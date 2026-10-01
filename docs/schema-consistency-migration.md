@@ -726,12 +726,38 @@ keeps only the float64 image, which is exact within ±2^53 and rounded past
 it. An API write stamps `change_log`, so the next flush re-exports the entity.
 Decide per row whether the value was meant to be clamped, rounded, or moved to
 a `numeric` attribute (or to a column-bound `bigint`, which keeps the full
-int64 range). Name the attribute in the update itself. An update merges into
-the document the OLTP route reads, so an update that leaves the attribute out
-re-submits the stored value to the funnel: a whole image past 2^53 is refused
-as invalid input naming the attribute, and one past int64 or with a fraction
-fails the read itself. Either way the unrelated update is blocked until the
-attribute is rewritten.
+int64 range). Name the attribute in the update itself. The merge does not
+convert a stored value that the update replaces, so an update naming the
+attribute repairs every image the census reports. That includes one past
+int64 or with a fraction, which the read itself refuses. An update replaces a
+list as a whole, so repair a list item by sending the whole list. An update
+that leaves the attribute out merges into the document the OLTP route reads,
+so it re-submits the stored value. A whole image past 2^53 is refused as
+invalid input that names the attribute and its image. One past int64 or with a
+fraction fails the read as a server error that names the attribute and the
+row. Either way, the unrelated update is blocked until the attribute is
+rewritten.
+
+**A `bigint` bound to a `double_*` column** holds the same contract since
+`#590`. The column keeps only the float64 image, so the funnel admits ±2^53,
+an unrelated update is blocked over a stored value outside that range, and an
+update naming the attribute repairs it. The census does not report these rows
+yet, because it scans only `eav_data` (`#618`). To find them, first list the
+column-bound `bigint` attributes in your schema files: those with `valueType`
+`bigint` and a `column_binding.col_name` of `double_01`..`double_03`. Then run
+this query for each such attribute, with its schema id and column:
+
+```sql
+-- one query per bigint attribute bound to a double_* column
+SELECT ltbase_row_id, double_01
+FROM entity_main_dev
+WHERE ltbase_schema_id = <schema id> AND double_01 IS NOT NULL
+  AND (abs(double_01) > 9007199254740992 OR double_01 <> trunc(double_01));
+```
+
+The comparison is exact, because 2^53 is a float64. The query reports a whole
+number past ±2^53, a fraction, a number past int64, NaN, and the infinities.
+Repair each row it returns through the API, naming the attribute, as above.
 
 ### Registered schema with no `<schema>.json` (`#314`)
 
@@ -831,6 +857,11 @@ LIMIT 50;
 - no bigint EAV value outside ±2^53 is reported (`#501`, `#612`, `#590`):
   rewrite each one through the API, naming the attribute, before an unrelated
   update is refused over it
+- no `bigint` bound to a `double_*` column holds a value outside ±2^53 or a
+  fraction (`#590`). The census does not cover these yet (`#618`), so run the
+  detection query in
+  [EAV integer values past their declared width](#eav-integer-values-past-their-declared-width-501)
+  and repair each row the same way
 - hardened release deployed
 - validator re-run after deploy
 - smoke CRUD tests pass against existing schemas

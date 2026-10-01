@@ -10,6 +10,13 @@ import (
 type PersistentRecordTransformer interface {
 	ToPersistentRecord(ctx context.Context, schemaID int16, rowID uuid.UUID, jsonData any) (*PersistentRecord, error)
 	FromPersistentRecord(ctx context.Context, record *PersistentRecord) (map[string]any, error)
+	// MergeBase rebuilds the stored document an update merges into. It is
+	// FromPersistentRecord except that the attributes replaced reports, the
+	// ones the update overwrites wholesale, are left out of the document
+	// without converting their stored values, so a stored value the read
+	// path refuses does not block the update that rewrites it (#590). They
+	// still count as present for the required policy, as they are stored.
+	MergeBase(ctx context.Context, record *PersistentRecord, replaced func(attrName string) bool) (map[string]any, error)
 }
 
 type StorageTables struct {

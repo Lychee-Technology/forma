@@ -321,3 +321,16 @@ func TestClassifyInt64(t *testing.T) {
 		})
 	}
 }
+
+// MaxExactFloat64Integer is the edge of the exact float64 images: it and
+// every integer below it round-trip, and the next integer does not.
+func TestMaxExactFloat64Integer(t *testing.T) {
+	for _, n := range []int64{MaxExactFloat64Integer, MaxExactFloat64Integer - 1, -MaxExactFloat64Integer} {
+		if int64(float64(n)) != n {
+			t.Fatalf("float64 image of %d is not exact", n)
+		}
+	}
+	if past := int64(MaxExactFloat64Integer + 1); int64(float64(past)) == past {
+		t.Fatalf("float64 image of %d is exact; the bound is not the edge", past)
+	}
+}

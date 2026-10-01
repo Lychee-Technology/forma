@@ -114,6 +114,19 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 }
 
 func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, record *model.PersistentRecord) (map[string]any, error) {
+	return t.fromPersistentRecord(ctx, record, nil)
+}
+
+// MergeBase is FromPersistentRecord for the document an update merges into:
+// the attributes replaced reports count as present for the required policy
+// but are not converted, so a stored value the read refuses, such as a
+// bigint image past int64 (#590), does not block the update that rewrites
+// it. A bound column's own encoding is still parsed (readFromMainColumn).
+func (t *persistentRecordTransformer) MergeBase(ctx context.Context, record *model.PersistentRecord, replaced func(attrName string) bool) (map[string]any, error) {
+	return t.fromPersistentRecord(ctx, record, replaced)
+}
+
+func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, record *model.PersistentRecord, replaced func(attrName string) bool) (map[string]any, error) {
 	if record == nil {
 		return nil, fmt.Errorf("record cannot be nil")
 	}
@@ -149,7 +162,7 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 
 	// Convert EAVRecords to EntityAttributes
 	converter := t.newConverter()
-	entityAttributes, err := converter.FromEAVRecords(attributes)
+	entityAttributes, err := converter.fromStoredEAVRecords(attributes, replaced)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert EAVRecords to EntityAttributes: %w", err)
 	}

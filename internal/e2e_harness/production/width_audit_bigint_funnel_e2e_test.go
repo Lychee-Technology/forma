@@ -117,6 +117,94 @@ func TestIntegerWidthAuditAgreesWithBigintWriteFunnel(t *testing.T) {
 	}
 }
 
+// TestBigintLegacyImageRepairByUpdate pins the repair the migration guide
+// prescribes for a stored image the #590 funnel refuses (#590 review): a PUT
+// that names the attribute rewrites it whatever the image, because the merge
+// does not convert the value it replaces, and the census then reports the row
+// clean. A PUT that does not name it carries the image into the write: a
+// whole image past 2^53 is refused as a 400 naming it, and one the read
+// cannot decode (a fraction, a number past int64) fails as a server error.
+func TestBigintLegacyImageRepairByUpdate(t *testing.T) {
+	cluster := SharedCluster(t)
+	env := NewEnv(t, cluster)
+	ctx := context.Background()
+	wide := DefaultSchemaFixtures()[1]
+
+	srv := httptest.NewServer(httpapi.NewServer(env.EntityManager(), httpapi.Options{}).Handler())
+	defer srv.Close()
+	tables := widthaudit.Tables{EAV: env.Tables.EAVData, ChangeLog: env.Tables.ChangeLog}
+
+	for _, image := range []string{"9007199254740994", "1000.5", "9223372036854775808"} {
+		status, body := postWideTotal(t, srv.URL, wide.Name, "1")
+		if status != http.StatusCreated {
+			t.Fatalf("create seed for image %s: status %d body %s", image, status, body)
+		}
+		rowID := uuid.MustParse(decodeCreatedRowID(t, body))
+		env.ExecSQL(ctx, "UPDATE "+env.Tables.EAVData+" SET value_numeric = "+image+" WHERE schema_id = $1 AND row_id = $2 AND attr_id = 15",
+			wide.ID, rowID)
+		if !censusFlagsRow(t, ctx, env, tables, rowID) {
+			t.Fatalf("census does not report the planted image %s", image)
+		}
+
+		status, body = putWide(t, srv.URL, wide.Name, rowID, `{"title":"unrelated"}`)
+		if image == "9007199254740994" {
+			if status != http.StatusBadRequest || !strings.Contains(body, "total") || !strings.Contains(body, "float64 image "+image) {
+				t.Fatalf("PUT title over image %s: status %d body %s, want %d naming total and the image", image, status, body, http.StatusBadRequest)
+			}
+		} else if status < http.StatusInternalServerError {
+			t.Fatalf("PUT title over unreadable image %s: status %d body %s, want a server error", image, status, body)
+		}
+
+		status, body = putWide(t, srv.URL, wide.Name, rowID, `{"total":5}`)
+		if status != http.StatusOK {
+			t.Fatalf("PUT total over image %s: status %d body %s, want %d", image, status, body, http.StatusOK)
+		}
+		got, err := env.EntityManager().Get(ctx, &forma.QueryRequest{SchemaName: wide.Name, RowID: &rowID})
+		if err != nil {
+			t.Fatalf("get repaired row (image %s): %v", image, err)
+		}
+		if total, _ := got.Attributes["total"].(int64); total != 5 {
+			t.Fatalf("repaired total = %v (%T), want int64 5", got.Attributes["total"], got.Attributes["total"])
+		}
+		if censusFlagsRow(t, ctx, env, tables, rowID) {
+			t.Fatalf("census still reports the row repaired over image %s", image)
+		}
+	}
+}
+
+func censusFlagsRow(t *testing.T, ctx context.Context, env *Env, tables widthaudit.Tables, rowID uuid.UUID) bool {
+	t.Helper()
+	findings, err := widthaudit.Census(ctx, env.Pool, tables, widthaudit.Targets(env.Metadata))
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	for _, f := range findings {
+		if f.RowID == rowID {
+			return true
+		}
+	}
+	return false
+}
+
+func putWide(t *testing.T, baseURL, schema string, rowID uuid.UUID, payload string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, baseURL+"/api/v1/"+schema+"/"+rowID.String(), strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("build update request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("update request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read update response: %v", err)
+	}
+	return resp.StatusCode, string(body)
+}
+
 func decodeCreatedRowID(t *testing.T, body string) string {
 	t.Helper()
 	var created struct {

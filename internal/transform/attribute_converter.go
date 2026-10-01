@@ -165,6 +165,12 @@ func (c *AttributeConverter) ToEAVRecords(attributes []model.EntityAttribute, ro
 // them for its own input-side check and hands that snapshot to
 // fromEAVRecords directly, so one write consults the registry once (#389).
 func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.EntityAttribute, error) {
+	return c.fromStoredEAVRecords(records, nil)
+}
+
+// fromStoredEAVRecords is FromEAVRecords leaving out the attributes replaced
+// reports (see fromEAVRecords); a nil replaced leaves out nothing.
+func (c *AttributeConverter) fromStoredEAVRecords(records []model.EAVRecord, replaced func(attrName string) bool) ([]model.EntityAttribute, error) {
 	if len(records) == 0 {
 		return []model.EntityAttribute{}, nil
 	}
@@ -175,11 +181,15 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 		return nil, fmt.Errorf("resolve relation roots for required-policy check of schema %d row %s: %w",
 			records[0].SchemaID, records[0].RowID, err)
 	}
-	return c.fromEAVRecords(records, relationRoots)
+	return c.fromEAVRecords(records, relationRoots, replaced)
 }
 
 // fromEAVRecords is FromEAVRecords with the relation roots already resolved.
-func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationRoots RelationRoots) ([]model.EntityAttribute, error) {
+// A record whose attribute replaced reports counts as present for the
+// required policy but is not converted and yields no attribute: the caller
+// is about to overwrite it (an update's merge base, MergeBase), so a stored
+// value the read refuses (#590) must not block the write that rewrites it.
+func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationRoots RelationRoots, replaced func(attrName string) bool) ([]model.EntityAttribute, error) {
 	if len(records) == 0 {
 		return []model.EntityAttribute{}, nil
 	}
@@ -217,6 +227,9 @@ func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationR
 			presentAttrIndices[attrName] = indexSet
 		}
 		indexSet[record.ArrayIndices] = struct{}{}
+		if replaced != nil && replaced(attrName) {
+			continue
+		}
 
 		meta := cache[attrName]
 		vt := meta.ValueType

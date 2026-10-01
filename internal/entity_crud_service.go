@@ -270,7 +270,7 @@ func (s *entityCRUDService) mergeUpdateRecord(
 		return nil, forma.NotFoundf("entity not found: %s/%s", req.SchemaName, req.RowID)
 	}
 
-	existingData, err := s.transformer.FromPersistentRecord(ctx, existing)
+	existingData, err := s.transformer.MergeBase(ctx, existing, replacedByUpdate(req.Updates))
 	if err != nil {
 		return nil, fmt.Errorf("failed to transform existing record: %w", err)
 	}

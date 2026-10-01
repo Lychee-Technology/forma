@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/numutil"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
@@ -113,8 +114,8 @@ func Targets(cache *schemameta.MetadataCache) []Target {
 
 // maxBigintImage is the largest magnitude the float64 image of an EAV-only
 // bigint keeps exactly; the write funnel admits exactly this range for
-// eav_data (transform.checkBigintImageFit, #590).
-const maxBigintImage = 1 << 53
+// eav_data (transform.checkBigintImageFit, #590), from the same constant.
+const maxBigintImage = numutil.MaxExactFloat64Integer
 
 // integerBounds is the inclusive range of an integer width as exact NUMERIC
 // text. It matches the write funnel's fit rule (transform.checkIntegerFit

@@ -102,7 +102,7 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 
 	// Convert EAVRecords to EntityAttributes, reusing the relation roots
 	// resolved above rather than reading the registry a second time.
-	attributes, err := t.converter.fromEAVRecords(eavRecords, relationRoots)
+	attributes, err := t.converter.fromEAVRecords(eavRecords, relationRoots, nil)
 	if err != nil {
 		return nil, fmt.Errorf("convert to model.EntityAttribute: %w", err)
 	}

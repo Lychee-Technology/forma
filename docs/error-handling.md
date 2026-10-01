@@ -629,8 +629,12 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   not a whole number or lies outside int64 is a read-path consistency error
   naming the attribute and row (#590), not a value made up by `int64()`
   (which wraps platform-dependently). A whole image inside int64, including
-  one past 2^53 written before #590, still reads as the stored value; the
-  #501 census names such rows.
+  one past 2^53 written before #590, still reads as the stored value. The
+  #501 census names such rows in `eav_data` only; for `double_*`, the
+  migration guide gives a detection query until the census covers it (#618).
+  An update that names the attribute rewrites any such image, including one
+  the read refuses, because the merge does not convert a stored value the
+  update replaces.
 - `text`→`uuid_*`: the value must parse as a UUID (published 4xx, not the
   redacted 500 `uuid.Parse` used to raise in `storeInMainColumn`).
 - A value whose typed slot does not match the column family is refused, never

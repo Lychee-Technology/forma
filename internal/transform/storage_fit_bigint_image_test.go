@@ -135,7 +135,8 @@ func TestCheckStorageFit_BigintImageBoundaryMessage(t *testing.T) {
 			require.Contains(t, msg, "bigint value 9223372036854775807 does not fit")
 			require.Contains(t, msg, "float64 image 9223372036854775808")
 
-			// A float64 input has no sidecar: the message names the image.
+			// A whole float64 input is judged as the integer it names, like
+			// any other spelling: the message names that value.
 			refused = model.EAVRecord{ArrayIndices: dest.indices}
 			_, err = populateTypedValue(&refused, "n", float64(1e18), dest.meta)
 			require.ErrorIs(t, err, forma.ErrInvalidInput)

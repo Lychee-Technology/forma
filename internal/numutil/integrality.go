@@ -24,6 +24,12 @@ const (
 	IntegralityFractional
 )
 
+// MaxExactFloat64Integer is 2^53: every integer of at most this magnitude
+// has an exact float64 image, and past it some do not. It bounds a declared
+// bigint on a destination that keeps only the float64 image, in the write
+// funnel and in the width census alike (#590).
+const MaxExactFloat64Integer = 1 << 53
+
 // ClassifyInt64 reports what value denotes for an integer destination,
 // judged on the input's own representation and never on its float64 image:
 // a json.Number or string by its digits, a float by its value, an integer

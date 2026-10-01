@@ -7,6 +7,7 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/numutil"
 )
 
 // The float64 image of a bigint (#590).
@@ -28,8 +29,9 @@ import (
 // whole int64 range on the strength of the sidecar and eav_data persisted
 // the rounded image (#205 float64 ceiling, #612 for the past-int64 slice).
 
-// maxBigintImage is the largest magnitude a float64 image keeps exactly.
-const maxBigintImage = 1 << 53
+// maxBigintImage is the largest magnitude a float64 image keeps exactly. The
+// width census bounds the stored image by the same constant.
+const maxBigintImage = numutil.MaxExactFloat64Integer
 
 // bigintImageRange is the allowed range quoted in the refusal.
 const bigintImageRange = "[-9007199254740992, 9007199254740992]"
