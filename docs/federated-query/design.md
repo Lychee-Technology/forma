@@ -953,8 +953,14 @@ applied on both sides:
   widening: an integral `bigint` operand outside int64 range (`gt:1e30`,
   `equals:9223372036854775808`, and the `Inf`/`NaN` spellings) is instead
   rejected as user-facing invalid input by every predicate binder
-  (`sqlgen.checkBigIntOperandRange`, #502) — the same bound the write funnel
-  enforces, so no legal data sits on either side of such a comparison and
+  (`sqlgen.checkBigIntOperandRange`, #502). An integral operand is judged on
+  its digits, not its float64 image: `equals:-9223372036854775809` is
+  rejected although its image is -2^63, which is MinInt64 exactly; binding
+  that image made Postgres match a MinInt64 row while DuckDB raised a
+  Conversion Error on `CAST('-9.223372036854776e+18' AS BIGINT)` (#617
+  review). This is the same
+  bound the write funnel enforces, so no legal data sits on either side of
+  such a comparison and
   every rejected literal has an exact in-range equivalent
   (`gt:9223372036854775807`). Before #502 the Postgres route answered against
   `NUMERIC` while the DuckDB route raised a Conversion Error on

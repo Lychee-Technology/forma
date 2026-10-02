@@ -186,18 +186,25 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 // be compared on the DuckDB route (CAST(? AS BIGINT) raises a Conversion
 // Error) while Postgres would answer against NUMERIC, so the shared
 // normalization refuses them on every binder instead. The bound mirrors the
-// #384 write funnel (checkDeclaredIntegerFit): float64(MaxInt64) is exactly
-// 2^63, so `< 2^63` rejects the first float64 that no longer fits, and NaN
-// fails both halves. A literal one below MinInt64 rounds to the float64 image
-// -2^63 and is accepted as that image, exactly as the write side would.
-// Widening the operand instead (HUGEINT) is not an option: no legal data can
-// sit beyond int64 on either side, and every rejected literal has an exact
-// in-range equivalent (gt:1e30 ≡ gt:9223372036854775807).
+// #384 write funnel (judgeDeclaredInteger, checkIntegerFit). An integral
+// literal is judged on its digits (numutil.ClassifyInt64), never on its
+// image: -9223372036854775809 rounds to the float64 -2^63, which is MinInt64
+// exactly, and binding that image made Postgres match a MinInt64 row for
+// equals:-9223372036854775809 while DuckDB raised a Conversion Error on the
+// image's shortest spelling, -9.223372036854776e+18 (#617 review F1). A
+// fractional literal is its float64 image (the numeric family's contract,
+// kept above), so its range is judged on the image: float64(MaxInt64) is
+// exactly 2^63, so `< 2^63` rejects the first float64 that no longer fits,
+// and NaN fails both halves. Widening the operand instead (HUGEINT) is not
+// an option: no legal data can sit beyond int64 on either side, and every
+// rejected literal has an exact in-range equivalent (gt:1e30 ≡
+// gt:9223372036854775807).
 func checkBigIntOperandRange(attr, valStr string, valueType forma.ValueType, v float64) error {
 	if valueType != forma.ValueTypeBigInt {
 		return nil
 	}
-	if v >= math.MinInt64 && v < math.MaxInt64 {
+	_, verdict := numutil.ClassifyInt64(valStr)
+	if verdict != numutil.IntegralityOutOfRange && v >= math.MinInt64 && v < math.MaxInt64 {
 		return nil
 	}
 	return forma.InvalidInputf(

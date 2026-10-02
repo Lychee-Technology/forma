@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,17 +14,28 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-// bigintImageDestinations are the destinations that keep only the float64
-// image of a declared bigint: storeInEAV clears the exact sidecar, and
-// storeNumericRendering writes a double column from the image.
-var bigintImageDestinations = []struct {
+// bigintDestination is one place a declared bigint is stored: an EAV scalar,
+// an EAV list item (indices set), or a bound main column.
+type bigintDestination struct {
 	name    string
 	meta    forma.AttributeMetadata
 	indices string
-}{
+}
+
+// bigintImageDestinations are the destinations that keep only the float64
+// image of a declared bigint: storeInEAV clears the exact sidecar, and
+// storeNumericRendering writes a double column from the image.
+var bigintImageDestinations = []bigintDestination{
 	{"eav", forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeBigInt}, ""},
 	{"eav list item", forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeBigInt}, "0"},
 	{"double column", boundMeta(forma.ValueTypeBigInt, forma.MainColumnDouble01, forma.MainColumnEncodingDefault), ""},
+}
+
+// allBigintDestinations adds the bigint column, which keeps the exact int64,
+// to the image destinations.
+func allBigintDestinations() []bigintDestination {
+	return append(slices.Clone(bigintImageDestinations), bigintDestination{
+		"bigint column", boundMeta(forma.ValueTypeBigInt, forma.MainColumnBigint01, forma.MainColumnEncodingDefault), ""})
 }
 
 // censusAdmitsBigint is the #501 integer-width census predicate for a
@@ -155,14 +167,7 @@ func TestCheckStorageFit_BigintImageBoundaryMessage(t *testing.T) {
 // bigint column. Every destination and every declared integer type judges
 // the same way.
 func TestPopulateTypedValue_IntegerJudgedOnTheLiteral(t *testing.T) {
-	bigintColumn := boundMeta(forma.ValueTypeBigInt, forma.MainColumnBigint01, forma.MainColumnEncodingDefault)
-	destinations := append(bigintImageDestinations, struct {
-		name    string
-		meta    forma.AttributeMetadata
-		indices string
-	}{"bigint column", bigintColumn, ""})
-
-	for _, dest := range destinations {
+	for _, dest := range allBigintDestinations() {
 		t.Run(dest.name, func(t *testing.T) {
 			for _, lit := range []any{json.Number("9007199254740991.5"), "9007199254740991.5", json.Number("-9007199254740991.5"), json.Number("9.0071992547409915e15")} {
 				rec := model.EAVRecord{ArrayIndices: dest.indices}
@@ -212,14 +217,77 @@ func TestPopulateTypedValue_IntegerJudgedOnTheLiteral(t *testing.T) {
 	require.Equal(t, float64(maxBigintImage), *num.ValueNumeric)
 }
 
-// A bigint column persists the exact sidecar, so the image rule does not
-// narrow it: the whole int64 range stays admitted there (#205).
-func TestCheckStorageFit_BigintColumnKeepsFullRange(t *testing.T) {
-	for _, v := range []any{json.Number("9223372036854775807"), json.Number("-9223372036854775808"), int64(maxBigintImage) + 1} {
+// An integer outside int64 is refused on the literal as well (#617 review
+// F1): no declared integer type holds it, so its image must not decide.
+// Below MinInt64 the image can be a valid value: -9223372036854775809, its
+// exponent spelling and -2^63-1024 (a tie, rounded to even) all have the
+// image -2^63, which is MinInt64 exactly, and the bigint column used to
+// admit them and store MinInt64. Every destination refuses every spelling,
+// naming the literal and the declared range.
+func TestPopulateTypedValue_IntegerOutsideInt64JudgedOnTheLiteral(t *testing.T) {
+	roundsToMinInt64 := []any{
+		json.Number("-9223372036854775809"), "-9223372036854775809",
+		json.Number("-9.223372036854775809e18"), json.Number("-9223372036854776832"),
+	}
+	outside := append(slices.Clone(roundsToMinInt64), json.Number("9223372036854775808"), json.Number("1e19"))
+	for _, dest := range allBigintDestinations() {
+		t.Run(dest.name, func(t *testing.T) {
+			for _, lit := range outside {
+				rec := model.EAVRecord{ArrayIndices: dest.indices}
+				_, err := populateTypedValue(&rec, "n", lit, dest.meta)
+				require.ErrorIs(t, err, forma.ErrInvalidInput, "%v", lit)
+				msg, published := forma.ResolvePublicMessage(err)
+				require.True(t, published)
+				require.Contains(t, msg, fmt.Sprintf("value %v out of range for declared type bigint (allowed [-9223372036854775808, 9223372036854775807])", lit))
+				require.Nil(t, rec.ValueInt64)
+				if slices.Contains(roundsToMinInt64, lit) {
+					require.Equal(t, math.Ldexp(-1, 63), *rec.ValueNumeric, "%v must exercise the image that is a valid int64", lit)
+				}
+			}
+		})
+	}
+
+	// The narrower declared types name the literal and their own range.
+	for _, vt := range []forma.ValueType{forma.ValueTypeSmallInt, forma.ValueTypeInteger} {
 		var rec model.EAVRecord
-		_, err := populateTypedValue(&rec, "n", v,
+		_, err := populateTypedValue(&rec, "n", json.Number("-9223372036854775809"), forma.AttributeMetadata{AttributeID: 9, ValueType: vt})
+		require.ErrorIs(t, err, forma.ErrInvalidInput)
+		msg, _ := forma.ResolvePublicMessage(err)
+		lo, hi := integerRange(vt)
+		require.Contains(t, msg, fmt.Sprintf("value -9223372036854775809 out of range for declared type %s (allowed [%d, %d])", vt, lo, hi))
+	}
+
+	// numeric keeps its image semantics (#205): the value is -2^63, which a
+	// bigint column holds exactly.
+	var num model.EAVRecord
+	_, err := populateTypedValue(&num, "n", json.Number("-9223372036854775809"),
+		boundMeta(forma.ValueTypeNumeric, forma.MainColumnBigint01, forma.MainColumnEncodingDefault))
+	require.NoError(t, err)
+	require.Nil(t, num.ValueInt64)
+	require.Equal(t, math.Ldexp(-1, 63), *num.ValueNumeric)
+}
+
+// A bigint column persists the exact sidecar, so the image rule does not
+// narrow it: the whole int64 range stays admitted there (#205), both
+// endpoints in every spelling, and stored as the caller's value.
+func TestCheckStorageFit_BigintColumnKeepsFullRange(t *testing.T) {
+	for _, tc := range []struct {
+		value any
+		want  int64
+	}{
+		{json.Number("9223372036854775807"), math.MaxInt64},
+		{json.Number("9.223372036854775807e18"), math.MaxInt64},
+		{json.Number("-9223372036854775808"), math.MinInt64},
+		{json.Number("-9.223372036854775808e18"), math.MinInt64},
+		{int64(math.MinInt64), math.MinInt64},
+		{int64(maxBigintImage) + 1, maxBigintImage + 1},
+	} {
+		var rec model.EAVRecord
+		_, err := populateTypedValue(&rec, "n", tc.value,
 			boundMeta(forma.ValueTypeBigInt, forma.MainColumnBigint01, forma.MainColumnEncodingDefault))
-		require.NoError(t, err, "%v", v)
+		require.NoError(t, err, "%v", tc.value)
+		require.NotNil(t, rec.ValueInt64, "%v", tc.value)
+		require.Equal(t, tc.want, *rec.ValueInt64, "%v", tc.value)
 	}
 }
 

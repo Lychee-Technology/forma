@@ -210,8 +210,9 @@ func columnFitType(colType forma.MainColumnType) (forma.ValueType, bool) {
 // ceiling). The caller guarantees attr.ValueNumeric is non-nil.
 //
 // The check judges the slot the store consumes, not the caller's raw value
-// (judgeDeclaredInteger has already judged a declared integer type on the
-// raw value, since past 2^52 a fractional literal has a whole image):
+// (judgeDeclaredInteger has already refused a declared integer type whose
+// raw value is fractional or outside int64, since past 2^52 a fractional
+// literal has a whole image and below MinInt64 an integer can round to it):
 // storeNumericRendering's bigint arm (default and unix_ms encodings) writes
 // the exact ValueInt64 sidecar when it is populated and int64(*ValueNumeric)
 // otherwise, and populateTypedValue fills the sidecar for declared bigint and
@@ -220,41 +221,41 @@ func columnFitType(colType forma.MainColumnType) (forma.ValueType, bool) {
 // what must fit; deriving an exact int64 from the raw value here would admit
 // it (#459 review F1).
 func checkIntegerFit(attr *model.EAVRecord, vt forma.ValueType, dest string) error {
-	numVal := *attr.ValueNumeric
-	var lo, hi float64
-	switch vt {
-	case forma.ValueTypeSmallInt:
-		lo, hi = math.MinInt16, math.MaxInt16
-	case forma.ValueTypeInteger:
-		lo, hi = math.MinInt32, math.MaxInt32
-	case forma.ValueTypeBigInt:
-		// The exact sidecar is an int64 and fits by construction; it is also
-		// how a declared bigint admits boundary literals like
-		// "9223372036854775807", whose float64 image rounds up to 2^63 and
-		// would fail the bound check below.
-		if attr.ValueInt64 != nil {
-			return nil
-		}
-		// Constant conversion: math.MinInt64 converts to exactly -2^63
-		// (a valid value); math.MaxInt64 rounds up to exactly 2^63, so >=
-		// rejects the first float64 that no longer fits.
-		if numVal != math.Trunc(numVal) {
-			return errNonIntegral(formatFitValue(numVal), dest)
-		}
-		if numVal < math.MinInt64 || numVal >= math.MaxInt64 {
-			return fmt.Errorf("value %s out of range for %s (allowed [-9223372036854775808, 9223372036854775807])", formatFitValue(numVal), dest)
-		}
-		return nil
-	default:
+	if !isIntegerType(vt) {
 		return nil
 	}
+	// The exact sidecar is an int64 and fits by construction; it is also how
+	// a declared bigint admits boundary literals like "9223372036854775807",
+	// whose float64 image rounds up to 2^63 and would fail the bound check
+	// below.
+	if vt == forma.ValueTypeBigInt && attr.ValueInt64 != nil {
+		return nil
+	}
+	numVal := *attr.ValueNumeric
 	if numVal != math.Trunc(numVal) {
 		return errNonIntegral(formatFitValue(numVal), dest)
 	}
-	if numVal < lo || numVal > hi {
-		return fmt.Errorf("value %s out of range for %s (allowed [%.0f, %.0f])", formatFitValue(numVal), dest, lo, hi)
+	fits := inInt64Range(numVal)
+	if vt != forma.ValueTypeBigInt {
+		lo, hi := integerRange(vt)
+		fits = numVal >= float64(lo) && numVal <= float64(hi)
+	}
+	if !fits {
+		return errOutOfRange(formatFitValue(numVal), dest, vt)
 	}
 	return nil
+}
+
+// integerRange is the range of the integer width vt names: smallint,
+// integer, or bigint's int64 (the caller passes only those three).
+func integerRange(vt forma.ValueType) (lo, hi int64) {
+	switch vt {
+	case forma.ValueTypeSmallInt:
+		return math.MinInt16, math.MaxInt16
+	case forma.ValueTypeInteger:
+		return math.MinInt32, math.MaxInt32
+	}
+	return math.MinInt64, math.MaxInt64
 }
 
 // errNonIntegral refuses a non-integer for an integer destination. value is
@@ -263,6 +264,13 @@ func checkIntegerFit(attr *model.EAVRecord, vt forma.ValueType, dest string) err
 // the slot (checkIntegerFit).
 func errNonIntegral(value, dest string) error {
 	return fmt.Errorf("non-integral value %s does not fit %s (whole number required)", value, dest)
+}
+
+// errOutOfRange refuses an integer outside the width vt names. value is the
+// spelling the message names, chosen as for errNonIntegral.
+func errOutOfRange(value, dest string, vt forma.ValueType) error {
+	lo, hi := integerRange(vt)
+	return fmt.Errorf("value %s out of range for %s (allowed [%d, %d])", value, dest, lo, hi)
 }
 
 // formatFitValue renders the rejected value in plain digits for the

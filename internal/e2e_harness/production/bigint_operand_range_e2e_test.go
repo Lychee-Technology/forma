@@ -73,6 +73,11 @@ func TestBigIntOperandRangeParityBothDialects(t *testing.T) {
 		{"amount_lt_negative_1e19", Filter{Attr: "amount", Op: "lt", Value: "-1e19"}},
 		// The first integer past MaxInt64, in bare digits.
 		{"total_equals_2p63", Filter{Attr: "total", Op: "equals", Value: "9223372036854775808"}},
+		// The first integer below MinInt64, whose float64 image is MinInt64
+		// itself: judged on its digits, not bound as that image, which
+		// Postgres answered and DuckDB failed to cast (#617 review F1).
+		{"amount_equals_below_minint64", Filter{Attr: "amount", Op: "equals", Value: "-9223372036854775809"}},
+		{"total_gt_below_minint64_exponent", Filter{Attr: "total", Op: "gt", Value: "-9.223372036854775809e18"}},
 	}
 	controls := []widthProbe{
 		// MaxInt64 stays addressable in bare and exponent spelling (#357).

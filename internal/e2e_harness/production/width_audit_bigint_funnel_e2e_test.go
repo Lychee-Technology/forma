@@ -218,7 +218,11 @@ func decodeCreatedRowID(t *testing.T, body string) string {
 
 func postWideTotal(t *testing.T, baseURL, schema, literal string) (int, string) {
 	t.Helper()
-	payload := fmt.Sprintf(`{"title":"width-audit-bigint-%s","total":%s}`, literal, literal)
+	return postWide(t, baseURL, schema, fmt.Sprintf(`{"title":"width-audit-bigint-%s","total":%s}`, literal, literal))
+}
+
+func postWide(t *testing.T, baseURL, schema, payload string) (int, string) {
+	t.Helper()
 	resp, err := http.Post(baseURL+"/api/v1/"+schema, "application/json", strings.NewReader(payload))
 	if err != nil {
 		t.Fatalf("create request: %v", err)

@@ -113,18 +113,28 @@ func toString(value any) (string, error) {
 // bigint that denotes an exact int64 fills the ValueInt64 sidecar in every
 // spelling ParseFloat accepts: "9.007199254740993e15" is 9007199254740993,
 // which the image alone reports as 2^53, and the sidecar is what a bigint_*
-// column stores and what the image destinations judge (bigint_image.go). An
-// integer outside int64, and a whole float, leave only the image, which
-// checkStorageFit bounds. numeric is not judged: its value is its float64
-// image (#205).
+// column stores and what the image destinations judge (bigint_image.go).
+//
+// An integer outside int64 is refused here too, naming the literal: no
+// declared integer type holds it, and its image must not be what decides.
+// Below MinInt64 the image can be a valid value: -9223372036854775809 has
+// the image -2^63, which is MinInt64 exactly, so the slot check alone
+// admitted it into a bigint_* column and stored MinInt64 (#617 review F1).
+// What the verdict leaves to checkStorageFit is the declared width of an
+// exact integer, which its image judges the same way (rounding never moves
+// an integer across a smallint or integer bound). numeric is not judged: its
+// value is its float64 image (#205).
 func judgeDeclaredInteger(attr *model.EAVRecord, value any, vt forma.ValueType) error {
 	if !isIntegerType(vt) {
 		return nil
 	}
 	exact, verdict := numutil.ClassifyInt64(value)
+	dest := "declared type " + string(vt)
 	switch verdict {
 	case numutil.IntegralityFractional:
-		return errNonIntegral(inputSpelling(value, *attr.ValueNumeric), "declared type "+string(vt))
+		return errNonIntegral(inputSpelling(value, *attr.ValueNumeric), dest)
+	case numutil.IntegralityOutOfRange:
+		return errOutOfRange(inputSpelling(value, *attr.ValueNumeric), dest, vt)
 	case numutil.IntegralityExact:
 		if vt == forma.ValueTypeBigInt {
 			attr.ValueInt64 = &exact

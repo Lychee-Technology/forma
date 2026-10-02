@@ -620,6 +620,13 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   although its image is the admitted `9007199254740992`, and
   `9.007199254740993e15` is the exact `9007199254740993`, refused by the image
   rule on the image destinations and stored exactly in a `bigint_*` column.
+  An integer outside int64 is refused on the literal for every declared
+  integer type, as `value -9223372036854775809 out of range for declared type
+  bigint (allowed [-9223372036854775808, 9223372036854775807])`: its image
+  must not decide, because just below MinInt64 the image rounds to -2^63,
+  which is MinInt64 exactly, and before the #617 review a `bigint_*` column
+  stored MinInt64 in its place. `numeric` is not judged on the literal: its
+  value is its float64 image (#205).
 - Column-bound attribute: the declared type **and** the column's own width
   (`double_*` keeps only the float64 image, so `bigint`→`double_01` admits the
   same ±2^53 as the EAV destination, #590; a `bigint_*` column keeps the

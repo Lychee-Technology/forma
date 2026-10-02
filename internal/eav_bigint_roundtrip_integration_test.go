@@ -170,6 +170,18 @@ func TestEAVBigintRoundTripIntegration(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, int64(9007199254740993), got["amount"])
 	})
+	// An integer outside int64 has no bigint value, even where its float64
+	// image is MinInt64 itself (#617 review F1): refused naming the literal,
+	// not stored as MinInt64.
+	for _, lit := range []json.Number{"-9223372036854775809", "-9.223372036854775809e18", "9223372036854775808"} {
+		t.Run(fmt.Sprintf("bigint column refuses %s", lit), func(t *testing.T) {
+			_, err := f.tr.ToPersistentRecord(ctx, bigintDestSchema, uuid.New(), map[string]any{"amount": lit})
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			msg, published := forma.ResolvePublicMessage(err)
+			require.True(t, published)
+			require.Contains(t, msg, fmt.Sprintf("value %s out of range for declared type bigint (allowed [-9223372036854775808, 9223372036854775807])", lit))
+		})
+	}
 }
 
 // The read side of a stored image (#590): a whole image inside int64 that

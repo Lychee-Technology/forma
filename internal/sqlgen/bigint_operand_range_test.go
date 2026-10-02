@@ -35,6 +35,15 @@ func TestBigIntOperandRangeAllBinders(t *testing.T) {
 		{"2p63_bare", "9223372036854775808", nil},
 		{"negative_1e19", "-1e19", nil},
 		{"hex_float_2p70", "0x1p70", nil},
+		// Integral literals below MinInt64 whose float64 image is -2^63,
+		// MinInt64 exactly: the verdict on the digits decides, not the
+		// image, or equals: would match a MinInt64 row (#617 review F1).
+		{"below_min_int64_bare", "-9223372036854775809", nil},
+		{"below_min_int64_exponent", "-9.223372036854775809e18", nil},
+		{"below_min_int64_rounding_tie", "-9223372036854776832", nil},
+		// A fractional literal is its float64 image (fractional_in_range):
+		// this one's image is -2^63, inside int64, so it binds as that image.
+		{"fractional_below_min_int64_image_in_range", "-9223372036854775808.5", -9223372036854775808.0},
 		// The bound is on magnitude, not integrality: a fractional literal
 		// past int64 is rejected too, exactly as the write funnel rejects a
 		// non-integral out-of-range value. Contrast fractional_in_range.
