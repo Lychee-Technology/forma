@@ -13,7 +13,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/lychee-technology/forma/internal/model"
@@ -75,29 +74,31 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 		}
 	}
 
-	// Validate required attributes with parent-aware semantics before flattening.
 	// The relation roots are resolved once here and handed to both required
-	// checks on this write — this one and the converter's, below — so they
+	// checks on this write, the walk's and the converter's below, so they
 	// carve the same names out of the same registry read (#389).
 	relationRoots, err := t.converter.relationRootsFor(schemaID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve relation roots for required-attribute check: %w", err)
 	}
-	if err := validateRequiredAttributesFromInput(data, cache, relationRoots); err != nil {
+
+	entries, err := walkDocument(schemaID, rowID, data, cache)
+	if err != nil {
+		return nil, err
+	}
+	// The required policy is judged on what the write stores, before any
+	// value is converted, so a missing attribute is reported ahead of a
+	// refused value as it always has been.
+	if err := requireWrittenAttributes(entries, cache, relationRoots); err != nil {
+		return nil, err
+	}
+	flattened, err := flattenToAttributes(entries)
+	if err != nil {
 		return nil, err
 	}
 
-	// First convert to EAVRecords internally, each tagged with the key spelling
-	// that produced it.
-	flattened := make([]taggedEAVRecord, 0)
-	if err := t.flattenToAttributes(schemaID, rowID, nil, data, nil, cache, &flattened); err != nil {
-		return nil, err
-	}
-
-	// Dotted attribute names let one payload spell the same attribute twice, so
-	// resolve the duplicate spellings here — once the whole tree is flattened,
-	// not inside the recursion, which appends through a shared slice and runs
-	// per nested value. The last spelling wins, whole attribute at a time (#312).
+	// Dotted attribute names let one payload spell the same attribute twice;
+	// the last spelling wins, whole attribute at a time (#312).
 	eavRecords := dedupeEAVRecords(flattened)
 
 	// Convert EAVRecords to EntityAttributes, reusing the relation roots
@@ -286,118 +287,6 @@ func isKnownAttributeOrParent(name string, cache forma.SchemaAttributeCache) boo
 	return false
 }
 
-func (t *transformer) flattenToAttributes(
-	schemaID int16,
-	rowID uuid.UUID,
-	path []string,
-	data any,
-	indices []int,
-	cache forma.SchemaAttributeCache,
-	result *[]taggedEAVRecord,
-) error {
-	switch v := data.(type) {
-	case map[string]any:
-		if err := checkPayloadDepth(flattenPosition(path, indices)); err != nil {
-			return err
-		}
-		keys := make([]string, 0, len(v))
-		for key := range v {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			value := v[key]
-			if value == nil {
-				candidateName := strings.Join(append(path, key), ".")
-				if isKnownAttributeOrParent(candidateName, cache) {
-					return forma.InvalidInputf("attribute '%s' cannot be set to null; omit the key to preserve its current value", candidateName)
-				}
-				continue
-			}
-			newPath := append(path, key)
-			if err := t.flattenToAttributes(schemaID, rowID, newPath, value, indices, cache, result); err != nil {
-				return err
-			}
-		}
-	case []any:
-		if err := checkPayloadDepth(flattenPosition(path, indices)); err != nil {
-			return err
-		}
-		if len(v) == 0 {
-			appendEmptyListMarker(schemaID, rowID, path, cache, result)
-			return nil
-		}
-		for i, item := range v {
-			if item == nil {
-				attrName := strings.Join(path, ".")
-				if isKnownAttributeOrParent(attrName, cache) {
-					return forma.InvalidInputf("attribute '%s' cannot be set to null (array index %d); omit the element to preserve its current value", attrName, i)
-				}
-				continue
-			}
-			newIndices := append(indices, i)
-			if err := t.flattenToAttributes(schemaID, rowID, path, item, newIndices, cache, result); err != nil {
-				return err
-			}
-		}
-	default:
-		attrName := strings.Join(path, ".")
-		meta, ok := cache[attrName]
-		if !ok {
-			// The internal schema id is operator detail: the caller addressed a
-			// schema by name and cannot act on the int16 (#362 review, P2).
-			return forma.WithOperatorDetail(
-				forma.InvalidInputf("attribute '%s' is not defined for this schema", attrName),
-				fmt.Errorf("schema %d", schemaID))
-		}
-
-		attr := model.EAVRecord{
-			SchemaID:     schemaID,
-			RowID:        rowID,
-			AttrID:       meta.AttributeID,
-			ArrayIndices: joinIndices(indices),
-		}
-
-		set, err := populateTypedValue(&attr, attrName, v, meta)
-		if err != nil {
-			return fmt.Errorf("convert value for attribute '%s': %w", attrName, err)
-		}
-
-		if set {
-			*result = append(*result, taggedEAVRecord{record: attr, spelling: spellingOf(path)})
-		}
-	}
-	return nil
-}
-
-// appendEmptyListMarker persists the explicit-empty-list marker row
-// (array_indices "", both value columns NULL) for a registered list attribute
-// so it round-trips as [] instead of silently degrading to an absent
-// attribute. Under merge-update semantics "tags": [] is the only way to clear
-// a list (#204). An unregistered name is silently skipped, as before.
-func appendEmptyListMarker(
-	schemaID int16,
-	rowID uuid.UUID,
-	path []string,
-	cache forma.SchemaAttributeCache,
-	result *[]taggedEAVRecord,
-) {
-	attrName := strings.Join(path, ".")
-	meta, ok := cache[attrName]
-	if !ok || meta.ValueType != forma.ValueTypeList {
-		return
-	}
-	*result = append(*result, taggedEAVRecord{
-		record: model.EAVRecord{
-			SchemaID:     schemaID,
-			RowID:        rowID,
-			AttrID:       meta.AttributeID,
-			ArrayIndices: "",
-		},
-		spelling: spellingOf(path),
-	})
-}
-
-// The input-side required-policy check (validateRequiredAttributesFromInput)
-// lives in input_required.go; array handling (joinIndices, parseIndices,
-// setValueAtPath, etc.) in transformer_array.go.
+// The document walk that ToAttributes reads (walkDocument, flattenToAttributes,
+// requireWrittenAttributes) lives in document_walk.go; array handling
+// (joinIndices, parseIndices, setValueAtPath, etc.) in transformer_array.go.

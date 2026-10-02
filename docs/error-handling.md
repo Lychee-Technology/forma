@@ -14,7 +14,7 @@ is what the HTTP boundary emits on the 4xx body (#313).
 
 Examples:
 
-- unknown write attribute names in `transformer.flattenToAttributes`
+- unknown write attribute names in `transform.walkDocument`
 - invalid value conversion in `populateTypedValue`
 - explicit `null` writes to schema-defined fields
 - a payload that violates the entity's JSON Schema (`internal/schemavalidate`) —
@@ -61,8 +61,9 @@ below.
 **This is in addition to `required_policy`, which is a separate mechanism and
 still applies independently.** `required_policy` lives in
 `<name>_attributes.json` (`forma.AttributeMetadata.RequiredPolicy`) and is
-checked by `validateRequiredAttributesFromInput` in `internal/transform`. It is
-per *attribute* and understands `required_if_parent_present`; the schema's
+checked by `requireWrittenAttributes` in `internal/transform`, against what
+the write stores. It is per *attribute* and understands
+`required_if_parent_present`; the schema's
 `required` is per *object* and understands nothing else. Neither subsumes the
 other, and a write must satisfy both.
 
@@ -82,8 +83,8 @@ author who wants a format asserted must write it as a `pattern`.
 
 **Unknown properties are accepted**, because no shipped schema sets
 `additionalProperties`. A key the schema does not define passes validation. That
-is not a hole for unknown *attributes* — `flattenToAttributes` still rejects
-those with `attribute is not defined`, so they answer `400` by a different route.
+is not a hole for unknown *attributes* — the write's document walk still
+rejects those with `attribute is not defined`, so they answer `400` by a different route.
 What passes unchecked is a key the attribute metadata defines and the JSON
 Schema does not describe at that position.
 
@@ -99,8 +100,8 @@ subtrees are never caller-writable").
 
 Normalization errs in the other direction in one case: at an array it can check
 slightly *more* than the writer stores, and so reject a value the write would
-have discarded. See "False rejection: a shrinking list over already-invalid
-data".
+have discarded. See "False rejection: a shrinking list sent in both
+spellings".
 
 ### Creates reject, updates report
 
@@ -116,9 +117,11 @@ pre-existing violation elsewhere, with no way to repair the row through the API.
 Creates have no legacy data and so always enforce.
 
 **Do not flip strict mode before an e2e pass on real data.** The update path
-validates the *merged* document — `FromPersistentRecord` reconstructs the stored
-entity out of EAV rows and `mergeMaps` overlays the caller's fragment — so what
-is judged is the EAV round-trip, not what the caller sent. Shipped schemas put a
+validates the *merged* document — `MergeUpdate` reconstructs the stored entity
+out of EAV rows, `mergeMaps` overlays the caller's fragment, and the stored
+values the written row discards are then removed (see "The update merge and the
+written row") — so what is judged is the EAV round-trip, not what the caller
+sent. Shipped schemas put a
 `pattern` — plus an inert `format: uuid` — on required identifiers (`lead.json`
 `$defs/lead_id`, `visit.json` `$defs/visit_id`), and the pattern is the half that
 bites, so any reconstruction that is lossy for such a field turns a legitimate
@@ -169,7 +172,7 @@ narrows where to look; the e2e pass above is still what licenses the flip.
 - **The payload depth cap is a carrier, yet is also returned regardless of
   enforcement** (#406). `internal/transform` bounds both of its recursions
   over the caller's nesting — `NormalizeDottedKeys`, which runs before
-  `Validate`, and `flattenToAttributes`, which runs on every write — at
+  `Validate`, and `walkDocument`, which runs on every write — at
   `maxPayloadNestingDepth` (1000, `payload_depth.go`), and past it builds
   `forma.InvalidInputf("payload nesting exceeds 1000 levels beneath attribute
   …; the payload is cyclic or too deeply nested")`, naming only the top-level
@@ -178,8 +181,10 @@ narrows where to look; the e2e pass above is still what licenses the flip.
   `map[string]any` exhausted the stack fatally before any validation ran.
   Report-only mode does not absorb it because it is not a violation an
   operator repairs in stored data, and the write could never succeed anyway —
-  the flattener refuses the same payload with the same cap. A consequence for
-  the marshal-refusal path below: the validator's own capped walk, and the
+  the document walk refuses the same payload with the same cap. That refusal
+  aborts the walk where it is met, so it precedes the required-policy check
+  and every other refusal the walk would report. A consequence for the
+  marshal-refusal path below: the validator's own capped walk, and the
   `encoding/json` cycle text it falls back to, are no longer reachable from
   the write path for a cyclic payload, and stay as defence in depth.
 
@@ -350,7 +355,7 @@ The "inside an element is fine" half holds unconditionally only because **no
 shipped schema nests an array inside an array**; a dotted key inside an outer
 element that crossed an inner array would fall back into the gap.
 
-### False rejection: a shrinking list over already-invalid data
+### False rejection: a shrinking list sent in both spellings
 
 The gap above is a value going unchecked. This is the opposite error, and it is
 **live, not latent**: one shape is checked more strictly than it is stored, and
@@ -375,14 +380,15 @@ declared `string`, so validation reports
 `type: 12345 has type "integer", want "string"` — about an index that will not
 exist after the write.
 
-**What an operator sees.** The rejection needs the surplus stored data to violate
-the schema *already*. On the default update path that surfaces as a report-only
-`Warn` naming the schema and row and the write proceeds; it becomes a `400` only
-under `Entity.ValidateUpdatesStrict`, which is exactly the mode meant to surface
-pre-existing violations. On create there is no stored surplus to inherit, so the
-only way to hit it is to send both spellings with a longer nested one in the same
-body. If it appears in strict mode, the fix is the same as for any pre-existing
-violation: correct the stored data, or send the list under one spelling.
+**What an operator sees.** Only a caller who sends both spellings in one body,
+the nested one longer, can hit it, on create or on update. Stored data no longer
+can (#590 review): an update removes the stored values its written row discards
+before the merged document is validated, so a stored nested list that the
+caller's literal key replaces never reaches the view (see "The update merge and
+the written row"). On the default update path the rejection surfaces as a
+report-only `Warn` naming the schema and row and the write proceeds; it is a
+`400` on create and under `Entity.ValidateUpdatesStrict`. The fix is to send the
+list under one spelling.
 
 **Why it is not fixed.** Making the view replace instead of merge trades this for
 the worse error — a *persisted* value going unvalidated, which is the bypass #314
@@ -555,8 +561,8 @@ startup check reads the JSON Schema document and never the
 there — and the strip would make any such policy unsatisfiable on every write.
 Both required checks `ToAttributes` runs on a create or update therefore skip
 names strictly beneath a relation root (`transform.RelationRoots.Covers`):
-`validateRequiredAttributesFromInput`, against the caller's input before
-flattening (#389), and `AttributeConverter.checkRequiredAttributes`, against
+`requireWrittenAttributes`, against what the write stores, before any value is
+converted (#389), and `AttributeConverter.checkRequiredAttributes`, against
 the flattened records (#315). The root's own policy stays enforced. The
 carve-out lives in the checks rather than on the read path because
 `FromEAVRecords` runs on both — `ToAttributes` on every write,
@@ -574,10 +580,10 @@ survived it and was written to the EAV table while the nested spelling was
 discarded. That value was unreadable wherever relation enrichment applied — it
 replaces the whole `contactSnapshot` object with the parent's fragment — and the
 next update deleted it: the update path rebuilds the dotted attribute name into
-a nested object (`FromPersistentRecord` → `FromAttributes`), the strip removes
-that object from the merged document, and the update's scoped EAV replace
-deletes every attribute id registered for the schema before writing back only
-what survived. It is now dropped on write, like the nested spelling.
+a nested object (`MergeUpdate`, which rebuilds the row as the read does), the
+strip removes that object from the merged document, and the update's scoped
+EAV replace deletes every attribute id registered for the schema before writing
+back only what survived. It is now dropped on write, like the nested spelling.
 
 Rows written before #318 keep whatever `contactSnapshot.*` values they hold. No
 migration is performed. They are not returned wherever relation enrichment
@@ -601,21 +607,48 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
 - EAV-only attribute: the destination is the declared `valueType`.
   `smallint`/`integer`/`bigint` must be integral and inside the type's
   range; `numeric` is unconstrained (#205 owns its float64 ceiling).
-  `eav_data` keeps only the float64 image, so a `bigint` is also judged by
-  that image (#612). An int64 from `9223372036854775296` (2^63−512) up has
-  the image 2^63, past int64, and is refused, although it fits the declared
-  type.
+  `eav_data` keeps only the float64 image of a `bigint`, which is exact only
+  within ±2^53, so an unbound `bigint` (list items included) admits exactly
+  `[-9007199254740992, 9007199254740992]` (#590; #612 had refused only the
+  slice from 2^63−512 up, whose image is 2^63). `9007199254740993` is refused
+  with a message naming the value, the destination, the image it would be
+  stored as and the allowed range; before #590 it was stored as
+  `9007199254740992` and read back as that on every route. A declared
+  integer type is judged on the literal the caller sent, not on its float64
+  image, which is always whole past 2^52: `9007199254740991.5` is refused as
+  `non-integral value 9007199254740991.5 does not fit declared type bigint`
+  although its image is the admitted `9007199254740992`, and
+  `9.007199254740993e15` is the exact `9007199254740993`, refused by the image
+  rule on the image destinations and stored exactly in a `bigint_*` column.
+  An integer outside int64 is refused on the literal for every declared
+  integer type, as `value -9223372036854775809 out of range for declared type
+  bigint (allowed [-9223372036854775808, 9223372036854775807])`: its image
+  must not decide, because just below MinInt64 the image rounds to -2^63,
+  which is MinInt64 exactly, and before the #617 review a `bigint_*` column
+  stored MinInt64 in its place. `numeric` is not judged on the literal: its
+  value is its float64 image (#205).
 - Column-bound attribute: the declared type **and** the column's own width
-  (`double_*` is unconstrained; #205 owns the float64 ceiling, so
-  `bigint`→`double_01` rounds above 2^53 rather than refusing, but it refuses
-  an image past int64 as the EAV destination does).
+  (`double_*` keeps only the float64 image, so `bigint`→`double_01` admits the
+  same ±2^53 as the EAV destination, #590; a `bigint_*` column keeps the
+  exact int64 and admits the full range).
   `numeric`→`integer_01` refuses `1.5` and `3e9`; `integer`→`smallint_01`
   refuses `40000`. Before #459 these wrapped (`int16(40000) = -25536`) into
   `entity_main`. The width check judges the slot the store actually writes:
   a declared `bigint` carries an exact int64 sidecar and admits the full
-  int64 range, while a `numeric` value is stored from its float64 image, so
-  `numeric`→`bigint_01` refuses `9223372036854775807` (its image is 2^63,
-  which does not fit).
+  int64 range into a `bigint_*` column, while a `numeric` value is stored
+  from its float64 image, so `numeric`→`bigint_01` refuses
+  `9223372036854775807` (its image is 2^63, which does not fit).
+- On the read side a stored `bigint` image (`eav_data`, `double_*`) that is
+  not a whole number or lies outside int64 is a read-path consistency error
+  naming the attribute and row (#590), not a value made up by `int64()`
+  (which wraps platform-dependently). A whole image inside int64, including
+  one past 2^53 written before #590, still reads as the stored value. The
+  #501 census names such rows in `eav_data` only; for `double_*`, the
+  migration guide gives a detection query until the census covers it (#618).
+  An update that names the attribute, nested or as a literal dotted key and
+  under any required policy, rewrites any such image, including one the read
+  refuses: an update never decodes a stored value its written row discards
+  (see "The update merge and the written row").
 - `text`→`uuid_*`: the value must parse as a UUID (published 4xx, not the
   redacted 500 `uuid.Parse` used to raise in `storeInMainColumn`).
 - A value whose typed slot does not match the column family is refused, never
@@ -668,6 +701,124 @@ by prefix and used to fail only on the first write) and a
 runtime rule only ever sees width and UUID-shape questions on a well-formed
 schema; `validate-schema-consistency` lists both across an already-deployed
 set (see `docs/schema-consistency-migration.md`).
+
+## The update merge and the written row (#590 review)
+
+An update writes the stored row merged with the caller's fragment. One walk
+decides what a written row holds, for the merge, the required policy and the
+writer alike: `transform.walkDocument` (`internal/transform/document_walk.go`)
+visits a document in sorted-key order and records each position it reaches (a
+value an attribute claims, a list's empty-list marker, a parent the caller sent
+explicitly, or a refusal) with the key spelling that reached it. #312's rule,
+that a literal dotted key outranks the nested spelling of the same attribute
+across the whole attribute, is applied to those claims in one place,
+`spellingWinners` (`eav_dedupe.go`).
+
+**Order of operations.** `Update`, the atomic `BatchUpdate` and the best-effort
+`BatchUpdate` build the merged document through one helper,
+`mergeUpdateDocument` (`internal/entity_manager_helpers.go`):
+
+1. `MergeUpdate` rebuilds the stored row as the read does, but holds each
+   stored value undecoded (`transform.storedValue`). That covers EAV values
+   and bound main-column values alike: a `bigint` image in `double_*` is held
+   the same way.
+2. `mergeMaps` overlays the caller's fragment (objects deep-merge, arrays and
+   scalars replace) and `StripComputedFields` removes relation subtrees. Both
+   treat a held value as an opaque scalar.
+3. `resolveStoredValues` walks the merged document and decodes exactly the
+   held values the written row keeps, the claims whose spelling wins, in walk
+   order. It removes the rest without decoding them.
+4. The resolved document is validated against the JSON Schema (creates
+   reject, updates report, as above) and handed to `ToAttributes`, which walks
+   it again: `requireWrittenAttributes` judges the required policies, each
+   claim is converted (`populateTypedValue`), and `dedupeEAVRecords` applies
+   #312 to the records.
+
+A create runs step 4 only.
+
+**What callers see.**
+
+- **A stored value the write discards is never decoded.** That covers a value
+  the caller's fragment replaces, a stored nested spelling outranked by the
+  caller's literal key (`{"contact.total":42}` over a stored `contact.total`),
+  and a stored value beneath a relation root the strip removes. A legacy
+  `bigint` image the read refuses (#590) is therefore repaired by any update
+  that names the attribute, in either spelling and under any required policy,
+  and the attributes the update does not name are kept. An update that keeps
+  such a value still decodes it. It then fails as reading the row fails:
+  plain and operator-visible for a fraction or a value past int64, or as the
+  funnel's `400` for a whole image past 2^53. The first attempt at this
+  (`MergeBase`) recognised a replacement only in the nested spelling. A
+  literal repair under a required policy was then refused as a missing
+  required attribute, and a nested sibling update dropped the stored list
+  beside it.
+- **Required policies are judged on what the write stores.** An attribute is
+  present where a winning claim writes it. A parent is present where a
+  winning claim writes beneath it, or where the caller sent it explicitly:
+  `{}`, `{"total": null}`, or a scalar where an object belongs. The check this
+  replaced, `validateRequiredAttributesFromInput`, read only the nested
+  spelling of the caller's input. Against it:
+  - a literal dotted key satisfies the requirement, so `{"contact.total":5}`
+    on a create under `required_always` is no longer a false `400`;
+  - `{"contact.name":"x"}` without `contact.total` under
+    `required_if_parent_present` is a `400` naming `contact.total`, not a
+    plain `500` from the record-side check;
+  - a value at a required attribute that writes no record there
+    (`{"contact":{"total":{}}}`, `{"contact":{"total":[]}}`) is a `400`
+    `missing required attribute`, not a plain `500`, and
+    `{"contact":{"total":{"x":1}}}` reports the missing attribute rather than
+    `attribute 'contact.total.x' is not defined`;
+  - `{"order.items":[{}]}` is an explicit parent in either spelling, so it is
+    refused when `order.items.name` is `required_if_parent_present`;
+  - a container whose every claim loses under #312 writes nothing, so it is
+    not a parent.
+
+  The record-side check (`checkRequiredAttributes`) still runs on the written
+  records and on every read. It stays plain, and on the write path it is now
+  a backstop that a row passing `requireWrittenAttributes` always passes.
+- **Order of refusals.** The payload depth cap aborts the walk and comes
+  first. On an update, decoding the kept stored values comes next, then the
+  JSON Schema. Then the required policy, then the first refusal (`null`, an
+  unknown attribute) or conversion error in walk order, as before.
+- **The JSON Schema sees the written state.** The merged document it
+  validates no longer holds the stored values the write discards. A schema
+  rule that a discarded stored value used to satisfy is judged on what the
+  row will hold, and the shrinking-list false rejection above no longer
+  arises from stored data.
+- **A literal repair carrying a bad value over an unreadable stored value
+  answers the caller's `400`**, not the stored value's decode error.
+- **Of several unreadable stored values an update keeps, the first in walk
+  order fails it**, the same one on every run.
+
+**Pruning keeps the rest of the row.** A map or array that pruning empties is
+removed with the value, since it held stored values only and the stored row is
+no evidence the caller sent it. An array keeps its element positions: an
+emptied element before a kept one stays as `{}`, so the kept elements keep
+their indices, and emptied trailing elements are cut. A container that was
+empty before resolution, such as a caller's `{}` or a stored list's `[]`, is
+kept.
+
+**Known limits.**
+
+- A bound column's own encoding (`readFromMainColumn`, e.g. an `iso8601` text
+  image) is parsed while the stored row is rebuilt, before the merge. A
+  main-column value that does not parse therefore blocks even the update that
+  replaces it.
+- An interior `{}` left by pruning counts as an explicit parent, as the
+  element holding the discarded value did before.
+- A stored row that already lacks a required attribute fails the rebuild, and
+  so the update, with the read's plain error.
+- The walk runs twice per update (resolution, then the writer). It is linear
+  in the payload plus the stored row.
+
+Pinned by `TestUpdateNamingLegacyBigintImageRepairsIt`,
+`TestUnrelatedUpdateOverLegacyBigintImageFails`,
+`TestRefusedRepairOverLegacyBigintImageReportsTheCallersValue`,
+`TestUpdateNamingRequiredNestedAttributeKeepsSiblings` and
+`TestUpdateLeavingRequiredNestedAttributeMissingFails` (package `internal`,
+across `Update` and both `BatchUpdate` modes), by `merge_update_test.go` and
+`written_required_test.go` in `internal/transform`, and by
+`TestNestedBigintLegacyImageRepairByUpdate` (production E2E).
 
 ## Read-path consistency errors
 
@@ -991,7 +1142,7 @@ only it.
 | site | caller mistake |
 | --- | --- |
 | `internal/entity_query_sort.go` | sorting by an attribute the schema does not define (#296) |
-| `internal/transform/input_required.go` (`validateRequiredAttributesFromInput`) | create/update body omitting an attribute whose metadata `required_policy` demands it |
+| `internal/transform/document_walk.go` (`requireWrittenAttributes`) | create/update that would store a row lacking an attribute whose metadata `required_policy` demands it |
 | `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator; an operator the attribute's type does not accept (`starts_with`/`contains` on a non-text column, an inequality on a boolean) |
 | `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
@@ -1232,8 +1383,8 @@ satisfied `errors.Is(err, forma.ErrInvalidInput)` and the boundary answered a
 verbatim `400` for state the caller cannot fix — exactly the inversion the two
 error classes above exist to prevent. That error is plain again. The write
 path's `400` never depended on it: `ToAttributes` runs
-`validateRequiredAttributesFromInput` against the caller's input *before*
-flattening, and that is the sentinel-carrying validator. A sentinel belongs on a
+`requireWrittenAttributes` on the write's document walk *before* any value is
+converted, and that is the sentinel-carrying validator. A sentinel belongs on a
 validator that only the write path can reach; if a converter is shared, the
 check has to move rather than the sentinel be added.
 
@@ -1619,10 +1770,13 @@ two `eav_data` records sharing the primary key
 them in one multi-row `INSERT` with no `ON CONFLICT`. The write failed on
 PostgreSQL `23505`.
 
-This is not an exotic payload. On update, `mergeMaps` is key-literal while
-`FromPersistentRecord` re-nests stored attributes, so an ordinary
-`PUT {"contact.email":"x"}` against an entity that already holds that attribute
-merges to *both* shapes — using the attribute name the schema advertises.
+This is not an exotic payload. On update, `mergeMaps` is key-literal while the
+merge base re-nests stored attributes, so an ordinary `PUT {"contact.email":"x"}`
+against an entity that already holds that attribute merges to *both* shapes —
+using the attribute name the schema advertises. Since the #590 review the update
+removes the stored nested value from the merged document, undecoded, before it
+is validated or written (see "The update merge and the written row"); the rule
+below is what decides it loses.
 
 | | before (pre-#301) | after #307 | now |
 | --- | --- | --- | --- |
@@ -1645,10 +1799,10 @@ report-only unless `VALIDATE_UPDATES_STRICT` is set.
 `transform.dedupeEAVRecords` now resolves the duplicate spellings before the
 records leave `ToAttributes`, keeping the **last** spelling — the same
 duplicate-key rule `encoding/json` applies. This is deterministic rather than
-map-order dependent: `flattenToAttributes` sorts each map's keys, and for any
-dotted name the nested spelling's top-level key is a proper prefix of the literal
-one, so it sorts first and the literal key's records — the caller's explicit
-value — are emitted last.
+map-order dependent: the write's document walk (`walkDocument`) sorts each
+map's keys, and for any dotted name the nested spelling's top-level key is a
+proper prefix of the literal one, so it sorts first and the literal key's
+records — the caller's explicit value — are emitted last.
 
 **The unit of replacement is the whole logical attribute, not the primary key.**
 When one spelling wins, every record the losing spellings produced for that
@@ -1660,11 +1814,13 @@ caller replaced; and a literal `[]` emits only the marker row (`array_indices`
 empty, both value columns `NULL`), which collides with no element index at all,
 so the clear would persist nothing. Both would answer `200` with stale rows —
 quietly wrong, where the duplicate-key failure was at least loud. To tell the two
-spellings apart, `flattenToAttributes` tags each record it emits with the
-concrete key path that produced it; `strings.Join(path, ".")` cannot serve as
+spellings apart, the walk tags each position it records with the concrete key
+path that reached it; `strings.Join(path, ".")` cannot serve as
 that tag, because collapsing `["contact","emails"]` and `["contact.emails"]` into
-one name is exactly the ambiguity the tag has to resolve. The tag is flatten-time
-provenance and never reaches `model.EAVRecord`.
+one name is exactly the ambiguity the tag has to resolve. The tag is walk-time
+provenance and never reaches `model.EAVRecord`. The required policy and an
+update's stored values read the same tags, so they agree with the writer on
+which spelling is stored.
 
 A residual primary-key collision *within* one spelling is still collapsed
 last-wins. That is a backstop that keeps the slice insertable, not a policy: one

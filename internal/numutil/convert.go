@@ -9,39 +9,6 @@ import (
 	"strings"
 )
 
-// Int64Exact extracts an exact int64 from value without a float64 hop.
-// It reports ok=false when the value is not integral, overflows int64, or
-// has a type it cannot losslessly interpret; callers then fall back to the
-// float64 path (which keeps today's semantics).
-func Int64Exact(value any) (int64, bool) {
-	switch v := value.(type) {
-	case int64:
-		return v, true
-	case int:
-		return int64(v), true
-	case int32:
-		return int64(v), true
-	case int16:
-		return int64(v), true
-	case json.Number:
-		i, err := v.Int64()
-		return i, err == nil
-	case string:
-		i, err := strconv.ParseInt(v, 10, 64)
-		return i, err == nil
-	case float64:
-		// 只接受整值且在 int64 可表示区间内的 float64;此时 int64(v) 对
-		// 该 float64 值本身是精确转换。2^63 及以上(含 float64(MaxInt64))
-		// 越界,交回 float64 回退路径维持旧语义。
-		if v != math.Trunc(v) || v < -9223372036854775808.0 || v >= 9223372036854775808.0 {
-			return 0, false
-		}
-		return int64(v), true
-	default:
-		return 0, false
-	}
-}
-
 func ToFloat64(value any) (float64, bool) {
 	val, err := Float64(value)
 	return val, err == nil
@@ -117,7 +84,7 @@ func TryParseNumber(s string) any {
 		return i
 	}
 	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		if i, ok := parseIntegralInt64(s); ok {
+		if i, verdict := parseIntegralInt64(s); verdict == IntegralityExact {
 			return i
 		}
 		return f
@@ -126,18 +93,19 @@ func TryParseNumber(s string) any {
 }
 
 // parseIntegralInt64 reports the exact int64 value of a ParseFloat-accepted
-// literal that denotes an integer, in any spelling and at any length. It
-// decides this syntactically — no big.Rat, no big.Int — so its cost is linear in
-// len(s) with small constants and a caller-supplied literal cannot amplify it
-// (#357 round-2). Returns false for genuine fractions (including nonzero
-// literals that underflow float64 to zero), integers outside int64 range, and
-// the Inf/NaN spellings ParseFloat accepts.
+// literal that denotes an integer, in any spelling and at any length, and
+// otherwise which way it misses: IntegralityFractional for a genuine
+// fraction (including a nonzero literal that underflows float64 to zero),
+// IntegralityOutOfRange for an integer outside int64. It decides this
+// syntactically — no big.Rat, no big.Int — so its cost is linear in len(s)
+// with small constants and a caller-supplied literal cannot amplify it (#357
+// round-2). The Inf/NaN spellings ParseFloat accepts get IntegralityUnknown.
 //
 // s must already have passed strconv.ParseFloat: the parser relies on that for
 // well-formedness (underscore placement, digit content, hex "p" exponent) and
-// is not itself an acceptance decision — any malformed shape returns false,
-// which only ever means "keep float64".
-func parseIntegralInt64(s string) (int64, bool) {
+// is not itself an acceptance decision — any malformed shape returns
+// IntegralityUnknown, which only ever means "keep float64".
+func parseIntegralInt64(s string) (int64, Integrality) {
 	neg := false
 	switch {
 	case strings.HasPrefix(s, "-"):
@@ -156,29 +124,29 @@ func parseIntegralInt64(s string) (int64, bool) {
 // the significant run's trailing zeros together: trail < 0 means the literal
 // keeps a fractional part, trail >= 0 means it is an integer whose canonical
 // digit string ParseInt can range-check.
-func parseDecIntegralInt64(neg bool, s string) (int64, bool) {
+func parseDecIntegralInt64(neg bool, s string) (int64, Integrality) {
 	mant, expLit := s, ""
 	if i := strings.IndexAny(s, "eE"); i >= 0 {
 		mant, expLit = s[:i], s[i+1:]
 	}
 	digits, fracLen, ok := scanDigits(mant, isDecDigit)
 	if !ok || len(digits) == 0 {
-		return 0, false // "inf"/"Infinity"/"NaN" carry no digits.
+		return 0, IntegralityUnknown // "inf"/"Infinity"/"NaN" carry no digits.
 	}
 	first, last := findSignificantRun(digits)
 	if first < 0 {
-		return 0, true // Every digit is zero: the literal denotes zero exactly.
+		return 0, IntegralityExact // Every digit is zero: the literal denotes zero exactly.
 	}
 	exp, ok := parseExponent(expLit, int64(len(mant))+64)
 	if !ok {
-		return 0, false
+		return 0, IntegralityUnknown
 	}
 	trail := exp - int64(fracLen) + int64(len(digits)-1-last)
 	if trail < 0 {
-		return 0, false
+		return 0, IntegralityFractional
 	}
 	if int64(last-first+1)+trail > maxInt64Digits {
-		return 0, false
+		return 0, IntegralityOutOfRange
 	}
 	var b strings.Builder
 	if neg {
@@ -190,56 +158,70 @@ func parseDecIntegralInt64(neg bool, s string) (int64, bool) {
 	}
 	v, err := strconv.ParseInt(b.String(), 10, 64)
 	if err != nil {
-		return 0, false // 19 digits that still overflow, e.g. "9223372036854775808".
+		return 0, IntegralityOutOfRange // 19 digits that still overflow, e.g. "9223372036854775808".
 	}
-	return v, true
+	return v, IntegralityExact
 }
 
 // parseHexIntegralInt64 decides the hex-float spellings, whose value is
 // hexDigits × 2^binExp. ParseFloat requires the "p" exponent on hex floats, so
 // a missing one means the caller skipped the gate.
-func parseHexIntegralInt64(neg bool, s string) (int64, bool) {
+func parseHexIntegralInt64(neg bool, s string) (int64, Integrality) {
 	marker := strings.IndexAny(s, "pP")
 	if marker < 0 {
-		return 0, false
+		return 0, IntegralityUnknown
 	}
 	mant, expLit := s[:marker], s[marker+1:]
 	digits, fracLen, ok := scanDigits(mant, isHexDigit)
 	if !ok || len(digits) == 0 {
-		return 0, false
+		return 0, IntegralityUnknown
 	}
 	first, last := findSignificantRun(digits)
 	if first < 0 {
-		return 0, true
+		return 0, IntegralityExact
 	}
 	run := digits[first : last+1]
+	exp, ok := parseExponent(expLit, 4*int64(len(mant))+128)
+	if !ok {
+		return 0, IntegralityUnknown
+	}
+	binExp := exp - 4*int64(fracLen) + 4*int64(len(digits)-1-last)
 	// The run starts and ends with a nonzero hex digit, so its value needs
 	// 4*len(run)-3 bits at minimum and carries at most 3 trailing zero *bits*
 	// (the widest such last digit is "8" = 0b1000). Integrality therefore caps
 	// any right shift at 3 bits, so an 18-digit run — at least 2^68 — still
 	// leaves 2^65 after every shift it can survive, and is out of int64 range
-	// for certain. 17 digits is the widest that can ever land, and it needs the
-	// two-word path below because 65..68 bits do not fit one uint64.
+	// for certain; a deeper shift moves a set bit past the point. 17 digits is
+	// the widest that can ever land, and it needs the two-word path below
+	// because 65..68 bits do not fit one uint64.
 	if len(run) > 17 {
-		return 0, false
+		if binExp < -int64(hexDigitTrailingZeroBits(run[len(run)-1])) {
+			return 0, IntegralityFractional
+		}
+		return 0, IntegralityOutOfRange
 	}
-	exp, ok := parseExponent(expLit, 4*int64(len(mant))+128)
-	if !ok {
-		return 0, false
-	}
-	binExp := exp - 4*int64(fracLen) + 4*int64(len(digits)-1-last)
 	if len(run) == 17 {
 		return parseWideHexIntegralInt64(neg, run, binExp)
 	}
 	mag, err := strconv.ParseUint(string(run), 16, 64)
 	if err != nil {
-		return 0, false
+		return 0, IntegralityUnknown
 	}
-	mag, ok = shiftMagnitude(mag, binExp)
-	if !ok {
-		return 0, false
+	mag, verdict := shiftMagnitude(mag, binExp)
+	if verdict != IntegralityExact {
+		return 0, verdict
 	}
 	return toSignedInt64(neg, mag)
+}
+
+// hexDigitTrailingZeroBits counts the trailing zero bits of a nonzero hex
+// digit's value: 0 for an odd digit, 3 for "8".
+func hexDigitTrailingZeroBits(digit byte) int {
+	value, err := strconv.ParseUint(string(digit), 16, 8)
+	if err != nil || value == 0 {
+		return 0
+	}
+	return bits.TrailingZeros64(value)
 }
 
 // parseWideHexIntegralInt64 decides a 17-hex-digit significant run, whose value
@@ -258,67 +240,70 @@ func parseHexIntegralInt64(neg bool, s string) (int64, bool) {
 // (hi << (64-k)) | (lo >> k), well defined in uint64 exactly when hi >> k == 0;
 // hi >> k != 0 means the result is at least 2^64, i.e. out of range anyway.
 // toSignedInt64 then applies the sign, admitting 2^63 only as MinInt64.
-func parseWideHexIntegralInt64(neg bool, run []byte, binExp int64) (int64, bool) {
-	if binExp >= 0 || binExp < -3 {
-		return 0, false
+func parseWideHexIntegralInt64(neg bool, run []byte, binExp int64) (int64, Integrality) {
+	if binExp >= 0 {
+		return 0, IntegralityOutOfRange // at least 2^64 before any shift.
+	}
+	if binExp < -3 {
+		return 0, IntegralityFractional // a set bit is shifted past the point.
 	}
 	hi, err := strconv.ParseUint(string(run[:1]), 16, 64)
 	if err != nil {
-		return 0, false
+		return 0, IntegralityUnknown
 	}
 	lo, err := strconv.ParseUint(string(run[1:]), 16, 64)
 	if err != nil {
-		return 0, false
+		return 0, IntegralityUnknown
 	}
 	k := uint(-binExp) // 1..3
 	if lo&((1<<k)-1) != 0 {
-		return 0, false // a set bit would be shifted out: the literal is fractional.
+		return 0, IntegralityFractional // a set bit would be shifted out.
 	}
 	if hi>>k != 0 {
-		return 0, false // the shifted value still needs >= 65 bits.
+		return 0, IntegralityOutOfRange // the shifted value still needs >= 65 bits.
 	}
 	return toSignedInt64(neg, hi<<(64-k)|lo>>k)
 }
 
-// shiftMagnitude applies 2^binExp to a nonzero magnitude, reporting false when
-// the result would keep a fractional part (right shift past a set bit) or
-// outgrow 64 bits.
-func shiftMagnitude(mag uint64, binExp int64) (uint64, bool) {
+// shiftMagnitude applies 2^binExp to a nonzero magnitude, reporting
+// IntegralityFractional when the result would keep a fractional part (right
+// shift past a set bit) and IntegralityOutOfRange when it outgrows 64 bits.
+func shiftMagnitude(mag uint64, binExp int64) (uint64, Integrality) {
 	switch {
 	case binExp < 0:
 		if -binExp >= 64 {
-			return 0, false // mag is nonzero, so it cannot survive the shift.
+			return 0, IntegralityFractional // mag is nonzero, so it cannot survive the shift.
 		}
 		shift := uint(-binExp)
 		if bits.TrailingZeros64(mag) < int(shift) {
-			return 0, false
+			return 0, IntegralityFractional
 		}
-		return mag >> shift, true
+		return mag >> shift, IntegralityExact
 	case binExp > 0:
 		if int64(bits.Len64(mag))+binExp > 64 {
-			return 0, false
+			return 0, IntegralityOutOfRange
 		}
-		return mag << uint(binExp), true
+		return mag << uint(binExp), IntegralityExact
 	default:
-		return mag, true
+		return mag, IntegralityExact
 	}
 }
 
 // toSignedInt64 applies the sign, admitting 2^63 only as MinInt64.
-func toSignedInt64(neg bool, mag uint64) (int64, bool) {
+func toSignedInt64(neg bool, mag uint64) (int64, Integrality) {
 	if neg {
 		if mag == 1<<63 {
-			return math.MinInt64, true
+			return math.MinInt64, IntegralityExact
 		}
 		if mag > math.MaxInt64 {
-			return 0, false
+			return 0, IntegralityOutOfRange
 		}
-		return -int64(mag), true
+		return -int64(mag), IntegralityExact
 	}
 	if mag > math.MaxInt64 {
-		return 0, false
+		return 0, IntegralityOutOfRange
 	}
-	return int64(mag), true
+	return int64(mag), IntegralityExact
 }
 
 // scanDigits collects the mantissa digits in order, skipping the underscores

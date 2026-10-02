@@ -115,7 +115,7 @@ func (v schemaConsistencyValidator) checkIntegerWidthExports(ctx context.Context
 		case class == widthaudit.ClassStaleCandidate:
 			issues = append(issues, widthIssue("exported EAV integer values outside the declared width, which may predate the #384 storage-width export (pass -width-export-cutover to confirm), in "+v.eavTable, f, severityInfo))
 		case class == widthaudit.ClassBigIntOutOfContract:
-			issues = append(issues, widthIssue("bigint EAV values outside int64 or non-integral in "+v.eavTable, f, severityError))
+			issues = append(issues, widthIssue("bigint EAV values outside ±2^53 (the float64-exact range) or non-integral in "+v.eavTable, f, severityError))
 		}
 	}
 	return issues, nil

@@ -114,6 +114,14 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 }
 
 func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, record *model.PersistentRecord) (map[string]any, error) {
+	return t.fromPersistentRecord(ctx, record, decodeRecordValue)
+}
+
+// fromPersistentRecord rebuilds the document of a stored row, giving each EAV
+// record the value valueOf produces: decoded on read, held undecoded for an
+// update's merge base (MergeUpdate). A bound column's own encoding is parsed
+// either way (readFromMainColumn).
+func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, record *model.PersistentRecord, valueOf recordValuer) (map[string]any, error) {
 	if record == nil {
 		return nil, fmt.Errorf("record cannot be nil")
 	}
@@ -149,7 +157,7 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 
 	// Convert EAVRecords to EntityAttributes
 	converter := t.newConverter()
-	entityAttributes, err := converter.FromEAVRecords(attributes)
+	entityAttributes, err := converter.fromStoredRecords(attributes, valueOf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert EAVRecords to EntityAttributes: %w", err)
 	}
@@ -167,11 +175,12 @@ func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, 
 }
 
 // storeInEAV appends the record to the row's eav_data attributes. eav_data
-// persists the float64 ValueNumeric image only (#205, 2^53 ceiling): the
-// exact sidecar is memory-only and is cleared here so the create-response
-// echo matches what is written. The funnels derive the image from the exact
-// millis (setEpochMillis), so within 2^53 it is the logical value; the
-// contract past that is #592.
+// persists the float64 ValueNumeric image only (#205): the exact sidecar is
+// memory-only and is cleared here so the create-response echo matches what
+// is written. checkStorageFit has bounded a bigint to the ±2^53 the image
+// keeps exactly (#590, bigint_image.go), so the image is the logical value.
+// The funnels derive a date's image from the exact millis (setEpochMillis);
+// the contract for that image past 2^53 is #592.
 func storeInEAV(record *model.PersistentRecord, attr model.EAVRecord) {
 	attr.ValueInt64 = nil
 	record.OtherAttributes = append(record.OtherAttributes, attr)

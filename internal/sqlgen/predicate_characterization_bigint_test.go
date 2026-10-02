@@ -33,11 +33,12 @@ func buildCharBigIntCases() []charCase {
 			span: 3,
 		},
 		{
-			// EAV-only bigint: the bind is exact, but eav_data storage rounds at
-			// write (2^53 ceiling, #205) — so above 2^53 an exact equality bind
+			// EAV-only bigint: the bind is exact, and the write funnel refuses
+			// anything past 2^53 (#590; before that eav_data stored the
+			// rounded image, #205) — so above 2^53 an exact equality bind
 			// misses on every tier alike. That parity is the contract; the
-			// pre-#281 float64 bind "matched" only by colliding with the same
-			// rounding error.
+			// pre-#281 float64 bind "matched" a rounded row only by colliding
+			// with the same rounding error.
 			name: "bigint EAV-only above 2^53: exact bind, storage-capped semantics",
 			cond: charKv("total", "equals:9007199254740993"),
 			want: DualClauses{

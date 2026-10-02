@@ -64,7 +64,7 @@ func TestBuildCensusQueryBindsExactBounds(t *testing.T) {
 	require.Equal(t, []any{
 		int16(1), int16(2), "-32768", "32767",
 		int16(1), int16(3), "-2147483648", "2147483647",
-		int16(1), int16(4), "-9223372036854775808", "9223372036854775807",
+		int16(1), int16(4), "-9007199254740992", "9007199254740992",
 	}, args)
 	require.Contains(t, query, "($9::smallint, $10::smallint, $11::numeric, $12::numeric)")
 	require.Contains(t, query, `FROM "eav_data" AS e`)

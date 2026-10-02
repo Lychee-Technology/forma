@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -62,6 +63,32 @@ func TestExtractValueFromEAVRecord(t *testing.T) { //nolint:funlen // #438: over
 			},
 			valueType: forma.ValueTypeBigInt,
 			want:      int64(42),
+		},
+		{
+			// #590: a stored image past 2^53 is legacy state the funnel no
+			// longer writes; it still reads as the value the table holds.
+			name: "bigint from whole image past 2^53",
+			record: model.EAVRecord{
+				ValueNumeric: new(float64(9007199254740994)),
+			},
+			valueType: forma.ValueTypeBigInt,
+			want:      int64(9007199254740994),
+		},
+		{
+			name: "bigint from fractional image",
+			record: model.EAVRecord{
+				ValueNumeric: new(1000.5),
+			},
+			valueType: forma.ValueTypeBigInt,
+			wantErr:   "stored bigint image 1000.5 is not a whole number",
+		},
+		{
+			name: "bigint from image past int64",
+			record: model.EAVRecord{
+				ValueNumeric: new(math.Ldexp(1, 63)),
+			},
+			valueType: forma.ValueTypeBigInt,
+			wantErr:   "stored bigint image 9223372036854775808 is outside the bigint range",
 		},
 		{
 			name: "numeric returns float64",

@@ -111,26 +111,27 @@ func (c *AttributeConverter) ToEAVRecord(attr model.EntityAttribute, rowID uuid.
 // FromEAVRecord converts an model.EAVRecord to an model.EntityAttribute.
 //
 // An extraction failure is a read-path consistency error (docs/error-handling.md):
-// plain, operator-visible, and wrapped here with the record's full identity.
-// This is the one hop that holds the row, so it is where the row gets named;
-// without it a list or query enrichment read cannot say which row is corrupt
-// (#405). The attribute name is added by fromEAVRecords, the hop that has it.
+// plain, operator-visible, and wrapped by decodeEAVRecord with the record's
+// full identity. This is the one hop that holds the row, so it is where the
+// row gets named; without it a list or query enrichment read cannot say which
+// row is corrupt (#405). The attribute name is added by convertEAVRecords,
+// the hop that has it.
 func (c *AttributeConverter) FromEAVRecord(record model.EAVRecord, valueType forma.ValueType) (model.EntityAttribute, error) {
-	attr := model.EntityAttribute{
+	attr := attributeOf(record, valueType)
+	var err error
+	attr.Value, err = decodeEAVRecord(record, valueType)
+	return attr, err
+}
+
+// attributeOf is the EntityAttribute a record becomes, without its value.
+func attributeOf(record model.EAVRecord, valueType forma.ValueType) model.EntityAttribute {
+	return model.EntityAttribute{
 		SchemaID:     record.SchemaID,
 		RowID:        record.RowID,
 		AttrID:       record.AttrID,
 		ArrayIndices: record.ArrayIndices,
 		ValueType:    valueType,
 	}
-
-	var err error
-	attr.Value, err = extractValueFromEAVRecord(record, valueType)
-	if err != nil {
-		return attr, fmt.Errorf("record %s: %w", eavRecordIdentity(record), err)
-	}
-
-	return attr, nil
 }
 
 // eavRecordIdentity renders the EAV key of a record for error messages:
@@ -162,24 +163,65 @@ func (c *AttributeConverter) ToEAVRecords(attributes []model.EntityAttribute, ro
 // It resolves the relation roots for the required-policy check itself, which
 // suits the read path (FromPersistentRecord), where this is the only
 // resolution on the call. The write path's ToAttributes has already resolved
-// them for its own input-side check and hands that snapshot to
-// fromEAVRecords directly, so one write consults the registry once (#389).
+// them for its own required check and hands that snapshot to fromEAVRecords
+// directly, so one write consults the registry once (#389).
 func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.EntityAttribute, error) {
+	return c.fromStoredRecords(records, decodeRecordValue)
+}
+
+// fromStoredRecords resolves the relation roots of a stored row's records and
+// converts them with valueOf: decodeRecordValue on read, holdRecordValue for
+// an update's merge base, which holds each value undecoded as a *storedValue
+// (stored_value.go). The required policy is checked on the stored records
+// either way; nothing about presence differs.
+func (c *AttributeConverter) fromStoredRecords(records []model.EAVRecord, valueOf recordValuer) ([]model.EntityAttribute, error) {
 	if len(records) == 0 {
 		return []model.EntityAttribute{}, nil
 	}
 	// The lookups ahead of the per-record loop hold the records, so they
-	// name the row from the first one (#405), like fromEAVRecords' own.
+	// name the row from the first one (#405), like convertEAVRecords' own.
 	relationRoots, err := c.relationRootsFor(records[0].SchemaID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve relation roots for required-policy check of schema %d row %s: %w",
 			records[0].SchemaID, records[0].RowID, err)
 	}
-	return c.fromEAVRecords(records, relationRoots)
+	return c.convertEAVRecords(records, relationRoots, valueOf)
 }
 
 // fromEAVRecords is FromEAVRecords with the relation roots already resolved.
 func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationRoots RelationRoots) ([]model.EntityAttribute, error) {
+	return c.convertEAVRecords(records, relationRoots, decodeRecordValue)
+}
+
+// recordValuer produces the Value of the attribute a record becomes. vt is the
+// record's scalar type: a list element's items type.
+type recordValuer func(record model.EAVRecord, attrName string, vt forma.ValueType) (any, error)
+
+// decodeRecordValue decodes the stored value, as every read does.
+func decodeRecordValue(record model.EAVRecord, attrName string, vt forma.ValueType) (any, error) {
+	value, err := decodeEAVRecord(record, vt)
+	if err != nil {
+		// decodeEAVRecord already names schema, row, and attrID; this hop
+		// adds the attribute name, which only it has resolved.
+		return nil, fmt.Errorf("convert attribute '%s': %w", attrName, err)
+	}
+	return value, nil
+}
+
+// holdRecordValue holds the stored value undecoded for an update's merge
+// base. A record with no value column set decodes to nil whatever its type,
+// so it stays nil here too and materializes exactly as on read.
+func holdRecordValue(record model.EAVRecord, attrName string, vt forma.ValueType) (any, error) {
+	if !hasStoredValue(record) {
+		return nil, nil
+	}
+	return &storedValue{record: record, valueType: vt, attrName: attrName}, nil
+}
+
+// convertEAVRecords converts the records of one row, skipping attrIDs the
+// schema no longer has (#294), and checks the required policy on the
+// attributes they carry.
+func (c *AttributeConverter) convertEAVRecords(records []model.EAVRecord, relationRoots RelationRoots, valueOf recordValuer) ([]model.EntityAttribute, error) {
 	if len(records) == 0 {
 		return []model.EntityAttribute{}, nil
 	}
@@ -187,8 +229,8 @@ func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationR
 	// Get schema metadata to determine value types. The records of one call
 	// all belong to one row, so the steps outside the per-record loop — this
 	// lookup and the required-policy check — name the row from the first
-	// record (#405); inside the loop FromEAVRecord holds the whole record and
-	// names it there.
+	// record (#405); inside the loop decodeEAVRecord holds the whole record
+	// and names it there.
 	schemaID, rowID := records[0].SchemaID, records[0].RowID
 	cache, idToName, err := schemameta.GetSchemaMetadata(c.registry, schemaID)
 	if err != nil {
@@ -211,12 +253,7 @@ func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationR
 			skippedAttrIDs[record.AttrID] = struct{}{}
 			continue
 		}
-		indexSet := presentAttrIndices[attrName]
-		if indexSet == nil {
-			indexSet = make(map[string]struct{})
-			presentAttrIndices[attrName] = indexSet
-		}
-		indexSet[record.ArrayIndices] = struct{}{}
+		addPresence(presentAttrIndices, attrName, record.ArrayIndices)
 
 		meta := cache[attrName]
 		vt := meta.ValueType
@@ -226,11 +263,9 @@ func (c *AttributeConverter) fromEAVRecords(records []model.EAVRecord, relationR
 			// ToEAVRecord) sees a scalar type, never the container type (#204).
 			vt = meta.EffectiveItemsType()
 		}
-		attr, err := c.FromEAVRecord(record, vt)
-		if err != nil {
-			// FromEAVRecord already names schema, row, and attrID; this hop
-			// adds the attribute name, which only it has resolved.
-			return nil, fmt.Errorf("convert attribute '%s': %w", attrName, err)
+		attr := attributeOf(record, vt)
+		if attr.Value, err = valueOf(record, attrName, vt); err != nil {
+			return nil, err
 		}
 		attributes = append(attributes, attr)
 	}

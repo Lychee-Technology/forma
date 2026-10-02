@@ -11,7 +11,7 @@ import (
 )
 
 // newDottedStubRegistry builds a schema whose attribute names are dotted, the
-// shape that lets flattenToAttributes reach the same attribute twice: once by
+// shape that lets walkDocument reach the same attribute twice: once by
 // recursing into {"contact":{"email":...}} and once through a literal
 // "contact.email" key (#312).
 func newDottedStubRegistry() forma.SchemaRegistry {
@@ -231,7 +231,7 @@ func TestSingleSpellingListIsUntouched(t *testing.T) {
 }
 
 // TestFlattenOrderingIsDeterministic pins the property last-write-wins depends
-// on: flattenToAttributes sorts each map's keys, and for any dotted name the
+// on: walkDocument sorts each map's keys, and for any dotted name the
 // nested spelling's top-level key is a proper prefix of the literal one, so the
 // literal key's records are always emitted last regardless of map iteration
 // order. Run with -count=10 to shake out a map-order dependency.

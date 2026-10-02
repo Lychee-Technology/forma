@@ -16,7 +16,7 @@ import (
 // checkStorageFit is the single write-side fidelity rule shared by #384 and
 // #459: a value must fit its physical destination — the bound main column
 // when the attribute has one, its declared type otherwise (and, for bigint,
-// the float64 image eav_data keeps, #612). populateTypedValue
+// the float64 image eav_data keeps, #612, #590). populateTypedValue
 // has already typed the value for the declared valueType; this decides
 // whether that typed value can be stored losslessly where it is going.
 // Every error returned here is wrapped into forma.InvalidInputf by the
@@ -33,41 +33,14 @@ func checkStorageFit(attr *model.EAVRecord, meta forma.AttributeMetadata) error 
 	}
 	binding := meta.ColumnBinding
 	if binding == nil {
-		// storeInEAV clears the exact sidecar: eav_data keeps the image.
+		// storeInEAV clears the exact sidecar: eav_data keeps the image
+		// (bigint_image.go).
 		return checkBigintImageFit(attr, meta.ValueType, "eav_data.value_numeric")
 	}
 	if isSystemManagedColumn(binding.ColumnName) {
 		return nil
 	}
 	return checkBoundColumnFit(attr, meta.ValueType, binding)
-}
-
-// maxBigintImageFit is the largest int64 whose float64 image is still inside
-// int64, quoted in checkBigintImageFit's message: 2^63-512 is a tie between
-// 2^63-1024 and 2^63 and rounds to the even 2^63, so every int64 from there
-// to MaxInt64 has the image 2^63.
-const maxBigintImageFit = 1<<63 - 513
-
-// checkBigintImageFit refuses a declared bigint whose destination keeps only
-// the float64 image (eav_data.value_numeric, a double_* column), when that
-// image is past int64. The declared-type check admits the whole int64 range
-// on the strength of the exact sidecar, but these destinations never persist
-// the sidecar: the image is what every read route converts back, int64() on
-// the OLTP route (platform-dependent past int64) and TRY_CAST(... AS BIGINT),
-// which yields NULL, on the DuckDB routes. This is the slot rule of
-// checkIntegerFit applied to what is stored; the rounding of images inside
-// int64 but past 2^53 is the float64 ceiling #590 owns.
-func checkBigintImageFit(attr *model.EAVRecord, vt forma.ValueType, dest string) error {
-	if vt != forma.ValueTypeBigInt || attr.ValueInt64 == nil || attr.ValueNumeric == nil {
-		// Without the sidecar the declared-type check already judged the image.
-		return nil
-	}
-	// Constant conversion: math.MaxInt64 rounds up to exactly 2^63.
-	if *attr.ValueNumeric < math.MaxInt64 {
-		return nil
-	}
-	return fmt.Errorf("bigint value %d does not fit %s, which keeps only its float64 image %s, past the bigint range (allowed [-9223372036854775808, %d])",
-		*attr.ValueInt64, dest, formatFitValue(*attr.ValueNumeric), int64(maxBigintImageFit))
 }
 
 // checkBoundColumnFit mirrors storeWithEncoding's dispatch: the same
@@ -191,6 +164,16 @@ func errEncodingMismatch(vt forma.ValueType, binding *forma.MainColumnBinding, r
 		vt, binding.ColumnName, binding.ColumnType(), binding.Encoding, renders)
 }
 
+// isIntegerType reports the declared types that carry a width and require a
+// whole number: the numeric family without numeric itself.
+func isIntegerType(vt forma.ValueType) bool {
+	switch vt {
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
+		return true
+	}
+	return false
+}
+
 // isNumericFamily reports the valueTypes whose magnitude is caller-chosen, so
 // checkStorageFit runs the declared-type width check on them (numeric itself
 // passes that check unconstrained, #205). date/datetime and bool also occupy
@@ -226,7 +209,10 @@ func columnFitType(colType forma.MainColumnType) (forma.ValueType, bool) {
 // enforced (#384, #459). numeric stays unconstrained (#205 owns its float64
 // ceiling). The caller guarantees attr.ValueNumeric is non-nil.
 //
-// The check judges the slot the store consumes, not the caller's raw value:
+// The check judges the slot the store consumes, not the caller's raw value
+// (judgeDeclaredInteger has already refused a declared integer type whose
+// raw value is fractional or outside int64, since past 2^52 a fractional
+// literal has a whole image and below MinInt64 an integer can round to it):
 // storeNumericRendering's bigint arm (default and unix_ms encodings) writes
 // the exact ValueInt64 sidecar when it is populated and int64(*ValueNumeric)
 // otherwise, and populateTypedValue fills the sidecar for declared bigint and
@@ -235,45 +221,56 @@ func columnFitType(colType forma.MainColumnType) (forma.ValueType, bool) {
 // what must fit; deriving an exact int64 from the raw value here would admit
 // it (#459 review F1).
 func checkIntegerFit(attr *model.EAVRecord, vt forma.ValueType, dest string) error {
+	if !isIntegerType(vt) {
+		return nil
+	}
+	// The exact sidecar is an int64 and fits by construction; it is also how
+	// a declared bigint admits boundary literals like "9223372036854775807",
+	// whose float64 image rounds up to 2^63 and would fail the bound check
+	// below.
+	if vt == forma.ValueTypeBigInt && attr.ValueInt64 != nil {
+		return nil
+	}
 	numVal := *attr.ValueNumeric
-	var lo, hi float64
-	switch vt {
-	case forma.ValueTypeSmallInt:
-		lo, hi = math.MinInt16, math.MaxInt16
-	case forma.ValueTypeInteger:
-		lo, hi = math.MinInt32, math.MaxInt32
-	case forma.ValueTypeBigInt:
-		// The exact sidecar is an int64 and fits by construction; it is also
-		// how a declared bigint admits boundary literals like
-		// "9223372036854775807", whose float64 image rounds up to 2^63 and
-		// would fail the bound check below.
-		if attr.ValueInt64 != nil {
-			return nil
-		}
-		// Constant conversion: math.MinInt64 converts to exactly -2^63
-		// (a valid value); math.MaxInt64 rounds up to exactly 2^63, so >=
-		// rejects the first float64 that no longer fits.
-		if numVal != math.Trunc(numVal) {
-			return errNonIntegralFor(numVal, dest)
-		}
-		if numVal < math.MinInt64 || numVal >= math.MaxInt64 {
-			return fmt.Errorf("value %s out of range for %s (allowed [-9223372036854775808, 9223372036854775807])", formatFitValue(numVal), dest)
-		}
-		return nil
-	default:
-		return nil
-	}
 	if numVal != math.Trunc(numVal) {
-		return errNonIntegralFor(numVal, dest)
+		return errNonIntegral(formatFitValue(numVal), dest)
 	}
-	if numVal < lo || numVal > hi {
-		return fmt.Errorf("value %s out of range for %s (allowed [%.0f, %.0f])", formatFitValue(numVal), dest, lo, hi)
+	fits := inInt64Range(numVal)
+	if vt != forma.ValueTypeBigInt {
+		lo, hi := integerRange(vt)
+		fits = numVal >= float64(lo) && numVal <= float64(hi)
+	}
+	if !fits {
+		return errOutOfRange(formatFitValue(numVal), dest, vt)
 	}
 	return nil
 }
 
-func errNonIntegralFor(numVal float64, dest string) error {
-	return fmt.Errorf("non-integral value %s does not fit %s (whole number required)", formatFitValue(numVal), dest)
+// integerRange is the range of the integer width vt names: smallint,
+// integer, or bigint's int64 (the caller passes only those three).
+func integerRange(vt forma.ValueType) (lo, hi int64) {
+	switch vt {
+	case forma.ValueTypeSmallInt:
+		return math.MinInt16, math.MaxInt16
+	case forma.ValueTypeInteger:
+		return math.MinInt32, math.MaxInt32
+	}
+	return math.MinInt64, math.MaxInt64
+}
+
+// errNonIntegral refuses a non-integer for an integer destination. value is
+// the spelling the message names: the caller's literal when the funnel
+// judged the literal (judgeDeclaredInteger), the slot's image when it judged
+// the slot (checkIntegerFit).
+func errNonIntegral(value, dest string) error {
+	return fmt.Errorf("non-integral value %s does not fit %s (whole number required)", value, dest)
+}
+
+// errOutOfRange refuses an integer outside the width vt names. value is the
+// spelling the message names, chosen as for errNonIntegral.
+func errOutOfRange(value, dest string, vt forma.ValueType) error {
+	lo, hi := integerRange(vt)
+	return fmt.Errorf("value %s out of range for %s (allowed [%d, %d])", value, dest, lo, hi)
 }
 
 // formatFitValue renders the rejected value in plain digits for the

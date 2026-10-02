@@ -33,15 +33,20 @@ func TestPopulateTypedValue_DeclaredIntegerFit(t *testing.T) {
 		{"smallint max ok", forma.ValueTypeSmallInt, float64(math.MaxInt16), false},
 		{"smallint min ok", forma.ValueTypeSmallInt, float64(math.MinInt16), false},
 		{"smallint 40000 rejected", forma.ValueTypeSmallInt, float64(40000), true},
-		// eav_data keeps only the float64 image, and MaxInt64's is 2^63
-		// (#612 review); the largest admitted value is 2^63-513.
+		// eav_data keeps only the float64 image, exact within +-2^53
+		// (#590; #612 refused only the slice whose image is past int64).
 		{"bigint max exact string rejected", forma.ValueTypeBigInt, "9223372036854775807", true},
-		{"bigint 2^63-513 exact string ok", forma.ValueTypeBigInt, "9223372036854775295", false},
-		{"bigint 2^63-512 exact string rejected", forma.ValueTypeBigInt, "9223372036854775296", true},
-		{"bigint min exact string ok", forma.ValueTypeBigInt, "-9223372036854775808", false},
+		{"bigint 2^63-513 exact string rejected", forma.ValueTypeBigInt, "9223372036854775295", true},
+		{"bigint min exact string rejected", forma.ValueTypeBigInt, "-9223372036854775808", true},
 		{"bigint 2^63 rejected", forma.ValueTypeBigInt, math.Ldexp(1, 63), true},
-		{"bigint -2^63 float ok", forma.ValueTypeBigInt, math.Ldexp(-1, 63), false},
-		{"bigint 1e18 ok", forma.ValueTypeBigInt, float64(1e18), false},
+		{"bigint -2^63 float rejected", forma.ValueTypeBigInt, math.Ldexp(-1, 63), true},
+		{"bigint 1e18 rejected", forma.ValueTypeBigInt, float64(1e18), true},
+		{"bigint 2^53 exact string ok", forma.ValueTypeBigInt, "9007199254740992", false},
+		{"bigint -2^53 exact string ok", forma.ValueTypeBigInt, "-9007199254740992", false},
+		{"bigint 2^53 float ok", forma.ValueTypeBigInt, math.Ldexp(1, 53), false},
+		{"bigint 2^53+1 exact string rejected", forma.ValueTypeBigInt, "9007199254740993", true},
+		{"bigint -(2^53+1) exact string rejected", forma.ValueTypeBigInt, "-9007199254740993", true},
+		{"bigint 2^53+2 float rejected", forma.ValueTypeBigInt, math.Ldexp(1, 53) + 2, true},
 		{"bigint non-integral rejected", forma.ValueTypeBigInt, 1.5, true},
 		{"numeric stays unconstrained", forma.ValueTypeNumeric, math.Ldexp(1, 80), false},
 		{"numeric fractional ok", forma.ValueTypeNumeric, 1.5, false},

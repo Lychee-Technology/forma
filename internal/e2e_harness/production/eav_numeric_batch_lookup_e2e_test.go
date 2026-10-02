@@ -4,9 +4,11 @@ package production
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/model"
 )
@@ -19,9 +21,9 @@ import (
 // anchor that way and the contract difference is invisible end to end.
 //
 // The contract mirrors TestEAVBigintFilterBoundaryBothDialects: the write path
-// rounded 2^53+1 down to 2^53 (#205 ceiling), so an exact operand of 2^53+1
-// must NOT find the row by colliding with that same rounding error, while the
-// value actually stored must stay addressable. The mixed integral/fractional
+// refuses 2^53+1 (#590; it used to round it down to 2^53, #205), so an exact
+// operand of 2^53+1 must NOT find the ceiling row by rounding the operand the
+// same way, while the value actually stored must stay addressable. The mixed
 // probe additionally proves what pgxmock structurally cannot: that pgx encodes
 // a per-element-typed []any into numeric[].
 func TestBatchAttrValueLookupBindsEAVNumericExactly(t *testing.T) {
@@ -31,13 +33,18 @@ func TestBatchAttrValueLookupBindsEAVNumericExactly(t *testing.T) {
 	wide := DefaultSchemaFixtures()[1]
 
 	// total (attr 15) is EAV-only bigint; ratio (attr 16) is EAV-only numeric.
-	aboveCeiling := CreateEvent(wide, map[string]any{
+	if err := env.ApplyEvents(ctx, CreateEvent(wide, map[string]any{
 		"title": "batch-2p53p1", "total": int64(1)<<53 + 1, "ratio": 2.5,
+	})); !errors.Is(err, forma.ErrInvalidInput) {
+		t.Fatalf("create total=2^53+1: err %v, want invalid input (#590)", err)
+	}
+	atCeiling := CreateEvent(wide, map[string]any{
+		"title": "batch-2p53", "total": int64(1) << 53, "ratio": 2.5,
 	})
 	small := CreateEvent(wide, map[string]any{
 		"title": "batch-small", "total": int64(7), "ratio": float64(8),
 	})
-	mustApplyEvents(ctx, t, env, "batch anchor seed", aboveCeiling, small)
+	mustApplyEvents(ctx, t, env, "batch anchor seed", atCeiling, small)
 
 	repo := internal.NewDBPersistentRecordRepository(env.Pool, env.Metadata)
 
@@ -52,29 +59,29 @@ func TestBatchAttrValueLookupBindsEAVNumericExactly(t *testing.T) {
 	}
 
 	t.Run("exact_operand_above_ceiling_matches_nothing", func(t *testing.T) {
-		// 9007199254740993 was never stored — the write rounded it to 2^53.
-		// Pre-fix, ParseFloat rounded the operand the same way and "found" the
-		// row anyway. No groups means: the result must be empty.
+		// 9007199254740993 was never stored — the write refuses it (#590).
+		// Pre-#355, ParseFloat rounded the operand to 2^53 and "found" the
+		// ceiling row anyway. No groups means: the result must be empty.
 		assertRowIDSet(t, "total=2^53+1",
 			lookup(t, "total", []string{"9007199254740993"}))
 	})
 
-	t.Run("stored_rounded_value_stays_addressable", func(t *testing.T) {
+	t.Run("stored_ceiling_value_stays_addressable", func(t *testing.T) {
 		assertRowIDSet(t, "total=2^53",
 			lookup(t, "total", []string{"9007199254740992"}),
-			[]uuid.UUID{aboveCeiling.RowID})
+			[]uuid.UUID{atCeiling.RowID})
 	})
 
 	t.Run("exponent_spelling_addresses_the_same_row", func(t *testing.T) {
 		assertRowIDSet(t, "total=9.007199254740992e15",
 			lookup(t, "total", []string{"9.007199254740992e15"}),
-			[]uuid.UUID{aboveCeiling.RowID})
+			[]uuid.UUID{atCeiling.RowID})
 	})
 
 	t.Run("multi_operand_integral_set", func(t *testing.T) {
 		assertRowIDSet(t, "total IN (2^53, 7)",
 			lookup(t, "total", []string{"9007199254740992", "7"}),
-			[]uuid.UUID{aboveCeiling.RowID, small.RowID})
+			[]uuid.UUID{atCeiling.RowID, small.RowID})
 	})
 
 	t.Run("mixed_integral_and_fractional_operands_encode", func(t *testing.T) {
@@ -83,6 +90,6 @@ func TestBatchAttrValueLookupBindsEAVNumericExactly(t *testing.T) {
 		// encode error rather than a wrong row set.
 		assertRowIDSet(t, "ratio IN (2.5, 8)",
 			lookup(t, "ratio", []string{"2.5", "8"}),
-			[]uuid.UUID{aboveCeiling.RowID, small.RowID})
+			[]uuid.UUID{atCeiling.RowID, small.RowID})
 	})
 }

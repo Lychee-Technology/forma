@@ -1,10 +1,12 @@
 package internal
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/model"
 )
 
 func applyProjection(records []*forma.DataRecord, attrs []string) {
@@ -88,6 +90,24 @@ func mergeMaps(existing map[string]any, updates any) map[string]any {
 	}
 
 	return result
+}
+
+// mergeUpdateDocument builds the document an update writes: the stored row
+// merged with updates (mergeMaps), relation subtrees stripped (#318), holding
+// the stored values the write keeps and only those decoded
+// (PersistentRecordTransformer.MergeUpdate, #590). Update and BatchUpdate
+// both merge through it, so the two cannot drift.
+func mergeUpdateDocument(
+	ctx context.Context,
+	transformer model.PersistentRecordTransformer,
+	relations *RelationIndex,
+	schemaName string,
+	existing *model.PersistentRecord,
+	updates any,
+) (map[string]any, error) {
+	return transformer.MergeUpdate(ctx, existing, func(base map[string]any) map[string]any {
+		return relations.StripComputedFields(schemaName, mergeMaps(base, updates))
+	})
 }
 
 // copyMapDeep creates a deep copy of a map

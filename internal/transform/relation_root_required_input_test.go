@@ -3,7 +3,7 @@ package transform
 // Relation-root carve-out for the write path's own required check (#389).
 //
 // ToAttributes runs two required-policy checks on every create and update:
-// validateRequiredAttributesFromInput against the caller's input, and
+// requireWrittenAttributes against what the write stores, and
 // AttributeConverter.checkRequiredAttributes against the flattened records.
 // #315 gave the second a relation-root carve-out; these tests pin that the
 // first carves the same names out, on the same boundary. The end-to-end half —

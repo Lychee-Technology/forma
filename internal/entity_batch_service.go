@@ -352,12 +352,10 @@ func (s *entityBatchService) mergeBatchUpdateRecord(
 		return nil, forma.NotFoundf("operation[%d]: entity not found: %s/%s", i, op.SchemaName, op.RowID)
 	}
 
-	existingData, err := s.transformer.FromPersistentRecord(ctx, existing)
+	mergedData, err := mergeUpdateDocument(ctx, s.transformer, s.relations, op.SchemaName, existing, op.Updates)
 	if err != nil {
 		return nil, forma.WrapPublicf(fmt.Errorf("failed to transform existing record: %w", err), "operation[%d]", i)
 	}
-
-	mergedData := s.relations.StripComputedFields(op.SchemaName, mergeMaps(existingData, op.Updates))
 
 	// The *merged* document is what gets validated, so a partial update that
 	// does not mention a required attribute still succeeds.

@@ -118,6 +118,10 @@ func (w *writeSpy) FromPersistentRecord(ctx context.Context, record *model.Persi
 	return w.inner.FromPersistentRecord(ctx, record)
 }
 
+func (w *writeSpy) MergeUpdate(ctx context.Context, record *model.PersistentRecord, merge func(base map[string]any) map[string]any) (map[string]any, error) {
+	return w.inner.MergeUpdate(ctx, record, merge)
+}
+
 // SetRelationRoots forwards the install to the wrapped transformer. A decorator
 // that swallows this optional interface silently disables the #314/#315
 // relation-root carve-out, so the spy has to stay transparent to it.

@@ -244,11 +244,20 @@ func TestInt64Exact(t *testing.T) {
 		{"int16", int16(3), 3, true},
 		{"json_number_int", json.Number("9223372036854775807"), math.MaxInt64, true},
 		{"json_number_frac", json.Number("1.5"), 0, false},
+		// Every integral spelling ParseFloat accepts is exact, as in
+		// TryParseNumber (#357): the float64 image of 9.007199254740993e15
+		// is 2^53, and the exact sidecar is what keeps 2^53+1 from being
+		// admitted as that (#590 review).
+		{"json_number_exponent", json.Number("9.007199254740993e15"), 9007199254740993, true},
+		{"json_number_trailing_fraction", json.Number("42.000"), 42, true},
+		{"json_number_past_int64", json.Number("1e19"), 0, false},
 		{"string_int", "-9223372036854775807", -math.MaxInt64, true},
+		{"string_exponent", "1e3", 1000, true},
 		{"string_junk", "abc", 0, false},
 		{"float64_integral", float64(1 << 62), 1 << 62, true},
 		{"float64_frac", float64(1.5), 0, false},
 		{"float64_2_63", math.Ldexp(1, 63), 0, false}, // 2^63 越界 int64
+		{"float32_integral", float32(1 << 20), 1 << 20, true},
 		{"nil", nil, 0, false},
 	}
 	for _, tc := range cases {
@@ -259,5 +268,69 @@ func TestInt64Exact(t *testing.T) {
 				require.Equal(t, tc.want, got)
 			}
 		})
+	}
+}
+
+// TestClassifyInt64 pins the verdict on the input's own representation, not
+// its float64 image: past 2^52 every image is whole, so a fractional literal
+// there (9007199254740991.5 has the image 2^53) is only knowable from its
+// digits, and the write funnel refuses it on this verdict (#590 review).
+func TestClassifyInt64(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      any
+		want    int64
+		verdict Integrality
+	}{
+		{"fraction whose image is 2^53", json.Number("9007199254740991.5"), 0, IntegralityFractional},
+		{"negative fraction whose image is -2^53", json.Number("-9007199254740991.5"), 0, IntegralityFractional},
+		{"fraction whose image is 2^62", "4611686018427387904.5", 0, IntegralityFractional},
+		{"small fraction", json.Number("1.5"), 0, IntegralityFractional},
+		{"exponent fraction", json.Number("15e-1"), 0, IntegralityFractional},
+		{"underflowing fraction", json.Number("1e-400"), 0, IntegralityFractional},
+		{"exponent integer past 2^53", json.Number("9.007199254740993e15"), 9007199254740993, IntegralityExact},
+		{"exponent integer at 2^53", json.Number("9.007199254740992e15"), 9007199254740992, IntegralityExact},
+		{"zero-padded fraction", json.Number("9007199254740993.000"), 9007199254740993, IntegralityExact},
+		{"plain int64 max", json.Number("9223372036854775807"), math.MaxInt64, IntegralityExact},
+		{"plain int64 min", "-9223372036854775808", math.MinInt64, IntegralityExact},
+		{"hex float", "0x1p53", 1 << 53, IntegralityExact},
+		{"hex fraction", "0x1.8p0", 0, IntegralityFractional},
+		{"integer past int64", json.Number("9223372036854775808"), 0, IntegralityOutOfRange},
+		{"exponent integer past int64", json.Number("1e19"), 0, IntegralityOutOfRange},
+		{"hex integer past int64", "0x1p64", 0, IntegralityOutOfRange},
+		{"nan spelling", "NaN", 0, IntegralityUnknown},
+		{"inf spelling", json.Number("Inf"), 0, IntegralityUnknown},
+		{"junk", "abc", 0, IntegralityUnknown},
+		{"literal past float64", json.Number("1e400"), 0, IntegralityUnknown},
+		{"int64", int64(-3), -3, IntegralityExact},
+		{"int", 7, 7, IntegralityExact},
+		{"float64 whole", float64(1 << 53), 1 << 53, IntegralityExact},
+		{"float64 fraction", 2.5, 0, IntegralityFractional},
+		{"float64 2^63", math.Ldexp(1, 63), 0, IntegralityOutOfRange},
+		{"float64 -2^63", math.Ldexp(-1, 63), math.MinInt64, IntegralityExact},
+		{"float64 nan", math.NaN(), 0, IntegralityUnknown},
+		{"float32 fraction", float32(0.5), 0, IntegralityFractional},
+		{"unsupported type", uint64(1), 0, IntegralityUnknown},
+		{"nil", nil, 0, IntegralityUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, verdict := ClassifyInt64(tc.in)
+			require.Equal(t, tc.verdict, verdict)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// MaxExactFloat64Integer is the edge of the exact float64 images: it and
+// every integer below it round-trip, and the next integer does not.
+func TestMaxExactFloat64Integer(t *testing.T) {
+	for _, n := range []int64{MaxExactFloat64Integer, MaxExactFloat64Integer - 1, -MaxExactFloat64Integer} {
+		if int64(float64(n)) != n {
+			t.Fatalf("float64 image of %d is not exact", n)
+		}
+	}
+	if past := int64(MaxExactFloat64Integer + 1); int64(float64(past)) == past {
+		t.Fatalf("float64 image of %d is exact; the bound is not the edge", past)
 	}
 }

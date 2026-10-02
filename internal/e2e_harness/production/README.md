@@ -107,7 +107,8 @@ documented ceilings: the faithful **bound `bigint`** range is ±2^62 — int64 i
 marshalled through float64 on both write and the federated read, so larger
 magnitudes lose precision and a stored `MaxInt64` crashes the read (tracked in
 #205) — and **EAV integers** are exact to ±2^53 by the float64 value model (by
-design). `forma.ValueTypeList` does **not** round-trip: the write path rejects
+design; since #590 the write funnel refuses an EAV-only `bigint` past that,
+where it used to store the rounded image). `forma.ValueTypeList` does **not** round-trip: the write path rejects
 `list` outright at `transform.populateTypedValue`, so the fixture defines a
 `tags` list attribute that `list_roundtrip_e2e_test.go` uses to pin the
 rejection contract live, with the end-to-end acceptance path written as a

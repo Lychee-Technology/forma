@@ -41,16 +41,7 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 		return int32(*record.ValueNumeric), nil
 
 	case forma.ValueTypeBigInt:
-		if record.ValueText != nil {
-			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
-		}
-		if record.ValueInt64 != nil {
-			return *record.ValueInt64, nil
-		}
-		if record.ValueNumeric == nil {
-			return nil, nil
-		}
-		return int64(*record.ValueNumeric), nil
+		return bigintFromEAVRecord(record)
 
 	case forma.ValueTypeNumeric:
 		if record.ValueText != nil {
@@ -111,6 +102,22 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 		}
 		return nil, nil
 	}
+}
+
+// bigintFromEAVRecord prefers the exact ValueInt64 when the record carries one
+// (a main bigint column). A persisted image (eav_data, a double_* column)
+// converts back only when it names an int64 (#590, bigint_image.go).
+func bigintFromEAVRecord(record model.EAVRecord) (any, error) {
+	if record.ValueText != nil {
+		return nil, storageTypeMismatchError(forma.ValueTypeBigInt, "value_text", "value_numeric")
+	}
+	if record.ValueInt64 != nil {
+		return *record.ValueInt64, nil
+	}
+	if record.ValueNumeric == nil {
+		return nil, nil
+	}
+	return int64FromBigintImage(*record.ValueNumeric)
 }
 
 func storageTypeMismatchError(valueType forma.ValueType, populatedColumn, expectedColumn string) error {

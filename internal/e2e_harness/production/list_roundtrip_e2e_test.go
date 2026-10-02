@@ -55,9 +55,9 @@ func runListRoundTripSpec(ctx context.Context, t *testing.T, cluster *Cluster) {
 	}
 
 	// Hop 1 (write layer): exactly three eav_data rows, one per element, with
-	// array_indices "0","1","2". transform.flattenToAttributes decomposes a flat
+	// array_indices "0","1","2". transform.walkDocument decomposes a flat
 	// array into single-index paths and joinIndices renders one integer with no
-	// nesting (internal/transform/transformer.go:287-300, array_paths.go:10-18),
+	// nesting (internal/transform/document_walk.go visitArray, array_paths.go),
 	// so the indices are the decimal element positions.
 	assertEAVElements(t, "hot eav_data", dumpEAVRows(ctx, t, env, wide.ID, 18), wantElems)
 

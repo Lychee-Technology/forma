@@ -638,7 +638,7 @@ Example validator output:
 
 ```text
 - EAV integer values whose parquet copy predates the #384 storage-width export in eav_data_dev: schema=lead schema_id=100 attr_id=14 attribute=qty declared=integer row_id=6f1c… value=4294967296 last_flushed_at=1756300000000
-- bigint EAV values outside int64 or non-integral in eav_data_dev: schema=lead schema_id=100 attr_id=15 attribute=big declared=bigint row_id=0b7e… value=9223372036854775808
+- bigint EAV values outside ±2^53 (the float64-exact range) or non-integral in eav_data_dev: schema=lead schema_id=100 attr_id=15 attribute=big declared=bigint row_id=0b7e… value=9007199254740994
 informational (not a failure):
 - exported EAV integer values outside the declared width, which may predate the #384 storage-width export (pass -width-export-cutover to confirm), in eav_data_dev: schema=lead schema_id=100 attr_id=14 attribute=qty declared=integer row_id=91d2… value=1.5 last_flushed_at=1756300000000
 ```
@@ -648,10 +648,13 @@ path accepted an EAV-only `smallint`/`integer`/`bigint` value that did not fit
 the declared width (`4294967296` under `integer`, `1.5` under anything). Since
 `#384` the write path rejects such values, but rows written earlier are still
 there. For `bigint` the funnel judged the exact int64 rather than the float64
-image `eav_data` stores until `#612`: an int64 from `9223372036854775296`
-(2^63−512) up to `9223372036854775807` was accepted and stored as
-`9223372036854775808` (2^63). Rows written that way before `#612` are
-reported too. The census lists every such row, one line per stored element
+image `eav_data` stores until `#590`: a value past 2^53 was accepted and
+stored rounded to its float64 image (`9007199254740993` as
+`9007199254740992`; an int64 from `9223372036854775296` (2^63−512) up as
+`9223372036854775808`, 2^63, which `#612` had already refused). Since `#590`
+the funnel admits exactly `[-9007199254740992, 9007199254740992]`, the range
+the image keeps exactly, and the census reports every stored `bigint` outside
+it. The census lists every such row, one line per stored element
 (`array_indices` is shown for list items), and classifies it by what the tiers
 serve for it:
 
@@ -665,13 +668,15 @@ serve for it:
 - **Candidate (informational).** The same row shape when no cutover is given:
   the validator cannot tell whether the last flush predates `#384`. Pass the
   cutover to turn candidates into either failures or nothing.
-- **bigint out of contract (failure).** A `bigint` value past int64 or with a
-  fraction. Every DuckDB leg still projects `bigint` through
-  `TRY_CAST(value_numeric AS BIGINT)`, including the unflushed hot leg, so the
-  value diverges whether or not it was ever exported, and a re-flush reproduces
-  the same cast. The OLTP route converts the value through Go's `int64()`,
-  whose result past int64 depends on the platform (`#590`). Only rewriting the
-  value repairs it.
+- **bigint out of contract (failure).** A `bigint` value past ±2^53 or with
+  a fraction. One past 2^53 was rounded on the write, so no route can recover
+  the caller's value; every route reads the rounded image. One past int64 or
+  with a fraction is projected by every DuckDB leg, the unflushed hot leg
+  included, through `TRY_CAST(value_numeric AS BIGINT)` to NULL or a rounded
+  value, and the OLTP route refuses the read with an error naming the
+  attribute and row (before `#590` it converted through Go's `int64()`, whose
+  result past int64 depends on the platform). A re-flush reproduces the same
+  image, so only rewriting the value repairs it.
 
 Rows that are pending (`change_log.flushed_at = 0`), never exported, or last
 exported at or after the cutover are not reported: every tier reads them the
@@ -715,18 +720,47 @@ not stamp `change_log`, so the row stays out of the dirty set and the warm and
 cold tiers keep serving the old copy.
 
 **Repair the bigint class** by rewriting the value through the API as an
-integral value from `-9223372036854775808` to `9223372036854775295`. That is
-the range the write funnel accepts for an EAV-only `bigint`: `eav_data` keeps
-only the float64 image, and every larger int64 has the image 2^63. A value
-within ±2^53 is stored exactly; one past that is stored rounded to its float64
-image (`#590`). An API write stamps `change_log`, so the next flush re-exports
-the entity. Decide per row whether the value was meant to be clamped, rounded,
-or moved to a `numeric` attribute. Name the attribute in the update itself. An
-update merges into the document the OLTP route reads, so an update that leaves
-the attribute out carries the platform-dependent `int64()` result forward: it
-is written back as `-9223372036854775808` on amd64, where the conversion
-wraps, and is refused as out of range on arm64 (the Lambda build), where it
-saturates to `9223372036854775807`.
+integral value from `-9007199254740992` to `9007199254740992`. That is the
+range the write funnel accepts for an EAV-only `bigint` (`#590`): `eav_data`
+keeps only the float64 image, which is exact within ±2^53 and rounded past
+it. An API write stamps `change_log`, so the next flush re-exports the entity.
+Decide per row whether the value was meant to be clamped, rounded, or moved to
+a `numeric` attribute (or to a column-bound `bigint`, which keeps the full
+int64 range). Name the attribute in the update itself, nested
+(`{"contact":{"total":42}}`) or as its literal dotted key
+(`{"contact.total":42}`), under any `required_policy`. An update never decodes
+a stored value its written row discards, so an update naming the attribute
+repairs every image the census reports and keeps the attributes it does not
+name. That includes one past int64 or with a fraction, which the read itself
+refuses. An update replaces a list as a whole, so repair a list item by
+sending the whole list. An update
+that leaves the attribute out merges into the document the OLTP route reads,
+so it re-submits the stored value. A whole image past 2^53 is refused as
+invalid input that names the attribute and its image. One past int64 or with a
+fraction fails the read as a server error that names the attribute and the
+row. Either way, the unrelated update is blocked until the attribute is
+rewritten.
+
+**A `bigint` bound to a `double_*` column** holds the same contract since
+`#590`. The column keeps only the float64 image, so the funnel admits ±2^53,
+an unrelated update is blocked over a stored value outside that range, and an
+update naming the attribute repairs it. The census does not report these rows
+yet, because it scans only `eav_data` (`#618`). To find them, first list the
+column-bound `bigint` attributes in your schema files: those with `valueType`
+`bigint` and a `column_binding.col_name` of `double_01`..`double_03`. Then run
+this query for each such attribute, with its schema id and column:
+
+```sql
+-- one query per bigint attribute bound to a double_* column
+SELECT ltbase_row_id, double_01
+FROM entity_main_dev
+WHERE ltbase_schema_id = <schema id> AND double_01 IS NOT NULL
+  AND (abs(double_01) > 9007199254740992 OR double_01 <> trunc(double_01));
+```
+
+The comparison is exact, because 2^53 is a float64. The query reports a whole
+number past ±2^53, a fraction, a number past int64, NaN, and the infinities.
+Repair each row it returns through the API, naming the attribute, as above.
 
 ### Registered schema with no `<schema>.json` (`#314`)
 
@@ -823,9 +857,14 @@ LIMIT 50;
   `--width-export-cutover` set to the time the `#384` build's `cdc-flush`
   first ran, and if it fails, run it again with
   `--requeue-stale-width-exports` followed by `cdc-flush`
-- no bigint EAV value outside int64 is reported (`#501`, `#612`): rewrite each
-  one through the API, naming the attribute, before an unrelated update on an
-  arm64 build is refused over it
+- no bigint EAV value outside ±2^53 is reported (`#501`, `#612`, `#590`):
+  rewrite each one through the API, naming the attribute, before an unrelated
+  update is refused over it
+- no `bigint` bound to a `double_*` column holds a value outside ±2^53 or a
+  fraction (`#590`). The census does not cover these yet (`#618`), so run the
+  detection query in
+  [EAV integer values past their declared width](#eav-integer-values-past-their-declared-width-501)
+  and repair each row the same way
 - hardened release deployed
 - validator re-run after deploy
 - smoke CRUD tests pass against existing schemas

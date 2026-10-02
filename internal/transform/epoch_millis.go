@@ -138,7 +138,7 @@ func unixMillisFloat64ToTimeUTC(value float64) time.Time {
 // image always holds after the funnel: a whole, finite number of epoch
 // millis. NaN fails the equality; the infinities fail the finiteness test.
 func isWholeMillis(value float64) bool {
-	return !math.IsInf(value, 0) && value == math.Trunc(value)
+	return isWholeNumber(value)
 }
 
 // describeEpochMillis renders a float64 slot with the instant it names. A

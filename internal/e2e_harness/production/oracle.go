@@ -63,7 +63,7 @@ func ExpectedStateFromEvents(events []*Event, schema SchemaRef, cache forma.Sche
 }
 
 // flattenEventAttrs folds nested object values into dotted attribute names,
-// mirroring the production write path (transform.flattenToAttributes): a
+// mirroring the production write path (transform.walkDocument): a
 // profile emits {"contact": {"name": ...}} and the entity manager stores
 // attribute "contact.name". A cache-known name wins before recursion, so a
 // whole-object attribute would not be split.

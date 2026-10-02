@@ -4,7 +4,7 @@ import "github.com/lychee-technology/forma"
 
 // maxPayloadNestingDepth bounds the two recursions this package runs over the
 // caller's own nesting: NormalizeDottedKeys (validator configured) and
-// flattenToAttributes (always). Neither has a natural end on a cyclic Go value
+// walkDocument (always). Neither has a natural end on a cyclic Go value
 // — `m := map[string]any{}; m["self"] = m` — and both sit in front of the
 // layers that would catch one (json.Marshal, and the validator's own capped
 // walk), so without a cap here a cyclic payload exhausts the stack fatally
@@ -44,7 +44,7 @@ func (p payloadPosition) into(key string) payloadPosition {
 	return p
 }
 
-// flattenPosition derives the position flattenToAttributes already carries
+// flattenPosition derives the position walkDocument already carries
 // implicitly: path grows by one per object member and indices by one per
 // array element, so their combined length is the depth.
 func flattenPosition(path []string, indices []int) payloadPosition {
