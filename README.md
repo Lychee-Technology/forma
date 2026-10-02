@@ -89,6 +89,11 @@ other integer variable above.
 | `GET` | `/api/v1/search` | Cross-schema search (`?schemas=&q=&page=&items_per_page=`) |
 | `POST` | `/api/v1/advanced_query` | Advanced query with condition DSL (JSON body) |
 
+A `date` or `datetime` attribute is returned as an RFC3339 string when its year
+is 0000 to 9999, and otherwise as a string of its exact epoch milliseconds
+(e.g. `"9223372036854775807"`), which a create or update accepts back unchanged
+([docs/error-handling.md](docs/error-handling.md), #591).
+
 ## Testing
 
 ### Unit & Integration Tests

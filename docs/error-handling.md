@@ -688,6 +688,23 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   refused as off a whole second. The accepted date input shapes are an
   RFC3339 string with or without a fraction, `YYYY-MM-DD`, `YYYY-MM`, an
   epoch-millisecond integer string, or a Go `time.Time`.
+- `date`/`datetime` in API responses (#591): a value is rendered as
+  RFC3339 (`time.Time.MarshalJSON`, unchanged) when its year is 0000 to
+  9999, and otherwise as a JSON string of its exact epoch milliseconds. A
+  `bigint_*`-bound value at MaxInt64 reads back as `"9223372036854775807"`,
+  at MinInt64 as `"-9223372036854775808"`, and 10000-01-01T00:00:00Z as
+  `"253402300800000"`. That string is an accepted input shape, so sending
+  back what a read returned stores the same instant. It is a string, not a
+  JSON number, because MaxInt64 is past what common JSON clients hold
+  exactly, and a JSON number is not an accepted date input. The rendering is
+  `forma.DataRecord.MarshalJSON`'s, so a Go caller that `json.Marshal`s a
+  record gets it too; `DataRecord.Attributes` itself still holds the
+  `time.Time`. Before #591 the stored value was always exact, but every
+  response carrying it (the create and update echo included) failed to
+  encode after its `201`/`200` had been written, so the client read a
+  truncated body. Bounding every date at years 0000 to 9999 instead would
+  have narrowed the shipped `unix_ms` contract (the full int64 range) for a
+  rendering limit.
 
 The published message names the attribute, the value, the destination and
 the allowed range, e.g. `invalid value for attribute 'rank' (attrID=3): value
@@ -1149,6 +1166,20 @@ only it.
 | `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites, `body_limit.go`) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360); a request body over the configured cap (`413`, #465); a body net/http could not frame (`400`, `malformed request body`). A body the transport failed to deliver is not caller input and takes the redacted branch (`408` on a read timeout, see "Request limits") |
 | `internal/entity_request_limits.go` (`validateBatchOperation`, `pageOffset`) | a batch carrying more operations than `PerformanceConfig.MaxBatchSize`; a `page` whose offset overflows an `int` (#465) |
 | `internal/federated/duckdb_query_build.go` (`duckDBParquetPathsForQuery`), `internal/federated/parquet_hint_scope.go` (`validateHintPathScope`) | a `federated.s3_parquet_path_template` hint that is disabled by the deployment, unrenderable, renders to no usable path, contains a disallowed character, resolves outside the configured bucket / `s3DataPrefix` scope, or has a forbidden shape — `**`, a wildcard outside the object-name segment, a `_tmp` segment, a trailing `/` (#456, #477) — or any hint at all on an engine whose bucket is empty or whose `s3DataPrefix` carries a glob metacharacter, combinations startup validation normally rejects. The hint template and the offending rendered path are caller-owned and published; the configured bucket and prefix are operator detail (`WithOperatorDetail`). |
+
+### A success body that fails to encode (#591)
+
+`writeSuccess` (`internal/httpapi/server.go`) encodes the body before it
+writes the status. A body that fails to encode is a read-side consistency
+failure, not the caller's: it answers the redacted `500` (`error_class`
+`internal`, an `error_id`) through `respondErrorWithStatus`, logged at Errorw
+as `success response not encodable` with the encoder's error and the status
+the success would have carried (`intended_status`). Before #591 the status
+was written first and the encoder streamed into the response, so a failure
+left a committed `201`/`200` with a truncated body. A create or update answered this way has
+still committed its write. Nothing the read path builds reaches this branch
+since #591 renders every date it returns (see "Value/column fidelity on the
+write path"), so it is a backstop, not an expected answer.
 
 ### Request limits (#465)
 

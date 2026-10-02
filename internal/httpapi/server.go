@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -165,16 +167,51 @@ type APIResponse struct {
 	SchemaID int16 `json:"schema_id,omitempty"`
 }
 
-// writeJSON writes JSON response to http.ResponseWriter.
+// writeJSON writes data as the JSON response body with statusCode. The body
+// is encoded before the status is written, so a body that fails to encode
+// leaves the response uncommitted rather than a status with a truncated body
+// (#591). Its callers write an APIResponse, whose fields always encode;
+// writeSuccess answers a body that can fail.
 func writeJSON(w http.ResponseWriter, statusCode int, data any) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	return json.NewEncoder(w).Encode(data)
+	body, err := encodeJSONBody(data)
+	if err != nil {
+		return err
+	}
+	return writeJSONBody(w, statusCode, body)
 }
 
-// writeSuccess writes a success response.
+// writeSuccess writes a success response. A body that fails to encode is a
+// read-side consistency failure, not the caller's: it is answered with the
+// redacted 500 in place of the success status, which has not been written
+// yet (#591). A write whose response fails this way has still committed.
 func writeSuccess(w http.ResponseWriter, statusCode int, data any) error {
-	return writeJSON(w, statusCode, data)
+	body, err := encodeJSONBody(data)
+	if err != nil {
+		respondErrorWithStatus(w, http.StatusInternalServerError, "success response not encodable", err,
+			"intended_status", statusCode)
+		return err
+	}
+	return writeJSONBody(w, statusCode, body)
+}
+
+// encodeJSONBody encodes data exactly as json.Encoder.Encode writes it (HTML
+// escaping, trailing newline) without writing anything to the response.
+func encodeJSONBody(data any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(data); err != nil {
+		return nil, fmt.Errorf("encode response body: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// writeJSONBody commits statusCode and writes an already encoded JSON body.
+func writeJSONBody(w http.ResponseWriter, statusCode int, body []byte) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	if _, err := w.Write(body); err != nil {
+		return fmt.Errorf("write response body: %w", err)
+	}
+	return nil
 }
 
 // parseUUID parses a UUID string. Its error is google/uuid's own prose about

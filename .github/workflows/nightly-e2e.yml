@@ -52,7 +52,7 @@ jobs:
 
       # See ci.yml's test-job cache-step note (#487).
       - name: Cache DuckDB extensions
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.duckdb/extensions
           key: duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
@@ -93,7 +93,7 @@ jobs:
 
       # See ci.yml's test-job cache-step note (#487).
       - name: Cache DuckDB extensions
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.duckdb/extensions
           key: duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
