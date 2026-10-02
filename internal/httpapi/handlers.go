@@ -70,13 +70,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	zap.S().Infow("create request completed", "schema", schemaName, "successful", len(result.Successful), "failed", len(result.Failed))
 
+	// A single object is answered with its record, which renders its
+	// date/datetime attributes as every other response does (#591).
 	if isSingleObject && len(result.Successful) > 0 {
-		singleResult := map[string]any{
-			"row_id":      result.Successful[0].RowID.String(),
-			"schema_name": result.Successful[0].SchemaName,
-			"attributes":  result.Successful[0].Attributes,
-		}
-		_ = writeSuccess(w, http.StatusCreated, singleResult)
+		_ = writeSuccess(w, http.StatusCreated, result.Successful[0])
 		return
 	}
 
