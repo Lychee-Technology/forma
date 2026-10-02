@@ -119,9 +119,9 @@ func TestIntegerWidthAuditAgreesWithBigintWriteFunnel(t *testing.T) {
 
 // TestBigintLegacyImageRepairByUpdate pins the repair the migration guide
 // prescribes for a stored image the #590 funnel refuses (#590 review): a PUT
-// that names the attribute rewrites it whatever the image, because the merge
-// does not convert the value it replaces, and the census then reports the row
-// clean. A PUT that does not name it carries the image into the write: a
+// that names the attribute rewrites it whatever the image, because the update
+// never decodes a stored value it replaces, and the census then reports the
+// row clean. A PUT that does not name it carries the image into the write: a
 // whole image past 2^53 is refused as a 400 naming it, and one the read
 // cannot decode (a fraction, a number past int64) fails as a server error.
 func TestBigintLegacyImageRepairByUpdate(t *testing.T) {

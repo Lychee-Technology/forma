@@ -31,6 +31,9 @@ func bigintDestinationRegistry() forma.SchemaRegistry {
 		"totals": {AttributeID: 31, ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeBigInt},
 		"ratio":  {AttributeID: 32, ValueType: forma.ValueTypeBigInt, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnDouble01}},
 		"amount": {AttributeID: 33, ValueType: forma.ValueTypeBigInt, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint01}},
+		// A nested eav_data scalar beside a sibling, for the update tests.
+		"contact.total": {AttributeID: 34, ValueType: forma.ValueTypeBigInt},
+		"contact.name":  {AttributeID: 35, ValueType: forma.ValueTypeText},
 	}}
 }
 

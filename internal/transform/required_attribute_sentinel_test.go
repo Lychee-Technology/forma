@@ -67,8 +67,8 @@ func TestSharedConverterMissingRequiredAttributeIsPlain(t *testing.T) {
 
 // TestWritePayloadMissingRequiredAttributeIsClientInput is the other half: the
 // write path's 400 must survive the removal above. It does not depend on the
-// shared converter at all — validateRequiredAttributesFromInput is the
-// write-only validator, and it runs against the caller's input before flattening.
+// shared converter at all — requireWrittenAttributes is the write-only check,
+// and it runs on the document walk before any value is converted.
 func TestWritePayloadMissingRequiredAttributeIsClientInput(t *testing.T) {
 	registry := newRequiredAttributeRegistry()
 	rowID := uuid.Must(uuid.NewV7())

@@ -77,8 +77,8 @@ func newPatchedShippedSchemaHarness(t *testing.T, patch func(ledger map[string]m
 //
 // StripComputedFields removes the whole contactSnapshot subtree before
 // validation, so the value the policy demands can never be present — sending it
-// only gives the strip more to remove. The write path's input-side required
-// check (transform.validateRequiredAttributesFromInput) therefore has to carve
+// only gives the strip more to remove. The write path's own required check
+// (transform.requireWrittenAttributes) therefore has to carve
 // relation roots out the way the record-side check has since #315. The startup
 // guard cannot catch this shape: it reads the JSON Schema document, and the
 // policy lives in the attribute ledger.

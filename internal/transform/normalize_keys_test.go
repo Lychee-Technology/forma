@@ -63,7 +63,7 @@ func TestNormalizeExpandsNestedDottedKey(t *testing.T) {
 }
 
 // TestNormalizeExpandsInsideArrayElements pins that array elements are walked.
-// flattenToAttributes recurses into []any, so a dotted key inside an element
+// walkDocument recurses into []any, so a dotted key inside an element
 // names a real attribute; skipping arrays would leave the bypass open for
 // exactly the array-of-object attributes it matters for (orders.items.price).
 func TestNormalizeExpandsInsideArrayElements(t *testing.T) {

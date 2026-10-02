@@ -1,10 +1,12 @@
 package internal
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/model"
 )
 
 func applyProjection(records []*forma.DataRecord, attrs []string) {
@@ -90,43 +92,22 @@ func mergeMaps(existing map[string]any, updates any) map[string]any {
 	return result
 }
 
-// replacedByUpdate reports the attributes mergeMaps(existing, updates) takes
-// from updates whatever existing holds, so an update's merge base need not
-// convert their stored values (PersistentRecordTransformer.MergeBase): the
-// update that repairs a value the read refuses must not be blocked by it
-// (#590). See replacesPath for the walk.
-func replacedByUpdate(updates any) func(attrName string) bool {
-	updateMap, ok := updates.(map[string]any)
-	if !ok {
-		return func(string) bool { return false }
-	}
-	return func(attrName string) bool {
-		return replacesPath(updateMap, strings.Split(attrName, "."))
-	}
-}
-
-// replacesPath walks an attribute's dotted path through one level of an
-// update the way mergeMaps recurses. An object value merges key by key, so
-// the walk goes into it; any other value (a scalar, null, an array) replaces
-// the whole subtree, list elements included, and so does an object at the
-// path's end. A key may also spell several segments at once ("contact.email"
-// for contact, email): mergeMaps keeps it literal and dedupeEAVRecords lets
-// that spelling win (#312), so every joined prefix is tried. The walk never
-// sees stored values, so where mergeMaps also replaces a stored non-object
-// under an object update, it keeps the attribute: that costs a conversion,
-// never a value the merge would keep.
-func replacesPath(level map[string]any, segments []string) bool {
-	for n := 1; n <= len(segments); n++ {
-		value, present := level[strings.Join(segments[:n], ".")]
-		if !present {
-			continue
-		}
-		nested, isObject := value.(map[string]any)
-		if !isObject || n == len(segments) || replacesPath(nested, segments[n:]) {
-			return true
-		}
-	}
-	return false
+// mergeUpdateDocument builds the document an update writes: the stored row
+// merged with updates (mergeMaps), relation subtrees stripped (#318), holding
+// the stored values the write keeps and only those decoded
+// (PersistentRecordTransformer.MergeUpdate, #590). Update and BatchUpdate
+// both merge through it, so the two cannot drift.
+func mergeUpdateDocument(
+	ctx context.Context,
+	transformer model.PersistentRecordTransformer,
+	relations *RelationIndex,
+	schemaName string,
+	existing *model.PersistentRecord,
+	updates any,
+) (map[string]any, error) {
+	return transformer.MergeUpdate(ctx, existing, func(base map[string]any) map[string]any {
+		return relations.StripComputedFields(schemaName, mergeMaps(base, updates))
+	})
 }
 
 // copyMapDeep creates a deep copy of a map

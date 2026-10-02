@@ -76,10 +76,10 @@ func spellingOf(path []string) string {
 // keeping the whole attribute the last spelling produced.
 //
 // Why collisions exist: attribute names in this codebase are dotted, so
-// flattenToAttributes reaches "contact.email" both by recursing into
+// walkDocument reaches "contact.email" both by recursing into
 // {"contact":{"email":…}} and through a literal top-level "contact.email" key.
 // A single request can carry both spellings — most commonly on update, where
-// mergeMaps is key-literal while FromPersistentRecord re-nests stored
+// mergeMaps is key-literal while the merge base (MergeUpdate) re-nests stored
 // attributes. Two records with one primary key make the multi-row INSERT in
 // insertEAVAttributes fail with PostgreSQL 23505 (#312).
 //
@@ -94,7 +94,7 @@ func spellingOf(path []string) string {
 // discarded: all indices, and the marker.
 //
 // Resolution is last-write-wins, matching encoding/json's own duplicate-key
-// semantics. It is deterministic because flattenToAttributes sorts every map's
+// semantics. It is deterministic because walkDocument sorts every map's
 // keys instead of ranging in map order: for any dotted name the nested
 // spelling's top-level key is a proper prefix of the literal one, so it sorts
 // first and the literal key — the caller's explicit value — is emitted last.
@@ -106,15 +106,15 @@ func spellingOf(path []string) string {
 // objects have unique keys and array indices are unique per list — so it exists
 // to keep the slice insertable rather than to express a policy.
 func dedupeEAVRecords(tagged []taggedEAVRecord) []model.EAVRecord {
-	winners := make(map[attributeIdentity]string, len(tagged))
+	winners := make(spellingWinners, len(tagged))
 	for _, item := range tagged {
-		winners[identityOf(item.record)] = item.spelling
+		winners.observe(item)
 	}
 
 	positions := make(map[eavPrimaryKey]int, len(tagged))
 	deduped := make([]model.EAVRecord, 0, len(tagged))
 	for _, item := range tagged {
-		if winners[identityOf(item.record)] != item.spelling {
+		if !winners.wins(item) {
 			continue
 		}
 
@@ -128,4 +128,20 @@ func dedupeEAVRecords(tagged []taggedEAVRecord) []model.EAVRecord {
 	}
 
 	return deduped
+}
+
+// spellingWinners is #312's rule: per logical attribute, the spelling observed
+// last wins, and every record or claim any other spelling produced for that
+// attribute is discarded. dedupeEAVRecords applies it to the records a write
+// produced; claimWinners (document_walk.go) to the claims they come from, so
+// the required policy and an update's stored values see the same winners the
+// write keeps.
+type spellingWinners map[attributeIdentity]string
+
+func (w spellingWinners) observe(item taggedEAVRecord) {
+	w[identityOf(item.record)] = item.spelling
+}
+
+func (w spellingWinners) wins(item taggedEAVRecord) bool {
+	return w[identityOf(item.record)] == item.spelling
 }

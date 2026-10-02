@@ -726,11 +726,14 @@ keeps only the float64 image, which is exact within ±2^53 and rounded past
 it. An API write stamps `change_log`, so the next flush re-exports the entity.
 Decide per row whether the value was meant to be clamped, rounded, or moved to
 a `numeric` attribute (or to a column-bound `bigint`, which keeps the full
-int64 range). Name the attribute in the update itself. The merge does not
-convert a stored value that the update replaces, so an update naming the
-attribute repairs every image the census reports. That includes one past
-int64 or with a fraction, which the read itself refuses. An update replaces a
-list as a whole, so repair a list item by sending the whole list. An update
+int64 range). Name the attribute in the update itself, nested
+(`{"contact":{"total":42}}`) or as its literal dotted key
+(`{"contact.total":42}`), under any `required_policy`. An update never decodes
+a stored value its written row discards, so an update naming the attribute
+repairs every image the census reports and keeps the attributes it does not
+name. That includes one past int64 or with a fraction, which the read itself
+refuses. An update replaces a list as a whole, so repair a list item by
+sending the whole list. An update
 that leaves the attribute out merges into the document the OLTP route reads,
 so it re-submits the stored value. A whole image past 2^53 is refused as
 invalid input that names the attribute and its image. One past int64 or with a

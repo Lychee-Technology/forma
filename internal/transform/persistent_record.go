@@ -114,19 +114,14 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 }
 
 func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, record *model.PersistentRecord) (map[string]any, error) {
-	return t.fromPersistentRecord(ctx, record, nil)
+	return t.fromPersistentRecord(ctx, record, decodeRecordValue)
 }
 
-// MergeBase is FromPersistentRecord for the document an update merges into:
-// the attributes replaced reports count as present for the required policy
-// but are not converted, so a stored value the read refuses, such as a
-// bigint image past int64 (#590), does not block the update that rewrites
-// it. A bound column's own encoding is still parsed (readFromMainColumn).
-func (t *persistentRecordTransformer) MergeBase(ctx context.Context, record *model.PersistentRecord, replaced func(attrName string) bool) (map[string]any, error) {
-	return t.fromPersistentRecord(ctx, record, replaced)
-}
-
-func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, record *model.PersistentRecord, replaced func(attrName string) bool) (map[string]any, error) {
+// fromPersistentRecord rebuilds the document of a stored row, giving each EAV
+// record the value valueOf produces: decoded on read, held undecoded for an
+// update's merge base (MergeUpdate). A bound column's own encoding is parsed
+// either way (readFromMainColumn).
+func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, record *model.PersistentRecord, valueOf recordValuer) (map[string]any, error) {
 	if record == nil {
 		return nil, fmt.Errorf("record cannot be nil")
 	}
@@ -162,7 +157,7 @@ func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, 
 
 	// Convert EAVRecords to EntityAttributes
 	converter := t.newConverter()
-	entityAttributes, err := converter.fromStoredEAVRecords(attributes, replaced)
+	entityAttributes, err := converter.fromStoredRecords(attributes, valueOf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert EAVRecords to EntityAttributes: %w", err)
 	}

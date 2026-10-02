@@ -12,7 +12,7 @@ import (
 // producing the document handed to the schema validator.
 //
 // It is for the validator only. The writer keeps receiving the caller's original
-// map, so flattenToAttributes and #312's dedupe remain the single authority on
+// map, so walkDocument and #312's dedupe remain the single authority on
 // which record wins: records carry the spelling that produced them, and the last
 // spelling replaces the whole logical attribute. Merging spellings into one
 // document destroys those tags, so a normalized document cannot re-derive that
@@ -29,7 +29,7 @@ import (
 // Interior paths are expanded too, not just leaf attributes: {"contact.snapshot":
 // {"code": …}} hides "code" from validation exactly the way a literal leaf key
 // hides its own value. The test is isKnownAttributeOrParent — the same predicate
-// flattenToAttributes uses — so a name is expanded when the schema defines it or
+// walkDocument uses — so a name is expanded when the schema defines it or
 // defines something beneath it. An unknown dotted key is left alone; the writer
 // still rejects it with "attribute is not defined".
 //
@@ -175,7 +175,7 @@ func normalizeValue(value any, name string, view schemaView, pos payloadPosition
 }
 
 // normalizeSlice normalizes each element. Array elements keep their parent's
-// name because an index is not part of an attribute name — flattenToAttributes
+// name because an index is not part of an attribute name — walkDocument
 // carries indices separately and recurses into elements with the path unchanged
 // — so {"tags":[{"a.b":1}]} must expand the same as {"tags":{"a.b":1}} would.
 func normalizeSlice(src []any, prefix string, view schemaView, pos payloadPosition) ([]any, error) {

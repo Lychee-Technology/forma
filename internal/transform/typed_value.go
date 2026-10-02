@@ -63,7 +63,7 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 		floatBool := boolToFloat64(boolVal)
 		attr.ValueNumeric = &floatBool
 	case forma.ValueTypeList:
-		// flattenToAttributes already decomposed the array into one call per
+		// walkDocument already decomposed the array into one call per
 		// element with ArrayIndices set; type the single scalar element by the
 		// declared items type. Parquet LIST reconstruction is positional, so
 		// only flat (single-index) lists are representable across tiers (#204).

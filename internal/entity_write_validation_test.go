@@ -118,8 +118,8 @@ func (w *writeSpy) FromPersistentRecord(ctx context.Context, record *model.Persi
 	return w.inner.FromPersistentRecord(ctx, record)
 }
 
-func (w *writeSpy) MergeBase(ctx context.Context, record *model.PersistentRecord, replaced func(attrName string) bool) (map[string]any, error) {
-	return w.inner.MergeBase(ctx, record, replaced)
+func (w *writeSpy) MergeUpdate(ctx context.Context, record *model.PersistentRecord, merge func(base map[string]any) map[string]any) (map[string]any, error) {
+	return w.inner.MergeUpdate(ctx, record, merge)
 }
 
 // SetRelationRoots forwards the install to the wrapped transformer. A decorator

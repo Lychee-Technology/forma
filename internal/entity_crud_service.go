@@ -270,12 +270,10 @@ func (s *entityCRUDService) mergeUpdateRecord(
 		return nil, forma.NotFoundf("entity not found: %s/%s", req.SchemaName, req.RowID)
 	}
 
-	existingData, err := s.transformer.MergeBase(ctx, existing, replacedByUpdate(req.Updates))
+	mergedData, err := mergeUpdateDocument(ctx, s.transformer, s.relations, req.SchemaName, existing, req.Updates)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transform existing record: %w", err)
 	}
-
-	mergedData := s.relations.StripComputedFields(req.SchemaName, mergeMaps(existingData, req.Updates))
 
 	// The *merged* document is what gets validated: a partial update that does
 	// not mention a required attribute must still succeed. The relation-root
