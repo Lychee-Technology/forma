@@ -75,6 +75,17 @@ func TestDateTime_ReadJudgesTheEmittedToken(t *testing.T) {
 		"NaN":                   "stored value NaN " + fraction,
 		"Infinity":              "stored value Infinity " + fraction,
 		"-Infinity":             "stored value -Infinity " + fraction,
+
+		// At the int64 boundary the digits decide too: these all round to
+		// ±2^63, yet a scaled MinInt64 or MaxInt64 names an instant that
+		// only the 2^53 rule refuses (#622 review). The first float64 past
+		// 2^63 is past int64 whatever its digits.
+		"9223372036854775807.000":  "stored value 9223372036854775807.000 (292278994-08-17T07:12:55.807Z) " + pastFloat64Image,
+		"-9223372036854775808.000": pastFloat64Image,
+		"9223372036854775807.5":    "stored value 9223372036854775807.5 " + fraction,
+		"9223372036854775808.000":  "stored value 9223372036854775808.000 " + beyond,
+		"-9223372036854775809.000": "stored value -9223372036854775809.000 " + beyond,
+		"9223372036854777856":      "stored value 9223372036854777856 " + beyond,
 	}
 	for token, want := range refused {
 		t.Run("refused "+token, func(t *testing.T) {

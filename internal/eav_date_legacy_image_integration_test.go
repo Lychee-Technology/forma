@@ -60,7 +60,8 @@ var doubleOnlyDateImages = []plantedDateImage{
 
 // A NUMERIC column keeps the digits, so the read sees images whose float64
 // rounds onto an admitted instant (2^53+1 and 2^53-0.5 both round to 2^53)
-// and judges them by the digits (#592), and a scale is no fraction.
+// and judges them by the digits (#592), and a scale is no fraction, even on
+// MaxInt64, whose float64 is the 2^63 of the values past it (#622 review).
 var numericOnlyDateImages = []plantedDateImage{
 	{"1704067200123.000", 1704067200123, ""},
 	{"9007199254740993", 0, "stored value 9007199254740993 (287396-10-12T08:59:00.993Z) " + pastFloat64DateImage},
@@ -68,6 +69,9 @@ var numericOnlyDateImages = []plantedDateImage{
 	{"9223372036854775807", 0, pastFloat64DateImage},
 	{"-9223372036854775808", 0, pastFloat64DateImage},
 	{"9223372036854775808", 0, "stored value 9223372036854775808 " + beyondDateImage},
+	{"9223372036854775807.000", 0, "stored value 9223372036854775807.000 (292278994-08-17T07:12:55.807Z) " + pastFloat64DateImage},
+	{"9223372036854775807.5", 0, "stored value 9223372036854775807.5 " + fractionDateImage},
+	{"9223372036854775808.000", 0, "stored value 9223372036854775808.000 " + beyondDateImage},
 	{"1e400", 0, beyondDateImage},
 	{"9007199254740991.5", 0, "stored value 9007199254740991.5 " + fractionDateImage},
 	{"0.001", 0, fractionDateImage},

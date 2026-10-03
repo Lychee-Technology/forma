@@ -187,13 +187,16 @@ func instantOfImageMillis(ms int64, stored string) (time.Time, error) {
 // unified BIGINT as digits. A plain integer is the common case. Anything else
 // is judged on its exact rational value: a fraction, NaN, an infinity or a
 // magnitude past int64 names no instant, whatever its float64 rounds to. The
-// float64 pre-check bounds the magnitude before big.Rat expands the token.
+// float64 pre-check bounds the magnitude before big.Rat expands the token,
+// and refuses only a token its float64 proves past int64: a scaled MaxInt64
+// ("9223372036854775807.000") rounds to 2^63 as the values past it do, so
+// the exact value tells them apart (#622 review).
 func wholeMillisOfToken(token string) (int64, error) {
 	if ms, err := strconv.ParseInt(token, 10, 64); err == nil {
 		return ms, nil
 	}
 	image, parseErr := strconv.ParseFloat(token, 64)
-	if !inInt64Range(image) {
+	if !mayRoundFromInt64(image) {
 		return 0, fmt.Errorf("stored value %s (%s) names no epoch millisecond instant", token, notAnInstantReason(image, parseErr))
 	}
 	exact, ok := new(big.Rat).SetString(token)
@@ -208,8 +211,18 @@ func wholeMillisOfToken(token string) (int64, error) {
 	return exact.Num().Int64(), nil
 }
 
+// mayRoundFromInt64 reports whether a float64 can be the rounded image of an
+// int64. Rounding is monotonic and MaxInt64 rounds up to 2^63, so every int64
+// has an image within ±2^63, and a value whose image lies past it (or is
+// NaN) is beyond int64 whatever its digits. inInt64Range is the test for a
+// float64 that is itself the value; it excludes 2^63, which as an image is
+// shared by MaxInt64 and the values just past it.
+func mayRoundFromInt64(image float64) bool {
+	return math.Abs(image) <= 1<<63
+}
+
 // notAnInstantReason is describeEpochMillis's reason for a token whose
-// float64 lies outside int64: NaN and the infinity spellings are no whole
+// float64 proves it past int64: NaN and the infinity spellings are no whole
 // number, while a finite token is beyond any instant even when its float64
 // overflowed to an infinity (a NUMERIC 1e400, strconv.ErrRange).
 func notAnInstantReason(image float64, parseErr error) string {
