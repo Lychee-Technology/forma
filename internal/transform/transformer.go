@@ -111,53 +111,38 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 	return attributes, nil
 }
 
+// FromAttributes rebuilds a row's document from its attributes, in whatever
+// order they arrive (rebuildDocument, #619). A record with no value is
+// dropped, except a list's empty-list marker (no indices, no value), which
+// rebuilds as an explicit [] (#204).
 func (t *transformer) FromAttributes(ctx context.Context, attributes []model.EntityAttribute) (map[string]any, error) {
-	if len(attributes) == 0 {
-		return make(map[string]any), nil
-	}
-
-	result := make(map[string]any)
-
+	records := make([]rebuildRecord, 0, len(attributes))
 	for _, attr := range attributes {
 		cache, idToName, err := schemameta.GetSchemaMetadata(t.registry, attr.SchemaID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("load metadata of schema %d: %w", attr.SchemaID, err)
 		}
-
 		attrName, ok := idToName[attr.AttrID]
 		if !ok {
 			return nil, fmt.Errorf("attribute id %d not found for schema %d", attr.AttrID, attr.SchemaID)
 		}
-
-		if attr.Value == nil {
-			// An empty-list marker (list attr, no indices, no value)
-			// materializes an explicit empty array. A marker placed first is
-			// grown in place by later element records; a stale marker arriving
-			// after elements is skipped so it never clobbers them (#204).
-			if meta, isKnown := cache[attrName]; isKnown &&
-				meta.ValueType == forma.ValueTypeList && attr.ArrayIndices == "" {
-				segments := strings.Split(attrName, ".")
-				if !pathAlreadySet(result, segments) {
-					if err := setValueAtPath(result, segments, nil, []any{}); err != nil {
-						return nil, fmt.Errorf("materialize empty list for attribute '%s': %w", attrName, err)
-					}
-				}
+		list := cache[attrName].ValueType == forma.ValueTypeList
+		value := attr.Value
+		if value == nil {
+			if !list || attr.ArrayIndices != "" {
+				continue
 			}
-			continue
+			value = []any{}
 		}
-
 		indices, err := parseIndices(attr.ArrayIndices)
 		if err != nil {
 			return nil, fmt.Errorf("parse array indices for attribute '%s': %w", attrName, err)
 		}
-
-		segments := strings.Split(attrName, ".")
-		if err := setValueAtPath(result, segments, indices, attr.Value); err != nil {
-			return nil, fmt.Errorf("set value for attribute '%s': %w", attrName, err)
-		}
+		records = append(records, rebuildRecord{
+			segments: strings.Split(attrName, "."), list: list, indices: indices, value: value,
+		})
 	}
-
-	return result, nil
+	return rebuildDocument(records), nil
 }
 
 func (t *transformer) BatchToAttributes(ctx context.Context, schemaID int16, jsonObjects []any) ([]model.EntityAttribute, error) {
@@ -288,5 +273,7 @@ func isKnownAttributeOrParent(name string, cache forma.SchemaAttributeCache) boo
 }
 
 // The document walk that ToAttributes reads (walkDocument, flattenToAttributes,
-// requireWrittenAttributes) lives in document_walk.go; array handling
-// (joinIndices, parseIndices, setValueAtPath, etc.) in transformer_array.go.
+// requireWrittenAttributes) lives in document_walk.go; the rebuild that
+// FromAttributes runs (rebuildDocument) in document_rebuild.go; index and
+// array helpers (joinIndices, parseIndices, setArrayValueRecursive, etc.) in
+// array_paths.go.
