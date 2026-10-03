@@ -95,16 +95,6 @@ func (s *Sink) EmitRowCount(ctx context.Context, source string, rows int64) {
 	s.emit(ctx, "fed_query_row_count", map[string]string{"source": source}, float64(rows))
 }
 
-// EmitPushdownEfficiency records the pushdown-efficiency proxy for one
-// federated query: the anti-join dirty-set size over the final matching row
-// count. It is a proxy because Forma never observes how many rows the
-// postgres_scan inside DuckDB touched; the dirty set is the upper bound of
-// hot rows that scan can return. schemaID is the queried schema.
-// name: "fed_query_pushdown_efficiency" with label {"schema_id": "<id>"}
-func (s *Sink) EmitPushdownEfficiency(ctx context.Context, schemaID int16, ratio float64) {
-	s.emit(ctx, "fed_query_pushdown_efficiency", schemaLabels(schemaID), ratio)
-}
-
 // EmitCompactionManifestContractViolation records a contract violation event when
 // compaction detects SaveManifest succeeded without metadata advancement.
 // name: "compaction_manifest_contract_violation_total" with label {"schema_id": "<id>"}

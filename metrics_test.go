@@ -48,6 +48,25 @@ func TestMetricCatalogueIsWellFormed(t *testing.T) {
 	}
 }
 
+// retiredMetricNames are wire names Forma once catalogued and no longer
+// emits. A retired name never returns: a dashboard still keyed on it would
+// read a different quantity under the old name.
+var retiredMetricNames = []string{
+	// #596: a dirty-set-over-result ratio standing in for a Postgres scan
+	// count Forma does not observe.
+	"fed_query_pushdown_efficiency",
+}
+
+// TestRetiredMetricNamesStayOutOfTheCatalogue is the other half of the
+// wire-name rule: names are never renamed, and a retired one is never reused.
+func TestRetiredMetricNamesStayOutOfTheCatalogue(t *testing.T) {
+	for _, name := range retiredMetricNames {
+		if _, ok := LookupMetric(name); ok {
+			t.Errorf("retired metric %q is catalogued again; a retired wire name is never reused", name)
+		}
+	}
+}
+
 // TestMetricCatalogueIsACopy: callers may sort or edit what they get back
 // without touching Forma's descriptors, and LookupMetric hands out the same
 // contract MetricCatalogue lists.

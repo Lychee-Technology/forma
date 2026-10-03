@@ -3,7 +3,6 @@ package federated
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -44,7 +43,7 @@ func (r *metricRecorder) value(t *testing.T, name, label string) float64 {
 }
 
 func labelString(labels map[string]string) string {
-	for _, k := range []string{"stage", "source", "schema_id"} {
+	for _, k := range []string{"stage", "source"} {
 		if v, ok := labels[k]; ok {
 			return k + "=" + v
 		}
@@ -53,14 +52,13 @@ func labelString(labels map[string]string) string {
 }
 
 // everyFedQuerySeries is the label set one successful DuckDB pass must
-// produce, keyed on the queried schema.
+// produce: nothing less, and nothing more.
 var everyFedQuerySeries = map[string]int{
-	"fed_query_latency_histogram/stage=translation":                                  1,
-	"fed_query_latency_histogram/stage=execution":                                    1,
-	"fed_query_latency_histogram/stage=streaming":                                    1,
-	"fed_query_row_count/source=pg":                                                  1,
-	"fed_query_row_count/source=duckdb":                                              1,
-	fmt.Sprintf("fed_query_pushdown_efficiency/schema_id=%d", coldPlanCacheSchemaID): 1,
+	"fed_query_latency_histogram/stage=translation": 1,
+	"fed_query_latency_histogram/stage=execution":   1,
+	"fed_query_latency_histogram/stage=streaming":   1,
+	"fed_query_row_count/source=pg":                 1,
+	"fed_query_row_count/source=duckdb":             1,
 }
 
 func newMetricsTestEngine(t *testing.T, opts ...EngineOption) (*DBFederatedQueryEngine, *fakeDuckDBExecutor) {
@@ -97,9 +95,8 @@ func requireCataloguedEmissions(t *testing.T, rec *metricRecorder) {
 
 // TestEngineEmitsQueryMetricsToTheInjectedEmitter pins the federated half of
 // #423: one query through an engine built with WithMetricEmitter delivers the
-// translation/execution/streaming latencies, the per-source row counts and
-// the pushdown ratio to that emitter, each on its catalogued contract and
-// labelled with the queried schema, not a placeholder.
+// translation/execution/streaming latencies and the per-source row counts to
+// that emitter, each on its catalogued contract.
 func TestEngineEmitsQueryMetricsToTheInjectedEmitter(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
@@ -115,8 +112,8 @@ func TestEngineEmitsQueryMetricsToTheInjectedEmitter(t *testing.T) {
 // TestEngineEmitsQueryMetricsWithoutAnExecutionPlan: the API default is
 // IncludeExecutionPlan=false (and Go callers may pass nil options), and the
 // metric stream must be identical to the plan-requested one. Before PR #595
-// review item 1, four of the six series were only emitted when a caller
-// opted into the diagnostic plan payload.
+// review item 1, the post-scan series were only emitted when a caller opted
+// into the diagnostic plan payload.
 func TestEngineEmitsQueryMetricsWithoutAnExecutionPlan(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
@@ -154,7 +151,7 @@ func TestEngineWithoutEmitterEmitsNothing(t *testing.T) {
 	require.Empty(t, rec.events, "an engine built without an emitter must not reach another engine's emitter")
 
 	runColdPlanCacheQuery(t, loud, loudDuck)
-	require.Len(t, rec.events, 6)
+	require.Len(t, rec.events, len(everyFedQuerySeries))
 }
 
 // TestEngineSurvivesAPanickingEmitter: the embedder's emitter throwing never
@@ -243,12 +240,14 @@ func TestEngineLatencyStagesAreDisjoint(t *testing.T) {
 	require.Equal(t, int64(1), last.ActualRows)
 }
 
-// TestEnginePushdownEfficiencyIsTheDirtySetOverTheResult pins PR #595 review
-// items 2 and 4 at the engine seam: the gauge carries the queried schema and
-// its value is the anti-join dirty-set size (3 here) over the query's total
-// match count (1, the window count the single fake row reports), no longer
-// read back out of execution-plan sources.
-func TestEnginePushdownEfficiencyIsTheDirtySetOverTheResult(t *testing.T) {
+// TestEnginePgRowCountIsTheDirtySetSize pins what the pg series measures at
+// the engine seam: the anti-join dirty-set size (3 here), next to the one
+// row the DuckDB scan streamed. It is also the #596 regression guard. The
+// retired fed_query_pushdown_efficiency gauge divided this count by the
+// result size and called the quotient pushdown efficiency, a quantity Forma
+// does not observe, so neither the metric stream nor the execution plan may
+// carry it again.
+func TestEnginePgRowCountIsTheDirtySetSize(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
@@ -261,33 +260,13 @@ func TestEnginePushdownEfficiencyIsTheDirtySetOverTheResult(t *testing.T) {
 		ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
 	runColdPlanCacheQueryWith(t, e, duck, "", opts)
 
-	label := fmt.Sprintf("schema_id=%d", coldPlanCacheSchemaID)
-	require.Equal(t, 3.0, rec.value(t, "fed_query_pushdown_efficiency", label))
 	require.Equal(t, 3.0, rec.value(t, "fed_query_row_count", "source=pg"))
-	require.Contains(t, opts.ExecutionPlan.Notes, "pushdown_efficiency=3.000 (dirty_rows=3 final_rows=1)")
-}
-
-// TestPushdownEfficiencyDenominatorFallbacks: the total match count is the
-// denominator; the streamed page stands in when the template reported none,
-// and 1 when nothing matched, so an empty result is never a division by zero.
-func TestPushdownEfficiencyDenominatorFallbacks(t *testing.T) {
-	for name, tc := range map[string]struct {
-		outcome   duckDBScanOutcome
-		ratio     float64
-		finalRows int64
-	}{
-		"total reported":       {duckDBScanOutcome{dirtyRows: 6, rowCount: 2, totalRecords: 3}, 2, 3},
-		"page only":            {duckDBScanOutcome{dirtyRows: 6, rowCount: 2}, 3, 2},
-		"empty result":         {duckDBScanOutcome{dirtyRows: 6}, 6, 1},
-		"empty dirty set":      {duckDBScanOutcome{rowCount: 4, totalRecords: 4}, 0, 4},
-		"nothing at all":       {duckDBScanOutcome{}, 0, 1},
-		"negative total guard": {duckDBScanOutcome{dirtyRows: 1, rowCount: 5, totalRecords: -1}, 0.2, 5},
-	} {
-		t.Run(name, func(t *testing.T) {
-			ratio, finalRows := pushdownEfficiency(tc.outcome)
-			require.InDelta(t, tc.ratio, ratio, 1e-9)
-			require.Equal(t, tc.finalRows, finalRows)
-		})
+	require.Equal(t, 1.0, rec.value(t, "fed_query_row_count", "source=duckdb"))
+	for _, m := range rec.events {
+		require.NotEqual(t, "fed_query_pushdown_efficiency", m.Name, "the retired gauge must not be emitted")
+	}
+	for _, note := range opts.ExecutionPlan.Notes {
+		require.NotContains(t, note, "pushdown_efficiency", "the plan must not report the retired ratio")
 	}
 }
 
@@ -312,8 +291,8 @@ func retryTables() model.StorageTables {
 // #251 retry produces exactly one sample per series, all from the retry.
 // Before the fix the dirty-set count and the translation latency were
 // emitted where they were measured, ahead of DuckDB, so the failed pass
-// contributed a second pg and translation sample while the four post-scan
-// series were emitted once.
+// contributed a second pg and translation sample while the post-scan series
+// were emitted once.
 func TestEngineRetriedQueryEmitsOneCompleteMetricSet(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()

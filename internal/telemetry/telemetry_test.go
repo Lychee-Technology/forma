@@ -30,8 +30,6 @@ var helperCalls = []helperCall{
 		"fed_query_latency_histogram", map[string]string{"stage": "execution"}, 42},
 	{"EmitRowCount", func(ctx context.Context, s *Sink) { s.EmitRowCount(ctx, "duckdb", 7) },
 		"fed_query_row_count", map[string]string{"source": "duckdb"}, 7},
-	{"EmitPushdownEfficiency", func(ctx context.Context, s *Sink) { s.EmitPushdownEfficiency(ctx, 3, 0.25) },
-		"fed_query_pushdown_efficiency", map[string]string{"schema_id": "3"}, 0.25},
 	{"EmitCompactionManifestContractViolation", func(ctx context.Context, s *Sink) { s.EmitCompactionManifestContractViolation(ctx, 4) },
 		"compaction_manifest_contract_violation_total", map[string]string{"schema_id": "4"}, 1},
 	{"EmitCompactionDirtyRatio", func(ctx context.Context, s *Sink) { s.EmitCompactionDirtyRatio(ctx, 5, 0.5) },

@@ -95,12 +95,11 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 		e.breaker.RecordSuccess()
 	}
 	outcome := duckDBScanOutcome{
-		translateMs:  sc.translateMs,
-		executeMs:    executeMs,
-		streamMs:     planCtx.millisSince(streamStart),
-		rowCount:     rowCount,
-		totalRecords: totalRecords,
-		dirtyRows:    int64(len(sc.dirtyIDs)),
+		translateMs: sc.translateMs,
+		executeMs:   executeMs,
+		streamMs:    planCtx.millisSince(streamStart),
+		rowCount:    rowCount,
+		dirtyRows:   int64(len(sc.dirtyIDs)),
 	}
 	// Metrics first and unconditionally: the execution plan is an optional
 	// diagnostic payload (IncludeExecutionPlan defaults to false on the API),
@@ -111,7 +110,7 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 	// partial sample behind, and the #251 corrupt-parquet retry counts a
 	// logical query once (the failed first pass is silent), which is what
 	// docs/telemetry.md means by "per successful DuckDB pass".
-	e.emitDuckDBScanMetrics(ctx, q.SchemaID, outcome)
+	e.emitDuckDBScanMetrics(ctx, outcome)
 	planCtx.recordScanOutcome(outcome)
 
 	return totalRecords, nil
@@ -128,54 +127,29 @@ type duckDBScanOutcome struct {
 	// consumption, which the previous "elapsed since query start" measure
 	// (streaming folded into execution, streaming itself ~0) could not.
 	translateMs, executeMs, streamMs int64
-	// rowCount is the number of rows the pass streamed (the page); totalRecords
-	// is the query's total match count as reported by the template's window
-	// count, 0 when no row carried one.
-	rowCount, totalRecords int64
-	// dirtyRows is the size of the anti-join dirty set fetched for the pass;
-	// see pushdownEfficiency for what it stands in for.
+	// rowCount is the number of rows the pass streamed (the page).
+	rowCount int64
+	// dirtyRows is the size of the anti-join dirty set fetched for the pass.
+	// It is the pg row count and nothing more: Forma does not observe what
+	// the postgres_scan calls inside DuckDB read, so no series claims to
+	// (#596 retired the gauge that used this as a stand-in for it).
 	dirtyRows int64
 }
 
 // emitDuckDBScanMetrics reports one successful pass to the engine's telemetry
-// sink as a complete set: the three latency stages, both row-count sources
-// and the per-schema pushdown-efficiency proxy. Everything the pass measured
-// before DuckDB ran (the dirty-set size, the render time) is carried here in
-// the outcome instead of being emitted where it was measured, so a consumer
-// never sees a translation or pg sample without the execution that followed
-// it, and a failed-then-retried query is not counted twice (PR #595 review).
-// Nil-sink safe (Sink methods no-op).
-func (e *DBFederatedQueryEngine) emitDuckDBScanMetrics(ctx context.Context, schemaID int16, o duckDBScanOutcome) {
+// sink as a complete set: the three latency stages and both row-count
+// sources. Everything the pass measured before DuckDB ran (the dirty-set
+// size, the render time) is carried here in the outcome instead of being
+// emitted where it was measured, so a consumer never sees a translation or
+// pg sample without the execution that followed it, and a failed-then-retried
+// query is not counted twice (PR #595 review). Nil-sink safe (Sink methods
+// no-op).
+func (e *DBFederatedQueryEngine) emitDuckDBScanMetrics(ctx context.Context, o duckDBScanOutcome) {
 	e.metrics.EmitLatency(ctx, "translation", o.translateMs)
 	e.metrics.EmitRowCount(ctx, "pg", o.dirtyRows)
 	e.metrics.EmitLatency(ctx, "execution", o.executeMs)
 	e.metrics.EmitLatency(ctx, "streaming", o.streamMs)
 	e.metrics.EmitRowCount(ctx, "duckdb", o.rowCount)
-	ratio, _ := pushdownEfficiency(o)
-	e.metrics.EmitPushdownEfficiency(ctx, schemaID, ratio)
-}
-
-// pushdownEfficiency is the value behind fed_query_pushdown_efficiency: the
-// dirty-set size over the final matching row count, with the row count of
-// the streamed page as the denominator when the template reported no total
-// and 1 when the pass matched nothing at all (so an empty result reads as
-// "dirtyRows hot rows considered per zero results", never as a division by
-// zero). It also returns the denominator it used, for the plan note.
-//
-// The numerator is a proxy, and the descriptor says so: Forma never sees how
-// many rows the postgres_scan inside the pg_source CTE touched, so the
-// anti-join dirty set — the upper bound of hot rows pg_source can return when
-// nothing is pushed down — stands in for "Postgres rows scanned". Measuring
-// the real scan count, or retiring the gauge, is #596.
-func pushdownEfficiency(o duckDBScanOutcome) (ratio float64, finalRows int64) {
-	finalRows = o.totalRecords
-	if finalRows <= 0 {
-		finalRows = o.rowCount
-	}
-	if finalRows <= 0 {
-		finalRows = 1
-	}
-	return float64(o.dirtyRows) / float64(finalRows), finalRows
 }
 
 // recordScanOutcome completes the requested execution plan with the pass's
@@ -202,10 +176,6 @@ func (c *duckDBExecutionPlanContext) recordScanOutcome(o duckDBScanOutcome) {
 
 	plan.Timings["duckdb_fetch"] = fetchMs
 	plan.Timings["total"] = c.millisSince(c.startTotal)
-
-	ratio, finalRows := pushdownEfficiency(o)
-	plan.Notes = append(plan.Notes,
-		fmt.Sprintf("pushdown_efficiency=%.3f (dirty_rows=%d final_rows=%d)", ratio, o.dirtyRows, finalRows))
 }
 
 // failDuckDBScan classifies a failed scan and reports it to the breaker.
