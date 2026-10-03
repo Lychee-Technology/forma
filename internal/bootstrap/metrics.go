@@ -17,8 +17,9 @@ const MetricsStdoutEnv = "METRICS_STDOUT"
 
 // MetricEmitterFromEnv returns the stdout JSON-line emitter when
 // METRICS_STDOUT is on, and nil — Forma's no-op default — otherwise. It is
-// what cmd/server and cmd/lambda set on Config.Metrics.Emitter (#423): the
-// demo binaries choose no metrics backend, they make the events visible.
+// what cmd/server and cmd/lambda set on Config.Metrics.Emitter (#423) and
+// what cmd/tools compactor builds its Compactor's sink from (#594): the demo
+// binaries choose no metrics backend, they make the events visible.
 func MetricEmitterFromEnv(w io.Writer) forma.MetricEmitter {
 	if !EnvBool(MetricsStdoutEnv, false) {
 		return nil

@@ -46,8 +46,8 @@ operation that emitted.
 
 A `compaction.Compactor` is built by hand rather than by the factory; it
 takes its sink through the exported `Metrics` field
-(`telemetry.NewSink(emitter)`). The shipped `cmd/tools compactor` does not
-set it yet; see #594.
+(`telemetry.NewSink(emitter)`). The shipped `cmd/tools compactor` sets it
+from `METRICS_STDOUT`; see [The demo binaries](#the-demo-binaries).
 
 ## The catalogue (the label contract)
 
@@ -104,9 +104,9 @@ descriptor, and a helper with no row.
 
 ## The demo binaries
 
-`cmd/server` and `cmd/lambda` are reference entrypoints, so they get the
-simplest thing that makes every metric visible without a dependency: an
-opt-in stdout emitter.
+`cmd/server`, `cmd/lambda` and the `compactor` subcommand of `cmd/tools` are
+reference entrypoints, so they get the simplest thing that makes every metric
+visible without a dependency: an opt-in stdout emitter.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -119,6 +119,25 @@ Each line has a stable shape:
 ```
 
 On Lambda the lines land in the function's log group like any other stdout.
+
+`cmd/tools compactor` is the only producer of the five compactor metrics, so
+it reads the same variable (#594): a cron- or job-driven run whose output
+reaches a log group reports them with no collector. Every pass that loads the
+schema's manifest emits at least `compaction_dirty_ratio`. A pass that finds
+no manifest emits nothing, and neither does one that fails before the
+manifest is loaded, so the gauge is not a heartbeat: a run that printed none
+either had no manifest to read (exit code 0) or failed before reading it
+(non-zero).
+
+The subcommand's logs go to stderr, so on a successful run stdout carries the
+metric lines and nothing else. A failed run also prints its
+`compactor: <error>` text there, after any metric the pass emitted before it
+failed, and that text can span several lines; a consumer keeps the lines that
+are `"type":"forma_metric"` objects and skips the rest. No other `cmd/tools`
+subcommand has a metric to emit, and the emitter belongs to the one
+`Compactor` the subcommand builds, so a subcommand that prints a document on
+stdout (`inline-schema`) never shares it with a metric line.
+
 There is no `/metrics` endpoint, no registry, no provider selection and no
 startup failure path: a boolean cannot be misconfigured, and unset means
 nothing new is written. An operator who wants a real backend behind one of
