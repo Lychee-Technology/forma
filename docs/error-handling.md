@@ -758,7 +758,9 @@ across the whole attribute, is applied to those claims in one place,
    treat a held value as an opaque scalar.
 3. `resolveStoredValues` walks the merged document and decodes exactly the
    held values the written row keeps, the claims whose spelling wins, in walk
-   order. It removes the rest without decoding them.
+   order. It removes the held values the write discards without decoding
+   them, and refuses the update over a held value the write could not store
+   at all (#619 review, below).
 4. The resolved document is validated against the JSON Schema (creates
    reject, updates report, as above) and handed to `ToAttributes`, which walks
    it again: `requireWrittenAttributes` judges the required policies, each
@@ -787,6 +789,35 @@ A create runs step 4 only.
   literal repair under a required policy was then refused as a missing
   required attribute, and a nested sibling update dropped the stored list
   beside it.
+- **An update never deletes a stored record it did not address (#619
+  review).** The write replaces the row's EAV records with the ones the
+  merged document yields, so a held value at a position no attribute claims
+  would be left out of the written row and its record deleted. The rebuild
+  leaves a value at such a position in one case: its record carries more
+  array indices than its parent takes. The members of an array of objects
+  nested inside another are stored that way (`order.items[].lots[].code`, at
+  two array indices), as is a legacy text-typed array (pre-#204 metadata)
+  inside an array of objects. Such a record rebuilds beneath its own
+  attribute's name, at `order.items.lots[0].code[0].code`, a path the schema
+  does not define (#623). A declared list inside an array of objects is not
+  among them: its indices are its own, and it is written back whole.
+  `resolveStoredValues` used to remove the value like one the write discards,
+  and an update of an unrelated attribute succeeded having deleted the
+  record. It now refuses the update with a plain, operator-visible error
+  naming the record, the attribute and the path it was rebuilt at:
+
+  ```text
+  record schema=624 row=… attrID=1 arrayIndices=0,0: stored text value of attribute 'order.items.lots.code' rebuilds at 'order.items.lots.code.code', which the schema does not define, so this update cannot write it back; an update must replace the attribute or a container holding it
+  ```
+
+  The stored row's shape is at fault and not the caller's fragment, so this
+  is not a `400`, and a best-effort batch reports `internal error`. As with
+  an unreadable value, only the updates that keep the value are refused. One
+  whose fragment replaces a container holding it (the `order.items` array),
+  or that spells the attribute as a literal key, writes its replacement. A
+  stored record of the same attribute that the write can place is no
+  replacement: it is written back under the stored spelling, and the record
+  beside it would still be deleted. Reading the row is unchanged.
 - **Required policies are judged on what the write stores.** An attribute is
   present where a winning claim writes it. A parent is present where a
   winning claim writes beneath it, or where the caller sent it explicitly:
@@ -812,9 +843,11 @@ A create runs step 4 only.
   records and on every read. It stays plain, and on the write path it is now
   a backstop that a row passing `requireWrittenAttributes` always passes.
 - **Order of refusals.** The payload depth cap aborts the walk and comes
-  first. On an update, decoding the kept stored values comes next, then the
-  JSON Schema. Then the required policy, then the first refusal (`null`, an
-  unknown attribute) or conversion error in walk order, as before.
+  first. On an update, resolving the stored values comes next: the first
+  kept value that fails to decode, or held value the write cannot place, in
+  walk order. Then the JSON Schema, then the required policy, then the first
+  refusal (`null`, an unknown attribute) or conversion error in walk order,
+  as before.
 - **The JSON Schema sees the written state.** The merged document it
   validates no longer holds the stored values the write discards. A schema
   rule that a discarded stored value used to satisfy is judged on what the
@@ -843,6 +876,12 @@ kept.
   element holding the discarded value did before.
 - A stored row that already lacks a required attribute fails the rebuild, and
   so the update, with the read's plain error.
+- A row holding a record with more array indices than its parent takes (an
+  array of objects nested inside another, or a legacy text-typed array inside
+  an array of objects) cannot be updated in part until the rebuild places
+  the record where the write reads it back (#623): every update that keeps
+  the value is refused, as above. Replacing the outer array or the attribute
+  itself still works.
 - The walk runs twice per update (resolution, then the writer). It is linear
   in the payload plus the stored row.
 
@@ -851,10 +890,14 @@ Pinned by `TestUpdateNamingLegacyBigintImageRepairsIt`,
 `TestUpdateNamingLegacyDateImageRepairsIt`,
 `TestUnrelatedUpdateOverLegacyDateImageFails`,
 `TestRefusedRepairOverLegacyBigintImageReportsTheCallersValue`,
-`TestUpdateNamingRequiredNestedAttributeKeepsSiblings` and
-`TestUpdateLeavingRequiredNestedAttributeMissingFails` (package `internal`,
-across `Update` and both `BatchUpdate` modes), by `merge_update_test.go` and
-`written_required_test.go` in `internal/transform`, and by
+`TestUpdateNamingRequiredNestedAttributeKeepsSiblings`,
+`TestUpdateLeavingRequiredNestedAttributeMissingFails`,
+`TestUnrelatedUpdateOverNestedArrayIsRefused` and
+`TestUpdateReplacingNestedArrayWritesIt` (package `internal`, across `Update`
+and both `BatchUpdate` modes), by `merge_update_test.go`,
+`merge_update_unplaced_test.go`, `merge_update_property_test.go` and
+`written_required_test.go` in `internal/transform`, by
+`TestUnrelatedUpdateOverNestedArrayIntegration` (Postgres), and by
 `TestNestedBigintLegacyImageRepairByUpdate` (production E2E).
 
 ## Read-path consistency errors

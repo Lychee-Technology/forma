@@ -2,6 +2,7 @@ package transform
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
@@ -27,6 +28,28 @@ type storedValue struct {
 // included: FromPersistentRecord over the same row raises the same error.
 func (v *storedValue) decode() (any, error) {
 	return decodeRecordValue(v.record, v.attrName, v.valueType)
+}
+
+// replacedBy reports whether the caller's own spelling of the attribute
+// replaces a stored value the write cannot place, as it replaces a placed
+// one (#312). The rebuild nests every stored value under its attribute's
+// path, so a winning spelling other than that one can only be a caller's
+// key. The nested spelling winning replaces nothing: it is other stored
+// records of the attribute being written back.
+func (v *storedValue) replacedBy(winners spellingWinners) bool {
+	winner, written := winners[identityOf(v.record)]
+	return written && winner != spellingOf(strings.Split(v.attrName, "."))
+}
+
+// unplacedError refuses an update that keeps a stored value the write cannot
+// place: the row rebuilt it at rebuiltAt, a path the schema does not define,
+// so the written row would omit its record and replaceEAVAttributes would
+// delete it. The stored row's shape is at fault, not the caller, so the error
+// is plain, like the read path's.
+func (v *storedValue) unplacedError(rebuiltAt string) error {
+	return fmt.Errorf("record %s: stored %s value of attribute '%s' rebuilds at '%s', which the schema does not define, "+
+		"so this update cannot write it back; an update must replace the attribute or a container holding it",
+		eavRecordIdentity(v.record), v.valueType, v.attrName, rebuiltAt)
 }
 
 // hasStoredValue reports whether a record carries a value to decode. A record

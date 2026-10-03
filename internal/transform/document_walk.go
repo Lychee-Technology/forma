@@ -43,13 +43,17 @@ const (
 // documentEntry is one position of a document the walk visited.
 type documentEntry struct {
 	kind entryKind
-	// name is the dotted attribute path; empty for a refusal.
+	// name is the dotted attribute path. A refusal carries one only where it
+	// refuses an undefined attribute.
 	name string
 	// tagged is the record the position addresses, without a value, and the
 	// key spelling that reached it. Its ArrayIndices is the position's
 	// array-index context for every kind but entryRefusal.
 	tagged taggedEAVRecord
-	// meta and value are the claimed attribute and the value to convert.
+	// meta and value are the claimed attribute and the value to convert. The
+	// refusal of an undefined attribute carries the value found there, which
+	// is how an update finds a stored value the write cannot place
+	// (resolveStoredValues).
 	meta  forma.AttributeMetadata
 	value any
 	// refusal is the published error of an entryRefusal.
@@ -175,9 +179,14 @@ func (w *documentWalk) visitLeaf(path []string, v any, indices []int) {
 	if !ok {
 		// The internal schema id is operator detail: the caller addressed a
 		// schema by name and cannot act on the int16 (#362 review, P2).
-		w.refuse(forma.WithOperatorDetail(
-			forma.InvalidInputf("attribute '%s' is not defined for this schema", attrName),
-			fmt.Errorf("schema %d", w.schemaID)))
+		w.entries = append(w.entries, documentEntry{
+			kind:  entryRefusal,
+			name:  attrName,
+			value: v,
+			refusal: forma.WithOperatorDetail(
+				forma.InvalidInputf("attribute '%s' is not defined for this schema", attrName),
+				fmt.Errorf("schema %d", w.schemaID)),
+		})
 		w.parent(path, indices)
 		return
 	}
