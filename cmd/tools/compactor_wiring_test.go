@@ -10,12 +10,13 @@ import (
 )
 
 // TestCompactorWiringSetsObjectReader guards the production compactor's
-// checksum wiring (#347). runCompactor needs AWS config and a DuckDB merge
-// engine, so no unit test can drive it end to end; without this guard the
-// ObjectReader assignment could be deleted and every merged base would silently
-// go unstamped in production while internal/compaction's own tests stayed green
-// (#318). The guard is over the source: every compaction.Compactor literal this
-// command builds must set the field to the run's own s3Client.
+// checksum wiring (#347). Stamping happens on a rewrite, which needs a DuckDB
+// merge over real parquet objects, so no unit test can drive runCompactor
+// through the pass that stamps; without this guard the ObjectReader assignment
+// could be deleted and every merged base would silently go unstamped in
+// production while internal/compaction's own tests stayed green (#318). The
+// guard is over the source: every compaction.Compactor literal this command
+// builds must set the field to the run's own s3Client.
 func TestCompactorWiringSetsObjectReader(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {

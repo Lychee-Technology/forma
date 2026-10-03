@@ -5,10 +5,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"os"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/bootstrap"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
+	"github.com/lychee-technology/forma/internal/telemetry"
 	"go.uber.org/zap"
 )
 
@@ -170,7 +174,17 @@ func logCompactionResult(logger *zap.Logger, result compaction.CompactionResult)
 	}
 }
 
+// runCompactor gives the pass stdout for its metric lines (#594). The
+// subcommand's logs go to stderr and a successful run prints nothing else on
+// stdout, so METRICS_STDOUT names the same stream here as in cmd/server and
+// cmd/lambda and there is no machine-readable output for a line to corrupt.
 func runCompactor(ctx context.Context, args []string) error {
+	return runCompactorOut(ctx, args, os.Stdout)
+}
+
+// runCompactorOut runs one compaction pass. metricsOut is where
+// METRICS_STDOUT=true writes the pass's metrics, one JSON line each.
+func runCompactorOut(ctx context.Context, args []string, metricsOut io.Writer) error {
 	opts, err := parseCompactorFlags(args)
 	if err != nil {
 		return err
@@ -207,6 +221,8 @@ func runCompactor(ctx context.Context, args []string) error {
 		// The same concrete *s3.Client, read back through its GetObject: it
 		// stamps the merged base's content hash into the manifest entry (#347).
 		ObjectReader: s3Client,
+		// Nil unless METRICS_STDOUT is on, and a nil sink emits nothing (#594).
+		Metrics: telemetry.NewSink(bootstrap.MetricEmitterFromEnv(metricsOut)),
 	}
 
 	logger.Info("starting compaction",
