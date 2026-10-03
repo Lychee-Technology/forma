@@ -122,14 +122,21 @@ On Lambda the lines land in the function's log group like any other stdout.
 
 `cmd/tools compactor` is the only producer of the five compactor metrics, so
 it reads the same variable (#594): a cron- or job-driven run whose output
-reaches a log group reports them with no collector. Every pass over a schema
-that has a manifest emits at least `compaction_dirty_ratio`. The subcommand's
-logs go to stderr, so on a successful run stdout carries the metric lines and
-nothing else; a failed run also prints its `compactor: <error>` line there,
-so key on `"type":"forma_metric"`. No other `cmd/tools` subcommand has a
-metric to emit, and the emitter belongs to the one `Compactor` the subcommand
-builds, so a subcommand that prints a document on stdout (`inline-schema`)
-never shares it with a metric line.
+reaches a log group reports them with no collector. Every pass that loads the
+schema's manifest emits at least `compaction_dirty_ratio`. A pass that finds
+no manifest emits nothing, and neither does one that fails before the
+manifest is loaded, so the gauge is not a heartbeat: a run that printed none
+either had no manifest to read (exit code 0) or failed before reading it
+(non-zero).
+
+The subcommand's logs go to stderr, so on a successful run stdout carries the
+metric lines and nothing else. A failed run also prints its
+`compactor: <error>` text there, after any metric the pass emitted before it
+failed, and that text can span several lines; a consumer keeps the lines that
+are `"type":"forma_metric"` objects and skips the rest. No other `cmd/tools`
+subcommand has a metric to emit, and the emitter belongs to the one
+`Compactor` the subcommand builds, so a subcommand that prints a document on
+stdout (`inline-schema`) never shares it with a metric line.
 
 There is no `/metrics` endpoint, no registry, no provider selection and no
 startup failure path: a boolean cannot be misconfigured, and unset means

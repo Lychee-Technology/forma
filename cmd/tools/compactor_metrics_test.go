@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -41,13 +43,36 @@ func serveManifest(t *testing.T, path string, m manifest.Manifest) (endpoint str
 	return srv.URL, gets
 }
 
+// serveNoopPass stands in for a bucket holding schema 7's manifest and returns
+// the compactor flags for one pass over it. A quarter of the base's rows sit
+// in delta, under the 50% rewrite threshold the flags set, so the pass is a
+// no-op that still emits compaction_dirty_ratio.
+func serveNoopPass(t *testing.T) (args []string, gets *atomic.Int32) {
+	t.Helper()
+	endpoint, gets := serveManifest(t, "/bkt/manifest/7.json", manifest.Manifest{
+		SchemaID: 7,
+		Version:  1,
+		Files: []manifest.FileEntry{
+			{Tier: "base", Path: "s3://bkt/data/7/base/a.parquet", RowIDMin: "a", RowIDMax: "b", SizeBytes: 4096, RowCount: 100},
+			{Tier: "delta", Path: "s3://bkt/data/7/delta/b.parquet", RowIDMin: "c", RowIDMax: "d", SizeBytes: 1024, RowCount: 25},
+		},
+	})
+	return []string{
+		"--schema-id", "7",
+		"--s3-bucket", "bkt",
+		"--s3-endpoint", endpoint,
+		"--s3-use-path=true",
+		"--s3-use-ssl=false",
+		"--dirty-ratio-pct", "50",
+	}, gets
+}
+
 // TestRunCompactor_MetricsStdout drives the compactor subcommand itself, flag
 // parsing through RunOnce, against an S3 endpoint holding one manifest (#594).
-// The pass is a no-op: a quarter of the base's rows sit in delta, under the 50%
-// rewrite threshold. That is enough to emit compaction_dirty_ratio, so the
-// writer the subcommand was handed shows whether the Compactor it built
-// carries a sink: with METRICS_STDOUT on the gauge arrives as one JSON line,
-// and with it unset the same pass writes nothing.
+// The no-op pass emits compaction_dirty_ratio, so the writer the subcommand
+// was handed shows whether the Compactor it built carries a sink: with
+// METRICS_STDOUT on the gauge arrives as one JSON line, and with it unset the
+// same pass writes nothing.
 func TestRunCompactor_MetricsStdout(t *testing.T) {
 	oldLogger := toolLoggerFactoryProd
 	t.Cleanup(func() { toolLoggerFactoryProd = oldLogger })
@@ -67,24 +92,10 @@ func TestRunCompactor_MetricsStdout(t *testing.T) {
 			setStaticS3Env(t)
 			t.Setenv(bootstrap.MetricsStdoutEnv, tc.env)
 
-			endpoint, gets := serveManifest(t, "/bkt/manifest/7.json", manifest.Manifest{
-				SchemaID: 7,
-				Version:  1,
-				Files: []manifest.FileEntry{
-					{Tier: "base", Path: "s3://bkt/data/7/base/a.parquet", RowIDMin: "a", RowIDMax: "b", SizeBytes: 4096, RowCount: 100},
-					{Tier: "delta", Path: "s3://bkt/data/7/delta/b.parquet", RowIDMin: "c", RowIDMax: "d", SizeBytes: 1024, RowCount: 25},
-				},
-			})
+			args, gets := serveNoopPass(t)
 
 			var out bytes.Buffer
-			err := runCompactorOut(context.Background(), []string{
-				"--schema-id", "7",
-				"--s3-bucket", "bkt",
-				"--s3-endpoint", endpoint,
-				"--s3-use-path=true",
-				"--s3-use-ssl=false",
-				"--dirty-ratio-pct", "50",
-			}, &out)
+			err := runCompactorOut(context.Background(), args, &out)
 			if err != nil {
 				t.Fatalf("compactor run: %v", err)
 			}
@@ -101,6 +112,69 @@ func TestRunCompactor_MetricsStdout(t *testing.T) {
 			assertDirtyRatioLine(t, out.String())
 		})
 	}
+}
+
+// TestCompactorCommand_MetricLinesOnStdout pins the stream (#594).
+// TestRunCompactor_MetricsStdout hands runCompactorOut a writer of its own, so
+// it cannot see which stream the registered command chose. Here the command
+// runs the way main runs it, with the production logger and the process's
+// streams captured: the metric lines are on stdout, the logs are on stderr,
+// and a successful run puts nothing else on stdout.
+func TestCompactorCommand_MetricLinesOnStdout(t *testing.T) {
+	chainLoaded := false
+	stubToolAWSChainLoader(t, &chainLoaded)
+	setStaticS3Env(t)
+	t.Setenv(bootstrap.MetricsStdoutEnv, "true")
+	args, gets := serveNoopPass(t)
+
+	var toolOut bytes.Buffer
+	var exitCode int
+	stdout, stderr := captureStdStreams(t, func() {
+		exitCode = runToolMain(context.Background(), append([]string{"compactor"}, args...), &toolOut)
+	})
+	if exitCode != 0 || toolOut.Len() != 0 {
+		t.Fatalf("compactor command: exit code %d, output %q, stderr %q", exitCode, toolOut.String(), stderr)
+	}
+	if gets.Load() == 0 {
+		t.Fatal("the pass never loaded the manifest, so it proves nothing about what it emits")
+	}
+	assertDirtyRatioLine(t, stdout)
+	if !strings.Contains(stderr, "starting compaction") {
+		t.Fatalf("the run's logs must be on stderr, leaving stdout to the metric lines; stderr = %q", stderr)
+	}
+}
+
+// captureStdStreams runs fn with the process's stdout and stderr pointed at
+// files and returns what fn wrote to each. The swap covers fn alone, so the
+// test's own reporting is unaffected.
+func captureStdStreams(t *testing.T, fn func()) (stdout, stderr string) {
+	t.Helper()
+	dir := t.TempDir()
+	open := func(name string) *os.File {
+		f, err := os.Create(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("create %s capture file: %v", name, err)
+		}
+		t.Cleanup(func() { _ = f.Close() })
+		return f
+	}
+	outFile, errFile := open("stdout"), open("stderr")
+
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outFile, errFile
+	func() {
+		defer func() { os.Stdout, os.Stderr = oldOut, oldErr }()
+		fn()
+	}()
+
+	read := func(f *os.File) string {
+		got, err := os.ReadFile(f.Name())
+		if err != nil {
+			t.Fatalf("read captured %s: %v", filepath.Base(f.Name()), err)
+		}
+		return string(got)
+	}
+	return read(outFile), read(errFile)
 }
 
 // assertDirtyRatioLine requires every line of a successful run's metric stream
