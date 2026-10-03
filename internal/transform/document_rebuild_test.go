@@ -164,19 +164,11 @@ func TestFromAttributesIsRecordOrderIndependent(t *testing.T) {
 	}
 }
 
-// Whatever a row holds, its records read every path they share the same way:
-// the rebuild is one document in every order, and writing that document back
-// either is refused or stores exactly the row's records (#619). Two records
-// that read one path differently, an object for one and an array of objects
-// for the other, break both: the later placement replaces the earlier, and
-// an update's merge base then omits a record that replaceEAVAttributes
-// deletes.
-//
-// The rows are every combination of one record of each kind an order can
+// orderRows returns every combination of one record of each kind an order can
 // hold, so no pairing of siblings is left to a hand-picked case. The members
-// nested inside the array of objects (#623) are in the pool for this
-// property only: their shape is not asserted.
-func TestFromAttributesReadsSharedPathsOneWay(t *testing.T) {
+// nested inside the array of objects are the ones the rebuild cannot shape
+// (#623).
+func orderRows() [][]model.EntityAttribute {
 	pool := []model.EntityAttribute{
 		rebuildAttr(10, "", "n"),      // order.note, a scalar
 		rebuildAttr(16, "0", "l"),     // order.labels, a list
@@ -186,6 +178,33 @@ func TestFromAttributesReadsSharedPathsOneWay(t *testing.T) {
 		rebuildAttr(17, "0", "w"),     // order.items.dims.w, an object inside the array
 		rebuildAttr(18, "0,0", "c"),   // order.items.lots.code, an array inside the array
 	}
+	rows := make([][]model.EntityAttribute, 0, 1<<len(pool)-1)
+	for mask := 1; mask < 1<<len(pool); mask++ {
+		var row []model.EntityAttribute
+		for i, attr := range pool {
+			if mask&(1<<i) != 0 {
+				row = append(row, attr)
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// Whatever a row holds, its records read every path they share the same way:
+// the rebuild is one document in every order, and that document handed
+// straight back to the write either is refused or stores exactly the row's
+// records (#619). Two records that read one path differently, an object for
+// one and an array of objects for the other, break both: the later placement
+// replaces the earlier, and the document omits a record.
+//
+// This is a property of the rebuild alone. An update does not hand the
+// document straight back: it writes the merge base through
+// resolveStoredValues, which is where a document the write refuses must not
+// become a deleted record. TestMergeUpdateWritesBackEveryStoredRecordOrRefuses
+// holds the same rows to that. The shape of the members nested inside the
+// array of objects (#623) is asserted by neither.
+func TestFromAttributesReadsSharedPathsOneWay(t *testing.T) {
 	tr := NewTransformer(newRebuildRegistry())
 	ctx := context.Background()
 	recordKeys := func(attrs []model.EntityAttribute) []string {
@@ -196,13 +215,7 @@ func TestFromAttributesReadsSharedPathsOneWay(t *testing.T) {
 		return keys
 	}
 
-	for mask := 1; mask < 1<<len(pool); mask++ {
-		var row []model.EntityAttribute
-		for i, attr := range pool {
-			if mask&(1<<i) != 0 {
-				row = append(row, attr)
-			}
-		}
+	for _, row := range orderRows() {
 		doc, err := tr.FromAttributes(ctx, row)
 		require.NoError(t, err)
 		for _, order := range permutations(row) {

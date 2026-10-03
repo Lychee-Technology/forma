@@ -37,7 +37,10 @@ func (rec rebuildRecord) parentOpen() bool {
 // above the parent, because the attribute cache does not record which
 // ancestors are arrays. An object or array nested inside an array of objects
 // therefore rebuilds, in every order, with that array read as an object and
-// its members as arrays of their own (#623).
+// its members as arrays of their own (#623). A record with more indices than
+// its parent takes lands beneath its own field's name, where the write
+// cannot read it back; an update refuses to carry it rather than drop it
+// (resolveStoredValues).
 func rebuildDocument(records []rebuildRecord) map[string]any {
 	objects := objectPaths(records)
 	doc := make(map[string]any)

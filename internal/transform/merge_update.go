@@ -45,6 +45,15 @@ func (t *persistentRecordTransformer) MergeUpdate(
 // unreadable kept values the same one fails the update on every run; the
 // error is the read path's, plain, as reading the row would raise.
 //
+// A stored value the walk does not claim was rebuilt where the write cannot
+// read it back. The rebuild leaves one there when its record carries more
+// array indices than its parent takes, as the members of an array of objects
+// nested inside another do: it lands beneath its own attribute's name, a path
+// the schema does not define (#623). Removing it would delete its record in
+// an update that never addressed it, so the update is refused instead, in the
+// same walk order, unless the caller's own spelling of the attribute replaces
+// the value (storedValue.replacedBy).
+//
 // Removing a value must not change what the rest of the row means. A
 // container it empties is removed with it, since it held stored values only
 // and the stored row is no evidence the caller sent it. An array keeps its
@@ -61,7 +70,16 @@ func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, ca
 	kept := make(map[*storedValue]any)
 	for _, entry := range entries {
 		held, isHeld := entry.value.(*storedValue)
-		if !isHeld || entry.kind != entryClaim || !winners.wins(entry.tagged) {
+		if !isHeld {
+			continue
+		}
+		if entry.kind != entryClaim {
+			if held.replacedBy(winners) {
+				continue
+			}
+			return nil, held.unplacedError(entry.name)
+		}
+		if !winners.wins(entry.tagged) {
 			continue
 		}
 		value, err := held.decode()
