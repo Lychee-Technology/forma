@@ -1148,3 +1148,5 @@ The execution plan and response metadata MUST include:
 * `circuit_breaker_state`: Current breaker state (`closed`, `open`, `half_open`) when relevant.
 * `source_availability`: Per-source status snapshot (PG available, S3 available).
 * `warning`: Human-readable warning when results are partial or consistency is reduced.
+
+**Not implemented.** None of these five fields exists in the execution plan or anywhere else in the response. A partial answer carries the `partial` marker (§7.3), and a request that sets `include_execution_plan` gets an `execution_plan` whose fields are `forma.ExecutionPlan` in `types.go`. #635 tracks reconciling this list and the degraded-mode metadata of §7.2 with the implementation. Circuit-breaker state is not reported as a metric either; #634 tracks that.
