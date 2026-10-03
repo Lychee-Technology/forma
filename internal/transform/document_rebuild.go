@@ -12,18 +12,32 @@ type rebuildRecord struct {
 	value    any
 }
 
-// rebuildDocument places every record of one row in a new document. Where a
-// record goes is decided by its own metadata and by objectPaths, which reads
-// the whole row before anything is placed, so the document does not depend on
-// the order the records arrive in (#619). Reading that decision off the part
-// of the document already built placed a nested list that arrived before its
-// first scalar sibling as an array of objects, which the sibling then
-// replaced.
+// parentOpen reports whether the record leaves open what its parent is. An
+// indexed record of a nested non-list attribute does: its indices index
+// either the parent, an array of objects, or the attribute itself, a
+// primitive array stored under element-typed metadata before #204
+// (contact.phones as text), and the attribute cache cannot tell the two
+// apart. Every other record has an object for a parent, or none: it carries
+// no indices, or it is a list's, whose indices the schema declares its own.
+func (rec rebuildRecord) parentOpen() bool {
+	return len(rec.indices) > 0 && !rec.list && len(rec.segments) > 1
+}
+
+// rebuildDocument places every record of one row in a new document. What
+// each path holds is settled before anything is placed, by the record's own
+// metadata and by objectPaths, which reads the whole row, so the document
+// does not depend on the order the records arrive in (#619). Reading that
+// off the part of the document already built placed a nested list that
+// arrived before its first scalar sibling as an array of objects, which the
+// sibling then replaced.
 //
-// The one shape this cannot settle is an object or array nested inside an
-// array of objects, whose indices index an ancestor above the parent: the
-// attribute cache does not record which ancestors are arrays, and such rows
-// do not rebuild correctly in any order (#623).
+// All records read a path they share the same way, so no placement replaces
+// what another built. That does not make every reading right. A record's
+// indices are taken to index its attribute or its parent, never an ancestor
+// above the parent, because the attribute cache does not record which
+// ancestors are arrays. An object or array nested inside an array of objects
+// therefore rebuilds, in every order, with that array read as an object and
+// its members as arrays of their own (#623).
 func rebuildDocument(records []rebuildRecord) map[string]any {
 	objects := objectPaths(records)
 	doc := make(map[string]any)
@@ -33,19 +47,26 @@ func rebuildDocument(records []rebuildRecord) map[string]any {
 	return doc
 }
 
-// objectPaths returns every path the row proves is an object. A record with
-// no indices has no array on its path, and a list record's indices index the
-// list itself, since a list never sits inside an array (populateTypedValue
-// refuses a multi-dimensional list): the proper ancestors of both are objects.
-// Any other indexed record proves nothing, because which segment its indices
-// index is the open question.
+// objectPaths returns every path the row's placements read as an object:
+// each record's ancestors, apart from the parent a record leaves open
+// (parentOpen). placeRecord reads exactly these paths as objects, and an
+// open parent as one only when it is here, because another record is placed
+// through it.
+//
+// The set is what the placements assume, which is more than the row proves.
+// An indexed record does not prove the ancestors above its parent are
+// objects (#623), and a list's empty-list marker written inside an array of
+// objects carries no index to say so. Both are still placed as though those
+// ancestors were objects, and a record read against that would replace what
+// they built or be replaced by it, whichever came later.
 func objectPaths(records []rebuildRecord) map[string]struct{} {
 	objects := make(map[string]struct{})
 	for _, rec := range records {
-		if len(rec.indices) > 0 && !rec.list {
-			continue
+		ancestors := len(rec.segments) - 1
+		if rec.parentOpen() {
+			ancestors--
 		}
-		for end := 1; end < len(rec.segments); end++ {
+		for end := 1; end <= ancestors; end++ {
 			objects[strings.Join(rec.segments[:end], ".")] = struct{}{}
 		}
 	}
@@ -82,18 +103,18 @@ func placeRecord(doc map[string]any, rec rebuildRecord, objects map[string]struc
 }
 
 // ownsIndices reports whether an indexed record's indices index the attribute
-// itself rather than its parent. They do for a list, which the schema
-// declares, and for an attribute with no parent. Otherwise they do only when
-// the row proves the parent an object: the attribute is then a primitive
-// array stored under element-typed metadata before #204 (contact.phones as
-// text beside contact.name), which the attribute cache cannot tell from a
-// member of an array of objects.
+// itself rather than its parent. They do unless the record leaves its parent
+// open (parentOpen), and then only when the row reads that parent as an
+// object (objectPaths): the attribute is a primitive array under
+// element-typed metadata, contact.phones as text beside contact.name or
+// beside contact.addresses.city. With no such sibling in the row the parent
+// reads as an array of objects, which is also how a primitive array of that
+// kind stored alone is read.
 func ownsIndices(rec rebuildRecord, objects map[string]struct{}) bool {
-	n := len(rec.segments)
-	if rec.list || n == 1 {
+	if !rec.parentOpen() {
 		return true
 	}
-	_, parentIsObject := objects[strings.Join(rec.segments[:n-1], ".")]
+	_, parentIsObject := objects[strings.Join(rec.segments[:len(rec.segments)-1], ".")]
 	return parentIsObject
 }
 

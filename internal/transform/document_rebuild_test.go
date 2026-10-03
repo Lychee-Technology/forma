@@ -2,6 +2,7 @@ package transform
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -12,9 +13,11 @@ import (
 )
 
 // newRebuildRegistry declares nested lists on both sides of a scalar
-// sibling's attribute id, an array of objects beside an object sibling, a
-// top-level list, and a legacy text-typed nested array (pre-#204 attributes
-// file) whose sibling sorts above it (#619).
+// sibling's attribute id, a top-level list, a legacy text-typed nested array
+// (pre-#204 attributes file) whose sibling sorts above it, and an order
+// holding one of each kind of member: a scalar, a list, a legacy text-typed
+// array, an array of objects, and the object and the array of objects nested
+// inside that array, which the rebuild cannot shape (#619, #623).
 func newRebuildRegistry() forma.SchemaRegistry {
 	return &stubSchemaRegistry{schemaID: 619, schemaName: "rebuild", cache: forma.SchemaAttributeCache{
 		"contact.phones":  {AttributeName: "contact.phones", AttributeID: 1, ValueType: forma.ValueTypeList},
@@ -31,6 +34,14 @@ func newRebuildRegistry() forma.SchemaRegistry {
 		"legacy.phones":   {AttributeName: "legacy.phones", AttributeID: 12, ValueType: forma.ValueTypeText},
 		"legacy.name":     {AttributeName: "legacy.name", AttributeID: 13, ValueType: forma.ValueTypeText},
 		"aliases":         {AttributeName: "aliases", AttributeID: 14, ValueType: forma.ValueTypeList},
+		"order.tags":      {AttributeName: "order.tags", AttributeID: 15, ValueType: forma.ValueTypeText},
+		"order.labels":    {AttributeName: "order.labels", AttributeID: 16, ValueType: forma.ValueTypeList},
+		"order.items.dims.w": {
+			AttributeName: "order.items.dims.w", AttributeID: 17, ValueType: forma.ValueTypeText,
+		},
+		"order.items.lots.code": {
+			AttributeName: "order.items.lots.code", AttributeID: 18, ValueType: forma.ValueTypeText,
+		},
 	}}
 }
 
@@ -111,6 +122,25 @@ func TestFromAttributesIsRecordOrderIndependent(t *testing.T) {
 			want:  map[string]any{"legacy": map[string]any{"name": "L", "phones": []any{"111", "222"}}},
 		},
 		{
+			name:  "legacy text-typed nested array beside only an array of objects",
+			attrs: []model.EntityAttribute{rebuildAttr(8, "0", int64(1)), rebuildAttr(15, "0", "x"), rebuildAttr(15, "1", "y")},
+			want: map[string]any{"order": map[string]any{
+				"items": []any{map[string]any{"qty": int64(1)}}, "tags": []any{"x", "y"},
+			}},
+		},
+		{
+			name:  "nested list beside only an array of objects",
+			attrs: []model.EntityAttribute{rebuildAttr(8, "0", int64(1)), rebuildAttr(16, "0", "x"), rebuildAttr(16, "1", "y")},
+			want: map[string]any{"order": map[string]any{
+				"items": []any{map[string]any{"qty": int64(1)}}, "labels": []any{"x", "y"},
+			}},
+		},
+		{
+			name:  "legacy text-typed nested array alone reads as an array of objects",
+			attrs: []model.EntityAttribute{rebuildAttr(12, "0", "111"), rebuildAttr(12, "1", "222")},
+			want:  map[string]any{"legacy": []any{map[string]any{"phones": "111"}, map[string]any{"phones": "222"}}},
+		},
+		{
 			name:  "legacy scalar row under list metadata alone (#372)",
 			attrs: []model.EntityAttribute{rebuildAttr(14, "", "old")},
 			want:  map[string]any{"aliases": "old"},
@@ -131,6 +161,62 @@ func TestFromAttributesIsRecordOrderIndependent(t *testing.T) {
 				require.Equal(t, tc.want, got, "record order %+v", order)
 			}
 		})
+	}
+}
+
+// Whatever a row holds, its records read every path they share the same way:
+// the rebuild is one document in every order, and writing that document back
+// either is refused or stores exactly the row's records (#619). Two records
+// that read one path differently, an object for one and an array of objects
+// for the other, break both: the later placement replaces the earlier, and
+// an update's merge base then omits a record that replaceEAVAttributes
+// deletes.
+//
+// The rows are every combination of one record of each kind an order can
+// hold, so no pairing of siblings is left to a hand-picked case. The members
+// nested inside the array of objects (#623) are in the pool for this
+// property only: their shape is not asserted.
+func TestFromAttributesReadsSharedPathsOneWay(t *testing.T) {
+	pool := []model.EntityAttribute{
+		rebuildAttr(10, "", "n"),      // order.note, a scalar
+		rebuildAttr(16, "0", "l"),     // order.labels, a list
+		rebuildAttr(15, "0", "t"),     // order.tags, a legacy text-typed array
+		rebuildAttr(8, "0", int64(1)), // order.items.qty, an array-of-objects member
+		rebuildAttr(9, "0", "a"),      // order.items.sku, its sibling
+		rebuildAttr(17, "0", "w"),     // order.items.dims.w, an object inside the array
+		rebuildAttr(18, "0,0", "c"),   // order.items.lots.code, an array inside the array
+	}
+	tr := NewTransformer(newRebuildRegistry())
+	ctx := context.Background()
+	recordKeys := func(attrs []model.EntityAttribute) []string {
+		keys := make([]string, 0, len(attrs))
+		for _, attr := range attrs {
+			keys = append(keys, fmt.Sprintf("%d[%s]=%v", attr.AttrID, attr.ArrayIndices, attr.Value))
+		}
+		return keys
+	}
+
+	for mask := 1; mask < 1<<len(pool); mask++ {
+		var row []model.EntityAttribute
+		for i, attr := range pool {
+			if mask&(1<<i) != 0 {
+				row = append(row, attr)
+			}
+		}
+		doc, err := tr.FromAttributes(ctx, row)
+		require.NoError(t, err)
+		for _, order := range permutations(row) {
+			got, err := tr.FromAttributes(ctx, order)
+			require.NoError(t, err)
+			require.Equal(t, doc, got, "record order %+v", order)
+		}
+
+		rewritten, err := tr.ToAttributes(ctx, 619, uuid.Must(uuid.NewV7()), doc)
+		if err != nil {
+			require.ErrorIs(t, err, forma.ErrInvalidInput, "row %+v", row)
+			continue
+		}
+		require.ElementsMatch(t, recordKeys(row), recordKeys(rewritten), "row %+v rebuilt as %v", row, doc)
 	}
 }
 
