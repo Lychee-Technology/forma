@@ -896,7 +896,8 @@ Pinned by `TestUpdateNamingLegacyBigintImageRepairsIt`,
 `TestUpdateReplacingNestedArrayWritesIt` (package `internal`, across `Update`
 and both `BatchUpdate` modes), by `merge_update_test.go`,
 `merge_update_unplaced_test.go`, `merge_update_property_test.go` and
-`written_required_test.go` in `internal/transform`, and by
+`written_required_test.go` in `internal/transform`, by
+`TestUnrelatedUpdateOverNestedArrayIntegration` (Postgres), and by
 `TestNestedBigintLegacyImageRepairByUpdate` (production E2E).
 
 ## Read-path consistency errors
