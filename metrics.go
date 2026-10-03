@@ -82,7 +82,9 @@ type MetricDescriptor struct {
 // and never prefixed. Adding a metric means adding its descriptor here and
 // the helper in internal/telemetry that emits it; the telemetry package's
 // contract test refuses a helper whose emission does not match its
-// descriptor.
+// descriptor. A metric that cannot keep its meaning is retired instead:
+// removed here together with its helper, and its name is never reused
+// (docs/telemetry.md lists the retired names).
 var metricCatalogue = []MetricDescriptor{
 	{
 		Name:   "fed_query_latency_histogram",
@@ -97,13 +99,6 @@ var metricCatalogue = []MetricDescriptor{
 		Unit:   MetricUnitCount,
 		Labels: []string{"source"},
 		Help:   "Rows handled by one successful federated query pass, per source: pg is the size of the dirty set fetched from the Postgres change_log for the anti-join (the hot rows that override their S3 copies), duckdb is the row count returned by the merged DuckDB scan.",
-	},
-	{
-		Name:   "fed_query_pushdown_efficiency",
-		Kind:   MetricKindGauge,
-		Unit:   MetricUnitRatio,
-		Labels: []string{"schema_id"},
-		Help:   "Hot-tier dirty-set size over final matching rows for the last federated query, per schema. A proxy for Postgres pushdown cost: Forma does not observe the postgres_scan row count, so the anti-join dirty set (the upper bound of hot rows the scan can return) stands in for it. High means the hot tier is large relative to what the query returns.",
 	},
 	{
 		Name:   "compaction_manifest_contract_violation_total",

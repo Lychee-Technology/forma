@@ -107,9 +107,9 @@ func TestRecordScanOutcome_CaptureDisabled(t *testing.T) {
 	engine := &DBFederatedQueryEngine{}
 	opts := &model.FederatedQueryOptions{}
 	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
-	outcome := duckDBScanOutcome{executeMs: 1, streamMs: 2, rowCount: 3, totalRecords: 4, dirtyRows: 5}
+	outcome := duckDBScanOutcome{executeMs: 1, streamMs: 2, rowCount: 3, dirtyRows: 5}
 	require.NotPanics(t, func() {
-		engine.emitDuckDBScanMetrics(context.Background(), 1, outcome)
+		engine.emitDuckDBScanMetrics(context.Background(), outcome)
 		planCtx.recordScanOutcome(outcome)
 	})
 	require.Nil(t, opts.ExecutionPlan)

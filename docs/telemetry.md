@@ -1,6 +1,6 @@
 # Telemetry: the metric contract and how to receive it
 
-Forma is a library first. It emits nine metrics and chooses no backend for
+Forma is a library first. It emits eight metrics and chooses no backend for
 them: nothing in the module links Prometheus, OpenTelemetry, CloudWatch or
 any other telemetry SDK. An application that embeds Forma hands it a
 `forma.MetricEmitter` and adapts each `forma.Metric` onto whatever it already
@@ -62,7 +62,6 @@ a fixed enumeration.
 |------|------|------|--------|------------|
 | `fed_query_latency_histogram` | histogram | milliseconds | `stage` (`translation`, `execution`, `streaming`) | federated query engine |
 | `fed_query_row_count` | counter | count | `source` (`pg`, `duckdb`) | federated query engine |
-| `fed_query_pushdown_efficiency` | gauge | ratio | `schema_id` | federated query engine |
 | `compaction_manifest_contract_violation_total` | counter | count | `schema_id` | compactor |
 | `compaction_dirty_ratio` | gauge | ratio | `schema_id` | compactor |
 | `compaction_rewrite_pending_total` | counter | count | `schema_id` | compactor |
@@ -79,16 +78,11 @@ gated on the caller asking for an execution plan):
   `execution + streaming`.
 - `fed_query_row_count`: `pg` is the size of the dirty set fetched from
   Postgres for the anti-join; `duckdb` is the row count of the merged DuckDB
-  scan. There is no `s3` series.
-- `fed_query_pushdown_efficiency`: dirty-set size over the final matching row
-  count, labelled with the queried `schema_id`. This is a **proxy**: Forma
-  never observes how many rows the `postgres_scan` inside the `pg_source` CTE
-  touched, and the dirty set is the upper bound of hot rows that scan can
-  return when nothing is pushed down. Read a high value as "the hot tier is
-  large relative to what this query returns", not as a measured scan count.
-  Measuring the real scan count, or retiring the gauge, is #596.
+  scan. There is no `s3` series, and no series reports what the Postgres
+  scans inside DuckDB read: Forma does not observe them (see
+  [Retired metrics](#retired-metrics)).
 
-All six samples are emitted together, after the pass has succeeded. A pass
+All five samples are emitted together, after the pass has succeeded. A pass
 that fails, whether at SQL rendering, at the DuckDB `Query` call or while
 streaming rows, emits nothing, so no counter or histogram ever carries a
 failed attempt. A query answered by the corrupt-parquet retry (#251) is
@@ -101,6 +95,20 @@ renamed or prefixed. **Adding a metric** means adding its descriptor to
 and a row in `helperCalls` in `internal/telemetry/telemetry_test.go`; the
 contract test there refuses a helper whose emission does not match its
 descriptor, and a helper with no row.
+
+### Retired metrics
+
+A metric that cannot keep the meaning its name promises is retired, not
+redefined: its descriptor, its `Emit*` helper and its `helperCalls` row are
+removed, and its name goes into `retiredMetricNames` in `metrics_test.go`,
+which fails if the name is ever catalogued again. A retired name is never
+reused for another quantity. An emitter that pre-registers from
+`forma.MetricCatalogue()` simply stops seeing it; a dashboard keyed on it
+stops receiving samples.
+
+| Name | Retired by | Why |
+|------|------------|-----|
+| `fed_query_pushdown_efficiency` (gauge, ratio, `schema_id`) | #596 | It was the dirty-set size over the final matching row count, a stand-in for a Postgres-rows-scanned ratio Forma does not observe: the hot leg runs inside DuckDB, which exposes the scans' row counts only through per-query profiling. Its numerator is still emitted as `fed_query_row_count{source="pg"}`. |
 
 ## The demo binaries
 

@@ -25,7 +25,7 @@ func TestJSONLineMetricEmitterWritesOneStableLinePerMetric(t *testing.T) {
 		Labels: map[string]string{"schema_id": "12", "schema_name": "lead", "kind": "constraint"},
 		Value:  1,
 	})
-	e.EmitMetric(context.Background(), forma.Metric{Name: "fed_query_pushdown_efficiency", Kind: forma.MetricKindGauge, Unit: forma.MetricUnitRatio, Value: 0.25})
+	e.EmitMetric(context.Background(), forma.Metric{Name: "compaction_dirty_ratio", Kind: forma.MetricKindGauge, Unit: forma.MetricUnitRatio, Value: 0.25})
 
 	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
 	require.Len(t, lines, 2, "one line per emission:\n%s", buf.String())
@@ -33,7 +33,7 @@ func TestJSONLineMetricEmitterWritesOneStableLinePerMetric(t *testing.T) {
 		`"name":"entity_report_only_validation_violation_total","kind":"counter","unit":"count","value":1,`+
 		`"labels":{"kind":"constraint","schema_id":"12","schema_name":"lead"}}`, lines[0])
 	require.JSONEq(t, `{"type":"forma_metric","ts":"2026-09-19T06:00:00Z",`+
-		`"name":"fed_query_pushdown_efficiency","kind":"gauge","unit":"ratio","value":0.25,"labels":{}}`, lines[1])
+		`"name":"compaction_dirty_ratio","kind":"gauge","unit":"ratio","value":0.25,"labels":{}}`, lines[1])
 }
 
 func TestJSONLineMetricEmitterSerializesConcurrentWrites(t *testing.T) {
