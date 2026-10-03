@@ -1,6 +1,7 @@
-// Package widthaudit finds EAV rows whose stored value_numeric does not fit
-// the attribute's declared integer width, and says which tier disagreement
-// each one can cause (#501).
+// Package widthaudit finds stored values that do not fit the attribute's
+// declared integer width, and says which tier disagreement each one can
+// cause (#501). It reads eav_data.value_numeric for EAV-only attributes and
+// the double_* columns of entity_main for a bigint bound to one (#618).
 //
 // #384 made the write funnel reject such values and moved the DuckDB
 // projection of EAV-only smallint/integer to storage width DOUBLE. Rows that
@@ -13,7 +14,9 @@
 // diverge whether or not they were ever exported. Its contract is the range
 // the float64 image eav_data keeps exactly, [-2^53, 2^53] (#590): a value
 // stored past that was rounded on the write and reads back as the rounded
-// value on every route, so the census reports it too.
+// value on every route, so the census reports it too. A bigint bound to a
+// double_* column is stored as the same image under the same contract, so
+// the census scans those columns as well (column_census.go).
 package widthaudit
 
 import (
@@ -37,27 +40,35 @@ type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// Tables names the storage the census reads. ChangeLog may be empty for a
-// deployment without CDC: nothing was ever exported there, so only the
-// bigint class can be reported.
+// Tables names the storage the census reads. EntityMain is needed only when
+// a target is column-bound. ChangeLog may be empty for a deployment without
+// CDC: nothing was ever exported there, so only the bigint class can be
+// reported.
 type Tables struct {
-	EAV       string
-	ChangeLog string
+	EAV        string
+	EntityMain string
+	ChangeLog  string
 }
 
-// Target is one EAV-only attribute whose declared type carries an integer
-// width. For a list attribute, Declared is the items type, since each
-// element is stored as its own eav_data row.
+// Target is one attribute whose stored value the census checks against an
+// integer width: an EAV-only smallint/integer/bigint, or a bigint bound to a
+// double_* column. For a list attribute, Declared is the items type, since
+// each element is stored as its own eav_data row.
 type Target struct {
 	SchemaID   int16
 	SchemaName string
 	AttrID     int16
 	AttrName   string
 	Declared   forma.ValueType
+	// Column is the double_* column of entity_main a column-bound bigint is
+	// stored in. It is empty for an EAV-only target.
+	Column string
 }
 
-// Finding is one eav_data row whose value does not fit its target's width.
-// StoredValue is the NUMERIC text exactly as Postgres holds it.
+// Finding is one stored value that does not fit its target's width: an
+// eav_data row, or the target's column of an entity_main row. StoredValue is
+// the NUMERIC text exactly as Postgres holds it for eav_data, and the float8
+// in plain digits for a column (formatDoubleImage).
 type Finding struct {
 	Target
 	RowID        uuid.UUID
@@ -72,9 +83,10 @@ type Finding struct {
 }
 
 // Targets lists every EAV-only smallint/integer/bigint attribute, including
-// list attributes with such items, in (schema_id, attr_id) order. Attributes
-// bound to a main column are excluded: their storage is the physical column,
-// whose width is the declared one.
+// list attributes with such items, and every bigint bound to a double_*
+// column, in (schema_id, attr_id) order. Other column-bound attributes are
+// excluded: a smallint, integer or bigint column holds the value at its own
+// integer width.
 func Targets(cache *schemameta.MetadataCache) []Target {
 	var targets []Target
 	for _, schemaName := range cache.ListSchemas() {
@@ -87,19 +99,13 @@ func Targets(cache *schemameta.MetadataCache) []Target {
 			continue
 		}
 		for _, meta := range schemaCache {
-			if meta.Location() != forma.AttributeStorageLocationEAV {
-				continue
-			}
-			declared := meta.ValueType
-			if declared == forma.ValueTypeList {
-				declared = meta.EffectiveItemsType()
-			}
-			if _, _, ok := integerBounds(declared); !ok {
+			declared, column, ok := targetStorage(meta)
+			if !ok {
 				continue
 			}
 			targets = append(targets, Target{
 				SchemaID: schemaID, SchemaName: schemaName,
-				AttrID: meta.AttributeID, AttrName: meta.AttributeName, Declared: declared,
+				AttrID: meta.AttributeID, AttrName: meta.AttributeName, Declared: declared, Column: column,
 			})
 		}
 	}
@@ -112,9 +118,25 @@ func Targets(cache *schemameta.MetadataCache) []Target {
 	return targets
 }
 
-// maxBigintImage is the largest magnitude the float64 image of an EAV-only
-// bigint keeps exactly; the write funnel admits exactly this range for
-// eav_data (transform.checkBigintImageFit, #590), from the same constant.
+// targetStorage says whether meta is a census target, with the integer type
+// its stored value is held to and, for a column-bound one, its column.
+func targetStorage(meta forma.AttributeMetadata) (declared forma.ValueType, column string, ok bool) {
+	if binding := meta.ColumnBinding; binding != nil {
+		column = string(binding.ColumnName)
+		return meta.ValueType, column, meta.ValueType == forma.ValueTypeBigInt && isDoubleColumn(column)
+	}
+	declared = meta.ValueType
+	if declared == forma.ValueTypeList {
+		declared = meta.EffectiveItemsType()
+	}
+	_, _, ok = integerBounds(declared)
+	return declared, "", ok
+}
+
+// maxBigintImage is the largest magnitude the float64 image of a bigint
+// keeps exactly; the write funnel admits exactly this range for eav_data and
+// a double_* column (transform.checkBigintImageFit, #590), from the same
+// constant.
 const maxBigintImage = numutil.MaxExactFloat64Integer
 
 // integerBounds is the inclusive range of an integer width as exact NUMERIC
@@ -133,10 +155,25 @@ func integerBounds(vt forma.ValueType) (lo, hi string, ok bool) {
 	return "", "", false
 }
 
-// BuildCensusQuery renders the census over the given targets. Each target
-// binds (schema_id, attr_id, lo, hi) through a VALUES list. The change_log
-// facts come from a LATERAL subquery keyed on the table's primary key, so
-// only the rows that are out of width pay for the lookup.
+// changeLogJoin renders the join that supplies a finding's change_log facts
+// as cl(pending, last_flushed_at), for the row the two SQL expressions
+// identify. It is a LATERAL subquery keyed on the table's primary key, so
+// only the rows the census keeps pay for the lookup.
+func changeLogJoin(tables Tables, schemaID, rowID string) string {
+	if tables.ChangeLog == "" {
+		return "CROSS JOIN (SELECT FALSE AS pending, 0::bigint AS last_flushed_at) AS cl"
+	}
+	return fmt.Sprintf(`LEFT JOIN LATERAL (
+  SELECT COALESCE(BOOL_OR(c.flushed_at = 0), FALSE) AS pending,
+         COALESCE(MAX(c.flushed_at) FILTER (WHERE c.flushed_at > 0), 0) AS last_flushed_at
+  FROM %s AS c
+  WHERE c.schema_id = %s AND c.row_id = %s
+) AS cl ON TRUE`, sqlutil.SanitizeIdentifier(tables.ChangeLog), schemaID, rowID)
+}
+
+// BuildCensusQuery renders the eav_data census over the given EAV-only
+// targets. Each target binds (schema_id, attr_id, lo, hi) through a VALUES
+// list.
 func BuildCensusQuery(tables Tables, targets []Target) (string, []any) {
 	values := make([]string, 0, len(targets))
 	args := make([]any, 0, len(targets)*4)
@@ -145,16 +182,6 @@ func BuildCensusQuery(tables Tables, targets []Target) (string, []any) {
 		n := len(args)
 		values = append(values, fmt.Sprintf("($%d::smallint, $%d::smallint, $%d::numeric, $%d::numeric)", n+1, n+2, n+3, n+4))
 		args = append(args, t.SchemaID, t.AttrID, lo, hi)
-	}
-
-	changeLogJoin := "CROSS JOIN (SELECT FALSE AS pending, 0::bigint AS last_flushed_at) AS cl"
-	if tables.ChangeLog != "" {
-		changeLogJoin = fmt.Sprintf(`LEFT JOIN LATERAL (
-  SELECT COALESCE(BOOL_OR(c.flushed_at = 0), FALSE) AS pending,
-         COALESCE(MAX(c.flushed_at) FILTER (WHERE c.flushed_at > 0), 0) AS last_flushed_at
-  FROM %s AS c
-  WHERE c.schema_id = e.schema_id AND c.row_id = e.row_id
-) AS cl ON TRUE`, sqlutil.SanitizeIdentifier(tables.ChangeLog))
 	}
 
 	query := fmt.Sprintf(`SELECT e.schema_id, e.attr_id, e.row_id, e.array_indices, e.value_numeric::text,
@@ -166,20 +193,47 @@ JOIN (VALUES %s) AS w(schema_id, attr_id, lo, hi)
 WHERE e.value_numeric IS NOT NULL
   AND (e.value_numeric < w.lo OR e.value_numeric > w.hi OR e.value_numeric <> TRUNC(e.value_numeric))
 ORDER BY e.schema_id, e.attr_id, e.row_id, e.array_indices`,
-		sqlutil.SanitizeIdentifier(tables.EAV), strings.Join(values, ", "), changeLogJoin)
+		sqlutil.SanitizeIdentifier(tables.EAV), strings.Join(values, ", "), changeLogJoin(tables, "e.schema_id", "e.row_id"))
 	return query, args
 }
 
-// Census returns every eav_data row under the targets whose value does not
-// fit the declared width. With no targets it issues no query.
+// Census returns every stored value under the targets that does not fit the
+// declared width: the eav_data findings first, then the entity_main ones.
+// Each table is queried only when it has targets.
 func Census(ctx context.Context, q Querier, tables Tables, targets []Target) ([]Finding, error) {
-	if len(targets) == 0 {
-		return nil, nil
+	var eavTargets, columnTargets []Target
+	for _, t := range targets {
+		if t.Column != "" {
+			columnTargets = append(columnTargets, t)
+			continue
+		}
+		eavTargets = append(eavTargets, t)
 	}
+	findings, err := censusEAV(ctx, q, tables, eavTargets)
+	if err != nil {
+		return nil, fmt.Errorf("EAV-only attributes: %w", err)
+	}
+	columnFindings, err := censusColumns(ctx, q, tables, columnTargets)
+	if err != nil {
+		return nil, fmt.Errorf("column-bound attributes: %w", err)
+	}
+	return append(findings, columnFindings...), nil
+}
+
+// targetIndex keys targets by (schema_id, attr_id) to resolve a census row.
+func targetIndex(targets []Target) map[[2]int16]Target {
 	byKey := make(map[[2]int16]Target, len(targets))
 	for _, t := range targets {
 		byKey[[2]int16{t.SchemaID, t.AttrID}] = t
 	}
+	return byKey
+}
+
+func censusEAV(ctx context.Context, q Querier, tables Tables, targets []Target) ([]Finding, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	byKey := targetIndex(targets)
 
 	query, args := BuildCensusQuery(tables, targets)
 	rows, err := q.Query(ctx, query, args...)

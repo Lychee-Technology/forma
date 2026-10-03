@@ -33,6 +33,11 @@ const (
 	// The write funnel refuses every such value, judging bigint by the
 	// float64 image eav_data stores (#612, #590), so a finding predates
 	// that check or was written around the funnel.
+	//
+	// A bigint bound to a double_* column is the same class (#618): the
+	// column stores the same image under the same contract, the OLTP read
+	// refuses the same values, and the same rewrite repairs it. Its
+	// Finding names the column.
 	ClassBigIntOutOfContract
 )
 

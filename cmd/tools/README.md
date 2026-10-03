@@ -16,11 +16,14 @@ Forma Tools CLI
   - `column_binding.col_name` 不是 `entity_main` 实际拥有的列（#557）；
   - `valueType`↔column-encoding 绑定无法 round-trip 的情况（#459）；
   - `eav_data` 中未知的 `attr_id`、存储列错位、list 属性下残留的标量行；
-  - EAV-only `smallint`/`integer`/`bigint` 值超出声明宽度或非整数（#501）。
+  - EAV-only `smallint`/`integer`/`bigint` 值超出声明宽度或非整数（#501）；
+    绑定到 `double_*` 列的 `bigint` 值超出 ±2^53 或非整数（#618，读取 `-entity-main-table`，
+    报告行、属性与列名；存在此类绑定而表名为空时报错）。
     `-change-log-table`（`CHANGE_LOG_TABLE`，默认 `change_log_dev`）用于区分已导出与待刷新的行；
     无 CDC 的部署传空值（`-change-log-table ''` 或显式 `CHANGE_LOG_TABLE=`，make 目标同样保留空值）；
     `-width-export-cutover`（RFC3339）为 #384 导出开始生效的时间，早于它导出的行报为失败；
-    `-requeue-stale-width-exports` 通过推进版本并写入 `change_log` 将这些行重新排队，
+    `-requeue-stale-width-exports` 通过推进版本并写入 `change_log` 将过期导出的
+    `smallint`/`integer` 行重新排队（`bigint` 类需通过 API 重写，不会被重新排队），
     需在 `-entity-main-table`（`ENTITY_MAIN_TABLE`，默认 `entity_main_dev`）上执行，之后运行 `cdc-flush`。
   详见 `docs/schema-consistency-migration.md`。
 

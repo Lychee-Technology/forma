@@ -643,8 +643,8 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   naming the attribute and row (#590), not a value made up by `int64()`
   (which wraps platform-dependently). A whole image inside int64, including
   one past 2^53 written before #590, still reads as the stored value. The
-  #501 census names such rows in `eav_data` only; for `double_*`, the
-  migration guide gives a detection query until the census covers it (#618).
+  #501 census names such rows in `eav_data`, and in the `double_*` columns of
+  `entity_main` with the column (#618).
   An update that names the attribute, nested or as a literal dotted key and
   under any required policy, rewrites any such image, including one the read
   refuses: an update never decodes a stored value its written row discards

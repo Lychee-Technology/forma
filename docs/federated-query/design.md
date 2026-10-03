@@ -1021,7 +1021,12 @@ parquet alone. `validate-schema-consistency` finds the affected rows and
 see `docs/schema-consistency-migration.md`). Declared bigint still projects at
 BIGINT, so a bigint value past int64 diverges on every DuckDB leg, and the
 OLTP read refuses it as a consistency error (#590); the same census reports
-it, together with every stored bigint past ±2^53, for a rewrite.
+it, together with every stored bigint past ±2^53, for a rewrite. A bigint
+bound to a `double_*` column stores the same image under the same contract,
+and the census reports it in `entity_main` with the column (#618). There the
+hot leg casts the column strictly, so an unflushed image past int64, NaN or
+±Infinity fails the query instead of reading NULL as its parquet copy does
+(#627).
 The remaining asymmetry class is #205's float64 ceiling: values only a full
 NUMERIC can hold (planted by direct SQL, never by the funnel) still read
 exactly on Postgres and as their float64 image on DuckDB.
