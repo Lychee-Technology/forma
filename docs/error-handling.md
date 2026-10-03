@@ -658,8 +658,22 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   `2024-01-01T00:00:00.123Z` and `10000-01-01T00:00:00Z` are refused. Before
   #582 the first was silently truncated to `2024-01-01T00:00:00Z` and the
   second stored as an image the reader cannot parse. The unbound
-  `eav_data.value_numeric` image keeps its pre-existing float64 behaviour
-  (#205; the contract past 2^53 is #592).
+  `eav_data.value_numeric` image has its own rule (#592, next).
+- Unbound `date`/`datetime` (#592): `eav_data.value_numeric` keeps only the
+  float64 image of the epoch milliseconds, which is exact within ±2^53, so an
+  unbound date (list items included) admits exactly
+  `[-9007199254740992, 9007199254740992]`, the image rule an unbound `bigint`
+  follows (#590). `9007199254740993` is refused in every input shape (a Go
+  `time.Time`, an RFC3339 string, an epoch-millisecond string) with
+  `datetime value 9007199254740993 (287396-10-12T08:59:00.993Z) cannot be
+  stored in eav_data.value_numeric, which keeps epoch milliseconds exactly up
+  to 9007199254740992 (2^53); bind the attribute to a bigint column for the
+  full int64 range`. Before #592 it was stored and read back as 2^53, a
+  different instant. The check and the store derive the image from the exact
+  millis through one helper (`transform.float64ImageOf`), so what is admitted
+  is what is written. A `bigint_*` column with `unix_ms` keeps the full int64
+  range. A `double_*` column, a binding registration refuses (#459), is held
+  to the same rule. The read side is in "Read-path consistency errors".
 - The query-filter literal on an `iso8601`-bound attribute follows the same
   rule (#588): the Postgres binders render it as the canonical stored image
   (UTC, whole seconds), so `gte:2024-01-02T05:04:05+02:00` and
@@ -764,7 +778,11 @@ A create runs step 4 only.
   and the attributes the update does not name are kept. An update that keeps
   such a value still decodes it. It then fails as reading the row fails:
   plain and operator-visible for a fraction or a value past int64, or as the
-  funnel's `400` for a whole image past 2^53. The first attempt at this
+  funnel's `400` for a whole image past 2^53. A legacy `date`/`datetime`
+  image (#592) is repaired the same way. An update that keeps one fails with
+  the read's plain error for every image the read refuses, a whole image past
+  2^53 included, since the date read applies the write's own range: it never
+  reaches the funnel's `400`. The first attempt at this
   (`MergeBase`) recognised a replacement only in the nested spelling. A
   literal repair under a required policy was then refused as a missing
   required attribute, and a nested sibling update dropped the stored list
@@ -830,6 +848,8 @@ kept.
 
 Pinned by `TestUpdateNamingLegacyBigintImageRepairsIt`,
 `TestUnrelatedUpdateOverLegacyBigintImageFails`,
+`TestUpdateNamingLegacyDateImageRepairsIt`,
+`TestUnrelatedUpdateOverLegacyDateImageFails`,
 `TestRefusedRepairOverLegacyBigintImageReportsTheCallersValue`,
 `TestUpdateNamingRequiredNestedAttributeKeepsSiblings` and
 `TestUpdateLeavingRequiredNestedAttributeMissingFails` (package `internal`,
@@ -845,6 +865,44 @@ Examples:
 
 - duplicate schema IDs or duplicate attribute IDs during metadata loading
 - storage column mismatches such as a text attribute stored in `value_numeric`
+- an unbound `date`/`datetime` image in `eav_data.value_numeric` that the
+  write path would not admit (#592): a whole number past ±2^53, a fraction,
+  `NaN`, `±Infinity`, or a number past int64. The OLTP read judges the
+  stored digits, not a float64 rounding of them. Postgres renders the
+  `NUMERIC` exactly into the row's JSON aggregate, and the decoder keeps the
+  token (`json.Decoder.UseNumber`, `model.EAVRecord.ValueNumericRaw`). The
+  DuckDB projection emits a date's unified `BIGINT` through `to_json` rather
+  than `CAST(… AS DOUBLE)`, so a Parquet `BIGINT` reaches the same rule with
+  its digits intact. The OLTP read therefore accepts exactly the set the
+  write admits, and a row that reads can always be rewritten. The messages
+  are `stored value 9007199254740993 (287396-10-12T08:59:00.993Z) is outside
+  the epoch milliseconds a float64 image keeps exactly (up to
+  9007199254740992, 2^53); rewrite it with an update that names the
+  attribute, or bind the attribute to a bigint column
+  (docs/schema-consistency-migration.md)`, and `stored value 1000.5 (not a
+  whole number of epoch milliseconds) names no epoch millisecond instant`
+  (`NaN` and `±Infinity` likewise; a number past int64 says `beyond any
+  epoch millisecond instant`). Before #592 the Postgres read decoded
+  `9007199254740993` as the 2^53 instant, truncated `1000.5` to one second,
+  wrapped a number past int64, and read `NaN`/`±Infinity` as an absent
+  attribute (the aggregate renders them as JSON strings, which the float64
+  decode skipped). An update that names the attribute repairs the row,
+  because it never decodes the value it replaces (see "The update merge and
+  the written row"). An update that does not name it fails with this error,
+  never with the caller's `400`. `validate-schema-consistency` lists such
+  rows before the upgrade, with the read's own predicate
+  (`transform.StoredDateImageRefusedSQL`)
+  ([migration](./schema-consistency-migration.md#date-images-the-read-path-refuses-592)).
+  The DuckDB hot leg, and the Parquet copies the CDC export derives from the
+  row, read such an image narrowed instead (2^53+1 as 2^53, `1000.5` as
+  `1000`, `NaN` as 1970-01-01, a number past int64 as absent): the DuckDB
+  Postgres scanner types `NUMERIC` as `DOUBLE` before any expression Forma
+  renders. The census is their guard until #621.
+- a `NaN` or `±Infinity` in `value_numeric` under `smallint`, `integer` or
+  `numeric` (#592): `stored numeric image NaN of attribute 3 in value_numeric
+  has no finite float64 value`. The write funnel never stores one; before
+  #592 a planted one read as an absent attribute, and an update then erased
+  it.
 
 These errors indicate metadata drift, corrupted state, or an incomplete
 deployment, and should be treated as operator-visible consistency failures.

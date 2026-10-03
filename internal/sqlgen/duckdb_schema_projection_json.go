@@ -13,7 +13,7 @@ import (
 // Postgres template's JSON_AGG(JSON_BUILD_OBJECT(...)) emits): a JSON array
 // of objects with schema_id/row_id/attr_id/array_indices and the value in
 // the storage column for the attribute's type (value_numeric for the numeric
-// family including bool as 1/0 and dates as epoch millis; value_text
+// family including bool as 1/0 and dates as exact epoch millis; value_text
 // otherwise). NULL (absent) attributes are filtered out, mirroring the PG
 // INNER JOIN which only aggregates rows that exist in eav_data (#173).
 //
@@ -71,11 +71,7 @@ func (sp *SchemaProjection) scalarEAVJSONObject(schemaID int16, attr string) str
 	valueText, valueNumeric := "NULL", "NULL"
 	vt := sp.UnifiedColumnTypes[attr]
 	if eavValueColumn(vt) == "value_numeric" {
-		if vt == forma.ValueTypeBool {
-			valueNumeric = fmt.Sprintf("CAST(CAST(%s AS INTEGER) AS DOUBLE)", unified)
-		} else {
-			valueNumeric = fmt.Sprintf("CAST(%s AS DOUBLE)", unified)
-		}
+		valueNumeric = valueNumericJSONExpr(vt, unified)
 	} else {
 		valueText = fmt.Sprintf("CAST(%s AS VARCHAR)", unified)
 	}
@@ -96,11 +92,7 @@ func (sp *SchemaProjection) listEAVJSONPart(schemaID int16, attr string) string 
 	itemsVT := sp.itemsTypes[attr]
 	valueText, valueNumeric := "NULL", "NULL"
 	if eavValueColumn(itemsVT) == "value_numeric" {
-		if itemsVT == forma.ValueTypeBool {
-			valueNumeric = "CAST(CAST(x AS INTEGER) AS DOUBLE)"
-		} else {
-			valueNumeric = "CAST(x AS DOUBLE)"
-		}
+		valueNumeric = valueNumericJSONExpr(itemsVT, "x")
 	} else {
 		valueText = "CAST(x AS VARCHAR)"
 	}
@@ -109,4 +101,23 @@ func (sp *SchemaProjection) listEAVJSONPart(schemaID int16, attr string) string 
 		"CASE WHEN %s IS NOT NULL AND len(%s) = 0 THEN [{'schema_id': %d, 'row_id': %s, 'attr_id': %d, 'array_indices': '', 'value_text': NULL, 'value_numeric': NULL}] WHEN %s IS NOT NULL THEN list_transform(%s, (x, i) -> {'schema_id': %d, 'row_id': %s, 'attr_id': %d, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': %s, 'value_numeric': %s}) ELSE [] END",
 		unified, unified, schemaID, rowExpr, sp.attrIDForName(attr),
 		unified, unified, schemaID, rowExpr, sp.attrIDForName(attr), valueText, valueNumeric)
+}
+
+// valueNumericJSONExpr renders one value_numeric field. A bool is 1/0 and the
+// rest of the numeric family is DOUBLE, as the Postgres JSON_AGG renders
+// them. A date/datetime is the unified epoch-ms BIGINT as JSON (#592): a
+// CAST to DOUBLE rounded a stored 2^53+1 onto 2^53 before the reader's
+// contract could refuse it, and a plain BIGINT field would not survive
+// either, because DuckDB unifies a struct field that is BIGINT in one list
+// element and DOUBLE in another (a numeric neighbour) to DOUBLE. A JSON
+// field unifies with DOUBLE to JSON, which keeps the BIGINT digits exact and
+// renders every DOUBLE element as before.
+func valueNumericJSONExpr(vt forma.ValueType, operand string) string {
+	switch vt {
+	case forma.ValueTypeBool:
+		return fmt.Sprintf("CAST(CAST(%s AS INTEGER) AS DOUBLE)", operand)
+	case forma.ValueTypeDate, forma.ValueTypeDateTime:
+		return fmt.Sprintf("to_json(%s)", operand)
+	}
+	return fmt.Sprintf("CAST(%s AS DOUBLE)", operand)
 }

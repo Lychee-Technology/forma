@@ -38,6 +38,11 @@ var ErrUnknownMainColumn = errors.New("unknown main column")
 //	bool                             text                                bool_text
 //	list                             —                                   never bindable
 //
+// An unbound date/datetime lives in eav_data.value_numeric as a float64
+// image and keeps |epoch millis| <= 2^53; the funnel refuses the rest at
+// write time and the read refuses a stored image past it (#592), so the
+// per-destination ranges above and this one are the contract.
+//
 // Width narrowing inside the numeric family is deliberately admitted:
 // numeric→smallint is a shipped shape, and transform.checkStorageFit rejects
 // any value that does not fit the column. System columns (ltbase_*) go through

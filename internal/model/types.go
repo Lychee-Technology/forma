@@ -38,8 +38,18 @@ type EAVRecord struct {
 	// bounds to the range that image keeps exactly, ±2^53 for bigint
 	// (#590), while main-column routing (storeInMainColumn) and read-back
 	// prefer ValueInt64 so column-bound bigint/unix_ms values carry the
-	// full int64 range without a float64 hop (#205).
+	// full int64 range without a float64 hop (#205). Because the sidecar
+	// never reaches eav_data, the EAV store refuses a date/datetime whose
+	// millis the float64 image cannot keep (|ms| > 2^53) instead of
+	// persisting a rounded image of a value the funnel admitted (#592).
 	ValueInt64 *int64
+	// ValueNumericRaw is the value_numeric token exactly as the read query
+	// emitted it ("9007199254740993", "1704067200123.0", "NaN"), set by
+	// ParseAttributesJSON only; ValueNumeric is its float64 image. It is
+	// read-only: the write path never consults it, and a record built in
+	// memory leaves it empty. A value-type rule that the float64 image
+	// cannot decide (the date contract, #592) judges this token instead.
+	ValueNumericRaw string
 }
 
 // AttributeOrder specifies how to sort by a particular attribute.

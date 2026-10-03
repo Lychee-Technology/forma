@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -308,19 +309,26 @@ func benchmarkEAVJSONArray(schemaID, targetSchemaID int16, extra string, attrs .
 
 // benchmarkScalarJSONObject renders the single json_object for one scalar
 // benchmark EAV attribute (array_indices is the empty string — scalars carry
-// no position).
+// no position). A numeric attribute's value_numeric is a JSON number,
+// rendered as the production projection renders it (valueNumericJSONExpr):
+// model.ParseAttributesJSON refuses a value_numeric string, which it used to
+// drop as an absent attribute (#592). The unified column is VARCHAR when the
+// hot leg's value_text pivot joins, so isCash, the trade schema's boolean,
+// is cast back to BOOLEAN first ('true' has no INTEGER cast).
 func benchmarkScalarJSONObject(targetSchemaID int16, a eavJSONAttr) string {
 	valColumn := "value_text"
 	nullColumn := "value_numeric"
-	valueExpr := a.name
+	valueExpr := fmt.Sprintf("CAST(%s AS VARCHAR)", a.name)
 	if a.type_ == "numeric" {
 		valColumn = "value_numeric"
 		nullColumn = "value_text"
+		operand, vt := a.name, forma.ValueTypeNumeric
 		if a.name == "isCash" {
-			valueExpr = "CASE WHEN isCash THEN 1 ELSE 0 END"
+			operand, vt = fmt.Sprintf("CAST(%s AS BOOLEAN)", a.name), forma.ValueTypeBool
 		}
+		valueExpr = valueNumericJSONExpr(vt, operand)
 	}
 	return fmt.Sprintf(
-		`json_object('schema_id', %d, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', %d, 'array_indices', '', '%s', CAST(%s AS VARCHAR), '%s', NULL)`,
+		`json_object('schema_id', %d, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', %d, 'array_indices', '', '%s', %s, '%s', NULL)`,
 		targetSchemaID, a.id, valColumn, valueExpr, nullColumn)
 }
