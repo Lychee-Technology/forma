@@ -1026,6 +1026,40 @@ The remaining asymmetry class is #205's float64 ceiling: values only a full
 NUMERIC can hold (planted by direct SQL, never by the funnel) still read
 exactly on Postgres and as their float64 image on DuckDB.
 
+**Unbound dates (#592).** A `date`/`datetime` in `eav_data.value_numeric` is
+the float64 image of its epoch milliseconds, and the write funnel admits
+|millis| ≤ 2^53, the range that image keeps exactly. The unified column is
+BIGINT on every tier (`TRY_CAST(value_numeric AS BIGINT)` on the hot pivot and
+the CDC export). The `attributes_json` projection
+(`sqlgen.valueNumericJSONExpr`) emits a date's BIGINT through `to_json`,
+scalar and list element, instead of `CAST(… AS DOUBLE)`, so the Go reader
+(`model.ParseAttributesJSON` with `UseNumber`, then
+`transform.instantOfStoredImage`) sees the exact digits and refuses a Parquet
+BIGINT past 2^53 as a read-path consistency error, the rule the OLTP read
+applies to the stored `NUMERIC`. Before #592 the cast turned
+`9007199254740993` into `9007199254740992.0`, an admitted instant. Every
+other type keeps its `CAST(… AS DOUBLE)`. A plain BIGINT field would not have
+survived either: DuckDB unifies a struct field that is BIGINT in one list
+element and DOUBLE in a numeric neighbour to DOUBLE. A `JSON` field unifies
+with DOUBLE to `JSON`, which keeps the date's digits and renders every DOUBLE
+element as before.
+
+The residual is upstream of that projection. The DuckDB Postgres scanner
+types unconstrained `NUMERIC` as `DOUBLE` on `postgres_scan` (the hot
+`pg_source`) and `postgres_query` (the CDC EAV export), so a date image the
+funnel would refuse, planted in Postgres before #592 or by hand, reaches the
+hot leg and every Parquet copy already narrowed: 2^53+1 as 2^53, `1000.5` as
+`1000`, `NaN`/`±Infinity` as 0, a number past int64 as NULL (absent). The
+OLTP read refuses the same row. #592 kept the DOUBLE transport and made the
+Postgres census (`validate-schema-consistency`, predicate
+`transform.StoredDateImageRefusedSQL`) the guard for those tiers: Postgres
+keeps every `eav_data` row after a flush, so the census covers the current
+version of every row the tiers serve. Exact transport, with a row-scoped
+channel for an invalid image, is #621. `TestUnboundDateHotImagePast2p53Residual`
+(production E2E) pins the residual, and
+`TestUnboundDateParquetImagePast2p53IsAConsistencyError` the exact Parquet
+read.
+
 ## **7. Resilience and Error Handling**
 
 ### **7.1 Circuit Breaker**

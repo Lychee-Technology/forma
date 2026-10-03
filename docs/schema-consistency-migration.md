@@ -148,6 +148,11 @@ It validates:
 - text/uuid/list values are not incorrectly stored in `value_numeric`
 - no `list` attribute still carries a scalar row (`array_indices = ''` with a
   value), left over from before the attribute became a list (`#372`)
+- no unbound `date`/`datetime` attribute (or list of them) carries an
+  `eav_data.value_numeric` image the upgraded read path refuses: a number
+  that is not whole (a fraction, `NaN`, `±Infinity`) or one past 2^53 epoch
+  milliseconds (`#592`). After the upgrade such a row, and every update of it
+  that does not name the attribute, is a consistency error
 - no EAV-only `smallint`/`integer`/`bigint` value (list items included) lies
   outside its declared width or is non-integral in a way that makes the tiers
   disagree (`#501`). It reads `--change-log-table` to tell exported rows from
@@ -550,7 +555,11 @@ whose epoch millis are off a whole second is refused at write time as invalid
 input rather than truncated, and a value outside 0000-01-01T00:00:00Z to
 9999-12-31T23:59:59Z is refused rather than stored as an image the RFC3339
 reader cannot parse, #582); `bool`→smallint (`bool_smallint`) or text
-(`bool_text`); `list` never binds.
+(`bool_text`); `list` never binds. An unbound `date`/`datetime` keeps the
+float64 image in `eav_data.value_numeric` and admits |millis| ≤ 2^53, refusing
+anything past it as invalid input; the read judges a stored image by the same
+rule (`#592`, see
+[Date images the read path refuses](#date-images-the-read-path-refuses-592)).
 
 Some refused pairs do store and read back losslessly on the Postgres path:
 `uuid`→text, `bool`→smallint/integer/bigint/double with the default encoding,
@@ -763,6 +772,102 @@ The comparison is exact, because 2^53 is a float64. The query reports a whole
 number past ±2^53, a fraction, a number past int64, NaN, and the infinities.
 Repair each row it returns through the API, naming the attribute, as above.
 
+### Date images the read path refuses (`#592`)
+
+Example validator output:
+
+```text
+- date/datetime images the read path refuses in eav_data_dev: schema=visit schema_id=100 attr_id=1 attribute=seenAt rows=2 (value_numeric must be a whole number with |value| <= 9007199254740992)
+```
+
+An unbound `date`/`datetime` (or a list of them) is stored in
+`eav_data.value_numeric` as the float64 image of its epoch milliseconds,
+which is exact within ±2^53 (`9007199254740992`, years -283457 to 287396).
+Since `#592` the write path admits exactly that range and refuses anything
+past it as invalid input. The OLTP read judges the stored digits, and the
+federated read the digits its Parquet and hot legs deliver, not a float64
+rounding of them, by the same rule: a whole number with |millis| ≤ 2^53. A
+row that reads can therefore always be rewritten. That matters because an update
+rebuilds the whole document and re-enters the write funnel: an image the read
+accepted and the write refused would fail an update that never mentioned the
+attribute, as the caller's invalid input.
+
+Before `#592` no rule judged the unbound destination. A row written earlier,
+or edited by hand, can hold a whole number past 2^53, a fraction, `NaN`,
+`±Infinity`, or a number past int64, and the Postgres read turned these into
+a nearby instant, a truncated one, a wrapped one, or an absent attribute.
+After the upgrade every OLTP read of such a row (a `GET`, and a list or query
+the Postgres route serves), and every update that does not name the
+attribute, fails with an operator-visible error, never a 4xx:
+
+```text
+datetime value of attribute 1 in value_numeric: stored value 9007199254740993 (287396-10-12T08:59:00.993Z) is outside the epoch milliseconds a float64 image keeps exactly (up to 9007199254740992, 2^53); rewrite it with an update that names the attribute, or bind the attribute to a bigint column (docs/schema-consistency-migration.md)
+```
+
+A fraction, `NaN` or an infinity reads as `… (not a whole number of epoch
+milliseconds) names no epoch millisecond instant`. The error names the row and
+the attribute, and the server never modifies the stored row. Run the
+validator before upgrading. Its predicate is the read's own rule
+(`transform.StoredDateImageRefusedSQL`), so it lists every attribute whose
+rows the upgraded read refuses.
+
+**The federated tiers read these rows differently until `#621`.** The DuckDB
+Postgres scanner types `NUMERIC` as `DOUBLE` before any expression Forma
+renders, so the federated hot leg, and the Parquet copy the CDC export writes
+from the row, read such an image narrowed: 2^53+1 as 2^53, `1000.5` as
+`1000`, `NaN` and the infinities as 1970-01-01T00:00:00Z, and a number past
+int64 as absent. One row can therefore fail on the OLTP route and answer a
+different instant on the federated one. The census is the only guard for
+those tiers, so clear it before relying on either route.
+
+Inspect the rows:
+
+```sql
+SELECT schema_id, row_id, attr_id, array_indices, value_numeric
+FROM eav_data_dev
+WHERE schema_id = 100 AND attr_id = 1 AND value_numeric IS NOT NULL
+  AND (value_numeric <> trunc(value_numeric) OR abs(value_numeric) > 9007199254740992)
+LIMIT 50;
+```
+
+Then decide per attribute:
+
+- **The value is not a real instant.** Every date past ±2^53 lies after
+  year 287396 or before year -283457, and a fraction was never a
+  millisecond. Rewrite the value through the API with an update that names
+  the attribute, nested (`{"visit":{"endAt":…}}`) or as its literal dotted
+  key (`{"visit.endAt":…}`), under any `required_policy`. An update never
+  decodes a stored value its written row discards, so it repairs every image
+  the census reports and keeps the attributes it does not name. An update
+  replaces a list as a whole, so repair a list item by sending the whole
+  list. An API write stamps `change_log`, so the next flush re-exports the
+  entity and the federated tiers follow. Rows whose image is inside the range
+  (for example `9007199254740992` itself) are readable and need no change.
+- **The magnitude is intended** (a scalar attribute only; `list` never
+  binds). Bind the attribute to a `bigint_*` column with the `unix_ms`
+  encoding, which keeps the full int64 range exactly, and move every row of
+  the attribute, not only the reported ones, into `entity_main` before the
+  new binding goes live. On the `NUMERIC` column the whole image keeps its
+  digits, so the cast is exact:
+
+  ```sql
+  UPDATE entity_main AS m
+     SET bigint_01 = e.value_numeric::bigint
+    FROM eav_data_dev AS e
+   WHERE e.schema_id = m.ltbase_schema_id AND e.row_id = m.ltbase_row_id
+     AND e.schema_id = 100 AND e.attr_id = 1 AND e.array_indices = ''
+     AND e.value_numeric IS NOT NULL;
+  DELETE FROM eav_data_dev WHERE schema_id = 100 AND attr_id = 1;
+  ```
+
+  A bound attribute has no `eav_data` rows, so the census no longer reports
+  it. The HTTP API renders an instant outside years 0000 to 9999 as an
+  epoch-millisecond string (`#591`).
+
+After the repair, re-run the validator. As with the other SQL repairs, a
+direct rewrite does not stamp `change_log`: a flushed row keeps its last
+exported image on the warm/cold tiers until its next write re-flushes it.
+
 ### Registered schema with no `<schema>.json` (`#314`)
 
 Symptom: the server refuses to start with `failed to build the schema guards
@@ -866,6 +971,11 @@ LIMIT 50;
   detection query in
   [EAV integer values past their declared width](#eav-integer-values-past-their-declared-width-501)
   and repair each row the same way
+- no unbound `date`/`datetime` image past ±2^53 or off a whole number is
+  reported (`#592`): rewrite each one through the API, naming the attribute.
+  The upgraded server refuses to read such rows on the OLTP route, and the
+  federated tiers read them narrowed until `#621`; see
+  [Date images the read path refuses](#date-images-the-read-path-refuses-592)
 - hardened release deployed
 - validator re-run after deploy
 - smoke CRUD tests pass against existing schemas

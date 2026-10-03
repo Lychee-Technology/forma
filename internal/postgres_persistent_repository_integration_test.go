@@ -74,7 +74,10 @@ func TestInsertPersistentRecordIntegration(t *testing.T) {
 	assert.Equal(t, record.Int32Items, stored.Int32Items)
 	assert.Equal(t, record.Int64Items, stored.Int64Items)
 	assert.Equal(t, record.Float64Items, stored.Float64Items)
-	assert.ElementsMatch(t, record.OtherAttributes, stored.OtherAttributes)
+	// The read carries each value_numeric token beside its float64 image (#592).
+	wantAttributes := append([]model.EAVRecord(nil), record.OtherAttributes...)
+	wantAttributes[1].ValueNumericRaw = "99"
+	assert.ElementsMatch(t, wantAttributes, stored.OtherAttributes)
 
 	var (
 		flushedAt       int64

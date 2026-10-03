@@ -55,14 +55,14 @@ func storedBigintImage(t *testing.T, rec model.EAVRecord, meta forma.AttributeMe
 	t.Helper()
 	record := &model.PersistentRecord{Float64Items: map[string]float64{}}
 	if meta.ColumnBinding == nil {
-		storeInEAV(record, rec)
+		require.NoError(t, storeInEAV(record, rec, meta.ValueType))
 		require.Len(t, record.OtherAttributes, 1)
 		require.Nil(t, record.OtherAttributes[0].ValueInt64, "eav_data must not carry the sidecar")
 		require.NotNil(t, record.OtherAttributes[0].ValueNumeric)
 		return *record.OtherAttributes[0].ValueNumeric
 	}
 	tr := &persistentRecordTransformer{}
-	require.NoError(t, tr.storeInMainColumn(record, rec, meta.ColumnBinding))
+	require.NoError(t, tr.storeInMainColumn(record, rec, meta.ValueType, meta.ColumnBinding))
 	stored, ok := record.Float64Items[string(meta.ColumnBinding.ColumnName)]
 	require.True(t, ok)
 	return stored

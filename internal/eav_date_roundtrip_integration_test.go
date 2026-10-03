@@ -18,17 +18,23 @@ import (
 	"github.com/lychee-technology/forma/internal/transform"
 )
 
+const dateDestSchema = 301
+
 // dateDestinationRegistry binds one date attribute to each physical
 // destination the write funnel can choose (#582): eav_data value_numeric
-// (unbound), a bigint column under unix_ms and under the default encoding,
-// and a text column under iso8601.
+// (unbound scalar, list item and nested scalar), a bigint column under
+// unix_ms and under the default encoding, and a text column under iso8601.
 func dateDestinationRegistry() forma.SchemaRegistry {
-	return &stubSchemaRegistry{schemaID: 301, schemaName: "date_dest", cache: forma.SchemaAttributeCache{
+	return &stubSchemaRegistry{schemaID: dateDestSchema, schemaName: "date_dest", cache: forma.SchemaAttributeCache{
 		"seenAt":    {AttributeID: 20, ValueType: forma.ValueTypeDateTime},
 		"bornOn":    {AttributeID: 21, ValueType: forma.ValueTypeDate},
 		"flushedAt": {AttributeID: 22, ValueType: forma.ValueTypeDateTime, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint01, Encoding: forma.MainColumnEncodingUnixMs}},
 		"openedAt":  {AttributeID: 23, ValueType: forma.ValueTypeDateTime, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint02}},
 		"expiresAt": {AttributeID: 24, ValueType: forma.ValueTypeDateTime, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01, Encoding: forma.MainColumnEncodingISO8601}},
+		"seenOn":    {AttributeID: 25, ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeDate},
+		// A nested eav_data date beside a sibling, for the update tests.
+		"visit.endAt": {AttributeID: 26, ValueType: forma.ValueTypeDateTime},
+		"visit.note":  {AttributeID: 27, ValueType: forma.ValueTypeText},
 	}}
 }
 

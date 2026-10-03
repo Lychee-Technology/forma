@@ -33,14 +33,35 @@ func checkStorageFit(attr *model.EAVRecord, meta forma.AttributeMetadata) error 
 	}
 	binding := meta.ColumnBinding
 	if binding == nil {
-		// storeInEAV clears the exact sidecar: eav_data keeps the image
-		// (bigint_image.go).
-		return checkBigintImageFit(attr, meta.ValueType, "eav_data.value_numeric")
+		return checkEAVFit(attr, meta.ValueType)
 	}
 	if isSystemManagedColumn(binding.ColumnName) {
 		return nil
 	}
 	return checkBoundColumnFit(attr, meta.ValueType, binding)
+}
+
+// checkEAVFit is the unbound destination's rule: eav_data persists the
+// float64 value_numeric image only (storeInEAV clears the exact sidecar), so
+// a bigint (#590, bigint_image.go) and a date/datetime (#592) must sit within
+// the range that image keeps exactly. For a date it asks float64ImageOf for
+// the image storeInEAV will write and refuses when there is none; every other
+// type keeps its declared-type rule above (#205 owns the numeric family's
+// float64 ceiling).
+func checkEAVFit(attr *model.EAVRecord, vt forma.ValueType) error {
+	if !isDateType(vt) {
+		return checkBigintImageFit(attr, vt, eavValueNumericDest)
+	}
+	if !hasEpochMillis(attr) {
+		return nil
+	}
+	_, err := float64ImageOf(attr, vt, eavValueNumericDest)
+	return err
+}
+
+// isDateType reports the valueTypes whose numeric slot holds epoch millis.
+func isDateType(vt forma.ValueType) bool {
+	return vt == forma.ValueTypeDate || vt == forma.ValueTypeDateTime
 }
 
 // checkBoundColumnFit mirrors storeWithEncoding's dispatch: the same
@@ -94,16 +115,33 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 			return err
 		}
 	}
-	dest := fmt.Sprintf("bound column %s (%s)", col, colType)
+	dest := boundColumnDest(col, colType)
 	if fitType, ok := columnFitType(colType); ok {
 		return checkIntegerFit(attr, fitType, dest)
 	}
 	if colType == forma.MainColumnTypeDouble {
-		// storeNumericRendering writes a double column from the image, never
-		// the sidecar.
+		// A double column keeps the float64 image, never the sidecar
+		// (storeNumericSlot).
+		if isDateType(vt) {
+			return checkDoubleColumnDateFit(attr, vt, dest)
+		}
 		return checkBigintImageFit(attr, vt, dest)
 	}
 	return nil
+}
+
+// boundColumnDest names a bound main column in fit messages.
+func boundColumnDest(col forma.MainColumn, colType forma.MainColumnType) string {
+	return fmt.Sprintf("bound column %s (%s)", col, colType)
+}
+
+// checkDoubleColumnDateFit applies the float64-image rule to a date/datetime
+// bound to a double column: the registration matrix refuses the pair, but the
+// funnel must not depend on registration (#592). It asks float64ImageOf for
+// the image storeNumericSlot will write, so the two cannot disagree.
+func checkDoubleColumnDateFit(attr *model.EAVRecord, vt forma.ValueType, dest string) error {
+	_, err := float64ImageOf(attr, vt, dest)
+	return err
 }
 
 // checkDefaultEncodingSlot verifies that the slot storeWithDefaultEncoding

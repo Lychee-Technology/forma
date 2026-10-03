@@ -22,47 +22,14 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 		}
 		return *record.ValueText, nil
 
-	case forma.ValueTypeSmallInt:
-		if record.ValueText != nil {
-			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
-		}
-		if record.ValueNumeric == nil {
-			return nil, nil
-		}
-		return int16(*record.ValueNumeric), nil
-
-	case forma.ValueTypeInteger:
-		if record.ValueText != nil {
-			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
-		}
-		if record.ValueNumeric == nil {
-			return nil, nil
-		}
-		return int32(*record.ValueNumeric), nil
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeNumeric:
+		return numericFromEAVRecord(record, valueType)
 
 	case forma.ValueTypeBigInt:
 		return bigintFromEAVRecord(record)
 
-	case forma.ValueTypeNumeric:
-		if record.ValueText != nil {
-			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
-		}
-		if record.ValueNumeric == nil {
-			return nil, nil
-		}
-		return *record.ValueNumeric, nil
-
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		if record.ValueText != nil {
-			return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
-		}
-		if record.ValueInt64 != nil {
-			return unixMillisToTimeUTC(*record.ValueInt64), nil
-		}
-		if record.ValueNumeric == nil {
-			return nil, nil
-		}
-		return unixMillisFloat64ToTimeUTC(*record.ValueNumeric), nil
+		return dateFromEAVRecord(record, valueType)
 
 	case forma.ValueTypeUUID:
 		if record.ValueNumeric != nil {
@@ -102,6 +69,62 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 		}
 		return nil, nil
 	}
+}
+
+// numericFromEAVRecord reads the smallint, integer and numeric arms. A stored
+// NaN or infinity names no value of any of them: it used to read as an absent
+// attribute, since Postgres renders it as a JSON string the float64 decode
+// skipped, and an update then erased it. It is now a read-path consistency
+// error (#592). Fractions and out-of-range images keep their conversions
+// (#384).
+func numericFromEAVRecord(record model.EAVRecord, valueType forma.ValueType) (any, error) {
+	if record.ValueText != nil {
+		return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
+	}
+	if record.ValueNumeric == nil {
+		return nil, nil
+	}
+	image := *record.ValueNumeric
+	if isNonFinite(image) {
+		return nil, fmt.Errorf("stored %s image %s of attribute %d in value_numeric has no finite float64 value",
+			valueType, storedImageText(record), record.AttrID)
+	}
+	switch valueType {
+	case forma.ValueTypeSmallInt:
+		return int16(image), nil
+	case forma.ValueTypeInteger:
+		return int32(image), nil
+	}
+	return image, nil
+}
+
+// dateFromEAVRecord prefers the exact ValueInt64 when the record carries one
+// (a main bigint column). A persisted float64 image is read by the contract
+// of the float64 destinations (instantOfStoredImage, #592).
+func dateFromEAVRecord(record model.EAVRecord, valueType forma.ValueType) (any, error) {
+	if record.ValueText != nil {
+		return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
+	}
+	if record.ValueInt64 != nil {
+		return unixMillisToTimeUTC(*record.ValueInt64), nil
+	}
+	if record.ValueNumeric == nil {
+		return nil, nil
+	}
+	timeVal, err := instantOfStoredImage(&record)
+	if err != nil {
+		return nil, fmt.Errorf("%s value of attribute %d in value_numeric: %w", valueType, record.AttrID, err)
+	}
+	return timeVal, nil
+}
+
+// storedImageText quotes a stored image as the read query emitted it when the
+// record carries the token, as its float64 otherwise.
+func storedImageText(record model.EAVRecord) string {
+	if record.ValueNumericRaw != "" {
+		return record.ValueNumericRaw
+	}
+	return formatFitValue(*record.ValueNumeric)
 }
 
 // bigintFromEAVRecord prefers the exact ValueInt64 when the record carries one
