@@ -867,12 +867,13 @@ Examples:
 - storage column mismatches such as a text attribute stored in `value_numeric`
 - an unbound `date`/`datetime` image in `eav_data.value_numeric` that the
   write path would not admit (#592): a whole number past ±2^53, a fraction,
-  `NaN`, `±Infinity`, or a number past int64. The read judges the stored
-  digits, not a float64 rounding of them. Postgres renders the `NUMERIC`
-  exactly into the row's JSON aggregate, the decoder keeps the token
-  (`json.Decoder.UseNumber`, `model.EAVRecord.ValueNumericRaw`), and the
+  `NaN`, `±Infinity`, or a number past int64. The OLTP read judges the
+  stored digits, not a float64 rounding of them. Postgres renders the
+  `NUMERIC` exactly into the row's JSON aggregate, and the decoder keeps the
+  token (`json.Decoder.UseNumber`, `model.EAVRecord.ValueNumericRaw`). The
   DuckDB projection emits a date's unified `BIGINT` through `to_json` rather
-  than `CAST(… AS DOUBLE)`. The read therefore accepts exactly the set the
+  than `CAST(… AS DOUBLE)`, so a Parquet `BIGINT` reaches the same rule with
+  its digits intact. The OLTP read therefore accepts exactly the set the
   write admits, and a row that reads can always be rewritten. The messages
   are `stored value 9007199254740993 (287396-10-12T08:59:00.993Z) is outside
   the epoch milliseconds a float64 image keeps exactly (up to

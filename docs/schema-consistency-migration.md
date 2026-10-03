@@ -784,13 +784,17 @@ An unbound `date`/`datetime` (or a list of them) is stored in
 `eav_data.value_numeric` as the float64 image of its epoch milliseconds,
 which is exact within ±2^53 (`9007199254740992`, years -283457 to 287396).
 Since `#592` the write path admits exactly that range and refuses anything
-past it as invalid input. The OLTP read judges the stored digits, and the
-federated read the digits its Parquet and hot legs deliver, not a float64
-rounding of them, by the same rule: a whole number with |millis| ≤ 2^53. A
-row that reads can therefore always be rewritten. That matters because an update
-rebuilds the whole document and re-enters the write funnel: an image the read
-accepted and the write refused would fail an update that never mentioned the
-attribute, as the caller's invalid input.
+past it as invalid input. The OLTP read judges the stored digits, not a
+float64 rounding of them, by the same rule: a whole number with |millis| ≤
+2^53. A row that reads can therefore always be rewritten. That matters
+because an update rebuilds the whole document and re-enters the write
+funnel: an image the read accepted and the write refused would fail an
+update that never mentioned the attribute, as the caller's invalid input.
+The federated read applies the same rule to the value its projection
+receives. A Parquet `BIGINT` reaches the projection with its digits intact.
+A value the DuckDB Postgres scanner reads does not: until `#621` the scanner
+narrows it to a float64 first, on the hot leg and in the CDC export that
+writes the Parquet copies (see below).
 
 Before `#592` no rule judged the unbound destination. A row written earlier,
 or edited by hand, can hold a whole number past 2^53, a fraction, `NaN`,
@@ -844,20 +848,63 @@ Then decide per attribute:
   entity and the federated tiers follow. Rows whose image is inside the range
   (for example `9007199254740992` itself) are readable and need no change.
 - **The magnitude is intended** (a scalar attribute only; `list` never
-  binds). Bind the attribute to a `bigint_*` column with the `unix_ms`
-  encoding, which keeps the full int64 range exactly, and move every row of
-  the attribute, not only the reported ones, into `entity_main` before the
-  new binding goes live. On the `NUMERIC` column the whole image keeps its
-  digits, so the cast is exact:
+  binds). A `bigint` holds only a whole number inside int64, so only such an
+  image can be an intended instant. `::bigint` rounds a fraction (`1000.5`
+  becomes `1001`) and fails on `NaN`, an infinity and a number past int64.
+  While the attribute is still unbound, rewrite those rows as in the
+  previous item. Then bind the attribute to a `bigint_*` column with the
+  `unix_ms` encoding, which keeps the full int64 range exactly. Before the
+  new binding goes live, move every row of the attribute into
+  `entity_main`, not only the reported ones. Stop writes to the schema
+  first, because a write between the move and the new binding lands in
+  `eav_data` again.
+
+  This query lists the rows the move cannot carry exactly. Besides an image
+  that is not a whole int64, it lists a value in `value_text` (a
+  [storage-column mismatch](#storage-column-mismatches)), a list item, and a
+  row with no `entity_main` row, which need a decision per row. It must
+  return no rows:
 
   ```sql
-  UPDATE entity_main AS m
-     SET bigint_01 = e.value_numeric::bigint
-    FROM eav_data_dev AS e
-   WHERE e.schema_id = m.ltbase_schema_id AND e.row_id = m.ltbase_row_id
-     AND e.schema_id = 100 AND e.attr_id = 1 AND e.array_indices = ''
-     AND e.value_numeric IS NOT NULL;
-  DELETE FROM eav_data_dev WHERE schema_id = 100 AND attr_id = 1;
+  SELECT e.row_id, e.array_indices, e.value_text, e.value_numeric
+  FROM eav_data_dev AS e
+  WHERE e.schema_id = 100 AND e.attr_id = 1
+    AND NOT (e.array_indices = '' AND e.value_text IS NULL
+             AND e.value_numeric IS NOT NULL
+             AND e.value_numeric = trunc(e.value_numeric)
+             AND e.value_numeric >= -9223372036854775808
+             AND e.value_numeric < 9223372036854775808
+             AND EXISTS (SELECT 1 FROM entity_main_dev AS m
+                          WHERE m.ltbase_schema_id = e.schema_id
+                            AND m.ltbase_row_id = e.row_id));
+  ```
+
+  The move copies exactly the rows that query leaves out, so no cast rounds
+  or fails: on the `NUMERIC` column a whole image keeps its digits. It then
+  deletes every row of the attribute and raises if that removed a row the
+  copy did not carry. The raise rolls back both statements, so even outside
+  a transaction the move never stops halfway or loses a row:
+
+  ```sql
+  DO $$
+  DECLARE copied bigint; removed bigint;
+  BEGIN
+    UPDATE entity_main_dev AS m
+       SET bigint_01 = e.value_numeric::bigint
+      FROM eav_data_dev AS e
+     WHERE e.schema_id = m.ltbase_schema_id AND e.row_id = m.ltbase_row_id
+       AND e.schema_id = 100 AND e.attr_id = 1 AND e.array_indices = ''
+       AND e.value_text IS NULL
+       AND e.value_numeric = trunc(e.value_numeric)
+       AND e.value_numeric >= -9223372036854775808
+       AND e.value_numeric < 9223372036854775808;
+    GET DIAGNOSTICS copied = ROW_COUNT;
+    DELETE FROM eav_data_dev WHERE schema_id = 100 AND attr_id = 1;
+    GET DIAGNOSTICS removed = ROW_COUNT;
+    IF copied <> removed THEN
+      RAISE EXCEPTION 'moved % of the % eav_data rows of attr_id 1; nothing was changed', copied, removed;
+    END IF;
+  END $$;
   ```
 
   A bound attribute has no `eav_data` rows, so the census no longer reports
