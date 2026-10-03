@@ -40,7 +40,7 @@ func registerWidthAuditFlags(flags *flag.FlagSet) widthAuditFlags {
 		changeLogTable: flags.String("change-log-table", bootstrap.EnvAllowEmpty("CHANGE_LOG_TABLE", "change_log_dev"),
 			"change_log table the integer-width census reads flush state from; empty (or CHANGE_LOG_TABLE= set empty) skips it (no CDC)"),
 		entityMainTable: flags.String("entity-main-table", bootstrap.Env("ENTITY_MAIN_TABLE", "entity_main_dev"),
-			"entity main table -requeue-stale-width-exports advances row versions in"),
+			"entity main table the integer-width census reads double_* columns of a bound bigint from, and -requeue-stale-width-exports advances row versions in"),
 		cutover: flags.String("width-export-cutover", "",
 			"RFC3339 time from which cdc-flush ran the #384 storage-width export; rows last flushed before it fail as stale exports"),
 		requeue: flags.Bool("requeue-stale-width-exports", false,
@@ -83,11 +83,12 @@ func parseWidthExportCutover(value string) (int64, error) {
 }
 
 // checkIntegerWidthExports reports EAV rows whose value does not fit the
-// declared integer width, classified by what the tiers serve for them (#501).
-// With requeue set, it repairs the stale-export classes first and reports
-// those rows as requeued instead.
+// declared integer width, classified by what the tiers serve for them (#501),
+// and entity_main rows whose double_* column holds a bound bigint outside its
+// float64 image contract (#618). With requeue set, it repairs the
+// stale-export classes first and reports those rows as requeued instead.
 func (v schemaConsistencyValidator) checkIntegerWidthExports(ctx context.Context, cache *schemameta.MetadataCache) ([]validationIssue, error) {
-	tables := widthaudit.Tables{EAV: v.eavTable, ChangeLog: v.widths.changeLogTable}
+	tables := widthaudit.Tables{EAV: v.eavTable, EntityMain: v.widths.entityMainTable, ChangeLog: v.widths.changeLogTable}
 	findings, err := widthaudit.Census(ctx, v.pool, tables, widthaudit.Targets(cache))
 	if err != nil {
 		return nil, fmt.Errorf("integer-width census: %w", err)
@@ -114,6 +115,8 @@ func (v schemaConsistencyValidator) checkIntegerWidthExports(ctx context.Context
 			issues = append(issues, widthIssue("EAV integer values whose parquet copy predates the #384 storage-width export in "+v.eavTable, f, severityError))
 		case class == widthaudit.ClassStaleCandidate:
 			issues = append(issues, widthIssue("exported EAV integer values outside the declared width, which may predate the #384 storage-width export (pass -width-export-cutover to confirm), in "+v.eavTable, f, severityInfo))
+		case class == widthaudit.ClassBigIntOutOfContract && f.Column != "":
+			issues = append(issues, widthIssue("bigint values in double columns outside ±2^53 (the float64-exact range) or non-integral in "+v.widths.entityMainTable, f, severityError))
 		case class == widthaudit.ClassBigIntOutOfContract:
 			issues = append(issues, widthIssue("bigint EAV values outside ±2^53 (the float64-exact range) or non-integral in "+v.eavTable, f, severityError))
 		}
@@ -165,6 +168,9 @@ func rowKeyOf(f widthaudit.Finding) widthRowKey {
 func widthIssue(category string, f widthaudit.Finding, severity issueSeverity) validationIssue {
 	details := fmt.Sprintf("schema=%s schema_id=%d attr_id=%d attribute=%s declared=%s row_id=%s",
 		f.SchemaName, f.SchemaID, f.AttrID, f.AttrName, f.Declared, f.RowID)
+	if f.Column != "" {
+		details += " column=" + f.Column
+	}
 	if f.ArrayIndices != "" {
 		details += " array_indices=" + f.ArrayIndices
 	}

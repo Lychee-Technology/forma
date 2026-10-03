@@ -160,6 +160,10 @@ It validates:
   (or set `CHANGE_LOG_TABLE=` explicitly empty: the tool and the
   `make validate-schema-consistency` target keep an empty value instead of
   falling back to `change_log_dev`)
+- no `bigint` bound to a `double_*` column holds a value outside ±2^53 or one
+  that is not a whole number (`#618`). The census reads these columns from
+  `--entity-main-table`, and fails when a schema declares such a binding and
+  the table name is empty
 
 Use both checks before upgrading. The SQL script gives quick database facts; the Go validator gives the final runtime-compatible answer.
 
@@ -649,6 +653,7 @@ Example validator output:
 ```text
 - EAV integer values whose parquet copy predates the #384 storage-width export in eav_data_dev: schema=lead schema_id=100 attr_id=14 attribute=qty declared=integer row_id=6f1c… value=4294967296 last_flushed_at=1756300000000
 - bigint EAV values outside ±2^53 (the float64-exact range) or non-integral in eav_data_dev: schema=lead schema_id=100 attr_id=15 attribute=big declared=bigint row_id=0b7e… value=9007199254740994
+- bigint values in double columns outside ±2^53 (the float64-exact range) or non-integral in entity_main_dev: schema=lead schema_id=100 attr_id=16 attribute=ratio declared=bigint row_id=3c9a… column=double_01 value=9007199254740994
 informational (not a failure):
 - exported EAV integer values outside the declared width, which may predate the #384 storage-width export (pass -width-export-cutover to confirm), in eav_data_dev: schema=lead schema_id=100 attr_id=14 attribute=qty declared=integer row_id=91d2… value=1.5 last_flushed_at=1756300000000
 ```
@@ -754,23 +759,34 @@ rewritten.
 **A `bigint` bound to a `double_*` column** holds the same contract since
 `#590`. The column keeps only the float64 image, so the funnel admits ±2^53,
 an unrelated update is blocked over a stored value outside that range, and an
-update naming the attribute repairs it. The census does not report these rows
-yet, because it scans only `eav_data` (`#618`). To find them, first list the
-column-bound `bigint` attributes in your schema files: those with `valueType`
-`bigint` and a `column_binding.col_name` of `double_01`..`double_03`. Then run
-this query for each such attribute, with its schema id and column:
+update naming the attribute repairs it. The census scans these columns too
+(`#618`). For every attribute with `valueType` `bigint` and a
+`column_binding.col_name` of `double_01`..`double_03`, it reads that column of
+`--entity-main-table` and reports each row whose value is a whole number past
+±2^53, a fraction, `NaN`, or an infinity. The comparison is exact, because
+2^53 is a float64, so `±9007199254740992` and every whole number between them
+are never reported. Each line is a failure of the bigint class and names the
+schema, the attribute, the row, and the column (`column=double_01`). `value`
+is the stored float64 in plain digits (`9223372036854775808` for 2^63), or in
+exponent form from 1e21 up. `last_flushed_at` is shown when the row has been
+exported, as for an EAV line.
 
-```sql
--- one query per bigint attribute bound to a double_* column
-SELECT ltbase_row_id, double_01
-FROM entity_main_dev
-WHERE ltbase_schema_id = <schema id> AND double_01 IS NOT NULL
-  AND (abs(double_01) > 9007199254740992 OR double_01 <> trunc(double_01));
-```
+The census needs `--entity-main-table` whenever a schema declares such a
+binding. With an empty table name it stops with an error naming the first
+such attribute instead of skipping the scan. Without such a binding the
+census does not read the table.
 
-The comparison is exact, because 2^53 is a float64. The query reports a whole
-number past ±2^53, a fraction, a number past int64, NaN, and the infinities.
-Repair each row it returns through the API, naming the attribute, as above.
+Repair each reported row the same way as an EAV `bigint`: rewrite the value
+through the API, naming the attribute. `--requeue-stale-width-exports` never
+requeues these rows, because a re-flush does not change what the column
+holds. What the routes serve until the repair depends on the image. A whole
+number past ±2^53 inside int64 reads as the stored value on every route. Any
+other image is refused by the OLTP route with an error naming the attribute
+and the row. The federated route reads a fraction rounded to a whole number.
+For an image past int64, `NaN`, or an infinity, the federated route fails
+every query that reaches the row while the row is unflushed, and reads the
+attribute as absent once it has been exported (`#627`). Repair those rows
+first.
 
 ### Date images the read path refuses (`#592`)
 
@@ -1013,11 +1029,11 @@ LIMIT 50;
 - no bigint EAV value outside ±2^53 is reported (`#501`, `#612`, `#590`):
   rewrite each one through the API, naming the attribute, before an unrelated
   update is refused over it
-- no `bigint` bound to a `double_*` column holds a value outside ±2^53 or a
-  fraction (`#590`). The census does not cover these yet (`#618`), so run the
-  detection query in
+- no bigint value in a `double_*` column outside ±2^53 or non-integral is
+  reported (`#590`, `#618`): the validator names the row and the column of
+  each `bigint` bound to a `double_*` column; rewrite each one through the
+  API, naming the attribute, as described in
   [EAV integer values past their declared width](#eav-integer-values-past-their-declared-width-501)
-  and repair each row the same way
 - no unbound `date`/`datetime` image past ±2^53 or off a whole number is
   reported (`#592`): rewrite each one through the API, naming the attribute.
   The upgraded server refuses to read such rows on the OLTP route, and the
