@@ -982,16 +982,16 @@ tracks it.
 
 ### 10.2 Structured Logging
 
-Forma logs through zap's global logger, which discards every line until the
-embedding application installs one with `zap.ReplaceGlobals`. The application
-must do that before it builds the manager. Most log sites look the global
-logger up when they write a line, but the federated engine and its DuckDB
-client take it while the manager is built and keep it. A logger installed
-later receives the "query results" line, the Debug SQL and the HTTP lines
-described below. It never receives the engine's anomaly lines or the DuckDB
-client's warning about a failed connection-init step. `cmd/server` and
-`cmd/lambda` install zap's production logger, whose threshold is Info, before
-they build the manager.
+Forma's query path logs through zap's global logger, which discards every
+line until the embedding application installs one with `zap.ReplaceGlobals`.
+The application must do that before it builds the manager. Most log sites
+look the global logger up when they write a line, but the federated engine
+and its DuckDB client take it while the manager is built and keep it. A
+logger installed later receives the "query results" line, the Debug SQL and
+the HTTP lines described below. It never receives the engine's anomaly lines
+or the DuckDB client's warning about a failed connection-init step.
+`cmd/server` and `cmd/lambda` install zap's production logger, whose
+threshold is Info, before they build the manager.
 
 No single log event reports a query's phases, per-tier row counts or files
 read. Which lines a query leaves depends on the layer it passes through.
@@ -1015,21 +1015,29 @@ application that calls the library directly gets none of them:
 - A query is logged at Info when its handler starts work on it and again when
   it has succeeded ("advanced query request received" and "advanced query
   request completed"; the simple and cross-schema search routes log the same
-  pair under their own names). The lines carry the schema name, page and page
-  size, and on completion the returned and total row counts.
-- The HTTP layer logs a failed request at most once, in place of the
-  completion line. A failure that goes through the error gate
-  (`respondErrorWithStatus`) is logged once, at the level that "Log levels are
-  contract" in `docs/error-handling.md` assigns. For a 4xx whose body already
-  tells the caller everything that level is Debug, so the production logger
-  does not show it. A body that withholds detail carries an `error_id` that
-  matches its log line; see "Public HTTP error surface" in the same document.
+  pair under their own names). The simple route logs its received line twice,
+  once on entry and once after parsing. The lines carry the schema name (the
+  search route logs its schema list instead, plus the search term on
+  receipt), page and page size, and on completion the returned and total row
+  counts.
+- The HTTP layer logs a failed request at most once. When the query itself
+  fails, that line takes the place of the completion line. A failure that
+  goes through the error gate (`respondErrorWithStatus`) is logged once, at
+  the level that "Log levels are contract" in `docs/error-handling.md`
+  assigns. For a 4xx whose body already tells the caller everything that
+  level is Debug, so the production logger does not show it. A body that
+  withholds detail carries an `error_id` that matches its log line; see
+  "Public HTTP error surface" in the same document.
 - A request that a handler rejects by its own checks (a method the route does
   not accept, a missing required field such as `condition`) is answered
   through `writeError`, which logs nothing. On the search and advanced-query
   routes those checks run before the "request received" line, so the request
-  leaves no line at all. #637 tracks whether these rejections should be
-  logged.
+  leaves no line at all. On the simple route the router has already logged
+  "handling request" with the path and method, so a rejection there leaves
+  that line.
+
+#637 tracks whether the rejections answered through `writeError` should be
+logged and where each route writes its "request received" line.
 
 Per-stage latency and row counts are metrics (§10.1). Routing, per-source and
 timing detail for one query is returned to the caller on request (§10.3) and
@@ -1072,13 +1080,36 @@ else its `federated` block says.
 - `execution_plan` is attached when a federated request also sets
   `federated.include_execution_plan` (`docs/federated-query/design.md` §4.3).
   It reports the routing decision (`routing`: whether DuckDB was used, the
-  tiers read, the reason), one entry per data source (`sources`: tier, engine,
-  estimated and actual rows, whether a predicate was pushed down, duration,
-  reason) and `timings` (`translate`, `duckdb_fetch` and `total` in
-  milliseconds, plus a plan-cache hit or miss flag). The generated SQL, its
-  bind parameters and the engine's internal notes are not projected into the
-  response. `forma.ExecutionPlan` also declares `merge`. Nothing populates it,
-  so it never appears in a response; #613 tracks retiring or populating it.
+  tiers read, the reason) and the sources the engine recorded (`sources`).
+  Every source names its tier, engine and reason. A source's other fields
+  (estimated rows, actual rows, whether a predicate was pushed down, duration)
+  are omitted when zero, and `timings` is omitted when empty. Which of them
+  appear depends on the path that answered:
+  - A page answered by PostgreSQL alone, through the hot-only gate or because
+    routing chose PostgreSQL, has one `postgres` source with no other fields
+    and no `timings`. This is the usual shape under the default `hybrid`
+    strategy, which answers a small page with implicit tiers from PostgreSQL
+    (`docs/federated-query/design.md` §4.3).
+  - A page answered by DuckDB has a `postgres` source for the dirty-ID set,
+    with the set's size as `row_estimate`. When the hot tier is read, a second
+    `postgres` source for the pushdown fragment sets `predicate_pushdown` if a
+    predicate was pushed. One `duckdb` source carries `actual_rows` (the rows
+    returned for the page) and `duration_ms`; its `tier` names one requested
+    Parquet tier, but the scan reads warm and cold together. `timings` holds
+    `translate`, `duckdb_fetch` and `total` in milliseconds, plus
+    `plan_cache_hit` or `plan_cache_miss` (value 1) when the compiled-plan
+    cache rendered the query.
+  - A degraded answer (§10.2) replaces `routing` and appends a `postgres`
+    source for the fallback, but keeps the sources and `timings` that the
+    abandoned DuckDB attempt recorded before it failed. Next to
+    `used_duckdb: false`, the plan can therefore show a `duckdb` source and
+    DuckDB timings that describe the attempt, not the answer. #639 tracks
+    dropping them.
+
+  The generated SQL, its bind parameters and the engine's internal notes are
+  not projected into the response. `forma.ExecutionPlan` also declares
+  `merge`. Nothing populates it, so it never appears in a response; #613
+  tracks retiring or populating it.
 - `partial` is set on a federated request, whether or not a plan was
   requested, when the page was answered from less than the request asked for:
   `corrupt_parquet_excluded` with the number of excluded objects, or
