@@ -966,95 +966,124 @@ def execute_advanced_query_degraded(query: Query) -> Response:
 
 ### 10.1 Metrics
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `query_total` | Counter | `type`, `status` | Total queries by type and outcome |
-| `query_latency_seconds` | Histogram | `type`, `phase` | Latency distribution |
-| `query_rows_scanned` | Counter | `type`, `tier` | Rows scanned per tier |
-| `query_rows_returned` | Counter | `type` | Final result count |
-| `s3_files_scanned` | Counter | `schema_id`, `tier` | Parquet files read |
-| `s3_files_pruned` | Counter | `schema_id`, `reason` | Files skipped |
-| `pg_scan_rows` | Counter | `table` | PostgreSQL rows scanned |
-| `circuit_breaker_state` | Gauge | `component` | 0=closed, 1=open, 2=half-open |
-| `duckdb_memory_bytes` | Gauge | `query_id` | Memory usage per query |
+The metrics Forma emits are the ones `forma.MetricCatalogue()` returns. This
+section does not restate them, so it cannot drift from the code. Two documents
+describe them:
+
+- `docs/telemetry.md` is the contract: each metric's name, kind, unit and
+  label keys, the retired names, and how an embedding application receives
+  the metrics through a `forma.MetricEmitter`.
+- `docs/federated-query/design.md` §8 says what the two federated query
+  series, `fed_query_latency_histogram` and `fed_query_row_count`, measure and
+  when the engine emits them.
+
+A metric for the circuit breaker's state (§9.2) is not implemented. #634
+tracks it.
 
 ### 10.2 Structured Logging
 
-```json
-{
-  "timestamp": "2024-01-15T10:30:00.123Z",
-  "level": "INFO",
-  "event": "query_completed",
-  "query_id": "q-12345",
-  "query_type": "advanced",
-  "schema_id": 1,
-  "duration_ms": 142,
-  "phases": {
-    "phase1_ms": 85,
-    "phase2_ms": 52,
-    "serialization_ms": 5
-  },
-  "rows": {
-    "hot_scanned": 1523,
-    "hot_matched": 45,
-    "warm_scanned": 12000,
-    "warm_matched": 230,
-    "cold_scanned": 5000,
-    "cold_matched": 18,
-    "final_returned": 20
-  },
-  "files": {
-    "delta_scanned": 3,
-    "base_scanned": 2,
-    "base_pruned": 15
-  },
-  "cursor": {
-    "provided": true,
-    "direction": "forward"
-  }
-}
-```
+Forma logs through zap's global logger, which discards every line until the
+embedding application installs one with `zap.ReplaceGlobals`. The application
+must do that before it builds the manager. Most log sites look the global
+logger up when they write a line, but the federated engine and its DuckDB
+client take it while the manager is built and keep it. A logger installed
+later receives the "query results" line, the Debug SQL and the HTTP lines
+described below. It never receives the engine's anomaly lines or the DuckDB
+client's warning about a failed connection-init step. `cmd/server` and
+`cmd/lambda` install zap's production logger, whose threshold is Info, before
+they build the manager.
 
-### 10.3 Debug Response (when `debug: true`)
+No single log event reports a query's phases, per-tier row counts or files
+read. Which lines a query leaves depends on the layer it passes through.
 
-```json
-{
-  "data": [...],
-  "pagination": {...},
-  "debug": {
-    "query_type": "advanced",
-    "routing_reason": "has_or_condition",
-    "execution_plan": {
-      "phase1": {
-        "pg_scan": "full_scan (10K bound)",
-        "delta_files": ["delta_001.parquet", "delta_002.parquet"],
-        "delta_predicate_pushdown": ["age > 18", "name LIKE 'John%'"]
-      },
-      "phase2": {
-        "base_files_total": 50,
-        "base_files_pruned": 45,
-        "base_files_scanned": 5,
-        "prune_reasons": {
-          "cursor_boundary": 30,
-          "phase1_boundary": 15
-        }
-      }
-    },
-    "timing": {
-      "classification_ms": 1,
-      "translation_ms": 3,
-      "phase1_ms": 85,
-      "phase2_ms": 52,
-      "serialization_ms": 5,
-      "total_ms": 146
-    },
-    "memory": {
-      "phase1_peak_mb": 128,
-      "phase2_peak_mb": 64
-    }
-  }
-}
-```
+The library's lines reach every caller, an embedding application included:
+
+- `EntityManager.Query` logs "query results" at Info with the record and page
+  counts. `CrossSchemaSearch` logs no such line.
+- At Debug, the Postgres repository logs the SQL it runs and its arguments.
+- The federated engine logs two anomalies and nothing else: at Error, a
+  Parquet scan-guard failure attributed to specific objects, and at Warn, a
+  manifest column stamp that disagrees with the Parquet footer. It reports
+  every other failure only through the error it returns. Silence from the
+  engine therefore does not mean a federated query was healthy: the degraded
+  fallback described at the end of this section absorbs a failure without a
+  line.
+
+The HTTP server (`internal/httpapi`) adds the per-request lines. An
+application that calls the library directly gets none of them:
+
+- A query is logged at Info when its handler starts work on it and again when
+  it has succeeded ("advanced query request received" and "advanced query
+  request completed"; the simple and cross-schema search routes log the same
+  pair under their own names). The lines carry the schema name, page and page
+  size, and on completion the returned and total row counts.
+- The HTTP layer logs a failed request at most once, in place of the
+  completion line. A failure that goes through the error gate
+  (`respondErrorWithStatus`) is logged once, at the level that "Log levels are
+  contract" in `docs/error-handling.md` assigns. For a 4xx whose body already
+  tells the caller everything that level is Debug, so the production logger
+  does not show it. A body that withholds detail carries an `error_id` that
+  matches its log line; see "Public HTTP error surface" in the same document.
+- A request that a handler rejects by its own checks (a method the route does
+  not accept, a missing required field such as `condition`) is answered
+  through `writeError`, which logs nothing. On the search and advanced-query
+  routes those checks run before the "request received" line, so the request
+  leaves no line at all. #637 tracks whether these rejections should be
+  logged.
+
+Per-stage latency and row counts are metrics (§10.1). Routing, per-source and
+timing detail for one query is returned to the caller on request (§10.3) and
+is not logged.
+
+One kind of failure leaves neither a log line nor a metric. When a request
+sets `federated.allow_partial_degraded_mode`, the engine absorbs most
+DuckDB-path failures, a circuit-breaker rejection included, and answers from
+PostgreSQL alone (`docs/federated-query/design.md` §7.2). The request
+succeeds, so:
+
+- The engine does not log the failure it absorbed. The scan-guard line above
+  is the one exception, because it is written before the fallback.
+- The failed pass emits no `fed_query_*` sample (§10.1). During an S3 outage
+  those series go flat, which reads the same as no traffic.
+- `EntityManager.Query` and the HTTP layer log their ordinary success lines.
+
+The only traces are in the response (§10.3). The `partial` marker reads
+`hot_tier_only`, which the routing shortcut for small pages sets too, so it
+does not identify a failure. A requested `execution_plan` names the degraded
+fallback in its `routing` reason. Neither carries the cause of the failure.
+`docs/federated-query/design.md` §7.2 lists "Log Error" as the first step of
+this fallback. That step is not implemented, and #638 tracks it.
+
+### 10.3 Query Diagnostics in the Response
+
+There is no `debug` request flag. `forma.QueryResult` in `types.go` is the
+field-level contract for the diagnostics a response carries.
+
+Every query response carries `execution_time`: the wall time the query took
+inside the library, as integer nanoseconds. It excludes HTTP decoding and
+response encoding. The PostgreSQL-only path and cross-schema search set it
+too, so it does not depend on a federated execution plan.
+
+Two more fields carry diagnostics, and only the federated path sets them. A
+request without `federated.enabled` is answered by the PostgreSQL-only path
+(`docs/federated-query/design.md` §4.1) and carries neither field, whatever
+else its `federated` block says.
+
+- `execution_plan` is attached when a federated request also sets
+  `federated.include_execution_plan` (`docs/federated-query/design.md` §4.3).
+  It reports the routing decision (`routing`: whether DuckDB was used, the
+  tiers read, the reason), one entry per data source (`sources`: tier, engine,
+  estimated and actual rows, whether a predicate was pushed down, duration,
+  reason) and `timings` (`translate`, `duckdb_fetch` and `total` in
+  milliseconds, plus a plan-cache hit or miss flag). The generated SQL, its
+  bind parameters and the engine's internal notes are not projected into the
+  response. `forma.ExecutionPlan` also declares `merge`. Nothing populates it,
+  so it never appears in a response; #613 tracks retiring or populating it.
+- `partial` is set on a federated request, whether or not a plan was
+  requested, when the page was answered from less than the request asked for:
+  `corrupt_parquet_excluded` with the number of excluded objects, or
+  `hot_tier_only` with the tiers that were not consulted
+  (`docs/federated-query/design.md` §7.3).
 
 ---
 
@@ -1277,3 +1306,4 @@ class ColumnStats:
 | 2.2 | - | Added keyset-only pagination for advanced queries |
 | 2.3 | - | Enhanced Phase-2 boundary pruning |
 | 2.4 | - | Added comprehensive Anti-Join requirements |
+| 2.5 | - | Replaced the unimplemented §10 observability sketches with the shipped metric catalogue, logging and response diagnostics (#597) |
