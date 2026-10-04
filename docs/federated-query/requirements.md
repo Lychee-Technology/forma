@@ -982,23 +982,45 @@ tracks it.
 
 ### 10.2 Structured Logging
 
-Forma logs through zap and writes no per-query completion event. A query
-leaves these lines:
+Forma logs through zap's global logger. That logger discards every line
+unless the embedding application installs one with `zap.ReplaceGlobals` before
+it builds the manager. `cmd/server` and `cmd/lambda` install zap's production
+logger, whose threshold is Info.
 
-- The HTTP handlers log each query at Info when it arrives and when it
-  completes ("advanced query request received" and "advanced query request
-  completed"; the simple and cross-schema search paths log the same pair under
-  their own names). The lines carry the schema name, page and page size, and
-  on completion the returned and total row counts. The query service adds a
-  "query results" line with the record and page counts.
+No single log event reports a query's phases, per-tier row counts or files
+read. Which lines a query leaves depends on the layer it passes through.
+
+The library's lines reach every caller, an embedding application included:
+
+- `EntityManager.Query` logs "query results" at Info with the record and page
+  counts. `CrossSchemaSearch` logs no such line.
 - At Debug, the Postgres repository logs the SQL it runs and its arguments.
-- A failed request is logged once by the HTTP error path. A redacted response
-  body carries an `error_id` that matches its log line; see "Public HTTP error
-  surface" and "Log levels are contract" in `docs/error-handling.md`.
 - The federated engine logs anomalies only: a Parquet scan-guard failure
   attributed to specific objects, and a manifest column stamp that disagrees
   with the Parquet footer. A healthy federated query logs nothing from the
   engine.
+
+The HTTP server (`internal/httpapi`) adds the per-request lines. An
+application that calls the library directly gets none of them:
+
+- A query is logged at Info when its handler starts work on it and again when
+  it has succeeded ("advanced query request received" and "advanced query
+  request completed"; the simple and cross-schema search routes log the same
+  pair under their own names). The lines carry the schema name, page and page
+  size, and on completion the returned and total row counts.
+- The HTTP layer logs a failed request at most once, in place of the
+  completion line. A failure that goes through the error gate
+  (`respondErrorWithStatus`) is logged once, at the level that "Log levels are
+  contract" in `docs/error-handling.md` assigns. For a 4xx whose body already
+  tells the caller everything that level is Debug, so the production logger
+  does not show it. A body that withholds detail carries an `error_id` that
+  matches its log line; see "Public HTTP error surface" in the same document.
+- A request that a handler rejects by its own checks (a method the route does
+  not accept, a missing required field such as `condition`) is answered
+  through `writeError`, which logs nothing. On the search and advanced-query
+  routes those checks run before the "request received" line, so the request
+  leaves no line at all. #637 tracks whether these rejections should be
+  logged.
 
 Per-stage latency and row counts are metrics (§10.1). Routing, per-source and
 timing detail for one query is returned to the caller on request (§10.3) and
@@ -1008,20 +1030,26 @@ is not logged.
 
 There is no `debug` request flag. Two fields of the query response carry
 diagnostics, and `forma.QueryResult` in `types.go` is their field-level
-contract:
+contract. Only the federated path sets them. A request without
+`federated.enabled` is answered by the PostgreSQL-only path
+(`docs/federated-query/design.md` §4.1) and carries neither field, whatever
+else its `federated` block says.
 
-- `execution_plan` is attached when the request sets
+- `execution_plan` is attached when a federated request also sets
   `federated.include_execution_plan` (`docs/federated-query/design.md` §4.3).
   It reports the routing decision (`routing`: whether DuckDB was used, the
   tiers read, the reason), one entry per data source (`sources`: tier, engine,
-  estimated and actual rows, whether a predicate was pushed down, duration)
-  and `timings` (`translate`, `duckdb_fetch` and `total` in milliseconds, plus
-  a plan-cache hit or miss flag). The generated SQL, its bind parameters and
-  the engine's internal notes are not projected into the response.
-- `partial` is set, whether or not a plan was requested, when the page was
-  answered from less than the request asked for: `corrupt_parquet_excluded`
-  with the number of excluded objects, or `hot_tier_only` with the tiers that
-  were not consulted (`docs/federated-query/design.md` §7.3).
+  estimated and actual rows, whether a predicate was pushed down, duration,
+  reason) and `timings` (`translate`, `duckdb_fetch` and `total` in
+  milliseconds, plus a plan-cache hit or miss flag). The generated SQL, its
+  bind parameters and the engine's internal notes are not projected into the
+  response. `forma.ExecutionPlan` also declares `merge`. Nothing populates it,
+  so it never appears in a response; #613 tracks retiring or populating it.
+- `partial` is set on a federated request, whether or not a plan was
+  requested, when the page was answered from less than the request asked for:
+  `corrupt_parquet_excluded` with the number of excluded objects, or
+  `hot_tier_only` with the tiers that were not consulted
+  (`docs/federated-query/design.md` §7.3).
 
 ---
 

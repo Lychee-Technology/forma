@@ -107,7 +107,7 @@ The translator must traverse the filter tree and generate two distinct SQL fragm
 
 ### **4.3 Federated Request Controls**
 
-The `"federated"` object carries optional controls that affect execution routing and failure semantics:
+The `"federated"` object carries optional controls that affect execution routing and failure semantics. `enabled` gates the rest: when it is false the request never reaches the federated path (§4.1), and the other controls have no effect.
 
 | Field | Type | Default | Description |
 | :---- | :---- | :---- | :---- |
@@ -1149,4 +1149,4 @@ The execution plan and response metadata MUST include:
 * `source_availability`: Per-source status snapshot (PG available, S3 available).
 * `warning`: Human-readable warning when results are partial or consistency is reduced.
 
-**Not implemented.** None of these five fields exists in the execution plan or anywhere else in the response. A partial answer carries the `partial` marker (§7.3), and a request that sets `include_execution_plan` gets an `execution_plan` whose fields are `forma.ExecutionPlan` in `types.go`. #635 tracks reconciling this list and the degraded-mode metadata of §7.2 with the implementation. Circuit-breaker state is not reported as a metric either; #634 tracks that.
+**Not implemented.** None of these five fields exists in the execution plan or anywhere else in the response. A partial answer carries the `partial` marker (§7.3), and a federated request (`federated.enabled`) that sets `federated.include_execution_plan` gets an `execution_plan` whose fields are `forma.ExecutionPlan` in `types.go`. #635 tracks reconciling this list and the degraded-mode metadata of §7.2 with the implementation. Circuit-breaker state is not reported as a metric either; #634 tracks that.
