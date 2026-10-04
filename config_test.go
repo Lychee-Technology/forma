@@ -282,6 +282,40 @@ func TestConfigValidationRequestLimits(t *testing.T) {
 	runValidationCases(t, tests)
 }
 
+// TestConfigValidationMaxRows pins the #598 rules on the pagination depth
+// limit: zero is unbounded, negative is refused, and a positive limit must
+// admit page 1 at the largest page size.
+func TestConfigValidationMaxRows(t *testing.T) {
+	if got := DefaultConfig(nil).Query.MaxRows; got != 10000 {
+		t.Fatalf("default MaxRows = %d; README documents 10000", got)
+	}
+	tests := []validationCase{
+		{
+			name:        "negative limit",
+			config:      configWith(func(c *Config) { c.Query.MaxRows = -1 }),
+			expectError: true,
+			errorField:  "query.maxRows",
+		},
+		{
+			name:        "limit below one full page",
+			config:      configWith(func(c *Config) { c.Query.MaxRows = c.Query.MaxPageSize - 1 }),
+			expectError: true,
+			errorField:  "query.maxRows",
+		},
+		{
+			name:        "limit of exactly one full page",
+			config:      configWith(func(c *Config) { c.Query.MaxRows = c.Query.MaxPageSize }),
+			expectError: false,
+		},
+		{
+			name:        "zero limit is unbounded, not invalid",
+			config:      configWith(func(c *Config) { c.Query.MaxRows = 0 }),
+			expectError: false,
+		},
+	}
+	runValidationCases(t, tests)
+}
+
 // configWith returns the default config after mutate has been applied to it.
 func configWith(mutate func(*Config)) *Config {
 	cfg := DefaultConfig(NewMockSchemaRegistry())

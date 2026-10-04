@@ -53,14 +53,27 @@ func withBudget(ctx context.Context, d time.Duration) (context.Context, context.
 }
 
 // pageOffset turns a 1-based page into a row offset, refusing a page whose
-// offset does not fit in an int (#465). Before this guard the product wrapped
-// to a negative offset, which the SQL generator rendered as `OFFSET -N`: an
-// error from Postgres at best, and a negative that a future `offset < 0`
-// clamp would have silently turned into page 1. Callers clamp page and
-// itemsPerPage to at least 1 before calling.
-func pageOffset(page, itemsPerPage int) (int, error) {
+// window ends past maxRows (QueryConfig.MaxRows, #598) or whose offset does
+// not fit in an int (#465). Callers clamp page and itemsPerPage to at least 1,
+// and itemsPerPage to MaxPageSize, before calling.
+//
+// The depth limit bounds the rows Postgres and DuckDB scan and discard to
+// reach an OFFSET. It refuses rather than clamps: clamping would silently
+// repeat the last admitted page for every deeper one. maxRows <= 0 leaves
+// pagination unbounded. `page > maxRows/itemsPerPage` is exactly
+// `page*itemsPerPage > maxRows` for integers and cannot overflow, so even a
+// page whose offset would overflow is answered with the limit.
+//
+// Before the overflow guard the product wrapped to a negative offset, which
+// the SQL generator rendered as `OFFSET -N`: an error from Postgres at best,
+// and a negative that a future `offset < 0` clamp would have silently turned
+// into page 1.
+func pageOffset(page, itemsPerPage, maxRows int) (int, error) {
 	if page < 1 || itemsPerPage < 1 {
 		return 0, forma.InvalidInputf("page %d and items per page %d must both be positive", page, itemsPerPage)
+	}
+	if maxRows > 0 && page > maxRows/itemsPerPage {
+		return 0, forma.InvalidInputf("page %d with %d items per page exceeds the pagination limit of %d rows; filter the query to reach rows beyond it", page, itemsPerPage, maxRows)
 	}
 	if page-1 > math.MaxInt/itemsPerPage {
 		return 0, forma.InvalidInputf("page %d with %d items per page addresses an offset beyond the supported range", page, itemsPerPage)

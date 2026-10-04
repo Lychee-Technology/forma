@@ -3,23 +3,33 @@ package internal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/httpapi"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/transform"
 )
 
 func newLimitsTestManager(t *testing.T, config *forma.Config, repo *mockPersistentRecordRepository) forma.EntityManager {
 	t.Helper()
+	return newLimitsTestManagerWithEngine(t, config, repo, nil)
+}
+
+func newLimitsTestManagerWithEngine(t *testing.T, config *forma.Config, repo *mockPersistentRecordRepository, engine model.FederatedQueryEngine) forma.EntityManager {
+	t.Helper()
 	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
 	}
 	transformer := transform.NewPersistentRecordTransformer(registry)
-	return mustNewEntityManager(t, transformer, repo, nil, registry, config, nil)
+	return mustNewEntityManager(t, transformer, repo, engine, registry, config, nil)
 }
 
 func visitCreateOps(n int) []forma.EntityOperation {
@@ -93,18 +103,18 @@ func TestZeroMaxBatchSizeLeavesBatchesUnbounded(t *testing.T) {
 // offset does not fit in an int is caller input to refuse, never a negative
 // offset handed to SQL generation.
 func TestPageOffsetRefusesOverflow(t *testing.T) {
-	if got, err := pageOffset(3, 10); err != nil || got != 20 {
+	if got, err := pageOffset(3, 10, 0); err != nil || got != 20 {
 		t.Fatalf("pageOffset(3, 10) = %d, %v; want 20, nil", got, err)
 	}
-	if got, err := pageOffset(1, 100); err != nil || got != 0 {
+	if got, err := pageOffset(1, 100, 0); err != nil || got != 0 {
 		t.Fatalf("pageOffset(1, 100) = %d, %v; want 0, nil", got, err)
 	}
 	last := math.MaxInt/100 + 1
-	if got, err := pageOffset(last, 100); err != nil || got != (last-1)*100 {
+	if got, err := pageOffset(last, 100, 0); err != nil || got != (last-1)*100 {
 		t.Fatalf("pageOffset(%d, 100) = %d, %v; want the largest fitting offset", last, got, err)
 	}
 	for _, page := range []int{last + 1, math.MaxInt} {
-		got, err := pageOffset(page, 100)
+		got, err := pageOffset(page, 100, 0)
 		if !errors.Is(err, forma.ErrInvalidInput) {
 			t.Fatalf("pageOffset(%d, 100) = %d, %v; want ErrInvalidInput", page, got, err)
 		}
@@ -112,8 +122,179 @@ func TestPageOffsetRefusesOverflow(t *testing.T) {
 			t.Fatalf("pageOffset(%d, 100) leaked a negative offset %d", page, got)
 		}
 	}
-	if _, err := pageOffset(0, 100); !errors.Is(err, forma.ErrInvalidInput) {
+	if _, err := pageOffset(0, 100, 0); !errors.Is(err, forma.ErrInvalidInput) {
 		t.Fatalf("pageOffset(0, 100) must refuse a non-positive page, got %v", err)
+	}
+}
+
+// TestPageOffsetRefusesAWindowPastMaxRows pins the depth limit (#598): a page
+// whose window ends exactly at maxRows is admitted, one that ends past it is
+// refused with a published message naming the limit (even when its offset
+// would overflow), and a non-positive maxRows leaves pagination unbounded.
+func TestPageOffsetRefusesAWindowPastMaxRows(t *testing.T) {
+	admitted := []struct{ page, itemsPerPage, maxRows, offset int }{
+		{100, 100, 10000, 9900}, // ends exactly at the limit
+		{3, 30, 100, 60},        // ends at 90, inside a limit the page size does not divide
+		{1, 100, 100, 0},        // one full page is the smallest limit Validate allows
+	}
+	for _, tc := range admitted {
+		if got, err := pageOffset(tc.page, tc.itemsPerPage, tc.maxRows); err != nil || got != tc.offset {
+			t.Fatalf("pageOffset(%d, %d, %d) = %d, %v; want %d, nil", tc.page, tc.itemsPerPage, tc.maxRows, got, err, tc.offset)
+		}
+	}
+
+	refused := []struct{ page, itemsPerPage, maxRows int }{
+		{101, 100, 10000},         // ends at 10100
+		{4, 30, 100},              // ends at 120
+		{2, 100, 100},             // ends at 200
+		{math.MaxInt, 100, 10000}, // the offset overflows; the limit still answers
+	}
+	for _, tc := range refused {
+		got, err := pageOffset(tc.page, tc.itemsPerPage, tc.maxRows)
+		if !errors.Is(err, forma.ErrInvalidInput) {
+			t.Fatalf("pageOffset(%d, %d, %d) = %d, %v; want ErrInvalidInput", tc.page, tc.itemsPerPage, tc.maxRows, got, err)
+		}
+		requirePaginationLimitMessage(t, err, tc.maxRows)
+	}
+
+	// The issue's example walk, with no limit configured.
+	for _, maxRows := range []int{0, -1} {
+		if got, err := pageOffset(1_000_000, 1000, maxRows); err != nil || got != 999_999_000 {
+			t.Fatalf("maxRows=%d must leave pagination unbounded, got %d, %v", maxRows, got, err)
+		}
+	}
+}
+
+// requirePaginationLimitMessage asserts err publishes the depth limit's
+// message, the text the HTTP boundary answers a 400 with.
+func requirePaginationLimitMessage(t *testing.T, err error, maxRows int) {
+	t.Helper()
+	msg, ok := forma.ResolvePublicMessage(err)
+	want := fmt.Sprintf("exceeds the pagination limit of %d rows", maxRows)
+	if !ok || !strings.Contains(msg, want) {
+		t.Fatalf("published message %q (published=%v) does not name the limit: want %q", msg, ok, want)
+	}
+}
+
+// TestQueryPastMaxRowsIsRefusedBeforeTheRepository drives the depth limit
+// (#598) through the manager, on both routes of Query and on
+// CrossSchemaSearch. The window is measured after the MaxPageSize clamp, in
+// the rows the query would actually read, and a refused page reaches neither
+// the repository nor the federated engine.
+func TestQueryPastMaxRowsIsRefusedBeforeTheRepository(t *testing.T) {
+	config := createTestConfig()
+	config.Query.MaxRows = 1000
+	repo := newMockPersistentRecordRepository()
+	engine := &mockFederatedQueryEngine{}
+	em := newLimitsTestManagerWithEngine(t, config, repo, engine)
+	ctx := context.Background()
+	query := func(page, itemsPerPage int, federated bool) error {
+		req := &forma.QueryRequest{SchemaName: "visit", Page: page, ItemsPerPage: itemsPerPage}
+		if federated {
+			req.Federated = &forma.FederatedQueryRequest{Enabled: true}
+		}
+		_, err := em.Query(ctx, req)
+		return err
+	}
+	search := func(page int) error {
+		_, err := em.CrossSchemaSearch(ctx, &forma.CrossSchemaRequest{
+			SchemaNames: []string{"visit"}, SearchTerm: "x", Page: page, ItemsPerPage: 100,
+		})
+		return err
+	}
+
+	refused := map[string]error{
+		"query":                      query(11, 100, false),
+		"query over the page cap":    query(11, 500, false), // clamps to 100 per page
+		"federated query":            query(11, 100, true),
+		"cross-schema search":        search(11),
+		"overflowing federated page": query(math.MaxInt, 100, true),
+	}
+	for name, err := range refused {
+		if !errors.Is(err, forma.ErrInvalidInput) {
+			t.Fatalf("%s: expected ErrInvalidInput, got %v", name, err)
+		}
+		requirePaginationLimitMessage(t, err, 1000)
+	}
+	if len(repo.queries) != 0 || engine.lastQuery != nil {
+		t.Fatalf("a page past the limit reached storage: repository queries=%d, federated=%v", len(repo.queries), engine.lastQuery != nil)
+	}
+
+	// The last page inside the limit is served at the offset it addresses, on
+	// both routes, and so is a clamped page size whose window fits.
+	for _, tc := range []struct {
+		page, itemsPerPage int
+		federated          bool
+		offset             int
+	}{{10, 100, false, 900}, {10, 500, false, 900}, {10, 100, true, 900}} {
+		if err := query(tc.page, tc.itemsPerPage, tc.federated); err != nil {
+			t.Fatalf("page %d (%d per page, federated=%v) is inside the limit: %v", tc.page, tc.itemsPerPage, tc.federated, err)
+		}
+	}
+	if len(repo.queries) != 2 || repo.queries[0].Offset != 900 || repo.queries[1].Offset != 900 {
+		t.Fatalf("expected two Postgres pages at offset 900, got %d queries", len(repo.queries))
+	}
+	if engine.lastQuery == nil || engine.lastQuery.Offset != 900 || engine.lastQuery.Limit != 100 {
+		t.Fatalf("the federated page must reach the engine at offset 900, got %+v", engine.lastQuery)
+	}
+	if err := search(10); err != nil {
+		t.Fatalf("the last cross-schema page inside the limit must be served: %v", err)
+	}
+}
+
+// TestZeroMaxRowsLeavesPaginationUnbounded pins the zero-value contract a
+// library embedder with a hand-built config relies on (#598): without a
+// limit, a page goes as deep as its offset fits, as before #598.
+func TestZeroMaxRowsLeavesPaginationUnbounded(t *testing.T) {
+	config := createTestConfig()
+	if config.Query.MaxRows != 0 {
+		t.Fatalf("test config must leave MaxRows unset, got %d", config.Query.MaxRows)
+	}
+	repo := newMockPersistentRecordRepository()
+	em := newLimitsTestManager(t, config, repo)
+
+	if _, err := em.Query(context.Background(), &forma.QueryRequest{SchemaName: "visit", Page: 1_000_000, ItemsPerPage: 100}); err != nil {
+		t.Fatalf("an unbounded deep page failed: %v", err)
+	}
+	if len(repo.queries) != 1 || repo.queries[0].Offset != 99_999_900 {
+		t.Fatalf("the deep page must reach the repository at offset 99999900, got %d queries", len(repo.queries))
+	}
+	if _, err := em.CrossSchemaSearch(context.Background(), &forma.CrossSchemaRequest{
+		SchemaNames: []string{"visit"}, SearchTerm: "x", Page: 1_000_000, ItemsPerPage: 100,
+	}); err != nil {
+		t.Fatalf("an unbounded deep cross-schema page failed: %v", err)
+	}
+}
+
+// TestPastMaxRowsAnswers400NamingTheLimit is #598's acceptance shape at the
+// HTTP boundary under the default limit: a page whose window ends past 10000
+// rows answers 400 with a body naming the limit, on the GET query, the
+// cross-schema search, and a federated advanced query, and nothing reaches
+// the repository.
+func TestPastMaxRowsAnswers400NamingTheLimit(t *testing.T) {
+	config := createTestConfig()
+	config.Query.MaxRows = forma.DefaultConfig(nil).Query.MaxRows
+	repo := newMockPersistentRecordRepository()
+	handler := httpapi.NewServer(newLimitsTestManager(t, config, repo), httpapi.Options{}).Handler()
+
+	advanced := `{"schema_name":"visit","condition":{"l":"and","c":[]},"page":101,"items_per_page":100,"federated":{"enabled":true}}`
+	requests := map[string]*http.Request{
+		"query":                    httptest.NewRequest(http.MethodGet, "/api/v1/visit?page=101&items_per_page=100", nil),
+		"search":                   httptest.NewRequest(http.MethodGet, "/api/v1/search?schemas=visit&q=x&page=101&items_per_page=100", nil),
+		"federated advanced query": httptest.NewRequest(http.MethodPost, "/api/v1/advanced_query", strings.NewReader(advanced)),
+	}
+	for name, req := range requests {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d: %s", name, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "exceeds the pagination limit of 10000 rows") {
+			t.Fatalf("%s: the body must name the limit, got %s", name, rec.Body.String())
+		}
+	}
+	if len(repo.queries) != 0 {
+		t.Fatalf("a page past the limit reached the repository %d times", len(repo.queries))
 	}
 }
 

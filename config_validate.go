@@ -41,10 +41,18 @@ func (c *Config) Validate() error {
 // cap, so it must be positive; the two budgets may be zero (unbounded) but
 // never negative, matching the duckdb.queryTimeout rule. The batch cap needs
 // no rule of its own: performance.maxBatchSize >= batchSize > 0 above already
-// keeps it positive.
+// keeps it positive. The pagination depth limit (#598) may be zero
+// (unbounded) but never negative, and a positive one must admit page 1 at the
+// largest page size, or every full-size first page would be refused.
 func (c *Config) validateRequestLimits() error {
 	if c.Entity.MaxEntitySize <= 0 {
 		return &ConfigError{Field: "entity.maxEntitySize", Message: "must be greater than 0"}
+	}
+	if c.Query.MaxRows < 0 {
+		return &ConfigError{Field: "query.maxRows", Message: "must be greater than or equal to 0"}
+	}
+	if c.Query.MaxRows > 0 && c.Query.MaxRows < c.Query.MaxPageSize {
+		return &ConfigError{Field: "query.maxRows", Message: "must be 0 (unbounded) or greater than or equal to maxPageSize"}
 	}
 	if c.Query.DefaultTimeout < 0 {
 		return &ConfigError{Field: "query.defaultTimeout", Message: "must be greater than or equal to 0"}
