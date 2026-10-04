@@ -982,10 +982,16 @@ tracks it.
 
 ### 10.2 Structured Logging
 
-Forma logs through zap's global logger. That logger discards every line
-unless the embedding application installs one with `zap.ReplaceGlobals` before
-it builds the manager. `cmd/server` and `cmd/lambda` install zap's production
-logger, whose threshold is Info.
+Forma logs through zap's global logger, which discards every line until the
+embedding application installs one with `zap.ReplaceGlobals`. The application
+must do that before it builds the manager. Most log sites look the global
+logger up when they write a line, but the federated engine and its DuckDB
+client take it while the manager is built and keep it. A logger installed
+later receives the "query results" line, the Debug SQL and the HTTP lines
+described below. It never receives the engine's anomaly lines or the DuckDB
+client's warning about a failed connection-init step. `cmd/server` and
+`cmd/lambda` install zap's production logger, whose threshold is Info, before
+they build the manager.
 
 No single log event reports a query's phases, per-tier row counts or files
 read. Which lines a query leaves depends on the layer it passes through.
@@ -995,10 +1001,13 @@ The library's lines reach every caller, an embedding application included:
 - `EntityManager.Query` logs "query results" at Info with the record and page
   counts. `CrossSchemaSearch` logs no such line.
 - At Debug, the Postgres repository logs the SQL it runs and its arguments.
-- The federated engine logs anomalies only: a Parquet scan-guard failure
-  attributed to specific objects, and a manifest column stamp that disagrees
-  with the Parquet footer. A healthy federated query logs nothing from the
-  engine.
+- The federated engine logs two anomalies and nothing else: at Error, a
+  Parquet scan-guard failure attributed to specific objects, and at Warn, a
+  manifest column stamp that disagrees with the Parquet footer. It reports
+  every other failure only through the error it returns. Silence from the
+  engine therefore does not mean a federated query was healthy: the degraded
+  fallback described at the end of this section absorbs a failure without a
+  line.
 
 The HTTP server (`internal/httpapi`) adds the per-request lines. An
 application that calls the library directly gets none of them:
@@ -1026,12 +1035,37 @@ Per-stage latency and row counts are metrics (§10.1). Routing, per-source and
 timing detail for one query is returned to the caller on request (§10.3) and
 is not logged.
 
+One kind of failure leaves neither a log line nor a metric. When a request
+sets `federated.allow_partial_degraded_mode`, the engine absorbs most
+DuckDB-path failures, a circuit-breaker rejection included, and answers from
+PostgreSQL alone (`docs/federated-query/design.md` §7.2). The request
+succeeds, so:
+
+- The engine does not log the failure it absorbed. The scan-guard line above
+  is the one exception, because it is written before the fallback.
+- The failed pass emits no `fed_query_*` sample (§10.1). During an S3 outage
+  those series go flat, which reads the same as no traffic.
+- `EntityManager.Query` and the HTTP layer log their ordinary success lines.
+
+The only traces are in the response (§10.3). The `partial` marker reads
+`hot_tier_only`, which the routing shortcut for small pages sets too, so it
+does not identify a failure. A requested `execution_plan` names the degraded
+fallback in its `routing` reason. Neither carries the cause of the failure.
+`docs/federated-query/design.md` §7.2 lists "Log Error" as the first step of
+this fallback. That step is not implemented, and #638 tracks it.
+
 ### 10.3 Query Diagnostics in the Response
 
-There is no `debug` request flag. Two fields of the query response carry
-diagnostics, and `forma.QueryResult` in `types.go` is their field-level
-contract. Only the federated path sets them. A request without
-`federated.enabled` is answered by the PostgreSQL-only path
+There is no `debug` request flag. `forma.QueryResult` in `types.go` is the
+field-level contract for the diagnostics a response carries.
+
+Every query response carries `execution_time`: the wall time the query took
+inside the library, as integer nanoseconds. It excludes HTTP decoding and
+response encoding. The PostgreSQL-only path and cross-schema search set it
+too, so it does not depend on a federated execution plan.
+
+Two more fields carry diagnostics, and only the federated path sets them. A
+request without `federated.enabled` is answered by the PostgreSQL-only path
 (`docs/federated-query/design.md` §4.1) and carries neither field, whatever
 else its `federated` block says.
 
