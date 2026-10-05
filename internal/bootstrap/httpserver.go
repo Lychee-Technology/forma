@@ -53,16 +53,22 @@ func DefaultHTTPServerConfig() HTTPServerConfig {
 }
 
 // HTTPServerConfigFromEnv overlays the HTTP_* environment on defaults. The
-// timeouts are whole seconds; an unparsable value keeps the default, matching
-// every other EnvInt overlay in this package.
-func HTTPServerConfigFromEnv(defaults HTTPServerConfig) HTTPServerConfig {
-	return HTTPServerConfig{
-		ReadHeaderTimeout: envSeconds("HTTP_READ_HEADER_TIMEOUT_SECONDS", defaults.ReadHeaderTimeout),
-		ReadTimeout:       envSeconds("HTTP_READ_TIMEOUT_SECONDS", defaults.ReadTimeout),
-		WriteTimeout:      envSeconds("HTTP_WRITE_TIMEOUT_SECONDS", defaults.WriteTimeout),
-		IdleTimeout:       envSeconds("HTTP_IDLE_TIMEOUT_SECONDS", defaults.IdleTimeout),
-		MaxHeaderBytes:    EnvInt("HTTP_MAX_HEADER_BYTES", defaults.MaxHeaderBytes),
+// timeouts are whole seconds. A set but unparsable value fails it with an
+// *EnvError per bad variable (#600), like every other overlay in this package;
+// unset keeps the default.
+func HTTPServerConfigFromEnv(defaults HTTPServerConfig) (HTTPServerConfig, error) {
+	var env envOverlay
+	cfg := HTTPServerConfig{
+		ReadHeaderTimeout: env.seconds("HTTP_READ_HEADER_TIMEOUT_SECONDS", defaults.ReadHeaderTimeout),
+		ReadTimeout:       env.seconds("HTTP_READ_TIMEOUT_SECONDS", defaults.ReadTimeout),
+		WriteTimeout:      env.seconds("HTTP_WRITE_TIMEOUT_SECONDS", defaults.WriteTimeout),
+		IdleTimeout:       env.seconds("HTTP_IDLE_TIMEOUT_SECONDS", defaults.IdleTimeout),
+		MaxHeaderBytes:    env.integer("HTTP_MAX_HEADER_BYTES", defaults.MaxHeaderBytes),
 	}
+	if err := env.err(); err != nil {
+		return HTTPServerConfig{}, err
+	}
+	return cfg, nil
 }
 
 // Validate refuses a configuration net/http would accept but that quietly
@@ -154,11 +160,4 @@ func NewHTTPServer(addr string, handler http.Handler, cfg HTTPServerConfig) *htt
 		IdleTimeout:       cfg.IdleTimeout,
 		MaxHeaderBytes:    cfg.MaxHeaderBytes,
 	}
-}
-
-// envSeconds reads a whole-seconds duration; unset or unparsable keeps the
-// default.
-func envSeconds(key string, defaultValue time.Duration) time.Duration {
-	seconds := EnvInt(key, int(defaultValue/time.Second))
-	return time.Duration(seconds) * time.Second
 }

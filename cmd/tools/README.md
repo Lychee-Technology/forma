@@ -45,7 +45,7 @@ init-db
 -------
 选项（可用环境变量同名大写带下划线作默认值）：
 - `-db-host`（`DB_HOST`，默认 `localhost`）
-- `-db-port`（`DB_PORT`，默认 `5432`）
+- `-db-port`（`DB_PORT`，默认 `5432`；`DB_PORT` 已设置但不是十进制整数（如 Kubernetes 注入的 `tcp://…`）时直接报错，即使同时传了 `-db-port`；`validate-schema-consistency` 同理，#600）
 - `-db-name`（`DB_NAME`，默认 `forma`）
 - `-db-user`（`DB_USER`，默认 `postgres`）
 - `-db-password`（`DB_PASSWORD`，默认空）

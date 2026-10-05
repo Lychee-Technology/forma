@@ -76,8 +76,22 @@ the query budget is `0`, or the transaction budget, whichever is longest)
 fails startup with a message naming the field. The write deadline starts
 when the headers have been read, so it has to cover the body upload, the
 budget, and the response; a bounded write timeout therefore also needs a
-bounded read timeout. An unparsable value keeps the default, as for every
-other integer variable above.
+bounded read timeout.
+
+Every integer variable above, and the pool settings `DB_MAX_CONNECTIONS`,
+`DB_MAX_IDLE_CONNS`, `DB_CONN_MAX_LIFETIME_SECONDS`,
+`DB_CONN_MAX_IDLE_TIME_SECONDS` and `DB_TIMEOUT_SECONDS`, must be a plain
+base-10 integer (the `*_SECONDS` ones a whole number of seconds) when set.
+Unset or empty takes the default. A value that does not parse, such as
+`30s`, `1_000` or `1.5`, or a seconds value too large for a Go duration,
+fails startup of the server and the Lambda cold start, before any
+connection is opened, with a message naming the variable and quoting the
+value, for example `environment variable QUERY_TIMEOUT_SECONDS="30s" must
+be a whole number of seconds: invalid syntax`. Every bad variable is named at
+once. On Kubernetes, a Service named `db` makes the kubelet inject
+`DB_PORT=tcp://<ip>:<port>` into pods in the same namespace; that value is
+refused rather than read as `5432`, so set `DB_PORT` explicitly or set
+`enableServiceLinks: false` on the pod.
 
 ## API Reference
 

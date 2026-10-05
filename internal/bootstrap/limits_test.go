@@ -41,16 +41,23 @@ func TestHTTPServerConfigFromEnv(t *testing.T) {
 	t.Setenv("HTTP_IDLE_TIMEOUT_SECONDS", "0")
 	t.Setenv("HTTP_MAX_HEADER_BYTES", "4096")
 
-	cfg := HTTPServerConfigFromEnv(DefaultHTTPServerConfig())
+	cfg, err := HTTPServerConfigFromEnv(DefaultHTTPServerConfig())
+	if err != nil {
+		t.Fatalf("a fully parsable environment must overlay cleanly: %v", err)
+	}
 	if cfg.ReadHeaderTimeout != 3*time.Second || cfg.ReadTimeout != 7*time.Second ||
 		cfg.WriteTimeout != 90*time.Second || cfg.IdleTimeout != 0 || cfg.MaxHeaderBytes != 4096 {
 		t.Fatalf("env overlay not applied: %+v", cfg)
 	}
 
-	t.Setenv("HTTP_READ_TIMEOUT_SECONDS", "not-a-number")
-	cfg = HTTPServerConfigFromEnv(DefaultHTTPServerConfig())
-	if cfg.ReadTimeout != DefaultHTTPServerConfig().ReadTimeout {
-		t.Fatalf("an unparsable value must keep the default, got %s", cfg.ReadTimeout)
+	// Unset keeps the defaults.
+	for _, key := range []string{"HTTP_READ_HEADER_TIMEOUT_SECONDS", "HTTP_READ_TIMEOUT_SECONDS",
+		"HTTP_WRITE_TIMEOUT_SECONDS", "HTTP_IDLE_TIMEOUT_SECONDS", "HTTP_MAX_HEADER_BYTES"} {
+		t.Setenv(key, "")
+	}
+	cfg, err = HTTPServerConfigFromEnv(DefaultHTTPServerConfig())
+	if err != nil || cfg != DefaultHTTPServerConfig() {
+		t.Fatalf("unset env must keep the defaults, got %+v (%v)", cfg, err)
 	}
 }
 
@@ -63,7 +70,9 @@ func TestApplyLimitsFromEnv(t *testing.T) {
 	t.Setenv("DUCKDB_QUERY_TIMEOUT_SECONDS", "12")
 
 	cfg := forma.DefaultConfig(nil)
-	ApplyLimitsFromEnv(cfg)
+	if err := ApplyLimitsFromEnv(cfg); err != nil {
+		t.Fatalf("a fully parsable environment must overlay cleanly: %v", err)
+	}
 	if cfg.Entity.MaxEntitySize != 2048 || cfg.Performance.MaxBatchSize != 250 || cfg.Query.MaxRows != 50000 ||
 		cfg.Query.DefaultTimeout != 5*time.Second || cfg.Transaction.DefaultTimeout != 0 ||
 		cfg.DuckDB.QueryTimeout != 12*time.Second {
@@ -79,14 +88,18 @@ func TestApplyLimitsFromEnv(t *testing.T) {
 	}
 	cfg = forma.DefaultConfig(nil)
 	want := *forma.DefaultConfig(nil)
-	ApplyLimitsFromEnv(cfg)
+	if err := ApplyLimitsFromEnv(cfg); err != nil {
+		t.Fatalf("unset env must not fail: %v", err)
+	}
 	if cfg.Entity.MaxEntitySize != want.Entity.MaxEntitySize || cfg.Performance.MaxBatchSize != want.Performance.MaxBatchSize ||
 		cfg.Query.MaxRows != want.Query.MaxRows ||
 		cfg.Query.DefaultTimeout != want.Query.DefaultTimeout || cfg.Transaction.DefaultTimeout != want.Transaction.DefaultTimeout ||
 		cfg.DuckDB.QueryTimeout != want.DuckDB.QueryTimeout {
 		t.Fatalf("unset env must keep defaults")
 	}
-	ApplyLimitsFromEnv(nil)
+	if err := ApplyLimitsFromEnv(nil); err != nil {
+		t.Fatalf("a nil config is a no-op, got %v", err)
+	}
 }
 
 // TestHTTPServerConfigValidate pins the boot-time rules on the HTTP_* overlay
@@ -221,7 +234,9 @@ func TestNegativeLimitOverlayFailsValidation(t *testing.T) {
 		t.Run(key, func(t *testing.T) {
 			t.Setenv(key, "-1")
 			cfg := forma.DefaultConfig(nil)
-			ApplyLimitsFromEnv(cfg)
+			if err := ApplyLimitsFromEnv(cfg); err != nil {
+				t.Fatalf("-1 parses; only Validate may refuse it: %v", err)
+			}
 			assertConfigError(t, cfg.Validate(), field)
 		})
 	}
@@ -231,7 +246,9 @@ func TestNegativeLimitOverlayFailsValidation(t *testing.T) {
 	t.Run("MAX_QUERY_ROWS below one page", func(t *testing.T) {
 		t.Setenv("MAX_QUERY_ROWS", "99")
 		cfg := forma.DefaultConfig(nil)
-		ApplyLimitsFromEnv(cfg)
+		if err := ApplyLimitsFromEnv(cfg); err != nil {
+			t.Fatalf("99 parses; only Validate may refuse it: %v", err)
+		}
 		assertConfigError(t, cfg.Validate(), "query.maxRows")
 	})
 
@@ -241,7 +258,9 @@ func TestNegativeLimitOverlayFailsValidation(t *testing.T) {
 		t.Setenv(key, "0")
 	}
 	cfg := forma.DefaultConfig(nil)
-	ApplyLimitsFromEnv(cfg)
+	if err := ApplyLimitsFromEnv(cfg); err != nil {
+		t.Fatalf("zero parses: %v", err)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("zero budgets and row limit must validate: %v", err)
 	}

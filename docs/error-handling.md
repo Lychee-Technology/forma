@@ -1387,6 +1387,21 @@ shape:
   request's connection before its `504` could leave. Library embedders that
   build a config by hand are not validated; for them the zero-value
   semantics above apply.
+- **Unparsable environment (#600).** Validation judges values, so it needs
+  the value the operator wrote to reach its field. A set integer variable
+  that does not parse as base-10 (`QUERY_TIMEOUT_SECONDS=30s`,
+  `DB_PORT=tcp://…`), or a `*_SECONDS` value too large for a
+  `time.Duration`, used to keep its default silently; it is now a
+  `*bootstrap.EnvError` carrying the variable, the raw value, the form it
+  needs, and `strconv.ErrSyntax` or `strconv.ErrRange` as its cause. The
+  `*FromEnv` overlays (`DatabaseConfigFromEnv`, `HTTPServerConfigFromEnv`,
+  `ApplyLimitsFromEnv`) read all of their variables and join every failure,
+  and cmd/server and cmd/lambda join the overlays' errors in turn, so one boot
+  names every bad variable. That check runs before `Config.Validate`: a
+  value that never reached its field would make validation judge a default
+  the operator did not choose. Like the rest of this section it is an
+  operator-facing startup failure, not a 4xx. An unset or empty variable
+  still takes the default.
 
 The write-path entry matters most: without it, a `POST` omitting a required
 attribute would answer `500` with an opaque body instead of naming the attribute.
