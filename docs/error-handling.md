@@ -1265,7 +1265,7 @@ only it.
 | `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
 | `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites, `body_limit.go`) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360); a request body over the configured cap (`413`, #465); a body net/http could not frame (`400`, `malformed request body`). A body the transport failed to deliver is not caller input and takes the redacted branch (`408` on a read timeout, see "Request limits") |
-| `internal/entity_request_limits.go` (`validateBatchOperation`, `pageOffset`) | a batch carrying more operations than `PerformanceConfig.MaxBatchSize`; a `page` whose offset overflows an `int` (#465) |
+| `internal/entity_request_limits.go` (`validateBatchOperation`, `pageOffset`) | a batch carrying more operations than `PerformanceConfig.MaxBatchSize`; a `page` whose offset overflows an `int` (#465); a `page` whose window ends past `QueryConfig.MaxRows` (#598) |
 | `internal/federated/duckdb_query_build.go` (`duckDBParquetPathsForQuery`), `internal/federated/parquet_hint_scope.go` (`validateHintPathScope`) | a `federated.s3_parquet_path_template` hint that is disabled by the deployment, unrenderable, renders to no usable path, contains a disallowed character, resolves outside the configured bucket / `s3DataPrefix` scope, or has a forbidden shape — `**`, a wildcard outside the object-name segment, a `_tmp` segment, a trailing `/` (#456, #477) — or any hint at all on an engine whose bucket is empty or whose `s3DataPrefix` carries a glob metacharacter, combinations startup validation normally rejects. The hint template and the offending rendered path are caller-owned and published; the configured bucket and prefix are operator detail (`WithOperatorDetail`). |
 
 ### A success body that fails to encode (#591)
@@ -1320,9 +1320,24 @@ shape:
   manager, before any repository work, so library embedders get the same
   bound: `400` with `batch of N operations exceeds the maximum batch size of
   M`. A zero or negative cap leaves batches unbounded.
-- **Page overflow.** A `page` × `items_per_page` product that does not fit in
-  an `int` is `400` (`... addresses an offset beyond the supported range`)
-  rather than a negative `OFFSET`.
+- **Page depth (#598).** `QueryConfig.MaxRows` (10000, `MAX_QUERY_ROWS`)
+  bounds how deep offset pagination reaches, since Postgres and DuckDB scan
+  and discard every row before an `OFFSET`. `Query` and `CrossSchemaSearch`
+  refuse a page whose window (`page` × `items_per_page`, after the
+  `MaxPageSize` clamp) ends past it, before any repository call: `400` with
+  `page N with M items per page exceeds the pagination limit of L rows;
+  filter the query to reach rows beyond it`. The limit refuses rather than
+  clamps, because a clamped offset would answer every deeper page with the
+  last admitted one. It is checked in `pageOffset`, which both routes of
+  `Query` share, so a federated request is bounded exactly like an OLTP one;
+  the keyset cursor has no offset, but no public request reaches it.
+  `total_pages` and `has_next` still describe the whole result, so a client
+  looping on `has_next` past the limit fails loudly instead of stopping
+  short. A zero or negative limit leaves pagination unbounded.
+- **Page overflow.** With no depth limit, a `page` × `items_per_page` product
+  that does not fit in an `int` is `400` (`... addresses an offset beyond the
+  supported range`) rather than a negative `OFFSET`. Under a limit, the depth
+  check answers first.
 - **Budgets.** `QueryConfig.DefaultTimeout` bounds `Get`, `Query` and
   `CrossSchemaSearch`; `TransactionConfig.DefaultTimeout` bounds each write
   transaction (`Create`, `Update`, `Delete`, and each atomic batch; a
@@ -1355,7 +1370,10 @@ shape:
   cmd/lambda assemble the whole `forma.Config` from the environment and run
   `Config.Validate` on it before opening the database: `Entity.MaxEntitySize`
   must be positive, `Performance.MaxBatchSize` must be at least `BatchSize`,
-  and the three budgets may be zero (unbounded) but not negative. cmd/server
+  `Query.MaxRows` may be zero (unbounded) but otherwise must be at least
+  `Query.MaxPageSize` (so page 1 at the largest page size is always
+  admitted), and the three budgets may be zero (unbounded) but not
+  negative. cmd/server
   also runs `HTTPServerConfig.Validate`, which refuses a negative phase
   timeout or header cap (net/http would read either as "no bound"), a
   bounded `WriteTimeout` that does not strictly exceed `ReadTimeout` plus
@@ -1369,9 +1387,6 @@ shape:
   request's connection before its `504` could leave. Library embedders that
   build a config by hand are not validated; for them the zero-value
   semantics above apply.
-
-`QueryConfig.MaxRows` remains declared but unenforced; it is tracked
-separately from #465.
 
 The write-path entry matters most: without it, a `POST` omitting a required
 attribute would answer `500` with an opaque body instead of naming the attribute.

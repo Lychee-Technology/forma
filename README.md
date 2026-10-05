@@ -57,6 +57,7 @@ The server listens on port `8080` by default. Configure via environment variable
 | `METRICS_STDOUT` | unset (off) | `true` writes every emitted metric as a JSON line on stdout (`docs/telemetry.md`) |
 | `MAX_ENTITY_SIZE_BYTES` | `1048576` | Cap on every HTTP request body, trailing bytes included; a larger body answers `413` before it is decoded |
 | `MAX_BATCH_SIZE` | `1000` | Cap on operations per batch create/update/delete; a larger batch answers `400` |
+| `MAX_QUERY_ROWS` | `10000` | How deep offset pagination reaches: a query or search page whose window (`page` × `items_per_page`) ends past it answers `400`, so walk further by filtering the query (`0` disables) |
 | `QUERY_TIMEOUT_SECONDS` | `30` | Budget for a get, query or search; an exceeded budget answers `504` (`0` disables) |
 | `TRANSACTION_TIMEOUT_SECONDS` | `30` | Budget for one write transaction (create, update, delete, atomic batch); `0` disables |
 | `DUCKDB_QUERY_TIMEOUT_SECONDS` | `30` | Budget for all the DuckDB work of one federated request, inside the query budget; `0` disables |
@@ -67,7 +68,8 @@ The server listens on port `8080` by default. Configure via environment variable
 | `HTTP_MAX_HEADER_BYTES` | `1048576` | `http.Server` MaxHeaderBytes |
 
 The limits and timeouts are validated before the server opens its database
-connection: a negative value, a zero size or batch cap, or a bounded
+connection: a negative value, a zero size or batch cap, a non-zero
+`MAX_QUERY_ROWS` below the 100-row page cap, or a bounded
 `HTTP_WRITE_TIMEOUT_SECONDS` that does not exceed `HTTP_READ_TIMEOUT_SECONDS`
 plus the largest bounded budget (the query budget, or the DuckDB budget when
 the query budget is `0`, or the transaction budget, whichever is longest)
@@ -88,6 +90,12 @@ other integer variable above.
 | `DELETE` | `/api/v1/{schema}` | Batch delete (JSON body: array of row_id strings) |
 | `GET` | `/api/v1/search` | Cross-schema search (`?schemas=&q=&page=&items_per_page=`) |
 | `POST` | `/api/v1/advanced_query` | Advanced query with condition DSL (JSON body) |
+
+Pagination is offset-based: `items_per_page` is capped at 100, and a page
+whose window ends past `MAX_QUERY_ROWS` rows (10000 by default) answers `400`
+naming the limit instead of scanning past every earlier row. To read further,
+narrow the result with an `advanced_query` condition, for example on the sort
+attribute past the last row already read.
 
 A `date` or `datetime` attribute is returned as an RFC3339 string when its year
 is 0000 to 9999, and otherwise as a string of its exact epoch milliseconds

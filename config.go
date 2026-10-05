@@ -37,7 +37,13 @@ type DatabaseConfig struct {
 
 // QueryConfig contains query execution settings
 type QueryConfig struct {
-	DefaultTimeout     time.Duration `json:"defaultTimeout"`
+	DefaultTimeout time.Duration `json:"defaultTimeout"`
+	// MaxRows caps how deep offset pagination reaches (#598): Query and
+	// CrossSchemaSearch refuse, as invalid input, a page whose window
+	// (page × itemsPerPage) ends past it, before any repository call, since
+	// Postgres and DuckDB scan and discard every row before an OFFSET.
+	// Zero or negative leaves pagination unbounded; Validate refuses a
+	// negative value and a positive one below MaxPageSize.
 	MaxRows            int           `json:"maxRows"`
 	DefaultPageSize    int           `json:"defaultPageSize"`
 	MaxPageSize        int           `json:"maxPageSize"`

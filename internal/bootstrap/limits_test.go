@@ -57,22 +57,23 @@ func TestHTTPServerConfigFromEnv(t *testing.T) {
 func TestApplyLimitsFromEnv(t *testing.T) {
 	t.Setenv("MAX_ENTITY_SIZE_BYTES", "2048")
 	t.Setenv("MAX_BATCH_SIZE", "250")
+	t.Setenv("MAX_QUERY_ROWS", "50000")
 	t.Setenv("QUERY_TIMEOUT_SECONDS", "5")
 	t.Setenv("TRANSACTION_TIMEOUT_SECONDS", "0")
 	t.Setenv("DUCKDB_QUERY_TIMEOUT_SECONDS", "12")
 
 	cfg := forma.DefaultConfig(nil)
 	ApplyLimitsFromEnv(cfg)
-	if cfg.Entity.MaxEntitySize != 2048 || cfg.Performance.MaxBatchSize != 250 ||
+	if cfg.Entity.MaxEntitySize != 2048 || cfg.Performance.MaxBatchSize != 250 || cfg.Query.MaxRows != 50000 ||
 		cfg.Query.DefaultTimeout != 5*time.Second || cfg.Transaction.DefaultTimeout != 0 ||
 		cfg.DuckDB.QueryTimeout != 12*time.Second {
-		t.Fatalf("limits overlay not applied: entity=%d batch=%d query=%s tx=%s duckdb=%s",
-			cfg.Entity.MaxEntitySize, cfg.Performance.MaxBatchSize,
+		t.Fatalf("limits overlay not applied: entity=%d batch=%d rows=%d query=%s tx=%s duckdb=%s",
+			cfg.Entity.MaxEntitySize, cfg.Performance.MaxBatchSize, cfg.Query.MaxRows,
 			cfg.Query.DefaultTimeout, cfg.Transaction.DefaultTimeout, cfg.DuckDB.QueryTimeout)
 	}
 
 	// Unset leaves the defaults, and a nil config is a no-op.
-	for _, key := range []string{"MAX_ENTITY_SIZE_BYTES", "MAX_BATCH_SIZE", "QUERY_TIMEOUT_SECONDS",
+	for _, key := range []string{"MAX_ENTITY_SIZE_BYTES", "MAX_BATCH_SIZE", "MAX_QUERY_ROWS", "QUERY_TIMEOUT_SECONDS",
 		"TRANSACTION_TIMEOUT_SECONDS", "DUCKDB_QUERY_TIMEOUT_SECONDS"} {
 		t.Setenv(key, "")
 	}
@@ -80,6 +81,7 @@ func TestApplyLimitsFromEnv(t *testing.T) {
 	want := *forma.DefaultConfig(nil)
 	ApplyLimitsFromEnv(cfg)
 	if cfg.Entity.MaxEntitySize != want.Entity.MaxEntitySize || cfg.Performance.MaxBatchSize != want.Performance.MaxBatchSize ||
+		cfg.Query.MaxRows != want.Query.MaxRows ||
 		cfg.Query.DefaultTimeout != want.Query.DefaultTimeout || cfg.Transaction.DefaultTimeout != want.Transaction.DefaultTimeout ||
 		cfg.DuckDB.QueryTimeout != want.DuckDB.QueryTimeout {
 		t.Fatalf("unset env must keep defaults")
@@ -210,6 +212,7 @@ func TestNegativeLimitOverlayFailsValidation(t *testing.T) {
 	cases := map[string]string{
 		"MAX_ENTITY_SIZE_BYTES":        "entity.maxEntitySize",
 		"MAX_BATCH_SIZE":               "performance.maxBatchSize",
+		"MAX_QUERY_ROWS":               "query.maxRows",
 		"QUERY_TIMEOUT_SECONDS":        "query.defaultTimeout",
 		"TRANSACTION_TIMEOUT_SECONDS":  "transaction.defaultTimeout",
 		"DUCKDB_QUERY_TIMEOUT_SECONDS": "duckdb.queryTimeout",
@@ -223,14 +226,27 @@ func TestNegativeLimitOverlayFailsValidation(t *testing.T) {
 		})
 	}
 
-	// Zero budgets are the documented "disabled" value and must pass.
-	for _, key := range []string{"QUERY_TIMEOUT_SECONDS", "TRANSACTION_TIMEOUT_SECONDS", "DUCKDB_QUERY_TIMEOUT_SECONDS"} {
+	// A positive row limit below one full page would refuse every full-size
+	// first page, so it fails at boot too.
+	t.Run("MAX_QUERY_ROWS below one page", func(t *testing.T) {
+		t.Setenv("MAX_QUERY_ROWS", "99")
+		cfg := forma.DefaultConfig(nil)
+		ApplyLimitsFromEnv(cfg)
+		assertConfigError(t, cfg.Validate(), "query.maxRows")
+	})
+
+	// Zero budgets and a zero row limit are the documented "disabled" value
+	// and must pass.
+	for _, key := range []string{"MAX_QUERY_ROWS", "QUERY_TIMEOUT_SECONDS", "TRANSACTION_TIMEOUT_SECONDS", "DUCKDB_QUERY_TIMEOUT_SECONDS"} {
 		t.Setenv(key, "0")
 	}
 	cfg := forma.DefaultConfig(nil)
 	ApplyLimitsFromEnv(cfg)
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("zero budgets must validate: %v", err)
+		t.Fatalf("zero budgets and row limit must validate: %v", err)
+	}
+	if cfg.Query.MaxRows != 0 {
+		t.Fatalf("MAX_QUERY_ROWS=0 must disable the limit, got %d", cfg.Query.MaxRows)
 	}
 }
 

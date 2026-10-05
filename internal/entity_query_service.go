@@ -80,7 +80,7 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		return nil, err
 	}
 
-	offset, err := pageOffset(req.Page, req.ItemsPerPage)
+	offset, err := pageOffset(req.Page, req.ItemsPerPage, s.config.Query.MaxRows)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +272,7 @@ func (s *entityQueryService) validateCrossSchemaRequest(req *forma.CrossSchemaRe
 	if req.ItemsPerPage > s.config.Query.MaxPageSize {
 		req.ItemsPerPage = s.config.Query.MaxPageSize
 	}
-	if _, err := pageOffset(req.Page, req.ItemsPerPage); err != nil {
+	if _, err := pageOffset(req.Page, req.ItemsPerPage, s.config.Query.MaxRows); err != nil {
 		return err
 	}
 	return nil
@@ -351,9 +351,10 @@ func (s *entityQueryService) fetchCrossSchemaResults(
 	schemaTotals []int64,
 	req *forma.CrossSchemaRequest,
 ) ([]*forma.DataRecord, error) {
-	// validateCrossSchemaRequest already refused an overflowing page; the
-	// error branch here is unreachable but keeps the arithmetic in one place.
-	offset, err := pageOffset(req.Page, req.ItemsPerPage)
+	// validateCrossSchemaRequest already refused an overflowing or too-deep
+	// page; the error branch here is unreachable but keeps the arithmetic in
+	// one place.
+	offset, err := pageOffset(req.Page, req.ItemsPerPage, s.config.Query.MaxRows)
 	if err != nil {
 		return nil, err
 	}
