@@ -58,11 +58,10 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 	}
 
 	// DB_PORT is --db-port's default, so a set but unparsable value is
-	// refused even when the flag would override it (#600).
-	portDefault, err := bootstrap.EnvInt("DB_PORT", 5432)
-	if err != nil {
-		return fmt.Errorf("resolve --db-port default: %w", err)
-	}
+	// refused even when the flag would override it (#600). The refusal waits
+	// until after flags.Parse so --help still prints usage; EnvInt returns
+	// 5432 alongside the error to register the flag with.
+	portDefault, portErr := bootstrap.EnvInt("DB_PORT", 5432)
 
 	var pg postgresFlags
 	pg.register(flags, postgresFlagOptions{
@@ -96,6 +95,9 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 			return nil
 		}
 		return err
+	}
+	if portErr != nil {
+		return fmt.Errorf("resolve --db-port default: %w", portErr)
 	}
 
 	if err := schemaRegistry.validate(true); err != nil {
