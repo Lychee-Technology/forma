@@ -133,9 +133,10 @@ func TestPageOffsetRefusesOverflow(t *testing.T) {
 // would overflow), and a non-positive maxRows leaves pagination unbounded.
 func TestPageOffsetRefusesAWindowPastMaxRows(t *testing.T) {
 	admitted := []struct{ page, itemsPerPage, maxRows, offset int }{
-		{100, 100, 10000, 9900}, // ends exactly at the limit
-		{3, 30, 100, 60},        // ends at 90, inside a limit the page size does not divide
-		{1, 100, 100, 0},        // one full page is the smallest limit Validate allows
+		{100, 100, 10000, 9900},  // ends exactly at the limit
+		{3, 30, 100, 60},         // ends at 90, inside a limit the page size does not divide
+		{1, 100, 100, 0},         // one full page is the smallest limit Validate allows
+		{101, 100, 10100, 10000}, // tests/e2e/README.md: 10001 rows need a 10100 limit
 	}
 	for _, tc := range admitted {
 		if got, err := pageOffset(tc.page, tc.itemsPerPage, tc.maxRows); err != nil || got != tc.offset {
@@ -146,6 +147,7 @@ func TestPageOffsetRefusesAWindowPastMaxRows(t *testing.T) {
 	refused := []struct{ page, itemsPerPage, maxRows int }{
 		{101, 100, 10000},         // ends at 10100
 		{4, 30, 100},              // ends at 120
+		{101, 100, 10001},         // ends at 10100, though page 101 holds only row 10001
 		{2, 100, 100},             // ends at 200
 		{math.MaxInt, 100, 10000}, // the offset overflows; the limit still answers
 	}

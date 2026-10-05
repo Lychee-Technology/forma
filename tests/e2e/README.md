@@ -186,7 +186,7 @@ bun run federated-check -- --full-scan
 
 Each run writes a versioned report `reports/federated-check-<runId>.json`.
 
-The check locates its sample by paging the federated result at 100 rows per page, so it can reach as deep as the schema is large. The server refuses a page whose window ends past `MAX_QUERY_ROWS` (10000 by default, #598), which the default `DATASET_SIZE` fits exactly. For a schema holding more rows, start the server with `MAX_QUERY_ROWS` at least the row count, or `0` to disable the limit; otherwise the pages past it answer `400` and the sampled rows beyond them are reported missing.
+The check locates its sample by paging the federated result at 100 rows per page, so it can reach as deep as the schema is large. The server refuses a page whose window ends past `MAX_QUERY_ROWS` (10000 by default, #598), which the default `DATASET_SIZE` fits exactly. For a schema holding more rows, start the server with `MAX_QUERY_ROWS` at least the row count rounded up to a multiple of 100, or `0` to disable the limit. The rounding matters because the limit bounds the whole window of the last, partially filled page: 10001 rows need `MAX_QUERY_ROWS=10100`, since page 101 ends at row 10100. Otherwise the pages past the limit answer `400` and the sampled rows beyond them are reported missing.
 
 By default the identity check routes through Postgres (hybrid routing serves small pages from the hot tier). To prove the read actually goes through **DuckDB/S3**, start the server with the federated engine enabled and pass `--require-duckdb` (or `REQUIRE_DUCKDB=1`):
 
