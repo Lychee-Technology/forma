@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/bootstrap"
 	"go.uber.org/zap"
 )
 
@@ -20,6 +21,55 @@ func TestBootstrapLambda_CanceledContext(t *testing.T) {
 	_, err := bootstrapLambda(ctx, zap.NewNop().Sugar())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
+	}
+}
+
+// TestBootstrapLambda_RejectsUnparsableIntegerEnv pins #600 on the Lambda
+// entry point: a set but unparsable integer variable fails the cold start
+// with an *EnvError naming it. The DSQL case matters most: its pool settings
+// used to be read inside createDSQLPool, after the AWS config load, and an
+// unparsable value kept the default there too. The context is already
+// canceled, so the env check is shown to run before any I/O; reaching the
+// pool would report context.Canceled instead.
+func TestBootstrapLambda_RejectsUnparsableIntegerEnv(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want []string
+	}{
+		{
+			name: "postgres",
+			env:  map[string]string{"DSQL_ENDPOINT": "", "DB_PORT": "tcp://10.0.0.7:5432", "MAX_BATCH_SIZE": "1_000"},
+			want: []string{`DB_PORT="tcp://10.0.0.7:5432"`, `MAX_BATCH_SIZE="1_000"`},
+		},
+		{
+			name: "dsql",
+			env:  map[string]string{"DSQL_ENDPOINT": "example.dsql.us-east-2.on.aws", "DB_MAX_CONNECTIONS": "twenty", "DB_TIMEOUT_SECONDS": "30s"},
+			want: []string{`DB_MAX_CONNECTIONS="twenty"`, `DB_TIMEOUT_SECONDS="30s"`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for key, value := range tc.env {
+				t.Setenv(key, value)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_, err := bootstrapLambda(ctx, zap.NewNop().Sugar())
+
+			var envErr *bootstrap.EnvError
+			if !errors.As(err, &envErr) {
+				t.Fatalf("expected an *bootstrap.EnvError, got %v", err)
+			}
+			if errors.Is(err, context.Canceled) {
+				t.Fatalf("the environment must be refused before the pool is opened, got %v", err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("cold-start error must name %s, got %v", want, err)
+				}
+			}
+		})
 	}
 }
 

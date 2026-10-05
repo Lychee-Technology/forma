@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -34,12 +35,6 @@ type lambdaRuntime struct {
 }
 
 func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRuntime, error) {
-	var (
-		dbPool         *pgxpool.Pool
-		err            error
-		startupTimeout time.Duration
-	)
-
 	// Get configuration from environment variables
 	schemaDir := bootstrap.Env("SCHEMA_DIR", "")
 	if schemaDir == "" {
@@ -47,50 +42,31 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	}
 	sugar.Infof("schemaDir: %s", schemaDir)
 
-	// Check if we're using Aurora DSQL (indicated by DSQL_ENDPOINT env var)
-	dsqlEndpoint := bootstrap.Env("DSQL_ENDPOINT", "")
-	var dbConfig forma.DatabaseConfig
-	if dsqlEndpoint != "" {
-		// Aurora DSQL mode - use IAM authentication
-		sugar.Infof("Using Aurora DSQL endpoint: %s", dsqlEndpoint)
-		startupTimeout = time.Duration(bootstrap.EnvInt("DB_TIMEOUT_SECONDS", 30)) * time.Second
-	} else {
-		// Traditional PostgreSQL mode - use password authentication
-		dbConfig = bootstrap.DatabaseConfigFromEnv(bootstrap.DBDefaults{
-			Host:                   "localhost",
-			Port:                   5432,
-			Database:               "forma",
-			Username:               "postgres",
-			Password:               "",
-			SSLMode:                "require",
-			Schema:                 "public",
-			MaxConnections:         10,
-			MaxIdleConns:           2,
-			ConnMaxLifetimeSeconds: 300,
-			ConnMaxIdleTimeSeconds: 60,
-			TimeoutSeconds:         30,
-		})
-		startupTimeout = dbConfig.Timeout
-		if startupTimeout <= 0 {
-			startupTimeout = 30 * time.Second
-		}
-	}
-
-	// The forma configuration is resolved and validated before the pool is
-	// opened, so an out-of-range limit fails the cold start here instead of
-	// silently widening a protection (#465).
-	formaConfig, err := lambdaFormaConfig(schemaDir)
+	// The whole configuration, the pool settings included, is resolved and
+	// validated before the pool is opened, so an out-of-range limit or an
+	// unparsable integer variable fails the cold start here instead of
+	// silently widening a protection or keeping a default (#465, #600).
+	formaConfig, dbConfig, err := lambdaConfigFromEnv(schemaDir)
 	if err != nil {
 		return nil, err
 	}
 	tableNames := formaConfig.Database.TableNames
 
+	startupTimeout := dbConfig.Timeout
+	if startupTimeout <= 0 {
+		startupTimeout = 30 * time.Second
+	}
 	startupCtx, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
 
-	if dsqlEndpoint != "" {
-		dbPool, err = createDSQLPool(startupCtx, dsqlEndpoint)
+	// Check if we're using Aurora DSQL (indicated by DSQL_ENDPOINT env var)
+	var dbPool *pgxpool.Pool
+	if dsqlEndpoint := bootstrap.Env("DSQL_ENDPOINT", ""); dsqlEndpoint != "" {
+		// Aurora DSQL mode - use IAM authentication
+		sugar.Infof("Using Aurora DSQL endpoint: %s", dsqlEndpoint)
+		dbPool, err = createDSQLPool(startupCtx, dsqlEndpoint, dbConfig)
 	} else {
+		// Traditional PostgreSQL mode - use password authentication
 		dbPool, err = bootstrap.NewPostgresPoolFromConfigContext(startupCtx, dbConfig)
 	}
 	if err != nil {
@@ -130,12 +106,32 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	}, nil
 }
 
-// lambdaFormaConfig assembles and validates the forma.Config this entry point
-// starts with. It performs no I/O, so bootstrapLambda calls it before opening
-// the pool; the schema registry is the one field it cannot fill, and
-// bootstrapLambda sets it once the pool exists. Extracted from bootstrapLambda
-// to keep that function inside the 100-line cap.
-func lambdaFormaConfig(schemaDir string) (*forma.Config, error) {
+// lambdaDBDefaults are the pool settings an execution environment starts from,
+// in both database modes: one environment serves one request at a time, so it
+// holds few connections and recycles them quickly. Aurora DSQL reads only the
+// pool sizing, lifetimes and timeout; its endpoint and IAM token replace the
+// host, port and credentials.
+var lambdaDBDefaults = bootstrap.DBDefaults{
+	Host:                   "localhost",
+	Port:                   5432,
+	Database:               "forma",
+	Username:               "postgres",
+	Password:               "",
+	SSLMode:                "require",
+	Schema:                 "public",
+	MaxConnections:         10,
+	MaxIdleConns:           2,
+	ConnMaxLifetimeSeconds: 300,
+	ConnMaxIdleTimeSeconds: 60,
+	TimeoutSeconds:         30,
+}
+
+// lambdaConfigFromEnv assembles and validates the forma.Config and the pool
+// settings this entry point starts with. It performs no I/O, so bootstrapLambda
+// calls it before opening the pool; the schema registry is the one field it
+// cannot fill, and bootstrapLambda sets it once the pool exists. Extracted
+// from bootstrapLambda to keep that function inside the 100-line cap.
+func lambdaConfigFromEnv(schemaDir string) (*forma.Config, forma.DatabaseConfig, error) {
 	config := forma.DefaultConfig(nil)
 
 	// Table names configuration
@@ -165,14 +161,24 @@ func lambdaFormaConfig(schemaDir string) (*forma.Config, error) {
 	// Request limits and budgets (#465), the same overlay cmd/server applies;
 	// API Gateway bounds the connection itself, so there is no http.Server
 	// to configure here.
-	bootstrap.ApplyLimitsFromEnv(config)
+	limitsErr := bootstrap.ApplyLimitsFromEnv(config)
+
+	// The pool settings, read in both database modes so a DSQL deployment's
+	// DB_* sizing is parsed before any I/O too (#600).
+	dbConfig, dbErr := bootstrap.DatabaseConfigFromEnv(lambdaDBDefaults)
+
+	// Both overlays are read before either is judged, so one cold start
+	// names every unparsable variable.
+	if err := errors.Join(dbErr, limitsErr); err != nil {
+		return nil, forma.DatabaseConfig{}, fmt.Errorf("invalid environment: %w", err)
+	}
 
 	// Validate covers every rule the manager relies on, so a rejection names
 	// the field at cold start rather than surfacing on the first request.
 	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %w", err)
+		return nil, forma.DatabaseConfig{}, fmt.Errorf("invalid configuration: %w", err)
 	}
-	return config, nil
+	return config, dbConfig, nil
 }
 
 // handler is the Lambda handler function
@@ -215,7 +221,11 @@ func main() {
 // - Database: postgres (fixed)
 // - User: admin (default admin user)
 // - SSL: required
-func createDSQLPool(ctx context.Context, endpoint string) (*pgxpool.Pool, error) {
+//
+// settings supplies the pool sizing, lifetimes and connect timeout, resolved
+// from the environment before any I/O; its host, port and credentials are
+// not read.
+func createDSQLPool(ctx context.Context, endpoint string, settings forma.DatabaseConfig) (*pgxpool.Pool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("dsql bootstrap context: %w", err)
 	}
@@ -246,12 +256,13 @@ func createDSQLPool(ctx context.Context, endpoint string) (*pgxpool.Pool, error)
 		return nil, fmt.Errorf("failed to parse DSQL connection string: %w", err)
 	}
 
-	// Configure pool for Lambda - use conservative settings
-	poolConfig.MaxConns = int32(bootstrap.EnvInt("DB_MAX_CONNECTIONS", 10))
-	poolConfig.MinConns = int32(bootstrap.EnvInt("DB_MAX_IDLE_CONNS", 2))
-	poolConfig.MaxConnLifetime = time.Duration(bootstrap.EnvInt("DB_CONN_MAX_LIFETIME_SECONDS", 300)) * time.Second
-	poolConfig.MaxConnIdleTime = time.Duration(bootstrap.EnvInt("DB_CONN_MAX_IDLE_TIME_SECONDS", 60)) * time.Second
-	poolConfig.ConnConfig.ConnectTimeout = time.Duration(bootstrap.EnvInt("DB_TIMEOUT_SECONDS", 30)) * time.Second
+	// Configure pool for Lambda - use conservative settings. DB_MAX_IDLE_CONNS
+	// is the warm floor here.
+	poolConfig.MaxConns = int32(settings.MaxConnections)
+	poolConfig.MinConns = int32(settings.MaxIdleConns)
+	poolConfig.MaxConnLifetime = settings.ConnMaxLifetime
+	poolConfig.MaxConnIdleTime = settings.ConnMaxIdleTime
+	poolConfig.ConnConfig.ConnectTimeout = settings.Timeout
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {

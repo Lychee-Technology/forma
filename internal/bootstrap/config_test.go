@@ -7,14 +7,6 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
-func TestEnvIntFallbackOnInvalidValue(t *testing.T) {
-	t.Setenv("BOOTSTRAP_INT_TEST", "invalid")
-	got := EnvInt("BOOTSTRAP_INT_TEST", 42)
-	if got != 42 {
-		t.Fatalf("expected fallback 42, got %d", got)
-	}
-}
-
 func TestEnvAllowEmptyKeepsExplicitEmpty(t *testing.T) {
 	t.Setenv("BOOTSTRAP_EMPTY_TEST", "")
 	if got := EnvAllowEmpty("BOOTSTRAP_EMPTY_TEST", "fallback"); got != "" {
@@ -46,19 +38,10 @@ func TestDatabaseConfigFromEnv(t *testing.T) {
 	t.Setenv("DB_CONN_MAX_IDLE_TIME_SECONDS", "120")
 	t.Setenv("DB_TIMEOUT_SECONDS", "15")
 
-	cfg := DatabaseConfigFromEnv(DBDefaults{
-		Host:                   "localhost",
-		Port:                   5432,
-		Database:               "forma",
-		Username:               "postgres",
-		SSLMode:                "disable",
-		Schema:                 "public",
-		MaxConnections:         25,
-		MaxIdleConns:           5,
-		ConnMaxLifetimeSeconds: 3600,
-		ConnMaxIdleTimeSeconds: 300,
-		TimeoutSeconds:         30,
-	})
+	cfg, err := DatabaseConfigFromEnv(testDBDefaults)
+	if err != nil {
+		t.Fatalf("a fully parsable environment must overlay cleanly: %v", err)
+	}
 
 	if cfg.Host != "db-host" {
 		t.Fatalf("expected host db-host, got %s", cfg.Host)
@@ -96,6 +79,20 @@ func TestDatabaseConfigFromEnv(t *testing.T) {
 	if cfg.Timeout != 15*time.Second {
 		t.Fatalf("expected timeout 15s, got %s", cfg.Timeout)
 	}
+}
+
+var testDBDefaults = DBDefaults{
+	Host:                   "localhost",
+	Port:                   5432,
+	Database:               "forma",
+	Username:               "postgres",
+	SSLMode:                "disable",
+	Schema:                 "public",
+	MaxConnections:         25,
+	MaxIdleConns:           5,
+	ConnMaxLifetimeSeconds: 3600,
+	ConnMaxIdleTimeSeconds: 300,
+	TimeoutSeconds:         30,
 }
 
 func TestTableNamesFromEnv(t *testing.T) {

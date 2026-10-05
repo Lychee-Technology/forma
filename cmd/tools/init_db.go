@@ -40,6 +40,12 @@ func runInitDB(ctx context.Context, args []string) error {
 		flags.PrintDefaults()
 	}
 
+	// DB_PORT is --db-port's default, so a set but unparsable value is
+	// refused even when the flag would override it (#600). The refusal waits
+	// until after flags.Parse so --help still prints usage; EnvInt returns
+	// 5432 alongside the error to register the flag with.
+	portDefault, portErr := bootstrap.EnvInt("DB_PORT", 5432)
+
 	opts := initDBOptions{}
 	var pg postgresFlags
 	pg.register(flags, postgresFlagOptions{
@@ -50,7 +56,7 @@ func runInitDB(ctx context.Context, args []string) error {
 		databaseFlag:    "db-name",
 		sslModeFlag:     "db-ssl-mode",
 		hostDefault:     bootstrap.Env("DB_HOST", "localhost"),
-		portDefault:     bootstrap.EnvInt("DB_PORT", 5432),
+		portDefault:     portDefault,
 		userDefault:     bootstrap.Env("DB_USER", "postgres"),
 		passwordDefault: bootstrap.Env("DB_PASSWORD", "postgres"),
 		databaseDefault: bootstrap.Env("DB_NAME", "forma"),
@@ -73,6 +79,9 @@ func runInitDB(ctx context.Context, args []string) error {
 			return nil
 		}
 		return err
+	}
+	if portErr != nil {
+		return fmt.Errorf("resolve --db-port default: %w", portErr)
 	}
 
 	opts.host = pg.host

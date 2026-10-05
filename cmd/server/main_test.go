@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/bootstrap"
 	"go.uber.org/zap"
 )
 
@@ -227,6 +229,36 @@ func TestBootstrapServer_RejectsCallerParquetPathsWithoutBucket(t *testing.T) {
 	var configErr *forma.ConfigError
 	if !errors.As(err, &configErr) || configErr.Field != "duckdb.s3Bucket" {
 		t.Fatalf("expected a ConfigError on duckdb.s3Bucket, got %v", err)
+	}
+}
+
+// TestBootstrapServer_RejectsUnparsableIntegerEnv pins #600: a set but
+// unparsable integer variable fails startup with an *EnvError naming it,
+// where it used to keep the default silently. One variable per overlay the
+// server applies (pool, limits, http.Server), so all three are wired, and
+// all three are named at once. The context is already canceled, so the env
+// check is shown to run before any I/O: reaching the pool would report
+// context.Canceled instead.
+func TestBootstrapServer_RejectsUnparsableIntegerEnv(t *testing.T) {
+	t.Setenv("DB_MAX_CONNECTIONS", "twenty")
+	t.Setenv("QUERY_TIMEOUT_SECONDS", "30s")
+	t.Setenv("HTTP_MAX_HEADER_BYTES", "1_000")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := bootstrapServer(ctx, zap.NewNop().Sugar())
+
+	var envErr *bootstrap.EnvError
+	if !errors.As(err, &envErr) {
+		t.Fatalf("expected an *bootstrap.EnvError, got %v", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("the environment must be refused before the pool is opened, got %v", err)
+	}
+	for _, want := range []string{`DB_MAX_CONNECTIONS="twenty"`, `QUERY_TIMEOUT_SECONDS="30s"`, `HTTP_MAX_HEADER_BYTES="1_000"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("startup error must name %s, got %v", want, err)
+		}
 	}
 }
 

@@ -180,9 +180,11 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 // and validates both. It performs no I/O, so bootstrapServer can call it
 // before opening the database and an out-of-range value (a negative budget,
 // a zero body cap, a write timeout that does not outlast the body read plus
-// a budget) fails at boot instead of silently widening a limit (#465). The
-// schema registry is the one field it cannot fill; bootstrapServer sets it
-// once the pool exists.
+// a budget) fails at boot instead of silently widening a limit (#465). A set
+// but unparsable integer variable fails the same way (#600); every overlay
+// is read before any of them is judged, so one boot names every such
+// variable. The schema registry is the one field it cannot fill;
+// bootstrapServer sets it once the pool exists.
 func serverConfigFromEnv(schemaDir string) (*forma.Config, bootstrap.HTTPServerConfig, error) {
 	config := forma.DefaultConfig(nil)
 
@@ -192,7 +194,8 @@ func serverConfigFromEnv(schemaDir string) (*forma.Config, bootstrap.HTTPServerC
 	config.Entity.SchemaDirectory = schemaDir
 
 	// Database configuration
-	config.Database = bootstrap.DatabaseConfigFromEnv(bootstrap.DBDefaults{
+	var dbErr error
+	config.Database, dbErr = bootstrap.DatabaseConfigFromEnv(bootstrap.DBDefaults{
 		Host:                   "localhost",
 		Port:                   5432,
 		Database:               "forma",
@@ -225,7 +228,20 @@ func serverConfigFromEnv(schemaDir string) (*forma.Config, bootstrap.HTTPServerC
 	// Request limits and budgets (#465): body cap, batch cap, query,
 	// transaction and DuckDB timeouts. Applied last so it sees the resolved
 	// DuckDB config.
-	bootstrap.ApplyLimitsFromEnv(config)
+	limitsErr := bootstrap.ApplyLimitsFromEnv(config)
+
+	// Every connection phase is bounded (#465); the defaults and the HTTP_*
+	// overrides are documented in the README. The manager's own per-request
+	// budgets run underneath these, since a server timeout never cancels a
+	// handler's context, which is why WriteTimeout has to cover them, and
+	// the body read that precedes them (HTTPServerConfig.Validate).
+	httpCfg, httpErr := bootstrap.HTTPServerConfigFromEnv(bootstrap.DefaultHTTPServerConfig())
+
+	// A value that did not parse never reached its field, so validating the
+	// rest would judge a default the operator did not choose.
+	if err := errors.Join(dbErr, limitsErr, httpErr); err != nil {
+		return nil, bootstrap.HTTPServerConfig{}, fmt.Errorf("invalid environment: %w", err)
+	}
 
 	// Validate covers every rule the manager relies on, the DuckDB manifest
 	// read surface and the #456 caller-path opt-in included, so a rejection
@@ -233,13 +249,6 @@ func serverConfigFromEnv(schemaDir string) (*forma.Config, bootstrap.HTTPServerC
 	if err := config.Validate(); err != nil {
 		return nil, bootstrap.HTTPServerConfig{}, fmt.Errorf("invalid configuration: %w", err)
 	}
-
-	// Every connection phase is bounded (#465); the defaults and the HTTP_*
-	// overrides are documented in the README. The manager's own per-request
-	// budgets run underneath these, since a server timeout never cancels a
-	// handler's context, which is why WriteTimeout has to cover them, and
-	// the body read that precedes them (HTTPServerConfig.Validate).
-	httpCfg := bootstrap.HTTPServerConfigFromEnv(bootstrap.DefaultHTTPServerConfig())
 	if err := httpCfg.Validate(config); err != nil {
 		return nil, bootstrap.HTTPServerConfig{}, fmt.Errorf("invalid http server configuration: %w", err)
 	}

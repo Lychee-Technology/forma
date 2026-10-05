@@ -19,16 +19,28 @@ import "github.com/lychee-technology/forma"
 // negative, and a positive MAX_QUERY_ROWS must cover one full page; the size
 // and batch caps must stay positive), and both cmd/server and cmd/lambda call it
 // on the overlaid config before opening the database, so an out-of-range
-// value fails at boot rather than silently widening a limit. An unparsable
-// value keeps the default, like every other EnvInt overlay in this package.
-func ApplyLimitsFromEnv(cfg *forma.Config) {
+// value fails at boot rather than silently widening a limit. A set but
+// unparsable value fails here instead, with an *EnvError per bad variable
+// (#600), and cfg is left untouched; unset keeps the value cfg already holds.
+func ApplyLimitsFromEnv(cfg *forma.Config) error {
 	if cfg == nil {
-		return
+		return nil
 	}
-	cfg.Entity.MaxEntitySize = EnvInt("MAX_ENTITY_SIZE_BYTES", cfg.Entity.MaxEntitySize)
-	cfg.Performance.MaxBatchSize = EnvInt("MAX_BATCH_SIZE", cfg.Performance.MaxBatchSize)
-	cfg.Query.MaxRows = EnvInt("MAX_QUERY_ROWS", cfg.Query.MaxRows)
-	cfg.Query.DefaultTimeout = envSeconds("QUERY_TIMEOUT_SECONDS", cfg.Query.DefaultTimeout)
-	cfg.Transaction.DefaultTimeout = envSeconds("TRANSACTION_TIMEOUT_SECONDS", cfg.Transaction.DefaultTimeout)
-	cfg.DuckDB.QueryTimeout = envSeconds("DUCKDB_QUERY_TIMEOUT_SECONDS", cfg.DuckDB.QueryTimeout)
+	var env envOverlay
+	entitySize := env.integer("MAX_ENTITY_SIZE_BYTES", cfg.Entity.MaxEntitySize)
+	batchSize := env.integer("MAX_BATCH_SIZE", cfg.Performance.MaxBatchSize)
+	maxRows := env.integer("MAX_QUERY_ROWS", cfg.Query.MaxRows)
+	queryTimeout := env.seconds("QUERY_TIMEOUT_SECONDS", cfg.Query.DefaultTimeout)
+	txTimeout := env.seconds("TRANSACTION_TIMEOUT_SECONDS", cfg.Transaction.DefaultTimeout)
+	duckDBTimeout := env.seconds("DUCKDB_QUERY_TIMEOUT_SECONDS", cfg.DuckDB.QueryTimeout)
+	if err := env.err(); err != nil {
+		return err
+	}
+	cfg.Entity.MaxEntitySize = entitySize
+	cfg.Performance.MaxBatchSize = batchSize
+	cfg.Query.MaxRows = maxRows
+	cfg.Query.DefaultTimeout = queryTimeout
+	cfg.Transaction.DefaultTimeout = txTimeout
+	cfg.DuckDB.QueryTimeout = duckDBTimeout
+	return nil
 }
