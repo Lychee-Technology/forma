@@ -84,7 +84,8 @@ func objectPaths(records []rebuildRecord) map[string]struct{} {
 // as they do in the stored order, where an empty array_indices sorts first.
 //
 // An indexed record's indices index either the attribute itself or its
-// parent, an array of objects (ownsIndices).
+// parent, an array of objects (ownsIndices). An element of that array no
+// record reaches reads as {} (expandObjectArray, #626).
 func placeRecord(doc map[string]any, rec rebuildRecord, objects map[string]struct{}) {
 	n := len(rec.segments)
 	field := rec.segments[n-1]

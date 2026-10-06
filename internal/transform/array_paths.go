@@ -62,8 +62,7 @@ func setObjectArrayValue(arr []any, indices []int, fieldName string, value any) 
 		return arr
 	}
 
-	// Expand array if needed
-	arr = expandArray(arr, idx)
+	arr = expandObjectArray(arr, idx)
 
 	if len(indices) == 1 {
 		// Last index - set the field in the object at this index
@@ -128,10 +127,27 @@ func setArrayValueRecursive(arr []any, indices []int, value any) []any {
 	return arr
 }
 
-// expandArray ensures the array has at least idx+1 elements
+// expandArray ensures the array has at least idx+1 elements, padding with
+// nil. The writer stores every element of a primitive array, so a gap there
+// is a damaged row, or a member some elements of an array of objects lack,
+// read as an array of its own (#623). Either way it stays a null, which the
+// next update refuses.
 func expandArray(arr []any, idx int) []any {
 	for len(arr) <= idx {
 		arr = append(arr, nil)
+	}
+	return arr
+}
+
+// expandObjectArray ensures the array of objects has at least idx+1
+// elements, padding with empty objects. An element that stored no record,
+// such as {}, holds no stored member, which is what {} says; read as nil, it
+// made every later update of the row refuse a null element the caller never
+// sent (#626). The array's length is not stored, so such an element after the
+// last one that stored a record does not come back at all.
+func expandObjectArray(arr []any, idx int) []any {
+	for len(arr) <= idx {
+		arr = append(arr, make(map[string]any))
 	}
 	return arr
 }

@@ -108,6 +108,35 @@ func (n *shapeNode) value(r *rand.Rand) (any, bool) {
 	}
 }
 
+// readsPerField reports whether the schema nests anything but a scalar
+// inside an array of objects. The rebuild reads such an array as an
+// object of per-field arrays (#623), so a member some elements lack leaves a
+// gap the write refuses or judges at the wrong level: a null in a primitive
+// array, or a {} that a required member is missing from. A list's empty
+// marker inside the array reads it per-field as well.
+func readsPerField(roots []*shapeNode) bool {
+	for _, root := range roots {
+		if root.nestsInObjectArray(false) {
+			return true
+		}
+	}
+	return false
+}
+
+// nestsInObjectArray reports whether n, or anything beneath it, is a
+// non-scalar inside an array of objects.
+func (n *shapeNode) nestsInObjectArray(insideObjectArray bool) bool {
+	if insideObjectArray && n.kind != shapeScalar {
+		return true
+	}
+	for _, child := range n.children {
+		if child.nestsInObjectArray(insideObjectArray || n.kind == shapeObjectArray) {
+			return true
+		}
+	}
+	return false
+}
+
 // Over random schemas and the rows the writer stores for random documents of
 // them, an update that addresses none of a row's records writes every one of
 // them back or is refused: it never succeeds having dropped one (#619 review).
@@ -115,12 +144,15 @@ func (n *shapeNode) value(r *rand.Rand) (any, bool) {
 // arrays of objects in each other, which reaches the shapes the rebuild
 // cannot place (#623) without naming them.
 //
-// A refusal by the merge is stored state, never caller input. One by the
-// write that follows deletes nothing either, so it is not judged here.
+// A refusal by the merge is stored state, never caller input. The write that
+// follows an accepted merge must succeed: an element of an array of objects
+// that stores no record reads as {}, which writes nothing back (#626). Only a
+// schema the rebuild reads per-field may still be refused there (#623); that
+// deletes nothing either, so it is counted, not judged.
 func TestMergeUpdateNeverDropsStoredRecords(t *testing.T) {
 	r := rand.New(rand.NewSource(624))
 	ctx := context.Background()
-	written, refused := 0, 0
+	written, refused, perField := 0, 0, 0
 	for i := 0; i < 20000; i++ {
 		roots := make([]*shapeNode, 1+r.Intn(3))
 		cache := forma.SchemaAttributeCache{"zz": {AttributeName: "zz", AttributeID: 100, ValueType: forma.ValueTypeText}}
@@ -148,6 +180,8 @@ func TestMergeUpdateNeverDropsStoredRecords(t *testing.T) {
 		}
 		updated, err := tr.ToPersistentRecord(ctx, 700, rowID, merged)
 		if err != nil {
+			require.True(t, readsPerField(roots), "document %v merged as %v: %v", doc, merged, err)
+			perField++
 			continue
 		}
 		require.ElementsMatch(t, append(storedKeys(stored.OtherAttributes), "100[]=u"),
@@ -156,5 +190,6 @@ func TestMergeUpdateNeverDropsStoredRecords(t *testing.T) {
 	}
 	require.Positive(t, written)
 	require.Positive(t, refused)
-	t.Logf("%d rows written back whole, %d updates refused", written, refused)
+	t.Logf("%d rows written back whole, %d updates refused, %d per-field rows refused on write (#623)",
+		written, refused, perField)
 }

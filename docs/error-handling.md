@@ -818,6 +818,29 @@ A create runs step 4 only.
   stored record of the same attribute that the write can place is no
   replacement: it is written back under the stored spelling, and the record
   beside it would still be deleted. Reading the row is unchanged.
+- **An element of an array of objects that stores no record reads as `{}`
+  (#626).** `{"items":[{}, {"sku":"a"}]}` stores one record, `items.sku` at
+  index 1. The rebuild used to pad index 0 with `null`, so a `Get`, a query
+  and the create and update responses answered `[null, {"sku":"a"}]`. Every
+  update that did not replace the array was then refused with a `400` naming
+  an attribute and an index the caller never sent:
+
+  ```text
+  attribute 'items' cannot be set to null (array index 0); omit the element to preserve its current value
+  ```
+
+  A gap in an array of objects is now padded with `{}` (`expandObjectArray`,
+  `internal/transform/array_paths.go`). An element that stored no record held
+  no member, which is what `{}` says, and it is the same `{}` pruning leaves
+  for an emptied element (below). The write stores nothing for `{}`, so an
+  unrelated update writes the stored records back unchanged. The `{}` counts
+  as an explicit parent at its index, as the element the caller sent did, so
+  the required policy is judged as it was on the original write. An empty
+  element after the last one that stores a record does not come back: the
+  array's length is not stored, so `{"items":[{"sku":"a"}, {}]}` reads back as
+  `{"items":[{"sku":"a"}]}`. A primitive array keeps `null` padding. The
+  writer stores every element of one, so a gap there is a damaged row or the
+  per-field reading under **Known limits**.
 - **Required policies are judged on what the write stores.** An attribute is
   present where a winning claim writes it. A parent is present where a
   winning claim writes beneath it, or where the caller sent it explicitly:
@@ -862,7 +885,8 @@ A create runs step 4 only.
 removed with the value, since it held stored values only and the stored row is
 no evidence the caller sent it. An array keeps its element positions: an
 emptied element before a kept one stays as `{}`, so the kept elements keep
-their indices, and emptied trailing elements are cut. A container that was
+their indices, and emptied trailing elements are cut. That `{}` is also what a
+stored element without records reads as (#626). A container that was
 empty before resolution, such as a caller's `{}` or a stored list's `[]`, is
 kept.
 
@@ -882,6 +906,23 @@ kept.
   the record where the write reads it back (#623): every update that keeps
   the value is refused, as above. Replacing the outer array or the attribute
   itself still works.
+- An array of objects that nests anything but scalars (an object, an array of
+  objects, a legacy text-typed array, or a list, whose empty-list marker
+  carries no index) rebuilds as an object of per-field arrays (#623). A member
+  that some elements lack then leaves its gap at the wrong level. A gap in an
+  object member's array reads `{}`, and the row stays updatable (#626). Two
+  gaps still refuse every update that keeps them, with a `400`:
+  - A scalar member missing from an earlier element reads `null` in its
+    per-field array, which is refused as `cannot be set to null (array index
+    N)`. A shipped lead hits this when its `propertyInterests[0]` holds a
+    `snapshot` and only `propertyInterests[1]` holds `notes`:
+    `"notes":[null,"n"]`.
+  - A `{}` gap in a per-field array of objects asserts its parent at the
+    per-field level, so a `required_if_parent_present` member of it is
+    reported missing.
+
+  Neither deletes a record, and replacing the outer array still works. Both
+  go when #623 gives these rows their written shape.
 - The walk runs twice per update (resolution, then the writer). It is linear
   in the payload plus the stored row.
 
@@ -892,12 +933,14 @@ Pinned by `TestUpdateNamingLegacyBigintImageRepairsIt`,
 `TestRefusedRepairOverLegacyBigintImageReportsTheCallersValue`,
 `TestUpdateNamingRequiredNestedAttributeKeepsSiblings`,
 `TestUpdateLeavingRequiredNestedAttributeMissingFails`,
-`TestUnrelatedUpdateOverNestedArrayIsRefused` and
-`TestUpdateReplacingNestedArrayWritesIt` (package `internal`, across `Update`
-and both `BatchUpdate` modes), by `merge_update_test.go`,
-`merge_update_unplaced_test.go`, `merge_update_property_test.go` and
-`written_required_test.go` in `internal/transform`, by
-`TestUnrelatedUpdateOverNestedArrayIntegration` (Postgres), and by
+`TestUnrelatedUpdateOverNestedArrayIsRefused`,
+`TestUpdateReplacingNestedArrayWritesIt` and
+`TestUnrelatedUpdateOverObjectArrayGapIsAccepted` (package `internal`, across
+`Update` and both `BatchUpdate` modes), by `merge_update_test.go`,
+`merge_update_unplaced_test.go`, `merge_update_property_test.go`,
+`object_array_gap_test.go` and `written_required_test.go` in
+`internal/transform`, by `TestUnrelatedUpdateOverNestedArrayIntegration` and
+`TestUnrelatedUpdateOverObjectArrayGapIntegration` (Postgres), and by
 `TestNestedBigintLegacyImageRepairByUpdate` (production E2E).
 
 ## Read-path consistency errors
