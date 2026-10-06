@@ -58,7 +58,9 @@ func seedAllTiers(ctx context.Context, t *testing.T, env *Env, schema SchemaRef)
 
 // assertDegradedFallbackPlan asserts the execution plan reflects the
 // postgres-only degraded fallback (#185 scenario 6; contract pinned by
-// TestDBFederatedQueryEngine_DegradedFallbackRecordsExecutionPlan).
+// TestDBFederatedQueryEngine_DegradedFallbackRecordsExecutionPlan) and
+// describes only that answer: nothing the abandoned DuckDB attempt recorded
+// survives (#639, pinned by TestDegradedFallbackPlanDropsTheAbandonedAttempt).
 func assertDegradedFallbackPlan(t *testing.T, result *QueryResult) {
 	t.Helper()
 	if result == nil {
@@ -72,6 +74,12 @@ func assertDegradedFallbackPlan(t *testing.T, result *QueryResult) {
 	}
 	if !strings.Contains(result.Plan.Routing.Reason, "degraded fallback") {
 		t.Errorf("degraded fallback plan reason = %q, want a degraded-fallback marker", result.Plan.Routing.Reason)
+	}
+	if planHasEngine(result.Plan, "duckdb") {
+		t.Errorf("degraded fallback plan keeps the abandoned attempt's duckdb source: %+v", result.Plan.Sources)
+	}
+	if len(result.Plan.Timings) != 0 {
+		t.Errorf("degraded fallback plan keeps the abandoned attempt's timings: %v", result.Plan.Timings)
 	}
 }
 

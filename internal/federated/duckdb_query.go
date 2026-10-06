@@ -88,7 +88,8 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 }
 
 // executionPlanMark remembers how much of the caller's execution plan predates
-// the first DuckDB pass, so a retry can drop what the failed pass recorded.
+// the first DuckDB pass, so a retry (#251) or the degraded fallback (#639) can
+// drop what a failed pass recorded.
 type executionPlanMark struct {
 	sources int
 	notes   int
@@ -131,7 +132,10 @@ func markExecutionPlan(opts *model.FederatedQueryOptions) executionPlanMark {
 // report both plan_cache_hit and plan_cache_miss (#348 item 1).
 // Everything recorded BEFORE the first pass survives — the routing decision and
 // its note are the caller's, not the failed pass's. The retry re-records the
-// corrupt-exclusion note itself, via path resolution.
+// corrupt-exclusion note itself, via path resolution. queryDuckDBRouted holds
+// an outer mark for the degraded fallback, which rewinds every DuckDB pass of
+// the request (a failed retry and a discarded page pass included) before it
+// records the Postgres-only answer (#639).
 func (m executionPlanMark) rewind(opts *model.FederatedQueryOptions) {
 	if opts == nil || opts.ExecutionPlan == nil {
 		return
