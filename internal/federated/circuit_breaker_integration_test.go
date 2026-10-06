@@ -294,7 +294,7 @@ func TestBreakerHalfOpenProbeReleasedOnConfirmedCorruption(t *testing.T) {
 
 	// RecordSuccess closed the breaker: only the closed state admits with the
 	// zero token (no probe reservation).
-	admitted, probe := breaker.Allow()
+	admitted, probe, _ := breaker.Allow()
 	require.True(t, admitted, "breaker must be closed after the retry's success")
 	require.Zero(t, probe, "closed-state admission carries no probe reservation")
 }

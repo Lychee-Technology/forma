@@ -34,6 +34,11 @@ import (
 // long after admission (the #251 post-verification path), by which time the
 // probe slot may belong to a newer caller — an unscoped release would free a
 // reservation its caller never held and admit a second concurrent probe.
+//
+// Reporting (#634): Allow, RecordFailure and RecordSuccess return the
+// BreakerTransition they caused, computed under mu, so the caller reports it
+// after the lock is released — the breaker itself holds no telemetry sink and
+// no logger. See reported for which events count.
 type CircuitBreaker struct {
 	mu           sync.Mutex
 	failures     []time.Time
@@ -45,6 +50,60 @@ type CircuitBreaker struct {
 	probeStarted time.Time
 	probeSeq     ProbeToken
 	probeToken   ProbeToken
+	// reported is the state the breaker last reported as a transition. It is
+	// not the admission state, which openUntil and probing derive: the lapse
+	// of openUntil runs no code, so open turns half-open unobserved. reported
+	// moves only at the observable events — a trip or re-open, Allow
+	// reserving the probe, RecordSuccess — and never repeats a state, so
+	// extending an open period, reclaiming a lapsed probe slot and
+	// ReleaseProbe are not transitions. The #251 corrupt-confirmed path
+	// releases the probe and its retry re-reserves it in one request; that
+	// must not report half-open twice.
+	reported BreakerState
+}
+
+// BreakerState is a breaker state as the breaker reports it (#634). Its
+// String form is the state label of the duckdb_circuit_breaker_transition_total
+// metric, so the three values are a fixed enumeration.
+type BreakerState int
+
+const (
+	BreakerClosed BreakerState = iota
+	BreakerOpen
+	BreakerHalfOpen
+)
+
+// String returns the metric label value: "closed", "open" or "half_open".
+func (s BreakerState) String() string {
+	switch s {
+	case BreakerOpen:
+		return "open"
+	case BreakerHalfOpen:
+		return "half_open"
+	default:
+		return "closed"
+	}
+}
+
+// BreakerTransition is a change of the breaker's reported state, returned by
+// the call that caused it. The zero value (closed to closed) means the call
+// changed nothing.
+type BreakerTransition struct {
+	From, To BreakerState
+}
+
+// Changed reports whether the call that returned t moved the breaker.
+func (t BreakerTransition) Changed() bool { return t.From != t.To }
+
+// report moves the reported state to `to` and returns the transition, or the
+// zero transition when the breaker already reported `to`. Callers hold mu.
+func (cb *CircuitBreaker) report(to BreakerState) BreakerTransition {
+	if cb.reported == to {
+		return BreakerTransition{}
+	}
+	t := BreakerTransition{From: cb.reported, To: to}
+	cb.reported = to
+	return t
 }
 
 // ProbeToken identifies one half-open probe reservation. The zero token means
@@ -68,29 +127,32 @@ func NewCircuitBreaker(threshold int, window, openDuration time.Duration) *Circu
 // the probe via RecordSuccess or RecordFailure (or let the reservation lapse
 // after openDuration). Callers admitted while the breaker is closed receive
 // the zero token: they hold no reservation, and their ReleaseProbe is a no-op.
-func (cb *CircuitBreaker) Allow() (admitted bool, probe ProbeToken) {
+// Reserving the probe after the open period is the breaker's first observable
+// half-open moment, so that admission returns the open-to-half-open
+// transition.
+func (cb *CircuitBreaker) Allow() (admitted bool, probe ProbeToken, transition BreakerTransition) {
 	if cb == nil {
-		return true, 0
+		return true, 0, BreakerTransition{}
 	}
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
 	now := time.Now()
 	if now.Before(cb.openUntil) {
-		return false, 0
+		return false, 0, BreakerTransition{}
 	}
 	if cb.openUntil.IsZero() && !cb.probing {
-		return true, 0 // closed: nothing to recover from
+		return true, 0, BreakerTransition{} // closed: nothing to recover from
 	}
 	if cb.probing && now.Sub(cb.probeStarted) < cb.openDuration {
-		return false, 0 // half-open with a live probe in flight
+		return false, 0, BreakerTransition{} // half-open with a live probe in flight
 	}
 	// Half-open with a free (or lapsed) probe slot: this caller is the probe.
 	cb.probing = true
 	cb.probeStarted = now
 	cb.probeSeq++
 	cb.probeToken = cb.probeSeq
-	return true, cb.probeToken
+	return true, cb.probeToken, cb.report(BreakerHalfOpen)
 }
 
 // ReleaseProbe relinquishes a half-open probe reservation without recording
@@ -134,10 +196,11 @@ func (cb *CircuitBreaker) ReleaseProbe(probe ProbeToken) {
 
 // RecordFailure records a failure occurrence. A probe failure re-opens the
 // breaker directly; otherwise failures accumulate in the sliding window and
-// open the breaker at threshold.
-func (cb *CircuitBreaker) RecordFailure() {
+// open the breaker at threshold. It returns the transition to open when the
+// breaker was not already reported open.
+func (cb *CircuitBreaker) RecordFailure() BreakerTransition {
 	if cb == nil {
-		return
+		return BreakerTransition{}
 	}
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -149,7 +212,7 @@ func (cb *CircuitBreaker) RecordFailure() {
 		// threshold (#246).
 		cb.probing = false
 		cb.openUntil = now.Add(cb.openDuration)
-		return
+		return cb.report(BreakerOpen)
 	}
 
 	// drop old failures outside the window
@@ -167,29 +230,35 @@ func (cb *CircuitBreaker) RecordFailure() {
 	// append this failure
 	cb.failures = append(cb.failures, now)
 
-	if len(cb.failures) >= cb.threshold {
-		// open the breaker
-		cb.openUntil = now.Add(cb.openDuration)
+	if len(cb.failures) < cb.threshold {
+		return BreakerTransition{}
 	}
+	// Open the breaker, or renew an open period: a stale failure landing
+	// while already reported open is not a transition.
+	cb.openUntil = now.Add(cb.openDuration)
+	return cb.report(BreakerOpen)
 }
 
 // RecordSuccess closes the breaker and clears the failure history. It
 // resolves an in-flight probe, and also closes from open state when a
 // pre-open in-flight query completes (see the type doc on stale callers).
-func (cb *CircuitBreaker) RecordSuccess() {
+// It returns the transition to closed unless the breaker already was.
+func (cb *CircuitBreaker) RecordSuccess() BreakerTransition {
 	if cb == nil {
-		return
+		return BreakerTransition{}
 	}
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 	cb.failures = cb.failures[:0]
 	cb.openUntil = time.Time{}
 	cb.probing = false
+	return cb.report(BreakerClosed)
 }
 
 // IsOpen reports whether the timed open period is currently active.
-// Observation only (tests, telemetry): admission control — including the
-// half-open probe reservation — lives in Allow.
+// Observation only (tests): admission control — including the half-open
+// probe reservation — lives in Allow, and state changes are reported through
+// the transitions Allow, RecordFailure and RecordSuccess return.
 func (cb *CircuitBreaker) IsOpen() bool {
 	if cb == nil {
 		return false

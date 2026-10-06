@@ -74,9 +74,7 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 		if !errors.Is(err, ErrFederatedReadFailed) {
 			// Handler errors are not read failures: they report to the
 			// breaker as before and pass through unclassified.
-			if e.breaker != nil {
-				e.breaker.RecordFailure()
-			}
+			e.breakerRecordFailure(ctx, err)
 			return 0, fmt.Errorf("stream duckdb federated rows: %w", err)
 		}
 		// A mid-stream read failure classifies like an execute failure:
@@ -91,9 +89,7 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 		return 0, e.failDuckDBScan(ctx, q, sc, err, "stream duckdb federated rows")
 	}
 
-	if e.breaker != nil {
-		e.breaker.RecordSuccess()
-	}
+	e.breakerRecordSuccess(ctx)
 	outcome := duckDBScanOutcome{
 		translateMs: sc.translateMs,
 		executeMs:   executeMs,
@@ -194,23 +190,17 @@ func (c *duckDBExecutionPlanContext) recordScanOutcome(o duckDBScanOutcome) {
 func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.FederatedAttributeQuery, sc scan, cause error, op string) error {
 	classified := e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource)
 	var inconsistent *ParquetSetInconsistentError
+	wrapped := fmt.Errorf("%s: %w: %w", op, classified, cause)
 	if errors.As(classified, &inconsistent) {
-		if e.breaker != nil {
-			e.breaker.RecordFailure()
-		}
-		return fmt.Errorf("%s: %w: %w", op, classified, cause)
+		e.breakerRecordFailure(ctx, wrapped)
+		return wrapped
 	}
 	if corrupt := e.confirmCorruptPaths(ctx, sc); len(corrupt) > 0 {
 		e.corruptPaths.Add(corrupt)
-		if e.breaker != nil {
-			e.breaker.ReleaseProbe(sc.probe)
-		}
-		return &corruptParquetRetryError{Corrupt: corrupt, cause: fmt.Errorf("%s: %w: %w", op, classified, cause)}
+		e.breaker.ReleaseProbe(sc.probe)
+		return &corruptParquetRetryError{Corrupt: corrupt, cause: wrapped}
 	}
-	if e.breaker != nil {
-		e.breaker.RecordFailure()
-	}
-	wrapped := fmt.Errorf("%s: %w: %w", op, classified, cause)
+	e.breakerRecordFailure(ctx, wrapped)
 	violating := e.identifyGuardViolationPaths(ctx, sc)
 	if len(violating) == 0 {
 		return wrapped

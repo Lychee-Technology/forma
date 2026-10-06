@@ -210,9 +210,10 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// before ANY DuckDB or S3 work — including the #189 pre-read schema
 	// probes and path resolution, which reach storage. Allow also reserves
 	// the half-open single probe (#246); early-error returns between here
-	// and duck.Query abandon the probe, whose reservation lapses after
-	// openDuration (see the CircuitBreaker type doc).
-	admitted, probe := e.breaker.Allow()
+	// and duck.Query hand it back through the deferred ReleaseProbe below.
+	// breakerAllow reports the transition when this caller is the probe
+	// (#634).
+	admitted, probe := e.breakerAllow(ctx)
 	if !admitted {
 		planCtx.recordClientUnavailable()
 		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected: %w", ErrDuckDBUnavailable)

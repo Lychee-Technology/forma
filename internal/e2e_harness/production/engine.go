@@ -40,10 +40,12 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 	}
 
 	// The engine's logger carries the #256 stamp/footer cross-check warning,
-	// which has no other outlet — the read it observes succeeds.
+	// which has no other outlet — the read it observes succeeds. A nil
+	// emitter (the default) emits nothing, as in the factory.
 	opts := []fedengine.EngineOption{
 		fedengine.WithLogger(e.logger),
 		fedengine.WithPlanCache(planCache),
+		fedengine.WithMetricEmitter(e.opts.metricEmitter),
 	}
 	if src := e.parquetSource(); src != nil {
 		if e.ParquetSourceWrap != nil {

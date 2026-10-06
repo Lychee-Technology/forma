@@ -5,15 +5,46 @@ package production
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
 const breakerRejection = "circuit breaker open"
+
+// breakerTransitions records the duckdb_circuit_breaker_transition_total
+// states an engine emits (#634). The mutex honours the emitter's
+// concurrent-use contract.
+type breakerTransitions struct {
+	mu     sync.Mutex
+	states []string
+}
+
+func (r *breakerTransitions) EmitMetric(_ context.Context, m forma.Metric) {
+	if m.Name != "duckdb_circuit_breaker_transition_total" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.states = append(r.states, m.Labels["state"])
+}
+
+// expect fails the test unless exactly want was emitted since the last call.
+func (r *breakerTransitions) expect(t *testing.T, step string, want ...string) {
+	t.Helper()
+	r.mu.Lock()
+	got := r.states
+	r.states = nil
+	r.mu.Unlock()
+	if !slices.Equal(got, want) {
+		t.Fatalf("%s: breaker transitions %v, want %v", step, got, want)
+	}
+}
 
 // TestCircuitBreaker_OpensAtThresholdAndRecovers covers #185 breaker
 // scenarios 1-3 plus the #246 single-probe semantics end to end: exactly N
@@ -23,13 +54,15 @@ const breakerRejection = "circuit breaker open"
 // single admitted probe succeeds and closes the breaker (failure history
 // cleared, so one fresh failure does not reopen it), and a FAILED probe
 // re-opens the breaker for a fresh openDuration with no threshold
-// re-accumulation (circuit_breaker.go type doc).
+// re-accumulation (circuit_breaker.go type doc). Each leg also asserts the
+// duckdb_circuit_breaker_transition_total samples it emitted (#634).
 func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 	const threshold = 3
 	const cooldown = 5 * time.Second
 
 	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t), WithBreaker(threshold, cooldown))
+	transitions := &breakerTransitions{}
+	env := NewEnv(t, SharedCluster(t), WithBreaker(threshold, cooldown), WithMetricEmitter(transitions))
 	wide := DefaultSchemaFixtures()[1]
 
 	seedTwoTiers(ctx, t, env, wide)
@@ -37,6 +70,7 @@ func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 	// Healthy precondition binds the engine — and the breaker the Env caches
 	// across DuckDB rebuilds — before the client is closed.
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20})
+	transitions.expect(t, "healthy precondition")
 
 	if err := env.Duck.Close(); err != nil {
 		t.Fatalf("close duckdb client: %v", err)
@@ -53,6 +87,7 @@ func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 			t.Fatalf("failure %d/%d: breaker opened before the threshold: %v", i+1, threshold, err)
 		}
 	}
+	transitions.expect(t, "threshold reached", "open")
 	// ...and the next query is rejected by the breaker, not by DuckDB.
 	if _, err := env.Query(ctx, Query{Schema: wide, Limit: 20}); err == nil || !strings.Contains(err.Error(), breakerRejection) {
 		t.Fatalf("query after threshold: want breaker rejection, got: %v", err)
@@ -66,11 +101,13 @@ func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 	if _, err := env.Query(ctx, Query{Schema: wide, Limit: 20}); err == nil || !strings.Contains(err.Error(), breakerRejection) {
 		t.Fatalf("query while open with healthy duckdb: want breaker rejection, got: %v", err)
 	}
+	transitions.expect(t, "rejections while open")
 
 	// Scenario 2: after openDuration the first query is admitted as the
 	// single probe, succeeds, and closes the breaker (oracle-checked result).
 	time.Sleep(cooldown + time.Second)
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20})
+	transitions.expect(t, "successful probe", "half_open", "closed")
 
 	// Scenario 3: the success cleared the failure history — a single fresh
 	// failure must NOT reopen the breaker (no half-open accumulation).
@@ -86,6 +123,7 @@ func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 		t.Fatalf("reopen duckdb after single failure: %v", err)
 	}
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20})
+	transitions.expect(t, "single failure below threshold")
 
 	// Scenario 4 (#246): a failed probe re-opens the breaker for a fresh
 	// openDuration without threshold re-accumulation.
@@ -99,6 +137,7 @@ func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 			t.Fatalf("probe-failure leg failure %d/%d: breaker opened before the threshold: %v", i+1, threshold, err)
 		}
 	}
+	transitions.expect(t, "threshold reached again", "open")
 	// Breaker is open again; wait out the cooldown with DuckDB STILL closed.
 	time.Sleep(cooldown + time.Second)
 	// The single admitted probe reaches the dead client and fails for real...
@@ -112,6 +151,7 @@ func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 	if _, err := env.Query(ctx, Query{Schema: wide, Limit: 20}); err == nil || !strings.Contains(err.Error(), breakerRejection) {
 		t.Fatalf("query after failed probe: want breaker rejection, got: %v", err)
 	}
+	transitions.expect(t, "failed probe", "half_open", "open")
 	// Recovery: healthy client + a fresh expired openDuration → the next
 	// probe succeeds and closes the breaker.
 	if err := env.ReopenDuckDB(); err != nil {
@@ -119,6 +159,7 @@ func TestCircuitBreaker_OpensAtThresholdAndRecovers(t *testing.T) {
 	}
 	time.Sleep(cooldown + time.Second)
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20})
+	transitions.expect(t, "recovery after failed probe", "half_open", "closed")
 }
 
 // TestCircuitBreaker_ConcurrentTransitions is #185 breaker scenario 4 under

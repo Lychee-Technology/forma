@@ -95,6 +95,14 @@ func (s *Sink) EmitRowCount(ctx context.Context, source string, rows int64) {
 	s.emit(ctx, "fed_query_row_count", map[string]string{"source": source}, float64(rows))
 }
 
+// EmitCircuitBreakerTransition records one DuckDB circuit breaker state change
+// by the state entered (#634). The breaker computes the transition under its
+// lock; the engine emits it after the lock is released.
+// name: "duckdb_circuit_breaker_transition_total" with label {"state": "open"|"half_open"|"closed"}
+func (s *Sink) EmitCircuitBreakerTransition(ctx context.Context, state string) {
+	s.emit(ctx, "duckdb_circuit_breaker_transition_total", map[string]string{"state": state}, 1)
+}
+
 // EmitCompactionManifestContractViolation records a contract violation event when
 // compaction detects SaveManifest succeeded without metadata advancement.
 // name: "compaction_manifest_contract_violation_total" with label {"schema_id": "<id>"}

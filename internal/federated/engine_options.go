@@ -22,21 +22,25 @@ func WithPlanCache(c *queryplan.Cache) EngineOption {
 }
 
 // WithMetricEmitter gives the engine the embedder's telemetry emitter (#423):
-// the fed_query_* metrics of every query this engine runs go to it. Nil, the
-// default, emits nothing.
+// the fed_query_* metrics of every query this engine runs, and its circuit
+// breaker's transitions (#634), go to it. Nil, the default, emits nothing.
 func WithMetricEmitter(e forma.MetricEmitter) EngineOption {
 	return func(eng *DBFederatedQueryEngine) { eng.metrics = telemetry.NewSink(e) }
 }
 
 // WithLogger gives the engine a logger; the default is zap.NewNop(). The
 // engine reports itself through returned errors and the execution plan, so
-// this stays narrow — two outlets whose observations have nowhere else to go:
-// the pre-read validator's stamp-versus-footer cross-check (#256), invisible
-// because the read it observes SUCCEEDS (a manifest entry whose column stamp
-// contradicts the object's real footer is an operator's problem no caller's
-// result would ever mention), and the scan-guard violation identification
-// (#351), invisible under AllowPartialDegradedMode because the degraded
-// fallback absorbs the error and toExecutionPlan drops plan Notes.
+// this stays narrow — three outlets whose observations have nowhere else to
+// go: the pre-read validator's stamp-versus-footer cross-check (#256),
+// invisible because the read it observes SUCCEEDS (a manifest entry whose
+// column stamp contradicts the object's real footer is an operator's problem
+// no caller's result would ever mention); the scan-guard violation
+// identification (#351), invisible under AllowPartialDegradedMode because the
+// degraded fallback absorbs the error and toExecutionPlan drops plan Notes;
+// and the circuit breaker's transitions (#634), which belong to no single
+// request: one line per transition, beside the
+// duckdb_circuit_breaker_transition_total sample, so the cause of a trip is
+// logged once rather than on every request it rejects.
 func WithLogger(l *zap.Logger) EngineOption {
 	return func(e *DBFederatedQueryEngine) {
 		if l == nil {

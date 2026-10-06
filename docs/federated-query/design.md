@@ -1069,8 +1069,22 @@ read.
 
 ### **7.1 Circuit Breaker**
 
-* **Trigger:** 5 consecutive failures (Timeout or OOM) within 30 seconds.
+* **Trigger:** `DuckDBConfig.CircuitBreakerFailureThreshold` failed DuckDB passes (default 5) within the sliding `CircuitBreakerWindow` (default 1m), with no successful pass in between. A failure is a pass that reached DuckDB and failed at the `Query` call, mid-stream or in the row handler. Confirmed per-object corruption (§7.3) and failures before DuckDB is consulted hand a probe reservation back instead of counting.
 * **Action:** Immediately fail requests with storage=['olap']. Fallback to storage=['oltp'] (Postgres only) if allowed by the request.
+* **States** (`internal/federated/circuit_breaker.go`): *closed* admits every request. *Open* rejects every request with `ErrDuckDBUnavailable` for `CircuitBreakerOpenDuration` (default 1m). *Half-open* follows the open period: the next request is admitted as the single probe and the rest are rejected until it resolves. The probe's success closes the breaker; its failure re-opens it for a fresh open period without re-counting the threshold. Any successful pass closes the breaker, including one admitted before it opened (#246).
+
+**Transition reporting (#634).** Each transition emits one `duckdb_circuit_breaker_transition_total` sample, labelled by the state entered, and writes one engine log line:
+
+| Transition | Caused by | `state` | Log line |
+|---|---|---|---|
+| closed → open | the failure that reaches the threshold | `open` | Warn "duckdb circuit breaker opened", with `from` and the pass's error |
+| open → half-open | the request admitted as the probe after the open period | `half_open` | Info "duckdb circuit breaker half-open: probe admitted" |
+| half-open → open | a failure while half-open: the probe's own, or a pass admitted earlier | `open` | Warn "duckdb circuit breaker opened", with `from` and the pass's error |
+| open or half-open → closed | a successful pass | `closed` | Info "duckdb circuit breaker closed", with `from` |
+
+The lapse of the open period runs no code, so half-open is reported when the probe is admitted, not when the period ends. The breaker records the state it last reported and never reports the same state twice in a row. Extending an open period, a failure that renews one no probe has entered yet, reclaiming a probe reservation that lapsed, and `ReleaseProbe` are not transitions. The last matters for the §7.3 corrupt-parquet retry: the probe pass releases its reservation and the retry reserves it again within one request, and that request reports `half_open` once.
+
+The breaker computes each transition under its mutex and returns it from `Allow`, `RecordFailure` or `RecordSuccess`. The engine emits and logs after the call has returned, so the embedder's emitter never runs under the breaker's lock. Transitions racing on different goroutines can reach the emitter and the log in a different order than the breaker took them. Per-state counts stay exact. The series is a counter, not a state gauge: a trip that opens and closes between two scrapes still counts, and `increase(duckdb_circuit_breaker_transition_total{state="open"}[5m]) > 0` alerts on any trip. It is not a heartbeat either. Transitions happen only on traffic, so an `open` with no later `half_open` or `closed` means no federated query has reached the breaker since; it does not mean the breaker is still rejecting.
 
 ### **7.2 Degraded Modes**
 
@@ -1141,6 +1155,8 @@ delivers them to the `forma.MetricEmitter` the embedder set on
 
 All five samples are emitted together once the pass has succeeded. A pass that fails at rendering, at the DuckDB `Query` call or mid-stream emits nothing, so a query answered by the corrupt-parquet retry (§7.3, #251) is counted once, from the pass that produced the returned page — the same pass the rewound execution plan describes.
 
+* `duckdb_circuit_breaker_transition_total`: Labeled by `{state: "open", "half_open", "closed"}`, the state the breaker entered. One sample per transition, never per request; §7.1 lists the transitions and the log line each writes (#634).
+
 The execution plan and response metadata MUST include:
 
 * `consistency_mode`: The requested freshness contract (`strict` or `eventual`).
@@ -1149,4 +1165,4 @@ The execution plan and response metadata MUST include:
 * `source_availability`: Per-source status snapshot (PG available, S3 available).
 * `warning`: Human-readable warning when results are partial or consistency is reduced.
 
-**Not implemented.** None of these five fields exists in the execution plan or anywhere else in the response. A partial answer carries the `partial` marker (§7.3), and a federated request (`federated.enabled`) that sets `federated.include_execution_plan` gets an `execution_plan` whose fields are `forma.ExecutionPlan` in `types.go`. #635 tracks reconciling this list and the degraded-mode metadata of §7.2 with the implementation. Circuit-breaker state is not reported as a metric either; #634 tracks that.
+**Not implemented.** None of these five fields exists in the execution plan or anywhere else in the response. A partial answer carries the `partial` marker (§7.3), and a federated request (`federated.enabled`) that sets `federated.include_execution_plan` gets an `execution_plan` whose fields are `forma.ExecutionPlan` in `types.go`. #635 tracks reconciling this list and the degraded-mode metadata of §7.2 with the implementation. The breaker's transitions are reported as a metric (above), not per response.
