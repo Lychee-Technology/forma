@@ -44,8 +44,9 @@ func recordDegradedFallbackPlan(opts *model.FederatedQueryOptions, tables model.
 // degradeToPostgresOnly serves the Postgres-only fallback for a degradable
 // DuckDB-path failure: it records the fallback decision and its cause on the
 // execution plan (#185 — the plan must reach callers that only see the page)
-// and stitches the plan onto the returned page.
-func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, cause error) (*model.PersistentRecordPage, error) {
+// and stitches the plan onto the returned page. mark is the plan as it stood
+// before the DuckDB attempt; see the rewind below.
+func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, mark executionPlanMark, cause error) (*model.PersistentRecordPage, error) {
 	if opts != nil {
 		// The failed DuckDB pass may have recorded a #348 partial marker; the
 		// out-parameter must agree with the page this path returns, and the
@@ -53,6 +54,12 @@ func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tabl
 		// postgres-only answer.
 		opts.PartialScan = nil
 	}
+	// The same holds for the plan (#639): whatever the abandoned attempt
+	// recorded — a failed pass's sources and timings, or a whole page pass
+	// whose page the failed recount discarded — would sit next to
+	// UseDuckDB=false with only internal Notes to say it describes the
+	// attempt, not the answer. Rewind first so the cause note below survives.
+	mark.rewind(opts)
 	recordDegradedFallbackPlan(opts, tables, cause)
 	page, perr := e.queryPostgresOnly(ctx, tables, fq)
 	if perr != nil {

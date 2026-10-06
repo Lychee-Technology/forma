@@ -257,10 +257,13 @@ func (e *DBFederatedQueryEngine) queryDuckDBRouted(ctx context.Context, tables m
 	ctx, cancel := withQueryTimeout(ctx, e.cfg.QueryTimeout)
 	defer cancel()
 
+	// The routing decision and its note are the caller's; everything after
+	// this mark belongs to the DuckDB attempt a degraded fallback abandons.
+	mark := markExecutionPlan(opts)
 	records, totalRecords, err := e.ExecuteDuckDBFederatedQuery(ctx, tables, fq, fq.Limit, fq.Offset, fq.AttributeOrders, opts)
 	if err != nil {
 		if mayDegradeToPostgres(fq, opts, err) {
-			return e.degradeToPostgresOnly(ctx, tables, fq, opts, err)
+			return e.degradeToPostgresOnly(ctx, tables, fq, opts, mark, err)
 		}
 		return nil, fmt.Errorf("duckdb federated query: %w", explainDeclinedDegradation(fq, opts, err))
 	}
@@ -277,7 +280,7 @@ func (e *DBFederatedQueryEngine) queryDuckDBRouted(ctx context.Context, tables m
 			// transient failure here must not fail a request the degraded
 			// mode contract promises to serve Postgres-only.
 			if mayDegradeToPostgres(fq, opts, cerr) {
-				return e.degradeToPostgresOnly(ctx, tables, fq, opts, cerr)
+				return e.degradeToPostgresOnly(ctx, tables, fq, opts, mark, cerr)
 			}
 			return nil, fmt.Errorf("compute empty-page federated count: %w", explainDeclinedDegradation(fq, opts, cerr))
 		}

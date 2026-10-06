@@ -91,6 +91,23 @@ func TestToExecutionPlan_EmptyMergeOmitted(t *testing.T) {
 	require.False(t, out.Routing.UsedDuckDB)
 }
 
+// TestToExecutionPlan_EmptyTimingsOmitted pins the response shape of every
+// Postgres-only plan, the degraded fallback's included (#639): the engine
+// leaves Timings empty, not nil, and the response must carry no timings key
+// rather than an empty object.
+func TestToExecutionPlan_EmptyTimingsOmitted(t *testing.T) {
+	out := toExecutionPlan(&model.ExecutionPlan{
+		Routing: model.RoutingDecision{UseDuckDB: false, Tiers: []model.DataTier{model.DataTierHot}},
+		Sources: []model.DataSourcePlan{{Tier: model.DataTierHot, Engine: "postgres", Reason: "degraded fallback (postgres-only)"}},
+		Timings: map[string]int64{},
+	})
+	require.NotNil(t, out)
+
+	blob, err := json.Marshal(out)
+	require.NoError(t, err)
+	require.NotContains(t, string(blob), `"timings"`)
+}
+
 // TestToPartialResultProjectsCountOnly pins that the partial-result
 // projection surfaces only the reason and excluded-object count; storage
 // keys are security-sensitive internals and must never cross the HTTP

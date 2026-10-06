@@ -1099,12 +1099,12 @@ else its `federated` block says.
     `translate`, `duckdb_fetch` and `total` in milliseconds, plus
     `plan_cache_hit` or `plan_cache_miss` (value 1) when the compiled-plan
     cache rendered the query.
-  - A degraded answer (§10.2) replaces `routing` and appends a `postgres`
-    source for the fallback, but keeps the sources and `timings` that the
-    abandoned DuckDB attempt recorded before it failed. Next to
-    `used_duckdb: false`, the plan can therefore show a `duckdb` source and
-    DuckDB timings that describe the attempt, not the answer. #639 tracks
-    dropping them.
+  - A degraded answer (§10.2) has the same shape as a page answered by
+    PostgreSQL alone: `routing` names the degraded fallback, and its one
+    `postgres` source is the fallback's, with no other fields and no
+    `timings`. The engine drops the sources and timings that the abandoned
+    DuckDB attempt recorded, so the plan describes the answer, not the
+    attempt.
 
   The generated SQL, its bind parameters and the engine's internal notes are
   not projected into the response. `forma.ExecutionPlan` also declares
