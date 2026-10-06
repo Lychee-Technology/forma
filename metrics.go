@@ -101,6 +101,13 @@ var metricCatalogue = []MetricDescriptor{
 		Help:   "Rows handled by one successful federated query pass, per source: pg is the size of the dirty set fetched from the Postgres change_log for the anti-join (the hot rows that override their S3 copies), duckdb is the row count returned by the merged DuckDB scan.",
 	},
 	{
+		Name:   "duckdb_circuit_breaker_transition_total",
+		Kind:   MetricKindCounter,
+		Unit:   MetricUnitCount,
+		Labels: []string{"state"},
+		Help:   "DuckDB circuit breaker state changes, by the state entered (#634): open when failures reach the threshold or a half-open probe fails, half_open when a request is admitted as the probe after the open period, closed when a DuckDB pass succeeds. Emitted only on a transition, never as a heartbeat.",
+	},
+	{
 		Name:   "compaction_manifest_contract_violation_total",
 		Kind:   MetricKindCounter,
 		Unit:   MetricUnitCount,

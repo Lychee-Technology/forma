@@ -80,7 +80,7 @@ needs schema IDs beyond the fixtures can register its own via
 
 Options: `WithSeed`, `WithSchemaDir`, `WithFlushThresholds` (#179),
 `WithDuckMemoryMB`, `WithBreaker` (#185), `WithDuckMaxConnections`,
-`WithRoutingStrategy`, `WithoutManifest`.
+`WithRoutingStrategy`, `WithoutManifest`, `WithMetricEmitter` (#634).
 
 ## Fixture schemas (`schemas/`)
 
@@ -186,6 +186,10 @@ where cdc-init bootstraps base files before federated reads. Use
   pool size (default 2). Since #245 every pooled connection self-configures
   via the driver's per-connection init hook, so this is purely a pool-sizing
   knob — concurrent DuckDB queries need no pinning.
+- `WithMetricEmitter(emitter)` (#634) hands the engine a `forma.MetricEmitter`
+  so a scenario can assert what it emits; unset, the engine emits nothing.
+  `TestCircuitBreaker_OpensAtThresholdAndRecovers` uses it to check the
+  `duckdb_circuit_breaker_transition_total` samples of every leg.
   Set `Query.AllowPartialDegradedMode` to forward the public degraded-mode
   flag so a tier outage falls back to a postgres-only result (complete in
   today's PG-retains-all model) instead of erroring.

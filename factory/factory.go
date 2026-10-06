@@ -317,7 +317,9 @@ func newRepositoryAndEngine(
 	// mention it. And the #351 guard-violation attribution: under
 	// AllowPartialDegradedMode the error naming the offending objects is
 	// absorbed into a Postgres-only answer and toExecutionPlan drops plan
-	// Notes, so the log line is the only surface that survives.
+	// Notes, so the log line is the only surface that survives. It also
+	// carries the circuit breaker's transition lines (#634), which pair with
+	// the duckdb_circuit_breaker_transition_total metric below.
 	// The embedder's telemetry emitter reaches the engine here and the
 	// manager through its config (#423); it is per instance, so nothing is
 	// registered globally.

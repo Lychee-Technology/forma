@@ -84,6 +84,7 @@ type envOptions struct {
 	breakerCooldown time.Duration
 	routing         forma.RoutingStrategy
 	withoutManifest bool
+	metricEmitter   forma.MetricEmitter
 }
 
 // WithSeed pins the per-test seed instead of deriving it from the cluster
@@ -127,6 +128,13 @@ func WithBreaker(maxFailures int, cooldown time.Duration) EnvOption {
 		o.breakerFailures = maxFailures
 		o.breakerCooldown = cooldown
 	}
+}
+
+// WithMetricEmitter hands the federated engine an embedder telemetry emitter
+// (#423), so a scenario can assert what the engine emits (#634). Unset, the
+// engine emits nothing, as in a factory build without Config.Metrics.Emitter.
+func WithMetricEmitter(emitter forma.MetricEmitter) EnvOption {
+	return func(o *envOptions) { o.metricEmitter = emitter }
 }
 
 // WithRoutingStrategy sets the engine routing strategy.

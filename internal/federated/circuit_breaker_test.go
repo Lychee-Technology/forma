@@ -220,10 +220,10 @@ func TestCircuitBreakerConcurrentSafety(t *testing.T) {
 	wg.Wait()
 }
 
-// allowed adapts Allow's (admitted, token) return for the admission-only
+// allowed adapts Allow's (admitted, token, transition) return for the admission-only
 // assertions above.
 func allowed(cb *CircuitBreaker) bool {
-	ok, _ := cb.Allow()
+	ok, _, _ := cb.Allow()
 	return ok
 }
 
@@ -243,19 +243,19 @@ func TestCircuitBreakerReleaseProbeScopedToOwner(t *testing.T) {
 	cb.RecordFailure()                // threshold 1: opens
 	time.Sleep(45 * time.Millisecond) // open period lapses → half-open
 
-	admitted, probeB := cb.Allow()
+	admitted, probeB, _ := cb.Allow()
 	if !admitted || probeB == 0 {
 		t.Fatalf("half-open must admit the probe with a token, got admitted=%v token=%d", admitted, probeB)
 	}
 	// Stale releases while B's probe is live: zero token and a foreign token.
 	cb.ReleaseProbe(0)
 	cb.ReleaseProbe(probeB + 100)
-	if ok, _ := cb.Allow(); ok {
+	if ok, _, _ := cb.Allow(); ok {
 		t.Fatal("stale releases must not clear a live probe; a second probe was admitted")
 	}
 	// The owner's release frees the slot for the next probe.
 	cb.ReleaseProbe(probeB)
-	admitted, probeC := cb.Allow()
+	admitted, probeC, _ := cb.Allow()
 	if !admitted || probeC == 0 || probeC == probeB {
 		t.Fatalf("owner release must free the slot for a fresh reservation, got admitted=%v token=%d (prev %d)", admitted, probeC, probeB)
 	}
@@ -269,18 +269,18 @@ func TestCircuitBreakerLapsedReservationReleaseCannotClearNewProbe(t *testing.T)
 	cb.RecordFailure()
 	time.Sleep(35 * time.Millisecond)
 
-	_, probeOld := cb.Allow()
+	_, probeOld, _ := cb.Allow()
 	if probeOld == 0 {
 		t.Fatal("expected the first half-open caller to reserve the probe")
 	}
 	time.Sleep(35 * time.Millisecond) // probeOld's reservation lapses
 
-	admitted, probeNew := cb.Allow() // reclaims the slot as the new probe
+	admitted, probeNew, _ := cb.Allow() // reclaims the slot as the new probe
 	if !admitted || probeNew == 0 || probeNew == probeOld {
 		t.Fatalf("lapsed slot must be reclaimed with a fresh token, got admitted=%v token=%d (old %d)", admitted, probeNew, probeOld)
 	}
 	cb.ReleaseProbe(probeOld) // the lapsed caller finally returns
-	if ok, _ := cb.Allow(); ok {
+	if ok, _, _ := cb.Allow(); ok {
 		t.Fatal("lapsed caller's release must not clear the reclaimed probe")
 	}
 }

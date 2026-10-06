@@ -1,6 +1,6 @@
 # Telemetry: the metric contract and how to receive it
 
-Forma is a library first. It emits eight metrics and chooses no backend for
+Forma is a library first. It emits nine metrics and chooses no backend for
 them: nothing in the module links Prometheus, OpenTelemetry, CloudWatch or
 any other telemetry SDK. An application that embeds Forma hands it a
 `forma.MetricEmitter` and adapts each `forma.Metric` onto whatever it already
@@ -62,6 +62,7 @@ a fixed enumeration.
 |------|------|------|--------|------------|
 | `fed_query_latency_histogram` | histogram | milliseconds | `stage` (`translation`, `execution`, `streaming`) | federated query engine |
 | `fed_query_row_count` | counter | count | `source` (`pg`, `duckdb`) | federated query engine |
+| `duckdb_circuit_breaker_transition_total` | counter | count | `state` (`open`, `half_open`, `closed`) | federated query engine (#634) |
 | `compaction_manifest_contract_violation_total` | counter | count | `schema_id` | compactor |
 | `compaction_dirty_ratio` | gauge | ratio | `schema_id` | compactor |
 | `compaction_rewrite_pending_total` | counter | count | `schema_id` | compactor |
@@ -88,6 +89,25 @@ streaming rows, emits nothing, so no counter or histogram ever carries a
 failed attempt. A query answered by the corrupt-parquet retry (#251) is
 therefore counted once, from the pass that produced the returned page, the
 same pass the execution plan describes.
+
+`duckdb_circuit_breaker_transition_total` is not one of those five. It
+counts the DuckDB circuit breaker's state changes, labelled by the state
+entered: `open` when failures reach the threshold or a half-open probe fails,
+`half_open` when a request is admitted as the probe after the open period,
+and `closed` when a DuckDB pass succeeds. It moves once per transition, not
+per request, and a request the open breaker rejects adds nothing. Each
+transition also writes one line through the engine's logger: Warn "duckdb
+circuit breaker opened" with the state it left and the error of the pass
+that opened it, and Info for "half-open: probe admitted" and "closed".
+`docs/federated-query/design.md` §7.1 lists exactly which events count.
+
+The breaker series is a counter rather than a state gauge, so a trip that
+opens and closes between two scrapes is still counted:
+`increase(duckdb_circuit_breaker_transition_total{state="open"}[5m]) > 0`
+alerts on any trip. Like `compaction_dirty_ratio`, it is not a heartbeat.
+Transitions happen only when federated queries reach the breaker, so an
+`open` with no later `half_open` or `closed` means no query has arrived
+since, not that the breaker is still rejecting.
 
 Names are wire names: dashboards key on them verbatim, so they are never
 renamed or prefixed. **Adding a metric** means adding its descriptor to

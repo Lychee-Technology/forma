@@ -977,8 +977,10 @@ describe them:
   series, `fed_query_latency_histogram` and `fed_query_row_count`, measure and
   when the engine emits them.
 
-A metric for the circuit breaker's state (§9.2) is not implemented. #634
-tracks it.
+The DuckDB circuit breaker (§9.2) reports its transitions, not its current
+state: `duckdb_circuit_breaker_transition_total` counts each state it enters,
+and there is no state gauge (#634). `docs/federated-query/design.md` §7.1
+says which events count as a transition.
 
 ### 10.2 Structured Logging
 
@@ -1001,11 +1003,16 @@ The library's lines reach every caller, an embedding application included:
 - `EntityManager.Query` logs "query results" at Info with the record and page
   counts. `CrossSchemaSearch` logs no such line.
 - At Debug, the Postgres repository logs the SQL it runs and its arguments.
-- The federated engine logs two anomalies and nothing else: at Error, a
-  Parquet scan-guard failure attributed to specific objects, and at Warn, a
-  manifest column stamp that disagrees with the Parquet footer. It reports
-  every other failure only through the error it returns. Silence from the
-  engine therefore does not mean a federated query was healthy: the degraded
+- The federated engine logs two anomalies and the circuit breaker's
+  transitions, and nothing else. The anomalies are, at Error, a Parquet
+  scan-guard failure attributed to specific objects, and at Warn, a manifest
+  column stamp that disagrees with the Parquet footer. The breaker writes one
+  line per transition (#634): "duckdb circuit breaker opened" at Warn, with
+  the state it left (`from`) and the error of the DuckDB pass that opened it,
+  and "duckdb circuit breaker half-open: probe admitted" and "duckdb circuit
+  breaker closed" (with `from`) at Info. The engine reports every other
+  failure only through the error it returns. Silence from the engine
+  therefore does not mean a federated query was healthy: the degraded
   fallback described at the end of this section absorbs a failure without a
   line.
 
@@ -1043,16 +1050,22 @@ Per-stage latency and row counts are metrics (§10.1). Routing, per-source and
 timing detail for one query is returned to the caller on request (§10.3) and
 is not logged.
 
-One kind of failure leaves neither a log line nor a metric. When a request
+One kind of failure leaves no log line or metric of its own. When a request
 sets `federated.allow_partial_degraded_mode`, the engine absorbs most
 DuckDB-path failures, a circuit-breaker rejection included, and answers from
 PostgreSQL alone (`docs/federated-query/design.md` §7.2). The request
 succeeds, so:
 
-- The engine does not log the failure it absorbed. The scan-guard line above
-  is the one exception, because it is written before the fallback.
+- The engine does not log the failure it absorbed. Two lines are written
+  before the fallback and so survive it: the scan-guard line above, and the
+  breaker's "opened" line when the absorbed failure is the one that opens the
+  breaker.
 - The failed pass emits no `fed_query_*` sample (§10.1). During an S3 outage
-  those series go flat, which reads the same as no traffic.
+  those series go flat, which reads the same as no traffic. The breaker's
+  transition counter does move: a sustained outage trips the breaker, and
+  each later probe that fails re-opens it. A request the open breaker
+  rejects leaves nothing itself; the trip it follows was counted and logged
+  once.
 - `EntityManager.Query` and the HTTP layer log their ordinary success lines.
 
 The only traces are in the response (§10.3). The `partial` marker reads
@@ -1338,3 +1351,4 @@ class ColumnStats:
 | 2.3 | - | Enhanced Phase-2 boundary pruning |
 | 2.4 | - | Added comprehensive Anti-Join requirements |
 | 2.5 | - | Replaced the unimplemented §10 observability sketches with the shipped metric catalogue, logging and response diagnostics (#597) |
+| 2.6 | - | §10.1 and §10.2: the DuckDB circuit breaker's transition metric and log lines (#634) |

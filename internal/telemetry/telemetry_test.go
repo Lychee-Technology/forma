@@ -30,6 +30,8 @@ var helperCalls = []helperCall{
 		"fed_query_latency_histogram", map[string]string{"stage": "execution"}, 42},
 	{"EmitRowCount", func(ctx context.Context, s *Sink) { s.EmitRowCount(ctx, "duckdb", 7) },
 		"fed_query_row_count", map[string]string{"source": "duckdb"}, 7},
+	{"EmitCircuitBreakerTransition", func(ctx context.Context, s *Sink) { s.EmitCircuitBreakerTransition(ctx, "half_open") },
+		"duckdb_circuit_breaker_transition_total", map[string]string{"state": "half_open"}, 1},
 	{"EmitCompactionManifestContractViolation", func(ctx context.Context, s *Sink) { s.EmitCompactionManifestContractViolation(ctx, 4) },
 		"compaction_manifest_contract_violation_total", map[string]string{"schema_id": "4"}, 1},
 	{"EmitCompactionDirtyRatio", func(ctx context.Context, s *Sink) { s.EmitCompactionDirtyRatio(ctx, 5, 0.5) },
