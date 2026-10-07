@@ -1,6 +1,7 @@
 package federated
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -8,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/lychee-technology/forma/internal/sizeguard"
 )
 
 // maxGuardedFunctionLines is coding-standard.md §7's refactoring trigger, which
@@ -52,9 +55,23 @@ func measureFunctionLines(filename string, source []byte) ([]guardedFunction, er
 // 100-line hard limit (#431), and loadExternalFederatedConfigFromEnv in
 // helpers.go at 84. Each needs a refactor this guard does not own, so the scope
 // widens one file group at a time; only once both are under the trigger can this
-// guard drop its pattern list and share listGuardedSourceFiles.
+// guard drop its query prefix and take the file guard's listing as it stands.
 func listFunctionGuardedSourceFiles() ([]string, error) {
-	return listNonTestSources("query*.go")
+	sources, err := sizeguard.List(os.DirFS("."), sizeguard.ExcludeTests)
+	if err != nil {
+		return nil, fmt.Errorf("list function-guarded source files: %w", err)
+	}
+
+	var files []string
+	for _, name := range sources {
+		if strings.HasPrefix(name, "query") {
+			files = append(files, name)
+		}
+	}
+	if len(files) == 0 {
+		return nil, errors.New("no function-guarded source files matched query*.go")
+	}
+	return files, nil
 }
 
 func TestMeasureFunctionLinesSpansFuncKeywordToClosingBrace(t *testing.T) {

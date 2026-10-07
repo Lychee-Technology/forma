@@ -1,4 +1,4 @@
-package sqlgen
+package production
 
 import (
 	"testing"
@@ -8,9 +8,9 @@ import (
 
 // TestPackageFilesStayWithinFileSizeLimit keeps every file in the package,
 // sources and tests alike, under the 500-line cap from coding-standard.md.
-// predicate_characterization_test.go sat at 497/500 when this guard landed;
-// the natural way to extend a characterization matrix is to append a row, and
-// this guard is what fires before the cap is crossed rather than after (#320).
+// schema_evolution_e2e_test.go was at 492 lines when this guard landed (#449,
+// on #452's watch list). The guard reads files rather than compiling them, so
+// it measures the e2e-tagged files too although a plain go test leaves them out.
 func TestPackageFilesStayWithinFileSizeLimit(t *testing.T) {
 	sizeguard.Check(t, sizeguard.IncludeTests)
 }
