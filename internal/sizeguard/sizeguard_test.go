@@ -211,3 +211,24 @@ func TestCheckFailsFatallyWhenTheGuardCannotRun(t *testing.T) {
 		t.Errorf("check reported %q alongside a fatal listing failure", rec.errors)
 	}
 }
+
+// TestAnUnknownScopeFailsTheGuard keeps the scope fail-closed. Scope is an int,
+// so a conversion can build a value that is neither declared scope. Unchecked,
+// such a value would watch like ExcludeTests: the guard would drop every test
+// file and pass. It must stop the guard before anything is measured.
+func TestAnUnknownScopeFailsTheGuard(t *testing.T) {
+	for _, scope := range []Scope{IncludeTests - 1, ExcludeTests + 1} {
+		if got, err := List(packageDir(), scope); err == nil {
+			t.Errorf("scope %d: List = %v, want an unknown-scope error", scope, got)
+		}
+
+		rec := &recordingTB{}
+		check(rec, packageDir(), scope)
+		if want := fmt.Sprintf("unknown scope %d", scope); !strings.Contains(rec.fatal, want) {
+			t.Errorf("scope %d: check fatal = %q, want it to contain %q", scope, rec.fatal, want)
+		}
+		if len(rec.errors) != 0 {
+			t.Errorf("scope %d: check reported %q alongside the unknown-scope failure", scope, rec.errors)
+		}
+	}
+}

@@ -25,7 +25,9 @@ import (
 // maxLines is coding-standard.md's source-file cap.
 const maxLines = 500
 
-// Scope says which Go files in a package directory a guard watches.
+// Scope says which Go files in a package directory a guard watches. Only the
+// two constants below are scopes: List fails on any other value, which a
+// conversion such as Scope(2) can still build.
 type Scope int
 
 const (
@@ -36,6 +38,13 @@ const (
 	// holds an over-cap test file, and each use names the issue that retires it.
 	ExcludeTests
 )
+
+// valid reports whether s is a declared scope. An undeclared value would
+// otherwise fall through watches as ExcludeTests and drop every test file from
+// the guard in silence.
+func (s Scope) valid() bool {
+	return s == IncludeTests || s == ExcludeTests
+}
 
 func (s Scope) watches(name string) bool {
 	return s == IncludeTests || !isTest(name)
@@ -66,8 +75,12 @@ func check(t testing.TB, fsys fs.FS, scope Scope) {
 // List returns the Go files in the root of fsys that scope watches. It globs
 // *.go and filters by scope alone, never by a list of name patterns: a file
 // whose name stops matching a pattern drops out of a pattern-based guard in
-// silence (#369).
+// silence (#369). A scope that is neither IncludeTests nor ExcludeTests is an
+// error.
 func List(fsys fs.FS, scope Scope) ([]string, error) {
+	if !scope.valid() {
+		return nil, fmt.Errorf("unknown scope %d: want IncludeTests or ExcludeTests", scope)
+	}
 	candidates, err := fs.Glob(fsys, "*.go")
 	if err != nil {
 		return nil, fmt.Errorf("glob guarded files: %w", err)
@@ -86,7 +99,8 @@ func List(fsys fs.FS, scope Scope) ([]string, error) {
 }
 
 // audit is the whole guard: list, cross-check the listing, then measure every
-// listed file.
+// listed file. List rejects an undeclared scope, so the steps after it only
+// ever see IncludeTests or ExcludeTests.
 func audit(fsys fs.FS, scope Scope) ([]string, error) {
 	names, err := List(fsys, scope)
 	if err != nil {
