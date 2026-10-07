@@ -11,9 +11,8 @@ import (
 )
 
 type toolCommand struct {
-	name        string
-	run         func(ctx context.Context, args []string) error
-	exitOnError bool
+	name string
+	run  func(ctx context.Context, args []string) error
 }
 
 var runValidateSchemaConsistencyFn = runValidateSchemaConsistency
@@ -21,37 +20,39 @@ var runValidateSchemaConsistencyFn = runValidateSchemaConsistency
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	os.Exit(runToolMain(ctx, os.Args[1:], os.Stdout))
+	os.Exit(runToolMain(ctx, os.Args[1:], os.Stderr))
 }
 
-func runToolMain(ctx context.Context, args []string, out io.Writer) int {
+// runToolMain dispatches args to a subcommand and returns the process exit
+// status. Every failure is non-zero, so a script or deploy step running a tool
+// can tell that it failed (#643). errOut receives only diagnostics (main
+// passes stderr), which leaves stdout to the subcommands' own output.
+func runToolMain(ctx context.Context, args []string, errOut io.Writer) int {
 	if len(args) < 1 {
-		printUsage(out)
+		printUsage(errOut)
 		return 1
 	}
 
 	cmd, ok := lookupToolCommand(args[0])
 	if !ok {
-		fmt.Fprintf(out, "unknown command %q\n", args[0])
-		printUsage(out)
+		fmt.Fprintf(errOut, "unknown command %q\n", args[0])
+		printUsage(errOut)
 		return 1
 	}
 
-	if err := cmd.run(ctx, args[1:]); err != nil {
-		// Commands report semantic outcomes (e.g. manifest-reconcile's
-		// "discrepancies found" = 2) via an ExitCode; those already rendered
-		// their output, so no error line is printed for them.
-		var ec exitCoder
-		if errors.As(err, &ec) {
-			return ec.ExitCode()
-		}
-		fmt.Fprintf(out, "%s: %v\n", cmd.name, err)
-		if cmd.exitOnError {
-			return 1
-		}
+	err := cmd.run(ctx, args[1:])
+	if err == nil {
+		return 0
 	}
-
-	return 0
+	// Commands report semantic outcomes (e.g. manifest-reconcile's
+	// "discrepancies found" = 2) via an ExitCode; those already rendered
+	// their output, so no error line is printed for them.
+	var ec exitCoder
+	if errors.As(err, &ec) {
+		return ec.ExitCode()
+	}
+	fmt.Fprintf(errOut, "%s: %v\n", cmd.name, err)
+	return 1
 }
 
 // exitCoder lets a command error carry its own process exit code.
@@ -73,11 +74,11 @@ func toolCommands() []toolCommand {
 		{name: "generate-attributes", run: runGenerateAttributes},
 		{name: "init-db", run: runInitDB},
 		{name: "inline-schema", run: runInlineSchema},
-		{name: "validate-schema-consistency", run: runValidateSchemaConsistencyFn, exitOnError: true},
-		{name: "cdc-flush", run: runCDCFlush, exitOnError: true},
-		{name: "cdc-init", run: runCDCInit, exitOnError: true},
-		{name: "compactor", run: runCompactor, exitOnError: true},
-		{name: "manifest-reconcile", run: runManifestReconcileFn, exitOnError: true},
+		{name: "validate-schema-consistency", run: runValidateSchemaConsistencyFn},
+		{name: "cdc-flush", run: runCDCFlush},
+		{name: "cdc-init", run: runCDCInit},
+		{name: "compactor", run: runCompactor},
+		{name: "manifest-reconcile", run: runManifestReconcileFn},
 	}
 }
 

@@ -3,6 +3,15 @@ Forma Tools CLI
 
 命令通过 `go run ./cmd/tools <command> [options]` 调用。
 
+退出码与输出流
+--------------
+- 任何子命令失败都以非零状态退出：一般为 1，带语义退出码的命令用自己的退出码
+  （`manifest-reconcile` 有差异时为 2）。`-h`/`--help` 打印用法后以 0 退出。
+  脚本和 CI 步骤可以直接依赖退出码判断成败（#643）。
+- 失败时的 `<command>: <error>` 行，以及未知命令、缺少命令时的用法说明，写到 stderr。
+  stdout 留给命令自身的输出，例如 `inline-schema` 未指定 `-out` 时输出的 JSON、
+  `compactor` 的指标行。
+
 可用命令
 --------
 - `generate-attributes`：从 JSON Schema 生成 `<schema>_attributes.json`。
@@ -48,11 +57,19 @@ init-db
 - `-db-port`（`DB_PORT`，默认 `5432`；`DB_PORT` 已设置但不是十进制整数（如 Kubernetes 注入的 `tcp://…`）时直接报错，即使同时传了 `-db-port`，但 `-h`/`--help` 仍会打印用法；`validate-schema-consistency` 同理，#600）
 - `-db-name`（`DB_NAME`，默认 `forma`）
 - `-db-user`（`DB_USER`，默认 `postgres`）
-- `-db-password`（`DB_PASSWORD`，默认空）
+- `-db-password`（`DB_PASSWORD`，默认 `postgres`）
 - `-db-ssl-mode`（`DB_SSL_MODE`，默认 `disable`）
 - `-schema-table`（`SCHEMA_TABLE`，默认 `schema_registry`）
-- `-eav-table`（`EAV_TABLE`，默认 `eav_data_2`）
-- `-entity-main-table`（`ENTITY_MAIN_TABLE`，默认 `entity_main`）
+- `-eav-table`（`EAV_TABLE`，默认 `eav_dev`）
+- `-entity-main-table`（`ENTITY_MAIN_TABLE`，默认 `entity_main_dev`）
+- `-change-log-table`（`CHANGE_LOG_TABLE`，默认 `change_log_dev`）
+- `-schema-dir`（`SCHEMA_DIR`，默认空即不注册）：把目录中的 JSON Schema（不含 `*_attributes.json`）
+  注册到 `-schema-table`。已注册的 schema 保留原 `schema_id`。新 schema 按文件名排序，
+  从现有最大 `schema_id` + 1 开始分配（空表从 100 开始），不回填空缺，因为空缺的 id
+  可能仍是已删除注册的实体行或 parquet 文件的键。
+
+建表与建索引均为 `IF NOT EXISTS`，所以 `init-db` 可以对已初始化的数据库重复运行，
+新增 schema 文件之后也可以（#643）。
 
 示例：
 - `go run ./cmd/tools init-db`
