@@ -9,9 +9,11 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/stretchr/testify/require"
 )
 
 // newFileSchemaRegistryFromDir creates a schema registry that loads schemas from
@@ -289,4 +291,29 @@ func visitPayload(id string) map[string]any {
 		"scheduledStartAt": "2024-01-01T00:00:00Z",
 		"status":           "scheduled",
 	}
+}
+
+// mustNewEntityManager builds a manager and fails the test if construction
+// fails. It exists because NewEntityManager fails closed on a relation-index
+// load (#388) while most tests in this package are about what a built manager
+// does, not about building one — so they assert construction succeeded and move
+// on. t.Helper keeps a failure attributed to the caller's line.
+//
+// Tests that are about construction itself do not use this: they call
+// NewEntityManager directly and assert on both return values.
+func mustNewEntityManager(
+	t *testing.T,
+	transformer model.PersistentRecordTransformer,
+	repository model.PersistentRecordRepository,
+	federatedQueryEngine model.FederatedQueryEngine,
+	registry forma.SchemaRegistry,
+	config *forma.Config,
+	validator *schemavalidate.Validator,
+	opts ...EntityManagerOption,
+) forma.EntityManager {
+	t.Helper()
+	manager, err := NewEntityManager(
+		transformer, repository, federatedQueryEngine, registry, config, validator, opts...)
+	require.NoError(t, err, "build entity manager")
+	return manager
 }
