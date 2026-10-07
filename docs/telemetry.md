@@ -157,11 +157,10 @@ manifest is loaded, so the gauge is not a heartbeat: a run that printed none
 either had no manifest to read (exit code 0) or failed before reading it
 (non-zero).
 
-The subcommand's logs go to stderr, so on a successful run stdout carries the
-metric lines and nothing else. A failed run also prints its
-`compactor: <error>` text there, after any metric the pass emitted before it
-failed, and that text can span several lines; a consumer keeps the lines that
-are `"type":"forma_metric"` objects and skips the rest. No other `cmd/tools`
+The subcommand's logs go to stderr, and so does a failed run's
+`compactor: <error>` text (#643), so stdout carries the metric lines and
+nothing else: on a failed run, just the metrics the pass emitted before it
+failed. No other `cmd/tools`
 subcommand has a metric to emit, and the emitter belongs to the one
 `Compactor` the subcommand builds, so a subcommand that prints a document on
 stdout (`inline-schema`) never shares it with a metric line.

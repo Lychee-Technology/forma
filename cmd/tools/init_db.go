@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -298,58 +299,131 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 	return nil
 }
 
-// registerSchemas reads JSON schema files from the directory and inserts them into the schema registry table
+// firstSchemaID is the schema_id init-db gives the first schema it registers.
+const firstSchemaID = 100
+
+// registerSchemas inserts the JSON schema files in schemaDir into the schema
+// registry table. A name already registered keeps its schema_id, which keys
+// its entity rows and the parquet files written under it; a new name gets an
+// id from newSchemaIDs, so re-running init-db after adding a schema file
+// succeeds (#643).
 func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir string) error {
-	entries, err := os.ReadDir(schemaDir)
+	schemaNames, err := listSchemaNames(schemaDir)
 	if err != nil {
-		return fmt.Errorf("read schema directory(%s): %w", schemaDir, err)
+		return err
 	}
-
-	// Collect schema files (excluding *_attributes.json files)
-	var schemaFiles []string
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if strings.HasSuffix(name, ".json") && !strings.HasSuffix(name, "_attributes.json") {
-			schemaFiles = append(schemaFiles, name)
-		}
-	}
-
-	if len(schemaFiles) == 0 {
+	if len(schemaNames) == 0 {
 		fmt.Printf("No schema files found, dir: %s\n", schemaDir)
 		return nil
 	}
 
-	// Sort for deterministic schema ID assignment
-	sort.Strings(schemaFiles)
+	registered, err := loadRegisteredSchemaIDs(ctx, tx, schemaTable)
+	if err != nil {
+		return err
+	}
+	newIDs, err := newSchemaIDs(schemaNames, registered)
+	if err != nil {
+		return err
+	}
 
-	// Insert schemas into the registry table
-	quotedTable := quoteIdentifier(schemaTable)
-	for idx, file := range schemaFiles {
-		schemaName := strings.TrimSuffix(file, ".json")
-		schemaID := int16(idx + 100) // Start IDs from 100
-
-		insertSQL := fmt.Sprintf(
-			`INSERT INTO %s (schema_name, schema_id) VALUES ($1, $2) ON CONFLICT (schema_name) DO NOTHING`,
-			quotedTable,
-		)
-
-		result, err := tx.Exec(ctx, insertSQL, schemaName, schemaID)
-		if err != nil {
-			return fmt.Errorf("insert schema %s: %w", schemaName, err)
+	// ON CONFLICT absorbs a concurrent init-db registering the same name
+	// between the read above and this insert.
+	insertSQL := fmt.Sprintf(
+		`INSERT INTO %s (schema_name, schema_id) VALUES ($1, $2) ON CONFLICT (schema_name) DO NOTHING`,
+		quoteIdentifier(schemaTable),
+	)
+	for _, schemaName := range schemaNames {
+		schemaID, isNew := newIDs[schemaName]
+		inserted := false
+		if isNew {
+			result, err := tx.Exec(ctx, insertSQL, schemaName, schemaID)
+			if err != nil {
+				return fmt.Errorf("insert schema %s: %w", schemaName, err)
+			}
+			inserted = result.RowsAffected() > 0
 		}
 
-		if result.RowsAffected() > 0 {
+		if inserted {
 			fmt.Printf("Registered schema, name: %s, id: %d\n", schemaName, schemaID)
 		} else {
 			fmt.Printf("Schema already exists, schema name: %s\n", schemaName)
 		}
 	}
 
-	fmt.Printf("Registered schemas from directory, count: %d, dir: %s\n", len(schemaFiles), schemaDir)
+	fmt.Printf("Registered schemas from directory, count: %d, dir: %s\n", len(schemaNames), schemaDir)
 	return nil
+}
+
+// listSchemaNames returns the names of the JSON schema files in schemaDir,
+// leaving out the *_attributes.json metadata files. The order is that of the
+// file names, which on an empty registry fixes the schema ids.
+func listSchemaNames(schemaDir string) ([]string, error) {
+	entries, err := os.ReadDir(schemaDir)
+	if err != nil {
+		return nil, fmt.Errorf("read schema directory(%s): %w", schemaDir, err)
+	}
+
+	var schemaFiles []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, "_attributes.json") {
+			continue
+		}
+		schemaFiles = append(schemaFiles, name)
+	}
+	sort.Strings(schemaFiles)
+
+	names := make([]string, len(schemaFiles))
+	for i, file := range schemaFiles {
+		names[i] = strings.TrimSuffix(file, ".json")
+	}
+	return names, nil
+}
+
+// loadRegisteredSchemaIDs reads the registry table's schema_name -> schema_id
+// rows.
+func loadRegisteredSchemaIDs(ctx context.Context, tx pgx.Tx, schemaTable string) (map[string]int16, error) {
+	rows, err := tx.Query(ctx, fmt.Sprintf(`SELECT schema_name, schema_id FROM %s`, quoteIdentifier(schemaTable)))
+	if err != nil {
+		return nil, fmt.Errorf("read registered schemas from %s: %w", schemaTable, err)
+	}
+
+	registered := make(map[string]int16)
+	var name string
+	var id int16
+	if _, err := pgx.ForEachRow(rows, []any{&name, &id}, func() error {
+		registered[name] = id
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("scan registered schemas from %s: %w", schemaTable, err)
+	}
+	return registered, nil
+}
+
+// newSchemaIDs assigns a schema_id to each of names (in order) that registered
+// lacks, counting up from one past the highest registered id, and from
+// firstSchemaID on an empty registry. That is the positional 100, 101, ... of
+// a first run, and the ids a re-run gives names sorting after every registered
+// one. A gap is never refilled: it may be a deleted registration whose id
+// still keys entity rows or parquet files.
+func newSchemaIDs(names []string, registered map[string]int16) (map[string]int16, error) {
+	next := firstSchemaID
+	for _, id := range registered {
+		next = max(next, int(id)+1)
+	}
+
+	ids := make(map[string]int16)
+	for _, name := range names {
+		if _, ok := registered[name]; ok {
+			continue
+		}
+		if next > math.MaxInt16 {
+			return nil, fmt.Errorf("assign schema_id to schema %s: next id %d exceeds the SMALLINT maximum %d", name, next, math.MaxInt16)
+		}
+		ids[name] = int16(next)
+		next++
+	}
+	return ids, nil
 }
 
 func withTx(ctx context.Context, conn *pgxpool.Conn, fn func(pgx.Tx) error) error {
