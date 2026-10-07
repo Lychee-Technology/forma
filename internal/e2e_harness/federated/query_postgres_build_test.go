@@ -7,7 +7,7 @@ import (
 
 // Unit tests for query_postgres_build.go, split out of query_unit_test.go when
 // that file reached 496 of the 500-line limit. The file-size guard does not
-// watch it: listNonTestSources excludes _test.go (#324).
+// watch it: this package's guard excludes _test.go until #433 (#324).
 
 func TestBuildPostgresOnlyQueriesSupportBenchmarkFilters(t *testing.T) {
 	h := &FederatedTestHarness{SchemaID: benchmarkSchemaIDTrade}
