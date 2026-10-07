@@ -58,7 +58,7 @@ import (
 //
 // That is a statement about those callers, not a guarantee this package can
 // make. Each strip site is guarded on the caller holding a relation index
-// (entity_crud_service.go, entity_batch_service.go), and a caller that skips the
+// (entity_crud_service.go, entity_batch_create_atomic.go), and a caller that skips the
 // strip reaches this function with contactSnapshot.name still present, where the
 // ordinary rule expands it like any other known dotted name. That expansion is
 // what #314 carved out against, and the carve-out is gone (#318).
