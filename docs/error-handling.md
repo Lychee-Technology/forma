@@ -2092,7 +2092,7 @@ pinned by six assertions of the form
 ### The best-effort batch result is a second publication surface (#318)
 
 `forma.OperationError.Error` is an exported, JSON-serialised field, and
-`executeBestEffortBatch` (`internal/entity_batch_service.go`) is the only place
+`executeBestEffortBatch` (`internal/entity_batch_best_effort.go`) is the only place
 in the tree that fills it — the atomic batch paths return the error itself, and
 every single-operation response goes through `internal/httpapi`. So that field
 crosses the Go API boundary and the HTTP one *without* passing
