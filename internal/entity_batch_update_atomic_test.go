@@ -11,6 +11,75 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
+func TestEntityManager_BatchUpdate_AtomicAllOrNothingOnRepositoryFailure(t *testing.T) {
+	ctx := context.Background()
+	config := createTestConfig()
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
+	if err != nil {
+		t.Fatalf("failed to create schema registry: %v", err)
+	}
+	transformer := transform.NewPersistentRecordTransformer(registry)
+	mockRepo := newMockPersistentRecordRepository()
+	mockRepo.atomicUpdateFailAt = 2
+
+	schemaID, _, err := registry.GetSchemaAttributeCacheByName("visit")
+	if err != nil {
+		t.Fatalf("failed to get schema metadata: %v", err)
+	}
+
+	rowID1 := uuid.New()
+	rowID2 := uuid.New()
+	mockRepo.storeRecord(buildPersistentRecord(t, transformer, schemaID, rowID1, visitPayload("visit-atomic-update-1")))
+	mockRepo.storeRecord(buildPersistentRecord(t, transformer, schemaID, rowID2, visitPayload("visit-atomic-update-2")))
+
+	em := mustNewEntityManager(t, transformer, mockRepo, nil, registry, config, nil)
+
+	req := &forma.BatchOperation{
+		Atomic: true,
+		Operations: []forma.EntityOperation{
+			{
+				EntityIdentifier: forma.EntityIdentifier{
+					SchemaName: "visit",
+					RowID:      rowID1,
+				},
+				Type:    forma.OperationUpdate,
+				Updates: map[string]any{"status": "visited"},
+			},
+			{
+				EntityIdentifier: forma.EntityIdentifier{
+					SchemaName: "visit",
+					RowID:      rowID2,
+				},
+				Type:    forma.OperationUpdate,
+				Updates: map[string]any{"status": "cancelled"},
+			},
+		},
+	}
+
+	_, err = em.BatchUpdate(ctx, req)
+	if err == nil {
+		t.Fatalf("expected batch update to fail")
+	}
+
+	record1 := mockRepo.records[schemaID][rowID1]
+	attrs1, err := transformer.FromPersistentRecord(ctx, record1)
+	if err != nil {
+		t.Fatalf("failed to convert record1: %v", err)
+	}
+	record2 := mockRepo.records[schemaID][rowID2]
+	attrs2, err := transformer.FromPersistentRecord(ctx, record2)
+	if err != nil {
+		t.Fatalf("failed to convert record2: %v", err)
+	}
+
+	if attrs1["status"] != "scheduled" {
+		t.Fatalf("expected row1 status unchanged, got %v", attrs1["status"])
+	}
+	if attrs2["status"] != "scheduled" {
+		t.Fatalf("expected row2 status unchanged, got %v", attrs2["status"])
+	}
+}
+
 // #554 pins at the service seam for atomic BatchUpdate: the merge base is
 // whatever the repository reads under its lock, and the answer is what the
 // repository stored — the two properties #553 gave single-row Update.
