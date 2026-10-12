@@ -2,7 +2,12 @@
 
 ## Overview
 
-Forma uses two error classes in the schema/metadata pipeline.
+Forma uses two error classes in the schema/metadata pipeline. Write-path
+validation errors are the caller's fault and answer `4xx`. Read-path
+consistency errors are operator-visible failures. A third, orthogonal
+vocabulary reports what happened to a write's transaction: the four storage
+outcomes (unique conflict, precondition failed, retryable conflict, commit
+outcome unknown) in "Storage outcomes on the write path" below.
 
 ## Write-path validation errors
 
@@ -943,6 +948,184 @@ Pinned by `TestUpdateNamingLegacyBigintImageRepairsIt`,
 `TestUnrelatedUpdateOverObjectArrayGapIntegration` (Postgres), and by
 `TestNestedBigintLegacyImageRepairByUpdate` (production E2E).
 
+## Storage outcomes on the write path (#645)
+
+A write can fail in four ways that a coordinating caller must handle differently.
+Before #645 the only way to tell them apart was to inspect driver errors. The
+public API does not expose those errors, and they differ between PostgreSQL and
+Aurora DSQL. Forma now reports each outcome as a typed sentinel in package
+`forma`:
+
+| Sentinel | Meaning | `errors.Is(err, ErrConflict)` | `forma.IsRetryable(err)` | HTTP | `error_class` (redacted body) | Batch `Code` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ErrUniqueConflict` | The write would give two live rows the same identity (a RowID or a declared unique key). | true | false | `409`, published message | `unique_conflict` | `UNIQUE_CONFLICT` |
+| `ErrPreconditionFailed` | A mutation's precondition did not hold against the current row. | true | false | `412`, published message | `precondition_failed` | `PRECONDITION_FAILED` |
+| `ErrRetryableConflict` | The database aborted the transaction because of concurrent activity. It is **known to be rolled back**. | false | **true** | `503`, always redacted | `retryable_conflict` | `RETRYABLE_CONFLICT` |
+| `ErrCommitOutcomeUnknown` | COMMIT was sent and no reply arrived. The transaction **may or may not** have committed. | false | false | `500`, always redacted | `commit_outcome_unknown` | `COMMIT_OUTCOME_UNKNOWN` |
+
+The two conflict species satisfy `ErrConflict`, so callers that predate #645
+keep matching. The other two deliberately do not. A retryable conflict means
+"run the transaction again", not "your request conflicts with stored state".
+An unknown commit is not a conflict at all.
+
+### Retry guidance
+
+Forma never retries on the caller's behalf. Retrying is the caller's decision
+(#648).
+
+- **Retry only when `forma.IsRetryable(err)` is true**, and re-run the whole
+  transaction. Re-sending only the statement that failed is not a retry. The
+  database rolled back everything the transaction did.
+- **Never retry blindly on `ErrCommitOutcomeUnknown`.** The write may have
+  landed. Re-read and reconcile first, or make the operation idempotent and
+  retry that. `IsRetryable` is false for it, even in a chain that also carries
+  `ErrRetryableConflict`.
+- **Stop on `ErrUniqueConflict`**: the identity already exists. **Stop or
+  re-read on `ErrPreconditionFailed`**: another writer changed the row.
+- Over HTTP the same rule reads: retry a `503` with `error_class:
+  retryable_conflict`, and never retry a `500` with `error_class:
+  commit_outcome_unknown` without first checking the stored state.
+
+### Classification
+
+Every repository write (`Insert`, `Delete`, `Merge`, the three batch writers and
+`RequeueForFlush`) runs its statements inside one transaction runner,
+`inWriteTx` (`internal/postgres_persistent_repository_tx.go`). That runner is
+the only place a write transaction begins, commits and is classified. A body
+error goes through `classifyStatementError` and a COMMIT error through
+`classifyCommitError` (`internal/storage_outcome.go`). Running classification at
+the transaction boundary, instead of at each statement, is what makes the first
+guarantee below structural. A `55P03` under `lock_timeout` comes from the
+advisory-lock statement, and a deadlock can surface on any statement. Before
+#645 four statements classified their own errors, and only `23505`: the
+`entity_main` insert and update, the `eav_data` insert and the requeue's
+version advance.
+
+Statement errors:
+
+| Input | Result |
+| --- | --- |
+| SQLSTATE `23505` | `ErrUniqueConflict`, publishing the unchanged row-identity message `the write conflicts with a row that already exists` |
+| SQLSTATE `40001` (on DSQL, with any OC code), `40P01`, `55P03` | `ErrRetryableConflict` |
+| Anything else | Unchanged |
+
+COMMIT errors:
+
+| Input | Result |
+| --- | --- |
+| A server error of `ERROR` severity | The server rejected the COMMIT, so the transaction is rolled back. It is classified by SQLSTATE as above: a `40001` at COMMIT is `ErrRetryableConflict`, never unknown. Any other code is a known not-committed storage error. |
+| A server error of `FATAL` or `PANIC` severity, whatever its code | `ErrCommitOutcomeUnknown`. A FATAL ends the session, and a connection pooler reports a backend lost after the COMMIT went out this way (PgBouncer's `FATAL 08P01 server conn crashed?`). An ended session proves nothing about the commit, so a FATAL `40001` (PostgreSQL ends a session over a recovery conflict with one) is unknown too, not retryable. Severity is checked before the code. |
+| `pgx.ErrTxCommitRollback` (the server answered ROLLBACK) | A known not-committed storage error. Not unknown and not retryable. |
+| COMMIT provably not sent (`pgconn.SafeToRetry(err)`, for example a context already done, or a connection pgx already knew was closed) | A known not-committed storage error. Not unknown and not retryable. |
+| COMMIT sent with no reply (the connection was lost, or the context was cancelled after the send) | `ErrCommitOutcomeUnknown`. The chain may also hold `context.Canceled` or `context.DeadlineExceeded`. |
+
+The guarantees, and what pins each:
+
+1. **No unclassified retryable SQLSTATE.** No `40001`, `40P01` or `55P03` raised
+   by a write path reaches a caller unclassified.
+   `TestEveryWritePathClassifiesItsLockStatement` drives all seven paths.
+2. **Unknown is never retryable.** `ErrCommitOutcomeUnknown` never maps to `503`
+   or `504`, and `IsRetryable` is false for it.
+3. **Retryable means rolled back.** `ErrRetryableConflict` is returned only for
+   a server-side abort of `ERROR` severity.
+4. **Backward compatibility.** The conflict species satisfy `ErrConflict`, and a
+   row-identity `23505` still answers `409` with the same published message.
+5. **No string matching.** Classification reads the SQLSTATE, the protocol's
+   unlocalized severity field and the `pgconn`/`pgx` predicates, never message
+   text (#307, #312). DSQL's OC codes are not parsed.
+6. **No physical detail in a published message.** A `23505`'s `Detail` names
+   physical columns and the constraint layout. It stays behind
+   `forma.WithOperatorDetail`, in `Error()` and on the log line, and never in
+   the body. A retryable conflict or an unknown commit publishes nothing. Its
+   driver error stays in the chain for operators.
+
+**Why "unknown" and not "rolled back".** From the client's side, a COMMIT that
+a fault swallowed before it reached the server is indistinguishable from one
+whose reply was lost after the server committed. In both cases the client wrote
+the bytes and read nothing back. The real-PostgreSQL fault-proxy tests pin both
+cases: `TestCommitReplyDroppedIsUnknownAndCommitted_PostgresOnly` (the row is
+present) and `TestCommitSwallowedIsUnknownAndNotCommitted_PostgresOnly` (the row
+is absent). Both report `ErrCommitOutcomeUnknown`. Only a failure pgx proves
+happened before any byte was sent may report "not committed"
+(`TestCommitNotSentIsNotUnknown_PostgresOnly`).
+
+### Published messages and constructors
+
+`forma.UniqueConflictf` and `forma.PreconditionFailedf` are #313 carriers like
+`Conflictf`. Their formatted message is published, and `Error()` renders
+`<message>: unique conflict` or `<message>: precondition failed`. A message
+must not name a physical column or constraint. Attach those with
+`forma.WithOperatorDetail`.
+
+`ErrRetryableConflict` and `ErrCommitOutcomeUnknown` have no public
+constructor, because callers never need to build them. The classifier builds
+them with an internal carrier that keeps the driver error in the chain.
+`TestNoBareSentinelWraps` covers all four sentinel names. A bare
+`fmt.Errorf("…: %w", forma.ErrUniqueConflict)` still earns its `409`, but
+answers a redacted body whose `error_class` is `unique_conflict` (likewise
+`precondition_failed` for a `412`).
+
+No write path produces `ErrPreconditionFailed` yet. #649 adds the
+preconditions, and the HTTP and batch mappings are in place for it.
+
+### HTTP and batch precedence
+
+`classifyManagerError` checks, in order:
+
+1. `ErrCommitOutcomeUnknown` (`500`). It wins over everything,
+   `context.DeadlineExceeded` included, so an unknown commit is never a `504`
+   or a `503` that would invite a blind retry.
+2. `ErrRetryableConflict` (`503`).
+3. `ErrPreconditionFailed` (`412`).
+4. The existing sentinels: `ErrNotFound` (`404`), then `ErrConflict` (`409`,
+   which also covers `ErrUniqueConflict`), then `ErrInvalidInput` (`400`).
+5. `context.DeadlineExceeded` (`504`).
+
+`errorClass` and `batchErrorCode` apply the same order. A best-effort batch
+reports the outcome's code in `OperationError.Code`. Any other failure keeps
+its per-operation code (`CREATE_FAILED`, `UPDATE_FAILED`, `DELETE_FAILED`). A
+retryable conflict or an unknown commit publishes nothing, so its batch `Error`
+is `internal error`, and the `Code` is what tells the caller whether running the
+operation again is safe.
+
+### Deprecated transaction settings
+
+`TransactionConfig.DefaultTimeout` is the only transaction setting with an
+effect. The following settings are marked `Deprecated: has no effect`. They
+still parse and keep their defaults, so existing config files load unchanged,
+but they are not wired up and will not be:
+
+- `MaxRetryAttempts`, `RetryAttempts`, `RetryDelay`: Forma never retries
+  (above).
+- `IsolationLevel`: isolation is load-bearing (#457). `Update`, the atomic
+  `BatchUpdate` and `RequeueForFlush` pin READ COMMITTED, and making the level
+  configurable would let a deployment silently reintroduce the lost-update bug.
+- `EnableDeadlockDetection`, `DeadlockCheckInterval`, `DeadlockMaxWaitTime`:
+  PostgreSQL always detects deadlocks, using its own `deadlock_timeout`. Bound
+  lock waits with the server's `lock_timeout`. Forma reports either outcome as
+  `ErrRetryableConflict`.
+
+### Aurora DSQL
+
+DSQL: specified, not verified (#633). DSQL uses optimistic concurrency control,
+and reports a conflict as SQLSTATE `40001` with `OC000` (data) or `OC001`
+(schema) at a statement or at COMMIT. Forma maps every `40001` to
+`ErrRetryableConflict` from the SQLSTATE alone. A COMMIT rejected with `40001`
+is a server error, so the transaction is known to be rolled back. No
+backend-specific strategy exists, because PostgreSQL and DSQL share the wire
+protocol and the SQLSTATE space. On PostgreSQL, Forma runs READ COMMITTED with
+blocking advisory locks, so the realistic retryable cases there are `40P01`
+and `55P03`. `TestWriteSerializationFailureIsRetryable_PostgresOnly` produces a
+real `40001` by running `DeletePersistentRecord` under a session default of
+REPEATABLE READ, which is DSQL's fixed level. Replacing the advisory locks and
+READ COMMITTED for DSQL stays in #633.
+
+Tests only PostgreSQL can run carry a `_PostgresOnly` suffix, so a run against
+another backend can exclude them with `go test -skip PostgresOnly`. They depend
+either on blocking lock waits or on the test fault proxy
+(`internal/testutil/faultproxy`), which reads the plaintext wire protocol and
+cannot sit in front of DSQL's mandatory TLS.
+
 ## Read-path consistency errors
 
 Read operations return plain errors when persisted data and metadata disagree.
@@ -1245,10 +1428,13 @@ expect, are each reported as a failure rather than skipped, so reshaping the
 call or the signature cannot silently drop sites out of the scan.
 
 **The status is decided by sentinel evidence and by nothing else.**
-`classifyManagerError` matches `errors.Is` against `forma.ErrNotFound` (404),
-`forma.ErrConflict` (409), `forma.ErrInvalidInput` (400) and
-`context.DeadlineExceeded` (504, see "Request limits" below); everything else —
-including a `nil` error — is `500`.
+`classifyManagerError` matches `errors.Is` against the #645 storage outcomes
+first: `forma.ErrCommitOutcomeUnknown` (500), `forma.ErrRetryableConflict`
+(503) and `forma.ErrPreconditionFailed` (412), in that order (see "Storage
+outcomes on the write path"). Then it matches `forma.ErrNotFound` (404),
+`forma.ErrConflict` (409, which also covers `forma.ErrUniqueConflict`),
+`forma.ErrInvalidInput` (400) and `context.DeadlineExceeded` (504, see "Request
+limits" below). Everything else, including a `nil` error, is `500`.
 
 **Disclosure needs the same evidence plus a deliberately published message
 (#313).** The gate is `isClientError(err)` plus `resolvePublicMessage(err)`: a
@@ -1393,7 +1579,10 @@ shape:
   running scan. An exceeded budget surfaces as `context.DeadlineExceeded` and
   answers `504` on the redacted branch with `error_class: "timeout"` and the
   fixed message `request timed out`: the budget's value is configuration, not
-  caller feedback, so nothing from the chain is disclosed. A DuckDB timeout
+  caller feedback, so nothing from the chain is disclosed. The one exception
+  is a write budget that expires while COMMIT is in flight. The write may have
+  committed, so that is `forma.ErrCommitOutcomeUnknown` and answers `500` with
+  `error_class: "commit_outcome_unknown"`, never a `504` (#645). A DuckDB timeout
   is **not** degradable to Postgres-only under `AllowPartialDegradedMode`; a
   DuckDB that keeps timing out opens the circuit breaker, and that rejection
   degrades as before. `context.Canceled` (the client went away) stays `500`;
@@ -1856,9 +2045,13 @@ the redaction gate.
   (`internal/postgres_persistent_repository_main_table.go`) used to wrap
   `pgErr.Detail`, so a unique-violation body carried driver-authored text
   naming physical columns (`Key (schema_id, row_id)=(…) already exists.`). It
-  now publishes a curated summary — `the write conflicts with a row that
-  already exists` — and pushes the whole driver error, `Detail` included, into
-  operator detail. Pinned by `TestClassifyPgError`.
+  then published a curated summary — `the write conflicts with a row that
+  already exists` — and pushed the whole driver error, `Detail` included, into
+  operator detail. #645 replaced it with the transaction-boundary classifier
+  (`classifySQLState` in `internal/storage_outcome.go`), which keeps that
+  summary and that operator detail. Pinned by
+  `TestClassifyStatementErrorMapsUniqueViolation` and, on real PostgreSQL,
+  `TestInsertDuplicateRowIDIsUniqueConflict`.
 - **Internal schema identifiers on a 404 — closed.** The seven ID-keyed
   `forma.ErrNotFound` chains in `internal/schemameta/file_registry.go` used to
   render the internal `int16` (`schema not found for ID: 402`) into the body —
@@ -2037,11 +2230,12 @@ change in this document. A client that treated a duplicate-attribute write as
 rejected now gets an accepted write carrying the literal key's value — the whole
 of it, including a shortened or emptied list.
 
-`insertEAVAttributes` additionally routes its `tx.Exec` error through
-`classifyPgError`, matching the two `entity_main` sites. Any residual `23505` the
-dedupe cannot reach — a concurrent writer racing the same row, which could not be
-settled without a live database — therefore answers `409` with the published
-conflict summary rather than a redacted `500`.
+Any residual `23505` the dedupe cannot reach, such as a concurrent writer
+racing the same row (which could not be settled without a live database), is
+classified at the transaction boundary like every other statement error (#645).
+It therefore answers `409` with the published conflict summary rather than a
+redacted `500`. Before #645, `insertEAVAttributes` and the two `entity_main`
+sites called a per-statement `classifyPgError` instead.
 
 ### Status change: service-wiring guards are now 500, not 400 (#313)
 
@@ -2115,7 +2309,8 @@ a libpq connection string, password and all, for a failed insert. Those
 operations now report `internal error` instead. A caller that parses this field
 for internal failures sees different text; the machine-readable classification
 it should key on is unchanged and sits beside it in `OperationError.Code`
-(`CREATE_FAILED`, `UPDATE_FAILED`, `DELETE_FAILED`). Published failures — an
+(`CREATE_FAILED`, `UPDATE_FAILED`, `DELETE_FAILED`, or since #645 the code of a
+storage outcome, such as `RETRYABLE_CONFLICT`). Published failures — an
 unknown schema, a schema violation, a missing required attribute — are
 unaffected and still carry their authored message.
 

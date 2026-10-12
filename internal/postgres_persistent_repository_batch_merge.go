@@ -42,12 +42,28 @@ func (r *DBPersistentRecordRepository) BatchMergePersistentRecords(
 		return nil, err
 	}
 
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	var stored []*model.PersistentRecord
+	err := r.inWriteTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		var err error
+		stored, err = r.batchMergeInTx(ctx, tx, tables, keys, merge)
+		return err
+	})
 	if err != nil {
-		return nil, fmt.Errorf("begin transaction: %w", err)
+		return nil, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
+	return stored, nil
+}
 
+// batchMergeInTx is BatchMergePersistentRecords' body, run on tx: the sorted
+// lock pass, then each row's read, merge and write in input order. It
+// answers the stored records positionally.
+func (r *DBPersistentRecordRepository) batchMergeInTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	tables model.StorageTables,
+	keys []model.PersistentRecordKey,
+	merge model.PersistentRecordBatchMerge,
+) ([]*model.PersistentRecord, error) {
 	if err := lockRowKeys(ctx, tx, keys); err != nil {
 		return nil, fmt.Errorf("lock row versions for batch update: %w", err)
 	}
@@ -80,9 +96,6 @@ func (r *DBPersistentRecordRepository) BatchMergePersistentRecords(
 		stored[i] = record
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit transaction: %w", err)
-	}
 	return stored, nil
 }
 

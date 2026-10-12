@@ -34,6 +34,15 @@ func TestNoBareSentinelWraps(t *testing.T) {
 		"ErrInvalidInput": true,
 		"ErrNotFound":     true,
 		"ErrConflict":     true,
+		// The #645 storage outcomes. The two conflict species publish through
+		// UniqueConflictf/PreconditionFailedf like any client sentinel. The
+		// other two never publish, but Forma builds them with a typed carrier
+		// that keeps the driver error as operator detail; a bare wrap would
+		// skip that carrier, so it is flagged here too.
+		"ErrUniqueConflict":       true,
+		"ErrPreconditionFailed":   true,
+		"ErrRetryableConflict":    true,
+		"ErrCommitOutcomeUnknown": true,
 	}
 	skipDirs := map[string]bool{
 		".git": true, ".gocache": true, "build": true,
@@ -113,8 +122,9 @@ func TestNoBareSentinelWraps(t *testing.T) {
 	}
 
 	if len(offenders) > 0 {
-		t.Fatalf("found %d bare sentinel wrap(s); build these with forma.InvalidInputf/NotFoundf/Conflictf "+
-			"(or forma.WrapPublicf) so the 4xx body carries a published message (#313):\n%s",
+		t.Fatalf("found %d bare sentinel wrap(s); build these with forma.InvalidInputf/NotFoundf/Conflictf/"+
+			"UniqueConflictf/PreconditionFailedf (or forma.WrapPublicf) so the 4xx body carries a published message (#313), "+
+			"or, for a retryable conflict or an unknown commit, through internal's storage-outcome classifier (#645):\n%s",
 			len(offenders), strings.Join(offenders, "\n"))
 	}
 }

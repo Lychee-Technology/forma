@@ -30,9 +30,8 @@ import (
 // prevent, silently. READ COMMITTED takes a fresh snapshot per statement, so
 // the post-lock read sees the previous holder's commit.
 //
-// The optimistic ltbase_updated_at predicate stays deferred: a failed assert
-// needs a caller-facing conflict protocol (409 mapping, retry) that does not
-// exist yet.
+// The optimistic ltbase_updated_at predicate stays deferred to #649, which
+// reports a failed assert as forma.ErrPreconditionFailed (#645, 412).
 func (r *DBPersistentRecordRepository) MergePersistentRecord(
 	ctx context.Context,
 	tables model.StorageTables,
@@ -47,12 +46,28 @@ func (r *DBPersistentRecordRepository) MergePersistentRecord(
 		return nil, fmt.Errorf("validate tables for update: %w", err)
 	}
 
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	var stored *model.PersistentRecord
+	err := r.inWriteTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		var err error
+		stored, err = r.mergeRecordInTx(ctx, tx, tables, schemaID, rowID, merge)
+		return err
+	})
 	if err != nil {
-		return nil, fmt.Errorf("begin transaction: %w", err)
+		return nil, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
+	return stored, nil
+}
 
+// mergeRecordInTx is MergePersistentRecord's body: lock, read the merge base,
+// merge and write, all on tx. It answers the stored record.
+func (r *DBPersistentRecordRepository) mergeRecordInTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	tables model.StorageTables,
+	schemaID int16,
+	rowID uuid.UUID,
+	merge model.PersistentRecordMerge,
+) (*model.PersistentRecord, error) {
 	if err := lockRowVersion(ctx, tx, schemaID, rowID); err != nil {
 		return nil, fmt.Errorf("lock row version for update: %w", err)
 	}
@@ -92,10 +107,6 @@ func (r *DBPersistentRecordRepository) MergePersistentRecord(
 		if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, record.UpdatedAt, record.DeletedAt); err != nil {
 			return nil, fmt.Errorf("upsert change log for %s: %w", rowID, err)
 		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
 	return record, nil

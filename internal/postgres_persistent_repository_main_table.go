@@ -10,31 +10,9 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
 )
-
-// classifyPgError converts well-known PostgreSQL error codes to sentinel errors.
-// Currently handles:
-//   - 23505 unique_violation → forma.ErrConflict
-//
-// The published message is a curated summary: pgErr.Detail names physical
-// columns and constraint layout ("Key (schema_id, row_id)=(…) already
-// exists"), which must not cross a public transport (#313). The whole driver
-// error — Detail included — stays in the chain as operator detail.
-func classifyPgError(err error) error {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		// Detail is prefixed into the operator text explicitly: PgError.Error()
-		// renders severity/message/SQLSTATE only, so without this the offending
-		// key would vanish from the log line too.
-		return forma.WithOperatorDetail(
-			forma.Conflictf("the write conflicts with a row that already exists"),
-			fmt.Errorf("%s: %w", pgErr.Detail, err))
-	}
-	return err
-}
 
 func sortedColumnKeys[T any](source map[string]T, allowed map[string]struct{}) ([]string, error) {
 	if len(source) == 0 {
@@ -184,7 +162,7 @@ func (r *DBPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx
 	}
 	zap.S().Debugw("insert main row", "query", query, "args", args)
 	if _, err := tx.Exec(ctx, query, args...); err != nil {
-		return fmt.Errorf("insert entity_main: %w", classifyPgError(err))
+		return fmt.Errorf("insert entity_main: %w", err)
 	}
 	return nil
 }
@@ -204,7 +182,7 @@ func (r *DBPersistentRecordRepository) updateMainRow(ctx context.Context, tx pgx
 			return forma.WithOperatorDetail(forma.NotFoundf("entity not found (row=%s)", record.RowID),
 				fmt.Errorf("schema=%d", record.SchemaID))
 		}
-		return fmt.Errorf("update entity_main: %w", classifyPgError(err))
+		return fmt.Errorf("update entity_main: %w", err)
 	}
 	record.UpdatedAt = effectiveUpdatedAt
 	return nil

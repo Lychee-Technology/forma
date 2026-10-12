@@ -191,13 +191,14 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 	}
 
 	now := r.nowMillis()
+	return r.inWriteTx(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return r.insertRecordInTx(ctx, tx, tables, record, now)
+	})
+}
 
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
-
+// insertRecordInTx is InsertPersistentRecord's body: every statement of the
+// create, run on tx.
+func (r *DBPersistentRecordRepository) insertRecordInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, record *model.PersistentRecord, now int64) error {
 	// A recreate of a deleted row_id must outrank the retained tombstone
 	// (#274): the version comes from nextRowVersion, while CreatedAt stays
 	// the identity clock read. The per-row lock serializes the history read
@@ -225,11 +226,6 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 			return fmt.Errorf("upsert change log for %s: %w", record.RowID, err)
 		}
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
 	return nil
 }
 
@@ -237,13 +233,14 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 	if err := validateWriteTables(tables); err != nil {
 		return fmt.Errorf("validate tables for delete: %w", err)
 	}
+	return r.inWriteTx(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return r.deleteRecordInTx(ctx, tx, tables, schemaID, rowID)
+	})
+}
 
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
-
+// deleteRecordInTx is DeletePersistentRecord's body: every statement of the
+// delete, run on tx.
+func (r *DBPersistentRecordRepository) deleteRecordInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
 	// The per-row lock pairs with the create path's: a concurrent recreate
 	// must observe this delete's tombstone before allocating its version.
 	if err := lockRowVersion(ctx, tx, schemaID, rowID); err != nil {
@@ -275,11 +272,6 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 			return fmt.Errorf("upsert tombstone change log for %s: %w", rowID, err)
 		}
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
-
 	return nil
 }
 

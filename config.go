@@ -86,23 +86,6 @@ type EntityConfig struct {
 	ValidateUpdatesStrict bool `json:"validateUpdatesStrict"`
 }
 
-// TransactionConfig contains transaction settings
-type TransactionConfig struct {
-	DefaultTimeout           time.Duration `json:"defaultTimeout"`
-	MaxTimeout               time.Duration `json:"maxTimeout"`
-	MaxRetryAttempts         int           `json:"maxRetryAttempts"`
-	RetryAttempts            int           `json:"retryAttempts"`
-	RetryDelay               time.Duration `json:"retryDelay"`
-	IsolationLevel           string        `json:"isolationLevel"`
-	EnableDeadlockDetection  bool          `json:"enableDeadlockDetection"`
-	DeadlockCheckInterval    time.Duration `json:"deadlockCheckInterval"`
-	DeadlockMaxWaitTime      time.Duration `json:"deadlockMaxWaitTime"`
-	SlowTransactionThreshold time.Duration `json:"slowTransactionThreshold"`
-	MinSuccessRate           float64       `json:"minSuccessRate"`
-	MaxAverageDuration       time.Duration `json:"maxAverageDuration"`
-	MaxConnectionPoolUsage   float64       `json:"maxConnectionPoolUsage"`
-}
-
 // PerformanceConfig contains performance monitoring settings
 type PerformanceConfig struct {
 	EnableMonitoring          bool          `json:"enableMonitoring"`
@@ -366,25 +349,6 @@ func defaultEntityConfig() EntityConfig {
 		CacheTTL:                  5 * time.Minute,
 		MaxEntitySize:             1024 * 1024, // 1MB
 		EnableVersioning:          true,
-	}
-}
-
-// defaultTransactionConfig returns default transaction configuration.
-func defaultTransactionConfig() TransactionConfig {
-	return TransactionConfig{
-		DefaultTimeout:           30 * time.Second,
-		MaxTimeout:               5 * time.Minute,
-		MaxRetryAttempts:         3,
-		RetryAttempts:            3,
-		RetryDelay:               100 * time.Millisecond,
-		IsolationLevel:           "READ_COMMITTED",
-		EnableDeadlockDetection:  true,
-		DeadlockCheckInterval:    5 * time.Second,
-		DeadlockMaxWaitTime:      30 * time.Second,
-		SlowTransactionThreshold: 2 * time.Second,
-		MinSuccessRate:           95.0,
-		MaxAverageDuration:       1 * time.Second,
-		MaxConnectionPoolUsage:   80.0,
 	}
 }
 

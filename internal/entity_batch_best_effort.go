@@ -39,7 +39,7 @@ func (s *entityBatchService) executeBestEffortBatch(
 			failed = append(failed, forma.OperationError{
 				Operation: op,
 				Error:     resolveBatchErrorMessage(err),
-				Code:      errorCode,
+				Code:      batchErrorCode(err, errorCode),
 				ErrorID:   errorID,
 			})
 			continue

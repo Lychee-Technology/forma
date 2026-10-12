@@ -83,7 +83,8 @@ func publicErrorAt(err error) (PublicError, bool) {
 }
 
 // carriesClientSentinel reports whether err's subtree proves caller fault —
-// the same three sentinels internal/httpapi classifies status on.
+// the same three sentinels internal/httpapi classifies status on. ErrConflict
+// covers its #645 species, ErrUniqueConflict and ErrPreconditionFailed.
 func carriesClientSentinel(err error) bool {
 	return errors.Is(err, ErrInvalidInput) ||
 		errors.Is(err, ErrNotFound) ||

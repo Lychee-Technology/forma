@@ -64,8 +64,13 @@ Supplying `sort` together with `sort_by`/`sort_order` is rejected with `400`. Th
 | `400` | Invalid request (bad path, missing params, invalid JSON) |
 | `404` | Record not found |
 | `405` | Method not allowed |
-| `409` | Conflict (e.g., duplicate) |
-| `500` | Internal server error |
+| `409` | Conflict (e.g., duplicate); `error_class: unique_conflict` when the body is redacted |
+| `412` | A precondition of the write did not hold (`precondition_failed`) |
+| `500` | Internal server error; `error_class: commit_outcome_unknown` when the write may or may not have committed (never retry blindly) |
+| `503` | The transaction was rolled back by a concurrent conflict and is safe to retry (`retryable_conflict`) |
+| `504` | A configured budget expired (`timeout`) |
+
+See `docs/error-handling.md`, "Storage outcomes on the write path", for the retry rules.
 
 ## References
 
