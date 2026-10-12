@@ -76,10 +76,37 @@ func CanonicalOperator(op string) string {
 	}
 }
 
+// The set and null-test operators (#646). Their SQL forms are not binary
+// comparisons: a set operator compares against one array bind, and a null
+// test takes no operand at all, so emitters render them through their own
+// shapes rather than "<lhs> <op> <bind>".
+const (
+	OpIn        = "in"
+	OpNotIn     = "not_in"
+	OpIsNull    = "is_null"
+	OpIsNotNull = "is_not_null"
+
+	SQLOpAny       = "= ANY"
+	SQLOpAll       = "<> ALL"
+	SQLOpIsNull    = "IS NULL"
+	SQLOpIsNotNull = "IS NOT NULL"
+)
+
 // ToSQLOperator converts a logical operator to SQL syntax.
 // For LIKE operators, it also applies wildcard normalization to value.
+// The set and null-test operators pass value through unchanged: their
+// operand (a JSON list, the literal true) is validated by the normalizer,
+// which knows the attribute it names.
 func ToSQLOperator(op, value string) (SQLOperatorResult, error) {
 	switch CanonicalOperator(op) {
+	case OpIn:
+		return SQLOperatorResult{SQLOperator: SQLOpAny, Value: value}, nil
+	case OpNotIn:
+		return SQLOperatorResult{SQLOperator: SQLOpAll, Value: value}, nil
+	case OpIsNull:
+		return SQLOperatorResult{SQLOperator: SQLOpIsNull, Value: value}, nil
+	case OpIsNotNull:
+		return SQLOperatorResult{SQLOperator: SQLOpIsNotNull, Value: value}, nil
 	case "equals":
 		return SQLOperatorResult{SQLOperator: "=", Value: value}, nil
 	case "gt":

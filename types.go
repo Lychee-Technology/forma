@@ -28,6 +28,8 @@ const (
 	FilterLessEq      FilterType = "lte"
 	FilterIn          FilterType = "in"
 	FilterNotIn       FilterType = "not_in"
+	FilterIsNull      FilterType = "is_null"
+	FilterIsNotNull   FilterType = "is_not_null"
 )
 
 // SortOrder defines sort direction
