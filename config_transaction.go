@@ -12,7 +12,9 @@ import "time"
 type TransactionConfig struct {
 	// DefaultTimeout bounds each write transaction: Create, Update, Delete,
 	// and each atomic batch. A best-effort batch is bounded per operation
-	// (#465). Zero means unbounded.
+	// (#465). It also bounds each Transactor.InTx call as a whole, fn
+	// included, unless the call passes WithTxTimeout (#648). Zero means
+	// unbounded.
 	DefaultTimeout time.Duration `json:"defaultTimeout"`
 	MaxTimeout     time.Duration `json:"maxTimeout"`
 	// Deprecated: has no effect. Forma never retries a transaction;

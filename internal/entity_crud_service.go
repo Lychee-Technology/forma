@@ -55,6 +55,18 @@ func newEntityCRUDService(em *entityManager) *entityCRUDService {
 	}
 }
 
+// boundTo returns a copy of s that writes through repository and has no write
+// budget of its own. A Tx session runs its operations on it (#648): the same
+// validation, merge and transform code as EntityManager, against the
+// session's transaction, bounded by the InTx deadline as a whole rather than
+// per operation.
+func (s *entityCRUDService) boundTo(repository model.PersistentRecordRepository) *entityCRUDService {
+	bound := *s
+	bound.repository = repository
+	bound.budgets.write = 0
+	return &bound
+}
+
 func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperation) (*forma.DataRecord, error) {
 	if err := s.validateDependencies(); err != nil {
 		return nil, err
