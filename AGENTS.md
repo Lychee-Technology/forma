@@ -103,14 +103,11 @@ Error messages must name the logical value type, the offending column or attribu
 
 ## Non-code artifacts
 
-Anything produced while working an issue that is not code must end up on GitHub, not just on disk. This covers design drafts, specs, implementation plans, research notes, investigation and verification notes, assessments, and rulings made mid-execution. Post each one as a comment on the relevant issue, never into the repo (`docs/superpowers/` is gitignored). If the work has no issue yet, create one first; if the artifact is about changes already under review, post it to the PR instead.
+Issues, PR descriptions, specs, plans, reviews, and every other non-code artifact give readers the
+context and judgment the diff cannot, not a narrated diff or filler, and are published in full on
+GitHub. The full rules:
 
-- Write non-code artifacts in English by default.
-- Post the full content, not a summary or a file path, and post it when it is produced: a design draft goes up as a draft (say so), a plan goes up when written, a mid-execution decision goes up the moment it is taken. The issue is the complete decision record; nothing load-bearing may live only in a chat transcript or a local file.
-- A local working copy is fine, but it is invisible to everyone else and does not survive the branch. Several child repos keep planning notes in gitignored local directories (for example `__ref__/plan/` in `ltbase.api`, see #497). Do not force-add gitignored planning files to make them shareable; the issue comment is the sharing mechanism.
-- Say in the comment which artifact it is and where the working copy lives, so a later reader knows whether they are looking at a plan, a spec, or a review.
-
-Scope: per-issue artifacts only. Reference documentation of the system itself (e.g. `docs/federated-query/design.md`) lives in `docs/` and is committed as before. Anything that must become a durable repository convention also belongs in `docs/` (an ADR, runbook, or reference page): the issue comment records the thinking, and `docs/` records the decision. Review artifacts belong on the PR; see PR rules.
+@docs/non-code-rules.md
 
 ## PR rules
 
