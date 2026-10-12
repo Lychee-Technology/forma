@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,12 +37,23 @@ func baseline() []catalogRow {
 	}
 }
 
+// expectSchema expects Ensure's lookup of the PostgreSQL schema table
+// resolves to.
+func expectSchema(mock pgxmock.PgxConnIface, table, schema string) {
+	mock.ExpectQuery(regexp.QuoteMeta("JOIN pg_namespace n")).WithArgs(sqlutil.SanitizeIdentifier(table)).
+		WillReturnRows(pgxmock.NewRows([]string{"nspname"}).AddRow(schema))
+}
+
 func expectCatalog(mock pgxmock.PgxConnIface, rows ...catalogRow) {
+	expectCatalogOn(mock, "entity_main", rows...)
+}
+
+func expectCatalogOn(mock pgxmock.PgxConnIface, table string, rows ...catalogRow) {
 	result := pgxmock.NewRows(catalogColumns)
 	for _, r := range rows {
 		result.AddRow(r.name, r.valid, r.columns, r.deviations, r.pid)
 	}
-	mock.ExpectQuery(regexp.QuoteMeta("FROM pg_index i")).WithArgs(`"entity_main"`).WillReturnRows(result)
+	mock.ExpectQuery(regexp.QuoteMeta("FROM pg_index i")).WithArgs(sqlutil.SanitizeIdentifier(table)).WillReturnRows(result)
 }
 
 func newMock(t *testing.T) pgxmock.PgxConnIface {
@@ -66,6 +78,7 @@ func TestEnsure_BuildsMissingIndexesConcurrently(t *testing.T) {
 	planned := planOutbox(t)
 	mock := newMock(t)
 
+	expectSchema(mock, "entity_main", "public")
 	expectCatalog(mock, baseline()...)
 	for _, ix := range planned {
 		mock.ExpectExec(regexp.QuoteMeta(ix.CreateSQL())).WillReturnResult(pgxmock.NewResult("CREATE INDEX", 0))
@@ -93,6 +106,7 @@ func TestEnsure_RerunIssuesNoDDL(t *testing.T) {
 	for _, ix := range planned {
 		rows = append(rows, row(ix, true))
 	}
+	expectSchema(mock, "entity_main", "public")
 	expectCatalog(mock, rows...)
 
 	report, err := Ensure(context.Background(), mock, "entity_main", planned)
@@ -108,6 +122,7 @@ func TestEnsure_InvalidIndexFailsWithRemediation(t *testing.T) {
 	mock := newMock(t)
 
 	rows := append(baseline(), row(planned[0], false), row(planned[1], true), row(planned[2], true))
+	expectSchema(mock, "entity_main", "public")
 	expectCatalog(mock, rows...)
 
 	report, err := Ensure(context.Background(), mock, "entity_main", planned)
@@ -115,7 +130,7 @@ func TestEnsure_InvalidIndexFailsWithRemediation(t *testing.T) {
 	msg := err.Error()
 	assert.Contains(t, msg, "declared index "+planned[0].Name+" on entity_main is invalid")
 	assert.Contains(t, msg, "pg_index.indisvalid = false")
-	assert.Contains(t, msg, `DROP INDEX CONCURRENTLY "`+planned[0].Name+`" and rerun`)
+	assert.Contains(t, msg, `DROP INDEX CONCURRENTLY "public"."`+planned[0].Name+`" and rerun`)
 	assert.Equal(t, planned[1:], report.Present, "the valid ones are still reported")
 }
 
@@ -125,6 +140,7 @@ func TestEnsure_IndexStillBeingBuiltNamesTheBackend(t *testing.T) {
 
 	building := row(planned[0], false)
 	building.pid = 4242
+	expectSchema(mock, "entity_main", "public")
 	expectCatalog(mock, append(baseline(), building)...)
 
 	_, err := Ensure(context.Background(), mock, "entity_main", planned)
@@ -160,13 +176,14 @@ func TestEnsure_MismatchedIndexFails(t *testing.T) {
 			mock := newMock(t)
 			existing := row(planned[0], true)
 			existing.columns, existing.deviations = tc.columns, tc.deviations
+			expectSchema(mock, "entity_main", "public")
 			expectCatalog(mock, append(baseline(), existing)...)
 
 			report, err := Ensure(context.Background(), mock, "entity_main", planned)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.want)
 			assert.Contains(t, err.Error(), "as a plain btree index; init-db never replaces an index")
-			assert.Contains(t, err.Error(), `DROP INDEX CONCURRENTLY "`+planned[0].Name+`"`)
+			assert.Contains(t, err.Error(), `DROP INDEX CONCURRENTLY "public"."`+planned[0].Name+`"`)
 			assert.Empty(t, report.Present, "a mismatched index is never reported present")
 		})
 	}
@@ -185,6 +202,7 @@ func TestEnsure_UnreferencedIndexesAreReportedNeverDropped(t *testing.T) {
 	for _, ix := range planned {
 		rows = append(rows, row(ix, true))
 	}
+	expectSchema(mock, "entity_main", "public")
 	expectCatalog(mock, rows...)
 	report, err := Ensure(context.Background(), mock, "entity_main", planned)
 	require.NoError(t, err)
@@ -192,6 +210,7 @@ func TestEnsure_UnreferencedIndexesAreReportedNeverDropped(t *testing.T) {
 	assert.Equal(t, orphan.Name, report.Unreferenced[0].Name)
 	assert.Equal(t, orphan.Columns, report.Unreferenced[0].Columns)
 
+	expectSchema(mock, "entity_main", "public")
 	expectCatalog(mock, append(baseline(), row(orphan, false))...)
 	_, err = Ensure(context.Background(), mock, "entity_main", nil)
 	require.Error(t, err)
@@ -204,13 +223,14 @@ func TestEnsure_NameHeldByAnotherRelationFails(t *testing.T) {
 	planned := planOutbox(t)[:1]
 	mock := newMock(t)
 
+	expectSchema(mock, "entity_main", "public")
 	expectCatalog(mock, baseline()...)
 	mock.ExpectExec(regexp.QuoteMeta(planned[0].CreateSQL())).WillReturnResult(pgxmock.NewResult("CREATE INDEX", 0))
 	expectCatalog(mock, baseline()...)
 
 	_, err := Ensure(context.Background(), mock, "entity_main", planned)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "another relation in the same schema already holds the name")
+	assert.Contains(t, err.Error(), "another relation in schema public already holds the name")
 }
 
 // A failed build stops the run, naming the index and the remediation; the
@@ -219,6 +239,7 @@ func TestEnsure_BuildFailureNamesIndexAndRemediation(t *testing.T) {
 	planned := planOutbox(t)
 	mock := newMock(t)
 
+	expectSchema(mock, "entity_main", "public")
 	expectCatalog(mock, baseline()...)
 	mock.ExpectExec(regexp.QuoteMeta(planned[0].CreateSQL())).WillReturnResult(pgxmock.NewResult("CREATE INDEX", 0))
 	cause := errors.New("canceling statement due to user request")
@@ -228,7 +249,63 @@ func TestEnsure_BuildFailureNamesIndexAndRemediation(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, cause)
 	assert.Contains(t, err.Error(), "build declared index "+planned[1].Name+" on entity_main for outbox_message.")
-	assert.Contains(t, err.Error(), `DROP INDEX CONCURRENTLY "`+planned[1].Name+`"`)
+	assert.Contains(t, err.Error(), `DROP INDEX CONCURRENTLY "public"."`+planned[1].Name+`"`)
 	assert.Equal(t, planned[:1], report.Created)
 	assert.Empty(t, report.Present)
+}
+
+// Every remedy names the index qualified by the schema its table resolved to,
+// because PostgreSQL creates an index in its table's schema and an unqualified
+// DROP INDEX resolves through the session's search_path, which need not
+// include it. The schema comes from the catalog, not from the configured name:
+// an unqualified table may resolve anywhere on init-db's search_path.
+func TestEnsure_RemediesQualifyTheIndexWithItsTableSchema(t *testing.T) {
+	targets := []struct{ table, schema string }{
+		{"tenant.entity_main", "tenant"},
+		{"entity_main", "app"},
+	}
+	for _, tc := range targets {
+		planned, err := Plan(tc.table, []SchemaDeclarations{outbox()})
+		require.NoError(t, err)
+		drop := func(ix Index) string {
+			return `DROP INDEX CONCURRENTLY "` + tc.schema + `"."` + ix.Name + `" and rerun`
+		}
+		t.Run(tc.table+"/invalid and mismatched", func(t *testing.T) {
+			mock := newMock(t)
+			mismatched := row(planned[1], true)
+			mismatched.deviations = []string{"brin access method"}
+			expectSchema(mock, tc.table, tc.schema)
+			expectCatalogOn(mock, tc.table, row(planned[0], false), mismatched, row(planned[2], true))
+
+			_, err := Ensure(context.Background(), mock, tc.table, planned)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), planned[0].Name+" on "+tc.table+" is invalid")
+			assert.Contains(t, err.Error(), drop(planned[0]))
+			assert.Contains(t, err.Error(), "is not a plain btree (brin access method)")
+			assert.Contains(t, err.Error(), drop(planned[1]))
+			assert.NotContains(t, err.Error(), `CONCURRENTLY "`+planned[0].Name+`"`)
+		})
+		t.Run(tc.table+"/failed build", func(t *testing.T) {
+			mock := newMock(t)
+			expectSchema(mock, tc.table, tc.schema)
+			expectCatalogOn(mock, tc.table)
+			mock.ExpectExec(regexp.QuoteMeta(planned[0].CreateSQL())).WillReturnError(errors.New("canceling statement due to user request"))
+
+			report, err := Ensure(context.Background(), mock, tc.table, planned)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), drop(planned[0]))
+			assert.Equal(t, tc.schema, report.Schema)
+		})
+		t.Run(tc.table+"/name taken", func(t *testing.T) {
+			mock := newMock(t)
+			expectSchema(mock, tc.table, tc.schema)
+			expectCatalogOn(mock, tc.table)
+			mock.ExpectExec(regexp.QuoteMeta(planned[0].CreateSQL())).WillReturnResult(pgxmock.NewResult("CREATE INDEX", 0))
+			expectCatalogOn(mock, tc.table)
+
+			_, err := Ensure(context.Background(), mock, tc.table, planned[:1])
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "another relation in schema "+tc.schema+" already holds the name")
+		})
+	}
 }

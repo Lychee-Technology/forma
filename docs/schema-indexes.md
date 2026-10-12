@@ -110,13 +110,17 @@ out of band. Without `--schema-dir` there are no declarations to read, so the
 step is skipped with a message.
 
 `init-db` exits non-zero and names the index when a declared index is
-unusable:
+unusable. Where the remedy is a drop, the error prints the exact statement,
+qualified by the PostgreSQL schema holding the entity_main table, for example
+`DROP INDEX CONCURRENTLY "public"."entity_main_cx_…"`. An index always lives in
+its table's schema, and an unqualified `DROP INDEX` resolves through the
+session's `search_path`, which may not include that schema.
 
 - **Invalid** (`pg_index.indisvalid = false`). An interrupted
   `CREATE INDEX CONCURRENTLY` leaves the index in this state. Interruptions
   include a cancelled `init-db`, a role- or database-level
   `statement_timeout`, and a lost connection. The remedy is to
-  drop it with `DROP INDEX CONCURRENTLY "<name>"` and rerun `init-db`. If a
+  drop it with the printed statement and rerun `init-db`. If a
   build is still running in another session, `init-db` names that backend's pid
   instead. The remedy then is to wait for the build to finish and rerun.
 - **Mismatched**: an index under the planned name is not exactly what
@@ -124,9 +128,9 @@ unusable:
   method (BRIN, hash, …), is unique or partial, has an expression key or
   `INCLUDE` columns, or has a non-default operator class, collation or sort
   order on a key column. The error lists each difference. `init-db` never
-  replaces an index, so drop it yourself and rerun.
-- **Name taken**: another relation in the same PostgreSQL schema holds the
-  name.
+  replaces an index, so drop it yourself with the printed statement and rerun.
+- **Name taken**: another relation in the table's PostgreSQL schema holds
+  the name. The error names that schema.
 
 ### No automatic drops
 
@@ -134,13 +138,13 @@ unusable:
 in place, and every later run reports it:
 
 ```
-Unreferenced declared index: entity_main_cx_… on entity_main (ltbase_schema_id, text_02, bigint_03, ltbase_row_id): no schema declares this key; init-db never drops indexes, so drop it yourself once nothing reads through it
+Unreferenced declared index: entity_main_cx_… on entity_main (ltbase_schema_id, text_02, bigint_03, ltbase_row_id): no schema declares this key; init-db never drops indexes, so once nothing reads through it, drop it yourself with DROP INDEX CONCURRENTLY "public"."entity_main_cx_…"
 ```
 
 Rebuilding a dropped index on a large table is slow. A server still running
 the previous schema generation may also read through the old index, so a drop
-waits for the operator's decision. Drop the index with
-`DROP INDEX CONCURRENTLY` once nothing depends on it.
+waits for the operator's decision. Run the printed statement once nothing
+depends on the index.
 
 ## What a declared index serves
 

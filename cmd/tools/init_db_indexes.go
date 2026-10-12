@@ -77,7 +77,7 @@ func printDeclaredIndexReport(out io.Writer, table string, report declaredindex.
 			ix.Name, table, strings.Join(ix.Columns, ", "), declaredindex.FormatSources(ix.Sources))
 	}
 	for _, ix := range report.Unreferenced {
-		fmt.Fprintf(out, "Unreferenced declared index: %s on %s (%s): no schema declares this key; init-db never drops indexes, so drop it yourself once nothing reads through it\n",
-			ix.Name, table, strings.Join(ix.Columns, ", "))
+		fmt.Fprintf(out, "Unreferenced declared index: %s on %s (%s): no schema declares this key; init-db never drops indexes, so once nothing reads through it, drop it yourself with %s\n",
+			ix.Name, table, strings.Join(ix.Columns, ", "), declaredindex.DropSQL(report.Schema, ix.Name))
 	}
 }

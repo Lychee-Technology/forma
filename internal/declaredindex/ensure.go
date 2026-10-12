@@ -20,6 +20,7 @@ import (
 type Conn interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // Existing is one index the catalog reports on the entity_main table.
@@ -50,6 +51,9 @@ func (e Existing) Plain() bool {
 // Report is what Ensure found and did. Every index Ensure is responsible for
 // lands in exactly one of Created, Present or the returned error.
 type Report struct {
+	// Schema is the PostgreSQL schema the table name resolved to. Every index
+	// on the table lives there, so DropSQL qualifies index names with it.
+	Schema string
 	// Created are planned indexes this run built; each ended up valid.
 	Created []Index
 	// Present are planned indexes that already existed, valid and with the
@@ -104,6 +108,14 @@ JOIN pg_class c ON c.oid = i.indexrelid
 JOIN pg_am am ON am.oid = c.relam
 WHERE i.indrelid = $1::regclass`
 
+// tableSchemaQuery resolves the table the way catalogQuery does, through the
+// connection's search_path when the name is unqualified, and returns the
+// schema holding it.
+const tableSchemaQuery = `SELECT n.nspname::text
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.oid = $1::regclass`
+
 // EnsureFromRegistry plans the declarations of every schema registry lists and
 // ensures them on table. It is FromRegistry, Plan and Ensure in one call: the
 // path init-db and both e2e harnesses take, so they build the same indexes
@@ -132,9 +144,13 @@ func EnsureFromRegistry(ctx context.Context, conn Conn, table string, registry f
 // filled either way. A build that fails stops the run: the error names that
 // index, and the Report holds only the indexes built before it.
 func Ensure(ctx context.Context, conn Conn, table string, planned []Index) (Report, error) {
+	var schema string
+	if err := conn.QueryRow(ctx, tableSchemaQuery, sqlutil.SanitizeIdentifier(table)).Scan(&schema); err != nil {
+		return Report{}, fmt.Errorf("resolve the schema holding %s: %w", table, err)
+	}
 	before, err := listIndexes(ctx, conn, table)
 	if err != nil {
-		return Report{}, fmt.Errorf("read existing indexes before building: %w", err)
+		return Report{Schema: schema}, fmt.Errorf("read existing indexes before building: %w", err)
 	}
 
 	created := make(map[string]bool)
@@ -144,8 +160,8 @@ func Ensure(ctx context.Context, conn Conn, table string, planned []Index) (Repo
 			continue
 		}
 		if _, err := conn.Exec(ctx, ix.CreateSQL()); err != nil {
-			return Report{Created: built}, fmt.Errorf("build declared index %s on %s for %s: %w; a build that fails part-way leaves the index invalid: drop it with DROP INDEX CONCURRENTLY %s and rerun",
-				ix.Name, table, FormatSources(ix.Sources), err, pgx.Identifier{ix.Name}.Sanitize())
+			return Report{Schema: schema, Created: built}, fmt.Errorf("build declared index %s on %s for %s: %w; a build that fails part-way leaves the index invalid: drop it with %s and rerun",
+				ix.Name, table, FormatSources(ix.Sources), err, DropSQL(schema, ix.Name))
 		}
 		created[ix.Name] = true
 		built = append(built, ix)
@@ -154,16 +170,26 @@ func Ensure(ctx context.Context, conn Conn, table string, planned []Index) (Repo
 	after := before
 	if len(created) > 0 {
 		if after, err = listIndexes(ctx, conn, table); err != nil {
-			return Report{Created: built}, fmt.Errorf("re-read indexes after building: %w", err)
+			return Report{Schema: schema, Created: built}, fmt.Errorf("re-read indexes after building: %w", err)
 		}
 	}
-	return classify(table, planned, after, created)
+	return classify(table, schema, planned, after, created)
+}
+
+// DropSQL renders the statement that drops the index name in schema without
+// blocking writes: the remedy printed for a declared index Ensure will not use
+// as it is, or that no declaration plans any more. Ensure never runs it. The
+// name is schema-qualified because an unqualified DROP INDEX resolves through
+// the session's search_path, which need not include the schema the index was
+// created in.
+func DropSQL(schema, name string) string {
+	return "DROP INDEX CONCURRENTLY " + pgx.Identifier{schema, name}.Sanitize()
 }
 
 // classify sorts the post-build catalog state into the Report and the
 // problems Ensure fails on.
-func classify(table string, planned []Index, after map[string]Existing, created map[string]bool) (Report, error) {
-	var report Report
+func classify(table, schema string, planned []Index, after map[string]Existing, created map[string]bool) (Report, error) {
+	report := Report{Schema: schema}
 	var problems []error
 	plannedNames := make(map[string]bool, len(planned))
 	for _, ix := range planned {
@@ -171,14 +197,14 @@ func classify(table string, planned []Index, after map[string]Existing, created 
 		existing, ok := after[ix.Name]
 		switch {
 		case !ok:
-			problems = append(problems, fmt.Errorf("declared index %s for %s is not on %s after CREATE INDEX CONCURRENTLY IF NOT EXISTS: another relation in the same schema already holds the name",
-				ix.Name, FormatSources(ix.Sources), table))
+			problems = append(problems, fmt.Errorf("declared index %s for %s is not on %s after CREATE INDEX CONCURRENTLY IF NOT EXISTS: another relation in schema %s already holds the name",
+				ix.Name, FormatSources(ix.Sources), table, schema))
 		case !existing.Valid:
-			problems = append(problems, invalidError(table, existing))
+			problems = append(problems, invalidError(table, schema, existing))
 		case !existing.Plain() || !slices.Equal(existing.Columns, ix.Columns):
-			problems = append(problems, fmt.Errorf("declared index %s on %s has key (%s)%s, but %s declare (%s) as a plain btree index; init-db never replaces an index: drop it with DROP INDEX CONCURRENTLY %s and rerun",
+			problems = append(problems, fmt.Errorf("declared index %s on %s has key (%s)%s, but %s declare (%s) as a plain btree index; init-db never replaces an index: drop it with %s and rerun",
 				ix.Name, table, strings.Join(existing.Columns, ", "), shapeNote(existing), FormatSources(ix.Sources),
-				strings.Join(ix.Columns, ", "), pgx.Identifier{ix.Name}.Sanitize()))
+				strings.Join(ix.Columns, ", "), DropSQL(schema, ix.Name)))
 		case created[ix.Name]:
 			report.Created = append(report.Created, ix)
 		default:
@@ -192,7 +218,7 @@ func classify(table string, planned []Index, after map[string]Existing, created 
 			continue
 		}
 		if !existing.Valid {
-			problems = append(problems, invalidError(table, existing))
+			problems = append(problems, invalidError(table, schema, existing))
 			continue
 		}
 		report.Unreferenced = append(report.Unreferenced, existing)
@@ -202,13 +228,13 @@ func classify(table string, planned []Index, after map[string]Existing, created 
 
 // invalidError reports an index that is not valid: still being built by
 // another session, or left behind by an interrupted concurrent build.
-func invalidError(table string, existing Existing) error {
+func invalidError(table, schema string, existing Existing) error {
 	if existing.BuildPID != 0 {
 		return fmt.Errorf("declared index %s on %s is still being built by backend pid %d; rerun once that build finishes",
 			existing.Name, table, existing.BuildPID)
 	}
-	return fmt.Errorf("declared index %s on %s is invalid (pg_index.indisvalid = false), which an interrupted CREATE INDEX CONCURRENTLY leaves behind; unless another session is building it right now, drop it with DROP INDEX CONCURRENTLY %s and rerun",
-		existing.Name, table, pgx.Identifier{existing.Name}.Sanitize())
+	return fmt.Errorf("declared index %s on %s is invalid (pg_index.indisvalid = false), which an interrupted CREATE INDEX CONCURRENTLY leaves behind; unless another session is building it right now, drop it with %s and rerun",
+		existing.Name, table, DropSQL(schema, existing.Name))
 }
 
 func shapeNote(existing Existing) string {

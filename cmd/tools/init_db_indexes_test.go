@@ -38,30 +38,31 @@ func TestEnsureDeclaredIndexesSkips(t *testing.T) {
 
 func TestPrintDeclaredIndexReportGolden(t *testing.T) {
 	due := declaredindex.Index{
-		Name:    "entity_main_cx_aaaaaaaaaaaaaaaa",
+		Name:    "tenant_entity_main_cx_aaaaaaaaaaaaaaaa",
 		Columns: []string{"ltbase_schema_id", "text_01", "bigint_01", "ltbase_row_id"},
 		Sources: []declaredindex.Source{{Schema: "outbox_message", Index: "due"}, {Schema: "timer", Index: "due_at"}},
 	}
 	fifo := declaredindex.Index{
-		Name:    "entity_main_cx_bbbbbbbbbbbbbbbb",
+		Name:    "tenant_entity_main_cx_bbbbbbbbbbbbbbbb",
 		Columns: []string{"ltbase_schema_id", "text_02", "bigint_03", "ltbase_row_id"},
 		Sources: []declaredindex.Source{{Schema: "outbox_message", Index: "fifo"}},
 	}
 	report := declaredindex.Report{
+		Schema:  "tenant",
 		Created: []declaredindex.Index{due},
 		Present: []declaredindex.Index{fifo},
 		Unreferenced: []declaredindex.Existing{{
-			Name: "entity_main_cx_cccccccccccccccc", Valid: true,
+			Name: "tenant_entity_main_cx_cccccccccccccccc", Valid: true,
 			Columns: []string{"ltbase_schema_id", "uuid_02", "ltbase_row_id"},
 		}},
 	}
 
 	var out bytes.Buffer
-	printDeclaredIndexReport(&out, "entity_main", report)
+	printDeclaredIndexReport(&out, "tenant.entity_main", report)
 	want := strings.Join([]string{
-		"Created declared index: entity_main_cx_aaaaaaaaaaaaaaaa on entity_main (ltbase_schema_id, text_01, bigint_01, ltbase_row_id) for outbox_message.due, timer.due_at",
-		"Declared index already present: entity_main_cx_bbbbbbbbbbbbbbbb on entity_main (ltbase_schema_id, text_02, bigint_03, ltbase_row_id) for outbox_message.fifo",
-		"Unreferenced declared index: entity_main_cx_cccccccccccccccc on entity_main (ltbase_schema_id, uuid_02, ltbase_row_id): no schema declares this key; init-db never drops indexes, so drop it yourself once nothing reads through it",
+		"Created declared index: tenant_entity_main_cx_aaaaaaaaaaaaaaaa on tenant.entity_main (ltbase_schema_id, text_01, bigint_01, ltbase_row_id) for outbox_message.due, timer.due_at",
+		"Declared index already present: tenant_entity_main_cx_bbbbbbbbbbbbbbbb on tenant.entity_main (ltbase_schema_id, text_02, bigint_03, ltbase_row_id) for outbox_message.fifo",
+		`Unreferenced declared index: tenant_entity_main_cx_cccccccccccccccc on tenant.entity_main (ltbase_schema_id, uuid_02, ltbase_row_id): no schema declares this key; init-db never drops indexes, so once nothing reads through it, drop it yourself with DROP INDEX CONCURRENTLY "tenant"."tenant_entity_main_cx_cccccccccccccccc"`,
 		"",
 	}, "\n")
 	if out.String() != want {
