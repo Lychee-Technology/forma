@@ -21,12 +21,13 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 	}
 
 	now := r.nowMillis()
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
+	return r.inWriteTx(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return r.batchInsertInTx(ctx, tx, tables, records, now)
+	})
+}
 
+// batchInsertInTx is BatchInsertPersistentRecords' body, run on tx.
+func (r *DBPersistentRecordRepository) batchInsertInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, records []*model.PersistentRecord, now int64) error {
 	// Recreates must outrank their retained tombstone (#274); see
 	// InsertPersistentRecord. The lock pass runs in sorted order before any
 	// write, the write loop below in input order (#554).
@@ -58,10 +59,6 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 			}
 		}
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
-	}
 	return nil
 }
 
@@ -72,13 +69,13 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 	if err := validateWriteTables(tables); err != nil {
 		return fmt.Errorf("validate tables for batch delete: %w", err)
 	}
+	return r.inWriteTx(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return r.batchDeleteInTx(ctx, tx, tables, keys)
+	})
+}
 
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
-
+// batchDeleteInTx is BatchDeletePersistentRecords' body, run on tx.
+func (r *DBPersistentRecordRepository) batchDeleteInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, keys []model.PersistentRecordKey) error {
 	// RETURNING + computeTombstoneStamp: see DeletePersistentRecord — the tombstone
 	// must rank strictly after the row's (possibly clock-ahead) last update
 	// or the delete loses the LWW tie (#274).
@@ -112,10 +109,6 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 				return fmt.Errorf("upsert change log for key[%d]: %w", i, err)
 			}
 		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil
 }

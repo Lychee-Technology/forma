@@ -50,33 +50,30 @@ func (r *DBPersistentRecordRepository) RequeueForFlush(ctx context.Context, tabl
 
 	// READ COMMITTED, as in MergePersistentRecord: the version read below
 	// must see the commit of whichever writer held the lock before us.
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }() // no-op if committed
+	return r.inWriteTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		return r.requeueInTx(ctx, tx, tables, schemaID, rowID)
+	})
+}
 
+// requeueInTx is RequeueForFlush's body, run on tx.
+func (r *DBPersistentRecordRepository) requeueInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
 	if err := lockRowVersion(ctx, tx, schemaID, rowID); err != nil {
 		return fmt.Errorf("lock row version for requeue: %w", err)
 	}
 
 	var version int64
 	var deletedAt *int64
-	err = tx.QueryRow(ctx, buildRequeueMainStatement(tables.EntityMain), r.nowMillis(), schemaID, rowID).Scan(&version, &deletedAt)
+	err := tx.QueryRow(ctx, buildRequeueMainStatement(tables.EntityMain), r.nowMillis(), schemaID, rowID).Scan(&version, &deletedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return forma.WithOperatorDetail(forma.NotFoundf("entity not found (row=%s)", rowID),
 			fmt.Errorf("schema=%d", schemaID))
 	}
 	if err != nil {
-		return fmt.Errorf("advance version of %s: %w", rowID, classifyPgError(err))
+		return fmt.Errorf("advance version of %s: %w", rowID, err)
 	}
 
 	if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, schemaID, rowID, version, deletedAt); err != nil {
 		return fmt.Errorf("upsert requeue change log for %s: %w", rowID, err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit requeue of %s: %w", rowID, err)
 	}
 	return nil
 }
