@@ -49,8 +49,14 @@ type Transactor interface {
 // of them until commit. Tx reads and writes the hot tier only; it never
 // touches the federated engine.
 //
-// Tx is sealed: only Forma implements it, so methods can be added to it
-// without breaking callers.
+// Tx is sealed, so methods can be added to it without breaking a caller's
+// build. A type outside Forma cannot satisfy Tx with methods of its own; it can
+// only embed a Tx, and then every method added later comes from the embedded
+// value. A wrapper around the Tx that fn received forwards a new method
+// straight to it, without running the wrapper's own code, and a test double
+// that embeds a nil Tx panics when a new method is called. Forma never takes a
+// Tx back from a caller, so a caller's own Tx type only reaches the caller's
+// code.
 type Tx interface {
 	Create(ctx context.Context, op *EntityOperation) (*DataRecord, error)
 	Update(ctx context.Context, op *EntityOperation) (*DataRecord, error)

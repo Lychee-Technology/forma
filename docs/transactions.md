@@ -100,6 +100,13 @@ ID) avoids this kind of deadlock.
 mutation (#652), claim (#653) and preconditions (#649) are later `Tx`
 methods. Batch operations inside a Tx are out of scope.
 
+Adding those methods doesn't break a caller's build. `Tx` is sealed, so a type
+outside Forma can satisfy it only by embedding a `Tx`, and that type gets each
+new method from the embedded value. A wrapper around the `Tx` that `fn`
+received forwards a new method straight to it, without running the wrapper's
+own code. A test double that embeds a nil `Tx` panics if a new method is
+called.
+
 ## Poisoning
 
 An error from a `Tx` method either leaves the Tx usable or **poisons** it.
