@@ -1,5 +1,7 @@
 package sqlgen
 
+import "github.com/lychee-technology/forma"
+
 // BoolTruthiness renders the one read-side rule every SQL reader derives a
 // bool from (#404): the stored numeric image is the nearest of 0/1, so float
 // noise around either end does not flip the answer. It is the SQL image of
@@ -11,4 +13,16 @@ package sqlgen
 // this one, not in the payload/IR files that consume it.
 func BoolTruthiness(expr string) string {
 	return "(" + expr + " > 0.5)"
+}
+
+// BoolMainTruth renders the read-contract truth value of a bool attribute's
+// entity_main column for the given encoding: `(<col> = '1')` for bool_text,
+// BoolTruthiness for the smallint image. Unlike BoolMainPredicate it yields
+// a boolean expression rather than a filter, for comparisons such as a set
+// membership test (#646) whose right-hand side is itself a bool list.
+func BoolMainTruth(column string, enc forma.MainColumnEncoding) string {
+	if enc == forma.MainColumnEncodingBoolText {
+		return "(" + column + " = '1')"
+	}
+	return BoolTruthiness(column)
 }

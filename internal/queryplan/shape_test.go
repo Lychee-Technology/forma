@@ -147,3 +147,16 @@ func TestShapeHashChildOrderPreserved(t *testing.T) {
 	require.NotEqual(t, mustHash(t, ab), mustHash(t, ba),
 		"child order determines arg ordering and must stay in the hash")
 }
+
+// #646: a list operand binds as one array parameter and the $now offset as
+// one bigint, so neither the list's length and contents nor the offset
+// shape the plan; the operator does.
+func TestShapeHashIgnoresListOperandsAndNowOffsets(t *testing.T) {
+	require.Equal(t, mustHash(t, baseQuery("in:[1,2]")), mustHash(t, baseQuery("in:[1,2,3,4,5,6,7]")))
+	require.Equal(t, mustHash(t, baseQuery("not_in:[1]")), mustHash(t, baseQuery(`not_in:[9,8,7,"x"]`)))
+	require.Equal(t, mustHash(t, baseQuery("lte:$now")), mustHash(t, baseQuery("lte:$now-30m")))
+	require.Equal(t, mustHash(t, baseQuery("IN:[1]")), mustHash(t, baseQuery("in:[1]")))
+	require.NotEqual(t, mustHash(t, baseQuery("in:[1,2]")), mustHash(t, baseQuery("not_in:[1,2]")))
+	require.NotEqual(t, mustHash(t, baseQuery("in:[1]")), mustHash(t, baseQuery("equals:1")))
+	require.NotEqual(t, mustHash(t, baseQuery("is_null:true")), mustHash(t, baseQuery("is_not_null:true")))
+}

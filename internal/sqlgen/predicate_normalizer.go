@@ -76,6 +76,10 @@ func normalizeLeaf(kv *forma.KvCondition, cache forma.SchemaAttributeCache, targ
 
 	lenient := conditionexpr.ParseOperatorValueLenient(kv.Value)
 	leaf.Operator = PredicateOperator(conditionexpr.CanonicalOperator(lenient.Operator))
+	if ext := classifyExtendedLeaf(kv.Attr, meta, hasMeta, lenient); ext.kind != extNone {
+		applyExtendedLeaf(leaf, meta, hasMeta, ext, targets)
+		return leaf
+	}
 	lenientSQL, lenientSQLErr := conditionexpr.ToSQLOperator(lenient.Operator, lenient.Value)
 	if lenientSQLErr == nil {
 		leaf.SQLOperator = lenientSQL.SQLOperator
@@ -123,13 +127,7 @@ func normalizeHybridPayload(
 	lenientSQL conditionexpr.SQLOperatorResult,
 	lenientSQLErr error,
 ) HybridLeafPayload {
-	colName := ""
-	if model.IsMainTableColumn(kv.Attr) {
-		colName = kv.Attr
-	} else if hasMeta && meta.ColumnBinding != nil {
-		colName = string(meta.ColumnBinding.ColumnName)
-	}
-
+	colName := hybridMainColumn(kv.Attr, meta, hasMeta)
 	if colName == "" {
 		return HybridLeafPayload{IsMain: false, Eav: normalizePgEavPayload(kv, meta, hasMeta)}
 	}
@@ -157,6 +155,18 @@ func normalizeHybridPayload(
 		MainSQLOp:  lenientSQL.SQLOperator,
 		MainValue:  value,
 	}
+}
+
+// hybridMainColumn is the entity_main column a hybrid leaf emits against:
+// the raw column itself, the cache binding's column, or "" for the EAV form.
+func hybridMainColumn(attr string, meta forma.AttributeMetadata, hasMeta bool) string {
+	if model.IsMainTableColumn(attr) {
+		return attr
+	}
+	if hasMeta && meta.ColumnBinding != nil {
+		return string(meta.ColumnBinding.ColumnName)
+	}
+	return ""
 }
 
 // resolveHybridLeafMeta returns the attribute metadata driving value

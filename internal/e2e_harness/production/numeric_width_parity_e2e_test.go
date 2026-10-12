@@ -161,6 +161,17 @@ func TestEAVIntegerWidthParityBothDialects(t *testing.T) {
 		// Operand past BIGINT (P2a): compares as DOUBLE instead of erroring
 		// only on the DuckDB route.
 		{"qty_gt_1e30_empty", Filter{Attr: "qty", Op: "gt", Value: "1e30"}, nil},
+		// #646 lists bind at the same storage width as equals operands: a
+		// fractional element is kept on EAV-only integer and matches the
+		// planted history, an over-range element compares as DOUBLE, and
+		// 2^53+1 narrows to the stored 2^53 image on both dialects.
+		{"qty_in_frac", Filter{Attr: "qty", Op: "in", Value: "[1.5]"}, []*Event{rowFrac}},
+		{"qty_in_frac_and_in_range", Filter{Attr: "qty", Op: "in", Value: "[1.5, 7]"}, []*Event{rowFrac, rowSmall}},
+		{"qty_in_2_not_frac", Filter{Attr: "qty", Op: "in", Value: "[2]"}, nil},
+		{"qty_not_in_frac", Filter{Attr: "qty", Op: "not_in", Value: "[1.5]"}, []*Event{rowOver, rowP53, rowSmall}},
+		{"qty_in_2p32", Filter{Attr: "qty", Op: "in", Value: "[4294967296]"}, []*Event{rowOver}},
+		{"qty_in_2p53_plus_1_same_image", Filter{Attr: "qty", Op: "in", Value: "[9007199254740993]"}, []*Event{rowP53}},
+		{"level_in_40000", Filter{Attr: "level", Op: "in", Value: "[40000]"}, []*Event{rowLevel}},
 	}
 
 	runWidthProbesAllTiers(ctx, t, env, wide, "int", probes)

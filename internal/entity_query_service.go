@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 
 	"github.com/lychee-technology/forma"
 	"go.uber.org/zap"
@@ -57,17 +58,7 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		return nil, forma.InvalidInputf("schema name is required")
 	}
 
-	if req.Page < 1 {
-		req.Page = 1
-	}
-
-	if req.ItemsPerPage < 1 {
-		req.ItemsPerPage = s.config.Query.DefaultPageSize
-	}
-
-	if req.ItemsPerPage > s.config.Query.MaxPageSize {
-		req.ItemsPerPage = s.config.Query.MaxPageSize
-	}
+	s.applyPageDefaults(req)
 
 	// Verify schema exists and get attribute metadata.
 	schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
@@ -77,6 +68,10 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 
 	attributeOrders, err := buildAttributeOrders(req, schemaCache)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := validateFederatedCondition(req, schemaCache); err != nil {
 		return nil, err
 	}
 
@@ -137,6 +132,35 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		ExecutionPlan: toExecutionPlan(page.ExecutionPlan),
 		Partial:       toPartialResult(page.Partial),
 	}, nil
+}
+
+// applyPageDefaults clamps the request's page to at least 1 and its page
+// size into [1, MaxPageSize], defaulting an unset size to DefaultPageSize.
+func (s *entityQueryService) applyPageDefaults(req *forma.QueryRequest) {
+	if req.Page < 1 {
+		req.Page = 1
+	}
+	if req.ItemsPerPage < 1 {
+		req.ItemsPerPage = s.config.Query.DefaultPageSize
+	}
+	if req.ItemsPerPage > s.config.Query.MaxPageSize {
+		req.ItemsPerPage = s.config.Query.MaxPageSize
+	}
+}
+
+// validateFederatedCondition refuses the $now operand on a federated
+// request. $now is the PostgreSQL transaction time, and the check runs
+// before routing: the engine may answer through its Postgres-only route,
+// where the operand would render and the answer would depend on which route
+// ran (#646).
+func validateFederatedCondition(req *forma.QueryRequest, cache forma.SchemaAttributeCache) error {
+	if req.Federated == nil || !req.Federated.Enabled {
+		return nil
+	}
+	if err := sqlgen.FederatedServerTimeError(req.Condition, cache); err != nil {
+		return fmt.Errorf("validate federated condition for schema %s: %w", req.SchemaName, err)
+	}
+	return nil
 }
 
 func (s *entityQueryService) queryRecords(ctx context.Context, query *model.PersistentRecordQuery, req *forma.QueryRequest) (*model.PersistentRecordPage, error) {

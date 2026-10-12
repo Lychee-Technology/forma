@@ -2,6 +2,7 @@ package internal
 
 import (
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/conditionexpr"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -28,6 +29,12 @@ func hasMainTableCondition(cond forma.Condition, cache forma.SchemaAttributeCach
 		}
 		// Check if it's a raw main table column name
 		if model.IsMainTableColumn(c.Attr) {
+			return true
+		}
+		// is_null must reach every entity, including one with no eav_data
+		// row at all, which an EAV anchor never visits (#646).
+		lenient := conditionexpr.ParseOperatorValueLenient(c.Value)
+		if conditionexpr.CanonicalOperator(lenient.Operator) == conditionexpr.OpIsNull {
 			return true
 		}
 		// Check if it's an attribute with column_binding to main table

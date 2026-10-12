@@ -25,6 +25,10 @@ const (
 	PredicateOpLte        PredicateOperator = "lte"
 	PredicateOpStartsWith PredicateOperator = "starts_with"
 	PredicateOpContains   PredicateOperator = "contains"
+	PredicateOpIn         PredicateOperator = "in"
+	PredicateOpNotIn      PredicateOperator = "not_in"
+	PredicateOpIsNull     PredicateOperator = "is_null"
+	PredicateOpIsNotNull  PredicateOperator = "is_not_null"
 )
 
 // PatternKind classifies the LIKE wildcard normalization applied to a value.
@@ -116,6 +120,13 @@ type HybridLeafPayload struct {
 	// = / != (#565): the emitter allocates Arity() placeholders, renders
 	// it over them and binds Args(). Nil for every other main-branch leaf.
 	MainBool *BoolMainPredicate
+	// The #646 leaf kinds replace MainValue; at most one is set. MainNullTest
+	// is SQLOpIsNull/SQLOpIsNotNull (no bind), MainSet the array bind of an
+	// in / not_in leaf, MainNow the offset bind of a $now leaf compared under
+	// MainSQLOp. RenderMain spells all of them.
+	MainNullTest string
+	MainSet      *SetOperand
+	MainNow      *ServerTimeOperand
 
 	// EAV branch — computed identically to PgEavLeafPayload (strict parse).
 	Eav PgEavLeafPayload
@@ -133,6 +144,15 @@ type PgEavLeafPayload struct {
 	// stored 2 answers the same on the OLTP route and the federated tiers
 	// (#384; the spelling is the #404 read-side rule).
 	Truthy bool
+	// The #646 leaf kinds replace Value; at most one is set. NullTest
+	// (SQLOpIsNull/SQLOpIsNotNull) makes the leaf a presence test with no
+	// value bind; List marks a list attribute, whose empty-list marker row
+	// counts as present (#204). Set is the array bind of an in / not_in
+	// leaf; Now the offset bind of a $now leaf compared under SQLOp.
+	NullTest string
+	List     bool
+	Set      *SetOperand
+	Now      *ServerTimeOperand
 }
 
 // ComparisonLHS renders the left-hand side of the EAV EXISTS comparison for
@@ -158,6 +178,9 @@ type PgMainLeafPayload struct {
 	// the emitter allocates Arity() placeholders, renders it over them and
 	// binds Args().
 	Bool *BoolMainPredicate
+	// NullTest (SQLOpIsNull/SQLOpIsNotNull) replaces SQLOp/Value for an
+	// is_null / is_not_null leaf (#646): no bind, no placeholder.
+	NullTest string
 }
 
 // DuckLeafPayload is the DuckDB emission payload (lenient parse policy).
@@ -169,6 +192,11 @@ type DuckLeafPayload struct {
 	ValueType forma.ValueType
 	TextLike  bool
 	Param     any
+	// NullTest (SQLOpIsNull/SQLOpIsNotNull) renders "<col> IS [NOT] NULL"
+	// with no bind (#646). Set renders an in / not_in leaf against Param,
+	// which then holds the exactly-typed list the cast names.
+	NullTest string
+	Set      *DuckSetOperand
 }
 
 // predicateNilNode marks a nil condition (top-level or composite child);

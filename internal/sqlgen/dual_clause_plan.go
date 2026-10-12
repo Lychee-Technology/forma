@@ -107,6 +107,9 @@ func bindPgMainValues(leaf *PredicateLeaf) ([]any, bool, error) {
 	if p.Bool != nil {
 		return p.Bool.Args(), true, nil
 	}
+	if p.NullTest != "" {
+		return nil, true, nil
+	}
 	return []any{p.Value}, true, nil
 }
 
@@ -115,13 +118,16 @@ func bindPgEavValues(leaf *PredicateLeaf) ([]any, bool, error) {
 	if p.Err != nil {
 		return nil, false, p.Err
 	}
-	return []any{p.AttrID, p.Value}, true, nil
+	return p.Args(), true, nil
 }
 
 func bindDuckValues(leaf *PredicateLeaf) ([]any, bool, error) {
 	p := leaf.Duck
 	if p.Err != nil {
 		return nil, false, p.Err
+	}
+	if p.NullTest != "" {
+		return nil, true, nil
 	}
 	return []any{p.Param}, true, nil
 }

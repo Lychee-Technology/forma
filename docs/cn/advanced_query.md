@@ -42,11 +42,18 @@
 | **Less Than or Equal** | `lte` | 小于等于 | `"lte:100"` | `<=` |
 | **Starts With** | `starts_with` | 前缀匹配 | `"starts_with:prod_"` | `LIKE 'val%'` |
 | **Contains** | `contains` | 包含 | `"contains:search"` | `LIKE '%val%'` |
+| **In** | `in` | 等于列表中任一值（1–1000 个元素） | `"in:[\"a\",\"b\"]"` | `= ANY($n)` |
+| **Not In** | `not_in` | 有值且不等于列表中任何值 | `"not_in:[18,21]"` | `IS NOT NULL AND <> ALL($n)` |
+| **Is Null** | `is_null` | 属性无值（操作数只能是 `true`） | `"is_null:true"` | `IS NULL` / `NOT EXISTS` |
+| **Is Not Null** | `is_not_null` | 属性有值（操作数只能是 `true`） | `"is_not_null:true"` | `IS NOT NULL` / `EXISTS` |
 
 **注意**:
 - `starts_with` 和 `contains` 操作符仅适用于文本类型 (`text`) 属性。
-- 布尔类型属性仅支持 `equals` 和 `not_equals`，且值为 `1` (true) 或 `0` (false)。
+- 布尔类型属性支持 `equals`、`not_equals`、`in`、`not_in` 和空值测试，值为 `1`/`true` 或 `0`/`false`。
 - 日期类型支持 ISO 8601 格式或 Unix 毫秒时间戳。
+- `not_in` 永远不匹配无值的行；如需包含，请与 `is_null:true` 用 `or` 组合。
+- 日期 (`date`/`datetime`) 属性的比较操作符可使用 `$now` 操作数（数据库事务时间，可带有符号的 Go duration 偏移，如 `lte:$now-30s`）；联邦查询不支持 `$now`。
+- 完整规则见英文参考文档 [Condition DSL Reference](../condition-dsl.md)。
 
 ### 3. 完整示例
 

@@ -68,26 +68,11 @@ func (e *pgEavTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, e
 		return "", nil, p.Err
 	}
 
-	var args []any
-
-	*e.paramIndex++
-	attrIDPlaceholder := fmt.Sprintf("$%d", *e.paramIndex)
-	args = append(args, p.AttrID)
-
-	*e.paramIndex++
-	valuePlaceholder := fmt.Sprintf("$%d", *e.paramIndex)
-	args = append(args, p.Value)
-
-	sql := fmt.Sprintf(
-		"EXISTS (SELECT 1 FROM %s x WHERE x.schema_id = e.schema_id AND x.row_id = e.row_id AND x.attr_id = %s AND %s %s %s)",
-		e.eavTable,
-		attrIDPlaceholder,
-		p.ComparisonLHS("x"),
-		p.SQLOp,
-		valuePlaceholder,
-	)
-
-	return sql, args, nil
+	next := func() string {
+		*e.paramIndex++
+		return fmt.Sprintf("$%d", *e.paramIndex)
+	}
+	return p.Render(e.eavTable, "e.schema_id", "e.row_id", next), p.Args(), nil
 }
 
 // pgEavClausesFromTree walks an already-normalized predicate tree for the
