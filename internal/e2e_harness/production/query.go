@@ -10,8 +10,10 @@ import (
 
 // Filter is one typed filter leaf. Op defaults to "equals"; supported
 // operators mirror forma.FilterType: equals, not_equals, gt, gte, lt, lte,
-// starts_with, contains. Values are the string forms the public condition
-// API uses ("1"/"0" for bools, unix-ms or ISO strings for dates).
+// starts_with, contains, in, not_in, is_null, is_not_null. Values are the
+// string forms the public condition API uses ("1"/"0" for bools, unix-ms or
+// ISO strings for dates, a JSON array for in/not_in, "true" for the null
+// tests).
 type Filter struct {
 	Attr  string `json:"attr"`
 	Op    string `json:"op,omitempty"`
