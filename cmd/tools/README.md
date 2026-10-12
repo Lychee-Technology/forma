@@ -74,7 +74,7 @@ init-db
 
 指定 `-schema-dir` 时，`init-db` 在建表事务提交之后，为 schema 通过 `x-forma-indexes` 声明的组合索引
 逐个执行 `CREATE INDEX CONCURRENTLY IF NOT EXISTS`（#647），不阻塞并发写入；索引已全部存在时不再发出任何索引 DDL。
-声明索引无效（`indisvalid = false`，通常是被中断的并发建索引留下的）、键不匹配或名字被占用时，
+声明索引无效（`indisvalid = false`，通常是被中断的并发建索引留下的）、键或形态与计划不符（如非 btree、带 INCLUDE 列）或名字被占用时，
 `init-db` 以非零退出并给出索引名与处理方法。`init-db` 从不删除索引：声明被移除后，对应索引被报告为
 unreferenced，由运维自行删除。详见 `docs/schema-indexes.md`。
 

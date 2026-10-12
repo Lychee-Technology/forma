@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/pashagolub/pgxmock/v4"
@@ -11,34 +12,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var catalogColumns = []string{"relname", "indisvalid", "plain", "columns", "build_pid"}
+var catalogColumns = []string{"relname", "indisvalid", "columns", "deviations", "build_pid"}
 
 // catalogRow is one pg_index row as catalogQuery returns it.
 type catalogRow struct {
-	name    string
-	valid   bool
-	plain   bool
-	columns []string
-	pid     int32
+	name       string
+	valid      bool
+	columns    []string
+	deviations []string
+	pid        int32
 }
 
 func row(ix Index, valid bool) catalogRow {
-	return catalogRow{name: ix.Name, valid: valid, plain: true, columns: ix.Columns}
+	return catalogRow{name: ix.Name, valid: valid, columns: ix.Columns}
 }
 
 // baseline is what every entity_main carries before any declaration: the
 // primary key and one of init-db's per-column indexes.
 func baseline() []catalogRow {
 	return []catalogRow{
-		{name: "entity_main_pkey", valid: true, columns: []string{"ltbase_schema_id", "ltbase_row_id"}},
-		{name: "entity_main_text_01_idx", valid: true, plain: true, columns: []string{"ltbase_schema_id", "ltbase_row_id", "text_01"}},
+		{name: "entity_main_pkey", valid: true, columns: []string{"ltbase_schema_id", "ltbase_row_id"}, deviations: []string{"unique"}},
+		{name: "entity_main_text_01_idx", valid: true, columns: []string{"ltbase_schema_id", "ltbase_row_id", "text_01"}},
 	}
 }
 
 func expectCatalog(mock pgxmock.PgxConnIface, rows ...catalogRow) {
 	result := pgxmock.NewRows(catalogColumns)
 	for _, r := range rows {
-		result.AddRow(r.name, r.valid, r.plain, r.columns, r.pid)
+		result.AddRow(r.name, r.valid, r.columns, r.deviations, r.pid)
 	}
 	mock.ExpectQuery(regexp.QuoteMeta("FROM pg_index i")).WithArgs(`"entity_main"`).WillReturnRows(result)
 }
@@ -132,26 +133,43 @@ func TestEnsure_IndexStillBeingBuiltNamesTheBackend(t *testing.T) {
 	assert.NotContains(t, err.Error(), "DROP INDEX", "an in-progress build must not be advised away")
 }
 
-func TestEnsure_MismatchedKeyFails(t *testing.T) {
+// An index under the planned name that is not exactly what CreateSQL builds
+// fails the run, whether its key differs or only its shape does: a BRIN index
+// over the planned key would otherwise pass as present while serving none of
+// the btree access paths the declaration promises.
+func TestEnsure_MismatchedIndexFails(t *testing.T) {
 	planned := planOutbox(t)[:1]
-	mock := newMock(t)
+	key := "(" + strings.Join(planned[0].Columns, ", ") + ")"
+	cases := []struct {
+		name       string
+		columns    []string
+		deviations []string
+		want       string
+	}{
+		{"different key", []string{"ltbase_schema_id", "text_09", "ltbase_row_id"}, nil,
+			"has key (ltbase_schema_id, text_09, ltbase_row_id), but outbox_message."},
+		{"same key, another access method", planned[0].Columns, []string{"brin access method"},
+			"has key " + key + " and is not a plain btree (brin access method), but outbox_message."},
+		{"key moved under INCLUDE", planned[0].Columns[:2], []string{"INCLUDE columns"},
+			"has key (" + strings.Join(planned[0].Columns[:2], ", ") + ") and is not a plain btree (INCLUDE columns)"},
+		{"several deviations", planned[0].Columns, []string{"unique", "partial", "non-default collation"},
+			"and is not a plain btree (unique, partial, non-default collation)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := newMock(t)
+			existing := row(planned[0], true)
+			existing.columns, existing.deviations = tc.columns, tc.deviations
+			expectCatalog(mock, append(baseline(), existing)...)
 
-	wrongKey := row(planned[0], true)
-	wrongKey.columns = []string{"ltbase_schema_id", "text_09", "ltbase_row_id"}
-	partial := row(planned[0], true)
-	partial.plain = false
-
-	expectCatalog(mock, append(baseline(), wrongKey)...)
-	_, err := Ensure(context.Background(), mock, "entity_main", planned)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "has key (ltbase_schema_id, text_09, ltbase_row_id)")
-	assert.Contains(t, err.Error(), "outbox_message.")
-	assert.Contains(t, err.Error(), "init-db never replaces an index")
-
-	expectCatalog(mock, append(baseline(), partial)...)
-	_, err = Ensure(context.Background(), mock, "entity_main", planned)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "partial, unique or over an expression")
+			report, err := Ensure(context.Background(), mock, "entity_main", planned)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.Contains(t, err.Error(), "as a plain btree index; init-db never replaces an index")
+			assert.Contains(t, err.Error(), `DROP INDEX CONCURRENTLY "`+planned[0].Name+`"`)
+			assert.Empty(t, report.Present, "a mismatched index is never reported present")
+		})
+	}
 }
 
 // A declaration removed from every schema leaves its index in place: a valid

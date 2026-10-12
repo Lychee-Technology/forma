@@ -25,17 +25,26 @@ type Conn interface {
 // Existing is one index the catalog reports on the entity_main table.
 type Existing struct {
 	Name string
-	// Columns are the key columns in order; an expression column reads "".
+	// Columns are the key columns in order, INCLUDE columns left out; an
+	// expression column reads "".
 	Columns []string
 	// Valid is pg_index.indisvalid. An interrupted CREATE INDEX CONCURRENTLY
 	// leaves the index behind with it false, and the planner never uses it.
 	Valid bool
-	// Plain is false for a partial, expression or unique index, none of which
-	// a declaration produces.
-	Plain bool
+	// Deviations names each way the index differs from the plain btree
+	// CreateSQL builds over the same key, such as "brin access method" or
+	// "INCLUDE columns"; empty for a plain btree.
+	Deviations []string
 	// BuildPID is the backend still building the index concurrently, 0 when
 	// no build is in progress or the progress view hides it from this role.
 	BuildPID int32
+}
+
+// Plain reports whether the index has the shape CreateSQL builds: a btree
+// over plain key columns with default operator classes, collations and
+// ordering, and nothing else.
+func (e Existing) Plain() bool {
+	return len(e.Deviations) == 0
 }
 
 // Report is what Ensure found and did. Every index Ensure is responsible for
@@ -52,20 +61,47 @@ type Report struct {
 }
 
 // catalogQuery lists every index on one table with what Ensure checks: the
-// validity flag, the key columns in order, whether the index has a shape no
-// declaration produces, and the backend building it concurrently, if any.
+// validity flag, the key columns in order, each way the index's shape differs
+// from what CreateSQL builds, and the backend building it concurrently, if
+// any. The key column list alone cannot tell a planned index from a BRIN one
+// over the same columns, or from one carrying the trailing columns under
+// INCLUDE, so every property CreateSQL leaves at its default is compared:
+// access method, uniqueness, predicate, expressions, INCLUDE columns, and each
+// key column's operator class, collation and ordering. indclass, indcollation
+// and indoption cover the key columns only.
 const catalogQuery = `SELECT c.relname::text,
        i.indisvalid,
-       NOT (i.indisunique OR i.indpred IS NOT NULL OR i.indexprs IS NOT NULL) AS plain,
        ARRAY(
            SELECT COALESCE(a.attname::text, '')
            FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
            LEFT JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+           WHERE k.ord <= i.indnkeyatts
            ORDER BY k.ord
        ) AS columns,
+       array_remove(ARRAY[
+           CASE WHEN am.amname <> 'btree' THEN am.amname::text || ' access method' END,
+           CASE WHEN i.indisunique THEN 'unique' END,
+           CASE WHEN i.indpred IS NOT NULL THEN 'partial' END,
+           CASE WHEN i.indexprs IS NOT NULL THEN 'expression key' END,
+           CASE WHEN i.indnatts > i.indnkeyatts THEN 'INCLUDE columns' END,
+           CASE WHEN EXISTS (
+               SELECT 1 FROM unnest(i.indclass::oid[]) AS k(opclass)
+               JOIN pg_opclass o ON o.oid = k.opclass
+               WHERE NOT o.opcdefault
+           ) THEN 'non-default operator class' END,
+           CASE WHEN EXISTS (
+               SELECT 1 FROM unnest(i.indkey::int2[], i.indcollation::oid[]) AS k(attnum, coll)
+               JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+               WHERE k.coll IS NOT NULL AND k.coll <> a.attcollation
+           ) THEN 'non-default collation' END,
+           CASE WHEN EXISTS (
+               SELECT 1 FROM unnest(i.indoption::int2[]) AS k(opt) WHERE k.opt <> 0
+           ) THEN 'DESC or NULLS FIRST ordering' END
+       ], NULL) AS deviations,
        COALESCE((SELECT p.pid FROM pg_stat_progress_create_index p WHERE p.index_relid = i.indexrelid LIMIT 1), 0) AS build_pid
 FROM pg_index i
 JOIN pg_class c ON c.oid = i.indexrelid
+JOIN pg_am am ON am.oid = c.relam
 WHERE i.indrelid = $1::regclass`
 
 // EnsureFromRegistry plans the declarations of every schema registry lists and
@@ -139,8 +175,8 @@ func classify(table string, planned []Index, after map[string]Existing, created 
 				ix.Name, FormatSources(ix.Sources), table))
 		case !existing.Valid:
 			problems = append(problems, invalidError(table, existing))
-		case !existing.Plain || !slices.Equal(existing.Columns, ix.Columns):
-			problems = append(problems, fmt.Errorf("declared index %s on %s has key (%s)%s, but %s declare (%s) as a plain index; init-db never replaces an index: drop it with DROP INDEX CONCURRENTLY %s and rerun",
+		case !existing.Plain() || !slices.Equal(existing.Columns, ix.Columns):
+			problems = append(problems, fmt.Errorf("declared index %s on %s has key (%s)%s, but %s declare (%s) as a plain btree index; init-db never replaces an index: drop it with DROP INDEX CONCURRENTLY %s and rerun",
 				ix.Name, table, strings.Join(existing.Columns, ", "), shapeNote(existing), FormatSources(ix.Sources),
 				strings.Join(ix.Columns, ", "), pgx.Identifier{ix.Name}.Sanitize()))
 		case created[ix.Name]:
@@ -176,10 +212,10 @@ func invalidError(table string, existing Existing) error {
 }
 
 func shapeNote(existing Existing) string {
-	if existing.Plain {
+	if existing.Plain() {
 		return ""
 	}
-	return " and is partial, unique or over an expression"
+	return " and is not a plain btree (" + strings.Join(existing.Deviations, ", ") + ")"
 }
 
 // listIndexes reads every index on table from the catalog, keyed by name.
@@ -190,9 +226,10 @@ func listIndexes(ctx context.Context, conn Conn, table string) (map[string]Exist
 	}
 	indexes := make(map[string]Existing)
 	var existing Existing
-	if _, err := pgx.ForEachRow(rows, []any{&existing.Name, &existing.Valid, &existing.Plain, &existing.Columns, &existing.BuildPID}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&existing.Name, &existing.Valid, &existing.Columns, &existing.Deviations, &existing.BuildPID}, func() error {
 		row := existing
 		row.Columns = slices.Clone(existing.Columns)
+		row.Deviations = slices.Clone(existing.Deviations)
 		indexes[existing.Name] = row
 		return nil
 	}); err != nil {

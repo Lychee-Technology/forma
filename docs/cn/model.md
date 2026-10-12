@@ -93,7 +93,7 @@ CREATE INDEX ... ON ... (ltbase_schema_id, ltbase_row_id, uuid_01);
 这些单列索引的第二列是 `ltbase_row_id`，无法按列值定位。需要按列值查找或排序的访问路径（如“到期的待处理消息”），
 由 schema 在顶层用 `x-forma-indexes` 声明组合索引：`init-db` 为每个声明以 `CREATE INDEX CONCURRENTLY`
 建立 `(ltbase_schema_id, <绑定列…>, ltbase_row_id)` 索引，不阻塞写入，且从不自动删除索引。
-只能声明 column-bound 属性，每个索引 1 到 4 个属性。详见 [Declared Indexes](../schema-indexes.md)。
+只能声明 column-bound 的非 bool 属性，每个索引 1 到 4 个属性。详见 [Declared Indexes](../schema-indexes.md)。
 
 ## EAV Data Table
 

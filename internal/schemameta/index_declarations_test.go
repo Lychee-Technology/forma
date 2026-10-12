@@ -11,14 +11,19 @@ import (
 )
 
 // outboxAttributes is the attributes file the declaration tests load: three
-// column-bound attributes, one EAV attribute, a retired bound one, and one
-// bound to the row-id key column.
+// column-bound attributes, one EAV attribute, a retired bound one, one bound
+// to the row-id key column, and a bool under each bool encoding.
 func outboxAttributes() map[string]any {
 	bound := func(id float64, valueType, col string) map[string]any {
 		return map[string]any{"attributeID": id, "valueType": valueType, "column_binding": map[string]any{"col_name": col}}
 	}
 	retired := bound(6, "text", "text_03")
 	retired["retired"] = true
+	boolBound := func(id float64, col, encoding string) map[string]any {
+		attr := bound(id, "bool", col)
+		attr["column_binding"].(map[string]any)["encoding"] = encoding
+		return attr
+	}
 	return map[string]any{
 		"status":          bound(1, "text", "text_01"),
 		"next_attempt_at": bound(2, "datetime", "bigint_01"),
@@ -26,6 +31,8 @@ func outboxAttributes() map[string]any {
 		"payload":         map[string]any{"attributeID": float64(4), "valueType": "text"},
 		"message_id":      bound(5, "uuid", "ltbase_row_id"),
 		"old_status":      retired,
+		"archived":        boolBound(7, "smallint_01", "bool_smallint"),
+		"acked":           boolBound(8, "text_04", "bool_text"),
 	}
 }
 
@@ -123,6 +130,12 @@ func TestIndexDeclarations_RefusedAtSchemaLoad(t *testing.T) {
 			[]string{"index due: attribute old_status is retired"}},
 		{"attribute bound to a key column", []any{index("due", "message_id")},
 			[]string{"index due: attribute message_id is bound to ltbase_row_id", "key column"}},
+		// #647 needs equals and in to be index conditions; a bool's filters
+		// compare its truth value, not the column, under either encoding.
+		{"bool_text attribute", []any{index("due", "acked", "next_attempt_at")},
+			[]string{"index due: attribute acked is a bool bound to text_04 (encoding bool_text)", "bool attributes cannot be indexed"}},
+		{"bool_smallint attribute", []any{index("due", "status", "archived")},
+			[]string{"index due: attribute archived is a bool bound to smallint_01 (encoding bool_smallint)", "bool attributes cannot be indexed"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -350,6 +350,54 @@ func TestInitDBExitsNonZeroOnInvalidDeclaredIndex(t *testing.T) {
 	}
 }
 
+// An index under the planned name that PostgreSQL reports valid but that is
+// not the plain btree CreateSQL builds makes init-db exit non-zero naming the
+// difference, and it is left in place. Each look-alike keeps the planned
+// columns in order, so only the catalog's shape check can tell them apart.
+func TestInitDBRefusesLookAlikeDeclaredIndex(t *testing.T) {
+	cases := []struct {
+		name, key, deviation string
+	}{
+		{"brin", "USING brin (ltbase_schema_id, text_01, bigint_01, ltbase_row_id)", "brin access method"},
+		{"include", "(ltbase_schema_id, text_01) INCLUDE (bigint_01, ltbase_row_id)", "INCLUDE columns"},
+		{"opclass", "(ltbase_schema_id, text_01 text_pattern_ops, bigint_01, ltbase_row_id)", "non-default operator class"},
+		{"collation", `(ltbase_schema_id, text_01 COLLATE "C", bigint_01, ltbase_row_id)`, "non-default collation"},
+		{"ordering", "(ltbase_schema_id, text_01, bigint_01 DESC, ltbase_row_id)", "DESC or NULLS FIRST ordering"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tg := newInitDBTarget(t)
+			tg.writeOutboxAndTimer(t, "due")
+			tg.opts.skipDeclaredIndexes = true
+			if out, err := tg.run(t); err != nil {
+				t.Fatalf("init-db --skip-declared-indexes: %v\n%s", err, out)
+			}
+			due, _ := tg.wantDef("text_01", "bigint_01")
+			if _, err := tg.pool.Exec(context.Background(), fmt.Sprintf("CREATE INDEX %s ON %s %s",
+				quoteIdentifier(due), quoteIdentifier(tg.opts.entityMain), tc.key)); err != nil {
+				t.Fatalf("create look-alike index: %v", err)
+			}
+
+			tg.opts.skipDeclaredIndexes = false
+			out, err := tg.run(t)
+			if err == nil {
+				t.Fatalf("init-db accepted the %s look-alike as the declared index:\n%s", tc.name, out)
+			}
+			for _, want := range []string{due, "is not a plain btree (" + tc.deviation + ")", "DROP INDEX CONCURRENTLY"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("init-db error %q does not contain %q", err, want)
+				}
+			}
+			if builds := tg.log.matching("CREATE INDEX CONCURRENTLY"); len(builds) != 0 {
+				t.Fatalf("init-db issued declared-index DDL over the look-alike: %+v", builds)
+			}
+			if got, ok := tg.declaredIndexes(t)[due]; !ok || !got.valid {
+				t.Fatalf("the look-alike index must be left in place; found %+v (present %v)", got, ok)
+			}
+		})
+	}
+}
+
 // leaveInvalidIndex starts the planned build of name on table while another
 // connection holds an open write transaction there, waits until
 // pg_stat_progress_create_index shows the build waiting on it, and cancels the

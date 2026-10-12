@@ -144,9 +144,20 @@ func unsupportedDeclarationKey(obj map[string]any) string {
 // validateIndexDeclarations checks each declared attribute against the
 // schema's FULL attribute cache (retired entries included, so a retired
 // attribute is named as such rather than as unknown): it must be an active,
-// column-bound attribute, and its column must not be one of the two key
-// columns every declared index already carries. Every error names the schema,
-// the index and the attribute; callers wrap it with the schema file.
+// column-bound attribute of a value type whose filters the index can serve,
+// and its column must not be one of the two key columns every declared index
+// already carries. Every error names the schema, the index and the attribute;
+// callers wrap it with the schema file.
+//
+// A bool attribute is refused because #647 requires equals and in on an
+// indexed attribute to be index conditions, and the entity_main SQL for a bool
+// compares the column's truth value rather than the column. bool_text renders
+// equals as (<col> = '1') = $n (sqlgen.BoolMainPredicate), which PostgreSQL
+// folds into an index condition only for a true it can see at planning time:
+// false becomes <col> <> '1', and a cached generic plan keeps the expression.
+// in / not_in compare sqlgen.BoolMainTruth under both encodings, which no
+// plan can seek (#671 tracks admitting bool_smallint). Every other admitted
+// binding compares the bare column (TestDeclaredIndexServesEveryIndexableKind).
 func validateIndexDeclarations(schemaName string, decls []forma.IndexDeclaration, cache forma.SchemaAttributeCache) error {
 	for _, decl := range decls {
 		for _, attr := range decl.Attributes {
@@ -171,6 +182,10 @@ func validateIndexedAttribute(attr string, cache forma.SchemaAttributeCache) err
 	switch col := meta.ColumnBinding.ColumnName; col {
 	case forma.MainColumnSchemaID, forma.MainColumnRowID:
 		return fmt.Errorf("attribute %s is bound to %s, which every declared index already carries as a key column", attr, col)
+	}
+	if meta.ValueType == forma.ValueTypeBool {
+		return fmt.Errorf("attribute %s is a bool bound to %s (encoding %s); bool filters compare the column's truth value rather than the column (in and not_in under every encoding, equals under bool_text), which an index on the column cannot reliably serve, so bool attributes cannot be indexed",
+			attr, meta.ColumnBinding.ColumnName, meta.ColumnBinding.Encoding)
 	}
 	return nil
 }

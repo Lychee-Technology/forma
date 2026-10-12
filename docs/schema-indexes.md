@@ -46,6 +46,14 @@ has a `column_binding` to an `entity_main` column. The rules for an attribute ar
   attribute the attributes file does not define, and for a retired one.
 - An attribute bound to `ltbase_schema_id` or `ltbase_row_id` is refused,
   because every declared index already carries both.
+- A `bool` attribute is refused under either encoding, because some of its
+  filters compare the column's truth value rather than the column, and no
+  index on the column serves them. `in` and `not_in` do this under both
+  encodings. Under `bool_text`, `equals` renders as `(<col> = '1') = $n`, which
+  PostgreSQL turns into an index condition only for a `true` it sees at
+  planning time: `false` becomes `<col> <> '1'`, and a cached generic plan
+  keeps the expression. Admitting `bool_smallint`, whose `equals` does seek, is
+  tracked in #671.
 - Keys other than `name` and `attributes` are refused, so `unique`, `where` and
   expressions are rejected rather than silently ignored.
 
@@ -108,9 +116,12 @@ unusable:
   drop it with `DROP INDEX CONCURRENTLY "<name>"` and rerun `init-db`. If a
   build is still running in another session, `init-db` names that backend's pid
   instead. The remedy then is to wait for the build to finish and rerun.
-- **Mismatched**: an index under the planned name has a different key, or is
-  partial, unique or over an expression. `init-db` never replaces an index, so
-  drop it yourself and rerun.
+- **Mismatched**: an index under the planned name is not exactly what
+  `init-db` would build. Its key columns differ, or it uses another access
+  method (BRIN, hash, …), is unique or partial, has an expression key or
+  `INCLUDE` columns, or has a non-default operator class, collation or sort
+  order on a key column. The error lists each difference. `init-db` never
+  replaces an index, so drop it yourself and rerun.
 - **Name taken**: another relation in the same PostgreSQL schema holds the
   name.
 
@@ -141,9 +152,15 @@ PostgreSQL can seek a declared index on these operators:
   (see [Condition DSL](condition-dsl.md));
 - `is_null`.
 
+These hold for every attribute a declaration admits: text, uuid, the integer
+and `double` columns, and dates and date-times under `unix_ms` or `iso8601`. A
+test runs each operator against a one-attribute index of each kind and checks
+the plan.
+
 A query should constrain the leading attributes with equality, and the last
-attribute with a range or a sort. The tests behind #647 check that the hot-tier
-SQL Forma generates reads through the declared index for these shapes:
+attribute with a range or a sort. The tests behind #647 also check that the
+hot-tier SQL Forma generates reads through the declared index for these
+multi-attribute shapes:
 
 | Shape | Condition |
 | --- | --- |
@@ -151,15 +168,12 @@ SQL Forma generates reads through the declared index for these shapes:
 | lease expired | `status` equals, and `locked_until` `lte:$now` |
 | FIFO | `partition_key` equals, and `enqueued_at` ranged and sorted |
 
-A btree key does not serve these predicates:
-
-- `contains` and `starts_with`, which render as `LIKE` patterns.
-- Bool attributes bound with the `bool_text` encoding, which are filtered
-  through an expression over the column.
+A btree key does not serve `contains` and `starts_with`, which render as
+`LIKE` patterns.
 
 ## Not supported
 
-- Indexes on EAV attributes.
+- Indexes on EAV attributes or on `bool` attributes.
 - Unique, partial and expression indexes.
 - Automatic index selection, and automatic drops.
 

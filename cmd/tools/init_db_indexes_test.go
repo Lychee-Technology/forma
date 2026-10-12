@@ -51,7 +51,7 @@ func TestPrintDeclaredIndexReportGolden(t *testing.T) {
 		Created: []declaredindex.Index{due},
 		Present: []declaredindex.Index{fifo},
 		Unreferenced: []declaredindex.Existing{{
-			Name: "entity_main_cx_cccccccccccccccc", Valid: true, Plain: true,
+			Name: "entity_main_cx_cccccccccccccccc", Valid: true,
 			Columns: []string{"ltbase_schema_id", "uuid_02", "ltbase_row_id"},
 		}},
 	}
