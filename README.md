@@ -200,6 +200,7 @@ make benchmark-heavy       # Heavy planning set
 - [Documentation Index](docs/index.md)
 - [Error Handling](docs/error-handling.md)
 - [Condition DSL Reference](docs/condition-dsl.md)
+- [Declared Indexes (`x-forma-indexes`)](docs/schema-indexes.md)
 - [Schema Consistency Migration Guide](docs/schema-consistency-migration.md)
 - [E2E Test Matrix](docs/e2e-tests-en.md)
 - [Integration Test Cases](docs/integ-tests-en.md)

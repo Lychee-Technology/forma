@@ -199,7 +199,9 @@ func (r *Runner) RunWithHarness(ctx context.Context, h *federated.FederatedTestH
 	if err != nil {
 		return nil, err
 	}
-	h.Registry = r.registry
+	if err := h.UseRegistry(ctx, r.registry); err != nil {
+		return nil, fmt.Errorf("attach benchmark schema registry: %w", err)
+	}
 	if err := LoadTieredDataset(ctx, h, tiered); err != nil {
 		return nil, err
 	}

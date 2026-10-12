@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	forma "github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/declaredindex"
 )
 
 // productionDDL is the authoritative table DDL for the production harness.
@@ -81,6 +83,17 @@ func applyProductionDDL(ctx context.Context, pool *pgxpool.Pool) error {
 		if _, err := pool.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("apply ddl %q: %w", stmt[:40], err)
 		}
+	}
+	return nil
+}
+
+// applyDeclaredIndexes builds the x-forma-indexes indexes the registry's
+// schemas declare on entity_main through the function init-db calls (#647), so
+// a harness database carries the same declared indexes an init-db database
+// does and an index-dependent assertion can run here.
+func applyDeclaredIndexes(ctx context.Context, pool *pgxpool.Pool, entityMain string, registry forma.SchemaRegistry) error {
+	if _, err := declaredindex.EnsureFromRegistry(ctx, pool, entityMain, registry); err != nil {
+		return fmt.Errorf("apply declared indexes on %s: %w", entityMain, err)
 	}
 	return nil
 }

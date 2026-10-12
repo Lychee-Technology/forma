@@ -9,6 +9,11 @@ type JSONSchema struct {
 	Properties map[string]*PropertySchema `json:"properties"`
 	Required   []string                   `json:"required"`
 	CreatedAt  int64                      `json:"created_at"`
+	// Indexes are the composite access paths the schema file declares under
+	// the top-level "x-forma-indexes" extension (#647), in file order. A
+	// loaded schema's declarations have been validated against its
+	// attributes file: every attribute is column-bound.
+	Indexes []IndexDeclaration `json:"indexes,omitempty"`
 }
 
 // PropertySchema defines the schema for a single property.

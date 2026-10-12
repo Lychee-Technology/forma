@@ -63,8 +63,9 @@ is unavailable). Each `NewEnv`:
   natural isolation and free multi-schema support (#186);
 - gets its own S3 prefix `e2e/<runID>/env<N>` and in-memory DuckDB client
   (1 GB default memory limit, `WithDuckMemoryMB` to override);
-- registers the fixture schemas (IDs 20-22; registration rejects the
-  sqlgen benchmark-reserved range 100-102);
+- registers the fixture schemas (IDs 20-24; registration rejects the
+  sqlgen benchmark-reserved range 100-102) and builds the `x-forma-indexes`
+  indexes they declare through the function `init-db` calls (#647);
 - registers cleanup: close DuckDB/pool, `DROP DATABASE ... WITH (FORCE)`,
   delete the S3 prefix. Tests may use `t.Parallel()`.
 
@@ -72,7 +73,7 @@ is unavailable). Each `NewEnv`:
 constraint:** forma's storage and query model has no first-class tenant —
 the DDL carries no tenant column and no API takes a tenant key; deploy-level
 tenancy is a database + S3 prefix pair. The per-test database therefore *is*
-the tenant boundary, and the fixture schema IDs (20-22), while numerically
+the tenant boundary, and the fixture schema IDs (20-24), while numerically
 identical across tests, live in private databases and private S3 prefixes —
 no state, lock, or parquet file is reachable from another test. A test that
 needs schema IDs beyond the fixtures can register its own via
@@ -89,6 +90,8 @@ Options: `WithSeed`, `WithSchemaDir`, `WithFlushThresholds` (#179),
 | `e2e_simple` | 20 | minimal: bound text + EAV numeric |
 | `e2e_wide` | 21 | one attribute per scalar `forma.ValueType`, mixed main-column/EAV storage (#174) |
 | `e2e_second` | 22 | second schema for multi-schema isolation (#186) |
+| `e2e_nested` | 23 | dotted (nested-object) attribute names, one column-bound and one EAV-only (#260) |
+| `e2e_outbox` | 24 | LTFlow-shaped outbox whose status and time attributes sit behind `x-forma-indexes` declarations (#647) |
 
 Fixtures define only the attributes their tests use: the synthetic
 `name`/`version` injection in `sqlgen.BuildSchemaProjection` was removed in
@@ -234,3 +237,4 @@ On failure (or `KEEP_E2E_ENV=1`) the Env writes
 | #185 degraded mode & circuit breaker | `WithBreaker`, `Query.AllowPartialDegradedMode`, `Cluster.HaltS3`, `Env.ReopenDuckDB` |
 | #186 multi-schema isolation | `e2e_simple`/`e2e_second` + `FaultInjectingS3`/`PausingS3` (`multi_schema_isolation_e2e_test.go`, `concurrent_flush_multi_schema_e2e_test.go`) |
 | #250 factory/server manifest wiring | `forma.DefaultConfig` + `factory.NewEntityManagerWithConfigContext` over `Env.Pool`/`Tables`/`Registry`/`DuckCfg`/`CDC` + `RegisterParquetInManifest` (`factory_manifest_e2e_test.go`) |
+| #647 declared indexes | `e2e_outbox` + `declaredindex` (`declared_index_explain_e2e_test.go`, `declared_index_build_e2e_test.go`) |

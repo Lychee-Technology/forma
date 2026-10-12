@@ -13,11 +13,13 @@ import (
 // column shapes derive from it at export time) and the metadata cache (the
 // read/oracle path) from newSchemaDir, then drops the memoized engine and
 // EntityManager so their next use re-binds the new caches; the plan cache is
-// discarded with the engine, matching a cold restart. The circuit breaker is
-// deliberately kept (mirroring Engine's ReopenDuckDB contract). Already
-// written parquet and manifest state is untouched — a later flush under the
-// new schema therefore produces a differently-shaped parquet generation,
-// which is exactly the cross-generation state schema-evolution tests need.
+// discarded with the engine, matching a cold restart. The indexes the new
+// generation declares are built first, as init-db would before that restart
+// (#647). The circuit breaker is deliberately kept (mirroring Engine's
+// ReopenDuckDB contract). Already written parquet and manifest state is
+// untouched — a later flush under the new schema therefore produces a
+// differently-shaped parquet generation, which is exactly the
+// cross-generation state schema-evolution tests need.
 func (e *Env) EvolveSchema(ctx context.Context, newSchemaDir string) error {
 	registry, err := schemameta.NewFileSchemaRegistryContext(ctx, e.Pool, e.Tables.SchemaRegistry, newSchemaDir)
 	if err != nil {
@@ -26,6 +28,11 @@ func (e *Env) EvolveSchema(ctx context.Context, newSchemaDir string) error {
 	metadata, err := schemameta.NewMetadataLoader(e.Pool, e.Tables.SchemaRegistry, newSchemaDir).LoadMetadata(ctx)
 	if err != nil {
 		return fmt.Errorf("evolve schema metadata from %s: %w", newSchemaDir, err)
+	}
+	// A restart under new metadata follows an init-db run over the new
+	// directory, which builds whatever indexes the new generation declares.
+	if err := applyDeclaredIndexes(ctx, e.Pool, e.Tables.EntityMain, registry); err != nil {
+		return fmt.Errorf("evolve schema from %s: %w", newSchemaDir, err)
 	}
 
 	e.Registry = registry

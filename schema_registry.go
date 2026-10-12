@@ -214,6 +214,20 @@ func (m AttributeMetadata) Location() AttributeStorageLocation {
 	return AttributeStorageLocationMain
 }
 
+// IndexDeclaration is one composite index a schema declares under
+// "x-forma-indexes" (#647). init-db builds it on entity_main as
+// (ltbase_schema_id, <bound column of each attribute in order>, ltbase_row_id);
+// declarations from any schemas that bind to the same column tuple share one
+// physical index. A declaration changes access paths only, never query results.
+type IndexDeclaration struct {
+	// Name matches ^[a-z][a-z0-9_]{0,30}$ and is unique within the schema. It
+	// names the declaration in errors and init-db output; the physical index
+	// name is derived from the column tuple instead.
+	Name string `json:"name"`
+	// Attributes is the ordered key: 1 to 4 distinct column-bound attributes.
+	Attributes []string `json:"attributes"`
+}
+
 // SchemaAttributeCache is a mapping of attr_name -> metadata.
 // Strongly recommended to populate per schema_id at application startup.
 type SchemaAttributeCache map[string]AttributeMetadata

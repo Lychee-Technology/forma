@@ -1,0 +1,41 @@
+{
+  "status": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "partition_key": {
+    "attributeID": 2,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_02"
+    }
+  },
+  "next_attempt_at": {
+    "attributeID": 3,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_01"
+    }
+  },
+  "locked_until": {
+    "attributeID": 4,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_02"
+    }
+  },
+  "enqueued_at": {
+    "attributeID": 5,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_03"
+    }
+  },
+  "payload": {
+    "attributeID": 6,
+    "valueType": "text"
+  }
+}
