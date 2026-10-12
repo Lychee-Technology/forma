@@ -226,6 +226,9 @@ func (e *Env) provision(ctx context.Context) error {
 		return fmt.Errorf("build schema registry: %w", err)
 	}
 	e.Registry = registry
+	if err := applyDeclaredIndexes(ctx, pool, e.Tables.EntityMain, registry); err != nil {
+		return fmt.Errorf("provision database %s: %w", e.DBName, err)
+	}
 
 	metadata, err := schemameta.NewMetadataLoader(pool, e.Tables.SchemaRegistry, schemaDir).LoadMetadata(ctx)
 	if err != nil {

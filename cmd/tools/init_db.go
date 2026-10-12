@@ -29,6 +29,9 @@ type initDBOptions struct {
 	entityMain  string
 	changeLog   string
 	schemaDir   string
+	// skipDeclaredIndexes leaves the x-forma-indexes step out, for operators
+	// who build indexes out of band (#647).
+	skipDeclaredIndexes bool
 }
 
 func runInitDB(ctx context.Context, args []string) error {
@@ -74,6 +77,7 @@ func runInitDB(ctx context.Context, args []string) error {
 	flags.StringVar(&opts.entityMain, "entity-main-table", bootstrap.Env("ENTITY_MAIN_TABLE", "entity_main_dev"), "Entity main table name")
 	flags.StringVar(&opts.changeLog, "change-log-table", bootstrap.Env("CHANGE_LOG_TABLE", "change_log_dev"), "Change log table name")
 	flags.StringVar(&opts.schemaDir, "schema-dir", bootstrap.Env("SCHEMA_DIR", ""), "Directory containing JSON schema files to register (optional)")
+	flags.BoolVar(&opts.skipDeclaredIndexes, "skip-declared-indexes", false, "Do not build the x-forma-indexes indexes the schemas declare (for operators who build them out of band)")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -114,6 +118,9 @@ func initDatabase(ctx context.Context, opts initDBOptions, dbConfig forma.Databa
 	if err := withTx(ctx, conn, func(tx pgx.Tx) error {
 		return ensureTables(ctx, tx, opts)
 	}); err != nil {
+		return err
+	}
+	if err := ensureDeclaredIndexes(ctx, pool, conn, opts, os.Stdout); err != nil {
 		return err
 	}
 

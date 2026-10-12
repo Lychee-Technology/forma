@@ -10,11 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/declaredindex"
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/e2e_harness"
@@ -391,6 +393,23 @@ func (h *FederatedTestHarness) CleanupOrLog(ctx context.Context, tb testing.TB) 
 	if err := h.Cleanup(ctx); err != nil {
 		tb.Logf("harness cleanup failed: %v", err)
 	}
+}
+
+// UseRegistry attaches the schema registry the harness seeds and queries
+// through, after building the x-forma-indexes indexes its schemas declare on
+// entity_main with the function init-db calls (#647). A harness database thus
+// carries the same declared indexes an init-db database does.
+func (h *FederatedTestHarness) UseRegistry(ctx context.Context, registry forma.SchemaRegistry) error {
+	conn, err := pgx.Connect(ctx, h.PGDSN)
+	if err != nil {
+		return fmt.Errorf("connect to build declared indexes: %w", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	if _, err := declaredindex.EnsureFromRegistry(ctx, conn, h.tables.EntityMain, registry); err != nil {
+		return fmt.Errorf("apply declared indexes on %s: %w", h.tables.EntityMain, err)
+	}
+	h.Registry = registry
+	return nil
 }
 
 // SetupSchema configures the schema for testing.

@@ -18,6 +18,7 @@ const (
 	SchemaIDWide   int16 = 21
 	SchemaIDSecond int16 = 22
 	SchemaIDNested int16 = 23
+	SchemaIDOutbox int16 = 24
 )
 
 // SchemaRef names a fixture schema and its fixed ID.
@@ -34,12 +35,16 @@ type SchemaRef struct {
 //   - e2e_second: a second schema for multi-schema isolation (for #186)
 //   - e2e_nested: dotted (nested-object) attribute names, mixing a
 //     column-bound and an EAV-only dotted attribute (for #260)
+//   - e2e_outbox: an LTFlow-shaped outbox whose status and time attributes
+//     sit behind x-forma-indexes declarations, so every Env carries declared
+//     indexes (for #647)
 func DefaultSchemaFixtures() []SchemaRef {
 	return []SchemaRef{
 		{ID: SchemaIDSimple, Name: "e2e_simple"},
 		{ID: SchemaIDWide, Name: "e2e_wide"},
 		{ID: SchemaIDSecond, Name: "e2e_second"},
 		{ID: SchemaIDNested, Name: "e2e_nested"},
+		{ID: SchemaIDOutbox, Name: "e2e_outbox"},
 	}
 }
 

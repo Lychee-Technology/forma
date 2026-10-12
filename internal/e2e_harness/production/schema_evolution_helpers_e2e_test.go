@@ -26,6 +26,29 @@ import (
 // byte-identical (pattern from writeListSchemaDir).
 func writeSimpleSchemaDir(t *testing.T, propsJSON, attrsJSON string) string {
 	t.Helper()
+	dst := copyFixtureSchemaDir(t)
+
+	schemaDoc := fmt.Sprintf(`{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "E2E Simple",
+  "description": "Schema-evolution generation of the e2e_simple fixture (#189)",
+  "type": "object",
+  "properties": %s
+}
+`, propsJSON)
+	if err := os.WriteFile(filepath.Join(dst, "e2e_simple.json"), []byte(schemaDoc), 0o600); err != nil {
+		t.Fatalf("write evolved e2e_simple.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "e2e_simple_attributes.json"), []byte(attrsJSON), 0o600); err != nil {
+		t.Fatalf("write evolved e2e_simple_attributes.json: %v", err)
+	}
+	return dst
+}
+
+// copyFixtureSchemaDir copies the bundled fixture schemas verbatim into a
+// throwaway directory for a test to mutate.
+func copyFixtureSchemaDir(t *testing.T) string {
+	t.Helper()
 	src := FixtureSchemasDir()
 	dst := t.TempDir()
 
@@ -44,21 +67,6 @@ func writeSimpleSchemaDir(t *testing.T, propsJSON, attrsJSON string) string {
 		if err := os.WriteFile(filepath.Join(dst, e.Name()), data, 0o600); err != nil {
 			t.Fatalf("write %s: %v", e.Name(), err)
 		}
-	}
-
-	schemaDoc := fmt.Sprintf(`{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "E2E Simple",
-  "description": "Schema-evolution generation of the e2e_simple fixture (#189)",
-  "type": "object",
-  "properties": %s
-}
-`, propsJSON)
-	if err := os.WriteFile(filepath.Join(dst, "e2e_simple.json"), []byte(schemaDoc), 0o600); err != nil {
-		t.Fatalf("write evolved e2e_simple.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dst, "e2e_simple_attributes.json"), []byte(attrsJSON), 0o600); err != nil {
-		t.Fatalf("write evolved e2e_simple_attributes.json: %v", err)
 	}
 	return dst
 }

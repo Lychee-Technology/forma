@@ -67,9 +67,16 @@ init-db
   注册到 `-schema-table`。已注册的 schema 保留原 `schema_id`。新 schema 按文件名排序，
   从现有最大 `schema_id` + 1 开始分配（空表从 100 开始），不回填空缺，因为空缺的 id
   可能仍是已删除注册的实体行或 parquet 文件的键。
+- `-skip-declared-indexes`（默认 `false`）：跳过 `x-forma-indexes` 声明索引的创建，供在带外自行建索引的运维使用。
 
 建表与建索引均为 `IF NOT EXISTS`，所以 `init-db` 可以对已初始化的数据库重复运行，
 新增 schema 文件之后也可以（#643）。
+
+指定 `-schema-dir` 时，`init-db` 在建表事务提交之后，为 schema 通过 `x-forma-indexes` 声明的组合索引
+逐个执行 `CREATE INDEX CONCURRENTLY IF NOT EXISTS`（#647），不阻塞并发写入；索引已全部存在时不再发出任何索引 DDL。
+声明索引无效（`indisvalid = false`，通常是被中断的并发建索引留下的）、键不匹配或名字被占用时，
+`init-db` 以非零退出并给出索引名与处理方法。`init-db` 从不删除索引：声明被移除后，对应索引被报告为
+unreferenced，由运维自行删除。详见 `docs/schema-indexes.md`。
 
 示例：
 - `go run ./cmd/tools init-db`

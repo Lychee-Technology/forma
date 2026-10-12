@@ -91,7 +91,7 @@ func loadHarnessDataset(ctx context.Context, t *testing.T, h *federated.Federate
 	require.NoError(t, err)
 	tiered, err := SplitIntoTiers(dataset, TierMixBalanced)
 	require.NoError(t, err)
-	h.Registry = runner.registry
+	require.NoError(t, h.UseRegistry(ctx, runner.registry))
 	require.NoError(t, LoadTieredDataset(ctx, h, tiered))
 	loadedRecords, _, err := buildLoadedStateSnapshot(ctx, h, tiered)
 	require.NoError(t, err)

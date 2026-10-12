@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "E2E Outbox",
+  "description": "LTFlow-shaped outbox fixture: status and time columns behind schema-declared composite indexes (#647)",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "partition_key": {
+      "type": "string"
+    },
+    "next_attempt_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "locked_until": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "enqueued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "string"
+    }
+  },
+  "x-forma-indexes": [
+    { "name": "due", "attributes": ["status", "next_attempt_at"] },
+    { "name": "lease", "attributes": ["status", "locked_until"] },
+    { "name": "fifo", "attributes": ["partition_key", "enqueued_at"] }
+  ]
+}
