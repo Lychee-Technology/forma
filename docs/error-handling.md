@@ -985,6 +985,10 @@ Forma never retries on the caller's behalf. Retrying is the caller's decision
 - Over HTTP the same rule reads: retry a `503` with `error_class:
   retryable_conflict`, and never retry a `500` with `error_class:
   commit_outcome_unknown` without first checking the stored state.
+- For `Transactor.InTx`, the whole transaction is `fn`: re-run all of it.
+  `InTx` keeps a retryable poisoning cause in its error even when `fn`
+  returns a different error or nil, so `IsRetryable` still answers true (see
+  [Transactions](transactions.md#retrying)).
 
 ### Classification
 
