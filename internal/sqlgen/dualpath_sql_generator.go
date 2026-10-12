@@ -98,6 +98,9 @@ func (e *pgMainTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, 
 	if p.Skip {
 		return "", nil, nil
 	}
+	if p.NullTest != "" {
+		return p.Column + " " + p.NullTest, nil, nil
+	}
 
 	// PgMainClause is only ever embedded in the DuckDB federated query template
 	// (as PG_WHERE_CLAUSE for the pg_source CTE) — it is never sent to Postgres.
@@ -153,6 +156,13 @@ func (duckTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, error
 	p := leaf.Duck
 	if p.Err != nil {
 		return "", nil, p.Err
+	}
+
+	if p.NullTest != "" {
+		return p.Column + " " + p.NullTest, nil, nil
+	}
+	if p.Set != nil {
+		return p.Set.Render(), []any{p.Param}, nil
 	}
 
 	if p.TextLike {

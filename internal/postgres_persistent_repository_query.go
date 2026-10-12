@@ -321,16 +321,12 @@ func (b *hybridConditionBuilder) emitMainLeaf(p sqlgen.HybridLeafPayload) (strin
 		sanitizeIdentifier(b.mainTable), predicate), args, nil
 }
 
-// mainPredicate renders the m-qualified main-table comparison and its binds.
-// A bool-encoded equality leaf is the #565 truthiness predicate (same text
-// for every operand, one $n per bind); every other leaf is
-// `m.<col> <op> $n`.
+// mainPredicate renders the m-qualified main-table comparison and its binds
+// through the payload's one spelling (sqlgen.HybridLeafPayload.RenderMain):
+// the #565 bool truthiness predicate, a #646 null test, set or $now
+// comparison, or `m.<col> <op> $n`.
 func (b *hybridConditionBuilder) mainPredicate(p sqlgen.HybridLeafPayload) (string, []any) {
-	column := "m." + sanitizeIdentifier(p.MainColumn)
-	if p.MainBool != nil {
-		return p.MainBool.Render(column, b.nextPlaceholder), p.MainBool.Args()
-	}
-	return fmt.Sprintf("%s %s %s", column, p.MainSQLOp, b.nextPlaceholder()), []any{p.MainValue}
+	return p.RenderMain("m."+sanitizeIdentifier(p.MainColumn), b.nextPlaceholder)
 }
 
 // nextPlaceholder allocates the next $n placeholder.
@@ -339,10 +335,11 @@ func (b *hybridConditionBuilder) nextPlaceholder() string {
 	return fmt.Sprintf("$%d", b.argCounter)
 }
 
-// emitEAVLeaf formats the EAV EXISTS subquery directly against the anchor
-// alias (t.* or m.ltbase_*), replacing the retired e.*-then-string-replace
-// path. Placeholder numbering (attr_id then value) matches the pre-#154 EAV
-// emitter exactly.
+// emitEAVLeaf formats the EAV subquery directly against the anchor alias
+// (t.* or m.ltbase_*), replacing the retired e.*-then-string-replace path,
+// through the spelling the pg-eav emitter shares
+// (sqlgen.PgEavLeafPayload.Render). Placeholder numbering (attr_id, then any
+// value) matches the pre-#154 EAV emitter exactly.
 func (b *hybridConditionBuilder) emitEAVLeaf(p sqlgen.HybridLeafPayload) (string, []any, error) {
 	if b.cache == nil {
 		return "", nil, fmt.Errorf("schema metadata cache not available for schema_id %d", b.schemaID)
@@ -357,12 +354,5 @@ func (b *hybridConditionBuilder) emitEAVLeaf(p sqlgen.HybridLeafPayload) (string
 		schemaAlias, rowAlias = "m.ltbase_schema_id", "m.ltbase_row_id"
 	}
 
-	attrPlaceholder := b.nextPlaceholder()
-	valuePlaceholder := b.nextPlaceholder()
-
-	clause := fmt.Sprintf(
-		"EXISTS (SELECT 1 FROM %s x WHERE x.schema_id = %s AND x.row_id = %s AND x.attr_id = %s AND %s %s %s)",
-		b.eavTable, schemaAlias, rowAlias, attrPlaceholder, eav.ComparisonLHS("x"), eav.SQLOp, valuePlaceholder,
-	)
-	return clause, []any{eav.AttrID, eav.Value}, nil
+	return eav.Render(b.eavTable, schemaAlias, rowAlias, b.nextPlaceholder), eav.Args(), nil
 }
