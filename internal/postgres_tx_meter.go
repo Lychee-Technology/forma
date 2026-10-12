@@ -18,10 +18,16 @@ import (
 //     or the connection is gone, so nothing after it can commit.
 //   - The physical-row limit: every statement's command tag reports the rows
 //     it modified, and the statement that takes the count past maxRows fails.
-//     The count is taken after the statement because, for an update's or a
-//     delete's EAV rows (and for #652's predicate mutations), nothing knows it
-//     sooner. The failure poisons the Tx, so the crossing statement's effect
-//     is rolled back, never committed.
+//     The crossing statement has therefore run, but its failure poisons the
+//     Tx: no statement runs after it and nothing the Tx wrote commits (#648
+//     rule 19, as amended in #673's review). Counting here, where every
+//     statement passes, covers every write path, a later one included,
+//     without any of them predicting its rows; a pre-check would need each
+//     path to declare every statement's rows, and a delete an extra count of
+//     its EAV rows. What this cannot bound is the crossing statement itself,
+//     so a write path sends only statements bounded by one entity's rows, as
+//     Create, Update and Delete do: a set-based UPDATE or DELETE must cap its
+//     own rows before it is sent.
 //
 // It is only touched by the goroutine holding the session's busy lock.
 type txMeter struct {

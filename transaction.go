@@ -90,9 +90,13 @@ func WithTxMaxOperations(n int) TxOption {
 	return func(o *TxOptions) { o.MaxOperations = n }
 }
 
-// WithTxMaxPhysicalRows caps the rows one InTx modifies at n. The statement
-// that takes the count past n fails, its operation answers ErrInvalidInput and
-// the Tx is poisoned, so none of that operation's writes is ever committed.
+// WithTxMaxPhysicalRows caps the rows one InTx modifies at n, counted from
+// what PostgreSQL reports each statement modified. The count is checked after
+// each statement, so the statement that takes it past n has run: it fails,
+// its operation answers ErrInvalidInput, and the Tx is poisoned, so no later
+// statement runs and none of the Tx's writes is ever committed. The cap is
+// exact for what commits; the work a Tx does can pass it by that one
+// statement.
 func WithTxMaxPhysicalRows(n int) TxOption {
 	return func(o *TxOptions) { o.MaxPhysicalRows = n }
 }

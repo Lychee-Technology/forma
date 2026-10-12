@@ -275,6 +275,56 @@ func TestTxPoisonedByAStorageErrorNeverCommits(t *testing.T) {
 	}
 }
 
+// The row limit is checked after each statement (#648 rule 19 as amended in
+// #673's review): the statement that crosses it has run inside the
+// transaction, no statement runs after it, and nothing the Tx wrote commits,
+// the crossing statement's rows included.
+func TestTxRowLimitBreachStopsAtTheCrossingStatementAndCommitsNothing(t *testing.T) {
+	env := setupTxEnv(t)
+	withEAV := func() map[string]any {
+		data := txActivity("before")
+		data["leadId"], data["nextFollowUpAt"] = "lead-eav", "2026-10-04T10:00:00Z"
+		return data
+	}
+	d, a := env.mustCreate(t, txSchemaA, withEAV()), env.mustCreate(t, txSchemaA, withEAV())
+	beforeD, beforeA := env.snapshot(t, txSchemaA, d), env.snapshot(t, txSchemaA, a)
+	eavD, eavA := jsonArrayLen(t, beforeD.eav), jsonArrayLen(t, beforeA.eav)
+	require.Positive(t, eavA)
+	// A Delete modifies its main row, its EAV rows and its change_log row.
+	// Deleting d fits; deleting a then fits its main row, and its EAV DELETE
+	// crosses the limit.
+	limit := (1 + eavD + 1) + eavA
+
+	var opErr error
+	err := env.inTx(func(ctx context.Context, tx forma.Tx) error {
+		require.NoError(t, tx.Delete(ctx, txDeleteOp(txSchemaA, d)))
+		opErr = tx.Delete(ctx, txDeleteOp(txSchemaA, a))
+		require.ErrorIs(t, opErr, forma.ErrInvalidInput)
+		session := tx.(*txSession)
+		assert.Equal(t, int64(limit+1), session.meter.rows, "the crossing statement's rows were counted")
+		inside := env.snapshotOn(t, session.tx.Tx, txSchemaA, a)
+		assert.Empty(t, inside.main, "the main-row DELETE before the crossing statement ran")
+		assert.Equal(t, "[]", inside.eav, "the crossing EAV DELETE ran")
+		assert.Equal(t, beforeA.changeLog, inside.changeLog, "the change_log upsert after it never did")
+
+		sent := session.meter.statements
+		require.ErrorIs(t, tx.Delete(ctx, txDeleteOp(txSchemaA, uuid.New())), forma.ErrTxAborted)
+		assert.Equal(t, sent, session.meter.statements, "nothing runs after the crossing statement")
+		return nil // fn ignores the breach
+	}, forma.WithTxMaxPhysicalRows(limit))
+	require.ErrorIs(t, err, forma.ErrTxAborted)
+	require.ErrorIs(t, err, opErr)
+	assert.Equal(t, beforeD, env.snapshot(t, txSchemaA, d), "the delete that fit did not commit")
+	assert.Equal(t, beforeA, env.snapshot(t, txSchemaA, a), "neither did the crossing statement")
+}
+
+func jsonArrayLen(t *testing.T, raw string) int {
+	t.Helper()
+	var items []json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(raw), &items))
+	return len(items)
+}
+
 func TestTxUpdateValidationFailureAfterTheReadPoisons(t *testing.T) {
 	env := setupTxEnv(t)
 	a := env.mustCreate(t, txSchemaA, txActivity("before"))

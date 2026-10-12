@@ -140,6 +140,13 @@ type rowSnapshot struct {
 
 func (e *txEnv) snapshot(t *testing.T, schema string, rowID uuid.UUID) rowSnapshot {
 	t.Helper()
+	return e.snapshotOn(t, e.postgresPool, schema, rowID)
+}
+
+// snapshotOn is snapshot read on q: the pool, or a session's own transaction
+// to see its uncommitted writes.
+func (e *txEnv) snapshotOn(t *testing.T, q singleRowQuerier, schema string, rowID uuid.UUID) rowSnapshot {
+	t.Helper()
 	schemaID := e.schemaID(t, schema)
 	var s rowSnapshot
 	queries := []struct {
@@ -152,7 +159,7 @@ func (e *txEnv) snapshot(t *testing.T, schema string, rowID uuid.UUID) rowSnapsh
 	}
 	for i, table := range []string{e.tables.EntityMain, e.tables.EAVData, e.tables.ChangeLog} {
 		sql := fmt.Sprintf(queries[i].sql, sanitizeIdentifier(table))
-		require.NoError(t, e.postgresPool.QueryRow(e.ctx, sql, schemaID, rowID).Scan(queries[i].dest))
+		require.NoError(t, q.QueryRow(e.ctx, sql, schemaID, rowID).Scan(queries[i].dest))
 	}
 	return s
 }

@@ -146,13 +146,29 @@ refused with `ErrInvalidInput` before `BEGIN`. A breach answers
 Tx.
 
 The operation limit is checked before the call runs, so operation 1,001 sends
-no SQL. The row limit counts what PostgreSQL reports each statement modified,
-so it can only be checked after the statement: the statement that crosses the
-limit has run, but the Tx is poisoned, and none of its rows is ever
-committed. An `Update` counts its main row, the row's old EAV rows (deleted)
-and new EAV rows (inserted), and its `change_log` row. The 3,000 default
-matches Aurora DSQL's documented per-transaction limit, so a Tx that fits on
-PostgreSQL also fits there.
+no SQL.
+
+The row limit counts what PostgreSQL reports each statement modified. An
+`Update` counts its main row, the row's old EAV rows (deleted) and new EAV rows
+(inserted), and its `change_log` row. The count is checked after each
+statement, so the limit is exact for what a Tx commits, not for what it does:
+
+- A Tx whose count stays at or under the limit can commit.
+- The statement that takes the count past the limit has run. It fails, its
+  operation returns `ErrInvalidInput`, and the Tx is poisoned: no statement
+  runs after it, and nothing the Tx wrote commits.
+- The work past the limit is that one statement. For `Create`, `Update` and
+  `Delete` it writes or deletes rows of one entity, and never more than the
+  same write does outside a Tx.
+
+A check before each statement would hold the work to the limit too, but only
+the write path knows a statement's rows in advance: every path would have to
+declare them, and a `Delete` would need an extra query to count its EAV rows.
+The check after the statement covers every statement a Tx sends without that,
+and gives the same rollback guarantee (decided in the review of #673).
+
+The 3,000 default matches Aurora DSQL's documented per-transaction limit, so a
+Tx that fits on PostgreSQL also fits there.
 
 The timeout is a context deadline over the whole call. When it passes, the
 running statement is cancelled and `InTx` rolls back with
