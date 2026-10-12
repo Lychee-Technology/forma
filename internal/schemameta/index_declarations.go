@@ -30,14 +30,18 @@ var indexNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,30}$`)
 // index enforces something it does not.
 var indexDeclarationKeys = []string{"attributes", "name"}
 
-// parseIndexDeclarations reads a schema document's x-forma-indexes value; nil
-// when the key is absent. It enforces every rule the document alone can
-// decide: the JSON shape, the name pattern and its uniqueness, 1 to
-// MaxIndexAttributes attributes, and no attribute twice. Whether each
-// attribute is column-bound needs the attributes file, so the registry checks
-// that with validateIndexDeclarations when it loads the schema.
-func parseIndexDeclarations(schemaName string, raw any) ([]forma.IndexDeclaration, error) {
-	if raw == nil {
+// parseIndexDeclarations reads the x-forma-indexes value of a schema
+// document; nil when the key is absent. A present key must hold an array: an
+// explicit null is refused like any other non-array, since loading it as "no
+// indexes" would leave the queries it was meant to serve scanning. It enforces
+// every rule the document alone can decide: the JSON shape, the name pattern
+// and its uniqueness, 1 to MaxIndexAttributes attributes, and no attribute
+// twice. Whether each attribute is column-bound needs the attributes file, so
+// the registry checks that with validateIndexDeclarations when it loads the
+// schema.
+func parseIndexDeclarations(schemaName string, doc map[string]any) ([]forma.IndexDeclaration, error) {
+	raw, present := doc[IndexDeclarationsKey]
+	if !present {
 		return nil, nil
 	}
 	entries, ok := raw.([]any)

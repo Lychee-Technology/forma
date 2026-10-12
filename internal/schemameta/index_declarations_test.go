@@ -1,6 +1,7 @@
 package schemameta
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -120,6 +121,10 @@ func TestIndexDeclarations_RefusedAtSchemaLoad(t *testing.T) {
 			[]string{"index due", "[status]", `unsupported key "unique"`}},
 		{"declarations not an array", map[string]any{"due": []any{"status"}},
 			[]string{"x-forma-indexes must be an array", "an object"}},
+		// An explicit null is not the absent key: loading it as "no indexes"
+		// would let init-db exit 0 without building what the author meant.
+		{"declarations null", json.RawMessage("null"),
+			[]string{"x-forma-indexes must be an array", "got null"}},
 		{"entry not an object", []any{"status"},
 			[]string{"x-forma-indexes entry 0", "must be an object", "a string"}},
 		{"unknown attribute", []any{index("due", "status", "nope")},

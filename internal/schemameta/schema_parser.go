@@ -22,7 +22,7 @@ func parseJSONSchemaFile(data []byte, schemaID int16, schemaName string) (forma.
 		Properties: make(map[string]*forma.PropertySchema),
 	}
 
-	indexes, err := parseIndexDeclarations(schemaName, rawSchema[IndexDeclarationsKey])
+	indexes, err := parseIndexDeclarations(schemaName, rawSchema)
 	if err != nil {
 		return forma.JSONSchema{}, fmt.Errorf("parse %s: %w", IndexDeclarationsKey, err)
 	}

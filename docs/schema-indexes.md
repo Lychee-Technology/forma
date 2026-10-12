@@ -30,6 +30,9 @@ Put `x-forma-indexes` at the top level of the schema file (`<schema>.json`):
 }
 ```
 
+The value must be an array. A schema that declares no indexes leaves the key
+out; `null`, like any other non-array value, fails the load.
+
 Each entry is an object with exactly two keys:
 
 - `name` must match `^[a-z][a-z0-9_]{0,30}$` and be unique within the schema.
