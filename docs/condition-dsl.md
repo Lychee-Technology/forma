@@ -63,9 +63,17 @@ The operand is a JSON array of **1 to 1,000** elements.
 - Duplicates are allowed and change nothing.
 - A `uuid` element is parsed and compared in canonical lowercase form, so
   upper- and lowercase spellings of one UUID match the same rows.
-- On an `integer`, `smallint` or `bigint` attribute a fractional element can
-  never equal a stored value and is dropped: `in:[18, 18.5]` matches what
-  `in:[18]` matches, and `not_in:[18.5]` matches every present value.
+- A numeric element is compared at the width the attribute's value is stored
+  at, the same as an `equals` operand. Whole-number storage cannot hold a
+  fractional element, so the element is dropped there: on a `bigint`
+  attribute, and on an `integer` or `smallint` attribute bound to an
+  `entity_main` column, `in:[18, 18.5]` matches what `in:[18]` matches, and
+  `not_in:[18.5]` matches every present value.
+- An `integer` or `smallint` attribute stored in `eav_data` is stored as
+  `DOUBLE` on every tier (#384), so a fractional element is kept. It matches
+  a fractional value written before the write path began refusing them, as
+  `equals:1.5` does: `in:[1.5]` matches such a value and `not_in:[1.5]`
+  excludes it.
 - `in` and `not_in` compare a scalar value. They are refused on a list
   (`array`) attribute; use `is_null` / `is_not_null` for list presence.
 - `$now` is not accepted inside a list.

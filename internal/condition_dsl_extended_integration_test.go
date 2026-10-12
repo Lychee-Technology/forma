@@ -47,6 +47,7 @@ func dslSchemaCache() forma.SchemaAttributeCache {
 		"other":     {AttributeID: 16, ValueType: forma.ValueTypeText},
 		"day_main":  {AttributeID: 17, ValueType: forma.ValueTypeDate, ColumnBinding: bind("bigint_02", forma.MainColumnEncodingUnixMs)},
 		"day_iso":   {AttributeID: 18, ValueType: forma.ValueTypeDate, ColumnBinding: bind("text_04", forma.MainColumnEncodingISO8601)},
+		"qty":       {AttributeID: 19, ValueType: forma.ValueTypeInteger},
 	}
 }
 
@@ -154,12 +155,15 @@ func runDSLTruthTable(t *testing.T, f *dslFixture) {
 		"bigint_01": int64(1704164645000), "text_03": "2024-01-02T03:04:05Z", "uuid_01": u1,
 	}, eavText("note", "x"), eavNum("weight", 1.5), eavInt("big", 9007199254740993), eavNum("soft", 1),
 		eavNum("seen", 1704164645000), eavNum("day", 1704153600000), eavText("ref", u1),
+		// qty 1.5 stands in for EAV integer history written before the write
+		// path refused fractions (#384); its storage width is DOUBLE.
+		eavNum("qty", 1.5),
 		dslEAVRow{attr: "labels", index: "0", text: "p"}, dslEAVRow{attr: "labels", index: "1", text: "q"})
 	r2 := f.seed(t, map[string]any{
 		"text_01": "b", "integer_01": 2, "smallint_01": 0, "text_02": "0",
 		"bigint_01": int64(1704164646000), "text_03": "2024-01-02T03:04:06Z", "uuid_01": u2,
 	}, eavText("note", "y"), eavNum("weight", 2.5), eavInt("big", 2), eavNum("soft", 0),
-		eavNum("seen", 1704164646000), eavNum("day", 1704240000000), eavText("ref", u2),
+		eavNum("seen", 1704164646000), eavNum("day", 1704240000000), eavText("ref", u2), eavNum("qty", 2),
 		dslEAVRow{attr: "labels", index: ""}) // the empty-list marker row
 	// r3 has no eav_data row at all: only the entity_main anchor visits it.
 	r3 := f.seed(t, map[string]any{})
@@ -182,6 +186,7 @@ func runDSLTruthTable(t *testing.T, f *dslFixture) {
 		{"day", `"2024-01-02T00:00:00Z"`, "1704240000000"},
 		{"ref", `"` + strings.ToUpper(u1) + `"`, `"` + u2 + `"`},
 		{"owner", `"` + strings.ToUpper(u1) + `"`, `"` + u2 + `"`},
+		{"qty", "1.5", "2"},
 	}
 	for _, a := range attrs {
 		t.Run(a.attr, func(t *testing.T) {
@@ -200,11 +205,17 @@ func runDSLTruthTable(t *testing.T, f *dslFixture) {
 		require.Equal(t, absent, f.match(t, kv("labels", "is_null:true")))
 		require.Equal(t, present, f.match(t, kv("labels", "is_not_null:true")))
 	})
-	t.Run("integer list drops fractional elements", func(t *testing.T) {
+	t.Run("whole-number storage drops fractional elements", func(t *testing.T) {
 		require.Equal(t, sortedIDs(r2), f.match(t, kv("rank", "in:[1.5, 2]")))
 		require.Equal(t, sortedIDs(r2), f.match(t, kv("big", "not_in:[9007199254740993, 2.5]")))
 		require.Empty(t, f.match(t, kv("rank", "in:[1.5]")))
 		require.Equal(t, present, f.match(t, kv("rank", "not_in:[1.5]")))
+	})
+	t.Run("EAV integer keeps fractional elements, as equals does", func(t *testing.T) {
+		require.Equal(t, sortedIDs(r1), f.match(t, kv("qty", "equals:1.5")))
+		require.Equal(t, sortedIDs(r1), f.match(t, kv("qty", "in:[1.5]")))
+		require.Equal(t, sortedIDs(r2), f.match(t, kv("qty", "not_in:[1.5]")))
+		require.Equal(t, sortedIDs(r2), f.match(t, kv("qty", "in:[2]")), "1.5 is not rounded to 2")
 	})
 	t.Run("composites mix the new operators with the old", func(t *testing.T) {
 		require.Equal(t, sortedIDs(r1, r3, r4), f.match(t, &forma.CompositeCondition{Logic: forma.LogicOr, Conditions: []forma.Condition{

@@ -157,7 +157,9 @@ func coerceDateListElement(attr string, meta forma.AttributeMetadata, literal st
 // pgEavSetValues builds the array bound against the eav_data value column.
 // bigint keeps exact int64 (its storage is BIGINT-backed on every tier);
 // the DOUBLE-width numeric classes take the float64 image their storage
-// holds (NarrowEAVNumericOperand).
+// holds (NarrowEAVNumericOperand). That includes EAV-only integer and
+// smallint (#384), so a fractional element is kept there and matches
+// fractional history exactly as an equals operand does.
 func pgEavSetValues(attr string, vt forma.ValueType, elems []any) (any, error) {
 	switch vt {
 	case forma.ValueTypeText, forma.ValueTypeUUID:
@@ -247,10 +249,11 @@ func exactElems[T any](attr string, elems []any) ([]T, error) {
 	return out, nil
 }
 
-// int64Elems builds an integer-typed array. A fractional element is dropped,
-// not refused: it is a valid literal under the equals rules, and it can
-// equal no value an integer-typed column holds, so dropping it changes
-// neither operator's answer (#646 D4).
+// int64Elems builds an integer-typed array, for whole-number storage only:
+// bigint, date and datetime values, and integer-family entity_main columns.
+// A fractional element is dropped, not refused: it is a valid literal under
+// the equals rules, and it can equal no value that storage holds, so
+// dropping it changes neither operator's answer (#646 D4).
 func int64Elems(attr string, elems []any) ([]int64, error) {
 	out := make([]int64, 0, len(elems))
 	for i, e := range elems {

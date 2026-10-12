@@ -49,7 +49,7 @@
 
 **注意**:
 - `starts_with` 和 `contains` 操作符仅适用于文本类型 (`text`) 属性。
-- 布尔类型属性仅支持 `equals` 和 `not_equals`，且值为 `1` (true) 或 `0` (false)。
+- 布尔类型属性支持 `equals`、`not_equals`、`in`、`not_in` 和空值测试，值为 `1`/`true` 或 `0`/`false`。
 - 日期类型支持 ISO 8601 格式或 Unix 毫秒时间戳。
 - `not_in` 永远不匹配无值的行；如需包含，请与 `is_null:true` 用 `or` 组合。
 - 日期 (`date`/`datetime`) 属性的比较操作符可使用 `$now` 操作数（数据库事务时间，可带有符号的 Go duration 偏移，如 `lte:$now-30s`）；联邦查询不支持 `$now`。

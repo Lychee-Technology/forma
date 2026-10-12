@@ -9,11 +9,13 @@ import (
 )
 
 // extendedCache extends the characterization cache with the value types the
-// #646 operators treat specially: a list attribute and an unbound date.
+// #646 operators treat specially: a list attribute, an unbound date and an
+// EAV-only integer (DOUBLE storage width, #384).
 func extendedCache() forma.SchemaAttributeCache {
 	cache := characterizationCache()
 	cache["labels"] = forma.AttributeMetadata{AttributeID: 20, ValueType: forma.ValueTypeList}
 	cache["due"] = forma.AttributeMetadata{AttributeID: 21, ValueType: forma.ValueTypeDate}
+	cache["qty"] = forma.AttributeMetadata{AttributeID: 22, ValueType: forma.ValueTypeInteger}
 	return cache
 }
 
@@ -51,6 +53,18 @@ func buildExtendedSetCases() []charCase {
 				PgClause:   "EXISTS (" + charEavHead("$1") + " AND x.value_numeric = ANY($2))",
 				PgArgs:     []any{int16(13), []int64{1, 9007199254740993}},
 				DuckClause: "total = ANY(CAST(? AS BIGINT[]))", DuckArgs: []any{[]int64{1, 9007199254740993}},
+			},
+			span: 2,
+		},
+		{
+			// The storage is DOUBLE, so 1.5 can match fractional history, as
+			// equals:1.5 does; only whole-number storage drops it.
+			name: "in EAV-only integer keeps fractions at DOUBLE storage width",
+			cond: charKv("qty", "in:[1.5, 2]"),
+			want: DualClauses{
+				PgClause:   "EXISTS (" + charEavHead("$1") + " AND x.value_numeric = ANY($2))",
+				PgArgs:     []any{int16(22), []float64{1.5, 2}},
+				DuckClause: "qty = ANY(CAST(? AS DOUBLE[]))", DuckArgs: []any{[]float64{1.5, 2}},
 			},
 			span: 2,
 		},
