@@ -25,12 +25,14 @@ import (
 // error built without a forma.PublicError carrier keeps its 4xx status but
 // takes the redacted branch — deny-by-default on the disclosure axis. Such a
 // body carries error_class "internal" plus an error_id, like any other
-// redacted response.
+// redacted response, except a conflict species (#645), which keeps its own
+// token: unique_conflict or precondition_failed.
 //
 // errorClassInternal deliberately absorbs ErrFederatedReadFailed,
-// ErrPostgresReadFailed, metadata drift, and transform failures. A client-facing
-// retryability taxonomy is a separate design; the redacted body is safe for all
-// of them.
+// ErrPostgresReadFailed, metadata drift, and transform failures. The only
+// retryability a client is told is the write path's retryable_conflict
+// (#645); a read-path retry taxonomy is a separate design, and the redacted
+// body is safe for all of them.
 const (
 	errorClassParquetSetInconsistent = "parquet_set_inconsistent"
 	errorClassNoParquetPaths         = "no_parquet_paths"
@@ -44,6 +46,16 @@ const (
 	// value is configuration, not caller feedback.
 	errorClassTimeout  = "timeout"
 	errorClassInternal = "internal"
+
+	// The #645 storage outcomes of a write. A retryable conflict (503) and an
+	// unknown commit (500) are always redacted: their only text is driver
+	// prose. The two conflict species normally publish their message on a
+	// 409/412, and carry their token only when that body is redacted, as for
+	// a bare sentinel wrap.
+	errorClassRetryableConflict    = "retryable_conflict"
+	errorClassCommitOutcomeUnknown = "commit_outcome_unknown"
+	errorClassUniqueConflict       = "unique_conflict"
+	errorClassPreconditionFailed   = "precondition_failed"
 )
 
 // errorClass maps an error to its public token using errors.Is, so wrapped
@@ -57,6 +69,16 @@ func errorClass(err error) string {
 		return errorClassNoParquetPaths
 	case errors.Is(err, forma.ErrManifestSchemaMismatch):
 		return errorClassManifestSchemaMismatch
+	// Same precedence as classifyManagerError: an unknown commit is never
+	// reported as anything else, and in particular never as a timeout.
+	case errors.Is(err, forma.ErrCommitOutcomeUnknown):
+		return errorClassCommitOutcomeUnknown
+	case errors.Is(err, forma.ErrRetryableConflict):
+		return errorClassRetryableConflict
+	case errors.Is(err, forma.ErrPreconditionFailed):
+		return errorClassPreconditionFailed
+	case errors.Is(err, forma.ErrUniqueConflict):
+		return errorClassUniqueConflict
 	case errors.Is(err, context.DeadlineExceeded), isBodyReadTimeout(err):
 		return errorClassTimeout
 	default:
@@ -138,6 +160,14 @@ func publicErrorMessage(class string) string {
 		return "internal error"
 	case errorClassTimeout:
 		return "request timed out"
+	case errorClassRetryableConflict:
+		return "the transaction was rolled back because of a concurrent conflict; it is safe to retry"
+	case errorClassCommitOutcomeUnknown:
+		return "the commit outcome is unknown; the write may or may not have been applied"
+	case errorClassUniqueConflict:
+		return "the write conflicts with an existing row"
+	case errorClassPreconditionFailed:
+		return "a precondition of the write did not hold"
 	default:
 		return "internal read error"
 	}
@@ -223,13 +253,28 @@ func writeError(w http.ResponseWriter, statusCode int, message string) error {
 // message-text fallback: an error with no sentinel is a 500 with an opaque
 // body, and a bare fmt.Errorf wrap of a sentinel is a 4xx with an opaque body
 // (#313) — either way the caller is told nothing about what they got wrong.
+//
+// The #645 storage outcomes come first, in this order. An unknown commit is
+// 500 and wins over everything, context.DeadlineExceeded included: 504 or
+// 503 would invite the blind retry that may apply the write twice. A
+// retryable conflict is 503, because the transaction is known to be rolled
+// back. Then the two conflict species, 412 and 409, precede the generic
+// ErrConflict they also satisfy.
 func classifyManagerError(err error) int {
 	switch {
 	case err == nil:
 		return http.StatusInternalServerError
+	case errors.Is(err, forma.ErrCommitOutcomeUnknown):
+		return http.StatusInternalServerError
+	case errors.Is(err, forma.ErrRetryableConflict):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, forma.ErrPreconditionFailed):
+		return http.StatusPreconditionFailed
 	case errors.Is(err, forma.ErrNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, forma.ErrConflict):
+		// ErrUniqueConflict lands here: it is a species of ErrConflict and
+		// shares its 409.
 		return http.StatusConflict
 	case errors.Is(err, forma.ErrInvalidInput):
 		return http.StatusBadRequest

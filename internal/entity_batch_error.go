@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"errors"
+
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/redact"
 )
@@ -23,10 +25,41 @@ import (
 //
 // The caller is not left with only this string: forma.OperationError.Code
 // carries the machine-readable classification of the failure alongside it
-// (CREATE_FAILED, UPDATE_FAILED, DELETE_FAILED), and the call site logs the
-// whole error under the entry's ErrorID (#398), so nothing an operator needs is
-// lost by publishing less and the caller has a handle to quote.
+// (batchErrorCode), and the call site logs the whole error under the entry's
+// ErrorID (#398), so nothing an operator needs is lost by publishing less and
+// the caller has a handle to quote. A retryable conflict or an unknown commit
+// (#645) answers this string too, since its only text is the driver's; its
+// Code is what tells the caller whether running the operation again is safe.
 const undisclosedBatchError = "internal error"
+
+// The OperationError.Code values a best-effort batch reports for the #645
+// storage outcomes. Any other failure keeps its per-operation code
+// (CREATE_FAILED, UPDATE_FAILED, DELETE_FAILED).
+const (
+	batchCodeUniqueConflict       = "UNIQUE_CONFLICT"
+	batchCodePreconditionFailed   = "PRECONDITION_FAILED"
+	batchCodeRetryableConflict    = "RETRYABLE_CONFLICT"
+	batchCodeCommitOutcomeUnknown = "COMMIT_OUTCOME_UNKNOWN"
+)
+
+// batchErrorCode classifies one failed operation for
+// forma.OperationError.Code. The precedence is internal/httpapi's
+// (classifyManagerError): an unknown commit wins over everything, because it
+// is the one outcome a caller must never retry blindly.
+func batchErrorCode(err error, operationCode string) string {
+	switch {
+	case errors.Is(err, forma.ErrCommitOutcomeUnknown):
+		return batchCodeCommitOutcomeUnknown
+	case errors.Is(err, forma.ErrRetryableConflict):
+		return batchCodeRetryableConflict
+	case errors.Is(err, forma.ErrPreconditionFailed):
+		return batchCodePreconditionFailed
+	case errors.Is(err, forma.ErrUniqueConflict):
+		return batchCodeUniqueConflict
+	default:
+		return operationCode
+	}
+}
 
 // resolveBatchErrorMessage renders one failed operation for
 // forma.OperationError.Error.

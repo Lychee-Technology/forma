@@ -62,7 +62,15 @@ type BatchResult struct {
 type OperationError struct {
 	Operation EntityOperation `json:"operation"`
 	Error     string          `json:"error"`
-	Code      string          `json:"code"`
+	// Code classifies the failure. A best-effort batch reports one of the
+	// four storage outcomes (#645) when the operation hit one:
+	// UNIQUE_CONFLICT (ErrUniqueConflict), PRECONDITION_FAILED
+	// (ErrPreconditionFailed), RETRYABLE_CONFLICT (ErrRetryableConflict:
+	// rolled back, safe to run again) or COMMIT_OUTCOME_UNKNOWN
+	// (ErrCommitOutcomeUnknown: may have committed, never retry blindly).
+	// Any other failure reports its operation's code: CREATE_FAILED,
+	// UPDATE_FAILED or DELETE_FAILED.
+	Code string `json:"code"`
 	// ErrorID correlates this failure with the server log line that records
 	// its full error: a UUID the caller can quote to an operator. It has the
 	// same name and shape as the HTTP error body's error_id (#398).
