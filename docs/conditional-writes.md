@@ -66,7 +66,11 @@ skips the operators; both behave exactly as before #649.
 - **Schema attributes only.** A leaf naming anything the schema does not
   define is refused, raw `entity_main` columns included. In particular the
   system stamp `ltbase_updated_at` is not a precondition: optimistic
-  concurrency uses an attribute the schema declares, such as `version`.
+  concurrency uses an attribute the schema declares, such as `version`. A
+  schema attribute whose name is itself an `entity_main` column (an
+  attribute called `text_02`, say) is refused too. The DSL reads such a name
+  as the column, whatever the schema stores under it, so the precondition
+  would test a different value. Registration still admits these names (#470).
 - **Matches `Query`.** A precondition holds exactly when a hot-tier `Query`
   with the same condition would return the row at the moment after the lock
   is granted. The check is rendered by the renderer `Query` uses

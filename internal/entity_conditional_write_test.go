@@ -61,7 +61,12 @@ type condFixture struct {
 
 func newCondFixture(t *testing.T) *condFixture {
 	t.Helper()
-	registry := &stubSchemaRegistry{schemaID: condSchemaID, schemaName: condSchemaName, cache: condSchemaCache()}
+	return newCondFixtureFor(t, condSchemaCache())
+}
+
+func newCondFixtureFor(t *testing.T, cache forma.SchemaAttributeCache) *condFixture {
+	t.Helper()
+	registry := &stubSchemaRegistry{schemaID: condSchemaID, schemaName: condSchemaName, cache: cache}
 	f := &condFixture{ctx: context.Background(), repo: newMockPersistentRecordRepository(), tr: transform.NewPersistentRecordTransformer(registry)}
 	f.repo.clock = func(context.Context) (int64, error) {
 		f.clockReads++
@@ -172,6 +177,43 @@ func TestConditionalFieldsAreRefusedAtIntake(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCondFixture(t)
+			requireRefusedBeforeRepository(t, f, tc.run(f), tc.want)
+		})
+	}
+}
+
+// TestPreconditionRefusesAttributesNamedLikeMainColumns pins the #674 review
+// finding: the renderer reads a raw entity_main column name before the
+// cache, so a precondition on an attribute named text_02 would test column
+// text_02, whatever the schema stores under that name. Registration admits
+// such names (#470), so intake refuses them.
+func TestPreconditionRefusesAttributesNamedLikeMainColumns(t *testing.T) {
+	cache := condSchemaCache()
+	cache["text_02"] = forma.AttributeMetadata{AttributeID: 16, ValueType: forma.ValueTypeText}
+	cache["integer_02"] = forma.AttributeMetadata{AttributeID: 17, ValueType: forma.ValueTypeInteger,
+		ColumnBinding: &forma.MainColumnBinding{ColumnName: "integer_03"}}
+	refusal := func(attr string) string {
+		return "precondition tests attribute '" + attr + "' of schema 'cond649', whose name is also an entity_main column"
+	}
+	cases := []struct {
+		name string
+		run  func(f *condFixture) error
+		want string
+	}{
+		{"EAV-backed attribute", conditional(&forma.KvCondition{Attr: "text_02", Value: "equals:a"}), refusal("text_02")},
+		{"attribute bound to another column, inside or", conditional(&forma.CompositeCondition{Logic: forma.LogicOr, Conditions: []forma.Condition{
+			&forma.KvCondition{Attr: "version", Value: "equals:7"},
+			&forma.KvCondition{Attr: "integer_02", Value: "equals:7"},
+		}}), refusal("integer_02")},
+		{"delete", func(f *condFixture) error {
+			op := condOp(uuid.New())
+			op.Preconditions = &forma.KvCondition{Attr: "text_02", Value: "is_null:true"}
+			return f.em.Delete(f.ctx, op)
+		}, refusal("text_02")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCondFixtureFor(t, cache)
 			requireRefusedBeforeRepository(t, f, tc.run(f), tc.want)
 		})
 	}

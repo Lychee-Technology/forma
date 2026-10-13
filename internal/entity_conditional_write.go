@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/model"
 )
 
 // Intake rules for EntityOperation.Preconditions and UpdateOps (#649). Every
@@ -58,9 +59,12 @@ func validateConditionalDelete(req *forma.EntityOperation, cache forma.SchemaAtt
 // and nor or (the renderer would join it with AND), and a leaf on anything
 // but a schema attribute. Query also accepts raw entity_main columns; a
 // precondition does not, so the system ltbase_updated_at stamp is no
-// precondition. Operators and operands are left to the renderer, which
-// refuses them before the write sends any statement. nil passes: no
-// precondition.
+// precondition. A schema attribute whose name is itself an entity_main
+// column is refused too: the renderer resolves a raw column name before the
+// cache, so the guard would test that column, not the attribute.
+// Registration still admits such names (#470). Operators and operands are
+// left to the renderer, which refuses them before the write sends any
+// statement. nil passes: no precondition.
 func validatePrecondition(cond forma.Condition, schemaName string, cache forma.SchemaAttributeCache) error {
 	if cond == nil {
 		return nil
@@ -72,6 +76,10 @@ func validatePrecondition(cond forma.Condition, schemaName string, cache forma.S
 		}
 		if _, ok := cache[c.Attr]; !ok {
 			return forma.InvalidInputf("precondition tests attribute '%s', which schema '%s' does not define; a precondition tests schema attributes only",
+				c.Attr, schemaName)
+		}
+		if model.IsMainTableColumn(c.Attr) {
+			return forma.InvalidInputf("precondition tests attribute '%s' of schema '%s', whose name is also an entity_main column: the condition DSL reads that name as the column, not the attribute, so a precondition cannot test it",
 				c.Attr, schemaName)
 		}
 		return nil
