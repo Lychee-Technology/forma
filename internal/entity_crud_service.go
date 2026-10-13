@@ -281,8 +281,9 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 // mergeUpdateRecord is Update's merge body, run by the repository inside the
 // locked write transaction with the row as it exists there. existing is nil
 // when the row is absent: the 404 is authored here because it names the
-// caller's schema and row, which storage does not know. The operators apply
-// to the merged document, so they read the locked row's values (#649).
+// caller's schema and row, which storage does not know. The operators read
+// the locked row and its transaction's clock (#649): server_time values are
+// assigned in the merge, increments applied to its result.
 func (s *entityCRUDService) mergeUpdateRecord(
 	ctx context.Context,
 	req *forma.EntityOperation,
@@ -295,12 +296,17 @@ func (s *entityCRUDService) mergeUpdateRecord(
 		return nil, forma.NotFoundf("entity not found: %s/%s", req.SchemaName, req.RowID)
 	}
 
-	mergedData, err := mergeUpdateDocument(ctx, s.transformer, s.relations, req.SchemaName, existing, req.Updates)
+	assigned, err := serverTimeAssignments(ctx, req.UpdateOps, schemaCache, clock)
+	if err != nil {
+		return nil, fmt.Errorf("failed to apply update operators: %w", err)
+	}
+
+	mergedData, err := mergeUpdateDocument(ctx, s.transformer, s.relations, req.SchemaName, existing, req.Updates, assigned)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transform existing record: %w", err)
 	}
 
-	if err := applyUpdateOps(ctx, mergedData, req.UpdateOps, schemaCache, clock); err != nil {
+	if err := applyIncrements(mergedData, req.UpdateOps, schemaCache); err != nil {
 		return nil, fmt.Errorf("failed to apply update operators: %w", err)
 	}
 

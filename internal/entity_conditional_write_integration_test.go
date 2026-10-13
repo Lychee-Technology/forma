@@ -181,23 +181,46 @@ func TestPreconditionHoldsExactlyWhenQueryReturnsTheRow(t *testing.T) {
 		{"and across kinds", and(kv("version", "equals:7"), kv("counter", "gt:5"))},
 		{"or across kinds", or(kv("version", "is_null:true"), kv("counter", "in:[3]"))},
 		{"nested", or(and(kv("version", "equals:7"), kv("name", "equals:alpha")), kv("rank", "lt:0"))},
+		{"and with an empty and", and(and(), kv("counter", "equals:10"))},
+		{"or with an empty or", or(or(), kv("counter", "equals:10"))},
+	}
+	// An empty and holds for every row. Alone or inside an or, it reaches
+	// the EAV-less row with no column-bound or is_null leaf to force Query's
+	// entity_main anchor.
+	everyRow := []struct {
+		name string
+		cond forma.Condition
+	}{
+		{"empty and", and()},
+		{"or with an empty and", or(and(), kv("counter", "equals:10"))},
+	}
+	requireGuardMatchesQuery := func(t *testing.T, i int, cond forma.Condition, want map[uuid.UUID]bool) {
+		t.Helper()
+		for _, rowID := range rows {
+			written := time.Unix(int64(1_700_000_000+i), 0).UTC()
+			_, err := e.em.Update(e.ctx, condUpdate(rowID, cond, map[string]any{"due_iso": written}))
+			if want[rowID] {
+				require.NoError(t, err, "Query returns row %s, so the precondition holds", rowID)
+				assert.Equal(t, written, e.get(t, rowID)["due_iso"])
+				continue
+			}
+			require.ErrorIs(t, err, forma.ErrPreconditionFailed, "Query does not return row %s", rowID)
+			assert.NotErrorIs(t, err, forma.ErrNotFound)
+		}
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			want := e.matching(t, tc.cond)
 			require.NotEmpty(t, want, "the case must match some row")
 			require.Less(t, len(want), len(rows), "the case must also miss some row")
-			for _, rowID := range rows {
-				written := time.Unix(int64(1_700_000_000+i), 0).UTC()
-				_, err := e.em.Update(e.ctx, condUpdate(rowID, tc.cond, map[string]any{"due_iso": written}))
-				if want[rowID] {
-					require.NoError(t, err, "Query returns row %s, so the precondition holds", rowID)
-					assert.Equal(t, written, e.get(t, rowID)["due_iso"])
-					continue
-				}
-				require.ErrorIs(t, err, forma.ErrPreconditionFailed, "Query does not return row %s", rowID)
-				assert.NotErrorIs(t, err, forma.ErrNotFound)
-			}
+			requireGuardMatchesQuery(t, i, tc.cond, want)
+		})
+	}
+	for i, tc := range everyRow {
+		t.Run(tc.name, func(t *testing.T) {
+			want := e.matching(t, tc.cond)
+			require.Len(t, want, len(rows), "the case must match every row")
+			requireGuardMatchesQuery(t, len(cases)+i, tc.cond, want)
 		})
 	}
 }

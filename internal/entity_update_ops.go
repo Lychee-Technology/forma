@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"strings"
 	"time"
@@ -11,32 +12,59 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-// applyUpdateOps applies an update's operators (#649) to doc, the document
-// the update writes: the locked row's decoded values with Updates merged in.
+// An update's operators (#649) apply in two places, by what they read.
 // Intake has checked every operator against the schema
 // (validateConditionalUpdate) and refused any attribute Updates also writes,
-// so each operator reads the locked row's own value. The clock is read once,
-// and only when a server_time operator needs it.
-func applyUpdateOps(ctx context.Context, doc map[string]any, ops []forma.UpdateOp, cache forma.SchemaAttributeCache, clock model.TxClock) error {
-	var now *int64
+// so each operator is the only writer of its attribute.
+//
+// server_time reads only the transaction clock and replaces its attribute
+// outright, so it is an attributeAssignment that the merge writes as it
+// writes Updates (mergeUpdateDocument). The stored value it replaces is then
+// discarded undecoded, as a literal replacement's is (#590), and a legacy
+// value the read refuses cannot block it.
+//
+// increment reads the locked row's value, so applyIncrements runs on the
+// merged document once the values it keeps are decoded.
+
+// attributeAssignment is a value an update writes at an attribute's dotted
+// path, over whatever the merged document holds there.
+type attributeAssignment struct {
+	attr  string
+	value any
+}
+
+// serverTimeAssignments answers the value of each server_time operator in
+// ops, in order. The clock is read once, and only when one needs it.
+func serverTimeAssignments(ctx context.Context, ops []forma.UpdateOp, cache forma.SchemaAttributeCache, clock model.TxClock) ([]attributeAssignment, error) {
+	var assigned []attributeAssignment
+	var now int64
 	for _, op := range ops {
-		meta := cache[op.Attribute]
+		if op.Kind != forma.UpdateOpServerTime {
+			continue
+		}
+		if len(assigned) == 0 {
+			ms, err := readTxClock(ctx, clock)
+			if err != nil {
+				return nil, fmt.Errorf("server_time on attribute '%s': %w", op.Attribute, err)
+			}
+			now = ms
+		}
+		assigned = append(assigned, attributeAssignment{attr: op.Attribute, value: serverTimeValue(now, op.Offset, cache[op.Attribute])})
+	}
+	return assigned, nil
+}
+
+// applyIncrements applies the increment operators in ops to doc, the merged
+// document with the locked row's kept values decoded.
+func applyIncrements(doc map[string]any, ops []forma.UpdateOp, cache forma.SchemaAttributeCache) error {
+	for _, op := range ops {
 		switch op.Kind {
 		case forma.UpdateOpIncrement:
-			if err := applyIncrement(doc, op, meta.ValueType); err != nil {
+			if err := applyIncrement(doc, op, cache[op.Attribute].ValueType); err != nil {
 				return fmt.Errorf("increment on attribute '%s': %w", op.Attribute, err)
 			}
 		case forma.UpdateOpServerTime:
-			if now == nil {
-				ms, err := readTxClock(ctx, clock)
-				if err != nil {
-					return fmt.Errorf("server_time on attribute '%s': %w", op.Attribute, err)
-				}
-				now = &ms
-			}
-			if err := setDocumentValue(doc, op.Attribute, serverTimeValue(*now, op.Offset, meta)); err != nil {
-				return fmt.Errorf("server_time on attribute '%s': %w", op.Attribute, err)
-			}
+			// assigned during the merge (serverTimeAssignments)
 		default:
 			return fmt.Errorf("update operator on attribute '%s' has unvalidated kind '%s'", op.Attribute, op.Kind)
 		}
@@ -174,15 +202,21 @@ func setDocumentValue(doc map[string]any, attr string, value any) error {
 }
 
 // documentParent walks to the object holding attr's last segment. A missing
-// object answers nil, or is created when create is set. A list on the way is
+// object answers nil, or is created when write is set. A list on the way is
 // refused: an operator writes one value, and an attribute inside an array has
 // one per element.
-func documentParent(doc map[string]any, attr string, segments []string, create bool) (map[string]any, error) {
+//
+// When write is set, every object on the way is replaced by a shallow copy
+// before the walk enters it. The merged document holds the caller's own
+// Updates maps where the row has no object to merge them into (mergeMaps),
+// and a write into one would change the caller's request: sent again, it
+// would then be refused for writing the operator's attribute in Updates.
+func documentParent(doc map[string]any, attr string, segments []string, write bool) (map[string]any, error) {
 	current := doc
 	for i, segment := range segments[:len(segments)-1] {
 		next, present := current[segment]
 		if !present || next == nil {
-			if !create {
+			if !write {
 				return nil, nil
 			}
 			child := map[string]any{}
@@ -192,6 +226,11 @@ func documentParent(doc map[string]any, attr string, segments []string, create b
 		}
 		switch child := next.(type) {
 		case map[string]any:
+			if write {
+				clone := make(map[string]any, len(child)+1)
+				maps.Copy(clone, child)
+				current[segment], child = clone, clone
+			}
 			current = child
 		case []any:
 			return nil, forma.InvalidInputf("attribute '%s' is inside the array '%s'; an update operator writes one value, not one per element",

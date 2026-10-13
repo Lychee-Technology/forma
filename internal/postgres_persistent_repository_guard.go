@@ -29,10 +29,9 @@ type renderedGuard struct {
 // means the guard requires nothing.
 //
 // The anchor does not change which rows match. Query anchors on eav_data
-// when no leaf reads entity_main, but every eav_data leaf is an EXISTS
-// correlated on the row, and the one leaf an entity without eav_data rows
-// can satisfy, is_null, already forces the entity_main anchor
-// (hasMainTableCondition).
+// only when hasMainTableCondition finds no node that can hold for an entity
+// without eav_data rows (a main-table leaf, is_null, an empty and), and
+// every other eav_data leaf is an EXISTS correlated on the row.
 func (r *DBPersistentRecordRepository) renderRowGuard(tables model.StorageTables, schemaID int16, guard model.RowGuard) (*renderedGuard, error) {
 	if guard.Precondition == nil {
 		return nil, nil

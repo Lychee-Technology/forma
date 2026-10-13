@@ -119,24 +119,81 @@ func TestUpdateAppliesOperatorsToTheLockedBase(t *testing.T) {
 	assert.Equal(t, 1, f.repo.mergeCalls)
 }
 
+// TestServerTimeCreatesTheObjectItNestsIn writes stats.seenAt into a row
+// with no stats object: first one the operator creates, then one only the
+// caller's Updates holds. The operator writes into a copy of the caller's
+// object, so the request is unchanged and can be sent again.
 func TestServerTimeCreatesTheObjectItNestsIn(t *testing.T) {
-	cache := forma.SchemaAttributeCache{"meta.seenAt": {AttributeID: 1, ValueType: forma.ValueTypeDateTime}}
-	doc := map[string]any{"name": "a"}
-	clock := func(context.Context) (int64, error) { return condClockMs, nil }
-	require.NoError(t, applyUpdateOps(context.Background(), doc, []forma.UpdateOp{forma.ServerTime("meta.seenAt", 0)}, cache, clock))
-	assert.Equal(t, map[string]any{"seenAt": time.UnixMilli(condClockMs).UTC()}, doc["meta"])
+	now := time.UnixMilli(condClockMs).UTC()
+	f := newCondFixture(t)
+	rowID := f.seed(t, map[string]any{"name": "a"})
+	op := condOp(rowID)
+	op.UpdateOps = []forma.UpdateOp{forma.ServerTime("stats.seenAt", 0)}
+	_, err := f.em.Update(f.ctx, op)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"seenAt": now}, f.stored(t, rowID)["stats"])
+
+	rowID = f.seed(t, map[string]any{"name": "a"})
+	op = condOp(rowID)
+	op.Updates = map[string]any{"stats": map[string]any{"note": "n"}}
+	op.UpdateOps = []forma.UpdateOp{forma.ServerTime("stats.seenAt", 0)}
+	for attempt := range 2 {
+		_, err := f.em.Update(f.ctx, op)
+		require.NoError(t, err, "attempt %d", attempt)
+		assert.Equal(t, map[string]any{"stats": map[string]any{"note": "n"}}, op.Updates, "the caller's Updates, after attempt %d", attempt)
+		assert.Equal(t, map[string]any{"note": "n", "seenAt": now}, f.stored(t, rowID)["stats"])
+	}
 }
 
 func TestServerTimeFailsWithoutAClock(t *testing.T) {
 	cache := forma.SchemaAttributeCache{"at": {AttributeID: 1, ValueType: forma.ValueTypeDateTime}}
-	err := applyUpdateOps(context.Background(), map[string]any{}, []forma.UpdateOp{forma.ServerTime("at", 0)}, cache, nil)
+	_, err := serverTimeAssignments(context.Background(), []forma.UpdateOp{forma.ServerTime("at", 0)}, cache, nil)
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, forma.ErrInvalidInput), "a missing clock is a wiring fault, not the caller's")
 
 	failing := func(context.Context) (int64, error) { return 0, errors.New("connection reset") }
-	err = applyUpdateOps(context.Background(), map[string]any{}, []forma.UpdateOp{forma.ServerTime("at", 0)}, cache, failing)
+	_, err = serverTimeAssignments(context.Background(), []forma.UpdateOp{forma.ServerTime("at", 0)}, cache, failing)
 	require.ErrorContains(t, err, "server_time on attribute 'at'")
 	require.ErrorContains(t, err, "connection reset")
+}
+
+// TestServerTimeRepairsALegacyDateImage pins that server_time, which
+// replaces its attribute outright, repairs a stored image the read refuses
+// as an update naming the attribute does (#590): the image is discarded
+// undecoded. The control runs the operator on the other attribute; the
+// image is then kept, and decoding it fails the update with the read's
+// consistency error, as any update that keeps it does.
+func TestServerTimeRepairsALegacyDateImage(t *testing.T) {
+	ctx := context.Background()
+	now := time.UnixMilli(condClockMs).UTC()
+	clock := func(context.Context) (int64, error) { return condClockMs, nil }
+	for attr, other := range map[string]string{"seenAt": "visit.endAt", "visit.endAt": "seenAt"} {
+		for _, legacy := range legacyDateImages {
+			t.Run(attr+"/"+legacy.name, func(t *testing.T) {
+				row := seedLegacyDateRow(t, forma.RequiredPolicyOptional, attr, legacy.image)
+				row.repo.clock = clock
+				before := row.repo.records[dateDestSchema][row.rowID]
+
+				op := dateDestUpdate(row.rowID, nil)
+				op.UpdateOps = []forma.UpdateOp{forma.ServerTime(other, 0)}
+				_, err := row.em.Update(ctx, op)
+				assertLegacyDateReadError(t, err, attr, legacy.rule, row.rowID)
+				require.Same(t, before, row.repo.records[dateDestSchema][row.rowID], "the refused update stores nothing")
+
+				op.UpdateOps = []forma.UpdateOp{forma.ServerTime(attr, 0)}
+				got, err := row.em.Update(ctx, op)
+				require.NoError(t, err)
+				stored, err := row.stored(t)
+				require.NoError(t, err, "the repaired row reads")
+				for name, attrs := range map[string]map[string]any{"answered": got.Attributes, "stored": stored} {
+					assert.Equal(t, now, valueAtPath(attrs, attr), name)
+					assert.Equal(t, keptInstant, valueAtPath(attrs, other), name)
+					assert.Equal(t, keptInstant, attrs["openedAt"], name)
+					assert.Equal(t, "kept", valueAtPath(attrs, "visit.note"), name)
+				}
+			})
+		}
+	}
 }
 
 // TestUpdateOperatorRefusesARelationAttribute pins that an operator cannot

@@ -46,6 +46,8 @@ func condSchemaCache() forma.SchemaAttributeCache {
 		"stats.attempts": {AttributeID: 11, ValueType: forma.ValueTypeInteger},
 		"stats.note":     {AttributeID: 12, ValueType: forma.ValueTypeText},
 		"items.qty":      {AttributeID: 13, ValueType: forma.ValueTypeInteger},
+		"stats.seenAt":   {AttributeID: 14, ValueType: forma.ValueTypeDateTime},
+		"items.seenAt":   {AttributeID: 15, ValueType: forma.ValueTypeDateTime},
 	}
 }
 
@@ -269,6 +271,8 @@ func TestUpdateRefusalNamesWhatTheLockedRowLacks(t *testing.T) {
 			"past the integer minimum -2147483648"},
 		{"inside an array", map[string]any{"items": []any{map[string]any{"qty": int64(1)}}}, forma.Increment("items.qty", 1),
 			"attribute 'items.qty' is inside the array 'items'"},
+		{"server_time inside an array", map[string]any{"items": []any{map[string]any{"qty": int64(1)}}}, forma.ServerTime("items.seenAt", 0),
+			"attribute 'items.seenAt' is inside the array 'items'"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -284,6 +288,34 @@ func TestUpdateRefusalNamesWhatTheLockedRowLacks(t *testing.T) {
 			require.True(t, published)
 			assert.Contains(t, message, tc.want)
 			assert.Equal(t, before, f.stored(t, rowID), "a refused operator stores nothing")
+		})
+	}
+}
+
+// TestOperatorsLeaveACyclicUpdateToTheDepthCap pins that the overlap check
+// walks no deeper into Updates than an operator's own path. A cyclic Go
+// value in Updates is then refused by the merge's depth cap (#406), as
+// ErrInvalidInput that stores nothing, as it is without operators, instead
+// of exhausting the stack. The operators cover an unrelated attribute, one
+// beside the cycle, and one assigned beside it during the merge.
+func TestOperatorsLeaveACyclicUpdateToTheDepthCap(t *testing.T) {
+	for _, op := range []forma.UpdateOp{forma.Increment("counter", 1), forma.Increment("stats.attempts", 1), forma.ServerTime("stats.seenAt", 0)} {
+		t.Run(op.Attribute, func(t *testing.T) {
+			f := newCondFixture(t)
+			rowID := f.seed(t, map[string]any{"counter": int64(1), "stats": map[string]any{"attempts": int64(1)}})
+			before := f.stored(t, rowID)
+			cycle := map[string]any{}
+			cycle["self"] = cycle
+
+			req := condOp(rowID)
+			req.Updates = map[string]any{"stats": map[string]any{"cycle": cycle}}
+			req.UpdateOps = []forma.UpdateOp{op}
+			_, err := f.em.Update(f.ctx, req)
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			message, published := forma.ResolvePublicMessage(err)
+			require.True(t, published, "the cap publishes: %v", err)
+			assert.Contains(t, message, `payload nesting exceeds 1000 levels beneath attribute "stats"`)
+			assert.Equal(t, before, f.stored(t, rowID))
 		})
 	}
 }

@@ -100,10 +100,6 @@ func validatePrecondition(cond forma.Condition, schemaName string, cache forma.S
 // the rest of the update: one operator per attribute, and none on an
 // attribute Updates also writes.
 func validateUpdateOps(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex) error {
-	if len(req.UpdateOps) == 0 {
-		return nil
-	}
-	written := updatePaths("", req.Updates, nil)
 	seen := make(map[string]struct{}, len(req.UpdateOps))
 	for i, op := range req.UpdateOps {
 		if err := validateUpdateOp(op, req.SchemaName, cache, relations); err != nil {
@@ -113,7 +109,7 @@ func validateUpdateOps(req *forma.EntityOperation, cache forma.SchemaAttributeCa
 			return forma.InvalidInputf("attribute '%s' has more than one update operator; send one", op.Attribute)
 		}
 		seen[op.Attribute] = struct{}{}
-		if path, ok := overlappingPath(written, op.Attribute); ok {
+		if path, ok := updatesWritingAttr("", req.Updates, op.Attribute); ok {
 			return forma.InvalidInputf("attribute '%s' appears in both updates (as '%s') and update operators; an attribute takes one or the other",
 				op.Attribute, path)
 		}
@@ -159,31 +155,36 @@ func validateUpdateOp(op forma.UpdateOp, schemaName string, cache forma.SchemaAt
 		op.Attribute, op.Kind, forma.UpdateOpIncrement, forma.UpdateOpServerTime)
 }
 
-// updatePaths appends the dotted path of every value updates writes, as the
-// deep merge applies them (mergeMaps): a nested map writes its own entries
-// beneath its path, anything else (a scalar, a list, nil) the whole path. A
-// literal dotted key and the nested spelling name the same path (#312).
-func updatePaths(prefix string, updates map[string]any, paths []string) []string {
+// updatesWritingAttr answers the dotted path of a value in updates, which
+// sits at prefix, that writes attr: attr itself, a path beneath it, or a
+// container holding it that is replaced rather than merged. It reads updates
+// as the deep merge applies them (mergeMaps): a nested map writes its own
+// entries beneath its path, anything else (a scalar, a list, nil) the whole
+// path. A literal dotted key and the nested spelling name the same path
+// (#312).
+//
+// It descends only into a map whose path is a proper prefix of attr, so it
+// goes no deeper than attr has segments, whatever updates holds. A cyclic
+// Go value is therefore left to the merge's own depth cap (#406), which
+// refuses it as ErrInvalidInput.
+func updatesWritingAttr(prefix string, updates map[string]any, attr string) (string, bool) {
 	for key, value := range updates {
 		path := key
 		if prefix != "" {
 			path = prefix + "." + key
 		}
-		if nested, ok := value.(map[string]any); ok {
-			paths = updatePaths(path, nested, paths)
+		if path == attr || strings.HasPrefix(path, attr+".") {
+			return path, true
+		}
+		if !strings.HasPrefix(attr, path+".") {
 			continue
 		}
-		paths = append(paths, path)
-	}
-	return paths
-}
-
-// overlappingPath answers a written path that writes attr: attr itself, a
-// container holding it, or a path beneath it.
-func overlappingPath(written []string, attr string) (string, bool) {
-	for _, path := range written {
-		if path == attr || strings.HasPrefix(attr, path+".") || strings.HasPrefix(path, attr+".") {
+		nested, merged := value.(map[string]any)
+		if !merged {
 			return path, true
+		}
+		if written, ok := updatesWritingAttr(path, nested, attr); ok {
+			return written, true
 		}
 	}
 	return "", false

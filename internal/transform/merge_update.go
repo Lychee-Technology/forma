@@ -21,7 +21,7 @@ import (
 func (t *persistentRecordTransformer) MergeUpdate(
 	ctx context.Context,
 	record *model.PersistentRecord,
-	merge func(base map[string]any) map[string]any,
+	merge func(base map[string]any) (map[string]any, error),
 ) (map[string]any, error) {
 	base, err := t.fromPersistentRecord(ctx, record, holdRecordValue)
 	if err != nil {
@@ -31,7 +31,11 @@ func (t *persistentRecordTransformer) MergeUpdate(
 	if err != nil {
 		return nil, fmt.Errorf("failed to load schema %d metadata for row %s: %w", record.SchemaID, record.RowID, err)
 	}
-	return resolveStoredValues(record.SchemaID, record.RowID, merge(base), cache)
+	merged, err := merge(base)
+	if err != nil {
+		return nil, fmt.Errorf("failed to merge the update into row %s: %w", record.RowID, err)
+	}
+	return resolveStoredValues(record.SchemaID, record.RowID, merged, cache)
 }
 
 // resolveStoredValues replaces every stored value the merged document holds

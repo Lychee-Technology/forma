@@ -76,16 +76,16 @@ func numericRecord(rowID uuid.UUID, attrID int16, indices string, image float64)
 	return model.EAVRecord{SchemaID: 501, RowID: rowID, AttrID: attrID, ArrayIndices: indices, ValueNumeric: &image}
 }
 
-func setting(values map[string]any) func(map[string]any) map[string]any {
-	return func(base map[string]any) map[string]any {
+func setting(values map[string]any) func(map[string]any) (map[string]any, error) {
+	return func(base map[string]any) (map[string]any, error) {
 		for key, value := range values {
 			base[key] = value
 		}
-		return base
+		return base, nil
 	}
 }
 
-func keepAll(base map[string]any) map[string]any { return base }
+func keepAll(base map[string]any) (map[string]any, error) { return base, nil }
 
 // The update that rewrites a stored image the read refuses must not be
 // blocked by decoding it (#590 review): a stored value the merge replaces is
@@ -218,11 +218,11 @@ func TestMergeUpdateRefusesCyclicMergeResult(t *testing.T) {
 	tr := NewPersistentRecordTransformer(newMergeUpdateRegistry())
 
 	_, err := tr.MergeUpdate(context.Background(), legacyBigintRecord(uuid.Must(uuid.NewV7())),
-		func(base map[string]any) map[string]any {
+		func(base map[string]any) (map[string]any, error) {
 			cycle := map[string]any{}
 			cycle["self"] = []any{cycle, cycle}
 			base["contact"] = cycle
-			return base
+			return base, nil
 		})
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 	require.ErrorContains(t, err, `payload nesting exceeds 1000 levels beneath attribute "contact"`)

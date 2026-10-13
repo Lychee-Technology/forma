@@ -18,8 +18,9 @@ type PersistentRecordTransformer interface {
 	// refuses blocks the updates that keep it and never the one that
 	// replaces it (#590). merge must return a document whose containers are
 	// the base's or fresh copies: resolution rewrites the ones that hold
-	// stored values in place.
-	MergeUpdate(ctx context.Context, record *PersistentRecord, merge func(base map[string]any) map[string]any) (map[string]any, error)
+	// stored values in place. An error from merge fails MergeUpdate before
+	// anything is decoded.
+	MergeUpdate(ctx context.Context, record *PersistentRecord, merge func(base map[string]any) (map[string]any, error)) (map[string]any, error)
 }
 
 type StorageTables struct {

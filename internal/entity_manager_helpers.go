@@ -93,10 +93,13 @@ func mergeMaps(existing map[string]any, updates any) map[string]any {
 }
 
 // mergeUpdateDocument builds the document an update writes: the stored row
-// merged with updates (mergeMaps), relation subtrees stripped (#318), holding
-// the stored values the write keeps and only those decoded
-// (PersistentRecordTransformer.MergeUpdate, #590). Update and BatchUpdate
-// both merge through it, so the two cannot drift.
+// merged with updates (mergeMaps), relation subtrees stripped (#318), and
+// each assigned value written at its attribute's path, holding the stored
+// values the write keeps and only those decoded
+// (PersistentRecordTransformer.MergeUpdate, #590). An assigned value is
+// written before that decoding, like updates, so the stored value it
+// replaces is never decoded. Update and BatchUpdate both merge through it,
+// so the two cannot drift.
 func mergeUpdateDocument(
 	ctx context.Context,
 	transformer model.PersistentRecordTransformer,
@@ -104,9 +107,16 @@ func mergeUpdateDocument(
 	schemaName string,
 	existing *model.PersistentRecord,
 	updates any,
+	assigned []attributeAssignment,
 ) (map[string]any, error) {
-	return transformer.MergeUpdate(ctx, existing, func(base map[string]any) map[string]any {
-		return relations.StripComputedFields(schemaName, mergeMaps(base, updates))
+	return transformer.MergeUpdate(ctx, existing, func(base map[string]any) (map[string]any, error) {
+		doc := relations.StripComputedFields(schemaName, mergeMaps(base, updates))
+		for _, a := range assigned {
+			if err := setDocumentValue(doc, a.attr, a.value); err != nil {
+				return nil, fmt.Errorf("assign attribute '%s': %w", a.attr, err)
+			}
+		}
+		return doc, nil
 	})
 }
 

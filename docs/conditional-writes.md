@@ -44,9 +44,16 @@ case errors.Is(err, forma.ErrNotFound): // the row is gone
    precondition on the row. No row is `ErrNotFound`. A row that does not
    satisfy it is `ErrPreconditionFailed`. Either way nothing is written: no
    `entity_main`, EAV or `change_log` change, and no version stamp.
-5. **Write.** An update reads the row, merges `Updates`, applies `UpdateOps`
-   to the result, validates, and writes through the ordinary merge path with
-   its version stamp and `change_log` entry. A delete deletes.
+5. **Write.** An update reads the row, merges `Updates` and the
+   `server_time` values onto it, applies `increment` to the result,
+   validates, and writes through the ordinary merge path with its version
+   stamp and `change_log` entry. A delete deletes.
+
+   A `server_time` replaces its attribute as a value in `Updates` does: the
+   stored value is never decoded, so the operator also rewrites a stored
+   value the read refuses (see
+   [Schema consistency migration](schema-consistency-migration.md)). An
+   `increment` decodes the value it adds to.
 
 An operation without `Preconditions` skips step 4, and one without `UpdateOps`
 skips the operators; both behave exactly as before #649.
@@ -65,9 +72,10 @@ skips the operators; both behave exactly as before #649.
   is granted. The check is rendered by the renderer `Query` uses
   (`buildHybridConditions`). It is anchored on the `entity_main` row, where
   `Query` may anchor on `eav_data`. The anchor does not change which rows
-  match: every EAV leaf is a correlated `EXISTS`, and `is_null`, the one
-  leaf an entity without EAV rows can satisfy, already forces the
-  `entity_main` anchor in `Query`.
+  match. `Query` anchors on `eav_data` only when no part of the condition
+  can hold for an entity without EAV rows, which that anchor never visits:
+  a column-bound leaf, an `is_null` leaf or an empty `and` group (which
+  matches every row) forces the `entity_main` anchor.
 - **Update and Delete only.** `Preconditions` on a `Create` is refused: there
   is no current row. Existence-conditional create is `Tx.Upsert` (#651).
 

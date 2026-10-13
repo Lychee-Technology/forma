@@ -126,6 +126,20 @@ func TestHasMainTableCondition_IsNullForcesMainAnchor(t *testing.T) {
 	require.False(t, hasMainTableCondition(&forma.KvCondition{Attr: "name", Value: `not_in:["x"]`}, cache))
 }
 
+// An empty and renders 1=1, so like is_null it holds for an entity with no
+// eav_data row and forces the entity_main anchor, alone or inside an or. An
+// empty or renders 1=0 and keeps the existing choice.
+func TestHasMainTableCondition_EmptyAndForcesMainAnchor(t *testing.T) {
+	cache := forma.SchemaAttributeCache{"name": {AttributeID: 7, ValueType: forma.ValueTypeText}}
+	eav := &forma.KvCondition{Attr: "name", Value: "equals:x"}
+	emptyAnd := &forma.CompositeCondition{Logic: forma.LogicAnd}
+	emptyOr := &forma.CompositeCondition{Logic: forma.LogicOr}
+	require.True(t, hasMainTableCondition(emptyAnd, cache))
+	require.True(t, hasMainTableCondition(&forma.CompositeCondition{Logic: forma.LogicOr, Conditions: []forma.Condition{emptyAnd, eav}}, cache))
+	require.False(t, hasMainTableCondition(emptyOr, cache))
+	require.False(t, hasMainTableCondition(&forma.CompositeCondition{Logic: forma.LogicOr, Conditions: []forma.Condition{emptyOr, eav}}, cache))
+}
+
 // The OLTP render cache keys on the clause text and the arg count, so a list
 // of any length and a $now of any offset must reuse one rendered statement.
 func TestOptimizedQueryShapeKey_IgnoresListLengthAndNowOffset(t *testing.T) {
