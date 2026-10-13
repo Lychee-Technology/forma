@@ -76,8 +76,8 @@ func TestMergePersistentRecordConcurrentDisjointUpdatesAllSurvive(t *testing.T) 
 			defer wg.Done()
 			attrID := int16(i + 1)
 			value := fmt.Sprintf("value-%02d", attrID)
-			_, err := repo.MergePersistentRecord(ctx, tables, 1, rowID,
-				func(_ context.Context, existing *model.PersistentRecord) (*model.PersistentRecord, error) {
+			_, err := repo.MergePersistentRecord(ctx, tables, 1, rowID, model.RowGuard{},
+				func(_ context.Context, existing *model.PersistentRecord, _ model.TxClock) (*model.PersistentRecord, error) {
 					if existing == nil {
 						return nil, fmt.Errorf("merge base missing for %s", rowID)
 					}
@@ -139,8 +139,8 @@ func TestGetPersistentRecordIsNeverTorn(t *testing.T) {
 	require.NoError(t, repo.InsertPersistentRecord(ctx, tables, &model.PersistentRecord{SchemaID: 1, RowID: rowID}))
 
 	write := func(state string) error {
-		_, err := repo.MergePersistentRecord(ctx, tables, 1, rowID,
-			func(_ context.Context, existing *model.PersistentRecord) (*model.PersistentRecord, error) {
+		_, err := repo.MergePersistentRecord(ctx, tables, 1, rowID, model.RowGuard{},
+			func(_ context.Context, existing *model.PersistentRecord, _ model.TxClock) (*model.PersistentRecord, error) {
 				v := state
 				return &model.PersistentRecord{
 					SchemaID:  1,

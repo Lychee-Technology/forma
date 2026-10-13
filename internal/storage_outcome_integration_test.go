@@ -175,8 +175,8 @@ func TestLockTimeoutIsRetryableConflict_PostgresOnly(t *testing.T) {
 	timed := openTunedPool(t, ctx, func(cfg *pgxpool.Config) {
 		cfg.ConnConfig.RuntimeParams["lock_timeout"] = "100ms"
 	})
-	_, err = NewDBPersistentRecordRepository(timed, cache).MergePersistentRecord(ctx, tables, 1, rowID,
-		func(context.Context, *model.PersistentRecord) (*model.PersistentRecord, error) {
+	_, err = NewDBPersistentRecordRepository(timed, cache).MergePersistentRecord(ctx, tables, 1, rowID, model.RowGuard{},
+		func(context.Context, *model.PersistentRecord, model.TxClock) (*model.PersistentRecord, error) {
 			t.Error("the merge ran without the row lock")
 			return nil, errors.New("unreachable")
 		})
@@ -217,7 +217,7 @@ func TestWriteSerializationFailureIsRetryable_PostgresOnly(t *testing.T) {
 		waitForAdvisoryWaiter(ctx, t, pool, key) // the victim holds its snapshot
 	}}, cache)
 	firstDone := make(chan error, 1)
-	go func() { firstDone <- first.DeletePersistentRecord(ctx, tables, 1, rowID) }()
+	go func() { firstDone <- first.DeletePersistentRecord(ctx, tables, 1, rowID, model.RowGuard{}) }()
 	select {
 	case <-atCommit:
 	case err := <-firstDone:
@@ -227,7 +227,7 @@ func TestWriteSerializationFailureIsRetryable_PostgresOnly(t *testing.T) {
 	repeatable := openTunedPool(t, ctx, func(cfg *pgxpool.Config) {
 		cfg.ConnConfig.RuntimeParams["default_transaction_isolation"] = "repeatable read"
 	})
-	err := NewDBPersistentRecordRepository(repeatable, cache).DeletePersistentRecord(ctx, tables, 1, rowID)
+	err := NewDBPersistentRecordRepository(repeatable, cache).DeletePersistentRecord(ctx, tables, 1, rowID, model.RowGuard{})
 	require.NoError(t, <-firstDone)
 	require.Error(t, err)
 

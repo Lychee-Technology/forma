@@ -85,12 +85,28 @@ func pageOffset(page, itemsPerPage, maxRows int) (int, error) {
 // entry points. The size cap is enforced here, at the manager, rather than in
 // the HTTP layer, so a library embedder gets the same bound as an HTTP caller;
 // maxBatchSize <= 0 leaves the batch unbounded.
+//
+// Batches carry no conditional writes (#649): an operation with Preconditions
+// or UpdateOps is refused before any write, because a best-effort batch would
+// silently drop them and an atomic one has no per-row outcome to report.
+// Conditional writes of several rows go through Transactor.InTx.
 func validateBatchOperation(req *forma.BatchOperation, maxBatchSize int) error {
 	if req == nil {
 		return forma.InvalidInputf("batch operation cannot be nil")
 	}
 	if maxBatchSize > 0 && len(req.Operations) > maxBatchSize {
 		return forma.InvalidInputf("batch of %d operations exceeds the maximum batch size of %d", len(req.Operations), maxBatchSize)
+	}
+	for i := range req.Operations {
+		op := &req.Operations[i]
+		if op.Preconditions != nil {
+			return forma.InvalidInputf("operation[%d]: batches do not accept preconditions (the precondition tests '%s'); run conditional writes through Transactor.InTx",
+				i, firstConditionAttr(op.Preconditions))
+		}
+		if len(op.UpdateOps) > 0 {
+			return forma.InvalidInputf("operation[%d]: batches do not accept update operators (%s on '%s'); run them through Update or Transactor.InTx",
+				i, op.UpdateOps[0].Kind, op.UpdateOps[0].Attribute)
+		}
 	}
 	return nil
 }

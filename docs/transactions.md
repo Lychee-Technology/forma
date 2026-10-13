@@ -96,9 +96,11 @@ aborts one of them, and its `InTx` returns `ErrRetryableConflict`. Writing rows
 in one consistent order in every transaction (for example by schema, then row
 ID) avoids this kind of deadlock.
 
-`Tx` has no read methods yet; they arrive with #650. Upsert (#651), predicate
-mutation (#652), claim (#653) and preconditions (#649) are later `Tx`
-methods. Batch operations inside a Tx are out of scope.
+`Tx.Update` and `Tx.Delete` honour `Preconditions` and `UpdateOps` exactly
+as `EntityManager` does ([Conditional writes](conditional-writes.md)). `Tx`
+has no read methods yet; they arrive with #650. Upsert (#651), predicate
+mutation (#652) and claim (#653) are later `Tx` methods. Batch operations
+inside a Tx are out of scope.
 
 Adding those methods doesn't break a caller's build. `Tx` is sealed, so a type
 outside Forma can satisfy it only by embedding a `Tx`, and that type gets each
@@ -132,7 +134,9 @@ Two cases surprise people:
 - **`Update` validates after it reads.** Strict update validation checks the
   merged document, which exists only after the row is locked and read. A
   validation failure there poisons the Tx, while the same failure from
-  `Create` does not.
+  `Create` does not. The same holds for an update operator judged against the
+  row: an `increment` with no current value or past its type's range poisons.
+  A failed precondition does not.
 - **Concurrent use.** A `Tx` must be used from one goroutine at a time. A
   call that arrives while another is running returns `ErrInvalidInput` and
   poisons the Tx; the running call finishes normally. If `fn` returns while a

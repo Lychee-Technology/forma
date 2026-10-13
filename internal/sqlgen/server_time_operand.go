@@ -5,6 +5,12 @@ import (
 	"github.com/lychee-technology/forma/internal/conditionexpr"
 )
 
+// ServerTimeMillisSQL is the PostgreSQL transaction timestamp truncated to
+// epoch milliseconds: the instant $now names (#646) and the value a
+// server_time update operator writes (#649). Both read it through this one
+// spelling, so the two cannot name different instants in one transaction.
+const ServerTimeMillisSQL = "floor(extract(epoch from now()) * 1000)::bigint"
+
 // ServerTimeOperand is the right-hand side of a $now leaf (#646): the
 // PostgreSQL transaction timestamp truncated to milliseconds, shifted by
 // OffsetMs. The offset binds as one bigint placeholder, so the clause text
@@ -28,7 +34,7 @@ func (s ServerTimeOperand) Args() []any {
 // It is PostgreSQL-only: no DuckDB tier can read the transaction clock, so
 // the federated payloads refuse the operand (serverTimeFederatedError).
 func (s ServerTimeOperand) RenderComparison(lhs, sqlOp, ph string) string {
-	ms := "(floor(extract(epoch from now()) * 1000)::bigint + " + ph + "::bigint)"
+	ms := "(" + ServerTimeMillisSQL + " + " + ph + "::bigint)"
 	if s.Date {
 		ms = "(floor(" + ms + " / 86400000.0) * 86400000)::bigint"
 	}

@@ -110,7 +110,9 @@ func TestEveryWritePathClassifiesItsLockStatement(t *testing.T) {
 	rowID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
 	key := model.PersistentRecordKey{SchemaID: 1, RowID: rowID}
 	record := func() *model.PersistentRecord { return &model.PersistentRecord{SchemaID: 1, RowID: rowID} }
-	mergeOne := func(context.Context, *model.PersistentRecord) (*model.PersistentRecord, error) { return record(), nil }
+	mergeOne := func(context.Context, *model.PersistentRecord, model.TxClock) (*model.PersistentRecord, error) {
+		return record(), nil
+	}
 	mergeBatch := func(context.Context, int, *model.PersistentRecord) (*model.PersistentRecord, error) {
 		return record(), nil
 	}
@@ -125,10 +127,10 @@ func TestEveryWritePathClassifiesItsLockStatement(t *testing.T) {
 			return r.InsertPersistentRecord(context.Background(), tables, record())
 		}},
 		{"delete", pgx.TxOptions{}, func(r *DBPersistentRecordRepository) error {
-			return r.DeletePersistentRecord(context.Background(), tables, 1, rowID)
+			return r.DeletePersistentRecord(context.Background(), tables, 1, rowID, model.RowGuard{})
 		}},
 		{"merge", readCommitted, func(r *DBPersistentRecordRepository) error {
-			_, err := r.MergePersistentRecord(context.Background(), tables, 1, rowID, mergeOne)
+			_, err := r.MergePersistentRecord(context.Background(), tables, 1, rowID, model.RowGuard{}, mergeOne)
 			return err
 		}},
 		{"batch insert", pgx.TxOptions{}, func(r *DBPersistentRecordRepository) error {

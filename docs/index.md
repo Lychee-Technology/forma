@@ -83,6 +83,7 @@ make test
 - [Documentation](/cn/README.cn) - API reference and guides
 - [Error Handling](./error-handling.md) - Write-path vs read-path error semantics
 - [Transactions](./transactions.md) - Several writes across schemas in one transaction with `Transactor.InTx`
+- [Conditional Writes](./conditional-writes.md) - Preconditions, `increment` and `server_time` on Update and Delete
 - [Condition DSL](./condition-dsl.md) - Filter operators, `in`/`not_in`, null tests and `$now`
 - [Declared Indexes](./schema-indexes.md) - Composite indexes on column-bound attributes via `x-forma-indexes`
 - [GitHub](https://github.com/ruoshui/forma) - Source code and issues

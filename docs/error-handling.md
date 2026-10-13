@@ -1069,8 +1069,11 @@ them with an internal carrier that keeps the driver error in the chain.
 answers a redacted body whose `error_class` is `unique_conflict` (likewise
 `precondition_failed` for a `412`).
 
-No write path produces `ErrPreconditionFailed` yet. #649 adds the
-preconditions, and the HTTP and batch mappings are in place for it.
+`Update` and `Delete` produce `ErrPreconditionFailed` when the operation's
+`Preconditions` do not hold on the locked row (#649,
+[Conditional writes](conditional-writes.md)); a missing row is `ErrNotFound`
+instead. The HTTP mapping is in place, but an HTTP request cannot carry a
+precondition until #655, and batches refuse them.
 
 ### HTTP and batch precedence
 

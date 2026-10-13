@@ -25,7 +25,7 @@ import (
 // returnRecord is the merge body a test uses when it wants the write to store
 // a fixture verbatim: the merge base is irrelevant to what is being pinned.
 func returnRecord(record *model.PersistentRecord) model.PersistentRecordMerge {
-	return func(_ context.Context, _ *model.PersistentRecord) (*model.PersistentRecord, error) {
+	return func(_ context.Context, _ *model.PersistentRecord, _ model.TxClock) (*model.PersistentRecord, error) {
 		return record, nil
 	}
 }
@@ -81,21 +81,21 @@ func TestSameMillisecondWritesStayStrictlyOrderedIntegration(t *testing.T) {
 	// Update #1 on the same frozen millisecond: the effective version must
 	// advance past the create, in both stores.
 	record.TextItems["text_01"] = "v2"
-	stored, err := repo.MergePersistentRecord(ctx, tables, record.SchemaID, rowID, returnRecord(record))
+	stored, err := repo.MergePersistentRecord(ctx, tables, record.SchemaID, rowID, model.RowGuard{}, returnRecord(record))
 	require.NoError(t, err)
 	require.Equal(t, frozenMillis+1, stored.UpdatedAt, "same-millisecond update must advance the version by 1")
 	assertChangeLogStamp(frozenMillis+1, nil)
 
 	// Update #2, still on the same frozen millisecond: strictly ordered again.
 	record.TextItems["text_01"] = "v3"
-	stored, err = repo.MergePersistentRecord(ctx, tables, record.SchemaID, rowID, returnRecord(record))
+	stored, err = repo.MergePersistentRecord(ctx, tables, record.SchemaID, rowID, model.RowGuard{}, returnRecord(record))
 	require.NoError(t, err)
 	require.Equal(t, frozenMillis+2, stored.UpdatedAt)
 	assertChangeLogStamp(frozenMillis+2, nil)
 
 	// Delete, same frozen millisecond: the tombstone must rank strictly after
 	// the clock-ahead live version or the delete loses the LWW tie.
-	require.NoError(t, repo.DeletePersistentRecord(ctx, tables, record.SchemaID, rowID))
+	require.NoError(t, repo.DeletePersistentRecord(ctx, tables, record.SchemaID, rowID, model.RowGuard{}))
 	wantTombstone := frozenMillis + 3
 	assertChangeLogStamp(wantTombstone, &wantTombstone)
 }
@@ -133,7 +133,7 @@ func TestRecreateOutranksClockAheadTombstoneIntegration(t *testing.T) {
 
 	// Same-millisecond delete: the tombstone lands at T+1, ahead of the
 	// still-frozen clock.
-	require.NoError(t, repo.DeletePersistentRecord(ctx, tables, record.SchemaID, rowID))
+	require.NoError(t, repo.DeletePersistentRecord(ctx, tables, record.SchemaID, rowID, model.RowGuard{}))
 
 	// Recreate on the same frozen millisecond: the new live version must land
 	// strictly above the retained tombstone (T+2), not at the clock read (T).
@@ -195,7 +195,7 @@ func TestConcurrentDeleteRecreateSerializesIntegration(t *testing.T) {
 		TextItems: map[string]string{"text_01": "v1"},
 	}
 	require.NoError(t, repo.InsertPersistentRecord(ctx, tables, record))
-	require.NoError(t, repo.DeletePersistentRecord(ctx, tables, record.SchemaID, rowID))
+	require.NoError(t, repo.DeletePersistentRecord(ctx, tables, record.SchemaID, rowID, model.RowGuard{}))
 	// Same frozen millisecond: the tombstone sits at T+1, ahead of the clock.
 
 	// A separate session takes the same per-row lock, simulating an in-flight
@@ -268,7 +268,7 @@ func assertConcurrentDeleteRecreatePairsStayOrdered(ctx context.Context, t *test
 
 		delDone := make(chan error, 1)
 		recDone := make(chan error, 1)
-		go func() { delDone <- repo.DeletePersistentRecord(ctx, tables, 1, id) }()
+		go func() { delDone <- repo.DeletePersistentRecord(ctx, tables, 1, id, model.RowGuard{}) }()
 		go func() {
 			for {
 				err := repo.InsertPersistentRecord(ctx, tables,

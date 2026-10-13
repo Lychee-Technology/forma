@@ -84,6 +84,10 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 		return nil, forma.InvalidInputf("data is required for create operation")
 	}
 
+	if err := validateConditionalCreate(req); err != nil {
+		return nil, fmt.Errorf("failed to validate create of %s: %w", req.SchemaName, err)
+	}
+
 	ctx, cancel := withBudget(ctx, s.budgets.write)
 	defer cancel()
 
@@ -227,7 +231,8 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		return nil, forma.InvalidInputf("row ID is required for update operation")
 	}
 
-	if req.Updates == nil {
+	// Operators alone are a complete update: an increment needs no Updates.
+	if req.Updates == nil && len(req.UpdateOps) == 0 {
 		return nil, forma.InvalidInputf("updates are required for update operation")
 	}
 
@@ -240,14 +245,20 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
+	if err := validateConditionalUpdate(req, schemaCache, s.relations); err != nil {
+		return nil, fmt.Errorf("failed to validate update of %s/%s: %w", req.SchemaName, req.RowID, err)
+	}
+
 	// The whole read-modify-write happens inside the repository's write
 	// transaction, under the per-row advisory lock create and delete take
 	// (#457): the merge base is read after the lock is granted, so two
 	// concurrent updates to disjoint fields both survive instead of the
-	// second committer replacing the first's document wholesale.
+	// second committer replacing the first's document wholesale. The
+	// precondition is judged under the same lock, before the read (#649).
 	stored, err := s.repository.MergePersistentRecord(ctx, s.resolveTables(), schemaID, req.RowID,
-		func(ctx context.Context, existing *model.PersistentRecord) (*model.PersistentRecord, error) {
-			return s.mergeUpdateRecord(ctx, req, schemaID, schemaCache, existing)
+		model.RowGuard{Precondition: req.Preconditions},
+		func(ctx context.Context, existing *model.PersistentRecord, clock model.TxClock) (*model.PersistentRecord, error) {
+			return s.mergeUpdateRecord(ctx, req, schemaID, schemaCache, existing, clock)
 		})
 	if err != nil {
 		return nil, fmt.Errorf("failed to update persistent record: %w", err)
@@ -270,13 +281,15 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 // mergeUpdateRecord is Update's merge body, run by the repository inside the
 // locked write transaction with the row as it exists there. existing is nil
 // when the row is absent: the 404 is authored here because it names the
-// caller's schema and row, which storage does not know.
+// caller's schema and row, which storage does not know. The operators apply
+// to the merged document, so they read the locked row's values (#649).
 func (s *entityCRUDService) mergeUpdateRecord(
 	ctx context.Context,
 	req *forma.EntityOperation,
 	schemaID int16,
 	schemaCache forma.SchemaAttributeCache,
 	existing *model.PersistentRecord,
+	clock model.TxClock,
 ) (*model.PersistentRecord, error) {
 	if existing == nil {
 		return nil, forma.NotFoundf("entity not found: %s/%s", req.SchemaName, req.RowID)
@@ -285,6 +298,10 @@ func (s *entityCRUDService) mergeUpdateRecord(
 	mergedData, err := mergeUpdateDocument(ctx, s.transformer, s.relations, req.SchemaName, existing, req.Updates)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transform existing record: %w", err)
+	}
+
+	if err := applyUpdateOps(ctx, mergedData, req.UpdateOps, schemaCache, clock); err != nil {
+		return nil, fmt.Errorf("failed to apply update operators: %w", err)
 	}
 
 	// The *merged* document is what gets validated: a partial update that does
@@ -336,12 +353,17 @@ func (s *entityCRUDService) Delete(ctx context.Context, req *forma.EntityOperati
 	ctx, cancel := withBudget(ctx, s.budgets.write)
 	defer cancel()
 
-	schemaID, _, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
+	schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {
 		return fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	if err := s.repository.DeletePersistentRecord(ctx, s.resolveTables(), schemaID, req.RowID); err != nil {
+	if err := validateConditionalDelete(req, schemaCache); err != nil {
+		return fmt.Errorf("failed to validate delete of %s/%s: %w", req.SchemaName, req.RowID, err)
+	}
+
+	guard := model.RowGuard{Precondition: req.Preconditions}
+	if err := s.repository.DeletePersistentRecord(ctx, s.resolveTables(), schemaID, req.RowID, guard); err != nil {
 		return fmt.Errorf("failed to delete persistent record: %w", err)
 	}
 

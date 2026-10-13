@@ -61,8 +61,8 @@ func TestMergePersistentRecord_NoSchemaCache_FailsBeforeDelete(t *testing.T) {
 	// No EAV delete, no EAV insert, no changelog upsert — transaction rolls back.
 	mock.ExpectRollback()
 
-	stored, err := repo.MergePersistentRecord(ctx, tables, 7, rowID,
-		func(_ context.Context, _ *model.PersistentRecord) (*model.PersistentRecord, error) {
+	stored, err := repo.MergePersistentRecord(ctx, tables, 7, rowID, model.RowGuard{},
+		func(_ context.Context, _ *model.PersistentRecord, _ model.TxClock) (*model.PersistentRecord, error) {
 			return record, nil
 		})
 	require.Error(t, err)
@@ -110,7 +110,7 @@ func TestDeletePersistentRecordWithMockPool(t *testing.T) {
 	mock.ExpectCommit()
 	mock.ExpectRollback()
 
-	err = repo.DeletePersistentRecord(ctx, tables, 1, rowID)
+	err = repo.DeletePersistentRecord(ctx, tables, 1, rowID, model.RowGuard{})
 	require.NoError(t, err)
 
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -136,7 +136,7 @@ func TestDeletePersistentRecord_WhenRowMissing_ReturnsNotFound(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"})) // no row deleted
 	mock.ExpectRollback()
 
-	err = repo.DeletePersistentRecord(ctx, tables, 1, rowID)
+	err = repo.DeletePersistentRecord(ctx, tables, 1, rowID, model.RowGuard{})
 	require.Error(t, err)
 	require.ErrorIs(t, err, forma.ErrNotFound)
 
@@ -164,7 +164,7 @@ func TestDeletePersistentRecord_WhenRowMissing_DoesNotWriteChangelog(t *testing.
 	// No EAV delete, no changelog upsert expected — transaction rolls back
 	mock.ExpectRollback()
 
-	err = repo.DeletePersistentRecord(ctx, tables, 1, rowID)
+	err = repo.DeletePersistentRecord(ctx, tables, 1, rowID, model.RowGuard{})
 	require.Error(t, err)
 	require.ErrorIs(t, err, forma.ErrNotFound)
 
