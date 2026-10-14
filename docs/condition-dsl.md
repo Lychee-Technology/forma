@@ -32,8 +32,8 @@ A **leaf** (`forma.KvCondition`) filters one attribute:
 | `equals` | `eq` | one value | equal (default) |
 | `not_equals` | `neq` | one value | has a value, and it differs |
 | `gt`, `gte`, `lt`, `lte` | | one value | ordered comparison |
-| `starts_with` | | text | prefix match, text attributes only |
-| `contains` | | text | substring match, text attributes only |
+| `starts_with` | | text | prefix match, text attributes only; the operand is literal text |
+| `contains` | | text | substring match, text attributes only; the operand is literal text |
 | `in` | | JSON array | equals one of the values |
 | `not_in` | | JSON array | has a value, and it equals none of the values |
 | `is_null` | | `true` | the attribute has no value |
@@ -49,6 +49,22 @@ Operand rules shared by every operator:
 - An operand the value type cannot take, or an operator it does not take
   (`starts_with` on a `uuid`), is `ErrInvalidInput` naming the attribute,
   refused before the query runs.
+- A numeric operand is a finite number. `NaN` and `Inf` are
+  `ErrInvalidInput` on every numeric type, refused before the query runs:
+  they are not values the types hold, and PostgreSQL orders `NaN` above
+  every number, so `lt:NaN` used to match every value stored in `eav_data`
+  or a `double` column.
+- A numeric operand compares exactly against whole-number storage: a
+  `smallint`, `integer` or `bigint` column of `entity_main`, and a `bigint`
+  attribute on the DuckDB tiers. On an `integer` attribute holding 7,
+  `equals:7.9` and `gt:7.5` do not match and `lt:7.5` and `not_equals:7.9`
+  do; an operand beyond the column's width compares too, so `lt:2147483648`
+  matches every value of an `integer` column. Such a comparison binds one
+  `bigint` parameter, which keeps it on the column's btree index. A literal
+  that is not an integer in int64 range is its float64 image, so
+  `9007199254740993.5` denotes 9007199254740994.
+- A `starts_with` or `contains` operand matches as literal text: `%`, `_`
+  and `\` in it match themselves (`starts_with:a_c` does not match `abc`).
 - A comparison never matches a row where the attribute has no value. In
   particular `not_equals` and `not_in` do not match absent values.
 
@@ -191,6 +207,15 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
   shape cache and the Postgres render cache) are therefore independent of
   the list's length, its contents, and the offset; `$now` and an absolute
   timestamp are different statements.
+- A numeric comparison against whole-number storage binds an int64 bound,
+  and its operator depends on whether the operand is an integer in int64
+  range, a fraction, or beyond int64: `equals:7.5` on an `integer` column
+  renders `< $n::bigint` with $n the smallest int64, which no value is
+  below. The federated shape cache keys on that operand class as well as
+  on the operator.
+- A `starts_with` / `contains` pattern escapes its operand with `\`,
+  PostgreSQL's default LIKE escape; the DuckDB renders name it with
+  `ESCAPE '\'`, since DuckDB has no default.
 - `not_in` renders as `(lhs IS NOT NULL AND lhs <> ALL(list))`. The explicit
   `IS NOT NULL` is load-bearing: `NULL <> ALL(empty)` is true.
 - On the federated route, `is_null` / `is_not_null` on a column-bound
@@ -201,8 +226,8 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
 
 | Backend | Status |
 | --- | --- |
-| PostgreSQL | Verified: a real-PostgreSQL truth table over every storage form, with `NUMERIC` and `DOUBLE PRECISION` EAV values, and a `$now` test seeded from `SELECT now()`. |
-| DuckDB (federated) | Verified: `in`, `not_in`, `is_null` and `is_not_null` return the same rows on the DuckDB route and the Postgres route across cold, warm and hot tiers (`TestConditionDSLOperatorParityAcrossTiers`). `$now` is refused. |
+| PostgreSQL | Verified: a real-PostgreSQL truth table over every storage form, with `NUMERIC` and `DOUBLE PRECISION` EAV values, and a `$now` test seeded from `SELECT now()`. Numeric and `starts_with`/`contains` operands are checked against exact arithmetic and Go string matching rather than against another route (`TestConditionOperandConformance_*`), over `smallint`, `integer`, `bigint` and `double` columns and both EAV value types. |
+| DuckDB (federated) | Verified: `in`, `not_in`, `is_null` and `is_not_null` return the same rows on the DuckDB route and the Postgres route across cold, warm and hot tiers (`TestConditionDSLOperatorParityAcrossTiers`). The DuckDB renders of numeric and `starts_with`/`contains` leaves run against an in-memory DuckDB with exact expected rows (`TestNumericOperand_DuckDBConformance`, `TestLikeOperand_DuckDBConformance`); the hot-tier pushdown runs there over native tables. `TestConditionOperandSemanticsAcrossRoutes` runs the same operands through the production harness on the Postgres route and on the DuckDB route over hot rows (`postgres_scan`) and warm parquet. `$now` is refused. |
 | Aurora DSQL | DSQL: specified, not verified (#633). The PostgreSQL rendering uses array binds with `= ANY` / `<> ALL`, `now()`, `extract(epoch ...)`, `floor`, `mod`, `to_timestamp` and `to_char`; none of it has run against a DSQL cluster. |
 
 ## Compatibility
@@ -210,3 +235,18 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
 The new operators and `$now` were refused before #646 (an unknown operator,
 or an unparseable date), so no query that worked before changes meaning.
 `$now` on a non-date attribute was, and still is, a literal.
+
+The operand rules above corrected three answers, and each changes what an
+existing query returns:
+
+- A fractional operand against a whole-number `entity_main` column was
+  truncated toward zero: `equals:7.9` matched 7, `gte:1.5` matched 1, and
+  `lt:1.5` missed 1. An operand beyond the column's width failed the query
+  after it started. On the DuckDB tiers a fraction against a `bigint`
+  attribute was rounded: `equals:7.5` matched 8.
+- `%`, `_` and `\` in a `starts_with` or `contains` operand acted as LIKE
+  wildcards and escapes. A caller that relied on them as wildcards now
+  matches the characters literally.
+- `NaN` and `Inf` operands are refused; before, `lt:NaN` matched every value
+  stored in `eav_data` or a `double` column, and failed on a whole-number
+  column after the query started.

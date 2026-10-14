@@ -101,9 +101,9 @@ func buildCharTextCases() []charCase {
 			name: "starts_with wildcards suffix",
 			cond: charKv("username", "starts_with:Al"),
 			want: DualClauses{
-				PgMainClause: "m.text_01 LIKE ?", PgMainArgs: []any{"Al%"},
+				PgMainClause: `m.text_01 LIKE ? ESCAPE '\'`, PgMainArgs: []any{"Al%"},
 				PgClause: charEavClause("$2", "value_text", "LIKE", "$3"), PgArgs: []any{int16(1), "Al%"},
-				DuckClause: "username LIKE ?", DuckArgs: []any{"Al%"},
+				DuckClause: `username LIKE ? ESCAPE '\'`, DuckArgs: []any{"Al%"},
 			},
 			span: 3,
 		},
@@ -113,9 +113,22 @@ func buildCharTextCases() []charCase {
 			want: DualClauses{
 				PgMainClause: "", PgMainArgs: nil,
 				PgClause: charEavClause("$1", "value_text", "LIKE", "$2"), PgArgs: []any{int16(4), "%mid%"},
-				DuckClause: "tag LIKE ?", DuckArgs: []any{"%mid%"},
+				DuckClause: `tag LIKE ? ESCAPE '\'`, DuckArgs: []any{"%mid%"},
 			},
 			span: 2,
+		},
+		{
+			// The operand is literal text: its LIKE metacharacters are
+			// escaped with \, PostgreSQL's default escape and the one the
+			// DuckDB renders name. starts_with:a_c used to match "abc".
+			name: "starts_with escapes the operand's metacharacters",
+			cond: charKv("username", `starts_with:a_c%\`),
+			want: DualClauses{
+				PgMainClause: `m.text_01 LIKE ? ESCAPE '\'`, PgMainArgs: []any{`a\_c\%\\%`},
+				PgClause: charEavClause("$2", "value_text", "LIKE", "$3"), PgArgs: []any{int16(1), `a\_c\%\\%`},
+				DuckClause: `username LIKE ? ESCAPE '\'`, DuckArgs: []any{`a\_c\%\\%`},
+			},
+			span: 3,
 		},
 	}
 }

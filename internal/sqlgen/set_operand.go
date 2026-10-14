@@ -106,17 +106,14 @@ func coerceListElement(attr string, meta forma.AttributeMetadata, literal string
 	case forma.ValueTypeUUID:
 		return canonicalUUID(literal)
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
-		switch v := numutil.TryParseNumber(literal).(type) {
-		case int64:
-			return v, nil
-		case float64:
-			if err := checkBigIntOperandRange(attr, literal, meta.ValueType, v); err != nil {
-				return nil, err
-			}
-			return v, nil
-		default:
+		v, ok, err := numericOperand(attr, literal, meta.ValueType)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			return nil, forma.InvalidInputf("%q is not a number", literal)
 		}
+		return v, nil
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		return coerceDateListElement(attr, meta, literal)
 	case forma.ValueTypeBool:
@@ -244,9 +241,11 @@ func exactElems[T any](attr string, elems []any) ([]T, error) {
 
 // int64Elems builds an integer-typed array, for whole-number storage only:
 // bigint, date and datetime values, and integer-family entity_main columns.
-// A fractional element is dropped, not refused: it is a valid literal under
-// the equals rules, and it can equal no value that storage holds, so
-// dropping it changes neither operator's answer (#646 D4).
+// An element that is not a whole number in int64 range is dropped, not
+// refused: it is a valid literal under the equals rules, and it can equal no
+// value that storage holds, so dropping it changes neither operator's answer
+// (#646 D4). A float64 element whose image is whole is kept as that integer,
+// the value an equals operand compares (wholeNumberComparison).
 func int64Elems(attr string, elems []any) ([]int64, error) {
 	out := make([]int64, 0, len(elems))
 	for i, e := range elems {
@@ -254,6 +253,9 @@ func int64Elems(attr string, elems []any) ([]int64, error) {
 		case int64:
 			out = append(out, v)
 		case float64:
+			if n, verdict := numutil.ClassifyInt64(v); verdict == numutil.IntegralityExact {
+				out = append(out, n)
+			}
 		default:
 			return nil, fmt.Errorf("list element %d for attribute '%s' is %T, expected int64", i, attr, e)
 		}

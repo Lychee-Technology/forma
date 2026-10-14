@@ -61,6 +61,13 @@ type dslFixture struct {
 
 func newDSLFixture(t *testing.T, numericEAV bool) *dslFixture {
 	t.Helper()
+	return newDSLFixtureWith(t, numericEAV, "dsl646", dslSchemaCache())
+}
+
+// newDSLFixtureWith registers cache as schema dslSchemaID under name, over
+// fresh temp tables.
+func newDSLFixtureWith(t *testing.T, numericEAV bool, name string, cache forma.SchemaAttributeCache) *dslFixture {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 	t.Cleanup(cancel)
 	pool := testdb.Connect(t, ctx)
@@ -69,9 +76,8 @@ func newDSLFixture(t *testing.T, numericEAV bool) *dslFixture {
 		_, err := pool.Exec(ctx, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN value_numeric TYPE NUMERIC", sanitizeIdentifier(tables.EAVData)))
 		require.NoError(t, err)
 	}
-	cache := dslSchemaCache()
 	metadata := schemameta.NewMetadataCache()
-	require.NoError(t, metadata.RegisterSchema("dsl646", dslSchemaID, cache))
+	require.NoError(t, metadata.RegisterSchema(name, dslSchemaID, cache))
 	return &dslFixture{ctx: ctx, pool: pool, repo: NewDBPersistentRecordRepository(pool, metadata), tables: tables, cache: cache}
 }
 

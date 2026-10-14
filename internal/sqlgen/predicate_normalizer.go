@@ -7,7 +7,6 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/conditionexpr"
 	"github.com/lychee-technology/forma/internal/model"
-	"github.com/lychee-technology/forma/internal/numutil"
 )
 
 // normalizeTargets selects which per-target payloads normalizePredicates
@@ -152,12 +151,7 @@ func normalizeHybridPayload(
 	if err != nil {
 		return HybridLeafPayload{IsMain: true, Err: err}
 	}
-	return HybridLeafPayload{
-		IsMain:     true,
-		MainColumn: colName,
-		MainSQLOp:  lenientSQL.SQLOperator,
-		MainValue:  value,
-	}
+	return hybridMainComparison(colName, leafMeta.ValueType, lenientSQL.SQLOperator, value)
 }
 
 // hybridMainColumn is the entity_main column a hybrid leaf emits against:
@@ -307,21 +301,21 @@ func parsePgEavValue(attr string, meta forma.AttributeMetadata, valStr string) (
 		return "value_text", v, nil
 
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
-		switch v := numutil.TryParseNumber(valStr).(type) {
-		case int64:
+		v, ok, err := numericOperand(attr, valStr, meta.ValueType)
+		if err != nil {
+			return "", nil, err
+		}
+		if !ok {
+			return "", nil, forma.InvalidInputf("invalid numeric value for '%s': %s", attr, valStr)
+		}
+		if exact, isInt := v.(int64); isInt {
 			// bigint binds the exact int64 (#281, #357); the DOUBLE-width
 			// classes narrow it through the same float64 funnel the stored
 			// data took, so both engines compare the float64 image above
 			// 2^53 (#384) — see NarrowEAVNumericOperand.
-			return "value_numeric", NarrowEAVNumericOperand(meta.ValueType, v), nil
-		case float64:
-			if err := checkBigIntOperandRange(attr, valStr, meta.ValueType, v); err != nil {
-				return "", nil, err
-			}
-			return "value_numeric", v, nil
-		default:
-			return "", nil, forma.InvalidInputf("invalid numeric value for '%s': %s", attr, valStr)
+			return "value_numeric", NarrowEAVNumericOperand(meta.ValueType, exact), nil
 		}
+		return "value_numeric", v, nil
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		parsed, dateErr := parseDateValue(attr, valStr, meta)
@@ -458,11 +452,15 @@ func normalizeDuckPayload(
 	if err := checkDuckISO8601Operand(kv.Attr, lenientSQL.Value, rawParam, valueType, meta, hasMeta); err != nil {
 		return DuckLeafPayload{Err: err}
 	}
+	sqlOp, rawParam, err := duckWholeNumberComparison(kv.Attr, valueType, lenientSQL.SQLOperator, rawParam)
+	if err != nil {
+		return DuckLeafPayload{Err: err}
+	}
 	param, err := ToDuckDBParam(rawParam, valueType)
 	if err != nil {
 		return DuckLeafPayload{Err: fmt.Errorf("to duckdb param: %w", err)}
 	}
-	return DuckLeafPayload{Column: column, SQLOp: lenientSQL.SQLOperator, ValueType: valueType, Param: param}
+	return DuckLeafPayload{Column: column, SQLOp: sqlOp, ValueType: valueType, Param: param}
 }
 
 // checkDuckISO8601Operand applies the iso8601 whole-second / four-digit-year

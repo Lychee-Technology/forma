@@ -61,5 +61,9 @@ func (p HybridLeafPayload) RenderMain(column string, next func() string) (string
 	case p.MainNow != nil:
 		return p.MainNow.RenderComparison(column, p.MainSQLOp, next()), p.MainNow.Args()
 	}
-	return fmt.Sprintf("%s %s %s", column, p.MainSQLOp, next()), []any{p.MainValue}
+	rhs := next()
+	if p.MainCast != "" {
+		rhs += "::" + p.MainCast
+	}
+	return fmt.Sprintf("%s %s %s", column, p.MainSQLOp, rhs), []any{p.MainValue}
 }

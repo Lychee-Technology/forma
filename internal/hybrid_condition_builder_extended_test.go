@@ -72,7 +72,7 @@ func TestHybrid_NullTests(t *testing.T) {
 		`(m."integer_01" IS NULL) AND `+
 			"(NOT EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = m.ltbase_schema_id AND x.row_id = m.ltbase_row_id AND x.attr_id = $2 AND x.value_text IS NOT NULL)) AND "+
 			"(EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = m.ltbase_schema_id AND x.row_id = m.ltbase_row_id AND x.attr_id = $3 AND x.value_text IS NOT NULL)) AND "+
-			`(m."integer_01" < $4)`,
+			`(m."integer_01" < $4::bigint)`,
 		clause)
 	require.Equal(t, []any{int16(7), int16(9), int64(5)}, args)
 }

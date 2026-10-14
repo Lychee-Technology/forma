@@ -116,6 +116,10 @@ type HybridLeafPayload struct {
 	MainColumn string // physical column name, unsanitized
 	MainSQLOp  string
 	MainValue  any
+	// MainCast is the type MainValue's placeholder is cast to; empty lets
+	// the column type it. A numeric comparison against a whole-number
+	// column binds an int64 cast to bigint (hybridMainComparison).
+	MainCast string
 	// MainBool replaces MainSQLOp/MainValue for a bool-encoded leaf under
 	// = / != (#565): the emitter allocates Arity() placeholders, renders
 	// it over them and binds Args(). Nil for every other main-branch leaf.
