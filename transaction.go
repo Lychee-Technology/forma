@@ -93,6 +93,19 @@ type Tx interface {
 	// arrives after the assertion waits for the Tx to end.
 	AssertRow(ctx context.Context, schemaName string, rowID uuid.UUID, preconditions Condition) error
 
+	// UpdateWhere applies req.Updates and req.UpdateOps to the rows matching
+	// req.Condition, each as Update would, and answers the rows it changed
+	// (see MutateWhereRequest). A request refused by its validation, before
+	// any SQL, or for matching more than MaxAffected rows leaves the Tx
+	// usable; a failure after the first row was written poisons it, so the
+	// Tx never commits part of a predicate mutation. A failure at the first
+	// row follows the rules of Update.
+	UpdateWhere(ctx context.Context, req *MutateWhereRequest) (*MutateWhereResult, error)
+	// DeleteWhere deletes the rows matching req.Condition, each as Delete
+	// would, and answers the rows it deleted. Its failure rules are
+	// UpdateWhere's.
+	DeleteWhere(ctx context.Context, req *MutateWhereRequest) (*MutateWhereResult, error)
+
 	txseal.Sealed
 }
 

@@ -36,7 +36,9 @@ type txSession struct {
 	tx     *meteredTx
 	meter  *txMeter
 	maxOps int
-	ops    int
+	// mutateHooks, set only by tests, run inside UpdateWhere and DeleteWhere.
+	mutateHooks *mutateWhereHooks
+	ops         int
 
 	// busy is held for the length of one method call; a second goroutine
 	// calling in at the same time fails its TryLock, which is how concurrent
@@ -91,12 +93,7 @@ func (s *txSession) do(ctx context.Context, method string, op func(context.Conte
 	if ctx == nil {
 		return forma.InvalidInputf("%s needs a non-nil context", method)
 	}
-	s.ops++
-	if s.ops > s.maxOps {
-		err := forma.InvalidInputf(
-			"operation %d would exceed the transaction's limit of %d operations; "+
-				"split the work across transactions or raise the limit with WithTxMaxOperations",
-			s.ops, s.maxOps)
+	if err := s.chargeOperations(1); err != nil {
 		s.poison(err)
 		return err
 	}
@@ -118,11 +115,29 @@ func (s *txSession) do(ctx context.Context, method string, op func(context.Conte
 	return err
 }
 
+// chargeOperations counts n more operations against the limit. A call is
+// one operation; UpdateWhere and DeleteWhere charge one more per affected
+// row past the first.
+func (s *txSession) chargeOperations(n int) error {
+	if n <= 0 {
+		return nil
+	}
+	s.ops += n
+	if s.ops > s.maxOps {
+		return forma.InvalidInputf(
+			"operation %d would exceed the transaction's limit of %d operations; "+
+				"split the work across transactions or raise the limit with WithTxMaxOperations",
+			s.ops, s.maxOps)
+	}
+	return nil
+}
+
 // poisons reports whether an operation's error poisons the transaction.
 // sent says the operation sent SQL, failed that one of its statements
 // failed. The expected outcomes are the ones that leave nothing half-written:
 // a lookup that found no row, a precondition or unique check answered
-// without a failed statement, and invalid input refused before any SQL.
+// without a failed statement, invalid input refused before any SQL, and a
+// predicate mutation refused after only reading (refusedBeforeWrite).
 // A failed statement always poisons: PostgreSQL has aborted the transaction,
 // or the connection is gone. An ErrInvalidInput raised after SQL was sent
 // poisons too, because the operation may have written part of its rows.
@@ -130,7 +145,10 @@ func poisons(err error, sent, failed bool) bool {
 	if failed {
 		return true
 	}
+	var readsOnly refusedBeforeWrite
 	switch {
+	case errors.As(err, &readsOnly):
+		return false
 	case errors.Is(err, forma.ErrNotFound),
 		errors.Is(err, forma.ErrPreconditionFailed),
 		errors.Is(err, forma.ErrUniqueConflict):

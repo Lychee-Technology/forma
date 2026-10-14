@@ -98,8 +98,8 @@ ID) avoids this kind of deadlock.
 
 `Tx.Update` and `Tx.Delete` honour `Preconditions` and `UpdateOps` exactly
 as `EntityManager` does ([Conditional writes](conditional-writes.md)). Upsert
-(#651), predicate mutation (#652) and claim (#653) are later `Tx` methods.
-Batch operations inside a Tx are out of scope.
+(#651) and claim (#653) are later `Tx` methods. Batch operations inside a Tx
+are out of scope.
 
 Adding those methods doesn't break a caller's build. `Tx` is sealed, so a type
 outside Forma can satisfy it only by embedding a `Tx`, and that type gets each
@@ -210,6 +210,110 @@ removes it. A test pins this. Whether two DSQL asserters of one row conflict
 with each other is not documented, so the two-asserters outcome is promised
 for PostgreSQL only.
 
+## Predicate mutation: `UpdateWhere` and `DeleteWhere`
+
+`Tx.UpdateWhere` and `Tx.DeleteWhere` change the rows of one schema that match
+a condition and report which rows they changed: SQL's `UPDATE … WHERE …
+RETURNING` and `DELETE … WHERE … RETURNING` on Forma's storage (#652). They
+replace the forbidden pattern of a `Query`, a list of row IDs, and one write
+per ID. That pattern writes a row that stopped matching between the read and
+the write, and cannot report what it changed.
+
+```go
+res, err := tx.UpdateWhere(ctx, &forma.MutateWhereRequest{
+	SchemaName: "workflow_task",
+	Condition: &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: []forma.Condition{
+		&forma.KvCondition{Attr: "instance_id", Value: "equals:" + id},
+		&forma.KvCondition{Attr: "status", Value: "equals:pending"},
+	}},
+	Updates:   map[string]any{"status": "cancelled"},
+	UpdateOps: []forma.UpdateOp{forma.ServerTime("resolved_at", 0)},
+	Returning: true,
+})
+// res.RowIDs: the cancelled tasks; res.Records: each as stored
+```
+
+A call runs in four steps:
+
+1. **Validate.** The whole request is checked before any statement, and a
+   refusal is `ErrInvalidInput` that leaves the Tx usable. The schema must be
+   registered and the condition present: a nil condition is refused, and so
+   is an empty `and` or `or` anywhere in it (an empty `and` would match every
+   row), so there is no unconditioned bulk mutation. The condition follows the
+   rules of a precondition (#649): it tests schema attributes only, never raw
+   `entity_main` columns such as `ltbase_updated_at`. `Sort` attributes must
+   exist. `Limit` is
+   at least 0, `MaxAffected` is 1 to 10,000 (0 means 1,000), and `Limit` must
+   not exceed `MaxAffected`. `Updates` and `UpdateOps` are checked as `Update`
+   checks them (#649), and `UpdateWhere` needs at least one of them.
+   `DeleteWhere` accepts neither.
+2. **Select the candidates.** These are the rows matching the condition as
+   the Tx sees them: the latest committed hot-tier state plus the Tx's own
+   writes. They come in `Sort` order, with the row ID ascending as the final
+   tiebreak (`Sort` names schema attributes only, so the row ID is never
+   repeated). With `Limit` set, the candidates are the first `Limit` rows.
+   With `Limit` 0 they are every matching row, and a match of more than
+   `MaxAffected` rows is `ErrInvalidInput`. That refusal writes nothing and,
+   although the select ran, leaves the Tx usable. The select is `Query`'s own
+   SQL, so for any condition both accept, a candidate set is what `Tx.Query`
+   with the same condition and sort answers. The federated engine is never
+   called.
+3. **Lock and re-check.** Every candidate is locked as a writer locks it, in
+   row ID order whatever `Sort` says, so two predicate mutations never
+   deadlock with each other. Then the condition is evaluated again on the
+   locked rows. A candidate that stopped matching, or was deleted, while the
+   call waited for its lock is **dropped**: it is not written and not
+   returned. Its lock is still held until the Tx ends, so any other write of
+   that row waits for this Tx.
+   - **No refill.** A dropped candidate is not replaced by the next row in
+     sort order, so a call with `Limit` L can affect fewer than L rows.
+   - **No phantoms.** A row that starts matching after the candidates were
+     selected is never locked, and is not affected.
+4. **Write.** Each surviving row, in candidate order, is written by the
+   single-row `Update` or `Delete` path: the same merge, validation, version
+   stamps, hot `change_log` row and #274 tombstone stamp as `Tx.Update` and
+   `Tx.Delete`. Each row costs that write's statements; the call is not one
+   set-based statement.
+
+The result's `RowIDs` lists the affected rows in candidate order. No match is
+an empty list, not an error. With `Returning`, `Records` holds one record per
+affected row, in the same order. For `UpdateWhere` it is the row as stored
+after the write. For `DeleteWhere` it is the row as it was just before its
+delete. These are the stored attributes, without relation enrichment, as
+`Update` answers them. If the Tx commits and nothing later in it touches those
+rows, each record is the committed row. Later operations in the Tx see the
+mutation: a second `UpdateWhere` whose condition the first one falsified does
+not match those rows.
+
+A failure while writing a row after the first one poisons the Tx, whatever its
+class, so a Tx never commits part of a predicate mutation. A failure at the
+first row, before anything was written, follows the usual
+[poisoning](#poisoning) rules. The select and the locks have been sent by then,
+so an `ErrInvalidInput` there (an `Increment` of an attribute the row lacks, or
+`Updates` the merged document fails validation on) poisons the Tx, as it does
+for `Tx.Update`. Only a refusal in step 1 and the `MaxAffected` overflow leave
+the Tx usable.
+
+Each affected row counts as one operation against `WithTxMaxOperations` (a
+call that affects no rows still counts as one). Its physical rows count
+against `WithTxMaxPhysicalRows`. The physical-row limit usually binds first.
+An updated entity modifies its main row, its old and new EAV rows and its
+`change_log` row, so the default 3,000 admits far fewer than 1,000 updated
+entities of any schema with EAV attributes. A breach of either limit poisons
+the Tx.
+
+On Aurora DSQL the predicate mutation is specified, not verified (#633). There
+the candidate select and the re-check both read the transaction's snapshot,
+and the dropping in step 3 does not happen. Instead, a concurrent transaction
+that commits a change to a candidate after the snapshot makes this
+transaction's COMMIT fail with `40001`, which is `ErrRetryableConflict`. So on
+DSQL a result never includes a row that a committed concurrent writer changed
+after the transaction's snapshot: the Tx either commits with the result as
+returned, or fails. On PostgreSQL such a row is judged again under its lock,
+kept if it still matches and written on top of the other writer's commit.
+Forma does not retry: the caller may have acted on the returned rows, so a
+retry must re-run the whole `fn`.
+
 ## Poisoning
 
 An error from a `Tx` method either leaves the Tx usable or **poisons** it.
@@ -218,8 +322,10 @@ An error from a `Tx` method either leaves the Tx usable or **poisons** it.
 | --- | --- |
 | `ErrNotFound` (an unknown schema, or no row to read, assert, update or delete) | no |
 | `ErrPreconditionFailed` (an `AssertRow` or conditional write that found the row failing its precondition), `ErrUniqueConflict`, raised without a failed SQL statement | no |
-| `ErrInvalidInput` raised before the operation sent any SQL (a malformed operation, a `Create` that fails validation, a federated read, `ForUpdate` on `Query`) | no |
+| `ErrInvalidInput` raised before the operation sent any SQL (a malformed operation, a `Create` that fails validation, a federated read, `ForUpdate` on `Query`, a `MutateWhereRequest` refused by its validation) | no |
+| `ErrInvalidInput` for a predicate mutation that matched more than `MaxAffected` rows, after only its candidate select | no |
 | `ErrInvalidInput` raised after the operation sent SQL | yes |
+| any error from a predicate mutation after its first row was written | yes |
 | any failed SQL statement, including `23505` and every retryable conflict | yes |
 | a limit breach, concurrent use, an operation that panicked | yes |
 | anything else | yes |

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/jackc/pgx/v5"
@@ -35,6 +36,14 @@ func newMockTransactor(t *testing.T) (*transactor, pgxmock.PgxPoolIface) {
 // engine as its federated query engine.
 func newMockTransactorWithEngine(t *testing.T, engine model.FederatedQueryEngine) (*transactor, pgxmock.PgxPoolIface) {
 	t.Helper()
+	return newMockTransactorOver(t, engine)
+}
+
+// newMockTransactorOver is newMockTransactorWithEngine whose repository also
+// holds the metadata of the named shipped schemas, which rendering a
+// condition needs.
+func newMockTransactorOver(t *testing.T, engine model.FederatedQueryEngine, schemas ...string) (*transactor, pgxmock.PgxPoolIface) {
+	t.Helper()
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)
 	t.Cleanup(mock.Close)
@@ -45,7 +54,16 @@ func newMockTransactorWithEngine(t *testing.T, engine model.FederatedQueryEngine
 	config := createTestConfig()
 	config.Database.TableNames = forma.TableNames{EntityMain: "entity_main", EAVData: "eav_data", ChangeLog: "change_log"}
 	config.Transaction.DefaultTimeout = 30 * time.Second
-	repo := NewDBPersistentRecordRepository(mock, nil)
+	var metadata *schemameta.MetadataCache
+	if len(schemas) > 0 {
+		metadata = schemameta.NewMetadataCache()
+		for _, name := range schemas {
+			id, cache, err := registry.GetSchemaAttributeCacheByName(name)
+			require.NoError(t, err)
+			require.NoError(t, metadata.RegisterSchema(name, id, cache))
+		}
+	}
+	repo := NewDBPersistentRecordRepository(mock, metadata)
 	em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry), repo, engine, registry, config, nil)
 
 	txr, err := NewTransactor(em)
