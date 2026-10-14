@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/lychee-technology/forma"
 )
@@ -23,7 +24,15 @@ const MaxListOperandElements = 1000
 //
 // The array is decoded as a token stream that stops at the first element
 // past the limit, so an oversized list is refused without decoding the rest.
+//
+// JSON text is UTF-8 (RFC 8259), and encoding/json would replace each
+// invalid byte inside a string with U+FFFD rather than fail. The element
+// would then match a stored U+FFFD the caller never sent, so invalid UTF-8
+// is refused before decoding.
 func ParseListOperand(attr, op, raw string) ([]string, error) {
+	if !utf8.ValidString(raw) {
+		return nil, listShapeError(attr, op, "the value is not valid UTF-8")
+	}
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.UseNumber()
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {

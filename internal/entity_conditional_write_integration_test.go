@@ -323,42 +323,91 @@ func TestInvalidPreconditionIsRefusedBeforeAnyStatement(t *testing.T) {
 	assert.Equal(t, "after", e.get(t, rowID)["name"])
 }
 
+// refusedPrecondition is a precondition the renderer refuses, with the
+// message it publishes.
+type refusedPrecondition struct{ attr, value, want string }
+
+// requireRefusedBeforeAnyStatement pins that each precondition is refused
+// before the write sends SQL. Query publishes the refusal, Update and Delete
+// leave every table as it was, and inside a Tx the refusals neither roll
+// back the write made before them nor block the one made after, whose
+// precondition is then.
+func (e *condPG) requireRefusedBeforeAnyStatement(t *testing.T, rowID uuid.UUID, then forma.Condition, cases []refusedPrecondition) {
+	t.Helper()
+	before := e.snapshot(t, rowID)
+	for _, tc := range cases {
+		_, err := e.em.Query(e.ctx, &forma.QueryRequest{SchemaName: condSchemaName, Condition: kv(tc.attr, tc.value), Page: 1, ItemsPerPage: 10})
+		require.ErrorIs(t, err, forma.ErrInvalidInput, "Query %s %q", tc.attr, tc.value)
+		message, published := forma.ResolvePublicMessage(err)
+		require.True(t, published, err)
+		assert.Equal(t, tc.want, message)
+
+		_, err = e.em.Update(e.ctx, condUpdate(rowID, kv(tc.attr, tc.value), map[string]any{"name": "refused"}))
+		require.ErrorIs(t, err, forma.ErrInvalidInput, "Update %s %q", tc.attr, tc.value)
+		require.ErrorIs(t, e.em.Delete(e.ctx, condDelete(rowID, kv(tc.attr, tc.value))), forma.ErrInvalidInput, "Delete %s %q", tc.attr, tc.value)
+	}
+	assert.Equal(t, before, e.snapshot(t, rowID), "every table as it was")
+
+	earlier := e.create(t, map[string]any{"name": "before"})
+	err := e.txr.InTx(e.ctx, func(ctx context.Context, tx forma.Tx) error {
+		if _, err := tx.Update(ctx, condUpdate(earlier, nil, map[string]any{"name": "earlier"})); err != nil {
+			return err
+		}
+		for _, tc := range cases {
+			_, err := tx.Update(ctx, condUpdate(rowID, kv(tc.attr, tc.value), map[string]any{"name": "refused"}))
+			require.ErrorIs(t, err, forma.ErrInvalidInput, "Tx.Update %s %q", tc.attr, tc.value)
+			err = tx.Delete(ctx, condDelete(rowID, kv(tc.attr, tc.value)))
+			require.ErrorIs(t, err, forma.ErrInvalidInput, "Tx.Delete %s %q", tc.attr, tc.value)
+		}
+		_, err := tx.Update(ctx, condUpdate(rowID, then, map[string]any{"name": "after"}))
+		return err
+	})
+	require.NoError(t, err, "the refusals did not poison the Tx")
+	assert.Equal(t, "earlier", e.get(t, earlier)["name"], "the write before the refusals committed")
+	assert.Equal(t, "after", e.get(t, rowID)["name"])
+}
+
 // TestUUIDPreconditionIsRefusedBeforeAnyStatement is the #674 review
 // reproduction for uuid attributes. On the uuid column, LIKE and a malformed
 // operand used to render, so the write took the row lock and then sent a
 // probe PostgreSQL failed (42883, 22P02), aborting the Tx. The renderer now
-// refuses them on both storage kinds, for Query, Update and Delete alike,
-// and the Tx commits a later write.
+// refuses them on both storage kinds.
 func TestUUIDPreconditionIsRefusedBeforeAnyStatement(t *testing.T) {
 	e := newCondPG(t)
 	token := uuid.NewString()
 	rowID := e.create(t, map[string]any{"name": "before", "token": token, "ref": token})
-	cases := []struct{ attr, value, want string }{
+	e.requireRefusedBeforeAnyStatement(t, rowID, kv("token", "equals:"+token), []refusedPrecondition{
 		{"token", "starts_with:a", "operator 'starts_with' only supported for text attributes, not 'uuid' (attribute 'token')"},
 		{"token", "contains:a", "operator 'contains' only supported for text attributes, not 'uuid' (attribute 'token')"},
 		{"token", "equals:not-a-uuid", `invalid uuid value for 'token': "not-a-uuid" is not a UUID`},
 		{"ref", "equals:not-a-uuid", `invalid uuid value for 'ref': "not-a-uuid" is not a UUID`},
-	}
-	for _, tc := range cases {
-		_, err := e.em.Query(e.ctx, &forma.QueryRequest{SchemaName: condSchemaName, Condition: kv(tc.attr, tc.value), Page: 1, ItemsPerPage: 10})
-		require.ErrorIs(t, err, forma.ErrInvalidInput, "Query %s %s", tc.attr, tc.value)
-		message, published := forma.ResolvePublicMessage(err)
-		require.True(t, published, err)
-		assert.Equal(t, tc.want, message)
-	}
-
-	err := e.txr.InTx(e.ctx, func(ctx context.Context, tx forma.Tx) error {
-		for _, tc := range cases {
-			_, err := tx.Update(ctx, condUpdate(rowID, kv(tc.attr, tc.value), map[string]any{"name": "refused"}))
-			require.ErrorIs(t, err, forma.ErrInvalidInput, "Update %s %s", tc.attr, tc.value)
-			err = tx.Delete(ctx, condDelete(rowID, kv(tc.attr, tc.value)))
-			require.ErrorIs(t, err, forma.ErrInvalidInput, "Delete %s %s", tc.attr, tc.value)
-		}
-		_, err := tx.Update(ctx, condUpdate(rowID, kv("token", "equals:"+token), map[string]any{"name": "after"}))
-		return err
 	})
-	require.NoError(t, err, "the refusals did not poison the Tx")
-	assert.Equal(t, "after", e.get(t, rowID)["name"])
+}
+
+// TestTextPreconditionIsRefusedBeforeAnyStatement is the #674 review
+// reproduction for text operands PostgreSQL text cannot hold. A NUL
+// character or invalid UTF-8 used to bind, so the write took the row lock
+// and sent a probe PostgreSQL failed (22021): the Tx was aborted and its
+// earlier write rolled back, even when the callback handled the refusal.
+// The renderer now refuses scalar, LIKE and list operands on both storage
+// kinds.
+func TestTextPreconditionIsRefusedBeforeAnyStatement(t *testing.T) {
+	const (
+		nul     = "text cannot contain a NUL character (U+0000)"
+		badUTF8 = "text must be valid UTF-8"
+	)
+	e := newCondPG(t)
+	rowID := e.create(t, map[string]any{"name": "ab", "label": "ab"})
+	e.requireRefusedBeforeAnyStatement(t, rowID, kv("label", "equals:ab"), []refusedPrecondition{
+		{"name", "equals:a\x00b", "invalid text value for 'name': " + nul},
+		{"name", "contains:a\x00b", "invalid text value for 'name': " + nul},
+		{"name", `in:["a\u0000b"]`, "element at index 0 of the 'in' list for text attribute 'name': " + nul},
+		{"name", "equals:a\xffb", "invalid text value for 'name': " + badUTF8},
+		{"label", "equals:a\x00b", "invalid text value for 'label': " + nul},
+		{"label", "starts_with:a\x00", "invalid text value for 'label': " + nul},
+		{"label", `not_in:["ab","a\u0000b"]`, "element at index 1 of the 'not_in' list for text attribute 'label': " + nul},
+		{"label", "not_equals:a\xffb", "invalid text value for 'label': " + badUTF8},
+	})
 }
 
 // TestOperatorOnASystemColumnAliasIsRefusedBeforeAnyStatement is the #674

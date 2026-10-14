@@ -102,6 +102,9 @@ func coerceListElements(attr, op string, meta forma.AttributeMetadata, raw []str
 func coerceListElement(attr string, meta forma.AttributeMetadata, literal string) (any, error) {
 	switch meta.ValueType {
 	case forma.ValueTypeText:
+		if err := checkTextLiteral(literal); err != nil {
+			return nil, err
+		}
 		return literal, nil
 	case forma.ValueTypeUUID:
 		return canonicalUUID(literal)

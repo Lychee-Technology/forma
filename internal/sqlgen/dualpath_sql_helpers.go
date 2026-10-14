@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lychee-technology/forma/internal/numutil"
 
@@ -24,7 +25,7 @@ import (
 func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata) (any, error) {
 	switch meta.ValueType {
 	case forma.ValueTypeText:
-		return valStr, nil
+		return textOperand(attr, valStr)
 
 	case forma.ValueTypeUUID:
 		return uuidOperand(attr, valStr)
@@ -128,6 +129,34 @@ func uuidOperand(attr, valStr string) (string, error) {
 		return "", forma.WrapPublicf(err, "invalid uuid value for '%s'", attr)
 	}
 	return v, nil
+}
+
+// checkTextLiteral refuses a text operand that PostgreSQL text cannot hold:
+// one with a NUL character, or bytes that are not valid UTF-8. It names no
+// value a row can store, and bound as a parameter it failed the statement
+// (22021), which in a conditional write came after the row lock and aborted
+// the Tx (#674 review). Escaping a LIKE operand and adding its wildcards
+// inserts only ASCII bytes outside any multi-byte sequence, so a pattern
+// passes exactly when its operand does.
+func checkTextLiteral(literal string) error {
+	if strings.IndexByte(literal, 0) >= 0 {
+		return forma.InvalidInputf("text cannot contain a NUL character (U+0000)")
+	}
+	if !utf8.ValidString(literal) {
+		return forma.InvalidInputf("text must be valid UTF-8")
+	}
+	return nil
+}
+
+// textOperand is checkTextLiteral for a scalar comparison operand, which
+// every binder (entity_main, eav_data, DuckDB) converts through, LIKE
+// patterns included. A list element takes checkTextLiteral with its index
+// (coerceListElement).
+func textOperand(attr, valStr string) (string, error) {
+	if err := checkTextLiteral(valStr); err != nil {
+		return "", forma.WrapPublicf(err, "invalid text value for '%s'", attr)
+	}
+	return valStr, nil
 }
 
 // parseBoolOperand parses a bool predicate operand under ONE rule for both

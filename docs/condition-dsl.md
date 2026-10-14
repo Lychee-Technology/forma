@@ -65,6 +65,11 @@ Operand rules shared by every operator:
   `9007199254740993.5` denotes 9007199254740994.
 - A `starts_with` or `contains` operand matches as literal text: `%`, `_`
   and `\` in it match themselves (`starts_with:a_c` does not match `abc`).
+- A text operand, `in` / `not_in` elements included, is valid UTF-8 without
+  a NUL character (U+0000), the text PostgreSQL stores. One that is not
+  names no value a row can hold, and is `ErrInvalidInput` naming the
+  attribute, refused before the query runs. A JSON body can carry a NUL as
+  `\u0000`.
 - A comparison never matches a row where the attribute has no value. In
   particular `not_equals` and `not_in` do not match absent values.
 
@@ -82,6 +87,8 @@ The operand is a JSON array of **1 to 1,000** elements.
   `in:[1704164645000, "2024-01-02T03:04:05Z"]` on a `datetime` names two
   spellings of instants, and `in:[true, 0]` on a `bool` names both values.
 - Duplicates are allowed and change nothing.
+- The operand is valid UTF-8, as JSON text must be. An invalid byte is
+  refused, not read as U+FFFD.
 - A `uuid` element is parsed and compared in canonical lowercase form, so
   upper- and lowercase spellings of one UUID match the same rows.
 - A numeric element is compared at the width the attribute's value is stored
@@ -250,3 +257,9 @@ existing query returns:
 - `NaN` and `Inf` operands are refused; before, `lt:NaN` matched every value
   stored in `eav_data` or a `double` column, and failed on a whole-number
   column after the query started.
+
+A text operand with a NUL character or invalid UTF-8 used to fail the query
+after it started (PostgreSQL `22021`); it is now refused before. The one
+answer this changes is an `in` / `not_in` list with an invalid UTF-8 byte
+inside a string: the byte was read as U+FFFD, so the element matched a
+stored U+FFFD.

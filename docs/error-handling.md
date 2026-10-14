@@ -1498,7 +1498,7 @@ only it.
 | `internal/entity_query_sort.go` | sorting by an attribute the schema does not define (#296) |
 | `internal/transform/document_walk.go` (`requireWrittenAttributes`) | create/update that would store a row lacking an attribute whose metadata `required_policy` demands it |
 | `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator; an operator the attribute's type does not accept (`starts_with`/`contains` on a non-text column, an inequality on a boolean) |
-| `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate |
+| `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate; a text operand with a NUL character or invalid UTF-8 |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
 | `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites, `body_limit.go`) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360); a request body over the configured cap (`413`, #465); a body net/http could not frame (`400`, `malformed request body`). A body the transport failed to deliver is not caller input and takes the redacted branch (`408` on a read timeout, see "Request limits") |
 | `internal/entity_request_limits.go` (`validateBatchOperation`, `pageOffset`) | a batch carrying more operations than `PerformanceConfig.MaxBatchSize`; a `page` whose offset overflows an `int` (#465); a `page` whose window ends past `QueryConfig.MaxRows` (#598) |
@@ -2170,6 +2170,13 @@ through on a `uuid` column. PostgreSQL then failed the statement (`42883`): an
 unclassified error from a hot-tier `Query`, and an aborted `Tx` for a
 conditional write. A `uuid` operand is parsed on every route as well, so a
 malformed one is `ErrInvalidInput` naming the attribute instead of `22P02`.
+
+A text operand PostgreSQL text cannot hold, one with a NUL character or
+invalid UTF-8, is judged on every route too, and is `ErrInvalidInput`
+naming the attribute instead of `22021`. Over HTTP that is `400` instead of
+a redacted `500`. Only the NUL reaches the server from a JSON body
+(`\u0000`), because the body decoder reads invalid UTF-8 as U+FFFD; the Go
+API can send both.
 
 ### Status change: a duplicate-attribute payload now succeeds
 

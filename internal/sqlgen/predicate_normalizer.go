@@ -291,7 +291,11 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 func parsePgEavValue(attr string, meta forma.AttributeMetadata, valStr string) (valueColumn string, parsedValue any, err error) {
 	switch meta.ValueType {
 	case forma.ValueTypeText:
-		return "value_text", valStr, nil
+		v, err := textOperand(attr, valStr)
+		if err != nil {
+			return "", nil, err
+		}
+		return "value_text", v, nil
 
 	case forma.ValueTypeUUID:
 		v, err := uuidOperand(attr, valStr)
@@ -431,7 +435,11 @@ func normalizeDuckPayload(
 	}
 
 	if lenientSQL.SQLOperator == "LIKE" {
-		return DuckLeafPayload{Column: column, SQLOp: lenientSQL.SQLOperator, TextLike: true, Param: lenientSQL.Value}
+		pattern, err := textOperand(kv.Attr, lenientSQL.Value)
+		if err != nil {
+			return DuckLeafPayload{Err: err}
+		}
+		return DuckLeafPayload{Column: column, SQLOp: lenientSQL.SQLOperator, TextLike: true, Param: pattern}
 	}
 
 	var valueType forma.ValueType
@@ -442,7 +450,11 @@ func normalizeDuckPayload(
 	}
 
 	if valueType == forma.ValueTypeText {
-		return DuckLeafPayload{Column: column, SQLOp: lenientSQL.SQLOperator, ValueType: valueType, TextLike: true, Param: lenientSQL.Value}
+		text, err := textOperand(kv.Attr, lenientSQL.Value)
+		if err != nil {
+			return DuckLeafPayload{Err: err}
+		}
+		return DuckLeafPayload{Column: column, SQLOp: lenientSQL.SQLOperator, ValueType: valueType, TextLike: true, Param: text}
 	}
 
 	rawParam, err := parseDuckDBRawParam(lenientSQL.Value, kv.Attr, valueType)

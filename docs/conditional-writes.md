@@ -38,7 +38,8 @@ case errors.Is(err, forma.ErrNotFound): // the row is gone
 2. **Render, before any SQL.** The precondition is rendered to SQL. A DSL
    error, such as an operator the attribute's type does not take
    (`starts_with` on a `uuid`), an operand that is not of its type (a
-   malformed UUID) or an empty `in` list, is the DSL's own `ErrInvalidInput`.
+   malformed UUID, text with a NUL character or invalid UTF-8) or an empty
+   `in` list, is the DSL's own `ErrInvalidInput`.
 3. **Lock.** The write begins its transaction and takes the row's advisory
    lock, as every single-row write does.
 4. **Check.** One statement, run after the lock is granted, evaluates the
@@ -237,6 +238,7 @@ assert `ErrPreconditionFailed` for the loser specifically are named
 | An object in `Updates` that would replace the row's array refuses the operator beneath it and writes nothing | `TestUpdatesReplacingARowArrayWritesNothing` |
 | An operator on a system-column alias is refused before SQL: no table changes, and a `Tx` stays usable | `TestOperatorOnASystemColumnAliasIsRefusedBeforeAnyStatement` |
 | A uuid precondition with a LIKE operator or a malformed operand is refused before SQL, by `Query`, Update and Delete, and a `Tx` stays usable | `TestUUIDPreconditionIsRefusedBeforeAnyStatement` |
+| A text precondition with a NUL character or invalid UTF-8, as a scalar, LIKE or list operand, is refused before SQL on both storage kinds: no table changes, and a `Tx` keeps its earlier write and commits a later one | `TestTextPreconditionIsRefusedBeforeAnyStatement` |
 | Numeric preconditions agree with exact arithmetic on every operator and operand class (fractions, both signs, beyond the column's width, around 2^53 and the int64 limits) over `smallint`, `integer`, `bigint` and `double` columns and EAV with `DOUBLE PRECISION` and `NUMERIC` `value_numeric`, through Update, Delete, `Tx.Update` and `Tx.Delete`; a refusal writes nothing and a `Tx` that handles it commits a later write | `TestPreconditionNumericOperandsMatchArithmetic`, `TestPreconditionOperandsReproductions` |
 | `starts_with` / `contains` preconditions match their operand literally | `TestPreconditionLikeOperandsAreLiteral` |
 | `NaN`, `Inf` and a bigint operand beyond int64 are refused before SQL on every route, and a `Tx` stays usable | `TestNonFinitePreconditionIsRefusedBeforeAnyStatement` |

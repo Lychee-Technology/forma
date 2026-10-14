@@ -183,6 +183,36 @@ func TestHybrid_UUIDLeafIsJudgedBeforeSQL(t *testing.T) {
 		{"ref", "contains:6f", "operator 'contains' only supported for text attributes, not 'uuid' (attribute 'ref')"},
 		{"ref", "equals:not-a-uuid", `invalid uuid value for 'ref': "not-a-uuid" is not a UUID`},
 	}
+	requireHybridRefusals(t, cases)
+}
+
+// A text operand PostgreSQL text cannot hold, a NUL character or invalid
+// UTF-8, is judged before any SQL on both storage kinds (#674 review).
+// Bound, it failed the statement (22021); in a conditional write that came
+// after the row lock and aborted the Tx. text_01 is a raw entity_main
+// column, name is stored in eav_data.
+func TestHybrid_UnrepresentableTextOperandIsJudgedBeforeSQL(t *testing.T) {
+	const (
+		nul     = "text cannot contain a NUL character (U+0000)"
+		badUTF8 = "text must be valid UTF-8"
+	)
+	cases := []struct{ attr, value, want string }{
+		{"text_01", "equals:a\x00b", "invalid text value for 'text_01': " + nul},
+		{"text_01", "not_equals:a\xffb", "invalid text value for 'text_01': " + badUTF8},
+		{"text_01", "starts_with:\x00", "invalid text value for 'text_01': " + nul},
+		{"text_01", `in:["a\u0000b"]`, "element at index 0 of the 'in' list for text attribute 'text_01': " + nul},
+		{"name", "equals:a\x00b", "invalid text value for 'name': " + nul},
+		{"name", "gt:a\xffb", "invalid text value for 'name': " + badUTF8},
+		{"name", "contains:\xc3", "invalid text value for 'name': " + badUTF8},
+		{"name", `not_in:["ok","\u0000"]`, "element at index 1 of the 'not_in' list for text attribute 'name': " + nul},
+	}
+	requireHybridRefusals(t, cases)
+}
+
+// requireHybridRefusals asserts that each leaf is refused under both
+// anchors with the published message want.
+func requireHybridRefusals(t *testing.T, cases []struct{ attr, value, want string }) {
+	t.Helper()
 	for _, tc := range cases {
 		t.Run(tc.attr+"/"+tc.value, func(t *testing.T) {
 			for _, anchor := range []bool{true, false} {
