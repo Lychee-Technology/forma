@@ -32,6 +32,8 @@ func characterizationCache() forma.SchemaAttributeCache {
 		"amount": {AttributeID: 12, ValueType: forma.ValueTypeBigInt,
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("bigint_02")}},
 		"total": {AttributeID: 13, ValueType: forma.ValueTypeBigInt},
+		"owner": {AttributeID: 14, ValueType: forma.ValueTypeUUID,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("uuid_01")}},
 	}
 }
 
@@ -273,23 +275,22 @@ func TestToDualClauses_Characterization(t *testing.T) {
 	}
 }
 
-// TestToDualClauses_Characterization_Errors locks the error surface: which
-// generator reports first (pg-main runs before EAV), the exact message, and
-// the strict-vs-lenient parse split between entrypoints.
-func TestToDualClauses_Characterization_Errors(t *testing.T) {
-	cache := characterizationCache()
+// charErrCase is one row of the error characterization: a condition and the
+// message the first generator to refuse it reports.
+type charErrCase struct {
+	name    string
+	cond    forma.Condition
+	wantErr string
+	// clientError marks the cases driven purely by the caller's condition
+	// payload. Since #301 the HTTP boundary classifies on sentinel evidence
+	// alone, so these must wrap forma.ErrInvalidInput or an advanced_query with a
+	// bad filter would answer 500 with a redacted body instead of a 400.
+	// The unmarked cases are schema/config or internal invariants.
+	clientError bool
+}
 
-	cases := []struct {
-		name    string
-		cond    forma.Condition
-		wantErr string
-		// clientError marks the cases driven purely by the caller's condition
-		// payload. Since #301 the HTTP boundary classifies on sentinel evidence
-		// alone, so these must wrap forma.ErrInvalidInput or an advanced_query with a
-		// bad filter would answer 500 with a redacted body instead of a 400.
-		// The unmarked cases are schema/config or internal invariants.
-		clientError bool
-	}{
+func buildCharErrCases() []charErrCase {
+	return []charErrCase{
 		{
 			// classifyPredicate splits the raw value at the first colon, so a
 			// bare ISO timestamp reads as an unknown operator and vetoes the
@@ -309,10 +310,11 @@ func TestToDualClauses_Characterization_Errors(t *testing.T) {
 		},
 		{
 			// Strict parse splits at the colon: op "2024-01-02T03" passes the
-			// non-empty check, then the value "04:05Z" fails date parsing.
-			name:        "bare ISO on unbound datetime errors in EAV date parse",
+			// non-empty check, and the value "04:05Z" is no date either. The
+			// operator is judged first, as on the entity_main routes.
+			name:        "bare ISO on unbound datetime errors in EAV operator parse",
 			cond:        charKv("seen", "2024-01-02T03:04:05Z"),
-			wantErr:     "pg sql generation: invalid date value for 'seen': invalid date value: expected ISO 8601 format or unix milliseconds, got '04:05Z'",
+			wantErr:     "pg sql generation: unsupported operator: 2024-01-02T03",
 			clientError: true,
 		},
 		{
@@ -364,8 +366,14 @@ func TestToDualClauses_Characterization_Errors(t *testing.T) {
 			wantErr: "pg sql generation: nil condition not allowed",
 		},
 	}
+}
 
-	for _, tc := range cases {
+// TestToDualClauses_Characterization_Errors locks the error surface: which
+// generator reports first (pg-main runs before EAV), the exact message, and
+// the strict-vs-lenient parse split between entrypoints.
+func TestToDualClauses_Characterization_Errors(t *testing.T) {
+	cache := characterizationCache()
+	for _, tc := range buildCharErrCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			paramIndex := 0
 			_, err := ToDualClauses(tc.cond, "eav_table", 7, cache, &paramIndex)

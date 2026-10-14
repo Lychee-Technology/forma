@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,16 +141,17 @@ func or(conds ...forma.Condition) forma.Condition {
 // TestPreconditionHoldsExactlyWhenQueryReturnsTheRow is the truth table of
 // invariant 4: a precondition holds on a row exactly when a hot-tier Query
 // with the same condition returns that row. Each operator runs on a
-// column-bound attribute (version, rank, due_main) and an EAV one (counter,
-// name, due). The update writes only due_iso, which no condition tests, so
+// column-bound attribute (version, rank, due_main, token) and an EAV one
+// (counter, name, due, ref). The update writes only due_iso, which no condition tests, so
 // the outcome of one case cannot move another, and the EAV-less row stays
 // EAV-less.
 func TestPreconditionHoldsExactlyWhenQueryReturnsTheRow(t *testing.T) {
 	e := newCondPG(t)
 	past, future := time.Now().Add(-48*time.Hour).UTC(), time.Now().Add(48*time.Hour).UTC()
+	alpha, beta := uuid.NewString(), uuid.NewString()
 	rows := []uuid.UUID{
-		e.create(t, map[string]any{"version": int64(7), "rank": int64(2), "counter": int64(10), "name": "alpha", "due": past, "due_main": future}),
-		e.create(t, map[string]any{"version": int64(8), "rank": int64(5), "counter": int64(3), "name": "beta", "due": future, "due_main": past}),
+		e.create(t, map[string]any{"version": int64(7), "rank": int64(2), "counter": int64(10), "name": "alpha", "due": past, "due_main": future, "token": alpha, "ref": alpha}),
+		e.create(t, map[string]any{"version": int64(8), "rank": int64(5), "counter": int64(3), "name": "beta", "due": future, "due_main": past, "token": beta, "ref": beta}),
 		e.create(t, map[string]any{"name": "gamma"}),
 		e.create(t, map[string]any{"version": int64(7), "rank": int64(-1), "counter": int64(7)}),
 		e.create(t, map[string]any{"version": int64(9), "rank": int64(0)}), // no EAV row at all
@@ -178,6 +180,9 @@ func TestPreconditionHoldsExactlyWhenQueryReturnsTheRow(t *testing.T) {
 		{"is_not_null eav", kv("name", "is_not_null:true")},
 		{"$now main", kv("due_main", "gte:$now")},
 		{"$now eav", kv("due", "lt:$now")},
+		// An upper-case uuid operand names the stored lower-case value.
+		{"equals main uuid", kv("token", "equals:"+strings.ToUpper(alpha))},
+		{"equals eav uuid", kv("ref", "equals:"+strings.ToUpper(alpha))},
 		{"and across kinds", and(kv("version", "equals:7"), kv("counter", "gt:5"))},
 		{"or across kinds", or(kv("version", "is_null:true"), kv("counter", "in:[3]"))},
 		{"nested", or(and(kv("version", "equals:7"), kv("name", "equals:alpha")), kv("rank", "lt:0"))},
@@ -312,6 +317,44 @@ func TestInvalidPreconditionIsRefusedBeforeAnyStatement(t *testing.T) {
 		err = tx.Delete(ctx, condDelete(rowID, kv("version", "contains:7")))
 		require.ErrorIs(t, err, forma.ErrInvalidInput)
 		_, err = tx.Update(ctx, condUpdate(rowID, kv("version", "equals:7"), map[string]any{"name": "after"}))
+		return err
+	})
+	require.NoError(t, err, "the refusals did not poison the Tx")
+	assert.Equal(t, "after", e.get(t, rowID)["name"])
+}
+
+// TestUUIDPreconditionIsRefusedBeforeAnyStatement is the #674 review
+// reproduction for uuid attributes. On the uuid column, LIKE and a malformed
+// operand used to render, so the write took the row lock and then sent a
+// probe PostgreSQL failed (42883, 22P02), aborting the Tx. The renderer now
+// refuses them on both storage kinds, for Query, Update and Delete alike,
+// and the Tx commits a later write.
+func TestUUIDPreconditionIsRefusedBeforeAnyStatement(t *testing.T) {
+	e := newCondPG(t)
+	token := uuid.NewString()
+	rowID := e.create(t, map[string]any{"name": "before", "token": token, "ref": token})
+	cases := []struct{ attr, value, want string }{
+		{"token", "starts_with:a", "operator 'starts_with' only supported for text attributes, not 'uuid' (attribute 'token')"},
+		{"token", "contains:a", "operator 'contains' only supported for text attributes, not 'uuid' (attribute 'token')"},
+		{"token", "equals:not-a-uuid", `invalid uuid value for 'token': "not-a-uuid" is not a UUID`},
+		{"ref", "equals:not-a-uuid", `invalid uuid value for 'ref': "not-a-uuid" is not a UUID`},
+	}
+	for _, tc := range cases {
+		_, err := e.em.Query(e.ctx, &forma.QueryRequest{SchemaName: condSchemaName, Condition: kv(tc.attr, tc.value), Page: 1, ItemsPerPage: 10})
+		require.ErrorIs(t, err, forma.ErrInvalidInput, "Query %s %s", tc.attr, tc.value)
+		message, published := forma.ResolvePublicMessage(err)
+		require.True(t, published, err)
+		assert.Equal(t, tc.want, message)
+	}
+
+	err := e.txr.InTx(e.ctx, func(ctx context.Context, tx forma.Tx) error {
+		for _, tc := range cases {
+			_, err := tx.Update(ctx, condUpdate(rowID, kv(tc.attr, tc.value), map[string]any{"name": "refused"}))
+			require.ErrorIs(t, err, forma.ErrInvalidInput, "Update %s %s", tc.attr, tc.value)
+			err = tx.Delete(ctx, condDelete(rowID, kv(tc.attr, tc.value)))
+			require.ErrorIs(t, err, forma.ErrInvalidInput, "Delete %s %s", tc.attr, tc.value)
+		}
+		_, err := tx.Update(ctx, condUpdate(rowID, kv("token", "equals:"+token), map[string]any{"name": "after"}))
 		return err
 	})
 	require.NoError(t, err, "the refusals did not poison the Tx")

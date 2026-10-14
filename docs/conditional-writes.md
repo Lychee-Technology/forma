@@ -36,8 +36,9 @@ case errors.Is(err, forma.ErrNotFound): // the row is gone
 1. **Intake, before any SQL.** The fields are checked against the schema
    (rules below). A refusal is `ErrInvalidInput`.
 2. **Render, before any SQL.** The precondition is rendered to SQL. A DSL
-   error, such as an operator the attribute's type does not take or an empty
-   `in` list, is the DSL's own `ErrInvalidInput`.
+   error, such as an operator the attribute's type does not take
+   (`starts_with` on a `uuid`), an operand that is not of its type (a
+   malformed UUID) or an empty `in` list, is the DSL's own `ErrInvalidInput`.
 3. **Lock.** The write begins its transaction and takes the row's advisory
    lock, as every single-row write does.
 4. **Check.** One statement, run after the lock is granted, evaluates the
@@ -227,6 +228,7 @@ assert `ErrPreconditionFailed` for the loser specifically are named
 | A refused update or delete leaves `entity_main`, EAV and `change_log` unchanged | `TestFailedPreconditionWritesNothing` |
 | An object in `Updates` that would replace the row's array refuses the operator beneath it and writes nothing | `TestUpdatesReplacingARowArrayWritesNothing` |
 | An operator on a system-column alias is refused before SQL: no table changes, and a `Tx` stays usable | `TestOperatorOnASystemColumnAliasIsRefusedBeforeAnyStatement` |
+| A uuid precondition with a LIKE operator or a malformed operand is refused before SQL, by `Query`, Update and Delete, and a `Tx` stays usable | `TestUUIDPreconditionIsRefusedBeforeAnyStatement` |
 | A missing or deleted row is `ErrNotFound` | `TestMissingRowIsNotFoundWhateverThePrecondition` |
 | Two writers with one expected version: one commits (60 iterations, both queued on the lock) | `TestSameExpectedVersionAdmitsOneWriter_PostgresOnly` |
 | 32 concurrent increments total exactly | `TestConcurrentIncrementsLoseNothing` |

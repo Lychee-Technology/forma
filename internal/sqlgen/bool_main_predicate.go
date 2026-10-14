@@ -72,20 +72,16 @@ func (p BoolMainPredicate) Args() []any {
 
 // pgMainBoolPredicate classifies an entity_main leaf: ok is true only for a
 // bool attribute bound with a bool encoding under `=` or `!=`, in which
-// case the returned predicate replaces the value bind. A bool attribute
-// under any other operator is rejected with the EAV whitelist's message:
-// the pg-main route already refused it through classifyPredicate, and the
-// hybrid route used to compare the raw 1/0 image (`m.<col> > $n`, #575), the one
-// place a bool range operator was still accepted. Any other leaf (other
-// value types) keeps the ConvertPgMainValue bind. The operand parse is the
-// engine-shared parseBoolOperand rule, so an invalid spelling is the same
-// user-facing rejection ConvertPgMainValue raises.
-func pgMainBoolPredicate(meta forma.AttributeMetadata, opStr, sqlOp, valStr, attr string) (BoolMainPredicate, bool, error) {
-	if meta.ValueType != forma.ValueTypeBool {
+// case the returned predicate replaces the value bind. Both callers refuse a
+// bool attribute under any other operator first, through the operator
+// whitelist (checkOperatorForType): without it the hybrid route compared the
+// raw 1/0 image (`m.<col> > $n`, #575). Any other leaf (other value types)
+// keeps the ConvertPgMainValue bind. The operand parse is the engine-shared
+// parseBoolOperand rule, so an invalid spelling is the same user-facing
+// rejection ConvertPgMainValue raises.
+func pgMainBoolPredicate(meta forma.AttributeMetadata, sqlOp, valStr, attr string) (BoolMainPredicate, bool, error) {
+	if meta.ValueType != forma.ValueTypeBool || (sqlOp != "=" && sqlOp != "!=") {
 		return BoolMainPredicate{}, false, nil
-	}
-	if sqlOp != "=" && sqlOp != "!=" {
-		return BoolMainPredicate{}, false, forma.InvalidInputf("operator '%s' not supported for boolean attributes", opStr)
 	}
 	if meta.ColumnBinding == nil {
 		return BoolMainPredicate{}, false, nil

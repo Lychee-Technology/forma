@@ -23,8 +23,11 @@ import (
 // as float64.
 func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata) (any, error) {
 	switch meta.ValueType {
-	case forma.ValueTypeText, forma.ValueTypeUUID:
+	case forma.ValueTypeText:
 		return valStr, nil
+
+	case forma.ValueTypeUUID:
+		return uuidOperand(attr, valStr)
 
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
 		switch v := numutil.TryParseNumber(valStr).(type) {
@@ -105,6 +108,31 @@ func detectValueType(valStr string) forma.ValueType {
 	return forma.ValueTypeText
 }
 
+// canonicalUUID parses a uuid operand into the spelling the write path
+// stores in value_text (uuid.UUID.String(): lowercase, hyphenated), so the
+// uuid column and the text storage form compare one value whatever spelling
+// the caller sent. A literal that is not a UUID is refused as invalid input:
+// bound against a uuid column it fails the statement (22P02), and against
+// value_text it compares with nothing the store ever wrote.
+func canonicalUUID(literal string) (string, error) {
+	u, err := uuid.Parse(literal)
+	if err != nil {
+		return "", forma.InvalidInputf("%q is not a UUID", literal)
+	}
+	return u.String(), nil
+}
+
+// uuidOperand is canonicalUUID for a scalar comparison operand, which every
+// binder (entity_main, eav_data, DuckDB) converts through it. A list
+// element takes canonicalUUID with its index (coerceListElement).
+func uuidOperand(attr, valStr string) (string, error) {
+	v, err := canonicalUUID(valStr)
+	if err != nil {
+		return "", forma.WrapPublicf(err, "invalid uuid value for '%s'", attr)
+	}
+	return v, nil
+}
+
 // parseBoolOperand parses a bool predicate operand under ONE rule for both
 // engines (#384 P2b): the standard bool spellings via ParseBool, else any
 // integer literal with the >0 truthiness the PG EAV path has always applied.
@@ -125,7 +153,7 @@ func parseBoolOperand(valStr string) (parsed, ok bool) {
 func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) (any, error) {
 	switch valueType {
 	case forma.ValueTypeUUID:
-		return valStr, nil
+		return uuidOperand(attr, valStr)
 
 	case forma.ValueTypeBool:
 		if b, ok := parseBoolOperand(valStr); ok {

@@ -3,7 +3,6 @@ package sqlgen
 import (
 	"fmt"
 
-	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/conditionexpr"
 	"github.com/lychee-technology/forma/internal/iso8601"
@@ -105,13 +104,7 @@ func coerceListElement(attr string, meta forma.AttributeMetadata, literal string
 	case forma.ValueTypeText:
 		return literal, nil
 	case forma.ValueTypeUUID:
-		// Canonical form, as the write path stores it in value_text, so the
-		// text and uuid storage forms answer one list identically.
-		u, err := uuid.Parse(literal)
-		if err != nil {
-			return nil, forma.InvalidInputf("%q is not a UUID", literal)
-		}
-		return u.String(), nil
+		return canonicalUUID(literal)
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
 		switch v := numutil.TryParseNumber(literal).(type) {
 		case int64:

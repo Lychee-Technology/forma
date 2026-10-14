@@ -43,7 +43,12 @@ Operand rules shared by every operator:
 
 - Values are coerced by the attribute's value type: unix milliseconds or
   RFC 3339 for `date` and `datetime`, a number for the numeric types,
-  `true`/`false`/`1`/`0` for `bool`.
+  `true`/`false`/`1`/`0` for `bool`, a UUID for `uuid`. A `uuid` operand is
+  compared in canonical lowercase form, so upper- and lowercase spellings of
+  one UUID match the same rows wherever the attribute is stored.
+- An operand the value type cannot take, or an operator it does not take
+  (`starts_with` on a `uuid`), is `ErrInvalidInput` naming the attribute,
+  refused before the query runs.
 - A comparison never matches a row where the attribute has no value. In
   particular `not_equals` and `not_in` do not match absent values.
 

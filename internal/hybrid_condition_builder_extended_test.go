@@ -166,3 +166,49 @@ func TestOptimizedQueryShapeKey_IgnoresListLengthAndNowOffset(t *testing.T) {
 		key(&forma.KvCondition{Attr: "created", Value: "lte:1704164645000"}),
 		"$now and an absolute timestamp are different statements")
 }
+
+// A uuid leaf is judged before any SQL on the renderer Query and a
+// write's precondition share (#674 review). On the uuid column, LIKE and a
+// malformed operand used to render, and PostgreSQL failed the statement
+// (42883 `uuid ~~ unknown`, 22P02); in a conditional write that came after
+// the row lock and aborted the Tx. Both storage kinds now refuse them
+// alike, naming the attribute.
+func TestHybrid_UUIDLeafIsJudgedBeforeSQL(t *testing.T) {
+	cases := []struct{ attr, value, want string }{
+		{"owner", "starts_with:6f", "operator 'starts_with' only supported for text attributes, not 'uuid' (attribute 'owner')"},
+		{"owner", "contains:6f", "operator 'contains' only supported for text attributes, not 'uuid' (attribute 'owner')"},
+		{"owner", "equals:not-a-uuid", `invalid uuid value for 'owner': "not-a-uuid" is not a UUID`},
+		{"owner", "gt:6f1c", `invalid uuid value for 'owner': "6f1c" is not a UUID`},
+		{"ltbase_row_id", "starts_with:6f", "operator 'starts_with' only supported for text attributes, not 'uuid' (attribute 'ltbase_row_id')"},
+		{"ref", "contains:6f", "operator 'contains' only supported for text attributes, not 'uuid' (attribute 'ref')"},
+		{"ref", "equals:not-a-uuid", `invalid uuid value for 'ref': "not-a-uuid" is not a UUID`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.attr+"/"+tc.value, func(t *testing.T) {
+			for _, anchor := range []bool{true, false} {
+				_, _, err := newHybridTestHelper(anchor).build(&forma.KvCondition{Attr: tc.attr, Value: tc.value})
+				require.ErrorIs(t, err, forma.ErrInvalidInput)
+				message, published := forma.ResolvePublicMessage(err)
+				require.True(t, published, err)
+				require.Equal(t, tc.want, message)
+			}
+		})
+	}
+}
+
+// A uuid operand binds the spelling the write path stores, so an upper-case
+// or braced literal matches on the uuid column and in value_text alike, as
+// an `in` element already did.
+func TestHybrid_UUIDOperandBindsTheStoredSpelling(t *testing.T) {
+	const stored = "6f1c3c3e-1111-4111-8111-111111111111"
+	h := newHybridTestHelper(true)
+	clause, args, err := h.build(&forma.KvCondition{Attr: "owner", Value: "equals:6F1C3C3E-1111-4111-8111-111111111111"})
+	require.NoError(t, err)
+	require.Equal(t, `m."uuid_01" = $2`, clause)
+	require.Equal(t, []any{stored}, args)
+
+	clause, args, err = h.build(&forma.KvCondition{Attr: "ref", Value: "not_equals:{6F1C3C3E-1111-4111-8111-111111111111}"})
+	require.NoError(t, err)
+	require.Contains(t, clause, "x.value_text != $3")
+	require.Equal(t, []any{int16(16), stored}, args)
+}

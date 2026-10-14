@@ -2163,6 +2163,14 @@ message names exactly what to change, so `400` is what the DSL contract always
 intended. A client keying on `500` to detect a rejected operator must key on
 `400` plus `success: false` instead.
 
+Since the #674 review the whitelist (`checkOperatorForType`) also guards the
+`entity_main` routes, and both messages end with `(attribute '…')`. Those
+routes had left the LIKE rule to operand conversion, which let a pattern
+through on a `uuid` column. PostgreSQL then failed the statement (`42883`): an
+unclassified error from a hot-tier `Query`, and an aborted `Tx` for a
+conditional write. A `uuid` operand is parsed on every route as well, so a
+malformed one is `ErrInvalidInput` naming the attribute instead of `22P02`.
+
 ### Status change: a duplicate-attribute payload now succeeds
 
 Baseline for this section is the **pre-#301** contract, as above.

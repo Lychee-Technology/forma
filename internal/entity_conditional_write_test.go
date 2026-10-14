@@ -52,6 +52,8 @@ func condSchemaCache() forma.SchemaAttributeCache {
 		// update's value in them (#674 review).
 		"createdEpoch": {AttributeID: 16, ValueType: forma.ValueTypeBigInt, ColumnBinding: bind("ltbase_created_at", "")},
 		"touchedAt":    {AttributeID: 17, ValueType: forma.ValueTypeDateTime, ColumnBinding: bind("ltbase_updated_at", forma.MainColumnEncodingUnixMs)},
+		"token":        {AttributeID: 18, ValueType: forma.ValueTypeUUID, ColumnBinding: bind("uuid_01", "")},
+		"ref":          {AttributeID: 19, ValueType: forma.ValueTypeUUID},
 	}
 }
 

@@ -140,7 +140,10 @@ func normalizeHybridPayload(
 	if err != nil {
 		return HybridLeafPayload{IsMain: true, Err: err}
 	}
-	if p, ok, err := pgMainBoolPredicate(leafMeta, lenient.Operator, lenientSQL.SQLOperator, lenientSQL.Value, kv.Attr); err != nil {
+	if err := checkOperatorForType(kv.Attr, lenient.Operator, lenientSQL.SQLOperator, leafMeta.ValueType); err != nil {
+		return HybridLeafPayload{IsMain: true, Err: err}
+	}
+	if p, ok, err := pgMainBoolPredicate(leafMeta, lenientSQL.SQLOperator, lenientSQL.Value, kv.Attr); err != nil {
 		return HybridLeafPayload{IsMain: true, Err: err}
 	} else if ok {
 		return HybridLeafPayload{IsMain: true, MainColumn: colName, MainBool: &p}
@@ -256,33 +259,26 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 	opStr := operator.Operator
 	valStr := operator.Value
 
-	valueColumn, parsedValue, err := parsePgEavValue(kv.Attr, meta, valStr)
-	if err != nil {
-		return PgEavLeafPayload{Err: err}
-	}
-
+	// Operator, then operator against type, then operand: the order of the
+	// entity_main forms, so a uuid LIKE pattern is refused for its operator
+	// rather than as a malformed UUID.
 	sqlOperator, err := conditionexpr.ToSQLOperator(opStr, valStr)
 	if err != nil {
 		return PgEavLeafPayload{Err: err}
 	}
 	sqlOp := sqlOperator.SQLOperator
-	if sqlOp == "LIKE" {
-		parsedValue = sqlOperator.Value
+	if err := checkOperatorForType(kv.Attr, opStr, sqlOp, meta.ValueType); err != nil {
+		return PgEavLeafPayload{Err: err}
 	}
 
-	// Both operator-whitelist rejections wrap forma.ErrInvalidInput: the operator
-	// is caller-supplied in the advanced_query condition DSL, and since #301 the
-	// HTTP boundary classifies on sentinel evidence alone. Without the sentinel,
-	// starts_with on a UUID column answered an opaque 500 instead of a 400 naming
-	// the operator and the type (#307 round-4 Finding 4).
-	//
 	// The `unsupported value_type` default in parsePgEavValue deliberately stays
 	// plain: that names the schema's declared type, not anything the caller sent.
-	if meta.ValueType != forma.ValueTypeText && sqlOp == "LIKE" {
-		return PgEavLeafPayload{Err: forma.InvalidInputf("operator '%s' only supported for text attributes, not '%s'", opStr, meta.ValueType)}
+	valueColumn, parsedValue, err := parsePgEavValue(kv.Attr, meta, valStr)
+	if err != nil {
+		return PgEavLeafPayload{Err: err}
 	}
-	if meta.ValueType == forma.ValueTypeBool && sqlOp != "=" && sqlOp != "!=" {
-		return PgEavLeafPayload{Err: forma.InvalidInputf("operator '%s' not supported for boolean attributes", opStr)}
+	if sqlOp == "LIKE" {
+		parsedValue = sqlOperator.Value
 	}
 
 	return PgEavLeafPayload{
@@ -300,8 +296,15 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 // behavior is unchanged, and the characterization matrix guards it.
 func parsePgEavValue(attr string, meta forma.AttributeMetadata, valStr string) (valueColumn string, parsedValue any, err error) {
 	switch meta.ValueType {
-	case forma.ValueTypeText, forma.ValueTypeUUID:
+	case forma.ValueTypeText:
 		return "value_text", valStr, nil
+
+	case forma.ValueTypeUUID:
+		v, err := uuidOperand(attr, valStr)
+		if err != nil {
+			return "", nil, err
+		}
+		return "value_text", v, nil
 
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
 		switch v := numutil.TryParseNumber(valStr).(type) {
@@ -387,9 +390,12 @@ func normalizePgMainPayload(
 	if lenientSQLErr != nil {
 		return PgMainLeafPayload{Err: lenientSQLErr}
 	}
+	if err := checkOperatorForType(kv.Attr, lenient.Operator, lenientSQL.SQLOperator, meta.ValueType); err != nil {
+		return PgMainLeafPayload{Err: err}
+	}
 
 	column := resolveMainTableColumn(kv.Attr, meta)
-	if p, ok, err := pgMainBoolPredicate(meta, lenient.Operator, lenientSQL.SQLOperator, lenientSQL.Value, kv.Attr); err != nil {
+	if p, ok, err := pgMainBoolPredicate(meta, lenientSQL.SQLOperator, lenientSQL.Value, kv.Attr); err != nil {
 		return PgMainLeafPayload{Err: err}
 	} else if ok {
 		return PgMainLeafPayload{Column: column, Bool: &p}
