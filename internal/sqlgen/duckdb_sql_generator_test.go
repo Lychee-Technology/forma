@@ -398,7 +398,7 @@ func TestBuildDuckClause_GivenNestedAndOrConditions_WhenClauseBuilt_ThenGrouping
 
 	clause, args, err := buildDuckClause(cond, nil)
 	require.NoError(t, err)
-	require.Equal(t, "(status = ?) AND ((score > CAST(? AS DOUBLE)) OR (email LIKE ?))", clause)
+	require.Equal(t, `(status = ?) AND ((score > CAST(? AS DOUBLE)) OR (email LIKE ? ESCAPE '\'))`, clause)
 	require.Equal(t, []any{"active", "10", "ops%"}, args)
 }
 
