@@ -123,8 +123,8 @@ func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
 	updatedAt := time.Date(2024, 1, 2, 4, 5, 6, 0, time.UTC)
 	repo.withClock(func() time.Time { return updatedAt })
 	record.TextItems["text_01"] = "updated"
-	_, err := repo.MergePersistentRecord(ctx, tables, record.SchemaID, record.RowID,
-		func(_ context.Context, _ *model.PersistentRecord) (*model.PersistentRecord, error) {
+	_, err := repo.MergePersistentRecord(ctx, tables, record.SchemaID, record.RowID, model.RowGuard{},
+		func(_ context.Context, _ *model.PersistentRecord, _ model.TxClock) (*model.PersistentRecord, error) {
 			return record, nil
 		})
 	require.NoError(t, err)
@@ -141,7 +141,7 @@ func TestChangeLogWritesOnUpdateAndDeleteIntegration(t *testing.T) {
 
 	deletedAt := time.Date(2024, 1, 2, 5, 6, 7, 0, time.UTC)
 	repo.withClock(func() time.Time { return deletedAt })
-	require.NoError(t, repo.DeletePersistentRecord(ctx, tables, record.SchemaID, record.RowID))
+	require.NoError(t, repo.DeletePersistentRecord(ctx, tables, record.SchemaID, record.RowID, model.RowGuard{}))
 
 	err = pool.QueryRow(ctx, query, record.SchemaID, record.RowID).Scan(&changeTimestamp, &deletedStamp)
 	require.NoError(t, err)

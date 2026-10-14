@@ -94,8 +94,8 @@ func TestMergePersistentRecordLocksThenReadsInsideTransaction(t *testing.T) {
 	mock.ExpectRollback()
 
 	var seen *model.PersistentRecord
-	stored, err := repo.MergePersistentRecord(ctx, tables, 1, rowID,
-		func(_ context.Context, existing *model.PersistentRecord) (*model.PersistentRecord, error) {
+	stored, err := repo.MergePersistentRecord(ctx, tables, 1, rowID, model.RowGuard{},
+		func(_ context.Context, existing *model.PersistentRecord, _ model.TxClock) (*model.PersistentRecord, error) {
 			seen = existing
 			return merged, nil
 		})
@@ -133,8 +133,8 @@ func TestMergePersistentRecordWhenRowMissingHandsNilAndWritesNothing(t *testing.
 	mock.ExpectRollback()
 
 	called := false
-	stored, err := repo.MergePersistentRecord(ctx, tables, 1, rowID,
-		func(_ context.Context, existing *model.PersistentRecord) (*model.PersistentRecord, error) {
+	stored, err := repo.MergePersistentRecord(ctx, tables, 1, rowID, model.RowGuard{},
+		func(_ context.Context, existing *model.PersistentRecord, _ model.TxClock) (*model.PersistentRecord, error) {
 			called = true
 			assert.Nil(t, existing, "an absent row must reach merge as nil")
 			return nil, forma.NotFoundf("entity not found: %s/%s", "mock_schema", rowID)

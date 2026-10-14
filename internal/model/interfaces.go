@@ -18,8 +18,9 @@ type PersistentRecordTransformer interface {
 	// refuses blocks the updates that keep it and never the one that
 	// replaces it (#590). merge must return a document whose containers are
 	// the base's or fresh copies: resolution rewrites the ones that hold
-	// stored values in place.
-	MergeUpdate(ctx context.Context, record *PersistentRecord, merge func(base map[string]any) map[string]any) (map[string]any, error)
+	// stored values in place. An error from merge fails MergeUpdate before
+	// anything is decoded.
+	MergeUpdate(ctx context.Context, record *PersistentRecord, merge func(base map[string]any) (map[string]any, error)) (map[string]any, error)
 }
 
 type StorageTables struct {
@@ -66,7 +67,29 @@ type PersistentRecordKey struct {
 // verbatim, so dropping it clears a stored tombstone. CreatedAt is never
 // written, only echoed, so a result that omits it answers a zero timestamp.
 // UpdatedAt is the one field the repository stamps itself.
-type PersistentRecordMerge func(ctx context.Context, existing *PersistentRecord) (*PersistentRecord, error)
+//
+// clock reads the write transaction's clock (TxClock); a merge that never
+// calls it costs no statement.
+type PersistentRecordMerge func(ctx context.Context, existing *PersistentRecord, clock TxClock) (*PersistentRecord, error)
+
+// TxClock reads the clock of the transaction a write runs in (#649):
+// PostgreSQL now(), the transaction's start, as epoch milliseconds. Every
+// read inside one transaction answers the same instant, and it is the instant
+// the condition DSL's $now operand names in that transaction.
+type TxClock func(ctx context.Context) (int64, error)
+
+// RowGuard is what a single-row write requires of the row it writes (#649),
+// checked after the row's lock is granted and before anything is written.
+// The zero value requires nothing and costs no statement.
+type RowGuard struct {
+	// Precondition is a condition in Query's DSL the row must satisfy. The
+	// repository renders it before the write sends any statement, so a
+	// malformed condition fails without touching the database. A missing row
+	// is left to the caller (the merge sees nil; a delete answers
+	// forma.ErrNotFound); a row that does not satisfy it fails the write
+	// with forma.ErrPreconditionFailed. nil means no precondition.
+	Precondition forma.Condition
+}
 
 // PersistentRecordBatchMerge is PersistentRecordMerge for one row of a batch:
 // index is the row's position in the keys handed to
@@ -80,9 +103,12 @@ type PersistentRecordWriter interface {
 	// MergePersistentRecord is the guarded read-modify-write (#457): it takes
 	// the per-row advisory lock create and delete take, reads the row inside
 	// the write transaction, hands it to merge, and stores what merge returns
-	// — all in one transaction. It answers the stored record.
-	MergePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID, merge PersistentRecordMerge) (*PersistentRecord, error)
-	DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID) error
+	// — all in one transaction. It answers the stored record. guard is
+	// checked between the lock and the read.
+	MergePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID, guard RowGuard, merge PersistentRecordMerge) (*PersistentRecord, error)
+	// DeletePersistentRecord deletes the row under the same lock, after guard
+	// holds. A missing row is forma.ErrNotFound.
+	DeletePersistentRecord(ctx context.Context, tables StorageTables, schemaID int16, rowID uuid.UUID, guard RowGuard) error
 }
 
 type PersistentRecordReader interface {

@@ -118,7 +118,7 @@ func (w *writeSpy) FromPersistentRecord(ctx context.Context, record *model.Persi
 	return w.inner.FromPersistentRecord(ctx, record)
 }
 
-func (w *writeSpy) MergeUpdate(ctx context.Context, record *model.PersistentRecord, merge func(base map[string]any) map[string]any) (map[string]any, error) {
+func (w *writeSpy) MergeUpdate(ctx context.Context, record *model.PersistentRecord, merge func(base map[string]any) (map[string]any, error)) (map[string]any, error) {
 	return w.inner.MergeUpdate(ctx, record, merge)
 }
 

@@ -27,7 +27,7 @@ import (
 // under the lock is carried forward, then one attribute is set (replacing
 // the base's value for it, if any).
 func carryForwardAndSet(attrID int16, value string) model.PersistentRecordMerge {
-	return func(_ context.Context, existing *model.PersistentRecord) (*model.PersistentRecord, error) {
+	return func(_ context.Context, existing *model.PersistentRecord, _ model.TxClock) (*model.PersistentRecord, error) {
 		if existing == nil {
 			return nil, forma.NotFoundf("merge base missing")
 		}
@@ -56,7 +56,7 @@ func carryForwardAndSet(attrID int16, value string) model.PersistentRecordMerge 
 
 func batchOf(merge model.PersistentRecordMerge) model.PersistentRecordBatchMerge {
 	return func(ctx context.Context, _ int, existing *model.PersistentRecord) (*model.PersistentRecord, error) {
-		return merge(ctx, existing)
+		return merge(ctx, existing, nil) // a batch merge has no clock, and these merges read none
 	}
 }
 
@@ -163,7 +163,7 @@ func TestBatchMergeRacingSingleRowMergeNeitherLoses(t *testing.T) {
 				_, errs[i] = repo.BatchMergePersistentRecords(ctx, tables, keysOf(shared), batchOf(merge))
 				return
 			}
-			_, errs[i] = repo.MergePersistentRecord(ctx, tables, 1, shared, merge)
+			_, errs[i] = repo.MergePersistentRecord(ctx, tables, 1, shared, model.RowGuard{}, merge)
 		}(i)
 	}
 	wg.Wait()
@@ -193,7 +193,7 @@ func TestBatchMergeOppositeInputOrderBothCommit(t *testing.T) {
 		inner := carryForwardAndSet(attrID, fmt.Sprintf("value-%02d", attrID))
 		return func(ctx context.Context, i int, existing *model.PersistentRecord) (*model.PersistentRecord, error) {
 			time.Sleep(5 * time.Millisecond)
-			return inner(ctx, existing)
+			return inner(ctx, existing, nil)
 		}
 	}
 
@@ -232,7 +232,7 @@ func TestBatchMergeVsBatchDeleteOppositeOrderNoDeadlock(t *testing.T) {
 
 	pausing := func(ctx context.Context, _ int, existing *model.PersistentRecord) (*model.PersistentRecord, error) {
 		time.Sleep(5 * time.Millisecond)
-		return carryForwardAndSet(1, "value-01")(ctx, existing)
+		return carryForwardAndSet(1, "value-01")(ctx, existing, nil)
 	}
 
 	for round := range 20 {

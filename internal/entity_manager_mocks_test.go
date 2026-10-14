@@ -46,6 +46,12 @@ type mockPersistentRecordRepository struct {
 	atomicInsertFailAt int
 	atomicUpdateFailAt int
 	atomicDeleteFailAt int
+	// clock is the TxClock every merge receives; nil unless a test sets it.
+	clock model.TxClock
+	// mergeCalls counts MergePersistentRecord calls, and guards records the
+	// guard of every single-row merge and delete, in call order.
+	mergeCalls int
+	guards     []model.RowGuard
 }
 
 type mockFederatedQueryEngine struct {
@@ -80,7 +86,9 @@ func (m *mockPersistentRecordRepository) InsertPersistentRecord(ctx context.Cont
 	return nil
 }
 
-func (m *mockPersistentRecordRepository) MergePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID, merge model.PersistentRecordMerge) (*model.PersistentRecord, error) {
+func (m *mockPersistentRecordRepository) MergePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID, guard model.RowGuard, merge model.PersistentRecordMerge) (*model.PersistentRecord, error) {
+	m.mergeCalls++
+	m.guards = append(m.guards, guard)
 	if m.beforeMerge != nil {
 		m.beforeMerge()
 	}
@@ -88,7 +96,7 @@ func (m *mockPersistentRecordRepository) MergePersistentRecord(ctx context.Conte
 	if schemaRecords, ok := m.records[schemaID]; ok {
 		existing = schemaRecords[rowID]
 	}
-	record, err := merge(ctx, existing)
+	record, err := merge(ctx, existing, m.clock)
 	if err != nil {
 		return nil, err
 	}
@@ -96,8 +104,9 @@ func (m *mockPersistentRecordRepository) MergePersistentRecord(ctx context.Conte
 	return record, nil
 }
 
-func (m *mockPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
+func (m *mockPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID, guard model.RowGuard) error {
 	m.deleteCalls++
+	m.guards = append(m.guards, guard)
 	if schemaRecords, ok := m.records[schemaID]; ok {
 		delete(schemaRecords, rowID)
 	}
@@ -251,7 +260,7 @@ func (m *mockPersistentRecordRepository) BatchDeletePersistentRecords(ctx contex
 			m.deleteCalls = deleteCalls
 			return fmt.Errorf("forced atomic delete failure at index %d", i)
 		}
-		if err := m.DeletePersistentRecord(ctx, tables, key.SchemaID, key.RowID); err != nil {
+		if err := m.DeletePersistentRecord(ctx, tables, key.SchemaID, key.RowID, model.RowGuard{}); err != nil {
 			m.records = snapshot
 			m.deleteCalls = deleteCalls
 			return err

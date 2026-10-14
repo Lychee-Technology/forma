@@ -88,8 +88,10 @@ func TestMergeClassifiesUniqueViolationAsConflict(t *testing.T) {
 		WillReturnError(&pgconn.PgError{Code: "23505", Detail: pgDetail, ConstraintName: "entity_main_pkey"})
 	mock.ExpectRollback()
 
-	_, err = repo.MergePersistentRecord(ctx, tables, 1, rowID,
-		func(context.Context, *model.PersistentRecord) (*model.PersistentRecord, error) { return record, nil })
+	_, err = repo.MergePersistentRecord(ctx, tables, 1, rowID, model.RowGuard{},
+		func(context.Context, *model.PersistentRecord, model.TxClock) (*model.PersistentRecord, error) {
+			return record, nil
+		})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, forma.ErrConflict)
 	assert.ErrorIs(t, err, forma.ErrUniqueConflict)

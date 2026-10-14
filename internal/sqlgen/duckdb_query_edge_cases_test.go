@@ -1,6 +1,7 @@
 package sqlgen
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -111,8 +112,8 @@ func TestGenerateDuckDBWhereClause_ManyTopLevelConditions(t *testing.T) {
 	conditions := make([]forma.Condition, 0, 25)
 	for i := range 25 {
 		conditions = append(conditions, &forma.KvCondition{
-			Attr:  "field" + string(rune(i)),
-			Value: "value" + string(rune(i)),
+			Attr:  "field" + strconv.Itoa(i),
+			Value: "value" + strconv.Itoa(i),
 		})
 	}
 

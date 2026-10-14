@@ -44,10 +44,12 @@ type Transactor interface {
 //
 // Create, Update and Delete take the same *EntityOperation as EntityManager's
 // methods and apply the same validation, computed-field stripping, per-row
-// lock, merge semantics, version stamping and change_log write. A later
-// operation sees the writes of earlier ones, and no other connection sees any
-// of them until commit. Tx reads and writes the hot tier only; it never
-// touches the federated engine.
+// lock, merge semantics, version stamping and change_log write, Preconditions
+// and UpdateOps included: ErrPreconditionFailed and ErrNotFound leave the Tx
+// usable, and every server_time and $now in it name the transaction's one
+// instant. A later operation sees the writes of earlier ones, and no other
+// connection sees any of them until commit. Tx reads and writes the hot tier
+// only; it never touches the federated engine.
 //
 // Tx is sealed, so methods can be added to it without breaking a caller's
 // build. A type outside Forma cannot satisfy Tx with methods of its own; it can

@@ -36,18 +36,26 @@ type ArrayPaths map[string]struct{}
 // array rather than something under it, and nesting it is both correct and
 // necessary for the value to be validated.
 func (p ArrayPaths) CrossesBelow(prefix, name string) bool {
+	_, crosses := p.CrossedArray(prefix, name)
+	return crosses
+}
+
+// CrossedArray answers the outermost array CrossesBelow finds: the shortest
+// proper prefix of name, longer than prefix, that the schema declares as an
+// array.
+func (p ArrayPaths) CrossedArray(prefix, name string) (string, bool) {
 	if len(p) == 0 {
-		return false
+		return "", false
 	}
 	for i, char := range name {
 		if char != '.' || i <= len(prefix) {
 			continue
 		}
 		if _, ok := p[name[:i]]; ok {
-			return true
+			return name[:i], true
 		}
 	}
-	return false
+	return "", false
 }
 
 // ArrayPaths returns the array paths declared by the schema registered for

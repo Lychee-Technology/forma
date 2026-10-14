@@ -59,6 +59,28 @@ func TestArrayPathsCrossesOnlyProperPrefixes(t *testing.T) {
 	require.False(t, paths.CrossesBelow("", "requirement.areasX.city"), "prefixes must end at a dot")
 }
 
+// TestCrossedArrayNamesTheOutermostArray pins the array CrossedArray names:
+// the outermost one name crosses, for a message that points at the array
+// the caller wrote through.
+func TestCrossedArrayNamesTheOutermostArray(t *testing.T) {
+	paths := ArrayPaths{"visits": {}, "visits.notes": {}, "requirement.areas": {}}
+
+	for name, want := range map[string]string{
+		"visits.notes.text":      "visits",
+		"requirement.areas.city": "requirement.areas",
+	} {
+		got, ok := paths.CrossedArray("", name)
+		require.True(t, ok, name)
+		require.Equal(t, want, got, name)
+	}
+	got, ok := paths.CrossedArray("visits", "visits.notes.text")
+	require.True(t, ok)
+	require.Equal(t, "visits.notes", got, "arrays at or above prefix are skipped")
+
+	_, ok = paths.CrossedArray("", "requirement.areas")
+	require.False(t, ok, "the array path itself crosses nothing")
+}
+
 // TestArrayPathsNilIsSafe pins that absent knowledge reads as "nothing is an
 // array", which leaves callers with pre-#314 behaviour instead of panicking.
 func TestArrayPathsNilIsSafe(t *testing.T) {

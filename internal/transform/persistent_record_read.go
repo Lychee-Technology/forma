@@ -204,12 +204,9 @@ func (t *persistentRecordTransformer) readWithDefaultEncoding(record *model.Pers
 // isSystemManagedColumn reports the main columns the record owns itself
 // (row id, schema id, lifecycle timestamps). A binding to one of them is a
 // read-only alias — storeInMainColumn skips it, and so does checkStorageFit,
-// because the caller's value is never what gets written there.
+// because the caller's value is never what gets written there. The set is
+// model.IsSystemColumn's, which update-operator intake reads too (#674), so
+// an operator is refused on exactly the bindings this skips.
 func isSystemManagedColumn(col forma.MainColumn) bool {
-	switch col {
-	case forma.MainColumnRowID, forma.MainColumnSchemaID,
-		forma.MainColumnCreatedAt, forma.MainColumnUpdatedAt, forma.MainColumnDeletedAt:
-		return true
-	}
-	return false
+	return model.IsSystemColumn(string(col))
 }

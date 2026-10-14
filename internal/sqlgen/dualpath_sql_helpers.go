@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lychee-technology/forma/internal/numutil"
 
@@ -23,8 +24,11 @@ import (
 // as float64.
 func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata) (any, error) {
 	switch meta.ValueType {
-	case forma.ValueTypeText, forma.ValueTypeUUID:
-		return valStr, nil
+	case forma.ValueTypeText:
+		return textOperand(attr, valStr)
+
+	case forma.ValueTypeUUID:
+		return uuidOperand(attr, valStr)
 
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
 		v, ok, err := numericOperand(attr, valStr, meta.ValueType)
@@ -102,6 +106,59 @@ func detectValueType(valStr string) forma.ValueType {
 	return forma.ValueTypeText
 }
 
+// canonicalUUID parses a uuid operand into the spelling the write path
+// stores in value_text (uuid.UUID.String(): lowercase, hyphenated), so the
+// uuid column and the text storage form compare one value whatever spelling
+// the caller sent. A literal that is not a UUID is refused as invalid input:
+// bound against a uuid column it fails the statement (22P02), and against
+// value_text it compares with nothing the store ever wrote.
+func canonicalUUID(literal string) (string, error) {
+	u, err := uuid.Parse(literal)
+	if err != nil {
+		return "", forma.InvalidInputf("%q is not a UUID", literal)
+	}
+	return u.String(), nil
+}
+
+// uuidOperand is canonicalUUID for a scalar comparison operand, which every
+// binder (entity_main, eav_data, DuckDB) converts through it. A list
+// element takes canonicalUUID with its index (coerceListElement).
+func uuidOperand(attr, valStr string) (string, error) {
+	v, err := canonicalUUID(valStr)
+	if err != nil {
+		return "", forma.WrapPublicf(err, "invalid uuid value for '%s'", attr)
+	}
+	return v, nil
+}
+
+// checkTextLiteral refuses a text operand that PostgreSQL text cannot hold:
+// one with a NUL character, or bytes that are not valid UTF-8. It names no
+// value a row can store, and bound as a parameter it failed the statement
+// (22021), which in a conditional write came after the row lock and aborted
+// the Tx (#674 review). Escaping a LIKE operand and adding its wildcards
+// inserts only ASCII bytes outside any multi-byte sequence, so a pattern
+// passes exactly when its operand does.
+func checkTextLiteral(literal string) error {
+	if strings.IndexByte(literal, 0) >= 0 {
+		return forma.InvalidInputf("text cannot contain a NUL character (U+0000)")
+	}
+	if !utf8.ValidString(literal) {
+		return forma.InvalidInputf("text must be valid UTF-8")
+	}
+	return nil
+}
+
+// textOperand is checkTextLiteral for a scalar comparison operand, which
+// every binder (entity_main, eav_data, DuckDB) converts through, LIKE
+// patterns included. A list element takes checkTextLiteral with its index
+// (coerceListElement).
+func textOperand(attr, valStr string) (string, error) {
+	if err := checkTextLiteral(valStr); err != nil {
+		return "", forma.WrapPublicf(err, "invalid text value for '%s'", attr)
+	}
+	return valStr, nil
+}
+
 // parseBoolOperand parses a bool predicate operand under ONE rule for both
 // engines (#384 P2b): the standard bool spellings via ParseBool, else any
 // integer literal with the >0 truthiness the PG EAV path has always applied.
@@ -122,7 +179,7 @@ func parseBoolOperand(valStr string) (parsed, ok bool) {
 func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) (any, error) {
 	switch valueType {
 	case forma.ValueTypeUUID:
-		return valStr, nil
+		return uuidOperand(attr, valStr)
 
 	case forma.ValueTypeBool:
 		if b, ok := parseBoolOperand(valStr); ok {

@@ -65,6 +65,12 @@ func newHybridTestHelper(useMainAnchor bool) hybridTestHelper {
 			ValueType:     forma.ValueTypeNumeric,
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("double_01")},
 		},
+		"owner": {
+			AttributeID:   15,
+			ValueType:     forma.ValueTypeUUID,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("uuid_01")},
+		},
+		"ref": {AttributeID: 16, ValueType: forma.ValueTypeUUID},
 	}); err != nil {
 		panic(err)
 	}
@@ -359,22 +365,23 @@ func TestHybrid_BoolTextEncoding(t *testing.T) {
 // too. It used to render `m.<col> > $n` against the raw 1/0 bind (a stored
 // 2 was "greater than true") and `m.<col> LIKE $n` against an int, a
 // Postgres-side type error; the pg-main and EAV routes always rejected it.
+// The whitelist judges LIKE before the bool rule, so a LIKE names text.
 func TestHybrid_BoolNonEqualityOperatorRejected(t *testing.T) {
 	for _, tc := range []struct {
-		attr, value, wantOp string
+		attr, value, want string
 	}{
-		{"active_int", "gt:true", "gt"},
-		{"active_int", "lte:0", "lte"},
-		{"active_int", "starts_with:1", "starts_with"},
-		{"active_text", "gte:1", "gte"},
-		{"active_text", "contains:1", "contains"},
+		{"active_int", "gt:true", "operator 'gt' not supported for boolean attributes (attribute 'active_int')"},
+		{"active_int", "lte:0", "operator 'lte' not supported for boolean attributes (attribute 'active_int')"},
+		{"active_int", "starts_with:1", "operator 'starts_with' only supported for text attributes, not 'bool' (attribute 'active_int')"},
+		{"active_text", "gte:1", "operator 'gte' not supported for boolean attributes (attribute 'active_text')"},
+		{"active_text", "contains:1", "operator 'contains' only supported for text attributes, not 'bool' (attribute 'active_text')"},
 	} {
 		t.Run(tc.attr+"/"+tc.value, func(t *testing.T) {
 			for _, anchor := range []bool{true, false} {
 				h := newHybridTestHelper(anchor)
 				_, _, err := h.build(&forma.KvCondition{Attr: tc.attr, Value: tc.value})
 				require.ErrorIs(t, err, forma.ErrInvalidInput)
-				require.Contains(t, err.Error(), "operator '"+tc.wantOp+"' not supported for boolean attributes")
+				require.Contains(t, err.Error(), tc.want)
 			}
 		})
 	}

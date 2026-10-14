@@ -109,7 +109,7 @@ func TestMergeUpdateRefusesToDropUnplacedStoredValue(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"18[0,0]=c"}, storedKeys(stored.OtherAttributes))
 
-	for name, merge := range map[string]func(map[string]any) map[string]any{
+	for name, merge := range map[string]func(map[string]any) (map[string]any, error){
 		"unrelated attribute":  setting(map[string]any{"tags": []any{"unrelated"}}),
 		"no change":            keepAll,
 		"sibling of the array": setting(map[string]any{"order.note": "n"}),

@@ -6,7 +6,13 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-// hasMainTableCondition checks if a condition contains predicates on main table columns
+// hasMainTableCondition checks if a condition contains predicates on main table columns.
+//
+// It answers true whenever the condition could hold for an entity with no
+// eav_data row, which an eav_data anchor never visits. Every eav_data leaf
+// but is_null is an EXISTS, false for such an entity, and the tree has no
+// negation, so only three nodes can make it true there: a main-table leaf,
+// is_null, and an empty and group, which renders 1=1.
 func hasMainTableCondition(cond forma.Condition, cache forma.SchemaAttributeCache) bool {
 	if cond == nil {
 		// An empty condition implies no filtering; treat as having main table condition
@@ -16,6 +22,11 @@ func hasMainTableCondition(cond forma.Condition, cache forma.SchemaAttributeCach
 	case *forma.CompositeCondition:
 		if c == nil {
 			return false
+		}
+		// An empty and holds for every entity (#649 review); an empty or
+		// renders 1=0 and holds for none.
+		if len(c.Conditions) == 0 && c.Logic == forma.LogicAnd {
+			return true
 		}
 		for _, child := range c.Conditions {
 			if hasMainTableCondition(child, cache) {

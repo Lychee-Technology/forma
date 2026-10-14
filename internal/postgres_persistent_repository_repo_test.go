@@ -180,7 +180,7 @@ func TestInsertNilRecordAndMergeNilFunctionAreRejected(t *testing.T) {
 	err := repo.InsertPersistentRecord(context.Background(), model.StorageTables{}, nil)
 	require.Error(t, err)
 
-	stored, err := repo.MergePersistentRecord(context.Background(), model.StorageTables{}, 1, uuid.New(), nil)
+	stored, err := repo.MergePersistentRecord(context.Background(), model.StorageTables{}, 1, uuid.New(), model.RowGuard{}, nil)
 	require.Error(t, err)
 	require.Nil(t, stored)
 	require.Contains(t, err.Error(), "merge function cannot be nil")

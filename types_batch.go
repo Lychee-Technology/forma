@@ -28,6 +28,20 @@ type EntityOperation struct {
 	Type    OperationType  `json:"type"`
 	Data    map[string]any `json:"data,omitempty"`
 	Updates map[string]any `json:"updates,omitempty"`
+
+	// Preconditions must hold on the row, evaluated after the row's lock is
+	// granted and in the same transaction as the write, or the operation
+	// writes nothing: a row that does not satisfy it is ErrPreconditionFailed,
+	// a missing row ErrNotFound. It is a condition in Query's DSL over schema
+	// attributes, and it holds exactly when a hot-tier Query for the row with
+	// the same condition would return it. Update and Delete only (EntityManager
+	// and Tx); nil means none. Batches refuse it. See
+	// docs/conditional-writes.md.
+	Preconditions Condition `json:"-"`
+	// UpdateOps compute values from the locked row or the transaction clock
+	// and apply after Updates; an attribute takes one or the other. Update
+	// only, where they may stand in for Updates. Batches refuse them.
+	UpdateOps []UpdateOp `json:"-"`
 }
 
 // BatchOperation represents batch entity operations.

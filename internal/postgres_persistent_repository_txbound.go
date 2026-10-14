@@ -42,6 +42,7 @@ func (b *txBoundRepository) MergePersistentRecord(
 	tables model.StorageTables,
 	schemaID int16,
 	rowID uuid.UUID,
+	guard model.RowGuard,
 	merge model.PersistentRecordMerge,
 ) (*model.PersistentRecord, error) {
 	if merge == nil {
@@ -50,18 +51,26 @@ func (b *txBoundRepository) MergePersistentRecord(
 	if err := validateWriteTables(tables); err != nil {
 		return nil, fmt.Errorf("validate tables for update: %w", err)
 	}
-	stored, err := b.repo.mergeRecordInTx(ctx, b.tx, tables, schemaID, rowID, merge)
+	rendered, err := b.repo.renderRowGuard(tables, schemaID, guard)
+	if err != nil {
+		return nil, fmt.Errorf("prepare update of %s: %w", rowID, err)
+	}
+	stored, err := b.repo.mergeRecordInTx(ctx, b.tx, tables, schemaID, rowID, rendered, merge)
 	if err != nil {
 		return nil, classifyStatementError(err)
 	}
 	return stored, nil
 }
 
-func (b *txBoundRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
+func (b *txBoundRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID, guard model.RowGuard) error {
 	if err := validateWriteTables(tables); err != nil {
 		return fmt.Errorf("validate tables for delete: %w", err)
 	}
-	return classifyStatementError(b.repo.deleteRecordInTx(ctx, b.tx, tables, schemaID, rowID))
+	rendered, err := b.repo.renderRowGuard(tables, schemaID, guard)
+	if err != nil {
+		return fmt.Errorf("prepare delete of %s: %w", rowID, err)
+	}
+	return classifyStatementError(b.repo.deleteRecordInTx(ctx, b.tx, tables, schemaID, rowID, rendered))
 }
 
 func (b *txBoundRepository) GetPersistentRecord(context.Context, model.StorageTables, int16, uuid.UUID) (*model.PersistentRecord, error) {

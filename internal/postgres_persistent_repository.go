@@ -229,22 +229,45 @@ func (r *DBPersistentRecordRepository) insertRecordInTx(ctx context.Context, tx 
 	return nil
 }
 
-func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
+// DeletePersistentRecord pins READ COMMITTED for a guarded delete, for the
+// reason MergePersistentRecord does: the guard judges the row after its lock
+// is granted, and a snapshot level would freeze that judgement at the lock
+// statement, before the previous holder committed. An unguarded delete keeps
+// the session's level, where a snapshot conflict is a retryable 40001 (#645).
+func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID, guard model.RowGuard) error {
 	if err := validateWriteTables(tables); err != nil {
 		return fmt.Errorf("validate tables for delete: %w", err)
 	}
-	return r.inWriteTx(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		return r.deleteRecordInTx(ctx, tx, tables, schemaID, rowID)
+	rendered, err := r.renderRowGuard(tables, schemaID, guard)
+	if err != nil {
+		return fmt.Errorf("prepare delete of %s: %w", rowID, err)
+	}
+	opts := pgx.TxOptions{}
+	if rendered != nil {
+		opts.IsoLevel = pgx.ReadCommitted
+	}
+	return r.inWriteTx(ctx, opts, func(tx pgx.Tx) error {
+		return r.deleteRecordInTx(ctx, tx, tables, schemaID, rowID, rendered)
 	})
 }
 
 // deleteRecordInTx is DeletePersistentRecord's body: every statement of the
-// delete, run on tx.
-func (r *DBPersistentRecordRepository) deleteRecordInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
+// delete, run on tx. guard was rendered before the delete sent any
+// statement; nil requires nothing.
+func (r *DBPersistentRecordRepository) deleteRecordInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, schemaID int16, rowID uuid.UUID, guard *renderedGuard) error {
 	// The per-row lock pairs with the create path's: a concurrent recreate
 	// must observe this delete's tombstone before allocating its version.
 	if err := lockRowVersion(ctx, tx, schemaID, rowID); err != nil {
 		return fmt.Errorf("lock row version for delete: %w", err)
+	}
+	if guard != nil {
+		exists, err := checkRowGuard(ctx, tx, tables, schemaID, rowID, guard)
+		if err != nil {
+			return fmt.Errorf("check precondition for %s: %w", rowID, err)
+		}
+		if !exists {
+			return rowNotFound(schemaID, rowID)
+		}
 	}
 
 	// RETURNING captures the deleted row's version so the tombstone can be
@@ -255,8 +278,7 @@ func (r *DBPersistentRecordRepository) deleteRecordInTx(ctx context.Context, tx 
 	var prevUpdatedAt int64
 	if err := tx.QueryRow(ctx, deleteMain, schemaID, rowID).Scan(&prevUpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return forma.WithOperatorDetail(forma.NotFoundf("entity not found (row=%s)", rowID),
-				fmt.Errorf("schema=%d", schemaID))
+			return rowNotFound(schemaID, rowID)
 		}
 		return fmt.Errorf("delete entity_main row: %w", err)
 	}

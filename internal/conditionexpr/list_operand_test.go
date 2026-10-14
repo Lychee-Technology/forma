@@ -48,6 +48,8 @@ func TestParseListOperandRefusesShapes(t *testing.T) {
 		{"null element", `["a",null]`, "element at index 1 of the 'in' list for attribute 'status' is null; the list takes 1 to 1000 non-null values"},
 		{"object element", `[{"a":1}]`, "element at index 0 of the 'in' list for attribute 'status' is a JSON object"},
 		{"array element", `["a",["b"]]`, "element at index 1 of the 'in' list for attribute 'status' is a JSON array"},
+		// encoding/json would decode this element as "a�b" (#674 review).
+		{"invalid utf-8", "[\"a\xffb\"]", "takes a JSON array of 1 to 1000 values; the value is not valid UTF-8"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
