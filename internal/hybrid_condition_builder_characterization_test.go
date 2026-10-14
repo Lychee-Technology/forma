@@ -104,7 +104,7 @@ func TestHybrid_MainColumn_AnchorTrue(t *testing.T) {
 	cond := &forma.KvCondition{Attr: "age", Value: "equals:25"}
 	clause, args, err := h.build(cond)
 	require.NoError(t, err)
-	require.Equal(t, "m.\"integer_01\" = $2", clause)
+	require.Equal(t, "m.\"integer_01\" = $2::bigint", clause)
 	// tryParseNumber for integer returns int64
 	require.Equal(t, []any{int64(25)}, args)
 }
@@ -117,7 +117,7 @@ func TestHybrid_MainColumn_AnchorFalse(t *testing.T) {
 	clause, args, err := h.build(cond)
 	require.NoError(t, err)
 	expected := fmt.Sprintf(
-		"EXISTS (SELECT 1 FROM %s m WHERE m.ltbase_row_id = t.row_id AND m.\"integer_01\" = $2)",
+		"EXISTS (SELECT 1 FROM %s m WHERE m.ltbase_row_id = t.row_id AND m.\"integer_01\" = $2::bigint)",
 		sanitizeIdentifier(h.mainTable),
 	)
 	require.Equal(t, expected, clause)
@@ -168,7 +168,7 @@ func TestHybrid_MixedMainAndEAV_AND(t *testing.T) {
 	// Sub-clauses each wrapped in (), joined with AND, no outer parens; $N
 	// placeholders continuous across the main→EAV boundary ($2 age, $3 attr_id, $4 value).
 	require.Equal(t,
-		`(EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" > $2)) AND (EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $3 AND x.value_text = $4))`,
+		`(EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" > $2::bigint)) AND (EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $3 AND x.value_text = $4))`,
 		clause)
 	// Args: [int64(18), int16(7) (attr_id of "name"), "Alice"]
 	require.Equal(t, []any{int64(18), int16(7), "Alice"}, args)
@@ -192,7 +192,7 @@ func TestHybrid_EmptyCompositeAndNestedOR(t *testing.T) {
 	require.NoError(t, err)
 	// empty AND produces "1=1" which becomes a wrapped sub-clause "(1=1)"
 	require.Equal(t,
-		`(1=1) AND (EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" = $2))`,
+		`(1=1) AND (EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" = $2::bigint))`,
 		clause)
 	require.Equal(t, []any{int64(25)}, args)
 
@@ -212,7 +212,7 @@ func TestHybrid_EmptyCompositeAndNestedOR(t *testing.T) {
 	require.NoError(t, err)
 	// Nested OR wrapped as one AND-child; placeholders $2 (age), $3/$4 (name), $5/$6 (tag).
 	require.Equal(t,
-		`(EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" = $2)) AND ((EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $3 AND x.value_text = $4)) OR (EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $5 AND x.value_text = $6)))`,
+		`(EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" = $2::bigint)) AND ((EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $3 AND x.value_text = $4)) OR (EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $5 AND x.value_text = $6)))`,
 		clause2)
 	require.Equal(t, []any{int64(25), int16(7), "Alice", int16(9), "admin"}, args2)
 }
@@ -319,7 +319,7 @@ func TestHybrid_BoolIntRangeAdvancesArgCounter(t *testing.T) {
 	}
 	clause, args, err := h.build(root)
 	require.NoError(t, err)
-	require.Equal(t, `(m."smallint_01" BETWEEN $2 AND $3) AND (m."integer_01" = $4)`, clause)
+	require.Equal(t, `(m."smallint_01" BETWEEN $2 AND $3) AND (m."integer_01" = $4::bigint)`, clause)
 	require.Equal(t, []any{int64(1), int64(32767), int64(25)}, args)
 }
 
@@ -399,7 +399,7 @@ func TestHybrid_RawColumnComposite(t *testing.T) {
 	}
 	clause, args, err := h.build(root)
 	require.NoError(t, err)
-	require.Equal(t, "(m.\"text_01\" = $2) AND (m.\"bigint_01\" > $3)", clause)
+	require.Equal(t, "(m.\"text_01\" = $2) AND (m.\"bigint_01\" > $3::bigint)", clause)
 	require.Equal(t, []any{"hello", int64(42)}, args)
 }
 
@@ -408,7 +408,7 @@ func TestHybrid_EqAliasNormalization(t *testing.T) {
 	cond := &forma.KvCondition{Attr: "age", Value: "eq:10"}
 	clause, args, err := h.build(cond)
 	require.NoError(t, err)
-	require.Equal(t, "m.\"integer_01\" = $2", clause)
+	require.Equal(t, "m.\"integer_01\" = $2::bigint", clause)
 	require.Equal(t, []any{int64(10)}, args)
 }
 

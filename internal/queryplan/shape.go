@@ -1,7 +1,9 @@
 // Package queryplan provides the plan-cache primitives for #142: a stable
 // query-shape fingerprint, a composite cache key, and a concurrency-safe
 // cache for compiled planning artifacts. Values, cursor positions, and dirty
-// IDs never participate in a shape hash — they are bound per request.
+// IDs never participate in a shape hash — they are bound per request — except
+// the class of a numeric filter operand, which picks the operator a
+// whole-number comparison renders (numericOperandClass).
 package queryplan
 
 import (
@@ -14,13 +16,15 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/conditionexpr"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/numutil"
 )
 
 // HashFederatedQueryShape fingerprints everything about a federated query
 // that determines the compiled plan: the condition-tree structure (attribute
 // names, canonical operators, and/or logic, original child order), sort keys,
 // anchor choice, and pagination mode including keyset columns and direction.
-// Filter operands, keyset cursor values, limit, and offset are excluded.
+// Filter operands (beyond their numericOperandClass), keyset cursor values,
+// limit, and offset are excluded.
 func HashFederatedQueryShape(q *model.FederatedAttributeQuery) (string, error) {
 	h := sha256.New()
 	write := func(parts ...string) {
@@ -29,7 +33,7 @@ func HashFederatedQueryShape(q *model.FederatedAttributeQuery) (string, error) {
 			_, _ = h.Write([]byte{0})
 		}
 	}
-	write("federated-shape-v1")
+	write("federated-shape-v2") // v2: a leaf's numeric operand class
 
 	if q == nil {
 		write("nil-query")
@@ -115,10 +119,35 @@ func hashCondition(h hash.Hash, cond forma.Condition) error {
 			return nil
 		}
 		parsed := conditionexpr.ParseOperatorValueLenient(c.Value)
-		write("kv", c.Attr, conditionexpr.CanonicalOperator(parsed.Operator))
+		write("kv", c.Attr, conditionexpr.CanonicalOperator(parsed.Operator), numericOperandClass(parsed.Value))
 		return nil
 	default:
 		return fmt.Errorf("shape hash: unsupported condition type %T", cond)
+	}
+}
+
+// numericOperandClass is the part of a leaf's operand the rendered SQL
+// depends on; the rest of the operand is a bind. sqlgen compares a numeric
+// operand against whole-number storage as an int64 bound
+// (wholeNumberComparison), and the operator it renders for a fraction, or
+// for a whole number above or below int64, differs from the one an int64
+// renders: on a bigint attribute equals:7 renders "=", equals:7.5 "<".
+// The classes mirror that function's branches and are judged on the same
+// value, TryParseNumber's float64 image; keep the two in lockstep.
+func numericOperandClass(value string) string {
+	f, isFloat := numutil.TryParseNumber(value).(float64)
+	if !isFloat {
+		return "" // an int64, or not a number
+	}
+	switch _, verdict := numutil.ClassifyInt64(f); {
+	case verdict == numutil.IntegralityExact:
+		return ""
+	case verdict == numutil.IntegralityFractional:
+		return "fractional"
+	case f > 0:
+		return "above-int64"
+	default:
+		return "below-int64"
 	}
 }
 

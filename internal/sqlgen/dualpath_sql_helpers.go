@@ -27,17 +27,14 @@ func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata
 		return valStr, nil
 
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
-		switch v := numutil.TryParseNumber(valStr).(type) {
-		case int64:
-			return v, nil
-		case float64:
-			if err := checkBigIntOperandRange(attr, valStr, meta.ValueType, v); err != nil {
-				return nil, err
-			}
-			return v, nil
-		default:
+		v, ok, err := numericOperand(attr, valStr, meta.ValueType)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			return nil, forma.InvalidInputf("invalid numeric value for '%s': %s", attr, valStr)
 		}
+		return v, nil
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		parsedValue, err := parseDateValue(attr, valStr, meta)
@@ -136,9 +133,10 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 	case forma.ValueTypeNumeric, forma.ValueTypeBigInt,
 		forma.ValueTypeSmallInt, forma.ValueTypeInteger:
 		// Integral literals in ANY accepted spelling — bare, decimal or
-		// exponent — bind as exact int64 (#281, #357) via the same
-		// TryParseNumber the two Postgres predicate paths and the batch
-		// attr-value anchor use (#355), so every emitter agrees on the value.
+		// exponent — bind as exact int64 (#281, #357) via numericOperand,
+		// the parse every predicate binder shares (its TryParseNumber is the
+		// one the batch attr-value anchor uses, #355), so every emitter
+		// agrees on the value.
 		// A bigint predicate above 2^53 — legal column state since #205 —
 		// compares exactly instead of riding a rounded float64. Fractional
 		// literals keep float64, the numeric family's storage contract.
@@ -152,17 +150,14 @@ func parseDuckDBRawParam(valStr string, attr string, valueType forma.ValueType) 
 		// like the numeric class), so an operand of any magnitude compares
 		// normally on both engines instead of raising a DuckDB Conversion
 		// Error while Postgres answered.
-		switch v := numutil.TryParseNumber(valStr).(type) {
-		case int64:
-			return v, nil
-		case float64:
-			if err := checkBigIntOperandRange(attr, valStr, valueType, v); err != nil {
-				return nil, err
-			}
-			return v, nil
-		default:
+		v, ok, err := numericOperand(attr, valStr, valueType)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			return nil, forma.InvalidInputf("invalid numeric literal for %s: %s", attr, valStr)
 		}
+		return v, nil
 
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		// Epoch-ms int64: date columns in the federated CTEs are BIGINT (#200).
