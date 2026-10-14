@@ -141,9 +141,12 @@ What a read sees:
 `tx.Get(ctx, req, forma.ForUpdate())` takes the row's write lock, then reads
 it. The lock is the per-row advisory lock every Forma writer takes, plus a
 `FOR UPDATE` row lock on the row's `entity_main` row, both held until the Tx
-ends. Until then no other transaction can commit a write to the row. A missing
-row is `ErrNotFound` and has no row to lock, but the advisory lock is still
-held, so a concurrent `Create` of that row ID waits for this Tx.
+ends. Until then no other transaction can commit a write to the row.
+Attributes that relation enrichment adds come from related rows, which the
+lock does not cover. A missing row is `ErrNotFound` and has no `entity_main`
+row to lock, but the advisory lock is still held, so any other write of that
+row ID waits for this Tx. Today Forma generates every new row ID itself, so
+this matters once callers can choose row IDs (#651).
 
 `Query` refuses `ForUpdate` with `ErrInvalidInput`. Locking a result set needs
 a lock-then-recheck protocol, which predicate mutation (#652) and claim (#653)
@@ -185,8 +188,8 @@ write invalidated never returns nil. On PostgreSQL:
 | --- | --- |
 | The asserter locks first; a writer of the row arrives | The writer waits. The asserter commits, then the writer commits on top of it. |
 | A writer commits first; the asserter then asserts the old version | `ErrPreconditionFailed`. If `fn` returns it, nothing the Tx wrote commits. |
-| A writer has written but not committed; the asserter asserts | The asserter waits, reads the committed version, and gets `ErrPreconditionFailed`. |
-| Two asserters of one row | They serialize on the lock, and both commit. |
+| A writer has written a change that falsifies the precondition but not committed; the asserter asserts | The asserter waits, reads the committed version, and gets `ErrPreconditionFailed`. If the writer rolls back instead, the assertion holds. |
+| Two asserters of one row | They serialize on the advisory lock, and both commit. |
 
 The locks are taken in the order writers take them, advisory lock first, so a
 fence adds no new deadlock: a Tx that asserts A and then updates B, crossed

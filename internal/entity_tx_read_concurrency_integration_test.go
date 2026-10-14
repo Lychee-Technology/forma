@@ -112,6 +112,76 @@ func TestLockingReadsHoldBothLocksUntilTheTxEnds_PostgresOnly(t *testing.T) {
 	}
 }
 
+// A locking read of a missing row takes no entity_main row lock but keeps
+// the per-row advisory lock, so another write of that row ID waits for the
+// Tx.
+func TestLockingReadOfAMissingRowKeepsTheAdvisoryLock_PostgresOnly(t *testing.T) {
+	env := newCondPG(t)
+	missing := uuid.New()
+	locking := map[string]func(ctx context.Context, tx forma.Tx) error{
+		"AssertRow": func(ctx context.Context, tx forma.Tx) error {
+			if err := tx.AssertRow(ctx, condSchemaName, missing, nil); !errors.Is(err, forma.ErrNotFound) {
+				return fmt.Errorf("AssertRow of a missing row: want ErrNotFound, got %w", err)
+			}
+			return nil
+		},
+		"Get ForUpdate": func(ctx context.Context, tx forma.Tx) error {
+			if _, err := tx.Get(ctx, condGet(missing), forma.ForUpdate()); !errors.Is(err, forma.ErrNotFound) {
+				return fmt.Errorf("Get ForUpdate of a missing row: want ErrNotFound, got %w", err)
+			}
+			return nil
+		},
+	}
+	for name, lock := range locking {
+		t.Run(name, func(t *testing.T) {
+			held, release, finished := env.holdingTx(lock)
+			defer release()
+			await(t, held, finished, "the lock")
+			advisory, rowLock := env.locksHeldElsewhere(t, missing)
+			assert.True(t, advisory, "the advisory lock of the missing row is held")
+			assert.False(t, rowLock, "there is no entity_main row to lock")
+
+			release()
+			require.NoError(t, <-finished)
+			advisory, _ = env.locksHeldElsewhere(t, missing)
+			assert.False(t, advisory, "commit released the advisory lock")
+		})
+	}
+}
+
+// Get with ForUpdate behind an in-flight writer waits for it, then reads
+// what it committed.
+func TestGetForUpdateWaitsForAnInFlightWriter_PostgresOnly(t *testing.T) {
+	env := newCondPG(t)
+	row := env.create(t, map[string]any{"name": "fenced", "version": int64(4)})
+
+	advanced, release, writer := env.holdingTx(func(ctx context.Context, tx forma.Tx) error {
+		_, err := tx.Update(ctx, condAdvance(row))
+		return err
+	})
+	defer release()
+	await(t, advanced, writer, "the advance")
+
+	read := make(chan *forma.DataRecord, 1)
+	reader := make(chan error, 1)
+	go func() {
+		reader <- env.inTx(func(ctx context.Context, tx forma.Tx) error {
+			record, err := tx.Get(ctx, condGet(row), forma.ForUpdate())
+			if err != nil {
+				return err
+			}
+			read <- record
+			return nil
+		})
+	}()
+	env.awaitRowLockWaiters(t, row, 1, "the locking read waits behind the in-flight writer")
+
+	release()
+	require.NoError(t, <-writer)
+	require.NoError(t, <-reader)
+	assert.EqualValues(t, 5, (<-read).Attributes["version"], "the locking read saw the committed advance")
+}
+
 // Special scenario 3 (a), assert first: a writer of the asserted row waits
 // until the asserter commits, then commits on top of it.
 func TestAssertFirstHoldsOffAWriterUntilCommit_PostgresOnly(t *testing.T) {
@@ -213,7 +283,7 @@ func TestAssertBehindAnInFlightAdvanceWaitsThenFails_PostgresOnly(t *testing.T) 
 }
 
 // Two asserters of one row do not invalidate each other: they serialize on
-// the row lock and both commit, and the row is unchanged.
+// the per-row advisory lock and both commit, and the row is unchanged.
 func TestTwoAssertersSerializeAndBothCommit_PostgresOnly(t *testing.T) {
 	env := newCondPG(t)
 	row := env.create(t, map[string]any{"name": "fenced", "version": int64(4)})

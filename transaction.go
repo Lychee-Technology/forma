@@ -75,8 +75,9 @@ type Tx interface {
 
 	// Get reads one row (req.RowID) on the transaction. A missing row is
 	// ErrNotFound, which leaves the Tx usable. With ForUpdate it first takes
-	// the row's write lock, as AssertRow does, so the record it answers stays
-	// current until the Tx ends.
+	// the row's write lock, as AssertRow does, so no other transaction can
+	// change the row's own attributes until the Tx ends; attributes enriched
+	// from related rows come from rows it does not lock.
 	Get(ctx context.Context, req *QueryRequest, opts ...ReadOption) (*DataRecord, error)
 	// Query runs a hot-tier query on the transaction. ForUpdate is
 	// ErrInvalidInput: Query locks nothing.
@@ -104,9 +105,9 @@ type ReadOption func(*ReadOptions)
 
 // ForUpdate makes Tx.Get lock the row it reads against every other writer
 // until the Tx ends: the per-row lock every Forma write takes, then the
-// entity_main row lock. A missing row is ErrNotFound and locks no row, but
-// the per-row lock is still held, so a concurrent Create of that RowID waits
-// for the Tx. Tx.Query refuses it with ErrInvalidInput.
+// entity_main row lock. A missing row is ErrNotFound and locks no
+// entity_main row, but the per-row lock is still held, so any other write of
+// that RowID waits for the Tx. Tx.Query refuses it with ErrInvalidInput.
 func ForUpdate() ReadOption {
 	return func(o *ReadOptions) { o.ForUpdate = true }
 }

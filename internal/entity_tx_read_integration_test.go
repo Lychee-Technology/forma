@@ -229,3 +229,24 @@ func TestNowIsOneInstantAcrossTxReads(t *testing.T) {
 	})
 	require.NoError(t, err)
 }
+
+// A page past the last match is recounted with a second statement (#181).
+// That statement runs on the transaction too: the total counts rows only
+// the Tx can see.
+func TestTxQueryRecountsPastTheLastPageOnTheTransaction(t *testing.T) {
+	env := newCondPG(t)
+	err := env.inTx(func(ctx context.Context, tx forma.Tx) error {
+		for range 3 {
+			_, err := tx.Create(ctx, &forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: condSchemaName},
+				Data: map[string]any{"name": "uncommitted"}})
+			require.NoError(t, err)
+		}
+		result, err := tx.Query(ctx, &forma.QueryRequest{SchemaName: condSchemaName, Condition: kv("name", "equals:uncommitted"),
+			Page: 9, ItemsPerPage: 5})
+		require.NoError(t, err)
+		assert.Empty(t, result.Data)
+		assert.Equal(t, 3, result.TotalRecords, "the recount saw the Tx's uncommitted rows")
+		return errors.New("roll back")
+	})
+	require.Error(t, err)
+}
