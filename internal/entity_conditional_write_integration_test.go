@@ -317,3 +317,39 @@ func TestInvalidPreconditionIsRefusedBeforeAnyStatement(t *testing.T) {
 	require.NoError(t, err, "the refusals did not poison the Tx")
 	assert.Equal(t, "after", e.get(t, rowID)["name"])
 }
+
+// TestOperatorOnASystemColumnAliasIsRefusedBeforeAnyStatement is the #674
+// review reproduction on PostgreSQL. createdEpoch and touchedAt are
+// read-only aliases of ltbase_created_at and ltbase_updated_at: the writer
+// drops an update's value for them, so an operator there succeeded and
+// stored nothing. Intake refuses both kinds: outside a Tx no table changes,
+// and inside one the refusals leave the Tx usable.
+func TestOperatorOnASystemColumnAliasIsRefusedBeforeAnyStatement(t *testing.T) {
+	e := newCondPG(t)
+	rowID := e.create(t, map[string]any{"name": "before"})
+	created := e.get(t, rowID)["createdEpoch"]
+	require.NotNil(t, created)
+	before := e.snapshot(t, rowID)
+	ops := []forma.UpdateOp{forma.Increment("createdEpoch", 1000), forma.ServerTime("touchedAt", time.Hour)}
+	for _, op := range ops {
+		_, err := e.em.Update(e.ctx, condUpdate(rowID, nil, nil, op))
+		require.ErrorIs(t, err, forma.ErrInvalidInput, op.Kind)
+		message, published := forma.ResolvePublicMessage(err)
+		require.True(t, published, op.Kind)
+		assert.Contains(t, message, fmt.Sprintf("attribute '%s', which is bound to system column", op.Attribute))
+		assert.Equal(t, before, e.snapshot(t, rowID), "%s: every table as it was", op.Kind)
+	}
+
+	err := e.txr.InTx(e.ctx, func(ctx context.Context, tx forma.Tx) error {
+		for _, op := range ops {
+			_, err := tx.Update(ctx, condUpdate(rowID, nil, nil, op))
+			require.ErrorIs(t, err, forma.ErrInvalidInput, op.Kind)
+		}
+		_, err := tx.Update(ctx, condUpdate(rowID, nil, map[string]any{"name": "after"}))
+		return err
+	})
+	require.NoError(t, err, "the refusals did not poison the Tx")
+	got := e.get(t, rowID)
+	assert.Equal(t, "after", got["name"])
+	assert.Equal(t, created, got["createdEpoch"], "the creation stamp is the store's, not the operator's")
+}

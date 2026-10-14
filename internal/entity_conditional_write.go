@@ -128,13 +128,19 @@ func validateUpdateOps(req *forma.EntityOperation, cache forma.SchemaAttributeCa
 	return nil
 }
 
-// validateUpdateOp checks one operator against its attribute. An attribute
-// inside an array the schema declares is refused here, whatever the row
-// holds: where the row holds the array the operator would write one value
-// for many, and where it holds none it would create an object the schema
-// says is an array. An array the schema does not show (one behind a $ref, or
-// any when there is no validator) is judged on the locked row
-// (documentParent).
+// validateUpdateOp checks one operator against its attribute. Like a
+// relation attribute, one bound to a system column (ltbase_created_at, say)
+// is never written: the transformer drops an update's value for it
+// (storeInMainColumn), so an operator there would report success and change
+// nothing. Literal Updates keep that read-only behavior; an operator, which
+// promises a stored result, is refused.
+//
+// An attribute inside an array the schema declares is refused here,
+// whatever the row holds: where the row holds the array the operator would
+// write one value for many, and where it holds none it would create an
+// object the schema says is an array. An array the schema does not show (one
+// behind a $ref, or any when there is no validator) is judged on the locked
+// row (documentParent).
 func validateUpdateOp(op forma.UpdateOp, schemaName string, cache forma.SchemaAttributeCache, relations *RelationIndex, arrays schemavalidate.ArrayPaths) error {
 	if op.Attribute == "" {
 		return forma.InvalidInputf("update operator %s names no attribute", op.Kind)
@@ -145,6 +151,10 @@ func validateUpdateOp(op forma.UpdateOp, schemaName string, cache forma.SchemaAt
 	}
 	if root, ok := relationRootCovering(relations, schemaName, op.Attribute); ok {
 		return forma.InvalidInputf("attribute '%s' belongs to relation '%s', which is derived on read and never written", op.Attribute, root)
+	}
+	if binding := meta.ColumnBinding; binding != nil && model.IsSystemColumn(string(binding.ColumnName)) {
+		return forma.InvalidInputf("update operator %s names %s attribute '%s', which is bound to system column '%s': the store sets that column itself and never writes an update's value there",
+			op.Kind, meta.ValueType, op.Attribute, binding.ColumnName)
 	}
 	if array, ok := arrays.CrossedArray("", op.Attribute); ok {
 		return operatorInsideArray(op.Attribute, array)

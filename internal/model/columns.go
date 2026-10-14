@@ -123,6 +123,15 @@ var EntityMainProjection = func() string {
 	return strings.Join(names, ", ")
 }()
 
+// IsSystemColumn reports whether name is one of SystemColumnDescriptors: the
+// row's identity and lifecycle stamps, which the writer sets itself. A
+// schema attribute bound to one is a read-only alias; the writer never
+// stores a caller's value there.
+func IsSystemColumn(name string) bool {
+	_, ok := systemColumnSet[name]
+	return ok
+}
+
 // IsMainTableColumn reports whether name is a recognised entity_main column.
 // Uses O(1) map lookups — no linear scan.
 func IsMainTableColumn(name string) bool {

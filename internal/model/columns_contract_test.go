@@ -110,3 +110,17 @@ func TestColumnTypeAgreesWithDescriptorKind(t *testing.T) {
 		require.Equal(t, desc.Kind, kindOf[binding.ColumnType()], "column %s", desc.Name)
 	}
 }
+
+// IsSystemColumn is the read-only-alias set: the writer skips a binding to
+// one of these columns, and update-operator intake refuses one (#674). The
+// *_by audit columns are ordinary text columns a caller writes.
+func TestIsSystemColumnIsTheRowsOwnStamps(t *testing.T) {
+	for _, col := range []forma.MainColumn{forma.MainColumnRowID, forma.MainColumnSchemaID,
+		forma.MainColumnCreatedAt, forma.MainColumnUpdatedAt, forma.MainColumnDeletedAt} {
+		require.True(t, IsSystemColumn(string(col)), "%s", col)
+	}
+	for _, col := range []forma.MainColumn{forma.MainColumnCreatedBy, forma.MainColumnUpdatedBy,
+		forma.MainColumnDeletedBy, forma.MainColumnBigint01, "not_a_column"} {
+		require.False(t, IsSystemColumn(string(col)), "%s", col)
+	}
+}

@@ -105,6 +105,12 @@ attribute:
 - `UpdateOps` on a `Create` or a `Delete`;
 - an attribute that is not in the schema, or one under an `x-relation` root
   (derived on read, never written);
+- an attribute bound to a system column (`ltbase_row_id`, `ltbase_schema_id`,
+  `ltbase_created_at`, `ltbase_updated_at` or `ltbase_deleted_at`). Such a
+  binding is a read-only alias: the store sets the column itself and drops
+  any value an update sends for it, so the operator's result could not be
+  stored. A literal value for it in `Updates` is still accepted and ignored,
+  as before;
 - an attribute inside an array the JSON Schema declares, such as
   `items.seenAt` when `items` is an array of objects. An operator writes one
   value, and such an attribute has one per element. The refusal does not
@@ -220,6 +226,7 @@ assert `ErrPreconditionFailed` for the loser specifically are named
 | Precondition matches `Query`, every operator, on column-bound and EAV attributes | `TestPreconditionHoldsExactlyWhenQueryReturnsTheRow` |
 | A refused update or delete leaves `entity_main`, EAV and `change_log` unchanged | `TestFailedPreconditionWritesNothing` |
 | An object in `Updates` that would replace the row's array refuses the operator beneath it and writes nothing | `TestUpdatesReplacingARowArrayWritesNothing` |
+| An operator on a system-column alias is refused before SQL: no table changes, and a `Tx` stays usable | `TestOperatorOnASystemColumnAliasIsRefusedBeforeAnyStatement` |
 | A missing or deleted row is `ErrNotFound` | `TestMissingRowIsNotFoundWhateverThePrecondition` |
 | Two writers with one expected version: one commits (60 iterations, both queued on the lock) | `TestSameExpectedVersionAdmitsOneWriter_PostgresOnly` |
 | 32 concurrent increments total exactly | `TestConcurrentIncrementsLoseNothing` |

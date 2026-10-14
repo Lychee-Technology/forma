@@ -48,6 +48,10 @@ func condSchemaCache() forma.SchemaAttributeCache {
 		"items.qty":      {AttributeID: 13, ValueType: forma.ValueTypeInteger},
 		"stats.seenAt":   {AttributeID: 14, ValueType: forma.ValueTypeDateTime},
 		"items.seenAt":   {AttributeID: 15, ValueType: forma.ValueTypeDateTime},
+		// Read-only aliases of system columns: the writer never stores an
+		// update's value in them (#674 review).
+		"createdEpoch": {AttributeID: 16, ValueType: forma.ValueTypeBigInt, ColumnBinding: bind("ltbase_created_at", "")},
+		"touchedAt":    {AttributeID: 17, ValueType: forma.ValueTypeDateTime, ColumnBinding: bind("ltbase_updated_at", forma.MainColumnEncodingUnixMs)},
 	}
 }
 
@@ -148,6 +152,10 @@ func TestConditionalFieldsAreRefusedAtIntake(t *testing.T) {
 			"increment applies to smallint, integer and bigint attributes; 'due' is datetime"},
 		{"server_time on bigint", update(nil, forma.ServerTime("big", 0)),
 			"server_time applies to date and datetime attributes; 'big' is bigint"},
+		{"increment on a system column alias", update(nil, forma.Increment("createdEpoch", 1000)),
+			"update operator increment names bigint attribute 'createdEpoch', which is bound to system column 'ltbase_created_at'"},
+		{"server_time on a system column alias", update(nil, forma.ServerTime("touchedAt", time.Hour)),
+			"update operator server_time names datetime attribute 'touchedAt', which is bound to system column 'ltbase_updated_at'"},
 		{"unknown operator attribute", update(nil, forma.Increment("missing", 1)),
 			"update operator increment names attribute 'missing', which schema 'cond649' does not define"},
 		{"unknown kind", update(nil, forma.UpdateOp{Attribute: "counter", Kind: "append"}),
@@ -189,8 +197,8 @@ func TestConditionalFieldsAreRefusedAtIntake(t *testing.T) {
 // such names (#470), so intake refuses them.
 func TestPreconditionRefusesAttributesNamedLikeMainColumns(t *testing.T) {
 	cache := condSchemaCache()
-	cache["text_02"] = forma.AttributeMetadata{AttributeID: 16, ValueType: forma.ValueTypeText}
-	cache["integer_02"] = forma.AttributeMetadata{AttributeID: 17, ValueType: forma.ValueTypeInteger,
+	cache["text_02"] = forma.AttributeMetadata{AttributeID: 18, ValueType: forma.ValueTypeText}
+	cache["integer_02"] = forma.AttributeMetadata{AttributeID: 19, ValueType: forma.ValueTypeInteger,
 		ColumnBinding: &forma.MainColumnBinding{ColumnName: "integer_03"}}
 	refusal := func(attr string) string {
 		return "precondition tests attribute '" + attr + "' of schema 'cond649', whose name is also an entity_main column"

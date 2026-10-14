@@ -24,7 +24,10 @@ const (
 // ServerTime.
 type UpdateOp struct {
 	// Attribute is the schema attribute the operator writes, in the dotted
-	// spelling the attributes file uses ("stats.attempts").
+	// spelling the attributes file uses ("stats.attempts"). It must be one
+	// the store writes: an attribute under an x-relation root, or one bound
+	// to a system column such as ltbase_created_at, is refused with
+	// ErrInvalidInput.
 	Attribute string
 	Kind      UpdateOpKind
 	// By is the increment's addend; it may be negative or zero. It must be
