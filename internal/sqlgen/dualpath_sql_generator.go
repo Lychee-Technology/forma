@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/conditionexpr"
 )
 
 // DualClauses contains SQL fragments and argument lists for both Postgres and DuckDB.
@@ -124,6 +125,9 @@ func (e *pgMainTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, 
 	}
 	*e.paramIndex++
 	sql := fmt.Sprintf("%s %s ?", p.Column, p.SQLOp)
+	if p.SQLOp == "LIKE" {
+		sql += conditionexpr.DuckLikeEscapeClause
+	}
 	return sql, []any{p.Value}, nil
 }
 
@@ -167,6 +171,9 @@ func (duckTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, error
 
 	if p.TextLike {
 		clause := fmt.Sprintf("%s %s ?", p.Column, p.SQLOp)
+		if p.SQLOp == "LIKE" {
+			clause += conditionexpr.DuckLikeEscapeClause
+		}
 		return clause, []any{p.Param}, nil
 	}
 

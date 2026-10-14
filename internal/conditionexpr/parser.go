@@ -92,8 +92,24 @@ const (
 	SQLOpIsNotNull = "IS NOT NULL"
 )
 
+// likeEscape is the escape character of every LIKE pattern ToSQLOperator
+// builds. It is PostgreSQL's default, so the PostgreSQL renders need no
+// ESCAPE clause; DuckDB has no default, so its renders append
+// DuckLikeEscapeClause.
+const likeEscape = `\`
+
+// DuckLikeEscapeClause is the clause every DuckDB LIKE render appends.
+const DuckLikeEscapeClause = ` ESCAPE '\'`
+
+// likeLiteral escapes the LIKE metacharacters of a starts_with or contains
+// operand, so the operand matches as literal text: "prefix match" and
+// "substring match" are what the condition DSL documents. Unescaped,
+// starts_with:a_c matched "abc" and contains:% matched every value.
+var likeLiteral = strings.NewReplacer(likeEscape, likeEscape+likeEscape, "%", likeEscape+"%", "_", likeEscape+"_")
+
 // ToSQLOperator converts a logical operator to SQL syntax.
-// For LIKE operators, it also applies wildcard normalization to value.
+// For LIKE operators, it also escapes the operand's LIKE metacharacters and
+// adds the operator's wildcards.
 // The set and null-test operators pass value through unchanged: their
 // operand (a JSON list, the literal true) is validated by the normalizer,
 // which knows the attribute it names.
@@ -120,9 +136,9 @@ func ToSQLOperator(op, value string) (SQLOperatorResult, error) {
 	case "not_equals":
 		return SQLOperatorResult{SQLOperator: "!=", Value: value}, nil
 	case "starts_with":
-		return SQLOperatorResult{SQLOperator: "LIKE", Value: value + "%"}, nil
+		return SQLOperatorResult{SQLOperator: "LIKE", Value: likeLiteral.Replace(value) + "%"}, nil
 	case "contains":
-		return SQLOperatorResult{SQLOperator: "LIKE", Value: "%" + value + "%"}, nil
+		return SQLOperatorResult{SQLOperator: "LIKE", Value: "%" + likeLiteral.Replace(value) + "%"}, nil
 	default:
 		return SQLOperatorResult{}, forma.InvalidInputf("unsupported operator: %s", op)
 	}

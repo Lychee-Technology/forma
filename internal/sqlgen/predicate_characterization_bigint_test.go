@@ -77,18 +77,39 @@ func buildCharBigIntCases() []charCase {
 		},
 		{
 			// #357 negative control: a genuinely fractional literal keeps
-			// float64 on every emitter — the refinement must not turn the
-			// numeric family into an integer-only family.
-			name: "bigint fractional spelling: stays float64 on all three",
+			// float64 on the Postgres binders — the refinement must not turn
+			// the numeric family into an integer-only family. Its float64
+			// image is whole (9007199254740993.5 rounds to ...994 at parse
+			// time), so the DuckDB BIGINT compare binds that integer exactly.
+			name: "bigint fractional spelling: float64 image, whole on DuckDB",
 			cond: charKv("amount", "lt:9007199254740993.5"),
 			want: DualClauses{
 				PgMainClause: "m.bigint_02 < ?", PgMainArgs: []any{float64(9007199254740993.5)},
 				PgClause: charEavClause("$2", "value_numeric", "<", "$3"), PgArgs: []any{int16(12), float64(9007199254740993.5)},
-				// float64 in shortest round-trip form (#384 P1b): fractional
-				// literals have no exact integral form to refine to, and the
-				// rendered string must recover the identical float64
-				// (9007199254740993.5 rounds to ...994 at parse time).
-				DuckClause: "amount < CAST(? AS BIGINT)", DuckArgs: []any{"9.007199254740994e+15"},
+				DuckClause: "amount < CAST(? AS BIGINT)", DuckArgs: []any{"9007199254740994"},
+			},
+			span: 3,
+		},
+		{
+			// A fraction against BIGINT compares as its whole bound
+			// (wholeNumberComparison): CAST(? AS BIGINT) used to round 7.5
+			// to 8, so lte:7.5 matched 8.
+			name: "bigint fractional lte: DuckDB compares the floor",
+			cond: charKv("amount", "lte:7.5"),
+			want: DualClauses{
+				PgMainClause: "m.bigint_02 <= ?", PgMainArgs: []any{float64(7.5)},
+				PgClause: charEavClause("$2", "value_numeric", "<=", "$3"), PgArgs: []any{int16(12), float64(7.5)},
+				DuckClause: "amount <= CAST(? AS BIGINT)", DuckArgs: []any{"7"},
+			},
+			span: 3,
+		},
+		{
+			name: "bigint fractional equals: DuckDB matches no value",
+			cond: charKv("amount", "equals:7.5"),
+			want: DualClauses{
+				PgMainClause: "m.bigint_02 = ?", PgMainArgs: []any{float64(7.5)},
+				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(12), float64(7.5)},
+				DuckClause: "amount < CAST(? AS BIGINT)", DuckArgs: []any{"-9223372036854775808"},
 			},
 			span: 3,
 		},
