@@ -81,6 +81,14 @@ skips the operators; both behave exactly as before #649.
   can hold for an entity without EAV rows, which that anchor never visits:
   a column-bound leaf, an `is_null` leaf or an empty `and` group (which
   matches every row) forces the `entity_main` anchor.
+- **What a condition means is the DSL's rule, not `Query`'s answer.**
+  Matching `Query` makes a precondition exactly as right as `Query`, and no
+  more: the two share the renderer, so a defect in it is in both. Before
+  #677 a fractional operand against an `integer` column was truncated, so
+  `equals:7.9` held on a row holding 7 and authorized the write. The tests
+  therefore judge preconditions against exact arithmetic over the stored
+  values and Go string matching, never against `Query`; the operand rules
+  are in [condition-dsl.md](condition-dsl.md).
 - **Update and Delete only.** `Preconditions` on a `Create` is refused: there
   is no current row. Existence-conditional create is `Tx.Upsert` (#651).
 
@@ -229,6 +237,9 @@ assert `ErrPreconditionFailed` for the loser specifically are named
 | An object in `Updates` that would replace the row's array refuses the operator beneath it and writes nothing | `TestUpdatesReplacingARowArrayWritesNothing` |
 | An operator on a system-column alias is refused before SQL: no table changes, and a `Tx` stays usable | `TestOperatorOnASystemColumnAliasIsRefusedBeforeAnyStatement` |
 | A uuid precondition with a LIKE operator or a malformed operand is refused before SQL, by `Query`, Update and Delete, and a `Tx` stays usable | `TestUUIDPreconditionIsRefusedBeforeAnyStatement` |
+| Numeric preconditions agree with exact arithmetic on every operator and operand class (fractions, both signs, beyond the column's width, around 2^53 and the int64 limits) over `smallint`, `integer`, `bigint` and `double` columns and EAV with `DOUBLE PRECISION` and `NUMERIC` `value_numeric`, through Update, Delete, `Tx.Update` and `Tx.Delete`; a refusal writes nothing and a `Tx` that handles it commits a later write | `TestPreconditionNumericOperandsMatchArithmetic`, `TestPreconditionOperandsReproductions` |
+| `starts_with` / `contains` preconditions match their operand literally | `TestPreconditionLikeOperandsAreLiteral` |
+| `NaN`, `Inf` and a bigint operand beyond int64 are refused before SQL on every route, and a `Tx` stays usable | `TestNonFinitePreconditionIsRefusedBeforeAnyStatement` |
 | A missing or deleted row is `ErrNotFound` | `TestMissingRowIsNotFoundWhateverThePrecondition` |
 | Two writers with one expected version: one commits (60 iterations, both queued on the lock) | `TestSameExpectedVersionAdmitsOneWriter_PostgresOnly` |
 | 32 concurrent increments total exactly | `TestConcurrentIncrementsLoseNothing` |

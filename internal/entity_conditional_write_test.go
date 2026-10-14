@@ -54,6 +54,10 @@ func condSchemaCache() forma.SchemaAttributeCache {
 		"touchedAt":    {AttributeID: 17, ValueType: forma.ValueTypeDateTime, ColumnBinding: bind("ltbase_updated_at", forma.MainColumnEncodingUnixMs)},
 		"token":        {AttributeID: 18, ValueType: forma.ValueTypeUUID, ColumnBinding: bind("uuid_01", "")},
 		"ref":          {AttributeID: 19, ValueType: forma.ValueTypeUUID},
+		"level":        {AttributeID: 20, ValueType: forma.ValueTypeSmallInt, ColumnBinding: bind("smallint_01", "")},
+		"ratio":        {AttributeID: 21, ValueType: forma.ValueTypeNumeric, ColumnBinding: bind("double_01", "")},
+		"score":        {AttributeID: 22, ValueType: forma.ValueTypeNumeric},
+		"label":        {AttributeID: 23, ValueType: forma.ValueTypeText, ColumnBinding: bind("text_02", "")},
 	}
 }
 
