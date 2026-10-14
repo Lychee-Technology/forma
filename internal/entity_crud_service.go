@@ -245,7 +245,7 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	if err := validateConditionalUpdate(req, schemaCache, s.relations); err != nil {
+	if err := validateConditionalUpdate(req, schemaCache, s.relations, s.validator.ArrayPaths(schemaID)); err != nil {
 		return nil, fmt.Errorf("failed to validate update of %s/%s: %w", req.SchemaName, req.RowID, err)
 	}
 
@@ -301,7 +301,7 @@ func (s *entityCRUDService) mergeUpdateRecord(
 		return nil, fmt.Errorf("failed to apply update operators: %w", err)
 	}
 
-	mergedData, err := mergeUpdateDocument(ctx, s.transformer, s.relations, req.SchemaName, existing, req.Updates, assigned)
+	mergedData, err := mergeUpdateDocument(ctx, s.transformer, s.relations, req.SchemaName, existing, req.Updates, req.UpdateOps, assigned)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transform existing record: %w", err)
 	}

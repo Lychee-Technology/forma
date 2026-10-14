@@ -15,7 +15,9 @@ import (
 // An update's operators (#649) apply in two places, by what they read.
 // Intake has checked every operator against the schema
 // (validateConditionalUpdate) and refused any attribute Updates also writes,
-// so each operator is the only writer of its attribute.
+// and the merge has refused one Updates writes only on the locked row
+// (mergeUpdateDocument), so each operator is the only writer of its
+// attribute.
 //
 // server_time reads only the transaction clock and replaces its attribute
 // outright, so it is an attributeAssignment that the merge writes as it
@@ -233,12 +235,19 @@ func documentParent(doc map[string]any, attr string, segments []string, write bo
 			}
 			current = child
 		case []any:
-			return nil, forma.InvalidInputf("attribute '%s' is inside the array '%s'; an update operator writes one value, not one per element",
-				attr, strings.Join(segments[:i+1], "."))
+			return nil, operatorInsideArray(attr, strings.Join(segments[:i+1], "."))
 		default:
 			return nil, fmt.Errorf("attribute '%s': the row holds a %T at '%s', not the object the attribute nests in",
 				attr, next, strings.Join(segments[:i+1], "."))
 		}
 	}
 	return current, nil
+}
+
+// operatorInsideArray refuses an operator on attr, which lies inside the
+// array at array: an operator writes one value, and the attribute has one
+// per element. Intake refuses with it where the schema declares the array,
+// documentParent where the locked row holds one.
+func operatorInsideArray(attr, array string) error {
+	return forma.InvalidInputf("attribute '%s' is inside the array '%s'; an update operator writes one value, not one per element", attr, array)
 }

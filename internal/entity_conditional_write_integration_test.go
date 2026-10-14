@@ -248,6 +248,37 @@ func TestFailedPreconditionWritesNothing(t *testing.T) {
 	assert.Empty(t, e.snapshot(t, rowID).main, "a delete whose precondition holds deletes")
 }
 
+// TestUpdatesReplacingARowArrayWritesNothing is the #674 review reproduction
+// on PostgreSQL. items holds two objects, and the update sends an object for
+// items beside server_time on items.seenAt. On this row the object replaces
+// the list rather than merging into it, so Updates writes the operator's
+// attribute too: the update is refused, and no table changes. The operator
+// alone is refused as inside the array.
+func TestUpdatesReplacingARowArrayWritesNothing(t *testing.T) {
+	e := newCondPG(t)
+	rowID := e.create(t, map[string]any{"items": []any{
+		map[string]any{"qty": int64(1), "seenAt": time.UnixMilli(1000).UTC()},
+		map[string]any{"qty": int64(2), "seenAt": time.UnixMilli(2000).UTC()},
+	}})
+	before := e.snapshot(t, rowID)
+	cases := map[string]struct {
+		updates map[string]any
+		want    string
+	}{
+		"beside a replacing object": {map[string]any{"items": map[string]any{"qty": int64(3)}},
+			"attribute 'items.seenAt' appears in both updates and update operators: the row holds a value at 'items' that is not an object"},
+		"alone": {nil, "attribute 'items.seenAt' is inside the array 'items'"},
+	}
+	for name, tc := range cases {
+		_, err := e.em.Update(e.ctx, condUpdate(rowID, nil, tc.updates, forma.ServerTime("items.seenAt", 0)))
+		require.ErrorIs(t, err, forma.ErrInvalidInput, name)
+		message, published := forma.ResolvePublicMessage(err)
+		require.True(t, published, name)
+		assert.Contains(t, message, tc.want, name)
+		assert.Equal(t, before, e.snapshot(t, rowID), "%s: every table as it was", name)
+	}
+}
+
 // TestMissingRowIsNotFoundWhateverThePrecondition pins the rule that tells
 // the two refusals apart: no row (never created, or deleted) is ErrNotFound
 // even when the precondition could never hold.

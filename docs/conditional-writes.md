@@ -105,6 +105,13 @@ attribute:
 - `UpdateOps` on a `Create` or a `Delete`;
 - an attribute that is not in the schema, or one under an `x-relation` root
   (derived on read, never written);
+- an attribute inside an array the JSON Schema declares, such as
+  `items.seenAt` when `items` is an array of objects. An operator writes one
+  value, and such an attribute has one per element. The refusal does not
+  depend on the row: where the row has no `items`, the operator would create
+  an object the schema says is an array. An array the manager cannot see in
+  the schema (one behind a `$ref`, or any array when the manager has no
+  validator) is judged on the locked row instead;
 - `increment` on any other type, or with an `Offset`; `server_time` on any
   other type, with a `By`, or with an offset finer than a millisecond;
 - two operators on one attribute;
@@ -122,8 +129,15 @@ Judged against the locked row, after the write has sent SQL, also
 - `increment` whose result leaves the type's range. The message names the
   attribute, the type and the bound, for example `increment by 1 on smallint
   attribute 'n' would take its value 32767 past the smallint maximum 32767`.
-- an operator on an attribute inside an array: it would write one value where
-  the row holds one per element.
+- an attribute that `Updates` writes on this row only. An object in
+  `Updates` merges into an object the row holds and is placed where the row
+  holds nothing, but replaces a list or a scalar, and everything beneath it.
+  On a row whose `a` is a list or a scalar, `{"a": {"x": 1}}` therefore
+  replaces it and `a.b` with it, and overlaps an operator on `a.b`. The check
+  runs before the merge, while the row's value is still there to judge.
+- an operator on an attribute inside an array the row holds, where intake
+  could not see the array in the schema: it would write one value where the
+  row holds one per element.
 
 ### Precision of `server_time`
 
@@ -163,9 +177,9 @@ mutation is #652.
 without a failed statement, so they leave the `Tx` usable: `fn` may handle
 them and continue, or return them to roll back everything. Intake and
 rendering refusals also come before any SQL and do not poison. The refusals
-judged against the locked row (a missing value, an overflow, an array) come
-after the write has sent SQL, and poison the Tx like any other `ErrInvalidInput`
-after SQL. See [Poisoning](transactions.md#poisoning).
+judged against the locked row (a missing value, an overflow, an overlap or an
+array only the row shows) come after the write has sent SQL, and poison the
+Tx like any other `ErrInvalidInput` after SQL. See [Poisoning](transactions.md#poisoning).
 
 ## Concurrency on PostgreSQL
 
@@ -205,6 +219,7 @@ assert `ErrPreconditionFailed` for the loser specifically are named
 | --- | --- |
 | Precondition matches `Query`, every operator, on column-bound and EAV attributes | `TestPreconditionHoldsExactlyWhenQueryReturnsTheRow` |
 | A refused update or delete leaves `entity_main`, EAV and `change_log` unchanged | `TestFailedPreconditionWritesNothing` |
+| An object in `Updates` that would replace the row's array refuses the operator beneath it and writes nothing | `TestUpdatesReplacingARowArrayWritesNothing` |
 | A missing or deleted row is `ErrNotFound` | `TestMissingRowIsNotFoundWhateverThePrecondition` |
 | Two writers with one expected version: one commits (60 iterations, both queued on the lock) | `TestSameExpectedVersionAdmitsOneWriter_PostgresOnly` |
 | 32 concurrent increments total exactly | `TestConcurrentIncrementsLoseNothing` |

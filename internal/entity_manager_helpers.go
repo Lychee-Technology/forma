@@ -100,16 +100,27 @@ func mergeMaps(existing map[string]any, updates any) map[string]any {
 // written before that decoding, like updates, so the stored value it
 // replaces is never decoded. Update and BatchUpdate both merge through it,
 // so the two cannot drift.
+//
+// Before merging, it refuses an operator in ops whose attribute updates
+// writes on this row. Intake found the overlaps every row has; only the row
+// shows which of updates' objects replace what it holds (updatesOverlap),
+// and after the merge the value replaced, an array included, is gone.
 func mergeUpdateDocument(
 	ctx context.Context,
 	transformer model.PersistentRecordTransformer,
 	relations *RelationIndex,
 	schemaName string,
 	existing *model.PersistentRecord,
-	updates any,
+	updates map[string]any,
+	ops []forma.UpdateOp,
 	assigned []attributeAssignment,
 ) (map[string]any, error) {
 	return transformer.MergeUpdate(ctx, existing, func(base map[string]any) (map[string]any, error) {
+		for _, op := range ops {
+			if err := updatesOverlap(updates, base, op.Attribute); err != nil {
+				return nil, fmt.Errorf("%s on attribute '%s': %w", op.Kind, op.Attribute, err)
+			}
+		}
 		doc := relations.StripComputedFields(schemaName, mergeMaps(base, updates))
 		for _, a := range assigned {
 			if err := setDocumentValue(doc, a.attr, a.value); err != nil {

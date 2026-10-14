@@ -334,6 +334,97 @@ func TestUpdateRefusalNamesWhatTheLockedRowLacks(t *testing.T) {
 	}
 }
 
+// TestUpdatesOverlapFollowsTheRowsShape pins that the overlap check reads
+// Updates as mergeMaps applies it over the locked row. An object in Updates
+// merges into an object the row holds and is placed where the row holds
+// nothing, but replaces a list or a scalar, and the operator's attribute
+// beneath it with them. At intake there is no row, so those overlaps pass
+// there and are refused in the merge.
+func TestUpdatesOverlapFollowsTheRowsShape(t *testing.T) {
+	list := []any{map[string]any{"qty": int64(1)}, map[string]any{"qty": int64(2)}}
+	stats := map[string]any{"note": "n"}
+	cases := []struct {
+		name    string
+		updates map[string]any
+		row     map[string]any
+		attr    string
+		want    string // the published refusal on the row; "" when the operator may write
+		intake  bool   // refused at intake as well
+	}{
+		{"object over a list", map[string]any{"items": map[string]any{"qty": 3}}, map[string]any{"items": list}, "items.seenAt",
+			"the row holds a value at 'items' that is not an object, so the object updates sends there replaces it", false},
+		{"object over a scalar", map[string]any{"stats": stats}, map[string]any{"stats": "legacy"}, "stats.seenAt",
+			"the row holds a value at 'stats' that is not an object", false},
+		{"object over a list deeper down", map[string]any{"a": map[string]any{"b": stats}}, map[string]any{"a": map[string]any{"b": list}}, "a.b.c",
+			"the row holds a value at 'a.b' that is not an object", false},
+		{"object into an object", map[string]any{"stats": stats}, map[string]any{"stats": map[string]any{"attempts": 1}}, "stats.seenAt", "", false},
+		{"object where the row holds nothing", map[string]any{"stats": stats}, map[string]any{}, "stats.seenAt", "", false},
+		{"object where the row holds null", map[string]any{"stats": stats}, map[string]any{"stats": nil}, "stats.seenAt", "", false},
+		{"dotted key beside a list", map[string]any{"items.qty": 3}, map[string]any{"items": list}, "items.seenAt", "", false},
+		{"null replaces whatever the row holds", map[string]any{"stats": nil}, map[string]any{"stats": map[string]any{}}, "stats.seenAt",
+			"appears in both updates (as 'stats')", true},
+		{"the attribute itself, inside an object the row holds", map[string]any{"stats": map[string]any{"seenAt": 1}},
+			map[string]any{"stats": map[string]any{}}, "stats.seenAt", "appears in both updates (as 'stats.seenAt')", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := updatesOverlap(tc.updates, tc.row, tc.attr)
+			if tc.want == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, forma.ErrInvalidInput)
+				message, published := forma.ResolvePublicMessage(err)
+				require.True(t, published)
+				assert.Contains(t, message, "attribute '"+tc.attr+"' appears in both updates")
+				assert.Contains(t, message, tc.want)
+			}
+			assert.Equal(t, tc.intake, updatesOverlap(tc.updates, nil, tc.attr) != nil, "refused at intake")
+		})
+	}
+}
+
+// TestUpdatesReplacingARowArrayCannotHideItFromAnOperator is the #674
+// review finding over the mock repository. On a row whose items is a list,
+// an object in Updates replaces the list, so after the merge nothing showed
+// that the operator's attribute had been inside an array, and the update
+// stored the replacement. The merge refuses it as an overlap before the
+// replacement happens; the operator alone is refused as inside the array.
+func TestUpdatesReplacingARowArrayCannotHideItFromAnOperator(t *testing.T) {
+	seed := map[string]any{"items": []any{
+		map[string]any{"qty": int64(1), "seenAt": time.UnixMilli(1).UTC()},
+		map[string]any{"qty": int64(2), "seenAt": time.UnixMilli(2).UTC()},
+	}}
+	cases := []struct {
+		name    string
+		updates map[string]any
+		op      forma.UpdateOp
+		want    string
+	}{
+		{"server_time beside the replacing object", map[string]any{"items": map[string]any{"qty": int64(3)}}, forma.ServerTime("items.seenAt", 0),
+			"attribute 'items.seenAt' appears in both updates and update operators: the row holds a value at 'items' that is not an object"},
+		{"increment beside the replacing object", map[string]any{"items": map[string]any{"seenAt": time.UnixMilli(3).UTC()}}, forma.Increment("items.qty", 1),
+			"attribute 'items.qty' appears in both updates and update operators: the row holds a value at 'items' that is not an object"},
+		{"server_time alone", nil, forma.ServerTime("items.seenAt", 0), "attribute 'items.seenAt' is inside the array 'items'"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCondFixture(t)
+			rowID := f.seed(t, seed)
+			before := f.stored(t, rowID)
+
+			op := condOp(rowID)
+			op.Updates, op.UpdateOps = tc.updates, []forma.UpdateOp{tc.op}
+			_, err := f.em.Update(f.ctx, op)
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			message, published := forma.ResolvePublicMessage(err)
+			require.True(t, published)
+			assert.Contains(t, message, tc.want)
+			assert.Equal(t, 1, f.repo.mergeCalls, "judged on the locked row")
+			assert.Equal(t, before, f.stored(t, rowID), "a refused operator stores nothing")
+		})
+	}
+}
+
 // TestOperatorsLeaveACyclicUpdateToTheDepthCap pins that the overlap check
 // walks no deeper into Updates than an operator's own path. A cyclic Go
 // value in Updates is then refused by the merge's depth cap (#406), as

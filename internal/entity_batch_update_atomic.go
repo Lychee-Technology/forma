@@ -89,7 +89,7 @@ func (s *entityBatchService) mergeBatchUpdateRecord(
 		return nil, forma.NotFoundf("operation[%d]: entity not found: %s/%s", i, op.SchemaName, op.RowID)
 	}
 
-	mergedData, err := mergeUpdateDocument(ctx, s.transformer, s.relations, op.SchemaName, existing, op.Updates, nil)
+	mergedData, err := mergeUpdateDocument(ctx, s.transformer, s.relations, op.SchemaName, existing, op.Updates, nil, nil)
 	if err != nil {
 		return nil, forma.WrapPublicf(fmt.Errorf("failed to transform existing record: %w", err), "operation[%d]", i)
 	}

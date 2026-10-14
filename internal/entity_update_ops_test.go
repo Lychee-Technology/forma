@@ -211,3 +211,29 @@ func TestUpdateOperatorRefusesARelationAttribute(t *testing.T) {
 	assert.Contains(t, message, "attribute 'contactSnapshot.birthday' belongs to relation 'contactSnapshot'")
 	assert.Zero(t, h.repo.mergeCalls)
 }
+
+// TestUpdateOperatorRefusesAnAttributeInsideASchemaArray pins the intake
+// refusal of an operator beneath an array the JSON Schema declares
+// (lead.propertyInterests). It needs no row: it holds whether the row has
+// the array, where an object in Updates would replace it, or none, where the
+// operator would create an object the schema says is an array. Refused
+// before SQL, it does not poison a Tx.
+func TestUpdateOperatorRefusesAnAttributeInsideASchemaArray(t *testing.T) {
+	h := newShippedSchemaHarness(t)
+	replacing := map[string]any{"propertyInterests": map[string]any{"propertyId": "p-1", "status": "active"}}
+	for name, updates := range map[string]map[string]any{"operator alone": nil, "beside a replacing object": replacing} {
+		t.Run(name, func(t *testing.T) {
+			op := &forma.EntityOperation{
+				EntityIdentifier: forma.EntityIdentifier{SchemaName: "lead", RowID: uuid.New()},
+				Updates:          updates,
+				UpdateOps:        []forma.UpdateOp{forma.ServerTime("propertyInterests.lastActivityAt", 0)},
+			}
+			_, err := h.manager.Update(context.Background(), op)
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			message, published := forma.ResolvePublicMessage(err)
+			require.True(t, published)
+			assert.Contains(t, message, "attribute 'propertyInterests.lastActivityAt' is inside the array 'propertyInterests'")
+			assert.Zero(t, h.repo.mergeCalls, "refused before the repository")
+		})
+	}
+}
