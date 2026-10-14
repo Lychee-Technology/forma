@@ -72,11 +72,17 @@ func checkRowGuard(ctx context.Context, tx pgx.Tx, tables model.StorageTables, s
 		return false, fmt.Errorf("evaluate precondition: %w", err)
 	}
 	if !holds {
-		return true, forma.WithOperatorDetail(
-			forma.PreconditionFailedf("precondition does not hold for entity (row=%s)", rowID),
-			fmt.Errorf("schema=%d", schemaID))
+		return true, rowPreconditionFailed(schemaID, rowID)
 	}
 	return true, nil
+}
+
+// rowPreconditionFailed is the error a row answers when it exists and does
+// not satisfy a guard.
+func rowPreconditionFailed(schemaID int16, rowID uuid.UUID) error {
+	return forma.WithOperatorDetail(
+		forma.PreconditionFailedf("precondition does not hold for entity (row=%s)", rowID),
+		fmt.Errorf("schema=%d", schemaID))
 }
 
 // txClock is the TxClock of tx. It reads the clock through the spelling the

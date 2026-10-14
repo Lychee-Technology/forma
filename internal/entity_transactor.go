@@ -12,11 +12,14 @@ import (
 )
 
 // transactor is Forma's forma.Transactor (#648). It shares the manager's
-// repository (and so its pool and metadata cache) and the manager's CRUD
-// service, which every session runs bound to its own transaction.
+// repository (and so its pool and metadata cache) and the manager's CRUD,
+// query and relation services, which every session runs bound to its own
+// transaction.
 type transactor struct {
-	repo *DBPersistentRecordRepository
-	crud *entityCRUDService
+	repo     *DBPersistentRecordRepository
+	crud     *entityCRUDService
+	query    *entityQueryService
+	relation *entityRelationService
 	// defaultTimeout is Config.Transaction.DefaultTimeout, the InTx budget
 	// WithTxTimeout overrides.
 	defaultTimeout time.Duration
@@ -42,7 +45,13 @@ func NewTransactor(em forma.EntityManager) (forma.Transactor, error) {
 		return nil, forma.InvalidInputf("a transactor needs an EntityManager backed by Forma's PostgreSQL repository, not %T",
 			manager.repository)
 	}
-	return &transactor{repo: repo, crud: manager.crud, defaultTimeout: manager.config.Transaction.DefaultTimeout}, nil
+	return &transactor{
+		repo:           repo,
+		crud:           manager.crud,
+		query:          manager.query,
+		relation:       manager.relation,
+		defaultTimeout: manager.config.Transaction.DefaultTimeout,
+	}, nil
 }
 
 // InTx implements forma.Transactor. The deferred rollback is what covers a
@@ -159,10 +168,14 @@ func (t *transactor) newSession(ctx context.Context, pgTx pgx.Tx, limits forma.T
 	meter := &txMeter{maxRows: int64(limits.MaxPhysicalRows), fault: t.statementFault}
 	tx := &meteredTx{Tx: pgTx, meter: meter}
 	sessionCtx, stop := context.WithCancel(ctx)
+	rows := newTxBoundRepository(t.repo, tx)
+	enrich := t.relation.boundTo(rows).enrichDataRecords
 	return &txSession{
 		ctx:    sessionCtx,
 		stop:   stop,
-		crud:   t.crud.boundTo(&txBoundRepository{repo: t.repo, tx: tx}),
+		crud:   t.crud.boundTo(rows, enrich),
+		query:  t.query.boundTo(rows, enrich),
+		rows:   rows,
 		tx:     tx,
 		meter:  meter,
 		maxOps: limits.MaxOperations,

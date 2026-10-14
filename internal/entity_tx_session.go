@@ -16,10 +16,10 @@ import (
 type txSessionKey struct{}
 
 // txSession is Forma's forma.Tx: one InTx call's handle on its transaction
-// (#648). Its methods run the manager's CRUD service bound to the session's
-// transaction, so they validate, lock, merge and stamp exactly as
-// EntityManager does; the session adds the transaction's own rules around
-// each call: the done and poisoned states, the operation limit, and
+// (#648). Its methods run the manager's CRUD and query services bound to the
+// session's transaction, so they validate, lock, merge, stamp and read
+// exactly as EntityManager does; the session adds the transaction's own rules
+// around each call: the done and poisoned states, the operation limit, and
 // concurrent-use detection.
 type txSession struct {
 	txseal.Seal
@@ -28,8 +28,11 @@ type txSession struct {
 	// operation is bound to it (see bind).
 	ctx  context.Context
 	stop context.CancelFunc
-	// crud is the manager's CRUD service writing through tx.
+	// crud and query are the manager's services running on tx, and rows
+	// the repository they run on.
 	crud   *entityCRUDService
+	query  *entityQueryService
+	rows   *txBoundRepository
 	tx     *meteredTx
 	meter  *txMeter
 	maxOps int

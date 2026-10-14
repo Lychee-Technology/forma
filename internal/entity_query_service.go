@@ -25,6 +25,9 @@ type entityQueryService struct {
 	toDataRecord         dataRecordConverter
 	enrichDataRecords    dataRecordEnricher
 	storageTables        storageTablesResolver
+	// readBudget bounds each Query and CrossSchemaSearch call
+	// (QueryConfig.DefaultTimeout, #465); zero means none.
+	readBudget time.Duration
 }
 
 func newEntityQueryService(em *entityManager) *entityQueryService {
@@ -39,6 +42,7 @@ func newEntityQueryService(em *entityManager) *entityQueryService {
 		toDataRecord:         em.toDataRecord,
 		enrichDataRecords:    em.enrichDataRecords,
 		storageTables:        em.storageTables,
+		readBudget:           budgetsFromConfig(em.config).read,
 	}
 }
 
@@ -89,7 +93,7 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		Offset:          offset,
 	}
 
-	ctx, cancel := withBudget(ctx, s.config.Query.DefaultTimeout)
+	ctx, cancel := withBudget(ctx, s.readBudget)
 	defer cancel()
 
 	startTime := time.Now()
@@ -228,7 +232,7 @@ func (s *entityQueryService) CrossSchemaSearch(ctx context.Context, req *forma.C
 		return nil, err
 	}
 
-	ctx, cancel := withBudget(ctx, s.config.Query.DefaultTimeout)
+	ctx, cancel := withBudget(ctx, s.readBudget)
 	defer cancel()
 
 	startTime := time.Now()
