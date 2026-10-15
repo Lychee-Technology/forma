@@ -113,8 +113,11 @@ func requireSQLState(t *testing.T, err error, code string) {
 
 // TestInsertDuplicateRowIDIsUniqueConflict is Given/When/Then 1: a create
 // whose row id already exists is a unique conflict that still satisfies
-// ErrConflict, publishes the unchanged row-identity message, and keeps the
-// physical detail out of it.
+// ErrConflict. Since #651 it is found without a failed statement (the main
+// insert is ON CONFLICT DO NOTHING under the row lock), so inside a Tx it is
+// an expected outcome, and its message names the schema and the row. A 23505
+// that still reaches the classifier keeps the curated row-identity message
+// (TestMergeClassifiesUniqueViolationAsConflict).
 func TestInsertDuplicateRowIDIsUniqueConflict(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -134,16 +137,15 @@ func TestInsertDuplicateRowIDIsUniqueConflict(t *testing.T) {
 	require.ErrorIs(t, err, forma.ErrConflict, "callers that predate #645 keep matching")
 	require.False(t, forma.IsRetryable(err))
 	require.NotErrorIs(t, err, forma.ErrCommitOutcomeUnknown)
-	requireSQLState(t, err, sqlstateUniqueViolation)
+	var pgErr *pgconn.PgError
+	require.False(t, errors.As(err, &pgErr), "no statement failed: %v", err)
 
 	msg, ok := forma.ResolvePublicMessage(err)
 	require.True(t, ok)
-	require.Equal(t, "the write conflicts with a row that already exists", msg)
+	require.Equal(t, fmt.Sprintf("schema with id 1 already has a row with ID %s", rowID), msg)
 	for _, physical := range []string{"ltbase_", "pkey", "Key (", "entity_main"} {
 		require.NotContains(t, msg, physical)
 	}
-	require.True(t, forma.HasOperatorDetail(err))
-	require.Contains(t, err.Error(), "Key (", "the operator still sees the server's Detail")
 
 	got, found := mainText(ctx, t, pool, tables, rowID)
 	require.True(t, found)

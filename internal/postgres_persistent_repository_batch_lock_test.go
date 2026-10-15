@@ -9,6 +9,7 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -58,7 +59,7 @@ func TestBatchInsertLocksInSortedOrderThenWritesInInputOrder(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	mock.ExpectBegin()
+	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	expectSortedLockPass(mock, 1, lockOrderLowRow, lockOrderHighRow)
 	for i, record := range records {
 		mock.ExpectQuery(`^SELECT COALESCE\(MAX\(changed_at\), 0\) FROM "change_log"`).

@@ -1,0 +1,13 @@
+{
+  "amount": { "attributeID": 10, "valueType": "numeric" },
+  "amountCol": { "attributeID": 11, "valueType": "numeric", "column_binding": { "col_name": "double_01" } },
+  "at": { "attributeID": 1, "valueType": "datetime", "column_binding": { "col_name": "bigint_01", "encoding": "unix_ms" } },
+  "big": { "attributeID": 8, "valueType": "bigint", "column_binding": { "col_name": "bigint_02" } },
+  "bigEav": { "attributeID": 9, "valueType": "bigint" },
+  "day": { "attributeID": 2, "valueType": "date" },
+  "flag": { "attributeID": 5, "valueType": "bool", "column_binding": { "col_name": "smallint_01", "encoding": "bool_smallint" } },
+  "flagEav": { "attributeID": 6, "valueType": "bool" },
+  "ref": { "attributeID": 3, "valueType": "uuid", "column_binding": { "col_name": "uuid_01" } },
+  "refEav": { "attributeID": 4, "valueType": "uuid" },
+  "tag": { "attributeID": 7, "valueType": "text" }
+}

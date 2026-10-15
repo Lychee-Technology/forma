@@ -1,0 +1,5 @@
+{
+  "businessKey": { "attributeID": 2, "valueType": "text" },
+  "definitionId": { "attributeID": 1, "valueType": "text" },
+  "status": { "attributeID": 3, "valueType": "text" }
+}

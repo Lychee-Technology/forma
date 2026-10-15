@@ -66,7 +66,7 @@ func TestBuildInsertMainStatement(t *testing.T) {
 	}
 
 	expectedQuery := fmt.Sprintf(
-		"INSERT INTO %s (%s) VALUES (%s)",
+		"INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (ltbase_schema_id, ltbase_row_id) DO NOTHING",
 		sanitizeIdentifier("entity_main"),
 		strings.Join(expectedColumns, ", "),
 		strings.Join(placeholders, ", "),

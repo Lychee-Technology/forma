@@ -16,6 +16,7 @@ Forma Tools CLI
 --------
 - `generate-attributes`：从 JSON Schema 生成 `<schema>_attributes.json`。
 - `init-db`：创建 schema registry、entity main、EAV 数据表及索引。
+- `build-unique-keys`：从 schema 的存活行构建 `x-forma-unique-keys` 声明的唯一键（#651）。须先停止所有写入方。
 - `manifest-reconcile`：比对 S3 parquet 对象与 manifest 条目，报告孤儿/dangling，
   `--repair` 补录 #197 flush 孤儿，`--gc` 清理 #188 compaction 遗留。
   详见 `docs/manifest-reconcile.md`。退出码：0 一致 / 2 有差异 / 1 失败。
@@ -78,6 +79,30 @@ init-db
 `init-db` 以非零退出并给出索引名与处理方法。`init-db` 从不删除索引：声明被移除后，对应索引被报告为
 unreferenced，由运维自行删除。详见 `docs/schema-indexes.md`。
 
+`init-db` 还会创建唯一键表 `<entity-main-table>_unique_key` 与状态表 `<entity-main-table>_unique_key_state`（#651）。
+指定 `-schema-dir` 时，没有存活行的 schema 所声明的唯一键会被直接构建；已有存活行的 schema，`init-db` 打印需要运行的
+`build-unique-keys` 命令。有声明的唯一键尚未构建时，服务端拒绝启动。即使 schema 没有存活行，也须在第一个带声明的写入方
+启动前停止所有不带该声明的写入方：后者写入的行没有唯一键条目。详见 `docs/unique-keys.md`。
+
 示例：
 - `go run ./cmd/tools init-db`
 - `go run ./cmd/tools init-db -db-host 127.0.0.1 -db-name forma_dev -entity-main-table entity_main_dev -eav-table eav_dev`
+
+build-unique-keys
+-----------------
+从 schema 的存活行构建它声明的唯一键（#651）。构建是离线的：运行前须停止所有写入该 schema 的服务端、Lambda 与嵌入方，
+否则构建期间漏掉的写入会让唯一键表缺少条目。存在共享同一键值的存活行时，构建失败并按组列出这些行的 RowID（不含键值），
+本次运行的任何键都不写入。详见 `docs/unique-keys.md`。
+
+选项（数据库与表名选项及其环境变量默认值与 `init-db` 相同）：
+- `-schema`（必填）：要构建唯一键的 schema 名。
+- `-key`：只构建这个键；省略时构建该 schema 声明且尚未构建的所有键，并删除 schema 不再声明的键。
+- `-rebuild`：即使键已按当前属性构建，也清空其条目重新构建。用于键构建后仍有不维护该键的写入方（如旧版本）写入过行的情况。
+  按其他属性列表构建的键仍被拒绝。
+- `-schema-dir`（`SCHEMA_DIR`，必填）：JSON Schema 目录，须与服务端使用的一致。
+- `-schema-table`、`-eav-table`、`-entity-main-table`、`-db-*`：同 `init-db`。
+
+示例：
+- `go run ./cmd/tools build-unique-keys -schema event_record -key idempotency -schema-dir schemas`
+- `go run ./cmd/tools build-unique-keys -schema event_record -schema-dir schemas`（构建全部键，删除已移除的键）
+- `go run ./cmd/tools build-unique-keys -schema event_record -key idempotency -rebuild -schema-dir schemas`（重建已构建的键）

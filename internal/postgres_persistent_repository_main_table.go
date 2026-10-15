@@ -86,8 +86,12 @@ func buildInsertMainStatement(table string, record *model.PersistentRecord) (str
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
 	}
 
+	// ON CONFLICT DO NOTHING makes a live row with the same ID a zero-row
+	// insert rather than a 23505 (#651): inside a Tx a failed statement
+	// aborts the transaction, so a duplicate caller-supplied RowID could not
+	// be the expected, non-poisoning ErrUniqueConflict otherwise.
 	query := fmt.Sprintf(
-		"INSERT INTO %s (%s) VALUES (%s)",
+		"INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (ltbase_schema_id, ltbase_row_id) DO NOTHING",
 		sanitizeIdentifier(table),
 		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "),
@@ -155,16 +159,20 @@ func buildUpdateMainStatement(table string, record *model.PersistentRecord) (str
 	return query, args, nil
 }
 
-func (r *DBPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx.Tx, table string, record *model.PersistentRecord) error {
+// insertMainRow inserts record's main row and reports whether it did: false
+// means a row with its (schema, row ID) already exists, and nothing was
+// written.
+func (r *DBPersistentRecordRepository) insertMainRow(ctx context.Context, tx pgx.Tx, table string, record *model.PersistentRecord) (bool, error) {
 	query, args, err := buildInsertMainStatement(table, record)
 	if err != nil {
-		return fmt.Errorf("build insert statement: %w", err)
+		return false, fmt.Errorf("build insert statement: %w", err)
 	}
 	zap.S().Debugw("insert main row", "query", query, "args", args)
-	if _, err := tx.Exec(ctx, query, args...); err != nil {
-		return fmt.Errorf("insert entity_main: %w", err)
+	tag, err := tx.Exec(ctx, query, args...)
+	if err != nil {
+		return false, fmt.Errorf("insert entity_main: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
 
 // updateMainRow applies the update and overwrites record.UpdatedAt with the

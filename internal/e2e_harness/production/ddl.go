@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/declaredindex"
+	"github.com/lychee-technology/forma/internal/uniquekey"
 )
 
 // productionDDL is the authoritative table DDL for the production harness.
@@ -15,8 +16,9 @@ import (
 // federated harness copy in internal/e2e_harness/federated/ddl.go (that
 // copy serves 68 existing federated test cases and must not be modified). The
 // seed INSERT for schema_id=1 is intentionally omitted — production fixtures
-// register their own schemas via RegisterSchemas.
-var productionDDL = []string{
+// register their own schemas via RegisterSchemas. The unique-key tables
+// (#651) come from uniquekey, the source init-db uses.
+var productionDDL = append([]string{
 	`CREATE TABLE IF NOT EXISTS schema_registry (
 		schema_id SMALLINT PRIMARY KEY,
 		schema_name TEXT NOT NULL UNIQUE,
@@ -74,7 +76,7 @@ var productionDDL = []string{
 		flushed_at BIGINT DEFAULT 0,
 		PRIMARY KEY (schema_id, row_id, flushed_at)
 	)`,
-}
+}, uniquekey.StatementsFor("entity_main")...)
 
 // applyProductionDDL creates the standard production tables in the per-test
 // database.

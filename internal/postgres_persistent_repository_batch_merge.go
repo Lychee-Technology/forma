@@ -55,8 +55,11 @@ func (r *DBPersistentRecordRepository) BatchMergePersistentRecords(
 }
 
 // batchMergeInTx is BatchMergePersistentRecords' body, run on tx: the sorted
-// lock pass, then each row's read, merge and write in input order. It
-// answers the stored records positionally.
+// lock pass, every row's read and merge in input order, the unique-key check
+// over all of them, then every row's write in input order. Merging every row
+// before writing any lets the keys be reserved in one sorted statement after
+// the row locks, and a conflict found before the first write (#651). It answers
+// the stored records positionally.
 func (r *DBPersistentRecordRepository) batchMergeInTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -68,14 +71,32 @@ func (r *DBPersistentRecordRepository) batchMergeInTx(
 		return nil, fmt.Errorf("lock row versions for batch update: %w", err)
 	}
 
-	// Records in a batch usually share one schema; resolve the #294 delete
-	// scope once per schemaID instead of once per record.
-	scopeBySchema := make(map[int16][]int16)
-	stored := make([]*model.PersistentRecord, len(keys))
+	merged := make([]*model.PersistentRecord, len(keys))
 	for i, key := range keys {
 		record, err := r.mergeOneOfBatch(ctx, tx, tables, i, key, merge)
 		if err != nil {
 			return nil, err
+		}
+		merged[i] = record
+	}
+	claims, err := r.planBatchUniqueKeys(ctx, tx, tables, merged, true)
+	if err != nil {
+		return nil, fmt.Errorf("plan unique keys for batch update: %w", err)
+	}
+	if _, err := r.reserveUniqueKeys(ctx, tx, tables, claims...); err != nil {
+		return nil, fmt.Errorf("reserve unique keys for batch update: %w", err)
+	}
+
+	// Records in a batch usually share one schema; resolve the #294 delete
+	// scope once per schemaID instead of once per record.
+	scopeBySchema := make(map[int16][]int16)
+	for i, key := range keys {
+		record := merged[i]
+		if err := r.updateMainRow(ctx, tx, tables.EntityMain, record); err != nil {
+			return nil, fmt.Errorf("update main row for record[%d] (%s): %w", i, key.RowID, err)
+		}
+		if err := r.applyUniqueKeys(ctx, tx, tables, claims[i]); err != nil {
+			return nil, fmt.Errorf("write unique keys for record[%d]: %w", i, err)
 		}
 		knownIDs, ok := scopeBySchema[key.SchemaID]
 		if !ok {
@@ -93,15 +114,14 @@ func (r *DBPersistentRecordRepository) batchMergeInTx(
 				return nil, fmt.Errorf("upsert change log for record[%d]: %w", i, err)
 			}
 		}
-		stored[i] = record
 	}
 
-	return stored, nil
+	return merged, nil
 }
 
-// mergeOneOfBatch reads one row's merge base inside tx, runs merge on it and
-// applies the main-table update, which stamps the effective version back
-// into the returned record (see updateMainRow).
+// mergeOneOfBatch reads one row's merge base inside tx and runs merge on it,
+// writing nothing. updateMainRow later stamps the effective version back into
+// the returned record.
 func (r *DBPersistentRecordRepository) mergeOneOfBatch(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -129,10 +149,6 @@ func (r *DBPersistentRecordRepository) mergeOneOfBatch(
 		return nil, fmt.Errorf("merge returned record for %d/%s, expected %d/%s at record[%d]",
 			record.SchemaID, record.RowID, key.SchemaID, key.RowID, i)
 	}
-
 	record.UpdatedAt = r.nowMillis()
-	if err := r.updateMainRow(ctx, tx, tables.EntityMain, record); err != nil {
-		return nil, fmt.Errorf("update main row for record[%d] (%s): %w", i, key.RowID, err)
-	}
 	return record, nil
 }

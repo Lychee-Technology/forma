@@ -69,6 +69,9 @@ type Transactor interface {
 // Tx back from a caller, so a caller's own Tx type only reaches the caller's
 // code.
 type Tx interface {
+	// Create, Update and Delete follow the EntityWriter rules, row ID and
+	// unique keys included. An ErrUniqueConflict is found before the write
+	// and leaves the Tx usable.
 	Create(ctx context.Context, op *EntityOperation) (*DataRecord, error)
 	Update(ctx context.Context, op *EntityOperation) (*DataRecord, error)
 	Delete(ctx context.Context, op *EntityOperation) error

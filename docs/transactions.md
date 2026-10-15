@@ -321,7 +321,7 @@ An error from a `Tx` method either leaves the Tx usable or **poisons** it.
 | Error | Poisons? |
 | --- | --- |
 | `ErrNotFound` (an unknown schema, or no row to read, assert, update or delete) | no |
-| `ErrPreconditionFailed` (an `AssertRow` or conditional write that found the row failing its precondition), `ErrUniqueConflict`, raised without a failed SQL statement | no |
+| `ErrPreconditionFailed` (an `AssertRow` or conditional write that found the row failing its precondition), `ErrUniqueConflict` (a create onto a live row ID, or a write onto a taken unique-key value: see [Row IDs and Unique Keys](unique-keys.md)), raised without a failed SQL statement | no |
 | `ErrInvalidInput` raised before the operation sent any SQL (a malformed operation, a `Create` that fails validation, a federated read, `ForUpdate` on `Query`, a `MutateWhereRequest` refused by its validation) | no |
 | `ErrInvalidInput` for a predicate mutation that matched more than `MaxAffected` rows, after only its candidate select | no |
 | `ErrInvalidInput` raised after the operation sent SQL | yes |

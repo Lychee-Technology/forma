@@ -23,6 +23,9 @@ type entityManager struct {
 	registry             forma.SchemaRegistry
 	config               *forma.Config
 	relations            *RelationIndex
+	// uniqueKeys is the schemas' unique keys (#651), installed on the
+	// PostgreSQL repository, whose write cores enforce them.
+	uniqueKeys *UniqueKeyCatalog
 
 	// validator is nil when schema validation is unconfigured. Callers must skip
 	// validation entirely in that case: Validate on a nil validator returns an
@@ -95,6 +98,18 @@ func WithRelationIndex(idx *RelationIndex) EntityManagerOption {
 	return func(em *entityManager) {
 		if idx != nil {
 			em.relations = idx
+		}
+	}
+}
+
+// WithUniqueKeys supplies the unique keys the composition root resolved from
+// the same document snapshot as its schema guards (#651), sparing the manager
+// a second read of the registry for the reason given on WithRelationIndex.
+// A nil catalog is ignored, and the manager resolves its own.
+func WithUniqueKeys(catalog *UniqueKeyCatalog) EntityManagerOption {
+	return func(em *entityManager) {
+		if catalog != nil {
+			em.uniqueKeys = catalog
 		}
 	}
 }
@@ -191,6 +206,9 @@ func NewEntityManager(
 		em.relations = idx
 	}
 	installRelationRoots(transformer, em.relations)
+	if err := em.installUniqueKeys(repository, registry); err != nil {
+		return nil, fmt.Errorf("failed to install unique keys: %w", err)
+	}
 
 	em.relation = newEntityRelationService(em)
 	em.crud = newEntityCRUDService(em)

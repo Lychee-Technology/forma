@@ -31,6 +31,13 @@ type singleRowQuerier interface {
 // the update path then persisted that torn merge base (#457). A single
 // statement takes a single snapshot under every isolation level.
 func buildSingleRowSelect(mainTable, eavTable string) string {
+	return rowSelectWithAttributes(mainTable, eavTable) + `
+WHERE m.ltbase_schema_id = $1 AND m.ltbase_row_id = $2`
+}
+
+// rowSelectWithAttributes is the projection and EAV aggregation every
+// whole-row read shares, up to its WHERE clause, over the alias m.
+func rowSelectWithAttributes(mainTable, eavTable string) string {
 	return fmt.Sprintf(`SELECT %s, COALESCE(a.attributes_json, '[]') AS attributes_json
 FROM %s m
 LEFT JOIN LATERAL (
@@ -46,8 +53,7 @@ LEFT JOIN LATERAL (
     )::TEXT AS attributes_json
     FROM %s e
     WHERE e.schema_id = m.ltbase_schema_id AND e.row_id = m.ltbase_row_id
-) a ON TRUE
-WHERE m.ltbase_schema_id = $1 AND m.ltbase_row_id = $2`,
+) a ON TRUE`,
 		model.EntityMainProjection,
 		sanitizeIdentifier(mainTable),
 		sanitizeIdentifier(eavTable),

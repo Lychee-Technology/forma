@@ -123,7 +123,7 @@ func TestEveryWritePathClassifiesItsLockStatement(t *testing.T) {
 		opts pgx.TxOptions
 		run  func(r *DBPersistentRecordRepository) error
 	}{
-		{"insert", pgx.TxOptions{}, func(r *DBPersistentRecordRepository) error {
+		{"insert", readCommitted, func(r *DBPersistentRecordRepository) error {
 			return r.InsertPersistentRecord(context.Background(), tables, record())
 		}},
 		{"delete", pgx.TxOptions{}, func(r *DBPersistentRecordRepository) error {
@@ -133,7 +133,7 @@ func TestEveryWritePathClassifiesItsLockStatement(t *testing.T) {
 			_, err := r.MergePersistentRecord(context.Background(), tables, 1, rowID, model.RowGuard{}, mergeOne)
 			return err
 		}},
-		{"batch insert", pgx.TxOptions{}, func(r *DBPersistentRecordRepository) error {
+		{"batch insert", readCommitted, func(r *DBPersistentRecordRepository) error {
 			return r.BatchInsertPersistentRecords(context.Background(), tables, []*model.PersistentRecord{record()})
 		}},
 		{"batch delete", pgx.TxOptions{}, func(r *DBPersistentRecordRepository) error {

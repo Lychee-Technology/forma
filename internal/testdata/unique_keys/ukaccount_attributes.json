@@ -1,0 +1,8 @@
+{
+  "counter": { "attributeID": 6, "valueType": "integer" },
+  "email": { "attributeID": 2, "valueType": "text" },
+  "handle": { "attributeID": 3, "valueType": "text" },
+  "note": { "attributeID": 5, "valueType": "text" },
+  "seq": { "attributeID": 4, "valueType": "integer" },
+  "tenant": { "attributeID": 1, "valueType": "text", "column_binding": { "col_name": "text_01" } }
+}

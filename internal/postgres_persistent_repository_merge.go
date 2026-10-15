@@ -106,8 +106,20 @@ func (r *DBPersistentRecordRepository) mergeRecordInTx(
 
 	record.UpdatedAt = r.nowMillis()
 
+	// A key the update moves is reserved before the first entity write, so a
+	// value another row holds leaves nothing written (#651).
+	claim, err := r.planUniqueKeys(ctx, tx, tables, record, true)
+	if err != nil {
+		return nil, fmt.Errorf("plan unique keys of %s: %w", rowID, err)
+	}
+	if _, err := r.reserveUniqueKeys(ctx, tx, tables, claim); err != nil {
+		return nil, fmt.Errorf("reserve unique keys of %s: %w", rowID, err)
+	}
 	if err := r.updateMainRow(ctx, tx, tables.EntityMain, record); err != nil {
 		return nil, fmt.Errorf("update main row for %s: %w", rowID, err)
+	}
+	if err := r.applyUniqueKeys(ctx, tx, tables, claim); err != nil {
+		return nil, fmt.Errorf("write unique keys of %s: %w", rowID, err)
 	}
 
 	if err := r.replaceEAVAttributes(ctx, tx, tables.EAVData, schemaID, rowID, record.OtherAttributes); err != nil {

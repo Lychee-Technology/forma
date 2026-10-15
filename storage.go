@@ -5,6 +5,11 @@ import (
 )
 
 type EntityWriter interface {
+	// Create writes a new row under req.RowID, or under an assigned UUIDv7
+	// when it is uuid.Nil. A live row with that ID, or a row holding one of
+	// the new row's unique-key values, is ErrUniqueConflict and nothing is
+	// written. Update refuses a move onto a taken key value the same way, and
+	// Delete frees the row's values for reuse. See docs/unique-keys.md.
 	Create(ctx context.Context, req *EntityOperation) (*DataRecord, error)
 	Update(ctx context.Context, req *EntityOperation) (*DataRecord, error)
 	Delete(ctx context.Context, req *EntityOperation) error

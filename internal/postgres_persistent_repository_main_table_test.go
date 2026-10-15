@@ -47,7 +47,9 @@ func TestInsertAndUpdateMainRow(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(int64(21)))
 
 	repo := &DBPersistentRecordRepository{}
-	require.NoError(t, repo.insertMainRow(ctx, mock, "entity_main", record))
+	inserted, err := repo.insertMainRow(ctx, mock, "entity_main", record)
+	require.NoError(t, err)
+	assert.True(t, inserted)
 	require.NoError(t, repo.updateMainRow(ctx, mock, "entity_main", record))
 	assert.Equal(t, int64(21), record.UpdatedAt, "updateMainRow must adopt the RETURNING'd effective version")
 

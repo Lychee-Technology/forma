@@ -31,7 +31,7 @@ func (s *entityBatchService) executeBestEffortBatch(
 			errorID := errorid.New()
 			// Name the operation, never log it whole: Data and Updates are
 			// caller content and may be sensitive (#396). A create's row_id is
-			// the caller's, normally nil, since Create mints the real one.
+			// the caller's: nil when Create assigns one (#651).
 			zap.S().Warnw(operationName+" operation failed",
 				"schema_name", op.SchemaName, "row_id", op.RowID.String(),
 				"operation_type", string(op.Type), "operation_index", index,

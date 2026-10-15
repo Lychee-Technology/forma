@@ -82,6 +82,9 @@ func (s *entityBatchService) BatchCreate(ctx context.Context, req *forma.BatchOp
 	if len(req.Operations) == 0 {
 		return emptyBatchResult(), nil
 	}
+	if err := refuseDuplicateCreateRowIDs(req.Operations); err != nil {
+		return nil, fmt.Errorf("batch create: %w", err)
+	}
 	if req.Atomic {
 		return s.batchCreateAtomic(ctx, req)
 	}

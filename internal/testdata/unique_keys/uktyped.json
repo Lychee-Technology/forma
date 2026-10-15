@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Unique keys over every scalar value type",
+  "type": "object",
+  "x-forma-unique-keys": [
+    { "id": 1, "name": "at_ref", "attributes": ["at", "ref"] },
+    { "id": 2, "name": "day_ref_eav", "attributes": ["day", "refEav"] },
+    { "id": 3, "name": "flag_tag", "attributes": ["flag", "tag"] },
+    { "id": 4, "name": "flag_eav_big", "attributes": ["flagEav", "big"] },
+    { "id": 5, "name": "amount", "attributes": ["amount"] },
+    { "id": 6, "name": "amount_col_big_eav", "attributes": ["amountCol", "bigEav"] }
+  ],
+  "properties": {
+    "at": { "type": "string", "format": "date-time" },
+    "day": { "type": "string", "format": "date" },
+    "ref": { "type": "string", "format": "uuid" },
+    "refEav": { "type": "string", "format": "uuid" },
+    "flag": { "type": "boolean" },
+    "flagEav": { "type": "boolean" },
+    "tag": { "type": "string" },
+    "big": { "type": "integer" },
+    "bigEav": { "type": "integer" },
+    "amount": { "type": "number" },
+    "amountCol": { "type": "number" }
+  }
+}

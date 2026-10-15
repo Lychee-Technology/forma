@@ -10,6 +10,7 @@ import (
 	"github.com/lychee-technology/forma/internal/schemameta"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -74,7 +75,7 @@ func TestInsertPersistentRecordWithMockPool(t *testing.T) {
 	_, eavArgs, err := buildAttributeValuesClause(record.OtherAttributes)
 	require.NoError(t, err)
 
-	mock.ExpectBegin()
+	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	// nextRowVersion (#274): a fresh row_id has no retained change_log
 	// history, so the create stamps the plain clock read.
 	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
@@ -135,7 +136,7 @@ func TestBatchInsertPersistentRecordsWithMockPool(t *testing.T) {
 	insertQuery2, insertArgs2, err := buildInsertMainStatement(tables.EntityMain, &expected2)
 	require.NoError(t, err)
 
-	mock.ExpectBegin()
+	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	// Both locks are taken up front, in sorted order (#554).
 	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).
 		WithArgs(pgxmock.AnyArg()).

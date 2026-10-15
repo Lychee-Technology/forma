@@ -14,6 +14,12 @@ type JSONSchema struct {
 	// loaded schema's declarations have been validated against its
 	// attributes file: every attribute is column-bound.
 	Indexes []IndexDeclaration `json:"indexes,omitempty"`
+	// UniqueKeys are the attribute tuples the schema file declares unique
+	// among live rows under the top-level "x-forma-unique-keys" extension
+	// (#651), in file order. A loaded schema's declarations have been
+	// validated against its attributes file: every attribute is an active
+	// scalar. See docs/unique-keys.md.
+	UniqueKeys []UniqueKeyDeclaration `json:"unique_keys,omitempty"`
 }
 
 // PropertySchema defines the schema for a single property.

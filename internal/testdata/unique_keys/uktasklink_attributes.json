@@ -1,0 +1,4 @@
+{
+  "childTaskId": { "attributeID": 2, "valueType": "text" },
+  "parentTaskHash": { "attributeID": 1, "valueType": "text" }
+}

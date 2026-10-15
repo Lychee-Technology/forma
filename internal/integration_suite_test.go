@@ -11,6 +11,7 @@ import (
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/testdb"
 	"github.com/lychee-technology/forma/internal/transform"
+	"github.com/lychee-technology/forma/internal/uniquekey"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
@@ -38,6 +39,9 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 
 	pool := testdb.Connect(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
+	// The shipped schemas declare no unique key, so no write of any suite
+	// built on this env may leave a key-table entry or built state (#651).
+	t.Cleanup(func() { assertNoUniqueKeyRows(t, pool, tables) })
 	schemaRegistryTable := createSchemaRegistryTable(t, ctx, pool)
 
 	registry, err := schemameta.NewFileSchemaRegistry(pool, schemaRegistryTable, "../cmd/server/schemas")
@@ -83,6 +87,19 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 // createSchemaRegistryTable mirrors the schema registry table using IDs from the file registry.
 func createSchemaRegistryTable(t *testing.T, ctx context.Context, pool *pgxpool.Pool) string {
 	t.Helper()
+	return createSchemaRegistryTableWith(t, ctx, pool, map[string]int16{
+		"activity":      100,
+		"lead":          101,
+		"visit":         102,
+		"communication": 103,
+		"log":           104,
+	})
+}
+
+// createSchemaRegistryTableWith creates a schema registry table holding
+// schemas.
+func createSchemaRegistryTableWith(t *testing.T, ctx context.Context, pool *pgxpool.Pool, schemas map[string]int16) string {
+	t.Helper()
 
 	suffix := time.Now().UnixNano()
 	tableName := fmt.Sprintf("schema_registry_it_%d", suffix)
@@ -91,17 +108,7 @@ func createSchemaRegistryTable(t *testing.T, ctx context.Context, pool *pgxpool.
 	_, err := pool.Exec(ctx, ddl)
 	require.NoError(t, err)
 
-	schemas := map[string]int16{
-		"activity":      100,
-		"lead":          101,
-		"visit":         102,
-		"communication": 103,
-		"log":           104,
-	}
-
 	for name, id := range schemas {
-		require.NoError(t, err)
-
 		_, err = pool.Exec(ctx,
 			fmt.Sprintf("INSERT INTO %s (schema_name, schema_id) VALUES ($1, $2)", sanitizeIdentifier(tableName)),
 			name, id,
@@ -333,4 +340,22 @@ func TestIntegration_AdvancedQuery_MixedSorting(t *testing.T) {
 	assert.Equal(t, rec3.RowID, resultMixed.Data[0].RowID) // email, 45
 	assert.Equal(t, rec2.RowID, resultMixed.Data[1].RowID) // call, 35
 	assert.Equal(t, rec1.RowID, resultMixed.Data[2].RowID) // call, 25
+}
+
+// assertNoUniqueKeyRows fails when the key table or the state table of
+// tables holds a row.
+func assertNoUniqueKeyRows(t *testing.T, pool *pgxpool.Pool, tables model.StorageTables) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, table := range []string{uniquekey.KeyTable(tables.EntityMain), uniquekey.StateTable(tables.EntityMain)} {
+		var n int
+		if err := pool.QueryRow(ctx, fmt.Sprintf("SELECT count(*) FROM %s", sanitizeIdentifier(table))).Scan(&n); err != nil {
+			t.Errorf("count rows of %s: %v", table, err)
+			continue
+		}
+		if n != 0 {
+			t.Errorf("%s holds %d rows, but no schema of this suite declares a unique key", table, n)
+		}
+	}
 }

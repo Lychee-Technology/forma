@@ -32,6 +32,10 @@ type DBPersistentRecordRepository struct {
 	// shared across repository instances so hits survive transient
 	// construction (the benchmark and production reuse lifecycle).
 	planCache *queryplan.Cache
+	// uniqueKeys is the schemas' unique keys (#651), which every write core
+	// enforces. NewEntityManager installs it from the manager's registry;
+	// nil enforces none.
+	uniqueKeys *UniqueKeyCatalog
 }
 
 // RepoOption customizes optional repository collaborators.
@@ -190,8 +194,11 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 		return fmt.Errorf("validate tables for insert: %w", err)
 	}
 
+	// READ COMMITTED, whatever the session's default: the unique-key
+	// reservation waits for a concurrent writer of a value and then judges
+	// its committed entry, which a snapshot level answers with 40001 (#651).
 	now := r.nowMillis()
-	return r.inWriteTx(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	return r.inWriteTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		return r.insertRecordInTx(ctx, tx, tables, record, now)
 	})
 }
@@ -213,8 +220,26 @@ func (r *DBPersistentRecordRepository) insertRecordInTx(ctx context.Context, tx 
 	record.CreatedAt = now
 	record.UpdatedAt = effective
 
-	if err := r.insertMainRow(ctx, tx, tables.EntityMain, record); err != nil {
+	// Unique keys are reserved before the entity write, so a conflict leaves
+	// nothing written; a row ID a live row has is the main insert's zero
+	// rows, after which the reservation is removed (#651).
+	claim, err := r.planUniqueKeys(ctx, tx, tables, record, false)
+	if err != nil {
+		return fmt.Errorf("plan unique keys of %s: %w", record.RowID, err)
+	}
+	reservation, err := r.reserveUniqueKeys(ctx, tx, tables, claim)
+	if err != nil {
+		return fmt.Errorf("reserve unique keys of %s: %w", record.RowID, err)
+	}
+	inserted, err := r.insertMainRow(ctx, tx, tables.EntityMain, record)
+	if err != nil {
 		return fmt.Errorf("insert main row for %s: %w", record.RowID, err)
+	}
+	if !inserted {
+		return r.undoAfter(ctx, tx, tables, reservation, r.rowIDConflict(record.SchemaID, record.RowID))
+	}
+	if err := r.applyUniqueKeys(ctx, tx, tables, claim); err != nil {
+		return fmt.Errorf("write unique keys of %s: %w", record.RowID, err)
 	}
 
 	if err := r.insertEAVAttributes(ctx, tx, tables.EAVData, record.OtherAttributes); err != nil {
@@ -286,6 +311,9 @@ func (r *DBPersistentRecordRepository) deleteRecordInTx(ctx context.Context, tx 
 	deleteEAV := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(tables.EAVData))
 	if _, err := tx.Exec(ctx, deleteEAV, schemaID, rowID); err != nil {
 		return fmt.Errorf("delete eav attributes: %w", err)
+	}
+	if err := r.releaseRowUniqueKeys(ctx, tx, tables, schemaID, rowID); err != nil {
+		return fmt.Errorf("delete unique keys: %w", err)
 	}
 
 	if tables.ChangeLog != "" {

@@ -34,6 +34,8 @@ func TestNewEntityManagerUsesTheSuppliedRelationIndex(t *testing.T) {
 	idx, err := LoadRelationIndex(registry)
 	require.NoError(t, err)
 	require.Len(t, idx.Relations("child"), 1)
+	keys, err := NewUniqueKeyCatalog(registry)
+	require.NoError(t, err)
 
 	registry.docErr["child"] = errors.New("backing store unavailable")
 
@@ -45,8 +47,8 @@ func TestNewEntityManagerUsesTheSuppliedRelationIndex(t *testing.T) {
 	config.Entity.SchemaDirectory = resolveRelationFixtureDir("relation_ok_not")
 	spy := &writeSpy{inner: transform.NewPersistentRecordTransformer(registry)}
 	manager, err := NewEntityManager(spy, newMockPersistentRecordRepository(), nil,
-		registry, config, validator, WithRelationIndex(idx))
-	require.NoError(t, err, "the supplied index must spare the manager a second, failing read")
+		registry, config, validator, WithRelationIndex(idx), WithUniqueKeys(keys))
+	require.NoError(t, err, "the supplied index and unique keys must spare the manager a second, failing read")
 
 	_, _ = manager.Create(context.Background(), &forma.EntityOperation{
 		Type:             forma.OperationCreate,

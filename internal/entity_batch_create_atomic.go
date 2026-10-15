@@ -7,7 +7,6 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 
-	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
 
@@ -38,7 +37,7 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 			return nil, forma.WrapPublicf(fmt.Errorf("failed to get schema: %w", err), "operation[%d]", i)
 		}
 
-		rowID := uuid.Must(uuid.NewV7())
+		rowID := assignedRowID(op.RowID)
 		// No nil guard: both RelationIndex methods are nil-receiver-safe, and
 		// StripComputedFields answers the very map it was handed, so a manager
 		// without an index writes exactly what the caller sent.

@@ -20,8 +20,10 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 		return fmt.Errorf("validate tables for batch insert: %w", err)
 	}
 
+	// READ COMMITTED for the unique-key reservation; see
+	// InsertPersistentRecord.
 	now := r.nowMillis()
-	return r.inWriteTx(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	return r.inWriteTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		return r.batchInsertInTx(ctx, tx, tables, records, now)
 	})
 }
@@ -33,10 +35,21 @@ func (r *DBPersistentRecordRepository) batchInsertInTx(ctx context.Context, tx p
 	// write, the write loop below in input order (#554).
 	keys, err := recordKeys(records)
 	if err != nil {
-		return err
+		return fmt.Errorf("validate batch insert: %w", err)
 	}
 	if err := lockRowKeys(ctx, tx, keys); err != nil {
 		return fmt.Errorf("lock row versions for batch insert: %w", err)
+	}
+	// Every record's unique keys are reserved in one sorted statement after
+	// every row lock and before the first entity write (#651), so two
+	// records of the batch taking one value conflict here too. A failure
+	// later rolls the batch's own transaction back, reservation included.
+	claims, err := r.planBatchUniqueKeys(ctx, tx, tables, records, false)
+	if err != nil {
+		return fmt.Errorf("plan unique keys for batch insert: %w", err)
+	}
+	if _, err := r.reserveUniqueKeys(ctx, tx, tables, claims...); err != nil {
+		return fmt.Errorf("reserve unique keys for batch insert: %w", err)
 	}
 
 	for i, record := range records {
@@ -47,8 +60,15 @@ func (r *DBPersistentRecordRepository) batchInsertInTx(ctx context.Context, tx p
 		record.CreatedAt = now
 		record.UpdatedAt = effective
 
-		if err := r.insertMainRow(ctx, tx, tables.EntityMain, record); err != nil {
+		inserted, err := r.insertMainRow(ctx, tx, tables.EntityMain, record)
+		if err != nil {
 			return fmt.Errorf("insert main row for record[%d]: %w", i, err)
+		}
+		if !inserted {
+			return fmt.Errorf("record[%d]: %w", i, r.rowIDConflict(record.SchemaID, record.RowID))
+		}
+		if err := r.applyUniqueKeys(ctx, tx, tables, claims[i]); err != nil {
+			return fmt.Errorf("write unique keys for record[%d]: %w", i, err)
 		}
 		if err := r.insertEAVAttributes(ctx, tx, tables.EAVData, record.OtherAttributes); err != nil {
 			return fmt.Errorf("insert eav attributes for record[%d]: %w", i, err)
@@ -103,6 +123,9 @@ func (r *DBPersistentRecordRepository) batchDeleteInTx(ctx context.Context, tx p
 		if _, err := tx.Exec(ctx, deleteEAV, key.SchemaID, key.RowID); err != nil {
 			return fmt.Errorf("delete eav row for key[%d]: %w", i, err)
 		}
+		if err := r.releaseRowUniqueKeys(ctx, tx, tables, key.SchemaID, key.RowID); err != nil {
+			return fmt.Errorf("delete unique keys for key[%d]: %w", i, err)
+		}
 		if tables.ChangeLog != "" {
 			stamp := computeTombstoneStamp(now, prevUpdatedAt)
 			if err := r.upsertChangeLog(ctx, tx, tables.ChangeLog, key.SchemaID, key.RowID, stamp, &stamp); err != nil {
@@ -111,6 +134,22 @@ func (r *DBPersistentRecordRepository) batchDeleteInTx(ctx context.Context, tx p
 		}
 	}
 	return nil
+}
+
+// planBatchUniqueKeys answers each record's unique-key claim, positionally;
+// stored says the rows exist (see planUniqueKeys).
+func (r *DBPersistentRecordRepository) planBatchUniqueKeys(
+	ctx context.Context, tx pgx.Tx, tables model.StorageTables, records []*model.PersistentRecord, stored bool,
+) ([]*uniqueKeyClaim, error) {
+	claims := make([]*uniqueKeyClaim, len(records))
+	for i, record := range records {
+		claim, err := r.planUniqueKeys(ctx, tx, tables, record, stored)
+		if err != nil {
+			return nil, fmt.Errorf("plan unique keys for record[%d]: %w", i, err)
+		}
+		claims[i] = claim
+	}
+	return claims, nil
 }
 
 // recordKeys projects a batch's records onto their (schemaID, rowID) keys for

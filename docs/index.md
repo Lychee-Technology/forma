@@ -86,4 +86,5 @@ make test
 - [Conditional Writes](./conditional-writes.md) - Preconditions, `increment` and `server_time` on Update and Delete
 - [Condition DSL](./condition-dsl.md) - Filter operators, `in`/`not_in`, null tests and `$now`
 - [Declared Indexes](./schema-indexes.md) - Composite indexes on column-bound attributes via `x-forma-indexes`
+- [Row IDs and Unique Keys](./unique-keys.md) - Caller-supplied row IDs on create, unique keys via `x-forma-unique-keys`, and `build-unique-keys`
 - [GitHub](https://github.com/ruoshui/forma) - Source code and issues
