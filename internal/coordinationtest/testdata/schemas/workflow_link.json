@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LTFlow parent-child workflow link, found by the parent task's token hash",
+  "type": "object",
+  "x-forma-unique-keys": [
+    {
+      "id": 1,
+      "name": "parent_task_hash",
+      "attributes": [
+        "parent_task_hash"
+      ]
+    }
+  ],
+  "required": [
+    "parent_task_hash",
+    "parent_instance_id",
+    "status"
+  ],
+  "properties": {
+    "parent_task_hash": {
+      "type": "string"
+    },
+    "parent_instance_id": {
+      "type": "string"
+    },
+    "child_instance_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "eligible_cleanup_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

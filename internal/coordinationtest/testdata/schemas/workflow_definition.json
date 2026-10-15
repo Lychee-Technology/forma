@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LTFlow workflow definition, unique by version and by activation sequence",
+  "type": "object",
+  "x-forma-unique-keys": [
+    {
+      "id": 1,
+      "name": "name_version",
+      "attributes": [
+        "name",
+        "version"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "name_activation",
+      "attributes": [
+        "name",
+        "activation_sequence"
+      ]
+    }
+  ],
+  "required": [
+    "name",
+    "version",
+    "status"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "version": {
+      "type": "integer"
+    },
+    "activation_sequence": {
+      "type": "integer"
+    },
+    "body": {
+      "type": "string"
+    }
+  }
+}

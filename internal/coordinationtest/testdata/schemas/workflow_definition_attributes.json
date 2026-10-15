@@ -1,0 +1,34 @@
+{
+  "name": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "status": {
+    "attributeID": 2,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_02"
+    }
+  },
+  "version": {
+    "attributeID": 3,
+    "valueType": "integer",
+    "column_binding": {
+      "col_name": "integer_01"
+    }
+  },
+  "activation_sequence": {
+    "attributeID": 4,
+    "valueType": "bigint",
+    "column_binding": {
+      "col_name": "bigint_01"
+    }
+  },
+  "body": {
+    "attributeID": 5,
+    "valueType": "text"
+  }
+}

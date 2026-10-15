@@ -181,8 +181,8 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// which the index handed in above skips — but the error is wrapped and
 	// returned rather than asserted away, so an option or a caller that later
 	// stops supplying the index cannot go back to a silent nil index (#388).
-	manager, err := internal.NewEntityManager(
-		transformer, repository, federatedEngine, registry, effectiveConfig, guards.validator, managerOpts...)
+	manager, err := internal.NewEntityManager(transformer, repository, internal.WrapFederatedEngine(ctx, federatedEngine),
+		registry, effectiveConfig, guards.validator, managerOpts...)
 	if err != nil {
 		discardDuckClient(duckClient)
 		return nil, fmt.Errorf("failed to build the entity manager: %w", err)
