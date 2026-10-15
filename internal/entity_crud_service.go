@@ -71,6 +71,27 @@ func (s *entityCRUDService) boundTo(repository model.PersistentRecordRepository,
 }
 
 func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperation) (*forma.DataRecord, error) {
+	ctx, cancel := withBudget(ctx, s.budgets.write)
+	defer cancel()
+	prepared, err := s.prepareCreate(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return s.insertPrepared(ctx, prepared)
+}
+
+// preparedCreate is a create validated and transformed, before any SQL: the
+// record to insert, under the row ID it was assigned.
+type preparedCreate struct {
+	schemaName string
+	schemaID   int16
+	cache      forma.SchemaAttributeCache
+	record     *model.PersistentRecord
+}
+
+// prepareCreate validates req and transforms it to the record Create
+// inserts. It sends no SQL, so every refusal precedes any write.
+func (s *entityCRUDService) prepareCreate(ctx context.Context, req *forma.EntityOperation) (*preparedCreate, error) {
 	if err := s.validateDependencies(); err != nil {
 		return nil, err
 	}
@@ -90,9 +111,6 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	if err := validateConditionalCreate(req); err != nil {
 		return nil, fmt.Errorf("failed to validate create of %s: %w", req.SchemaName, err)
 	}
-
-	ctx, cancel := withBudget(ctx, s.budgets.write)
-	defer cancel()
 
 	// Get schema by name to obtain schema ID and the attribute cache the
 	// validator needs to recognise literal dotted keys.
@@ -147,12 +165,19 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("failed to validate create payload: %w", err)
 	}
 
-	zap.S().Debugw("Creating entity", "schemaName", req.SchemaName, "schemaID", schemaID, "rowID", rowID)
 	record, err := s.transformer.ToPersistentRecord(ctx, schemaID, rowID, inputData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to transform data to persistent record: %w", err)
 	}
+	return &preparedCreate{schemaName: req.SchemaName, schemaID: schemaID, cache: schemaCache, record: record}, nil
+}
 
+// insertPrepared inserts a prepared create and answers the row as stored. A
+// refused insert writes nothing, so the same prepared create can be tried
+// again.
+func (s *entityCRUDService) insertPrepared(ctx context.Context, prepared *preparedCreate) (*forma.DataRecord, error) {
+	record := prepared.record
+	zap.S().Debugw("Creating entity", "schemaName", prepared.schemaName, "schemaID", prepared.schemaID, "rowID", record.RowID)
 	if err := s.repository.InsertPersistentRecord(ctx, s.resolveTables(), record); err != nil {
 		return nil, fmt.Errorf("failed to insert persistent record: %w", err)
 	}
@@ -163,8 +188,8 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 	}
 
 	return &forma.DataRecord{
-		SchemaName: req.SchemaName,
-		RowID:      rowID,
+		SchemaName: prepared.schemaName,
+		RowID:      record.RowID,
 		Attributes: attributes,
 	}, nil
 }

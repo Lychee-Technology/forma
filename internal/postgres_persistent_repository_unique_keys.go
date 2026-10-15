@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -115,7 +116,40 @@ func heldUniqueKeys(ctx context.Context, tx pgx.Tx, tables model.StorageTables, 
 // value, which may be sensitive (#651).
 func (r *DBPersistentRecordRepository) uniqueKeyConflict(c claimedEntry, owner uuid.UUID) error {
 	return forma.WithOperatorDetail(r.uniqueKeyConflictMessage(c),
-		fmt.Errorf("key id %d is held by row %s; the write of row %s wanted it", c.entry.keyID, owner, c.rowID))
+		&uniqueKeyConflictDetail{schemaID: c.schemaID, keyID: c.entry.keyID, holder: owner, writer: c.rowID})
+}
+
+// uniqueKeyConflictDetail is a key conflict's operator detail, typed so
+// Tx.Upsert can tell a conflict on its target key from one on another.
+type uniqueKeyConflictDetail struct {
+	schemaID, keyID int16
+	holder, writer  uuid.UUID
+}
+
+func (d *uniqueKeyConflictDetail) Error() string {
+	return fmt.Sprintf("key id %d is held by row %s; the write of row %s wanted it", d.keyID, d.holder, d.writer)
+}
+
+// conflictsOnKey says whether err is a conflict on key keyID of schemaID.
+func conflictsOnKey(err error, schemaID, keyID int16) bool {
+	var d *uniqueKeyConflictDetail
+	return errors.As(err, &d) && d.schemaID == schemaID && d.keyID == keyID
+}
+
+// uniqueKeyOwner answers the row that holds value of key keyID of schemaID,
+// as tx sees the key table: committed entries and tx's own.
+func uniqueKeyOwner(ctx context.Context, tx pgx.Tx, tables model.StorageTables, schemaID, keyID int16, value string) (uuid.UUID, bool, error) {
+	query := fmt.Sprintf("SELECT ltbase_row_id FROM %s WHERE ltbase_schema_id = $1 AND key_id = $2 AND key_value = $3",
+		sanitizeIdentifier(uniquekey.KeyTable(tables.EntityMain)))
+	var owner uuid.UUID
+	err := tx.QueryRow(ctx, query, schemaID, keyID, value).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, fmt.Errorf("read the holder of a value of key id %d: %w", keyID, err)
+	}
+	return owner, true, nil
 }
 
 // batchUniqueKeyConflict is the ErrUniqueConflict of two operations of one

@@ -8,6 +8,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/txseal"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
 
@@ -36,9 +37,10 @@ type txSession struct {
 	tx     *meteredTx
 	meter  *txMeter
 	maxOps int
-	// mutateHooks, set only by tests, run inside UpdateWhere and DeleteWhere.
-	mutateHooks *mutateWhereHooks
-	ops         int
+	// testHooks, set only by tests, run inside predicate mutations and
+	// upserts.
+	testHooks *txTestHooks
+	ops       int
 
 	// busy is held for the length of one method call; a second goroutine
 	// calling in at the same time fails its TryLock, which is how concurrent
@@ -53,6 +55,20 @@ type txSession struct {
 }
 
 var _ forma.Tx = (*txSession)(nil)
+
+// txTestHooks, set only by tests, run inside a Tx operation at the points
+// its concurrency and poisoning proofs need.
+type txTestHooks struct {
+	// afterCandidates runs once a predicate mutation's candidates are
+	// selected, before any of them is locked.
+	afterCandidates func(candidates []uuid.UUID)
+	// beforeWrite runs before a predicate mutation writes its i-th
+	// surviving row; an error fails that row's write.
+	beforeWrite func(i int, rowID uuid.UUID) error
+	// afterTargetLookup runs each time an upsert on a unique key has looked
+	// up the target's holder, before it locks the holder or creates.
+	afterTargetLookup func(holder uuid.UUID, found bool)
+}
 
 func (s *txSession) Create(ctx context.Context, op *forma.EntityOperation) (*forma.DataRecord, error) {
 	var record *forma.DataRecord

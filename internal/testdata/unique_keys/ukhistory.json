@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LTFlow-shaped history event, deduplicated on its row ID",
+  "type": "object",
+  "properties": {
+    "event": { "type": "string" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "dedup_count": { "type": "integer" }
+  }
+}

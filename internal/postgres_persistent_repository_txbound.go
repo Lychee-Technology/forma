@@ -52,6 +52,16 @@ func (p txStatementPool) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
 
 var _ model.PersistentRecordRepository = (*txBoundRepository)(nil)
 
+// uniqueKeyOwner answers the row that holds value of key keyID of schemaID,
+// as the transaction sees it.
+func (b *txBoundRepository) uniqueKeyOwner(ctx context.Context, tables model.StorageTables, schemaID, keyID int16, value string) (uuid.UUID, bool, error) {
+	owner, found, err := uniqueKeyOwner(ctx, b.tx, tables, schemaID, keyID, value)
+	if err != nil {
+		return uuid.Nil, false, classifyStatementError(err)
+	}
+	return owner, found, nil
+}
+
 func (b *txBoundRepository) InsertPersistentRecord(ctx context.Context, tables model.StorageTables, record *model.PersistentRecord) error {
 	if record == nil {
 		return fmt.Errorf("record cannot be nil")

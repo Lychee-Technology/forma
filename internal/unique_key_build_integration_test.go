@@ -155,7 +155,7 @@ func TestCheckUniqueKeysBuiltRefusesUnbuiltChangedAndUndeclaredKeys(t *testing.T
 	preKeyCreate(t, env, env.preKeyManager(t), ukTaskLink, map[string]any{"parentTaskHash": "p"})
 	built, pending, err := catalog.BuildUniqueKeysOfEmptySchemas(env.ctx, env.postgresPool, env.tables)
 	require.NoError(t, err)
-	assert.Len(t, built, 12, "ukaccount's three keys, ukflowdef's, ukinstance's, uktyped's six and ukcreated's")
+	assert.Len(t, built, 14, "ukaccount's three keys, ukflowdef's, ukinstance's, uktyped's six, ukcreated's and ukidem's two")
 	assert.Equal(t, []string{"unique key parent_task_hash of schema uktasklink is not built: run forma-tools build-unique-keys --schema uktasklink --key parent_task_hash"}, pending)
 	_, err = catalog.BuildUniqueKeys(env.ctx, env.postgresPool, env.tables, UniqueKeyBuildRequest{Schema: ukTaskLink})
 	require.NoError(t, err)

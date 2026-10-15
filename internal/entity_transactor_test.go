@@ -162,6 +162,8 @@ func TestTxMethodsAnswerErrTxDoneAfterInTxReturns(t *testing.T) {
 	_, err = tx.Update(ctx, op)
 	require.ErrorIs(t, err, forma.ErrTxDone)
 	require.ErrorIs(t, tx.Delete(ctx, op), forma.ErrTxDone)
+	_, err = tx.Upsert(ctx, &forma.UpsertRequest{Create: *op, Target: forma.ConflictTarget{RowID: true}, Action: forma.UpsertDoNothing})
+	require.ErrorIs(t, err, forma.ErrTxDone)
 	require.NoError(t, mock.ExpectationsWereMet(), "a finished Tx sends nothing")
 }
 
