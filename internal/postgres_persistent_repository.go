@@ -393,7 +393,9 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Contex
 		}
 	}
 
-	useMainTableAsAnchor := hasMainTableCondition(query.Condition, cache)
+	// A group head is a predicate on the entity_main row, so a claim with
+	// one anchors there whatever its condition tests (#653).
+	useMainTableAsAnchor := query.Head != nil || hasMainTableCondition(query.Condition, cache)
 
 	conditions, args, err := r.buildHybridConditions(
 		sanitizeIdentifier(query.Tables.EAVData),
@@ -404,6 +406,14 @@ func (r *DBPersistentRecordRepository) QueryPersistentRecords(ctx context.Contex
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build hybrid conditions: %w", err)
+	}
+	if query.Head != nil {
+		head, headArgs, _, err := r.headPredicate(query.Tables, query.SchemaID, query.Head, 1+len(args))
+		if err != nil {
+			return nil, fmt.Errorf("build group head: %w", err)
+		}
+		conditions = "(" + conditions + ") AND " + head
+		args = append(args, headArgs...)
 	}
 
 	// Use the optimized single-query approach that eliminates N+1 queries

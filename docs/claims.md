@@ -6,7 +6,8 @@ a lease and a generation), and answers the rows as stored. It is the operation
 behind a work queue, an outbox relay, a scheduler or a worker pool. Two
 concurrent claimers never receive the same row, a row whose lease expired can
 be claimed again, and a holder whose lease was taken over cannot complete its
-work.
+work. With a `Group`, a claim takes only the earliest unresolved row of each
+group, for per-key FIFO.
 
 Leases, owners, statuses and generations are ordinary schema attributes the
 caller chooses. Forma provides the atomic take; the caller's condition decides
@@ -50,10 +51,10 @@ twice `Limit` candidates, then takes them in that order:
    that is `pg_try_advisory_xact_lock` on the same key every Forma write,
    `AssertRow`, `Get` with `ForUpdate`, `UpdateWhere`, `Upsert` and claim
    takes first. A candidate another Forma transaction holds is **skipped**.
-2. It re-checks `Condition` on the candidates it got, under their row locks
-   (`FOR UPDATE ... SKIP LOCKED`). A candidate that stopped matching after the
-   select, for example because another claimer claimed and committed it, is
-   dropped.
+2. It re-checks `Condition`, and with a `Group` the head rule, on the
+   candidates it got, under their row locks (`FOR UPDATE ... SKIP LOCKED`). A
+   candidate that stopped matching after the select, for example because
+   another claimer claimed and committed it, is dropped.
 3. Each skipped or dropped candidate is replaced by the next one, until
    `Limit` rows are held or the candidates run out.
 
@@ -69,6 +70,87 @@ got but that the re-check dropped, or skipped for a row lock held outside
 Forma, keeps that lock until the Tx ends, because a transaction-scoped lock
 cannot be released early. A Forma write of that row, or an `AssertRow` on it,
 waits for the Tx, and another claim skips it.
+
+## Group heads: per-group FIFO
+
+With `Group`, a claim takes only the head of each group:
+
+```go
+Group: &forma.ClaimGroup{
+	Key:   []string{"partition_key"},
+	Order: []forma.OrderBy{{Attribute: "enqueued_at"}},
+	Live:  &forma.KvCondition{Attr: "status", Value: `not_in:["published","dead_letter"]`},
+},
+```
+
+Rows with equal `Key` values form a group. A null component equals a null, so
+the rows that lack a key attribute form one group. A row is eligible when it
+matches `Condition`, matches `Live`, and no other row of its group that
+matches `Live` comes before it by `Order`, then row ID ascending. A null
+`Order` value sorts last in either direction, as in `Sort`. So at most one row
+of a group, its **head**, is claimable at a time, and a claim takes at most one
+row per group.
+
+`Live` decides what blocks a group, separately from `Condition`. A failed
+message waiting for its retry matches `Live` but not `Condition`, so the
+messages after it wait too. A head under an active claim blocks its group the
+same way. When its lease expires the head itself is claimed again, not the
+next row. Once the head stops matching `Live`, for example when it is
+published, the next row becomes the head.
+
+**No fall-through.** A head another transaction holds is skipped like any
+held row, and no later row of its group is claimed in its place: the later
+rows are not heads. The re-check under the lock tests the head rule again, so
+a candidate that stopped being the head after the select is dropped, for
+example because an earlier row became live again.
+
+**Group order is the caller's.** Heads are judged on stored values. A row that
+enters a group with an `Order` value earlier than a row already claimed does
+not revoke that claim, and the two can then be held at once. A caller that
+needs strict FIFO assigns `Order` values that only increase within a group,
+as LTFlow requires of its enqueue time.
+
+**A claimed row must stay its group's head.** Two rules keep the claim's own
+write from handing the head on while the claimed row is still in flight:
+
+- The claim may not move the row within its group. A `Key` or `Order`
+  attribute bound to a column Forma stamps on every update
+  (`ltbase_updated_at`, `ltbase_updated_by`, `ltbase_deleted_at`,
+  `ltbase_deleted_by`) is refused, and so is a claim mutation that writes a
+  `Key` or `Order` attribute. Either would let the next row of the group sort
+  first and be claimed beside it.
+- `Live` must keep matching a claimed row. That one is the caller's to get
+  right, as Forma cannot tell what `Live` means: LTFlow's `not_in` published
+  and dead-lettered keeps a `publishing` message live. A `Live` that the
+  claim mutation stops matching, such as `status in pending, failed`, makes
+  the next row the head as soon as the claim commits.
+
+`Key` lists 1 to 4 attributes with no repeats, and `Order` at least one.
+Every attribute of `Key`, `Order` and `Live` must be column-bound, because the
+head rule compares rows of the schema with each other in `entity_main`. A
+request that breaks a rule is refused with `ErrInvalidInput` naming the
+attribute, before any SQL.
+
+**Declare an index on the key, then the order**
+([Schema indexes](schema-indexes.md)), for example
+`{"name": "fifo", "attributes": ["partition_key", "enqueued_at"]}`. The head
+rule looks up a row's earlier rows by key, and with the index it reads only
+that row's group. A test asserts the plan. Without it, each lookup reads the
+schema's whole range.
+
+**What a group claim costs.** The candidate select applies the head rule to
+every row that matches `Condition` and `Live` before it sorts and limits, not
+only to the 2 × `Limit` it keeps, and each lookup reads the row's whole
+group through the index's key prefix: the order comparison is a filter, and
+rows no longer live, such as published messages still stored, are read too.
+The cost grows with the matching rows times the group size. The rows whose
+key is null are read for every lookup, so a schema where many rows lack a key
+pays for them on each claim. In one measurement on a development machine,
+with every due row in one partition, the candidate select took 106 ms with a
+`Group` and 37 ms without at 4,000 due rows, and 1.19 s against 0.19 s at
+16,000, where the planner left the index for a sequential scan. A backlog of
+that shape builds when a failed head holds back its partition. Deleting
+resolved rows keeps groups small; #685 tracks the candidate select's cost.
 
 ## Never waiting
 
@@ -162,7 +244,7 @@ rows are eligible to the next claimer exactly as before.
 | Outcome | Poisons the Tx? |
 | --- | --- |
 | An empty result | no |
-| `ErrInvalidInput` refusing the request before any SQL: no schema or an unknown one, a nil, invalid or empty-group `Condition`, `Limit` outside 1..1000, an unknown `Sort` attribute, no `Updates` or `UpdateOps`, update operators `Update` would refuse, a mutation of a unique-key attribute | no |
+| `ErrInvalidInput` refusing the request before any SQL: no schema or an unknown one, a nil, invalid or empty-group `Condition`, `Limit` outside 1..1000, an unknown `Sort` attribute, no `Updates` or `UpdateOps`, update operators `Update` would refuse, a mutation of a unique-key attribute, a `Group` that breaks a rule above | no |
 | `ErrInvalidInput` for a mutation that left a claimed row matching `Condition` | yes |
 | any failure once a row is held, and every failed statement | yes |
 
@@ -205,10 +287,18 @@ relay treats the error as "claim again". The take step on DSQL is therefore
 write-and-let-the-commit-decide; the API is the same. The outcome contract on
 DSQL:
 
-- exclusive claims, rollback and fencing hold as on PostgreSQL;
+- exclusive claims, rollback, fencing and group heads hold as on PostgreSQL;
 - a contending claimer receives `ErrRetryableConflict` instead of a smaller
   result;
 - never waiting, and skipping held rows, are PostgreSQL-only.
+
+The head rule reads the transaction's snapshot on DSQL. A concurrent commit
+that changes whether an earlier row is live is not in the claiming
+transaction's write set, so it raises no `40001`, and a claim can be decided
+on a head that is stale by that one commit. If the earlier row was just
+published, the claim is conservative: it takes nothing from the group, and
+the next claim takes the new head. If an earlier row was just made live again,
+the group-order obligation above applies, as on PostgreSQL.
 
 DSQL's own limit of 3,000 rows per transaction is the default row limit, and
 `WithTxMaxPhysicalRows` cannot raise it, so on DSQL the arithmetic under

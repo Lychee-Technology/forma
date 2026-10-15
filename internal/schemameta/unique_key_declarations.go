@@ -161,7 +161,7 @@ func validateUniqueKeyAttribute(attr string, cache forma.SchemaAttributeCache, p
 		return fmt.Errorf("attribute %s is a list; a unique key needs scalar attributes", attr)
 	case insideArray(attr, properties):
 		return fmt.Errorf("attribute %s is inside an array; a unique key needs one value per row", attr)
-	case meta.ColumnBinding != nil && slices.Contains(serverMaintainedColumns, meta.ColumnBinding.ColumnName):
+	case meta.ColumnBinding != nil && IsServerMaintained(meta.ColumnBinding.ColumnName):
 		return fmt.Errorf("attribute %s is bound to %s, which Forma rewrites on later writes; a unique key needs attributes the writes set",
 			attr, meta.ColumnBinding.ColumnName)
 	}
@@ -174,6 +174,13 @@ func validateUniqueKeyAttribute(attr string, cache forma.SchemaAttributeCache, p
 // create, and stay admissible.
 var serverMaintainedColumns = []forma.MainColumn{
 	forma.MainColumnUpdatedAt, forma.MainColumnUpdatedBy, forma.MainColumnDeletedAt, forma.MainColumnDeletedBy,
+}
+
+// IsServerMaintained reports whether Forma stamps column on every update or
+// delete, whatever the write sets. A unique key and a claim group's key and
+// order (#653) refuse an attribute bound to one.
+func IsServerMaintained(column forma.MainColumn) bool {
+	return slices.Contains(serverMaintainedColumns, column)
 }
 
 // insideArray says whether the document places attr under an array. The
