@@ -3,6 +3,9 @@ package forma
 // MaxClaimLimit is the largest ClaimRequest.Limit (#653).
 const MaxClaimLimit = 1000
 
+// MaxClaimGroupKey is the most attributes a ClaimGroup.Key may list.
+const MaxClaimGroupKey = 4
+
 // ClaimRequest is Tx.Claim: take up to Limit rows of one schema that match
 // Condition, apply the claim mutation to each, and answer them.
 //
@@ -34,6 +37,37 @@ type ClaimRequest struct {
 	// neither may change an attribute of a unique key.
 	Updates   map[string]any
 	UpdateOps []UpdateOp
+	// Group, when set, restricts the claim to group heads: per-group FIFO.
+	Group *ClaimGroup
+}
+
+// ClaimGroup restricts a claim to the head of each group (#653). Rows with
+// equal Key values form a group, a null component equal to a null. A row is
+// eligible only if it matches Live and no other row of its group that
+// matches Live precedes it by Order, then row ID ascending. So at most one
+// row per group, its head, is claimable at a time. A head another
+// transaction holds is skipped, and no later row of its group is claimed in
+// its place. Every attribute in Key, Order and Live must be column-bound.
+//
+// Order is evaluated on stored values: a row that enters a group with an
+// Order value earlier than a row already claimed does not revoke that claim.
+// A caller needing strict FIFO assigns Order values monotonically.
+//
+// A claimed row must stay its group's head while it is in flight. The claim
+// mutation may not write a Key or Order attribute, and neither may be bound
+// to a column Forma stamps on every update, such as ltbase_updated_at; each
+// is ErrInvalidInput. Live is the caller's to keep matching a claimed row.
+type ClaimGroup struct {
+	// Key lists 1 to MaxClaimGroupKey attributes, with no repeats.
+	Key []string
+	// Order is the head order within a group, at least one attribute; nulls
+	// sort last in either direction, as in a query's Sort.
+	Order []OrderBy
+	// Live says which rows still block later rows of their group, for
+	// example every row not yet published. It is required, and it must still
+	// match a claimed row after the claim mutation, or the next row becomes
+	// the head as soon as the claim commits.
+	Live Condition
 }
 
 // ClaimResult answers a claim.

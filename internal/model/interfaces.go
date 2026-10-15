@@ -37,6 +37,19 @@ type PersistentRecordQuery struct {
 	AttributeOrders []AttributeOrder
 	Limit           int
 	Offset          int
+	// Head, when set, restricts the rows to group heads (a claim's Group,
+	// #653). Query never sets it.
+	Head *GroupHead
+}
+
+// GroupHead is a validated forma.ClaimGroup: a row qualifies when it
+// matches Live and no other row with equal KeyColumns that matches Live
+// precedes it by Orders, then row ID. Every column is an entity_main
+// column, and Live tests column-bound attributes only.
+type GroupHead struct {
+	KeyColumns []string
+	Orders     []AttributeOrder
+	Live       forma.Condition
 }
 
 type PersistentRecordPage struct {

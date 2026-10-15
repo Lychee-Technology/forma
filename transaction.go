@@ -120,7 +120,8 @@ type Tx interface {
 
 	// Claim takes up to req.Limit rows matching req.Condition, applies the
 	// claim mutation to each as Update would, and answers them as stored
-	// (see ClaimRequest). On PostgreSQL it never waits for a row another
+	// (see ClaimRequest). With req.Group it takes only group heads (see
+	// ClaimGroup). On PostgreSQL it never waits for a row another
 	// Forma transaction holds: it skips it. The mutation must make every
 	// claimed row stop matching req.Condition; if one still matches, Claim
 	// answers ErrInvalidInput and poisons the Tx. A refusal of the request
