@@ -74,26 +74,9 @@ func lockAndRecheckInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTabl
 		return nil, fmt.Errorf("lock %d candidates: %w", len(candidates), err)
 	}
 
-	recheck := fmt.Sprintf("SELECT m.ltbase_row_id FROM %s m WHERE m.ltbase_schema_id = $1 AND m.ltbase_row_id = ANY($2) AND (%s) FOR UPDATE OF m",
-		sanitizeIdentifier(tables.EntityMain), condition.clause)
-	args := append([]any{schemaID, candidates}, condition.args...)
-	rows, err := tx.Query(ctx, recheck, args...)
+	survivors, err := matchingRowsInTx(ctx, tx, tables, schemaID, candidates, condition, "FOR UPDATE OF m")
 	if err != nil {
 		return nil, fmt.Errorf("re-check %d locked candidates: %w", len(candidates), err)
-	}
-	matching, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
-	if err != nil {
-		return nil, fmt.Errorf("read re-checked candidates: %w", err)
-	}
-	still := make(map[uuid.UUID]struct{}, len(matching))
-	for _, id := range matching {
-		still[id] = struct{}{}
-	}
-	survivors := make([]uuid.UUID, 0, len(matching))
-	for _, id := range candidates {
-		if _, ok := still[id]; ok {
-			survivors = append(survivors, id)
-		}
 	}
 	return survivors, nil
 }
