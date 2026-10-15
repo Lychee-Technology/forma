@@ -1,0 +1,42 @@
+{
+  "parent_task_hash": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "parent_instance_id": {
+    "attributeID": 2,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_02"
+    }
+  },
+  "child_instance_id": {
+    "attributeID": 3,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_03"
+    }
+  },
+  "status": {
+    "attributeID": 4,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_04"
+    }
+  },
+  "eligible_cleanup_at": {
+    "attributeID": 5,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_01",
+      "encoding": "unix_ms"
+    }
+  },
+  "completed_at": {
+    "attributeID": 6,
+    "valueType": "datetime"
+  }
+}

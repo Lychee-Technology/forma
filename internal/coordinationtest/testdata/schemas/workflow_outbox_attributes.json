@@ -1,0 +1,84 @@
+{
+  "partition_key": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "topic": {
+    "attributeID": 2,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_02"
+    }
+  },
+  "status": {
+    "attributeID": 3,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_03"
+    }
+  },
+  "locked_by": {
+    "attributeID": 4,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_04"
+    }
+  },
+  "next_attempt_at": {
+    "attributeID": 5,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_01",
+      "encoding": "unix_ms"
+    }
+  },
+  "locked_until": {
+    "attributeID": 6,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_02",
+      "encoding": "unix_ms"
+    }
+  },
+  "enqueued_at": {
+    "attributeID": 7,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_03",
+      "encoding": "unix_ms"
+    }
+  },
+  "attempts": {
+    "attributeID": 8,
+    "valueType": "integer",
+    "column_binding": {
+      "col_name": "integer_01"
+    }
+  },
+  "lock_generation": {
+    "attributeID": 9,
+    "valueType": "integer",
+    "column_binding": {
+      "col_name": "integer_02"
+    }
+  },
+  "command_type": {
+    "attributeID": 10,
+    "valueType": "text"
+  },
+  "payload": {
+    "attributeID": 11,
+    "valueType": "text"
+  },
+  "last_error": {
+    "attributeID": 12,
+    "valueType": "text"
+  },
+  "published_at": {
+    "attributeID": 13,
+    "valueType": "datetime"
+  }
+}

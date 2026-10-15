@@ -1,0 +1,63 @@
+{
+  "instance_id": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "type": {
+    "attributeID": 2,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_02"
+    }
+  },
+  "dedup_count": {
+    "attributeID": 3,
+    "valueType": "integer",
+    "column_binding": {
+      "col_name": "integer_01"
+    }
+  },
+  "recorded_at": {
+    "attributeID": 4,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_01",
+      "encoding": "unix_ms"
+    }
+  },
+  "eligible_cleanup_at": {
+    "attributeID": 5,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_02",
+      "encoding": "unix_ms"
+    }
+  },
+  "archived_at": {
+    "attributeID": 6,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_03",
+      "encoding": "unix_ms"
+    }
+  },
+  "state_from": {
+    "attributeID": 7,
+    "valueType": "text"
+  },
+  "state_to": {
+    "attributeID": 8,
+    "valueType": "text"
+  },
+  "event": {
+    "attributeID": 9,
+    "valueType": "text"
+  },
+  "details": {
+    "attributeID": 10,
+    "valueType": "text"
+  }
+}
