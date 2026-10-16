@@ -8,6 +8,7 @@ import (
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/declaredindex"
 	"github.com/lychee-technology/forma/internal/rowguard"
+	"github.com/lychee-technology/forma/internal/schemalease"
 	"github.com/lychee-technology/forma/internal/uniquekey"
 )
 
@@ -18,8 +19,8 @@ import (
 // copy serves 68 existing federated test cases and must not be modified). The
 // seed INSERT for schema_id=1 is intentionally omitted — production fixtures
 // register their own schemas via RegisterSchemas. The unique-key tables
-// (#651) and the row-guard table (#633) come from uniquekey and rowguard, the
-// sources init-db uses.
+// (#651), the row-guard table and the schema-lease table (#633) come from
+// uniquekey, rowguard and schemalease, the sources init-db uses.
 var productionDDL = append([]string{
 	`CREATE TABLE IF NOT EXISTS schema_registry (
 		schema_id SMALLINT PRIMARY KEY,
@@ -78,7 +79,8 @@ var productionDDL = append([]string{
 		flushed_at BIGINT DEFAULT 0,
 		PRIMARY KEY (schema_id, row_id, flushed_at)
 	)`,
-}, append(uniquekey.StatementsFor("entity_main"), rowguard.StatementFor("entity_main"))...)
+}, append(uniquekey.StatementsFor("entity_main"), rowguard.StatementFor("entity_main"),
+	schemalease.StatementFor("entity_main"))...)
 
 // applyProductionDDL creates the standard production tables in the per-test
 // database.

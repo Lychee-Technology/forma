@@ -34,7 +34,7 @@ type flushBatchExecutor struct {
 	executeSingle    func(*flushBatchExecutor, []uuid.UUID) error
 	executeInChunks  func(*flushBatchExecutor, []uuid.UUID, int) error
 	exportSnapshot   func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error
-	markFlushed      func(context.Context, *sql.DB, string, int16, []uuid.UUID, map[uuid.UUID]int64, int64) ([]uuid.UUID, error)
+	markFlushed      markFlushedFunc
 	// describeColumns is a test seam for the write-time footer probe that
 	// stamps manifest entries (#256); nil uses the exporter's DuckDB session.
 	describeColumns func(ctx context.Context, uri string) (map[string]string, error)
@@ -117,7 +117,7 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 	flushedAt := time.Now().UnixMilli()
 	markFlushed := e.markFlushed
 	if markFlushed == nil {
-		markFlushed = MarkFlushedVersions
+		markFlushed = markFlushedFor(e.cfg.Engine)
 	}
 	updatedIDs, err := markFlushed(ctx, e.db, e.tableName, e.schemaID, batchIDs, e.versions, flushedAt)
 	if err != nil {

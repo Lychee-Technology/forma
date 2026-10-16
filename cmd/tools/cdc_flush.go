@@ -51,6 +51,7 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 		includeUseIAM:   true,
 		useIAMFlag:      "pg-use-iam",
 		useIAMUsage:     "Use IAM authentication for PostgreSQL",
+		engineFlag:      "pg-engine",
 	})
 
 	// Change log settings
@@ -105,11 +106,16 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	if err := validateManifestTemplateFlag(*manifestTemplate); err != nil {
 		return nil, err
 	}
+	engine, err := pg.cdcEngine("pg-engine")
+	if err != nil {
+		return nil, err
+	}
 
 	password := pg.resolvedPassword("PGPASSWORD")
 	cfg := buildCDCConfig(pg, password, changeLogTable, entityMainTable, eavDataTable,
 		minRecords, maxAgeMs, batchSize, estimatedRowBytes, maxBatchBytes, duck,
 		s3Config, manifestPrefix, manifestTemplate)
+	cfg.Engine = engine
 
 	return &cdcFlushOptions{cfg: cfg, pg: pg, registry: schemaRegistry, dryRun: *dryRun}, nil
 }

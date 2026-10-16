@@ -92,7 +92,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	}
 	defer duck.DB.Close()
 
-	flushCtx := newSchemaFlushContext(flushContextParams{
+	flushCtx, err := newSchemaFlushContext(flushContextParams{
 		cfg:            cfg,
 		db:             db,
 		duck:           duck,
@@ -102,6 +102,9 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 		logger:         logger,
 		schemaRegistry: schemaRegistry,
 	})
+	if err != nil {
+		return fmt.Errorf("prepare flush: %w", err)
+	}
 
 	// Get schemas with unflushed rows
 	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, flushCtx.tableName)
@@ -216,8 +219,10 @@ type schemaFlushContext struct {
 	manifestResolver manifest.PathResolver
 	// checksumObject is the executor's content-hash seam (#347), resolved once
 	// per run from the full S3 client; nil leaves manifest entries unstamped.
-	checksumObject  func(ctx context.Context, key string) (string, error)
-	tryLock         func(context.Context, *sql.DB, int16) (bool, func(), error)
+	checksumObject func(ctx context.Context, key string) (string, error)
+	// locker is the per-schema lock of the run's database engine; nil takes
+	// the PostgreSQL advisory lock.
+	locker          SchemaLocker
 	executeSingle   func(*flushBatchExecutor, []uuid.UUID) error
 	executeInChunks func(*flushBatchExecutor, []uuid.UUID, int) error
 	processSchemaFn func(context.Context, int16) error
@@ -263,11 +268,11 @@ func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int
 func (c *schemaFlushContext) processSchema(ctx context.Context, schemaID int16) error {
 	c.logger.Sugar().Infow("processing schema", "schema_id", schemaID)
 
-	tryLock := c.tryLock
-	if tryLock == nil {
-		tryLock = TrySchemaLock
+	locker := c.locker
+	if locker == nil {
+		locker = advisorySchemaLocker{db: c.db}
 	}
-	locked, unlock, err := tryLock(ctx, c.db, schemaID)
+	held, release, locked, err := locker.TryLock(ctx, schemaID)
 	if err != nil {
 		return fmt.Errorf("acquire schema lock: %w", err)
 	}
@@ -275,8 +280,13 @@ func (c *schemaFlushContext) processSchema(ctx context.Context, schemaID int16) 
 		c.logger.Sugar().Infow("lock not acquired, skipping", "schema_id", schemaID)
 		return nil
 	}
-	defer unlock()
+	defer release()
+	return WithLockLoss(held, c.flushUnderLock(held, schemaID))
+}
 
+// flushUnderLock is processSchema's work once the schema lock is held, on
+// the lock's held context.
+func (c *schemaFlushContext) flushUnderLock(ctx context.Context, schemaID int16) error {
 	// Check if flush is needed
 	cnt, oldest, err := GetChangeLogStats(ctx, c.db, c.tableName, schemaID)
 	if err != nil {

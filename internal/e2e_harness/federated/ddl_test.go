@@ -7,6 +7,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/rowguard"
+	"github.com/lychee-technology/forma/internal/schemalease"
 	"github.com/lychee-technology/forma/internal/uniquekey"
 )
 
@@ -44,5 +45,11 @@ func TestFederatedDDLCreatesUniqueKeyTablesFromSharedSource(t *testing.T) {
 func TestFederatedDDLCreatesRowGuardTableFromSharedSource(t *testing.T) {
 	if want := rowguard.StatementFor("entity_main"); !slices.Contains(federatedDDL, want) {
 		t.Errorf("federatedDDL lacks the shared row guard statement:\n%s", want)
+	}
+}
+
+func TestFederatedDDLCreatesSchemaLeaseTableFromSharedSource(t *testing.T) {
+	if want := schemalease.StatementFor("entity_main"); !slices.Contains(federatedDDL, want) {
+		t.Errorf("federatedDDL lacks the shared schema lease statement:\n%s", want)
 	}
 }

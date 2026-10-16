@@ -15,6 +15,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.uber.org/zap"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/reconcile"
@@ -83,6 +84,7 @@ type reconcileOptions struct {
 	verifyChecksums           bool
 	gcGrace                   time.Duration
 	etagRetries               int
+	engine                    forma.DatabaseEngine
 	duck                      duckExportFlags
 }
 
@@ -115,6 +117,7 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 		passwordUsage:   "PostgreSQL password (or set PGPASSWORD env)",
 		databaseUsage:   "PostgreSQL database",
 		sslModeUsage:    "PostgreSQL sslmode",
+		engineFlag:      "pg-engine",
 	})
 
 	// Must match the prefix the flusher/init exported under (cdc-flush
@@ -159,6 +162,11 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	if err := validateManifestTemplateFlag(*manifestTemplate); err != nil {
 		return nil, err
 	}
+	engine, err := opts.pg.cdcEngine("pg-engine")
+	if err != nil {
+		return nil, err
+	}
+	opts.engine = engine
 
 	opts.manifest = cdc.ManifestConfig{
 		Bucket:       opts.s3.bucket,
@@ -207,7 +215,10 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 		return fmt.Errorf("load AWS config: %w", err)
 	}
 
-	r := newReconciler(opts, s3Client, db, logger)
+	r, err := newReconciler(opts, s3Client, db, logger)
+	if err != nil {
+		return fmt.Errorf("build reconciler: %w", err)
+	}
 
 	// Both the repair guards and --verify-stamps read parquet through the
 	// DuckDB stats engine; only repair needs the Postgres liveness surface,
@@ -250,7 +261,12 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 // production (Objects in particular — verifyChecksums would then answer a
 // configuration error instead of scrubbing, and --repair would silently
 // publish its adopted and promoted entries unstamped).
-func newReconciler(opts *reconcileOptions, s3Client *s3.Client, db *sql.DB, logger *zap.Logger) *reconcile.Reconciler {
+func newReconciler(opts *reconcileOptions, s3Client *s3.Client, db *sql.DB, logger *zap.Logger) (*reconcile.Reconciler, error) {
+	// The lock the flusher and cdc-init of the same engine take (#633).
+	locker, err := cdc.NewSchemaLocker(db, opts.engine, opts.entityMainTable)
+	if err != nil {
+		return nil, fmt.Errorf("manifest-reconcile schema lock: %w", err)
+	}
 	objectStore := &reconcile.S3ObjectStore{Client: s3Client, Bucket: opts.s3.bucket}
 	manifestStore := &manifest.S3Store{Client: s3Client, Bucket: opts.manifest.Bucket}
 	resolver := manifest.PathResolver{Prefix: opts.manifest.Prefix, PathTemplate: opts.manifest.PathTemplate}
@@ -260,7 +276,7 @@ func newReconciler(opts *reconcileOptions, s3Client *s3.Client, db *sql.DB, logg
 		Objects:   s3Client, // raw byte reads: the #347 checksum scrub and repair/promotion stamping
 		Manifests: &reconcile.ResolverManifestStore{Store: manifestStore, Resolver: resolver},
 		GCStates:  &reconcile.ManifestGCStateStore{Store: manifestStore, Resolver: resolver},
-		Locker:    &reconcile.PGAdvisoryLocker{DB: db},
+		Locker:    locker,
 		Schemas: &reconcile.RegistrySchemaEnumerator{
 			DB: db, Table: opts.registryTable, SchemaIDFilter: opts.schemaID,
 		},
@@ -277,7 +293,7 @@ func newReconciler(opts *reconcileOptions, s3Client *s3.Client, db *sql.DB, logg
 			MaxETagRetries:            opts.etagRetries,
 			AllowEmptyManifestSchemas: opts.allowEmptyManifestSchemas,
 		},
-	}
+	}, nil
 }
 
 // reconcileExitError maps a rendered report to the process outcome:

@@ -65,14 +65,21 @@ type flushContextParams struct {
 // the content-checksum seam (#347), cannot be live on one path and silently
 // absent on the other; both frames are a single call to this function and carry
 // no wiring of their own.
-func newSchemaFlushContext(p flushContextParams) *schemaFlushContext {
+func newSchemaFlushContext(p flushContextParams) (*schemaFlushContext, error) {
 	tableName := p.cfg.ChangeLogTable
 	if tableName == "" {
 		tableName = "change_log"
 	}
+	// The schema lock follows the configured engine (#633); an unknown one
+	// fails the run here, before any schema is touched.
+	locker, err := NewSchemaLocker(p.db, p.cfg.Engine, p.cfg.EntityMainTable)
+	if err != nil {
+		return nil, fmt.Errorf("cdc flush schema lock: %w", err)
+	}
 
 	flushCtx := &schemaFlushContext{
 		db:             p.db,
+		locker:         locker,
 		duck:           p.duck,
 		s3Client:       p.clients.object,
 		cfg:            p.cfg,
@@ -95,7 +102,7 @@ func newSchemaFlushContext(p flushContextParams) *schemaFlushContext {
 		}
 	}
 
-	return flushCtx
+	return flushCtx, nil
 }
 
 // newChecksumSeam builds the executor's manifest content-hash seam over the

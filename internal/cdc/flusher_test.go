@@ -304,15 +304,15 @@ func TestProcessSchema_SkipsWhenSchemaLockIsAlreadyHeld(t *testing.T) {
 		db:     db,
 		cfg:    CDCConfig{MinRecords: 1, MaxAgeMs: 1000},
 		logger: zap.NewNop(),
-		tryLock: func(context.Context, *sql.DB, int16) (bool, func(), error) {
+		locker: SchemaLockerFunc(func(context.Context, int16) (context.Context, func(), bool, error) {
 			lockAttempts++
-			// Intentionally returns a non-nil unlock alongside locked=false,
-			// violating the "unlock non-nil iff locked" contract on purpose:
+			// Intentionally returns a non-nil release alongside ok=false,
+			// violating the "release non-nil iff ok" contract on purpose:
 			// the require.Zero(unlockCalls) below proves the skip path never
-			// invokes unlock. Do NOT "fix" this to a nil unlock — that would
+			// invokes it. Do NOT "fix" this to a nil release — that would
 			// hollow the assertion (a nil call would panic instead of counting).
-			return false, func() { unlockCalls++ }, nil
-		},
+			return nil, func() { unlockCalls++ }, false, nil
+		}),
 	}
 
 	err = flushCtx.processSchema(context.Background(), 7)
@@ -334,9 +334,9 @@ func TestProcessSchema_ReturnsErrorWhenChangeLogStatsCannotBeRead(t *testing.T) 
 		cfg:       CDCConfig{MinRecords: 1, MaxAgeMs: 1000},
 		tableName: "missing_change_log",
 		logger:    zap.NewNop(),
-		tryLock: func(context.Context, *sql.DB, int16) (bool, func(), error) {
-			return true, func() { unlockCalls++ }, nil
-		},
+		locker: SchemaLockerFunc(func(ctx context.Context, _ int16) (context.Context, func(), bool, error) {
+			return ctx, func() { unlockCalls++ }, true, nil
+		}),
 	}
 
 	err = flushCtx.processSchema(context.Background(), 7)
@@ -362,9 +362,9 @@ func TestProcessSchema_SkipsWhenNoPendingRowsExist(t *testing.T) {
 		cfg:       CDCConfig{MinRecords: 1, MaxAgeMs: 1000},
 		tableName: "change_log",
 		logger:    zap.NewNop(),
-		tryLock: func(context.Context, *sql.DB, int16) (bool, func(), error) {
-			return true, func() { unlockCalls++ }, nil
-		},
+		locker: SchemaLockerFunc(func(ctx context.Context, _ int16) (context.Context, func(), bool, error) {
+			return ctx, func() { unlockCalls++ }, true, nil
+		}),
 	}
 
 	err = flushCtx.processSchema(ctx, 7)
@@ -391,9 +391,9 @@ func TestProcessSchema_SkipsWhenThresholdsAreNotMet(t *testing.T) {
 		cfg:       CDCConfig{MinRecords: 10, MaxAgeMs: 1_000_000},
 		tableName: "change_log",
 		logger:    zap.NewNop(),
-		tryLock: func(context.Context, *sql.DB, int16) (bool, func(), error) {
-			return true, func() { unlockCalls++ }, nil
-		},
+		locker: SchemaLockerFunc(func(ctx context.Context, _ int16) (context.Context, func(), bool, error) {
+			return ctx, func() { unlockCalls++ }, true, nil
+		}),
 	}
 
 	err = flushCtx.processSchema(ctx, 7)

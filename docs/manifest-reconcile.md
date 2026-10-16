@@ -470,7 +470,9 @@ forma-tools manifest-reconcile ... --gc --allow-empty-manifest-schema 7,9 --allo
   `--s3-prefix`、compactor 的 `--data-prefix`）。前缀不一致时列举落空，所有 manifest
   条目会被误报为 unverifiable/dangling、所有对象被误报为孤儿。
 - 工具需要 Postgres：逐 schema 取与 flusher/cdc-init 同款 advisory lock
-  （`pg_try_advisory_lock(schemaID, schemaID)`，钉在单一连接上），消除与 flusher 的
+  （`pg_try_advisory_lock(schemaID, schemaID)`，钉在单一连接上；`--pg-engine aurora-dsql`
+  下改为 `<entity_main>_schema_lease` 表中的租约，见
+  [Aurora DSQL](aurora-dsql.md#the-cdc-schema-lock)），消除与 flusher 的
   list/load 竞态；拿不到锁的 schema 跳过并计入差异退出码。#290 起 cdc-init 也持这把锁，
   故此锁下的 init 形态孤儿必非 in-flight init：`--repair` 下先经晋升守卫判定（#292），
   未晋升者纳入 `--gc` 候选。compactor 仍不持这把锁，

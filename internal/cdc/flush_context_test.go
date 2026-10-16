@@ -20,11 +20,12 @@ import (
 func TestNewSchemaFlushContextWiresChecksumSeam(t *testing.T) {
 	full := &hashableFullS3Client{body: []byte("hello parquet")}
 
-	flushCtx := newSchemaFlushContext(flushContextParams{
+	flushCtx, err := newSchemaFlushContext(flushContextParams{
 		cfg:     CDCConfig{S3Bucket: "test-bucket"},
 		clients: resolvedS3Clients{object: full, full: full},
 		logger:  zap.NewNop(),
 	})
+	require.NoError(t, err)
 
 	require.NotNil(t, flushCtx.checksumObject, "flush context built without the checksum seam")
 	got, err := flushCtx.checksumObject(context.Background(), "cdc/7/delta-file.parquet")
@@ -38,11 +39,12 @@ func TestNewSchemaFlushContextWiresChecksumSeam(t *testing.T) {
 func TestNewSchemaFlushContextLeavesChecksumSeamNilWithoutFullClient(t *testing.T) {
 	object := &objectOnlyS3Client{}
 
-	flushCtx := newSchemaFlushContext(flushContextParams{
+	flushCtx, err := newSchemaFlushContext(flushContextParams{
 		cfg:     CDCConfig{S3Bucket: "test-bucket"},
 		clients: resolvedS3Clients{object: object},
 		logger:  zap.NewNop(),
 	})
+	require.NoError(t, err)
 
 	require.Nil(t, flushCtx.checksumObject)
 	require.Same(t, object, flushCtx.s3Client)
@@ -54,7 +56,7 @@ func TestNewSchemaFlushContextLeavesChecksumSeamNilWithoutFullClient(t *testing.
 func TestNewSchemaFlushContextWiresManifestStoreAndTableDefault(t *testing.T) {
 	full := &fullS3ClientMock{}
 
-	withManifest := newSchemaFlushContext(flushContextParams{
+	withManifest, err := newSchemaFlushContext(flushContextParams{
 		cfg: CDCConfig{
 			S3Bucket:         "test-bucket",
 			ManifestPrefix:   "cdc",
@@ -63,16 +65,18 @@ func TestNewSchemaFlushContextWiresManifestStoreAndTableDefault(t *testing.T) {
 		clients: resolvedS3Clients{object: full, full: full},
 		logger:  zap.NewNop(),
 	})
+	require.NoError(t, err)
 	require.NotNil(t, withManifest.manifestStore)
 	require.Equal(t, "manifest/{{.SchemaID}}.json", withManifest.manifestResolver.PathTemplate)
 	require.Equal(t, "cdc", withManifest.manifestResolver.Prefix)
 	require.Equal(t, "change_log", withManifest.tableName)
 
-	withoutManifest := newSchemaFlushContext(flushContextParams{
+	withoutManifest, err := newSchemaFlushContext(flushContextParams{
 		cfg:     CDCConfig{S3Bucket: "test-bucket", ChangeLogTable: "custom_log"},
 		clients: resolvedS3Clients{object: full, full: full},
 		logger:  zap.NewNop(),
 	})
+	require.NoError(t, err)
 	require.Nil(t, withoutManifest.manifestStore)
 	require.Equal(t, "custom_log", withoutManifest.tableName)
 }
