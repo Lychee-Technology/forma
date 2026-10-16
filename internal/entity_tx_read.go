@@ -25,10 +25,11 @@ func (s *txSession) Get(ctx context.Context, req *forma.QueryRequest, opts ...fo
 		if err != nil {
 			return err
 		}
-		// The lock step skips what Get refuses and discards ErrNotFound, so
-		// the read below authors every refusal and every missing row, the
-		// zero row ID's included: ForUpdate never changes Get's answer. A
-		// missing row locks nothing but keeps the per-row lock.
+		// The lock step runs only on a request Get accepts and drops its
+		// ErrNotFound, so the read below answers every refusal and every
+		// missing row, the zero row ID included: ForUpdate never changes
+		// Get's answer. A missing row has no entity_main row to lock but
+		// keeps the per-row lock.
 		if read.ForUpdate && req.SchemaName != "" && req.RowID != nil {
 			if err := s.lockRow(ctx, req.SchemaName, *req.RowID, nil); err != nil && !errors.Is(err, forma.ErrNotFound) {
 				return err
