@@ -13,7 +13,9 @@ afterwards, which is the lost-update race #593 forbids. Two fields on
 
 They apply to `EntityManager.Update` and `Delete` and to `Tx.Update` and
 `Tx.Delete` ([Transactions](transactions.md)). The API is Go only: both fields
-are `json:"-"`, and the HTTP carriers are #655.
+are `json:"-"`, and the HTTP carriers are #655. `Tx.AssertRow` evaluates a
+precondition by the same rules on a row it locks without writing it
+([Locking a row](transactions.md#locking-a-row-forupdate-and-assertrow)).
 
 ```go
 _, err := tx.Update(ctx, &forma.EntityOperation{

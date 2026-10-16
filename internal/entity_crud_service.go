@@ -55,14 +55,17 @@ func newEntityCRUDService(em *entityManager) *entityCRUDService {
 	}
 }
 
-// boundTo returns a copy of s that writes through repository and has no write
-// budget of its own. A Tx session runs its operations on it (#648): the same
-// validation, merge and transform code as EntityManager, against the
-// session's transaction, bounded by the InTx deadline as a whole rather than
-// per operation.
-func (s *entityCRUDService) boundTo(repository model.PersistentRecordRepository) *entityCRUDService {
+// boundTo returns a copy of s that reads and writes through repository,
+// enriches through enrich, and has no read or write budget of its own. A Tx
+// session runs its operations on it (#648, #650): the same validation, merge,
+// transform and enrichment code as EntityManager, against the session's
+// transaction, bounded by the InTx deadline as a whole rather than per
+// operation.
+func (s *entityCRUDService) boundTo(repository model.PersistentRecordRepository, enrich dataRecordEnricher) *entityCRUDService {
 	bound := *s
 	bound.repository = repository
+	bound.enrichDataRecords = enrich
+	bound.budgets.read = 0
 	bound.budgets.write = 0
 	return &bound
 }

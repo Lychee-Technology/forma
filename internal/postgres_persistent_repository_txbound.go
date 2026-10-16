@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/lychee-technology/forma/internal/model"
@@ -10,19 +11,43 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// txBoundRepository is the repository a Tx session's CRUD service writes
-// through (#648). Each write runs the same body the public method runs inside
-// its own transaction (insertRecordInTx, mergeRecordInTx, deleteRecordInTx),
-// on the session's transaction instead, so a write through a Tx and the same
-// write through EntityManager are one code path. Statement errors are
-// classified here, as inWriteTx classifies them, because no inWriteTx wraps
-// these calls; the COMMIT is InTx's.
-//
-// Reads refuse rather than fall back to the pool: a read on the pool would
-// miss the session's own uncommitted writes. Tx reads arrive with #650.
+// txBoundRepository is the repository a Tx session's services run on (#648,
+// #650). Each write runs the same body the public method runs inside its own
+// transaction (insertRecordInTx, mergeRecordInTx, deleteRecordInTx), on the
+// session's transaction instead, so a write through a Tx and the same write
+// through EntityManager are one code path. Each read runs the read path's own
+// code on reader, the manager's repository with every statement sent on the
+// transaction, so it sees the session's own uncommitted writes and never
+// reaches for the pool. Statement errors are classified here, as inWriteTx
+// classifies them, because no inWriteTx wraps these calls; the COMMIT is
+// InTx's.
 type txBoundRepository struct {
-	repo *DBPersistentRecordRepository
-	tx   pgx.Tx
+	repo   *DBPersistentRecordRepository
+	tx     pgx.Tx
+	reader *DBPersistentRecordRepository
+}
+
+func newTxBoundRepository(repo *DBPersistentRecordRepository, tx pgx.Tx) *txBoundRepository {
+	reader := *repo
+	reader.pool = txStatementPool{tx: tx}
+	return &txBoundRepository{repo: repo, tx: tx, reader: &reader}
+}
+
+// txStatementPool is the statement surface of a Tx's reader: every statement
+// goes to the transaction. BeginTx refuses, because a read path that opened a
+// transaction of its own would leave the Tx's connection and miss its writes.
+type txStatementPool struct{ tx pgx.Tx }
+
+func (p txStatementPool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return p.tx.Query(ctx, sql, args...)
+}
+
+func (p txStatementPool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return p.tx.QueryRow(ctx, sql, args...)
+}
+
+func (p txStatementPool) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error) {
+	return nil, errors.New("a read inside a Forma transaction cannot open a transaction of its own")
 }
 
 var _ model.PersistentRecordRepository = (*txBoundRepository)(nil)
@@ -73,16 +98,42 @@ func (b *txBoundRepository) DeletePersistentRecord(ctx context.Context, tables m
 	return classifyStatementError(b.repo.deleteRecordInTx(ctx, b.tx, tables, schemaID, rowID, rendered))
 }
 
-func (b *txBoundRepository) GetPersistentRecord(context.Context, model.StorageTables, int16, uuid.UUID) (*model.PersistentRecord, error) {
-	return nil, errTxReadUnsupported
+func (b *txBoundRepository) GetPersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID) (*model.PersistentRecord, error) {
+	record, err := b.reader.GetPersistentRecord(ctx, tables, schemaID, rowID)
+	if err != nil {
+		return nil, classifyStatementError(err)
+	}
+	return record, nil
 }
 
-func (b *txBoundRepository) QueryPersistentRecords(context.Context, *model.PersistentRecordQuery) (*model.PersistentRecordPage, error) {
-	return nil, errTxReadUnsupported
+func (b *txBoundRepository) QueryPersistentRecords(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error) {
+	page, err := b.reader.QueryPersistentRecords(ctx, query)
+	if err != nil {
+		return nil, classifyStatementError(err)
+	}
+	return page, nil
 }
 
-func (b *txBoundRepository) QueryPersistentRecordsByAttrValues(context.Context, model.StorageTables, int16, string, []string, int) (*model.PersistentRecordPage, error) {
-	return nil, errTxReadUnsupported
+func (b *txBoundRepository) QueryPersistentRecordsByAttrValues(ctx context.Context, tables model.StorageTables, schemaID int16, attr string, values []string, limit int) (*model.PersistentRecordPage, error) {
+	page, err := b.reader.QueryPersistentRecordsByAttrValues(ctx, tables, schemaID, attr, values, limit)
+	if err != nil {
+		return nil, classifyStatementError(err)
+	}
+	return page, nil
 }
 
-var errTxReadUnsupported = fmt.Errorf("reading through a Forma transaction is not supported yet")
+// LockPersistentRecord takes the write lock of (schemaID, rowID) until the
+// transaction ends and checks guard on the locked row, writing nothing: the
+// lock behind Tx.AssertRow and Tx.Get with ForUpdate (#650). guard renders
+// before any statement is sent, so a malformed precondition fails without
+// SQL. See lockRowInTx.
+func (b *txBoundRepository) LockPersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID, guard model.RowGuard) error {
+	if err := validateTables(tables); err != nil {
+		return fmt.Errorf("validate tables for row lock: %w", err)
+	}
+	rendered, err := b.repo.renderRowGuard(tables, schemaID, guard)
+	if err != nil {
+		return fmt.Errorf("prepare lock of %s: %w", rowID, err)
+	}
+	return classifyStatementError(lockRowInTx(ctx, b.tx, tables, schemaID, rowID, rendered))
+}

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/jackc/pgx/v5"
@@ -27,6 +28,13 @@ var readCommittedTx = pgx.TxOptions{IsoLevel: pgx.ReadCommitted}
 // on a pgxmock pool, with the shipped schemas and named tables.
 func newMockTransactor(t *testing.T) (*transactor, pgxmock.PgxPoolIface) {
 	t.Helper()
+	return newMockTransactorWithEngine(t, nil)
+}
+
+// newMockTransactorWithEngine is newMockTransactor over a manager wired with
+// engine as its federated query engine.
+func newMockTransactorWithEngine(t *testing.T, engine model.FederatedQueryEngine) (*transactor, pgxmock.PgxPoolIface) {
+	t.Helper()
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)
 	t.Cleanup(mock.Close)
@@ -38,7 +46,7 @@ func newMockTransactor(t *testing.T) (*transactor, pgxmock.PgxPoolIface) {
 	config.Database.TableNames = forma.TableNames{EntityMain: "entity_main", EAVData: "eav_data", ChangeLog: "change_log"}
 	config.Transaction.DefaultTimeout = 30 * time.Second
 	repo := NewDBPersistentRecordRepository(mock, nil)
-	em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry), repo, nil, registry, config, nil)
+	em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry), repo, engine, registry, config, nil)
 
 	txr, err := NewTransactor(em)
 	require.NoError(t, err)

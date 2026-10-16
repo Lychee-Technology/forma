@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/txseal"
 )
 
@@ -51,6 +52,14 @@ type Transactor interface {
 // connection sees any of them until commit. Tx reads and writes the hot tier
 // only; it never touches the federated engine.
 //
+// Get and Query take the same *QueryRequest as EntityManager's and answer the
+// same results, relation enrichment included, read on the transaction: they
+// see its own writes. A request with Federated.Enabled is ErrInvalidInput.
+// An unlocked read sees the latest committed state at the moment its
+// statement runs (READ COMMITTED), so two reads in one Tx can disagree; a
+// decision that must still hold at commit needs ForUpdate, AssertRow or a
+// write's Preconditions. See docs/transactions.md.
+//
 // Tx is sealed, so methods can be added to it without breaking a caller's
 // build. A type outside Forma cannot satisfy Tx with methods of its own; it can
 // only embed a Tx, and then every method added later comes from the embedded
@@ -64,7 +73,45 @@ type Tx interface {
 	Update(ctx context.Context, op *EntityOperation) (*DataRecord, error)
 	Delete(ctx context.Context, op *EntityOperation) error
 
+	// Get reads one row (req.RowID) on the transaction. A missing row is
+	// ErrNotFound, which leaves the Tx usable. With ForUpdate it first takes
+	// the row's write lock, as AssertRow does, so no other transaction can
+	// change the row's own attributes until the Tx ends; attributes enriched
+	// from related rows come from rows it does not lock. ForUpdate changes
+	// only what Get locks: every request gets the same answer with or
+	// without it.
+	Get(ctx context.Context, req *QueryRequest, opts ...ReadOption) (*DataRecord, error)
+	// Query runs a hot-tier query on the transaction. ForUpdate is
+	// ErrInvalidInput: Query locks nothing.
+	Query(ctx context.Context, req *QueryRequest, opts ...ReadOption) (*QueryResult, error)
+	// AssertRow takes the write lock of (schemaName, rowID) until the Tx ends
+	// and checks preconditions on the locked row, writing nothing. nil
+	// preconditions assert only that the row exists. A missing row is
+	// ErrNotFound and a row that fails them ErrPreconditionFailed; neither
+	// poisons the Tx. If AssertRow answers nil and InTx then commits, no other
+	// transaction committed a write to the row in between: a writer that
+	// arrives after the assertion waits for the Tx to end.
+	AssertRow(ctx context.Context, schemaName string, rowID uuid.UUID, preconditions Condition) error
+
 	txseal.Sealed
+}
+
+// ReadOptions holds the options of one Tx read.
+type ReadOptions struct {
+	// ForUpdate makes Tx.Get take the row's write lock before it reads.
+	ForUpdate bool
+}
+
+// ReadOption sets one option of one Tx read.
+type ReadOption func(*ReadOptions)
+
+// ForUpdate makes Tx.Get lock the row it reads against every other writer
+// until the Tx ends: the per-row lock every Forma write takes, then the
+// entity_main row lock. A missing row is ErrNotFound and locks no
+// entity_main row, but the per-row lock is still held, so any other write of
+// that RowID waits for the Tx. Tx.Query refuses it with ErrInvalidInput.
+func ForUpdate() ReadOption {
+	return func(o *ReadOptions) { o.ForUpdate = true }
 }
 
 // The default limits of one InTx call. DefaultTxMaxPhysicalRows matches
