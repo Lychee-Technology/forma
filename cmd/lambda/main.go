@@ -172,6 +172,11 @@ func lambdaConfigFromEnv(schemaDir string) (*forma.Config, forma.DatabaseConfig,
 	if err := errors.Join(dbErr, limitsErr); err != nil {
 		return nil, forma.DatabaseConfig{}, fmt.Errorf("invalid environment: %w", err)
 	}
+	engine, err := lambdaEngine(dbConfig.Engine, bootstrap.Env("DSQL_ENDPOINT", ""))
+	if err != nil {
+		return nil, forma.DatabaseConfig{}, fmt.Errorf("invalid configuration: %w", err)
+	}
+	config.Database.Engine, dbConfig.Engine = engine, engine
 
 	// Validate covers every rule the manager relies on, so a rejection names
 	// the field at cold start rather than surfacing on the first request.
@@ -179,6 +184,23 @@ func lambdaConfigFromEnv(schemaDir string) (*forma.Config, forma.DatabaseConfig,
 		return nil, forma.DatabaseConfig{}, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return config, dbConfig, nil
+}
+
+// lambdaEngine answers the database engine of this execution environment
+// (#633). DSQL_ENDPOINT selects the IAM-authenticated Aurora DSQL pool, so it
+// implies the aurora-dsql engine; a DB_ENGINE naming another engine beside it
+// is refused, since either reading would lock rows wrongly on one of the two.
+func lambdaEngine(configured forma.DatabaseEngine, dsqlEndpoint string) (forma.DatabaseEngine, error) {
+	if dsqlEndpoint == "" {
+		return configured, nil
+	}
+	if configured != "" && configured != forma.EngineAuroraDSQL {
+		return "", &forma.ConfigError{
+			Field:   "database.engine",
+			Message: fmt.Sprintf("DSQL_ENDPOINT selects %q, but DB_ENGINE is %q", forma.EngineAuroraDSQL, configured),
+		}
+	}
+	return forma.EngineAuroraDSQL, nil
 }
 
 // handler is the Lambda handler function

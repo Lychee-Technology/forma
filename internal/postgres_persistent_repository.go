@@ -38,6 +38,9 @@ type DBPersistentRecordRepository struct {
 	// read it without synchronization and a Tx's reader, a copy of the
 	// repository, shares it.
 	uniqueKeys *UniqueKeyCatalog
+	// locks is the database engine's per-row write lock (#633): advisory
+	// locks on PostgreSQL, the default, and guard rows on Aurora DSQL.
+	locks rowLocking
 }
 
 // RepoOption customizes optional repository collaborators.
@@ -56,12 +59,24 @@ func WithUniqueKeyCatalog(catalog *UniqueKeyCatalog) RepoOption {
 	return func(r *DBPersistentRecordRepository) { r.uniqueKeys = catalog }
 }
 
+// WithDatabaseEngine selects how the repository's writes exclude each other
+// on engine (#633). It refuses an engine name it does not know, so a typo
+// cannot fall back to the PostgreSQL engine's locks on another database.
+func WithDatabaseEngine(engine forma.DatabaseEngine) (RepoOption, error) {
+	locks, err := rowLockingFor(engine)
+	if err != nil {
+		return nil, fmt.Errorf("select the row locking of database engine %q: %w", engine, err)
+	}
+	return func(r *DBPersistentRecordRepository) { r.locks = locks }, nil
+}
+
 func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *schemameta.MetadataCache, opts ...RepoOption) *DBPersistentRecordRepository {
 	r := &DBPersistentRecordRepository{
 		pool:          pool,
 		metadataCache: metadataCache,
 		nowFunc:       time.Now,
 		planCache:     queryplan.NewCache(1024),
+		locks:         advisoryLocking{},
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -204,11 +219,12 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 		return fmt.Errorf("validate tables for insert: %w", err)
 	}
 
-	// READ COMMITTED, whatever the session's default: the unique-key
-	// reservation waits for a concurrent writer of a value and then judges
-	// its committed entry, which a snapshot level answers with 40001 (#651).
+	// READ COMMITTED on PostgreSQL, whatever the session's default: the
+	// unique-key reservation waits for a concurrent writer of a value and
+	// then judges its committed entry, which a snapshot level answers with
+	// 40001 (#651). On Aurora DSQL that 40001 is the contract.
 	now := r.nowMillis()
-	return r.inWriteTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+	return r.inWriteTx(ctx, r.locks.writeTxOptions(true), func(tx pgx.Tx) error {
 		return r.insertRecordInTx(ctx, tx, tables, record, now)
 	})
 }
@@ -218,7 +234,7 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 func (r *DBPersistentRecordRepository) insertRecordInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, record *model.PersistentRecord, now int64) error {
 	// The per-row lock serializes prepareCreate's history read against a
 	// concurrent delete's tombstone allocation (#274).
-	if err := lockRowVersion(ctx, tx, record.SchemaID, record.RowID); err != nil {
+	if err := r.locks.lockRow(ctx, tx, tables, record.SchemaID, record.RowID); err != nil {
 		return fmt.Errorf("lock row version for insert: %w", err)
 	}
 	claim, err := r.prepareCreate(ctx, tx, tables, record, now)
@@ -279,11 +295,12 @@ func (r *DBPersistentRecordRepository) prepareCreate(
 	return claim, nil
 }
 
-// DeletePersistentRecord pins READ COMMITTED for a guarded delete, for the
-// reason MergePersistentRecord does: the guard judges the row after its lock
-// is granted, and a snapshot level would freeze that judgement at the lock
-// statement, before the previous holder committed. An unguarded delete keeps
-// the session's level, where a snapshot conflict is a retryable 40001 (#645).
+// DeletePersistentRecord pins READ COMMITTED for a guarded delete on
+// PostgreSQL, for the reason MergePersistentRecord does: the guard judges the
+// row after its lock is granted, and a snapshot level would freeze that
+// judgement at the lock statement, before the previous holder committed. An
+// unguarded delete keeps the session's level, where a snapshot conflict is a
+// retryable 40001 (#645), as every write is on Aurora DSQL.
 func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID, guard model.RowGuard) error {
 	if err := validateWriteTables(tables); err != nil {
 		return fmt.Errorf("validate tables for delete: %w", err)
@@ -292,11 +309,7 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 	if err != nil {
 		return fmt.Errorf("prepare delete of %s: %w", rowID, err)
 	}
-	opts := pgx.TxOptions{}
-	if rendered != nil {
-		opts.IsoLevel = pgx.ReadCommitted
-	}
-	return r.inWriteTx(ctx, opts, func(tx pgx.Tx) error {
+	return r.inWriteTx(ctx, r.locks.writeTxOptions(rendered != nil), func(tx pgx.Tx) error {
 		return r.deleteRecordInTx(ctx, tx, tables, schemaID, rowID, rendered)
 	})
 }
@@ -307,7 +320,7 @@ func (r *DBPersistentRecordRepository) DeletePersistentRecord(ctx context.Contex
 func (r *DBPersistentRecordRepository) deleteRecordInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, schemaID int16, rowID uuid.UUID, guard *renderedGuard) error {
 	// The per-row lock pairs with the create path's: a concurrent recreate
 	// must observe this delete's tombstone before allocating its version.
-	if err := lockRowVersion(ctx, tx, schemaID, rowID); err != nil {
+	if err := r.locks.lockRow(ctx, tx, tables, schemaID, rowID); err != nil {
 		return fmt.Errorf("lock row version for delete: %w", err)
 	}
 	if guard != nil {

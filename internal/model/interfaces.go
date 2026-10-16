@@ -114,7 +114,7 @@ type PersistentRecordBatchMerge func(ctx context.Context, index int, existing *P
 type PersistentRecordWriter interface {
 	InsertPersistentRecord(ctx context.Context, tables StorageTables, record *PersistentRecord) error
 	// MergePersistentRecord is the guarded read-modify-write (#457): it takes
-	// the per-row advisory lock create and delete take, reads the row inside
+	// the per-row write lock create and delete take, reads the row inside
 	// the write transaction, hands it to merge, and stores what merge returns
 	// — all in one transaction. It answers the stored record. guard is
 	// checked between the lock and the read.
@@ -146,7 +146,7 @@ type PersistentRecordRepository interface {
 type AtomicBatchPersistentRecordRepository interface {
 	BatchInsertPersistentRecords(ctx context.Context, tables StorageTables, records []*PersistentRecord) error
 	// BatchMergePersistentRecords is the batch analogue of
-	// MergePersistentRecord (#554): one transaction, every row's advisory
+	// MergePersistentRecord (#554): one transaction, every row's write
 	// lock taken up front in sorted (schemaID, rowID) order, each merge base
 	// read inside the transaction and handed to merge with its input index,
 	// every result stored, all committed together. It answers the stored

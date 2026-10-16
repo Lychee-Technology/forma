@@ -10,22 +10,27 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The repository half of a claim (#653). A claim never waits for a lock
-// another Forma transaction holds: it takes each candidate's per-row
-// advisory lock with pg_try_advisory_xact_lock, the key lockRowVersion uses,
-// and skips a candidate whose lock is taken. Every Forma writer and
-// asserter takes that lock before it touches the row, so a lock this
-// transaction got means no other Forma transaction is writing the row, and
-// the re-check's row lock is then free of them too. The re-check still says
-// SKIP LOCKED, so a row lock taken outside Forma is skipped rather than
+// The repository half of a claim (#653). On PostgreSQL a claim never waits
+// for a lock another Forma transaction holds: it takes each candidate's
+// per-row advisory lock with pg_try_advisory_xact_lock, the key
+// lockRowVersion uses, and skips a candidate whose lock is taken. Every Forma
+// writer and asserter takes that lock before it touches the row, so a lock
+// this transaction got means no other Forma transaction is writing the row,
+// and the re-check's row lock is then free of them too. The re-check still
+// says SKIP LOCKED, so a row lock taken outside Forma is skipped rather than
 // waited on. A try-lock waits for nothing, so it joins no deadlock cycle.
+//
+// On Aurora DSQL nothing can be seen to be held, so nothing is skipped: the
+// take writes each candidate's guard row and the re-check reads the
+// snapshot, and of two claimers that take one row, one fails at COMMIT with
+// 40001 (guardRowLocking, #633).
 
-// TryLockRows takes, without waiting, the per-row advisory lock of each of
-// rowIDs, and answers the rows it got in rowIDs order. A lock another
+// TryLockRows takes, without waiting, the write lock of each of rowIDs, and
+// answers the rows it got in rowIDs order. On PostgreSQL a lock another
 // transaction holds is skipped; one this transaction already holds is got
 // again. The locks it got are held until the transaction ends.
-func (b *txBoundRepository) TryLockRows(ctx context.Context, schemaID int16, rowIDs []uuid.UUID) ([]uuid.UUID, error) {
-	taken, err := tryLockRowsInTx(ctx, b.tx, schemaID, rowIDs)
+func (b *txBoundRepository) TryLockRows(ctx context.Context, tables model.StorageTables, schemaID int16, rowIDs []uuid.UUID) ([]uuid.UUID, error) {
+	taken, err := b.repo.locks.tryLockRows(ctx, b.tx, tables, schemaID, rowIDs)
 	if err != nil {
 		return nil, classifyStatementError(err)
 	}
@@ -33,12 +38,12 @@ func (b *txBoundRepository) TryLockRows(ctx context.Context, schemaID int16, row
 }
 
 // RecheckHeld answers the rows of rowIDs that exist and satisfy condition,
-// in rowIDs order, taking their entity_main row locks and skipping any row
-// whose lock another transaction holds. The caller holds each row's
-// advisory lock, so under READ COMMITTED the statement sees every Forma
+// in rowIDs order. On PostgreSQL it takes their entity_main row locks and
+// skips any row whose lock another transaction holds; the caller holds each
+// row's advisory lock, so under READ COMMITTED the statement sees every Forma
 // writer's commit to the rows (#457).
 func (b *txBoundRepository) RecheckHeld(ctx context.Context, tables model.StorageTables, schemaID int16, rowIDs []uuid.UUID, condition *renderedGuard) ([]uuid.UUID, error) {
-	held, err := matchingRowsInTx(ctx, b.tx, tables, schemaID, rowIDs, condition, "FOR UPDATE OF m SKIP LOCKED")
+	held, err := matchingRowsInTx(ctx, b.tx, tables, schemaID, rowIDs, condition, b.repo.locks.recheckClause(true))
 	if err != nil {
 		return nil, classifyStatementError(err)
 	}

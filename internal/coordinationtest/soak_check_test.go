@@ -11,7 +11,7 @@ import (
 )
 
 // requireConsistent asserts the soak iteration's end state by direct SQL:
-// every instance advanced, versions contiguous, each visit's tasks and history written exactly once with the
+// versions contiguous, each visit's tasks and history written exactly once with the
 // version that reached it, every fence at a version committed before the
 // advance that left it (invariant 2), every message published once in its
 // partition's version order, nothing written by a step that did not commit,
@@ -26,7 +26,6 @@ func (s *soak) requireConsistent(t *testing.T, run *relayRun) {
 	partitions := make([][]OutboxMessage, 0, len(s.instances))
 	for _, id := range s.instances {
 		final := e.stored(t, InstanceSchema, id, "version")["version"].(int64)
-		require.GreaterOrEqual(t, final, int64(2), "instance %s: an advance committed", id)
 		recs := slices.SortedFunc(slices.Values(s.advanced[id]), func(a, b advanceRecord) int { return cmp.Compare(a.version, b.version) })
 		reached := make([]int64, len(recs))
 		for i, rec := range recs {
@@ -62,9 +61,29 @@ func (s *soak) requireConsistent(t *testing.T, run *relayRun) {
 		partitions = append(partitions, partition)
 	}
 	requireDrained(t, e, run, partitions)
-	e.requireWritten(t, InstanceSchema, s.seeded, s.instances...)
+	var advanced []uuid.UUID
+	for _, id := range s.instances {
+		if len(s.advanced[id]) > 0 {
+			advanced = append(advanced, id)
+			continue
+		}
+		require.Equal(t, s.seeded[id], e.stamps(t, InstanceSchema, id)[id], "instance %s: no advance committed, so nothing wrote it", id)
+	}
+	e.requireWritten(t, InstanceSchema, s.seeded, advanced...)
 	for schema := range schemaIDs {
 		e.requireOneHotEntryPerRow(t, schema)
+	}
+}
+
+// requireEveryInstanceAdvanced is a mechanism assertion. On PostgreSQL a
+// fence makes the advance it races wait and then commit, so an advance wins
+// every race. Under optimistic concurrency the fence can commit first and
+// abort the advance with ErrRetryableConflict, so an instance whose every
+// advance lost that way stays at version 1 (#633).
+func (s *soak) requireEveryInstanceAdvanced(t *testing.T) {
+	t.Helper()
+	for _, id := range s.instances {
+		require.NotEmpty(t, s.advanced[id], "instance %s: an advance committed", id)
 	}
 }
 
@@ -116,9 +135,9 @@ func (s *soak) fencesByVersion(t *testing.T) map[string]map[int64]int {
 	return out
 }
 
-// versionsBetween answers from..to, or nil when to < from.
+// versionsBetween answers from..to, empty when to < from.
 func versionsBetween(from, to int64) []int64 {
-	var out []int64
+	out := make([]int64, 0, max(to-from+1, 0))
 	for v := from; v <= to; v++ {
 		out = append(out, v)
 	}

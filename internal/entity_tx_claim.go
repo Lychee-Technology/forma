@@ -191,7 +191,7 @@ func (s *txSession) takeClaimable(ctx context.Context, plan *claimPlan) ([]uuid.
 	for len(candidates) > 0 && len(claimed) < req.Limit {
 		round := candidates[:min(req.Limit-len(claimed), len(candidates))]
 		candidates = candidates[len(round):]
-		taken, err := s.rows.TryLockRows(ctx, plan.schemaID, round)
+		taken, err := s.rows.TryLockRows(ctx, plan.tables, plan.schemaID, round)
 		if err != nil {
 			return nil, fmt.Errorf("failed to take Claim candidates on %s: %w", req.SchemaName, err)
 		}

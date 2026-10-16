@@ -260,17 +260,19 @@ Making it cost in proportion to the limit is #685.
 
 ## Aurora DSQL
 
-DSQL: specified, not verified (#633).
+This section describes the `aurora-dsql` engine (#633,
+[Aurora DSQL](aurora-dsql.md)). CI runs it on PostgreSQL emulating DSQL. It
+has not yet run on a cluster.
 
 DSQL has no advisory locks and no `SKIP LOCKED`, and its `FOR UPDATE` takes no
-lock, so there is nothing to skip. Until the locking seam of #633 exists, a
-claim on DSQL fails at its first try-lock statement; what follows is the
-contract that seam is to implement. Two claimers that select the same rows both
-write them, and one commit fails with `40001`, which Forma answers as
-`ErrRetryableConflict`. Forma does not retry; the caller re-runs its Tx, and a
-relay treats the error as "claim again". The take step on DSQL is therefore
-write-and-let-the-commit-decide; the API is the same. The outcome contract on
-DSQL:
+lock, so there is nothing to skip. On this engine the take step writes the
+guard row of every candidate in the round and keeps all of them. The re-check
+reads them without a locking clause. Two claimers that select the same rows
+both write their guard rows, and one of them fails with `40001`, which Forma
+answers as `ErrRetryableConflict`. Forma does not retry. The caller re-runs
+its Tx, and a relay treats the error as "claim again". The take step is
+therefore write-and-let-the-commit-decide, and the API is the same. The
+outcome contract on DSQL:
 
 - exclusive claims, rollback, fencing and group heads hold as on PostgreSQL;
 - a contending claimer receives `ErrRetryableConflict` instead of a smaller
@@ -286,4 +288,5 @@ the next claim takes the new head. If an earlier row was just made live again,
 the group-order obligation above applies, as on PostgreSQL.
 
 The DSQL transaction limit of 3,000 rows bounds `Limit` times the physical
-rows each claimed row writes.
+rows each claimed row writes, guard row included. The coordination suite's
+claim scenarios run on this engine in CI (`dsql-emulated`).

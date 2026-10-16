@@ -32,6 +32,7 @@ func TestDatabaseConfigFromEnv(t *testing.T) {
 	t.Setenv("DB_PASSWORD", "db-password")
 	t.Setenv("DB_SSL_MODE", "require")
 	t.Setenv("DB_SCHEMA", "tenant")
+	t.Setenv("DB_ENGINE", "aurora-dsql")
 	t.Setenv("DB_MAX_CONNECTIONS", "20")
 	t.Setenv("DB_MAX_IDLE_CONNS", "4")
 	t.Setenv("DB_CONN_MAX_LIFETIME_SECONDS", "600")
@@ -63,6 +64,9 @@ func TestDatabaseConfigFromEnv(t *testing.T) {
 	}
 	if cfg.Schema != "tenant" {
 		t.Fatalf("expected schema tenant, got %s", cfg.Schema)
+	}
+	if cfg.Engine != forma.EngineAuroraDSQL {
+		t.Fatalf("expected engine aurora-dsql, got %s", cfg.Engine)
 	}
 	if cfg.MaxConnections != 20 {
 		t.Fatalf("expected max connections 20, got %d", cfg.MaxConnections)

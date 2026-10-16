@@ -184,6 +184,7 @@ A btree key does not serve `contains` and `starts_with`, which render as
 - Unique, partial and expression indexes.
 - Automatic index selection, and automatic drops.
 
-**DSQL: specified, not verified (#633).** The declaration format and the
-physical shape are specified independently of PostgreSQL. No DSQL code path
-builds or checks these indexes.
+**DSQL: specified, not verified.** The declaration format and the physical
+shape are specified independently of PostgreSQL. No DSQL code path builds or
+checks these indexes: DSQL builds an index on a populated table only with
+`CREATE INDEX ASYNC`, which is #690's work.

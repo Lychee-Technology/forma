@@ -110,6 +110,12 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	if err := effectiveConfig.DuckDB.ValidateCallerParquetPaths(); err != nil {
 		return nil, fmt.Errorf("invalid duckdb caller parquet paths configuration: %w", err)
 	}
+	// #633: the engine decides how writes exclude each other, so an unknown
+	// name fails here rather than falling back to PostgreSQL's locks.
+	engine, err := internal.WithDatabaseEngine(effectiveConfig.Database.Engine)
+	if err != nil {
+		return nil, fmt.Errorf("invalid database configuration: %w", err)
+	}
 	tables, err := deps.collectTables(ctx, pool, schemaName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to collect tables for schema %s: %w", schemaName, err)
@@ -117,6 +123,9 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 
 	if err := requireCoreTables(effectiveConfig, tables); err != nil {
 		return nil, fmt.Errorf("core table check failed: %w", err)
+	}
+	if err := requireRowGuards(effectiveConfig, tables); err != nil {
+		return nil, fmt.Errorf("row guard table check failed: %w", err)
 	}
 
 	// Load metadata from database at startup
@@ -160,7 +169,7 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// The repository enforces the unique keys the check above found built,
 	// for as long as it lives (#651).
 	repository, federatedEngine := newRepositoryAndEngine(
-		pool, metadataCache, effectiveConfig, duckClient, parquetSource, internal.WithUniqueKeyCatalog(guards.uniqueKeys))
+		pool, metadataCache, effectiveConfig, duckClient, parquetSource, engine, internal.WithUniqueKeyCatalog(guards.uniqueKeys))
 	// The DuckDB client has no owner other than the manager being built:
 	// register it so EntityManager.Close releases it (#302). Guarded on nil
 	// because a typed-nil *DuckDBClient boxed into io.Closer would defeat

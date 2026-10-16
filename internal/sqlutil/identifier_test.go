@@ -25,3 +25,14 @@ func TestSanitizeIdentifier(t *testing.T) {
 		})
 	}
 }
+
+func TestSuffixedIdentifier(t *testing.T) {
+	tests := []struct{ table, want string }{
+		{table: "entity_main", want: "entity_main_x"},
+		{table: "tenant.entity_main", want: "tenant.entity_main_x"},
+		{table: `"tenant"."Entity Main"`, want: `"tenant"."Entity Main_x"`},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, SuffixedIdentifier(tt.table, "_x"), tt.table)
+	}
+}
