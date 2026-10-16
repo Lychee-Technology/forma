@@ -77,7 +77,9 @@ type Tx interface {
 	// ErrNotFound, which leaves the Tx usable. With ForUpdate it first takes
 	// the row's write lock, as AssertRow does, so no other transaction can
 	// change the row's own attributes until the Tx ends; attributes enriched
-	// from related rows come from rows it does not lock.
+	// from related rows come from rows it does not lock. ForUpdate changes
+	// only what Get locks: every request gets the same answer with or
+	// without it.
 	Get(ctx context.Context, req *QueryRequest, opts ...ReadOption) (*DataRecord, error)
 	// Query runs a hot-tier query on the transaction. ForUpdate is
 	// ErrInvalidInput: Query locks nothing.

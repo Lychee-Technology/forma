@@ -25,9 +25,11 @@ func (s *txSession) Get(ctx context.Context, req *forma.QueryRequest, opts ...fo
 		if err != nil {
 			return err
 		}
+		// The lock step skips what Get refuses and discards ErrNotFound, so
+		// the read below authors every refusal and every missing row, the
+		// zero row ID's included: ForUpdate never changes Get's answer. A
+		// missing row locks nothing but keeps the per-row lock.
 		if read.ForUpdate && req.SchemaName != "" && req.RowID != nil {
-			// A missing row locks nothing but keeps the per-row lock; the
-			// read below then answers the same ErrNotFound Get always does.
 			if err := s.lockRow(ctx, req.SchemaName, *req.RowID, nil); err != nil && !errors.Is(err, forma.ErrNotFound) {
 				return err
 			}
@@ -57,20 +59,23 @@ func (s *txSession) Query(ctx context.Context, req *forma.QueryRequest, opts ...
 
 func (s *txSession) AssertRow(ctx context.Context, schemaName string, rowID uuid.UUID, preconditions forma.Condition) error {
 	return s.do(ctx, "AssertRow", func(ctx context.Context) error {
+		// Like Update and Delete, AssertRow takes its row ID by value, so
+		// the zero row ID is an absent one.
+		if schemaName == "" {
+			return forma.InvalidInputf("schema name is required to assert a row")
+		}
+		if rowID == uuid.Nil {
+			return forma.InvalidInputf("row ID is required to assert a row of %s", schemaName)
+		}
 		return s.lockRow(ctx, schemaName, rowID, preconditions)
 	})
 }
 
 // lockRow takes the write lock of one row and checks preconditions on it,
 // writing nothing. The schema and the precondition are checked before any
-// statement is sent.
+// statement is sent. It refuses no row ID: which arguments are required is
+// each caller's contract, and a row ID that names no row is ErrNotFound.
 func (s *txSession) lockRow(ctx context.Context, schemaName string, rowID uuid.UUID, preconditions forma.Condition) error {
-	if schemaName == "" {
-		return forma.InvalidInputf("schema name is required to lock a row")
-	}
-	if rowID == uuid.Nil {
-		return forma.InvalidInputf("row ID is required to lock a row of %s", schemaName)
-	}
 	schemaID, cache, err := s.crud.registry.GetSchemaAttributeCacheByName(schemaName)
 	if err != nil {
 		return fmt.Errorf("failed to get schema: %w", err)

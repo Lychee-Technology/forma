@@ -115,6 +115,43 @@ func TestTxGetAndAssertRowAnswerNotFoundForAMissingRow(t *testing.T) {
 	require.NoError(t, err, "the not-found outcomes leave the Tx able to commit")
 }
 
+// Tx.Get answers what EntityManager.Get answers, and ForUpdate changes no
+// answer. The zero row ID names no row, so it is ErrNotFound on every path,
+// as any missing row is.
+func TestTxGetAnswersWhatEntityManagerGetAnswersWithOrWithoutForUpdate(t *testing.T) {
+	env := newCondPG(t)
+	present, missing := env.create(t, map[string]any{"name": "present", "version": int64(1)}), uuid.New()
+	cases := []struct {
+		name  string
+		req   *forma.QueryRequest
+		class error // nil when the row is read
+	}{
+		{"a present row", condGet(present), nil},
+		{"a missing row", condGet(missing), forma.ErrNotFound},
+		{"the zero row ID", condGet(uuid.Nil), forma.ErrNotFound},
+		{"no row ID", &forma.QueryRequest{SchemaName: condSchemaName}, forma.ErrInvalidInput},
+		{"no schema", &forma.QueryRequest{RowID: &missing}, forma.ErrInvalidInput},
+	}
+	err := env.inTx(func(ctx context.Context, tx forma.Tx) error {
+		for _, tc := range cases {
+			want, wantErr := env.em.Get(env.ctx, tc.req)
+			plain, plainErr := tx.Get(ctx, tc.req)
+			locked, lockedErr := tx.Get(ctx, tc.req, forma.ForUpdate())
+			for path, err := range map[string]error{"EntityManager.Get": wantErr, "Tx.Get": plainErr, "Tx.Get ForUpdate": lockedErr} {
+				if tc.class == nil {
+					require.NoError(t, err, "%s: %s", tc.name, path)
+				} else {
+					require.ErrorIs(t, err, tc.class, "%s: %s", tc.name, path)
+				}
+			}
+			assert.Equal(t, want, plain, tc.name)
+			assert.Equal(t, want, locked, tc.name)
+		}
+		return nil
+	})
+	require.NoError(t, err, "no answer above poisons the Tx")
+}
+
 // AssertRow and Get(ForUpdate) lock the row and write nothing, whatever the
 // outcome: entity_main (its current version included), EAV and change_log
 // are the same after the Tx commits.
