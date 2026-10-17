@@ -159,6 +159,35 @@ func buildUpdateMainStatement(table string, record *model.PersistentRecord) (str
 	return query, args, nil
 }
 
+// retainStoredColumns copies into record every main column stored holds
+// that record does not set. buildUpdateMainStatement assigns only the
+// columns record sets, so the UPDATE leaves such a column as stored; with it
+// copied in, record is the row as the update stores it. A nil stored, a row
+// the merge found missing, adds nothing.
+func retainStoredColumns(record, stored *model.PersistentRecord) {
+	if stored == nil {
+		return
+	}
+	retainColumns(&record.TextItems, stored.TextItems)
+	retainColumns(&record.Int16Items, stored.Int16Items)
+	retainColumns(&record.Int32Items, stored.Int32Items)
+	retainColumns(&record.Int64Items, stored.Int64Items)
+	retainColumns(&record.Float64Items, stored.Float64Items)
+	retainColumns(&record.UUIDItems, stored.UUIDItems)
+}
+
+func retainColumns[T any](record *map[string]T, stored map[string]T) {
+	for column, value := range stored {
+		if _, set := (*record)[column]; set {
+			continue
+		}
+		if *record == nil {
+			*record = make(map[string]T, len(stored))
+		}
+		(*record)[column] = value
+	}
+}
+
 // insertMainRow inserts record's main row and reports whether it did: false
 // means a row with its (schema, row ID) already exists, and nothing was
 // written.

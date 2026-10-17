@@ -133,22 +133,6 @@ func (r *DBPersistentRecordRepository) batchDeleteInTx(ctx context.Context, tx p
 	return nil
 }
 
-// planBatchUniqueKeys answers the unique-key claim of each record of rows
-// that exist, positionally (see planUniqueKeys).
-func (r *DBPersistentRecordRepository) planBatchUniqueKeys(
-	ctx context.Context, tx pgx.Tx, tables model.StorageTables, records []*model.PersistentRecord,
-) ([]*uniqueKeyClaim, error) {
-	claims := make([]*uniqueKeyClaim, len(records))
-	for i, record := range records {
-		claim, err := r.planUniqueKeys(ctx, tx, tables, record, true)
-		if err != nil {
-			return nil, fmt.Errorf("plan unique keys for record[%d]: %w", i, err)
-		}
-		claims[i] = claim
-	}
-	return claims, nil
-}
-
 // recordKeys projects a batch's records onto their (schemaID, rowID) keys for
 // the lock pass, refusing a nil record before any lock is taken.
 func recordKeys(records []*model.PersistentRecord) ([]model.PersistentRecordKey, error) {

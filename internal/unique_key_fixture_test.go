@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/testdb"
 	"github.com/lychee-technology/forma/internal/transform"
 	"github.com/lychee-technology/forma/internal/uniquekey"
@@ -73,9 +74,14 @@ func setupUniqueKeyEnvWith(t *testing.T, tune func(*pgxpool.Config)) *txEnv {
 	return &txEnv{integrationEnv: env, txr: txr.(*transactor)}
 }
 
-// newUniqueKeyManager builds a manager over env's tables and registry.
+// newUniqueKeyManager builds a manager over env's tables and registry. It
+// validates writes as the factory's manager does: creates strictly, updates
+// in the default report-only mode, which admits a merged document that
+// violates the schema.
 func newUniqueKeyManager(t *testing.T, env *integrationEnv, opts ...EntityManagerOption) forma.EntityManager {
 	t.Helper()
+	validator, err := schemavalidate.New(SnapshotSchemaDocuments(env.registry), ukSchemaDir)
+	require.NoError(t, err)
 	config := &forma.Config{
 		Database: forma.DatabaseConfig{TableNames: forma.TableNames{
 			SchemaRegistry: env.schemaTable,
@@ -88,7 +94,7 @@ func newUniqueKeyManager(t *testing.T, env *integrationEnv, opts ...EntityManage
 		Transaction: forma.TransactionConfig{DefaultTimeout: 30 * time.Second},
 	}
 	repo := NewDBPersistentRecordRepository(env.postgresPool, env.metadata)
-	return mustNewEntityManager(t, transform.NewPersistentRecordTransformer(env.registry), repo, nil, env.registry, config, nil, opts...)
+	return mustNewEntityManager(t, transform.NewPersistentRecordTransformer(env.registry), repo, nil, env.registry, config, validator, opts...)
 }
 
 // ukCatalog resolves the environment's unique keys, as the manager did.

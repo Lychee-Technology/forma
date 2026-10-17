@@ -55,11 +55,11 @@ func (r *DBPersistentRecordRepository) BatchMergePersistentRecords(
 }
 
 // batchMergeInTx is BatchMergePersistentRecords' body, run on tx: the sorted
-// lock pass, every row's read and merge in input order, the unique-key check
-// over all of them, then every row's write in input order. Merging every row
-// before writing any lets the keys be reserved in one sorted statement after
-// the row locks, and a conflict found before the first write (#651). It answers
-// the stored records positionally.
+// lock pass, every row's read, merge and unique-key plan in input order, one
+// reservation over all of them, then every row's write in input order.
+// Merging every row before writing any lets the keys be reserved in one
+// sorted statement after the row locks, and a conflict found before the first
+// write (#651). It answers the stored records positionally.
 func (r *DBPersistentRecordRepository) batchMergeInTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -72,16 +72,13 @@ func (r *DBPersistentRecordRepository) batchMergeInTx(
 	}
 
 	merged := make([]*model.PersistentRecord, len(keys))
+	claims := make([]*uniqueKeyClaim, len(keys))
 	for i, key := range keys {
-		record, err := r.mergeOneOfBatch(ctx, tx, tables, i, key, merge)
+		record, claim, err := r.mergeOneOfBatch(ctx, tx, tables, i, key, merge)
 		if err != nil {
 			return nil, err
 		}
-		merged[i] = record
-	}
-	claims, err := r.planBatchUniqueKeys(ctx, tx, tables, merged)
-	if err != nil {
-		return nil, fmt.Errorf("plan unique keys for batch update: %w", err)
+		merged[i], claims[i] = record, claim
 	}
 	if _, err := r.reserveUniqueKeys(ctx, tx, tables, claims...); err != nil {
 		return nil, fmt.Errorf("reserve unique keys for batch update: %w", err)
@@ -100,6 +97,7 @@ func (r *DBPersistentRecordRepository) batchMergeInTx(
 		}
 		knownIDs, ok := scopeBySchema[key.SchemaID]
 		if !ok {
+			var err error
 			knownIDs, err = r.knownAttrIDs(key.SchemaID)
 			if err != nil {
 				return nil, fmt.Errorf("resolve replace scope for record[%d]: %w", i, err)
@@ -119,9 +117,10 @@ func (r *DBPersistentRecordRepository) batchMergeInTx(
 	return merged, nil
 }
 
-// mergeOneOfBatch reads one row's merge base inside tx and runs merge on it,
-// writing nothing. updateMainRow later stamps the effective version back into
-// the returned record.
+// mergeOneOfBatch reads one row's merge base inside tx, runs merge on it and
+// prepares the merged record's write (prepareUpdate), writing nothing. It
+// answers the record and its unique-key claim; updateMainRow later stamps
+// the effective version back into the record.
 func (r *DBPersistentRecordRepository) mergeOneOfBatch(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -129,10 +128,10 @@ func (r *DBPersistentRecordRepository) mergeOneOfBatch(
 	i int,
 	key model.PersistentRecordKey,
 	merge model.PersistentRecordBatchMerge,
-) (*model.PersistentRecord, error) {
+) (*model.PersistentRecord, *uniqueKeyClaim, error) {
 	existing, err := r.loadRecordWithAttributes(ctx, tx, tables, key.SchemaID, key.RowID)
 	if err != nil {
-		return nil, fmt.Errorf("load merge base for record[%d] (%s): %w", i, key.RowID, err)
+		return nil, nil, fmt.Errorf("load merge base for record[%d] (%s): %w", i, key.RowID, err)
 	}
 
 	// A plain wrap, never WrapPublicf, for the reason given on
@@ -140,15 +139,18 @@ func (r *DBPersistentRecordRepository) mergeOneOfBatch(
 	// message, and this wrap must stay out of the body (#313).
 	record, err := merge(ctx, i, existing)
 	if err != nil {
-		return nil, fmt.Errorf("merge record for %s: %w", key.RowID, err)
+		return nil, nil, fmt.Errorf("merge record for %s: %w", key.RowID, err)
 	}
 	if record == nil {
-		return nil, fmt.Errorf("merge returned no record for record[%d] (%s)", i, key.RowID)
+		return nil, nil, fmt.Errorf("merge returned no record for record[%d] (%s)", i, key.RowID)
 	}
 	if record.SchemaID != key.SchemaID || record.RowID != key.RowID {
-		return nil, fmt.Errorf("merge returned record for %d/%s, expected %d/%s at record[%d]",
+		return nil, nil, fmt.Errorf("merge returned record for %d/%s, expected %d/%s at record[%d]",
 			record.SchemaID, record.RowID, key.SchemaID, key.RowID, i)
 	}
-	record.UpdatedAt = r.nowMillis()
-	return record, nil
+	claim, err := r.prepareUpdate(ctx, tx, tables, record, existing)
+	if err != nil {
+		return nil, nil, fmt.Errorf("prepare update of record[%d] (%s): %w", i, key.RowID, err)
+	}
+	return record, claim, nil
 }
