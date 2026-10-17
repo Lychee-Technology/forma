@@ -97,7 +97,7 @@ func TestUniqueKeyDuplicatesErrorListsTheRows(t *testing.T) {
 		uuid.MustParse("00000000-0000-7000-8000-00000000000c")
 	err := duplicatesOf("account", "handle", map[string][]uuid.UUID{"2:h1": {b, a}, "2:h2": {c}, "2:h3": {c, a}})
 	require.Error(t, err)
-	assert.Equal(t, "schema account: 2 values of unique key handle are shared by more than one live row; "+
+	assert.Equal(t, "schema account: 2 values of unique key handle are shared by more than one live row, so the key is left unbuilt; "+
 		"resolve these rows (each group shares one value) and build again: ["+a.String()+" "+b.String()+"] ["+a.String()+" "+c.String()+"]", err.Error())
 	assert.NoError(t, duplicatesOf("account", "handle", map[string][]uuid.UUID{"2:h1": {a}}))
 }

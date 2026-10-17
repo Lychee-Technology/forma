@@ -285,19 +285,22 @@ Adding a key to a schema that has rows is an offline step:
    declaration, so a rolling deploy that keeps old writers running alongside
    new ones is not safe for this step.
 
-The build scans the schema's live rows in pages of 1,000, writes the entries
-in batches of 1,000, and records the key's state last. Each statement is its
-own transaction, which keeps every transaction under Aurora DSQL's
-3,000-row limit. An interrupted build leaves the key unbuilt, and the server
-refuses to start until the build runs again; a new run first deletes the
-entries the interrupted one wrote. A key already built for its attributes is
+The build first unbuilds each key it builds: it deletes the key's state, then
+its entries. It then scans the schema's live rows in pages of 1,000, writes
+the entries in batches of 1,000, and records the key's state last. Each statement is its own transaction, which keeps every transaction
+under Aurora DSQL's 3,000-row limit. A build that fails or is interrupted at
+any point leaves the keys it was building unbuilt, and the server refuses to
+start until a build succeeds. A key already built for its attributes is
 reported as `already built` and left alone, so a re-run is safe.
 
 **Rebuilding.** `--rebuild` builds a key again although it is built for its
 attributes: it clears the key's entries and state, scans the rows and writes
 them anew. Use it, with every writer stopped, when a writer that did not
-maintain the key wrote rows after the key was built. A rebuild never changes
-what a key means: a key built for another attribute list is still refused.
+maintain the key wrote rows after the key was built. Such a writer may also
+have duplicated a value, so a rebuild can fail on duplicates (below). The key
+then stays unbuilt rather than built over the entries the rebuild was meant
+to repair. A rebuild never changes what a key means: a key built for another
+attribute list is still refused.
 
 The build holds every value of the keys it builds in memory, with the row IDs
 that hold each, until it writes them. Its memory grows with the number of rows
@@ -305,15 +308,19 @@ times the number of keys built in one run. For a very large schema, build one
 key at a time with `--key`.
 
 **Duplicates.** When live rows already share a value of a key, the build
-fails. It writes nothing for any key of the run, including the keys without
-duplicates. It lists each group of rows that share one value, by row ID only:
+fails. It writes no entry for any key of the run, and every key of the run is
+left unbuilt, including the keys without duplicates and the keys a `--rebuild`
+found built. It lists each group of rows that share one value, by row ID only:
 
 ```
-schema event_record: 2 values of unique key idempotency are shared by more than one live row; resolve these rows (each group shares one value) and build again: [0190… 0190…] [0191… 0191…]
+schema event_record: 2 values of unique key idempotency are shared by more than one live row, so the key is left unbuilt; resolve these rows (each group shares one value) and build again: [0190… 0190…] [0191… 0191…]
 ```
 
 Resolve each group (delete or change all but one row), then run the build
-again.
+again. The keys are unbuilt by then, so the build needs no `--rebuild`. A
+writer whose schema files declare an unbuilt key refuses to start, so resolve
+the rows through a writer whose schema files do not declare it, and stop that
+writer before the build.
 
 ### Changing or removing a key
 
@@ -350,6 +357,14 @@ saw the committed entry, or `ErrRetryableConflict`, on an OCC abort.** Forma
 does not retry. A caller that retries an `ErrRetryableConflict` then receives
 `ErrUniqueConflict`. Tests that assert `ErrUniqueConflict` for every loser
 carry the `_PostgresOnly` suffix.
+
+Every entry a write inserts or deletes is a modified row of its transaction,
+counted with the entity's main, EAV and `change_log` rows against DSQL's
+3,000-row limit. A row with two keys adds two rows to its create. Inside a Tx,
+`WithTxMaxPhysicalRows` counts the entries too
+([Transactions](transactions.md#limits)). An atomic batch has no such bound,
+keyed or not: one within `Performance.MaxBatchSize` can exceed the limit and
+fail as a whole, with an error Forma does not classify yet (#692).
 
 ## Not supported
 

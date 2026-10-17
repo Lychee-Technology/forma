@@ -67,6 +67,29 @@ func TestUniqueKeyRolledBackTxLeavesNoEntry(t *testing.T) {
 	env.assertKeyTableMatchesRows(t)
 }
 
+// The Tx row limit counts unique-key entries with the entity's own rows, and
+// a refused write's entries although they never commit (transactions.md,
+// Limits).
+func TestUniqueKeyTxRowLimitCountsEntries(t *testing.T) {
+	env := setupUniqueKeyEnv(t)
+	env.mustCreateAccount(t, "t1", "a@x", "h1")
+	var refused, created int64
+	var rowID uuid.UUID
+	require.NoError(t, env.inTx(func(ctx context.Context, tx forma.Tx) error {
+		meter := tx.(*txSession).meter
+		_, err := tx.Create(ctx, ukCreateOp(ukAccount, uuid.Nil, ukAccountData("t1", "b@x", "h1")))
+		require.ErrorIs(t, err, forma.ErrUniqueConflict)
+		refused = meter.rows
+		record, err := tx.Create(ctx, ukCreateOp(ukAccount, uuid.Nil, ukAccountData("t1", "b@x", "h2")))
+		require.NoError(t, err)
+		created, rowID = meter.rows-refused, record.RowID
+		return nil
+	}))
+	assert.Equal(t, int64(2), refused, "tenant_email's entry was inserted, then deleted when handle conflicted")
+	eav := jsonArrayLen(t, env.snapshot(t, ukAccount, rowID).eav)
+	assert.Equal(t, int64(1+eav+1+2), created, "main row, EAV rows, change_log row and two key entries")
+}
+
 func ukHandleWhere(note string) *forma.MutateWhereRequest {
 	return &forma.MutateWhereRequest{SchemaName: ukAccount, Condition: &forma.KvCondition{Attr: "note", Value: "equals:" + note}}
 }

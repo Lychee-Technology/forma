@@ -248,3 +248,49 @@ func TestBuildUniqueKeysRebuildRestoresEntriesAWriterMissed(t *testing.T) {
 	_, err = build(true)
 	require.ErrorContains(t, err, "was built for another attribute list")
 }
+
+// A rebuild exists because a built key's entries are suspect, so one that
+// finds duplicates must not leave the key built over them: the startup check
+// would pass and a writer could take the missed value once more. Every key
+// the run was building is left unbuilt until a build succeeds.
+func TestBuildUniqueKeysFailedRebuildLeavesTheKeysUnbuilt(t *testing.T) {
+	env := setupUniqueKeyEnv(t)
+	catalog := env.ukCatalog(t)
+	check := func() error { return catalog.CheckUniqueKeysBuilt(env.ctx, env.postgresPool, env.tables.EntityMain) }
+	build := func(rebuild bool) error {
+		_, err := catalog.BuildUniqueKeys(env.ctx, env.postgresPool, env.tables, UniqueKeyBuildRequest{Schema: ukAccount, Rebuild: rebuild})
+		return err
+	}
+	_, pending, err := catalog.BuildUniqueKeysOfEmptySchemas(env.ctx, env.postgresPool, env.tables)
+	require.NoError(t, err)
+	require.Empty(t, pending)
+	_, err = env.manager.Create(env.ctx, ukCreateOp(ukAccount, uuid.Nil, ukAccountData("t", "a@x", "dup")))
+	require.NoError(t, err)
+	// A writer that does not maintain the keys duplicates a value after the
+	// build, which the startup check cannot see.
+	missed := preKeyCreate(t, env, env.preKeyManager(t), ukAccount, ukAccountData("t", "b@x", "dup"))
+	require.NoError(t, check())
+
+	err = build(true)
+	var duplicates *UniqueKeyDuplicatesError
+	require.ErrorAs(t, err, &duplicates)
+	assert.Equal(t, "handle", duplicates.Key)
+	state := env.stateRows(t)
+	for _, spec := range catalog.keysOf(ukSchemaIDs[ukAccount]) {
+		assert.NotContains(t, state, [2]int16{ukSchemaIDs[ukAccount], spec.id},
+			"key %s is unbuilt: tenant_email and seq have no duplicates, but the rebuild was building them too", spec.name)
+	}
+	err = check()
+	require.Error(t, err, "the server refuses to start after a failed rebuild")
+	assert.Contains(t, err.Error(), "unique key handle of schema ukaccount is not built: run forma-tools build-unique-keys --schema ukaccount --key handle")
+	assert.Contains(t, err.Error(), "unique key tenant_email of schema ukaccount is not built")
+
+	// Once the group is resolved, a plain build enforces the keys again,
+	// over the rows of both writers.
+	require.NoError(t, env.manager.Delete(env.ctx, txDeleteOp(ukAccount, missed)))
+	require.NoError(t, build(false))
+	require.NoError(t, check())
+	env.assertKeyTableMatchesRows(t)
+	_, err = env.manager.Create(env.ctx, ukCreateOp(ukAccount, uuid.Nil, ukAccountData("t", "c@x", "dup")))
+	requireKeyConflict(t, err, ukAccount, "handle", "dup")
+}

@@ -64,7 +64,7 @@ func (e *UniqueKeyDuplicatesError) Error() string {
 		}
 		groups[i] = "[" + strings.Join(ids, " ") + "]"
 	}
-	return fmt.Sprintf("schema %s: %d values of unique key %s are shared by more than one live row; "+
+	return fmt.Sprintf("schema %s: %d values of unique key %s are shared by more than one live row, so the key is left unbuilt; "+
 		"resolve these rows (each group shares one value) and build again: %s",
 		e.Schema, len(e.Groups), e.Key, strings.Join(groups, " "))
 }
@@ -87,12 +87,13 @@ type UniqueKeyBuildRequest struct {
 //
 // A key already built for its current attributes is left alone unless
 // req.Rebuild, and one built for other attributes is refused, since a key's
-// attributes never change under its id. Duplicates in any key fail the
-// whole run before it writes anything, with a UniqueKeyDuplicatesError per
-// key. Otherwise each key is unbuilt first, its entries rewritten in batches
-// of UniqueKeyBuildBatchSize, and its state row written last, so an
-// interrupted build leaves the key unbuilt: the server refuses to start until
-// the build is run again.
+// attributes never change under its id. Every key the run builds is unbuilt
+// before the rows are scanned. Duplicates in any key then fail the run before
+// it writes an entry, with a UniqueKeyDuplicatesError per key. Otherwise each
+// key's entries are written in batches of UniqueKeyBuildBatchSize, and its
+// state row last. So a run that fails at any point, on duplicates included,
+// leaves the keys it was building unbuilt: the server refuses to start until
+// a build succeeds.
 func (c *UniqueKeyCatalog) BuildUniqueKeys(
 	ctx context.Context, db UniqueKeyStore, tables model.StorageTables, req UniqueKeyBuildRequest,
 ) (UniqueKeyBuildReport, error) {
@@ -165,8 +166,15 @@ func (c *UniqueKeyCatalog) keysPendingBuild(
 	return todo, nil
 }
 
-// buildKeys scans schemaID's live rows once for every key of specs, refuses
-// duplicates, then writes each key. built is the keys built before the run.
+// buildKeys unbuilds every key of specs, scans schemaID's live rows once for
+// all of them, refuses duplicates, then writes each key. built is the keys
+// built before the run.
+//
+// The keys are unbuilt before the scan because a rebuild is asked for when a
+// built key's entries are suspect. Were a rebuild that found duplicates to
+// leave its key built, the startup check would pass over the very entries
+// the rebuild was meant to repair, and a writer could take a missed value
+// again (#651, review of #682).
 func (c *UniqueKeyCatalog) buildKeys(
 	ctx context.Context, db UniqueKeyStore, tables model.StorageTables, schemaID int16, specs []uniqueKeySpec,
 	built map[[2]int16]string, report *UniqueKeyBuildReport,
@@ -175,6 +183,11 @@ func (c *UniqueKeyCatalog) buildKeys(
 		return nil
 	}
 	schemaName := c.schemaName(schemaID)
+	for _, spec := range specs {
+		if err := unbuildKey(ctx, db, tables.EntityMain, schemaID, spec.id); err != nil {
+			return fmt.Errorf("clear unique key %s of schema %s before the scan: %w", spec.name, schemaName, err)
+		}
+	}
 	owners, err := scanUniqueKeyOwners(ctx, db, tables, schemaID, specs)
 	if err != nil {
 		return fmt.Errorf("scan the live rows of schema %s: %w", schemaName, err)
@@ -284,12 +297,10 @@ func duplicatesOf(schemaName, keyName string, owners map[string][]uuid.UUID) err
 
 func compareUUIDs(a, b uuid.UUID) int { return bytes.Compare(a[:], b[:]) }
 
-// writeBuiltKey replaces spec's entries with owners, each value held by one
-// row, and records the key as built for its current attributes.
+// writeBuiltKey writes spec's entries from owners, each value held by one
+// row, into a key the run has unbuilt, and records the key as built for its
+// current attributes.
 func writeBuiltKey(ctx context.Context, db UniqueKeyStore, entityMain string, schemaID int16, spec uniqueKeySpec, owners map[string][]uuid.UUID) (int, error) {
-	if err := unbuildKey(ctx, db, entityMain, schemaID, spec.id); err != nil {
-		return 0, fmt.Errorf("clear the key before writing it: %w", err)
-	}
 	values := make([]string, 0, len(owners))
 	for value := range owners {
 		values = append(values, value)
