@@ -154,7 +154,11 @@ and returns `ErrUniqueConflict`; if it rolls back, the waiter takes the value.
 Concurrent creators of one value therefore end with exactly one commit. A
 value that an update moves away from, or a delete releases, can be taken by
 another writer once that write commits; a creator already waiting for it then
-succeeds.
+succeeds. Only a creator whose insert meets the release under way waits for
+it. For a value its insert skipped, the creator then looks up the holder
+without waiting, so a release that started after the insert and has not
+committed yet still counts: the creator returns `ErrUniqueConflict`, as if it
+had run just before the release, and can take the value when run again.
 
 Writes of keyed rows pin `READ COMMITTED`, whatever the session's default
 isolation level. Under a snapshot level a loser would see `40001` for an entry
@@ -217,8 +221,10 @@ HTTP a violation is `409` with the published message (see
 ### The key tables
 
 Keys live in two tables named after the `entity_main` table they guard.
-`init-db` creates both. A deployment whose schemas declare no keys never
-reads or writes them, so it starts without them.
+Every `init-db` run creates both, whether or not a schema declares a key. A
+deployment whose schemas declare no keys never writes them, and starts
+without them. Once the state table exists, startup reads it even when no key
+is declared, to refuse a key still built after its declaration was removed.
 
 - `<entity_main>_unique_key` holds one entry per (live row, built key) whose
   attributes are all present. Its primary key

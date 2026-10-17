@@ -109,6 +109,13 @@ func (r *DBPersistentRecordRepository) takenEntries(claims []*uniqueKeyClaim) ([
 // owner: one the claimer holds already is taken, one another row holds is
 // the conflict, and one nobody holds any more (its owner released it after
 // the insert looked) is answered for another round.
+//
+// The lookup does not wait for a release under way, as the insert does: an
+// owner that began deleting its entry after the insert passed it, and has not
+// committed, still holds the value here, so the write answers
+// ErrUniqueConflict as if it ran just before the release. Waiting would lock
+// the owner's entry (FOR SHARE, or ON CONFLICT DO UPDATE) until this
+// transaction ends, and an owner's later release would then wait for it.
 func (r *DBPersistentRecordRepository) settleMissing(
 	ctx context.Context, tx pgx.Tx, tables model.StorageTables, reservation *uniqueKeyReservation, missing []claimedEntry,
 ) ([]claimedEntry, error) {
