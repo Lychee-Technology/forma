@@ -74,11 +74,22 @@ func setupUniqueKeyEnvWith(t *testing.T, tune func(*pgxpool.Config)) *txEnv {
 	return &txEnv{integrationEnv: env, txr: txr.(*transactor)}
 }
 
-// newUniqueKeyManager builds a manager over env's tables and registry. It
-// validates writes as the factory's manager does: creates strictly, updates
-// in the default report-only mode, which admits a merged document that
-// violates the schema.
-func newUniqueKeyManager(t *testing.T, env *integrationEnv, opts ...EntityManagerOption) forma.EntityManager {
+// newUniqueKeyManager builds a manager over env's tables and registry, on a
+// repository of its own that enforces the registry's unique keys, as the
+// factory's does. It validates writes as the factory's manager does: creates
+// strictly, updates in the default report-only mode, which admits a merged
+// document that violates the schema.
+func newUniqueKeyManager(t *testing.T, env *integrationEnv) forma.EntityManager {
+	t.Helper()
+	catalog, err := NewUniqueKeyCatalog(env.registry)
+	require.NoError(t, err)
+	return newUniqueKeyManagerEnforcing(t, env, catalog)
+}
+
+// newUniqueKeyManagerEnforcing is newUniqueKeyManager with a repository
+// built to enforce catalog's keys; an empty catalog writes as a server whose
+// schema files declare no key.
+func newUniqueKeyManagerEnforcing(t *testing.T, env *integrationEnv, catalog *UniqueKeyCatalog) forma.EntityManager {
 	t.Helper()
 	validator, err := schemavalidate.New(SnapshotSchemaDocuments(env.registry), ukSchemaDir)
 	require.NoError(t, err)
@@ -93,8 +104,9 @@ func newUniqueKeyManager(t *testing.T, env *integrationEnv, opts ...EntityManage
 		Entity:      forma.EntityConfig{SchemaDirectory: ukSchemaDir},
 		Transaction: forma.TransactionConfig{DefaultTimeout: 30 * time.Second},
 	}
-	repo := NewDBPersistentRecordRepository(env.postgresPool, env.metadata)
-	return mustNewEntityManager(t, transform.NewPersistentRecordTransformer(env.registry), repo, nil, env.registry, config, validator, opts...)
+	repo := NewDBPersistentRecordRepository(env.postgresPool, env.metadata, WithUniqueKeyCatalog(catalog))
+	return mustNewEntityManager(t, transform.NewPersistentRecordTransformer(env.registry), repo, nil, env.registry, config, validator,
+		WithUniqueKeys(catalog))
 }
 
 // ukCatalog resolves the environment's unique keys, as the manager did.

@@ -26,6 +26,30 @@ func TestAttributesHashIdentifiesTheAttributeList(t *testing.T) {
 	}
 }
 
+// The storage hash changes with where any attribute's value is read from,
+// and with nothing else: the default encoding reads as itself however it is
+// spelled.
+func TestStorageHashIdentifiesWhereTheAttributesAreStored(t *testing.T) {
+	text01 := Storage{Column: forma.MainColumnText01}
+	eav2 := Storage{AttributeID: 2}
+	base := StorageHash([]Storage{text01, eav2})
+	assert.Equal(t, base, StorageHash([]Storage{{Column: forma.MainColumnText01, Encoding: forma.MainColumnEncodingDefault}, eav2}))
+	assert.Equal(t, base, StorageHash([]Storage{{Column: forma.MainColumnText01, AttributeID: 9}, eav2}),
+		"a bound attribute is read from its column, whatever its attribute id")
+	for name, other := range map[string][]Storage{
+		"column":   {{Column: forma.MainColumnText02}, eav2},
+		"encoding": {{Column: forma.MainColumnText01, Encoding: forma.MainColumnEncodingISO8601}, eav2},
+		"eav id":   {text01, {AttributeID: 3}},
+		"to eav":   {{AttributeID: 1}, eav2},
+		"order":    {eav2, text01},
+		"subset":   {text01},
+	} {
+		assert.NotEqual(t, base, StorageHash(other), name)
+	}
+	assert.Equal(t, "column text_01 (encoding default)", text01.String())
+	assert.Equal(t, "EAV attribute id 2", eav2.String())
+}
+
 func TestStatementsForDerivesEveryNameFromEntityMain(t *testing.T) {
 	statements := StatementsFor("entity_main")
 	assert.Len(t, statements, 3)

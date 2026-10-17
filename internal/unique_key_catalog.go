@@ -17,19 +17,40 @@ type uniqueKeySpec struct {
 	id    int16
 	name  string
 	attrs []uniqueKeyAttribute
-	// hash is uniquekey.AttributesHash of attrs: the state table records a
-	// key as built for it.
-	hash string
+	// hash is uniquekey.AttributesHash of attrs: what the key's values mean.
+	// storage is uniquekey.StorageHash of attrs: where the write path reads
+	// them. The state table records a key as built for both.
+	hash    string
+	storage string
 }
 
 type uniqueKeyAttribute struct {
 	name string
 	meta forma.AttributeMetadata
+	// stored is where the write path reads the attribute's value.
+	stored uniquekey.Storage
+}
+
+// storageOf answers where the write path reads the value meta describes: its
+// bound column and encoding, an unnamed encoding spelled as the default it
+// reads as, or its EAV attribute ID. Two attributes read from one place have
+// equal storage.
+func storageOf(meta forma.AttributeMetadata) uniquekey.Storage {
+	binding := meta.ColumnBinding
+	if binding == nil {
+		return uniquekey.Storage{AttributeID: meta.AttributeID}
+	}
+	encoding := binding.Encoding
+	if encoding == "" {
+		encoding = forma.MainColumnEncodingDefault
+	}
+	return uniquekey.Storage{Column: binding.ColumnName, Encoding: encoding}
 }
 
 // UniqueKeyCatalog holds every schema's unique keys, resolved once from the
-// registry, which is immutable after construction. A nil catalog declares
-// nothing.
+// registry. It is immutable: a repository is given one when it is built
+// (WithUniqueKeyCatalog) and reads it on every write without synchronization.
+// A nil catalog declares nothing.
 type UniqueKeyCatalog struct {
 	bySchema map[int16][]uniqueKeySpec
 	// names holds every schema's name, keyed or not, for the conflict
@@ -63,6 +84,9 @@ func NewUniqueKeyCatalog(registry forma.SchemaRegistry) (*UniqueKeyCatalog, erro
 		if err := schemameta.ValidateUniqueKeyDeclarations(schemaName, schema.UniqueKeys, cache, schema.Properties); err != nil {
 			return nil, fmt.Errorf("validate the unique keys of schema %s: %w", schemaName, err)
 		}
+		if err := refuseRelationSubtreeKeys(registry, schemaName, schema.UniqueKeys); err != nil {
+			return nil, err
+		}
 		specs, err := resolveUniqueKeys(schemaName, schema.UniqueKeys, cache)
 		if err != nil {
 			return nil, fmt.Errorf("resolve the unique keys of schema %s: %w", schemaName, err)
@@ -70,6 +94,26 @@ func NewUniqueKeyCatalog(registry forma.SchemaRegistry) (*UniqueKeyCatalog, erro
 		catalog.bySchema[schemaID] = specs
 	}
 	return catalog, nil
+}
+
+// refuseRelationSubtreeKeys refuses a key over a relation root or anything
+// beneath it. Every write strips that subtree (StripComputedFields) and every
+// read derives it from the parent, so the write path never sees a value to
+// reserve while reads answer one: the key would enforce nothing.
+func refuseRelationSubtreeKeys(registry forma.SchemaRegistry, schemaName string, decls []forma.UniqueKeyDeclaration) error {
+	relations := &RelationIndex{bySchema: map[string][]RelationDescriptor{}}
+	if err := relations.loadSchemaRelations(registry, schemaName); err != nil {
+		return fmt.Errorf("load the relations of schema %s for its unique keys: %w", schemaName, err)
+	}
+	for _, decl := range decls {
+		for _, attr := range decl.Attributes {
+			if root, covered := relationRootCovering(relations, schemaName, attr); covered {
+				return fmt.Errorf("schema %s: unique key %s: attribute %s lies under relation root %s, which writes never store; "+
+					"a unique key needs attributes the writes store", schemaName, decl.Name, attr, root)
+			}
+		}
+	}
+	return nil
 }
 
 func resolveUniqueKeys(schemaName string, decls []forma.UniqueKeyDeclaration, cache forma.SchemaAttributeCache) ([]uniqueKeySpec, error) {
@@ -81,25 +125,35 @@ func resolveUniqueKeys(schemaName string, decls []forma.UniqueKeyDeclaration, ca
 		}
 		spec := uniqueKeySpec{id: decl.ID, name: decl.Name}
 		hashed := make([]uniquekey.Attribute, 0, len(decl.Attributes))
+		stored := make([]uniquekey.Storage, 0, len(decl.Attributes))
 		for _, attr := range decl.Attributes {
 			meta := cache[attr] // ValidateUniqueKeyDeclarations found it
-			spec.attrs = append(spec.attrs, uniqueKeyAttribute{name: attr, meta: meta})
+			if meta.ColumnBinding != nil {
+				// Copied, as the catalog is immutable and the binding is the
+				// registry's.
+				binding := *meta.ColumnBinding
+				meta.ColumnBinding = &binding
+			}
+			spec.attrs = append(spec.attrs, uniqueKeyAttribute{name: attr, meta: meta, stored: storageOf(meta)})
 			hashed = append(hashed, uniquekey.Attribute{Name: attr, ValueType: meta.ValueType})
+			stored = append(stored, storageOf(meta))
 		}
 		spec.hash = uniquekey.AttributesHash(hashed)
+		spec.storage = uniquekey.StorageHash(stored)
 		specs = append(specs, spec)
 	}
 	return specs, nil
 }
 
-// installUniqueKeys hands the PostgreSQL repository the unique keys of
-// registry's schemas (#651), which its write cores then enforce on every
-// surface the manager and its Transactor offer: the catalog WithUniqueKeys
-// supplied, or one resolved here. Another repository cannot enforce them, so
-// a registry that declares a key refuses it rather than leave the key
-// silently unenforced. The keys live on the repository, so two managers can
-// share one only when they enforce the same keys.
-func (em *entityManager) installUniqueKeys(repository model.PersistentRecordRepository, registry forma.SchemaRegistry) error {
+// checkUniqueKeys refuses a repository that does not enforce the unique keys
+// of registry's schemas (#651): the catalog WithUniqueKeys supplied, or one
+// resolved here. The PostgreSQL repository enforces the catalog it was built
+// with, which nothing replaces afterwards, so a manager only reads it: two
+// managers may share a repository when their registries resolve the same
+// keys over the same storage, and any other manager is refused before it can
+// write. Another repository enforces no keys, so a registry that declares one
+// refuses it rather than leave the key silently unenforced.
+func (em *entityManager) checkUniqueKeys(repository model.PersistentRecordRepository, registry forma.SchemaRegistry) error {
 	if em.uniqueKeys == nil {
 		catalog, err := NewUniqueKeyCatalog(registry)
 		if err != nil {
@@ -108,10 +162,10 @@ func (em *entityManager) installUniqueKeys(repository model.PersistentRecordRepo
 		em.uniqueKeys = catalog
 	}
 	if repo, ok := repository.(*DBPersistentRecordRepository); ok {
-		if repo.uniqueKeys != nil && !repo.uniqueKeys.sameKeys(em.uniqueKeys) {
-			return fmt.Errorf("the repository already enforces another registry's unique keys; give each manager its own repository")
+		if difference := repo.uniqueKeys.differenceFrom(em.uniqueKeys); difference != "" {
+			return fmt.Errorf("the repository enforces other unique keys than the registry declares (%s); "+
+				"build the repository with WithUniqueKeyCatalog and the registry's keys", difference)
 		}
-		repo.uniqueKeys = em.uniqueKeys
 		return nil
 	}
 	if keyed := em.uniqueKeys.keyedSchemas(); len(keyed) > 0 {
@@ -121,20 +175,56 @@ func (em *entityManager) installUniqueKeys(repository model.PersistentRecordRepo
 	return nil
 }
 
-// sameKeys says whether c and other enforce the same keys: the same ids,
-// names and attribute lists in every schema.
-func (c *UniqueKeyCatalog) sameKeys(other *UniqueKeyCatalog) bool {
-	if len(c.bySchema) != len(other.bySchema) {
-		return false
+// differenceFrom names the first way the keys c enforces, as a repository's,
+// differ from the keys other declares, as a registry's; "" when they are the
+// same keys, read from the same storage. Two catalogs whose declarations
+// agree but whose attributes are stored apart are different: each would
+// compute its keys from columns the other's writes do not fill.
+func (c *UniqueKeyCatalog) differenceFrom(other *UniqueKeyCatalog) string {
+	if c == other {
+		return ""
 	}
-	for schemaID, specs := range c.bySchema {
-		if !slices.EqualFunc(specs, other.bySchema[schemaID], func(a, b uniqueKeySpec) bool {
-			return a.id == b.id && a.name == b.name && a.hash == b.hash
-		}) {
-			return false
+	schemaIDs := append(c.keyedSchemas(), other.keyedSchemas()...)
+	slices.Sort(schemaIDs)
+	for _, schemaID := range slices.Compact(schemaIDs) {
+		ours, theirs := c.schemaName(schemaID), other.schemaName(schemaID)
+		name := theirs
+		if len(other.keysOf(schemaID)) == 0 {
+			name = ours
+		}
+		if difference := keysDifference(name, c.keysOf(schemaID), other.keysOf(schemaID)); difference != "" {
+			return difference
+		}
+		if ours != theirs {
+			return fmt.Sprintf("schema id %d is %s to the repository and %s to the registry", schemaID, ours, theirs)
 		}
 	}
-	return true
+	return ""
+}
+
+// keysDifference names the first difference between a schema's keys as the
+// repository enforces them (enforced) and as the registry declares them.
+func keysDifference(schema string, enforced, declared []uniqueKeySpec) string {
+	for i := range max(len(enforced), len(declared)) {
+		switch {
+		case i >= len(enforced):
+			return fmt.Sprintf("schema %s: the repository does not enforce unique key %s", schema, declared[i].name)
+		case i >= len(declared):
+			return fmt.Sprintf("schema %s: the repository enforces unique key %s, which the registry does not declare", schema, enforced[i].name)
+		}
+		a, b := enforced[i], declared[i]
+		if a.id != b.id || a.name != b.name || a.hash != b.hash {
+			return fmt.Sprintf("schema %s: the repository enforces unique key %s (id %d), where the registry declares unique key %s (id %d) over other attributes or types",
+				schema, a.name, a.id, b.name, b.id)
+		}
+		for j := range a.attrs {
+			if a.attrs[j].stored != b.attrs[j].stored {
+				return fmt.Sprintf("schema %s: unique key %s reads attribute %s from %s, where the registry stores it in %s",
+					schema, a.name, a.attrs[j].name, a.attrs[j].stored, b.attrs[j].stored)
+			}
+		}
+	}
+	return ""
 }
 
 // keysOf answers schemaID's unique keys; nil when it declares none.

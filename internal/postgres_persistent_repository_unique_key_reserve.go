@@ -121,7 +121,10 @@ func (r *DBPersistentRecordRepository) settleMissing(
 ) ([]claimedEntry, error) {
 	owners, err := keyEntryOwners(ctx, tx, tables, missing)
 	if err != nil {
-		return nil, r.undoAfter(ctx, tx, tables, reservation, err)
+		// No undo, as after a failed insert: the error poisons a Tx and rolls
+		// back any other write, which removes the entries. After a failed
+		// statement an undo would fail too, and its error would hide this one.
+		return nil, err
 	}
 	var again []claimedEntry
 	for i, c := range missing {
@@ -137,10 +140,12 @@ func (r *DBPersistentRecordRepository) settleMissing(
 }
 
 // undoAfter removes the reservation's entries and answers cause, or the
-// undo's own failure.
+// undo's own failure. A failed undo keeps cause as text only: its failed
+// statement aborts the transaction, and an answer that still matched
+// ErrUniqueConflict would claim the Tx usable.
 func (r *DBPersistentRecordRepository) undoAfter(ctx context.Context, tx pgx.Tx, tables model.StorageTables, reservation *uniqueKeyReservation, cause error) error {
 	if err := r.undoReservation(ctx, tx, tables, reservation); err != nil {
-		return fmt.Errorf("%w (after: %w)", err, cause)
+		return fmt.Errorf("%w (after: %v)", err, cause)
 	}
 	return cause
 }

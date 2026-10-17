@@ -36,8 +36,10 @@ import (
 //     both iterate ListSchemas — so there is nothing captured to answer with, and
 //     such a read is passed to the wrapped registry.
 //   - the attribute caches. Neither startup consumer reads them; capturing them
-//     would add a read per schema at startup and a new startup failure class for
-//     data no consumer of this snapshot looks at. Those accessors delegate.
+//     would add a read per schema at startup and a new startup failure class.
+//     Those accessors delegate. NewUniqueKeyCatalog, also built from this
+//     snapshot, does read them, and so gets the wrapped registry's caches, the
+//     ones the transformer writes through.
 //
 // The result is immutable after construction, so it is safe to share and holds
 // no lock. It is a startup value: it does not observe a registry that reloads,
@@ -139,8 +141,7 @@ func (s *schemaDocumentSnapshot) GetSchemaByID(id int16) (string, forma.JSONSche
 
 // GetSchemaAttributeCacheByName answers nothing of its own: attribute caches are
 // not captured, so every call is the wrapped registry's, returned as it came.
-// SnapshotSchemaDocuments states why they are left out — neither startup
-// consumer of this snapshot reads them.
+// SnapshotSchemaDocuments states why they are left out.
 func (s *schemaDocumentSnapshot) GetSchemaAttributeCacheByName(name string) (int16, forma.SchemaAttributeCache, error) {
 	return s.registry.GetSchemaAttributeCacheByName(name)
 }

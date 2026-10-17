@@ -27,8 +27,9 @@ func (c *UniqueKeyCatalog) DeclaresKeys() bool {
 }
 
 // unbuiltKey is one key whose entries the write path cannot trust: declared
-// but not built, declared over other attributes than it was built for, or
-// built but no longer declared.
+// but not built, declared over other attributes than it was built for, built
+// while its attributes were stored elsewhere, or built but no longer
+// declared.
 // A key that is no longer declared stops being maintained, so a later
 // declaration of the same id over the same attributes would read as built
 // over stale entries; the startup check refuses it until a build drops it.
@@ -64,19 +65,26 @@ func (k unbuiltKey) String() string {
 	return fmt.Sprintf("unique key %s of schema %s %s: run %s", k.key, k.schema, k.reason, k.command())
 }
 
-// readUniqueKeyState answers the built keys the state table records, as
-// (schema, key) -> attributes hash.
-func readUniqueKeyState(ctx context.Context, db UniqueKeyStore, entityMain string) (map[[2]int16]string, error) {
+// builtKey is what the state table records of one built key: the
+// uniquekey.AttributesHash and uniquekey.StorageHash it was built for.
+type builtKey struct {
+	attributes string
+	storage    string
+}
+
+// readUniqueKeyState answers the built keys the state table records, by
+// (schema, key).
+func readUniqueKeyState(ctx context.Context, db UniqueKeyStore, entityMain string) (map[[2]int16]builtKey, error) {
 	stateTable := uniquekey.StateTable(entityMain)
-	rows, err := db.Query(ctx, fmt.Sprintf("SELECT ltbase_schema_id, key_id, attributes_hash FROM %s", sanitizeIdentifier(stateTable)))
+	rows, err := db.Query(ctx, fmt.Sprintf("SELECT ltbase_schema_id, key_id, attributes_hash, storage_hash FROM %s", sanitizeIdentifier(stateTable)))
 	if err != nil {
 		return nil, fmt.Errorf("read built unique keys from %s (forma-tools init-db creates it): %w", stateTable, err)
 	}
-	built := map[[2]int16]string{}
+	built := map[[2]int16]builtKey{}
 	var schemaID, keyID int16
-	var hash string
-	if _, err := pgx.ForEachRow(rows, []any{&schemaID, &keyID, &hash}, func() error {
-		built[[2]int16{schemaID, keyID}] = hash
+	var state builtKey
+	if _, err := pgx.ForEachRow(rows, []any{&schemaID, &keyID, &state.attributes, &state.storage}, func() error {
+		built[[2]int16{schemaID, keyID}] = state
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("read built unique keys from %s: %w", stateTable, err)
@@ -97,13 +105,16 @@ func (c *UniqueKeyCatalog) unbuiltKeys(ctx context.Context, db UniqueKeyStore, e
 	for _, schemaID := range c.registeredSchemas() {
 		specs := c.keysOf(schemaID)
 		for _, spec := range specs {
-			hash, ok := built[[2]int16{schemaID, spec.id}]
+			state, ok := built[[2]int16{schemaID, spec.id}]
 			switch {
 			case !ok:
 				unbuilt = append(unbuilt, unbuiltKey{schema: c.names[schemaID], key: spec.name, keyID: spec.id, reason: "is not built"})
-			case hash != spec.hash:
+			case state.attributes != spec.hash:
 				unbuilt = append(unbuilt, unbuiltKey{schema: c.names[schemaID], key: spec.name, keyID: spec.id,
 					reason: "was built for another attribute list", changed: true})
+			case state.storage != spec.storage:
+				unbuilt = append(unbuilt, unbuiltKey{schema: c.names[schemaID], key: spec.name, keyID: spec.id,
+					reason: "was built while its attributes were stored elsewhere (a column binding or attribute id changed)"})
 			}
 		}
 		for _, keyID := range builtKeyIDs(built, schemaID) {
@@ -117,7 +128,7 @@ func (c *UniqueKeyCatalog) unbuiltKeys(ctx context.Context, db UniqueKeyStore, e
 }
 
 // builtKeyIDs answers the key IDs of schemaID that built records, ascending.
-func builtKeyIDs(built map[[2]int16]string, schemaID int16) []int16 {
+func builtKeyIDs(built map[[2]int16]builtKey, schemaID int16) []int16 {
 	var ids []int16
 	for k := range built {
 		if k[0] == schemaID {

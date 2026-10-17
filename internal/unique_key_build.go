@@ -85,15 +85,17 @@ type UniqueKeyBuildRequest struct {
 // is offline: every writer must be stopped while it runs, since a write it
 // misses would leave the key table short of the rows.
 //
-// A key already built for its current attributes is left alone unless
-// req.Rebuild, and one built for other attributes is refused, since a key's
-// attributes never change under its id. Every key the run builds is unbuilt
-// before the rows are scanned. Duplicates in any key then fail the run before
-// it writes an entry, with a UniqueKeyDuplicatesError per key. Otherwise each
-// key's entries are written in batches of UniqueKeyBuildBatchSize, and its
-// state row last. So a run that fails at any point, on duplicates included,
-// leaves the keys it was building unbuilt: the server refuses to start until
-// a build succeeds.
+// A key already built for its current attributes and their storage is left
+// alone unless req.Rebuild; one built while its attributes were stored
+// elsewhere is built again, since its entries may hold values no stored row
+// reads as any more; and one built for other attributes is refused, since a
+// key's attributes never change under its id. Every key the run builds is
+// unbuilt before the rows are scanned. Duplicates in any key then fail the
+// run before it writes an entry, with a UniqueKeyDuplicatesError per key.
+// Otherwise each key's entries are written in batches of
+// UniqueKeyBuildBatchSize, and its state row last. So a run that fails at
+// any point, on duplicates included, leaves the keys it was building unbuilt:
+// the server refuses to start until a build succeeds.
 func (c *UniqueKeyCatalog) BuildUniqueKeys(
 	ctx context.Context, db UniqueKeyStore, tables model.StorageTables, req UniqueKeyBuildRequest,
 ) (UniqueKeyBuildReport, error) {
@@ -148,16 +150,16 @@ func (c *UniqueKeyCatalog) keysToBuild(req UniqueKeyBuildRequest) (int16, []uniq
 // each one it skips as already built, and refuses a key built for other
 // attributes.
 func (c *UniqueKeyCatalog) keysPendingBuild(
-	req UniqueKeyBuildRequest, schemaID int16, specs []uniqueKeySpec, built map[[2]int16]string, report *UniqueKeyBuildReport,
+	req UniqueKeyBuildRequest, schemaID int16, specs []uniqueKeySpec, built map[[2]int16]builtKey, report *UniqueKeyBuildReport,
 ) ([]uniqueKeySpec, error) {
 	var todo []uniqueKeySpec
 	for _, spec := range specs {
-		hash, ok := built[[2]int16{schemaID, spec.id}]
+		state, ok := built[[2]int16{schemaID, spec.id}]
 		switch {
-		case ok && hash != spec.hash:
+		case ok && state.attributes != spec.hash:
 			return nil, fmt.Errorf("unique key %s of schema %s (id %d) was built for another attribute list: %s",
 				spec.name, req.Schema, spec.id, changedKeyAdvice)
-		case ok && !req.Rebuild:
+		case ok && state.storage == spec.storage && !req.Rebuild:
 			report.Keys = append(report.Keys, UniqueKeyBuildResult{Schema: req.Schema, Key: spec.name, AlreadyBuilt: true})
 		default:
 			todo = append(todo, spec)
@@ -177,7 +179,7 @@ func (c *UniqueKeyCatalog) keysPendingBuild(
 // again (#651, review of #682).
 func (c *UniqueKeyCatalog) buildKeys(
 	ctx context.Context, db UniqueKeyStore, tables model.StorageTables, schemaID int16, specs []uniqueKeySpec,
-	built map[[2]int16]string, report *UniqueKeyBuildReport,
+	built map[[2]int16]builtKey, report *UniqueKeyBuildReport,
 ) error {
 	if len(specs) == 0 {
 		return nil
@@ -299,7 +301,7 @@ func compareUUIDs(a, b uuid.UUID) int { return bytes.Compare(a[:], b[:]) }
 
 // writeBuiltKey writes spec's entries from owners, each value held by one
 // row, into a key the run has unbuilt, and records the key as built for its
-// current attributes.
+// current attributes and their storage.
 func writeBuiltKey(ctx context.Context, db UniqueKeyStore, entityMain string, schemaID int16, spec uniqueKeySpec, owners map[string][]uuid.UUID) (int, error) {
 	values := make([]string, 0, len(owners))
 	for value := range owners {
@@ -319,10 +321,11 @@ SELECT $1, $2, u.key_value, u.ltbase_row_id FROM unnest($3::text[], $4::uuid[]) 
 			return 0, fmt.Errorf("write entries %d to %d: %w", start, start+len(batch), err)
 		}
 	}
-	state := fmt.Sprintf(`INSERT INTO %s (ltbase_schema_id, key_id, attributes_hash, built_at) VALUES ($1, $2, $3, $4)
-ON CONFLICT (ltbase_schema_id, key_id) DO UPDATE SET attributes_hash = EXCLUDED.attributes_hash, built_at = EXCLUDED.built_at`,
+	state := fmt.Sprintf(`INSERT INTO %s (ltbase_schema_id, key_id, attributes_hash, storage_hash, built_at) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (ltbase_schema_id, key_id) DO UPDATE
+SET attributes_hash = EXCLUDED.attributes_hash, storage_hash = EXCLUDED.storage_hash, built_at = EXCLUDED.built_at`,
 		sanitizeIdentifier(uniquekey.StateTable(entityMain)))
-	if _, err := db.Exec(ctx, state, schemaID, spec.id, spec.hash, time.Now().UnixMilli()); err != nil {
+	if _, err := db.Exec(ctx, state, schemaID, spec.id, spec.hash, spec.storage, time.Now().UnixMilli()); err != nil {
 		return 0, fmt.Errorf("record the key as built: %w", err)
 	}
 	return len(values), nil

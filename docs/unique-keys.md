@@ -92,7 +92,11 @@ keys:
   to `ltbase_created_at` compares the creation stamp Forma assigns, not a
   value the write sets. Every row of one atomic `BatchCreate` gets the same
   stamp, so two rows of that batch that agree on the key's other attributes
-  conflict.
+  conflict. An attribute under a relation root (`contactSnapshot.email`,
+  beneath an `x-relation` property) is refused too: writes never store it and
+  reads derive it from the parent, so the key would hold nothing. That one is
+  caught when the server, `init-db` or `build-unique-keys` resolves the keys,
+  not when the schema loads, and refuses the same way.
 
 Other keys, such as `partial` or `where`, are refused rather than ignored. A
 declaration that breaks a rule fails the schema load, so the server refuses
@@ -160,9 +164,10 @@ without waiting, so a release that started after the insert and has not
 committed yet still counts: the creator returns `ErrUniqueConflict`, as if it
 had run just before the release, and can take the value when run again.
 
-Writes of keyed rows pin `READ COMMITTED`, whatever the session's default
+Writes that take values pin `READ COMMITTED`, whatever the session's default
 isolation level. Under a snapshot level a loser would see `40001` for an entry
-committed after its snapshot instead of `ErrUniqueConflict`.
+committed after its snapshot instead of `ErrUniqueConflict`. A delete without
+preconditions only releases values and keeps the session's level (#645).
 
 What each surface does:
 
@@ -198,10 +203,11 @@ What each surface does:
 
 One operation's statement takes its values in sorted order, so two
 operations never wait on each other over values they both take in one
-statement. A transaction that takes values over several statements can: the
-rows of one `Tx.UpdateWhere` take their values row by row, and so do the
-operations of one Tx. Two transactions that take overlapping values in
-opposite orders can deadlock. PostgreSQL then aborts one of them, which
+statement. Values taken over several statements can: an operation takes a
+value in a further statement when its holder released it while the first
+insert ran, the rows of one `Tx.UpdateWhere` take their values row by row,
+and so do the operations of one Tx. Two transactions that take overlapping
+values in opposite orders can deadlock. PostgreSQL then aborts one of them, which
 receives `ErrRetryableConflict` rather than `ErrUniqueConflict`; running it
 again settles the outcome.
 
@@ -231,9 +237,11 @@ is declared, to refuse a key still built after its declaration was removed.
   `(ltbase_schema_id, key_id, key_value)` is the uniqueness itself: an
   ordinary table, not a partial unique index. A secondary index on
   `(ltbase_schema_id, ltbase_row_id)` finds a row's entries.
-- `<entity_main>_unique_key_state` records each built key with a hash of its
-  attribute names, their value types and the version of the canonical
-  encoding.
+- `<entity_main>_unique_key_state` records each built key with two hashes:
+  one of its attribute names, their value types and the version of the
+  canonical encoding, which together decide every key value; and one of
+  where each attribute is stored, its bound column and the column's encoding
+  or its EAV attribute id, which decides where a write reads the value.
 
 PostgreSQL truncates identifiers longer than 63 bytes, which would make the
 two tables of a long `entity_main` name one table. A derived name (either
@@ -260,12 +268,16 @@ message names the remedy:
 unique key check failed: unique keys are not built; stop every writer, then: unique key idempotency of schema event_record is not built: run forma-tools build-unique-keys --schema event_record --key idempotency
 ```
 
-The check refuses three states:
+The check refuses four states:
 
 - a declared key that is not built (`is not built: run forma-tools build-unique-keys --schema S --key K`);
 - a key built for another attribute list under the same id (`was built for
   another attribute list: a key's attributes cannot change under its id;
   declare the new attribute list under a new id`);
+- a key built while one of its attributes was stored elsewhere (`was built
+  while its attributes were stored elsewhere (a column binding or attribute id
+  changed): run forma-tools build-unique-keys --schema S --key K`; see
+  [Moving a key attribute](#moving-a-key-attribute));
 - a key still built that the schema no longer declares (`no longer declares a
   unique key that is still built (key id N): run forma-tools build-unique-keys
   --schema S`).
@@ -312,9 +324,11 @@ The build first unbuilds each key it builds: it deletes the key's state, then
 its entries. It then scans the schema's live rows in pages of 1,000, writes
 the entries in batches of 1,000, and records the key's state last. Each statement is its own transaction, which keeps every transaction
 under Aurora DSQL's 3,000-row limit. A build that fails or is interrupted at
-any point leaves the keys it was building unbuilt, and the server refuses to
-start until a build succeeds. A key already built for its attributes is
-reported as `already built` and left alone, so a re-run is safe.
+any point leaves unbuilt every key whose state it had not yet recorded, and
+the server refuses to start until a build succeeds; a key whose state it
+recorded is built, with all its entries. A key already built for its attributes and
+their storage is reported as `already built` and left alone, so a re-run is
+safe. A key built while its attributes were stored elsewhere is built again.
 
 **Rebuilding.** `--rebuild` builds a key again although it is built for its
 attributes: it clears the key's entries and state, scans the rows and writes
@@ -361,6 +375,34 @@ scanning rows. The server refuses to start until the drop runs. A key that
 stays built after its declaration goes away stops being maintained; if the
 same id were declared again over the same attributes, it would look built over
 stale entries.
+
+### Moving a key attribute
+
+A key value is the canonical form of what a read of the row answers, not of
+the column it came from. Moving an attribute of a key to another column, to
+another encoding, into or out of EAV, or to another attribute id is a data
+migration ([Schema Consistency Migration Guide](schema-consistency-migration.md)):
+the attributes file changes, and the stored values must move with it. The
+built entries are only as good as that migration. If it skips rows, or
+changes values on the way (a fraction rounded into a `bigint` column, an
+instant cut to whole seconds by `iso8601`), rows can come to share a value no
+entry records, and a new row can take it too.
+
+So the state table records where each attribute was stored when the key was
+built, and a server whose attributes file stores one elsewhere refuses to
+start until the key is built again:
+
+1. Stop every writer of the schema.
+2. Migrate the stored values, and deploy the attributes file with the new
+   binding.
+3. Run `forma-tools build-unique-keys --schema S`. It builds every key whose
+   storage moved again from the rows as now stored, and fails on duplicates
+   (above) if the migration made rows share a value.
+4. Start the writers.
+
+Within one process, two managers can share a repository only when their
+registries declare the same keys and store every key attribute in the same
+place; any other manager is refused when it is built.
 
 ## Aurora DSQL
 

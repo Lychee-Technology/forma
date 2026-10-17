@@ -157,8 +157,10 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		return nil, fmt.Errorf("failed to open the federated read surface: %w", err)
 	}
 
+	// The repository enforces the unique keys the check above found built,
+	// for as long as it lives (#651).
 	repository, federatedEngine := newRepositoryAndEngine(
-		pool, metadataCache, effectiveConfig, duckClient, parquetSource)
+		pool, metadataCache, effectiveConfig, duckClient, parquetSource, internal.WithUniqueKeyCatalog(guards.uniqueKeys))
 	// The DuckDB client has no owner other than the manager being built:
 	// register it so EntityManager.Close releases it (#302). Guarded on nil
 	// because a typed-nil *DuckDBClient boxed into io.Closer would defeat
@@ -167,7 +169,8 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// must strip with exactly the declarations the guard just approved (#318
 	// review). Not nil-guarded, because buildSchemaGuards returns a non-nil index
 	// on its success path, and WithRelationIndex ignores a nil anyway. The
-	// unique keys are the ones the check above found built, for the same reason.
+	// unique keys are the repository's, for the same reason; the manager
+	// checks them against nothing else.
 	managerOpts := []internal.EntityManagerOption{
 		internal.WithRelationIndex(guards.relations), internal.WithUniqueKeys(guards.uniqueKeys),
 	}
@@ -221,13 +224,15 @@ func requireCoreTables(cfg *forma.Config, tables []string) error {
 
 // newRepositoryAndEngine builds the OLTP repository and the federated engine
 // as a pair, because they share one plan cache (#142): its lifetime is the
-// manager's, so compiled plans survive across requests.
+// manager's, so compiled plans survive across requests. repoOpts are the
+// repository's other construction-time collaborators.
 func newRepositoryAndEngine(
 	pool *pgxpool.Pool, metadataCache *schemameta.MetadataCache, cfg *forma.Config,
-	duckClient *federated.DuckDBClient, parquetSource federated.ParquetSource,
+	duckClient *federated.DuckDBClient, parquetSource federated.ParquetSource, repoOpts ...internal.RepoOption,
 ) (*internal.DBPersistentRecordRepository, *federated.DBFederatedQueryEngine) {
 	planCache := queryplan.NewCache(4096)
-	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache, internal.WithPlanCache(planCache))
+	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache,
+		append([]internal.RepoOption{internal.WithPlanCache(planCache)}, repoOpts...)...)
 	// zap.L() is the same global the rest of this package logs through. It
 	// carries two log-only signals. The federated validator's #256
 	// stamp/footer cross-check, whose only surface is a log line: the read it

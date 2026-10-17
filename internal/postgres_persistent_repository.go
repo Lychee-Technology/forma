@@ -33,8 +33,10 @@ type DBPersistentRecordRepository struct {
 	// construction (the benchmark and production reuse lifecycle).
 	planCache *queryplan.Cache
 	// uniqueKeys is the schemas' unique keys (#651), which every write core
-	// enforces. NewEntityManager installs it from the manager's registry;
-	// nil enforces none.
+	// enforces; nil enforces none. It is set once, by WithUniqueKeyCatalog
+	// when the repository is built, and never replaced, so the write cores
+	// read it without synchronization and a Tx's reader, a copy of the
+	// repository, shares it.
 	uniqueKeys *UniqueKeyCatalog
 }
 
@@ -44,6 +46,14 @@ type RepoOption func(*DBPersistentRecordRepository)
 // WithPlanCache injects a shared plan cache (#142).
 func WithPlanCache(c *queryplan.Cache) RepoOption {
 	return func(r *DBPersistentRecordRepository) { r.planCache = c }
+}
+
+// WithUniqueKeyCatalog makes the repository enforce catalog's unique keys
+// (#651) for as long as it lives. NewEntityManager refuses a repository whose
+// keys differ from those of the manager's registry, in declaration or in
+// where an attribute is stored.
+func WithUniqueKeyCatalog(catalog *UniqueKeyCatalog) RepoOption {
+	return func(r *DBPersistentRecordRepository) { r.uniqueKeys = catalog }
 }
 
 func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *schemameta.MetadataCache, opts ...RepoOption) *DBPersistentRecordRepository {

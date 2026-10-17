@@ -29,7 +29,7 @@ func withBuildBatchSize(t *testing.T, n int) {
 // preKeyManager writes as a server whose schemas declare no key.
 func (e *txEnv) preKeyManager(t *testing.T) forma.EntityManager {
 	t.Helper()
-	return newUniqueKeyManager(t, e.integrationEnv, WithUniqueKeys(&UniqueKeyCatalog{}))
+	return newUniqueKeyManagerEnforcing(t, e.integrationEnv, &UniqueKeyCatalog{})
 }
 
 func preKeyCreate(t *testing.T, env *txEnv, em forma.EntityManager, schema string, data map[string]any) uuid.UUID {
@@ -39,8 +39,8 @@ func preKeyCreate(t *testing.T, env *txEnv, em forma.EntityManager, schema strin
 	return record.RowID
 }
 
-// stateRows reads the state table as (schema, key) -> attributes hash.
-func (e *txEnv) stateRows(t *testing.T) map[[2]int16]string {
+// stateRows reads the state table by (schema, key).
+func (e *txEnv) stateRows(t *testing.T) map[[2]int16]builtKey {
 	t.Helper()
 	built, err := readUniqueKeyState(e.ctx, e.postgresPool, e.tables.EntityMain)
 	require.NoError(t, err)
@@ -79,7 +79,8 @@ func TestBuildUniqueKeysPopulatesTheKeyTableAndState(t *testing.T) {
 
 	state := env.stateRows(t)
 	for _, spec := range catalog.keysOf(ukSchemaIDs[ukAccount]) {
-		assert.Equal(t, spec.hash, state[[2]int16{ukSchemaIDs[ukAccount], spec.id}], "key %s is built for its attributes", spec.name)
+		assert.Equal(t, builtKey{attributes: spec.hash, storage: spec.storage}, state[[2]int16{ukSchemaIDs[ukAccount], spec.id}],
+			"key %s is built for its attributes and their storage", spec.name)
 	}
 	_, pending, err := catalog.BuildUniqueKeysOfEmptySchemas(env.ctx, env.postgresPool, env.tables)
 	require.NoError(t, err)
@@ -180,12 +181,26 @@ func TestCheckUniqueKeysBuiltRefusesUnbuiltChangedAndUndeclaredKeys(t *testing.T
 	_, err = catalog.BuildUniqueKeys(env.ctx, env.postgresPool, env.tables, UniqueKeyBuildRequest{Schema: ukAccount, Key: "handle"})
 	require.NoError(t, err)
 
+	// A key built while its attributes were stored elsewhere is unbuilt, not
+	// changed: a plain build derives its entries again.
+	_, err = env.postgresPool.Exec(env.ctx, fmt.Sprintf("UPDATE %s SET storage_hash = 'other' WHERE ltbase_schema_id = $1 AND key_id = $2",
+		stateTable), ukSchemaIDs[ukAccount], ukKeyHandle)
+	require.NoError(t, err)
+	err = check()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unique key handle of schema ukaccount was built while its attributes were stored elsewhere "+
+		"(a column binding or attribute id changed): run forma-tools build-unique-keys --schema ukaccount --key handle")
+	report, err := catalog.BuildUniqueKeys(env.ctx, env.postgresPool, env.tables, UniqueKeyBuildRequest{Schema: ukAccount, Key: "handle"})
+	require.NoError(t, err)
+	assert.Equal(t, []UniqueKeyBuildResult{{Schema: ukAccount, Key: "handle", Rebuilt: true}}, report.Keys)
+	require.NoError(t, check())
+
 	// A built key the schema no longer declares is refused until a build of
 	// the schema drops it; one of a schema the registry does not hold is not
 	// this registry's to judge.
 	keyTable := sanitizeIdentifier(uniquekey.KeyTable(env.tables.EntityMain))
 	for _, schemaID := range []int16{ukSchemaIDs[ukPlain], 999} {
-		_, err = env.postgresPool.Exec(env.ctx, fmt.Sprintf("INSERT INTO %s VALUES ($1, 9, 'h', 0)", stateTable), schemaID)
+		_, err = env.postgresPool.Exec(env.ctx, fmt.Sprintf("INSERT INTO %s VALUES ($1, 9, 'h', 's', 0)", stateTable), schemaID)
 		require.NoError(t, err)
 		_, err = env.postgresPool.Exec(env.ctx, fmt.Sprintf("INSERT INTO %s VALUES ($1, 9, 'v', $2)", keyTable), schemaID, uuid.New())
 		require.NoError(t, err)
@@ -194,7 +209,7 @@ func TestCheckUniqueKeysBuiltRefusesUnbuiltChangedAndUndeclaredKeys(t *testing.T
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "schema ukplain no longer declares a unique key that is still built (key id 9): run forma-tools build-unique-keys --schema ukplain")
 	assert.NotContains(t, err.Error(), "999")
-	report, err := catalog.BuildUniqueKeys(env.ctx, env.postgresPool, env.tables, UniqueKeyBuildRequest{Schema: ukPlain})
+	report, err = catalog.BuildUniqueKeys(env.ctx, env.postgresPool, env.tables, UniqueKeyBuildRequest{Schema: ukPlain})
 	require.NoError(t, err)
 	assert.Equal(t, []int16{9}, report.DroppedKeyIDs)
 	require.NoError(t, check())

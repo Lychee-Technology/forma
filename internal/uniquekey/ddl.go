@@ -105,12 +105,13 @@ const keyTableDDL = `CREATE TABLE IF NOT EXISTS %s (
 // keyRowIndexDDL serves a write's lookup of the entries one row holds.
 const keyRowIndexDDL = `CREATE INDEX IF NOT EXISTS %s ON %s (ltbase_schema_id, ltbase_row_id)`
 
-// stateTableDDL records each built key and the attribute list it was built
-// for.
+// stateTableDDL records each built key, the attribute list it was built for
+// and where those attributes were stored when it was built.
 const stateTableDDL = `CREATE TABLE IF NOT EXISTS %s (
 		ltbase_schema_id SMALLINT NOT NULL,
 		key_id           SMALLINT NOT NULL,
 		attributes_hash  TEXT     NOT NULL,
+		storage_hash     TEXT     NOT NULL,
 		built_at         BIGINT   NOT NULL,
 		PRIMARY KEY (ltbase_schema_id, key_id)
 	)`
@@ -153,6 +154,51 @@ func AttributesHash(attrs []Attribute) string {
 	fmt.Fprintf(&b, "encoding %s;", EncodingVersion)
 	for _, a := range attrs {
 		fmt.Fprintf(&b, "%d:%s%d:%s", len(a.Name), a.Name, len(a.ValueType), a.ValueType)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:])
+}
+
+// Storage is where the write path reads one key attribute's value: the
+// entity_main column the attribute is bound to and that column's encoding,
+// or, for an attribute stored in EAV, its attribute ID.
+type Storage struct {
+	Column      forma.MainColumn
+	Encoding    forma.MainColumnEncoding
+	AttributeID int16
+}
+
+// String names s for an error.
+func (s Storage) String() string {
+	if s.Column == "" {
+		return fmt.Sprintf("EAV attribute id %d", s.AttributeID)
+	}
+	return fmt.Sprintf("column %s (encoding %s)", s.Column, s.encoding())
+}
+
+// encoding is s's column encoding, with the default spelled out: a binding
+// that names no encoding reads its column exactly as one naming "default".
+func (s Storage) encoding() forma.MainColumnEncoding {
+	if s.Encoding == "" {
+		return forma.MainColumnEncodingDefault
+	}
+	return s.Encoding
+}
+
+// StorageHash identifies where a key's attributes, in order, are stored. A
+// key value encodes what a read of the row answers, not where the answer was
+// stored, so moving an attribute without moving its values unchanged leaves
+// built entries that no row's stored values produce any more. Such a key has
+// its attributes hash still and another storage hash; the startup check
+// treats it as unbuilt, and a build derives its entries again.
+func StorageHash(storage []Storage) string {
+	var b strings.Builder
+	for _, s := range storage {
+		if s.Column == "" {
+			fmt.Fprintf(&b, "eav %d;", s.AttributeID)
+			continue
+		}
+		fmt.Fprintf(&b, "column %d:%s%d:%s;", len(s.Column), s.Column, len(s.encoding()), s.encoding())
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])

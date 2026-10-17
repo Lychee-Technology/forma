@@ -90,6 +90,31 @@ func TestUniqueKeyTxRowLimitCountsEntries(t *testing.T) {
 	assert.Equal(t, int64(1+eav+1+2), created, "main row, EAV rows, change_log row and two key entries")
 }
 
+// A conflict whose undo fails answers the undo's failure alone. The failed
+// statement poisoned the Tx, and InTx promises that ErrUniqueConflict leaves
+// it usable, so an answer that matched both sent a caller who took the
+// conflict on into ErrTxAborted (audit of #682). Here the undo trips the row
+// limit: tenant_email's entry is row 1, its removal row 2.
+func TestUniqueKeyConflictWhoseUndoFailsAnswersTheFailure(t *testing.T) {
+	env := setupUniqueKeyEnv(t)
+	env.mustCreateAccount(t, "t1", "a@x", "h1")
+	err := env.inTx(func(ctx context.Context, tx forma.Tx) error {
+		_, err := tx.Create(ctx, ukCreateOp(ukAccount, uuid.Nil, ukAccountData("t1", "b@x", "h1")))
+		require.ErrorIs(t, err, forma.ErrInvalidInput)
+		assert.NotErrorIs(t, err, forma.ErrUniqueConflict, "the Tx is poisoned, so the conflict is not the answer")
+		published, ok := forma.ResolvePublicMessage(err)
+		require.True(t, ok)
+		assert.Contains(t, published, "more than its limit of 1 physical rows")
+		assert.Contains(t, err.Error(), "unique key handle", "the conflict stays in the operator text")
+		_, err = tx.Create(ctx, ukCreateOp(ukAccount, uuid.Nil, ukAccountData("t1", "c@x", "h3")))
+		require.ErrorIs(t, err, forma.ErrTxAborted)
+		return nil
+	}, forma.WithTxMaxPhysicalRows(1))
+	require.Error(t, err, "a poisoned Tx never commits")
+	assert.Len(t, env.keyEntries(t), 2)
+	env.assertKeyTableMatchesRows(t)
+}
+
 func ukHandleWhere(note string) *forma.MutateWhereRequest {
 	return &forma.MutateWhereRequest{SchemaName: ukAccount, Condition: &forma.KvCondition{Attr: "note", Value: "equals:" + note}}
 }

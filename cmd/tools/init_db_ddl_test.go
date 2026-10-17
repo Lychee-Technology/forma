@@ -151,6 +151,7 @@ func wantUniqueKeyTableDDL() []string {
 		ltbase_schema_id SMALLINT NOT NULL,
 		key_id           SMALLINT NOT NULL,
 		attributes_hash  TEXT     NOT NULL,
+		storage_hash     TEXT     NOT NULL,
 		built_at         BIGINT   NOT NULL,
 		PRIMARY KEY (ltbase_schema_id, key_id)
 	)`,
