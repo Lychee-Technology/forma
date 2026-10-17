@@ -26,6 +26,9 @@ type transactor struct {
 	// statementFault, set only by tests, is installed on every session's
 	// meter (see txMeter.fault).
 	statementFault func(sql string) error
+	// mutateHooks, set only by tests, is installed on every session (see
+	// mutateWhereHooks).
+	mutateHooks *mutateWhereHooks
 }
 
 var _ forma.Transactor = (*transactor)(nil)
@@ -171,13 +174,14 @@ func (t *transactor) newSession(ctx context.Context, pgTx pgx.Tx, limits forma.T
 	rows := newTxBoundRepository(t.repo, tx)
 	enrich := t.relation.boundTo(rows).enrichDataRecords
 	return &txSession{
-		ctx:    sessionCtx,
-		stop:   stop,
-		crud:   t.crud.boundTo(rows, enrich),
-		query:  t.query.boundTo(rows, enrich),
-		rows:   rows,
-		tx:     tx,
-		meter:  meter,
-		maxOps: limits.MaxOperations,
+		ctx:         sessionCtx,
+		stop:        stop,
+		crud:        t.crud.boundTo(rows, enrich),
+		query:       t.query.boundTo(rows, enrich),
+		rows:        rows,
+		tx:          tx,
+		mutateHooks: t.mutateHooks,
+		meter:       meter,
+		maxOps:      limits.MaxOperations,
 	}
 }

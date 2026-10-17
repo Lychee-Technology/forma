@@ -68,41 +68,48 @@ func validateConditionalDelete(req *forma.EntityOperation, cache forma.SchemaAtt
 // left to the renderer, which refuses them before the write sends any
 // statement. nil passes: no precondition.
 func validatePrecondition(cond forma.Condition, schemaName string, cache forma.SchemaAttributeCache) error {
+	return validateGuardCondition("precondition", cond, schemaName, cache)
+}
+
+// validateGuardCondition is validatePrecondition for any condition rendered
+// as a row guard; noun names it in the published message ("precondition",
+// or "condition" for a predicate mutation's, #652).
+func validateGuardCondition(noun string, cond forma.Condition, schemaName string, cache forma.SchemaAttributeCache) error {
 	if cond == nil {
 		return nil
 	}
 	switch c := cond.(type) {
 	case *forma.KvCondition:
 		if c == nil {
-			return forma.InvalidInputf("precondition holds a nil condition")
+			return forma.InvalidInputf("%s holds a nil condition", noun)
 		}
 		if _, ok := cache[c.Attr]; !ok {
-			return forma.InvalidInputf("precondition tests attribute '%s', which schema '%s' does not define; a precondition tests schema attributes only",
-				c.Attr, schemaName)
+			return forma.InvalidInputf("%s tests attribute '%s', which schema '%s' does not define; a %s tests schema attributes only",
+				noun, c.Attr, schemaName, noun)
 		}
 		if model.IsMainTableColumn(c.Attr) {
-			return forma.InvalidInputf("precondition tests attribute '%s' of schema '%s', whose name is also an entity_main column: the condition DSL reads that name as the column, not the attribute, so a precondition cannot test it",
-				c.Attr, schemaName)
+			return forma.InvalidInputf("%s tests attribute '%s' of schema '%s', whose name is also an entity_main column: the condition DSL reads that name as the column, not the attribute, so a %s cannot test it",
+				noun, c.Attr, schemaName, noun)
 		}
 		return nil
 	case *forma.CompositeCondition:
 		if c == nil {
-			return forma.InvalidInputf("precondition holds a nil condition")
+			return forma.InvalidInputf("%s holds a nil condition", noun)
 		}
 		if c.Logic != forma.LogicAnd && c.Logic != forma.LogicOr {
-			return forma.InvalidInputf("precondition composite has logic '%s'; expected '%s' or '%s'", c.Logic, forma.LogicAnd, forma.LogicOr)
+			return forma.InvalidInputf("%s composite has logic '%s'; expected '%s' or '%s'", noun, c.Logic, forma.LogicAnd, forma.LogicOr)
 		}
 		for i, child := range c.Conditions {
 			if child == nil {
-				return forma.InvalidInputf("precondition holds a nil condition")
+				return forma.InvalidInputf("%s holds a nil condition", noun)
 			}
-			if err := validatePrecondition(child, schemaName, cache); err != nil {
+			if err := validateGuardCondition(noun, child, schemaName, cache); err != nil {
 				return fmt.Errorf("%s condition %d: %w", c.Logic, i, err)
 			}
 		}
 		return nil
 	default:
-		return forma.InvalidInputf("precondition holds an unsupported condition type %T", cond)
+		return forma.InvalidInputf("%s holds an unsupported condition type %T", noun, cond)
 	}
 }
 

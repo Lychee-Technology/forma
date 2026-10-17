@@ -50,7 +50,12 @@ func (e *condPG) holdRowLock(t *testing.T, rowID uuid.UUID) (release func()) {
 
 // rowLockWaiters counts the transactions queued on rowID's row lock.
 func (e *condPG) rowLockWaiters(rowID uuid.UUID) int {
-	key := uint64(rowVersionLockKey(condSchemaID, rowID))
+	return e.rowLockWaitersOf(condSchemaID, rowID)
+}
+
+// rowLockWaitersOf is rowLockWaiters for a row of any schema.
+func (e *condPG) rowLockWaitersOf(schemaID int16, rowID uuid.UUID) int {
+	key := uint64(rowVersionLockKey(schemaID, rowID))
 	var n int
 	err := e.pool.QueryRow(e.ctx, `SELECT count(*) FROM pg_locks
 		WHERE locktype = 'advisory' AND NOT granted AND classid::bigint = $1 AND objid::bigint = $2 AND objsubid = 1`,

@@ -35,6 +35,12 @@ type condPG struct {
 // connection.
 func newCondPG(t *testing.T) *condPG {
 	t.Helper()
+	return newSchemaPG(t, condSchemaName, condSchemaID, condSchemaCache())
+}
+
+// newSchemaPG is newCondPG over any one schema.
+func newSchemaPG(t *testing.T, schemaName string, schemaID int16, cache forma.SchemaAttributeCache) *condPG {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	t.Cleanup(cancel)
 	testdb.Connect(t, ctx) // skips, or fails in CI, when PostgreSQL is absent
@@ -46,10 +52,9 @@ func newCondPG(t *testing.T) *condPG {
 	t.Cleanup(pool.Close)
 
 	tables := createTempPersistentTables(t, ctx, pool)
-	cache := condSchemaCache()
 	metadata := schemameta.NewMetadataCache()
-	require.NoError(t, metadata.RegisterSchema(condSchemaName, condSchemaID, cache))
-	registry := &stubSchemaRegistry{schemaID: condSchemaID, schemaName: condSchemaName, cache: cache}
+	require.NoError(t, metadata.RegisterSchema(schemaName, schemaID, cache))
+	registry := &stubSchemaRegistry{schemaID: schemaID, schemaName: schemaName, cache: cache}
 
 	config := createTestConfig()
 	config.Database.TableNames = forma.TableNames{EntityMain: tables.EntityMain, EAVData: tables.EAVData, ChangeLog: tables.ChangeLog}
@@ -89,6 +94,12 @@ func (e *condPG) matching(t *testing.T, cond forma.Condition) map[uuid.UUID]bool
 // snapshot is the row's stored state in all three tables, by direct SQL.
 func (e *condPG) snapshot(t *testing.T, rowID uuid.UUID) rowSnapshot {
 	t.Helper()
+	return e.snapshotOf(t, condSchemaID, rowID)
+}
+
+// snapshotOf is snapshot for a row of any schema.
+func (e *condPG) snapshotOf(t *testing.T, schemaID int16, rowID uuid.UUID) rowSnapshot {
+	t.Helper()
 	var s rowSnapshot
 	queries := []struct {
 		dest  *string
@@ -100,7 +111,7 @@ func (e *condPG) snapshot(t *testing.T, rowID uuid.UUID) rowSnapshot {
 		{&s.changeLog, e.tables.ChangeLog, "SELECT COALESCE(json_agg(c ORDER BY flushed_at, changed_at)::text, '[]') FROM %s c WHERE schema_id = $1 AND row_id = $2"},
 	}
 	for _, q := range queries {
-		require.NoError(t, e.pool.QueryRow(e.ctx, fmt.Sprintf(q.sql, sanitizeIdentifier(q.table)), condSchemaID, rowID).Scan(q.dest))
+		require.NoError(t, e.pool.QueryRow(e.ctx, fmt.Sprintf(q.sql, sanitizeIdentifier(q.table)), schemaID, rowID).Scan(q.dest))
 	}
 	return s
 }
@@ -109,12 +120,18 @@ func (e *condPG) snapshot(t *testing.T, rowID uuid.UUID) rowSnapshot {
 // entries' changed_at values.
 func (e *condPG) hotStamp(t *testing.T, rowID uuid.UUID) (int64, []int64) {
 	t.Helper()
+	return e.hotStampOf(t, condSchemaID, rowID)
+}
+
+// hotStampOf is hotStamp for a row of any schema.
+func (e *condPG) hotStampOf(t *testing.T, schemaID int16, rowID uuid.UUID) (int64, []int64) {
+	t.Helper()
 	var updatedAt int64
 	require.NoError(t, e.pool.QueryRow(e.ctx, fmt.Sprintf("SELECT ltbase_updated_at FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
-		sanitizeIdentifier(e.tables.EntityMain)), condSchemaID, rowID).Scan(&updatedAt))
+		sanitizeIdentifier(e.tables.EntityMain)), schemaID, rowID).Scan(&updatedAt))
 	var hot []int64
 	require.NoError(t, e.pool.QueryRow(e.ctx, fmt.Sprintf("SELECT COALESCE(array_agg(changed_at), '{}') FROM %s WHERE schema_id = $1 AND row_id = $2 AND flushed_at = 0",
-		sanitizeIdentifier(e.tables.ChangeLog)), condSchemaID, rowID).Scan(&hot))
+		sanitizeIdentifier(e.tables.ChangeLog)), schemaID, rowID).Scan(&hot))
 	return updatedAt, hot
 }
 
