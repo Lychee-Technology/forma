@@ -109,6 +109,15 @@ type Tx interface {
 	// UpdateWhere's.
 	DeleteWhere(ctx context.Context, req *MutateWhereRequest) (*MutateWhereResult, error)
 
+	// Upsert creates req.Create, or, when a live row holds req.Target,
+	// locks that row as AssertRow does and applies req.Action to it instead
+	// (see UpsertRequest). It answers the outcome and the row as stored.
+	// Its expected failures leave the Tx usable: ErrPreconditionFailed, an
+	// ErrUniqueConflict on a key or row ID other than the target, and an
+	// ErrInvalidInput refusal of the request. It counts as one operation,
+	// whichever branch runs.
+	Upsert(ctx context.Context, req *UpsertRequest) (*UpsertResult, error)
+
 	txseal.Sealed
 }
 

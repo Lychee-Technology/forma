@@ -52,14 +52,32 @@ func (p txStatementPool) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
 
 var _ model.PersistentRecordRepository = (*txBoundRepository)(nil)
 
+// uniqueKeyOwner answers the row that holds value of key keyID of schemaID,
+// as the transaction sees it.
+func (b *txBoundRepository) uniqueKeyOwner(ctx context.Context, tables model.StorageTables, schemaID, keyID int16, value string) (uuid.UUID, bool, error) {
+	owner, found, err := uniqueKeyOwner(ctx, b.tx, tables, schemaID, keyID, value)
+	if err != nil {
+		return uuid.Nil, false, classifyStatementError(err)
+	}
+	return owner, found, nil
+}
+
 func (b *txBoundRepository) InsertPersistentRecord(ctx context.Context, tables model.StorageTables, record *model.PersistentRecord) error {
+	return b.insertPersistentRecordAt(ctx, tables, record, b.repo.nowMillis())
+}
+
+// insertPersistentRecordAt is InsertPersistentRecord stamped with now, a read
+// of the repository's clock the caller made earlier: Tx.Upsert looks its
+// target up before it inserts, and a key over ltbase_created_at must be
+// looked up and reserved under the one stamp the row is stored with (#651).
+func (b *txBoundRepository) insertPersistentRecordAt(ctx context.Context, tables model.StorageTables, record *model.PersistentRecord, now int64) error {
 	if record == nil {
 		return fmt.Errorf("record cannot be nil")
 	}
 	if err := validateWriteTables(tables); err != nil {
 		return fmt.Errorf("validate tables for insert: %w", err)
 	}
-	return classifyStatementError(b.repo.insertRecordInTx(ctx, b.tx, tables, record, b.repo.nowMillis()))
+	return classifyStatementError(b.repo.insertRecordInTx(ctx, b.tx, tables, record, now))
 }
 
 func (b *txBoundRepository) MergePersistentRecord(

@@ -32,13 +32,13 @@ func (e *taskPG) setStatus(t *testing.T, rowID uuid.UUID, status string) {
 func (e *taskPG) onceAfterCandidates(t *testing.T, change func(candidates []uuid.UUID)) {
 	t.Helper()
 	ran := false
-	e.txr.mutateHooks = &mutateWhereHooks{afterCandidates: func(candidates []uuid.UUID) {
+	e.txr.testHooks = &txTestHooks{afterCandidates: func(candidates []uuid.UUID) {
 		if !ran {
 			ran = true
 			change(candidates)
 		}
 	}}
-	t.Cleanup(func() { e.txr.mutateHooks = nil })
+	t.Cleanup(func() { e.txr.testHooks = nil })
 }
 
 // A candidate another transaction changes and commits between the candidate

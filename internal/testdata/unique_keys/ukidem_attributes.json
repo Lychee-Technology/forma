@@ -1,0 +1,8 @@
+{
+  "counter": { "attributeID": 6, "valueType": "integer" },
+  "external_ref": { "attributeID": 5, "valueType": "text" },
+  "idempotency_key": { "attributeID": 2, "valueType": "text" },
+  "instance_id": { "attributeID": 1, "valueType": "text", "column_binding": { "col_name": "text_01" } },
+  "request_hash": { "attributeID": 4, "valueType": "text" },
+  "status": { "attributeID": 3, "valueType": "text" }
+}

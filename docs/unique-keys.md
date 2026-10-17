@@ -11,8 +11,8 @@ Both are enforced on PostgreSQL atomically with the write. A violation is
 the operation leaves nothing written. Callers no longer need a check-then-act
 read to keep an identity unique.
 
-`Tx.Upsert` (create, or resolve a conflict on a named target) is the second
-half of #651. It is not available yet.
+[`Tx.Upsert`](#upsert) creates a row, or resolves a conflict on its row ID or
+a unique key instead of failing.
 
 ## Caller-supplied row IDs
 
@@ -254,6 +254,92 @@ characters of its SHA-256, then the whole suffix. For a 60-byte
 Both tables are derived state. They are not in `change_log`, are never
 flushed to S3, and DuckDB never reads them.
 
+## Upsert
+
+`Tx.Upsert` creates `req.Create`, or, when a live row already holds the
+request's **conflict target**, resolves the conflict by `req.Action` instead of
+failing:
+
+```go
+res, err := tx.Upsert(ctx, &forma.UpsertRequest{
+	Create: forma.EntityOperation{
+		EntityIdentifier: forma.EntityIdentifier{SchemaName: "idempotency_record"},
+		Data: map[string]any{"instance_id": id, "idempotency_key": key, "status": "running", "request_hash": h},
+	},
+	Target:        forma.ConflictTarget{Key: "idempotency"},
+	Action:        forma.UpsertUpdate,
+	Preconditions: &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: []forma.Condition{
+		&forma.KvCondition{Attr: "status", Value: "equals:failed"},
+		&forma.KvCondition{Attr: "request_hash", Value: "equals:" + h},
+	}},
+	Updates: map[string]any{"status": "running"},
+})
+```
+
+The target is exactly one of:
+
+- `Target.RowID`: the create's row ID, which must then be set;
+- `Target.Key`: a unique key the schema declares. `Create.Data` must set every
+  attribute of that key, since a create without one is not subject to it. An
+  attribute bound to `ltbase_created_at` is the exception: Forma stamps it,
+  whatever `Create.Data` says. The upsert reads that stamp once, before its
+  lookup, and stores the row under it, so the target is the value `Create`
+  would reserve, and only a row created with that same stamp holds it.
+
+What it answers:
+
+| Outcome | When | `Record` |
+| --- | --- | --- |
+| `created` | No live row holds the target; the create wrote a row. | the created row |
+| `existing` | A row holds the target, and `Action` is `do_nothing`. | that row as stored |
+| `updated` | A row holds the target, `Action` is `update`, and `Preconditions` (optional) hold on it. `Updates` and `UpdateOps` are applied with `Update`'s rules ([Conditional Writes](conditional-writes.md)). | the row after the update |
+| `ErrPreconditionFailed` | As for `updated`, but the preconditions fail on the row. Nothing is written. | — |
+| `ErrUniqueConflict` | The target is free, but the create conflicts on another key, or on its row ID when the target is a key. Nothing is written. | — |
+
+None of these poison the Tx. `Record` is the storage round-trip, as `Update`
+answers a row, without relation enrichment, for every outcome.
+
+A key target is looked up, its holder locked, and the holder checked again
+under the lock; with no holder the create runs. A round repeats when another
+transaction moves, deletes, takes or releases the value in between. After 4
+rounds the upsert answers `ErrRetryableConflict`. It wrote nothing, but like
+every `ErrRetryableConflict` it poisons the Tx, and a re-run of the
+transaction settles against whatever then holds the value.
+
+A malformed request is `ErrInvalidInput`,
+refused before any SQL, so it does not poison it either: no target or two,
+`Target.RowID` without `Create.RowID`, an undeclared key, a `Create` that
+`Create` would refuse, a `Create.Data` missing an attribute of the target key,
+an unknown `Action`, `Preconditions`, `Updates` or `UpdateOps` with
+`do_nothing`, `update` with neither `Updates` nor `UpdateOps`, update
+operators that `Update` would refuse, or a precondition operand that does not
+parse, whether or not a row holds the target. An `ErrInvalidInput` found only on the
+existing row, after it was locked (an `Increment` of an attribute the row
+lacks, or `Updates` the merged document fails validation on), poisons the Tx,
+as it does for `Tx.Update`.
+
+The row that holds the target is locked as `AssertRow` locks it before the
+action runs, so with `do_nothing` no other transaction can change or delete
+it until the Tx ends, and with `update` the preconditions are judged on the
+row the update writes. Concurrent upserts of one target settle like
+concurrent creates: one creates the row, and each other one waits for it,
+then answers `existing` or `updated` against it. An `Upsert` counts as one
+operation against the Tx's limit, whichever branch runs.
+
+A row the lookup found that no longer held the value once its lock was
+granted (deleted, or its key moved away) stays locked until the Tx ends, as
+every transaction-scoped lock does, though the upsert answers on another
+row. Writers of that row wait for the Tx.
+
+Two races can deadlock. An upsert whose create lost to another creator still
+holds, deleted but uncommitted, the entries of its create's other keys while it
+locks the winner's row. A transaction that holds that row's lock and then takes
+one of those values waits for the upsert, which waits for it. And a row kept
+locked after it stopped holding the value, as above, can be the row another
+transaction needs while the upsert's create waits on that transaction.
+PostgreSQL aborts one of them with `ErrRetryableConflict` (see
+[Deadlocks](#deadlocks)).
+
 ## Building a key
 
 Every writer whose schema files declare a key maintains it from the moment
@@ -422,6 +508,12 @@ saw the committed entry, or `ErrRetryableConflict`, on an OCC abort.** Forma
 does not retry. A caller that retries an `ErrRetryableConflict` then receives
 `ErrUniqueConflict`. Tests that assert `ErrUniqueConflict` for every loser
 carry the `_PostgresOnly` suffix.
+
+`Tx.Upsert` follows the same contract. Concurrent upserts of one target
+commit exactly one `created`; each other one answers `existing` or `updated`
+when it sees the committed row, or `ErrRetryableConflict` on an OCC abort, and
+a re-run of its `fn` then resolves against the row. The tests asserting that
+every loser resolves without an error are `_PostgresOnly`.
 
 Every entry a write inserts or deletes is a modified row of its transaction,
 counted with the entity's main, EAV and `change_log` rows against DSQL's
