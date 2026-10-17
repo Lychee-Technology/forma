@@ -41,12 +41,14 @@ func TestEngineShapedSoak(t *testing.T) {
 			require.NoError(t, e.result(t, relays))
 
 			s.requireConsistent(t, run)
+			require.NotZero(t, s.advances(), "an advance committed")
 			t.Logf("%d steps advanced, %d fenced, %d lost a race (ErrPreconditionFailed); %d ErrRetryableConflict in steps, %d in relays",
 				s.advances(), s.fences(), s.lost, s.retryable, run.retryable)
 			t.Run("mechanism: no ErrRetryableConflict", func(t *testing.T) {
 				requirePostgresMechanisms(t)
 				require.Zero(t, s.retryable, "steps")
 				require.Zero(t, run.retryable, "relays")
+				s.requireEveryInstanceAdvanced(t)
 			})
 		})
 		if !passed {

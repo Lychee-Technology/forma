@@ -73,7 +73,7 @@ Other rules:
 
 `Tx.Create`, `Tx.Update` and `Tx.Delete` take the same `*EntityOperation` as
 `EntityManager` and run the manager's own service code against the
-transaction. Validation, computed-field stripping, the per-row advisory lock,
+transaction. Validation, computed-field stripping, the per-row write lock,
 `Update`'s merge semantics and strict-update setting, version stamping and the
 `change_log` write are the same code path, not a copy. A test compares the
 rows the two paths store and finds them identical apart from row IDs and time
@@ -85,9 +85,12 @@ Inside one transaction:
   onto the first.
 - Repeated writes to one row stamp strictly increasing versions and leave one
   hot `change_log` entry carrying the last stamp.
-- The per-row advisory lock is held until commit or rollback. Another writer
-  of the same row, inside or outside a Tx, waits for it and then merges onto
-  the committed result.
+- The per-row write lock is held until commit or rollback. On PostgreSQL it
+  is an advisory lock: another writer of the same row, inside or outside a
+  Tx, waits for it and then merges onto the committed result. On the
+  `aurora-dsql` engine it is a write of the row's guard row: the other writer
+  does not wait, and one of the two gets `ErrRetryableConflict`
+  ([Aurora DSQL](aurora-dsql.md)).
 - No other connection sees any write until commit; then all are visible
   together.
 
@@ -201,18 +204,18 @@ with one that asserts B and updates A, deadlocks exactly as two crossed
 writers do, and PostgreSQL ends one with `ErrRetryableConflict`. The
 consistent-order advice above applies to assertions too.
 
-On Aurora DSQL the fence is specified, not verified (#633). `FOR UPDATE` there
-takes no lock but registers the row for conflict detection at commit, so an
-asserter whose row another transaction changed and committed after its
-snapshot fails at COMMIT with `40001`, which is `ErrRetryableConflict`. The
-precondition reads the snapshot, so the second interleaving above may end as
-`ErrRetryableConflict` instead of `ErrPreconditionFailed`. Both outcomes
-satisfy the contract. The DSQL premise is that every Forma write modifies the
-row's `entity_main` row: `Create` inserts it, `Update` rewrites it even when
-only EAV attributes change (it stamps `ltbase_updated_at`), and `Delete`
-removes it. A test pins this. Whether two DSQL asserters of one row conflict
-with each other is not documented, so the two-asserters outcome is promised
-for PostgreSQL only.
+On the `aurora-dsql` engine (#633, [Aurora DSQL](aurora-dsql.md)) the lock
+is a write of the row's guard row, and the read takes no row lock. CI runs
+this on PostgreSQL emulating DSQL; it has not yet run on a cluster. Every
+writer of the row writes the same guard row, so an asserter whose row another
+transaction changed and committed after its snapshot fails with `40001`,
+which is `ErrRetryableConflict`. The precondition reads the snapshot, so the
+second and third interleavings above may end as `ErrRetryableConflict`
+instead of `ErrPreconditionFailed`. Both outcomes satisfy the contract. Two
+asserters of one row both write its guard row, so on this engine one of them
+gets `ErrRetryableConflict` instead of both committing. The guard row exists
+whether or not the entity row does, so an assertion that a row is missing
+conflicts with a concurrent create of that row ID.
 
 ## Predicate mutation: `UpdateWhere` and `DeleteWhere`
 
@@ -302,15 +305,17 @@ Each affected row counts as one operation against `WithTxMaxOperations` (a
 call that affects no rows still counts as one). Its physical rows count
 against `WithTxMaxPhysicalRows`. The physical-row limit usually binds first.
 An updated entity modifies its main row, its old and new EAV rows and its
-`change_log` row, so the default 3,000 admits far fewer than 1,000 updated
-entities of any schema with EAV attributes. A breach of either limit poisons
+`change_log` row, and on the `aurora-dsql` engine its guard row, so the
+default 3,000 admits far fewer than 1,000 updated entities of any schema with
+EAV attributes. A breach of either limit poisons
 the Tx.
 
-On Aurora DSQL the predicate mutation is specified, not verified (#633). There
-the candidate select and the re-check both read the transaction's snapshot,
-and the dropping in step 3 does not happen. Instead, a concurrent transaction
-that commits a change to a candidate after the snapshot makes this
-transaction's COMMIT fail with `40001`, which is `ErrRetryableConflict`. So on
+On the `aurora-dsql` engine (#633, [Aurora DSQL](aurora-dsql.md)) the lock in
+step 3 writes each candidate's guard row, the candidate select and the
+re-check both read the transaction's snapshot, and the dropping does not
+happen. Instead, a concurrent transaction that commits a change to a
+candidate after the snapshot wrote the same guard row, so this transaction
+fails with `40001`, which is `ErrRetryableConflict`. So on
 DSQL a result never includes a row that a committed concurrent writer changed
 after the transaction's snapshot: the Tx either commits with the result as
 returned, or fails. On PostgreSQL such a row is judged again under its lock,
@@ -393,8 +398,9 @@ declare them, and a `Delete` would need an extra query to count its EAV rows.
 The check after the statement covers every statement a Tx sends without that,
 and gives the same rollback guarantee (decided in the review of #673).
 
-The 3,000 default matches Aurora DSQL's documented per-transaction limit, so a
-Tx that fits on PostgreSQL also fits there.
+The 3,000 default matches Aurora DSQL's documented per-transaction limit. On
+the `aurora-dsql` engine the meter also counts each guard row a statement
+writes, so a Tx the meter admits stays within DSQL's limit.
 
 The timeout is a context deadline over the whole call. When it passes, the
 running statement is cancelled and `InTx` rolls back with
@@ -421,10 +427,10 @@ fix. The general rules are in [Error Handling](error-handling.md#retry-guidance)
   writes reach the lakehouse through CDC like any other write.
   `CrossSchemaSearch` and shared (`FOR SHARE`) locks are not offered inside a
   Tx.
-- **DSQL: specified, not verified (#633).** On Aurora DSQL there are no
-  advisory locks and the isolation is fixed at REPEATABLE READ with optimistic
-  concurrency. A conflicting writer would abort with `40001` at statement or
-  commit time instead of waiting and merging. Forma surfaces that as
-  `ErrRetryableConflict`, and the retry rule above is unchanged. The locking
-  seam that would replace the advisory lock is #633's work and has not been
-  run against DSQL.
+- **Aurora DSQL.** On the `aurora-dsql` engine (#633) the per-row lock is a
+  write of the row's guard row, and the isolation is DSQL's fixed REPEATABLE
+  READ. A conflicting writer aborts with `40001` instead of waiting and
+  merging. Forma surfaces that as `ErrRetryableConflict`, and the retry rule
+  above is unchanged. CI runs the engine on PostgreSQL emulating DSQL; it has
+  not yet run on a cluster. [Aurora DSQL](aurora-dsql.md) lists what a caller
+  sees differently.

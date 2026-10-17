@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/testdb"
 	"github.com/lychee-technology/forma/internal/uniquekey"
@@ -259,6 +260,10 @@ func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool
 		_, err = pool.Exec(ctx, stmt)
 		require.NoError(t, err)
 	}
+	// The row-guard table (#633), which only the aurora-dsql engine writes.
+	guardTable := rowguard.Table(entityTable)
+	_, err = pool.Exec(ctx, rowguard.Statement(sanitizeIdentifier(guardTable)))
+	require.NoError(t, err)
 
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -268,6 +273,7 @@ func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool
 		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(changeLogTable)))
 		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(keyTable)))
 		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(stateTable)))
+		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(guardTable)))
 	})
 
 	return model.StorageTables{

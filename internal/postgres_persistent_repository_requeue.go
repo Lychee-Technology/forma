@@ -48,16 +48,17 @@ func (r *DBPersistentRecordRepository) RequeueForFlush(ctx context.Context, tabl
 		return fmt.Errorf("requeue row %s: change log table name is required: a requeue is a change_log entry", rowID)
 	}
 
-	// READ COMMITTED, as in MergePersistentRecord: the version read below
-	// must see the commit of whichever writer held the lock before us.
-	return r.inWriteTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+	// READ COMMITTED on PostgreSQL, as in MergePersistentRecord: the version
+	// read below must see the commit of whichever writer held the lock before
+	// us.
+	return r.inWriteTx(ctx, r.locks.writeTxOptions(true), func(tx pgx.Tx) error {
 		return r.requeueInTx(ctx, tx, tables, schemaID, rowID)
 	})
 }
 
 // requeueInTx is RequeueForFlush's body, run on tx.
 func (r *DBPersistentRecordRepository) requeueInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, schemaID int16, rowID uuid.UUID) error {
-	if err := lockRowVersion(ctx, tx, schemaID, rowID); err != nil {
+	if err := r.locks.lockRow(ctx, tx, tables, schemaID, rowID); err != nil {
 		return fmt.Errorf("lock row version for requeue: %w", err)
 	}
 

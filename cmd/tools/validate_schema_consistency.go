@@ -20,6 +20,7 @@ var runValidateSchemaConsistencyOutFn = runValidateSchemaConsistencyOut
 
 type schemaConsistencyValidator struct {
 	pool        toolDBPool
+	engine      forma.DatabaseEngine
 	schemaDir   string
 	schemaTable string
 	eavTable    string
@@ -83,6 +84,9 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 		passwordUsage:   "database password",
 		databaseUsage:   "database name",
 		sslModeUsage:    "database sslmode",
+		// -requeue-stale-width-exports writes rows, which lock per engine.
+		engineFlag:    "db-engine",
+		engineDefault: bootstrap.Env("DB_ENGINE", string(forma.EnginePostgreSQL)),
 	})
 
 	var schemaRegistry schemaRegistryFlags
@@ -107,6 +111,10 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 	if err != nil {
 		return err
 	}
+	engine := forma.DatabaseEngine(pg.engine)
+	if err := engine.Validate(); err != nil {
+		return fmt.Errorf("validate --db-engine: %w", err)
+	}
 
 	pool, err := buildSchemaConsistencyPool(ctx, pg.databaseConfig("DB_PASSWORD", toolPostgresPoolSettings{
 		maxConnections: 4,
@@ -119,6 +127,7 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 
 	validator := schemaConsistencyValidator{
 		pool:        pool,
+		engine:      engine,
 		schemaDir:   schemaRegistry.dir,
 		schemaTable: schemaRegistry.table,
 		eavTable:    *eavTable,

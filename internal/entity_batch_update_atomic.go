@@ -34,7 +34,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 	}
 
 	// The whole read-modify-write of every operation happens inside the
-	// repository's one write transaction, after every row's advisory lock
+	// repository's one write transaction, after every row's write lock
 	// has been granted (#554, the batch analogue of #457): each merge base
 	// is read there, so an overlapping batch or single-row Update cannot be
 	// clobbered by a merge onto a pre-write snapshot.

@@ -213,12 +213,14 @@ unconditional `Delete` keeps the session's default isolation, as before.
 
 ## Aurora DSQL
 
-**DSQL: specified, not verified (#633).** DSQL has no advisory locks and runs
-at REPEATABLE READ with optimistic concurrency, so a losing writer may
-evaluate its precondition on the snapshot from before the winner committed,
-see it hold, and write. DSQL then aborts one of the two transactions with
-`40001`. The contract is therefore stated as an outcome that holds on both
-backends:
+This section describes the `aurora-dsql` engine (#633,
+[Aurora DSQL](aurora-dsql.md)). CI runs it on PostgreSQL emulating DSQL. It
+has not yet run on a cluster. DSQL has no advisory locks and runs at
+REPEATABLE READ with optimistic concurrency, so a losing writer may evaluate
+its precondition on the snapshot from before the winner committed, see it
+hold, and write. Both writers wrote the row's guard row, so DSQL aborts one of
+the two transactions with `40001`. The contract is therefore stated as an
+outcome that holds on both backends:
 
 - At most one of the conflicting writers commits.
 - Every other writer receives `ErrPreconditionFailed` or
@@ -226,9 +228,9 @@ backends:
   fresh snapshot and then reports `ErrPreconditionFailed`.
 
 Forma does not retry `40001` internally ([Retrying](transactions.md#retrying)).
-The precondition and operator semantics are backend-neutral; the locking that
-replaces the advisory lock goes through the seam #648 and #633 own. Tests that
-assert `ErrPreconditionFailed` for the loser specifically are named
+The precondition and operator semantics are backend-neutral. The guard-row
+write replaces the advisory lock behind the locking seam #648 introduced.
+Tests that assert `ErrPreconditionFailed` for the loser specifically are named
 `_PostgresOnly`.
 
 ## Verification

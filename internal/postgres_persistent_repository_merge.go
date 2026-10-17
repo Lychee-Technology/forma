@@ -12,7 +12,7 @@ import (
 
 // MergePersistentRecord performs a row's read-modify-write with the merge
 // base read inside the write transaction, under the same (schema_id, row_id)
-// advisory lock create and delete take (#457).
+// write lock create and delete take (#457).
 //
 // The update path used to read its merge base on the pool, outside any
 // transaction, and write back with no lock and no version assert: two
@@ -23,12 +23,15 @@ import (
 // released only after the previous holder commits, and re-reads that commit
 // before merging.
 //
-// The transaction pins READ COMMITTED explicitly rather than inheriting the
-// cluster default, because here the level is load-bearing: a snapshot
-// isolation level would freeze the waiter's view at BEGIN — before the lock
-// was granted — and hand the merge the very stale base this exists to
-// prevent, silently. READ COMMITTED takes a fresh snapshot per statement, so
-// the post-lock read sees the previous holder's commit.
+// On PostgreSQL the transaction pins READ COMMITTED explicitly rather than
+// inheriting the cluster default, because here the level is load-bearing: a
+// snapshot isolation level would freeze the waiter's view at BEGIN — before
+// the lock was granted — and hand the merge the very stale base this exists
+// to prevent, silently. READ COMMITTED takes a fresh snapshot per statement,
+// so the post-lock read sees the previous holder's commit. Aurora DSQL has
+// only REPEATABLE READ and never waits: there the merge reads its snapshot,
+// and a concurrent update of the row aborts one of the two with 40001
+// (rowLocking, #633), so the stale base is refused rather than written.
 //
 // Optimistic concurrency is the caller's attribute precondition (#649):
 // guard is evaluated against the locked row before the merge base is read,
@@ -55,7 +58,7 @@ func (r *DBPersistentRecordRepository) MergePersistentRecord(
 	}
 
 	var stored *model.PersistentRecord
-	err = r.inWriteTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+	err = r.inWriteTx(ctx, r.locks.writeTxOptions(true), func(tx pgx.Tx) error {
 		var err error
 		stored, err = r.mergeRecordInTx(ctx, tx, tables, schemaID, rowID, rendered, merge)
 		return err
@@ -79,7 +82,7 @@ func (r *DBPersistentRecordRepository) mergeRecordInTx(
 	guard *renderedGuard,
 	merge model.PersistentRecordMerge,
 ) (*model.PersistentRecord, error) {
-	if err := lockRowVersion(ctx, tx, schemaID, rowID); err != nil {
+	if err := r.locks.lockRow(ctx, tx, tables, schemaID, rowID); err != nil {
 		return nil, fmt.Errorf("lock row version for update: %w", err)
 	}
 

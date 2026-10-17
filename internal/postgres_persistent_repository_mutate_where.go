@@ -46,23 +46,25 @@ func (b *txBoundRepository) RenderCondition(tables model.StorageTables, schemaID
 // candidates that, once locked, still exist and satisfy condition, in
 // candidate order. See lockAndRecheckInTx.
 func (b *txBoundRepository) LockAndRecheck(ctx context.Context, tables model.StorageTables, schemaID int16, candidates []uuid.UUID, condition *renderedGuard) ([]uuid.UUID, error) {
-	survivors, err := lockAndRecheckInTx(ctx, b.tx, tables, schemaID, candidates, condition)
+	survivors, err := lockAndRecheckInTx(ctx, b.tx, b.repo.locks, tables, schemaID, candidates, condition)
 	if err != nil {
 		return nil, classifyStatementError(err)
 	}
 	return survivors, nil
 }
 
-// lockAndRecheckInTx takes every candidate's per-row advisory lock in
+// lockAndRecheckInTx takes every candidate's per-row write lock in
 // (schema_id, row_id) order, the order every batch writer takes them, so two
 // predicate mutations never deadlock with each other whatever their Sort.
 // It then re-evaluates condition on the locked rows in one statement, which
-// also takes their entity_main row locks. Under READ COMMITTED that
-// statement's snapshot postdates every lock grant, so it sees each previous
-// holder's commit (#457): a candidate a concurrent writer changed so that it
-// no longer matches, or deleted, is dropped. A row the candidate select did
-// not see is never locked, so it is never written.
-func lockAndRecheckInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, schemaID int16, candidates []uuid.UUID, condition *renderedGuard) ([]uuid.UUID, error) {
+// on PostgreSQL also takes their entity_main row locks. Under READ COMMITTED
+// that statement's snapshot postdates every lock grant, so it sees each
+// previous holder's commit (#457): a candidate a concurrent writer changed so
+// that it no longer matches, or deleted, is dropped. On Aurora DSQL the
+// re-check reads the snapshot, and a concurrent writer of a candidate aborts
+// one of the two transactions with 40001 instead (#633). A row the candidate
+// select did not see is never locked, so it is never written.
+func lockAndRecheckInTx(ctx context.Context, tx pgx.Tx, locks rowLocking, tables model.StorageTables, schemaID int16, candidates []uuid.UUID, condition *renderedGuard) ([]uuid.UUID, error) {
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -70,11 +72,11 @@ func lockAndRecheckInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTabl
 	for i, id := range candidates {
 		keys[i] = model.PersistentRecordKey{SchemaID: schemaID, RowID: id}
 	}
-	if err := lockRowKeys(ctx, tx, keys); err != nil {
+	if err := locks.lockRows(ctx, tx, tables, keys); err != nil {
 		return nil, fmt.Errorf("lock %d candidates: %w", len(candidates), err)
 	}
 
-	survivors, err := matchingRowsInTx(ctx, tx, tables, schemaID, candidates, condition, "FOR UPDATE OF m")
+	survivors, err := matchingRowsInTx(ctx, tx, tables, schemaID, candidates, condition, locks.recheckClause(false))
 	if err != nil {
 		return nil, fmt.Errorf("re-check %d locked candidates: %w", len(candidates), err)
 	}

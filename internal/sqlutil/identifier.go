@@ -24,3 +24,16 @@ func SanitizeIdentifier(name string) string {
 	}
 	return pgx.Identifier(clean).Sanitize()
 }
+
+// SuffixedIdentifier names a table derived from table by appending suffix to
+// its last part, inside the closing quote when it is quoted: "entity_main"
+// becomes "entity_main_unique_key". A schema-qualified name keeps its
+// qualifier. The row-guard table is named this way, so a deployment that
+// names its entity_main table names it too. The unique-key tables are named
+// by uniquekey, which also bounds a name to PostgreSQL's identifier limit.
+func SuffixedIdentifier(table, suffix string) string {
+	if quoted, ok := strings.CutSuffix(table, `"`); ok {
+		return quoted + suffix + `"`
+	}
+	return table + suffix
+}

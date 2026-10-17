@@ -488,14 +488,16 @@ place; any other manager is refused when it is built.
 
 ## Aurora DSQL
 
-Status: **DSQL: specified, not verified (#633)**.
+This section describes the `aurora-dsql` engine (#633,
+[Aurora DSQL](aurora-dsql.md)). CI runs it on PostgreSQL emulating DSQL. It
+has not yet run on a cluster.
 
 The key table is a guard-row design. Uniqueness is a primary-key collision on
 an ordinary table, which DSQL enforces at commit through optimistic
 concurrency, so it needs no partial index. The key table, the canonical
 encoding, the insert-then-undo reservation and the API are backend-neutral.
-The row locks every write takes before it reserves keys are PostgreSQL
-advisory locks, the backend-specific locking seam (#648, #633).
+The row lock every write takes before it reserves keys is engine-specific:
+an advisory lock on PostgreSQL, and on DSQL a write of the row's guard row.
 
 On DSQL two concurrent creators of one value both insert the same primary key,
 and one commit fails with `40001`. The contract is therefore: **exactly one

@@ -1114,7 +1114,7 @@ but they are not wired up and will not be:
 
 ### Aurora DSQL
 
-DSQL: specified, not verified (#633). DSQL uses optimistic concurrency control,
+DSQL uses optimistic concurrency control,
 and reports a conflict as SQLSTATE `40001` with `OC000` (data) or `OC001`
 (schema) at a statement or at COMMIT. Forma maps every `40001` to
 `ErrRetryableConflict` from the SQLSTATE alone. A COMMIT rejected with `40001`
@@ -1124,8 +1124,15 @@ protocol and the SQLSTATE space. On PostgreSQL, Forma runs READ COMMITTED with
 blocking advisory locks, so the realistic retryable cases there are `40P01`
 and `55P03`. `TestWriteSerializationFailureIsRetryable_PostgresOnly` produces a
 real `40001` by running `DeletePersistentRecord` under a session default of
-REPEATABLE READ, which is DSQL's fixed level. Replacing the advisory locks and
-READ COMMITTED for DSQL stays in #633.
+REPEATABLE READ, which is DSQL's fixed level.
+
+The `aurora-dsql` engine (#633, [Aurora DSQL](aurora-dsql.md)) replaces the
+advisory locks with guard-row writes and runs at the session's REPEATABLE
+READ, so there `40001` is the ordinary outcome of two writers of one row. The
+classification is unchanged. CI runs the engine on PostgreSQL emulating DSQL,
+where the losing writer waits and then gets `40001` at its guard write; it has
+not yet run on a cluster. The CDC schema lock still uses advisory locks, and
+its replacement is the second half of #633.
 
 Tests only PostgreSQL can run carry a `_PostgresOnly` suffix, so a run against
 another backend can exclude them with `go test -skip PostgresOnly`. They depend

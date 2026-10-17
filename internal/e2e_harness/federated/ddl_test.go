@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/uniquekey"
 )
 
@@ -35,5 +36,13 @@ func TestFederatedDDLCreatesUniqueKeyTablesFromSharedSource(t *testing.T) {
 		if !slices.Contains(federatedDDL, want) {
 			t.Errorf("federatedDDL lacks the shared unique key statement:\n%s", want)
 		}
+	}
+}
+
+// #633: the row-guard table, which the aurora-dsql engine locks rows with,
+// comes from rowguard, the source init-db's DDL is built from.
+func TestFederatedDDLCreatesRowGuardTableFromSharedSource(t *testing.T) {
+	if want := rowguard.StatementFor("entity_main"); !slices.Contains(federatedDDL, want) {
+		t.Errorf("federatedDDL lacks the shared row guard statement:\n%s", want)
 	}
 }
