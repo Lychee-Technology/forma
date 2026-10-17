@@ -118,6 +118,17 @@ type Tx interface {
 	// whichever branch runs.
 	Upsert(ctx context.Context, req *UpsertRequest) (*UpsertResult, error)
 
+	// Claim takes up to req.Limit rows matching req.Condition, applies the
+	// claim mutation to each as Update would, and answers them as stored
+	// (see ClaimRequest). On PostgreSQL it never waits for a row another
+	// Forma transaction holds: it skips it. The mutation must make every
+	// claimed row stop matching req.Condition; if one still matches, Claim
+	// answers ErrInvalidInput and poisons the Tx. A refusal of the request
+	// before any SQL leaves the Tx usable; any failure once a row is held
+	// poisons it. Each claimed row past the first counts as one more
+	// operation.
+	Claim(ctx context.Context, req *ClaimRequest) (*ClaimResult, error)
+
 	txseal.Sealed
 }
 
