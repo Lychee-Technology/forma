@@ -206,27 +206,19 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 // insertRecordInTx is InsertPersistentRecord's body: every statement of the
 // create, run on tx.
 func (r *DBPersistentRecordRepository) insertRecordInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, record *model.PersistentRecord, now int64) error {
-	// A recreate of a deleted row_id must outrank the retained tombstone
-	// (#274): the version comes from nextRowVersion, while CreatedAt stays
-	// the identity clock read. The per-row lock serializes the history read
-	// against a concurrent delete's tombstone allocation.
+	// The per-row lock serializes prepareCreate's history read against a
+	// concurrent delete's tombstone allocation (#274).
 	if err := lockRowVersion(ctx, tx, record.SchemaID, record.RowID); err != nil {
 		return fmt.Errorf("lock row version for insert: %w", err)
 	}
-	effective, err := nextRowVersion(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, now)
+	claim, err := r.prepareCreate(ctx, tx, tables, record, now)
 	if err != nil {
-		return fmt.Errorf("stamp create version for row %s: %w", record.RowID, err)
+		return fmt.Errorf("prepare create of %s: %w", record.RowID, err)
 	}
-	record.CreatedAt = now
-	record.UpdatedAt = effective
 
 	// Unique keys are reserved before the entity write, so a conflict leaves
 	// nothing written; a row ID a live row has is the main insert's zero
 	// rows, after which the reservation is removed (#651).
-	claim, err := r.planUniqueKeys(ctx, tx, tables, record, false)
-	if err != nil {
-		return fmt.Errorf("plan unique keys of %s: %w", record.RowID, err)
-	}
 	reservation, err := r.reserveUniqueKeys(ctx, tx, tables, claim)
 	if err != nil {
 		return fmt.Errorf("reserve unique keys of %s: %w", record.RowID, err)
@@ -252,6 +244,29 @@ func (r *DBPersistentRecordRepository) insertRecordInTx(ctx context.Context, tx 
 		}
 	}
 	return nil
+}
+
+// prepareCreate stamps record as the create stores it and answers its
+// unique-key claim; the caller holds the row's version lock. CreatedAt is
+// the identity clock read now; UpdatedAt is the version nextRowVersion
+// allocates, so a recreate of a deleted row_id outranks its retained
+// tombstone (#274). The claim is planned from the stamped record because a
+// key may name an attribute bound to ltbase_created_at, whose entry must
+// hold the stamp the row is stored with (#651).
+func (r *DBPersistentRecordRepository) prepareCreate(
+	ctx context.Context, tx pgx.Tx, tables model.StorageTables, record *model.PersistentRecord, now int64,
+) (*uniqueKeyClaim, error) {
+	effective, err := nextRowVersion(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, now)
+	if err != nil {
+		return nil, fmt.Errorf("stamp create version: %w", err)
+	}
+	record.CreatedAt = now
+	record.UpdatedAt = effective
+	claim, err := r.planUniqueKeys(ctx, tx, tables, record, false)
+	if err != nil {
+		return nil, fmt.Errorf("plan unique keys: %w", err)
+	}
+	return claim, nil
 }
 
 // DeletePersistentRecord pins READ COMMITTED for a guarded delete, for the

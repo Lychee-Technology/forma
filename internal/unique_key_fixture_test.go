@@ -31,9 +31,10 @@ const (
 	ukInstance = "ukinstance"
 	ukPlain    = "ukplain"
 	ukTyped    = "uktyped"
+	ukCreated  = "ukcreated"
 )
 
-var ukSchemaIDs = map[string]int16{ukAccount: 120, ukFlowDef: 121, ukTaskLink: 122, ukInstance: 123, ukPlain: 124, ukTyped: 125}
+var ukSchemaIDs = map[string]int16{ukAccount: 120, ukFlowDef: 121, ukTaskLink: 122, ukInstance: 123, ukPlain: 124, ukTyped: 125, ukCreated: 128}
 
 // setupUniqueKeyEnv builds the keyed environment. Its pool holds enough
 // connections for 16 concurrent writers and a pg_locks poller.

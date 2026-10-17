@@ -88,7 +88,11 @@ keys:
   refused, because a row holds many values of it. So is an attribute bound to
   a column Forma rewrites on later writes (`ltbase_updated_at`,
   `ltbase_updated_by`, `ltbase_deleted_at`, `ltbase_deleted_by`);
-  `ltbase_created_at` and `ltbase_created_by` are allowed.
+  `ltbase_created_at` and `ltbase_created_by` are allowed. An attribute bound
+  to `ltbase_created_at` compares the creation stamp Forma assigns, not a
+  value the write sets. Every row of one atomic `BatchCreate` gets the same
+  stamp, so two rows of that batch that agree on the key's other attributes
+  conflict.
 
 Other keys, such as `partial` or `where`, are refused rather than ignored. A
 declaration that breaks a rule fails the schema load, so the server refuses

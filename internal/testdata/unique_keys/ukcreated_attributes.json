@@ -1,0 +1,4 @@
+{
+  "created": { "attributeID": 2, "valueType": "datetime", "column_binding": { "col_name": "ltbase_created_at" } },
+  "owner": { "attributeID": 1, "valueType": "text" }
+}

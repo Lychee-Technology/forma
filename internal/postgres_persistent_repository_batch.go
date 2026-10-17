@@ -31,8 +31,8 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 // batchInsertInTx is BatchInsertPersistentRecords' body, run on tx.
 func (r *DBPersistentRecordRepository) batchInsertInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, records []*model.PersistentRecord, now int64) error {
 	// Recreates must outrank their retained tombstone (#274); see
-	// InsertPersistentRecord. The lock pass runs in sorted order before any
-	// write, the write loop below in input order (#554).
+	// prepareCreate. The lock pass runs in sorted order before any write,
+	// the stamp and write loops below in input order (#554).
 	keys, err := recordKeys(records)
 	if err != nil {
 		return fmt.Errorf("validate batch insert: %w", err)
@@ -40,26 +40,23 @@ func (r *DBPersistentRecordRepository) batchInsertInTx(ctx context.Context, tx p
 	if err := lockRowKeys(ctx, tx, keys); err != nil {
 		return fmt.Errorf("lock row versions for batch insert: %w", err)
 	}
-	// Every record's unique keys are reserved in one sorted statement after
-	// every row lock and before the first entity write (#651), so two
-	// records of the batch taking one value conflict here too. A failure
-	// later rolls the batch's own transaction back, reservation included.
-	claims, err := r.planBatchUniqueKeys(ctx, tx, tables, records, false)
-	if err != nil {
-		return fmt.Errorf("plan unique keys for batch insert: %w", err)
+	// Every record is stamped and its unique keys planned before any is
+	// reserved, so each entry holds the stamp its row is stored with. The
+	// keys are then reserved in one sorted statement after every row lock
+	// and before the first entity write (#651), so two records of the batch
+	// taking one value conflict here too. A failure later rolls the batch's
+	// own transaction back, reservation included.
+	claims := make([]*uniqueKeyClaim, len(records))
+	for i, record := range records {
+		if claims[i], err = r.prepareCreate(ctx, tx, tables, record, now); err != nil {
+			return fmt.Errorf("prepare create of record[%d]: %w", i, err)
+		}
 	}
 	if _, err := r.reserveUniqueKeys(ctx, tx, tables, claims...); err != nil {
 		return fmt.Errorf("reserve unique keys for batch insert: %w", err)
 	}
 
 	for i, record := range records {
-		effective, err := nextRowVersion(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, now)
-		if err != nil {
-			return fmt.Errorf("stamp create version for record[%d]: %w", i, err)
-		}
-		record.CreatedAt = now
-		record.UpdatedAt = effective
-
 		inserted, err := r.insertMainRow(ctx, tx, tables.EntityMain, record)
 		if err != nil {
 			return fmt.Errorf("insert main row for record[%d]: %w", i, err)
@@ -136,14 +133,14 @@ func (r *DBPersistentRecordRepository) batchDeleteInTx(ctx context.Context, tx p
 	return nil
 }
 
-// planBatchUniqueKeys answers each record's unique-key claim, positionally;
-// stored says the rows exist (see planUniqueKeys).
+// planBatchUniqueKeys answers the unique-key claim of each record of rows
+// that exist, positionally (see planUniqueKeys).
 func (r *DBPersistentRecordRepository) planBatchUniqueKeys(
-	ctx context.Context, tx pgx.Tx, tables model.StorageTables, records []*model.PersistentRecord, stored bool,
+	ctx context.Context, tx pgx.Tx, tables model.StorageTables, records []*model.PersistentRecord,
 ) ([]*uniqueKeyClaim, error) {
 	claims := make([]*uniqueKeyClaim, len(records))
 	for i, record := range records {
-		claim, err := r.planUniqueKeys(ctx, tx, tables, record, stored)
+		claim, err := r.planUniqueKeys(ctx, tx, tables, record, true)
 		if err != nil {
 			return nil, fmt.Errorf("plan unique keys for record[%d]: %w", i, err)
 		}

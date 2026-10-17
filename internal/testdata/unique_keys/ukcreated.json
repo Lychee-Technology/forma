@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "A unique key over the creation stamp",
+  "type": "object",
+  "x-forma-unique-keys": [
+    { "id": 1, "name": "owner_created", "attributes": ["owner", "created"] }
+  ],
+  "properties": {
+    "owner": { "type": "string" },
+    "created": { "type": "string", "format": "date-time" }
+  }
+}

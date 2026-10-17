@@ -41,8 +41,10 @@ func (c *uniqueKeyClaim) empty() bool {
 }
 
 // planUniqueKeys answers the claim of writing record, nil for a schema
-// without keys. stored says the row exists, so its current entries are read
-// and diffed; a created row holds none.
+// without keys. record must already carry the creation stamp the row is
+// stored with, since a key may name an attribute bound to ltbase_created_at.
+// stored says the row exists, so its current entries are read and diffed; a
+// created row holds none.
 func (r *DBPersistentRecordRepository) planUniqueKeys(
 	ctx context.Context, tx pgx.Tx, tables model.StorageTables, record *model.PersistentRecord, stored bool,
 ) (*uniqueKeyClaim, error) {

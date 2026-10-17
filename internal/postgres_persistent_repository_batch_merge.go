@@ -79,7 +79,7 @@ func (r *DBPersistentRecordRepository) batchMergeInTx(
 		}
 		merged[i] = record
 	}
-	claims, err := r.planBatchUniqueKeys(ctx, tx, tables, merged, true)
+	claims, err := r.planBatchUniqueKeys(ctx, tx, tables, merged)
 	if err != nil {
 		return nil, fmt.Errorf("plan unique keys for batch update: %w", err)
 	}
