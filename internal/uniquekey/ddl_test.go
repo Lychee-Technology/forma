@@ -3,6 +3,7 @@ package uniquekey
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
@@ -34,13 +35,63 @@ func TestStatementsForDerivesEveryNameFromEntityMain(t *testing.T) {
 }
 
 func TestKeyTableNamesKeepQualifierAndQuotes(t *testing.T) {
-	for entityMain, want := range map[string][2]string{
-		"entity_main":         {"entity_main_unique_key", "entity_main_unique_key_state"},
-		"public.entity_main":  {"public.entity_main_unique_key", "public.entity_main_unique_key_state"},
-		`"entity_main"`:       {`"entity_main_unique_key"`, `"entity_main_unique_key_state"`},
-		`"app"."Entity Main"`: {`"app"."Entity Main_unique_key"`, `"app"."Entity Main_unique_key_state"`},
+	for entityMain, want := range map[string][3]string{
+		"entity_main":         {"entity_main_unique_key", "entity_main_unique_key_state", "entity_main_unique_key_row_idx"},
+		"public.entity_main":  {"public.entity_main_unique_key", "public.entity_main_unique_key_state", "entity_main_unique_key_row_idx"},
+		`"entity_main"`:       {`"entity_main_unique_key"`, `"entity_main_unique_key_state"`, "entity_main_unique_key_row_idx"},
+		`"app"."Entity Main"`: {`"app"."Entity Main_unique_key"`, `"app"."Entity Main_unique_key_state"`, "Entity Main_unique_key_row_idx"},
 	} {
 		assert.Equal(t, want[0], KeyTable(entityMain), entityMain)
 		assert.Equal(t, want[1], StateTable(entityMain), entityMain)
+		assert.Equal(t, want[2], RowIndex(entityMain), entityMain)
 	}
+}
+
+// PostgreSQL truncates an identifier past 63 bytes, so a derived name must
+// fit, or the key table and state table of a long entity_main name would be
+// one table (#651). Names that already fit keep their plain form.
+func TestDerivedNamesFitAnIdentifierAndStayApart(t *testing.T) {
+	names := []string{strings.Repeat("é", 30)} // 60 bytes: a cut must not split a character
+	for n := 40; n <= 80; n++ {
+		names = append(names, strings.Repeat("m", n))
+	}
+	for _, entityMain := range names {
+		derived := map[string]string{
+			KeyTableSuffix:   KeyTable(entityMain),
+			StateTableSuffix: StateTable(entityMain),
+			RowIndexSuffix:   RowIndex(entityMain),
+		}
+		seen := map[string]bool{}
+		for suffix, name := range derived {
+			assert.LessOrEqual(t, len(name), maxIdentifierLen, name)
+			assert.True(t, utf8.ValidString(name), name)
+			assert.True(t, strings.HasSuffix(name, suffix), name)
+			if len(entityMain)+len(suffix) <= maxIdentifierLen {
+				assert.Equal(t, entityMain+suffix, name)
+			}
+			assert.False(t, seen[name], "%d-byte entity_main derives %s twice", len(entityMain), name)
+			seen[name] = true
+		}
+	}
+	// The first case the review found: the key table fits exactly, and the
+	// state table, which used to truncate to the key table's name, does not.
+	main52 := strings.Repeat("m", 52)
+	assert.Equal(t, main52+KeyTableSuffix, KeyTable(main52))
+	assert.NotEqual(t, KeyTable(main52), StateTable(main52)[:maxIdentifierLen])
+}
+
+func TestShortenedNamesTellLongEntityMainNamesApart(t *testing.T) {
+	a, b := strings.Repeat("m", 70)+"a", strings.Repeat("m", 70)+"b"
+	assert.NotEqual(t, KeyTable(a), KeyTable(b))
+	assert.NotEqual(t, StateTable(a), StateTable(b))
+	assert.NotEqual(t, RowIndex(a), RowIndex(b))
+}
+
+// Every consumer derives the same physical name, however it spells
+// entity_main: init-db may name it bare while the factory qualifies it.
+func TestShortenedNamesIgnoreQualifierAndQuotes(t *testing.T) {
+	long := strings.Repeat("m", 70)
+	assert.Equal(t, "public."+KeyTable(long), KeyTable("public."+long))
+	assert.Equal(t, `"app"."`+StateTable(long)+`"`, StateTable(`"app"."`+long+`"`))
+	assert.Equal(t, RowIndex(long), RowIndex(`"app"."`+long+`"`))
 }

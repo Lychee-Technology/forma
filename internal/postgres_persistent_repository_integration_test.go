@@ -255,7 +255,7 @@ func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool
 	// The unique-key tables (#651), from the source init-db uses. A schema
 	// without keys never names them, so every test can have them.
 	keyTable, stateTable := uniquekey.KeyTable(entityTable), uniquekey.StateTable(entityTable)
-	for _, stmt := range uniquekey.Statements(sanitizeIdentifier(keyTable), sanitizeIdentifier(keyTable+"_row_idx"), sanitizeIdentifier(stateTable)) {
+	for _, stmt := range uniquekey.Statements(sanitizeIdentifier(keyTable), sanitizeIdentifier(uniquekey.RowIndex(entityTable)), sanitizeIdentifier(stateTable)) {
 		_, err = pool.Exec(ctx, stmt)
 		require.NoError(t, err)
 	}

@@ -229,6 +229,14 @@ reads or writes them, so it starts without them.
   attribute names, their value types and the version of the canonical
   encoding.
 
+PostgreSQL truncates identifiers longer than 63 bytes, which would make the
+two tables of a long `entity_main` name one table. A derived name (either
+table, or the `<entity_main>_unique_key_row_idx` index) that would pass 63
+bytes keeps the start of the `entity_main` name, then `_` and 16 hex
+characters of its SHA-256, then the whole suffix. For a 60-byte
+`entity_main` name, the key table is its first 35 bytes followed by
+`_<digest>_unique_key`. `init-db` prints the names it creates.
+
 Both tables are derived state. They are not in `change_log`, are never
 flushed to S3, and DuckDB never reads them.
 

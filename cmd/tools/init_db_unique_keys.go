@@ -19,7 +19,7 @@ func uniqueKeyDDL(opts initDBOptions) (tables []tableDDL, index tableDDL) {
 	keyTable := uniquekey.KeyTable(opts.entityMain)
 	stateTable := uniquekey.StateTable(opts.entityMain)
 	statements := uniquekey.Statements(
-		quoteIdentifier(keyTable), quoteIdentifier(makeIndexName(keyTable, "row")), quoteIdentifier(stateTable))
+		quoteIdentifier(keyTable), quoteIdentifier(uniquekey.RowIndex(opts.entityMain)), quoteIdentifier(stateTable))
 	tables = []tableDDL{
 		{
 			statement: statements[0],

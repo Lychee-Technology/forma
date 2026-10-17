@@ -5,33 +5,89 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/lychee-technology/forma"
 )
 
-// The two key tables take their names from the entity_main table they guard,
-// so every deployment and every test that names its entity_main table names
-// its key tables too.
+// The two key tables and the key table's row index take their names from the
+// entity_main table they guard, so every deployment and every test that names
+// its entity_main table names them too.
 const (
 	KeyTableSuffix   = "_unique_key"
 	StateTableSuffix = "_unique_key_state"
+	RowIndexSuffix   = "_unique_key_row_idx"
 )
+
+// maxIdentifierLen is PostgreSQL's NAMEDATALEN-1. The server truncates a
+// longer identifier, quoted or not, so two derived names that differ only
+// past it would name one relation.
+const maxIdentifierLen = 63
+
+// digestLen is the number of hex characters of the entity_main name's
+// SHA-256 a shortened name carries: 64 bits, so long entity_main names that
+// share their start do not collide in practice.
+const digestLen = 16
 
 // KeyTable names the key table of entityMain: one entry per (live row,
 // built key) whose attributes are all present. A schema-qualified name keeps
 // its qualifier, and a quoted one its quotes.
-func KeyTable(entityMain string) string { return suffixed(entityMain, KeyTableSuffix) }
+func KeyTable(entityMain string) string { return derivedTable(entityMain, KeyTableSuffix) }
 
 // StateTable names the built-key registry of entityMain.
-func StateTable(entityMain string) string { return suffixed(entityMain, StateTableSuffix) }
+func StateTable(entityMain string) string { return derivedTable(entityMain, StateTableSuffix) }
 
-// suffixed appends suffix to the table name's last part, inside its closing
-// quote when it is quoted: "entity_main" becomes "entity_main_unique_key".
-func suffixed(table, suffix string) string {
-	if quoted, ok := strings.CutSuffix(table, `"`); ok {
-		return quoted + suffix + `"`
+// RowIndex names the key table's row index. An index lives in its table's
+// schema, so the name carries no qualifier and no quotes: the caller quotes
+// it if it needs quoting.
+func RowIndex(entityMain string) string {
+	_, name, _ := splitTableName(entityMain)
+	return boundedName(name, RowIndexSuffix)
+}
+
+// derivedTable names a table after entityMain's last part, keeping its
+// qualifier, and its quotes when it is quoted: "entity_main" becomes
+// "entity_main_unique_key".
+func derivedTable(entityMain, suffix string) string {
+	qualifier, name, quoted := splitTableName(entityMain)
+	name = boundedName(name, suffix)
+	if quoted {
+		name = `"` + name + `"`
 	}
-	return table + suffix
+	return qualifier + name
+}
+
+// splitTableName splits a table name into its qualifier, final dot included,
+// and its last part without quotes.
+func splitTableName(table string) (qualifier, name string, quoted bool) {
+	if i := strings.LastIndex(table, "."); i >= 0 {
+		qualifier, table = table[:i+1], table[i+1:]
+	}
+	if len(table) >= 2 && strings.HasPrefix(table, `"`) && strings.HasSuffix(table, `"`) {
+		return qualifier, table[1 : len(table)-1], true
+	}
+	return qualifier, table, false
+}
+
+// boundedName joins name and suffix when the result fits an identifier.
+// Otherwise the server would truncate it, and the key table and state table
+// of a long entity_main name, which differ only in their suffixes, would be
+// one table. A longer join keeps the start of name, then "_" and a digest of
+// all of name, then the whole suffix: the suffix keeps one entity_main's
+// derived names apart, the digest keeps long entity_main names apart. The
+// digest covers name alone, so every spelling of entityMain, qualified or
+// quoted or neither, derives the same names.
+func boundedName(name, suffix string) string {
+	if len(name)+len(suffix) <= maxIdentifierLen {
+		return name + suffix
+	}
+	sum := sha256.Sum256([]byte(name))
+	digest := "_" + hex.EncodeToString(sum[:])[:digestLen]
+	keep := maxIdentifierLen - len(digest) - len(suffix)
+	for keep > 0 && !utf8.RuneStart(name[keep]) {
+		keep--
+	}
+	return name[:keep] + digest + suffix
 }
 
 // keyTableDDL is the key table. Uniqueness is the primary key on an ordinary
@@ -71,11 +127,9 @@ func Statements(keyTable, rowIndex, stateTable string) []string {
 }
 
 // StatementsFor answers Statements for an entity_main name that needs no
-// quoting, as both e2e harnesses name it: the row index takes the key table's
-// name with a _row_idx suffix, which is what init-db names it too.
+// quoting, as both e2e harnesses name it.
 func StatementsFor(entityMain string) []string {
-	keyTable := KeyTable(entityMain)
-	return Statements(keyTable, keyTable+"_row_idx", StateTable(entityMain))
+	return Statements(KeyTable(entityMain), RowIndex(entityMain), StateTable(entityMain))
 }
 
 // Attribute is one attribute of a key as the attributes hash sees it.

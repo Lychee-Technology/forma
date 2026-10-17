@@ -80,6 +80,7 @@ init-db
 unreferenced，由运维自行删除。详见 `docs/schema-indexes.md`。
 
 `init-db` 还会创建唯一键表 `<entity-main-table>_unique_key` 与状态表 `<entity-main-table>_unique_key_state`（#651）。
+派生名超过 PostgreSQL 的 63 字节标识符上限时，改为表名前缀加 `_`、表名 SHA-256 的 16 位十六进制摘要和完整后缀，`init-db` 打印实际表名。
 指定 `-schema-dir` 时，没有存活行的 schema 所声明的唯一键会被直接构建；已有存活行的 schema，`init-db` 打印需要运行的
 `build-unique-keys` 命令。有声明的唯一键尚未构建时，服务端拒绝启动。即使 schema 没有存活行，也须在第一个带声明的写入方
 启动前停止所有不带该声明的写入方：后者写入的行没有唯一键条目。详见 `docs/unique-keys.md`。

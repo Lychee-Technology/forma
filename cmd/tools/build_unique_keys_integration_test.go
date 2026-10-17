@@ -158,3 +158,65 @@ func TestBuildUniqueKeysCommandBuildsOrListsDuplicates(t *testing.T) {
 		t.Errorf("key table holds %d entries after the rebuild, want 3", n)
 	}
 }
+
+// PostgreSQL truncates an identifier past 63 bytes. A long but valid
+// entity_main name still gets a key table, a state table and a row index of
+// its own, whether or not a schema declares a key: a 52-byte name used to
+// truncate its state table onto its key table, which failed init-db even for
+// unkeyed schemas, and no name derived from a 63-byte one fits unshortened.
+func TestInitDBCreatesKeyTablesOfALongEntityMainName(t *testing.T) {
+	for _, length := range []int{52, 63} {
+		for _, keyed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%d bytes keyed=%v", length, keyed), func(t *testing.T) {
+				tg := newInitDBTarget(t)
+				tg.opts.entityMain += strings.Repeat("x", length-len(tg.opts.entityMain))
+				if keyed {
+					tg.writeKeyedSchema(t, "account")
+				} else {
+					tg.writeSchema(t, "account", map[string]string{"handle": "text_01"}, nil)
+				}
+				for run := 1; run <= 2; run++ {
+					if out, err := tg.run(t); err != nil {
+						t.Fatalf("init-db run %d: %v\n%s", run, err, out)
+					}
+				}
+				tg.requireKeyRelations(t)
+				if !keyed {
+					return
+				}
+				if n := tg.count(t, uniquekey.StateTable(tg.opts.entityMain)); n != 1 {
+					t.Errorf("state table holds %d rows, want the one built key", n)
+				}
+				tg.insertHandleRow(t, firstSchemaID, "01900000-0000-7000-8000-000000000001", "late")
+				if out, err := tg.buildKeys(t, "account", true); err != nil {
+					t.Fatalf("rebuild: %v\n%s", err, out)
+				}
+				if n := tg.count(t, uniquekey.KeyTable(tg.opts.entityMain)); n != 1 {
+					t.Errorf("key table holds %d entries after the rebuild, want 1", n)
+				}
+			})
+		}
+	}
+}
+
+// requireKeyRelations fails unless the key table, the state table and the
+// row index each exist as a relation of their own, the index on the key
+// table.
+func (tg *initDBTarget) requireKeyRelations(t *testing.T) {
+	t.Helper()
+	keyTable, stateTable := uniquekey.KeyTable(tg.opts.entityMain), uniquekey.StateTable(tg.opts.entityMain)
+	var keyOID, stateOID, indexedOID *uint32
+	if err := tg.pool.QueryRow(context.Background(), `SELECT to_regclass($1)::oid, to_regclass($2)::oid,
+		(SELECT indrelid FROM pg_index WHERE indexrelid = to_regclass($3))`,
+		keyTable, stateTable, uniquekey.RowIndex(tg.opts.entityMain)).Scan(&keyOID, &stateOID, &indexedOID); err != nil {
+		t.Fatalf("look up the key relations: %v", err)
+	}
+	switch {
+	case keyOID == nil || stateOID == nil:
+		t.Fatalf("key table %s (%v) or state table %s (%v) is missing", keyTable, keyOID, stateTable, stateOID)
+	case *keyOID == *stateOID:
+		t.Fatalf("key table %s and state table %s are one relation", keyTable, stateTable)
+	case indexedOID == nil || *indexedOID != *keyOID:
+		t.Fatalf("row index %s is missing or not on key table %s", uniquekey.RowIndex(tg.opts.entityMain), keyTable)
+	}
+}

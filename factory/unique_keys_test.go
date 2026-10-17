@@ -3,6 +3,7 @@ package factory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,12 +29,27 @@ func TestRequireUniqueKeysBuiltSkipsADeploymentWithoutKeys(t *testing.T) {
 }
 
 // The server refuses to start while a declared key is unbuilt or its tables
-// are missing (#651), and starts once the key is built.
+// are missing (#651), and starts once the key is built. A 63-byte entity_main
+// name, whose derived names are all shortened to fit PostgreSQL's identifier
+// limit, finds the same tables the harness DDL created.
 func TestNewEntityManagerWithConfig_Integration_RefusesAnUnbuiltUniqueKey(t *testing.T) {
+	for _, long := range []bool{false, true} {
+		t.Run(fmt.Sprintf("long=%v", long), func(t *testing.T) { refusesAnUnbuiltUniqueKey(t, long) })
+	}
+}
+
+func refusesAnUnbuiltUniqueKey(t *testing.T, longEntityMain bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	pool := testdb.Connect(t, ctx)
 	schemaRegistryTable, entityMainTable, eavDataTable := createTempTables(t, ctx, pool)
+	if longEntityMain {
+		long := entityMainTable + strings.Repeat("x", 63-len(entityMainTable))
+		_, err := pool.Exec(ctx, fmt.Sprintf("ALTER TABLE %s RENAME TO %s", entityMainTable, long))
+		require.NoError(t, err)
+		t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+long) })
+		entityMainTable = long
+	}
 	_, err := pool.Exec(ctx, fmt.Sprintf("INSERT INTO %s (schema_name, schema_id) VALUES ('account', 1)", schemaRegistryTable))
 	require.NoError(t, err)
 
