@@ -118,10 +118,13 @@ func initDatabase(ctx context.Context, opts initDBOptions, dbConfig forma.Databa
 	if err := withTx(ctx, conn, func(tx pgx.Tx) error {
 		return ensureTables(ctx, tx, opts)
 	}); err != nil {
-		return err
+		return fmt.Errorf("create the tables: %w", err)
 	}
 	if err := ensureDeclaredIndexes(ctx, pool, conn, opts, os.Stdout); err != nil {
-		return err
+		return fmt.Errorf("create the declared indexes: %w", err)
+	}
+	if err := ensureUniqueKeys(ctx, pool, opts, os.Stdout); err != nil {
+		return fmt.Errorf("set up the unique keys: %w", err)
 	}
 
 	fmt.Println("Database initialized successfully.")
@@ -215,8 +218,9 @@ func coreTableDDL(opts initDBOptions) []tableDDL {
 	eavTable := quoteIdentifier(opts.eavTable)
 	entityMain := quoteIdentifier(opts.entityMain)
 	changeLog := quoteIdentifier(opts.changeLog)
+	uniqueKeyTables, _ := uniqueKeyDDL(opts)
 
-	return []tableDDL{
+	return append([]tableDDL{
 		{
 			statement: schemaRegistryDDL(schemaTable),
 			announce:  fmt.Sprintf("Created schema registry table: %s\n", opts.schemaTable),
@@ -238,7 +242,7 @@ func coreTableDDL(opts initDBOptions) []tableDDL {
 			announce:  fmt.Sprintf("Created change log table: %s\n", opts.changeLog),
 			failure:   "ensure change log table",
 		},
-	}
+	}, uniqueKeyTables...)
 }
 
 func eavIndexDDL(opts initDBOptions) []tableDDL {
@@ -280,10 +284,12 @@ func mainColumnIndexDDL(opts initDBOptions) []tableDDL {
 }
 
 func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
+	_, uniqueKeyIndex := uniqueKeyDDL(opts)
 	groups := [][]tableDDL{
 		coreTableDDL(opts),
 		eavIndexDDL(opts),
 		mainColumnIndexDDL(opts),
+		{uniqueKeyIndex},
 	}
 	for _, group := range groups {
 		for _, ddl := range group {

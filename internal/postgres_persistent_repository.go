@@ -32,6 +32,12 @@ type DBPersistentRecordRepository struct {
 	// shared across repository instances so hits survive transient
 	// construction (the benchmark and production reuse lifecycle).
 	planCache *queryplan.Cache
+	// uniqueKeys is the schemas' unique keys (#651), which every write core
+	// enforces; nil enforces none. It is set once, by WithUniqueKeyCatalog
+	// when the repository is built, and never replaced, so the write cores
+	// read it without synchronization and a Tx's reader, a copy of the
+	// repository, shares it.
+	uniqueKeys *UniqueKeyCatalog
 }
 
 // RepoOption customizes optional repository collaborators.
@@ -40,6 +46,14 @@ type RepoOption func(*DBPersistentRecordRepository)
 // WithPlanCache injects a shared plan cache (#142).
 func WithPlanCache(c *queryplan.Cache) RepoOption {
 	return func(r *DBPersistentRecordRepository) { r.planCache = c }
+}
+
+// WithUniqueKeyCatalog makes the repository enforce catalog's unique keys
+// (#651) for as long as it lives. NewEntityManager refuses a repository whose
+// keys differ from those of the manager's registry, in declaration or in
+// where an attribute is stored.
+func WithUniqueKeyCatalog(catalog *UniqueKeyCatalog) RepoOption {
+	return func(r *DBPersistentRecordRepository) { r.uniqueKeys = catalog }
 }
 
 func NewDBPersistentRecordRepository(pool persistentRecordPool, metadataCache *schemameta.MetadataCache, opts ...RepoOption) *DBPersistentRecordRepository {
@@ -190,8 +204,11 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 		return fmt.Errorf("validate tables for insert: %w", err)
 	}
 
+	// READ COMMITTED, whatever the session's default: the unique-key
+	// reservation waits for a concurrent writer of a value and then judges
+	// its committed entry, which a snapshot level answers with 40001 (#651).
 	now := r.nowMillis()
-	return r.inWriteTx(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	return r.inWriteTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		return r.insertRecordInTx(ctx, tx, tables, record, now)
 	})
 }
@@ -199,22 +216,32 @@ func (r *DBPersistentRecordRepository) InsertPersistentRecord(ctx context.Contex
 // insertRecordInTx is InsertPersistentRecord's body: every statement of the
 // create, run on tx.
 func (r *DBPersistentRecordRepository) insertRecordInTx(ctx context.Context, tx pgx.Tx, tables model.StorageTables, record *model.PersistentRecord, now int64) error {
-	// A recreate of a deleted row_id must outrank the retained tombstone
-	// (#274): the version comes from nextRowVersion, while CreatedAt stays
-	// the identity clock read. The per-row lock serializes the history read
-	// against a concurrent delete's tombstone allocation.
+	// The per-row lock serializes prepareCreate's history read against a
+	// concurrent delete's tombstone allocation (#274).
 	if err := lockRowVersion(ctx, tx, record.SchemaID, record.RowID); err != nil {
 		return fmt.Errorf("lock row version for insert: %w", err)
 	}
-	effective, err := nextRowVersion(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, now)
+	claim, err := r.prepareCreate(ctx, tx, tables, record, now)
 	if err != nil {
-		return fmt.Errorf("stamp create version for row %s: %w", record.RowID, err)
+		return fmt.Errorf("prepare create of %s: %w", record.RowID, err)
 	}
-	record.CreatedAt = now
-	record.UpdatedAt = effective
 
-	if err := r.insertMainRow(ctx, tx, tables.EntityMain, record); err != nil {
+	// Unique keys are reserved before the entity write, so a conflict leaves
+	// nothing written; a row ID a live row has is the main insert's zero
+	// rows, after which the reservation is removed (#651).
+	reservation, err := r.reserveUniqueKeys(ctx, tx, tables, claim)
+	if err != nil {
+		return fmt.Errorf("reserve unique keys of %s: %w", record.RowID, err)
+	}
+	inserted, err := r.insertMainRow(ctx, tx, tables.EntityMain, record)
+	if err != nil {
 		return fmt.Errorf("insert main row for %s: %w", record.RowID, err)
+	}
+	if !inserted {
+		return r.undoAfter(ctx, tx, tables, reservation, r.rowIDConflict(record.SchemaID, record.RowID))
+	}
+	if err := r.applyUniqueKeys(ctx, tx, tables, claim); err != nil {
+		return fmt.Errorf("write unique keys of %s: %w", record.RowID, err)
 	}
 
 	if err := r.insertEAVAttributes(ctx, tx, tables.EAVData, record.OtherAttributes); err != nil {
@@ -227,6 +254,29 @@ func (r *DBPersistentRecordRepository) insertRecordInTx(ctx context.Context, tx 
 		}
 	}
 	return nil
+}
+
+// prepareCreate stamps record as the create stores it and answers its
+// unique-key claim; the caller holds the row's version lock. CreatedAt is
+// the identity clock read now; UpdatedAt is the version nextRowVersion
+// allocates, so a recreate of a deleted row_id outranks its retained
+// tombstone (#274). The claim is planned from the stamped record because a
+// key may name an attribute bound to ltbase_created_at, whose entry must
+// hold the stamp the row is stored with (#651).
+func (r *DBPersistentRecordRepository) prepareCreate(
+	ctx context.Context, tx pgx.Tx, tables model.StorageTables, record *model.PersistentRecord, now int64,
+) (*uniqueKeyClaim, error) {
+	effective, err := nextRowVersion(ctx, tx, tables.ChangeLog, record.SchemaID, record.RowID, now)
+	if err != nil {
+		return nil, fmt.Errorf("stamp create version: %w", err)
+	}
+	record.CreatedAt = now
+	record.UpdatedAt = effective
+	claim, err := r.planUniqueKeys(ctx, tx, tables, record, false)
+	if err != nil {
+		return nil, fmt.Errorf("plan unique keys: %w", err)
+	}
+	return claim, nil
 }
 
 // DeletePersistentRecord pins READ COMMITTED for a guarded delete, for the
@@ -286,6 +336,9 @@ func (r *DBPersistentRecordRepository) deleteRecordInTx(ctx context.Context, tx 
 	deleteEAV := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND row_id = $2", sanitizeIdentifier(tables.EAVData))
 	if _, err := tx.Exec(ctx, deleteEAV, schemaID, rowID); err != nil {
 		return fmt.Errorf("delete eav attributes: %w", err)
+	}
+	if err := r.releaseRowUniqueKeys(ctx, tx, tables, schemaID, rowID); err != nil {
+		return fmt.Errorf("delete unique keys: %w", err)
 	}
 
 	if tables.ChangeLog != "" {

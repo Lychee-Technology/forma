@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LTFlow-shaped task link",
+  "type": "object",
+  "x-forma-unique-keys": [
+    { "id": 1, "name": "parent_task_hash", "attributes": ["parentTaskHash"] }
+  ],
+  "properties": {
+    "parentTaskHash": { "type": "string" },
+    "childTaskId": { "type": "string" }
+  }
+}

@@ -321,7 +321,7 @@ An error from a `Tx` method either leaves the Tx usable or **poisons** it.
 | Error | Poisons? |
 | --- | --- |
 | `ErrNotFound` (an unknown schema, or no row to read, assert, update or delete) | no |
-| `ErrPreconditionFailed` (an `AssertRow` or conditional write that found the row failing its precondition), `ErrUniqueConflict`, raised without a failed SQL statement | no |
+| `ErrPreconditionFailed` (an `AssertRow` or conditional write that found the row failing its precondition), `ErrUniqueConflict` (a create onto a live row ID, or a write onto a taken unique-key value: see [Row IDs and Unique Keys](unique-keys.md)), raised without a failed SQL statement | no |
 | `ErrInvalidInput` raised before the operation sent any SQL (a malformed operation, a `Create` that fails validation, a federated read, `ForUpdate` on `Query`, a `MutateWhereRequest` refused by its validation) | no |
 | `ErrInvalidInput` for a predicate mutation that matched more than `MaxAffected` rows, after only its candidate select | no |
 | `ErrInvalidInput` raised after the operation sent SQL | yes |
@@ -355,7 +355,7 @@ Two cases surprise people:
 | Limit | Default | Option |
 | --- | --- | --- |
 | `Tx` method calls | 1,000 | `WithTxMaxOperations(n)` |
-| Rows modified: `entity_main`, EAV and `change_log` | 3,000 | `WithTxMaxPhysicalRows(n)` |
+| Rows modified: `entity_main`, EAV, `change_log` and unique-key entries | 3,000 | `WithTxMaxPhysicalRows(n)` |
 | Wall-clock time for the whole `InTx`, `fn` included | `Config.Transaction.DefaultTimeout` | `WithTxTimeout(d)`; zero removes Forma's deadline |
 
 Options apply in order, and a non-positive count or negative timeout is
@@ -368,8 +368,12 @@ no SQL.
 
 The row limit counts what PostgreSQL reports each statement modified. An
 `Update` counts its main row, the row's old EAV rows (deleted) and new EAV rows
-(inserted), and its `change_log` row. The count is checked after each
-statement, so the limit is exact for what a Tx commits, not for what it does:
+(inserted), and its `change_log` row. On a schema with unique keys, a write
+also counts each key entry it inserts or deletes
+([Row IDs and Unique Keys](unique-keys.md)); a write refused with
+`ErrUniqueConflict` counts the entries it inserted and deleted again, though
+none of them commits. The count is checked after each statement, so the limit
+is exact for what a Tx commits, not for what it does:
 
 - A Tx whose count stays at or under the limit can commit.
 - The statement that takes the count past the limit has run. It fails, its

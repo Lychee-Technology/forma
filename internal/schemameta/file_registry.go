@@ -214,6 +214,9 @@ func (r *fileSchemaRegistry) admitSchema(schemaName string, schemaID int16, cach
 		if err := validateIndexDeclarations(schemaName, schema.Indexes, cache); err != nil {
 			return fmt.Errorf("schema file %s: %w", r.schemaFilePath(schemaName), err)
 		}
+		if err := ValidateUniqueKeyDeclarations(schemaName, schema.UniqueKeys, cache, schema.Properties); err != nil {
+			return fmt.Errorf("schema file %s: %w", r.schemaFilePath(schemaName), err)
+		}
 	}
 	if err := r.registerSchema(schemaName, schemaID, activeAttributeCache(cache), schema); err != nil {
 		return fmt.Errorf("register schema id %d: %w", schemaID, err)

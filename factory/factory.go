@@ -9,7 +9,6 @@ import (
 	"github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/lychee-technology/forma/internal/schemameta"
-	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/jackc/pgx/v5"
@@ -145,9 +144,12 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// Initialize transformer
 	transformer := transform.NewPersistentRecordTransformer(registry)
 
-	schemaValidator, relationIndex, err := buildSchemaGuards(registry, effectiveConfig.Entity.SchemaDirectory)
+	guards, err := buildSchemaGuards(registry, effectiveConfig.Entity.SchemaDirectory)
 	if err != nil {
 		return nil, wrapSchemaGuardError(effectiveConfig.Entity.SchemaDirectory, err)
+	}
+	if err := requireUniqueKeysBuilt(ctx, pool, effectiveConfig, tables, guards.uniqueKeys); err != nil {
+		return nil, fmt.Errorf("failed to verify the schemas' unique keys: %w", err)
 	}
 
 	duckClient, parquetSource, err := newFederatedReadSurface(ctx, effectiveConfig.DuckDB, deps)
@@ -155,8 +157,10 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		return nil, fmt.Errorf("failed to open the federated read surface: %w", err)
 	}
 
+	// The repository enforces the unique keys the check above found built,
+	// for as long as it lives (#651).
 	repository, federatedEngine := newRepositoryAndEngine(
-		pool, metadataCache, effectiveConfig, duckClient, parquetSource)
+		pool, metadataCache, effectiveConfig, duckClient, parquetSource, internal.WithUniqueKeyCatalog(guards.uniqueKeys))
 	// The DuckDB client has no owner other than the manager being built:
 	// register it so EntityManager.Close releases it (#302). Guarded on nil
 	// because a typed-nil *DuckDBClient boxed into io.Closer would defeat
@@ -164,8 +168,12 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// The relation index is the one built above, not a fresh load: the manager
 	// must strip with exactly the declarations the guard just approved (#318
 	// review). Not nil-guarded, because buildSchemaGuards returns a non-nil index
-	// on its success path, and WithRelationIndex ignores a nil anyway.
-	managerOpts := []internal.EntityManagerOption{internal.WithRelationIndex(relationIndex)}
+	// on its success path, and WithRelationIndex ignores a nil anyway. The
+	// unique keys are the repository's, for the same reason; the manager
+	// checks them against nothing else.
+	managerOpts := []internal.EntityManagerOption{
+		internal.WithRelationIndex(guards.relations), internal.WithUniqueKeys(guards.uniqueKeys),
+	}
 	if duckClient != nil {
 		managerOpts = append(managerOpts, internal.WithCloser(duckClient))
 	}
@@ -174,7 +182,7 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// returned rather than asserted away, so an option or a caller that later
 	// stops supplying the index cannot go back to a silent nil index (#388).
 	manager, err := internal.NewEntityManager(
-		transformer, repository, federatedEngine, registry, effectiveConfig, schemaValidator, managerOpts...)
+		transformer, repository, federatedEngine, registry, effectiveConfig, guards.validator, managerOpts...)
 	if err != nil {
 		discardDuckClient(duckClient)
 		return nil, fmt.Errorf("failed to build the entity manager: %w", err)
@@ -199,93 +207,6 @@ func discardDuckClient(duckClient *federated.DuckDBClient) {
 	}
 }
 
-// buildSchemaGuards runs both fail-closed schema checks and returns what each
-// one produced: the resolved validator, and the relation index.
-//
-// They belong together because they sit at the same position and answer the same
-// kind of question about the same documents. Resolving every registered schema
-// fails closed so that one which cannot resolve aborts startup rather than
-// silently losing validation at runtime (#314); checking relation declarations
-// fails closed so that a schema requiring a relation root aborts startup rather
-// than making its entity unwritable, since the root is stripped from every
-// payload before the validator sees it (#318).
-//
-// The position is load-bearing, and this function preserves it: neither step
-// opens a client, pool, or handle, so both failure returns have nothing to leak.
-// Queries have already run (collectTables, LoadMetadata) — this is
-// pre-read-surface, not pre-I/O. Never move a step that opens a client, pool, or
-// handle above the call site.
-//
-// Both read the registry, not SCHEMA_DIR, so they analyse the same documents.
-// Handing the directory to either would let a registry that does not serve the
-// files on disk boot with an index built from one document and a validator built
-// from another.
-//
-// Same accessors is not enough on its own, which is why they are built from a
-// snapshot rather than from the registry directly. forma.SchemaRegistry promises
-// nothing about repeated reads, so two independent reads can answer two
-// different documents, and this pair is where that costs the most: a validator
-// demanding a relation root beside an index that strips it boots cleanly and
-// makes the entity unwritable (#318 review, and see SnapshotSchemaDocuments).
-// One capture, both consumers.
-//
-// The snapshot covers the registry's *documents*. schemavalidate.New also
-// resolves cross-file "$ref"s against schemaDir by reading sibling files, and
-// nothing here freezes the file system — so this is one consistent view of the
-// registry, not of everything the validator is built from.
-//
-// The snapshot deliberately stops here rather than becoming the manager's
-// registry. The disagreement being closed is between two startup consumers of
-// the same documents; the manager reads the registry for something else
-// entirely (attribute caches, on every write) and may be given an
-// implementation that reloads. Handing it a snapshot would freeze that for the
-// process lifetime to fix a startup-time problem, so NewEntityManager keeps the
-// caller's registry.
-//
-// The index is returned rather than discarded. LoadRelationIndex does the
-// validating, so building it here and passing it to the manager is what makes
-// "the manager strips with the declarations the guard approved" true rather than
-// merely likely — see internal.WithRelationIndex.
-func buildSchemaGuards(
-	registry forma.SchemaRegistry, schemaDir string,
-) (*schemavalidate.Validator, *internal.RelationIndex, error) {
-	documents := internal.SnapshotSchemaDocuments(registry)
-
-	schemaValidator, err := schemavalidate.New(documents, schemaDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to build schema validator: %w", err)
-	}
-
-	relationIndex, err := internal.LoadRelationIndex(documents)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to validate schema relations: %w", err)
-	}
-
-	return schemaValidator, relationIndex, nil
-}
-
-// wrapSchemaGuardError adds the call-site context to a buildSchemaGuards failure:
-// the schema directory both guards were built over.
-//
-// An empty directory gets its own wording rather than being interpolated. It is
-// a reachable state, not a defensive branch — Entity.SchemaDirectory is declared
-// with no non-empty guard and defaultEntityConfig leaves it unset (forma's
-// config.go), and nothing rejects it on the way here. It does not fail on its
-// own either: schemavalidate.New starts with filepath.Abs(schemaDir), and
-// filepath.Abs("") answers the process working directory (measured), so the
-// guards run against wherever the server happens to have been started from.
-// Interpolating it would render "over : …", which reads as a truncated path
-// rather than as the misconfiguration it usually is.
-//
-// This only changes how the failure reads. It adds no new startup rejection: an
-// unset directory that resolves anyway still boots, exactly as before.
-func wrapSchemaGuardError(schemaDir string, err error) error {
-	if schemaDir == "" {
-		return fmt.Errorf("failed to build the schema guards (Entity.SchemaDirectory is unset): %w", err)
-	}
-	return fmt.Errorf("failed to build the schema guards over %s: %w", schemaDir, err)
-}
-
 // requireCoreTables fails closed when any of the three tables the manager
 // cannot operate without is absent from the resolved schema.
 func requireCoreTables(cfg *forma.Config, tables []string) error {
@@ -303,13 +224,15 @@ func requireCoreTables(cfg *forma.Config, tables []string) error {
 
 // newRepositoryAndEngine builds the OLTP repository and the federated engine
 // as a pair, because they share one plan cache (#142): its lifetime is the
-// manager's, so compiled plans survive across requests.
+// manager's, so compiled plans survive across requests. repoOpts are the
+// repository's other construction-time collaborators.
 func newRepositoryAndEngine(
 	pool *pgxpool.Pool, metadataCache *schemameta.MetadataCache, cfg *forma.Config,
-	duckClient *federated.DuckDBClient, parquetSource federated.ParquetSource,
+	duckClient *federated.DuckDBClient, parquetSource federated.ParquetSource, repoOpts ...internal.RepoOption,
 ) (*internal.DBPersistentRecordRepository, *federated.DBFederatedQueryEngine) {
 	planCache := queryplan.NewCache(4096)
-	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache, internal.WithPlanCache(planCache))
+	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache,
+		append([]internal.RepoOption{internal.WithPlanCache(planCache)}, repoOpts...)...)
 	// zap.L() is the same global the rest of this package logs through. It
 	// carries two log-only signals. The federated validator's #256
 	// stamp/footer cross-check, whose only surface is a log line: the read it

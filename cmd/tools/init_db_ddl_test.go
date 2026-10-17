@@ -1,8 +1,11 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/lychee-technology/forma/internal/uniquekey"
 )
 
 func testInitDBOptions() initDBOptions {
@@ -14,12 +17,13 @@ func testInitDBOptions() initDBOptions {
 	}
 }
 
-// allDDLStatements flattens the three builder groups in the exact order
-// ensureTables executes them: 4 core tables, 2 EAV indexes, 10 main-column
-// indexes.
+// allDDLStatements flattens the builder groups in the exact order
+// ensureTables executes them: 6 core tables, 2 EAV indexes, 10 main-column
+// indexes, and the unique key row index.
 func allDDLStatements(opts initDBOptions) []tableDDL {
 	var all []tableDDL
-	for _, group := range [][]tableDDL{coreTableDDL(opts), eavIndexDDL(opts), mainColumnIndexDDL(opts)} {
+	_, uniqueKeyIndex := uniqueKeyDDL(opts)
+	for _, group := range [][]tableDDL{coreTableDDL(opts), eavIndexDDL(opts), mainColumnIndexDDL(opts), {uniqueKeyIndex}} {
 		all = append(all, group...)
 	}
 	return all
@@ -37,7 +41,7 @@ func allDDLStatements(opts initDBOptions) []tableDDL {
 // pre-existing quirk #319 preserved deliberately. Do not "tidy" it — gofmt will
 // not, and the DDL Postgres receives would change.
 func wantDDLStatements() []string {
-	return []string{
+	statements := []string{
 		// schema_registry table
 		`CREATE TABLE IF NOT EXISTS "schema_registry" (
 		schema_name TEXT PRIMARY KEY,
@@ -98,6 +102,9 @@ func wantDDLStatements() []string {
 			deleted_at BIGINT,
 			primary key (schema_id, row_id, flushed_at)
 		);`,
+	}
+	statements = append(statements, wantUniqueKeyTableDDL()...)
+	return append(statements,
 		// eav numeric index
 		"CREATE INDEX IF NOT EXISTS \"eav_data_numeric_idx\" ON \"eav_data\" (schema_id, attr_id, value_numeric, row_id) WHERE value_numeric IS NOT NULL",
 		// eav text index
@@ -122,10 +129,36 @@ func wantDDLStatements() []string {
 		"CREATE INDEX IF NOT EXISTS \"entity_main_double_02_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"double_02\")",
 		// main index on uuid_01
 		"CREATE INDEX IF NOT EXISTS \"entity_main_uuid_01_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"uuid_01\")",
+		// unique key row index (#651)
+		"CREATE INDEX IF NOT EXISTS \"entity_main_unique_key_row_idx\" ON \"entity_main_unique_key\" (ltbase_schema_id, ltbase_row_id)",
+	)
+}
+
+// wantUniqueKeyTableDDL is the golden text of the two unique key tables
+// (#651), created after the four core tables.
+func wantUniqueKeyTableDDL() []string {
+	return []string{
+		// unique key table (#651)
+		`CREATE TABLE IF NOT EXISTS "entity_main_unique_key" (
+		ltbase_schema_id SMALLINT NOT NULL,
+		key_id           SMALLINT NOT NULL,
+		key_value        TEXT     NOT NULL,
+		ltbase_row_id    UUID     NOT NULL,
+		PRIMARY KEY (ltbase_schema_id, key_id, key_value)
+	)`,
+		// unique key state table (#651)
+		`CREATE TABLE IF NOT EXISTS "entity_main_unique_key_state" (
+		ltbase_schema_id SMALLINT NOT NULL,
+		key_id           SMALLINT NOT NULL,
+		attributes_hash  TEXT     NOT NULL,
+		storage_hash     TEXT     NOT NULL,
+		built_at         BIGINT   NOT NULL,
+		PRIMARY KEY (ltbase_schema_id, key_id)
+	)`,
 	}
 }
 
-// wantCoreAnnouncements is the golden text of the four lines init-db prints on
+// wantCoreAnnouncements is the golden text of the six lines init-db prints on
 // success. Independent literals, captured the same way as the statements.
 //
 // Note the entity-main line has NO trailing newline while the other three do.
@@ -136,6 +169,8 @@ func wantCoreAnnouncements() []string {
 		"Created entity main table: entity_main",
 		"Created EAV table: eav_data\n",
 		"Created change log table: change_log\n",
+		"Created unique key table: entity_main_unique_key\n",
+		"Created unique key state table: entity_main_unique_key_state\n",
 	}
 }
 
@@ -169,22 +204,25 @@ func TestCoreTableAnnouncementsGolden(t *testing.T) {
 			t.Errorf("announcement %d differs from golden:\n got: %q\nwant: %q", i, core[i].announce, want[i])
 		}
 	}
-	for i, ddl := range append(eavIndexDDL(opts), mainColumnIndexDDL(opts)...) {
+	_, uniqueKeyIndex := uniqueKeyDDL(opts)
+	for i, ddl := range append(append(eavIndexDDL(opts), mainColumnIndexDDL(opts)...), uniqueKeyIndex) {
 		if ddl.announce != "" {
 			t.Errorf("index statement %d announces %q, want silence", i, ddl.announce)
 		}
 	}
 }
 
-// TestCoreTableDDLCoversFourTables pins the four CREATE TABLE statements
-// ensureTables issues, in order. Before #319 split them out, a dropped table
-// would only have surfaced against a live database.
-func TestCoreTableDDLCoversFourTables(t *testing.T) {
+// TestCoreTableDDLCoversSixTables pins the six CREATE TABLE statements
+// ensureTables issues, in order: the four core tables, then the unique key
+// and state tables (#651). Before #319 split them out, a dropped table would
+// only have surfaced against a live database.
+func TestCoreTableDDLCoversSixTables(t *testing.T) {
 	ddl := coreTableDDL(testInitDBOptions())
-	if len(ddl) != 4 {
-		t.Fatalf("coreTableDDL returned %d statements, want 4", len(ddl))
+	if len(ddl) != 6 {
+		t.Fatalf("coreTableDDL returned %d statements, want 6", len(ddl))
 	}
-	wantTables := []string{"schema_registry", "entity_main", "eav_data", "change_log"}
+	wantTables := []string{"schema_registry", "entity_main", "eav_data", "change_log",
+		`"entity_main_unique_key" (`, `"entity_main_unique_key_state" (`}
 	for i, want := range wantTables {
 		if !strings.Contains(ddl[i].statement, want) {
 			t.Errorf("statement %d does not mention %q: %s", i, want, ddl[i].statement)
@@ -198,6 +236,8 @@ func TestCoreTableDDLCoversFourTables(t *testing.T) {
 		"ensure entity main table",
 		"ensure eav table",
 		"ensure change log table",
+		"ensure unique key table",
+		"ensure unique key state table",
 	}
 	for i, want := range wantFailures {
 		if ddl[i].failure != want {
@@ -263,5 +303,23 @@ func TestEAVIndexDDLCoversNumericAndText(t *testing.T) {
 	}
 	if ddl[1].failure != "create text index" {
 		t.Errorf("text failure label = %q", ddl[1].failure)
+	}
+}
+
+// TestUniqueKeyDDLUsesSharedSource pins init-db's unique-key statements to
+// uniquekey.Statements, the source both e2e harnesses use too (#651, #440).
+func TestUniqueKeyDDLUsesSharedSource(t *testing.T) {
+	opts := testInitDBOptions()
+	tables, index := uniqueKeyDDL(opts)
+	got := []string{tables[0].statement, index.statement, tables[1].statement}
+	want := uniquekey.Statements(`"entity_main_unique_key"`, `"entity_main_unique_key_row_idx"`, `"entity_main_unique_key_state"`)
+	if !slices.Equal(got, want) {
+		t.Fatalf("init-db unique key DDL differs from uniquekey.Statements:\n got: %q\nwant: %q", got, want)
+	}
+	unquoted := uniquekey.StatementsFor("entity_main")
+	for i := range unquoted {
+		if strings.ReplaceAll(got[i], `"`, "") != unquoted[i] {
+			t.Errorf("statement %d names other tables than the harnesses' copy:\n got: %q\nwant: %q", i, got[i], unquoted[i])
+		}
 	}
 }

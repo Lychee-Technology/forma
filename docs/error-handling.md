@@ -2057,8 +2057,13 @@ the redaction gate.
   operator detail. #645 replaced it with the transaction-boundary classifier
   (`classifySQLState` in `internal/storage_outcome.go`), which keeps that
   summary and that operator detail. Pinned by
-  `TestClassifyStatementErrorMapsUniqueViolation` and, on real PostgreSQL,
-  `TestInsertDuplicateRowIDIsUniqueConflict`.
+  `TestClassifyStatementErrorMapsUniqueViolation` and
+  `TestMergeClassifiesUniqueViolationAsConflict`. Since #651 a create onto a
+  live row ID raises no `23505` at all: the main insert is `ON CONFLICT DO
+  NOTHING` under the row lock, and the conflict publishes `schema <schema>
+  already has a row with ID <row id>` without a failed statement, so it leaves
+  a `Tx` usable (`TestInsertDuplicateRowIDIsUniqueConflict`; see
+  [Row IDs and Unique Keys](unique-keys.md)).
 - **Internal schema identifiers on a 404 — closed.** The seven ID-keyed
   `forma.ErrNotFound` chains in `internal/schemameta/file_registry.go` used to
   render the internal `int16` (`schema not found for ID: 402`) into the body —

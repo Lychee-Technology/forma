@@ -47,3 +47,24 @@ func validateAtomicUpdateOperations(ops []forma.EntityOperation) error {
 	}
 	return nil
 }
+
+// refuseDuplicateCreateRowIDs refuses a BatchCreate, atomic or best-effort,
+// in which two operations name one non-nil row ID of one schema (#651). Both
+// cannot be created, and which one fails would otherwise depend on the
+// write order. A nil row ID asks Forma to assign one and never collides.
+func refuseDuplicateCreateRowIDs(ops []forma.EntityOperation) error {
+	seen := make(map[batchUpdateTarget]int, len(ops))
+	for i, op := range ops {
+		if op.RowID == uuid.Nil {
+			continue
+		}
+		key := batchUpdateTarget{schemaName: op.SchemaName, rowID: op.RowID}
+		if first, dup := seen[key]; dup {
+			return forma.InvalidInputf(
+				"operation[%d]: duplicate row id %s for schema %s in batch create (already used by operation[%d])",
+				i, op.RowID, op.SchemaName, first)
+		}
+		seen[key] = i
+	}
+	return nil
+}

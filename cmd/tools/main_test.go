@@ -101,6 +101,11 @@ func TestRunToolMain_CommandFailuresExitOne(t *testing.T) {
 			wantLine: "inline-schema: inline schema: read file " + missing,
 		},
 		{
+			name:     "build-unique-keys without a schema",
+			args:     []string{"build-unique-keys"},
+			wantLine: "build-unique-keys: --schema and --schema-dir are required",
+		},
+		{
 			name:     "cdc-flush without its required flags",
 			args:     []string{"cdc-flush"},
 			wantLine: "cdc-flush: ",

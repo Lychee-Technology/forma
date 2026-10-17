@@ -55,7 +55,7 @@ func (m *txMeter) accept(sql string, rows int64) error {
 	if m.rows > m.maxRows {
 		return m.fail(forma.InvalidInputf(
 			"the transaction would modify more than its limit of %d physical rows "+
-				"(entity_main, EAV and change_log rows); split the work across transactions or raise the limit with WithTxMaxPhysicalRows",
+				"(entity_main, EAV, change_log and unique-key rows); split the work across transactions or raise the limit with WithTxMaxPhysicalRows",
 			m.maxRows))
 	}
 	if m.fault != nil {

@@ -19,7 +19,8 @@ import (
 
 // #554 pins for the batch merge: one READ COMMITTED transaction, every lock
 // taken in sorted order before any read, each merge base read inside the
-// transaction, writes in input order, and the answer is what storage stored.
+// transaction, every read before the first write (#651), writes in input
+// order, and the answer is what storage stored.
 
 func batchMergeTestRepo(t *testing.T, mock pgxmock.PgxPoolIface) *DBPersistentRecordRepository {
 	t.Helper()
@@ -53,6 +54,8 @@ func TestBatchMergeLocksSortedReadsInsideTransactionAndAnswersStored(t *testing.
 
 	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	expectSortedLockPass(mock, 1, lockOrderLowRow, lockOrderHighRow)
+	// Every base is read and merged before any row is written (#651), so the
+	// unique-key check can see every row's new values first.
 	for i, key := range keys {
 		text := "merged-" + key.RowID.String()[:8]
 		merged[i] = &model.PersistentRecord{
@@ -64,13 +67,6 @@ func TestBatchMergeLocksSortedReadsInsideTransactionAndAnswersStored(t *testing.
 				{SchemaID: 1, RowID: key.RowID, AttrID: 11, ValueText: &text},
 			},
 		}
-		expected := *merged[i]
-		expected.UpdatedAt = fixed.UnixMilli()
-		updateQuery, updateArgs, err := buildUpdateMainStatement(tables.EntityMain, &expected)
-		require.NoError(t, err)
-		_, eavArgs, err := buildAttributeValuesClause(merged[i].OtherAttributes)
-		require.NoError(t, err)
-
 		mock.ExpectQuery(`SELECT .* FROM "entity_main" m\s+LEFT JOIN LATERAL`).
 			WithArgs(int16(1), key.RowID).
 			WillReturnRows(pgxmock.NewRows(singleRowColumns()).AddRow(singleRowValues(map[string]any{
@@ -80,6 +76,15 @@ func TestBatchMergeLocksSortedReadsInsideTransactionAndAnswersStored(t *testing.
 				"ltbase_updated_at": int64(222),
 				"text_01":           "base-" + key.RowID.String()[:8],
 			}, `[]`)...))
+	}
+	for i, key := range keys {
+		expected := *merged[i]
+		expected.UpdatedAt = fixed.UnixMilli()
+		updateQuery, updateArgs, err := buildUpdateMainStatement(tables.EntityMain, &expected)
+		require.NoError(t, err)
+		_, eavArgs, err := buildAttributeValuesClause(merged[i].OtherAttributes)
+		require.NoError(t, err)
+
 		mock.ExpectQuery("^" + regexp.QuoteMeta(updateQuery) + "$").
 			WithArgs(updateArgs...).
 			WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at"}).AddRow(effective[i]))

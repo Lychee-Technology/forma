@@ -1,0 +1,5 @@
+{
+  "body": { "attributeID": 3, "valueType": "text" },
+  "name": { "attributeID": 1, "valueType": "text", "column_binding": { "col_name": "text_01" } },
+  "version": { "attributeID": 2, "valueType": "integer" }
+}

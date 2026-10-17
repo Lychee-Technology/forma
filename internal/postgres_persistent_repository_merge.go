@@ -104,10 +104,20 @@ func (r *DBPersistentRecordRepository) mergeRecordInTx(
 			record.SchemaID, record.RowID, schemaID, rowID)
 	}
 
-	record.UpdatedAt = r.nowMillis()
-
+	// A key the update moves is reserved before the first entity write, so a
+	// value another row holds leaves nothing written (#651).
+	claim, err := r.prepareUpdate(ctx, tx, tables, record, existing)
+	if err != nil {
+		return nil, fmt.Errorf("prepare update of %s: %w", rowID, err)
+	}
+	if _, err := r.reserveUniqueKeys(ctx, tx, tables, claim); err != nil {
+		return nil, fmt.Errorf("reserve unique keys of %s: %w", rowID, err)
+	}
 	if err := r.updateMainRow(ctx, tx, tables.EntityMain, record); err != nil {
 		return nil, fmt.Errorf("update main row for %s: %w", rowID, err)
+	}
+	if err := r.applyUniqueKeys(ctx, tx, tables, claim); err != nil {
+		return nil, fmt.Errorf("write unique keys of %s: %w", rowID, err)
 	}
 
 	if err := r.replaceEAVAttributes(ctx, tx, tables.EAVData, schemaID, rowID, record.OtherAttributes); err != nil {
@@ -121,6 +131,27 @@ func (r *DBPersistentRecordRepository) mergeRecordInTx(
 	}
 
 	return record, nil
+}
+
+// prepareUpdate makes merged the row its update stores and answers its
+// unique-key claim; the caller holds the row's version lock and read
+// existing, the merge base, under it. updateMainRow assigns only the main
+// columns merged sets, so a column the merged document dropped, a shape
+// report-only validation admits, keeps its stored value. merged takes that
+// value from existing, so the claim keeps the entry the row still holds
+// instead of releasing it (#651), and the update answers the value too.
+// UpdatedAt is the clock read now; updateMainRow advances it past the row's
+// previous version. Both merge cores call it, so they cannot drift.
+func (r *DBPersistentRecordRepository) prepareUpdate(
+	ctx context.Context, tx pgx.Tx, tables model.StorageTables, merged, existing *model.PersistentRecord,
+) (*uniqueKeyClaim, error) {
+	retainStoredColumns(merged, existing)
+	merged.UpdatedAt = r.nowMillis()
+	claim, err := r.planUniqueKeys(ctx, tx, tables, merged, true)
+	if err != nil {
+		return nil, fmt.Errorf("plan unique keys: %w", err)
+	}
+	return claim, nil
 }
 
 // loadGuardedMergeBase reads the merge base once guard holds. A row the

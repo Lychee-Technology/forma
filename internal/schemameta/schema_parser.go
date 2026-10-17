@@ -28,6 +28,12 @@ func parseJSONSchemaFile(data []byte, schemaID int16, schemaName string) (forma.
 	}
 	jsonSchema.Indexes = indexes
 
+	uniqueKeys, err := parseUniqueKeyDeclarations(schemaName, rawSchema)
+	if err != nil {
+		return forma.JSONSchema{}, fmt.Errorf("parse %s: %w", UniqueKeyDeclarationsKey, err)
+	}
+	jsonSchema.UniqueKeys = uniqueKeys
+
 	// Parse required fields
 	jsonSchema.Required = parseRequiredFields(rawSchema)
 

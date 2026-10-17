@@ -1,0 +1,4 @@
+{
+  "count": { "attributeID": 2, "valueType": "integer" },
+  "title": { "attributeID": 1, "valueType": "text" }
+}

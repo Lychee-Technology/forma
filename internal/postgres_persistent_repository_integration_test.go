@@ -10,6 +10,7 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/testdb"
+	"github.com/lychee-technology/forma/internal/uniquekey"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -251,12 +252,22 @@ func createTempPersistentTables(t *testing.T, ctx context.Context, pool *pgxpool
 	_, err = pool.Exec(ctx, changeLogDDL)
 	require.NoError(t, err)
 
+	// The unique-key tables (#651), from the source init-db uses. A schema
+	// without keys never names them, so every test can have them.
+	keyTable, stateTable := uniquekey.KeyTable(entityTable), uniquekey.StateTable(entityTable)
+	for _, stmt := range uniquekey.Statements(sanitizeIdentifier(keyTable), sanitizeIdentifier(uniquekey.RowIndex(entityTable)), sanitizeIdentifier(stateTable)) {
+		_, err = pool.Exec(ctx, stmt)
+		require.NoError(t, err)
+	}
+
 	t.Cleanup(func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(eavTable)))
 		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(entityTable)))
 		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(changeLogTable)))
+		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(keyTable)))
+		_, _ = pool.Exec(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", sanitizeIdentifier(stateTable)))
 	})
 
 	return model.StorageTables{

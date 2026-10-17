@@ -18,8 +18,12 @@ const (
 
 // EntityIdentifier identifies an entity for operations
 type EntityIdentifier struct {
-	SchemaName string    `json:"schemaName"`
-	RowID      uuid.UUID `json:"rowId"`
+	SchemaName string `json:"schemaName"`
+	// RowID names the row. On a create (Create, BatchCreate, Tx.Create),
+	// uuid.Nil asks Forma to assign a UUIDv7, and any other value becomes the
+	// new row's ID; a live row of the schema with that ID makes the create
+	// ErrUniqueConflict, writing nothing (#651). See docs/unique-keys.md.
+	RowID uuid.UUID `json:"rowId"`
 }
 
 // EntityOperation represents CRUD operations

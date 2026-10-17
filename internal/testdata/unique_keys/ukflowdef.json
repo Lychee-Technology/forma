@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LTFlow-shaped workflow definition",
+  "type": "object",
+  "x-forma-unique-keys": [
+    { "id": 1, "name": "name_version", "attributes": ["name", "version"] }
+  ],
+  "properties": {
+    "name": { "type": "string" },
+    "version": { "type": "integer" },
+    "body": { "type": "string" }
+  }
+}

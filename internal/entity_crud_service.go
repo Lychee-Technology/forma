@@ -101,7 +101,7 @@ func (s *entityCRUDService) Create(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	rowID := uuid.Must(uuid.NewV7())
+	rowID := assignedRowID(req.RowID)
 	// No nil guard: the RelationIndex methods are nil-receiver-safe, and
 	// StripComputedFields answers the very map it was handed, so a manager without
 	// an index hands the writer the caller's own map, as #312 requires.
@@ -377,6 +377,15 @@ func (s *entityCRUDService) Delete(ctx context.Context, req *forma.EntityOperati
 	}
 
 	return nil
+}
+
+// assignedRowID answers the row ID a create writes: the caller's when it set
+// one (#651), a fresh UUIDv7 for uuid.Nil.
+func assignedRowID(requested uuid.UUID) uuid.UUID {
+	if requested != uuid.Nil {
+		return requested
+	}
+	return uuid.Must(uuid.NewV7())
 }
 
 func (s *entityCRUDService) validateDependencies() error {
