@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LTFlow workflow instance; the row ID is the instance ID",
+  "type": "object",
+  "x-forma-indexes": [
+    {
+      "name": "by_status",
+      "attributes": [
+        "workflow_name",
+        "status"
+      ]
+    }
+  ],
+  "required": [
+    "workflow_name",
+    "state",
+    "status",
+    "version"
+  ],
+  "properties": {
+    "workflow_name": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "business_reference": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "string"
+    },
+    "version": {
+      "type": "integer"
+    },
+    "event_count": {
+      "type": "integer"
+    },
+    "last_progress_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "eligible_cleanup_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "archived_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

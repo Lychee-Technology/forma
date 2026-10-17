@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LTFlow transactional outbox message, published per partition in enqueued order",
+  "type": "object",
+  "x-forma-indexes": [
+    {
+      "name": "fifo",
+      "attributes": [
+        "partition_key",
+        "enqueued_at"
+      ]
+    },
+    {
+      "name": "due",
+      "attributes": [
+        "status",
+        "next_attempt_at"
+      ]
+    },
+    {
+      "name": "lease",
+      "attributes": [
+        "status",
+        "locked_until"
+      ]
+    }
+  ],
+  "required": [
+    "partition_key",
+    "topic",
+    "status",
+    "enqueued_at",
+    "next_attempt_at",
+    "lock_generation",
+    "attempts"
+  ],
+  "properties": {
+    "partition_key": {
+      "type": "string"
+    },
+    "topic": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "locked_by": {
+      "type": "string"
+    },
+    "next_attempt_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "locked_until": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "enqueued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "attempts": {
+      "type": "integer"
+    },
+    "lock_generation": {
+      "type": "integer"
+    },
+    "command_type": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "string"
+    },
+    "last_error": {
+      "type": "string"
+    },
+    "published_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

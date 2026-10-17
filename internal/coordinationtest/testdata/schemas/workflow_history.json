@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LTFlow workflow history event; a deduplicated event's row ID is derived from its dedup key",
+  "type": "object",
+  "x-forma-indexes": [
+    {
+      "name": "by_instance",
+      "attributes": [
+        "instance_id",
+        "recorded_at"
+      ]
+    }
+  ],
+  "required": [
+    "instance_id",
+    "type",
+    "recorded_at"
+  ],
+  "properties": {
+    "instance_id": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dedup_count": {
+      "type": "integer"
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "eligible_cleanup_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "archived_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "state_from": {
+      "type": "string"
+    },
+    "state_to": {
+      "type": "string"
+    },
+    "event": {
+      "type": "string"
+    },
+    "details": {
+      "type": "string"
+    }
+  }
+}

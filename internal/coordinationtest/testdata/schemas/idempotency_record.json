@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LTFlow event idempotency record, keyed on (instance, idempotency key)",
+  "type": "object",
+  "x-forma-unique-keys": [
+    {
+      "id": 1,
+      "name": "idempotency",
+      "attributes": [
+        "instance_id",
+        "idempotency_key"
+      ]
+    }
+  ],
+  "x-forma-indexes": [
+    {
+      "name": "cleanup",
+      "attributes": [
+        "eligible_cleanup_at"
+      ]
+    }
+  ],
+  "required": [
+    "instance_id",
+    "idempotency_key",
+    "request_hash",
+    "status"
+  ],
+  "properties": {
+    "instance_id": {
+      "type": "string"
+    },
+    "idempotency_key": {
+      "type": "string"
+    },
+    "request_hash": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "event": {
+      "type": "string"
+    },
+    "result_state": {
+      "type": "string"
+    },
+    "result_version": {
+      "type": "integer"
+    },
+    "error_code": {
+      "type": "string"
+    },
+    "eligible_cleanup_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
