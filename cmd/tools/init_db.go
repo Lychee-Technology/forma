@@ -242,7 +242,7 @@ func coreTableDDL(opts initDBOptions) []tableDDL {
 			announce:  fmt.Sprintf("Created change log table: %s\n", opts.changeLog),
 			failure:   "ensure change log table",
 		},
-	}, append(uniqueKeyTables, rowGuardDDL(opts))...)
+	}, append(uniqueKeyTables, rowGuardDDL(opts), schemaLeaseDDL(opts))...)
 }
 
 func eavIndexDDL(opts initDBOptions) []tableDDL {

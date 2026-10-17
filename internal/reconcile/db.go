@@ -61,20 +61,6 @@ func (e *RegistrySchemaEnumerator) SchemaIDs(ctx context.Context) ([]int16, erro
 	return ids, nil
 }
 
-// PGAdvisoryLocker takes the flusher's per-schema advisory lock
-// (pg_try_advisory_lock(schemaID, schemaID)). It delegates to cdc.TrySchemaLock,
-// the single source of truth for the pinned-connection acquire/release dance:
-// on a pool, acquire and release could land on different connections, and a
-// session-scoped lock released on the wrong session silently fails, so the lock
-// pins one physical connection for its lifetime and closes it to unlock.
-type PGAdvisoryLocker struct {
-	DB *sql.DB
-}
-
-func (l *PGAdvisoryLocker) TryLock(ctx context.Context, schemaID int16) (bool, func(), error) {
-	return cdc.TrySchemaLock(ctx, l.DB, schemaID)
-}
-
 // liveRowPredicate is the WHERE clause fragment defining liveness: rows not
 // marked as soft-deleted. Must be identical in both MissingLiveRows and
 // LiveRowCount queries to ensure the counting identity is sound.
@@ -146,6 +132,6 @@ func (p *PGLiveRows) LiveRowCount(ctx context.Context, schemaID int16) (int64, e
 
 var (
 	_ SchemaEnumerator = (*RegistrySchemaEnumerator)(nil)
-	_ Locker           = (*PGAdvisoryLocker)(nil)
+	_ Locker           = cdc.SchemaLocker(nil)
 	_ LiveRowChecker   = (*PGLiveRows)(nil)
 )

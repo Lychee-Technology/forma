@@ -2,7 +2,6 @@ package cdc
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -20,12 +19,12 @@ func TestProcessInitSchemas_ContendedLockRecordsErrorAndContinues(t *testing.T) 
 	runCtx := &initRunContext{
 		logger:         zap.NewNop(),
 		schemaRegistry: stubSchemaRegistry{cache: testAttrCache()},
-		tryLock: func(_ context.Context, _ *sql.DB, sid int16) (bool, func(), error) {
+		locker: SchemaLockerFunc(func(ctx context.Context, sid int16) (context.Context, func(), bool, error) {
 			if sid == 7 {
-				return false, nil, nil
+				return nil, nil, false, nil
 			}
-			return true, func() { unlockCalled = append(unlockCalled, sid) }, nil
-		},
+			return ctx, func() { unlockCalled = append(unlockCalled, sid) }, true, nil
+		}),
 		initSchemaFn: func(_ context.Context, _ *initRunContext, sid int16) (int64, int, error) {
 			initCalled = append(initCalled, sid)
 			return 5, 1, nil

@@ -22,16 +22,22 @@ func TestNewReconciler_WiresVerificationPasses(t *testing.T) {
 	client := &s3.Client{}
 	logger := zap.NewNop()
 
-	off := newReconciler(&reconcileOptions{}, client, nil, logger)
+	off, err := newReconciler(&reconcileOptions{}, client, nil, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if off.Opts.VerifyChecksums || off.Opts.VerifyStamps {
 		t.Fatalf("verification must stay off when the flags are not set: %+v", off.Opts)
 	}
 
-	on := newReconciler(&reconcileOptions{
+	on, err := newReconciler(&reconcileOptions{
 		verifyChecksums: true,
 		verifyStamps:    true,
 		etagRetries:     3,
 	}, client, nil, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !on.Opts.VerifyChecksums {
 		t.Fatal("--verify-checksums must reach reconcile.Options")
 	}
@@ -231,7 +237,10 @@ func TestParseReconcileFlags_AllowEmptyManifestSchema(t *testing.T) {
 }
 
 func TestNewReconciler_WiresEmptyManifestAllowance(t *testing.T) {
-	r := newReconciler(&reconcileOptions{allowEmptyManifestSchemas: []int16{7, 9}}, &s3.Client{}, nil, zap.NewNop())
+	r, err := newReconciler(&reconcileOptions{allowEmptyManifestSchemas: []int16{7, 9}}, &s3.Client{}, nil, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(r.Opts.AllowEmptyManifestSchemas) != 2 || r.Opts.AllowEmptyManifestSchemas[0] != 7 || r.Opts.AllowEmptyManifestSchemas[1] != 9 {
 		t.Fatalf("AllowEmptyManifestSchemas = %v, want [7 9]", r.Opts.AllowEmptyManifestSchemas)
 	}

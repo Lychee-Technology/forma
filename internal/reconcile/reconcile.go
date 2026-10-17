@@ -7,6 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/manifest"
 )
@@ -45,10 +46,11 @@ type LiveRowChecker interface {
 	LiveRowCount(ctx context.Context, schemaID int16) (int64, error)
 }
 
-// Locker serializes reconciliation against the live flusher per schema.
-// unlock is non-nil exactly when locked is true.
+// Locker serializes reconciliation against the live flusher per schema:
+// cdc.SchemaLocker, whose contract it shares. held ends if the lock is
+// lost; release is non-nil exactly when ok is true.
 type Locker interface {
-	TryLock(ctx context.Context, schemaID int16) (locked bool, unlock func(), err error)
+	TryLock(ctx context.Context, schemaID int16) (held context.Context, release func(), ok bool, err error)
 }
 
 // SchemaEnumerator yields the schema IDs to reconcile.
@@ -129,19 +131,24 @@ func (r *Reconciler) Run(ctx context.Context) (Report, error) {
 }
 
 func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) SchemaReport {
-	s := SchemaReport{SchemaID: schemaID}
-
-	locked, unlock, err := r.Locker.TryLock(ctx, schemaID)
+	held, release, locked, err := r.Locker.TryLock(ctx, schemaID)
 	if err != nil {
-		s.Err = fmt.Errorf("acquire schema %d advisory lock: %w", schemaID, err)
-		return s
+		return SchemaReport{SchemaID: schemaID, Err: fmt.Errorf("acquire schema %d lock: %w", schemaID, err)}
 	}
 	if !locked {
-		s.Skipped = true
 		r.Logger.Info("schema lock not acquired, skipping", zap.Int16("schema_id", schemaID))
-		return s
+		return SchemaReport{SchemaID: schemaID, Skipped: true}
 	}
-	defer unlock()
+	defer release()
+	s := r.reconcileLocked(held, schemaID)
+	s.Err = cdc.WithLockLoss(held, s.Err)
+	return s
+}
+
+// reconcileLocked is reconcileSchema's work under the schema lock, run on
+// the lock's held context so a lost lease (#633) ends it.
+func (r *Reconciler) reconcileLocked(ctx context.Context, schemaID int16) SchemaReport {
+	s := SchemaReport{SchemaID: schemaID}
 
 	// Load the manifest BEFORE listing: a file created after the manifest
 	// snapshot then still appears in the listing, so a racing compactor's

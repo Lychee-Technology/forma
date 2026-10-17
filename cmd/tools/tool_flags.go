@@ -79,6 +79,24 @@ func (f postgresFlags) resolvedPassword(fallbackEnv string) string {
 	return bootstrap.Env(fallbackEnv, "")
 }
 
+// cdcEngine resolves the CDC tools' --pg-engine (#633), which decides their
+// per-schema lock. --pg-use-iam authenticates with an Aurora DSQL token, so
+// it implies aurora-dsql, and another engine beside it is refused: either
+// reading would take a lock the other tools of the database do not see.
+func (f postgresFlags) cdcEngine(engineFlag string) (forma.DatabaseEngine, error) {
+	engine := forma.DatabaseEngine(f.engine)
+	if f.useIAM {
+		if engine != "" && engine != forma.EngineAuroraDSQL {
+			return "", fmt.Errorf("--pg-use-iam authenticates to Aurora DSQL, but --%s is %q", engineFlag, engine)
+		}
+		return forma.EngineAuroraDSQL, nil
+	}
+	if err := engine.Validate(); err != nil {
+		return "", fmt.Errorf("validate --%s: %w", engineFlag, err)
+	}
+	return engine.Resolved(), nil
+}
+
 func (f postgresFlags) databaseConfig(passwordEnv string, settings toolPostgresPoolSettings) forma.DatabaseConfig {
 	timeout := settings.timeout
 	if timeout <= 0 {

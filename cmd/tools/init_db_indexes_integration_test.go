@@ -20,6 +20,7 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/declaredindex"
 	"github.com/lychee-technology/forma/internal/rowguard"
+	"github.com/lychee-technology/forma/internal/schemalease"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/testdb"
 	"github.com/lychee-technology/forma/internal/uniquekey"
@@ -97,7 +98,8 @@ func newInitDBTarget(t *testing.T) *initDBTarget {
 	}
 	t.Cleanup(func() {
 		for _, table := range []string{tg.opts.schemaTable, tg.opts.eavTable, tg.opts.entityMain, tg.opts.changeLog,
-			uniquekey.KeyTable(tg.opts.entityMain), uniquekey.StateTable(tg.opts.entityMain), rowguard.Table(tg.opts.entityMain)} {
+			uniquekey.KeyTable(tg.opts.entityMain), uniquekey.StateTable(tg.opts.entityMain), rowguard.Table(tg.opts.entityMain),
+			schemalease.Table(tg.opts.entityMain)} {
 			if _, err := pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+quoteIdentifier(table)); err != nil {
 				t.Logf("drop %s: %v", table, err)
 			}

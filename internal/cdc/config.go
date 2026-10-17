@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 )
 
 // CDCConfig controls change_log flushing and export behavior.
@@ -29,6 +30,11 @@ type CDCConfig struct {
 	PGDB       string
 	PGUseIAM   bool
 	PGSSLMode  string
+	// Engine is the database the PG settings reach (#633). It decides the
+	// per-schema lock (NewSchemaLocker) and how the flush mark is sent, so
+	// every flusher, cdc-init and manifest-reconcile of one database must
+	// name the same engine. Empty means PostgreSQL.
+	Engine forma.DatabaseEngine
 
 	// DuckDB export options
 	DuckDBPath              string        // optional on-disk duckdb; empty for :memory:

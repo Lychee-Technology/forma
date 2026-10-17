@@ -21,7 +21,7 @@ import (
 
 // newReconcileHarness wires a real reconcile.Reconciler the way the
 // manifest-reconcile tool does: real S3 listing/deletion, raw object reads,
-// etag manifest store, the flusher's advisory lock over a database/sql
+// etag manifest store, the flusher's schema lock over a database/sql
 // handle, registry enumeration, and (when withStats) a DuckDB stats engine
 // reading parquet through httpfs. The returned cleanup closes both handles.
 func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, opts reconcile.Options, withStats bool) (*reconcile.Reconciler, func()) {
@@ -34,6 +34,10 @@ func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema Sch
 		t.Fatalf("open pg for reconcile: %v", err)
 	}
 
+	locker, err := cdc.NewSchemaLocker(db, env.CDC.Engine, env.CDC.EntityMainTable)
+	if err != nil {
+		t.Fatalf("schema lock for reconcile: %v", err)
+	}
 	store := &reconcile.S3ObjectStore{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
 	manifestStore := &manifest.S3Store{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
 	resolver := manifest.PathResolver{Prefix: env.CDC.ManifestPrefix, PathTemplate: env.CDC.ManifestTemplate}
@@ -47,7 +51,7 @@ func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema Sch
 		Objects:    env.Cluster.S3,
 		Manifests:  &reconcile.ResolverManifestStore{Store: manifestStore, Resolver: resolver},
 		GCStates:   &reconcile.ManifestGCStateStore{Store: manifestStore, Resolver: resolver},
-		Locker:     &reconcile.PGAdvisoryLocker{DB: db},
+		Locker:     locker,
 		Schemas:    &reconcile.RegistrySchemaEnumerator{DB: db, Table: env.Tables.SchemaRegistry, SchemaIDFilter: int(schema.ID)},
 		Now:        time.Now,
 		Bucket:     env.Cluster.Bucket,

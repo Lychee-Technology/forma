@@ -5,24 +5,25 @@ import (
 	"fmt"
 )
 
-// initSchemaUnderLock holds the per-schema advisory lock for the whole
-// export + manifest publish, so manifest-reconcile (which reconciles under
-// the same lock) can never race an in-flight init (#290). Contended is an
-// error, not a skip: init is operator-initiated and a silently skipped
-// schema would stay uninitialized unnoticed.
+// initSchemaUnderLock holds the per-schema lock for the whole export +
+// manifest publish, so manifest-reconcile (which reconciles under the same
+// lock) can never race an in-flight init (#290). Contended is an error, not
+// a skip: init is operator-initiated and a silently skipped schema would
+// stay uninitialized unnoticed. The work runs on the lock's held context, so
+// a lost lease (#633) ends it.
 func initSchemaUnderLock(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error) {
-	tryLock := runCtx.tryLock
-	if tryLock == nil {
-		tryLock = TrySchemaLock
+	locker := runCtx.locker
+	if locker == nil {
+		locker = advisorySchemaLocker{db: runCtx.db}
 	}
-	locked, unlock, err := tryLock(ctx, runCtx.db, schemaID)
+	held, release, locked, err := locker.TryLock(ctx, schemaID)
 	if err != nil {
-		return 0, 0, fmt.Errorf("acquire advisory lock: %w", err)
+		return 0, 0, fmt.Errorf("acquire schema lock: %w", err)
 	}
 	if !locked {
 		return 0, 0, ErrSchemaLockContended
 	}
-	defer unlock()
+	defer release()
 	initSchemaFn := runCtx.initSchemaFn
 	if initSchemaFn == nil {
 		initSchemaFn = initSchema
@@ -30,9 +31,9 @@ func initSchemaUnderLock(ctx context.Context, runCtx *initRunContext, schemaID i
 	// The caller (processInitSchemas) already wraps this with "schema %d: %w",
 	// so we name only the operation here — not the schema ID — to avoid the
 	// double-naming rejected in earlier review.
-	rowsExported, filesCreated, err := initSchemaFn(ctx, runCtx, schemaID)
+	rowsExported, filesCreated, err := initSchemaFn(held, runCtx, schemaID)
 	if err != nil {
-		return rowsExported, filesCreated, fmt.Errorf("init export+publish under schema lock: %w", err)
+		return rowsExported, filesCreated, WithLockLoss(held, fmt.Errorf("init export+publish under schema lock: %w", err))
 	}
 	return rowsExported, filesCreated, nil
 }
