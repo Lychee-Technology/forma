@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/lychee-technology/forma/internal/model"
+
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
@@ -30,6 +32,10 @@ const maxUpsertAttempts = 4
 type upsertPlan struct {
 	schemaName string
 	create     *preparedCreate
+	// createdAt is the repository clock read the create is stamped with in
+	// every round, so a key over the creation stamp is looked up under the
+	// value the create would reserve.
+	createdAt int64
 	// key is the target key, nil for a row-ID target, and value its value
 	// in the create.
 	key   *uniqueKeySpec
@@ -141,9 +147,12 @@ func (s *txSession) lockTargetHolder(ctx context.Context, plan *upsertPlan, hold
 	return found && current == holder, nil
 }
 
-// createUpserted runs the planned create.
+// createUpserted runs the planned create under the plan's creation stamp.
 func (s *txSession) createUpserted(ctx context.Context, plan *upsertPlan) (*forma.UpsertResult, error) {
-	record, err := s.crud.insertPrepared(ctx, plan.create)
+	insert := func(ctx context.Context, tables model.StorageTables, record *model.PersistentRecord) error {
+		return s.rows.insertPersistentRecordAt(ctx, tables, record, plan.createdAt)
+	}
+	record, err := s.crud.insertPrepared(ctx, plan.create, insert)
 	if err != nil {
 		return nil, err
 	}
