@@ -1,0 +1,5 @@
+{
+  "createdAt": { "attributeID": 2, "valueType": "datetime", "column_binding": { "col_name": "bigint_01", "encoding": "unix_ms" } },
+  "dedup_count": { "attributeID": 3, "valueType": "integer" },
+  "event": { "attributeID": 1, "valueType": "text" }
+}

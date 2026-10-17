@@ -97,9 +97,11 @@ in one consistent order in every transaction (for example by schema, then row
 ID) avoids this kind of deadlock.
 
 `Tx.Update` and `Tx.Delete` honour `Preconditions` and `UpdateOps` exactly
-as `EntityManager` does ([Conditional writes](conditional-writes.md)). Upsert
-(#651) and claim (#653) are later `Tx` methods. Batch operations inside a Tx
-are out of scope.
+as `EntityManager` does ([Conditional writes](conditional-writes.md)).
+`Tx.Upsert` creates a row, or, when a live row holds its row ID or unique-key
+target, locks that row and leaves it or updates it under a precondition
+([Row IDs and Unique Keys](unique-keys.md#upsert)). Claim (#653) is a later
+`Tx` method. Batch operations inside a Tx are out of scope.
 
 Adding those methods doesn't break a caller's build. `Tx` is sealed, so a type
 outside Forma can satisfy it only by embedding a `Tx`, and that type gets each
@@ -322,7 +324,7 @@ An error from a `Tx` method either leaves the Tx usable or **poisons** it.
 | --- | --- |
 | `ErrNotFound` (an unknown schema, or no row to read, assert, update or delete) | no |
 | `ErrPreconditionFailed` (an `AssertRow` or conditional write that found the row failing its precondition), `ErrUniqueConflict` (a create onto a live row ID, or a write onto a taken unique-key value: see [Row IDs and Unique Keys](unique-keys.md)), raised without a failed SQL statement | no |
-| `ErrInvalidInput` raised before the operation sent any SQL (a malformed operation, a `Create` that fails validation, a federated read, `ForUpdate` on `Query`, a `MutateWhereRequest` refused by its validation) | no |
+| `ErrInvalidInput` raised before the operation sent any SQL (a malformed operation, a `Create` that fails validation, a federated read, `ForUpdate` on `Query`, a `MutateWhereRequest` or `UpsertRequest` refused by its validation) | no |
 | `ErrInvalidInput` for a predicate mutation that matched more than `MaxAffected` rows, after only its candidate select | no |
 | `ErrInvalidInput` raised after the operation sent SQL | yes |
 | any error from a predicate mutation after its first row was written | yes |

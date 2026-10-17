@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LTFlow-shaped idempotency record",
+  "type": "object",
+  "x-forma-unique-keys": [
+    { "id": 1, "name": "idempotency", "attributes": ["instance_id", "idempotency_key"] },
+    { "id": 2, "name": "external_ref", "attributes": ["external_ref"] }
+  ],
+  "properties": {
+    "instance_id": { "type": "string" },
+    "idempotency_key": { "type": "string" },
+    "status": { "type": "string" },
+    "request_hash": { "type": "string" },
+    "external_ref": { "type": "string" },
+    "counter": { "type": "integer" }
+  }
+}

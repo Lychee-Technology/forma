@@ -32,17 +32,6 @@ func (k mutateKind) method() string {
 	return "DeleteWhere"
 }
 
-// mutateWhereHooks, set only by tests, run inside a predicate mutation at
-// the points its concurrency and poisoning proofs need.
-type mutateWhereHooks struct {
-	// afterCandidates runs once the candidates are selected, before any of
-	// them is locked.
-	afterCandidates func(candidates []uuid.UUID)
-	// beforeWrite runs before the i-th surviving row is written; an error
-	// fails that row's write.
-	beforeWrite func(i int, rowID uuid.UUID) error
-}
-
 // mutationPlan is a validated request, with everything its statements need
 // resolved before the first one is sent.
 type mutationPlan struct {
@@ -215,8 +204,8 @@ func (s *txSession) lockSurvivors(ctx context.Context, plan *mutationPlan) ([]uu
 			"%s on %s matches %d rows, more than MaxAffected %d: narrow the condition, set a Limit, or raise MaxAffected (at most %d)",
 			plan.kind.method(), req.SchemaName, matched, plan.maxAffected, forma.MaxMaxAffected)}
 	}
-	if s.mutateHooks != nil && s.mutateHooks.afterCandidates != nil {
-		s.mutateHooks.afterCandidates(candidates)
+	if s.testHooks != nil && s.testHooks.afterCandidates != nil {
+		s.testHooks.afterCandidates(candidates)
 	}
 	survivors, err := s.rows.LockAndRecheck(ctx, plan.tables, plan.schemaID, candidates, plan.condition)
 	if err != nil {
@@ -257,8 +246,8 @@ func (s *txSession) applyMutation(ctx context.Context, plan *mutationPlan, survi
 // mutateRow writes one surviving row through the CRUD service's own Update
 // or Delete. It answers the row's record when the request asked for it.
 func (s *txSession) mutateRow(ctx context.Context, plan *mutationPlan, i int, rowID uuid.UUID) (*forma.DataRecord, error) {
-	if s.mutateHooks != nil && s.mutateHooks.beforeWrite != nil {
-		if err := s.mutateHooks.beforeWrite(i, rowID); err != nil {
+	if s.testHooks != nil && s.testHooks.beforeWrite != nil {
+		if err := s.testHooks.beforeWrite(i, rowID); err != nil {
 			return nil, err
 		}
 	}
@@ -283,19 +272,28 @@ func (s *txSession) mutateRow(ctx context.Context, plan *mutationPlan, i int, ro
 	return before, nil
 }
 
-// storedRecord reads a locked row as Update answers a row: the storage
-// round-trip, without relation enrichment.
+// storedRecord reads a locked row before its delete; see storedRow.
 func (s *txSession) storedRecord(ctx context.Context, plan *mutationPlan, rowID uuid.UUID) (*forma.DataRecord, error) {
-	stored, err := s.rows.GetPersistentRecord(ctx, plan.tables, plan.schemaID, rowID)
+	record, err := s.storedRow(ctx, plan.tables, plan.req.SchemaName, plan.schemaID, rowID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read %s/%s before deleting it: %w", plan.req.SchemaName, rowID, err)
+		return nil, fmt.Errorf("failed to read the row before deleting it: %w", err)
+	}
+	return record, nil
+}
+
+// storedRow reads a locked row as Update answers a row: the storage
+// round-trip, without relation enrichment.
+func (s *txSession) storedRow(ctx context.Context, tables model.StorageTables, schemaName string, schemaID int16, rowID uuid.UUID) (*forma.DataRecord, error) {
+	stored, err := s.rows.GetPersistentRecord(ctx, tables, schemaID, rowID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read %s/%s: %w", schemaName, rowID, err)
 	}
 	if stored == nil {
-		return nil, fmt.Errorf("locked row %s/%s is missing before its delete", plan.req.SchemaName, rowID)
+		return nil, fmt.Errorf("locked row %s/%s is missing", schemaName, rowID)
 	}
 	attributes, err := s.crud.transformer.FromPersistentRecord(ctx, stored)
 	if err != nil {
-		return nil, fmt.Errorf("failed to transform %s/%s before deleting it: %w", plan.req.SchemaName, rowID, err)
+		return nil, fmt.Errorf("failed to transform %s/%s: %w", schemaName, rowID, err)
 	}
-	return &forma.DataRecord{SchemaName: plan.req.SchemaName, RowID: rowID, Attributes: attributes}, nil
+	return &forma.DataRecord{SchemaName: schemaName, RowID: rowID, Attributes: attributes}, nil
 }

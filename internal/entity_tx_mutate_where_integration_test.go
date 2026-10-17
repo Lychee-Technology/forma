@@ -225,7 +225,7 @@ func TestMutateWhereFailureAfterTheFirstWritePoisons(t *testing.T) {
 	before := env.snapshots(t, ids)
 	conflict := fmt.Errorf("injected: %w", forma.ErrUniqueConflict)
 	failAt := 0
-	env.txr.mutateHooks = &mutateWhereHooks{beforeWrite: func(i int, _ uuid.UUID) error {
+	env.txr.testHooks = &txTestHooks{beforeWrite: func(i int, _ uuid.UUID) error {
 		if i == failAt {
 			return conflict
 		}
