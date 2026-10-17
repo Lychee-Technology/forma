@@ -204,6 +204,7 @@ make benchmark-heavy       # Heavy planning set
 - [Condition DSL Reference](docs/condition-dsl.md)
 - [Declared Indexes (`x-forma-indexes`)](docs/schema-indexes.md)
 - [Row IDs and Unique Keys (`x-forma-unique-keys`)](docs/unique-keys.md)
+- [Claims (`Tx.Claim`)](docs/claims.md)
 - [Schema Consistency Migration Guide](docs/schema-consistency-migration.md)
 - [E2E Test Matrix](docs/e2e-tests-en.md)
 - [Integration Test Cases](docs/integ-tests-en.md)

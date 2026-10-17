@@ -33,6 +33,7 @@ func TestClaimListRunsOnRealPostgres(t *testing.T) {
 	for _, name := range []string{
 		"entity_tx_claim_integration_test.go",
 		"entity_tx_claim_concurrency_integration_test.go",
+		"entity_tx_claim_holds_integration_test.go",
 		"entity_tx_claim_fixture_test.go",
 		"entity_conditional_write_integration_test.go",
 	} {

@@ -141,8 +141,9 @@ func claimWrites(req *forma.ClaimRequest, attr string) bool {
 // Limit of them that no other transaction holds and that still match once
 // held. A candidate held elsewhere is skipped and one that stopped matching
 // is dropped; either way the next candidate is tried in its place. Each
-// round tries only as many candidates as rows are still wanted, so the call
-// never holds more claimable rows than it claims.
+// round tries only as many candidates as rows are still wanted, so beyond
+// the rows it claims the call holds only the advisory locks of candidates
+// the re-check dropped or skipped, which last until the Tx ends.
 func (s *txSession) takeClaimable(ctx context.Context, plan *claimPlan) ([]uuid.UUID, error) {
 	req := plan.req
 	candidates, _, err := s.rows.SelectCandidates(ctx, &model.PersistentRecordQuery{Tables: plan.tables,
