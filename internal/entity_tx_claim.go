@@ -16,7 +16,8 @@ import (
 // statement, selects the candidates with Query's own SQL on the transaction,
 // then takes them in selection order without waiting: a candidate another
 // transaction holds is skipped, and a taken one is re-checked against the
-// condition under its row lock. Each claimed row is written through the
+// condition, and with a Group against the head predicate, under its row
+// lock. Each claimed row is written through the
 // single-row Update path, so a claimed row is stored exactly as Tx.Update
 // would store it. The call then checks that the mutation falsified the
 // condition on every claimed row.
@@ -33,7 +34,11 @@ type claimPlan struct {
 	schemaID  int16
 	tables    model.StorageTables
 	orders    []model.AttributeOrder
+	head      *model.GroupHead
 	condition *renderedGuard
+	// eligible is what the re-check tests: condition, and with a Group the
+	// head predicate too.
+	eligible *renderedGuard
 }
 
 func (s *txSession) Claim(ctx context.Context, req *forma.ClaimRequest) (*forma.ClaimResult, error) {
@@ -76,7 +81,7 @@ func (s *txSession) planClaim(req *forma.ClaimRequest) (*claimPlan, error) {
 		return nil, fmt.Errorf("failed to validate Claim condition on %s: %w", req.SchemaName, err)
 	}
 	if err := refuseEmptyGroups("Claim", req.SchemaName, req.Condition); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to validate Claim condition on %s: %w", req.SchemaName, err)
 	}
 	if req.Limit < 1 || req.Limit > forma.MaxClaimLimit {
 		return nil, forma.InvalidInputf("Claim limit %d is out of range: it must be 1 to %d", req.Limit, forma.MaxClaimLimit)
@@ -85,15 +90,37 @@ func (s *txSession) planClaim(req *forma.ClaimRequest) (*claimPlan, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve Claim sort on %s: %w", req.SchemaName, err)
 	}
-	if err := s.validateClaimMutation(req, schemaID, cache); err != nil {
-		return nil, err
-	}
-	tables := s.crud.resolveTables()
-	condition, err := s.rows.RenderCondition(tables, schemaID, model.RowGuard{Precondition: req.Condition})
+	head, err := planClaimGroup(req, cache)
 	if err != nil {
+		return nil, fmt.Errorf("failed to validate Claim group on %s: %w", req.SchemaName, err)
+	}
+	if err := s.validateClaimMutation(req, schemaID, cache); err != nil {
+		return nil, fmt.Errorf("failed to validate Claim mutation on %s: %w", req.SchemaName, err)
+	}
+	plan := &claimPlan{req: req, schemaID: schemaID, tables: s.crud.resolveTables(), orders: orders, head: head}
+	if err := s.renderClaim(plan); err != nil {
 		return nil, fmt.Errorf("failed to prepare Claim on %s: %w", req.SchemaName, err)
 	}
-	return &claimPlan{req: req, schemaID: schemaID, tables: tables, orders: orders, condition: condition}, nil
+	return plan, nil
+}
+
+// renderClaim renders the plan's condition, for the rule-8 check, and what
+// the re-check tests, so that a malformed operand fails before any SQL.
+func (s *txSession) renderClaim(plan *claimPlan) error {
+	condition, err := s.rows.RenderCondition(plan.tables, plan.schemaID, model.RowGuard{Precondition: plan.req.Condition})
+	if err != nil {
+		return forma.WrapPublicf(err, "Claim condition on %s", plan.req.SchemaName)
+	}
+	plan.condition, plan.eligible = condition, condition
+	if plan.head == nil {
+		return nil
+	}
+	// The condition rendered above, so a failure here is the live condition's.
+	plan.eligible, err = s.rows.RenderClaimEligibility(plan.tables, plan.schemaID, plan.req.Condition, plan.head)
+	if err != nil {
+		return forma.WrapPublicf(err, "Claim group live condition on %s", plan.req.SchemaName)
+	}
+	return nil
 }
 
 // validateClaimMutation checks Updates and UpdateOps as Update checks them
@@ -137,6 +164,14 @@ func claimWrites(req *forma.ClaimRequest, attr string) bool {
 	return false
 }
 
+// candidateQuery is the candidate select: Query's SQL for the condition,
+// restricted to group heads with a Group, over-fetching claimOverfetch
+// candidates per row the claim may take.
+func (plan *claimPlan) candidateQuery() *model.PersistentRecordQuery {
+	return &model.PersistentRecordQuery{Tables: plan.tables, SchemaID: plan.schemaID, Condition: plan.req.Condition,
+		AttributeOrders: plan.orders, Head: plan.head, Limit: claimOverfetch * plan.req.Limit}
+}
+
 // takeClaimable selects the candidates and takes, in selection order, up to
 // Limit of them that no other transaction holds and that still match once
 // held. A candidate held elsewhere is skipped and one that stopped matching
@@ -145,8 +180,7 @@ func claimWrites(req *forma.ClaimRequest, attr string) bool {
 // never holds more claimable rows than it claims.
 func (s *txSession) takeClaimable(ctx context.Context, plan *claimPlan) ([]uuid.UUID, error) {
 	req := plan.req
-	candidates, _, err := s.rows.SelectCandidates(ctx, &model.PersistentRecordQuery{Tables: plan.tables,
-		SchemaID: plan.schemaID, Condition: req.Condition, AttributeOrders: plan.orders, Limit: claimOverfetch * req.Limit})
+	candidates, _, err := s.rows.SelectCandidates(ctx, plan.candidateQuery())
 	if err != nil {
 		return nil, fmt.Errorf("failed to select Claim candidates on %s: %w", req.SchemaName, err)
 	}
@@ -161,7 +195,7 @@ func (s *txSession) takeClaimable(ctx context.Context, plan *claimPlan) ([]uuid.
 		if err != nil {
 			return nil, fmt.Errorf("failed to take Claim candidates on %s: %w", req.SchemaName, err)
 		}
-		held, err := s.rows.RecheckHeld(ctx, plan.tables, plan.schemaID, taken, plan.condition)
+		held, err := s.rows.RecheckHeld(ctx, plan.tables, plan.schemaID, taken, plan.eligible)
 		if err != nil {
 			return nil, fmt.Errorf("failed to re-check Claim candidates on %s: %w", req.SchemaName, err)
 		}

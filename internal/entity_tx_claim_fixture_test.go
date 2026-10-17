@@ -120,10 +120,45 @@ func (e *outboxPG) create(t *testing.T, data map[string]any) uuid.UUID {
 // answers their row IDs in enqueued_at order.
 func (e *outboxPG) createMessages(t *testing.T, topic string, n int) []uuid.UUID {
 	t.Helper()
+	messages := make([]map[string]any, n)
+	for i := range messages {
+		messages[i] = pendingMessage(topic, i)
+	}
+	return e.createAll(t, messages)
+}
+
+// createAll creates messages in one batch and answers their row IDs in
+// order.
+func (e *outboxPG) createAll(t *testing.T, messages []map[string]any) []uuid.UUID {
+	t.Helper()
+	return e.createBatch(t, messages, nil)
+}
+
+// createDescending is createAll under caller row IDs (#651) that descend as
+// messages ascend, so a row's ID order is the reverse of its place in
+// messages: a test whose messages are in enqueued order then tells the
+// group order from the row-ID tiebreak. tag keeps one test's IDs apart.
+func (e *outboxPG) createDescending(t *testing.T, tag int, messages []map[string]any) []uuid.UUID {
+	t.Helper()
+	rowIDs := make([]uuid.UUID, len(messages))
+	for i := range messages {
+		rowIDs[i] = uuid.MustParse(fmt.Sprintf("0190b6a1-0000-7000-8000-%02d%010d", tag, len(messages)-i))
+	}
+	return e.createBatch(t, messages, rowIDs)
+}
+
+// createBatch creates messages in one atomic batch, under rowIDs when it is
+// not nil.
+func (e *outboxPG) createBatch(t *testing.T, messages []map[string]any, rowIDs []uuid.UUID) []uuid.UUID {
+	t.Helper()
+	n := len(messages)
 	ops := make([]forma.EntityOperation, n)
-	for i := range ops {
+	for i, data := range messages {
 		ops[i] = forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: outboxSchemaName},
-			Type: forma.OperationCreate, Data: pendingMessage(topic, i)}
+			Type: forma.OperationCreate, Data: data}
+		if rowIDs != nil {
+			ops[i].RowID = rowIDs[i]
+		}
 	}
 	result, err := e.em.BatchCreate(e.ctx, &forma.BatchOperation{Operations: ops, Atomic: true})
 	require.NoError(t, err)
@@ -138,6 +173,9 @@ func (e *outboxPG) createMessages(t *testing.T, topic string, n int) []uuid.UUID
 	ids := make([]uuid.UUID, n)
 	for i, record := range result.Successful {
 		ids[i] = record.RowID
+		if rowIDs != nil {
+			require.Equal(t, rowIDs[i], record.RowID)
+		}
 	}
 	return ids
 }
