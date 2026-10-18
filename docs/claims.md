@@ -100,7 +100,10 @@ published, the next row becomes the head.
 
 **No fall-through.** A head another transaction holds is skipped like any
 held row, and no later row of its group is claimed in its place: the later
-rows are not heads. The re-check under the lock tests the head rule again, so
+rows are not heads. That includes a head a claim locked but did not take,
+which keeps its lock until that claim's Tx ends
+([above](#what-a-claim-takes)): its whole group waits for that Tx, not only
+the head. The re-check under the lock tests the head rule again, so
 a candidate that stopped being the head after the select is dropped, for
 example because an earlier row became live again.
 

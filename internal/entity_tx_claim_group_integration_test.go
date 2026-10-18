@@ -163,6 +163,46 @@ func TestClaimGroupNullsGroupAndSortLast(t *testing.T) {
 		"one head for the rows without a partition; p1's valued row heads the row with no enqueued_at")
 }
 
+// attempted sets message's attempts to n, or clears it when n is negative.
+func attempted(message map[string]any, n int) map[string]any {
+	message["attempts"] = n
+	if n < 0 {
+		delete(message, "attempts")
+	}
+	return message
+}
+
+// Rows share a group only when every key component is equal, a null equal
+// to a null.
+func TestClaimGroupTwoKeyAttributes(t *testing.T) {
+	env := newOutboxPG(t)
+	ids := env.createDescending(t, 4, []map[string]any{
+		partitioned("g", "p1", 0), partitioned("g", "p1", 1), attempted(partitioned("g", "p1", 2), 1),
+		attempted(partitioned("g", "p1", 3), -1), attempted(partitioned("g", "p1", 4), -1), partitioned("g", "", 5),
+	})
+	req := fifo(claimOf("g", "relay", 10))
+	req.Group.Key = []string{"partition_key", "attempts"}
+	records, err := env.claim(req)
+	require.NoError(t, err)
+	assert.Equal(t, []uuid.UUID{ids[0], ids[2], ids[3], ids[5]}, rowIDsOf(records),
+		"one head each for (p1, 0), (p1, 1), (p1, null) and (null, 0)")
+}
+
+// A later order attribute breaks a tie of an earlier one before the row ID
+// does.
+func TestClaimGroupTwoOrderAttributes(t *testing.T) {
+	env := newOutboxPG(t)
+	ids := env.createDescending(t, 5, []map[string]any{
+		attempted(partitioned("g", "p1", 0), 1), partitioned("g", "p1", 1), partitioned("g", "p1", 2),
+	})
+	req := fifo(claimOf("g", "relay", 10))
+	req.Group.Order = []forma.OrderBy{{Attribute: "attempts"}, {Attribute: "enqueued_at"}}
+	records, err := env.claim(req)
+	require.NoError(t, err)
+	assert.Equal(t, ids[1:2], rowIDsOf(records),
+		"attempts, then enqueued_at, pick r2; attempts then row ID would pick r3, enqueued_at alone r1")
+}
+
 // The re-check applies the head predicate too: a candidate that stopped
 // being its group's head between the select and its lock is dropped.
 func TestClaimGroupReCheckDropsARowThatStoppedBeingTheHead(t *testing.T) {
