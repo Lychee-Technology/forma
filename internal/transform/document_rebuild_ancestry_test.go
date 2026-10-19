@@ -29,6 +29,18 @@ func newAncestryRegistry() *stubSchemaRegistry {
 	return &stubSchemaRegistry{schemaID: 619, schemaName: "rebuild", cache: cache}
 }
 
+// newRegistryWithoutAncestry is newAncestryRegistry's schema with no
+// attribute declaring its array ancestry, as a registry that cannot derive
+// it registers the schema.
+func newRegistryWithoutAncestry() *stubSchemaRegistry {
+	registry := newAncestryRegistry()
+	for name, meta := range registry.cache {
+		meta.ArrayAncestors = nil
+		registry.cache[name] = meta
+	}
+	return registry
+}
+
 // declareArrayAncestors sets every attribute's ArrayAncestors to the arrays
 // of objects among its proper prefixes.
 func declareArrayAncestors(cache forma.SchemaAttributeCache, arrays ...string) {

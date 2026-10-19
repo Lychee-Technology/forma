@@ -180,7 +180,10 @@ type AttributeMetadata struct {
 	// the schema; a registry that sets it must set it, possibly empty, on every
 	// attribute of the schema. A rebuild that meets an attribute without it
 	// infers each record's array ancestor from the row, which cannot place an
-	// object or array nested inside an array of objects. The JSON form keeps
+	// object or array nested inside an array of objects. Nor can it place the
+	// empty-list marker such a list stores while the field is set, so once a
+	// registry stops setting it for a schema, every update of a row holding
+	// one is refused until the registry sets it again. The JSON form keeps
 	// nil (null) and empty ([]) apart.
 	ArrayAncestors []string `json:"array_ancestors"`
 }

@@ -200,13 +200,24 @@ func (n *shapeNode) nestsInObjectArray(insideObjectArray bool) bool {
 // merge. That deletes nothing either, so it is counted, not judged.
 func TestMergeUpdateNeverDropsStoredRecords(t *testing.T) {
 	t.Run("array ancestry", func(t *testing.T) {
-		written, refused, perField := checkMergeUpdateKeepsStoredRecords(t, true)
+		written, refused, perField := checkMergeUpdateKeepsStoredRecords(t, true, true)
 		require.Positive(t, written)
 		require.Zero(t, refused, "an update over a row of a schema with array ancestry is never refused")
 		require.Zero(t, perField)
 	})
 	t.Run("inferred", func(t *testing.T) {
-		written, refused, perField := checkMergeUpdateKeepsStoredRecords(t, false)
+		written, refused, perField := checkMergeUpdateKeepsStoredRecords(t, false, false)
+		require.Positive(t, written)
+		require.Positive(t, refused)
+		t.Logf("%d rows written back whole, %d updates refused, %d per-field rows refused on write (#623)",
+			written, refused, perField)
+	})
+	// A registry that no longer derives a schema's ancestry, as one whose
+	// document gained another file's $ref does, reads rows written with it
+	// by inference. Those rows differ only in their empty-list markers inside
+	// an array of objects, which carry indices the inference cannot place.
+	t.Run("ancestry lost after the write", func(t *testing.T) {
+		written, refused, perField := checkMergeUpdateKeepsStoredRecords(t, true, false)
 		require.Positive(t, written)
 		require.Positive(t, refused)
 		t.Logf("%d rows written back whole, %d updates refused, %d per-field rows refused on write (#623)",
@@ -226,13 +237,29 @@ func storedDocument(roots []*shapeNode, doc map[string]any) map[string]any {
 	return want
 }
 
-func checkMergeUpdateKeepsStoredRecords(t *testing.T, ancestry bool) (written, refused, perField int) {
+// shapesRegistry registers declared as is, or with no attribute declaring
+// its array ancestry.
+func shapesRegistry(declared forma.SchemaAttributeCache, ancestry bool) forma.SchemaRegistry {
+	cache := make(forma.SchemaAttributeCache, len(declared))
+	for name, meta := range declared {
+		if !ancestry {
+			meta.ArrayAncestors = nil
+		}
+		cache[name] = meta
+	}
+	return &stubSchemaRegistry{schemaID: 700, schemaName: "shapes", cache: cache}
+}
+
+// checkMergeUpdateKeepsStoredRecords stores each row through a registry
+// with array ancestry or without (storeAncestry), and updates it through
+// one with or without (updateAncestry).
+func checkMergeUpdateKeepsStoredRecords(t *testing.T, storeAncestry, updateAncestry bool) (written, refused, perField int) {
 	t.Helper()
 	r := rand.New(rand.NewSource(624))
 	ctx := context.Background()
 	for i := 0; i < 20000; i++ {
 		roots := make([]*shapeNode, 1+r.Intn(3))
-		cache := forma.SchemaAttributeCache{"zz": {AttributeName: "zz", AttributeID: 100, ValueType: forma.ValueTypeText}}
+		cache := forma.SchemaAttributeCache{"zz": {AttributeName: "zz", AttributeID: 100, ValueType: forma.ValueTypeText, ArrayAncestors: []string{}}}
 		ids := r.Perm(99)
 		doc := make(map[string]any)
 		for j := range roots {
@@ -242,22 +269,13 @@ func checkMergeUpdateKeepsStoredRecords(t *testing.T, ancestry bool) (written, r
 				doc[roots[j].name] = value
 			}
 		}
-		for name, meta := range cache {
-			if !ancestry || name == "zz" {
-				meta.ArrayAncestors = nil
-			}
-			if ancestry && name == "zz" {
-				meta.ArrayAncestors = []string{}
-			}
-			cache[name] = meta
-		}
-		tr := NewPersistentRecordTransformer(&stubSchemaRegistry{schemaID: 700, schemaName: "shapes", cache: cache})
 		rowID := uuid.Must(uuid.NewV7())
-		stored, err := tr.ToPersistentRecord(ctx, 700, rowID, doc)
+		stored, err := NewPersistentRecordTransformer(shapesRegistry(cache, storeAncestry)).ToPersistentRecord(ctx, 700, rowID, doc)
 		if err != nil {
 			continue
 		}
-		if ancestry {
+		tr := NewPersistentRecordTransformer(shapesRegistry(cache, updateAncestry))
+		if storeAncestry && updateAncestry {
 			read, err := tr.FromPersistentRecord(ctx, stored)
 			require.NoError(t, err, "document %v", doc)
 			require.Equal(t, storedDocument(roots, doc), read, "document %v", doc)

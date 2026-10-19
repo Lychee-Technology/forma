@@ -3,6 +3,7 @@ package transform
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -18,12 +19,20 @@ import (
 // not decided here: it is read off the same walk the write runs over the
 // merged document (walkDocument), so the update's path and #312 semantics
 // have one source.
+//
+// A row read without array ancestry leaves out an empty-list marker that
+// carries array indices (rebuildInferred). It was written while the
+// registry declared the schema's ancestry, which a schema document edit can
+// stop (#705), and it reads back in its element once the registry does
+// again. The write would delete its record, so the update is refused
+// instead, before the merge: the base does not hold the marker, so nothing
+// tells whether the caller replaces it.
 func (t *persistentRecordTransformer) MergeUpdate(
 	ctx context.Context,
 	record *model.PersistentRecord,
 	merge func(base map[string]any) (map[string]any, error),
 ) (map[string]any, error) {
-	base, err := t.fromPersistentRecord(ctx, record, holdRecordValue)
+	base, unplaced, err := t.fromPersistentRecord(ctx, record, holdRecordValue)
 	if err != nil {
 		return nil, err
 	}
@@ -31,11 +40,31 @@ func (t *persistentRecordTransformer) MergeUpdate(
 	if err != nil {
 		return nil, fmt.Errorf("failed to load schema %d metadata for row %s: %w", record.SchemaID, record.RowID, err)
 	}
+	if len(unplaced) > 0 {
+		return nil, unplacedMarkerError(record, unplaced[0], cache)
+	}
 	merged, err := merge(base)
 	if err != nil {
 		return nil, fmt.Errorf("failed to merge the update into row %s: %w", record.RowID, err)
 	}
 	return resolveStoredValues(record.SchemaID, record.RowID, merged, cache)
+}
+
+// unplacedMarkerError refuses an update over a row holding marker, an
+// empty-list marker with array indices that the row, read without array
+// ancestry, leaves out. Like unplacedError, it blames the stored state, not
+// the caller, and is plain.
+func unplacedMarkerError(record *model.PersistentRecord, marker rebuildRecord, cache forma.SchemaAttributeCache) error {
+	attrName := strings.Join(marker.segments, ".")
+	identity := eavRecordIdentity(model.EAVRecord{
+		SchemaID: record.SchemaID, RowID: record.RowID,
+		AttrID: cache[attrName].AttributeID, ArrayIndices: joinIndices(marker.indices),
+	})
+	return fmt.Errorf("record %s: stored empty-list marker of list attribute '%s' carries array indices, "+
+		"which only a rebuild by array ancestry places, and the registry does not declare the ancestry of every attribute in the row, "+
+		"so this update cannot write it back; the registry must declare the schema's array ancestry, "+
+		"as the file registry does when the schema document resolves every attribute's ancestors",
+		identity, attrName)
 }
 
 // resolveStoredValues replaces every stored value the merged document holds

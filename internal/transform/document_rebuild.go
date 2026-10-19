@@ -30,13 +30,19 @@ type rebuildRecord struct {
 // was written in (#623). A row with any attribute that does not declare them
 // is read as before, by inferring each record's array from the row
 // (rebuildInferred); the two readings are never mixed within a row.
-func rebuildDocument(records []rebuildRecord) map[string]any {
+//
+// It also returns the records the document leaves out that a reading by
+// array ancestry places: the indexed empty-list markers a row read by
+// inference holds, which an update refuses rather than deletes
+// (MergeUpdate). The markers a reading by ancestry leaves out are not
+// among them, since no reading places them.
+func rebuildDocument(records []rebuildRecord) (map[string]any, []rebuildRecord) {
 	for _, rec := range records {
 		if rec.ancestors == nil {
 			return rebuildInferred(records)
 		}
 	}
-	return rebuildByAncestry(records)
+	return rebuildByAncestry(records), nil
 }
 
 // rebuildByAncestry places every record by its attribute's array ancestors.
@@ -55,12 +61,11 @@ func rebuildDocument(records []rebuildRecord) map[string]any {
 // is what it read as without ancestry, unless the row holds elements of the
 // array in the same element of its outer arrays. Then it goes under a literal
 // key beside the array, which the write reads back at the indices it is
-// stored under. The choice is made for
-// all of an attribute's records with as many indices at once, so they share
-// one key spelling, which is all a write keeps of an attribute (#312). An
-// empty-list marker with no indices beside an array with elements is left
-// out: one written before #623 carried none wherever its list was, so it
-// names none of the elements.
+// stored under. The choice is made for all of an attribute's records with as
+// many indices at once, so they share one key spelling, which is all a write
+// keeps of an attribute (#312). An empty-list marker with no indices beside
+// an array with elements is left out: one written before #623 carried none
+// wherever its list was, so it names none of the elements.
 func rebuildByAncestry(records []rebuildRecord) map[string]any {
 	arrays := make(map[string]struct{})
 	for _, rec := range records {

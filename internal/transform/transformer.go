@@ -116,15 +116,23 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 // dropped, except a list's empty-list marker, which rebuilds as an explicit
 // [] (#204).
 func (t *transformer) FromAttributes(ctx context.Context, attributes []model.EntityAttribute) (map[string]any, error) {
+	doc, _, err := t.rebuild(attributes)
+	return doc, err
+}
+
+// rebuild is FromAttributes, also returning the empty-list markers the
+// document leaves out that a reading by array ancestry places
+// (rebuildDocument).
+func (t *transformer) rebuild(attributes []model.EntityAttribute) (map[string]any, []rebuildRecord, error) {
 	records := make([]rebuildRecord, 0, len(attributes))
 	for _, attr := range attributes {
 		cache, idToName, err := schemameta.GetSchemaMetadata(t.registry, attr.SchemaID)
 		if err != nil {
-			return nil, fmt.Errorf("load metadata of schema %d: %w", attr.SchemaID, err)
+			return nil, nil, fmt.Errorf("load metadata of schema %d: %w", attr.SchemaID, err)
 		}
 		attrName, ok := idToName[attr.AttrID]
 		if !ok {
-			return nil, fmt.Errorf("attribute id %d not found for schema %d", attr.AttrID, attr.SchemaID)
+			return nil, nil, fmt.Errorf("attribute id %d not found for schema %d", attr.AttrID, attr.SchemaID)
 		}
 		meta := cache[attrName]
 		list := meta.ValueType == forma.ValueTypeList
@@ -137,7 +145,7 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []model.Ent
 		}
 		indices, err := parseIndices(attr.ArrayIndices)
 		if err != nil {
-			return nil, fmt.Errorf("parse array indices for attribute '%s': %w", attrName, err)
+			return nil, nil, fmt.Errorf("parse array indices for attribute '%s': %w", attrName, err)
 		}
 		records = append(records, rebuildRecord{
 			segments:  strings.Split(attrName, "."),
@@ -148,7 +156,8 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []model.Ent
 			value:     value,
 		})
 	}
-	return rebuildDocument(records), nil
+	doc, unplaced := rebuildDocument(records)
+	return doc, unplaced, nil
 }
 
 func (t *transformer) BatchToAttributes(ctx context.Context, schemaID int16, jsonObjects []any) ([]model.EntityAttribute, error) {

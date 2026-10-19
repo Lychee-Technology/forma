@@ -154,23 +154,69 @@ func TestEmptyListMarkerCarriesItsElementUnderAncestry(t *testing.T) {
 	doc := map[string]any{"order": map[string]any{"items": []any{
 		map[string]any{"sku": "a"}, map[string]any{"tags": []any{}},
 	}}}
-	inferred := newAncestryRegistry()
-	for name, meta := range inferred.cache {
-		meta.ArrayAncestors = nil
-		inferred.cache[name] = meta
-	}
 	for name, tc := range map[string]struct {
 		registry forma.SchemaRegistry
 		want     []string
 	}{
 		"array ancestry": {registry: newAncestryRegistry(), want: []string{"9[0]=a", "19[1]=<none>"}},
-		"inferred":       {registry: inferred, want: []string{"9[0]=a", "19[]=<none>"}},
+		"inferred":       {registry: newRegistryWithoutAncestry(), want: []string{"9[0]=a", "19[]=<none>"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			stored, err := NewPersistentRecordTransformer(tc.registry).
 				ToPersistentRecord(context.Background(), 619, uuid.Must(uuid.NewV7()), doc)
 			require.NoError(t, err)
 			require.ElementsMatch(t, tc.want, storedKeys(stored.OtherAttributes))
+		})
+	}
+}
+
+// A row written while its schema declared array ancestry holds the indexed
+// marker of a list inside an array of objects. A registry that no longer
+// declares that ancestry, as one does once the schema document reaches an
+// attribute through another file's $ref, reads the row by inference and
+// without the marker. An update of the row is then refused rather than
+// deleting the marker's record, whatever the update sends: the merge base
+// does not hold the marker, so nothing tells whether the update replaces
+// it. The refusal follows the row's reading, so a row read by inference
+// because one of its attributes alone declares no ancestry is refused too.
+func TestMergeUpdateRefusesMarkerReadWithoutAncestry(t *testing.T) {
+	ctx := context.Background()
+	rowID := uuid.Must(uuid.NewV7())
+	stored, err := NewPersistentRecordTransformer(newAncestryRegistry()).ToPersistentRecord(ctx, 619, rowID, map[string]any{
+		"order": map[string]any{"note": "n", "items": []any{map[string]any{"sku": "a"}, map[string]any{"tags": []any{}}}},
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"10[]=n", "9[0]=a", "19[1]=<none>"}, storedKeys(stored.OtherAttributes))
+
+	noteUndeclared := newAncestryRegistry()
+	note := noteUndeclared.cache["order.note"]
+	note.ArrayAncestors = nil
+	noteUndeclared.cache["order.note"] = note
+	for name, registry := range map[string]forma.SchemaRegistry{
+		"no attribute declares it": newRegistryWithoutAncestry(),
+		"one attribute does not":   noteUndeclared,
+	} {
+		t.Run(name, func(t *testing.T) {
+			tr := NewPersistentRecordTransformer(registry)
+			read, err := tr.FromPersistentRecord(ctx, stored)
+			require.NoError(t, err)
+			require.Equal(t, map[string]any{"order": map[string]any{
+				"note": "n", "items": []any{map[string]any{"sku": "a"}},
+			}}, read)
+
+			for _, update := range []map[string]any{
+				{"tags": []any{"unrelated"}},
+				{"order": map[string]any{"items": []any{}}},
+			} {
+				_, err := tr.MergeUpdate(ctx, stored, setting(update))
+				require.EqualError(t, err, "record schema=619 row="+rowID.String()+" attrID=19 arrayIndices=1: "+
+					"stored empty-list marker of list attribute 'order.items.tags' carries array indices, "+
+					"which only a rebuild by array ancestry places, and the registry does not declare the ancestry of every attribute in the row, "+
+					"so this update cannot write it back; the registry must declare the schema's array ancestry, "+
+					"as the file registry does when the schema document resolves every attribute's ancestors",
+					"update %v", update)
+				require.NotErrorIs(t, err, forma.ErrInvalidInput)
+			}
 		})
 	}
 }

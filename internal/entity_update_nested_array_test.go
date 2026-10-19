@@ -165,7 +165,8 @@ func TestUnrelatedUpdateOverNestedArrayIsRefused(t *testing.T) {
 				if err == nil {
 					t.Fatalf("update of %s succeeded; stored records now %v", name, storedTextRecords(repo.records[nestedArraySchema][rowID]))
 				}
-				assertNestedArrayRefusal(t, err, rowID)
+				assertStoredRowRefusal(t, err,
+					rowID.String(), "attrID=1 arrayIndices=0,0", "'order.items.lots.code'", "'order.items.lots.code.code'")
 				if repo.records[nestedArraySchema][rowID] != before {
 					t.Fatalf("refused update of %s stored a new row", name)
 				}
@@ -174,7 +175,10 @@ func TestUnrelatedUpdateOverNestedArrayIsRefused(t *testing.T) {
 	}
 }
 
-func assertNestedArrayRefusal(t *testing.T, err error, rowID uuid.UUID) {
+// assertStoredRowRefusal asserts that an update surface refused the update
+// for the stored row's sake: a plain error naming each of wants, which a
+// best-effort batch does not publish.
+func assertStoredRowRefusal(t *testing.T, err error, wants ...string) {
 	t.Helper()
 	var reported bestEffortFailure
 	if errors.As(err, &reported) {
@@ -184,14 +188,67 @@ func assertNestedArrayRefusal(t *testing.T, err error, rowID uuid.UUID) {
 		return
 	}
 	if errors.Is(err, forma.ErrInvalidInput) {
-		t.Fatalf("a stored value the write cannot place is not caller input: %v", err)
+		t.Fatalf("a stored record the write cannot write back is not caller input: %v", err)
 	}
-	for _, want := range []string{
-		rowID.String(), "attrID=1 arrayIndices=0,0", "'order.items.lots.code'", "'order.items.lots.code.code'",
-	} {
+	for _, want := range wants {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("expected the error to name %q, got %v", want, err)
 		}
+	}
+}
+
+// listInObjectArrayRegistry declares a list inside an array of objects,
+// order.items[].tags, beside a member of the array and an attribute outside
+// it, with array ancestry or without.
+func listInObjectArrayRegistry(ancestry bool) forma.SchemaRegistry {
+	cache := forma.SchemaAttributeCache{
+		"stage":            {AttributeID: 3, ValueType: forma.ValueTypeText},
+		"order.items.sku":  {AttributeID: 4, ValueType: forma.ValueTypeText},
+		"order.items.tags": {AttributeID: 5, ValueType: forma.ValueTypeList},
+	}
+	if ancestry {
+		for name, meta := range cache {
+			meta.ArrayAncestors = []string{}
+			if strings.HasPrefix(name, "order.items.") {
+				meta.ArrayAncestors = []string{"order.items"}
+			}
+			cache[name] = meta
+		}
+	}
+	return &stubSchemaRegistry{schemaID: nestedArraySchema, schemaName: "nested_array", cache: cache}
+}
+
+// A row written while the registry declared array ancestry holds the
+// indexed empty-list marker of a list inside an array of objects. Through a
+// registry that no longer declares it, every update surface refuses an
+// update of the row as stored state, leaving the row as stored rather than
+// deleting the marker.
+func TestUpdateOverMarkerWrittenWithAncestryIsRefusedWithout(t *testing.T) {
+	data := func() map[string]any {
+		return map[string]any{"stage": "new", "order": map[string]any{"items": []any{
+			map[string]any{"sku": "a"}, map[string]any{"tags": []any{}},
+		}}}
+	}
+	for _, surface := range updateSurfaces {
+		t.Run(surface.name, func(t *testing.T) {
+			repo := newMockPersistentRecordRepository()
+			rowID := uuid.New()
+			written := transform.NewPersistentRecordTransformer(listInObjectArrayRegistry(true))
+			repo.storeRecord(buildPersistentRecord(t, written, nestedArraySchema, rowID, data()))
+			before := repo.records[nestedArraySchema][rowID]
+			assertEqualValue(t, "stored records", []string{"3[]=new", "4[0]=a", "5[1]=<none>"}, storedTextRecords(before))
+
+			registry := listInObjectArrayRegistry(false)
+			em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry), repo, nil, registry, createTestConfig(), nil)
+			_, err := surface.update(context.Background(), em, nestedArrayUpdate(rowID, map[string]any{"stage": "contacted"}))
+			if err == nil {
+				t.Fatalf("update succeeded; stored records now %v", storedTextRecords(repo.records[nestedArraySchema][rowID]))
+			}
+			assertStoredRowRefusal(t, err, rowID.String(), "attrID=5 arrayIndices=1", "'order.items.tags'")
+			if repo.records[nestedArraySchema][rowID] != before {
+				t.Fatal("refused update stored a new row")
+			}
+		})
 	}
 }
 

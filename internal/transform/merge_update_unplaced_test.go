@@ -100,11 +100,10 @@ func TestMergeUpdateWritesBackEveryStoredRecordOrRefuses(t *testing.T) {
 
 // Without array ancestry, the row the writer itself stores for an array
 // nested inside an array of objects rebuilds beneath the attribute's own name
-// (#623). Removing the
-// stored value there let an unrelated update succeed and delete the record
-// (#619 review); the update is refused instead, naming the record, the
-// attribute and where it was rebuilt, and blaming the stored row, not the
-// caller.
+// (#623). Removing the stored value there let an unrelated update succeed and
+// delete the record (#619 review); the update is refused instead, naming the
+// record, the attribute and where it was rebuilt, and blaming the stored row,
+// not the caller.
 func TestMergeUpdateRefusesToDropUnplacedStoredValue(t *testing.T) {
 	tr := NewPersistentRecordTransformer(newRebuildRegistry())
 	ctx := context.Background()

@@ -803,7 +803,11 @@ A create runs step 4 only.
   for every attribute or for none. A document that does not resolve one
   attribute's ancestors, such as one reached through another file's `$ref`
   (the shipped `visit`'s `contactSnapshot`), leaves the whole schema
-  underived, and an info log names the attribute. The rebuild
+  underived, and a log names the attribute. It is a warning when an
+  attribute of the schema is known to lie inside an array of objects, since
+  only such a schema's rows can read differently, and information otherwise,
+  as for `visit`. An ancestor the document leaves open could still be such
+  an array (#705). The rebuild
   (`rebuildDocument`, `internal/transform/document_rebuild.go`) then places
   each record by it, in every record order: a lead's
   `propertyInterests[0].snapshot.title` reads back at
@@ -836,7 +840,9 @@ A create runs step 4 only.
   readings are never mixed within a row. So is every row of a
   `SchemaRegistry` that does not set the field, and the marker of such a
   schema keeps no indices, since that reading cannot place one inside an
-  array of objects either way.
+  array of objects either way. A marker that does carry indices was written
+  while the registry declared the schema's ancestry. The row reads without
+  it, and an update of the row is refused (below).
 - **An update never deletes a stored record it did not address (#619
   review).** The write replaces the row's EAV records with the ones the
   merged document yields, so a held value at a position no attribute claims
@@ -877,6 +883,24 @@ A create runs step 4 only.
   update is refused the same way, plainly, as `… rebuilds under a different
   key spelling than the attribute's other stored records …`, unless the
   caller's own spelling replaces the attribute.
+
+  A row read without array ancestry leaves out an empty-list marker that
+  carries array indices. Only a write under ancestry stores one, so the row
+  was written while the registry declared the schema's ancestry and is read
+  after it stopped, as it does once the schema document reaches an attribute
+  through another file's `$ref` (#705). Writing the row back would delete
+  the marker, which reads back in its element once the ancestry is declared
+  again. Every update of such a row is refused, plainly, before the merge:
+
+  ```text
+  record schema=619 row=… attrID=19 arrayIndices=1: stored empty-list marker of list attribute 'order.items.tags' carries array indices, which only a rebuild by array ancestry places, and the registry does not declare the ancestry of every attribute in the row, so this update cannot write it back; the registry must declare the schema's array ancestry, as the file registry does when the schema document resolves every attribute's ancestors
+  ```
+
+  Unlike the refusals above, a fragment that replaces the array is refused
+  too: the merge base does not hold the marker, so nothing tells whether
+  the fragment replaces it. A marker that a row read by ancestry leaves out
+  is different: no reading places it (a marker written before #623, above),
+  and the update deletes it.
 - **An element of an array of objects that stores no record reads as `{}`
   (#626).** `{"items":[{}, {"sku":"a"}]}` stores one record, `items.sku` at
   index 1. The rebuild used to pad index 0 with `null`, so a `Get`, a query
@@ -924,8 +948,9 @@ A create runs step 4 only.
   The record-side check (`checkRequiredAttributes`) still runs on the written
   records and on every read. It stays plain, and on the write path it is now
   a backstop that a row passing `requireWrittenAttributes` always passes.
-- **Order of refusals.** The payload depth cap aborts the walk and comes
-  first. On an update, resolving the stored values comes next: the first
+- **Order of refusals.** A stored row whose rebuild fails, or that holds a
+  marker the update refuses before the merge (above), fails every update.
+  Of the rest, the payload depth cap aborts the walk and comes first. On an update, resolving the stored values comes next: the first
   kept value that fails to decode, or held value the write cannot place, in
   walk order. Then the JSON Schema, then the required policy, then the first
   refusal (`null`, an unknown attribute) or conversion error in walk order,
@@ -959,7 +984,7 @@ kept.
   element holding the discarded value did before.
 - A stored row that already lacks a required attribute fails the rebuild, and
   so the update, with the read's plain error.
-- The two limits below apply only to a schema without array ancestry (#623,
+- The limits below apply only to a schema without array ancestry (#623,
   above). No shipped schema has one with an array of objects.
   - A row holding a record with more array indices than its parent takes (an
     array of objects nested inside another, or a legacy text-typed array
@@ -977,6 +1002,9 @@ kept.
     the per-field level, so a `required_if_parent_present` member of it is
     reported missing. Both are `400`s on every update that keeps the gap;
     neither deletes a record, and replacing the outer array still works.
+  - A row holding an empty-list marker written while the schema declared its
+    array ancestry cannot be updated at all until the registry declares it
+    again. Reading the row leaves the marker out.
 - The walk runs twice per update (resolution, then the writer). It is linear
   in the payload plus the stored row.
 
@@ -990,14 +1018,15 @@ Pinned by `TestUpdateNamingLegacyBigintImageRepairsIt`,
 `TestUnrelatedUpdateOverNestedArrayKeepsIt`,
 `TestUnrelatedUpdateOverLegacyArrayInObjectArrayKeepsIt`,
 `TestUnrelatedUpdateOverNestedArrayIsRefused`,
+`TestUpdateOverMarkerWrittenWithAncestryIsRefusedWithout`,
 `TestUpdateReplacingNestedArrayWritesIt` and
 `TestUnrelatedUpdateOverObjectArrayGapIsAccepted` (package `internal`, across
 `Update` and both `BatchUpdate` modes), by `merge_update_test.go`,
 `merge_update_unplaced_test.go`, `merge_update_ancestry_test.go`,
 `merge_update_property_test.go`, `document_rebuild_ancestry_test.go`,
 `object_array_gap_test.go` and `written_required_test.go` in
-`internal/transform`, by `TestFileRegistryDerivesArrayAncestors` in
-`internal/schemameta`, by `TestUnrelatedUpdateOverNestedArrayIntegration` and
+`internal/transform`, by `TestFileRegistryDerivesArrayAncestors` and
+`TestFileRegistryLogsUnderivedSchemaByItsArrays` in `internal/schemameta`, by `TestUnrelatedUpdateOverNestedArrayIntegration` and
 `TestUnrelatedUpdateOverObjectArrayGapIntegration` (Postgres), and by
 `TestNestedBigintLegacyImageRepairByUpdate` (production E2E).
 

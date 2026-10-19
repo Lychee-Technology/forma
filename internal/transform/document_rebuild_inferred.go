@@ -29,14 +29,17 @@ func (rec rebuildRecord) parentOpen() bool {
 // field's name, where the write cannot read it back; an update refuses to
 // carry it rather than drop it (resolveStoredValues). An empty-list marker
 // is written without indices for a schema read this way (emptyList), so one
-// inside an array of objects reads that array as an object too; a marker
+// inside an array of objects reads that array as an object too. A marker
 // with indices, which only a schema that declared array ancestors when it
-// was written stores, names an element this reading cannot place and is
-// left out.
-func rebuildInferred(records []rebuildRecord) map[string]any {
+// was written stores, names an element this reading cannot place: it is
+// left out of the document and returned, so that an update refuses to
+// delete it (MergeUpdate).
+func rebuildInferred(records []rebuildRecord) (map[string]any, []rebuildRecord) {
 	placed := make([]rebuildRecord, 0, len(records))
+	var unplaced []rebuildRecord
 	for _, rec := range records {
 		if rec.marker && len(rec.indices) > 0 {
+			unplaced = append(unplaced, rec)
 			continue
 		}
 		placed = append(placed, rec)
@@ -46,7 +49,7 @@ func rebuildInferred(records []rebuildRecord) map[string]any {
 	for _, rec := range placed {
 		placeInferred(doc, rec, objects)
 	}
-	return doc
+	return doc, unplaced
 }
 
 // objectPaths returns every path the row's placements read as an object:

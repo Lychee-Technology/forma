@@ -6,6 +6,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/lychee-technology/forma"
 )
@@ -74,11 +77,13 @@ func TestArrayAncestorsOf(t *testing.T) {
 		{name: "orders.dims.w", want: []string{"orders"}, ok: true},
 		{name: "orders.items.qty", want: []string{"orders", "orders.items"}, ok: true},
 		{name: "nullable.rows.x", want: []string{"nullable.rows"}, ok: true},
-		// An ancestor the document does not describe leaves the answer open.
-		{name: "missing.x"},
-		{name: "ref.x"},
-		{name: "tags.x"},
-		{name: "orders.items.qty.deeper"},
+		// An ancestor the document does not describe leaves the answer open,
+		// with the arrays above it.
+		{name: "missing.x", want: []string{}},
+		{name: "ref.x", want: []string{}},
+		{name: "tags.x", want: []string{}},
+		{name: "orders.missing.x", want: []string{"orders"}},
+		{name: "orders.items.qty.deeper", want: []string{"orders", "orders.items"}},
 	}
 	for _, tc := range cases {
 		got, ok := arrayAncestorsOf(tc.name, properties)
@@ -107,4 +112,40 @@ func TestFileRegistryDerivesAllOrNone(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, cache["items.sku"].ArrayAncestors)
 	require.Nil(t, cache["other.x"].ArrayAncestors)
+}
+
+// A schema left without array ancestry is logged as a warning when one of
+// its attributes is known to lie inside an array of objects, as when a
+// member of one is moved behind another file's $ref: its rows are the ones
+// that read differently by row evidence. A schema without one, like visit,
+// is logged as information.
+func TestFileRegistryLogsUnderivedSchemaByItsArrays(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600))
+	}
+	write("orders.json", `{"type":"object","properties":{
+		"items":{"type":"array","items":{"type":"object","properties":{
+			"sku":{"type":"string"},
+			"snapshot":{"$ref":"elsewhere.json#/properties/snapshot"}}}}}}`)
+	write("orders_attributes.json", `{
+		"items.sku":{"attributeID":1,"valueType":"text"},
+		"items.snapshot.title":{"attributeID":2,"valueType":"text"}}`)
+	write("people.json", `{"type":"object","properties":{
+		"name":{"type":"string"},
+		"contact":{"$ref":"elsewhere.json#/properties/contact"}}}`)
+	write("people_attributes.json", `{
+		"name":{"attributeID":1,"valueType":"text"},
+		"contact.phone":{"attributeID":2,"valueType":"text"}}`)
+
+	core, logs := observer.New(zapcore.InfoLevel)
+	t.Cleanup(zap.ReplaceGlobals(zap.New(core)))
+	_, err := NewFileSchemaRegistryFromDirectory(dir)
+	require.NoError(t, err)
+
+	levels := make(map[string]zapcore.Level)
+	for _, entry := range logs.FilterMessageSnippet("array ancestors not derived").All() {
+		levels[entry.ContextMap()["schema"].(string)] = entry.Level
+	}
+	require.Equal(t, map[string]zapcore.Level{"orders": zapcore.WarnLevel, "people": zapcore.InfoLevel}, levels)
 }
