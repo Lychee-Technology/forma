@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LTFlow workflow task, found by its token hash",
+  "type": "object",
+  "x-forma-unique-keys": [
+    {
+      "id": 1,
+      "name": "token_hash",
+      "attributes": [
+        "token_hash"
+      ]
+    }
+  ],
+  "x-forma-indexes": [
+    {
+      "name": "by_instance",
+      "attributes": [
+        "instance_id",
+        "status"
+      ]
+    },
+    {
+      "name": "cleanup",
+      "attributes": [
+        "eligible_cleanup_at"
+      ]
+    }
+  ],
+  "required": [
+    "token_hash",
+    "instance_id",
+    "state",
+    "status",
+    "version"
+  ],
+  "properties": {
+    "token_hash": {
+      "type": "string"
+    },
+    "instance_id": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "expected_event": {
+      "type": "string"
+    },
+    "purpose": {
+      "type": "string"
+    },
+    "version": {
+      "type": "integer"
+    },
+    "eligible_cleanup_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resolved_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

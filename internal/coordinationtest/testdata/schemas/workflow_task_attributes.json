@@ -1,0 +1,67 @@
+{
+  "token_hash": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "instance_id": {
+    "attributeID": 2,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_02"
+    }
+  },
+  "state": {
+    "attributeID": 3,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_03"
+    }
+  },
+  "status": {
+    "attributeID": 4,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_04"
+    }
+  },
+  "expected_event": {
+    "attributeID": 5,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_05"
+    }
+  },
+  "purpose": {
+    "attributeID": 6,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_06"
+    }
+  },
+  "version": {
+    "attributeID": 7,
+    "valueType": "bigint",
+    "column_binding": {
+      "col_name": "bigint_01"
+    }
+  },
+  "eligible_cleanup_at": {
+    "attributeID": 8,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_02",
+      "encoding": "unix_ms"
+    }
+  },
+  "resolved_at": {
+    "attributeID": 9,
+    "valueType": "datetime"
+  },
+  "expires_at": {
+    "attributeID": 10,
+    "valueType": "datetime"
+  }
+}

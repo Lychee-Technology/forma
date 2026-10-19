@@ -1,0 +1,54 @@
+{
+  "instance_id": {
+    "attributeID": 1,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_01"
+    }
+  },
+  "idempotency_key": {
+    "attributeID": 2,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_02"
+    }
+  },
+  "request_hash": {
+    "attributeID": 3,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_03"
+    }
+  },
+  "status": {
+    "attributeID": 4,
+    "valueType": "text",
+    "column_binding": {
+      "col_name": "text_04"
+    }
+  },
+  "event": {
+    "attributeID": 5,
+    "valueType": "text"
+  },
+  "result_state": {
+    "attributeID": 6,
+    "valueType": "text"
+  },
+  "result_version": {
+    "attributeID": 7,
+    "valueType": "bigint"
+  },
+  "error_code": {
+    "attributeID": 8,
+    "valueType": "text"
+  },
+  "eligible_cleanup_at": {
+    "attributeID": 10,
+    "valueType": "datetime",
+    "column_binding": {
+      "col_name": "bigint_01",
+      "encoding": "unix_ms"
+    }
+  }
+}
