@@ -44,6 +44,30 @@ func TestFileRegistryDerivesArrayAncestors(t *testing.T) {
 	}
 }
 
+// The attribute caches the file registry hands out are copies: a caller that
+// mutates the ancestry of one changes neither what a later getter answers nor
+// what the rebuild reads (GetSchemaMetadata).
+func TestFileRegistryAttributeCacheCopiesArrayAncestors(t *testing.T) {
+	registry, err := NewFileSchemaRegistryFromDirectory("../../cmd/server/schemas")
+	require.NoError(t, err)
+	const name = "propertyInterests.snapshot.title"
+
+	id, byName, err := registry.GetSchemaAttributeCacheByName("lead")
+	require.NoError(t, err)
+	byName[name].ArrayAncestors[0] = "mutated by name"
+	_, byID, err := registry.GetSchemaAttributeCacheByID(id)
+	require.NoError(t, err)
+	require.Equal(t, []string{"propertyInterests"}, byID[name].ArrayAncestors)
+	byID[name].ArrayAncestors[0] = "mutated by id"
+
+	_, again, err := registry.GetSchemaAttributeCacheByName("lead")
+	require.NoError(t, err)
+	require.Equal(t, []string{"propertyInterests"}, again[name].ArrayAncestors)
+	internal, _, err := GetSchemaMetadata(registry, id)
+	require.NoError(t, err)
+	require.Equal(t, []string{"propertyInterests"}, internal[name].ArrayAncestors)
+}
+
 func TestArrayAncestorsOf(t *testing.T) {
 	str := &forma.PropertySchema{Type: "string"}
 	object := func(props map[string]*forma.PropertySchema) *forma.PropertySchema {

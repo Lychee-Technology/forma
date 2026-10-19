@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -270,7 +269,7 @@ func (r *fileSchemaRegistry) GetSchemaAttributeCacheByName(name string) (int16, 
 	}
 
 	// Return a copy to prevent external mutations
-	schemaCopy := copyFileSchemaAttributeCache(schema)
+	schemaCopy := copySchemaAttributeCache(schema)
 	return schemaID, schemaCopy, nil
 }
 
@@ -290,7 +289,7 @@ func (r *fileSchemaRegistry) GetSchemaAttributeCacheByID(id int16) (string, form
 	}
 
 	// Return a copy to prevent external mutations
-	schemaCopy := copyFileSchemaAttributeCache(schema)
+	schemaCopy := copySchemaAttributeCache(schema)
 	return name, schemaCopy, nil
 }
 
@@ -347,13 +346,6 @@ func (r *fileSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, 
 func hasSuffix(name, suffix string) bool {
 	suffixLen := len(suffix)
 	return len(name) > suffixLen && name[len(name)-suffixLen:] == suffix
-}
-
-// copyFileSchemaAttributeCache creates a deep copy of a SchemaAttributeCache
-func copyFileSchemaAttributeCache(cache forma.SchemaAttributeCache) forma.SchemaAttributeCache {
-	result := make(forma.SchemaAttributeCache, len(cache))
-	maps.Copy(result, cache)
-	return result
 }
 
 // NewFileSchemaRegistryFromDirectory creates a schema registry that scans
