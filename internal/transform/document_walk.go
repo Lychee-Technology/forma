@@ -212,6 +212,16 @@ func (w *documentWalk) visitLeaf(path []string, v any, indices []int) {
 // them infers each record's array from the row and cannot place a marker
 // inside an array of objects either way, so the marker keeps the form that
 // reading writes back unchanged.
+//
+// Under ancestry every index the marker carries must fill an array ancestor:
+// the read takes any index past them for one of the list's own elements, and
+// a list's row with no value there is no element (placeByAncestry). An []
+// inside more arrays than that is inside the list's own value
+// ({"tags": [[]]}), or inside an array where the schema declares an object.
+// Either is refused, as a non-empty array inside a list's value is
+// (populateTypedValue), rather than written as a record the read leaves out
+// and an unrelated update then deletes. Report-only update validation lets
+// such a fragment reach the walk.
 func (w *documentWalk) emptyList(path []string, indices []int) {
 	attrName := strings.Join(path, ".")
 	meta, ok := w.cache[attrName]
@@ -220,6 +230,10 @@ func (w *documentWalk) emptyList(path []string, indices []int) {
 	}
 	arrayIndices := ""
 	if meta.ArrayAncestors != nil {
+		if len(indices) > len(meta.ArrayAncestors) {
+			w.refuse(nestedEmptyListError(attrName, meta, indices))
+			return
+		}
 		arrayIndices = joinIndices(indices)
 	}
 	w.claim(documentEntry{
@@ -228,6 +242,18 @@ func (w *documentWalk) emptyList(path []string, indices []int) {
 		tagged: w.tag(path, meta.AttributeID, arrayIndices),
 		meta:   meta,
 	})
+}
+
+// nestedEmptyListError refuses an [] at a list attribute nested in more
+// arrays than the attribute's array ancestors (emptyList).
+func nestedEmptyListError(attrName string, meta forma.AttributeMetadata, indices []int) error {
+	ancestors := "none"
+	if len(meta.ArrayAncestors) > 0 {
+		ancestors = strings.Join(meta.ArrayAncestors, ", ")
+	}
+	return forma.InvalidInputf(
+		"invalid value for attribute '%s' (attrID=%d): empty list at array indices %q is nested in more arrays than the attribute's arrays of objects (%s); a list's elements cannot be arrays",
+		attrName, meta.AttributeID, joinIndices(indices), ancestors)
 }
 
 // parent records an explicit parent at a known path; the root document and

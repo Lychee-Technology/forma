@@ -835,6 +835,18 @@ A create runs step 4 only.
     not name. The DuckDB pivot and the CDC export tell a marker from an
     element by its NULL values rather than its empty `array_indices`, so an
     indexed marker exports as `[]`.
+  - Any index past a list's ancestors is one of its own elements, and a
+    row with no value there is no element: the read leaves it out. So an
+    `[]` nested in more arrays than the list's arrays of objects, inside
+    the list's own value (`{"tags":[[]]}`) or inside an array where the
+    schema declares an object, is refused as invalid input rather than
+    stored as a record the next unrelated update would delete: `invalid
+    value for attribute 'tags' (attrID=…): empty list at array indices "0"
+    is nested in more arrays than the attribute's arrays of objects (none);
+    a list's elements cannot be arrays`. Report-only update validation lets
+    such a fragment through, so the write is what refuses it. Without
+    ancestry the marker carries no indices, and the `[]` still stores the
+    marker of the list it is nested in, as before.
   - A stored array index below zero fails the read with a plain error
     naming the attribute.
 
@@ -1015,8 +1027,9 @@ kept.
     reported missing. Both are `400`s on every update that keeps the gap;
     neither deletes a record, and replacing the outer array still works.
   - A row holding an empty-list marker written while the schema declared its
-    array ancestry cannot be updated at all until the registry declares it
-    again. Reading the row leaves the marker out.
+    array ancestry can be neither read nor updated until the registry
+    declares it again. The read fails with the plain error above rather
+    than leave the marker out.
 - The walk runs twice per update (resolution, then the writer). It is linear
   in the payload plus the stored row.
 
@@ -1030,7 +1043,8 @@ Pinned by `TestUpdateNamingLegacyBigintImageRepairsIt`,
 `TestUnrelatedUpdateOverNestedArrayKeepsIt`,
 `TestUnrelatedUpdateOverLegacyArrayInObjectArrayKeepsIt`,
 `TestUnrelatedUpdateOverNestedArrayIsRefused`,
-`TestUpdateOverMarkerWrittenWithAncestryIsRefusedWithout`,
+`TestRowWithMarkerWrittenWithAncestryFailsWithout`,
+`TestUpdateNestingEmptyListInListIsRefused`,
 `TestUpdateReplacingNestedArrayWritesIt` and
 `TestUnrelatedUpdateOverObjectArrayGapIsAccepted` (package `internal`, across
 `Update` and both `BatchUpdate` modes), by `merge_update_test.go`,

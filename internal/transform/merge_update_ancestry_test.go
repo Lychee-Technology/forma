@@ -274,6 +274,59 @@ func TestEmptyListMarkerCarriesItsElementUnderAncestry(t *testing.T) {
 	}
 }
 
+// Under array ancestry a marker carries one index per array of objects
+// around its list, and the read takes any further index for one of the
+// list's own elements, where a row with no value is no element. An [] nested
+// in more arrays than that, inside the list's own value or inside an array
+// where the schema declares an object, is refused as caller input, so the
+// write never stores a record the read leaves out and an unrelated update
+// deletes. Without ancestry a marker carries no indices, so the write stores
+// the marker of the list the [] is nested in, which the read keeps, as
+// before #623.
+func TestNestedEmptyListIsRefusedUnderAncestry(t *testing.T) {
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		doc      map[string]any
+		refusal  string
+		inferred []string
+	}{
+		"inside a list's value": {
+			doc:      map[string]any{"tags": []any{[]any{}}},
+			refusal:  `invalid value for attribute 'tags' (attrID=11): empty list at array indices "0" is nested in more arrays than the attribute's arrays of objects (none); a list's elements cannot be arrays`,
+			inferred: []string{"11[]=<none>"},
+		},
+		"inside a list's value inside an array of objects": {
+			doc:      map[string]any{"order": map[string]any{"items": []any{map[string]any{"tags": []any{[]any{}}}}}},
+			refusal:  `invalid value for attribute 'order.items.tags' (attrID=19): empty list at array indices "0,0" is nested in more arrays than the attribute's arrays of objects (order.items); a list's elements cannot be arrays`,
+			inferred: []string{"19[]=<none>"},
+		},
+		"inside an array where the schema declares an object": {
+			doc:      map[string]any{"order": []any{map[string]any{"labels": []any{}}}},
+			refusal:  `invalid value for attribute 'order.labels' (attrID=16): empty list at array indices "0" is nested in more arrays than the attribute's arrays of objects (none); a list's elements cannot be arrays`,
+			inferred: []string{"16[]=<none>"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewPersistentRecordTransformer(newAncestryRegistry()).ToPersistentRecord(ctx, 619, uuid.Must(uuid.NewV7()), tc.doc)
+			require.ErrorIs(t, err, forma.ErrInvalidInput)
+			msg, published := forma.ResolvePublicMessage(err)
+			require.True(t, published, "must publish, not redact: %v", err)
+			require.Equal(t, tc.refusal, msg)
+
+			tr := NewPersistentRecordTransformer(newRegistryWithoutAncestry())
+			rowID := uuid.Must(uuid.NewV7())
+			stored, err := tr.ToPersistentRecord(ctx, 619, rowID, tc.doc)
+			require.NoError(t, err)
+			require.ElementsMatch(t, tc.inferred, storedKeys(stored.OtherAttributes))
+			read, err := tr.FromPersistentRecord(ctx, stored)
+			require.NoError(t, err)
+			rewritten, err := tr.ToPersistentRecord(ctx, 619, rowID, read)
+			require.NoError(t, err)
+			require.ElementsMatch(t, tc.inferred, storedKeys(rewritten.OtherAttributes), "read as %v", read)
+		})
+	}
+}
+
 // A row written while its schema declared array ancestry holds the indexed
 // marker of a list inside an array of objects. A registry that no longer
 // declares that ancestry, as one does once the schema document reaches an

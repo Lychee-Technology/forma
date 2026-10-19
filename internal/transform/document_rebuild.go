@@ -144,7 +144,8 @@ func placeByAncestry(doc map[string]any, rec rebuildRecord, ends []int, literal 
 	}
 	if rec.marker && len(own) > 0 {
 		// A list's row with no value at an element's index is no element,
-		// and no marker either; the read has always left it out.
+		// and no marker either; the read has always left it out, and the
+		// write refuses the [] that would store one (emptyList).
 		return
 	}
 	n := len(segments)

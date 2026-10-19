@@ -12,6 +12,7 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/transform"
 )
 
@@ -376,5 +377,87 @@ func TestUpdateNestedSpellingReplacesLiteralPlacedRecord(t *testing.T) {
 				storedTextRecords(repo.records[nestedArraySchema][rowID]))
 			assertEqualValue(t, "answered order", map[string]any{"items": items}, updated["order"])
 		})
+	}
+}
+
+// An update's JSON Schema validation only reports by default, so a lead
+// update nesting [] inside the value of contact.phones reaches the write.
+// Under the lead's array ancestry its marker would carry an index the read
+// takes for one of the list's own elements and leaves out: the answer and
+// the next Get would lack the list, and the next unrelated update would
+// delete its record. Every update surface refuses it as caller input
+// instead, and the row keeps its phones.
+func TestUpdateNestingEmptyListInListIsRefused(t *testing.T) {
+	ctx := context.Background()
+	registry, err := newFileSchemaRegistryFromDir(shippedSchemaDir)
+	if err != nil {
+		t.Fatalf("load the shipped schemas: %v", err)
+	}
+	validator, err := schemavalidate.New(registry, shippedSchemaDir)
+	if err != nil {
+		t.Fatalf("build the validator: %v", err)
+	}
+	config := createTestConfig()
+	config.Entity.ValidateUpdatesStrict = false
+	schemaID, _, err := registry.GetSchemaByName("lead")
+	if err != nil {
+		t.Fatalf("lead schema: %v", err)
+	}
+	for _, surface := range updateSurfaces {
+		t.Run(surface.name, func(t *testing.T) {
+			repo := newMockPersistentRecordRepository()
+			em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry), repo, nil, registry, config, validator)
+			created, err := em.Create(ctx, &forma.EntityOperation{
+				EntityIdentifier: forma.EntityIdentifier{SchemaName: "lead"},
+				Type:             forma.OperationCreate,
+				Data: map[string]any{
+					"id": uuid.New().String(), "tenantId": "tenant-1", "ownerUserId": "owner-1",
+					"pipeline": "buy", "stage": "new", "status": "open",
+					"contact":   map[string]any{"isAnonymous": false, "phones": []any{"123"}},
+					"createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-02T00:00:00Z",
+				},
+			})
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			stored := storedTextRecords(repo.records[schemaID][created.RowID])
+
+			_, err = surface.update(ctx, em, &forma.EntityOperation{
+				EntityIdentifier: forma.EntityIdentifier{SchemaName: "lead", RowID: created.RowID},
+				Type:             forma.OperationUpdate,
+				Updates:          map[string]any{"contact": map[string]any{"phones": []any{[]any{}}}},
+			})
+			assertNestedEmptyListRefused(t, err, "contact.phones")
+			assertEqualValue(t, "stored records", stored, storedTextRecords(repo.records[schemaID][created.RowID]))
+			fetched, err := em.Get(ctx, &forma.QueryRequest{SchemaName: "lead", RowID: &created.RowID})
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			assertEqualValue(t, "phones", []any{"123"}, valueAtPath(fetched.Attributes, "contact.phones"))
+		})
+	}
+}
+
+func assertNestedEmptyListRefused(t *testing.T, err error, attr string) {
+	t.Helper()
+	want := []string{"attribute '" + attr + "'", `empty list at array indices "0" is nested in more arrays`}
+	message := ""
+	var reported bestEffortFailure
+	switch {
+	case errors.As(err, &reported):
+		message = reported.failure.Error
+	case errors.Is(err, forma.ErrInvalidInput):
+		published, ok := forma.ResolvePublicMessage(err)
+		if !ok {
+			t.Fatalf("expected a published message, got %v", err)
+		}
+		message = published
+	default:
+		t.Fatalf("expected the update to be refused as invalid input, got %v", err)
+	}
+	for _, part := range want {
+		if !strings.Contains(message, part) {
+			t.Fatalf("expected the refusal to name %q, got %q", part, message)
+		}
 	}
 }
