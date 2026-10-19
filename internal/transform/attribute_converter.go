@@ -208,13 +208,12 @@ func decodeRecordValue(record model.EAVRecord, attrName string, vt forma.ValueTy
 	return value, nil
 }
 
-// holdRecordValue holds the stored value undecoded for an update's merge
-// base. A record with no value column set decodes to nil whatever its type,
-// so it stays nil here too and materializes exactly as on read.
+// holdRecordValue holds the stored record undecoded for an update's merge
+// base, a record with no value column set included. The rebuild places such
+// a record where the read places it: a list's empty-list marker, held rather
+// than as [] so that the update keeps or discards it like any other stored
+// record (resolveStoredValues), and nowhere for any other attribute.
 func holdRecordValue(record model.EAVRecord, attrName string, vt forma.ValueType) (any, error) {
-	if !hasStoredValue(record) {
-		return nil, nil
-	}
 	return &storedValue{record: record, valueType: vt, attrName: attrName}, nil
 }
 

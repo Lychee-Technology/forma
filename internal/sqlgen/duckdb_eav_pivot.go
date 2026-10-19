@@ -24,15 +24,17 @@ func buildEAVPivotExpr(a attrProjectionInfo) string {
 		// order instead of MAX-collapsing, mirroring the CDC export side
 		// (cdc.castEAVValue with the items-typed meta) so the hot leg
 		// type-unifies with the parquet LIST column. The empty-list marker row
-		// (array_indices '', both value columns NULL) is the only row excluded
-		// from the element aggregate; the presence count still sees it, so
-		// explicit [] stays distinguishable from an absent attribute (NULL) on
-		// every tier (#204). A legacy scalar row (array_indices '' carrying a
-		// value, written before the schema declared the attribute a list)
-		// therefore pivots as a one-element list instead of being dropped as
-		// [] (#372); validate-schema-consistency reports such rows.
+		// (both value columns NULL) is the only row excluded from the element
+		// aggregate; the presence count still sees it, so explicit [] stays
+		// distinguishable from an absent attribute (NULL) on every tier
+		// (#204). The marker is told by its NULL values, not its
+		// array_indices: inside an array of objects it carries its element's
+		// (#623). A legacy scalar row (array_indices '' carrying a value,
+		// written before the schema declared the attribute a list) therefore
+		// pivots as a one-element list instead of being dropped as [] (#372);
+		// validate-schema-consistency reports such rows.
 		return fmt.Sprintf(
-			"CASE WHEN count(*) FILTER (WHERE attr_id = %d) > 0 THEN coalesce(list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d AND (array_indices <> '' OR value_text IS NOT NULL OR value_numeric IS NOT NULL)), []) END",
+			"CASE WHEN count(*) FILTER (WHERE attr_id = %d) > 0 THEN coalesce(list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d AND (value_text IS NOT NULL OR value_numeric IS NOT NULL)), []) END",
 			a.attrID, eavElementCastExpr(a.meta.EffectiveItemsType()), a.attrID)
 	}
 	if a.meta.ValueType == forma.ValueTypeBool {

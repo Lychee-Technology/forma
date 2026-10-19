@@ -48,7 +48,8 @@ func storedKeys(records []model.EAVRecord) []string {
 
 // lotsDocument is a document whose array of objects holds an array of
 // objects: the writer stores its one value as order.items.lots.code at
-// indices "0,0", which the rebuild cannot shape (#623).
+// indices "0,0", which the rebuild cannot shape without array ancestry
+// (#623).
 func lotsDocument(code string) map[string]any {
 	return map[string]any{"order": map[string]any{
 		"items": []any{map[string]any{"lots": []any{map[string]any{"code": code}}}},
@@ -61,9 +62,11 @@ func lotsDocument(code string) map[string]any {
 // the update's own pipeline, MergeUpdate then ToPersistentRecord, over every
 // row TestFromAttributesReadsSharedPathsOneWay rebuilds.
 //
-// Only the array nested inside the array of objects rebuilds where the write
-// cannot read it back, so exactly the rows holding it are refused, as stored
-// state and not as caller input, and every other row is written back whole.
+// The rebuild schema declares no array ancestry, so the array nested inside
+// the array of objects rebuilds where the write cannot read it back: exactly
+// the rows holding it are refused, as stored state and not as caller input,
+// and every other row is written back whole. With ancestry none is refused
+// (TestMergeUpdateByAncestryWritesBackEveryStoredRecord).
 func TestMergeUpdateWritesBackEveryStoredRecordOrRefuses(t *testing.T) {
 	tr := NewPersistentRecordTransformer(newRebuildRegistry())
 	ctx := context.Background()
@@ -95,12 +98,12 @@ func TestMergeUpdateWritesBackEveryStoredRecordOrRefuses(t *testing.T) {
 	}
 }
 
-// The row the writer itself stores for an array nested inside an array of
-// objects rebuilds beneath the attribute's own name (#623). Removing the
-// stored value there let an unrelated update succeed and delete the record
-// (#619 review); the update is refused instead, naming the record, the
-// attribute and where it was rebuilt, and blaming the stored row, not the
-// caller.
+// Without array ancestry, the row the writer itself stores for an array
+// nested inside an array of objects rebuilds beneath the attribute's own name
+// (#623). Removing the stored value there let an unrelated update succeed and
+// delete the record (#619 review); the update is refused instead, naming the
+// record, the attribute and where it was rebuilt, and blaming the stored row,
+// not the caller.
 func TestMergeUpdateRefusesToDropUnplacedStoredValue(t *testing.T) {
 	tr := NewPersistentRecordTransformer(newRebuildRegistry())
 	ctx := context.Background()

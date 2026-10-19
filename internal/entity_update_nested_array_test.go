@@ -12,21 +12,38 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/transform"
 )
 
 const nestedArraySchema = 624
 
 // nestedArrayRegistry declares an array of objects nested inside an array of
-// objects, order.items[].lots[].code, beside two attributes outside it. The
-// writer stores a code at two array indices, which the rebuild cannot place
-// where the write reads it back (#623).
-func nestedArrayRegistry() forma.SchemaRegistry {
-	return &stubSchemaRegistry{schemaID: nestedArraySchema, schemaName: "nested_array", cache: forma.SchemaAttributeCache{
+// objects, order.items[].lots[].code, beside two attributes outside it, and a
+// text-typed member of the outer array, order.items[].sku, that a pre-#204
+// attributes file left holding an array. The writer stores a code, and each
+// element of such a sku, at two array indices. With ancestry the registry
+// declares both arrays, as the file registry derives them from a schema
+// document, and the rebuild places the code where it was written (#623);
+// without, it cannot place it where the write reads it back.
+func nestedArrayRegistry(ancestry bool) forma.SchemaRegistry {
+	cache := forma.SchemaAttributeCache{
 		"order.items.lots.code": {AttributeID: 1, ValueType: forma.ValueTypeText},
 		"order.note":            {AttributeID: 2, ValueType: forma.ValueTypeText},
 		"stage":                 {AttributeID: 3, ValueType: forma.ValueTypeText},
-	}}
+		"order.items.sku":       {AttributeID: 4, ValueType: forma.ValueTypeText},
+	}
+	if ancestry {
+		ancestors := map[string][]string{
+			"order.items.lots.code": {"order.items", "order.items.lots"},
+			"order.items.sku":       {"order.items"},
+		}
+		for name, meta := range cache {
+			meta.ArrayAncestors = append([]string{}, ancestors[name]...)
+			cache[name] = meta
+		}
+	}
+	return &stubSchemaRegistry{schemaID: nestedArraySchema, schemaName: "nested_array", cache: cache}
 }
 
 func nestedArrayDocument(code string) map[string]any {
@@ -37,13 +54,19 @@ func nestedArrayDocument(code string) map[string]any {
 
 // seedNestedArrayRow stores, through the writer, a row holding one code at
 // order.items[0].lots[0], order.note and stage.
-func seedNestedArrayRow(t *testing.T) (forma.EntityManager, *mockPersistentRecordRepository, uuid.UUID) {
+func seedNestedArrayRow(t *testing.T, ancestry bool) (forma.EntityManager, *mockPersistentRecordRepository, uuid.UUID) {
 	t.Helper()
-	registry := nestedArrayRegistry()
+	return seedNestedArrayDocument(t, ancestry, nestedArrayDocument("c"))
+}
+
+// seedNestedArrayDocument stores data, with order.note and stage added,
+// through the writer.
+func seedNestedArrayDocument(t *testing.T, ancestry bool, data map[string]any) (forma.EntityManager, *mockPersistentRecordRepository, uuid.UUID) {
+	t.Helper()
+	registry := nestedArrayRegistry(ancestry)
 	tr := transform.NewPersistentRecordTransformer(registry)
 	repo := newMockPersistentRecordRepository()
 	rowID := uuid.New()
-	data := nestedArrayDocument("c")
 	data["order"].(map[string]any)["note"] = "kept"
 	data["stage"] = "new"
 	repo.storeRecord(buildPersistentRecord(t, tr, nestedArraySchema, rowID, data))
@@ -73,28 +96,78 @@ func storedTextRecords(record *model.PersistentRecord) []string {
 	return records
 }
 
-// An update that does not address the nested array would write the row
-// without its record, which replaceEAVAttributes then deletes (#619 review).
-// Every update surface refuses it instead and leaves the row as stored. The
-// stored row is at fault, so the refusal is a plain error naming the record,
-// never a 4xx, and a best-effort batch publishes nothing of it.
-func TestUnrelatedUpdateOverNestedArrayIsRefused(t *testing.T) {
-	unrelated := map[string]map[string]any{
-		"attribute outside the order": {"stage": "contacted"},
-		"nested sibling":              {"order": map[string]any{"note": "n"}},
-		"literal sibling":             {"order.note": "n"},
-	}
+// unrelatedNestedArrayUpdates address none of the nested array's records,
+// each with the stored records it leaves besides the code.
+var unrelatedNestedArrayUpdates = map[string]struct {
+	updates map[string]any
+	others  []string
+}{
+	"attribute outside the order": {map[string]any{"stage": "contacted"}, []string{"2[]=kept", "3[]=contacted"}},
+	"nested sibling":              {map[string]any{"order": map[string]any{"note": "n"}}, []string{"2[]=n", "3[]=new"}},
+	"literal sibling":             {map[string]any{"order.note": "n"}, []string{"2[]=n", "3[]=new"}},
+}
+
+// With array ancestry declared, every update surface writes back the nested
+// array an update does not address, and answers with it in place (#623).
+func TestUnrelatedUpdateOverNestedArrayKeepsIt(t *testing.T) {
 	for _, surface := range updateSurfaces {
-		for name, updates := range unrelated {
+		for name, unrelated := range unrelatedNestedArrayUpdates {
 			t.Run(surface.name+"/"+name, func(t *testing.T) {
-				em, repo, rowID := seedNestedArrayRow(t)
+				em, repo, rowID := seedNestedArrayRow(t, true)
+
+				updated, err := surface.update(context.Background(), em, nestedArrayUpdate(rowID, unrelated.updates))
+				if err != nil {
+					t.Fatalf("update of %s: %v", name, err)
+				}
+				assertEqualValue(t, "stored records", append([]string{"1[0,0]=c"}, unrelated.others...),
+					storedTextRecords(repo.records[nestedArraySchema][rowID]))
+				assertEqualValue(t, "answered items", nestedArrayDocument("c")["order"].(map[string]any)["items"],
+					valueAtPath(updated, "order.items"))
+			})
+		}
+	}
+}
+
+// A text-typed member of an array of objects stored holding an array (pre-#204
+// metadata) is written back the same way under array ancestry: its indices
+// are the outer array's and then its own (#623).
+func TestUnrelatedUpdateOverLegacyArrayInObjectArrayKeepsIt(t *testing.T) {
+	items := []any{map[string]any{"sku": []any{"a", "b"}}}
+	for _, surface := range updateSurfaces {
+		t.Run(surface.name, func(t *testing.T) {
+			em, repo, rowID := seedNestedArrayDocument(t, true, map[string]any{"order": map[string]any{"items": items}})
+
+			updated, err := surface.update(context.Background(), em, nestedArrayUpdate(rowID, map[string]any{"stage": "contacted"}))
+			if err != nil {
+				t.Fatalf("unrelated update: %v", err)
+			}
+			assertEqualValue(t, "stored records", []string{"2[]=kept", "3[]=contacted", "4[0,0]=a", "4[0,1]=b"},
+				storedTextRecords(repo.records[nestedArraySchema][rowID]))
+			assertEqualValue(t, "answered items", items, valueAtPath(updated, "order.items"))
+		})
+	}
+}
+
+// Without array ancestry, an update that does not address the nested array
+// would write the row without its record, which replaceEAVAttributes then
+// deletes (#619 review). Every update surface refuses it instead and leaves
+// the row as stored. The stored row is at fault, so the refusal is a plain
+// error naming the record, never a 4xx, and a best-effort batch publishes
+// nothing of it.
+func TestUnrelatedUpdateOverNestedArrayIsRefused(t *testing.T) {
+	for _, surface := range updateSurfaces {
+		for name, unrelated := range unrelatedNestedArrayUpdates {
+			updates := unrelated.updates
+			t.Run(surface.name+"/"+name, func(t *testing.T) {
+				em, repo, rowID := seedNestedArrayRow(t, false)
 				before := repo.records[nestedArraySchema][rowID]
 
 				_, err := surface.update(context.Background(), em, nestedArrayUpdate(rowID, updates))
 				if err == nil {
 					t.Fatalf("update of %s succeeded; stored records now %v", name, storedTextRecords(repo.records[nestedArraySchema][rowID]))
 				}
-				assertNestedArrayRefusal(t, err, rowID)
+				assertStoredRowRefusal(t, err,
+					rowID.String(), "attrID=1 arrayIndices=0,0", "'order.items.lots.code'", "'order.items.lots.code.code'")
 				if repo.records[nestedArraySchema][rowID] != before {
 					t.Fatalf("refused update of %s stored a new row", name)
 				}
@@ -103,7 +176,10 @@ func TestUnrelatedUpdateOverNestedArrayIsRefused(t *testing.T) {
 	}
 }
 
-func assertNestedArrayRefusal(t *testing.T, err error, rowID uuid.UUID) {
+// assertStoredRowRefusal asserts that an update surface refused the update
+// for the stored row's sake: a plain error naming each of wants, which a
+// best-effort batch does not publish.
+func assertStoredRowRefusal(t *testing.T, err error, wants ...string) {
 	t.Helper()
 	var reported bestEffortFailure
 	if errors.As(err, &reported) {
@@ -113,20 +189,80 @@ func assertNestedArrayRefusal(t *testing.T, err error, rowID uuid.UUID) {
 		return
 	}
 	if errors.Is(err, forma.ErrInvalidInput) {
-		t.Fatalf("a stored value the write cannot place is not caller input: %v", err)
+		t.Fatalf("a stored record the write cannot write back is not caller input: %v", err)
 	}
-	for _, want := range []string{
-		rowID.String(), "attrID=1 arrayIndices=0,0", "'order.items.lots.code'", "'order.items.lots.code.code'",
-	} {
+	for _, want := range wants {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("expected the error to name %q, got %v", want, err)
 		}
 	}
 }
 
-// The refusal never blocks the update that replaces the nested array, in
-// either spelling of its attribute: the row then stores the replacement and
-// keeps every record the update did not address.
+// listInObjectArrayRegistry declares a list inside an array of objects,
+// order.items[].tags, beside a member of the array and an attribute outside
+// it, with array ancestry or without.
+func listInObjectArrayRegistry(ancestry bool) forma.SchemaRegistry {
+	cache := forma.SchemaAttributeCache{
+		"stage":            {AttributeID: 3, ValueType: forma.ValueTypeText},
+		"order.items.sku":  {AttributeID: 4, ValueType: forma.ValueTypeText},
+		"order.items.tags": {AttributeID: 5, ValueType: forma.ValueTypeList},
+	}
+	if ancestry {
+		for name, meta := range cache {
+			meta.ArrayAncestors = []string{}
+			if strings.HasPrefix(name, "order.items.") {
+				meta.ArrayAncestors = []string{"order.items"}
+			}
+			cache[name] = meta
+		}
+	}
+	return &stubSchemaRegistry{schemaID: nestedArraySchema, schemaName: "nested_array", cache: cache}
+}
+
+// A row written while the registry declared array ancestry holds the
+// indexed empty-list marker of a list inside an array of objects. Through a
+// registry that no longer declares it, the read of the row fails rather than
+// answer without the list, and every update surface refuses an update of
+// the row as stored state, leaving the row as stored rather than deleting
+// the marker.
+func TestRowWithMarkerWrittenWithAncestryFailsWithout(t *testing.T) {
+	data := func() map[string]any {
+		return map[string]any{"stage": "new", "order": map[string]any{"items": []any{
+			map[string]any{"sku": "a"}, map[string]any{"tags": []any{}},
+		}}}
+	}
+	for _, surface := range updateSurfaces {
+		t.Run(surface.name, func(t *testing.T) {
+			repo := newMockPersistentRecordRepository()
+			rowID := uuid.New()
+			written := transform.NewPersistentRecordTransformer(listInObjectArrayRegistry(true))
+			repo.storeRecord(buildPersistentRecord(t, written, nestedArraySchema, rowID, data()))
+			before := repo.records[nestedArraySchema][rowID]
+			assertEqualValue(t, "stored records", []string{"3[]=new", "4[0]=a", "5[1]=<none>"}, storedTextRecords(before))
+
+			registry := listInObjectArrayRegistry(false)
+			em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry), repo, nil, registry, createTestConfig(), nil)
+			const unplaced = "empty-list marker of list attribute 'order.items.tags' carries array indices 1"
+			if _, err := em.Get(context.Background(), &forma.QueryRequest{SchemaName: "nested_array", RowID: &rowID}); err == nil ||
+				errors.Is(err, forma.ErrInvalidInput) || !strings.Contains(err.Error(), unplaced) {
+				t.Fatalf("expected the read to fail with a plain error naming the marker, got %v", err)
+			}
+			_, err := surface.update(context.Background(), em, nestedArrayUpdate(rowID, map[string]any{"stage": "contacted"}))
+			if err == nil {
+				t.Fatalf("update succeeded; stored records now %v", storedTextRecords(repo.records[nestedArraySchema][rowID]))
+			}
+			assertStoredRowRefusal(t, err, rowID.String(), unplaced)
+			if repo.records[nestedArraySchema][rowID] != before {
+				t.Fatal("refused update stored a new row")
+			}
+		})
+	}
+}
+
+// The update that replaces the nested array, in either spelling of its
+// attribute, stores the replacement and keeps every record the update did not
+// address, with or without array ancestry: the refusal without it never
+// blocks the update.
 func TestUpdateReplacingNestedArrayWritesIt(t *testing.T) {
 	replacements := []struct {
 		name    string
@@ -136,17 +272,192 @@ func TestUpdateReplacingNestedArrayWritesIt(t *testing.T) {
 		{"nested", nestedArrayDocument("d"), "1[0,0]=d"},
 		{"literal", map[string]any{"order.items.lots.code": "d"}, "1[]=d"},
 	}
-	for _, surface := range updateSurfaces {
-		for _, replacement := range replacements {
-			t.Run(surface.name+"/"+replacement.name, func(t *testing.T) {
-				em, repo, rowID := seedNestedArrayRow(t)
+	for _, ancestry := range []bool{true, false} {
+		for _, surface := range updateSurfaces {
+			for _, replacement := range replacements {
+				t.Run(fmt.Sprintf("%s/%s/ancestry=%t", surface.name, replacement.name, ancestry), func(t *testing.T) {
+					em, repo, rowID := seedNestedArrayRow(t, ancestry)
 
-				if _, err := surface.update(context.Background(), em, nestedArrayUpdate(rowID, replacement.updates)); err != nil {
-					t.Fatalf("update replacing the nested array: %v", err)
+					if _, err := surface.update(context.Background(), em, nestedArrayUpdate(rowID, replacement.updates)); err != nil {
+						t.Fatalf("update replacing the nested array: %v", err)
+					}
+					assertEqualValue(t, "stored records", []string{replacement.want, "2[]=kept", "3[]=new"},
+						storedTextRecords(repo.records[nestedArraySchema][rowID]))
+				})
+			}
+		}
+	}
+}
+
+// seedListInObjectArrayRow stores data through the writer of a registry
+// declaring the ancestry of listInObjectArrayRegistry's schema.
+func seedListInObjectArrayRow(t *testing.T, data map[string]any) (forma.EntityManager, *mockPersistentRecordRepository, uuid.UUID) {
+	t.Helper()
+	registry := listInObjectArrayRegistry(true)
+	tr := transform.NewPersistentRecordTransformer(registry)
+	repo := newMockPersistentRecordRepository()
+	rowID := uuid.New()
+	repo.storeRecord(buildPersistentRecord(t, tr, nestedArraySchema, rowID, data))
+	return mustNewEntityManager(t, tr, repo, nil, registry, createTestConfig(), nil), repo, rowID
+}
+
+// An empty list written through a literal dotted key that crosses the array
+// of objects around it, beside the array's elements, stores its marker with
+// no indices. Every update surface answers with it under that key and
+// writes it back, whether the update leaves the order alone or rewrites the
+// array beside it.
+func TestUpdateKeepsLiteralKeyMarkerBesideElements(t *testing.T) {
+	for name, tc := range map[string]struct {
+		updates map[string]any
+		records []string
+		items   []any
+	}{
+		"attribute outside the order": {
+			map[string]any{"stage": "contacted"},
+			[]string{"3[]=contacted", "4[0]=a", "5[]=<none>"}, []any{map[string]any{"sku": "a"}},
+		},
+		"the array beside it": {
+			map[string]any{"order": map[string]any{"items": []any{map[string]any{"sku": "b"}}}},
+			[]string{"3[]=new", "4[0]=b", "5[]=<none>"}, []any{map[string]any{"sku": "b"}},
+		},
+	} {
+		for _, surface := range updateSurfaces {
+			t.Run(surface.name+"/"+name, func(t *testing.T) {
+				em, repo, rowID := seedListInObjectArrayRow(t, map[string]any{"stage": "new", "order": map[string]any{
+					"items": []any{map[string]any{"sku": "a"}}, "items.tags": []any{},
+				}})
+
+				updated, err := surface.update(context.Background(), em, nestedArrayUpdate(rowID, tc.updates))
+				if err != nil {
+					t.Fatalf("update: %v", err)
 				}
-				assertEqualValue(t, "stored records", []string{replacement.want, "2[]=kept", "3[]=new"},
-					storedTextRecords(repo.records[nestedArraySchema][rowID]))
+				assertEqualValue(t, "stored records", tc.records, storedTextRecords(repo.records[nestedArraySchema][rowID]))
+				assertEqualValue(t, "answered order", map[string]any{"items": tc.items, "items.tags": []any{}}, updated["order"])
 			})
+		}
+	}
+}
+
+// A stored record the read places under a literal key beside an array, as
+// one written through that key is, gives way to the caller's nested
+// spelling of its attribute inside a rewritten array: every update surface
+// writes the caller's value, although the stored spelling sorts last and
+// would win by #312's rule alone.
+func TestUpdateNestedSpellingReplacesLiteralPlacedRecord(t *testing.T) {
+	for _, surface := range updateSurfaces {
+		t.Run(surface.name+"/value", func(t *testing.T) {
+			em, repo, rowID := seedNestedArrayDocument(t, true, map[string]any{"order": map[string]any{
+				"items": []any{map[string]any{"sku": "a"}}, "items.lots.code": "x",
+			}})
+			items := []any{map[string]any{"sku": "a", "lots": []any{map[string]any{"code": "z"}}}}
+
+			updated, err := surface.update(context.Background(), em, nestedArrayUpdate(rowID, map[string]any{
+				"order": map[string]any{"items": items},
+			}))
+			if err != nil {
+				t.Fatalf("update: %v", err)
+			}
+			assertEqualValue(t, "stored records", []string{"1[0,0]=z", "2[]=kept", "3[]=new", "4[0]=a"},
+				storedTextRecords(repo.records[nestedArraySchema][rowID]))
+			assertEqualValue(t, "answered order", map[string]any{"items": items, "note": "kept"}, updated["order"])
+		})
+		t.Run(surface.name+"/empty-list marker", func(t *testing.T) {
+			em, repo, rowID := seedListInObjectArrayRow(t, map[string]any{"stage": "new", "order": map[string]any{
+				"items": []any{map[string]any{"sku": "a"}}, "items.tags": []any{},
+			}})
+			items := []any{map[string]any{"sku": "a", "tags": []any{}}}
+
+			updated, err := surface.update(context.Background(), em, nestedArrayUpdate(rowID, map[string]any{
+				"order": map[string]any{"items": items},
+			}))
+			if err != nil {
+				t.Fatalf("update: %v", err)
+			}
+			assertEqualValue(t, "stored records", []string{"3[]=new", "4[0]=a", "5[0]=<none>"},
+				storedTextRecords(repo.records[nestedArraySchema][rowID]))
+			assertEqualValue(t, "answered order", map[string]any{"items": items}, updated["order"])
+		})
+	}
+}
+
+// An update's JSON Schema validation only reports by default, so a lead
+// update nesting [] inside the value of contact.phones reaches the write.
+// Under the lead's array ancestry its marker would carry an index the read
+// takes for one of the list's own elements and leaves out: the answer and
+// the next Get would lack the list, and the next unrelated update would
+// delete its record. Every update surface refuses it as caller input
+// instead, and the row keeps its phones.
+func TestUpdateNestingEmptyListInListIsRefused(t *testing.T) {
+	ctx := context.Background()
+	registry, err := newFileSchemaRegistryFromDir(shippedSchemaDir)
+	if err != nil {
+		t.Fatalf("load the shipped schemas: %v", err)
+	}
+	validator, err := schemavalidate.New(registry, shippedSchemaDir)
+	if err != nil {
+		t.Fatalf("build the validator: %v", err)
+	}
+	config := createTestConfig()
+	config.Entity.ValidateUpdatesStrict = false
+	schemaID, _, err := registry.GetSchemaByName("lead")
+	if err != nil {
+		t.Fatalf("lead schema: %v", err)
+	}
+	for _, surface := range updateSurfaces {
+		t.Run(surface.name, func(t *testing.T) {
+			repo := newMockPersistentRecordRepository()
+			em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry), repo, nil, registry, config, validator)
+			created, err := em.Create(ctx, &forma.EntityOperation{
+				EntityIdentifier: forma.EntityIdentifier{SchemaName: "lead"},
+				Type:             forma.OperationCreate,
+				Data: map[string]any{
+					"id": uuid.New().String(), "tenantId": "tenant-1", "ownerUserId": "owner-1",
+					"pipeline": "buy", "stage": "new", "status": "open",
+					"contact":   map[string]any{"isAnonymous": false, "phones": []any{"123"}},
+					"createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-02T00:00:00Z",
+				},
+			})
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			stored := storedTextRecords(repo.records[schemaID][created.RowID])
+
+			_, err = surface.update(ctx, em, &forma.EntityOperation{
+				EntityIdentifier: forma.EntityIdentifier{SchemaName: "lead", RowID: created.RowID},
+				Type:             forma.OperationUpdate,
+				Updates:          map[string]any{"contact": map[string]any{"phones": []any{[]any{}}}},
+			})
+			assertNestedEmptyListRefused(t, err, "contact.phones")
+			assertEqualValue(t, "stored records", stored, storedTextRecords(repo.records[schemaID][created.RowID]))
+			fetched, err := em.Get(ctx, &forma.QueryRequest{SchemaName: "lead", RowID: &created.RowID})
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			assertEqualValue(t, "phones", []any{"123"}, valueAtPath(fetched.Attributes, "contact.phones"))
+		})
+	}
+}
+
+func assertNestedEmptyListRefused(t *testing.T, err error, attr string) {
+	t.Helper()
+	want := []string{"attribute '" + attr + "'", `empty list at array indices "0" is nested in more arrays`}
+	message := ""
+	var reported bestEffortFailure
+	switch {
+	case errors.As(err, &reported):
+		message = reported.failure.Error
+	case errors.Is(err, forma.ErrInvalidInput):
+		published, ok := forma.ResolvePublicMessage(err)
+		if !ok {
+			t.Fatalf("expected a published message, got %v", err)
+		}
+		message = published
+	default:
+		t.Fatalf("expected the update to be refused as invalid input, got %v", err)
+	}
+	for _, part := range want {
+		if !strings.Contains(message, part) {
+			t.Fatalf("expected the refusal to name %q, got %q", part, message)
 		}
 	}
 }

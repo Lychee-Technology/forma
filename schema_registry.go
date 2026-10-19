@@ -168,6 +168,24 @@ type AttributeMetadata struct {
 	// writes preserve them — but their (id, name, valueType) still guards
 	// against rebinding the freed id to a different attribute.
 	Retired bool `json:"retired,omitempty"`
+	// ArrayAncestors names the attribute's ancestors that the schema declares
+	// as arrays of objects, outermost first, by dotted path: orders.items.qty
+	// under orders[] and orders[].items[] has ["orders", "orders.items"]. A
+	// stored record's array indices are not part of its attribute's name, and
+	// the writer stores one index per array it traverses, so this is what says
+	// which ancestor each index belongs to when a row is rebuilt (#623).
+	//
+	// Nil means the registry did not derive it. The file registry derives it
+	// from the schema document when the document resolves every attribute of
+	// the schema; a registry that sets it must set it, possibly empty, on every
+	// attribute of the schema. A rebuild that meets an attribute without it
+	// infers each record's array ancestor from the row, which cannot place an
+	// object or array nested inside an array of objects. Nor can it place the
+	// empty-list marker such a list stores while the field is set, so once a
+	// registry stops setting it for a schema, every read and update of a row
+	// holding one fails until the registry sets it again. The JSON form keeps
+	// nil (null) and empty ([]) apart.
+	ArrayAncestors []string `json:"array_ancestors"`
 }
 
 // EffectiveRequiredPolicy returns the policy used at runtime.

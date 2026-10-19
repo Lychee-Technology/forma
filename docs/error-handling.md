@@ -794,18 +794,92 @@ A create runs step 4 only.
   literal repair under a required policy was then refused as a missing
   required attribute, and a nested sibling update dropped the stored list
   beside it.
+- **A row rebuilds in its written shape when its schema declares array
+  ancestry (#623).** A stored record's `array_indices` list one index per
+  array the writer crossed, and its dotted attribute name does not say which
+  ancestors those arrays were. `AttributeMetadata.ArrayAncestors` says: the
+  ancestors the schema declares as arrays of objects, outermost first. The
+  file registry derives it from the schema document when it loads a schema,
+  for every attribute or for none. A document that does not resolve one
+  attribute's ancestors, such as one reached through another file's `$ref`
+  (the shipped `visit`'s `contactSnapshot`), leaves the whole schema
+  underived, and a log names the attribute. It is a warning when an
+  attribute of the schema is known to lie inside an array of objects, since
+  only such a schema's rows can read differently, and information otherwise,
+  as for `visit`. An ancestor the document leaves open could still be such
+  an array (#705). The rebuild
+  (`rebuildDocument`, `internal/transform/document_rebuild.go`) then places
+  each record by it, in every record order: a lead's
+  `propertyInterests[0].snapshot.title` reads back at
+  `propertyInterests[0].snapshot`, where it used to read as
+  `{"propertyInterests":{"snapshot":[…],"propertyId":[…]}}`.
+  - Indices past the ancestors index the attribute's own array: a list's
+    elements, or a legacy text-typed array. One stored alone, with no
+    sibling in the row, now reads as the array it is
+    (`{"legacy":{"phones":["111","222"]}}`).
+  - A record with fewer indices than ancestors was written where the first
+    array it does not index was an object, or through a literal dotted key
+    crossing that array (`{"orders":[{"items.qty":1}]}`), or is a row the
+    federated reader collapsed to one value. It reads that array as an
+    object, as before, unless the row holds elements of the array in the
+    same element of its outer arrays; then it reads under the literal key
+    beside the array, so the write stores it back at the same indices. A
+    projection selects it there by its attribute's path:
+    `Attrs: ["requirement.areas.note"]` answers
+    `{"requirement":{"areas.note":"…"}}`, and `requirement.areas` answers
+    the array with the literal key beside it.
+  - The empty-list marker of a list inside an array of objects carries its
+    element's indices, and so `{"items":[{"sku":"a","tags":[]}]}` with a
+    `required_if_parent_present` `items.sku` is no longer refused as missing
+    `items.sku`. A marker with fewer indices is placed like any other such
+    record. Beside the array's elements it reads under the literal key, as
+    `{"items":[{"sku":"a"}],"items.tags":[]}` writes it, and an update
+    writes it back. A marker written before #623 carries no indices wherever
+    its list was, so it reads there too rather than in an element it does
+    not name. The DuckDB pivot and the CDC export tell a marker from an
+    element by its NULL values rather than its empty `array_indices`, so an
+    indexed marker exports as `[]`. A binary older than #623 skips an
+    indexed marker on read and deletes it on its next update of the row, so
+    a rolling deploy or a rollback across #623 needs care for a schema with
+    a list inside an array of objects
+    ([Rollback](./schema-consistency-migration.md#rollback)).
+  - Any index past a list's ancestors is one of its own elements, and a
+    row with no value there is no element: the read leaves it out. So an
+    `[]` nested in more arrays than the list's arrays of objects, inside
+    the list's own value (`{"tags":[[]]}`) or inside an array where the
+    schema declares an object, is refused as invalid input rather than
+    stored as a record the next unrelated update would delete: `invalid
+    value for attribute 'tags' (attrID=…): empty list at array indices "0"
+    is nested in more arrays than the attribute's arrays of objects (none);
+    a list's elements cannot be arrays`. Report-only update validation lets
+    such a fragment through, so the write is what refuses it. Without
+    ancestry the marker carries no indices, and the `[]` still stores the
+    marker of the list it is nested in, as before.
+  - A stored array index below zero fails the read with a plain error
+    naming the attribute.
+
+  A row with any attribute that does not declare its ancestors is rebuilt as
+  before #623, by inferring each record's array from the row; the two
+  readings are never mixed within a row. So is every row of a
+  `SchemaRegistry` that does not set the field, and the marker of such a
+  schema keeps no indices, since that reading cannot place one inside an
+  array of objects either way. A marker that does carry indices was written
+  while the registry declared the schema's ancestry, and the row fails to
+  rebuild (below).
 - **An update never deletes a stored record it did not address (#619
   review).** The write replaces the row's EAV records with the ones the
   merged document yields, so a held value at a position no attribute claims
-  would be left out of the written row and its record deleted. The rebuild
-  leaves a value at such a position in one case: its record carries more
-  array indices than its parent takes. The members of an array of objects
-  nested inside another are stored that way (`order.items[].lots[].code`, at
-  two array indices), as is a legacy text-typed array (pre-#204 metadata)
-  inside an array of objects. Such a record rebuilds beneath its own
-  attribute's name, at `order.items.lots[0].code[0].code`, a path the schema
-  does not define (#623). A declared list inside an array of objects is not
-  among them: its indices are its own, and it is written back whole.
+  would be left out of the written row and its record deleted. A row
+  rebuilt by array ancestry places every record where the write reads it
+  back. A row rebuilt without it leaves a value at such a position in one
+  case: its record carries more array indices than its parent takes. The
+  members of an array of objects nested inside another are stored that way
+  (`order.items[].lots[].code`, at two array indices), as is a legacy
+  text-typed array (pre-#204 metadata) inside an array of objects. Such a
+  record rebuilds beneath its own attribute's name, at
+  `order.items.lots[0].code[0].code`, a path the schema does not define
+  (#623). A declared list inside an array of objects is not among them: its
+  indices are its own, and it is written back whole.
   `resolveStoredValues` used to remove the value like one the write discards,
   and an update of an unrelated attribute succeeded having deleted the
   record. It now refuses the update with a plain, operator-visible error
@@ -823,6 +897,42 @@ A create runs step 4 only.
   stored record of the same attribute that the write can place is no
   replacement: it is written back under the stored spelling, and the record
   beside it would still be deleted. Reading the row is unchanged.
+
+  A row rebuilt by array ancestry can still hold records of one attribute
+  under two key spellings: nested in one element, and under the literal key
+  beside the array in another. One write never stores that, since it keeps
+  one spelling per attribute, but rows written before #312 can hold it. The
+  write would keep one spelling and delete the other's records, so the
+  update is refused the same way, plainly, as `… rebuilds under a different
+  key spelling than the attribute's other stored records …`, unless the
+  caller's own spelling replaces the attribute. The merge base holds a
+  list's empty-list marker as a stored record like any other, so a marker
+  under one spelling and a scalar stored before its attribute became a list
+  (#372) under the other are refused too, whichever spelling wins.
+
+  A stored record under the literal key never wins over the caller's own
+  spelling of its attribute. In the caller's payload the literal key sorts
+  last and wins (#312), which is how it replaces the stored nested value.
+  A stored record the rebuild places under the literal key sorts last as
+  well, so by that rule alone an update that rewrites the array beside it,
+  spelling the attribute inside the array, would answer `200` and write the
+  stored value instead of the caller's. The caller's spelling wins instead,
+  and the stored record is discarded as one the caller replaces.
+
+  A row read without array ancestry cannot place an empty-list marker that
+  carries array indices. Only a write under ancestry stores one, so the row
+  was written while the registry declared the schema's ancestry and is read
+  after it stopped, as it does once the schema document reaches an attribute
+  through another file's `$ref` (#705). The rebuild fails rather than leave
+  the marker out, so a read of the row fails with the read-path error below,
+  and so does every update of it, before the merge, rather than delete the
+  marker. Even a fragment that replaces the array is refused, since nothing
+  tells whether it replaces the marker. The marker reads back in its element
+  once the ancestry is declared again. Without ancestry the rebuild cannot
+  tell how many array ancestors a list has, but it has no more than its name
+  has proper prefixes, so a list's record with no value and more indices
+  than that is a row with no value at an element's index, which the read
+  leaves out, as it always has and as a reading by ancestry does.
 - **An element of an array of objects that stores no record reads as `{}`
   (#626).** `{"items":[{}, {"sku":"a"}]}` stores one record, `items.sku` at
   index 1. The rebuild used to pad index 0 with `null`, so a `Get`, a query
@@ -844,8 +954,8 @@ A create runs step 4 only.
   element after the last one that stores a record does not come back: the
   array's length is not stored, so `{"items":[{"sku":"a"}, {}]}` reads back as
   `{"items":[{"sku":"a"}]}`. A primitive array keeps `null` padding. The
-  writer stores every element of one, so a gap there is a damaged row or the
-  per-field reading under **Known limits**.
+  writer stores every element of one, so a gap there is a damaged row or,
+  without array ancestry, the per-field reading under **Known limits**.
 - **Required policies are judged on what the write stores.** An attribute is
   present where a winning claim writes it. A parent is present where a
   winning claim writes beneath it, or where the caller sent it explicitly:
@@ -870,8 +980,9 @@ A create runs step 4 only.
   The record-side check (`checkRequiredAttributes`) still runs on the written
   records and on every read. It stays plain, and on the write path it is now
   a backstop that a row passing `requireWrittenAttributes` always passes.
-- **Order of refusals.** The payload depth cap aborts the walk and comes
-  first. On an update, resolving the stored values comes next: the first
+- **Order of refusals.** A stored row whose rebuild fails, or that holds a
+  marker the update refuses before the merge (above), fails every update.
+  Of the rest, the payload depth cap aborts the walk and comes first. On an update, resolving the stored values comes next: the first
   kept value that fails to decode, or held value the write cannot place, in
   walk order. Then the JSON Schema, then the required policy, then the first
   refusal (`null`, an unknown attribute) or conversion error in walk order,
@@ -905,29 +1016,28 @@ kept.
   element holding the discarded value did before.
 - A stored row that already lacks a required attribute fails the rebuild, and
   so the update, with the read's plain error.
-- A row holding a record with more array indices than its parent takes (an
-  array of objects nested inside another, or a legacy text-typed array inside
-  an array of objects) cannot be updated in part until the rebuild places
-  the record where the write reads it back (#623): every update that keeps
-  the value is refused, as above. Replacing the outer array or the attribute
-  itself still works.
-- An array of objects that nests anything but scalars (an object, an array of
-  objects, a legacy text-typed array, or a list, whose empty-list marker
-  carries no index) rebuilds as an object of per-field arrays (#623). A member
-  that some elements lack then leaves its gap at the wrong level. A gap in an
-  object member's array reads `{}`, and the row stays updatable (#626). Two
-  gaps still refuse every update that keeps them, with a `400`:
-  - A scalar member missing from an earlier element reads `null` in its
+- The limits below apply only to a schema without array ancestry (#623,
+  above). No shipped schema has one with an array of objects.
+  - A row holding a record with more array indices than its parent takes (an
+    array of objects nested inside another, or a legacy text-typed array
+    inside an array of objects) cannot be updated in part: every update that
+    keeps the value is refused, as above. Replacing the outer array or the
+    attribute itself still works.
+  - An array of objects that nests anything but scalars (an object, an array
+    of objects, a legacy text-typed array, or a list, whose empty-list marker
+    carries no index) rebuilds as an object of per-field arrays. A member that
+    some elements lack then leaves its gap at the wrong level. A gap in an
+    object member's array reads `{}`, and the row stays updatable (#626). A
+    scalar member missing from an earlier element reads `null` in its
     per-field array, which is refused as `cannot be set to null (array index
-    N)`. A shipped lead hits this when its `propertyInterests[0]` holds a
-    `snapshot` and only `propertyInterests[1]` holds `notes`:
-    `"notes":[null,"n"]`.
-  - A `{}` gap in a per-field array of objects asserts its parent at the
-    per-field level, so a `required_if_parent_present` member of it is
-    reported missing.
-
-  Neither deletes a record, and replacing the outer array still works. Both
-  go when #623 gives these rows their written shape.
+    N)`, and a `{}` gap in a per-field array of objects asserts its parent at
+    the per-field level, so a `required_if_parent_present` member of it is
+    reported missing. Both are `400`s on every update that keeps the gap;
+    neither deletes a record, and replacing the outer array still works.
+  - A row holding an empty-list marker written while the schema declared its
+    array ancestry can be neither read nor updated until the registry
+    declares it again. The read fails with the plain error above rather
+    than leave the marker out.
 - The walk runs twice per update (resolution, then the writer). It is linear
   in the payload plus the stored row.
 
@@ -938,13 +1048,19 @@ Pinned by `TestUpdateNamingLegacyBigintImageRepairsIt`,
 `TestRefusedRepairOverLegacyBigintImageReportsTheCallersValue`,
 `TestUpdateNamingRequiredNestedAttributeKeepsSiblings`,
 `TestUpdateLeavingRequiredNestedAttributeMissingFails`,
+`TestUnrelatedUpdateOverNestedArrayKeepsIt`,
+`TestUnrelatedUpdateOverLegacyArrayInObjectArrayKeepsIt`,
 `TestUnrelatedUpdateOverNestedArrayIsRefused`,
+`TestRowWithMarkerWrittenWithAncestryFailsWithout`,
+`TestUpdateNestingEmptyListInListIsRefused`,
 `TestUpdateReplacingNestedArrayWritesIt` and
 `TestUnrelatedUpdateOverObjectArrayGapIsAccepted` (package `internal`, across
 `Update` and both `BatchUpdate` modes), by `merge_update_test.go`,
-`merge_update_unplaced_test.go`, `merge_update_property_test.go`,
+`merge_update_unplaced_test.go`, `merge_update_ancestry_test.go`,
+`merge_update_property_test.go`, `document_rebuild_ancestry_test.go`,
 `object_array_gap_test.go` and `written_required_test.go` in
-`internal/transform`, by `TestUnrelatedUpdateOverNestedArrayIntegration` and
+`internal/transform`, by `TestFileRegistryDerivesArrayAncestors` and
+`TestFileRegistryLogsUnderivedSchemaByItsArrays` in `internal/schemameta`, by `TestUnrelatedUpdateOverNestedArrayIntegration` and
 `TestUnrelatedUpdateOverObjectArrayGapIntegration` (Postgres), and by
 `TestNestedBigintLegacyImageRepairByUpdate` (production E2E).
 
@@ -1174,6 +1290,14 @@ Examples:
   `1000`, `NaN` as 1970-01-01, a number past int64 as absent): the DuckDB
   Postgres scanner types `NUMERIC` as `DOUBLE` before any expression Forma
   renders. The census is their guard until #621.
+- an empty-list marker with array indices in a row whose registry does not
+  declare its schema's array ancestry (#623; see "The update merge and the
+  written row"): `failed to convert attributes of row 0198… to JSON:
+  empty-list marker of list attribute 'order.items.tags' carries array
+  indices 1, which only a rebuild by array ancestry places, and the registry
+  does not declare the ancestry of every attribute in the row; the registry
+  must declare the schema's array ancestry, as the file registry does when
+  the schema document resolves every attribute's ancestors`.
 - a `NaN` or `±Infinity` in `value_numeric` under `smallint`, `integer` or
   `numeric` (#592): `stored numeric image NaN of attribute 3 in value_numeric
   has no finite float64 value`. The write funnel never stores one; before
@@ -2227,7 +2351,11 @@ duplicate-key rule `encoding/json` applies. This is deterministic rather than
 map-order dependent: the write's document walk (`walkDocument`) sorts each
 map's keys, and for any dotted name the nested spelling's top-level key is a
 proper prefix of the literal one, so it sorts first and the literal key's
-records — the caller's explicit value — are emitted last.
+records — the caller's explicit value — are emitted last. An update is the one
+place a literal key can be the stored row's: a row rebuilt by array ancestry
+places a record with fewer indices than ancestors under the literal key beside
+the array (#623). There the caller's spelling wins over one only stored
+records are under, and those records are discarded before the write.
 
 **The unit of replacement is the whole logical attribute, not the primary key.**
 When one spelling wins, every record the losing spellings produced for that

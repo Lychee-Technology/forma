@@ -113,8 +113,9 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 
 // FromAttributes rebuilds a row's document from its attributes, in whatever
 // order they arrive (rebuildDocument, #619). A record with no value is
-// dropped, except a list's empty-list marker (no indices, no value), which
-// rebuilds as an explicit [] (#204).
+// dropped, except a list's empty-list marker, which rebuilds as an explicit
+// [] (#204). For an update's merge base the values are held undecoded
+// (holdRecordValue), and a marker is placed as its held record instead.
 func (t *transformer) FromAttributes(ctx context.Context, attributes []model.EntityAttribute) (map[string]any, error) {
 	records := make([]rebuildRecord, 0, len(attributes))
 	for _, attr := range attributes {
@@ -126,23 +127,32 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []model.Ent
 		if !ok {
 			return nil, fmt.Errorf("attribute id %d not found for schema %d", attr.AttrID, attr.SchemaID)
 		}
-		list := cache[attrName].ValueType == forma.ValueTypeList
+		meta := cache[attrName]
+		list := meta.ValueType == forma.ValueTypeList
 		value := attr.Value
-		if value == nil {
-			if !list || attr.ArrayIndices != "" {
+		marker := holdsNoValue(value)
+		if marker {
+			if !list {
 				continue
 			}
-			value = []any{}
+			if value == nil {
+				value = []any{}
+			}
 		}
 		indices, err := parseIndices(attr.ArrayIndices)
 		if err != nil {
 			return nil, fmt.Errorf("parse array indices for attribute '%s': %w", attrName, err)
 		}
 		records = append(records, rebuildRecord{
-			segments: strings.Split(attrName, "."), list: list, indices: indices, value: value,
+			segments:  strings.Split(attrName, "."),
+			list:      list,
+			marker:    marker,
+			ancestors: meta.ArrayAncestors,
+			indices:   indices,
+			value:     value,
 		})
 	}
-	return rebuildDocument(records), nil
+	return rebuildDocument(records)
 }
 
 func (t *transformer) BatchToAttributes(ctx context.Context, schemaID int16, jsonObjects []any) ([]model.EntityAttribute, error) {

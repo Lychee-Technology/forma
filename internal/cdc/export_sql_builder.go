@@ -144,19 +144,20 @@ func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) (schemaDr
 			// One eav_data row per element: aggregate into a DuckDB LIST in
 			// element-index order instead of MAX-collapsing to one scalar.
 			// The element cast follows the declared items type. The empty-list
-			// marker row (array_indices '', both value columns NULL) is the
-			// only row excluded from the element aggregate; it is still
-			// detected by the presence count, so an explicit empty list
-			// exports as [] while an absent attribute stays NULL (#204). A
-			// legacy scalar row (array_indices '' carrying a value, written
-			// before the schema declared the attribute a list) therefore
-			// exports as a one-element list instead of being dropped as []
-			// (#372); validate-schema-consistency reports such rows. Mirrored
-			// by sqlgen.buildEAVPivotExpr.
+			// marker row (both value columns NULL) is the only row excluded
+			// from the element aggregate; it is still detected by the presence
+			// count, so an explicit empty list exports as [] while an absent
+			// attribute stays NULL (#204). The marker is told by its NULL
+			// values, not its array_indices: inside an array of objects it
+			// carries its element's (#623). A legacy scalar row (array_indices
+			// '' carrying a value, written before the schema declared the
+			// attribute a list) therefore exports as a one-element list instead
+			// of being dropped as [] (#372); validate-schema-consistency reports
+			// such rows. Mirrored by sqlgen.buildEAVPivotExpr.
 			elemMeta := meta
 			elemMeta.ValueType = meta.EffectiveItemsType()
 			eavAgg = append(eavAgg, fmt.Sprintf(
-				"CASE WHEN count(*) FILTER (WHERE attr_id = %d) > 0 THEN coalesce(list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d AND (array_indices <> '' OR value_text IS NOT NULL OR value_numeric IS NOT NULL)), []) END AS %s",
+				"CASE WHEN count(*) FILTER (WHERE attr_id = %d) > 0 THEN coalesce(list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d AND (value_text IS NOT NULL OR value_numeric IS NOT NULL)), []) END AS %s",
 				meta.AttributeID, castEAVValue(elemMeta), meta.AttributeID, alias))
 		} else {
 			castExpr := castEAVValue(meta)
