@@ -10,7 +10,8 @@ import (
 // If attrs is nil or empty, returns the original attributes unchanged.
 // Supports nested paths like "contact.name" or "contact.phone", including
 // paths through arrays of objects ("items.sku"), which keep each element in
-// its position (projectionNode.project).
+// its position (projectionNode.project), and paths a literal dotted key
+// spells (projectionNode.member).
 func FilterAttributes(attributes map[string]any, attrs []string) map[string]any {
 	if len(attrs) == 0 {
 		return attributes
@@ -52,20 +53,37 @@ func (n *projectionNode) add(segments []string) {
 }
 
 // projectMembers returns the requested members of object, each projected by
-// its node. A member the object lacks, or that holds none of its node's
-// paths, is left out.
+// its node and kept under its own key. A member no requested path reaches,
+// or that holds none of its node's paths, is left out.
 func (n *projectionNode) projectMembers(object map[string]any) map[string]any {
 	result := make(map[string]any)
-	for name, child := range n.children {
-		value, exists := object[name]
-		if !exists {
+	for key, value := range object {
+		child := n.member(key)
+		if child == nil {
 			continue
 		}
 		if projected, ok := child.project(value); ok {
-			result[name] = projected
+			result[key] = projected
 		}
 	}
 	return result
+}
+
+// member returns the node that projects the object member named key, or nil
+// when no requested path reaches it. A key holding dots is a literal key the
+// rebuild places beside an array of objects (#623,
+// {"requirement":{"areas":[…],"areas.note":"n"}}). It stands for the path
+// its segments spell, so "requirement.areas.note" selects it, and a path
+// that ends partway through it, such as "requirement.areas", keeps it whole.
+func (n *projectionNode) member(key string) *projectionNode {
+	for {
+		segment, rest, dotted := strings.Cut(key, ".")
+		n = n.children[segment]
+		if n == nil || n.whole || !dotted {
+			return n
+		}
+		key = rest
+	}
 }
 
 // project returns the part of value the node's paths select, and false when

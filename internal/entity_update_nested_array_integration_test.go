@@ -139,6 +139,9 @@ func TestLiteralKeyMarkerBesideElementsIntegration(t *testing.T) {
 	fetched, err := e.em.Get(ctx, &forma.QueryRequest{SchemaName: "nested_array", RowID: &rowID})
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{"items": []any{map[string]any{"sku": "a"}}, "items.tags": []any{}}, fetched.Attributes["order"])
+	projected, err := e.em.Get(ctx, &forma.QueryRequest{SchemaName: "nested_array", RowID: &rowID, Attrs: []string{"order.items.tags"}})
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"order": map[string]any{"items.tags": []any{}}}, projected.Attributes, "projected Get")
 
 	items := []any{map[string]any{"sku": "a", "tags": []any{}}}
 	_, err = e.em.Update(ctx, nestedArrayUpdate(rowID, map[string]any{"order": map[string]any{"items": items}}))

@@ -304,6 +304,74 @@ func TestFilterAttributes_ArrayOfObjects(t *testing.T) {
 	}
 }
 
+// The rebuild places a record with fewer indices than its attribute's arrays
+// of objects under a literal key beside the array when the row holds
+// elements of it (#623). A path selects the literal key its segments spell
+// and keeps it under that key, a path that ends partway through one keeps it
+// whole, and a literal key no path reaches is left out. The source is not
+// modified.
+func TestFilterAttributes_LiteralKeys(t *testing.T) {
+	source := func() map[string]any {
+		return map[string]any{
+			"requirement": map[string]any{
+				"areas": []any{map[string]any{"city": "Tokyo"}}, "areas.note": "literal note",
+			},
+			"order": map[string]any{
+				"items": []any{
+					map[string]any{"sku": "a", "lots": []any{map[string]any{"code": "c"}}, "lots.qty": 2},
+					map[string]any{"sku": "b"},
+				},
+				"items.tags": []any{},
+			},
+		}
+	}
+	for name, tc := range map[string]struct {
+		attrs []string
+		want  map[string]any
+	}{
+		"literal key beside an array": {
+			attrs: []string{"requirement.areas.note"},
+			want:  map[string]any{"requirement": map[string]any{"areas.note": "literal note"}},
+		},
+		"literal key inside an element": {
+			attrs: []string{"order.items.lots.qty"},
+			want: map[string]any{"order": map[string]any{"items": []any{
+				map[string]any{"lots.qty": 2}, map[string]any{},
+			}}},
+		},
+		"empty-list marker under a literal key": {
+			attrs: []string{"order.items.tags"},
+			want:  map[string]any{"order": map[string]any{"items.tags": []any{}}},
+		},
+		"path ending partway through a literal key": {
+			attrs: []string{"requirement.areas"},
+			want:  map[string]any{"requirement": source()["requirement"]},
+		},
+		"member beside a literal key": {
+			attrs: []string{"requirement.areas.city"},
+			want: map[string]any{"requirement": map[string]any{
+				"areas": []any{map[string]any{"city": "Tokyo"}},
+			}},
+		},
+		"members under both spellings": {
+			attrs: []string{"order.items.lots.code", "order.items.lots.qty"},
+			want: map[string]any{"order": map[string]any{"items": []any{
+				map[string]any{"lots": []any{map[string]any{"code": "c"}}, "lots.qty": 2}, map[string]any{},
+			}}},
+		},
+		"literal key no path reaches": {
+			attrs: []string{"requirement.areas.ward", "order.items.lots.qty.x"},
+			want:  map[string]any{},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			attributes := source()
+			require.Equal(t, tc.want, FilterAttributes(attributes, tc.attrs))
+			require.Equal(t, source(), attributes, "the source must not change")
+		})
+	}
+}
+
 // Get and Query project a lead's property interests, an array of objects
 // whose elements nest a snapshot, in the shape the read rebuilds them in
 // under the array ancestry the file registry derives (#623): each requested
