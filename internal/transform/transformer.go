@@ -113,8 +113,8 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 
 // FromAttributes rebuilds a row's document from its attributes, in whatever
 // order they arrive (rebuildDocument, #619). A record with no value is
-// dropped, except a list's empty-list marker (no indices, no value), which
-// rebuilds as an explicit [] (#204).
+// dropped, except a list's empty-list marker, which rebuilds as an explicit
+// [] (#204).
 func (t *transformer) FromAttributes(ctx context.Context, attributes []model.EntityAttribute) (map[string]any, error) {
 	records := make([]rebuildRecord, 0, len(attributes))
 	for _, attr := range attributes {
@@ -126,10 +126,11 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []model.Ent
 		if !ok {
 			return nil, fmt.Errorf("attribute id %d not found for schema %d", attr.AttrID, attr.SchemaID)
 		}
-		list := cache[attrName].ValueType == forma.ValueTypeList
+		meta := cache[attrName]
+		list := meta.ValueType == forma.ValueTypeList
 		value := attr.Value
 		if value == nil {
-			if !list || attr.ArrayIndices != "" {
+			if !list {
 				continue
 			}
 			value = []any{}
@@ -139,7 +140,12 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []model.Ent
 			return nil, fmt.Errorf("parse array indices for attribute '%s': %w", attrName, err)
 		}
 		records = append(records, rebuildRecord{
-			segments: strings.Split(attrName, "."), list: list, indices: indices, value: value,
+			segments:  strings.Split(attrName, "."),
+			list:      list,
+			marker:    attr.Value == nil,
+			ancestors: meta.ArrayAncestors,
+			indices:   indices,
+			value:     value,
 		})
 	}
 	return rebuildDocument(records), nil

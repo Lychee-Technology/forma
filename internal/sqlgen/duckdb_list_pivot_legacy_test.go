@@ -12,8 +12,9 @@ import (
 )
 
 // TestBuildEAVPivotExprListShapes executes the hot-tier list pivot against
-// the four eav_data shapes a list attribute can carry and pins the result of
-// each (#372): absent → NULL, empty-list marker → [], per-element rows → the
+// the eav_data shapes a list attribute can carry and pins the result of each
+// (#372): absent → NULL, empty-list marker → [], whether at the top level or
+// in an element of an array of objects (#623), per-element rows → the
 // ordered list, and a legacy scalar row (array_indices ” with a value,
 // written before the schema declared the attribute a list) → a one-element
 // list instead of the [] that silently dropped the stored value.
@@ -34,6 +35,8 @@ func TestBuildEAVPivotExprListShapes(t *testing.T) {
 			('absent',  7,  '',  'note',  CAST(NULL AS DOUBLE)),
 			('marker',  18, '',  NULL,    NULL),
 			('marker',  19, '',  NULL,    NULL),
+			('element', 18, '2', NULL,    NULL),
+			('element', 19, '0', NULL,    NULL),
 			('elems',   18, '1', 'beta',  NULL),
 			('elems',   18, '0', 'alpha', NULL),
 			('elems',   19, '1', NULL,    2),
@@ -55,6 +58,7 @@ func TestBuildEAVPivotExprListShapes(t *testing.T) {
 
 	require.Equal(t, [2]string{"NULL", "NULL"}, got["absent"])
 	require.Equal(t, [2]string{"[]", "[]"}, got["marker"])
+	require.Equal(t, [2]string{"[]", "[]"}, got["element"])
 	require.Equal(t, [2]string{`["alpha","beta"]`, "[1.0,2.0]"}, got["elems"])
 	require.Equal(t, [2]string{`["alpha"]`, "[42.0]"}, got["legacy"])
 }

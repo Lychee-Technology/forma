@@ -49,14 +49,21 @@ func (t *persistentRecordTransformer) MergeUpdate(
 // unreadable kept values the same one fails the update on every run; the
 // error is the read path's, plain, as reading the row would raise.
 //
+// A stored value the walk claims but whose spelling loses is discarded only
+// when the caller's own spelling of the attribute replaces it
+// (storedValue.replacedBy). Otherwise the winning spelling is other stored
+// records', which a row rebuilt from records written through different
+// spellings of the attribute holds, and the update is refused rather than
+// silently deleting the record (respelledError).
+//
 // A stored value the walk does not claim was rebuilt where the write cannot
-// read it back. The rebuild leaves one there when its record carries more
-// array indices than its parent takes, as the members of an array of objects
-// nested inside another do: it lands beneath its own attribute's name, a path
-// the schema does not define (#623). Removing it would delete its record in
-// an update that never addressed it, so the update is refused instead, in the
-// same walk order, unless the caller's own spelling of the attribute replaces
-// the value (storedValue.replacedBy).
+// read it back. A row without array ancestry leaves one there when its record
+// carries more array indices than its parent takes, as the members of an
+// array of objects nested inside another do: it lands beneath its own
+// attribute's name, a path the schema does not define (#623). Removing it
+// would delete its record in an update that never addressed it, so the update
+// is refused instead, in the same walk order, unless the caller's own
+// spelling of the attribute replaces the value.
 //
 // Removing a value must not change what the rest of the row means. A
 // container it empties is removed with it, since it held stored values only
@@ -71,29 +78,37 @@ func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, ca
 		return nil, err
 	}
 	winners := claimWinners(entries)
+	stored := storedSpellingsOf(entries)
 	kept := make(map[*storedValue]any)
 	for _, entry := range entries {
 		held, isHeld := entry.value.(*storedValue)
 		if !isHeld {
 			continue
 		}
-		if entry.kind != entryClaim {
-			if held.replacedBy(winners) {
-				continue
+		claimed := entry.kind == entryClaim
+		if claimed && winners.wins(entry.tagged) {
+			value, err := held.decode()
+			if err != nil {
+				return nil, err
 			}
-			return nil, held.unplacedError(entry.name)
-		}
-		if !winners.wins(entry.tagged) {
+			// A stored record decodes to nil only when it holds no value,
+			// and the read leaves such a record out of the document; so
+			// does this.
+			if value != nil {
+				kept[held] = value
+			}
 			continue
 		}
-		value, err := held.decode()
-		if err != nil {
-			return nil, err
+		spelling := held.nestedSpelling()
+		if claimed {
+			spelling = entry.tagged.spelling
 		}
-		// A stored record decodes to nil only when it holds no value, and
-		// the read leaves such a record out of the document; so does this.
-		if value != nil {
-			kept[held] = value
+		switch {
+		case held.replacedBy(winners, spelling, stored):
+		case claimed:
+			return nil, held.respelledError()
+		default:
+			return nil, held.unplacedError(entry.name)
 		}
 	}
 	resolveMap(doc, kept)

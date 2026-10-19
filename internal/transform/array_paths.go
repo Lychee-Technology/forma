@@ -18,7 +18,9 @@ func joinIndices(indices []int) string {
 	return strings.Join(parts, ",")
 }
 
-// parseIndices converts a comma-separated string to a slice of indices
+// parseIndices converts a stored comma-separated array_indices to a slice of
+// indices. The writer stores none below zero, so one is refused as a damaged
+// row rather than placed nowhere.
 func parseIndices(indices string) ([]int, error) {
 	if indices == "" {
 		return nil, nil
@@ -33,6 +35,9 @@ func parseIndices(indices string) ([]int, error) {
 		value, err := strconv.Atoi(part)
 		if err != nil {
 			return nil, fmt.Errorf("invalid index '%s'", part)
+		}
+		if value < 0 {
+			return nil, fmt.Errorf("negative index '%s'", part)
 		}
 		result[i] = value
 	}
@@ -129,9 +134,9 @@ func setArrayValueRecursive(arr []any, indices []int, value any) []any {
 
 // expandArray ensures the array has at least idx+1 elements, padding with
 // nil. The writer stores every element of a primitive array, so a gap there
-// is a damaged row, or a member some elements of an array of objects lack,
-// read as an array of its own (#623). Either way it stays a null, which the
-// next update refuses.
+// is a damaged row, or, in a row rebuilt without array ancestry, a member
+// some elements of an array of objects lack, read as an array of its own
+// (#623). Either way it stays a null, which the next update refuses.
 func expandArray(arr []any, idx int) []any {
 	for len(arr) <= idx {
 		arr = append(arr, nil)

@@ -18,15 +18,24 @@ import (
 // Against Postgres, the row the writer stores for an array of objects nested
 // inside another (#623) used to lose its record to an update of an unrelated
 // attribute: the merge committed a row without it and replaceEAVAttributes
-// deleted it (#619 review). The update is now refused before anything is
-// written, so eav_data holds the same rows afterwards, and the update that
-// replaces the array still commits.
+// deleted it (#619 review). With array ancestry declared the update writes
+// it back. Without, the update is refused before anything is written, so
+// eav_data holds the same rows afterwards. Either way the update that
+// replaces the array commits.
 func TestUnrelatedUpdateOverNestedArrayIntegration(t *testing.T) {
+	for _, ancestry := range []bool{true, false} {
+		t.Run(fmt.Sprintf("ancestry=%t", ancestry), func(t *testing.T) {
+			checkUnrelatedUpdateOverNestedArray(t, ancestry)
+		})
+	}
+}
+
+func checkUnrelatedUpdateOverNestedArray(t *testing.T, ancestry bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	pool := testdb.Connect(t, ctx)
 	tables := createTempPersistentTables(t, ctx, pool)
-	registry := nestedArrayRegistry()
+	registry := nestedArrayRegistry(ancestry)
 	_, attributes, err := registry.GetSchemaAttributeCacheByName("nested_array")
 	require.NoError(t, err)
 	metadata := schemameta.NewMetadataCache()
@@ -63,10 +72,18 @@ func TestUnrelatedUpdateOverNestedArrayIntegration(t *testing.T) {
 	require.Equal(t, []string{"1[0,0]=c", "3[]=new"}, storedRows())
 
 	_, err = em.Update(ctx, nestedArrayUpdate(rowID, map[string]any{"stage": "contacted"}))
-	require.ErrorContains(t, err,
-		"attrID=1 arrayIndices=0,0: stored text value of attribute 'order.items.lots.code' rebuilds at 'order.items.lots.code.code'")
-	require.NotErrorIs(t, err, forma.ErrInvalidInput)
-	require.Equal(t, []string{"1[0,0]=c", "3[]=new"}, storedRows(), "rows after the refused update")
+	if ancestry {
+		require.NoError(t, err)
+		require.Equal(t, []string{"1[0,0]=c", "3[]=contacted"}, storedRows(), "rows after the unrelated update")
+		fetched, err := em.Get(ctx, &forma.QueryRequest{SchemaName: "nested_array", RowID: &rowID})
+		require.NoError(t, err)
+		require.Equal(t, nestedArrayDocument("c")["order"], fetched.Attributes["order"])
+	} else {
+		require.ErrorContains(t, err,
+			"attrID=1 arrayIndices=0,0: stored text value of attribute 'order.items.lots.code' rebuilds at 'order.items.lots.code.code'")
+		require.NotErrorIs(t, err, forma.ErrInvalidInput)
+		require.Equal(t, []string{"1[0,0]=c", "3[]=new"}, storedRows(), "rows after the refused update")
+	}
 
 	replacement := nestedArrayDocument("d")
 	replacement["stage"] = "contacted"
