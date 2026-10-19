@@ -3,7 +3,7 @@ package transform
 import (
 	"context"
 	"fmt"
-	"strings"
+	"maps"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -13,35 +13,25 @@ import (
 
 // MergeUpdate builds the document an update writes (model.
 // PersistentRecordTransformer). The stored row is rebuilt as on read, but
-// with each EAV value held undecoded (holdRecordValue); merge places, moves
+// with each EAV record held undecoded (holdRecordValue); merge places, moves
 // or drops those values like any other; and resolveStoredValues then decodes
 // exactly the ones the written row keeps. Whether a stored value is kept is
 // not decided here: it is read off the same walk the write runs over the
 // merged document (walkDocument), so the update's path and #312 semantics
-// have one source.
-//
-// A row read without array ancestry leaves out an empty-list marker that
-// carries array indices (rebuildInferred). It was written while the
-// registry declared the schema's ancestry, which a schema document edit can
-// stop (#705), and it reads back in its element once the registry does
-// again. The write would delete its record, so the update is refused
-// instead, before the merge: the base does not hold the marker, so nothing
-// tells whether the caller replaces it.
+// have one source. A row the read refuses to rebuild, such as one holding a
+// marker it cannot place (rebuildInferred), is refused before the merge.
 func (t *persistentRecordTransformer) MergeUpdate(
 	ctx context.Context,
 	record *model.PersistentRecord,
 	merge func(base map[string]any) (map[string]any, error),
 ) (map[string]any, error) {
-	base, unplaced, err := t.fromPersistentRecord(ctx, record, holdRecordValue)
+	base, err := t.fromPersistentRecord(ctx, record, holdRecordValue)
 	if err != nil {
 		return nil, err
 	}
 	cache, _, err := schemameta.GetSchemaMetadata(t.registry, record.SchemaID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load schema %d metadata for row %s: %w", record.SchemaID, record.RowID, err)
-	}
-	if len(unplaced) > 0 {
-		return nil, unplacedMarkerError(record, unplaced[0], cache)
 	}
 	merged, err := merge(base)
 	if err != nil {
@@ -50,33 +40,17 @@ func (t *persistentRecordTransformer) MergeUpdate(
 	return resolveStoredValues(record.SchemaID, record.RowID, merged, cache)
 }
 
-// unplacedMarkerError refuses an update over a row holding marker, an
-// empty-list marker with array indices that the row, read without array
-// ancestry, leaves out. Like unplacedError, it blames the stored state, not
-// the caller, and is plain.
-func unplacedMarkerError(record *model.PersistentRecord, marker rebuildRecord, cache forma.SchemaAttributeCache) error {
-	attrName := strings.Join(marker.segments, ".")
-	identity := eavRecordIdentity(model.EAVRecord{
-		SchemaID: record.SchemaID, RowID: record.RowID,
-		AttrID: cache[attrName].AttributeID, ArrayIndices: joinIndices(marker.indices),
-	})
-	return fmt.Errorf("record %s: stored empty-list marker of list attribute '%s' carries array indices, "+
-		"which only a rebuild by array ancestry places, and the registry does not declare the ancestry of every attribute in the row, "+
-		"so this update cannot write it back; the registry must declare the schema's array ancestry, "+
-		"as the file registry does when the schema document resolves every attribute's ancestors",
-		identity, attrName)
-}
-
 // resolveStoredValues replaces every stored value the merged document holds
 // with its decoded value, or removes it when the write discards it.
 //
 // A stored value is kept exactly when the write would store it: the walk
-// claims it and #312 lets its spelling win. A caller's literal "contact.total"
-// therefore discards the stored contact.total the base nests beside it, and a
-// caller value that replaces a subtree has already dropped the stored values
-// beneath it in merge. Kept values are decoded in walk order, so of several
-// unreadable kept values the same one fails the update on every run; the
-// error is the read path's, plain, as reading the row would raise.
+// claims it and its spelling wins (updateWinners). A caller's literal
+// "contact.total" therefore discards the stored contact.total the base nests
+// beside it, and a caller value that replaces a subtree has already dropped
+// the stored values beneath it in merge. Kept values are decoded in walk
+// order, so of several unreadable kept values the same one fails the update
+// on every run; the error is the read path's, plain, as reading the row
+// would raise.
 //
 // A stored value the walk claims but whose spelling loses is discarded only
 // when the caller's own spelling of the attribute replaces it
@@ -100,13 +74,13 @@ func unplacedMarkerError(record *model.PersistentRecord, marker rebuildRecord, c
 // element positions: an emptied element before a kept one stays as {}, so
 // the kept elements keep their indices, and emptied trailing elements are
 // cut. The root document is never removed, and a container that was empty
-// before resolution, such as a caller's {} or a stored list's [], is kept.
+// before resolution, such as a caller's {} or [], is kept.
 func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, cache forma.SchemaAttributeCache) (map[string]any, error) {
 	entries, err := walkDocument(schemaID, rowID, doc, cache)
 	if err != nil {
 		return nil, err
 	}
-	winners := claimWinners(entries)
+	winners := updateWinners(entries)
 	stored := storedSpellingsOf(entries)
 	kept := make(map[*storedValue]any)
 	for _, entry := range entries {
@@ -120,9 +94,8 @@ func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, ca
 			if err != nil {
 				return nil, err
 			}
-			// A stored record decodes to nil only when it holds no value,
-			// and the read leaves such a record out of the document; so
-			// does this.
+			// A stored record decodes to nil only where the read decodes
+			// it to nil and leaves it out of the document; so does this.
 			if value != nil {
 				kept[held] = value
 			}
@@ -142,6 +115,36 @@ func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, ca
 	}
 	resolveMap(doc, kept)
 	return doc, nil
+}
+
+// updateWinners is #312's rule over an update's merged document, with the
+// caller's spellings ahead of the stored row's: per attribute, the last
+// spelling the caller sends wins, and the last spelling the walk claims a
+// stored value at wins only when the caller sends none.
+//
+// In a caller's own payload the literal key sorts last and wins, which is
+// what lets it replace the nested spelling the merge base holds. A row
+// rebuilt by array ancestry can put a stored value under a literal key of
+// its own, beside an array (rebuildByAncestry), and a caller's fragment that
+// rewrites the array spells the same attribute nested inside it. The last
+// spelling there is the stored one, and letting it win would write the row
+// back without the caller's value. The stored value loses instead, and is
+// discarded as any stored value the caller's spelling replaces
+// (storedValue.replacedBy), so the written row holds the caller's spelling
+// alone and the write's own rule (dedupeEAVRecords) agrees.
+func updateWinners(entries []documentEntry) spellingWinners {
+	winners, sent := make(spellingWinners, len(entries)), make(spellingWinners)
+	for _, entry := range entries {
+		if !entry.claims() {
+			continue
+		}
+		winners.observe(entry.tagged)
+		if _, held := entry.value.(*storedValue); !held {
+			sent.observe(entry.tagged)
+		}
+	}
+	maps.Copy(winners, sent)
+	return winners
 }
 
 // resolveMap resolves the stored values beneath m in place and reports

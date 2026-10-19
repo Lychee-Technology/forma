@@ -17,14 +17,15 @@ import (
 // newAncestryRegistry is newRebuildRegistry's schema with its array ancestry
 // declared, as the file registry derives it from the schema document (#623):
 // order.items is an array of objects, and so is order.items.lots inside it.
-// It adds a list, a second object member and a second array member inside
-// the array of objects, and a list inside the inner array.
+// It adds two lists, a second object member and a second array member
+// inside the array of objects, and a list inside the inner array.
 func newAncestryRegistry() *stubSchemaRegistry {
 	cache := newRebuildRegistry().(*stubSchemaRegistry).cache
 	cache["order.items.tags"] = forma.AttributeMetadata{AttributeName: "order.items.tags", AttributeID: 19, ValueType: forma.ValueTypeList}
 	cache["order.items.lots.n"] = forma.AttributeMetadata{AttributeName: "order.items.lots.n", AttributeID: 20, ValueType: forma.ValueTypeText}
 	cache["order.items.dims.h"] = forma.AttributeMetadata{AttributeName: "order.items.dims.h", AttributeID: 21, ValueType: forma.ValueTypeText}
 	cache["order.items.lots.tags"] = forma.AttributeMetadata{AttributeName: "order.items.lots.tags", AttributeID: 22, ValueType: forma.ValueTypeList}
+	cache["order.items.marks"] = forma.AttributeMetadata{AttributeName: "order.items.marks", AttributeID: 23, ValueType: forma.ValueTypeList}
 	declareArrayAncestors(cache, "order.items", "order.items.lots")
 	return &stubSchemaRegistry{schemaID: 619, schemaName: "rebuild", cache: cache}
 }
@@ -168,9 +169,21 @@ func ancestryPlacements() []ancestryPlacement {
 			want:  items(map[string]any{"lots": []any{map[string]any{"code": "c"}}, "lots.tags": []any{}}),
 		},
 		{
-			name:  "empty-list marker written before #623 beside the array's elements",
+			// {"order": {"items": [{"sku": "a"}], "items.tags": []}} stores
+			// the marker with no indices, as a write before #623 stored one
+			// inside an element.
+			name:  "empty-list marker with no indices beside the array's elements",
 			attrs: []model.EntityAttribute{rebuildAttr(19, "", nil), rebuildAttr(9, "0", "a")},
-			want:  items(map[string]any{"sku": "a"}),
+			want: map[string]any{"order": map[string]any{
+				"items": []any{map[string]any{"sku": "a"}}, "items.tags": []any{},
+			}},
+		},
+		{
+			name:  "empty-list marker of a list inside the inner array, with no indices beside the outer array's elements",
+			attrs: []model.EntityAttribute{rebuildAttr(22, "", nil), rebuildAttr(9, "0", "a")},
+			want: map[string]any{"order": map[string]any{
+				"items": []any{map[string]any{"sku": "a"}}, "items.lots.tags": []any{},
+			}},
 		},
 		{
 			name:  "empty-list marker written before #623 alone",
@@ -196,6 +209,7 @@ func ancestryRows() [][]model.EntityAttribute {
 		rebuildAttr(20, "0", "ln"),    // order.items.lots.n, written as "lots.n" in an element
 		rebuildAttr(21, "", "h"),      // order.items.dims.h, written as "items.dims.h" in order
 		rebuildAttr(22, "1", nil),     // order.items.lots.tags, written as "lots.tags": [] in an element
+		rebuildAttr(23, "", nil),      // order.items.marks, written as "items.marks": [] in order
 	}
 	rows := make([][]model.EntityAttribute, 0, 1<<len(pool)-1)
 	for mask := 1; mask < 1<<len(pool); mask++ {

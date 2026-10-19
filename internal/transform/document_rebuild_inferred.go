@@ -1,6 +1,9 @@
 package transform
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // The rebuild of a row whose schema declares no array ancestry
 // (rebuildDocument): each record's array ancestor is inferred from the row.
@@ -29,27 +32,60 @@ func (rec rebuildRecord) parentOpen() bool {
 // field's name, where the write cannot read it back; an update refuses to
 // carry it rather than drop it (resolveStoredValues). An empty-list marker
 // is written without indices for a schema read this way (emptyList), so one
-// inside an array of objects reads that array as an object too. A marker
-// with indices, which only a schema that declared array ancestors when it
-// was written stores, names an element this reading cannot place: it is
-// left out of the document and returned, so that an update refuses to
-// delete it (MergeUpdate).
-func rebuildInferred(records []rebuildRecord) (map[string]any, []rebuildRecord) {
+// inside an array of objects reads that array as an object too.
+//
+// A marker with indices, which only a schema that declared array ancestors
+// when it was written stores, names an element this reading cannot place.
+// Leaving it out would answer a read without the list and let an update
+// delete it, so the rebuild fails instead, plainly: the registry no longer
+// declares what the row was written under. The rebuild cannot tell how many
+// array ancestors the attribute has, but it has no more than its name has
+// proper prefixes, so a record with more indices is no marker but a list's
+// row with no value at an element's index, which the read leaves out as it
+// always has (placeByAncestry).
+func rebuildInferred(records []rebuildRecord) (map[string]any, error) {
 	placed := make([]rebuildRecord, 0, len(records))
-	var unplaced []rebuildRecord
-	for _, rec := range records {
-		if rec.marker && len(rec.indices) > 0 {
-			unplaced = append(unplaced, rec)
-			continue
+	var unplaced *rebuildRecord
+	for i, rec := range records {
+		switch {
+		case !rec.marker || len(rec.indices) == 0:
+			placed = append(placed, rec)
+		case len(rec.indices) < len(rec.segments) && (unplaced == nil || rec.sortsBefore(*unplaced)):
+			unplaced = &records[i]
 		}
-		placed = append(placed, rec)
+	}
+	if unplaced != nil {
+		return nil, unplaced.unplacedMarkerError()
 	}
 	objects := objectPaths(placed)
 	doc := make(map[string]any)
 	for _, rec := range placed {
 		placeInferred(doc, rec, objects)
 	}
-	return doc, unplaced
+	return doc, nil
+}
+
+// sortsBefore orders records by attribute name and then indices, so that of
+// several markers a row read by inference cannot place, the same one fails
+// the rebuild in every record order.
+func (rec rebuildRecord) sortsBefore(other rebuildRecord) bool {
+	name, otherName := strings.Join(rec.segments, "."), strings.Join(other.segments, ".")
+	if name != otherName {
+		return name < otherName
+	}
+	return joinIndices(rec.indices) < joinIndices(other.indices)
+}
+
+// unplacedMarkerError fails the rebuild of a row holding rec, an empty-list
+// marker with array indices that the row, read without array ancestry,
+// cannot place. The row is read against metadata it was not written under,
+// so the error is plain, like the read's other consistency failures.
+func (rec rebuildRecord) unplacedMarkerError() error {
+	return fmt.Errorf("empty-list marker of list attribute '%s' carries array indices %s, "+
+		"which only a rebuild by array ancestry places, and the registry does not declare the ancestry of every attribute in the row; "+
+		"the registry must declare the schema's array ancestry, "+
+		"as the file registry does when the schema document resolves every attribute's ancestors",
+		strings.Join(rec.segments, "."), joinIndices(rec.indices))
 }
 
 // objectPaths returns every path the row's placements read as an object:

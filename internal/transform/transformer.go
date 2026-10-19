@@ -114,50 +114,45 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 // FromAttributes rebuilds a row's document from its attributes, in whatever
 // order they arrive (rebuildDocument, #619). A record with no value is
 // dropped, except a list's empty-list marker, which rebuilds as an explicit
-// [] (#204).
+// [] (#204). For an update's merge base the values are held undecoded
+// (holdRecordValue), and a marker is placed as its held record instead.
 func (t *transformer) FromAttributes(ctx context.Context, attributes []model.EntityAttribute) (map[string]any, error) {
-	doc, _, err := t.rebuild(attributes)
-	return doc, err
-}
-
-// rebuild is FromAttributes, also returning the empty-list markers the
-// document leaves out that a reading by array ancestry places
-// (rebuildDocument).
-func (t *transformer) rebuild(attributes []model.EntityAttribute) (map[string]any, []rebuildRecord, error) {
 	records := make([]rebuildRecord, 0, len(attributes))
 	for _, attr := range attributes {
 		cache, idToName, err := schemameta.GetSchemaMetadata(t.registry, attr.SchemaID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("load metadata of schema %d: %w", attr.SchemaID, err)
+			return nil, fmt.Errorf("load metadata of schema %d: %w", attr.SchemaID, err)
 		}
 		attrName, ok := idToName[attr.AttrID]
 		if !ok {
-			return nil, nil, fmt.Errorf("attribute id %d not found for schema %d", attr.AttrID, attr.SchemaID)
+			return nil, fmt.Errorf("attribute id %d not found for schema %d", attr.AttrID, attr.SchemaID)
 		}
 		meta := cache[attrName]
 		list := meta.ValueType == forma.ValueTypeList
 		value := attr.Value
-		if value == nil {
+		marker := holdsNoValue(value)
+		if marker {
 			if !list {
 				continue
 			}
-			value = []any{}
+			if value == nil {
+				value = []any{}
+			}
 		}
 		indices, err := parseIndices(attr.ArrayIndices)
 		if err != nil {
-			return nil, nil, fmt.Errorf("parse array indices for attribute '%s': %w", attrName, err)
+			return nil, fmt.Errorf("parse array indices for attribute '%s': %w", attrName, err)
 		}
 		records = append(records, rebuildRecord{
 			segments:  strings.Split(attrName, "."),
 			list:      list,
-			marker:    attr.Value == nil,
+			marker:    marker,
 			ancestors: meta.ArrayAncestors,
 			indices:   indices,
 			value:     value,
 		})
 	}
-	doc, unplaced := rebuildDocument(records)
-	return doc, unplaced, nil
+	return rebuildDocument(records)
 }
 
 func (t *transformer) BatchToAttributes(ctx context.Context, schemaID int16, jsonObjects []any) ([]model.EntityAttribute, error) {

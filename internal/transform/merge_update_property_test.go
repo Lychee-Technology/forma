@@ -215,13 +215,23 @@ func TestMergeUpdateNeverDropsStoredRecords(t *testing.T) {
 	// A registry that no longer derives a schema's ancestry, as one whose
 	// document gained another file's $ref does, reads rows written with it
 	// by inference. Those rows differ only in their empty-list markers inside
-	// an array of objects, which carry indices the inference cannot place.
+	// an array of objects, which carry indices the inference cannot place,
+	// so their rebuild fails.
 	t.Run("ancestry lost after the write", func(t *testing.T) {
 		written, refused, perField := checkMergeUpdateKeepsStoredRecords(t, true, false)
 		require.Positive(t, written)
 		require.Positive(t, refused)
 		t.Logf("%d rows written back whole, %d updates refused, %d per-field rows refused on write (#623)",
 			written, refused, perField)
+	})
+	// Rows written before #623 hold those markers with no indices, which a
+	// reading by ancestry places in the object form of the array, or under
+	// the literal key beside its elements, where the write stores them back.
+	t.Run("ancestry gained after the write", func(t *testing.T) {
+		written, refused, perField := checkMergeUpdateKeepsStoredRecords(t, false, true)
+		require.Positive(t, written)
+		require.Zero(t, refused, "an update over a row read with array ancestry is never refused")
+		require.Zero(t, perField)
 	})
 }
 

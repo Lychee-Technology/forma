@@ -23,10 +23,10 @@ import (
 // That is logged once, naming the first such attribute. The log is a
 // warning when an attribute is known to lie inside an array of objects,
 // since only such a schema's rows can read differently by row evidence: an
-// object or array nested inside the array reads in another shape, and an
-// update over a row holding an empty-list marker written with ancestry is
-// refused. Otherwise it is informational, as for visit, though an ancestor
-// the document leaves open could still be such an array (#705).
+// object or array nested inside the array reads in another shape, and a row
+// holding an empty-list marker written with ancestry fails to read.
+// Otherwise it is informational, as for visit, though an ancestor the
+// document leaves open could still be such an array (#705).
 func withArrayAncestors(schemaName string, cache forma.SchemaAttributeCache, properties map[string]*forma.PropertySchema) forma.SchemaAttributeCache {
 	names := make([]string, 0, len(cache))
 	for name := range cache {

@@ -31,12 +31,10 @@ type rebuildRecord struct {
 // is read as before, by inferring each record's array from the row
 // (rebuildInferred); the two readings are never mixed within a row.
 //
-// It also returns the records the document leaves out that a reading by
-// array ancestry places: the indexed empty-list markers a row read by
-// inference holds, which an update refuses rather than deletes
-// (MergeUpdate). The markers a reading by ancestry leaves out are not
-// among them, since no reading places them.
-func rebuildDocument(records []rebuildRecord) (map[string]any, []rebuildRecord) {
+// A row read by inference fails when it holds an empty-list marker with
+// array indices, which only a reading by ancestry places (rebuildInferred):
+// the document would leave the marker out, and an update would delete it.
+func rebuildDocument(records []rebuildRecord) (map[string]any, error) {
 	for _, rec := range records {
 		if rec.ancestors == nil {
 			return rebuildInferred(records)
@@ -63,9 +61,13 @@ func rebuildDocument(records []rebuildRecord) (map[string]any, []rebuildRecord) 
 // key beside the array, which the write reads back at the indices it is
 // stored under. The choice is made for all of an attribute's records with as
 // many indices at once, so they share one key spelling, which is all a write
-// keeps of an attribute (#312). An empty-list marker with no indices beside
-// an array with elements is left out: one written before #623 carried none
-// wherever its list was, so it names none of the elements.
+// keeps of an attribute (#312).
+//
+// An empty-list marker is placed the same way. One with no indices beside an
+// array with elements was written through a literal dotted key
+// ({"order": {"items": [...], "items.tags": []}}), or before #623, when a
+// marker carried none wherever its list was. The two are stored alike, and
+// the literal key is the one place either is written back from.
 func rebuildByAncestry(records []rebuildRecord) map[string]any {
 	arrays := make(map[string]struct{})
 	for _, rec := range records {
@@ -129,9 +131,6 @@ func placeByAncestry(doc map[string]any, rec rebuildRecord, ends []int, literal 
 		if j == len(rec.indices) {
 			if !literal {
 				break
-			}
-			if rec.marker && j == 0 {
-				return
 			}
 			setField(objectAt(holder, segments[from:end-1]), strings.Join(segments[end-1:], "."), rec, nil)
 			return

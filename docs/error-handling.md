@@ -827,11 +827,14 @@ A create runs step 4 only.
   - The empty-list marker of a list inside an array of objects carries its
     element's indices, and so `{"items":[{"sku":"a","tags":[]}]}` with a
     `required_if_parent_present` `items.sku` is no longer refused as missing
-    `items.sku`. A marker written before #623 carries none; beside the
-    array's elements it names none of them, so the read leaves it out and
-    the next update deletes it. The DuckDB pivot and the CDC export tell a
-    marker from an element by its NULL values rather than its empty
-    `array_indices`, so an indexed marker exports as `[]`.
+    `items.sku`. A marker with fewer indices is placed like any other such
+    record. Beside the array's elements it reads under the literal key, as
+    `{"items":[{"sku":"a"}],"items.tags":[]}` writes it, and an update
+    writes it back. A marker written before #623 carries no indices wherever
+    its list was, so it reads there too rather than in an element it does
+    not name. The DuckDB pivot and the CDC export tell a marker from an
+    element by its NULL values rather than its empty `array_indices`, so an
+    indexed marker exports as `[]`.
   - A stored array index below zero fails the read with a plain error
     naming the attribute.
 
@@ -841,8 +844,8 @@ A create runs step 4 only.
   `SchemaRegistry` that does not set the field, and the marker of such a
   schema keeps no indices, since that reading cannot place one inside an
   array of objects either way. A marker that does carry indices was written
-  while the registry declared the schema's ancestry. The row reads without
-  it, and an update of the row is refused (below).
+  while the registry declared the schema's ancestry, and the row fails to
+  rebuild (below).
 - **An update never deletes a stored record it did not address (#619
   review).** The write replaces the row's EAV records with the ones the
   merged document yields, so a held value at a position no attribute claims
@@ -882,25 +885,34 @@ A create runs step 4 only.
   write would keep one spelling and delete the other's records, so the
   update is refused the same way, plainly, as `… rebuilds under a different
   key spelling than the attribute's other stored records …`, unless the
-  caller's own spelling replaces the attribute.
+  caller's own spelling replaces the attribute. The merge base holds a
+  list's empty-list marker as a stored record like any other, so a marker
+  under one spelling and a scalar stored before its attribute became a list
+  (#372) under the other are refused too, whichever spelling wins.
 
-  A row read without array ancestry leaves out an empty-list marker that
+  A stored record under the literal key never wins over the caller's own
+  spelling of its attribute. In the caller's payload the literal key sorts
+  last and wins (#312), which is how it replaces the stored nested value.
+  A stored record the rebuild places under the literal key sorts last as
+  well, so by that rule alone an update that rewrites the array beside it,
+  spelling the attribute inside the array, would answer `200` and write the
+  stored value instead of the caller's. The caller's spelling wins instead,
+  and the stored record is discarded as one the caller replaces.
+
+  A row read without array ancestry cannot place an empty-list marker that
   carries array indices. Only a write under ancestry stores one, so the row
   was written while the registry declared the schema's ancestry and is read
   after it stopped, as it does once the schema document reaches an attribute
-  through another file's `$ref` (#705). Writing the row back would delete
-  the marker, which reads back in its element once the ancestry is declared
-  again. Every update of such a row is refused, plainly, before the merge:
-
-  ```text
-  record schema=619 row=… attrID=19 arrayIndices=1: stored empty-list marker of list attribute 'order.items.tags' carries array indices, which only a rebuild by array ancestry places, and the registry does not declare the ancestry of every attribute in the row, so this update cannot write it back; the registry must declare the schema's array ancestry, as the file registry does when the schema document resolves every attribute's ancestors
-  ```
-
-  Unlike the refusals above, a fragment that replaces the array is refused
-  too: the merge base does not hold the marker, so nothing tells whether
-  the fragment replaces it. A marker that a row read by ancestry leaves out
-  is different: no reading places it (a marker written before #623, above),
-  and the update deletes it.
+  through another file's `$ref` (#705). The rebuild fails rather than leave
+  the marker out, so a read of the row fails with the read-path error below,
+  and so does every update of it, before the merge, rather than delete the
+  marker. Even a fragment that replaces the array is refused, since nothing
+  tells whether it replaces the marker. The marker reads back in its element
+  once the ancestry is declared again. Without ancestry the rebuild cannot
+  tell how many array ancestors a list has, but it has no more than its name
+  has proper prefixes, so a list's record with no value and more indices
+  than that is a row with no value at an element's index, which the read
+  leaves out, as it always has and as a reading by ancestry does.
 - **An element of an array of objects that stores no record reads as `{}`
   (#626).** `{"items":[{}, {"sku":"a"}]}` stores one record, `items.sku` at
   index 1. The rebuild used to pad index 0 with `null`, so a `Get`, a query
@@ -1256,6 +1268,14 @@ Examples:
   `1000`, `NaN` as 1970-01-01, a number past int64 as absent): the DuckDB
   Postgres scanner types `NUMERIC` as `DOUBLE` before any expression Forma
   renders. The census is their guard until #621.
+- an empty-list marker with array indices in a row whose registry does not
+  declare its schema's array ancestry (#623; see "The update merge and the
+  written row"): `failed to convert attributes of row 0198… to JSON:
+  empty-list marker of list attribute 'order.items.tags' carries array
+  indices 1, which only a rebuild by array ancestry places, and the registry
+  does not declare the ancestry of every attribute in the row; the registry
+  must declare the schema's array ancestry, as the file registry does when
+  the schema document resolves every attribute's ancestors`.
 - a `NaN` or `±Infinity` in `value_numeric` under `smallint`, `integer` or
   `numeric` (#592): `stored numeric image NaN of attribute 3 in value_numeric
   has no finite float64 value`. The write funnel never stores one; before
@@ -2309,7 +2329,11 @@ duplicate-key rule `encoding/json` applies. This is deterministic rather than
 map-order dependent: the write's document walk (`walkDocument`) sorts each
 map's keys, and for any dotted name the nested spelling's top-level key is a
 proper prefix of the literal one, so it sorts first and the literal key's
-records — the caller's explicit value — are emitted last.
+records — the caller's explicit value — are emitted last. An update is the one
+place a literal key can be the stored row's: a row rebuilt by array ancestry
+places a record with fewer indices than ancestors under the literal key beside
+the array (#623). There the caller's spelling wins over one only stored
+records are under, and those records are discarded before the write.
 
 **The unit of replacement is the whole logical attribute, not the primary key.**
 When one spelling wins, every record the losing spellings produced for that

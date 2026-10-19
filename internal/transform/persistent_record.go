@@ -116,19 +116,16 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 }
 
 func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, record *model.PersistentRecord) (map[string]any, error) {
-	doc, _, err := t.fromPersistentRecord(ctx, record, decodeRecordValue)
-	return doc, err
+	return t.fromPersistentRecord(ctx, record, decodeRecordValue)
 }
 
 // fromPersistentRecord rebuilds the document of a stored row, giving each EAV
 // record the value valueOf produces: decoded on read, held undecoded for an
 // update's merge base (MergeUpdate). A bound column's own encoding is parsed
-// either way (readFromMainColumn). It also returns the empty-list markers
-// the document leaves out that a reading by array ancestry places
-// (rebuildDocument).
-func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, record *model.PersistentRecord, valueOf recordValuer) (map[string]any, []rebuildRecord, error) {
+// either way (readFromMainColumn).
+func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, record *model.PersistentRecord, valueOf recordValuer) (map[string]any, error) {
 	if record == nil {
-		return nil, nil, fmt.Errorf("record cannot be nil")
+		return nil, fmt.Errorf("record cannot be nil")
 	}
 
 	// Every error raised while rebuilding a row names the row (#405): the
@@ -136,7 +133,7 @@ func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, 
 	// and the wraps here cover the hops that do not hold it on their own.
 	cache, _, err := schemameta.GetSchemaMetadata(t.registry, record.SchemaID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to load schema %d metadata for row %s: %w", record.SchemaID, record.RowID, err)
+		return nil, fmt.Errorf("failed to load schema %d metadata for row %s: %w", record.SchemaID, record.RowID, err)
 	}
 
 	// Reconstruct attributes from main table columns
@@ -150,7 +147,7 @@ func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, 
 
 		attr, err := t.readFromMainColumn(record, meta, meta.ColumnBinding)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to read attribute %s of row %s from main column: %w", attrName, record.RowID, err)
+			return nil, fmt.Errorf("failed to read attribute %s of row %s from main column: %w", attrName, record.RowID, err)
 		}
 		if attr != nil {
 			attributes = append(attributes, *attr)
@@ -164,19 +161,19 @@ func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, 
 	converter := t.newConverter()
 	entityAttributes, err := converter.fromStoredRecords(attributes, valueOf)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to convert EAVRecords to EntityAttributes: %w", err)
+		return nil, fmt.Errorf("failed to convert EAVRecords to EntityAttributes: %w", err)
 	}
 
-	// Convert EntityAttributes back to JSON. The rebuild names the
+	// Convert EntityAttributes back to JSON. FromAttributes names the
 	// attribute but not the row (a malformed persisted array_indices fails
 	// here, not in FromEAVRecord, which does not parse it), so the row is
 	// added at this hop.
-	result, unplaced, err := t.jsonTransformer.rebuild(entityAttributes)
+	result, err := t.jsonTransformer.FromAttributes(ctx, entityAttributes)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to convert attributes of row %s to JSON: %w", record.RowID, err)
+		return nil, fmt.Errorf("failed to convert attributes of row %s to JSON: %w", record.RowID, err)
 	}
 
-	return result, unplaced, nil
+	return result, nil
 }
 
 // storeInEAV appends the record to the row's eav_data attributes. eav_data

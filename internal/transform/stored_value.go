@@ -9,10 +9,11 @@ import (
 )
 
 // storedValue is a stored attribute value an update's merge carries without
-// decoding it. The merge base holds one per stored record that has a value;
-// only the ones the written row keeps are decoded (resolveStoredValues), so a
-// stored value the read refuses, such as a bigint image past int64 (#590),
-// blocks the updates that keep it and never the one that replaces it.
+// decoding it. The merge base holds one per stored record the read places, a
+// list's empty-list marker included; only the ones the written row keeps are
+// decoded (resolveStoredValues), so a stored value the read refuses, such as
+// a bigint image past int64 (#590), blocks the updates that keep it and never
+// the one that replaces it.
 //
 // It is a leaf to everything that handles the merge base: mergeMaps,
 // StripComputedFields and the document walk place it, move it, or drop it
@@ -25,9 +26,36 @@ type storedValue struct {
 }
 
 // decode converts the stored value exactly as the read path does, errors
-// included: FromPersistentRecord over the same row raises the same error.
+// included: FromPersistentRecord over the same row raises the same error. An
+// empty-list marker decodes to the [] the read places.
 func (v *storedValue) decode() (any, error) {
+	if v.marker() {
+		return []any{}, nil
+	}
 	return decodeRecordValue(v.record, v.attrName, v.valueType)
+}
+
+// marker reports whether the held record is an empty-list marker: it holds
+// no value, and the rebuild places such a record only for a list.
+func (v *storedValue) marker() bool {
+	return !hasStoredValue(v.record)
+}
+
+// holdsNoValue reports whether a record's value, decoded or held, is none:
+// the record is a list's empty-list marker or, for any other attribute,
+// nothing the rebuild places.
+func holdsNoValue(value any) bool {
+	held, isHeld := value.(*storedValue)
+	return value == nil || isHeld && held.marker()
+}
+
+// describe names what the held record stores, for an error that refuses to
+// write it back.
+func (v *storedValue) describe() string {
+	if v.marker() {
+		return fmt.Sprintf("empty-list marker of list attribute '%s'", v.attrName)
+	}
+	return fmt.Sprintf("%s value of attribute '%s'", v.valueType, v.attrName)
 }
 
 // replacedBy reports whether the caller's own spelling of the attribute
@@ -79,9 +107,9 @@ func storedSpellingsOf(entries []documentEntry) storedSpellings {
 // delete it. The stored row's shape is at fault, not the caller, so the error
 // is plain, like the read path's.
 func (v *storedValue) unplacedError(rebuiltAt string) error {
-	return fmt.Errorf("record %s: stored %s value of attribute '%s' rebuilds at '%s', which the schema does not define, "+
+	return fmt.Errorf("record %s: stored %s rebuilds at '%s', which the schema does not define, "+
 		"so this update cannot write it back; an update must replace the attribute or a container holding it",
-		eavRecordIdentity(v.record), v.valueType, v.attrName, rebuiltAt)
+		eavRecordIdentity(v.record), v.describe(), rebuiltAt)
 }
 
 // respelledError refuses an update that keeps a stored value the write would
@@ -91,15 +119,14 @@ func (v *storedValue) unplacedError(rebuiltAt string) error {
 // spelling per attribute (#312), so the written row would omit its record.
 // Like unplacedError, it is the stored row's fault and the error is plain.
 func (v *storedValue) respelledError() error {
-	return fmt.Errorf("record %s: stored %s value of attribute '%s' rebuilds under a different key spelling than the attribute's other stored records, "+
+	return fmt.Errorf("record %s: stored %s rebuilds under a different key spelling than the attribute's other stored records, "+
 		"and a write keeps one spelling per attribute, so this update cannot write it back; an update must replace the attribute or a container holding it",
-		eavRecordIdentity(v.record), v.valueType, v.attrName)
+		eavRecordIdentity(v.record), v.describe())
 }
 
 // hasStoredValue reports whether a record carries a value to decode. A record
-// with every value column NULL decodes to nil for every value type, so there
-// is nothing to hold: it is an empty-list marker or nothing, on read and on
-// the merge base alike.
+// with every value column NULL decodes to nil for every value type: it is an
+// empty-list marker or nothing, on read and on the merge base alike.
 func hasStoredValue(record model.EAVRecord) bool {
 	return record.ValueText != nil || record.ValueNumeric != nil || record.ValueInt64 != nil
 }
