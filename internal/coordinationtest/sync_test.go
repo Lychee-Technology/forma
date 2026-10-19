@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,11 +29,29 @@ type held struct {
 // what the transaction answers when it is released.
 func (e *env) hold(t *testing.T, fn func(UnitOfWork) error) *held {
 	t.Helper()
+	return e.holdIn(t, func(park func(error) error) error {
+		return e.inTx(func(uow UnitOfWork) error { return park(fn(uow)) })
+	})
+}
+
+// holdTx is hold for a function of the Forma transaction itself, for a
+// transaction no adapter store expresses, such as a lock-order round's gate.
+func (e *env) holdTx(t *testing.T, fn func(context.Context, forma.Tx) error) *held {
+	t.Helper()
+	return e.holdIn(t, func(park func(error) error) error {
+		return e.store.tr.InTx(e.ctx, func(ctx context.Context, tx forma.Tx) error { return park(fn(ctx, tx)) })
+	})
+}
+
+// holdIn runs a transaction through run, whose body hands its result to
+// park: park says the body has returned, and returns the result once the
+// transaction is released.
+func (e *env) holdIn(t *testing.T, run func(park func(error) error) error) *held {
+	t.Helper()
 	h := &held{release: make(chan struct{}), done: make(chan error, 1)}
 	ready := make(chan struct{})
 	go func() {
-		h.done <- e.inTx(func(uow UnitOfWork) error {
-			err := fn(uow)
+		h.done <- run(func(err error) error {
 			close(ready)
 			<-h.release
 			return err

@@ -120,8 +120,11 @@ FORMA_COORDINATION_DSN='postgres://…' FORMA_COORDINATION_BACKEND=dsql \
   GOTOOLCHAIN=go1.26.0+auto go test ./internal/coordinationtest/
 ```
 
-Any backend name other than `postgres` skips the mechanism assertions. A DSN
-without a backend name fails the run.
+Any backend name other than `postgres` skips the mechanism assertions; naming
+it `postgres` runs them against that database too. A DSN without a backend name
+fails the run. The suite reaches the database the DSN names and no other. It
+does not probe it first, so one that does not answer fails the run instead of
+skipping it.
 
 Tests that claim over a growing outbox analyze the tables as it grows: the
 EXPLAIN test after seeding, scenario 6 after each round's seeding, and the
@@ -135,5 +138,7 @@ about 2 s (#685).
 **DSQL: specified, not verified (#633).** The contract assertions are written
 to hold under DSQL's optimistic concurrency, but no one has run them there.
 That run is #633's, with the fixture changes it needs: `CREATE INDEX ASYNC`
-for the declared indexes, and another way to inject the storage failure of
-scenario 1, which here is a PL/pgSQL trigger on `entity_main`.
+for the declared indexes, another way to inject the storage failure of
+scenario 1, which here is a PL/pgSQL trigger on `entity_main`, and another
+injection point for `TestCommitOutcomeUnknown`. Its fault proxy relays only
+plaintext connections, and DSQL requires TLS.

@@ -185,6 +185,20 @@ func (e *env) requireWritten(t *testing.T, schema string, before map[uuid.UUID]i
 	}
 }
 
+// requireDeleted is requireWritten for rows deleted since before was taken:
+// each one's hot entry is also a tombstone.
+func (e *env) requireDeleted(t *testing.T, schema string, before map[uuid.UUID]int64, rows ...uuid.UUID) {
+	t.Helper()
+	e.requireWritten(t, schema, before, rows...)
+	for _, row := range rows {
+		var tombstone bool
+		require.NoError(t, e.pool.QueryRow(e.ctx, fmt.Sprintf(
+			"SELECT deleted_at IS NOT NULL FROM %s WHERE schema_id = $1 AND row_id = $2 AND flushed_at = 0", e.tables.changeLog),
+			schemaIDs[schema], row).Scan(&tombstone))
+		require.True(t, tombstone, "%s row %s: its hot change_log entry is a tombstone", schema, row)
+	}
+}
+
 // eavTexts answers the text EAV attribute attr of every live row of schema
 // that has it.
 func (e *env) eavTexts(t *testing.T, schema, attr string) map[uuid.UUID]string {
