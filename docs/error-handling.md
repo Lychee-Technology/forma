@@ -823,7 +823,11 @@ A create runs step 4 only.
     federated reader collapsed to one value. It reads that array as an
     object, as before, unless the row holds elements of the array in the
     same element of its outer arrays; then it reads under the literal key
-    beside the array, so the write stores it back at the same indices.
+    beside the array, so the write stores it back at the same indices. A
+    projection selects it there by its attribute's path:
+    `Attrs: ["requirement.areas.note"]` answers
+    `{"requirement":{"areas.note":"…"}}`, and `requirement.areas` answers
+    the array with the literal key beside it.
   - The empty-list marker of a list inside an array of objects carries its
     element's indices, and so `{"items":[{"sku":"a","tags":[]}]}` with a
     `required_if_parent_present` `items.sku` is no longer refused as missing
@@ -834,7 +838,11 @@ A create runs step 4 only.
     its list was, so it reads there too rather than in an element it does
     not name. The DuckDB pivot and the CDC export tell a marker from an
     element by its NULL values rather than its empty `array_indices`, so an
-    indexed marker exports as `[]`.
+    indexed marker exports as `[]`. A binary older than #623 skips an
+    indexed marker on read and deletes it on its next update of the row, so
+    a rolling deploy or a rollback across #623 needs care for a schema with
+    a list inside an array of objects
+    ([Rollback](./schema-consistency-migration.md#rollback)).
   - Any index past a list's ancestors is one of its own elements, and a
     row with no value there is no element: the read leaves it out. So an
     `[]` nested in more arrays than the list's arrays of objects, inside
