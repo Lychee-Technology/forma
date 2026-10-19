@@ -63,7 +63,7 @@ func declareArrayAncestors(cache forma.SchemaAttributeCache, arrays ...string) {
 // own element.
 func TestFromAttributesPlacesByArrayAncestry(t *testing.T) {
 	tr := NewTransformer(newAncestryRegistry())
-	for _, tc := range ancestryPlacements() {
+	for _, tc := range append(indexedPlacements(), fewerIndicesPlacements()...) {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, order := range permutations(tc.attrs) {
 				got, err := tr.FromAttributes(context.Background(), order)
@@ -80,15 +80,20 @@ type ancestryPlacement struct {
 	want  map[string]any
 }
 
-func ancestryPlacements() []ancestryPlacement {
-	items := func(elements ...any) map[string]any {
-		return map[string]any{"order": map[string]any{"items": elements}}
-	}
+// orderItems is an order whose items, an array of objects, are elements.
+func orderItems(elements ...any) map[string]any {
+	return map[string]any{"order": map[string]any{"items": elements}}
+}
+
+// indexedPlacements are rows whose records carry an index for every array
+// ancestor of their attribute, as the write stores a value nested inside
+// each array it crosses.
+func indexedPlacements() []ancestryPlacement {
 	return []ancestryPlacement{
 		{
 			name:  "object inside an array of objects, in one element of two",
 			attrs: []model.EntityAttribute{rebuildAttr(17, "0", "w"), rebuildAttr(9, "1", "b")},
-			want:  items(map[string]any{"dims": map[string]any{"w": "w"}}, map[string]any{"sku": "b"}),
+			want:  orderItems(map[string]any{"dims": map[string]any{"w": "w"}}, map[string]any{"sku": "b"}),
 		},
 		{
 			name: "array of objects inside an array of objects",
@@ -96,7 +101,7 @@ func ancestryPlacements() []ancestryPlacement {
 				rebuildAttr(18, "0,0", "c00"), rebuildAttr(18, "0,1", "c01"),
 				rebuildAttr(18, "1,0", "c10"), rebuildAttr(8, "1", int64(2)),
 			},
-			want: items(
+			want: orderItems(
 				map[string]any{"lots": []any{map[string]any{"code": "c00"}, map[string]any{"code": "c01"}}},
 				map[string]any{"lots": []any{map[string]any{"code": "c10"}}, "qty": int64(2)},
 			),
@@ -104,12 +109,12 @@ func ancestryPlacements() []ancestryPlacement {
 		{
 			name:  "an element no record reaches reads as {} (#626)",
 			attrs: []model.EntityAttribute{rebuildAttr(18, "1,1", "c11")},
-			want:  items(map[string]any{}, map[string]any{"lots": []any{map[string]any{}, map[string]any{"code": "c11"}}}),
+			want:  orderItems(map[string]any{}, map[string]any{"lots": []any{map[string]any{}, map[string]any{"code": "c11"}}}),
 		},
 		{
 			name:  "empty-list marker in its element",
 			attrs: []model.EntityAttribute{rebuildAttr(9, "0", "a"), rebuildAttr(19, "1", nil)},
-			want:  items(map[string]any{"sku": "a"}, map[string]any{"tags": []any{}}),
+			want:  orderItems(map[string]any{"sku": "a"}, map[string]any{"tags": []any{}}),
 		},
 		{
 			name:  "list row with no value at an element's index",
@@ -128,6 +133,15 @@ func ancestryPlacements() []ancestryPlacement {
 				"items": []any{map[string]any{"qty": int64(1)}}, "tags": []any{"x", "y"},
 			}},
 		},
+	}
+}
+
+// fewerIndicesPlacements are rows holding a record with fewer indices than
+// its attribute has array ancestors: one written through a literal dotted
+// key that crosses an array, where an element held the inner array as an
+// object, or collapsed by the federated reader.
+func fewerIndicesPlacements() []ancestryPlacement {
+	return []ancestryPlacement{
 		{
 			// The federated reader collapses a member of an array of objects to
 			// one value with no indices; with nothing indexing the array it
@@ -151,14 +165,14 @@ func ancestryPlacements() []ancestryPlacement {
 		{
 			name:  "fewer indices than ancestors inside an element",
 			attrs: []model.EntityAttribute{rebuildAttr(20, "0", "n"), rebuildAttr(18, "0,0", "c")},
-			want:  items(map[string]any{"lots": []any{map[string]any{"code": "c"}}, "lots.n": "n"}),
+			want:  orderItems(map[string]any{"lots": []any{map[string]any{"code": "c"}}, "lots.n": "n"}),
 		},
 		{
 			// An update's validation only reports, so an element can hold the
 			// inner array as an object.
 			name:  "fewer indices than ancestors where its element holds no such array",
 			attrs: []model.EntityAttribute{rebuildAttr(18, "1", "x"), rebuildAttr(18, "0,0", "c")},
-			want: items(
+			want: orderItems(
 				map[string]any{"lots": []any{map[string]any{"code": "c"}}},
 				map[string]any{"lots": map[string]any{"code": "x"}},
 			),
@@ -166,7 +180,7 @@ func ancestryPlacements() []ancestryPlacement {
 		{
 			name:  "empty-list marker with fewer indices than ancestors beside the array's elements",
 			attrs: []model.EntityAttribute{rebuildAttr(22, "0", nil), rebuildAttr(18, "0,0", "c")},
-			want:  items(map[string]any{"lots": []any{map[string]any{"code": "c"}}, "lots.tags": []any{}}),
+			want:  orderItems(map[string]any{"lots": []any{map[string]any{"code": "c"}}, "lots.tags": []any{}}),
 		},
 		{
 			// {"order": {"items": [{"sku": "a"}], "items.tags": []}} stores
