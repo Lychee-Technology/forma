@@ -21,7 +21,8 @@ import (
 // array of objects. The file registry derives the lead's array ancestry from
 // its schema document, so they read as written (#623): before, the array
 // read as an object of per-field arrays. The first interest holds a snapshot
-// and the second notes, the case no per-field reading kept apart.
+// and the second notes, the case no per-field reading kept apart. A Get or
+// Query projecting their members keeps each in its element.
 func TestUnrelatedUpdateOverObjectArrayGapIntegration(t *testing.T) {
 	areas := []any{map[string]any{}, map[string]any{"city": "Tokyo"}}
 	interests := []any{
@@ -80,8 +81,27 @@ func TestUnrelatedUpdateOverObjectArrayGapIntegration(t *testing.T) {
 			require.Len(t, list.Data, 1)
 			require.Equal(t, areas, valueAtPath(list.Data[0].Attributes, "requirement.areas"), "query")
 			require.Equal(t, interests, list.Data[0].Attributes["propertyInterests"], "query")
+			requireProjectedInterests(t, env, created.RowID)
 		})
 	}
+}
+
+// requireProjectedInterests checks that Get and Query projecting members of
+// the property interests keep each in its element.
+func requireProjectedInterests(t *testing.T, env *integrationEnv, rowID uuid.UUID) {
+	t.Helper()
+	attrs := []string{"propertyInterests.propertyId", "propertyInterests.snapshot.title"}
+	want := map[string]any{"propertyInterests": []any{
+		map[string]any{"propertyId": "p1", "snapshot": map[string]any{"title": "Flat A"}},
+		map[string]any{"propertyId": "p2"},
+	}}
+	fetched, err := env.manager.Get(env.ctx, &forma.QueryRequest{SchemaName: "lead", RowID: &rowID, Attrs: attrs})
+	require.NoError(t, err)
+	require.Equal(t, want, fetched.Attributes, "projected get")
+	list, err := env.manager.Query(env.ctx, &forma.QueryRequest{SchemaName: "lead", Page: 1, ItemsPerPage: 10, Attrs: attrs})
+	require.NoError(t, err)
+	require.Len(t, list.Data, 1)
+	require.Equal(t, want, list.Data[0].Attributes, "projected query")
 }
 
 func requireLeadAreas(t *testing.T, env *integrationEnv, rowID uuid.UUID, step string, areas, interests []any) {

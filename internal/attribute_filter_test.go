@@ -1,10 +1,14 @@
 package internal
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
+
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/transform"
 )
 
 func TestFilterAttributes_EmptyAttrs(t *testing.T) {
@@ -222,4 +226,120 @@ func TestFilterDataRecord_EmptyAttrs(t *testing.T) {
 	if result != record {
 		t.Errorf("expected same record reference when attrs is empty")
 	}
+}
+
+// A path through an array of objects projects every element in place: each
+// keeps its position and only the requested members, an element holding
+// none of them reads as {}, and an array none of whose elements holds one is
+// left out, as an object is. Paths sharing a container fill one copy of it,
+// and the source is not modified.
+func TestFilterAttributes_ArrayOfObjects(t *testing.T) {
+	source := func() map[string]any {
+		return map[string]any{
+			"stage": "new",
+			"propertyInterests": []any{
+				map[string]any{"propertyId": "p1", "status": "viewed", "snapshot": map[string]any{"title": "Flat A", "price": 10}},
+				map[string]any{"propertyId": "p2", "notes": "near the station"},
+			},
+			"order": map[string]any{"items": []any{
+				map[string]any{"lots": []any{map[string]any{"code": "c00", "n": 1}, map[string]any{"code": "c01"}}},
+				map[string]any{"sku": "b"},
+			}},
+			"contact": map[string]any{"phones": []any{"111", "222"}},
+		}
+	}
+	for name, tc := range map[string]struct {
+		attrs []string
+		want  map[string]any
+	}{
+		"member of every element": {
+			attrs: []string{"propertyInterests.propertyId"},
+			want: map[string]any{"propertyInterests": []any{
+				map[string]any{"propertyId": "p1"}, map[string]any{"propertyId": "p2"},
+			}},
+		},
+		"members some elements lack": {
+			attrs: []string{"propertyInterests.snapshot.title", "propertyInterests.notes"},
+			want: map[string]any{"propertyInterests": []any{
+				map[string]any{"snapshot": map[string]any{"title": "Flat A"}},
+				map[string]any{"notes": "near the station"},
+			}},
+		},
+		"member of one element": {
+			attrs: []string{"propertyInterests.snapshot"},
+			want: map[string]any{"propertyInterests": []any{
+				map[string]any{"snapshot": map[string]any{"title": "Flat A", "price": 10}},
+				map[string]any{},
+			}},
+		},
+		"member of no element": {
+			attrs: []string{"propertyInterests.missing", "stage"},
+			want:  map[string]any{"stage": "new"},
+		},
+		"array of objects inside an array of objects": {
+			attrs: []string{"order.items.lots.code"},
+			want: map[string]any{"order": map[string]any{"items": []any{
+				map[string]any{"lots": []any{map[string]any{"code": "c00"}, map[string]any{"code": "c01"}}},
+				map[string]any{},
+			}}},
+		},
+		"whole array beside one of its members": {
+			attrs: []string{"propertyInterests.propertyId", "propertyInterests"},
+			want:  map[string]any{"propertyInterests": source()["propertyInterests"]},
+		},
+		"primitive array": {
+			attrs: []string{"contact.phones", "contact.phones.x"},
+			want:  map[string]any{"contact": map[string]any{"phones": []any{"111", "222"}}},
+		},
+		"path beneath a primitive array": {
+			attrs: []string{"contact.phones.x"},
+			want:  map[string]any{},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			attributes := source()
+			require.Equal(t, tc.want, FilterAttributes(attributes, tc.attrs))
+			require.Equal(t, source(), attributes, "the source must not change")
+		})
+	}
+}
+
+// Get and Query project a lead's property interests, an array of objects
+// whose elements nest a snapshot, in the shape the read rebuilds them in
+// under the array ancestry the file registry derives (#623): each requested
+// member stays in its element.
+func TestProjectionOfObjectArrayMembers(t *testing.T) {
+	ctx := context.Background()
+	registry, err := newFileSchemaRegistryFromDir(shippedSchemaDir)
+	require.NoError(t, err)
+	schemaID, _, err := registry.GetSchemaByName("lead")
+	require.NoError(t, err)
+	tr := transform.NewPersistentRecordTransformer(registry)
+	repo := newMockPersistentRecordRepository()
+	rowID := uuid.New()
+	repo.storeRecord(buildPersistentRecord(t, tr, schemaID, rowID, map[string]any{
+		"id": uuid.New().String(), "tenantId": "tenant-1", "ownerUserId": "owner-1",
+		"pipeline": "buy", "stage": "new", "status": "open",
+		"contact":   map[string]any{"isAnonymous": false},
+		"createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-02T00:00:00Z",
+		"propertyInterests": []any{
+			map[string]any{"propertyId": "p1", "status": "viewed", "snapshot": map[string]any{"title": "Flat A"}},
+			map[string]any{"propertyId": "p2", "status": "viewed", "notes": "near the station"},
+		},
+	}))
+	em := mustNewEntityManager(t, tr, repo, nil, registry, createTestConfig(), nil)
+
+	attrs := []string{"propertyInterests.propertyId", "propertyInterests.snapshot.title"}
+	want := map[string]any{"propertyInterests": []any{
+		map[string]any{"propertyId": "p1", "snapshot": map[string]any{"title": "Flat A"}},
+		map[string]any{"propertyId": "p2"},
+	}}
+	got, err := em.Get(ctx, &forma.QueryRequest{SchemaName: "lead", RowID: &rowID, Attrs: attrs})
+	require.NoError(t, err)
+	require.Equal(t, want, got.Attributes, "Get")
+
+	list, err := em.Query(ctx, &forma.QueryRequest{SchemaName: "lead", Page: 1, ItemsPerPage: 10, Attrs: attrs})
+	require.NoError(t, err)
+	require.Len(t, list.Data, 1)
+	require.Equal(t, want, list.Data[0].Attributes, "Query")
 }
