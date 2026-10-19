@@ -34,6 +34,9 @@ func TestClaimListRunsOnRealPostgres(t *testing.T) {
 		"entity_tx_claim_integration_test.go",
 		"entity_tx_claim_concurrency_integration_test.go",
 		"entity_tx_claim_holds_integration_test.go",
+		"entity_tx_claim_group_integration_test.go",
+		"entity_tx_claim_group_concurrency_integration_test.go",
+		"entity_tx_claim_group_explain_integration_test.go",
 		"entity_tx_claim_fixture_test.go",
 		"entity_conditional_write_integration_test.go",
 	} {

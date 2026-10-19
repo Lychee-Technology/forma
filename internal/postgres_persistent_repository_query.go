@@ -257,6 +257,9 @@ type hybridConditionBuilder struct {
 	cache                forma.SchemaAttributeCache
 	argCounter           int
 	useMainTableAsAnchor bool
+	// mainAlias is the entity_main alias a main-anchored condition tests;
+	// empty means m. A claim's group head renders Live on e as well (#653).
+	mainAlias string
 }
 
 func (r *DBPersistentRecordRepository) buildHybridConditions(
@@ -326,7 +329,19 @@ func (b *hybridConditionBuilder) emitMainLeaf(p sqlgen.HybridLeafPayload) (strin
 // the #565 bool truthiness predicate, a #646 null test, set or $now
 // comparison, or `m.<col> <op> $n`.
 func (b *hybridConditionBuilder) mainPredicate(p sqlgen.HybridLeafPayload) (string, []any) {
-	return p.RenderMain("m."+sanitizeIdentifier(p.MainColumn), b.nextPlaceholder)
+	alias := "m"
+	if b.useMainTableAsAnchor {
+		alias = b.anchorAlias()
+	}
+	return p.RenderMain(alias+"."+sanitizeIdentifier(p.MainColumn), b.nextPlaceholder)
+}
+
+// anchorAlias answers the entity_main alias of a main-anchored condition.
+func (b *hybridConditionBuilder) anchorAlias() string {
+	if b.mainAlias == "" {
+		return "m"
+	}
+	return b.mainAlias
 }
 
 // nextPlaceholder allocates the next $n placeholder.
@@ -351,7 +366,7 @@ func (b *hybridConditionBuilder) emitEAVLeaf(p sqlgen.HybridLeafPayload) (string
 
 	schemaAlias, rowAlias := "t.schema_id", "t.row_id"
 	if b.useMainTableAsAnchor {
-		schemaAlias, rowAlias = "m.ltbase_schema_id", "m.ltbase_row_id"
+		schemaAlias, rowAlias = b.anchorAlias()+".ltbase_schema_id", b.anchorAlias()+".ltbase_row_id"
 	}
 
 	return eav.Render(b.eavTable, schemaAlias, rowAlias, b.nextPlaceholder), eav.Args(), nil
