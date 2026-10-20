@@ -103,9 +103,12 @@ DUCKDB_ENABLED="yes" must be a boolean (true/false, 1/0 or t/f, in any case):
 invalid syntax`. Before #642 such a value read as false, so the feature stayed
 off with no message. The `compactor` subcommand of `cmd/tools` holds
 `METRICS_STDOUT` to the same rule, and `cmd/sample` holds
-`VALIDATE_UPDATES_STRICT` to it. Like every `DUCKDB_` variable,
-`DUCKDB_ALLOW_CALLER_PARQUET_PATHS` is read only while `DUCKDB_ENABLED` is
-true.
+`VALIDATE_UPDATES_STRICT` to it. Like the DuckDB engine and manifest
+settings, `DUCKDB_ALLOW_CALLER_PARQUET_PATHS` is not read while
+`DUCKDB_ENABLED` is false or unset, so a bad value there does not stop a boot
+with DuckDB off. It is also checked when `DUCKDB_ENABLED` is itself refused,
+so one boot names both bad values. `DUCKDB_QUERY_TIMEOUT_SECONDS` above is a
+limit, not an engine setting, and is checked whatever `DUCKDB_ENABLED` holds.
 
 ## API Reference
 

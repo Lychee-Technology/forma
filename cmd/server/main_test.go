@@ -216,7 +216,7 @@ func TestDuckDBConfigFromEnv_AllowCallerParquetPaths(t *testing.T) {
 // DUCKDB_ALLOW_CALLER_PARQUET_PATHS=on to leave the opt-in off; each is now an
 // *EnvError, and the base config comes back untouched. The opt-in is judged
 // alongside a refused DUCKDB_ENABLED, so one boot names both, but stays unread
-// while DuckDB is off, like every other DUCKDB_ name.
+// while DuckDB is off.
 func TestDuckDBConfigFromEnv_RejectsUnrecognisedBoolean(t *testing.T) {
 	base := forma.DuckDBConfig{S3Bucket: "base-bucket"}
 	cases := []struct {

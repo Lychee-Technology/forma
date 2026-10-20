@@ -68,10 +68,12 @@ func main() {
 // When disabled it returns base unchanged (DuckDB off — the production default).
 //
 // Both booleans are strict (#642): a set value that is not a boolean is an
-// *bootstrap.EnvError, returned with base unchanged. Like every DUCKDB_ name,
-// DUCKDB_ALLOW_CALLER_PARQUET_PATHS is read only when DuckDB is on, and also
-// when DUCKDB_ENABLED itself is refused, since that operator was configuring
-// DuckDB and one boot should name both bad values.
+// *bootstrap.EnvError, returned with base unchanged. Like the engine and
+// manifest names below, DUCKDB_ALLOW_CALLER_PARQUET_PATHS is read only when
+// DuckDB is on, and also when DUCKDB_ENABLED itself is refused, since that
+// operator was configuring DuckDB and one boot should name both bad values.
+// DUCKDB_QUERY_TIMEOUT_SECONDS is not gated here: it is a limit, read by
+// bootstrap.ApplyLimitsFromEnv whatever DUCKDB_ENABLED holds.
 //
 // Each field reads its DUCKDB_-prefixed name first, then a shared name reserved
 // as the single-stack configuration point (future CDC runners may read the same
