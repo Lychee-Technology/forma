@@ -216,7 +216,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	admitted, probe := e.breakerAllow(ctx)
 	if !admitted {
 		planCtx.recordClientUnavailable()
-		return 0, fmt.Errorf("duckdb circuit breaker open, query rejected: %w", ErrDuckDBUnavailable)
+		return 0, fmt.Errorf("%w: %w", errBreakerRejected, ErrDuckDBUnavailable)
 	}
 
 	// DuckDBConfig.QueryTimeout bounds one DuckDB pass end to end (#465):

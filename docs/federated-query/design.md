@@ -1098,7 +1098,7 @@ The breaker computes each transition under its mutex and returns it from `Allow`
 ### **7.2 Degraded Modes**
 
 1. **S3 Unavailable:**
-   * Log Error.
+   * Log the fallback (#638): one Warn line per degraded request, "federated query degraded to postgres-only", with `schema_id` and the absorbed failure, password-scrubbed. A request the open breaker rejected logs it at Debug instead, because the §7.1 "opened" line already logged the failure behind the rejection. No metric counts degraded answers.
    * Rewrite query to select *only* from pg_source.
    * Return HTTP 200 with metadata: `{"partial_result": true, "warning": "Historical data unavailable"}`.
 2. **PostgreSQL Unavailable:**

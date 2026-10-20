@@ -16,11 +16,15 @@ type fakePostgresFederatedSource struct {
 	queryCalls int
 	lastQuery  *model.PersistentRecordQuery
 	page       *model.PersistentRecordPage
+	err        error
 }
 
 func (f *fakePostgresFederatedSource) QueryPersistentRecords(ctx context.Context, query *model.PersistentRecordQuery) (*model.PersistentRecordPage, error) {
 	f.queryCalls++
 	f.lastQuery = query
+	if f.err != nil {
+		return nil, f.err
+	}
 	if f.page != nil {
 		return f.page, nil
 	}
