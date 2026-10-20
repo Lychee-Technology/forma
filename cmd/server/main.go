@@ -64,8 +64,16 @@ func main() {
 }
 
 // duckDBConfigFromEnv turns on the federated DuckDB engine when DUCKDB_ENABLED
-// is set, wiring its S3/httpfs and manifest settings from the environment. When
-// disabled it returns base unchanged (DuckDB off — the production default).
+// is true, wiring its S3/httpfs and manifest settings from the environment.
+// When disabled it returns base unchanged (DuckDB off — the production default).
+//
+// Both booleans are strict (#642): a set value that is not a boolean is an
+// *bootstrap.EnvError, returned with base unchanged. Like the engine and
+// manifest names below, DUCKDB_ALLOW_CALLER_PARQUET_PATHS is read only when
+// DuckDB is on, and also when DUCKDB_ENABLED itself is refused, since that
+// operator was configuring DuckDB and one boot should name both bad values.
+// DUCKDB_QUERY_TIMEOUT_SECONDS is not gated here: it is a limit, read by
+// bootstrap.ApplyLimitsFromEnv whatever DUCKDB_ENABLED holds.
 //
 // Each field reads its DUCKDB_-prefixed name first, then a shared name reserved
 // as the single-stack configuration point (future CDC runners may read the same
@@ -85,9 +93,14 @@ func main() {
 // S3_BUCKET has no such condition: a bucket alone never makes the config inert.
 // DUCKDB_MANIFEST_TEMPLATE is the switch for manifest-driven reads; if set
 // without a bucket, the server fails at startup (factory fail-fast).
-func duckDBConfigFromEnv(base forma.DuckDBConfig) forma.DuckDBConfig {
-	if !bootstrap.EnvBool("DUCKDB_ENABLED", false) {
-		return base
+func duckDBConfigFromEnv(base forma.DuckDBConfig) (forma.DuckDBConfig, error) {
+	enabled, enabledErr := bootstrap.EnvBool("DUCKDB_ENABLED", false)
+	if enabledErr == nil && !enabled {
+		return base, nil
+	}
+	allowCallerPaths, allowErr := bootstrap.EnvBool("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", base.AllowCallerParquetPaths)
+	if err := errors.Join(enabledErr, allowErr); err != nil {
+		return base, err
 	}
 	base.Enabled = true
 	base.EnableS3 = true
@@ -102,8 +115,8 @@ func duckDBConfigFromEnv(base forma.DuckDBConfig) forma.DuckDBConfig {
 	manifestOn := strings.TrimSpace(base.ManifestTemplate) != ""
 	base.S3DataPrefix = prefixFromEnv("DUCKDB_S3_PREFIX", "S3_PREFIX", base.S3DataPrefix, manifestOn)
 	base.ManifestPrefix = prefixFromEnv("DUCKDB_MANIFEST_PREFIX", "MANIFEST_PREFIX", base.ManifestPrefix, manifestOn)
-	base.AllowCallerParquetPaths = bootstrap.EnvBool("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", base.AllowCallerParquetPaths)
-	return base
+	base.AllowCallerParquetPaths = allowCallerPaths
+	return base, nil
 }
 
 // prefixFromEnv resolves one of the two inert-when-alone prefix fields. The
@@ -181,16 +194,17 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 // before opening the database and an out-of-range value (a negative budget,
 // a zero body cap, a write timeout that does not outlast the body read plus
 // a budget) fails at boot instead of silently widening a limit (#465). A set
-// but unparsable integer variable fails the same way (#600); every overlay
-// is read before any of them is judged, so one boot names every such
-// variable. The schema registry is the one field it cannot fill;
+// but unparsable integer (#600) or boolean (#642) variable fails the same
+// way; every overlay is read before any of them is judged, so one boot names
+// every such variable. The schema registry is the one field it cannot fill;
 // bootstrapServer sets it once the pool exists.
 func serverConfigFromEnv(schemaDir string) (*forma.Config, bootstrap.HTTPServerConfig, error) {
 	config := forma.DefaultConfig(nil)
 
 	// Set entity options from the environment, then the schema directory. The
 	// overlay runs first so it cannot clobber the directory passed in.
-	config.Entity = bootstrap.EntityConfigFromEnv(config.Entity)
+	var entityErr error
+	config.Entity, entityErr = bootstrap.EntityConfigFromEnv(config.Entity)
 	config.Entity.SchemaDirectory = schemaDir
 
 	// Database configuration
@@ -219,11 +233,13 @@ func serverConfigFromEnv(schemaDir string) (*forma.Config, bootstrap.HTTPServerC
 	// Enable the federated DuckDB engine when configured (disabled by default).
 	// This lets a deployment exercise the real warm/cold S3 read path; the e2e
 	// suite turns it on so its federated checks are genuinely federated.
-	config.DuckDB = duckDBConfigFromEnv(config.DuckDB)
+	var duckErr error
+	config.DuckDB, duckErr = duckDBConfigFromEnv(config.DuckDB)
 
 	// METRICS_STDOUT=true makes every metric this instance emits a JSON line
 	// on stdout (#423); unset, Forma's no-op default emits nothing.
-	config.Metrics.Emitter = bootstrap.MetricEmitterFromEnv(os.Stdout)
+	var metricsErr error
+	config.Metrics.Emitter, metricsErr = bootstrap.MetricEmitterFromEnv(os.Stdout)
 
 	// Request limits and budgets (#465): body cap, batch cap, query,
 	// transaction and DuckDB timeouts. Applied last so it sees the resolved
@@ -239,7 +255,7 @@ func serverConfigFromEnv(schemaDir string) (*forma.Config, bootstrap.HTTPServerC
 
 	// A value that did not parse never reached its field, so validating the
 	// rest would judge a default the operator did not choose.
-	if err := errors.Join(dbErr, limitsErr, httpErr); err != nil {
+	if err := errors.Join(entityErr, dbErr, duckErr, metricsErr, limitsErr, httpErr); err != nil {
 		return nil, bootstrap.HTTPServerConfig{}, fmt.Errorf("invalid environment: %w", err)
 	}
 

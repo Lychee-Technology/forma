@@ -89,6 +89,75 @@ func TestEnvIntStrictContract(t *testing.T) {
 	}
 }
 
+// TestEnvBoolStrictContract pins #642's vocabulary: strconv.ParseBool over
+// the lower-cased value. Every value that read as true before #642 (true in any
+// case, 1) still does, and so do t/T; anything else that is set, the yes/on
+// habits and a padded value included, is refused where it used to read as
+// false.
+func TestEnvBoolStrictContract(t *testing.T) {
+	const key = "BOOTSTRAP_BOOL_TEST"
+
+	for _, def := range []bool{false, true} {
+		got, err := EnvBool(key+"_UNSET", def)
+		if err != nil || got != def {
+			t.Fatalf("unset must take the default %v: got %v, %v", def, got, err)
+		}
+		t.Setenv(key, "")
+		if got, err = EnvBool(key, def); err != nil || got != def {
+			t.Fatalf("empty must take the default %v: got %v, %v", def, got, err)
+		}
+	}
+
+	accepted := map[string]bool{
+		"true": true, "TRUE": true, "True": true, "tRuE": true, "1": true, "t": true, "T": true,
+		"false": false, "FALSE": false, "False": false, "fAlSe": false, "0": false, "f": false, "F": false,
+	}
+	for value, want := range accepted {
+		t.Setenv(key, value)
+		// The default is the opposite of want, so a value read as the default
+		// cannot pass.
+		if got, err := EnvBool(key, !want); err != nil || got != want {
+			t.Fatalf("%s=%q must read as %v: got %v, %v", key, value, want, got, err)
+		}
+	}
+
+	for _, value := range []string{"yes", "no", "on", "off", "Y", "enabled", "2", "-1", "TRUE ", " 1", "true\n", "truee"} {
+		t.Run(strconv.Quote(value), func(t *testing.T) {
+			t.Setenv(key, value)
+			got, err := EnvBool(key, true)
+			var envErr *EnvError
+			if !errors.As(err, &envErr) {
+				t.Fatalf("expected *EnvError for %q, got %v, %v", value, got, err)
+			}
+			if envErr.Key != key || envErr.Value != value || !errors.Is(err, strconv.ErrSyntax) {
+				t.Fatalf("EnvError must carry the key, the raw value and ErrSyntax, got %+v", envErr)
+			}
+			if !got {
+				t.Fatal("the default must be returned alongside the error")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, key) || !strings.Contains(msg, strconv.Quote(value)) || !strings.Contains(msg, "a boolean") {
+				t.Fatalf("message must name the variable, quote the value and say a boolean is wanted: %s", msg)
+			}
+		})
+	}
+}
+
+// TestEntityConfigFromEnvRejectsUnrecognisedBoolean: before #642,
+// VALIDATE_UPDATES_STRICT=yes left updates report-only while the operator
+// believed them enforced. It is now refused, and the defaults come back
+// unchanged rather than half-applied.
+func TestEntityConfigFromEnvRejectsUnrecognisedBoolean(t *testing.T) {
+	defaults := forma.EntityConfig{BatchSize: 500, ValidateUpdatesStrict: false}
+	t.Setenv("VALIDATE_UPDATES_STRICT", "yes")
+
+	cfg, err := EntityConfigFromEnv(defaults)
+	assertEnvErrorKeys(t, err, "VALIDATE_UPDATES_STRICT")
+	if cfg != defaults {
+		t.Fatalf("a refused overlay must return the defaults unchanged: %+v", cfg)
+	}
+}
+
 // TestEnvSecondsRefusesDurationOverflow pins that a seconds value too large
 // for a time.Duration is refused rather than wrapped: 18446744074 seconds
 // would otherwise multiply out to about 0.29s.

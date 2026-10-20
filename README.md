@@ -93,6 +93,23 @@ once. On Kubernetes, a Service named `db` makes the kubelet inject
 refused rather than read as `5432`, so set `DB_PORT` explicitly or set
 `enableServiceLinks: false` on the pod.
 
+The boolean variables, `METRICS_STDOUT` above plus `VALIDATE_UPDATES_STRICT`
+(`docs/error-handling.md`), `DUCKDB_ENABLED` and
+`DUCKDB_ALLOW_CALLER_PARQUET_PATHS` (`docs/federated-query/design.md`), take
+`true`/`false`, `1`/`0` or `t`/`f`, in any case, when set. Unset or empty
+takes the default. Any other value, such as `yes`, `on` or `true` with a
+trailing space, fails startup the same way, for example `environment variable
+DUCKDB_ENABLED="yes" must be a boolean (true/false, 1/0 or t/f, in any case):
+invalid syntax`. Before #642 such a value read as false, so the feature stayed
+off with no message. The `compactor` subcommand of `cmd/tools` holds
+`METRICS_STDOUT` to the same rule, and `cmd/sample` holds
+`VALIDATE_UPDATES_STRICT` to it. Like the DuckDB engine and manifest
+settings, `DUCKDB_ALLOW_CALLER_PARQUET_PATHS` is not read while
+`DUCKDB_ENABLED` is false or unset, so a bad value there does not stop a boot
+with DuckDB off. It is also checked when `DUCKDB_ENABLED` is itself refused,
+so one boot names both bad values. `DUCKDB_QUERY_TIMEOUT_SECONDS` above is a
+limit, not an engine setting, and is checked whatever `DUCKDB_ENABLED` holds.
+
 ## API Reference
 
 | Method | Path | Description |

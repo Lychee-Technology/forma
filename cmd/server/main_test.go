@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,10 +14,21 @@ import (
 	"go.uber.org/zap"
 )
 
+// readDuckDBConfig is duckDBConfigFromEnv for a test whose environment is
+// valid: an error fails the test.
+func readDuckDBConfig(t *testing.T, base forma.DuckDBConfig) forma.DuckDBConfig {
+	t.Helper()
+	cfg, err := duckDBConfigFromEnv(base)
+	if err != nil {
+		t.Fatalf("duckDBConfigFromEnv: %v", err)
+	}
+	return cfg
+}
+
 // TestDuckDBConfigFromEnv_DisabledByDefault pins that the federated DuckDB
 // engine stays off unless DUCKDB_ENABLED is set — the production default.
 func TestDuckDBConfigFromEnv_DisabledByDefault(t *testing.T) {
-	if got := duckDBConfigFromEnv(forma.DuckDBConfig{Enabled: false}); got.Enabled {
+	if got := readDuckDBConfig(t, forma.DuckDBConfig{Enabled: false}); got.Enabled {
 		t.Fatalf("expected DuckDB disabled by default, got enabled")
 	}
 }
@@ -30,7 +42,7 @@ func TestDuckDBConfigFromEnv_EnablesWithS3(t *testing.T) {
 	t.Setenv("S3_SECRET_KEY", "minio_password")
 	t.Setenv("S3_BUCKET", "forma-cdc")
 
-	got := duckDBConfigFromEnv(forma.DuckDBConfig{})
+	got := readDuckDBConfig(t, forma.DuckDBConfig{})
 	if !got.Enabled || !got.EnableS3 || !got.EnableParquet {
 		t.Fatalf("expected DuckDB+S3+parquet enabled, got %+v", got)
 	}
@@ -54,7 +66,7 @@ func TestDuckDBConfigFromEnv_DuckDBOverridesWin(t *testing.T) {
 	t.Setenv("S3_ENDPOINT", "http://shared:9000")
 	t.Setenv("DUCKDB_S3_ENDPOINT", "http://duck:9000")
 
-	if got := duckDBConfigFromEnv(forma.DuckDBConfig{}); got.S3Endpoint != "http://duck:9000" {
+	if got := readDuckDBConfig(t, forma.DuckDBConfig{}); got.S3Endpoint != "http://duck:9000" {
 		t.Fatalf("expected DUCKDB_S3_ENDPOINT override, got %q", got.S3Endpoint)
 	}
 }
@@ -66,7 +78,7 @@ func TestDuckDBConfigFromEnv_ManifestFieldsFromSharedVars(t *testing.T) {
 	t.Setenv("MANIFEST_PREFIX", "shared-prefix")
 	t.Setenv("MANIFEST_TEMPLATE", "shared-template")
 
-	got := duckDBConfigFromEnv(forma.DuckDBConfig{})
+	got := readDuckDBConfig(t, forma.DuckDBConfig{})
 	if got.ManifestPrefix != "shared-prefix" {
 		t.Fatalf("expected ManifestPrefix from MANIFEST_PREFIX, got %q", got.ManifestPrefix)
 	}
@@ -84,7 +96,7 @@ func TestDuckDBConfigFromEnv_DuckDBManifestOverridesWin(t *testing.T) {
 	t.Setenv("DUCKDB_MANIFEST_PREFIX", "duck-prefix")
 	t.Setenv("DUCKDB_MANIFEST_TEMPLATE", "duck-template")
 
-	got := duckDBConfigFromEnv(forma.DuckDBConfig{})
+	got := readDuckDBConfig(t, forma.DuckDBConfig{})
 	if got.ManifestPrefix != "duck-prefix" {
 		t.Fatalf("expected DUCKDB_MANIFEST_PREFIX override, got %q", got.ManifestPrefix)
 	}
@@ -98,7 +110,7 @@ func TestDuckDBConfigFromEnv_DuckDBManifestOverridesWin(t *testing.T) {
 func TestDuckDBConfigFromEnv_ManifestOffByDefault(t *testing.T) {
 	t.Setenv("DUCKDB_ENABLED", "1")
 
-	got := duckDBConfigFromEnv(forma.DuckDBConfig{})
+	got := readDuckDBConfig(t, forma.DuckDBConfig{})
 	if got.ManifestReadEnabled() {
 		t.Fatalf("expected manifest reads disabled by default, got enabled")
 	}
@@ -115,7 +127,7 @@ func TestDuckDBConfigFromEnv_SharedPrefixesIgnoredWithoutTemplate(t *testing.T) 
 	t.Setenv("S3_PREFIX", "delta")
 	t.Setenv("MANIFEST_PREFIX", "x")
 
-	got := duckDBConfigFromEnv(forma.DuckDBConfig{})
+	got := readDuckDBConfig(t, forma.DuckDBConfig{})
 	if got.S3DataPrefix != "" {
 		t.Fatalf("expected S3DataPrefix ignored without a template, got %q", got.S3DataPrefix)
 	}
@@ -139,7 +151,7 @@ func TestDuckDBConfigFromEnv_SharedPrefixesAdoptedWithTemplate(t *testing.T) {
 	t.Setenv("MANIFEST_PREFIX", "manifests")
 	t.Setenv("MANIFEST_TEMPLATE", "manifest/{{.SchemaID}}.json")
 
-	got := duckDBConfigFromEnv(forma.DuckDBConfig{})
+	got := readDuckDBConfig(t, forma.DuckDBConfig{})
 	if got.S3DataPrefix != "delta" {
 		t.Fatalf("expected S3DataPrefix from S3_PREFIX, got %q", got.S3DataPrefix)
 	}
@@ -160,7 +172,7 @@ func TestDuckDBConfigFromEnv_ExplicitPrefixKeptWithoutTemplate(t *testing.T) {
 	t.Setenv("DUCKDB_ENABLED", "1")
 	t.Setenv("DUCKDB_S3_PREFIX", "delta")
 
-	got := duckDBConfigFromEnv(forma.DuckDBConfig{})
+	got := readDuckDBConfig(t, forma.DuckDBConfig{})
 	if got.S3DataPrefix != "delta" {
 		t.Fatalf("expected explicit DUCKDB_S3_PREFIX kept, got %q", got.S3DataPrefix)
 	}
@@ -175,7 +187,7 @@ func TestDuckDBConfigFromEnv_ExplicitManifestPrefixKeptWithoutTemplate(t *testin
 	t.Setenv("DUCKDB_ENABLED", "1")
 	t.Setenv("DUCKDB_MANIFEST_PREFIX", "manifests")
 
-	got := duckDBConfigFromEnv(forma.DuckDBConfig{})
+	got := readDuckDBConfig(t, forma.DuckDBConfig{})
 	if got.ManifestPrefix != "manifests" {
 		t.Fatalf("expected explicit DUCKDB_MANIFEST_PREFIX kept, got %q", got.ManifestPrefix)
 	}
@@ -189,13 +201,60 @@ func TestDuckDBConfigFromEnv_ExplicitManifestPrefixKeptWithoutTemplate(t *testin
 // DUCKDB_ALLOW_CALLER_PARQUET_PATHS is set, and turning it on flips the flag.
 func TestDuckDBConfigFromEnv_AllowCallerParquetPaths(t *testing.T) {
 	t.Setenv("DUCKDB_ENABLED", "true")
-	if got := duckDBConfigFromEnv(forma.DuckDBConfig{}); got.AllowCallerParquetPaths {
+	if got := readDuckDBConfig(t, forma.DuckDBConfig{}); got.AllowCallerParquetPaths {
 		t.Fatalf("expected AllowCallerParquetPaths off by default, got true")
 	}
 
 	t.Setenv("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", "true")
-	if got := duckDBConfigFromEnv(forma.DuckDBConfig{}); !got.AllowCallerParquetPaths {
+	if got := readDuckDBConfig(t, forma.DuckDBConfig{}); !got.AllowCallerParquetPaths {
 		t.Fatalf("expected AllowCallerParquetPaths on when DUCKDB_ALLOW_CALLER_PARQUET_PATHS=true")
+	}
+}
+
+// TestDuckDBConfigFromEnv_RejectsUnrecognisedBoolean pins #642 on both DuckDB
+// switches. DUCKDB_ENABLED=yes used to leave the engine off, and
+// DUCKDB_ALLOW_CALLER_PARQUET_PATHS=on to leave the opt-in off; each is now an
+// *EnvError, and the base config comes back untouched. The opt-in is judged
+// alongside a refused DUCKDB_ENABLED, so one boot names both, but stays unread
+// while DuckDB is off.
+func TestDuckDBConfigFromEnv_RejectsUnrecognisedBoolean(t *testing.T) {
+	base := forma.DuckDBConfig{S3Bucket: "base-bucket"}
+	cases := []struct {
+		name    string
+		enabled string
+		allow   string
+		want    []string
+	}{
+		{name: "enabled refused", enabled: "yes", want: []string{"DUCKDB_ENABLED"}},
+		{name: "opt-in refused", enabled: "true", allow: "on", want: []string{"DUCKDB_ALLOW_CALLER_PARQUET_PATHS"}},
+		{name: "both refused", enabled: "on", allow: "yes", want: []string{"DUCKDB_ENABLED", "DUCKDB_ALLOW_CALLER_PARQUET_PATHS"}},
+		{name: "opt-in unread while off", enabled: "false", allow: "on"},
+		{name: "opt-in unread while unset", allow: "on"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("DUCKDB_ENABLED", tc.enabled)
+			t.Setenv("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", tc.allow)
+			got, err := duckDBConfigFromEnv(base)
+			if !reflect.DeepEqual(got, base) {
+				t.Fatalf("expected the base config back untouched, got %+v", got)
+			}
+			if len(tc.want) == 0 {
+				if err != nil {
+					t.Fatalf("DuckDB is off, so the opt-in must not be judged: %v", err)
+				}
+				return
+			}
+			for _, key := range tc.want {
+				if !strings.Contains(err.Error(), key+"=") {
+					t.Fatalf("expected the error to name %s, got %v", key, err)
+				}
+			}
+			var envErr *bootstrap.EnvError
+			if !errors.As(err, &envErr) {
+				t.Fatalf("expected an *bootstrap.EnvError, got %v", err)
+			}
+		})
 	}
 }
 
@@ -256,6 +315,36 @@ func TestBootstrapServer_RejectsUnparsableIntegerEnv(t *testing.T) {
 		t.Fatalf("the environment must be refused before the pool is opened, got %v", err)
 	}
 	for _, want := range []string{`DB_MAX_CONNECTIONS="twenty"`, `QUERY_TIMEOUT_SECONDS="30s"`, `HTTP_MAX_HEADER_BYTES="1_000"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("startup error must name %s, got %v", want, err)
+		}
+	}
+}
+
+// TestBootstrapServer_RejectsUnrecognisedBooleanEnv pins #642 on the server:
+// each of its three boolean overlays (entity, DuckDB, metrics) fails startup
+// with an *EnvError naming the variable, where the value used to read as
+// false. They join the integer overlays' failures, so one boot names a bad
+// boolean and a bad integer together. The context is already canceled, so
+// the check is shown to run before any I/O.
+func TestBootstrapServer_RejectsUnrecognisedBooleanEnv(t *testing.T) {
+	t.Setenv("VALIDATE_UPDATES_STRICT", "yes")
+	t.Setenv("DUCKDB_ENABLED", "on")
+	t.Setenv("METRICS_STDOUT", "TRUE ")
+	t.Setenv("QUERY_TIMEOUT_SECONDS", "30s")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := bootstrapServer(ctx, zap.NewNop().Sugar())
+
+	var envErr *bootstrap.EnvError
+	if !errors.As(err, &envErr) {
+		t.Fatalf("expected an *bootstrap.EnvError, got %v", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("the environment must be refused before the pool is opened, got %v", err)
+	}
+	for _, want := range []string{`VALIDATE_UPDATES_STRICT="yes"`, `DUCKDB_ENABLED="on"`, `METRICS_STDOUT="TRUE "`, `QUERY_TIMEOUT_SECONDS="30s"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("startup error must name %s, got %v", want, err)
 		}

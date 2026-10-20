@@ -1750,17 +1750,22 @@ shape:
   request's connection before its `504` could leave. Library embedders that
   build a config by hand are not validated; for them the zero-value
   semantics above apply.
-- **Unparsable environment (#600).** Validation judges values, so it needs
+- **Unparsable environment (#600, #642).** Validation judges values, so it needs
   the value the operator wrote to reach its field. A set integer variable
   that does not parse as base-10 (`QUERY_TIMEOUT_SECONDS=30s`,
   `DB_PORT=tcp://…`), or a `*_SECONDS` value too large for a
   `time.Duration`, used to keep its default silently; it is now a
   `*bootstrap.EnvError` carrying the variable, the raw value, the form it
-  needs, and `strconv.ErrSyntax` or `strconv.ErrRange` as its cause. The
-  `*FromEnv` overlays (`DatabaseConfigFromEnv`, `HTTPServerConfigFromEnv`,
-  `ApplyLimitsFromEnv`) read all of their variables and join every failure,
-  and cmd/server and cmd/lambda join the overlays' errors in turn, so one boot
-  names every bad variable. That check runs before `Config.Validate`: a
+  needs, and `strconv.ErrSyntax` or `strconv.ErrRange` as its cause. A set
+  boolean variable is held to `strconv.ParseBool` over its lower-cased value
+  (`true`/`false`, `1`/`0`, `t`/`f`); `VALIDATE_UPDATES_STRICT=yes` or
+  `DUCKDB_ENABLED=on` used to read as false and is now the same `EnvError`
+  with `strconv.ErrSyntax` (#642). The `*FromEnv` overlays
+  (`DatabaseConfigFromEnv`, `HTTPServerConfigFromEnv`, `ApplyLimitsFromEnv`,
+  `EntityConfigFromEnv`, `MetricEmitterFromEnv`, and cmd/server's DuckDB
+  overlay) read all of their variables and join every failure, and cmd/server
+  and cmd/lambda join the overlays' errors in turn, so one boot names every
+  bad variable. That check runs before `Config.Validate`: a
   value that never reached its field would make validation judge a default
   the operator did not choose. Like the rest of this section it is an
   operator-facing startup failure, not a 4xx. An unset or empty variable
