@@ -44,8 +44,9 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 
 	// The whole configuration, the pool settings included, is resolved and
 	// validated before the pool is opened, so an out-of-range limit or an
-	// unparsable integer variable fails the cold start here instead of
-	// silently widening a protection or keeping a default (#465, #600).
+	// unparsable integer or boolean variable fails the cold start here
+	// instead of silently widening a protection, keeping a default or
+	// switching a feature off (#465, #600, #642).
 	formaConfig, dbConfig, err := lambdaConfigFromEnv(schemaDir)
 	if err != nil {
 		return nil, err
@@ -146,7 +147,8 @@ func lambdaConfigFromEnv(schemaDir string) (*forma.Config, forma.DatabaseConfig,
 	// entry point serves the same write routes as cmd/server, so it must honour
 	// VALIDATE_UPDATES_STRICT too or the #314 staged rollout is unavailable on
 	// Lambda. The overlay runs first so it cannot clobber the directory below.
-	config.Entity = bootstrap.EntityConfigFromEnv(config.Entity)
+	var entityErr error
+	config.Entity, entityErr = bootstrap.EntityConfigFromEnv(config.Entity)
 	config.Entity.SchemaDirectory = schemaDir
 
 	// Database schema used by factory table discovery.
@@ -156,7 +158,8 @@ func lambdaConfigFromEnv(schemaDir string) (*forma.Config, forma.DatabaseConfig,
 	// METRICS_STDOUT=true makes every metric this instance emits a JSON line
 	// on stdout, which Lambda forwards to the function's log group (#423);
 	// unset, Forma's no-op default emits nothing.
-	config.Metrics.Emitter = bootstrap.MetricEmitterFromEnv(os.Stdout)
+	var metricsErr error
+	config.Metrics.Emitter, metricsErr = bootstrap.MetricEmitterFromEnv(os.Stdout)
 
 	// Request limits and budgets (#465), the same overlay cmd/server applies;
 	// API Gateway bounds the connection itself, so there is no http.Server
@@ -167,9 +170,9 @@ func lambdaConfigFromEnv(schemaDir string) (*forma.Config, forma.DatabaseConfig,
 	// DB_* sizing is parsed before any I/O too (#600).
 	dbConfig, dbErr := bootstrap.DatabaseConfigFromEnv(lambdaDBDefaults)
 
-	// Both overlays are read before either is judged, so one cold start
-	// names every unparsable variable.
-	if err := errors.Join(dbErr, limitsErr); err != nil {
+	// Every overlay is read before any is judged, so one cold start names
+	// every unparsable integer (#600) or boolean (#642) variable.
+	if err := errors.Join(entityErr, metricsErr, dbErr, limitsErr); err != nil {
 		return nil, forma.DatabaseConfig{}, fmt.Errorf("invalid environment: %w", err)
 	}
 

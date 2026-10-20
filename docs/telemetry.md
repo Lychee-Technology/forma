@@ -138,7 +138,7 @@ visible without a dependency: an opt-in stdout emitter.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `METRICS_STDOUT` | unset (off) | `true`/`1` writes every emitted metric as one JSON line on stdout. |
+| `METRICS_STDOUT` | unset (off) | `true` (or `1`/`t`, in any case) writes every emitted metric as one JSON line on stdout. A set value that is not a boolean fails startup (#642). |
 
 Each line has a stable shape:
 
@@ -165,9 +165,12 @@ subcommand has a metric to emit, and the emitter belongs to the one
 `Compactor` the subcommand builds, so a subcommand that prints a document on
 stdout (`inline-schema`) never shares it with a metric line.
 
-There is no `/metrics` endpoint, no registry, no provider selection and no
-startup failure path: a boolean cannot be misconfigured, and unset means
-nothing new is written. An operator who wants a real backend behind one of
+There is no `/metrics` endpoint, no registry and no provider selection, and
+unset means nothing new is written. The one way to misconfigure the variable is
+a value that is not a boolean, such as `yes` or `on`. That value used to read
+as false, so the operator who turned metrics on got none; since #642 it fails
+the server's startup, the Lambda cold start or the compactor run, naming the
+variable and the value. An operator who wants a real backend behind one of
 these binaries writes an adapter against `forma.MetricEmitter` in a fork or
 wrapper; Forma does not carry one.
 
