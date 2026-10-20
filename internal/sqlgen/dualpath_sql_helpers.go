@@ -264,12 +264,22 @@ func checkBigIntOperandRange(attr, valStr string, valueType forma.ValueType, v f
 		valStr, attr, int64(math.MinInt64), int64(math.MaxInt64))
 }
 
-// resolveMainTableColumn returns the column name prefixed with "m." for main table queries.
+// resolveMainTableColumn returns what a pg-main pushdown leaf compares: the
+// column prefixed with "m.", or, for an integer in a wider column, the
+// declared-type read the hot leg projects (mainColIntegerExpr). The pushdown
+// only pre-filters pg_source, and `visible` filters the projected value
+// again, so a leaf on the raw column was stricter wherever that read changes
+// the value: `is_null` missed an image it reads as NULL, `equals:1000` a
+// `1000.5` it rounds, and the row matched only once its parquet copy served
+// it (#627).
 func resolveMainTableColumn(attr string, meta forma.AttributeMetadata) string {
-	if meta.ColumnBinding != nil {
-		return "m." + string(meta.ColumnBinding.ColumnName)
+	if meta.ColumnBinding == nil {
+		return "m." + attr
 	}
-	return "m." + attr
+	if expr, ok := mainColIntegerExpr(meta); ok {
+		return expr
+	}
+	return "m." + string(meta.ColumnBinding.ColumnName)
 }
 
 // resolveDuckDBColumn returns the column name the DuckClause must reference.

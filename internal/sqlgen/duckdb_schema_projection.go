@@ -60,10 +60,13 @@ type SchemaProjection struct {
 	// boundMainExprs maps a column-bound attribute's name to the DuckDB
 	// expression that reads its main column normalised to the unified column
 	// type, for the bindings whose stored image is not that type: bool
-	// (mainColBoolExpr) and iso8601 date/datetime (mainColISO8601Expr).
-	// Every hot-leg projection — the EAV-joined one and BuildPGSelectNoEAV
-	// alike — reads such a column through this map; absent means the raw
-	// column is the image.
+	// (mainColBoolExpr), iso8601 date/datetime (mainColISO8601Expr) and a
+	// smallint/integer/bigint in a wider column (mainColIntegerExpr).
+	// Both schema-driven hot-leg projections — the EAV-joined one and
+	// BuildPGSelectNoEAV — read such a column through this map; absent means
+	// the raw column is the image. The benchmark projections (schema IDs
+	// 100-102) are hardcoded and read raw columns, which holds only while no
+	// benchmark binding needs one of these reads (BuildBenchmarkProjections).
 	boundMainExprs map[string]string
 }
 
@@ -207,7 +210,8 @@ func (sp *SchemaProjection) buildPGProjection(attrs []attrProjectionInfo) {
 			if mainExpr, ok := sp.boundMainExprs[a.name]; ok {
 				// Normalise the main column so both sides of COALESCE are the
 				// same type: hot_vals.<attr> is already BOOLEAN / epoch-ms
-				// BIGINT (the EAV pivot), m.<col> is normalised by encoding.
+				// BIGINT / the declared integer type (the EAV pivot), and
+				// m.<col> is read at that type.
 				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), %s) AS %s",
 					unified, mainExpr, unified)
 			} else if a.meta.ValueType == forma.ValueTypeUUID {
@@ -297,8 +301,9 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 // BuildPGSelectNoEAV returns a PG source SELECT that uses only entity_main columns
 // (no EAV pivot expressions), for use when all filter/sort attributes are column-bound.
 //
-// Bool and iso8601 date/datetime columns go through boundMainExprs exactly
-// as buildPGProjection's COALESCE leg does: projecting the raw bool column
+// Bool, iso8601 date/datetime and wider-column integer (#627) bindings go
+// through boundMainExprs exactly as buildPGProjection's COALESCE leg does:
+// projecting the raw bool column
 // left the outer CAST(attr AS BOOLEAN) to read it, which is a different
 // truth table (SMALLINT -1 → true, VARCHAR 'true' → true) from the `> 0.5`
 // / `= '1'` every other reader and the CDC export spell (#404, PR #564
