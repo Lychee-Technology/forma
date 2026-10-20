@@ -164,6 +164,14 @@ type benchmarkAttr struct {
 
 // BuildBenchmarkProjections builds a SchemaProjection with matching S3 and PG sources
 // for a benchmark schema. Both sources produce the same columns in the same order.
+//
+// The PG source reads every bound column's stored value as is (cast only to
+// VARCHAR). That is correct only because no benchmark binding
+// (internal/e2e_harness/federated/benchmark/schemas) is bool, iso8601, or an
+// integer in a column wider than its declared type. A binding of any of those
+// kinds must be read the way boundMainExpr reads it for the schema-driven
+// projections. Otherwise the benchmark's hot leg answers differently from the
+// row's parquet copy, or fails the outer cast (#627).
 func BuildBenchmarkProjections(schemaID int16) *SchemaProjection {
 	sp := &SchemaProjection{
 		UnifiedColumnNames: []string{"row_id", "created_at", "ver_ts", "deleted_ts"},

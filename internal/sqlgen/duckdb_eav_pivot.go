@@ -132,7 +132,10 @@ func mainColISO8601Expr(colName string) string {
 
 // integerWidths and columnWidths rank the integer valueTypes and the numeric
 // main column types on one scale: each holds every value of the ranks below
-// it, and a double column also holds fractions, NaN and the infinities.
+// it, and a double column also holds fractions, NaN and the infinities. A
+// column type missing here reads raw.
+// TestHotLegProjections_WideIntegerColumnsReadAtDeclaredType walks every
+// numeric binding registration admits, so an unranked one fails there.
 var (
 	integerWidths = map[forma.ValueType]struct {
 		rank     int

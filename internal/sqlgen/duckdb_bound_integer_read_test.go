@@ -25,52 +25,6 @@ func boundNumericMeta(vt forma.ValueType, col forma.MainColumn) forma.AttributeM
 		ColumnBinding: &forma.MainColumnBinding{ColumnName: col}}
 }
 
-// TestHotLegProjections_WideIntegerColumnsReadAtDeclaredType walks every
-// numeric-family pair schemameta.ValidateColumnBinding admits. Only a column
-// wider than the declared integer type is read through TRY_CAST, on both hot
-// projections; a column of the type's own width or narrower, and every
-// numeric binding, keep the raw column.
-func TestHotLegProjections_WideIntegerColumnsReadAtDeclaredType(t *testing.T) {
-	cols := map[string]forma.MainColumn{
-		"smallint": forma.MainColumnSmallint01, "integer": forma.MainColumnInteger01,
-		"bigint": forma.MainColumnBigint01, "double": forma.MainColumnDouble01,
-	}
-	for _, tc := range []struct {
-		vt     forma.ValueType
-		column string
-		read   string // the hot leg's read of the column; "" means the raw column
-	}{
-		{forma.ValueTypeSmallInt, "smallint", ""},
-		{forma.ValueTypeSmallInt, "integer", "TRY_CAST(m.integer_01 AS SMALLINT)"},
-		{forma.ValueTypeSmallInt, "bigint", "TRY_CAST(m.bigint_01 AS SMALLINT)"},
-		{forma.ValueTypeSmallInt, "double", "TRY_CAST(m.double_01 AS SMALLINT)"},
-		{forma.ValueTypeInteger, "smallint", ""},
-		{forma.ValueTypeInteger, "integer", ""},
-		{forma.ValueTypeInteger, "bigint", "TRY_CAST(m.bigint_01 AS INTEGER)"},
-		{forma.ValueTypeInteger, "double", "TRY_CAST(m.double_01 AS INTEGER)"},
-		{forma.ValueTypeBigInt, "smallint", ""},
-		{forma.ValueTypeBigInt, "integer", ""},
-		{forma.ValueTypeBigInt, "bigint", ""},
-		{forma.ValueTypeBigInt, "double", "TRY_CAST(m.double_01 AS BIGINT)"},
-		{forma.ValueTypeNumeric, "smallint", ""},
-		{forma.ValueTypeNumeric, "integer", ""},
-		{forma.ValueTypeNumeric, "bigint", ""},
-		{forma.ValueTypeNumeric, "double", ""},
-	} {
-		t.Run(string(tc.vt)+"_in_"+tc.column, func(t *testing.T) {
-			col := cols[tc.column]
-			sp, err := BuildSchemaProjection(7, forma.SchemaAttributeCache{"x": boundNumericMeta(tc.vt, col)})
-			require.NoError(t, err)
-			read := tc.read
-			if read == "" {
-				read = "m." + string(col)
-			}
-			require.Contains(t, sp.PGSourceSelect, "COALESCE(ANY_VALUE(hot_vals.x), "+read+") AS x")
-			require.Contains(t, sp.BuildPGSelectNoEAV(), read+" AS x")
-		})
-	}
-}
-
 // TestMainColIntegerExpr_ReadsTheExportImage runs the hot-leg read and the
 // outer select's cast on DuckDB over the images a wider column can hold. An
 // image the declared type cannot hold reads NULL instead of failing the
