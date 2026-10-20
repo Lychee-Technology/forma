@@ -16,6 +16,12 @@ import (
 // Transient infrastructure — degradable under AllowPartialDegradedMode.
 var ErrDuckDBUnavailable = errors.New("duckdb unavailable")
 
+// errBreakerRejected marks the ErrDuckDBUnavailable that the open circuit
+// breaker returns, as distinct from a missing client. The degraded fallback
+// logs it at Debug (#638): the breaker's "opened" line (#634) already logged
+// the failure behind the rejection, once.
+var errBreakerRejected = errors.New("duckdb circuit breaker open, query rejected")
+
 // ErrFederatedReadFailed marks a DuckDB federated read that failed at
 // execution or while streaming rows: unreadable parquet (corrupt bytes,
 // truncation, schema mismatch), storage-layer rejections (credentials), or a

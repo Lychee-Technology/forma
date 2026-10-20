@@ -7,6 +7,9 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/redact"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // The §7.2 degraded fallback: a DuckDB-path failure absorbed under
@@ -43,9 +46,10 @@ func recordDegradedFallbackPlan(opts *model.FederatedQueryOptions, tables model.
 
 // degradeToPostgresOnly serves the Postgres-only fallback for a degradable
 // DuckDB-path failure: it records the fallback decision and its cause on the
-// execution plan (#185 — the plan must reach callers that only see the page)
-// and stitches the plan onto the returned page. mark is the plan as it stood
-// before the DuckDB attempt; see the rewind below.
+// execution plan (#185 — the plan must reach callers that only see the page),
+// logs them for the operator (#638), and stitches the plan onto the returned
+// page. mark is the plan as it stood before the DuckDB attempt; see the
+// rewind below.
 func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, mark executionPlanMark, cause error) (*model.PersistentRecordPage, error) {
 	if opts != nil {
 		// The failed DuckDB pass may have recorded a #348 partial marker; the
@@ -61,6 +65,9 @@ func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tabl
 	// attempt, not the answer. Rewind first so the cause note below survives.
 	mark.rewind(opts)
 	recordDegradedFallbackPlan(opts, tables, cause)
+	// Logged before the Postgres read: a failed fallback returns its own
+	// error, which no longer carries the cause it was absorbing.
+	e.logDegradedFallback(fq, cause)
 	page, perr := e.queryPostgresOnly(ctx, tables, fq)
 	if perr != nil {
 		return nil, fmt.Errorf("degraded postgres-only fallback: %w", perr)
@@ -71,6 +78,31 @@ func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tabl
 	// the same coverage marker as the routed path (#468).
 	markHotTierOnly(page, opts, fq)
 	return page, nil
+}
+
+// degradedFallbackMsg is the line every degraded fallback writes (#638).
+const degradedFallbackMsg = "federated query degraded to postgres-only"
+
+// logDegradedFallback writes the one line a degraded fallback leaves (#638).
+// The request succeeds and toExecutionPlan drops the plan note that records
+// the cause, so without this line the absorbed failure reaches no log, no
+// metric and no caller. Warn fits a request answered with less than it asked
+// for. A breaker rejection logs at Debug: the breaker's "opened" line (#634)
+// logged the failure that tripped it once, and a Warn per rejected request
+// would repeat it for the whole open period with only the breaker's own
+// sentinel as the cause. The scan-guard attribution (#351) keeps its own
+// Error line; that line names the objects, and this one says the request was
+// answered without them. The cause passes redact.Error once more: DuckDB's
+// errors are scrubbed at their source (#306), but a degradable cause can also
+// come from path resolution or the dirty-ID fetch, which that scrub does not
+// cover.
+func (e *DBFederatedQueryEngine) logDegradedFallback(fq *model.FederatedAttributeQuery, cause error) {
+	level := zapcore.WarnLevel
+	if errors.Is(cause, errBreakerRejected) {
+		level = zapcore.DebugLevel
+	}
+	e.log().Log(level, degradedFallbackMsg,
+		zap.Int16("schema_id", fq.SchemaID), zap.Error(redact.Error(cause)))
 }
 
 // degradableFederatedError reports whether a DuckDB-path failure may be

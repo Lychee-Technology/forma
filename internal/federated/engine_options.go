@@ -30,17 +30,20 @@ func WithMetricEmitter(e forma.MetricEmitter) EngineOption {
 
 // WithLogger gives the engine a logger; the default is zap.NewNop(). The
 // engine reports itself through returned errors and the execution plan, so
-// this stays narrow — three outlets whose observations have nowhere else to
+// this stays narrow — four outlets whose observations have nowhere else to
 // go: the pre-read validator's stamp-versus-footer cross-check (#256),
 // invisible because the read it observes SUCCEEDS (a manifest entry whose
 // column stamp contradicts the object's real footer is an operator's problem
 // no caller's result would ever mention); the scan-guard violation
 // identification (#351), invisible under AllowPartialDegradedMode because the
 // degraded fallback absorbs the error and toExecutionPlan drops plan Notes;
-// and the circuit breaker's transitions (#634), which belong to no single
+// the circuit breaker's transitions (#634), which belong to no single
 // request: one line per transition, beside the
 // duckdb_circuit_breaker_transition_total sample, so the cause of a trip is
-// logged once rather than on every request it rejects.
+// logged once rather than on every request it rejects; and the degraded
+// fallback itself (#638), one line per request answered from Postgres alone,
+// carrying the failure it absorbed (Debug for a breaker rejection, whose
+// cause the trip line already logged).
 func WithLogger(l *zap.Logger) EngineOption {
 	return func(e *DBFederatedQueryEngine) {
 		if l == nil {
