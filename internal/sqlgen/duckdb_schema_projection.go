@@ -60,7 +60,8 @@ type SchemaProjection struct {
 	// boundMainExprs maps a column-bound attribute's name to the DuckDB
 	// expression that reads its main column normalised to the unified column
 	// type, for the bindings whose stored image is not that type: bool
-	// (mainColBoolExpr) and iso8601 date/datetime (mainColISO8601Expr).
+	// (mainColBoolExpr), iso8601 date/datetime (mainColISO8601Expr) and a
+	// smallint/integer/bigint in a wider column (mainColIntegerExpr).
 	// Every hot-leg projection — the EAV-joined one and BuildPGSelectNoEAV
 	// alike — reads such a column through this map; absent means the raw
 	// column is the image.

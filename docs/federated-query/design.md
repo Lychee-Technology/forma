@@ -905,7 +905,7 @@ stamp existing.
 
 * PostgreSQL numeric $\rightarrow$ DuckDB DOUBLE (Precision loss acceptable for search, not for finance).
 * PostgreSQL smallint/integer $\rightarrow$ **binding-dependent**: column-bound
-  attributes keep the physical SMALLINT/INTEGER width, EAV-only attributes
+  attributes keep the declared SMALLINT/INTEGER width, EAV-only attributes
   carry storage width DOUBLE — the precise per-surface contract is §6.4 (#384).
 * PostgreSQL text (containing UUID) $\rightarrow$ DuckDB UUID (Explicit cast required).
 
@@ -934,7 +934,8 @@ applied on both sides:
   historical out-of-declared-range *and* non-integral rows answer identically
   on all tiers (an integer-width cast NULLed the former and rounded the
   latter, only on the DuckDB legs). Column-bound attributes keep declared
-  width: their storage is physically int4/int2.
+  width on every leg. A column of exactly that width stores it physically,
+  and a wider column is read at the declared type (below, #627).
 * **Predicate operands**: DuckDB operand casts follow column storage width —
   `integer`/`smallint`/`numeric` operands cast to `DOUBLE` (an operand of any
   magnitude compares instead of raising a Conversion Error; the former
@@ -1023,10 +1024,18 @@ BIGINT, so a bigint value past int64 diverges on every DuckDB leg, and the
 OLTP read refuses it as a consistency error (#590); the same census reports
 it, together with every stored bigint past ±2^53, for a rewrite. A bigint
 bound to a `double_*` column stores the same image under the same contract,
-and the census reports it in `entity_main` with the column (#618). There the
-hot leg casts the column strictly, so an unflushed image past int64, NaN or
-±Infinity fails the query instead of reading NULL as its parquet copy does
-(#627).
+and the census reports it in `entity_main` with the column (#618). An integer
+in a column wider than its declared type (a bigint in `double_*`, an integer
+in `bigint_*`/`double_*`, a smallint in any wider numeric column) is read on
+the DuckDB hot leg through the export's `TRY_CAST(<col> AS <declared>)`
+(`sqlgen.mainColIntegerExpr`, #627): an image past the type's range, NaN or
+±Infinity reads NULL, and a fraction rounds half to even, on the unflushed
+row exactly as on its parquet copy. The pg-main pushdown compares the same
+expression, so a filter matches the row the same way before and after its
+flush. That leaf is a DuckDB expression over `postgres_scan`, not a plain
+column compare. Before #627 the hot leg read the raw column, so the outer
+select's strict cast failed the whole query on such an image. The OLTP route
+and the census do not cover the smallint/integer bindings yet (#708).
 The remaining asymmetry class is #205's float64 ceiling: values only a full
 NUMERIC can hold (planted by direct SQL, never by the funnel) still read
 exactly on Postgres and as their float64 image on DuckDB.

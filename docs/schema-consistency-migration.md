@@ -782,11 +782,19 @@ requeues these rows, because a re-flush does not change what the column
 holds. What the routes serve until the repair depends on the image. A whole
 number past ±2^53 inside int64 reads as the stored value on every route. Any
 other image is refused by the OLTP route with an error naming the attribute
-and the row. The federated route reads a fraction rounded to a whole number.
-For an image past int64, `NaN`, or an infinity, the federated route fails
-every query that reaches the row while the row is unflushed, and reads the
-attribute as absent once it has been exported (`#627`). Repair those rows
-first.
+and the row. The federated route reads the column the way the CDC export
+does, `TRY_CAST(<column> AS BIGINT)`, on the unflushed row as on its parquet
+copy (`#627`). A fraction rounds half to even (`1000.5` reads `1000`,
+`1001.5` reads `1002`), and an image past int64, `NaN`, or an infinity reads
+as an absent attribute. Filters compare that same value, so a federated
+query answers the same for the row before and after its flush. Before
+`#627`, such an image failed every federated query that reached the
+unflushed row.
+
+A `smallint` or `integer` bound to a wider column (`bigint_*` or `double_*`,
+or `integer_*` for a `smallint`) is read the same way on the federated
+route, at its declared type. The census does not scan these columns yet,
+and the OLTP route converts such an image instead of refusing it (`#708`).
 
 ### Date images the read path refuses (`#592`)
 
