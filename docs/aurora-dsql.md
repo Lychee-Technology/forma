@@ -91,7 +91,10 @@ flushed to S3 and never read by DuckDB. `init-db` creates it on every
 PostgreSQL deployment, and the PostgreSQL engine leaves it empty. On DSQL,
 where `init-db` cannot run yet (#690), create it with the statement above.
 On the `aurora-dsql` engine the server refuses to start while the table is
-missing.
+missing. When `<entity_main>_row_guard` would pass PostgreSQL's 63-byte
+identifier limit, the name is shortened as the unique-key tables' names are
+([The key tables](unique-keys.md#the-key-tables)); `init-db` prints the name
+it creates.
 
 ## What a caller sees differently
 
