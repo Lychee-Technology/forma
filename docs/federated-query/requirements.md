@@ -1003,18 +1003,17 @@ The library's lines reach every caller, an embedding application included:
 - `EntityManager.Query` logs "query results" at Info with the record and page
   counts. `CrossSchemaSearch` logs no such line.
 - At Debug, the Postgres repository logs the SQL it runs and its arguments.
-- The federated engine logs two anomalies and the circuit breaker's
-  transitions, and nothing else. The anomalies are, at Error, a Parquet
-  scan-guard failure attributed to specific objects, and at Warn, a manifest
-  column stamp that disagrees with the Parquet footer. The breaker writes one
-  line per transition (#634): "duckdb circuit breaker opened" at Warn, with
-  the state it left (`from`) and the error of the DuckDB pass that opened it,
-  and "duckdb circuit breaker half-open: probe admitted" and "duckdb circuit
-  breaker closed" (with `from`) at Info. The engine reports every other
-  failure only through the error it returns. Silence from the engine
-  therefore does not mean a federated query was healthy: the degraded
-  fallback described at the end of this section absorbs a failure without a
-  line.
+- The federated engine logs two anomalies, the circuit breaker's transitions
+  and the degraded fallback, and nothing else. The anomalies are, at Error, a
+  Parquet scan-guard failure attributed to specific objects, and at Warn, a
+  manifest column stamp that disagrees with the Parquet footer. The breaker
+  writes one line per transition (#634): "duckdb circuit breaker opened" at
+  Warn, with the state it left (`from`) and the error of the DuckDB pass that
+  opened it, and "duckdb circuit breaker half-open: probe admitted" and
+  "duckdb circuit breaker closed" (with `from`) at Info. The degraded
+  fallback writes "federated query degraded to postgres-only" with the
+  failure it absorbed, described at the end of this section (#638). The
+  engine reports every other failure only through the error it returns.
 
 The HTTP server (`internal/httpapi`) adds the per-request lines. An
 application that calls the library directly gets none of them:
@@ -1050,30 +1049,40 @@ Per-stage latency and row counts are metrics (§10.1). Routing, per-source and
 timing detail for one query is returned to the caller on request (§10.3) and
 is not logged.
 
-One kind of failure leaves no log line or metric of its own. When a request
+One kind of failure is recorded only in the engine's log. When a request
 sets `federated.allow_partial_degraded_mode`, the engine absorbs most
 DuckDB-path failures, a circuit-breaker rejection included, and answers from
 PostgreSQL alone (`docs/federated-query/design.md` §7.2). The request
 succeeds, so:
 
-- The engine does not log the failure it absorbed. Two lines are written
-  before the fallback and so survive it: the scan-guard line above, and the
-  breaker's "opened" line when the absorbed failure is the one that opens the
-  breaker.
-- The failed pass emits no `fed_query_*` sample (§10.1). During an S3 outage
-  those series go flat, which reads the same as no traffic. The breaker's
-  transition counter does move: a sustained outage trips the breaker, and
-  each later probe that fails re-opens it. A request the open breaker
-  rejects leaves nothing itself; the trip it follows was counted and logged
-  once.
+- The engine writes one line per degraded request (#638): "federated query
+  degraded to postgres-only", with `schema_id` and the absorbed failure as
+  `error`, at Warn. The failure text goes through `internal/redact`, which
+  removes a connection-string password and keeps everything else, object
+  keys included. The line is written before the PostgreSQL read, so it also
+  appears when that read fails and the request fails after all.
+- A request the open breaker rejects logs that line at Debug, so the
+  production logger does not show it. The breaker's "opened" line has already
+  logged the failure that tripped it, once. While DuckDB keeps failing, the
+  breaker therefore bounds the Warn lines: after the trip, only a failed
+  probe adds one per open period. A failure before DuckDB is consulted, such
+  as a manifest read or the dirty-ID fetch, does not count toward the
+  breaker, so it logs at Warn on every request it degrades.
+- Two other engine lines can come first for the same request: the scan-guard
+  line above, when the absorbed failure is a guard violation, and the
+  breaker's "opened" line, when the absorbed failure is the one that opens
+  the breaker.
+- The failed pass emits no `fed_query_*` sample (§10.1), and no metric counts
+  degraded answers. During an S3 outage those series go flat, which reads the
+  same as no traffic. The breaker's transition counter does move: a sustained
+  outage trips the breaker, and each later probe that fails re-opens it.
 - `EntityManager.Query` and the HTTP layer log their ordinary success lines.
 
-The only traces are in the response (§10.3). The `partial` marker reads
-`hot_tier_only`, which the routing shortcut for small pages sets too, so it
-does not identify a failure. A requested `execution_plan` names the degraded
-fallback in its `routing` reason. Neither carries the cause of the failure.
-`docs/federated-query/design.md` §7.2 lists "Log Error" as the first step of
-this fallback. That step is not implemented, and #638 tracks it.
+The caller sees the fallback only in the response (§10.3). The `partial`
+marker reads `hot_tier_only`, which the routing shortcut for small pages sets
+too, so it does not identify a failure. A requested `execution_plan` names
+the degraded fallback in its `routing` reason. Neither carries the cause of
+the failure.
 
 ### 10.3 Query Diagnostics in the Response
 
@@ -1352,3 +1361,4 @@ class ColumnStats:
 | 2.4 | - | Added comprehensive Anti-Join requirements |
 | 2.5 | - | Replaced the unimplemented §10 observability sketches with the shipped metric catalogue, logging and response diagnostics (#597) |
 | 2.6 | - | §10.1 and §10.2: the DuckDB circuit breaker's transition metric and log lines (#634) |
+| 2.7 | - | §10.2: the degraded fallback's log line (#638) |

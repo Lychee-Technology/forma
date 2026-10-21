@@ -782,11 +782,19 @@ requeues these rows, because a re-flush does not change what the column
 holds. What the routes serve until the repair depends on the image. A whole
 number past ±2^53 inside int64 reads as the stored value on every route. Any
 other image is refused by the OLTP route with an error naming the attribute
-and the row. The federated route reads a fraction rounded to a whole number.
-For an image past int64, `NaN`, or an infinity, the federated route fails
-every query that reaches the row while the row is unflushed, and reads the
-attribute as absent once it has been exported (`#627`). Repair those rows
-first.
+and the row. The federated route reads the column the way the CDC export
+does, `TRY_CAST(<column> AS BIGINT)`, on the unflushed row as on its parquet
+copy (`#627`). A fraction rounds half to even (`1000.5` reads `1000`,
+`1001.5` reads `1002`), and an image past int64, `NaN`, or an infinity reads
+as an absent attribute. Filters compare that same value, so a federated
+query answers the same for the row before and after its flush. Before
+`#627`, such an image failed every federated query that reached the
+unflushed row.
+
+A `smallint` or `integer` bound to a wider column (`bigint_*` or `double_*`,
+or `integer_*` for a `smallint`) is read the same way on the federated
+route, at its declared type. The census does not scan these columns yet,
+and the OLTP route converts such an image instead of refusing it (`#708`).
 
 ### Date images the read path refuses (`#592`)
 
@@ -1063,5 +1071,30 @@ therefore makes those attributes — and the values `#294` preserved under
 them — visible again, and drops the reuse guard entirely. If you must roll back
 that far, either accept the re-exposure or revert the attributes files to their
 pre-`#342` state alongside the binary.
+
+**Rolling deploys and rollbacks across `#623`.** A binary older than `#623`
+loses one record shape a newer binary writes. When a schema has array ancestry
+(the file registry derives it, as for the shipped `lead` and `log`; see
+[The update merge and the written row](./error-handling.md#the-update-merge-and-the-written-row-590-review)),
+the empty-list marker of a list inside an array of objects carries its
+element's array indices: `{"items":[{"sku":"a"},{"tags":[]}]}` stores the
+marker of `items.tags` at `"1"`. An older binary skips a value-less record
+with indices, so its reads answer that element without `tags`. Any update it
+runs on the row, even of an unrelated attribute, writes the row back without
+the marker and deletes it. A newer binary cannot guard against this, since the
+older process does the deleting. No shipped schema declares a list inside an
+array of objects, so only a custom schema that does is exposed. For such a
+schema:
+
+- In a rolling deploy, stop every older process before a newer one accepts
+  writes for the schema. Otherwise an `[]` written inside an array of objects
+  during the overlap can be deleted by the older processes.
+- Rolling back after a newer binary has written such an `[]` loses it the same
+  way: reads answer the element without the list, and the next update of the
+  row deletes the marker. Rolling forward again does not restore a deleted
+  marker.
+- The CDC flush (`forma-tools cdc-flush`) is a separate binary from the
+  server. An older one exports such a marker as a list holding one `null`
+  rather than `[]`, so upgrade it alongside the server.
 
 The validator is safe to run repeatedly and is intended to be part of your pre-upgrade checklist.

@@ -31,7 +31,9 @@ func planClaimGroup(req *forma.ClaimRequest, cache forma.SchemaAttributeCache) (
 	}
 	orders, err := buildAttributeOrders(&forma.QueryRequest{SchemaName: req.SchemaName, Sort: group.Order}, cache)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve Claim group order on %s: %w", req.SchemaName, err)
+		// Sort's resolver words its refusals for Sort, so the published
+		// message must say it is the group order that is wrong.
+		return nil, forma.WrapPublicf(err, "Claim group order on %s", req.SchemaName)
 	}
 	for _, order := range orders {
 		if order.StorageLocation != forma.AttributeStorageLocationMain {

@@ -148,7 +148,7 @@ These controls are part of the request payload; they are not conveyed via HTTP h
 | `duckdb.manifestTemplate` | `DUCKDB_MANIFEST_TEMPLATE` (`MANIFEST_TEMPLATE`) | Per-schema manifest path template, e.g. `manifest/{{.SchemaID}}.json`. **Non-empty is the single enable gate** for manifest reads. |
 | `duckdb.allowCallerParquetPaths` | `DUCKDB_ALLOW_CALLER_PARQUET_PATHS` | Opt in to honoring the per-request `federated.s3_parquet_path_template` hint (§4.3.1 level 1). Default `false`: the hint is rejected. When `true`, rendered hint paths must fall inside `duckdb.s3Bucket` (under `duckdb.s3DataPrefix` when set) and obey the level-3 glob's shape rules — no `**`, wildcards only in the object-name segment, no `_tmp/` (#477); enabling it without a bucket fails at startup (#456), as does enabling it with an `s3DataPrefix` containing `*`, `?`, or `[` (#526 review). |
 
-* **Env vars are read only when `DUCKDB_ENABLED` is truthy:** with DuckDB off, `cmd/server` returns the base config untouched, so setting `DUCKDB_MANIFEST_TEMPLATE` alone is a silent no-op — not a startup failure and not a behavior change.
+* **Env vars are read only when `DUCKDB_ENABLED` is true** (`true`, `1` or `t`, in any case; since #642 a set value that is not a boolean, such as `yes`, fails startup instead of reading as off): with DuckDB off, `cmd/server` returns the base config untouched, so setting `DUCKDB_MANIFEST_TEMPLATE` alone is a silent no-op — not a startup failure and not a behavior change. The one exception is a refused `DUCKDB_ENABLED`: `DUCKDB_ALLOW_CALLER_PARQUET_PATHS` is checked alongside it, so the failed boot names both bad values.
 * **Gate:** the source is built only when `duckdb.enabled` *and* `manifestTemplate` is non-empty. All four fields default to empty, so an upgrade never flips an existing deployment from glob reads to manifest reads on its own.
 * **Shared prefix names are all-or-nothing with the template.** `S3_PREFIX` and `MANIFEST_PREFIX` are adopted **only when the effective `manifestTemplate` (resolved first, from `DUCKDB_MANIFEST_TEMPLATE` then `MANIFEST_TEMPLATE`) is non-empty**; otherwise they are ignored and the field stays at its base value. Without this, a stack that already exports `S3_PREFIX` for its CDC tooling and merely sets `DUCKDB_ENABLED=1` would produce a prefix-without-template config — precisely the inert combination the startup validation rejects — and would stop booting on upgrade. `S3_BUCKET` carries no such condition: a bucket alone is never inert. The explicit `DUCKDB_S3_PREFIX` / `DUCKDB_MANIFEST_PREFIX` names bypass the condition and are **always** adopted, so an operator who names one by hand without a template gets the startup rejection rather than a silently dropped value.
 * **Must match the writer:** `manifestPrefix` / `manifestTemplate` must be identical to the CDC and compaction write side, and `s3DataPrefix` must match the writers' parquet prefix. A reader pointed at a manifest path the writers never use resolves an empty manifest for every schema and falls back to the glob — or, without `s3DataPrefix`, resolves no paths at all — then every read that *reaches the DuckDB engine* fails per level 4 with `ErrNoParquetPaths`, while PG-routed reads (hybrid routing's hot-only and *cursor-free, tier-implicit* small-page cases, which never render the DuckDB template — since #354 a small-page read carrying a keyset cursor is rerouted onto DuckDB and does render it, and since #468 so is one carrying an explicit multi-tier `preferred_tiers`) keep returning hot-tier-only rows; since #468 they are at least marked `hot_tier_only`, so the shortfall is visible if not explained. A level-4 misconfiguration is therefore loud only for the queries that were going to touch the cold tier. **The template is probe-validated at startup** so the most common way to point the reader at a path the writers never use — a field-name typo such as `{{.SchemaId}}`, which parses but renders `<no value>` for every schema — is rejected before the server boots, along with any template that does not vary by schema.
@@ -905,7 +905,7 @@ stamp existing.
 
 * PostgreSQL numeric $\rightarrow$ DuckDB DOUBLE (Precision loss acceptable for search, not for finance).
 * PostgreSQL smallint/integer $\rightarrow$ **binding-dependent**: column-bound
-  attributes keep the physical SMALLINT/INTEGER width, EAV-only attributes
+  attributes keep the declared SMALLINT/INTEGER width, EAV-only attributes
   carry storage width DOUBLE — the precise per-surface contract is §6.4 (#384).
 * PostgreSQL text (containing UUID) $\rightarrow$ DuckDB UUID (Explicit cast required).
 
@@ -934,7 +934,8 @@ applied on both sides:
   historical out-of-declared-range *and* non-integral rows answer identically
   on all tiers (an integer-width cast NULLed the former and rounded the
   latter, only on the DuckDB legs). Column-bound attributes keep declared
-  width: their storage is physically int4/int2.
+  width on every leg. A column of exactly that width stores it physically,
+  and a wider column is read at the declared type (below, #627).
 * **Predicate operands**: DuckDB operand casts follow column storage width —
   `integer`/`smallint`/`numeric` operands cast to `DOUBLE` (an operand of any
   magnitude compares instead of raising a Conversion Error; the former
@@ -1023,10 +1024,18 @@ BIGINT, so a bigint value past int64 diverges on every DuckDB leg, and the
 OLTP read refuses it as a consistency error (#590); the same census reports
 it, together with every stored bigint past ±2^53, for a rewrite. A bigint
 bound to a `double_*` column stores the same image under the same contract,
-and the census reports it in `entity_main` with the column (#618). There the
-hot leg casts the column strictly, so an unflushed image past int64, NaN or
-±Infinity fails the query instead of reading NULL as its parquet copy does
-(#627).
+and the census reports it in `entity_main` with the column (#618). An integer
+in a column wider than its declared type (a bigint in `double_*`, an integer
+in `bigint_*`/`double_*`, a smallint in any wider numeric column) is read on
+the DuckDB hot leg through the export's `TRY_CAST(<col> AS <declared>)`
+(`sqlgen.mainColIntegerExpr`, #627): an image past the type's range, NaN or
+±Infinity reads NULL, and a fraction rounds half to even, on the unflushed
+row exactly as on its parquet copy. The pg-main pushdown compares the same
+expression, so a filter matches the row the same way before and after its
+flush. That leaf is a DuckDB expression over `postgres_scan`, not a plain
+column compare. Before #627 the hot leg read the raw column, so the outer
+select's strict cast failed the whole query on such an image. The OLTP route
+and the census do not cover the smallint/integer bindings yet (#708).
 The remaining asymmetry class is #205's float64 ceiling: values only a full
 NUMERIC can hold (planted by direct SQL, never by the funnel) still read
 exactly on Postgres and as their float64 image on DuckDB.
@@ -1089,7 +1098,7 @@ The breaker computes each transition under its mutex and returns it from `Allow`
 ### **7.2 Degraded Modes**
 
 1. **S3 Unavailable:**
-   * Log Error.
+   * Log the fallback (#638): one Warn line per degraded request, "federated query degraded to postgres-only", with `schema_id` and the absorbed failure, password-scrubbed. A request the open breaker rejected logs it at Debug instead, because the §7.1 "opened" line already logged the failure behind the rejection. No metric counts degraded answers.
    * Rewrite query to select *only* from pg_source.
    * Return HTTP 200 with metadata: `{"partial_result": true, "warning": "Historical data unavailable"}`.
 2. **PostgreSQL Unavailable:**

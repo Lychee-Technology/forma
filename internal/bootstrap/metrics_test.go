@@ -64,20 +64,21 @@ func TestJSONLineMetricEmitterTreatsNilWriterAsDiscard(t *testing.T) {
 	})
 }
 
-// TestMetricEmitterFromEnv pins the entrypoint contract: unset or anything
-// but true/1 leaves Forma on its no-op default, so a deployment that never
-// heard of METRICS_STDOUT gets no new stdout output.
+// TestMetricEmitterFromEnv pins the entrypoint contract: unset or a false
+// boolean leaves Forma on its no-op default, so a deployment that never heard
+// of METRICS_STDOUT gets no new stdout output.
 func TestMetricEmitterFromEnv(t *testing.T) {
 	for _, tc := range []struct {
 		value string
 		want  bool
 	}{
-		{"", false}, {"false", false}, {"0", false}, {"yes", false}, {"true", true}, {"TRUE", true}, {"1", true},
+		{"", false}, {"false", false}, {"0", false}, {"true", true}, {"TRUE", true}, {"1", true},
 	} {
 		t.Run("METRICS_STDOUT="+tc.value, func(t *testing.T) {
 			t.Setenv(MetricsStdoutEnv, tc.value)
 			var buf bytes.Buffer
-			e := MetricEmitterFromEnv(&buf)
+			e, err := MetricEmitterFromEnv(&buf)
+			require.NoError(t, err)
 			if !tc.want {
 				require.Nil(t, e)
 				return
@@ -86,5 +87,17 @@ func TestMetricEmitterFromEnv(t *testing.T) {
 			e.EmitMetric(context.Background(), forma.Metric{Name: "fed_query_row_count", Labels: map[string]string{"source": "pg"}, Value: 3})
 			require.Contains(t, buf.String(), `"name":"fed_query_row_count"`)
 		})
+	}
+}
+
+// TestMetricEmitterFromEnvRejectsUnrecognisedBoolean: METRICS_STDOUT=yes used
+// to read as false, so the operator who turned metrics on got none and no
+// word why (#642). It is now an *EnvError naming the variable, with no emitter.
+func TestMetricEmitterFromEnvRejectsUnrecognisedBoolean(t *testing.T) {
+	for _, value := range []string{"yes", "on", "true "} {
+		t.Setenv(MetricsStdoutEnv, value)
+		e, err := MetricEmitterFromEnv(&bytes.Buffer{})
+		require.Nil(t, e)
+		assertEnvErrorKeys(t, err, MetricsStdoutEnv)
 	}
 }

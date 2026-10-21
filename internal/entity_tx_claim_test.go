@@ -140,6 +140,8 @@ func TestClaimRefusesAnInvalidGroupBeforeAnySQL(t *testing.T) {
 		{"an EAV order attribute", group(func(g *forma.ClaimGroup) { g.Order = []forma.OrderBy{{Attribute: "at"}, {Attribute: "nextFollowUpAt"}} }),
 			"Claim group order uses attribute 'nextFollowUpAt' of schema 'activity', which is stored in EAV"},
 		{"an invalid order direction", group(func(g *forma.ClaimGroup) { g.Order = []forma.OrderBy{{Attribute: "at", SortOrder: "up"}} }), "invalid sort_order 'up'"},
+		{"an unknown sort attribute beside a group", claim(func(r *forma.ClaimRequest) { r.Sort = []forma.OrderBy{{Attribute: "nope"}} }),
+			"cannot sort by unknown attribute 'nope'"},
 		{"no live condition", group(func(g *forma.ClaimGroup) { g.Live = nil }), "Claim group on activity needs a live condition"},
 		{"a live condition on an unknown attribute", group(func(g *forma.ClaimGroup) { g.Live = &forma.KvCondition{Attr: "nope", Value: "equals:x"} }),
 			"group live condition tests attribute 'nope'"},
@@ -161,10 +163,14 @@ func TestClaimRefusesAnInvalidGroupBeforeAnySQL(t *testing.T) {
 		{"a mutation that writes the group key", claim(func(r *forma.ClaimRequest) { r.Updates["userId"] = "u2" }),
 			"Claim on activity writes attribute 'userId' of its group key"},
 	}
-	// The published message names the condition at fault.
+	// Where Sort, the condition and the group share a resolver or renderer,
+	// the published message names the part at fault.
 	published := map[string]string{
-		"a malformed live operand":      "Claim group live condition on activity: ",
-		"a malformed condition operand": "Claim condition on activity: ",
+		"a malformed live operand":                 "Claim group live condition on activity: ",
+		"a malformed condition operand":            "Claim condition on activity: ",
+		"an unknown order attribute":               "Claim group order on activity: cannot sort by unknown attribute 'nope'",
+		"an invalid order direction":               "Claim group order on activity: sort entry for attribute 'at': invalid sort_order 'up'",
+		"an unknown sort attribute beside a group": "cannot sort by unknown attribute 'nope'",
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -178,7 +184,7 @@ func TestClaimRefusesAnInvalidGroupBeforeAnySQL(t *testing.T) {
 				if prefix, ok := published[tc.name]; ok {
 					message, ok := forma.ResolvePublicMessage(err)
 					require.True(t, ok)
-					require.True(t, strings.HasPrefix(message, prefix), "published %q names the condition at fault", message)
+					require.True(t, strings.HasPrefix(message, prefix), "published %q names the part at fault", message)
 				}
 				return nil
 			})

@@ -84,10 +84,10 @@ type DBFederatedQueryEngine struct {
 	corruptPaths *corruptParquetCache
 	// logger is the engine's own operator outlet; zap.NewNop() when unset
 	// (see log(), in engine_options.go beside the option that sets this).
-	// Three writers use it: the pre-read validator's stamp cross-check (#256,
-	// via schemaValidator.logger, set together in WithLogger), the
-	// guard-violation identification (#351), whose error degraded mode
-	// absorbs, and one line per circuit breaker transition (#634).
+	// Four writers use it: the pre-read validator's stamp cross-check (#256,
+	// via schemaValidator.logger, set together in WithLogger), the #351
+	// guard-violation identification, whose error degraded mode absorbs, and
+	// one line per breaker transition (#634) and per degraded fallback (#638).
 	logger *zap.Logger
 	// metrics is the engine's telemetry sink (#423), set by WithMetricEmitter
 	// from the embedder's Config.Metrics.Emitter. Nil emits nothing; per

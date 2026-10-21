@@ -73,6 +73,37 @@ func TestBootstrapLambda_RejectsUnparsableIntegerEnv(t *testing.T) {
 	}
 }
 
+// TestBootstrapLambda_RejectsUnrecognisedBooleanEnv pins #642 on the Lambda
+// entry point: VALIDATE_UPDATES_STRICT and METRICS_STDOUT set to a value that
+// is not a boolean fail the cold start with an *EnvError naming each, where
+// they used to read as false, and they join the integer overlays' failures.
+// Both are read before the database mode is chosen, so one mode covers them.
+// The context is already canceled, so the check is shown to run before any
+// I/O.
+func TestBootstrapLambda_RejectsUnrecognisedBooleanEnv(t *testing.T) {
+	t.Setenv("DSQL_ENDPOINT", "")
+	t.Setenv("VALIDATE_UPDATES_STRICT", "on")
+	t.Setenv("METRICS_STDOUT", "yes")
+	t.Setenv("MAX_BATCH_SIZE", "1_000")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := bootstrapLambda(ctx, zap.NewNop().Sugar())
+
+	var envErr *bootstrap.EnvError
+	if !errors.As(err, &envErr) {
+		t.Fatalf("expected an *bootstrap.EnvError, got %v", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("the environment must be refused before the pool is opened, got %v", err)
+	}
+	for _, want := range []string{`VALIDATE_UPDATES_STRICT="on"`, `METRICS_STDOUT="yes"`, `MAX_BATCH_SIZE="1_000"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("cold-start error must name %s, got %v", want, err)
+		}
+	}
+}
+
 // knownManagerBuilders are the cmd/ directories that build an EntityManager
 // today. The walk below discovers directories rather than reading this list, so
 // this is a floor and never a ceiling: it exists only so a walk that finds

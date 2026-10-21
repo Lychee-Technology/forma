@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -105,6 +106,7 @@ func copySchemaAttributeCache(cache forma.SchemaAttributeCache) forma.SchemaAttr
 			binding := *meta.ColumnBinding
 			meta.ColumnBinding = &binding
 		}
+		meta.ArrayAncestors = slices.Clone(meta.ArrayAncestors)
 		snapshot[name] = meta
 	}
 	return snapshot

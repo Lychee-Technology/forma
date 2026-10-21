@@ -98,6 +98,10 @@ func spellingOf(path []string) string {
 // keys instead of ranging in map order: for any dotted name the nested
 // spelling's top-level key is a proper prefix of the literal one, so it sorts
 // first and the literal key — the caller's explicit value — is emitted last.
+// An update's merge base can hold a literal key of the stored row's own
+// (rebuildByAncestry); resolveStoredValues lets the caller's spelling win
+// over it and removes it, so what reaches this rule holds the caller's alone
+// (updateWinners).
 //
 // Ordering rule: surviving records keep their relative input order, and a
 // residual primary-key collision *within* one spelling is still collapsed

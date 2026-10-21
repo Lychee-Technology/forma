@@ -82,9 +82,10 @@ make test
 - [Engineering Blog Series](/blog-series/) - Deep dive into Forma's architecture
 - [Documentation](/cn/README.cn) - API reference and guides
 - [Error Handling](./error-handling.md) - Write-path vs read-path error semantics
-- [Transactions](./transactions.md) - Several reads and writes across schemas in one transaction with `Transactor.InTx`, row fences with `Tx.AssertRow`, and predicate mutation with `Tx.UpdateWhere`/`DeleteWhere`
+- [Transactions](./transactions.md) - Several reads and writes across schemas in one transaction with `Transactor.InTx`, row fences with `Tx.AssertRow`, predicate mutation with `Tx.UpdateWhere`/`DeleteWhere`, and claims with `Tx.Claim`
 - [Conditional Writes](./conditional-writes.md) - Preconditions, `increment` and `server_time` on Update and Delete
 - [Condition DSL](./condition-dsl.md) - Filter operators, `in`/`not_in`, null tests and `$now`
 - [Declared Indexes](./schema-indexes.md) - Composite indexes on column-bound attributes via `x-forma-indexes`
-- [Row IDs and Unique Keys](./unique-keys.md) - Caller-supplied row IDs on create, unique keys via `x-forma-unique-keys`, and `build-unique-keys`
+- [Row IDs and Unique Keys](./unique-keys.md) - Caller-supplied row IDs on create, unique keys via `x-forma-unique-keys`, `Tx.Upsert`, and `build-unique-keys`
+- [Claims](./claims.md) - `Tx.Claim`: take up to a limit of matching rows without waiting for rows others hold, with caller-defined leases and generation fencing, and per-group FIFO through group heads
 - [GitHub](https://github.com/ruoshui/forma) - Source code and issues

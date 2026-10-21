@@ -24,15 +24,17 @@ func buildEAVPivotExpr(a attrProjectionInfo) string {
 		// order instead of MAX-collapsing, mirroring the CDC export side
 		// (cdc.castEAVValue with the items-typed meta) so the hot leg
 		// type-unifies with the parquet LIST column. The empty-list marker row
-		// (array_indices '', both value columns NULL) is the only row excluded
-		// from the element aggregate; the presence count still sees it, so
-		// explicit [] stays distinguishable from an absent attribute (NULL) on
-		// every tier (#204). A legacy scalar row (array_indices '' carrying a
-		// value, written before the schema declared the attribute a list)
-		// therefore pivots as a one-element list instead of being dropped as
-		// [] (#372); validate-schema-consistency reports such rows.
+		// (both value columns NULL) is the only row excluded from the element
+		// aggregate; the presence count still sees it, so explicit [] stays
+		// distinguishable from an absent attribute (NULL) on every tier
+		// (#204). The marker is told by its NULL values, not its
+		// array_indices: inside an array of objects it carries its element's
+		// (#623). A legacy scalar row (array_indices '' carrying a value,
+		// written before the schema declared the attribute a list) therefore
+		// pivots as a one-element list instead of being dropped as [] (#372);
+		// validate-schema-consistency reports such rows.
 		return fmt.Sprintf(
-			"CASE WHEN count(*) FILTER (WHERE attr_id = %d) > 0 THEN coalesce(list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d AND (array_indices <> '' OR value_text IS NOT NULL OR value_numeric IS NOT NULL)), []) END",
+			"CASE WHEN count(*) FILTER (WHERE attr_id = %d) > 0 THEN coalesce(list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d AND (value_text IS NOT NULL OR value_numeric IS NOT NULL)), []) END",
 			a.attrID, eavElementCastExpr(a.meta.EffectiveItemsType()), a.attrID)
 	}
 	if a.meta.ValueType == forma.ValueTypeBool {
@@ -47,9 +49,10 @@ func buildEAVPivotExpr(a attrProjectionInfo) string {
 		return fmt.Sprintf("TRY_CAST(%s AS BIGINT)", base)
 	case forma.ValueTypeInteger, forma.ValueTypeSmallInt:
 		if a.isColumn {
-			// Bound storage is physically int4/int2: declared width IS the
-			// storage width, and the COALESCE partner m.<col> is just as
-			// narrow, so nothing wider can ever round-trip.
+			// A bound attribute keeps its declared width on both COALESCE
+			// arms: the partner reads its main column at the declared type
+			// too, through the same TRY_CAST when the column is wider
+			// (mainColIntegerExpr, #627), and the export casts to it.
 			if a.meta.ValueType == forma.ValueTypeInteger {
 				return fmt.Sprintf("TRY_CAST(%s AS INTEGER)", base)
 			}
@@ -127,6 +130,48 @@ func mainColISO8601Expr(colName string) string {
 	return fmt.Sprintf("epoch_ms(TRY_CAST(m.%s AS TIMESTAMP))", colName)
 }
 
+// integerWidths and columnWidths rank the integer valueTypes and the numeric
+// main column types on one scale: each holds every value of the ranks below
+// it, and a double column also holds fractions, NaN and the infinities. A
+// column type missing here reads raw.
+// TestHotLegProjections_WideIntegerColumnsReadAtDeclaredType walks every
+// numeric binding registration admits, so an unranked one fails there.
+var (
+	integerWidths = map[forma.ValueType]struct {
+		rank     int
+		duckType string
+	}{
+		forma.ValueTypeSmallInt: {1, "SMALLINT"},
+		forma.ValueTypeInteger:  {2, "INTEGER"},
+		forma.ValueTypeBigInt:   {3, "BIGINT"},
+	}
+	columnWidths = map[forma.MainColumnType]int{
+		forma.MainColumnTypeSmallint: 1,
+		forma.MainColumnTypeInteger:  2,
+		forma.MainColumnTypeBigint:   3,
+		forma.MainColumnTypeDouble:   4,
+	}
+)
+
+// mainColIntegerExpr returns the hot-leg read of a column-bound
+// smallint/integer/bigint whose column holds values its declared type cannot:
+// an integer column wider than the type, or a double column, which keeps the
+// float64 image (#590). It reads the column at the declared type through the
+// CDC export's spelling (cdc.castMainValue), so an image past the type's
+// range, NaN or ±Infinity reads NULL and a fraction rounds half to even, on
+// the unflushed row exactly as on its parquet copy. The raw image used to
+// reach the outer select's strict cast instead, which failed every query
+// that reached the row (#627). The write funnel refuses such images
+// (checkStorageFit judges the declared type first), so they are history
+// written before it or by direct SQL.
+func mainColIntegerExpr(meta forma.AttributeMetadata) (string, bool) {
+	declared, ok := integerWidths[meta.ValueType]
+	if !ok || columnWidths[meta.ColumnBinding.ColumnType()] <= declared.rank {
+		return "", false
+	}
+	return fmt.Sprintf("TRY_CAST(m.%s AS %s)", meta.ColumnBinding.ColumnName, declared.duckType), true
+}
+
 // boundMainExpr returns the hot-leg read of a column-bound attribute whose
 // stored image is not the unified column type the parquet legs carry, or
 // false when the raw column already is that image.
@@ -139,6 +184,8 @@ func boundMainExpr(meta forma.AttributeMetadata) (string, bool) {
 		if meta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601 {
 			return mainColISO8601Expr(colName), true
 		}
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
+		return mainColIntegerExpr(meta)
 	}
 	return "", false
 }

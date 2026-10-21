@@ -81,6 +81,7 @@ func TestIdempotency(t *testing.T) {
 			e.requireCommitted(t, r)
 			records = append(records, r)
 		}
+		before := e.stamps(t, IdempotencySchema, records[0].ID, records[1].ID)
 		var deleted int
 		require.NoError(t, e.inTx(func(uow UnitOfWork) error {
 			var err error
@@ -92,6 +93,8 @@ func TestIdempotency(t *testing.T) {
 		require.Nil(t, e.stored(t, IdempotencySchema, records[1].ID, "status"))
 		require.NotNil(t, e.stored(t, IdempotencySchema, records[2].ID, "status"), "the limit leaves the third eligible record")
 		require.NotNil(t, e.stored(t, IdempotencySchema, records[3].ID, "status"), "a record not yet eligible stays")
+		e.requireDeleted(t, IdempotencySchema, before, records[0].ID, records[1].ID)
+		e.requireOneHotEntryPerRow(t, IdempotencySchema)
 	})
 }
 

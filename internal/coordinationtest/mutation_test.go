@@ -110,6 +110,7 @@ func TestTaskMutations(t *testing.T) {
 			task(inst, "r3", TaskExpired, "a", PurposeTimer)}
 		live := task(inst, "p1", TaskPending, "a", PurposeWorker)
 		e.seedTasks(t, append(slices.Clone(resolved), live)...)
+		seeded := e.stamps(t, TaskSchema, taskIDs(resolved)...)
 		eligible := time.Now().Add(-time.Hour)
 		require.NoError(t, e.inTx(func(uow UnitOfWork) error {
 			return uow.Tasks().MarkResolvedForInstanceEligible(e.ctx, inst.ID, eligible)
@@ -118,6 +119,8 @@ func TestTaskMutations(t *testing.T) {
 		for _, tk := range resolved {
 			require.Equal(t, eligible.Truncate(time.Millisecond).UnixMilli(), e.stored(t, TaskSchema, tk.ID, "eligible_cleanup_at")["eligible_cleanup_at"])
 		}
+		e.requireWritten(t, TaskSchema, seeded, taskIDs(resolved)...)
+		marked := e.stamps(t, TaskSchema, taskIDs(resolved)...)
 		var deleted int
 		require.NoError(t, e.inTx(func(uow UnitOfWork) error {
 			var err error
@@ -127,6 +130,15 @@ func TestTaskMutations(t *testing.T) {
 		require.Equal(t, 2, deleted)
 		require.Equal(t, 2, e.liveRows(t, TaskSchema), "the limit leaves one eligible task and the pending one")
 		require.NotNil(t, e.stored(t, TaskSchema, live.ID, "status"))
+		var gone []uuid.UUID
+		for _, tk := range resolved {
+			if e.stored(t, TaskSchema, tk.ID, "status") == nil {
+				gone = append(gone, tk.ID)
+			}
+		}
+		require.Len(t, gone, 2)
+		e.requireDeleted(t, TaskSchema, marked, gone...)
+		e.requireOneHotEntryPerRow(t, TaskSchema)
 	})
 }
 
@@ -136,6 +148,8 @@ func TestLinksAndHistoryMutations(t *testing.T) {
 		parent, child := e.seedInstance(t, 1), e.seedInstance(t, 1)
 		link := &Link{ParentTaskHash: "parent-1", ParentInstanceID: parent.ID, ChildInstanceID: child.ID, Status: "running"}
 		require.NoError(t, e.inTx(func(uow UnitOfWork) error { return uow.Links().Insert(e.ctx, link) }))
+		e.requireWritten(t, LinkSchema, nil, link.ID)
+		inserted := e.stamps(t, LinkSchema, link.ID)
 		require.NoError(t, e.inTx(func(uow UnitOfWork) error {
 			if err := uow.Links().UpdateStatus(e.ctx, "parent-1", "completed"); err != nil {
 				return err
@@ -150,6 +164,7 @@ func TestLinksAndHistoryMutations(t *testing.T) {
 		}))
 		require.Equal(t, Link{ID: link.ID, ParentTaskHash: "parent-1", ParentInstanceID: parent.ID, ChildInstanceID: child.ID, Status: "completed"}, *got)
 		require.Equal(t, 1, e.liveRows(t, LinkSchema))
+		e.requireWritten(t, LinkSchema, inserted, link.ID)
 	})
 
 	t.Run("history: MarkArchived stamps one instance's events and counts them", func(t *testing.T) {
@@ -157,6 +172,7 @@ func TestLinksAndHistoryMutations(t *testing.T) {
 		a, b := e.seedInstance(t, 1), e.seedInstance(t, 1)
 		events := []HistoryEvent{{InstanceID: a.ID, Type: "t1"}, {InstanceID: a.ID, Type: "t2"}, {InstanceID: b.ID, Type: "t1"}}
 		require.NoError(t, e.inTx(func(uow UnitOfWork) error { return uow.History().Insert(e.ctx, events) }))
+		inserted := e.stamps(t, HistorySchema, events[0].ID, events[1].ID, events[2].ID)
 		at := time.Now().Add(-time.Minute)
 		var n int
 		require.NoError(t, e.inTx(func(uow UnitOfWork) error {
@@ -169,6 +185,8 @@ func TestLinksAndHistoryMutations(t *testing.T) {
 			require.Equal(t, at.Truncate(time.Millisecond).UnixMilli(), e.stored(t, HistorySchema, evt.ID, "archived_at")["archived_at"])
 		}
 		require.Nil(t, e.stored(t, HistorySchema, events[2].ID, "archived_at")["archived_at"], "the other instance's event is not archived")
+		e.requireWritten(t, HistorySchema, inserted, events[0].ID, events[1].ID)
+		require.Equal(t, inserted[events[2].ID], e.stamps(t, HistorySchema, events[2].ID)[events[2].ID], "the other instance's event is not written")
 	})
 
 	t.Run("instances: Get and ListByFilter read inside the transaction", func(t *testing.T) {

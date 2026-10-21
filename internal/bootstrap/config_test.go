@@ -133,7 +133,10 @@ func TestTableNamesFromEnv(t *testing.T) {
 func TestEntityConfigFromEnvValidateUpdatesStrict(t *testing.T) {
 	t.Setenv("VALIDATE_UPDATES_STRICT", "true")
 
-	cfg := EntityConfigFromEnv(forma.EntityConfig{})
+	cfg, err := EntityConfigFromEnv(forma.EntityConfig{})
+	if err != nil {
+		t.Fatalf("VALIDATE_UPDATES_STRICT=true must be accepted: %v", err)
+	}
 	if !cfg.ValidateUpdatesStrict {
 		t.Fatalf("expected VALIDATE_UPDATES_STRICT=true to enable strict updates")
 	}
@@ -149,8 +152,10 @@ func TestEntityConfigFromEnvPreservesUnrelatedFields(t *testing.T) {
 		MaxEntitySize:   1024,
 	}
 
-	cfg := EntityConfigFromEnv(defaults)
-
+	cfg, err := EntityConfigFromEnv(defaults)
+	if err != nil {
+		t.Fatalf("an unset VALIDATE_UPDATES_STRICT must not fail: %v", err)
+	}
 	if cfg.ValidateUpdatesStrict {
 		t.Fatalf("expected strict updates to default to false when the env var is unset")
 	}

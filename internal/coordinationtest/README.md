@@ -120,12 +120,14 @@ FORMA_COORDINATION_DSN='postgres://…' FORMA_COORDINATION_BACKEND=dsql \
   GOTOOLCHAIN=go1.26.0+auto go test ./internal/coordinationtest/
 ```
 
-Any backend name other than `postgres` skips the mechanism assertions. A DSN
-without a backend name fails the run. The backends `dsql` and `dsql-emulated`
-run the manager on the `aurora-dsql` engine ([Aurora
-DSQL](../../docs/aurora-dsql.md)). `dsql-emulated` takes no DSN: it runs on
-the integration PostgreSQL with every session at REPEATABLE READ, DSQL's
-fixed level.
+Any backend name other than `postgres` skips the mechanism assertions; naming
+it `postgres` runs them against that database too. A DSN without a backend name
+fails the run. The suite reaches the database the DSN names and no other. It
+does not probe it first, so one that does not answer fails the run instead of
+skipping it. The backends `dsql` and `dsql-emulated` run the manager on the
+`aurora-dsql` engine ([Aurora DSQL](../../docs/aurora-dsql.md)).
+`dsql-emulated` takes no DSN: it runs on the integration PostgreSQL with every
+session at REPEATABLE READ, DSQL's fixed level.
 
 ```bash
 FORMA_COORDINATION_BACKEND=dsql-emulated \
@@ -149,6 +151,7 @@ conflict is a wait and then `40001` at the guard write, where DSQL answers
 `TestDSQLEngineSendsOnlyStatementsDSQLRuns` checks that one transaction
 through every locking path sends no advisory lock, row-locking clause or
 isolation level. The `dsql` backend has not run: the fixture needs
-`CREATE INDEX ASYNC` for the declared indexes (#690), and another way to
-inject the storage failure of scenario 1, which here is a PL/pgSQL trigger on
-`entity_main`.
+`CREATE INDEX ASYNC` for the declared indexes (#690), another way to inject
+the storage failure of scenario 1, which here is a PL/pgSQL trigger on
+`entity_main`, and another injection point for `TestCommitOutcomeUnknown`. Its
+fault proxy relays only plaintext connections, and DSQL requires TLS.

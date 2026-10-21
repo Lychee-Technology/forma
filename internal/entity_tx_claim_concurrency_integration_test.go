@@ -228,12 +228,7 @@ func TestClaimSkipsHeldRowsWithoutWaiting_PostgresOnly(t *testing.T) {
 func TestClaimSkipsARowLockedOutsideForma_PostgresOnly(t *testing.T) {
 	env := newOutboxPG(t)
 	ids := env.createMessages(t, "t", 5)
-	raw, err := env.pool.Begin(env.ctx)
-	require.NoError(t, err)
-	defer func() { _ = raw.Rollback(env.ctx) }()
-	_, err = raw.Exec(env.ctx, fmt.Sprintf("SELECT 1 FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2 FOR UPDATE",
-		sanitizeIdentifier(env.tables.EntityMain)), outboxSchemaID, ids[0])
-	require.NoError(t, err)
+	raw := env.lockRowOutsideForma(t, ids[0])
 
 	result, waited := env.claimWatched(t, claimOf("t", "B", 10))
 	assert.Equal(t, ids[1:], rowIDsOf(result), "r1 is skipped, r2..r5 are claimed")
@@ -430,12 +425,7 @@ func TestClaimTryLockSharesTheRowVersionLockKey_PostgresOnly(t *testing.T) {
 	})
 	defer release()
 	await(t, held, holder, "the claim")
-	probe, err := env.pool.Begin(env.ctx)
-	require.NoError(t, err)
-	defer func() { _ = probe.Rollback(env.ctx) }()
-	var free bool
-	require.NoError(t, probe.QueryRow(env.ctx, "SELECT pg_try_advisory_xact_lock($1)", rowVersionLockKey(outboxSchemaID, ids[0])).Scan(&free))
-	assert.False(t, free, "the claimed row's version lock is held")
+	assert.True(t, env.versionLockHeld(t, ids[0]), "the claimed row's version lock is held")
 	release()
 	require.NoError(t, <-holder)
 }

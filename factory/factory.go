@@ -243,15 +243,17 @@ func newRepositoryAndEngine(
 	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache,
 		append([]internal.RepoOption{internal.WithPlanCache(planCache)}, repoOpts...)...)
 	// zap.L() is the same global the rest of this package logs through. It
-	// carries two log-only signals. The federated validator's #256
+	// carries three log-only signals. The federated validator's #256
 	// stamp/footer cross-check, whose only surface is a log line: the read it
 	// observes succeeds, so no caller error and no execution plan would ever
-	// mention it. And the #351 guard-violation attribution: under
+	// mention it. The #351 guard-violation attribution: under
 	// AllowPartialDegradedMode the error naming the offending objects is
 	// absorbed into a Postgres-only answer and toExecutionPlan drops plan
-	// Notes, so the log line is the only surface that survives. It also
-	// carries the circuit breaker's transition lines (#634), which pair with
-	// the duckdb_circuit_breaker_transition_total metric below.
+	// Notes, so the log line is the only surface that survives. And the #638
+	// degraded-fallback line, the only record of the failure such an answer
+	// absorbed. It also carries the circuit breaker's transition lines
+	// (#634), which pair with the duckdb_circuit_breaker_transition_total
+	// metric below.
 	// The embedder's telemetry emitter reaches the engine here and the
 	// manager through its config (#423); it is per instance, so nothing is
 	// registered globally.

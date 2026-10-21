@@ -280,7 +280,11 @@ The target is exactly one of:
 
 - `Target.RowID`: the create's row ID, which must then be set;
 - `Target.Key`: a unique key the schema declares. `Create.Data` must set every
-  attribute of that key, since a create without one is not subject to it.
+  attribute of that key, since a create without one is not subject to it. An
+  attribute bound to `ltbase_created_at` is the exception: Forma stamps it,
+  whatever `Create.Data` says. The upsert reads that stamp once, before its
+  lookup, and stores the row under it, so the target is the value `Create`
+  would reserve, and only a row created with that same stamp holds it.
 
 What it answers:
 
