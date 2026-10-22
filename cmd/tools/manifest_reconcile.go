@@ -356,9 +356,11 @@ func openReconcileStatsEngine(ctx context.Context, opts *reconcileOptions, logge
 	return exporter, nil
 }
 
-// buildToolSQLDB opens a database/sql handle (pgx driver) for tools that
-// need session-scoped Postgres features — the reconcile advisory lock pins
-// a single connection, which pgxpool does not expose. Values are quoted so
+// buildToolSQLDB opens a database/sql handle (pgx driver) for
+// manifest-reconcile. On the PostgreSQL engine its schema lock is a session
+// advisory lock that pins one connection, which pgxpool does not expose; on
+// Aurora DSQL it is a lease row and needs no session (cdc.NewSchemaLocker).
+// Values are quoted so passwords with spaces or quotes survive the DSN.
 func buildToolSQLDB(pg postgresFlags) (*sql.DB, error) {
 	connStr := cdc.BuildPGDSN(cdc.PGDSNParams{
 		Host:     pg.host,
