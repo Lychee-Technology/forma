@@ -26,7 +26,10 @@ import (
 const TableSuffix = "_schema_lease"
 
 // Table names the schema-lease table of entityMain. A schema-qualified name
-// keeps its qualifier, and a quoted one its quotes.
+// keeps its qualifier, and a quoted one its quotes. The name is bounded to
+// PostgreSQL's identifier limit like the row-guard table's: unbounded, the
+// lease table of a 63-byte entity_main name would truncate to entity_main's
+// own name.
 func Table(entityMain string) string { return sqlutil.SuffixedIdentifier(entityMain, TableSuffix) }
 
 // tableDDL is the schema-lease table: at most one lease row per schema.
