@@ -312,10 +312,10 @@ Each affected row counts as one operation against `WithTxMaxOperations` (a
 call that affects no rows still counts as one). Its physical rows count
 against `WithTxMaxPhysicalRows`. The physical-row limit usually binds first.
 An updated entity modifies its main row, its old and new EAV rows and its
-`change_log` row, and on the `aurora-dsql` engine its guard row, so the
-default 3,000 admits far fewer than 1,000 updated entities of any schema with
-EAV attributes. A breach of either limit poisons
-the Tx.
+`change_log` row, and on the `aurora-dsql` engine its guard row, once
+although step 3 and the row's update both lock it. So the default 3,000
+admits far fewer than 1,000 updated entities of any schema with EAV
+attributes. A breach of either limit poisons the Tx.
 
 On the `aurora-dsql` engine (#633, [Aurora DSQL](aurora-dsql.md)) the lock in
 step 3 writes each candidate's guard row, the candidate select and the
@@ -407,7 +407,10 @@ and gives the same rollback guarantee (decided in the review of #673).
 
 The 3,000 default matches Aurora DSQL's documented per-transaction limit. On
 the `aurora-dsql` engine the meter also counts each guard row a statement
-writes, so a Tx the meter admits stays within DSQL's limit.
+writes, so a Tx the meter admits stays within DSQL's limit. A Tx writes a
+row's guard once, however many of its operations lock the row: a claim, a
+predicate mutation, or an assertion followed by an update of the same row
+counts one guard row for it, not two.
 
 The timeout is a context deadline over the whole call. When it passes, the
 running statement is cancelled and `InTx` rolls back with

@@ -89,6 +89,48 @@ func TestGuardRowLockingWritesDistinctKeysInOrderAndChunks(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// In a Tx, a guard row an earlier operation wrote is not written again, so
+// the meter counts it once; the same key of another entity_main is another
+// guard row. TestDSQLEngineTxChargesEachRowGuardOnce runs this end to end.
+func TestGuardRowLockingWritesEachGuardOnceInATx(t *testing.T) {
+	ctx := context.Background()
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+	mock.MatchExpectationsInOrder(true)
+
+	sorted := sortedRowKeys([]model.PersistentRecordKey{{SchemaID: 1, RowID: uuid.New()}, {SchemaID: 1, RowID: uuid.New()}, {SchemaID: 1, RowID: uuid.New()}})
+	a, b, c := sorted[0], sorted[1], sorted[2]
+	expectGuards := func(table string, keys ...model.PersistentRecordKey) {
+		args := make([]any, 0, 2*len(keys))
+		for _, k := range keys {
+			args = append(args, k.SchemaID, k.RowID)
+		}
+		mock.ExpectExec("^" + regexp.QuoteMeta(guardUpsertSQL(table, len(keys))) + "$").
+			WithArgs(args...).WillReturnResult(pgxmock.NewResult("INSERT", int64(len(keys))))
+	}
+	mock.ExpectBegin()
+	expectGuards(`"entity_main_row_guard"`, a, b)
+	expectGuards(`"entity_main_row_guard"`, c)
+	expectGuards(`"other_main_row_guard"`, a)
+
+	pgTx, err := mock.Begin(ctx)
+	require.NoError(t, err)
+	meter := &txMeter{maxRows: 10}
+	tx := &meteredTx{Tx: pgTx, meter: meter}
+	main, other := model.StorageTables{EntityMain: "entity_main"}, model.StorageTables{EntityMain: "other_main"}
+	locks := guardRowLocking{}
+	require.NoError(t, locks.lockRows(ctx, tx, main, []model.PersistentRecordKey{b, a}))
+	require.NoError(t, locks.lockRows(ctx, tx, main, []model.PersistentRecordKey{c, b}), "only c is new")
+	require.NoError(t, locks.lockRow(ctx, tx, main, a.SchemaID, a.RowID), "a is written: no statement")
+	_, err = locks.tryLockRows(ctx, tx, main, 1, []uuid.UUID{a.RowID, c.RowID})
+	require.NoError(t, err, "a and c are written: no statement")
+	require.NoError(t, locks.lockRow(ctx, tx, other, a.SchemaID, a.RowID))
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.EqualValues(t, 4, meter.rows, "each guard row counted once")
+	assert.Equal(t, 3, meter.statements)
+}
+
 // A write on the aurora-dsql engine sends a plain BEGIN and a guard upsert
 // where the PostgreSQL engine sends READ COMMITTED and an advisory lock.
 func TestDSQLEngineDeleteWritesTheGuardRow(t *testing.T) {

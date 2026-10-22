@@ -308,5 +308,8 @@ the group-order obligation above applies, as on PostgreSQL.
 DSQL's own limit of 3,000 rows per transaction is the default row limit, and
 `WithTxMaxPhysicalRows` cannot raise it, so on DSQL the arithmetic under
 [limits](#transactions-errors-and-limits) caps `Limit`. On this engine each
-claimed row also writes its guard row, one more physical row. The coordination
-suite's claim scenarios run on this engine in CI (`dsql-emulated`).
+claimed row also writes its guard row, one more physical row. The take and the
+row's `Update` both lock the row, but a Tx writes a row's guard only the first
+time, so the guard counts once. A row storing three EAV values before and after
+counts 9, and a claim of such rows fits 333. The coordination suite's claim
+scenarios run on this engine in CI (`dsql-emulated`).

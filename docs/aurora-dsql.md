@@ -120,9 +120,10 @@ The invariants hold on both engines:
 
 DSQL limits a transaction to 3,000 modified rows, 10 MiB and five minutes,
 and a connection to one hour. The guard row counts toward the rows: a `Tx`
-counts it against `WithTxMaxPhysicalRows`, whose 3,000 default matches DSQL's
-limit. Atomic batches have no such meter, and the default batch size of 1,000
-already reaches the limit on DSQL (#692). Keep the pool's
+writes each row's guard once, however many of its operations lock the row,
+and counts it against `WithTxMaxPhysicalRows`, whose 3,000 default matches
+DSQL's limit. Atomic batches have no such meter, and the default batch size
+of 1,000 already reaches the limit on DSQL (#692). Keep the pool's
 `ConnMaxLifetime` under an hour. The Lambda's default is five minutes.
 
 ## Verification

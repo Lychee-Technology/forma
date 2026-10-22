@@ -151,12 +151,22 @@ func (guardRowLocking) recheckClause(bool) string { return "" }
 // sortedRowKeys order and at most guardRowsPerStatement a statement. One
 // upsert may not name a row twice, so duplicates are dropped; a second write
 // of a row the transaction already wrote changes nothing about the conflict.
+// For the same reason a Tx skips the guard rows its earlier operations wrote
+// (meteredTx.guardsWritten), so it writes, and its meter counts, each once.
 func writeGuardRows(ctx context.Context, tx pgx.Tx, tables model.StorageTables, keys []model.PersistentRecordKey) error {
 	if tables.EntityMain == "" {
 		return fmt.Errorf("entity main table name is required to name its row guards")
 	}
 	sorted := slices.Compact(sortedRowKeys(keys))
 	table := sanitizeIdentifier(rowguard.Table(tables.EntityMain))
+	var written map[model.PersistentRecordKey]struct{}
+	if session, ok := tx.(*meteredTx); ok {
+		written = session.guardsWritten(table)
+		sorted = slices.DeleteFunc(sorted, func(key model.PersistentRecordKey) bool {
+			_, ok := written[key]
+			return ok
+		})
+	}
 	for chunk := range slices.Chunk(sorted, guardRowsPerStatement) {
 		args := make([]any, 0, 2*len(chunk))
 		for _, key := range chunk {
@@ -164,6 +174,11 @@ func writeGuardRows(ctx context.Context, tx pgx.Tx, tables model.StorageTables, 
 		}
 		if _, err := tx.Exec(ctx, guardUpsertSQL(table, len(chunk)), args...); err != nil {
 			return fmt.Errorf("upsert %d row guards: %w", len(chunk), err)
+		}
+		if written != nil {
+			for _, key := range chunk {
+				written[key] = struct{}{}
+			}
 		}
 	}
 	return nil
