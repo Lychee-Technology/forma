@@ -33,6 +33,10 @@ type DatabaseConfig struct {
 	ConnMaxIdleTime time.Duration `json:"connMaxIdleTime"`
 	Timeout         time.Duration `json:"timeout"`
 	TableNames      TableNames    `json:"tableNames"`
+	// Engine is the database the pool connects to (#633). Empty means
+	// EnginePostgreSQL. It decides how writes exclude each other, so it must
+	// name the engine the pool actually reaches; see DatabaseEngine.
+	Engine DatabaseEngine `json:"engine"`
 }
 
 // QueryConfig contains query execution settings

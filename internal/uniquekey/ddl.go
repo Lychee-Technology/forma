@@ -5,90 +5,38 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // The two key tables and the key table's row index take their names from the
 // entity_main table they guard, so every deployment and every test that names
-// its entity_main table names them too.
+// its entity_main table names them too. sqlutil bounds each derived name to
+// PostgreSQL's identifier limit, so the key and state tables of a long
+// entity_main name stay two tables.
 const (
 	KeyTableSuffix   = "_unique_key"
 	StateTableSuffix = "_unique_key_state"
 	RowIndexSuffix   = "_unique_key_row_idx"
 )
 
-// maxIdentifierLen is PostgreSQL's NAMEDATALEN-1. The server truncates a
-// longer identifier, quoted or not, so two derived names that differ only
-// past it would name one relation.
-const maxIdentifierLen = 63
-
-// digestLen is the number of hex characters of the entity_main name's
-// SHA-256 a shortened name carries: 64 bits, so long entity_main names that
-// share their start do not collide in practice.
-const digestLen = 16
-
 // KeyTable names the key table of entityMain: one entry per (live row,
 // built key) whose attributes are all present. A schema-qualified name keeps
 // its qualifier, and a quoted one its quotes.
-func KeyTable(entityMain string) string { return derivedTable(entityMain, KeyTableSuffix) }
+func KeyTable(entityMain string) string {
+	return sqlutil.SuffixedIdentifier(entityMain, KeyTableSuffix)
+}
 
 // StateTable names the built-key registry of entityMain.
-func StateTable(entityMain string) string { return derivedTable(entityMain, StateTableSuffix) }
+func StateTable(entityMain string) string {
+	return sqlutil.SuffixedIdentifier(entityMain, StateTableSuffix)
+}
 
 // RowIndex names the key table's row index. An index lives in its table's
 // schema, so the name carries no qualifier and no quotes: the caller quotes
 // it if it needs quoting.
-func RowIndex(entityMain string) string {
-	_, name, _ := splitTableName(entityMain)
-	return boundedName(name, RowIndexSuffix)
-}
-
-// derivedTable names a table after entityMain's last part, keeping its
-// qualifier, and its quotes when it is quoted: "entity_main" becomes
-// "entity_main_unique_key".
-func derivedTable(entityMain, suffix string) string {
-	qualifier, name, quoted := splitTableName(entityMain)
-	name = boundedName(name, suffix)
-	if quoted {
-		name = `"` + name + `"`
-	}
-	return qualifier + name
-}
-
-// splitTableName splits a table name into its qualifier, final dot included,
-// and its last part without quotes.
-func splitTableName(table string) (qualifier, name string, quoted bool) {
-	if i := strings.LastIndex(table, "."); i >= 0 {
-		qualifier, table = table[:i+1], table[i+1:]
-	}
-	if len(table) >= 2 && strings.HasPrefix(table, `"`) && strings.HasSuffix(table, `"`) {
-		return qualifier, table[1 : len(table)-1], true
-	}
-	return qualifier, table, false
-}
-
-// boundedName joins name and suffix when the result fits an identifier.
-// Otherwise the server would truncate it, and the key table and state table
-// of a long entity_main name, which differ only in their suffixes, would be
-// one table. A longer join keeps the start of name, then "_" and a digest of
-// all of name, then the whole suffix: the suffix keeps one entity_main's
-// derived names apart, the digest keeps long entity_main names apart. The
-// digest covers name alone, so every spelling of entityMain, qualified or
-// quoted or neither, derives the same names.
-func boundedName(name, suffix string) string {
-	if len(name)+len(suffix) <= maxIdentifierLen {
-		return name + suffix
-	}
-	sum := sha256.Sum256([]byte(name))
-	digest := "_" + hex.EncodeToString(sum[:])[:digestLen]
-	keep := maxIdentifierLen - len(digest) - len(suffix)
-	for keep > 0 && !utf8.RuneStart(name[keep]) {
-		keep--
-	}
-	return name[:keep] + digest + suffix
-}
+func RowIndex(entityMain string) string { return sqlutil.SuffixedName(entityMain, RowIndexSuffix) }
 
 // keyTableDDL is the key table. Uniqueness is the primary key on an ordinary
 // table, a guard-row design that needs no partial index (#651), so it holds

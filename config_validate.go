@@ -9,6 +9,10 @@ func (c *Config) Validate() error {
 		return &ConfigError{Field: "database.maxConnections", Message: "must be greater than 0"}
 	}
 
+	if err := c.Database.Engine.Validate(); err != nil {
+		return err
+	}
+
 	if c.Query.DefaultPageSize <= 0 {
 		return &ConfigError{Field: "query.defaultPageSize", Message: "must be greater than 0"}
 	}

@@ -177,7 +177,8 @@ func EnvBool(key string, defaultValue bool) (bool, error) {
 
 // DatabaseConfigFromEnv overlays the DB_* environment on defaults. A set but
 // unparsable integer variable fails it with an *EnvError per bad variable
-// (#600); see EnvInt.
+// (#600); see EnvInt. DB_ENGINE names the database engine (#633) and is left
+// to Config.Validate, which refuses a name it does not know.
 func DatabaseConfigFromEnv(defaults DBDefaults) (forma.DatabaseConfig, error) {
 	var env envOverlay
 	cfg := forma.DatabaseConfig{
@@ -188,6 +189,7 @@ func DatabaseConfigFromEnv(defaults DBDefaults) (forma.DatabaseConfig, error) {
 		Password:        Env("DB_PASSWORD", defaults.Password),
 		SSLMode:         Env("DB_SSL_MODE", defaults.SSLMode),
 		Schema:          Env("DB_SCHEMA", defaults.Schema),
+		Engine:          forma.DatabaseEngine(Env("DB_ENGINE", "")),
 		MaxConnections:  env.integer("DB_MAX_CONNECTIONS", defaults.MaxConnections),
 		MaxIdleConns:    env.integer("DB_MAX_IDLE_CONNS", defaults.MaxIdleConns),
 		ConnMaxLifetime: env.seconds("DB_CONN_MAX_LIFETIME_SECONDS", time.Duration(defaults.ConnMaxLifetimeSeconds)*time.Second),

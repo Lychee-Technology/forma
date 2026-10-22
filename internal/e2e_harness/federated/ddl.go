@@ -1,14 +1,18 @@
 package federated
 
-import "github.com/lychee-technology/forma/internal/uniquekey"
+import (
+	"github.com/lychee-technology/forma/internal/rowguard"
+	"github.com/lychee-technology/forma/internal/uniquekey"
+)
 
 // federatedDDL is the table DDL the federated harness creates. It is a
 // hand-maintained copy of the init-db DDL (#440); ddl_test.go pins its
 // entity_main statement to the runtime column set so it cannot drift from
 // what the writer, the read projection and the CDC column order are built
 // for (#585). The seed row for schema_id=1 is what the federated fixtures
-// expect. The unique-key tables (#651) come from uniquekey, the source
-// init-db uses, rather than from another copy.
+// expect. The unique-key tables (#651) and the row-guard table (#633) come
+// from uniquekey and rowguard, the sources init-db uses, rather than from
+// another copy.
 var federatedDDL = append([]string{
 	`CREATE TABLE IF NOT EXISTS schema_registry (
 		schema_id SMALLINT PRIMARY KEY,
@@ -68,4 +72,4 @@ var federatedDDL = append([]string{
 		PRIMARY KEY (schema_id, row_id, flushed_at)
 	)`,
 	`INSERT INTO schema_registry (schema_id, schema_name) VALUES (1, 'test_entity') ON CONFLICT DO NOTHING`,
-}, uniquekey.StatementsFor("entity_main")...)
+}, append(uniquekey.StatementsFor("entity_main"), rowguard.StatementFor("entity_main"))...)

@@ -98,17 +98,9 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config, pool *pgxpool.Pool, deps entityManagerDependencies) (forma.EntityManager, error) {
 	schemaName := normalizeSchemaName(config.Database.Schema)
 	effectiveConfig := configWithQualifiedTables(config, schemaName)
-	// Configuration errors are rejected before any I/O: an incoherent manifest
-	// read surface must not be discovered halfway through startup, after the
-	// database has already been queried.
-	if err := effectiveConfig.DuckDB.ValidateManifestRead(); err != nil {
-		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
-	}
-	// #456: reject the caller-path opt-in without a bucket before any I/O, so an
-	// operator misconfiguration fails fast instead of surfacing as a 4xx on
-	// every hint-bearing request.
-	if err := effectiveConfig.DuckDB.ValidateCallerParquetPaths(); err != nil {
-		return nil, fmt.Errorf("invalid duckdb caller parquet paths configuration: %w", err)
+	engine, err := validateBeforeIO(effectiveConfig)
+	if err != nil {
+		return nil, fmt.Errorf("configuration rejected before connecting: %w", err)
 	}
 	tables, err := deps.collectTables(ctx, pool, schemaName)
 	if err != nil {
@@ -117,6 +109,9 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 
 	if err := requireCoreTables(effectiveConfig, tables); err != nil {
 		return nil, fmt.Errorf("core table check failed: %w", err)
+	}
+	if err := requireRowGuards(effectiveConfig, tables); err != nil {
+		return nil, fmt.Errorf("row guard table check failed: %w", err)
 	}
 
 	// Load metadata from database at startup
@@ -160,7 +155,7 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// The repository enforces the unique keys the check above found built,
 	// for as long as it lives (#651).
 	repository, federatedEngine := newRepositoryAndEngine(
-		pool, metadataCache, effectiveConfig, duckClient, parquetSource, internal.WithUniqueKeyCatalog(guards.uniqueKeys))
+		pool, metadataCache, effectiveConfig, duckClient, parquetSource, engine, internal.WithUniqueKeyCatalog(guards.uniqueKeys))
 	// The DuckDB client has no owner other than the manager being built:
 	// register it so EntityManager.Close releases it (#302). Guarded on nil
 	// because a typed-nil *DuckDBClient boxed into io.Closer would defeat
@@ -205,6 +200,28 @@ func discardDuckClient(duckClient *federated.DuckDBClient) {
 		zap.S().Warnw("failed to close the duckdb client after entity manager construction failed",
 			"error", err)
 	}
+}
+
+// validateBeforeIO rejects configuration errors before any I/O, and answers
+// the repository option of the configured database engine:
+//   - an incoherent manifest read surface must not be discovered halfway
+//     through startup, after the database has already been queried;
+//   - the caller-path opt-in without a bucket fails fast instead of surfacing
+//     as a 4xx on every hint-bearing request (#456);
+//   - the engine decides how writes exclude each other, so an unknown name
+//     fails here rather than falling back to PostgreSQL's locks (#633).
+func validateBeforeIO(cfg *forma.Config) (internal.RepoOption, error) {
+	if err := cfg.DuckDB.ValidateManifestRead(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
+	}
+	if err := cfg.DuckDB.ValidateCallerParquetPaths(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb caller parquet paths configuration: %w", err)
+	}
+	engine, err := internal.WithDatabaseEngine(cfg.Database.Engine)
+	if err != nil {
+		return nil, fmt.Errorf("invalid database configuration: %w", err)
+	}
+	return engine, nil
 }
 
 // requireCoreTables fails closed when any of the three tables the manager

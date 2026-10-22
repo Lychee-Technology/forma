@@ -153,5 +153,5 @@ func (b *txBoundRepository) LockPersistentRecord(ctx context.Context, tables mod
 	if err != nil {
 		return fmt.Errorf("prepare lock of %s: %w", rowID, err)
 	}
-	return classifyStatementError(lockRowInTx(ctx, b.tx, tables, schemaID, rowID, rendered))
+	return classifyStatementError(lockRowInTx(ctx, b.tx, b.repo.locks, tables, schemaID, rowID, rendered))
 }

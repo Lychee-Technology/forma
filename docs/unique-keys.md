@@ -164,10 +164,12 @@ without waiting, so a release that started after the insert and has not
 committed yet still counts: the creator returns `ErrUniqueConflict`, as if it
 had run just before the release, and can take the value when run again.
 
-Writes that take values pin `READ COMMITTED`, whatever the session's default
-isolation level. Under a snapshot level a loser would see `40001` for an entry
+On PostgreSQL, writes that take values pin `READ COMMITTED`, whatever the
+session's default isolation level. Under a snapshot level a loser would see `40001` for an entry
 committed after its snapshot instead of `ErrUniqueConflict`. A delete without
-preconditions only releases values and keeps the session's level (#645).
+preconditions only releases values and keeps the session's level (#645). On
+the `aurora-dsql` engine every write runs at DSQL's fixed REPEATABLE READ, and
+that `40001` is part of the contract ([Aurora DSQL](#aurora-dsql)).
 
 What each surface does:
 
@@ -492,14 +494,16 @@ place; any other manager is refused when it is built.
 
 ## Aurora DSQL
 
-Status: **DSQL: specified, not verified (#633)**.
+This section describes the `aurora-dsql` engine (#633,
+[Aurora DSQL](aurora-dsql.md)). CI runs it on PostgreSQL emulating DSQL. It
+has not yet run on a cluster.
 
 The key table is a guard-row design. Uniqueness is a primary-key collision on
 an ordinary table, which DSQL enforces at commit through optimistic
 concurrency, so it needs no partial index. The key table, the canonical
 encoding, the insert-then-undo reservation and the API are backend-neutral.
-The row locks every write takes before it reserves keys are PostgreSQL
-advisory locks, the backend-specific locking seam (#648, #633).
+The row lock every write takes before it reserves keys is engine-specific:
+an advisory lock on PostgreSQL, and on DSQL a write of the row's guard row.
 
 On DSQL two concurrent creators of one value both insert the same primary key,
 and one commit fails with `40001`. The contract is therefore: **exactly one

@@ -23,6 +23,7 @@ type postgresFlags struct {
 	database string
 	sslMode  string
 	useIAM   bool
+	engine   string
 }
 
 type postgresFlagOptions struct {
@@ -48,6 +49,11 @@ type postgresFlagOptions struct {
 	useIAMFlag      string
 	useIAMDefault   bool
 	useIAMUsage     string
+	// engineFlag, when set, registers the database engine flag (#633) of a
+	// tool that writes entity rows or takes the CDC schema lock, the two
+	// things the engines do differently.
+	engineFlag    string
+	engineDefault string
 }
 
 func (f *postgresFlags) register(fs *flag.FlagSet, opts postgresFlagOptions) {
@@ -59,6 +65,10 @@ func (f *postgresFlags) register(fs *flag.FlagSet, opts postgresFlagOptions) {
 	fs.StringVar(&f.sslMode, opts.sslModeFlag, opts.sslModeDefault, opts.sslModeUsage)
 	if opts.includeUseIAM {
 		fs.BoolVar(&f.useIAM, opts.useIAMFlag, opts.useIAMDefault, opts.useIAMUsage)
+	}
+	if opts.engineFlag != "" {
+		fs.StringVar(&f.engine, opts.engineFlag, opts.engineDefault,
+			fmt.Sprintf("database engine: %q or %q", forma.EnginePostgreSQL, forma.EngineAuroraDSQL))
 	}
 }
 
@@ -86,6 +96,7 @@ func (f postgresFlags) databaseConfig(passwordEnv string, settings toolPostgresP
 		Username:        f.user,
 		Password:        f.resolvedPassword(passwordEnv),
 		SSLMode:         f.sslMode,
+		Engine:          forma.DatabaseEngine(f.engine),
 		MaxConnections:  maxConnections,
 		MaxIdleConns:    settings.maxIdleConns,
 		ConnMaxLifetime: 0,

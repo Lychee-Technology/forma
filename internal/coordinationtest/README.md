@@ -124,7 +124,15 @@ Any backend name other than `postgres` skips the mechanism assertions; naming
 it `postgres` runs them against that database too. A DSN without a backend name
 fails the run. The suite reaches the database the DSN names and no other. It
 does not probe it first, so one that does not answer fails the run instead of
-skipping it.
+skipping it. The backends `dsql` and `dsql-emulated` run the manager on the
+`aurora-dsql` engine ([Aurora DSQL](../../docs/aurora-dsql.md)).
+`dsql-emulated` takes no DSN: it runs on the integration PostgreSQL with every
+session at REPEATABLE READ, DSQL's fixed level.
+
+```bash
+FORMA_COORDINATION_BACKEND=dsql-emulated \
+  GOTOOLCHAIN=go1.26.0+auto go test ./internal/coordinationtest/
+```
 
 Tests that claim over a growing outbox analyze the tables as it grows: the
 EXPLAIN test after seeding, scenario 6 after each round's seeding, and the
@@ -135,10 +143,15 @@ claim's group-head anti-join in a loop over the hot `change_log` rows. A
 claim can then take seconds, and a soak iteration took 5 to 61 s instead of
 about 2 s (#685).
 
-**DSQL: specified, not verified (#633).** The contract assertions are written
-to hold under DSQL's optimistic concurrency, but no one has run them there.
-That run is #633's, with the fixture changes it needs: `CREATE INDEX ASYNC`
-for the declared indexes, another way to inject the storage failure of
-scenario 1, which here is a PL/pgSQL trigger on `entity_main`, and another
-injection point for `TestCommitOutcomeUnknown`. Its fault proxy relays only
-plaintext connections, and DSQL requires TLS.
+**DSQL: run on the emulation, not on a cluster (#633).** The CI Test job runs
+the suite a second time on `dsql-emulated`, and
+`TestSuiteRunsOnTheDSQLEngineInCI` keeps that step. There a guard-row write
+conflict is a wait and then `40001` at the guard write, where DSQL answers
+`40001` at COMMIT without the wait. The contract assertions accept either.
+`TestDSQLEngineSendsOnlyStatementsDSQLRuns` checks that one transaction
+through every locking path sends no advisory lock, row-locking clause or
+isolation level. The `dsql` backend has not run: the fixture needs
+`CREATE INDEX ASYNC` for the declared indexes (#690), another way to inject
+the storage failure of scenario 1, which here is a PL/pgSQL trigger on
+`entity_main`, and another injection point for `TestCommitOutcomeUnknown`. Its
+fault proxy relays only plaintext connections, and DSQL requires TLS.

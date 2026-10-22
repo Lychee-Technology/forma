@@ -283,11 +283,13 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	}
 
 	// The whole read-modify-write happens inside the repository's write
-	// transaction, under the per-row advisory lock create and delete take
+	// transaction, under the per-row write lock create and delete take
 	// (#457): the merge base is read after the lock is granted, so two
 	// concurrent updates to disjoint fields both survive instead of the
-	// second committer replacing the first's document wholesale. The
-	// precondition is judged under the same lock, before the read (#649).
+	// second committer replacing the first's document wholesale. On Aurora
+	// DSQL the second instead fails retryable, and its retry merges onto the
+	// first (#633). The precondition is judged under the same lock, before
+	// the read (#649).
 	stored, err := s.repository.MergePersistentRecord(ctx, s.resolveTables(), schemaID, req.RowID,
 		model.RowGuard{Precondition: req.Preconditions},
 		func(ctx context.Context, existing *model.PersistentRecord, clock model.TxClock) (*model.PersistentRecord, error) {

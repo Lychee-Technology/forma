@@ -15,6 +15,7 @@ import (
 	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/declaredindex"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/testdb"
 	"github.com/lychee-technology/forma/internal/uniquekey"
 	"github.com/stretchr/testify/require"
@@ -44,17 +45,40 @@ type backend struct {
 	named bool
 }
 
+// The backends whose Forma engine is aurora-dsql (#633). dsqlEmulated runs
+// that engine on the integration PostgreSQL with every transaction at
+// REPEATABLE READ, where a guard-row write conflict is a wait and then 40001
+// rather than DSQL's 40001 at COMMIT: the contract assertions hold either
+// way, and CI runs them so.
+const (
+	dsqlBackend  = "dsql"
+	dsqlEmulated = "dsql-emulated"
+)
+
 // activeBackend answers the backend FORMA_COORDINATION_DSN and
 // FORMA_COORDINATION_BACKEND name, or the integration PostgreSQL that
-// testdb resolves when no DSN is set.
+// testdb resolves when no DSN is set: as itself, or as dsqlEmulated when
+// that is the backend named.
 func activeBackend() backend {
+	name := os.Getenv("FORMA_COORDINATION_BACKEND")
 	if dsn := os.Getenv("FORMA_COORDINATION_DSN"); dsn != "" {
-		return backend{name: os.Getenv("FORMA_COORDINATION_BACKEND"), dsn: dsn, named: true}
+		return backend{name: name, dsn: dsn, named: true}
 	}
-	return backend{name: "postgres", dsn: testdb.ResolveDSN()}
+	if name != dsqlEmulated {
+		name = "postgres"
+	}
+	return backend{name: name, dsn: testdb.ResolveDSN()}
 }
 
 func (b backend) postgres() bool { return b.name == "postgres" }
+
+// engine is the Forma database engine the suite's manager runs on b.
+func (b backend) engine() forma.DatabaseEngine {
+	if b.name == dsqlBackend || b.name == dsqlEmulated {
+		return forma.EngineAuroraDSQL
+	}
+	return forma.EnginePostgreSQL
+}
 
 // requirePostgresMechanisms skips a mechanism assertion on a backend other
 // than PostgreSQL: blocking seen in pg_locks, the non-blocking skip, and
@@ -162,6 +186,9 @@ func (e *env) openPool(t *testing.T, dsn string) *pgxpool.Pool {
 	require.NoError(t, err)
 	cfg.MaxConns = 40
 	cfg.ConnConfig.RuntimeParams["application_name"] = e.app
+	if activeBackend().name == dsqlEmulated {
+		cfg.ConnConfig.RuntimeParams["default_transaction_isolation"] = "repeatable read"
+	}
 	cfg.ConnConfig.Tracer = e.tracer
 	pool, err := pgxpool.NewWithConfig(e.ctx, cfg)
 	require.NoError(t, err)
@@ -171,8 +198,9 @@ func (e *env) openPool(t *testing.T, dsn string) *pgxpool.Pool {
 
 // createTables creates the test's tables from init-db's sources: the
 // entity_main columns Forma reads (checked against model's column contract),
-// the unique-key tables (#651) and the schema registry rows. The declared
-// indexes (#647) and the keys' build follow once the registry is loaded.
+// the unique-key tables (#651), the row-guard table (#633) and the schema
+// registry rows. The declared indexes (#647) and the keys' build follow once
+// the registry is loaded.
 // The EAV and change_log tables and init-db's default indexes are copies of
 // cmd/tools/init_db.go, a main package no test can import.
 func (e *env) createTables(t *testing.T) {
@@ -188,6 +216,7 @@ func (e *env) createTables(t *testing.T) {
 		fmt.Sprintf(`CREATE TABLE %s (schema_id SMALLINT NOT NULL, row_id UUID NOT NULL, flushed_at BIGINT NOT NULL DEFAULT 0,
 			changed_at BIGINT NOT NULL, deleted_at BIGINT, PRIMARY KEY (schema_id, row_id, flushed_at))`, e.tables.changeLog),
 	}, uniquekey.StatementsFor(e.tables.entityMain)...)
+	statements = append(statements, rowguard.StatementFor(e.tables.entityMain))
 	statements = append(statements, initDBIndexes(e.tables)...)
 	t.Cleanup(e.dropTables)
 	for _, stmt := range statements {
@@ -204,7 +233,7 @@ func (e *env) dropTables() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for _, table := range []string{e.tables.schemaRegistry, e.tables.entityMain, e.tables.eavData, e.tables.changeLog,
-		uniquekey.KeyTable(e.tables.entityMain), uniquekey.StateTable(e.tables.entityMain)} {
+		uniquekey.KeyTable(e.tables.entityMain), uniquekey.StateTable(e.tables.entityMain), rowguard.Table(e.tables.entityMain)} {
 		_, _ = e.pool.Exec(ctx, "DROP TABLE IF EXISTS "+table)
 	}
 }
@@ -282,7 +311,7 @@ func (e *env) buildManager(t *testing.T, pool *pgxpool.Pool) forma.EntityManager
 	require.NoError(t, err)
 
 	config := &forma.Config{
-		Database: forma.DatabaseConfig{TableNames: forma.TableNames{SchemaRegistry: e.tables.schemaRegistry,
+		Database: forma.DatabaseConfig{Engine: activeBackend().engine(), TableNames: forma.TableNames{SchemaRegistry: e.tables.schemaRegistry,
 			EntityMain: e.tables.entityMain, EAVData: e.tables.eavData, ChangeLog: e.tables.changeLog}},
 		Query:          forma.QueryConfig{DefaultPageSize: 20, MaxPageSize: 100},
 		Entity:         forma.EntityConfig{SchemaDirectory: schemaDir},

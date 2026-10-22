@@ -166,8 +166,9 @@ type TxOptions struct {
 	// MaxOperations caps the Tx method calls. It must be positive.
 	MaxOperations int
 	// MaxPhysicalRows caps the rows the transaction modifies, counting
-	// entity_main, EAV and change_log rows and unique-key entries. It must be
-	// positive.
+	// entity_main, EAV and change_log rows, unique-key entries, and on the
+	// aurora-dsql engine the guard row of each row it writes or asserts. It
+	// must be positive.
 	MaxPhysicalRows int
 	// Timeout bounds the whole InTx call as a context deadline. Zero means
 	// no deadline beyond the caller's context; negative is invalid.

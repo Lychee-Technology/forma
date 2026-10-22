@@ -52,6 +52,7 @@ The server listens on port `8080` by default. Configure via environment variable
 | `DB_USER` | `postgres` | Database user |
 | `DB_PASSWORD` | `` | Database password |
 | `DB_SSL_MODE` | `disable` | SSL mode |
+| `DB_ENGINE` | `postgresql` | Write-path engine: `postgresql`, or `aurora-dsql` for Amazon Aurora DSQL. Every writer of one database must name the same engine ([Aurora DSQL](docs/aurora-dsql.md)) |
 | `SCHEMA_DIR` | `` | Directory containing schema JSON files |
 | `PORT` | `8080` | HTTP listen port |
 | `METRICS_STDOUT` | unset (off) | `true` writes every emitted metric as a JSON line on stdout (`docs/telemetry.md`) |

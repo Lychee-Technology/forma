@@ -20,10 +20,10 @@ func (r *DBPersistentRecordRepository) BatchInsertPersistentRecords(ctx context.
 		return fmt.Errorf("validate tables for batch insert: %w", err)
 	}
 
-	// READ COMMITTED for the unique-key reservation; see
+	// READ COMMITTED on PostgreSQL for the unique-key reservation; see
 	// InsertPersistentRecord.
 	now := r.nowMillis()
-	return r.inWriteTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+	return r.inWriteTx(ctx, r.locks.writeTxOptions(true), func(tx pgx.Tx) error {
 		return r.batchInsertInTx(ctx, tx, tables, records, now)
 	})
 }
@@ -37,7 +37,7 @@ func (r *DBPersistentRecordRepository) batchInsertInTx(ctx context.Context, tx p
 	if err != nil {
 		return fmt.Errorf("validate batch insert: %w", err)
 	}
-	if err := lockRowKeys(ctx, tx, keys); err != nil {
+	if err := r.locks.lockRows(ctx, tx, tables, keys); err != nil {
 		return fmt.Errorf("lock row versions for batch insert: %w", err)
 	}
 	// Every record is stamped and its unique keys planned before any is
@@ -86,7 +86,7 @@ func (r *DBPersistentRecordRepository) BatchDeletePersistentRecords(ctx context.
 	if err := validateWriteTables(tables); err != nil {
 		return fmt.Errorf("validate tables for batch delete: %w", err)
 	}
-	return r.inWriteTx(ctx, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	return r.inWriteTx(ctx, r.locks.writeTxOptions(false), func(tx pgx.Tx) error {
 		return r.batchDeleteInTx(ctx, tx, tables, keys)
 	})
 }
@@ -103,7 +103,7 @@ func (r *DBPersistentRecordRepository) batchDeleteInTx(ctx context.Context, tx p
 		return err
 	}
 	// Sorted lock pass first, input-order writes after (#554).
-	if err := lockRowKeys(ctx, tx, keys); err != nil {
+	if err := r.locks.lockRows(ctx, tx, tables, keys); err != nil {
 		return fmt.Errorf("lock row versions for batch delete: %w", err)
 	}
 

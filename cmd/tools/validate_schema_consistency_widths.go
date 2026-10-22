@@ -130,7 +130,11 @@ func (v schemaConsistencyValidator) checkIntegerWidthExports(ctx context.Context
 // fatal. Any other failure aborts, and rows already requeued stay requeued,
 // which is harmless.
 func (v schemaConsistencyValidator) requeueStaleWidthExports(ctx context.Context, cache *schemameta.MetadataCache, findings []widthaudit.Finding) (requeued, missing map[widthRowKey]bool, err error) {
-	repo := internal.NewDBPersistentRecordRepository(v.pool, cache)
+	engine, err := internal.WithDatabaseEngine(v.engine)
+	if err != nil {
+		return nil, nil, fmt.Errorf("requeue stale width exports: %w", err)
+	}
+	repo := internal.NewDBPersistentRecordRepository(v.pool, cache, engine)
 	tables := model.StorageTables{EntityMain: v.widths.entityMainTable, EAVData: v.eavTable, ChangeLog: v.widths.changeLogTable}
 	requeued, missing = map[widthRowKey]bool{}, map[widthRowKey]bool{}
 	for _, f := range findings {

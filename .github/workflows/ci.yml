@@ -101,6 +101,22 @@ jobs:
           DB_NAME: forma_test
         run: go test -v -race -coverprofile=coverage.out . ./cdc ./cmd/... ./factory ./internal/...
 
+      # The coordination suite again, on the aurora-dsql engine (#633): the
+      # same PostgreSQL with every transaction at REPEATABLE READ, DSQL's one
+      # isolation level, so its contract assertions run against guard-row
+      # locking while its PostgreSQL mechanism assertions skip. No -race: the
+      # run above covers the code under the race detector.
+      # TestSuiteRunsOnTheDSQLEngineInCI guards this step.
+      - name: Run coordination suite on the aurora-dsql engine
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: test
+          DB_PASSWORD: test
+          DB_NAME: forma_test
+          FORMA_COORDINATION_BACKEND: dsql-emulated
+        run: go test -count=1 ./internal/coordinationtest/
+
       - name: Upload coverage
         uses: codecov/codecov-action@v6
         with:

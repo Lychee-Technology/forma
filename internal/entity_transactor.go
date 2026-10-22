@@ -74,7 +74,7 @@ func (t *transactor) InTx(ctx context.Context, fn func(context.Context, forma.Tx
 	ctx, cancel := withBudget(ctx, limits.Timeout)
 	defer cancel()
 
-	pgTx, err := t.repo.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	pgTx, err := t.repo.pool.BeginTx(ctx, t.repo.locks.writeTxOptions(true))
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", classifyStatementError(err))
 	}

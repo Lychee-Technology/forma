@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/model"
 )
 
 // txMeter accounts for the statements one Tx session sends (#648). Two rules
@@ -55,7 +56,7 @@ func (m *txMeter) accept(sql string, rows int64) error {
 	if m.rows > m.maxRows {
 		return m.fail(forma.InvalidInputf(
 			"the transaction would modify more than its limit of %d physical rows "+
-				"(entity_main, EAV, change_log and unique-key rows); split the work across transactions or raise the limit with WithTxMaxPhysicalRows",
+				"(entity_main, EAV, change_log, unique-key and row-guard rows); split the work across transactions or raise the limit with WithTxMaxPhysicalRows",
 			m.maxRows))
 	}
 	if m.fault != nil {
@@ -81,6 +82,29 @@ func modifiedRows(tag pgconn.CommandTag) int64 {
 type meteredTx struct {
 	pgx.Tx
 	meter *txMeter
+	// guards holds the guard rows the transaction has written, by guard
+	// table (see guardsWritten).
+	guards map[string]map[model.PersistentRecordKey]struct{}
+}
+
+// guardsWritten answers the set of table's guard rows the transaction has
+// written, which writeGuardRows reads and adds to. A Tx's operations each
+// lock their rows, so a claim or a predicate mutation, which locks its
+// candidates and then writes each through Update, and an assertion followed
+// by an update would otherwise write one guard row twice. The first write
+// already decides the conflict, and holds until the transaction ends: a Tx
+// has no savepoints, and a failed statement poisons it. A second write would
+// only cost a statement and a second count against the physical-row limit.
+func (t *meteredTx) guardsWritten(table string) map[model.PersistentRecordKey]struct{} {
+	if t.guards == nil {
+		t.guards = make(map[string]map[model.PersistentRecordKey]struct{})
+	}
+	written, ok := t.guards[table]
+	if !ok {
+		written = make(map[model.PersistentRecordKey]struct{})
+		t.guards[table] = written
+	}
+	return written
 }
 
 func (t *meteredTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {

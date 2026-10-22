@@ -11,7 +11,7 @@ import (
 
 // BatchMergePersistentRecords is MergePersistentRecord over a batch (#554):
 // the same guarded read-modify-write, with every row's merge base read
-// inside the one write transaction after every row's advisory lock has been
+// inside the one write transaction after every row's write lock has been
 // granted. The lock pass runs in sorted (schemaID, rowID) order so two
 // overlapping batches cannot invert (see sortedRowKeys); reads, merges and
 // writes then follow input order so the answer is positional.
@@ -43,7 +43,7 @@ func (r *DBPersistentRecordRepository) BatchMergePersistentRecords(
 	}
 
 	var stored []*model.PersistentRecord
-	err := r.inWriteTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+	err := r.inWriteTx(ctx, r.locks.writeTxOptions(true), func(tx pgx.Tx) error {
 		var err error
 		stored, err = r.batchMergeInTx(ctx, tx, tables, keys, merge)
 		return err
@@ -67,7 +67,7 @@ func (r *DBPersistentRecordRepository) batchMergeInTx(
 	keys []model.PersistentRecordKey,
 	merge model.PersistentRecordBatchMerge,
 ) ([]*model.PersistentRecord, error) {
-	if err := lockRowKeys(ctx, tx, keys); err != nil {
+	if err := r.locks.lockRows(ctx, tx, tables, keys); err != nil {
 		return nil, fmt.Errorf("lock row versions for batch update: %w", err)
 	}
 

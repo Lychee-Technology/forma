@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -20,10 +21,16 @@ import (
 func TestClaimExclusivity(t *testing.T) {
 	t.Run("two concurrent claimers never receive the same record (scenario 6)", func(t *testing.T) {
 		e := newEnv(t)
+		// A head an earlier round left unclaimed is still its partition's
+		// head. Claims that skip held rows take every head of a round; on an
+		// optimistic backend the losers of a round claim nothing (#633).
+		var heads []uuid.UUID
+		before := map[uuid.UUID]int64{}
 		for _, relays := range []int{2, 8} {
 			for iteration := 0; iteration < 10; iteration++ {
-				heads := ids(firsts(e.seedOutbox(t, 10, 2)))
-				before := e.stamps(t, OutboxSchema, heads...)
+				round := ids(firsts(e.seedOutbox(t, 10, 2)))
+				heads = append(heads, round...)
+				maps.Copy(before, e.stamps(t, OutboxSchema, round...))
 				// Each round's held messages stay live, so the statistics
 				// must follow the outbox.
 				e.analyze(t)
