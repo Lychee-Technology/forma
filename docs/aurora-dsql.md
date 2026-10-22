@@ -206,8 +206,8 @@ gets `ErrRetryableConflict`.
   after an hour. A run that outlives its token cannot reconnect, so give
   the token an `--expires-in` that covers the run. When renewals cannot get
   a connection, the lease ends the run with `ErrSchemaLockLost` rather than
-  letting it continue unlocked. No DSQL client refreshes its token yet,
-  the Lambda's pool included (#694).
+  letting it continue unlocked. None of the three tools refreshes its token
+  yet (#694). The Lambda's pool does: it signs a token per connection.
 - **Inspecting leases.**
 
   ```sql
