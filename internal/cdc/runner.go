@@ -193,7 +193,7 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 	}
 	defer releaseDuck()
 
-	flushCtx := newSchemaFlushContext(flushContextParams{
+	flushCtx, err := newSchemaFlushContext(flushContextParams{
 		cfg:            cfg,
 		db:             db,
 		duck:           duck,
@@ -203,6 +203,9 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 		logger:         r.logger,
 		schemaRegistry: schemaRegistry,
 	})
+	if err != nil {
+		return fmt.Errorf("prepare flush: %w", err)
+	}
 
 	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, flushCtx.tableName)
 	if err != nil {

@@ -2,6 +2,19 @@
 
 Forma is a general-purpose data management system built on PostgreSQL. It uses JSON Schema for data definition and a dual storage model (Hot Fields Table + EAV Table) to handle highly dynamic data structures without schema migrations.
 
+## Database engines
+
+Forma runs on PostgreSQL 16 and on Amazon Aurora DSQL. DSQL has no advisory locks and never makes a statement wait, so the engine is configured, not detected, and every writer and CDC tool of one database must name the same one:
+
+| Surface | PostgreSQL 16 | Aurora DSQL |
+|---------|---------------|-------------|
+| Write path (`DB_ENGINE`, `forma.DatabaseConfig.Engine`) | Supported | Supported as `aurora-dsql`; CI runs it on PostgreSQL emulating DSQL, not yet on a cluster |
+| CDC schema lock and flush mark (`--pg-engine` on `cdc-flush`, `cdc-init`, `manifest-reconcile`) | Supported | Supported as `aurora-dsql` (a lease row); CI only, not yet on a cluster |
+| `init-db` | Supported | Not yet: its DDL is not valid on DSQL (#690) |
+| DuckDB `postgres` extension (CDC export, hot-tier reads) | Supported | Not verified (#691) |
+
+[Aurora DSQL](docs/aurora-dsql.md) covers what differs, the tables to create by hand, and how to verify a cluster.
+
 ## Prerequisites
 
 - **Go** 1.26+

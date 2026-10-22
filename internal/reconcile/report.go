@@ -10,7 +10,7 @@ import (
 // path verbatim (the raw path is what the operator must inspect).
 type SchemaReport struct {
 	SchemaID     int16
-	Skipped      bool // advisory lock not acquired; nothing inspected
+	Skipped      bool // schema lock not acquired; nothing inspected
 	DeltaOrphans []string
 	BaseOrphans  []string
 	TmpOrphans   []string
@@ -119,7 +119,7 @@ func (s SchemaReport) Residual() bool {
 func (r Report) Render(w io.Writer) {
 	for _, s := range r.Schemas {
 		if s.Skipped {
-			fmt.Fprintf(w, "schema %d: skipped (advisory lock not acquired)\n", s.SchemaID)
+			fmt.Fprintf(w, "schema %d: skipped (schema lock not acquired)\n", s.SchemaID)
 			continue
 		}
 		if s.clean() {

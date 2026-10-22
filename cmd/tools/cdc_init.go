@@ -55,6 +55,7 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 		passwordUsage:   "PostgreSQL password (or set PGPASSWORD env)",
 		databaseUsage:   "PostgreSQL database",
 		sslModeUsage:    "PostgreSQL sslmode",
+		engineFlag:      "pg-engine",
 	})
 
 	// Table names
@@ -107,6 +108,10 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 	if err := schemaRegistry.validate(true); err != nil {
 		return nil, err
 	}
+	engine, err := pg.cdcEngine("pg-engine")
+	if err != nil {
+		return nil, err
+	}
 
 	// Track if user explicitly provided estimated-row-bytes (0 means auto-calculate from schema)
 	autoEstimateRowBytes := *estimatedRowBytes == 0
@@ -115,6 +120,7 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 	cfg := buildCDCInitConfig(pg, password, entityMainTable, eavDataTable, batchSize,
 		targetFileSizeMB, estimatedRowBytes, maxBatchSize, duck, s3Config,
 		manifestPrefix, manifestTemplate)
+	cfg.Engine = engine
 
 	return &cdcInitOptions{
 		cfg:                  cfg,

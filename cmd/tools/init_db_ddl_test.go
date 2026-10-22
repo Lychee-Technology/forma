@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/rowguard"
+	"github.com/lychee-technology/forma/internal/schemalease"
 	"github.com/lychee-technology/forma/internal/uniquekey"
 )
 
@@ -19,7 +20,7 @@ func testInitDBOptions() initDBOptions {
 }
 
 // allDDLStatements flattens the builder groups in the exact order
-// ensureTables executes them: 7 core tables, 2 EAV indexes, 10 main-column
+// ensureTables executes them: 8 core tables, 2 EAV indexes, 10 main-column
 // indexes, and the unique key row index.
 func allDDLStatements(opts initDBOptions) []tableDDL {
 	var all []tableDDL
@@ -136,7 +137,8 @@ func wantDDLStatements() []string {
 }
 
 // wantUniqueKeyTableDDL is the golden text of the two unique key tables
-// (#651) and the row guard table (#633), created after the four core tables.
+// (#651), the row guard table and the schema lease table (#633), created
+// after the four core tables.
 func wantUniqueKeyTableDDL() []string {
 	return []string{
 		// unique key table (#651)
@@ -163,10 +165,17 @@ func wantUniqueKeyTableDDL() []string {
 		generation       BIGINT   NOT NULL,
 		PRIMARY KEY (ltbase_schema_id, ltbase_row_id)
 	)`,
+		// schema lease table (#633)
+		`CREATE TABLE IF NOT EXISTS "entity_main_schema_lease" (
+		schema_id  SMALLINT NOT NULL,
+		holder     UUID     NOT NULL,
+		expires_at BIGINT   NOT NULL,
+		PRIMARY KEY (schema_id)
+	)`,
 	}
 }
 
-// wantCoreAnnouncements is the golden text of the seven lines init-db prints on
+// wantCoreAnnouncements is the golden text of the eight lines init-db prints on
 // success. Independent literals, captured the same way as the statements.
 //
 // Note the entity-main line has NO trailing newline while the other three do.
@@ -180,6 +189,7 @@ func wantCoreAnnouncements() []string {
 		"Created unique key table: entity_main_unique_key\n",
 		"Created unique key state table: entity_main_unique_key_state\n",
 		"Created row guard table: entity_main_row_guard\n",
+		"Created schema lease table: entity_main_schema_lease\n",
 	}
 }
 
@@ -221,17 +231,19 @@ func TestCoreTableAnnouncementsGolden(t *testing.T) {
 	}
 }
 
-// TestCoreTableDDLCoversSevenTables pins the seven CREATE TABLE statements
+// TestCoreTableDDLCoversEightTables pins the eight CREATE TABLE statements
 // ensureTables issues, in order: the four core tables, the unique key and
-// state tables (#651), then the row guard table (#633). Before #319 split
-// them out, a dropped table would only have surfaced against a live database.
-func TestCoreTableDDLCoversSevenTables(t *testing.T) {
+// state tables (#651), then the row guard and schema lease tables (#633).
+// Before #319 split them out, a dropped table would only have surfaced
+// against a live database.
+func TestCoreTableDDLCoversEightTables(t *testing.T) {
 	ddl := coreTableDDL(testInitDBOptions())
-	if len(ddl) != 7 {
-		t.Fatalf("coreTableDDL returned %d statements, want 7", len(ddl))
+	if len(ddl) != 8 {
+		t.Fatalf("coreTableDDL returned %d statements, want 8", len(ddl))
 	}
 	wantTables := []string{"schema_registry", "entity_main", "eav_data", "change_log",
-		`"entity_main_unique_key" (`, `"entity_main_unique_key_state" (`, `"entity_main_row_guard" (`}
+		`"entity_main_unique_key" (`, `"entity_main_unique_key_state" (`, `"entity_main_row_guard" (`,
+		`"entity_main_schema_lease" (`}
 	for i, want := range wantTables {
 		if !strings.Contains(ddl[i].statement, want) {
 			t.Errorf("statement %d does not mention %q: %s", i, want, ddl[i].statement)
@@ -248,6 +260,7 @@ func TestCoreTableDDLCoversSevenTables(t *testing.T) {
 		"ensure unique key table",
 		"ensure unique key state table",
 		"ensure row guard table",
+		"ensure schema lease table",
 	}
 	for i, want := range wantFailures {
 		if ddl[i].failure != want {
@@ -342,6 +355,18 @@ func TestRowGuardDDLUsesSharedSource(t *testing.T) {
 		t.Fatalf("init-db row guard DDL differs from rowguard.Statement:\n got: %q\nwant: %q", got, want)
 	}
 	if unquoted := rowguard.StatementFor("entity_main"); strings.ReplaceAll(got, `"`, "") != unquoted {
+		t.Errorf("init-db names another table than the harnesses' copy:\n got: %q\nwant: %q", got, unquoted)
+	}
+}
+
+// TestSchemaLeaseDDLUsesSharedSource pins init-db's schema lease statement to
+// schemalease.Statement, the source both e2e harnesses use too (#633).
+func TestSchemaLeaseDDLUsesSharedSource(t *testing.T) {
+	got := schemaLeaseDDL(testInitDBOptions()).statement
+	if want := schemalease.Statement(`"entity_main_schema_lease"`); got != want {
+		t.Fatalf("init-db schema lease DDL differs from schemalease.Statement:\n got: %q\nwant: %q", got, want)
+	}
+	if unquoted := schemalease.StatementFor("entity_main"); strings.ReplaceAll(got, `"`, "") != unquoted {
 		t.Errorf("init-db names another table than the harnesses' copy:\n got: %q\nwant: %q", got, unquoted)
 	}
 }

@@ -470,7 +470,9 @@ forma-tools manifest-reconcile ... --gc --allow-empty-manifest-schema 7,9 --allo
   `--s3-prefix`、compactor 的 `--data-prefix`）。前缀不一致时列举落空，所有 manifest
   条目会被误报为 unverifiable/dangling、所有对象被误报为孤儿。
 - 工具需要 Postgres：逐 schema 取与 flusher/cdc-init 同款 advisory lock
-  （`pg_try_advisory_lock(schemaID, schemaID)`，钉在单一连接上），消除与 flusher 的
+  （`pg_try_advisory_lock(schemaID, schemaID)`，钉在单一连接上；`--pg-engine aurora-dsql`
+  下改为 `<entity_main>_schema_lease` 表中的租约，见
+  [Aurora DSQL](aurora-dsql.md#the-cdc-schema-lock)），消除与 flusher 的
   list/load 竞态；拿不到锁的 schema 跳过并计入差异退出码。#290 起 cdc-init 也持这把锁，
   故此锁下的 init 形态孤儿必非 in-flight init：`--repair` 下先经晋升守卫判定（#292），
   未晋升者纳入 `--gc` 候选。compactor 仍不持这把锁，
@@ -482,7 +484,7 @@ forma-tools manifest-reconcile ... --gc --allow-empty-manifest-schema 7,9 --allo
   一致，比较时不做任何前导斜杠归一化）。
 - 退出码：`0` 一致；`2` 存在残余差异（含跳过的 schema、拒绝自动处理的混杂文件、
   记录目击但尚未过宽限期的残留、`--verify-stamps` 发现的印章分歧、`--verify-checksums`
-  发现的校验和分歧）；`1` 工具自身失败（含任一 schema 的 list/load/lock/dangling 复核/
+  发现的校验和分歧）；`1` 工具自身失败（含任一 schema 的 list/load/lock/租约丢失/dangling 复核/
   GC 状态读取/印章 footer 探测/校验和 GET 失败——不会伪装成「有差异」）。
   `--verify-checksums` 因无印章而跳过的条目数只作为覆盖率信息打印，**不影响退出码**。
 

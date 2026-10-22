@@ -308,6 +308,8 @@ When Lambda is configured with a VPC, it uses **Hyperplane Elastic Network Inter
 | Scaling | Automatic | Manual or auto-scaling |
 | Cost Model | Pay per request | Pay for capacity |
 
+**What it requires of Forma**: the Lambda selects the `aurora-dsql` engine when `DSQL_ENDPOINT` is set, and the CDC tools need `--pg-engine aurora-dsql` (`cdc-flush --pg-use-iam` implies it). Both are supported, but have run only on PostgreSQL emulating DSQL, not on a cluster (#633). `init-db` cannot create the tables on DSQL yet (#690), and the DuckDB `postgres` extension the CDC export and hot-tier reads use is not verified there (#691). The CDC tools keep one IAM token for the whole run, so a run that outlives it cannot reconnect (#694); the Lambda's pool signs a fresh token for each connection. See [Aurora DSQL](aurora-dsql.md).
+
 ### Decision 2: No VPC (Current)
 
 **Chosen**: Lambda runs outside VPC

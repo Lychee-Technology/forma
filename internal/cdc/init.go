@@ -59,8 +59,9 @@ type initRunContext struct {
 	pgConnStr            string
 	replaceDelta         bool
 	deltaPrefix          string
-	// tryLock and initSchemaFn are test seams (nil→real impl below), mirroring the flusher's processSchemaFn seam.
-	tryLock      func(ctx context.Context, db *sql.DB, schemaID int16) (bool, func(), error)
+	// locker is the run engine's schema lock (nil: the PostgreSQL advisory
+	// lock); initSchemaFn is a test seam (nil→real impl below), mirroring the flusher's processSchemaFn seam.
+	locker       SchemaLocker
 	initSchemaFn func(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error)
 	// describeColumns is a test seam for the write-time footer probe that
 	// stamps manifest entries (#256); nil uses the exporter's DuckDB session.
@@ -123,6 +124,11 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 	if err != nil {
 		return nil, fmt.Errorf("open pg: %w", err)
 	}
+	locker, err := NewSchemaLocker(db, cfg.Engine, cfg.EntityMainTable)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("cdc init schema lock: %w", err)
+	}
 
 	// DuckDB httpfs credentials follow the same both-halves rule as every
 	// other cdc credential site (#326): with no fully-set static pair the
@@ -140,6 +146,7 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 	runCtx := &initRunContext{
 		cfg:                  cfg,
 		db:                   db,
+		locker:               locker,
 		duck:                 duck,
 		schemaRegistry:       opts.SchemaRegistry,
 		logger:               opts.Logger,

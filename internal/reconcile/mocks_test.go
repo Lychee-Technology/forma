@@ -103,15 +103,15 @@ type fakeLocker struct {
 	unlocked []int16
 }
 
-func (f *fakeLocker) TryLock(_ context.Context, schemaID int16) (bool, func(), error) {
+func (f *fakeLocker) TryLock(ctx context.Context, schemaID int16) (context.Context, func(), bool, error) {
 	if f.err != nil {
-		return false, nil, f.err
+		return nil, nil, false, f.err
 	}
 	if f.denied[schemaID] {
-		return false, nil, nil
+		return nil, nil, false, nil
 	}
 	f.locked = append(f.locked, schemaID)
-	return true, func() { f.unlocked = append(f.unlocked, schemaID) }, nil
+	return ctx, func() { f.unlocked = append(f.unlocked, schemaID) }, true, nil
 }
 
 type fakeDeleter struct {

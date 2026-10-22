@@ -1248,8 +1248,11 @@ advisory locks with guard-row writes and runs at the session's REPEATABLE
 READ, so there `40001` is the ordinary outcome of two writers of one row. The
 classification is unchanged. CI runs the engine on PostgreSQL emulating DSQL,
 where the losing writer waits and then gets `40001` at its guard write; it has
-not yet run on a cluster. The CDC schema lock still uses advisory locks, and
-its replacement is the second half of #633.
+not yet run on a cluster. With `--pg-engine aurora-dsql` the CDC tools'
+per-schema lock is a lease row instead of an advisory lock. A run whose
+lease ends before it finishes fails with an error that matches
+`cdc.ErrSchemaLockLost`, an operator-visible failure like the read-path
+consistency errors ([The CDC schema lock](aurora-dsql.md#the-cdc-schema-lock)).
 
 Tests only PostgreSQL can run carry a `_PostgresOnly` suffix, so a run against
 another backend can exclude them with `go test -skip PostgresOnly`. They depend

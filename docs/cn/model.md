@@ -2,6 +2,8 @@
 
 用户数据存储在[AWS DSQL](https://docs.aws.amazon.com/aurora-dsql/latest/userguide/working-with-postgresql-compatibility-supported-data-types.html)中。AWS DSQL是一个Serverless的数据库，兼容`PostgreSQL 16`。
 
+Forma 同时支持 PostgreSQL 16 和 Aurora DSQL。DSQL 没有 advisory lock，也从不让语句等待锁，所以数据库引擎需要显式配置，不做自动探测：写路径用 `DB_ENGINE`（`forma.DatabaseConfig.Engine`），CDC 工具（`cdc-flush`、`cdc-init`、`manifest-reconcile`）用 `--pg-engine`。同一数据库的所有写入方和 CDC 工具必须配置同一个引擎。`aurora-dsql` 引擎下，写路径用 `<entity_main>_row_guard` 表中的 guard row 互斥，CDC 的 per-schema 锁是 `<entity_main>_schema_lease` 表中的租约（#633）。两者目前只在模拟 DSQL 的 PostgreSQL 上验证过，尚未在真实集群上运行。`init-db` 的 DDL 还不能在 DSQL 上执行（#690），DuckDB `postgres` 扩展对 DSQL 尚未验证（#691）。详见 [Aurora DSQL](../aurora-dsql.md)。
+
 每个项目还有元数据访问接口：
 
 ```golang
@@ -46,7 +48,7 @@ type MainColumnBinding struct {
 }
 ```
 
-每个项目有3个核心DSQL Tables: `entity main` (主表), `EAV Data` (扩展属性表) 和 `Change Log` (变更日志表)。
+每个项目有3个核心DSQL Tables: `entity main` (主表), `EAV Data` (扩展属性表) 和 `Change Log` (变更日志表)。另有 `aurora-dsql` 引擎使用的两张锁表 `<entity_main>_row_guard` 和 `<entity_main>_schema_lease`，在 PostgreSQL 上它们保持为空。
 
 ### 时间日期处理
 
