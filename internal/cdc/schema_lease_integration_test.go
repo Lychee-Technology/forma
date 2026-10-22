@@ -225,6 +225,53 @@ func TestLeaseSchemaLockStopsBeforeItsLeaseExpires(t *testing.T) {
 	require.Less(t, stoppedAt, expiresAt, "held must end before the lease can be taken over")
 }
 
+// TestLeaseSchemaLockRefusesAnAcquireThatOutlivedItsLease pins that an
+// acquire answered too late to reach its first renewal fails with that cause
+// and frees the schema, rather than handing out a held context that has
+// already ended. The database set the expiry from the statement's start, so
+// a hold timed from the answer instead would outlast the lease.
+func TestLeaseSchemaLockRefusesAnAcquireThatOutlivedItsLease(t *testing.T) {
+	db, cluster := leaseTarget(t, "")
+	if cluster {
+		t.Skip("delaying the acquire needs a row lock wait, which DSQL does not have")
+	}
+	table := leaseTestTable(t, db)
+	_, err := db.Exec(fmt.Sprintf("INSERT INTO %s (schema_id, holder, expires_at) VALUES (7, $1, 0)", table), uuid.New())
+	require.NoError(t, err)
+	blocker, err := db.Begin()
+	require.NoError(t, err)
+	defer func() { _ = blocker.Rollback() }()
+	_, err = blocker.Exec(fmt.Sprintf("SELECT 1 FROM %s WHERE schema_id = 7 FOR UPDATE", table))
+	require.NoError(t, err)
+
+	locker := newLeaseSchemaLocker(db, table, 600*time.Millisecond, 150*time.Millisecond)
+	type result struct {
+		held context.Context
+		ok   bool
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		held, release, ok, err := locker.TryLock(context.Background(), 7)
+		if ok {
+			defer release()
+		}
+		done <- result{held: held, ok: ok, err: err}
+	}()
+	waitForLockWaiter(t, db)
+	time.Sleep(locker.validFor())
+	require.NoError(t, blocker.Rollback())
+
+	got := <-done
+	require.Error(t, got.err)
+	require.Contains(t, got.err.Error(), "schema 7")
+	require.Contains(t, got.err.Error(), "too late to reach its first renewal")
+	require.False(t, got.ok)
+	require.Nil(t, got.held)
+	_, _, present := leaseRow(t, db, table, 7)
+	require.False(t, present, "the refused acquire must give its lease up")
+}
+
 // TestLeaseSchemaLockOneWinnerAmongRacingAcquirers races acquirers on a free
 // schema and on an expired lease, at both isolation levels: each round has
 // exactly one holder, and the losers answer ok false, never an error.

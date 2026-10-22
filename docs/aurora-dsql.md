@@ -156,7 +156,9 @@ monotonic clock. The database set that renewal's expiry no earlier than
 when it was sent, so the holder stops at least 15 seconds before another
 holder can take the lease. Its work runs on a context that ends then, and
 the tool's error carries `cdc.ErrSchemaLockLost` rather than a bare
-"context canceled".
+"context canceled". The acquire counts as the first renewal, timed from
+when it was sent. An acquire answered more than 30 seconds later, too late
+for the holder to reach its first renewal, deletes its row and fails.
 
 The table is named after `entity_main`, not `change_log`, because all three
 tools are given `--entity-main-table` and only `cdc-flush` is given
@@ -226,6 +228,10 @@ gets `ErrRetryableConflict`.
 - **"schema lock lost".** The run stopped because it found another holder
   in its row, or could not renew for 45 seconds. Re-run it. A flush or init
   cut short leaves what one that fails at the same point leaves.
+- **"too late to reach its first renewal".** The database took more
+  than 30 seconds to answer the acquire. The run gave the lease up before
+  doing any work, so the schema is free. Re-run it once the cluster answers
+  promptly.
 
 ## Limits
 

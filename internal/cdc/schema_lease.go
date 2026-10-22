@@ -54,6 +54,12 @@ func (l *leaseSchemaLocker) validFor() time.Duration { return l.ttl - l.renewEve
 
 // TryLock takes schemaID's lease when no live lease holds it. A concurrent
 // acquirer that wins the race leaves this one ok false, never an error.
+//
+// The hold is timed from before the acquire is sent, not from its answer:
+// the database sets the expiry from the statement's start, so a hold timed
+// from a late answer would outlast the lease. An acquire answered too late
+// for the hold to reach its first renewal is given up and fails with that
+// cause, rather than handing out a held context about to end.
 func (l *leaseSchemaLocker) TryLock(ctx context.Context, schemaID int16) (context.Context, func(), bool, error) {
 	holder := uuid.New()
 	sent := time.Now()
@@ -61,9 +67,15 @@ func (l *leaseSchemaLocker) TryLock(ctx context.Context, schemaID int16) (contex
 	if err != nil || !ok {
 		return nil, nil, false, err
 	}
+	validUntil := sent.Add(l.validFor())
+	if time.Until(validUntil) < l.renewEvery {
+		l.deleteLease(schemaID, holder)
+		return nil, nil, false, fmt.Errorf("acquire schema %d lease in %s: answered after %s, too late to reach its first renewal within the %s a lease is valid for; gave the lease up",
+			schemaID, l.table, time.Since(sent).Round(time.Millisecond), l.validFor())
+	}
 	held, cancel := context.WithCancelCause(ctx)
 	h := &leaseHold{locker: l, schemaID: schemaID, holder: holder, cancel: cancel, done: make(chan struct{})}
-	go h.renewUntilReleased(held, sent.Add(l.validFor()))
+	go h.renewUntilReleased(held, validUntil)
 	return held, h.release, true, nil
 }
 
@@ -162,15 +174,20 @@ func (h *leaseHold) renewOnce(held context.Context) (bool, error) {
 }
 
 // release ends held, waits for the renewal loop, and deletes the lease if
-// this holder still holds it. A failed delete leaves a lease that expires
-// after the TTL.
+// this holder still holds it.
 func (h *leaseHold) release() {
 	h.once.Do(func() {
 		h.cancel(nil)
 		<-h.done
-		ctx, cancel := context.WithTimeout(context.Background(), leaseReleaseTimeout)
-		defer cancel()
-		query := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND holder = $2", h.locker.table)
-		_, _ = h.locker.db.ExecContext(ctx, query, h.schemaID, h.holder)
+		h.locker.deleteLease(h.schemaID, h.holder)
 	})
+}
+
+// deleteLease deletes schemaID's lease if holder still holds it. A failed
+// delete leaves a lease that expires after the TTL.
+func (l *leaseSchemaLocker) deleteLease(schemaID int16, holder uuid.UUID) {
+	ctx, cancel := context.WithTimeout(context.Background(), leaseReleaseTimeout)
+	defer cancel()
+	query := fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 AND holder = $2", l.table)
+	_, _ = l.db.ExecContext(ctx, query, schemaID, holder)
 }
