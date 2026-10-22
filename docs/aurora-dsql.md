@@ -22,7 +22,7 @@ behind one API. It does not detect the engine. You configure it.
 | --- | --- |
 | Library | `forma.DatabaseConfig.Engine`: `forma.EnginePostgreSQL` (`"postgresql"`, the default when empty) or `forma.EngineAuroraDSQL` (`"aurora-dsql"`) |
 | `cmd/server` | `DB_ENGINE` |
-| `cmd/lambda` | `DSQL_ENDPOINT` opens the IAM-authenticated DSQL pool and selects `aurora-dsql`. A `DB_ENGINE` that names another engine beside it fails the cold start |
+| `cmd/lambda` | `DSQL_ENDPOINT` opens the IAM-authenticated DSQL pool and selects `aurora-dsql`. The pool signs a fresh IAM token for each connection it opens, so a warm environment keeps connecting after the cold start's token expires. A `DB_ENGINE` that names another engine beside it fails the cold start |
 | `forma-tools validate-schema-consistency` | `--db-engine` (default `DB_ENGINE`), used by `-requeue-stale-width-exports` |
 
 An unknown name fails `Config.Validate` and the factory before any
