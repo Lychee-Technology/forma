@@ -64,3 +64,24 @@ func TestProcessInitSchemas_NamesALostLock(t *testing.T) {
 	require.Contains(t, err.Error(), "schema 7")
 	require.Equal(t, 1, released)
 }
+
+// TestProcessInitSchemas_NamesALockLostUnderCleanWork pins that a lost lease
+// fails the schema even when the init work returns no error, as work that
+// logs and skips a cancelled step does.
+func TestProcessInitSchemas_NamesALockLostUnderCleanWork(t *testing.T) {
+	released := 0
+	runCtx := &initRunContext{
+		logger:         zap.NewNop(),
+		schemaRegistry: stubSchemaRegistry{cache: testAttrCache()},
+		locker:         lostLocker(&released),
+		initSchemaFn: func(context.Context, *initRunContext, int16) (int64, int, error) {
+			return 3, 1, nil
+		},
+	}
+
+	summary, err := processInitSchemas(context.Background(), runCtx, []int64{7})
+	require.ErrorIs(t, err, ErrSchemaLockLost)
+	require.Contains(t, err.Error(), "schema 7")
+	require.Zero(t, summary.TotalFilesCreated, "a schema whose lock was lost is not counted as initialized")
+	require.Equal(t, 1, released)
+}

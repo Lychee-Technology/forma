@@ -227,8 +227,12 @@ gets `ErrRetryableConflict`.
   its next renewal, within 15 seconds, and stops, but statements it sends
   before then run unlocked.
 - **"schema lock lost".** The run stopped because it found another holder
-  in its row, or could not renew for 45 seconds. Re-run it. A flush or init
-  cut short leaves what one that fails at the same point leaves.
+  in its row, or could not renew for 45 seconds. The schema fails even when
+  its remaining steps reported no error: a step the tool logs and skips,
+  such as a reconcile probe or a `--gc` delete, may have been skipped
+  because the loss cancelled it. So `manifest-reconcile` exits 1, not 2.
+  Re-run it. A flush or init cut short leaves what one that fails at the
+  same point leaves.
 - **"too late to reach its first renewal".** The database took more
   than 30 seconds to answer the acquire. The run gave the lease up before
   doing any work, so the schema is free. Re-run it once the cluster answers

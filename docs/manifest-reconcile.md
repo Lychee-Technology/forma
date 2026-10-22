@@ -484,7 +484,7 @@ forma-tools manifest-reconcile ... --gc --allow-empty-manifest-schema 7,9 --allo
   一致，比较时不做任何前导斜杠归一化）。
 - 退出码：`0` 一致；`2` 存在残余差异（含跳过的 schema、拒绝自动处理的混杂文件、
   记录目击但尚未过宽限期的残留、`--verify-stamps` 发现的印章分歧、`--verify-checksums`
-  发现的校验和分歧）；`1` 工具自身失败（含任一 schema 的 list/load/lock/dangling 复核/
+  发现的校验和分歧）；`1` 工具自身失败（含任一 schema 的 list/load/lock/租约丢失/dangling 复核/
   GC 状态读取/印章 footer 探测/校验和 GET 失败——不会伪装成「有差异」）。
   `--verify-checksums` 因无印章而跳过的条目数只作为覆盖率信息打印，**不影响退出码**。
 

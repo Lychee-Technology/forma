@@ -78,4 +78,9 @@ func TestWithLockLossNamesALostLock(t *testing.T) {
 
 	already := fmt.Errorf("flush: %w", context.Cause(lost))
 	require.Same(t, already, WithLockLoss(lost, already), "an error naming the loss is not wrapped twice")
+
+	require.NoError(t, WithLockLoss(released, nil), "work that finished before a release is clean")
+	err = WithLockLoss(lost, nil)
+	require.ErrorIs(t, err, ErrSchemaLockLost, "work that swallowed the loss's cancellation must not read as clean")
+	require.Contains(t, err.Error(), "schema 7's lease")
 }

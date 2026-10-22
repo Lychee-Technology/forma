@@ -33,7 +33,7 @@ func initSchemaUnderLock(ctx context.Context, runCtx *initRunContext, schemaID i
 	// double-naming rejected in earlier review.
 	rowsExported, filesCreated, err := initSchemaFn(held, runCtx, schemaID)
 	if err != nil {
-		return rowsExported, filesCreated, WithLockLoss(held, fmt.Errorf("init export+publish under schema lock: %w", err))
+		err = fmt.Errorf("init export+publish under schema lock: %w", err)
 	}
-	return rowsExported, filesCreated, nil
+	return rowsExported, filesCreated, WithLockLoss(held, err)
 }

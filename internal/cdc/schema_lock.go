@@ -105,15 +105,22 @@ func TrySchemaLock(ctx context.Context, db *sql.DB, schemaID int16) (bool, func(
 	return true, unlock, nil
 }
 
-// WithLockLoss names the lost lock as the cause of err, an error of work done
-// on a SchemaLocker's held context: work cut short by the loss otherwise
-// reports only context.Canceled.
+// WithLockLoss names the lost lock as the cause of err, the result of work
+// done on a SchemaLocker's held context: work cut short by the loss otherwise
+// reports only context.Canceled. A loss is reported even when err is nil,
+// because work that skips a step it could not do (a best-effort delete, a
+// probe it logs and passes over) returns nil after the loss cancelled that
+// step, and its result is then incomplete, not clean.
 func WithLockLoss(held context.Context, err error) error {
+	cause := context.Cause(held)
+	if !errors.Is(cause, ErrSchemaLockLost) {
+		return err
+	}
 	if err == nil {
-		return nil
+		return fmt.Errorf("%w; the work under it reported no error but may have skipped steps the loss cancelled", cause)
 	}
-	if cause := context.Cause(held); errors.Is(cause, ErrSchemaLockLost) && !errors.Is(err, ErrSchemaLockLost) {
-		return fmt.Errorf("%w: %w", cause, err)
+	if errors.Is(err, ErrSchemaLockLost) {
+		return err
 	}
-	return err
+	return fmt.Errorf("%w: %w", cause, err)
 }
