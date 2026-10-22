@@ -267,9 +267,10 @@ without the wait. What runs:
   exclusion and release; takeover of an expired lease only; renewal past
   the TTL; a holder that finds another's token stops and leaves that lease
   alone; a holder whose renewals are blocked stops while the database still
-  counts its lease live. Acquirers racing for a free and for an expired
-  lease leave exactly one holder, on READ COMMITTED and REPEATABLE READ
-  sessions.
+  counts its lease live; an acquire answered too late to reach its first
+  renewal fails and frees the schema. Acquirers racing for a free and for
+  an expired lease leave exactly one holder, on READ COMMITTED and
+  REPEATABLE READ sessions.
 - `internal/cdc/mark_flushed_dsql_test.go`, the flush mark: statements stay
   at 1,000 rows or fewer; on a REPEATABLE READ session, a writer's commit
   fails the mark with `40001`, and the retry marks the rows at their listed
@@ -293,9 +294,13 @@ cluster, because it waits for the emulation's lock wait. The sweep covers
 #274 there.
 
 `FORMA_DSQL_DSN` also runs the schema-lease tests against the cluster
-(`go test ./internal/cdc -run TestLeaseSchemaLock -v`). The blocked-renewal
-test skips there, since DSQL has no lock wait to block on. A `cdc-flush` run
-against a cluster also waits on the DuckDB `postgres` extension (#691).
+(`go test ./internal/cdc -run TestLeaseSchemaLock -v`). The acquire is the
+only statement on the DSQL path that pairs `ON CONFLICT ... DO UPDATE ...
+WHERE` with `RETURNING`. The exclusion test checks its contract there: an
+acquire that a live lease blocks returns no row, so `TryLock` answers "not
+acquired" rather than an error. The blocked-renewal and slow-acquire tests
+skip on a cluster, since DSQL has no lock wait to block on. A `cdc-flush`
+run against a cluster also waits on the DuckDB `postgres` extension (#691).
 
 The coordination suite runs against a cluster with
 `FORMA_COORDINATION_DSN` and `FORMA_COORDINATION_BACKEND=dsql`. It has not
