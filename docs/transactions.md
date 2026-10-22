@@ -39,7 +39,9 @@ manager's pool and services. The transactor holds no resources of its own.
 
 ## Lifecycle
 
-`InTx` begins one READ COMMITTED transaction and calls `fn` exactly once.
+`InTx` begins one transaction and calls `fn` exactly once. On PostgreSQL the
+transaction is READ COMMITTED; on the `aurora-dsql` engine it is DSQL's fixed
+REPEATABLE READ ([Aurora DSQL](aurora-dsql.md)).
 
 | `fn` ends by | Transaction | `InTx` returns |
 | --- | --- | --- |
@@ -65,8 +67,9 @@ Other rules:
 - **No nesting.** `InTx` with a context derived from the one `fn` received
   returns `ErrInvalidInput` without starting a transaction. There are no
   savepoints.
-- **Isolation** is READ COMMITTED, the level `Update` already pins for #457. It
-  is not configurable.
+- **Isolation** follows the engine and is not configurable. On PostgreSQL it
+  is READ COMMITTED, the level `Update` already pins for #457. On the
+  `aurora-dsql` engine it is REPEATABLE READ, the only level DSQL accepts.
 - **No retries.** Forma never re-runs `fn`.
 
 ## What a Tx write does
@@ -131,11 +134,15 @@ What a read sees:
   before any SQL, and no Tx read ever calls the federated engine. The
   PostgreSQL hot tier holds every live row and the Tx's own writes; the
   lakehouse tiers hold neither the uncommitted writes nor a lock.
-- **No repeatable read.** An unlocked read runs at READ COMMITTED: each
-  statement sees what had committed when it started, plus the Tx's own
-  writes. Two reads of one row in one Tx can disagree when another
-  transaction commits between them. A decision that must stay true until
-  commit needs a lock, below.
+- **Unlocked reads follow the engine's isolation.** On PostgreSQL an
+  unlocked read runs at READ COMMITTED: each statement sees what had
+  committed when it started, plus the Tx's own writes. Two reads of one row
+  in one Tx can disagree when another transaction commits between them. On
+  the `aurora-dsql` engine every read sees the transaction's snapshot plus
+  its own writes, so two reads of one row agree, but the snapshot does not
+  stop another transaction from changing the row and committing first. On
+  either engine, a decision that must stay true until commit needs a lock,
+  below.
 - **One clock.** Every `$now` in a Tx's reads, preconditions and
   `server_time` operators names the transaction's start instant
   ([Conditional writes](conditional-writes.md)), however long `fn` runs.

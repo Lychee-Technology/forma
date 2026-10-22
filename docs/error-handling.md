@@ -1220,8 +1220,9 @@ but they are not wired up and will not be:
 
 - `MaxRetryAttempts`, `RetryAttempts`, `RetryDelay`: Forma never retries
   (above).
-- `IsolationLevel`: isolation is load-bearing (#457). `Update`, the atomic
-  `BatchUpdate` and `RequeueForFlush` pin READ COMMITTED, and making the level
+- `IsolationLevel`: isolation is load-bearing (#457). On PostgreSQL, `Update`,
+  the atomic `BatchUpdate` and `RequeueForFlush` pin READ COMMITTED (the
+  `aurora-dsql` engine runs at DSQL's fixed REPEATABLE READ), and making the level
   configurable would let a deployment silently reintroduce the lost-update bug.
 - `EnableDeadlockDetection`, `DeadlockCheckInterval`, `DeadlockMaxWaitTime`:
   PostgreSQL always detects deadlocks, using its own `deadlock_timeout`. Bound
