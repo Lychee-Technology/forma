@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	dsqlauth "github.com/aws/aws-sdk-go-v2/feature/dsql/auth"
 	"github.com/awslabs/aws-lambda-go-api-proxy/httpadapter"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/factory"
@@ -44,8 +44,9 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 
 	// The whole configuration, the pool settings included, is resolved and
 	// validated before the pool is opened, so an out-of-range limit or an
-	// unparsable integer variable fails the cold start here instead of
-	// silently widening a protection or keeping a default (#465, #600).
+	// unparsable integer or boolean variable fails the cold start here
+	// instead of silently widening a protection, keeping a default or
+	// switching a feature off (#465, #600, #642).
 	formaConfig, dbConfig, err := lambdaConfigFromEnv(schemaDir)
 	if err != nil {
 		return nil, err
@@ -146,7 +147,8 @@ func lambdaConfigFromEnv(schemaDir string) (*forma.Config, forma.DatabaseConfig,
 	// entry point serves the same write routes as cmd/server, so it must honour
 	// VALIDATE_UPDATES_STRICT too or the #314 staged rollout is unavailable on
 	// Lambda. The overlay runs first so it cannot clobber the directory below.
-	config.Entity = bootstrap.EntityConfigFromEnv(config.Entity)
+	var entityErr error
+	config.Entity, entityErr = bootstrap.EntityConfigFromEnv(config.Entity)
 	config.Entity.SchemaDirectory = schemaDir
 
 	// Database schema used by factory table discovery.
@@ -156,7 +158,8 @@ func lambdaConfigFromEnv(schemaDir string) (*forma.Config, forma.DatabaseConfig,
 	// METRICS_STDOUT=true makes every metric this instance emits a JSON line
 	// on stdout, which Lambda forwards to the function's log group (#423);
 	// unset, Forma's no-op default emits nothing.
-	config.Metrics.Emitter = bootstrap.MetricEmitterFromEnv(os.Stdout)
+	var metricsErr error
+	config.Metrics.Emitter, metricsErr = bootstrap.MetricEmitterFromEnv(os.Stdout)
 
 	// Request limits and budgets (#465), the same overlay cmd/server applies;
 	// API Gateway bounds the connection itself, so there is no http.Server
@@ -167,9 +170,9 @@ func lambdaConfigFromEnv(schemaDir string) (*forma.Config, forma.DatabaseConfig,
 	// DB_* sizing is parsed before any I/O too (#600).
 	dbConfig, dbErr := bootstrap.DatabaseConfigFromEnv(lambdaDBDefaults)
 
-	// Both overlays are read before either is judged, so one cold start
-	// names every unparsable variable.
-	if err := errors.Join(dbErr, limitsErr); err != nil {
+	// Every overlay is read before any is judged, so one cold start names
+	// every unparsable integer (#600) or boolean (#642) variable.
+	if err := errors.Join(entityErr, metricsErr, dbErr, limitsErr); err != nil {
 		return nil, forma.DatabaseConfig{}, fmt.Errorf("invalid environment: %w", err)
 	}
 	engine, err := lambdaEngine(dbConfig.Engine, bootstrap.Env("DSQL_ENDPOINT", ""))
@@ -258,33 +261,15 @@ func createDSQLPool(ctx context.Context, endpoint string, settings forma.Databas
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Generate IAM auth token for DSQL
-	// The token is valid for 15 minutes to 7 days (default: 15 minutes)
-	token, err := dsqlauth.GenerateDBConnectAdminAuthToken(ctx, endpoint, awsCfg.Region, awsCfg.Credentials)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate DSQL auth token: %w", err)
+	// Signing a token is local: the credentials provider caches the role's
+	// credentials, so a token per connection costs no AWS call.
+	newToken := func(ctx context.Context) (string, error) {
+		return dsqlauth.GenerateDBConnectAdminAuthToken(ctx, endpoint, awsCfg.Region, awsCfg.Credentials)
 	}
-
-	// Build connection string for DSQL
-	// DSQL always uses: database=postgres, user=admin, sslmode=require
-	connString := fmt.Sprintf(
-		"postgres://admin:%s@%s:5432/postgres?sslmode=require",
-		url.QueryEscape(token),
-		endpoint,
-	)
-
-	poolConfig, err := pgxpool.ParseConfig(connString)
+	poolConfig, err := dsqlPoolConfig(endpoint, settings, newToken)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse DSQL connection string: %w", err)
+		return nil, fmt.Errorf("failed to configure DSQL pool for %s: %w", endpoint, err)
 	}
-
-	// Configure pool for Lambda - use conservative settings. DB_MAX_IDLE_CONNS
-	// is the warm floor here.
-	poolConfig.MaxConns = int32(settings.MaxConnections)
-	poolConfig.MinConns = int32(settings.MaxIdleConns)
-	poolConfig.MaxConnLifetime = settings.ConnMaxLifetime
-	poolConfig.MaxConnIdleTime = settings.ConnMaxIdleTime
-	poolConfig.ConnConfig.ConnectTimeout = settings.Timeout
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
@@ -300,4 +285,36 @@ func createDSQLPool(ctx context.Context, endpoint string, settings forma.Databas
 	}
 
 	return pool, nil
+}
+
+// dsqlPoolConfig builds the DSQL pool's configuration. The connection string
+// carries no password: BeforeConnect signs a fresh IAM token for every
+// connection the pool opens. A token expires after 15 minutes by default,
+// while a warm execution environment keeps its pool far longer and replaces
+// connections every ConnMaxLifetime, so a token taken once at the cold start
+// would fail every connection opened after it expired.
+func dsqlPoolConfig(endpoint string, settings forma.DatabaseConfig, newToken func(context.Context) (string, error)) (*pgxpool.Config, error) {
+	// DSQL always uses: database=postgres, user=admin, sslmode=require
+	connString := fmt.Sprintf("postgres://admin@%s:5432/postgres?sslmode=require", endpoint)
+	poolConfig, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse DSQL connection string: %w", err)
+	}
+	poolConfig.BeforeConnect = func(ctx context.Context, connConfig *pgx.ConnConfig) error {
+		token, err := newToken(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to generate DSQL auth token for %s: %w", endpoint, err)
+		}
+		connConfig.Password = token
+		return nil
+	}
+
+	// Configure pool for Lambda - use conservative settings. DB_MAX_IDLE_CONNS
+	// is the warm floor here.
+	poolConfig.MaxConns = int32(settings.MaxConnections)
+	poolConfig.MinConns = int32(settings.MaxIdleConns)
+	poolConfig.MaxConnLifetime = settings.ConnMaxLifetime
+	poolConfig.MaxConnIdleTime = settings.ConnMaxIdleTime
+	poolConfig.ConnConfig.ConnectTimeout = settings.Timeout
+	return poolConfig, nil
 }

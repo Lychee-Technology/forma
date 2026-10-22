@@ -30,7 +30,8 @@ var dsqlUnsupported = []string{"ADVISORY", "FOR UPDATE", "FOR SHARE", "FOR NO KE
 // write path takes sends none of dsqlUnsupported: the lock of one row (a CAS
 // update, a fence, a create under a unique key), of a row set (a predicate
 // update and delete), the claim's non-blocking lock and re-check, and an
-// upsert's. Every transaction it opens begins with a plain BEGIN.
+// upsert's, both when it creates and when it resolves the conflict with the
+// row it created. Every transaction it opens begins with a plain BEGIN.
 func TestDSQLEngineSendsOnlyStatementsDSQLRuns(t *testing.T) {
 	requireDSQLEngine(t)
 	e := newEnv(t)
@@ -58,6 +59,8 @@ func TestDSQLEngineSendsOnlyStatementsDSQLRuns(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, begins, "the InTx is one transaction, and the audit saw it begin")
+	require.Equal(t, map[string]any{"dedup_count": int64(1)}, e.stored(t, HistorySchema, DedupRowID(e.app), "dedup_count"),
+		"the second upsert resolved its conflict rather than failing its precondition")
 }
 
 // everyLockingPath runs, in uow, a write of each per-row locking path.
@@ -82,7 +85,10 @@ func everyLockingPath(e *env, uow UnitOfWork, inst, fenced *Instance) error {
 	}
 	evt := HistoryEvent{InstanceID: inst.ID, Type: "stuck", Details: e.app}
 	if err := uow.History().UpsertDeduped(e.ctx, evt, e.app, time.Hour); err != nil {
-		return fmt.Errorf("upsert: %w", err)
+		return fmt.Errorf("upsert that creates: %w", err)
+	}
+	if err := uow.History().UpsertDeduped(e.ctx, evt, e.app, time.Hour); err != nil {
+		return fmt.Errorf("upsert that resolves its conflict: %w", err)
 	}
 	return nil
 }

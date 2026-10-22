@@ -81,7 +81,36 @@ func resolveSampleOptions(csvFile, dbURL, schemaName *string, dryRun *bool, suga
 	return databaseURL, mapper
 }
 
+// sampleConfigFromEnv builds the importer's configuration with no I/O, so
+// runSampleImport resolves it before connecting: a set VALIDATE_UPDATES_STRICT
+// that is not a boolean fails the run up front (#642). The schema registry is
+// the one field it cannot fill; runSampleImport sets it once the schemas load.
+func sampleConfigFromEnv(schemaDir string) (*forma.Config, error) {
+	config := forma.DefaultConfig(nil)
+	config.Database.TableNames.EAVData = "eav_data_sample"
+	config.Database.TableNames.EntityMain = "entity_main_sample"
+	config.Database.TableNames.SchemaRegistry = "schema_registry_sample"
+	config.Database.TableNames.ChangeLog = "change_log_sample"
+
+	config.Entity.SchemaDirectory = schemaDir
+
+	// The importer is a write path, so it honours the #314 staged rollout
+	// (VALIDATE_UPDATES_STRICT) like the other entry points that build an
+	// EntityManager. Pinned by cmd/lambda's entry-point walk (#321).
+	var err error
+	config.Entity, err = bootstrap.EntityConfigFromEnv(config.Entity)
+	if err != nil {
+		return nil, fmt.Errorf("invalid environment: %w", err)
+	}
+	return config, nil
+}
+
 func runSampleImport(ctx context.Context, cfg sampleRunConfig, sugar *zap.SugaredLogger) {
+	config, err := sampleConfigFromEnv(cfg.schemaDir)
+	if err != nil {
+		sugar.Fatalf("Failed to configure import: %v", err)
+	}
+
 	// Connect to database
 	sugar.Infof("Connecting to database...")
 	pool, err := pgxpool.New(ctx, cfg.databaseURL)
@@ -110,19 +139,7 @@ func runSampleImport(ctx context.Context, cfg sampleRunConfig, sugar *zap.Sugare
 	}
 	sugar.Infof("Schema '%s' found with ID: %d", cfg.schemaName, schemaID)
 
-	// Create configuration
-	config := forma.DefaultConfig(registry)
-	config.Database.TableNames.EAVData = "eav_data_sample"
-	config.Database.TableNames.EntityMain = "entity_main_sample"
-	config.Database.TableNames.SchemaRegistry = "schema_registry_sample"
-	config.Database.TableNames.ChangeLog = "change_log_sample"
-
-	config.Entity.SchemaDirectory = cfg.schemaDir
-
-	// The importer is a write path, so it honours the #314 staged rollout
-	// (VALIDATE_UPDATES_STRICT) like the other entry points that build an
-	// EntityManager. Pinned by cmd/lambda's entry-point walk (#321).
-	config.Entity = bootstrap.EntityConfigFromEnv(config.Entity)
+	config.SchemaRegistry = registry
 
 	// Clear sample tables before import
 	sugar.Infof("Clearing sample tables...")

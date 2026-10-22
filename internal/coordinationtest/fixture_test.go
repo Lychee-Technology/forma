@@ -39,8 +39,10 @@ var schemaIDs = map[string]int16{
 type backend struct {
 	name string
 	dsn  string
-	// testDB says dsn is the integration PostgreSQL testdb resolves.
-	testDB bool
+	// named says FORMA_COORDINATION_DSN chose the database. A named one was
+	// asked for, so it is not probed and its absence fails the run; only
+	// the default database is probed, and skipped when it is absent.
+	named bool
 }
 
 // The backends whose Forma engine is aurora-dsql (#633). dsqlEmulated runs
@@ -60,12 +62,12 @@ const (
 func activeBackend() backend {
 	name := os.Getenv("FORMA_COORDINATION_BACKEND")
 	if dsn := os.Getenv("FORMA_COORDINATION_DSN"); dsn != "" {
-		return backend{name: name, dsn: dsn}
+		return backend{name: name, dsn: dsn, named: true}
 	}
 	if name != dsqlEmulated {
 		name = "postgres"
 	}
-	return backend{name: name, dsn: testdb.ResolveDSN(), testDB: true}
+	return backend{name: name, dsn: testdb.ResolveDSN()}
 }
 
 func (b backend) postgres() bool { return b.name == "postgres" }
@@ -86,6 +88,26 @@ func requirePostgresMechanisms(t *testing.T) {
 	if b := activeBackend(); !b.postgres() {
 		t.Skipf("mechanism assertion: PostgreSQL only, the backend is %q", b.name)
 	}
+}
+
+// A run against a named DSN neither probes nor needs the default database,
+// so the default's absence cannot skip it.
+func TestNamedBackendDoesNotProbeTheDefaultDatabase(t *testing.T) {
+	if b := activeBackend(); !b.named {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		testdb.Connect(t, ctx) // the default database is the one to name
+		t.Setenv("FORMA_COORDINATION_DSN", b.dsn)
+		t.Setenv("FORMA_COORDINATION_BACKEND", b.name)
+	}
+	// Nothing listens where the default database now is.
+	t.Setenv("DATABASE_URL", "postgres://postgres:postgres@127.0.0.1:1/forma?sslmode=disable")
+	built := false
+	t.Run("an env on the named DSN", func(t *testing.T) {
+		newEnv(t)
+		built = true
+	})
+	require.True(t, built, "the env was built on the named DSN, not skipped by a probe of the default database")
 }
 
 // tableSet names one test's tables.
@@ -128,7 +150,7 @@ func newEnvOn(t *testing.T, managerPool func(*env) *pgxpool.Pool) *env {
 	if b.name == "" {
 		t.Fatal("FORMA_COORDINATION_DSN is set without FORMA_COORDINATION_BACKEND")
 	}
-	if b.testDB {
+	if !b.named {
 		testdb.Connect(t, ctx) // skips, or fails in CI, when PostgreSQL is absent
 	}
 	serial := fmt.Sprintf("coord_%d_%d", time.Now().UnixNano(), envSerial.Add(1))

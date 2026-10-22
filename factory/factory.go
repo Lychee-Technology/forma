@@ -98,23 +98,9 @@ func NewEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config, pool *pgxpool.Pool, deps entityManagerDependencies) (forma.EntityManager, error) {
 	schemaName := normalizeSchemaName(config.Database.Schema)
 	effectiveConfig := configWithQualifiedTables(config, schemaName)
-	// Configuration errors are rejected before any I/O: an incoherent manifest
-	// read surface must not be discovered halfway through startup, after the
-	// database has already been queried.
-	if err := effectiveConfig.DuckDB.ValidateManifestRead(); err != nil {
-		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
-	}
-	// #456: reject the caller-path opt-in without a bucket before any I/O, so an
-	// operator misconfiguration fails fast instead of surfacing as a 4xx on
-	// every hint-bearing request.
-	if err := effectiveConfig.DuckDB.ValidateCallerParquetPaths(); err != nil {
-		return nil, fmt.Errorf("invalid duckdb caller parquet paths configuration: %w", err)
-	}
-	// #633: the engine decides how writes exclude each other, so an unknown
-	// name fails here rather than falling back to PostgreSQL's locks.
-	engine, err := internal.WithDatabaseEngine(effectiveConfig.Database.Engine)
+	engine, err := validateBeforeIO(effectiveConfig)
 	if err != nil {
-		return nil, fmt.Errorf("invalid database configuration: %w", err)
+		return nil, fmt.Errorf("configuration rejected before connecting: %w", err)
 	}
 	tables, err := deps.collectTables(ctx, pool, schemaName)
 	if err != nil {
@@ -216,6 +202,28 @@ func discardDuckClient(duckClient *federated.DuckDBClient) {
 	}
 }
 
+// validateBeforeIO rejects configuration errors before any I/O, and answers
+// the repository option of the configured database engine:
+//   - an incoherent manifest read surface must not be discovered halfway
+//     through startup, after the database has already been queried;
+//   - the caller-path opt-in without a bucket fails fast instead of surfacing
+//     as a 4xx on every hint-bearing request (#456);
+//   - the engine decides how writes exclude each other, so an unknown name
+//     fails here rather than falling back to PostgreSQL's locks (#633).
+func validateBeforeIO(cfg *forma.Config) (internal.RepoOption, error) {
+	if err := cfg.DuckDB.ValidateManifestRead(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
+	}
+	if err := cfg.DuckDB.ValidateCallerParquetPaths(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb caller parquet paths configuration: %w", err)
+	}
+	engine, err := internal.WithDatabaseEngine(cfg.Database.Engine)
+	if err != nil {
+		return nil, fmt.Errorf("invalid database configuration: %w", err)
+	}
+	return engine, nil
+}
+
 // requireCoreTables fails closed when any of the three tables the manager
 // cannot operate without is absent from the resolved schema.
 func requireCoreTables(cfg *forma.Config, tables []string) error {
@@ -243,15 +251,17 @@ func newRepositoryAndEngine(
 	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache,
 		append([]internal.RepoOption{internal.WithPlanCache(planCache)}, repoOpts...)...)
 	// zap.L() is the same global the rest of this package logs through. It
-	// carries two log-only signals. The federated validator's #256
+	// carries three log-only signals. The federated validator's #256
 	// stamp/footer cross-check, whose only surface is a log line: the read it
 	// observes succeeds, so no caller error and no execution plan would ever
-	// mention it. And the #351 guard-violation attribution: under
+	// mention it. The #351 guard-violation attribution: under
 	// AllowPartialDegradedMode the error naming the offending objects is
 	// absorbed into a Postgres-only answer and toExecutionPlan drops plan
-	// Notes, so the log line is the only surface that survives. It also
-	// carries the circuit breaker's transition lines (#634), which pair with
-	// the duckdb_circuit_breaker_transition_total metric below.
+	// Notes, so the log line is the only surface that survives. And the #638
+	// degraded-fallback line, the only record of the failure such an answer
+	// absorbed. It also carries the circuit breaker's transition lines
+	// (#634), which pair with the duckdb_circuit_breaker_transition_total
+	// metric below.
 	// The embedder's telemetry emitter reaches the engine here and the
 	// manager through its config (#423); it is per instance, so nothing is
 	// registered globally.

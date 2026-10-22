@@ -17,7 +17,10 @@ import (
 // (pre-#204 attributes file) whose sibling sorts above it, and an order
 // holding one of each kind of member: a scalar, a list, a legacy text-typed
 // array, an array of objects, and the object and the array of objects nested
-// inside that array, which the rebuild cannot shape (#619, #623).
+// inside that array (#619). It declares no array ancestry, so its rows are
+// read by inferring each record's array from the row, which cannot shape
+// what is nested inside an array of objects (#623); newAncestryRegistry is
+// the same schema with its ancestry declared.
 func newRebuildRegistry() forma.SchemaRegistry {
 	return &stubSchemaRegistry{schemaID: 619, schemaName: "rebuild", cache: forma.SchemaAttributeCache{
 		"contact.phones":  {AttributeName: "contact.phones", AttributeID: 1, ValueType: forma.ValueTypeList},
@@ -167,7 +170,7 @@ func TestFromAttributesIsRecordOrderIndependent(t *testing.T) {
 // orderRows returns every combination of one record of each kind an order can
 // hold, so no pairing of siblings is left to a hand-picked case. The members
 // nested inside the array of objects are the ones the rebuild cannot shape
-// (#623).
+// without array ancestry (#623).
 func orderRows() [][]model.EntityAttribute {
 	pool := []model.EntityAttribute{
 		rebuildAttr(10, "", "n"),      // order.note, a scalar
@@ -203,7 +206,8 @@ func orderRows() [][]model.EntityAttribute {
 // resolveStoredValues, which is where a document the write refuses must not
 // become a deleted record. TestMergeUpdateWritesBackEveryStoredRecordOrRefuses
 // holds the same rows to that. The shape of the members nested inside the
-// array of objects (#623) is asserted by neither.
+// array of objects (#623) is asserted by neither: without array ancestry it
+// is wrong, and TestFromAttributesPlacesByArrayAncestry asserts it with.
 func TestFromAttributesReadsSharedPathsOneWay(t *testing.T) {
 	tr := NewTransformer(newRebuildRegistry())
 	ctx := context.Background()

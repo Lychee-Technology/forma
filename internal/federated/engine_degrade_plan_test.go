@@ -19,6 +19,9 @@ type degradedPlanCase struct {
 	// cause is a substring of the absorbed error, which the fallback's own
 	// note must carry.
 	cause string
+	// breakerRejected marks the case the open breaker turns away before any
+	// DuckDB work; its fallback line is logged at Debug (#638).
+	breakerRejected bool
 }
 
 func degradedPlanCases() []degradedPlanCase {
@@ -33,7 +36,8 @@ func degradedPlanCases() []degradedPlanCase {
 				require.True(t, breaker.IsOpen(), "precondition: the breaker must be open")
 				return newSentinelTestEngine(t, &fakeDuckDBExecutor{}, breaker), coldTierQuery()
 			},
-			cause: "duckdb circuit breaker open",
+			cause:           "duckdb circuit breaker open",
+			breakerRejected: true,
 		},
 		{
 			// The shape of the #636 review's reproduction ([hot, cold],

@@ -11,20 +11,24 @@ import (
 )
 
 // MetricsStdoutEnv is the one telemetry switch the shipped entrypoints read:
-// "true"/"1" makes every metric the Forma instance emits a JSON line on
-// stdout. Off by default, so an unconfigured process writes nothing extra.
+// a true boolean (see EnvBool) makes every metric the Forma instance emits a
+// JSON line on stdout. Off by default, so an unconfigured process writes
+// nothing extra.
 const MetricsStdoutEnv = "METRICS_STDOUT"
 
 // MetricEmitterFromEnv returns the stdout JSON-line emitter when
 // METRICS_STDOUT is on, and nil — Forma's no-op default — otherwise. It is
 // what cmd/server and cmd/lambda set on Config.Metrics.Emitter (#423) and
 // what cmd/tools compactor builds its Compactor's sink from (#594): the demo
-// binaries choose no metrics backend, they make the events visible.
-func MetricEmitterFromEnv(w io.Writer) forma.MetricEmitter {
-	if !EnvBool(MetricsStdoutEnv, false) {
-		return nil
+// binaries choose no metrics backend, they make the events visible. A set
+// value that is not a boolean is an *EnvError with a nil emitter (#642), so
+// the entrypoint fails instead of running with no metrics.
+func MetricEmitterFromEnv(w io.Writer) (forma.MetricEmitter, error) {
+	on, err := EnvBool(MetricsStdoutEnv, false)
+	if err != nil || !on {
+		return nil, err
 	}
-	return NewJSONLineMetricEmitter(w)
+	return NewJSONLineMetricEmitter(w), nil
 }
 
 // metricLine is the wire shape of one emitted metric. The field set is

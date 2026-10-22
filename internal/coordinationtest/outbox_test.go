@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -24,9 +25,12 @@ func TestClaimExclusivity(t *testing.T) {
 		// head. Claims that skip held rows take every head of a round; on an
 		// optimistic backend the losers of a round claim nothing (#633).
 		var heads []uuid.UUID
+		before := map[uuid.UUID]int64{}
 		for _, relays := range []int{2, 8} {
 			for iteration := 0; iteration < 10; iteration++ {
-				heads = append(heads, ids(firsts(e.seedOutbox(t, 10, 2)))...)
+				round := ids(firsts(e.seedOutbox(t, 10, 2)))
+				heads = append(heads, round...)
+				maps.Copy(before, e.stamps(t, OutboxSchema, round...))
 				// Each round's held messages stay live, so the statistics
 				// must follow the outbox.
 				e.analyze(t)
@@ -38,7 +42,7 @@ func TestClaimExclusivity(t *testing.T) {
 						return err
 					})
 				})
-				requireDisjointClaims(t, e, heads, claimed, errs)
+				requireDisjointClaims(t, e, heads, before, claimed, errs)
 				total := committedClaims(claimed, errs)
 				require.NotZero(t, total, "%d relays, iteration %d: a claim committed", relays, iteration)
 				t.Run(fmt.Sprintf("mechanism: %d relays, iteration %d, no ErrRetryableConflict", relays, iteration), func(t *testing.T) {
@@ -57,11 +61,15 @@ func TestClaimExclusivity(t *testing.T) {
 		// Half the partitions enqueue all their messages at one instant, so
 		// their order is the row-ID tiebreak's.
 		partitions := append(e.seedOutbox(t, 10, 3), e.seedTiedOutbox(t, 10, 3)...)
+		seeded := ids(flatten(partitions))
+		before := e.stamps(t, OutboxSchema, seeded...)
 		run := newRelayRun(e, 60)
 		for i, err := range run.run(4) {
 			require.NoError(t, err, "relay %d", i)
 		}
 		requireDrained(t, e, run, partitions)
+		e.requireWritten(t, OutboxSchema, before, seeded...)
+		e.requireOneHotEntryPerRow(t, OutboxSchema)
 		t.Run("mechanism: no ErrRetryableConflict", func(t *testing.T) {
 			requirePostgresMechanisms(t)
 			require.Zero(t, run.retryable)
@@ -222,6 +230,7 @@ func concurrentClaimsOnPostgres(t *testing.T) {
 	require.NoError(t, e.pool.QueryRow(e.ctx, "SELECT version()").Scan(&version))
 	require.True(t, strings.HasPrefix(version, "PostgreSQL "), "the backend is %q", version)
 	heads := ids(firsts(e.seedOutbox(t, 40, 2)))
+	before := e.stamps(t, OutboxSchema, heads...)
 	claimed := make([][]OutboxMessage, 8)
 	errs := race(8, func(i int) error {
 		return e.inTx(func(uow UnitOfWork) error {
@@ -231,7 +240,7 @@ func concurrentClaimsOnPostgres(t *testing.T) {
 		})
 	})
 	require.Zero(t, retryable(errs))
-	requireDisjointClaims(t, e, heads, claimed, errs)
+	requireDisjointClaims(t, e, heads, before, claimed, errs)
 }
 
 func TestClaimBatchByTopics(t *testing.T) {
@@ -242,6 +251,7 @@ func TestClaimBatchByTopics(t *testing.T) {
 	msgs := []OutboxMessage{message("a", base), message("b", base.Add(time.Millisecond)), message("b", base.Add(2*time.Millisecond))}
 	msgs[0].Topic, msgs[2].Topic = "billing", "billing"
 	require.NoError(t, e.inTx(func(uow UnitOfWork) error { return uow.Outbox().Insert(e.ctx, msgs) }))
+	before := e.stamps(t, OutboxSchema, ids(msgs)...)
 	claimTopics := func(topics ...string) []OutboxMessage {
 		var got []OutboxMessage
 		require.NoError(t, e.inTx(func(uow UnitOfWork) error {
@@ -259,6 +269,8 @@ func TestClaimBatchByTopics(t *testing.T) {
 	require.Empty(t, claimTopics("billing"), "b's billing message still waits: its head is held")
 	require.Equal(t, map[string]any{"status": OutboxPending, "lock_generation": int64(0)},
 		e.stored(t, OutboxSchema, msgs[2].ID, "status", "lock_generation"))
+	e.requireWritten(t, OutboxSchema, before, msgs[0].ID, msgs[1].ID)
+	require.Equal(t, before[msgs[2].ID], e.stamps(t, OutboxSchema, msgs[2].ID)[msgs[2].ID], "b's billing message is not written")
 }
 
 // committedClaims counts the messages the committed claims took.
@@ -286,9 +298,10 @@ func firsts(partitions [][]OutboxMessage) []OutboxMessage {
 
 // requireDisjointClaims asserts that no message is in two committed claims,
 // that every claimed message is a partition head, and that each is stored
-// as its claimer's. A claim that failed is ErrRetryableConflict, and a loser
-// claims nothing.
-func requireDisjointClaims(t *testing.T, e *env, heads []uuid.UUID, claimed [][]OutboxMessage, errs []error) {
+// as its claimer's, with one hot change_log entry stamped after its entry in
+// before. A claim that failed is ErrRetryableConflict, and a loser claims
+// nothing.
+func requireDisjointClaims(t *testing.T, e *env, heads []uuid.UUID, before map[uuid.UUID]int64, claimed [][]OutboxMessage, errs []error) {
 	t.Helper()
 	owner := map[uuid.UUID]int{}
 	for i, msgs := range claimed {
@@ -303,6 +316,7 @@ func requireDisjointClaims(t *testing.T, e *env, heads []uuid.UUID, claimed [][]
 			require.Contains(t, heads, m.ID, "only partition heads are claimable")
 			require.Equal(t, map[string]any{"locked_by": fmt.Sprintf("relay-%d", i), "status": OutboxPublishing},
 				e.stored(t, OutboxSchema, m.ID, "locked_by", "status"))
+			e.requireWritten(t, OutboxSchema, before, m.ID)
 		}
 	}
 }

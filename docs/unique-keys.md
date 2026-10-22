@@ -164,10 +164,12 @@ without waiting, so a release that started after the insert and has not
 committed yet still counts: the creator returns `ErrUniqueConflict`, as if it
 had run just before the release, and can take the value when run again.
 
-Writes that take values pin `READ COMMITTED`, whatever the session's default
-isolation level. Under a snapshot level a loser would see `40001` for an entry
+On PostgreSQL, writes that take values pin `READ COMMITTED`, whatever the
+session's default isolation level. Under a snapshot level a loser would see `40001` for an entry
 committed after its snapshot instead of `ErrUniqueConflict`. A delete without
-preconditions only releases values and keeps the session's level (#645).
+preconditions only releases values and keeps the session's level (#645). On
+the `aurora-dsql` engine every write runs at DSQL's fixed REPEATABLE READ, and
+that `40001` is part of the contract ([Aurora DSQL](#aurora-dsql)).
 
 What each surface does:
 
@@ -280,7 +282,11 @@ The target is exactly one of:
 
 - `Target.RowID`: the create's row ID, which must then be set;
 - `Target.Key`: a unique key the schema declares. `Create.Data` must set every
-  attribute of that key, since a create without one is not subject to it.
+  attribute of that key, since a create without one is not subject to it. An
+  attribute bound to `ltbase_created_at` is the exception: Forma stamps it,
+  whatever `Create.Data` says. The upsert reads that stamp once, before its
+  lookup, and stores the row under it, so the target is the value `Create`
+  would reserve, and only a row created with that same stamp holds it.
 
 What it answers:
 

@@ -40,6 +40,8 @@ func TestDefinitions(t *testing.T) {
 		}))
 		require.Equal(t, "first", got.Body)
 		require.Equal(t, DefinitionDraft, got.Status)
+		e.requireWritten(t, DefinitionSchema, nil, got.ID)
+		e.requireOneHotEntryPerRow(t, DefinitionSchema)
 	})
 
 	t.Run("activations take the next sequence; a duplicate sequence is ErrUniqueConflict", func(t *testing.T) {
@@ -72,6 +74,8 @@ func TestDefinitions(t *testing.T) {
 				}
 			}
 			require.Equal(t, 3, e.liveRows(t, DefinitionSchema))
+			e.requireWritten(t, DefinitionSchema, nil, e.liveIDs(t, DefinitionSchema, "name", "approval")...)
+			e.requireOneHotEntryPerRow(t, DefinitionSchema)
 		})
 		t.Run("mechanism: the second waits on the key, then answers ErrUniqueConflict", func(t *testing.T) {
 			requirePostgresMechanisms(t)

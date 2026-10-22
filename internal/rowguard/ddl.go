@@ -27,7 +27,10 @@ import (
 const TableSuffix = "_row_guard"
 
 // Table names the row-guard table of entityMain. A schema-qualified name
-// keeps its qualifier, and a quoted one its quotes.
+// keeps its qualifier, and a quoted one its quotes. The name is bounded to
+// PostgreSQL's identifier limit like the unique-key tables': unbounded, the
+// guard table of a 63-byte entity_main name would truncate to entity_main's
+// own name.
 func Table(entityMain string) string { return sqlutil.SuffixedIdentifier(entityMain, TableSuffix) }
 
 // tableDDL is the row-guard table. generation counts the transactions that

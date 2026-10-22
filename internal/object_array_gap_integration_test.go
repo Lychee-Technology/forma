@@ -17,11 +17,18 @@ import (
 // Get, Query and update alike, and every update surface writes back exactly
 // the stored rows beside its own change.
 //
-// The lead's second property interest holds a snapshot the first lacks. Its
-// array reads per-field (#623), but the snapshot gap takes the same padding,
-// so the update is accepted over it too.
+// The lead's property interests nest an object, the snapshot, inside an
+// array of objects. The file registry derives the lead's array ancestry from
+// its schema document, so they read as written (#623): before, the array
+// read as an object of per-field arrays. The first interest holds a snapshot
+// and the second notes, the case no per-field reading kept apart. A Get or
+// Query projecting their members keeps each in its element.
 func TestUnrelatedUpdateOverObjectArrayGapIntegration(t *testing.T) {
 	areas := []any{map[string]any{}, map[string]any{"city": "Tokyo"}}
+	interests := []any{
+		map[string]any{"propertyId": "p1", "status": "viewed", "snapshot": map[string]any{"title": "Flat A"}},
+		map[string]any{"propertyId": "p2", "status": "viewed", "notes": "near the station"},
+	}
 	for _, surface := range updateSurfaces {
 		t.Run(surface.name, func(t *testing.T) {
 			env := setupIntegrationEnv(t)
@@ -34,18 +41,16 @@ func TestUnrelatedUpdateOverObjectArrayGapIntegration(t *testing.T) {
 				Data: map[string]any{
 					"id": uuid.New().String(), "tenantId": "tenant-1", "ownerUserId": "owner-1",
 					"pipeline": "buy", "stage": "new", "status": "open",
-					"contact":     map[string]any{"isAnonymous": false},
-					"requirement": map[string]any{"areas": areas},
-					"propertyInterests": []any{
-						map[string]any{"propertyId": "p1", "status": "viewed"},
-						map[string]any{"propertyId": "p2", "status": "viewed", "snapshot": map[string]any{"title": "Flat B"}},
-					},
-					"createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-02T00:00:00Z",
+					"contact":           map[string]any{"isAnonymous": false},
+					"requirement":       map[string]any{"areas": areas},
+					"propertyInterests": interests,
+					"createdAt":         "2024-01-01T00:00:00Z", "updatedAt": "2024-01-02T00:00:00Z",
 				},
 			})
 			require.NoError(t, err)
 			require.Equal(t, areas, valueAtPath(created.Attributes, "requirement.areas"), "create response")
-			requireLeadAreas(t, env, created.RowID, "get after create", areas)
+			require.Equal(t, interests, created.Attributes["propertyInterests"], "create response")
+			requireLeadAreas(t, env, created.RowID, "get after create", areas, interests)
 
 			stageID := cache["stage"].AttributeID
 			before := storedLeadRows(t, env, schemaID, created.RowID)
@@ -59,6 +64,7 @@ func TestUnrelatedUpdateOverObjectArrayGapIntegration(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, "contacted", updated["stage"])
 			require.Equal(t, areas, valueAtPath(updated, "requirement.areas"), "update response")
+			require.Equal(t, interests, updated["propertyInterests"], "update response")
 
 			want := make([]string, 0, len(before))
 			for _, row := range before {
@@ -69,20 +75,41 @@ func TestUnrelatedUpdateOverObjectArrayGapIntegration(t *testing.T) {
 			}
 			require.ElementsMatch(t, want, storedLeadRows(t, env, schemaID, created.RowID), "eav_data rows after the update")
 
-			requireLeadAreas(t, env, created.RowID, "get after update", areas)
+			requireLeadAreas(t, env, created.RowID, "get after update", areas, interests)
 			list, err := env.manager.Query(env.ctx, &forma.QueryRequest{SchemaName: "lead", Page: 1, ItemsPerPage: 10})
 			require.NoError(t, err)
 			require.Len(t, list.Data, 1)
 			require.Equal(t, areas, valueAtPath(list.Data[0].Attributes, "requirement.areas"), "query")
+			require.Equal(t, interests, list.Data[0].Attributes["propertyInterests"], "query")
+			requireProjectedInterests(t, env, created.RowID)
 		})
 	}
 }
 
-func requireLeadAreas(t *testing.T, env *integrationEnv, rowID uuid.UUID, step string, areas []any) {
+// requireProjectedInterests checks that Get and Query projecting members of
+// the property interests keep each in its element.
+func requireProjectedInterests(t *testing.T, env *integrationEnv, rowID uuid.UUID) {
+	t.Helper()
+	attrs := []string{"propertyInterests.propertyId", "propertyInterests.snapshot.title"}
+	want := map[string]any{"propertyInterests": []any{
+		map[string]any{"propertyId": "p1", "snapshot": map[string]any{"title": "Flat A"}},
+		map[string]any{"propertyId": "p2"},
+	}}
+	fetched, err := env.manager.Get(env.ctx, &forma.QueryRequest{SchemaName: "lead", RowID: &rowID, Attrs: attrs})
+	require.NoError(t, err)
+	require.Equal(t, want, fetched.Attributes, "projected get")
+	list, err := env.manager.Query(env.ctx, &forma.QueryRequest{SchemaName: "lead", Page: 1, ItemsPerPage: 10, Attrs: attrs})
+	require.NoError(t, err)
+	require.Len(t, list.Data, 1)
+	require.Equal(t, want, list.Data[0].Attributes, "projected query")
+}
+
+func requireLeadAreas(t *testing.T, env *integrationEnv, rowID uuid.UUID, step string, areas, interests []any) {
 	t.Helper()
 	fetched, err := env.manager.Get(env.ctx, &forma.QueryRequest{SchemaName: "lead", RowID: &rowID})
 	require.NoError(t, err, step)
 	require.Equal(t, areas, valueAtPath(fetched.Attributes, "requirement.areas"), step)
+	require.Equal(t, interests, fetched.Attributes["propertyInterests"], step)
 }
 
 // storedLeadRows names each eav_data row of the lead by attribute id, array

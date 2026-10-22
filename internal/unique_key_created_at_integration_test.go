@@ -77,3 +77,66 @@ func TestUniqueKeyOverTheCreationStampHoldsTheStoredStamp(t *testing.T) {
 	assert.Equal(t, 3, env.mainRowCount(t, ukCreated))
 	env.assertKeyTableMatchesRows(t)
 }
+
+// ukCreatedUpsert is a do_nothing Upsert of one ukcreated row on its
+// owner_created key.
+func ukCreatedUpsert(owner string) *forma.UpsertRequest {
+	return &forma.UpsertRequest{
+		Create: *ukCreateOp(ukCreated, uuid.Nil, map[string]any{"owner": owner}),
+		Target: forma.ConflictTarget{Key: "owner_created"},
+		Action: forma.UpsertDoNothing,
+	}
+}
+
+// An upsert's target over the creation stamp is the stamp its create would
+// store, so a held value resolves to its holder rather than being looked up
+// under one stamp and reserved under another.
+func TestUpsertOnACreationStampKeyResolvesItsHolder(t *testing.T) {
+	env := setupUniqueKeyEnv(t)
+	stamp := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	env.txr.repo.withClock(func() time.Time { return stamp })
+	holder := env.mustCreate(t, ukCreated, map[string]any{"owner": "alice"})
+
+	res, err := env.upsertInTx(t, ukCreatedUpsert("alice"))
+	require.NoError(t, err)
+	assert.Equal(t, forma.UpsertExisting, res.Outcome)
+	assert.Equal(t, holder, res.Record.RowID)
+
+	// A free value is created, and the Tx's own entry is the holder a second
+	// upsert of it resolves to.
+	var created, again *forma.UpsertResult
+	require.NoError(t, env.inTx(func(ctx context.Context, tx forma.Tx) error {
+		if created, err = tx.Upsert(ctx, ukCreatedUpsert("bob")); err != nil {
+			return err
+		}
+		again, err = tx.Upsert(ctx, ukCreatedUpsert("bob"))
+		return err
+	}))
+	assert.Equal(t, forma.UpsertCreated, created.Outcome)
+	assert.Equal(t, forma.UpsertExisting, again.Outcome)
+	assert.Equal(t, created.Record.RowID, again.Record.RowID)
+	env.requireStored(t, created.Record)
+	assert.Equal(t, 2, env.mainRowCount(t, ukCreated))
+	env.assertKeyTableMatchesRows(t)
+}
+
+// The clock moving between the lookup and the create does not move the
+// target: the create stores the stamp the upsert looked up, so it does not
+// meet the holder of the clock's newer value.
+func TestUpsertStoresTheCreationStampItLookedUp(t *testing.T) {
+	env := setupUniqueKeyEnv(t)
+	looked := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	later := looked.Add(time.Second)
+	now := later
+	env.txr.repo.withClock(func() time.Time { return now })
+	env.mustCreate(t, ukCreated, map[string]any{"owner": "alice"})
+
+	now = looked
+	onTargetLookup(t, env, func(int, uuid.UUID, bool) { now = later })
+	res, err := env.upsertInTx(t, ukCreatedUpsert("alice"))
+	require.NoError(t, err)
+	assert.Equal(t, forma.UpsertCreated, res.Outcome)
+	assert.Equal(t, looked, res.Record.Attributes["created"])
+	env.requireStored(t, res.Record)
+	env.assertKeyTableMatchesRows(t)
+}

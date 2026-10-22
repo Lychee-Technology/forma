@@ -45,9 +45,11 @@ func EnvAllowEmpty(key, defaultValue string) string {
 }
 
 // EnvError reports an environment variable that is set to a value its setting
-// cannot use (#600). An unset or empty variable never produces one; it takes
-// the default. Before #600 a value like QUERY_TIMEOUT_SECONDS=30s silently
-// kept the default, so the operator believed a limit was set when it was not.
+// cannot use: an integer since #600, a boolean since #642. An unset or empty
+// variable never produces one; it takes the default. Before #600 a value like
+// QUERY_TIMEOUT_SECONDS=30s silently kept the default, and before #642
+// DUCKDB_ENABLED=yes read as false, so the operator believed a setting was in
+// force when it was not.
 type EnvError struct {
 	// Key is the variable's name and Value its raw, unparsed value.
 	Key   string
@@ -107,15 +109,19 @@ func lookupEnvInt(key, want string) (value int, ok bool, err error) {
 	}
 	value, err = strconv.Atoi(raw)
 	if err != nil {
-		// The NumError repeats the value the EnvError already quotes; keep
-		// only its cause.
-		var numErr *strconv.NumError
-		if errors.As(err, &numErr) {
-			err = numErr.Err
-		}
-		return 0, false, &EnvError{Key: key, Value: raw, Want: want, Err: err}
+		return 0, false, &EnvError{Key: key, Value: raw, Want: want, Err: numErrCause(err)}
 	}
 	return value, true, nil
+}
+
+// numErrCause strips a strconv.NumError down to its cause: the NumError
+// repeats the value the EnvError already quotes.
+func numErrCause(err error) error {
+	var numErr *strconv.NumError
+	if errors.As(err, &numErr) {
+		return numErr.Err
+	}
+	return err
 }
 
 // envOverlay reads the integer variables of one *FromEnv function and keeps
@@ -148,14 +154,25 @@ func (o *envOverlay) err() error {
 	return errors.Join(o.errs...)
 }
 
-// EnvBool reads a boolean env var, treating "true"/"1" (case-insensitive) as
-// true. Any other non-empty value is false; an unset var returns the default.
-func EnvBool(key string, defaultValue bool) bool {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
+// envBoolWant is how an *EnvError names the spellings EnvBool accepts.
+const envBoolWant = "a boolean (true/false, 1/0 or t/f, in any case)"
+
+// EnvBool reads a boolean variable with strconv.ParseBool over the lower-cased
+// value, so true/false, 1/0 and t/f are accepted in any case (#642). Unset or
+// empty takes defaultValue. Any other set value, yes/on and a value padded
+// with spaces included, is an *EnvError, returned with the default as EnvInt
+// does. Before #642 every unrecognised value read as false, so a typo turned a
+// feature off without a word.
+func EnvBool(key string, defaultValue bool) (bool, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return defaultValue, nil
 	}
-	return strings.EqualFold(value, "true") || value == "1"
+	value, err := strconv.ParseBool(strings.ToLower(raw))
+	if err != nil {
+		return defaultValue, &EnvError{Key: key, Value: raw, Want: envBoolWant, Err: numErrCause(err)}
+	}
+	return value, nil
 }
 
 // DatabaseConfigFromEnv overlays the DB_* environment on defaults. A set but
@@ -191,10 +208,15 @@ func DatabaseConfigFromEnv(defaults DBDefaults) (forma.DatabaseConfig, error) {
 // updates start report-only so that rows written before enforcement stay
 // updatable. Flipping to enforcing is an operational decision, so it has to be
 // reachable from the environment and not only by library embedders.
-func EntityConfigFromEnv(defaults forma.EntityConfig) forma.EntityConfig {
+//
+// A set VALIDATE_UPDATES_STRICT that is not a boolean is an *EnvError (#642),
+// returned with defaults unchanged: read as false, it would leave updates
+// report-only while the operator believed them enforced.
+func EntityConfigFromEnv(defaults forma.EntityConfig) (forma.EntityConfig, error) {
 	cfg := defaults
-	cfg.ValidateUpdatesStrict = EnvBool("VALIDATE_UPDATES_STRICT", defaults.ValidateUpdatesStrict)
-	return cfg
+	var err error
+	cfg.ValidateUpdatesStrict, err = EnvBool("VALIDATE_UPDATES_STRICT", defaults.ValidateUpdatesStrict)
+	return cfg, err
 }
 
 func TableNamesFromEnv(defaults forma.TableNames) forma.TableNames {

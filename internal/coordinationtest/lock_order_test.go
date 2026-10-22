@@ -3,6 +3,7 @@ package coordinationtest
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,16 @@ import (
 // InTx of its own. On PostgreSQL their lock rules give them one order, so
 // none may wait in a cycle: a deadlock aborts one transaction with
 // ErrRetryableConflict, and that is a lock-order bug.
+//
+// Each round opens behind two gates. One transaction holds AssertRow's
+// locks on the seeded rows that single-row primitives lock, apart from the
+// partition head an AssertRow contends for with the claims, and another has
+// created a task under the token hash a key upsert of the round creates.
+// Once every transaction of the round has answered or waits on a lock, both
+// gates commit, and each lock's waiters are granted at one instant instead
+// of whenever a narrow window happens to open. A primitive that took the
+// two locks of a row in another order than UpdateWhere then holds one while
+// an UpdateWhere holds the other.
 
 const lockOrderRounds = 50
 
@@ -36,8 +47,9 @@ func TestLockOrderComposition(t *testing.T) {
 
 // lockOrderRound seeds a topic of its own, two partitions of two messages,
 // and a task group, runs eight transactions over the messages and five over
-// the tasks at once, checks what the committed ones did, and answers how
-// many failed with ErrRetryableConflict.
+// the tasks at once behind the round's gates, checks what the committed ones
+// did, and answers how many transactions, the gates included, failed with
+// ErrRetryableConflict.
 func (e *env) lockOrderRound(t *testing.T, round int, inst *Instance) int {
 	t.Helper()
 	topic := fmt.Sprintf("round-%d", round)
@@ -51,6 +63,11 @@ func (e *env) lockOrderRound(t *testing.T, round int, inst *Instance) int {
 	before := e.stamps(t, OutboxSchema, ids(msgs)...)
 	created := newID()
 	tasks := e.newTaskRound(t, inst, round)
+	// msgs[0] and msgs[2] are the partition heads, which the gate leaves to
+	// the claims.
+	gate := e.holdRows(t, rowRef{OutboxSchema, msgs[1].ID}, rowRef{OutboxSchema, msgs[3].ID},
+		rowRef{TaskSchema, tasks.tasks[0].ID}, rowRef{TaskSchema, tasks.tasks[1].ID})
+	creator := tasks.holdCreated(t)
 
 	claimed := make([][]OutboxMessage, 2)
 	var touched [2][]uuid.UUID
@@ -69,7 +86,7 @@ func (e *env) lockOrderRound(t *testing.T, round int, inst *Instance) int {
 		func() error { return e.assertGeneration(msgs[0].ID) },
 		func() error { return e.assertGeneration(msgs[3].ID) },
 	}
-	errs := e.raceWithin(t, time.Minute, append(workers, tasks.workers()...))
+	errs, gateErrs := e.raceGated(t, time.Minute, []*held{gate, creator}, append(workers, tasks.workers()...))
 
 	retryable := 0
 	for i, err := range errs {
@@ -79,8 +96,23 @@ func (e *env) lockOrderRound(t *testing.T, round int, inst *Instance) int {
 		}
 		require.NoError(t, err, "round %d transaction %d", round, i)
 	}
-	e.requireLockOrderRound(t, msgs, claimed, errs)
-	tasks.requireCommitted(t, errs[len(workers):])
+	// On PostgreSQL neither gate waits once the round starts, so neither
+	// can lose. Elsewhere either may lose to a worker that committed first,
+	// the creator to the round's other writer of its token hash.
+	gateErr, creatorErr := gateErrs[0], gateErrs[1]
+	for _, err := range gateErrs {
+		if forma.IsRetryable(err) {
+			retryable++
+		}
+	}
+	if !forma.IsRetryable(gateErr) {
+		require.NoError(t, gateErr, "round %d: the row gate", round)
+	}
+	if creatorErr != nil {
+		requireLoser(t, creatorErr, forma.ErrUniqueConflict)
+	}
+	e.requireLockOrderRound(t, msgs, before, claimed, errs)
+	tasks.requireCommitted(t, errs[len(workers):], creatorErr)
 	if errs[4] == nil {
 		require.Equal(t, forma.UpsertUpdated, upserted[0])
 		require.Equal(t, map[string]any{"attempts": int64(1)}, e.stored(t, OutboxSchema, msgs[1].ID, "attempts"))
@@ -103,9 +135,9 @@ func (e *env) lockOrderRound(t *testing.T, round int, inst *Instance) int {
 
 // requireLockOrderRound asserts the round's claims: disjoint, partition
 // heads only, and each message's generation counting its committed claims.
-func (e *env) requireLockOrderRound(t *testing.T, msgs []OutboxMessage, claimed [][]OutboxMessage, errs []error) {
+func (e *env) requireLockOrderRound(t *testing.T, msgs []OutboxMessage, before map[uuid.UUID]int64, claimed [][]OutboxMessage, errs []error) {
 	t.Helper()
-	requireDisjointClaims(t, e, []uuid.UUID{msgs[0].ID, msgs[2].ID}, claimed, errs)
+	requireDisjointClaims(t, e, []uuid.UUID{msgs[0].ID, msgs[2].ID}, before, claimed, errs)
 	claims := map[uuid.UUID]int64{}
 	for i, got := range claimed {
 		if errs[i] != nil {
@@ -121,19 +153,65 @@ func (e *env) requireLockOrderRound(t *testing.T, msgs []OutboxMessage, claimed 
 	}
 }
 
-// raceWithin runs workers at once and answers each one's error. A worker
-// that has not returned within limit fails the test: a hang.
-func (e *env) raceWithin(t *testing.T, limit time.Duration, workers []func() error) []error {
+// raceGated starts workers at once while gates hold their locks, waits
+// until each worker has answered or waits on a lock, then releases every
+// gate at once. It answers each worker's error and each gate's. A worker
+// that has not returned within limit of the start fails the test: a hang.
+// On a backend whose writers do not block, every worker answers before the
+// gates are released.
+func (e *env) raceGated(t *testing.T, limit time.Duration, gates []*held, workers []func() error) (errs, gateErrs []error) {
 	t.Helper()
+	deadline := time.After(limit)
+	var answered atomic.Int64
 	done := make(chan []error, 1)
-	go func() { done <- race(len(workers), func(i int) error { return workers[i]() }) }()
-	select {
-	case errs := <-done:
-		return errs
-	case <-time.After(limit):
-		t.Fatalf("a transaction did not return within %s", limit)
-		return nil
+	go func() {
+		done <- race(len(workers), func(i int) error {
+			defer answered.Add(1)
+			return workers[i]()
+		})
+	}()
+	require.Eventually(t, func() bool {
+		n := int(answered.Load())
+		if waits, err := e.lockWaits(); err == nil {
+			n += waits
+		}
+		return n >= len(workers)
+	}, limit, 10*time.Millisecond, "each transaction of the round answers or waits on a lock")
+	for _, g := range gates {
+		g.finish()
 	}
+	gateErrs = make([]error, len(gates))
+	for i, g := range gates {
+		gateErrs[i] = e.result(t, g.done)
+	}
+	select {
+	case errs = <-done:
+		return errs, gateErrs
+	case <-deadline:
+		t.Fatalf("a transaction did not return within %s", limit)
+		return nil, nil
+	}
+}
+
+// rowRef names one row.
+type rowRef struct {
+	schema string
+	id     uuid.UUID
+}
+
+// holdRows parks a transaction that holds AssertRow's locks on rows: a
+// lock-order round's gate. It takes them before any worker of the round
+// starts, so it waits for none of them.
+func (e *env) holdRows(t *testing.T, rows ...rowRef) *held {
+	t.Helper()
+	return e.holdTx(t, func(ctx context.Context, tx forma.Tx) error {
+		for _, r := range rows {
+			if err := tx.AssertRow(ctx, r.schema, r.id, nil); err != nil {
+				return fmt.Errorf("gate %s row %s: %w", r.schema, r.id, err)
+			}
+		}
+		return nil
+	})
 }
 
 func (e *env) claimTopic(topic string, relay int, out *[]OutboxMessage) error {

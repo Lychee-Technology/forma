@@ -65,9 +65,11 @@ by others, or past the candidates it selected. An empty result is not an
 error: a claimer that gets one claims again later.
 
 Each round tries only as many candidates as rows are still wanted, so a claim
-holds no row it does not claim, with one exception: a candidate dropped at the
-re-check keeps its lock until the Tx ends, because a transaction-scoped lock
-cannot be released early. Writers of that row wait for the Tx.
+holds no row it does not claim, with one exception: a candidate whose lock it
+got but that the re-check dropped, or skipped for a row lock held outside
+Forma, keeps that lock until the Tx ends, because a transaction-scoped lock
+cannot be released early. A Forma write of that row, or an `AssertRow` on it,
+waits for the Tx, and another claim skips it.
 
 ## Group heads: per-group FIFO
 
@@ -98,7 +100,10 @@ published, the next row becomes the head.
 
 **No fall-through.** A head another transaction holds is skipped like any
 held row, and no later row of its group is claimed in its place: the later
-rows are not heads. The re-check under the lock tests the head rule again, so
+rows are not heads. That includes a head a claim locked but did not take,
+which keeps its lock until that claim's Tx ends
+([above](#what-a-claim-takes)): its whole group waits for that Tx, not only
+the head. The re-check under the lock tests the head rule again, so
 a candidate that stopped being the head after the select is dropped, for
 example because an earlier row became live again.
 
@@ -187,6 +192,14 @@ path as `Tx.Update`: the same merge, validation, stamps, EAV rows and
 read the Tx's clock, so a lease of `ServerTime("locked_until", 30*time.Second)`
 and a condition `locked_until lte:$now` name instants on one clock.
 
+That clock is the Tx's start, not the moment of the claim
+([One clock](conditional-writes.md#one-clock)), so a lease runs from the Tx's
+`BEGIN`. A claim made 10 s into its Tx with a 30 s lease leaves its holder
+20 s before other claimers may take the row. A claim made more than a lease's
+length into its Tx hands out a lease other claimers already see as expired,
+and its own check below, on the same clock, does not refuse it. Claim at the
+start of a Tx, or add to the lease the time the Tx may run before it claims.
+
 **The mutation must make every claimed row stop matching `Condition`.** After
 the writes, the claim evaluates `Condition` on the claimed rows again. If any
 still matches, it answers `ErrInvalidInput` ("the claim mutation must make a
@@ -239,9 +252,14 @@ rows are eligible to the next claimer exactly as before.
 | any failure once a row is held, and every failed statement | yes |
 
 Each claimed row past the first counts as one more operation against the Tx's
-operation limit, and the writes count against its row limit
-([Limits](transactions.md#limits)). A breach is `ErrInvalidInput` and poisons
-the Tx.
+operation limit, and every claimed row's writes count against the row limit
+([Limits](transactions.md#limits)). A claimed row counts what its `Update`
+counts: its main row, its `change_log` row, the EAV rows it stored before the
+mutation (deleted) and those it stores after (inserted). A row storing three
+EAV values before and after counts 8, so under the default limit of 3,000 rows
+a claim of such rows fits 375. Size `Limit` from that, or raise the limit with
+`WithTxMaxPhysicalRows`: a breach is `ErrInvalidInput` from the statement that
+crosses the limit, after the rows before it were written, and poisons the Tx.
 
 A claim holds an advisory lock on every candidate it got, up to 2 × `Limit`,
 until its Tx ends. PostgreSQL's lock table has room for about
@@ -287,6 +305,11 @@ published, the claim is conservative: it takes nothing from the group, and
 the next claim takes the new head. If an earlier row was just made live again,
 the group-order obligation above applies, as on PostgreSQL.
 
-The DSQL transaction limit of 3,000 rows bounds `Limit` times the physical
-rows each claimed row writes, guard row included. The coordination suite's
-claim scenarios run on this engine in CI (`dsql-emulated`).
+DSQL's own limit of 3,000 rows per transaction is the default row limit, and
+`WithTxMaxPhysicalRows` cannot raise it, so on DSQL the arithmetic under
+[limits](#transactions-errors-and-limits) caps `Limit`. On this engine each
+claimed row also writes its guard row, one more physical row. The take and the
+row's `Update` both lock the row, but a Tx writes a row's guard only the first
+time, so the guard counts once. A row storing three EAV values before and after
+counts 9, and a claim of such rows fits 333. The coordination suite's claim
+scenarios run on this engine in CI (`dsql-emulated`).

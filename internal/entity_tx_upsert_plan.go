@@ -34,7 +34,12 @@ func (s *txSession) planUpsert(ctx context.Context, req *forma.UpsertRequest) (*
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare the create of the upsert: %w", err)
 	}
-	plan := &upsertPlan{schemaName: create.SchemaName, create: prepared, update: update}
+	// The create is stamped now, once, not by each round's insert: a key over
+	// ltbase_created_at is looked up under this stamp, so the row must be
+	// stored, and its entry reserved, under it too.
+	createdAt := s.rows.repo.nowMillis()
+	prepared.record.CreatedAt = createdAt
+	plan := &upsertPlan{schemaName: create.SchemaName, create: prepared, createdAt: createdAt, update: update}
 	if update != nil {
 		if err := s.validateUpsertUpdate(update, prepared); err != nil {
 			return nil, err

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -111,6 +112,38 @@ func TestRunCompactor_MetricsStdout(t *testing.T) {
 			}
 			assertDirtyRatioLine(t, out.String())
 		})
+	}
+}
+
+// TestRunCompactor_RejectsUnrecognisedMetricsStdout pins #642 on the
+// compactor: METRICS_STDOUT=yes used to read as false, so the pass ran and
+// emitted nothing. The run now fails on an *EnvError before it touches the
+// bucket, while -h/--help still prints usage for the operator fixing it.
+func TestRunCompactor_RejectsUnrecognisedMetricsStdout(t *testing.T) {
+	chainLoaded := false
+	stubToolAWSChainLoader(t, &chainLoaded)
+	setStaticS3Env(t)
+	t.Setenv(bootstrap.MetricsStdoutEnv, "yes")
+
+	args, gets := serveNoopPass(t)
+	var out bytes.Buffer
+	err := runCompactorOut(context.Background(), args, &out)
+
+	var envErr *bootstrap.EnvError
+	if !errors.As(err, &envErr) || envErr.Key != bootstrap.MetricsStdoutEnv {
+		t.Fatalf("expected an *bootstrap.EnvError on %s, got %v", bootstrap.MetricsStdoutEnv, err)
+	}
+	if gets.Load() != 0 || chainLoaded {
+		t.Fatalf("the environment must be refused before any I/O: %d manifest GETs, AWS chain loaded %v", gets.Load(), chainLoaded)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("a refused run must write no metric line, got %q", out.String())
+	}
+
+	for _, help := range []string{"-h", "--help"} {
+		if err := runCompactorOut(context.Background(), []string{help}, &out); err != nil {
+			t.Fatalf("compactor %s: expected usage and a nil error, got %v", help, err)
+		}
 	}
 }
 

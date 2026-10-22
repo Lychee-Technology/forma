@@ -26,10 +26,13 @@ const (
 	// record, or the write fails converting it (populateTypedValue).
 	entryClaim entryKind = iota
 	// entryMarker is [] at a registered list attribute: the explicit
-	// empty-list marker row (array_indices "", both value columns NULL), so
-	// the list round-trips as [] instead of degrading to an absent
-	// attribute. Under merge-update semantics "tags": [] is the only way to
-	// clear a list (#204). [] anywhere else writes nothing.
+	// empty-list marker row (both value columns NULL), so the list
+	// round-trips as [] instead of degrading to an absent attribute. Under
+	// merge-update semantics "tags": [] is the only way to clear a list
+	// (#204). When the attribute declares its array ancestors, its
+	// array_indices are those of the arrays around the list, "" outside any,
+	// so a list inside an array of objects is cleared in its own element
+	// (#623); otherwise they are "". [] anywhere else writes nothing.
 	entryMarker
 	// entryParent is a value at a known path beneath which the walk found no
 	// claim: {}, {"total": null}, or a scalar where an object belongs. The
@@ -155,7 +158,7 @@ func (w *documentWalk) visitArray(path []string, v []any, indices []int) {
 		return
 	}
 	if len(v) == 0 {
-		w.emptyList(path)
+		w.emptyList(path, indices)
 		return
 	}
 	for i, item := range v {
@@ -201,18 +204,56 @@ func (w *documentWalk) visitLeaf(path []string, v any, indices []int) {
 
 // emptyList claims the empty-list marker of a registered list attribute; an
 // unregistered name writes nothing, as before.
-func (w *documentWalk) emptyList(path []string) {
+//
+// Before #623 the marker carried no indices, so one inside an array of
+// objects named no element. It now carries the array-index context of the
+// arrays around it when the attribute declares its array ancestors, which is
+// when the read places a record by them (rebuildByAncestry). A read without
+// them infers each record's array from the row and cannot place a marker
+// inside an array of objects either way, so the marker keeps the form that
+// reading writes back unchanged.
+//
+// Under ancestry every index the marker carries must fill an array ancestor:
+// the read takes any index past them for one of the list's own elements, and
+// a list's row with no value there is no element (placeByAncestry). An []
+// inside more arrays than that is inside the list's own value
+// ({"tags": [[]]}), or inside an array where the schema declares an object.
+// Either is refused, as a non-empty array inside a list's value is
+// (populateTypedValue), rather than written as a record the read leaves out
+// and an unrelated update then deletes. Report-only update validation lets
+// such a fragment reach the walk.
+func (w *documentWalk) emptyList(path []string, indices []int) {
 	attrName := strings.Join(path, ".")
 	meta, ok := w.cache[attrName]
 	if !ok || meta.ValueType != forma.ValueTypeList {
 		return
 	}
+	arrayIndices := ""
+	if meta.ArrayAncestors != nil {
+		if len(indices) > len(meta.ArrayAncestors) {
+			w.refuse(nestedEmptyListError(attrName, meta, indices))
+			return
+		}
+		arrayIndices = joinIndices(indices)
+	}
 	w.claim(documentEntry{
 		kind:   entryMarker,
 		name:   attrName,
-		tagged: w.tag(path, meta.AttributeID, ""),
+		tagged: w.tag(path, meta.AttributeID, arrayIndices),
 		meta:   meta,
 	})
+}
+
+// nestedEmptyListError refuses an [] at a list attribute nested in more
+// arrays than the attribute's array ancestors (emptyList).
+func nestedEmptyListError(attrName string, meta forma.AttributeMetadata, indices []int) error {
+	ancestors := "none"
+	if len(meta.ArrayAncestors) > 0 {
+		ancestors = strings.Join(meta.ArrayAncestors, ", ")
+	}
+	return forma.InvalidInputf(
+		"invalid value for attribute '%s' (attrID=%d): empty list at array indices %q is nested in more arrays than the attribute's arrays of objects (%s); a list's elements cannot be arrays",
+		attrName, meta.AttributeID, joinIndices(indices), ancestors)
 }
 
 // parent records an explicit parent at a known path; the root document and

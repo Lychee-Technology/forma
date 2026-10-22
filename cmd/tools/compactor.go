@@ -193,6 +193,14 @@ func runCompactorOut(ctx context.Context, args []string, metricsOut io.Writer) e
 		return nil
 	}
 
+	// After the flags, so --help still prints usage, and before any I/O: a set
+	// METRICS_STDOUT that is not a boolean fails the run (#642) rather than
+	// letting the pass run with no metrics.
+	emitter, err := bootstrap.MetricEmitterFromEnv(metricsOut)
+	if err != nil {
+		return fmt.Errorf("invalid environment: %w", err)
+	}
+
 	logger, err := buildToolLogger(false)
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
@@ -222,7 +230,7 @@ func runCompactorOut(ctx context.Context, args []string, metricsOut io.Writer) e
 		// stamps the merged base's content hash into the manifest entry (#347).
 		ObjectReader: s3Client,
 		// Nil unless METRICS_STDOUT is on, and a nil sink emits nothing (#594).
-		Metrics: telemetry.NewSink(bootstrap.MetricEmitterFromEnv(metricsOut)),
+		Metrics: telemetry.NewSink(emitter),
 	}
 
 	logger.Info("starting compaction",

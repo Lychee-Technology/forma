@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -87,10 +88,10 @@ func TestDerivedNamesFitAnIdentifierAndStayApart(t *testing.T) {
 		}
 		seen := map[string]bool{}
 		for suffix, name := range derived {
-			assert.LessOrEqual(t, len(name), maxIdentifierLen, name)
+			assert.LessOrEqual(t, len(name), sqlutil.MaxIdentifierLen, name)
 			assert.True(t, utf8.ValidString(name), name)
 			assert.True(t, strings.HasSuffix(name, suffix), name)
-			if len(entityMain)+len(suffix) <= maxIdentifierLen {
+			if len(entityMain)+len(suffix) <= sqlutil.MaxIdentifierLen {
 				assert.Equal(t, entityMain+suffix, name)
 			}
 			assert.False(t, seen[name], "%d-byte entity_main derives %s twice", len(entityMain), name)
@@ -101,7 +102,7 @@ func TestDerivedNamesFitAnIdentifierAndStayApart(t *testing.T) {
 	// state table, which used to truncate to the key table's name, does not.
 	main52 := strings.Repeat("m", 52)
 	assert.Equal(t, main52+KeyTableSuffix, KeyTable(main52))
-	assert.NotEqual(t, KeyTable(main52), StateTable(main52)[:maxIdentifierLen])
+	assert.NotEqual(t, KeyTable(main52), StateTable(main52)[:sqlutil.MaxIdentifierLen])
 }
 
 func TestShortenedNamesTellLongEntityMainNamesApart(t *testing.T) {

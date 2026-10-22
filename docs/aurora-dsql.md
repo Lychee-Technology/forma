@@ -24,7 +24,7 @@ engine. You configure it.
 | --- | --- |
 | Library | `forma.DatabaseConfig.Engine`: `forma.EnginePostgreSQL` (`"postgresql"`, the default when empty) or `forma.EngineAuroraDSQL` (`"aurora-dsql"`) |
 | `cmd/server` | `DB_ENGINE` |
-| `cmd/lambda` | `DSQL_ENDPOINT` opens the IAM-authenticated DSQL pool and selects `aurora-dsql`. A `DB_ENGINE` that names another engine beside it fails the cold start |
+| `cmd/lambda` | `DSQL_ENDPOINT` opens the IAM-authenticated DSQL pool and selects `aurora-dsql`. The pool signs a fresh IAM token for each connection it opens, so a warm environment keeps connecting after the cold start's token expires. A `DB_ENGINE` that names another engine beside it fails the cold start |
 | `forma-tools validate-schema-consistency` | `--db-engine` (default `DB_ENGINE`), used by `-requeue-stale-width-exports` |
 | `forma-tools cdc-flush`, `cdc-init`, `manifest-reconcile` | `--pg-engine` (default `postgresql`). `cdc-flush --pg-use-iam` authenticates to DSQL, so it implies `aurora-dsql` and refuses another engine beside it |
 
@@ -97,7 +97,10 @@ flushed to S3 and never read by DuckDB. `init-db` creates it on every
 PostgreSQL deployment, and the PostgreSQL engine leaves it empty. On DSQL,
 where `init-db` cannot run yet (#690), create it with the statement above.
 On the `aurora-dsql` engine the server refuses to start while the table is
-missing.
+missing. When `<entity_main>_row_guard` would pass PostgreSQL's 63-byte
+identifier limit, the name is shortened as the unique-key tables' names are
+([The key tables](unique-keys.md#the-key-tables)); `init-db` prints the name
+it creates.
 
 ## What a caller sees differently
 
@@ -228,11 +231,12 @@ gets `ErrRetryableConflict`.
 
 DSQL limits a transaction to 3,000 modified rows, 10 MiB and five minutes,
 and a connection to one hour. The guard row counts toward the rows: a `Tx`
-counts it against `WithTxMaxPhysicalRows`, whose 3,000 default matches DSQL's
-limit. Atomic batches have no such meter, and the default batch size of 1,000
-already reaches the limit on DSQL (#692). The CDC flush mark is chunked to
-stay under it. Keep the pool's `ConnMaxLifetime` under an hour. The Lambda's
-default is five minutes.
+writes each row's guard once, however many of its operations lock the row,
+and counts it against `WithTxMaxPhysicalRows`, whose 3,000 default matches
+DSQL's limit. Atomic batches have no such meter, and the default batch size
+of 1,000 already reaches the limit on DSQL (#692). The CDC flush mark is
+chunked to stay under it. Keep the pool's `ConnMaxLifetime` under an hour.
+The Lambda's default is five minutes.
 
 ## Verification
 
