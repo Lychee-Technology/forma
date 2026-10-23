@@ -897,7 +897,7 @@ reads. Where the two documents differ, design.md wins.
 
 | Failure | Response |
 |---------|----------|
-| PostgreSQL unavailable | Every read fails: `Get`, PostgreSQL-only queries and federated queries (`ErrPostgresReadFailed`). No query is answered from S3 alone, whatever the request sets (design.md §7.2). |
+| PostgreSQL unavailable | Every read fails: `Get`, PostgreSQL-only queries and federated queries. No query is answered from S3 alone, whatever the request sets. The error sentinel depends on where the outage is met: `ErrPostgresReadFailed` from the federated engine's own PostgreSQL reads, `ErrFederatedReadFailed` from a failure inside DuckDB's `postgres_scan` (design.md §7.2). |
 | S3 or DuckDB unavailable | `Get` and PostgreSQL-only queries are unaffected. A federated query that reaches DuckDB fails, or, with `allow_partial_degraded_mode`, is answered from PostgreSQL alone and marked `partial: {reason: "hot_tier_only"}` (design.md §7.2). |
 | DuckDB out of memory | No dedicated handling and no 507: it is a DuckDB read error like any other (design.md §7.1-§7.3). |
 | Query timeout | The request fails, answered 504 over HTTP (`QueryConfig.DefaultTimeout`, `DuckDBConfig.QueryTimeout`, #465). No partial result is returned, and an expired deadline is never degraded to PostgreSQL. |
