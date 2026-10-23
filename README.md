@@ -147,6 +147,21 @@ is 0000 to 9999, and otherwise as a string of its exact epoch milliseconds
 (e.g. `"9223372036854775807"`), which a create or update accepts back unchanged
 ([docs/error-handling.md](docs/error-handling.md), #591).
 
+### Read consistency
+
+Each read API promises a minimum consistency guarantee, whichever execution
+path answers it ([design §3.3](docs/federated-query/design.md#33-read-consistency-by-api-635)):
+
+| API | Guarantee |
+|-----|-----------|
+| `GET /api/v1/{schema}/{row_id}` (`Get`) | Read-after-write: once a create, update or delete has returned, every later `Get` sees it. A record's attributes come from one snapshot; relation fields are fetched separately and can reflect a different commit. Always read from PostgreSQL: if PostgreSQL is unavailable, `Get` fails. |
+| `GET /api/v1/{schema}`, `POST /api/v1/advanced_query` (`Query`) | Eventually consistent: an answer converges on committed state once CDC catches up. The minimum allows a stale answer, but no path deliberately serves one, and a deleted row never reappears. If PostgreSQL is unavailable, the query fails. |
+| `GET /api/v1/search` (`CrossSchemaSearch`) | Eventually consistent. Served by PostgreSQL. |
+| `Tx.Get`, `Tx.Query` (Go API) | Reads see the transaction's own writes, at READ COMMITTED on PostgreSQL ([Transactions](docs/transactions.md#reading-inside-a-tx)). |
+
+No read is serializable. In a query's `federated` block, `consistency_mode`
+and `use_main_as_anchor` are accepted and have no effect.
+
 ## Testing
 
 ### Unit & Integration Tests

@@ -160,7 +160,7 @@ These ceilings span multiple waves or fall outside any single wave's scope.
 | Field | Value |
 |-------|-------|
 | **Workload** | All (potential failure modes untested) |
-| **Observed ceiling** | The benchmark tests correctness and latency under normal operation. It does not test: Postgres connection failures, S3 unavailability, DuckDB OOM, stale dirty-ID sets, or partial degraded modes. The `consistency_mode` field (PR #103, `#98`) adds the plumbing but no benchmark workloads exercise `eventual` mode or degraded-mode fallbacks. |
+| **Observed ceiling** | The benchmark tests correctness and latency under normal operation. It does not test: Postgres connection failures, S3 unavailability, DuckDB OOM, stale dirty-ID sets, or partial degraded modes. The `consistency_mode` field (PR #103, `#98`) added plumbing for an `eventual` mode that was never built and that #635 retired; no benchmark workloads exercise degraded-mode fallbacks. |
 | **Metric evidence** | `docs/federated-query/design.md` §9 references resilience patterns; `docs/federated-query/federated-query-benchmark-hld-en.md` does not include failure-mode workloads |
 | **Suspected cause** | Resilience testing requires fault injection that the current harness does not support. |
 | **Evidence reference** | `docs/federated-query/design.md` §9, PR #103, `#98` |

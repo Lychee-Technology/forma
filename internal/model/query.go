@@ -26,6 +26,8 @@ type DuckDBRenderHints struct {
 	TimeEncodingHint      string
 }
 
+// ConsistencyMode is forwarded from the request and read by nothing: read
+// consistency is fixed per API (#635), and #715 deletes the field.
 type ConsistencyMode string
 
 const (
