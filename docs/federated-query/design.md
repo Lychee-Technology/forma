@@ -1153,6 +1153,17 @@ One unreadable parquet object no longer fails a whole manifest-authored scan. Th
 
 **Writer- and reader-side CRCs stay dead on the pinned engine.** Both directions were probed on DuckDB **v1.4.5** during #347 and neither is available (re-checked on **v1.5.6** for #702: the same four `COPY` options are rejected, and neither `parquet_metadata()` nor `duckdb_settings()` exposes a checksum or CRC), which is why the digest lives in the manifest at all. The parquet `COPY` writer accepts no checksum option — `WRITE_PAGE_CHECKSUM`, `PAGE_CHECKSUM`, `CHECKSUM` and `CRC` are each rejected — and no reader-side setting asks DuckDB to verify a page CRC it did not write; `parquet_metadata()` still exposes no CRC column, so a CRC written by some other producer could not be read out and checked in SQL either. An engine upgrade that adds either capability should re-open this deliberately rather than by accident: writer page CRCs would shrink the upload window, and reader-side verification would close the query-time hole D4 declined to pay for by re-downloading.
 
+### **7.4 Database Invalidation (#702)**
+
+DuckDB invalidates a database after a FATAL error and after an INTERNAL error (a failed assertion inside DuckDB). Every later statement on any connection of that database fails with `FATAL Error: Failed: database has been invalidated because of a previous fatal error`, until the database is reopened. `DuckDBClient` opens its `*sql.DB` over a connector that reopens it (`internal/federated/duckdb_recovery.go`):
+
+* **Detection.** A connection that gets a FATAL error from `QueryContext` or `ExecContext` marks its database instance invalid. Statements prepared with `Prepare` are not watched; nothing in Forma prepares on this handle. After an INTERNAL error it first runs `SELECT 1` on the same connection, and marks the instance invalid only if that fails FATAL, so an INTERNAL error that left the database usable does not reopen it.
+* **Recovery.** database/sql stops reusing connections of the invalid instance (`ResetSession` and `IsValid` turn them away), and the next new connection opens a fresh instance with the same DSN and per-connection init (extensions, S3 settings, pragmas). One Error line records the invalidation and one Warn line the reopen.
+* **What the caller sees.** The statement that hit the error still fails, and so does any statement already running on another connection of that instance. Nothing is retried, so a deterministic INTERNAL error fails each time it runs, and each run reopens the database. The failure counts toward the §7.1 breaker like any other.
+* **Limits.** A `:memory:` database loses whatever was created in it. The engine creates nothing there, but direct users of `DuckDBClient.DB` do. A file-backed database reopens through duckdb-go's instance cache, which returns the invalidated instance while any of its connections is still open. The reopened database then fails and is reopened again, until database/sql has dropped the stale connections.
+
+The trigger behind #702 was a DuckDB race in parallel window finalization: a window whose input had an empty block, such as a `UNION ALL` branch that filtered to nothing, could finalize before every sink task ran. DuckDB 1.5.6 fixes it (duckdb#25844).
+
 ## **8. Observability**
 
 The following metrics MUST be emitted through the engine's metric sink, which
