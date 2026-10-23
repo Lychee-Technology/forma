@@ -19,7 +19,8 @@ import (
 // leakCanaries are the strings that must never appear in a response body.
 // The password one is the real shape: DuckDB's postgres_scan attach failure puts
 // the connection string — password included — into its own prose, verified
-// against duckdb-go v2.5.6. The key one is ParquetSetInconsistentError.MissingKeys.
+// against duckdb-go v2.5.6 and again on v2.10506.0 (DuckDB 1.5.6, #702). The key
+// one is ParquetSetInconsistentError.MissingKeys.
 //
 // The secret canary is built to exhibit both failure modes this PR fixed, because
 // asserting the wrong string makes the whole suite decorative:

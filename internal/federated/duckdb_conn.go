@@ -3,6 +3,7 @@ package federated
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"strings"
 	"time"
@@ -75,7 +76,12 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 	// connection; PingContext below opens and thereby initializes the first one.
 	// Failed init statements are logged and skipped, never blocking the
 	// connection — construction fails only on credential validation or ping.
-	connector, err := duckdb.NewConnector(dsn, duckdbinit.MakeConnInit(steps, zap.S(), duckdbinit.DefaultInitTimeout))
+	// The recovering connector reopens the database with the same hook when
+	// DuckDB invalidates it (#702).
+	connInit := duckdbinit.MakeConnInit(steps, zap.S(), duckdbinit.DefaultInitTimeout)
+	connector, err := newRecoveringConnector(func() (driver.Connector, error) {
+		return duckdb.NewConnector(dsn, connInit)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb connector: %w", err)
 	}
