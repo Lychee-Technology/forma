@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -225,4 +226,102 @@ func TestRecoveringConnectorReopensRealDuckDBWithConnectionInit(t *testing.T) {
 	var threads int64
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT current_setting('threads')").Scan(&threads))
 	require.Equal(t, int64(3), threads, "the init hook runs on the reopened database's connections")
+}
+
+// gatedConnector holds Connect until the test releases it, so a test can
+// replace the instance while an acquisition on it is in flight.
+type gatedConnector struct {
+	driver.Connector
+	entered chan struct{}
+	release chan struct{}
+	closed  atomic.Bool
+}
+
+func (g *gatedConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	close(g.entered)
+	<-g.release
+	conn, err := g.Connector.Connect(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("gated connect: %w", err)
+	}
+	return conn, nil
+}
+
+func (g *gatedConnector) Close() error {
+	g.closed.Store(true)
+	return closeConnector(g.Connector)
+}
+
+// Replacing an invalidated instance must not close its connector under an
+// acquisition that already selected it: duckdb-go does not synchronize
+// Connector.Connect with Connector.Close.
+func TestRecoveringConnectorKeepsReplacedDatabaseOpenForInFlightConnect(t *testing.T) {
+	ctx := context.Background()
+	var gate *gatedConnector
+	connector, err := newRecoveringConnector(func() (driver.Connector, error) {
+		real, err := duckdb.NewConnector(":memory:", nil)
+		if err != nil || gate != nil {
+			return real, err
+		}
+		gate = &gatedConnector{Connector: real, entered: make(chan struct{}), release: make(chan struct{})}
+		return gate, nil
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = connector.Close() })
+
+	type result struct {
+		conn driver.Conn
+		err  error
+	}
+	inFlight := make(chan result, 1)
+	go func() {
+		conn, err := connector.Connect(ctx)
+		inFlight <- result{conn, err}
+	}()
+	<-gate.entered
+
+	connector.cur.invalid.Store(true)
+	replacement, err := connector.Connect(ctx)
+	require.NoError(t, err)
+	require.NoError(t, replacement.Close())
+	require.False(t, gate.closed.Load(), "the replaced connector stays open while a Connect on it is in flight")
+
+	close(gate.release)
+	got := <-inFlight
+	require.NoError(t, got.err, "an acquisition in flight during replacement still connects")
+	require.NoError(t, got.conn.Close())
+	require.True(t, gate.closed.Load(), "the last in-flight Connect closes the replaced connector")
+}
+
+// Concurrent acquisitions racing repeated replacement all connect; run under
+// -race this also checks no Connect overlaps closing its connector.
+func TestRecoveringConnectorConnectsConcurrentlyWithReplacement(t *testing.T) {
+	ctx := context.Background()
+	connector, err := newRecoveringConnector(func() (driver.Connector, error) {
+		return duckdb.NewConnector(":memory:", nil)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = connector.Close() })
+
+	const workers, connects = 4, 50
+	errs := make(chan error, workers*connects)
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for range connects {
+				conn, err := connector.Connect(ctx)
+				if err != nil {
+					errs <- err
+					continue
+				}
+				conn.(*instanceConn).inst.invalid.Store(true)
+				errs <- conn.Close()
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
 }

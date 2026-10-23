@@ -34,6 +34,13 @@ type duckConn interface {
 type duckInstance struct {
 	connector driver.Connector
 	invalid   atomic.Bool
+
+	// Guarded by recoveringConnector.mu. duckdb-go does not synchronize
+	// Connector.Connect with Connector.Close, so a retired connector is
+	// closed only once no Connect on it is in flight.
+	connecting int
+	retired    bool
+	closed     bool
 }
 
 // recoveringConnector keeps one *sql.DB usable across DuckDB database
@@ -69,11 +76,12 @@ func newRecoveringConnector(open func() (driver.Connector, error)) (*recoveringC
 // Connect opens a connection on the live instance, reopening the database
 // first when the current instance has been invalidated.
 func (r *recoveringConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	inst, err := r.instance()
+	inst, err := r.acquire()
 	if err != nil {
 		return nil, err
 	}
 	conn, err := inst.connector.Connect(ctx)
+	r.release(inst)
 	if err != nil {
 		return nil, fmt.Errorf("connect to duckdb: %w", err)
 	}
@@ -85,28 +93,59 @@ func (r *recoveringConnector) Connect(ctx context.Context) (driver.Conn, error) 
 	return &instanceConn{duckConn: dc, inst: inst}, nil
 }
 
-func (r *recoveringConnector) instance() (*duckInstance, error) {
+// acquire returns the live instance, reopening it if it was invalidated,
+// and holds its connector open until release.
+func (r *recoveringConnector) acquire() (*duckInstance, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
 		return nil, errors.New("duckdb connector is closed")
 	}
-	if !r.cur.invalid.Load() {
-		return r.cur, nil
+	if r.cur.invalid.Load() {
+		if err := r.replaceLocked(); err != nil {
+			return nil, err
+		}
 	}
+	r.cur.connecting++
+	return r.cur, nil
+}
+
+func (r *recoveringConnector) release(inst *duckInstance) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inst.connecting--
+	if err := closeIfDrainedLocked(inst); err != nil {
+		zap.S().Warnw("duckdb: closing the invalidated database failed", "error", err)
+	}
+}
+
+// replaceLocked opens a replacement for the invalidated instance and retires
+// the old one. Connections still open on it keep it alive in DuckDB until
+// database/sql discards them. If the reopen fails, the invalid instance stays
+// current, so the next Connect retries.
+func (r *recoveringConnector) replaceLocked() error {
 	next, err := r.open()
 	if err != nil {
-		return nil, fmt.Errorf("reopen invalidated duckdb database: %w", err)
+		return fmt.Errorf("reopen invalidated duckdb database: %w", err)
 	}
 	stale := r.cur
 	r.cur = &duckInstance{connector: next}
-	// Connections still open on the stale instance keep it alive in DuckDB
-	// until database/sql discards them, so closing it here is safe.
-	if err := closeConnector(stale.connector); err != nil {
+	stale.retired = true
+	if err := closeIfDrainedLocked(stale); err != nil {
 		zap.S().Warnw("duckdb: closing the invalidated database failed", "error", err)
 	}
 	zap.S().Warnw("duckdb: reopened the database after it was invalidated")
-	return r.cur, nil
+	return nil
+}
+
+// closeIfDrainedLocked closes a retired instance's connector once no Connect
+// on it is in flight; the last release closes it otherwise.
+func closeIfDrainedLocked(inst *duckInstance) error {
+	if !inst.retired || inst.connecting > 0 || inst.closed {
+		return nil
+	}
+	inst.closed = true
+	return closeConnector(inst.connector)
 }
 
 // Driver returns the DuckDB driver.
@@ -116,7 +155,8 @@ func (r *recoveringConnector) Driver() driver.Driver {
 	return r.cur.connector.Driver()
 }
 
-// Close closes the live instance; database/sql calls it from DB.Close.
+// Close closes the live instance; database/sql calls it from DB.Close. A
+// Connect still in flight closes it when it finishes.
 func (r *recoveringConnector) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -124,7 +164,8 @@ func (r *recoveringConnector) Close() error {
 		return nil
 	}
 	r.closed = true
-	if err := closeConnector(r.cur.connector); err != nil {
+	r.cur.retired = true
+	if err := closeIfDrainedLocked(r.cur); err != nil {
 		return fmt.Errorf("close duckdb database: %w", err)
 	}
 	return nil
