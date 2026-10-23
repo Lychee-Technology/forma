@@ -61,7 +61,7 @@ type recoveringConnector struct {
 func newRecoveringConnector(open func() (driver.Connector, error)) (*recoveringConnector, error) {
 	first, err := open()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open duckdb database: %w", err)
 	}
 	return &recoveringConnector{open: open, cur: &duckInstance{connector: first}}, nil
 }
