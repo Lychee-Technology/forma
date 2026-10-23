@@ -1094,7 +1094,8 @@ else its `federated` block says.
   tracks retiring or populating it.
 - `partial` is set on a federated request, whether or not a plan was
   requested, when the page was answered from less than the request asked for:
-  `corrupt_parquet_excluded` with the number of excluded objects, or
+  `corrupt_parquet_excluded` with the number of excluded objects (such a
+  page can miss rows and can also return older or deleted versions), or
   `hot_tier_only` with the tiers that were not consulted
   (`docs/federated-query/design.md` §7.3).
 
