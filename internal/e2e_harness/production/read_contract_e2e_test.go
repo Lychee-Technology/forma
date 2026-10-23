@@ -98,8 +98,8 @@ func readContractRequests(schema SchemaRef) map[string]*forma.QueryRequest {
 }
 
 // assertCommittedRows checks that Get returns each committed row and that
-// both Query routes return exactly the committed rows, each with its
-// committed name.
+// both Query routes return exactly the committed rows, each once and with
+// its committed name.
 func assertCommittedRows(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, want map[uuid.UUID]string) {
 	t.Helper()
 	for rowID, name := range want {
@@ -112,22 +112,40 @@ func assertCommittedRows(ctx context.Context, t *testing.T, env *Env, schema Sch
 		}
 	}
 	for route, req := range readContractRequests(schema) {
-		result := queryReadContract(ctx, t, env, route, req)
-		if len(result.Data) != len(want) {
-			t.Errorf("%s query: got %d rows, want %d", route, len(result.Data), len(want))
-		}
-		for _, record := range result.Data {
-			name, ok := want[record.RowID]
+		got := queryRowNames(t, route, queryReadContract(ctx, t, env, route, req))
+		for rowID, name := range want {
+			gotName, ok := got[rowID]
 			if !ok {
-				t.Errorf("%s query: returned %s, which is not a committed live row", route, record.RowID)
+				t.Errorf("%s query: committed row %s is missing", route, rowID)
 				continue
 			}
-			if record.Attributes["name"] != name {
+			if gotName != name {
 				t.Errorf("%s query: %s has name %v, want the committed %q, not a stale version",
-					route, record.RowID, record.Attributes["name"], name)
+					route, rowID, gotName, name)
+			}
+		}
+		for rowID := range got {
+			if _, ok := want[rowID]; !ok {
+				t.Errorf("%s query: returned %s, which is not a committed live row", route, rowID)
 			}
 		}
 	}
+}
+
+// queryRowNames indexes a Query result's names by row ID. A row returned
+// twice fails the test: merge-on-read must yield each row once, and letting
+// a duplicate collapse into the map would hide a row it displaced.
+func queryRowNames(t *testing.T, route string, result *forma.QueryResult) map[uuid.UUID]any {
+	t.Helper()
+	names := make(map[uuid.UUID]any, len(result.Data))
+	for _, record := range result.Data {
+		if _, dup := names[record.RowID]; dup {
+			t.Errorf("%s query: returned %s more than once", route, record.RowID)
+			continue
+		}
+		names[record.RowID] = record.Attributes["name"]
+	}
+	return names
 }
 
 func assertNotFound(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, rowID uuid.UUID) {
