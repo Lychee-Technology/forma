@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -322,6 +323,37 @@ func TestRecoveringConnectorConnectsConcurrentlyWithReplacement(t *testing.T) {
 	wg.Wait()
 	close(errs)
 	for err := range errs {
+		require.NoError(t, err)
+	}
+}
+
+// A file-backed database reopens through duckdb-go's instance cache. Once the
+// stale connections are gone, the reopen must reach a new DuckDB instance,
+// not the cached invalidated one.
+func TestRecoveringConnectorReopensFileBackedDuckDBAsNewInstance(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "federated.duckdb")
+	connector, err := newRecoveringConnector(func() (driver.Connector, error) {
+		return duckdb.NewConnector(dsn, nil)
+	})
+	require.NoError(t, err)
+	db := sql.OpenDB(connector)
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+
+	// An attached database belongs to the instance, not to a connection.
+	_, err = db.ExecContext(ctx, "ATTACH ':memory:' AS instance_marker")
+	require.NoError(t, err)
+
+	for cycle := 1; cycle <= 2; cycle++ {
+		connector.cur.invalid.Store(true)
+
+		var attached int
+		require.NoError(t, db.QueryRowContext(ctx,
+			"SELECT count(*) FROM duckdb_databases() WHERE database_name = 'instance_marker'").Scan(&attached))
+		require.Zero(t, attached, "cycle %d: the query must run on a new DuckDB instance", cycle)
+
+		_, err = db.ExecContext(ctx, "ATTACH ':memory:' AS instance_marker")
 		require.NoError(t, err)
 	}
 }

@@ -48,15 +48,17 @@ type duckInstance struct {
 // connection can no longer run SELECT 1, invalidates the whole DuckDB
 // database: every later statement fails until the database is reopened.
 // The connector marks the instance invalid, database/sql drops its pooled
-// connections through ResetSession and IsValid, and the next Connect opens
-// a fresh instance with the same DSN and connection init hook.
+// connections through ResetSession and IsValid, and the next Connect
+// retires the instance and opens a fresh one with the same DSN and
+// connection init hook.
 //
 // The statement that hit the error still fails; nothing is retried. A
 // :memory: instance loses only what was created in it, and the federated
 // engine creates nothing there. A file-backed instance reopens through
 // duckdb-go's instance cache, which hands back the invalidated instance
-// while any of its connections is still open; such a reopen fails again and
-// repeats until database/sql has dropped the stale connections.
+// while anything still holds it: a connection database/sql has not dropped
+// yet, or a Connect in flight on it. Such a reopen fails again and repeats
+// until those are gone.
 type recoveringConnector struct {
 	open func() (driver.Connector, error)
 
@@ -119,21 +121,24 @@ func (r *recoveringConnector) release(inst *duckInstance) {
 	}
 }
 
-// replaceLocked opens a replacement for the invalidated instance and retires
-// the old one. Connections still open on it keep it alive in DuckDB until
-// database/sql discards them. If the reopen fails, the invalid instance stays
-// current, so the next Connect retries.
+// replaceLocked retires the invalidated instance before opening its
+// replacement. Releasing the old connector first matters for a file-backed
+// database: while the connector holds it, duckdb-go's instance cache would
+// hand the same invalidated instance back to the reopen. Connections still
+// open on it keep it alive in DuckDB until database/sql discards them. If
+// the reopen fails, the retired instance stays current, still invalid, so
+// the next Connect retries.
 func (r *recoveringConnector) replaceLocked() error {
-	next, err := r.open()
-	if err != nil {
-		return fmt.Errorf("reopen invalidated duckdb database: %w", err)
-	}
 	stale := r.cur
-	r.cur = &duckInstance{connector: next}
 	stale.retired = true
 	if err := closeIfDrainedLocked(stale); err != nil {
 		zap.S().Warnw("duckdb: closing the invalidated database failed", "error", err)
 	}
+	next, err := r.open()
+	if err != nil {
+		return fmt.Errorf("reopen invalidated duckdb database: %w", err)
+	}
+	r.cur = &duckInstance{connector: next}
 	zap.S().Warnw("duckdb: reopened the database after it was invalidated")
 	return nil
 }
