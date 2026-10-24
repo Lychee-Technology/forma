@@ -471,7 +471,9 @@ dirty_ids AS (
 
 -- ============================================================================
 -- CTE 2: Hot Source (PostgreSQL)
--- Full scan is acceptable due to bounded volume (≤ 10K rows)
+-- Full scan is acceptable due to bounded volume (≤ 10K rows).
+-- (The shipped template filters in DuckDB, not in these SQL strings, and
+-- copies whole tables; see §7.1.)
 -- ============================================================================
 pg_raw AS (
     SELECT 
@@ -776,6 +778,8 @@ ORDER BY created_at DESC, row_id DESC;
 
 **Decision:** Accept 10ms latency increase for significantly reduced complexity and security risk.
 
+**What ships (#631).** No predicate reaches PostgreSQL, as decided, but the rationale's bound does not hold. `postgres_scan` copies whole tables, not the Hot tier: `change_log` twice, `entity_main`, and `eav_data` when the EAV pivot renders, across every schema and including flushed rows. The storage invariant (design.md §3.3) keeps every live entity in `entity_main` and `eav_data`, and nothing prunes `change_log`, so the copied volume grows with the whole database. The ≤ 10K-row bound limits the rows the hot leg returns, not the rows it reads. The latency figures above are from the original decision and were not re-measured. design.md §6.1 states the shipped behavior and the open pushdown decision.
+
 ### 7.2 Base File Pruning
 
 Leverage Parquet metadata for file-level pruning:
@@ -1064,7 +1068,8 @@ else its `federated` block says.
   It reports the routing decision (`routing`: whether DuckDB was used, the
   tiers read, the reason) and the sources the engine recorded (`sources`).
   Every source names its tier, engine and reason. A source's other fields
-  (estimated rows, actual rows, whether a predicate was pushed down, duration)
+  (estimated rows, actual rows, whether a predicate was pushed down, which no
+  source currently sets, duration)
   are omitted when zero, and `timings` is omitted when empty. Which of them
   appear depends on the path that answered:
   - A page answered by PostgreSQL alone, through the hot-only gate or because
@@ -1074,8 +1079,10 @@ else its `federated` block says.
     (`docs/federated-query/design.md` §4.3).
   - A page answered by DuckDB has a `postgres` source for the dirty-ID set,
     with the set's size as `row_estimate`. When the hot tier is read, a second
-    `postgres` source for the pushdown fragment sets `predicate_pushdown` if a
-    predicate was pushed. One `duckdb` source carries `actual_rows` (the rows
+    `postgres` source carries the hot leg's main-table predicate as its `sql`,
+    with the reason `hot-leg predicate (evaluated in DuckDB)`. It never sets
+    `predicate_pushdown`, because DuckDB evaluates that predicate after copying
+    the table (design.md §6.1). One `duckdb` source carries `actual_rows` (the rows
     returned for the page) and `duration_ms`; its `tier` names one requested
     Parquet tier, but the scan reads warm and cold together. `timings` holds
     `translate`, `duckdb_fetch` and `total` in milliseconds, plus
@@ -1323,3 +1330,4 @@ class ColumnStats:
 | 2.5 | - | Replaced the unimplemented §10 observability sketches with the shipped metric catalogue, logging and response diagnostics (#597) |
 | 2.6 | - | §10.1 and §10.2: the DuckDB circuit breaker's transition metric and log lines (#634) |
 | 2.7 | - | §10.2: the degraded fallback's log line (#638) |
+| 2.8 | - | §7.1: the full scan copies whole tables, not the Hot tier; §10.3: the plan never reports a pushed predicate (#631) |

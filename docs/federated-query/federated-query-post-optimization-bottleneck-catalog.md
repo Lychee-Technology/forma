@@ -81,6 +81,8 @@ This catalog harvests remaining performance ceilings, tail-latency regressions, 
 | **Recommended follow-up** | Run `small-live` and `medium-live` baselines with pushdown workloads, publish the efficiency ratios, and add pushdown efficiency to the protected workload guardrail set. |
 | **Linked issue** | None (can be done as part of `#100` large-scale baseline work) |
 
+**Correction (#631).** The hot leg has no pushdown to measure: `postgres_scan` sends PostgreSQL no predicate (`design.md` §6.1). `pushdown-active` only reported the plan's `predicate_pushdown` flag, which was set whenever the query had a main-table clause, so it could not fail. The assertion is removed and the plan no longer sets the flag. `pushdown_ratio` and `pushdown-efficiency-reasonable` divide row counts recorded on plan sources and do not measure pushdown either, so a published baseline of them would not show whether pushdown works.
+
 ### 2.3 Service path vs harness path unification — resolved
 
 The filter wave's status assessment (`#51` body) identified 8 gaps. All 8 were addressed by sub-issues `#79`-`#85`:

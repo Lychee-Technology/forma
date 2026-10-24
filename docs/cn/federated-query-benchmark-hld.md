@@ -199,7 +199,7 @@ Runner 需要支持：
 - `cold_hit_ratio`
 - `dedup_count`
 - `delete_filtered_count`
-- `pushdown_efficiency`
+- `pushdown_efficiency`（目前无法度量：hot leg 不向 PostgreSQL 下推任何谓词，见 `design.md` §6.1 和 #631）
 - `memory_peak_mb`
 
 报告格式：
