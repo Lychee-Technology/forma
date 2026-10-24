@@ -50,6 +50,13 @@ type EAVRecord struct {
 	// memory leaves it empty. A value-type rule that the float64 image
 	// cannot decide (the date contract, #592) judges this token instead.
 	ValueNumericRaw string
+	// BoundColumn is the numeric entity_main column a column-bound record
+	// was read from with the default encoding, set by the main-column read
+	// only; it is empty for an eav_data record. It is read-only like
+	// ValueNumericRaw. A smallint or integer read from a column wider than
+	// its declared type is held to that type on decode (#708), while an
+	// EAV-only one keeps its #384 conversion.
+	BoundColumn string
 }
 
 // AttributeOrder specifies how to sort by a particular attribute.

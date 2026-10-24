@@ -29,54 +29,83 @@ func ledgerCache(t *testing.T) *schemameta.MetadataCache {
 		"amount": {AttributeName: "amount", AttributeID: 3, ValueType: forma.ValueTypeBigInt, ColumnBinding: bound(forma.MainColumnBigint01)},
 		"share":  {AttributeName: "share", AttributeID: 4, ValueType: forma.ValueTypeInteger, ColumnBinding: bound(forma.MainColumnDouble01)},
 		"price":  {AttributeName: "price", AttributeID: 5, ValueType: forma.ValueTypeNumeric, ColumnBinding: bound(forma.MainColumnDouble03)},
+		"qty":    {AttributeName: "qty", AttributeID: 6, ValueType: forma.ValueTypeInteger, ColumnBinding: bound(forma.MainColumnBigint02)},
+		"count":  {AttributeName: "count", AttributeID: 7, ValueType: forma.ValueTypeInteger, ColumnBinding: bound(forma.MainColumnInteger01)},
+		"tier":   {AttributeName: "tier", AttributeID: 8, ValueType: forma.ValueTypeSmallInt, ColumnBinding: bound(forma.MainColumnInteger02)},
+		"rank":   {AttributeName: "rank", AttributeID: 9, ValueType: forma.ValueTypeSmallInt, ColumnBinding: bound(forma.MainColumnSmallint01)},
+		"wide":   {AttributeName: "wide", AttributeID: 10, ValueType: forma.ValueTypeInteger, ColumnBinding: bound(forma.MainColumnSmallint02)},
 	}))
 	return mc
 }
 
-// TestTargetsSelectsBigintBoundToDoubleColumn pins the column-bound targets
-// (#618): a bigint in a double_* column is stored as its float64 image and
-// is held to ±2^53, so it is audited and carries its column. A bigint in a
-// bigint column keeps the exact int64. integer and numeric in a double
-// column are not held to the bigint contract.
-func TestTargetsSelectsBigintBoundToDoubleColumn(t *testing.T) {
+// TestTargetsSelectsIntegersBoundToWiderColumns pins the column-bound
+// targets. A bigint in a double_* column is stored as its float64 image and
+// is held to ±2^53 (#618). A smallint or integer in a column wider than its
+// declared type is held to that type (#708). A column as narrow as the
+// declared type, or narrower, holds the value at its own width, and a
+// numeric has no integer width, so neither is audited.
+func TestTargetsSelectsIntegersBoundToWiderColumns(t *testing.T) {
 	require.Equal(t, []Target{
 		{SchemaID: 300, SchemaName: "ledger", AttrID: 1, AttrName: "total", Declared: forma.ValueTypeBigInt},
 		{SchemaID: 300, SchemaName: "ledger", AttrID: 2, AttrName: "ratio", Declared: forma.ValueTypeBigInt, Column: "double_02"},
+		{SchemaID: 300, SchemaName: "ledger", AttrID: 4, AttrName: "share", Declared: forma.ValueTypeInteger, Column: "double_01"},
+		{SchemaID: 300, SchemaName: "ledger", AttrID: 6, AttrName: "qty", Declared: forma.ValueTypeInteger, Column: "bigint_02"},
+		{SchemaID: 300, SchemaName: "ledger", AttrID: 8, AttrName: "tier", Declared: forma.ValueTypeSmallInt, Column: "integer_02"},
 	}, Targets(ledgerCache(t)))
 }
 
-// TestTargetStorageMatchesDoubleColumnsExactly: a binding to a name
-// entity_main does not have is not a stored value. The validator loads
-// metadata with the binding check deferred, so such a binding can reach the
-// census. It is reported by that check, and the census must not scan for it.
-func TestTargetStorageMatchesDoubleColumnsExactly(t *testing.T) {
-	for _, column := range []forma.MainColumn{"double_04", "DOUBLE_01", "double"} {
-		_, _, ok := targetStorage(forma.AttributeMetadata{ValueType: forma.ValueTypeBigInt, ColumnBinding: bound(column)})
-		require.False(t, ok, "bigint bound to %s", column)
+// TestTargetStorageMatchesColumnsExactly: a binding to a name entity_main
+// does not have is not a stored value. The validator loads metadata with the
+// binding check deferred, so such a binding can reach the census. It is
+// reported by that check, and the census must not scan for it.
+func TestTargetStorageMatchesColumnsExactly(t *testing.T) {
+	for _, column := range []forma.MainColumn{"double_04", "DOUBLE_01", "double", "bigint_04", "INTEGER_01"} {
+		for _, vt := range []forma.ValueType{forma.ValueTypeBigInt, forma.ValueTypeInteger, forma.ValueTypeSmallInt} {
+			_, _, ok := targetStorage(forma.AttributeMetadata{ValueType: vt, ColumnBinding: bound(column)})
+			require.False(t, ok, "%s bound to %s", vt, column)
+		}
 	}
-	for _, column := range []forma.MainColumn{forma.MainColumnDouble01, forma.MainColumnDouble02, forma.MainColumnDouble03} {
-		declared, got, ok := targetStorage(forma.AttributeMetadata{ValueType: forma.ValueTypeBigInt, ColumnBinding: bound(column)})
-		require.True(t, ok, "bigint bound to %s", column)
-		require.Equal(t, forma.ValueTypeBigInt, declared)
-		require.Equal(t, string(column), got)
+	wider := map[forma.ValueType][]forma.MainColumn{
+		forma.ValueTypeBigInt:   {forma.MainColumnDouble01, forma.MainColumnDouble02, forma.MainColumnDouble03},
+		forma.ValueTypeInteger:  {forma.MainColumnBigint01, forma.MainColumnBigint03, forma.MainColumnDouble01, forma.MainColumnDouble03},
+		forma.ValueTypeSmallInt: {forma.MainColumnInteger01, forma.MainColumnInteger03, forma.MainColumnBigint02, forma.MainColumnDouble02},
+	}
+	for vt, columns := range wider {
+		for _, column := range columns {
+			declared, got, ok := targetStorage(forma.AttributeMetadata{ValueType: vt, ColumnBinding: bound(column)})
+			require.True(t, ok, "%s bound to %s", vt, column)
+			require.Equal(t, vt, declared)
+			require.Equal(t, string(column), got)
+		}
 	}
 }
 
 // TestBuildColumnCensusQuery: the column is a bound parameter matched by a
-// CASE over the double columns, and the bound is the float8 2^53 the write
-// funnel admits up to, inclusive.
+// CASE over the candidate columns, and each target carries its declared
+// range: the float8 2^53 the write funnel admits a bigint image up to, and a
+// smallint's or integer's own bounds, all inclusive. A double column is
+// compared as float8 and an integer column as bigint.
 func TestBuildColumnCensusQuery(t *testing.T) {
 	targets := []Target{
 		{SchemaID: 1, AttrID: 2, Declared: forma.ValueTypeBigInt, Column: "double_01"},
-		{SchemaID: 7, AttrID: 9, Declared: forma.ValueTypeBigInt, Column: "double_03"},
+		{SchemaID: 7, AttrID: 9, Declared: forma.ValueTypeInteger, Column: "bigint_03"},
+		{SchemaID: 7, AttrID: 10, Declared: forma.ValueTypeSmallInt, Column: "integer_01"},
 	}
 	query, args := BuildColumnCensusQuery(Tables{EntityMain: "entity_main", ChangeLog: "change_log"}, targets)
-	require.Equal(t, []any{int16(1), int16(2), "double_01", int16(7), int16(9), "double_03"}, args)
-	require.Contains(t, query, "($4::smallint, $5::smallint, $6::text)")
+	require.Equal(t, []any{
+		int16(1), int16(2), "double_01", int64(-9007199254740992), int64(9007199254740992),
+		int16(7), int16(9), "bigint_03", int64(math.MinInt32), int64(math.MaxInt32),
+		int16(7), int16(10), "integer_01", int64(math.MinInt16), int64(math.MaxInt16),
+	}, args)
+	require.Contains(t, query, "($6::smallint, $7::smallint, $8::text, $9::bigint, $10::bigint)")
 	require.Contains(t, query, `FROM "entity_main" AS m`)
 	require.Contains(t, query,
 		`CASE w.col WHEN 'double_01' THEN m."double_01" WHEN 'double_02' THEN m."double_02" WHEN 'double_03' THEN m."double_03" END AS image`)
-	require.Contains(t, query, "ABS(v.image) > 9007199254740992::float8 OR v.image <> TRUNC(v.image)")
+	require.Contains(t, query,
+		`CASE w.col WHEN 'integer_01' THEN m."integer_01"::bigint WHEN 'integer_02' THEN m."integer_02"::bigint WHEN 'integer_03' THEN m."integer_03"::bigint `+
+			`WHEN 'bigint_01' THEN m."bigint_01"::bigint WHEN 'bigint_02' THEN m."bigint_02"::bigint WHEN 'bigint_03' THEN m."bigint_03"::bigint END AS exact`)
+	require.Contains(t, query, "v.image < w.lo::float8 OR v.image > w.hi::float8 OR v.image <> TRUNC(v.image)")
+	require.Contains(t, query, "v.exact < w.lo OR v.exact > w.hi")
 	require.Contains(t, query, `FROM "change_log" AS c`)
 	require.Contains(t, query, "WHERE c.schema_id = m.ltbase_schema_id AND c.row_id = m.ltbase_row_id")
 }
@@ -91,8 +120,10 @@ func TestBuildColumnCensusQueryWithoutChangeLog(t *testing.T) {
 }
 
 func columnCensusRows() *pgxmock.Rows {
-	return pgxmock.NewRows(strings.Fields("ltbase_schema_id attr_id ltbase_row_id image pending last_flushed_at"))
+	return pgxmock.NewRows(strings.Fields("ltbase_schema_id attr_id ltbase_row_id image exact pending last_flushed_at"))
 }
+
+func ptr[T any](v T) *T { return &v }
 
 // TestCensusScansBothStores: one census reads eav_data for the EAV-only
 // targets and entity_main for the column-bound ones, and each finding
@@ -113,8 +144,11 @@ func TestCensusScansBothStores(t *testing.T) {
 	columnQuery, columnArgs := BuildColumnCensusQuery(tables, targets[1:])
 	mock.ExpectQuery(regexp.QuoteMeta(columnQuery)).WithArgs(columnArgs...).
 		WillReturnRows(columnCensusRows().
-			AddRow(int16(300), int16(2), mainRow, float64(9007199254740994), false, int64(1700)).
-			AddRow(int16(300), int16(2), eavRow, 1000.5, true, int64(0)))
+			AddRow(int16(300), int16(2), mainRow, ptr(float64(9007199254740994)), (*int64)(nil), false, int64(1700)).
+			AddRow(int16(300), int16(2), eavRow, ptr(1000.5), (*int64)(nil), true, int64(0)).
+			AddRow(int16(300), int16(4), mainRow, ptr(1001.5), (*int64)(nil), false, int64(0)).
+			AddRow(int16(300), int16(6), mainRow, (*float64)(nil), ptr(int64(4294967296)), false, int64(1700)).
+			AddRow(int16(300), int16(8), mainRow, (*float64)(nil), ptr(int64(-32769)), true, int64(0)))
 
 	got, err := Census(context.Background(), mock, tables, targets)
 	require.NoError(t, err)
@@ -122,11 +156,22 @@ func TestCensusScansBothStores(t *testing.T) {
 		{Target: targets[0], RowID: eavRow, StoredValue: "9007199254740994"},
 		{Target: targets[1], RowID: mainRow, StoredValue: "9007199254740994", LastFlushedAt: 1700},
 		{Target: targets[1], RowID: eavRow, StoredValue: "1000.5", Pending: true},
+		{Target: targets[2], RowID: mainRow, StoredValue: "1001.5"},
+		{Target: targets[3], RowID: mainRow, StoredValue: "4294967296", LastFlushedAt: 1700},
+		{Target: targets[4], RowID: mainRow, StoredValue: "-32769", Pending: true},
 	}, got)
 	require.Equal(t, "double_02", got[1].Column)
-	for _, f := range got {
+	for _, f := range got[:3] {
 		require.Equal(t, ClassBigIntOutOfContract, f.Classify(0))
 		require.False(t, f.Classify(0).Requeueable())
+	}
+	// A bound smallint/integer is its own class whatever the cutover: a
+	// re-flush reads the column the same way, so it is never requeued.
+	for _, f := range got[3:] {
+		for _, cutover := range []int64{0, 1, 1 << 40} {
+			require.Equal(t, ClassBoundIntegerOutOfContract, f.Classify(cutover))
+			require.False(t, f.Classify(cutover).Requeueable())
+		}
 	}
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -169,8 +214,8 @@ func TestCensusColumnRejectsRowOutsideTargets(t *testing.T) {
 	defer mock.Close()
 
 	targets := []Target{{SchemaID: 1, AttrID: 2, Declared: forma.ValueTypeBigInt, Column: "double_01"}}
-	mock.ExpectQuery(`SELECT m\.ltbase_schema_id`).WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
-		WillReturnRows(columnCensusRows().AddRow(int16(1), int16(9), uuid.New(), 1.5, false, int64(0)))
+	mock.ExpectQuery(`SELECT m\.ltbase_schema_id`).WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(columnCensusRows().AddRow(int16(1), int16(9), uuid.New(), ptr(1.5), (*int64)(nil), false, int64(0)))
 
 	_, err = Census(context.Background(), mock, Tables{EAV: "eav_data", EntityMain: "entity_main"}, targets)
 	require.ErrorContains(t, err, "schema_id=1 attr_id=9, which is not a census target")

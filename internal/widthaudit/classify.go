@@ -39,6 +39,16 @@ const (
 	// refuses the same values, and the same rewrite repairs it. Its
 	// Finding names the column.
 	ClassBigIntOutOfContract
+	// ClassBoundIntegerOutOfContract: a smallint or integer bound to a column
+	// wider than its declared type holds an image that type cannot: a
+	// fraction, a value past its range, NaN or an infinity (#708). The OLTP
+	// read refuses the row with a consistency error, so an unrelated update
+	// is blocked. The federated route reads the column through
+	// TRY_CAST(<column> AS <declared>), as the CDC export does (#627): a
+	// value past the range reads as absent and a fraction rounds half to
+	// even. A re-flush reproduces that, so only rewriting the attribute
+	// repairs the row.
+	ClassBoundIntegerOutOfContract
 )
 
 // Classify places f given the cutover, the epoch millisecond from which
@@ -46,6 +56,9 @@ const (
 func (f Finding) Classify(cutoverMillis int64) Class {
 	if f.Declared == forma.ValueTypeBigInt {
 		return ClassBigIntOutOfContract
+	}
+	if f.Column != "" {
+		return ClassBoundIntegerOutOfContract
 	}
 	if f.Pending || f.LastFlushedAt == 0 {
 		return ClassConsistent

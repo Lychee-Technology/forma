@@ -343,7 +343,10 @@ check fires **only** on retired entries. Changing the `valueType` of a *live*
 attribute is still written straight through by `generate-attributes`, which
 leaves that attribute's existing EAV rows in the wrong physical column — the
 condition the next section tells you to repair. Treat a live type change as a
-remove-then-add-under-a-new-name, not an edit.
+remove-then-add-under-a-new-name, not an edit. The policy for type changes is
+fail-closed: a change activates only when every stored value on every tier
+satisfies the new type (`#710`). Nothing enforces it yet, so it is up to you;
+see [Schema Evolution and Declared Types](./schema-evolution.md#d2-schema-type-evolution-fails-closed-710).
 
 **Shipped schemas already carrying the marker.** Two entries are now
 `retired: true`, for different reasons — in both cases because
@@ -654,6 +657,7 @@ Example validator output:
 - EAV integer values whose parquet copy predates the #384 storage-width export in eav_data_dev: schema=lead schema_id=100 attr_id=14 attribute=qty declared=integer row_id=6f1c… value=4294967296 last_flushed_at=1756300000000
 - bigint EAV values outside ±2^53 (the float64-exact range) or non-integral in eav_data_dev: schema=lead schema_id=100 attr_id=15 attribute=big declared=bigint row_id=0b7e… value=9007199254740994
 - bigint values in double columns outside ±2^53 (the float64-exact range) or non-integral in entity_main_dev: schema=lead schema_id=100 attr_id=16 attribute=ratio declared=bigint row_id=3c9a… column=double_01 value=9007199254740994
+- smallint/integer values in wider bound columns outside the declared range or non-integral, which the OLTP read refuses, in entity_main_dev: schema=lead schema_id=100 attr_id=17 attribute=cnt declared=integer row_id=5d2e… column=double_02 value=1001.5
 informational (not a failure):
 - exported EAV integer values outside the declared width, which may predate the #384 storage-width export (pass -width-export-cutover to confirm), in eav_data_dev: schema=lead schema_id=100 attr_id=14 attribute=qty declared=integer row_id=91d2… value=1.5 last_flushed_at=1756300000000
 ```
@@ -791,10 +795,37 @@ query answers the same for the row before and after its flush. Before
 `#627`, such an image failed every federated query that reached the
 unflushed row.
 
-A `smallint` or `integer` bound to a wider column (`bigint_*` or `double_*`,
-or `integer_*` for a `smallint`) is read the same way on the federated
-route, at its declared type. The census does not scan these columns yet,
-and the OLTP route converts such an image instead of refusing it (`#708`).
+**A `smallint` or `integer` bound to a wider column** (`bigint_*` or
+`double_*`, or `integer_*` for a `smallint`) holds its declared type's
+contract (`#708`). The write funnel admits only a whole number inside the
+declared range, so anything else in the column is history. The census reads
+the bound column of `--entity-main-table` for every such attribute and
+reports each row whose value is a fraction, outside the declared range
+(`[-2147483648, 2147483647]` for `integer`, `[-32768, 32767]` for
+`smallint`), `NaN`, or an infinity. The comparison is exact, so the type's
+own bounds are never reported:
+
+```text
+- smallint/integer values in wider bound columns outside the declared range or non-integral, which the OLTP read refuses, in entity_main_dev: schema=lead schema_id=100 attr_id=17 attribute=cnt declared=integer row_id=5d2e… column=double_02 value=1001.5
+```
+
+Each line is a failure that is never requeued. Until the row is repaired the
+OLTP route refuses it with a server error naming the schema id, the row, the
+attribute, the column, and the stored image. An update that leaves the
+attribute out fails the same way and changes nothing. Before `#708` that read
+converted the image (`4294967296` read as `-2147483648`, `1001.5` as `1001`),
+and an unrelated update wrote the converted value back. The federated route
+keeps reading the column at the declared type through `TRY_CAST` (`#627`): a
+fraction rounds half to even, and a value out of range, `NaN`, or an infinity
+reads as absent. The two routes answer differently for such a row on purpose,
+until `#621` or a later decision unifies them. Repair the row by rewriting the
+attribute through the API, choosing the value yourself. See
+[Schema Evolution and Declared Types](./schema-evolution.md#d1-invalid-legacy-integer-images-on-oltp-reads-708).
+
+An EAV-only `smallint` or `integer` outside its width is still converted on
+the OLTP read, and an unrelated update writes the converted value back
+(`#729`). The stale-export classes above report it only when its parquet copy
+is stale.
 
 ### Date images the read path refuses (`#592`)
 
@@ -1042,6 +1073,13 @@ LIMIT 50;
   each `bigint` bound to a `double_*` column; rewrite each one through the
   API, naming the attribute, as described in
   [EAV integer values past their declared width](#eav-integer-values-past-their-declared-width-501)
+- no `smallint`/`integer` value in a wider bound column outside its declared
+  type is reported (`#708`): the upgraded server refuses to read such rows on
+  the OLTP route, and an unrelated update over one fails; rewrite each one
+  through the API, naming the attribute
+- no attribute's `valueType` changed since the last deploy, unless the change
+  is lossless for every stored value on every tier (`#710`; see
+  [Schema Evolution and Declared Types](./schema-evolution.md#d2-schema-type-evolution-fails-closed-710))
 - no unbound `date`/`datetime` image past ±2^53 or off a whole number is
   reported (`#592`): rewrite each one through the API, naming the attribute.
   The upgraded server refuses to read such rows on the OLTP route, and the
@@ -1071,6 +1109,12 @@ therefore makes those attributes — and the values `#294` preserved under
 them — visible again, and drops the reuse guard entirely. If you must roll back
 that far, either accept the re-exposure or revert the attributes files to their
 pre-`#342` state alongside the binary.
+
+**Rolling back past `#708`.** An older binary converts a `smallint`/`integer`
+image outside the declared type in a wider bound column instead of refusing
+it, and an unrelated update writes the converted value back over the stored
+one. Repair the rows the validator reports before rolling back, or accept that
+an update can overwrite them.
 
 **Rolling deploys and rollbacks across `#623`.** A binary older than `#623`
 loses one record shape a newer binary writes. When a schema has array ancestry

@@ -654,6 +654,18 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   under any required policy, rewrites any such image, including one the read
   refuses: an update never decodes a stored value its written row discards
   (see "The update merge and the written row").
+- A `smallint`/`integer` bound to a wider column (`integer`→`bigint_*`/`double_*`,
+  `smallint`→`integer_*`/`bigint_*`/`double_*`) is held to its declared type
+  on the read side too (#708). An image that is a fraction, outside the
+  declared range, NaN or an infinity is a read-path consistency error naming
+  the schema id, row, attribute, column and image; it is never wrapped by
+  `int32()`/`int16()`, truncated, or answered as absent. The declared type's
+  own bounds read exactly. An update that leaves the attribute out fails with
+  that error and writes nothing; one that names it repairs the row. The #501
+  census reports these rows with the column. The federated legs still read
+  the column through `TRY_CAST` (#627), a documented transitional difference
+  ([Schema Evolution and Declared Types](./schema-evolution.md#d1-invalid-legacy-integer-images-on-oltp-reads-708)).
+  An EAV-only `smallint`/`integer` keeps the #384 conversion on read (#729).
 - `text`→`uuid_*`: the value must parse as a UUID (published 4xx, not the
   redacted 500 `uuid.Parse` used to raise in `storeInMainColumn`).
 - A value whose typed slot does not match the column family is refused, never
