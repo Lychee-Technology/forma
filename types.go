@@ -108,14 +108,17 @@ type QueryRequest struct {
 // federated repository path while preserving the normal API surface for callers that
 // do not need DuckDB/S3-backed reads.
 type FederatedQueryRequest struct {
-	Enabled                  bool     `json:"enabled,omitempty"`
-	PreferredTiers           []string `json:"preferred_tiers,omitempty"`
-	PreferHot                bool     `json:"prefer_hot,omitempty"`
-	UseMainAsAnchor          bool     `json:"use_main_as_anchor,omitempty"`
-	S3ParquetPathTemplate    string   `json:"s3_parquet_path_template,omitempty"`
-	AllowPartialDegradedMode bool     `json:"allow_partial_degraded_mode,omitempty"`
-	IncludeExecutionPlan     bool     `json:"include_execution_plan,omitempty"`
-	ConsistencyMode          string   `json:"consistency_mode,omitempty"`
+	Enabled        bool     `json:"enabled,omitempty"`
+	PreferredTiers []string `json:"preferred_tiers,omitempty"`
+	PreferHot      bool     `json:"prefer_hot,omitempty"`
+	// UseMainAsAnchor has no effect: the federated template ignores it (#635).
+	UseMainAsAnchor          bool   `json:"use_main_as_anchor,omitempty"`
+	S3ParquetPathTemplate    string `json:"s3_parquet_path_template,omitempty"`
+	AllowPartialDegradedMode bool   `json:"allow_partial_degraded_mode,omitempty"`
+	IncludeExecutionPlan     bool   `json:"include_execution_plan,omitempty"`
+	// ConsistencyMode has no effect and is not validated. Read consistency is
+	// fixed per API, and no value permits an answer without PostgreSQL (#635).
+	ConsistencyMode string `json:"consistency_mode,omitempty"`
 }
 
 func unmarshalConditionField(data []byte) (Condition, bool, error) {

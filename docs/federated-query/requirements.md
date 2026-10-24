@@ -888,77 +888,37 @@ FROM postgres_scan(...)
 
 ## 9. Error Handling and Resilience
 
+This section began as a design sketch. The shipped behavior is specified in
+`docs/federated-query/design.md`: §3.3 for the consistency each read API
+promises, and §7 for the circuit breaker, the degraded mode and partial
+reads. Where the two documents differ, design.md wins.
+
 ### 9.1 Failure Modes and Responses
 
-| Failure | Detection | Response |
-|---------|-----------|----------|
-| PostgreSQL unavailable | Connection timeout | Fail all queries (required for Dirty Set) |
-| S3 unavailable | HTTP 5xx / timeout | Simple: continue; Advanced: fail with 503 |
-| DuckDB OOM | Memory allocation failure | Return 507 with query refinement suggestion |
-| Query timeout | Execution exceeds 30s | Return partial results with warning |
-| Invalid cursor | Decode failure | Return 400 with error details |
+| Failure | Response |
+|---------|----------|
+| PostgreSQL unavailable | Every read fails: `Get`, PostgreSQL-only queries and federated queries. No query is answered from S3 alone, whatever the request sets. The error sentinel depends on where the outage is met: `ErrPostgresReadFailed` from the federated engine's own PostgreSQL reads, `ErrFederatedReadFailed` from a failure inside DuckDB's `postgres_scan` (design.md §7.2). |
+| S3 or DuckDB unavailable | `Get` and PostgreSQL-only queries are unaffected. A federated query that reaches DuckDB fails, or, with `allow_partial_degraded_mode`, is answered from PostgreSQL alone and marked `partial: {reason: "hot_tier_only"}` (design.md §7.2). |
+| DuckDB out of memory | No dedicated handling and no 507: it is a DuckDB read error like any other (design.md §7.1-§7.3). |
+| Query timeout | The request fails, answered 504 over HTTP (`QueryConfig.DefaultTimeout`, `DuckDBConfig.QueryTimeout`, #465). No partial result is returned, and an expired deadline is never degraded to PostgreSQL. |
+| Invalid cursor | There is no public cursor: HTTP pagination is offset-based. The engine's internal keyset cursor is validated before any SQL. |
 
-### 9.2 Circuit Breaker Implementation
+### 9.2 Circuit Breaker
 
-```python
-class CircuitBreaker:
-    def __init__(self, failure_threshold=5, window_seconds=30, probe_interval=10):
-        self.failure_threshold = failure_threshold
-        self.window_seconds = window_seconds
-        self.probe_interval = probe_interval
-        self.failures = []
-        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
-        self.last_probe = None
-    
-    def record_failure(self):
-        now = time.time()
-        self.failures = [t for t in self.failures if now - t < self.window_seconds]
-        self.failures.append(now)
-        
-        if len(self.failures) >= self.failure_threshold:
-            self.state = "OPEN"
-            self.last_probe = now
-    
-    def can_execute(self) -> bool:
-        if self.state == "CLOSED":
-            return True
-        
-        if self.state == "OPEN":
-            if time.time() - self.last_probe > self.probe_interval:
-                self.state = "HALF_OPEN"
-                return True  # Allow probe request
-            return False
-        
-        return True  # HALF_OPEN allows one request
-    
-    def record_success(self):
-        if self.state == "HALF_OPEN":
-            self.state = "CLOSED"
-            self.failures = []
-```
+design.md §7.1 specifies the breaker. A threshold of failed DuckDB passes
+(default 5) within a sliding window (default 1m) opens it for an open period
+(default 1m). After that period one request is admitted as a probe, and its
+outcome closes or re-opens the breaker. The Python sketch that stood here
+used other parameters and has been removed.
 
 ### 9.3 Degraded Mode: S3 Unavailable
 
-```python
-def execute_advanced_query_degraded(query: Query) -> Response:
-    """
-    Execute with S3 unavailable - PG only mode.
-    """
-    warning = DegradedModeWarning(
-        message="Historical data unavailable. Results may be incomplete.",
-        missing_tiers=["warm", "cold"],
-        data_freshness="last_24_hours"
-    )
-    
-    # Execute Phase-1 only (PG data)
-    results = execute_phase1_only(query)
-    
-    return Response(
-        data=results,
-        partial_result=True,
-        warnings=[warning]
-    )
-```
+design.md §7.2 specifies the degraded mode. The answer comes from PostgreSQL
+alone and carries `partial: {reason: "hot_tier_only", unconsulted_tiers:
+[...]}`. The `partial_result`/`warnings` response the sketch returned, and
+its "last 24 hours" freshness hint, were never built. Under the storage
+invariant (design.md §3.3) a degraded answer holds every live row: the marker
+reports the tiers the answer did not consult, not missing rows.
 
 ---
 
@@ -1134,7 +1094,8 @@ else its `federated` block says.
   tracks retiring or populating it.
 - `partial` is set on a federated request, whether or not a plan was
   requested, when the page was answered from less than the request asked for:
-  `corrupt_parquet_excluded` with the number of excluded objects, or
+  `corrupt_parquet_excluded` with the number of excluded objects (such a
+  page can miss rows and can also return older or deleted versions), or
   `hot_tier_only` with the tiers that were not consulted
   (`docs/federated-query/design.md` §7.3).
 
