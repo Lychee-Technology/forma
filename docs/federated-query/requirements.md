@@ -84,6 +84,8 @@ The design leverages bounded data volume constraints (Hot ≤ 10K rows, Warm ≤
 
 **Critical Constraint:** The bounded volumes of Hot and Warm tiers (≤ 250K total) enable full-scan strategies that simplify query execution without sacrificing performance.
 
+The Hot bound limits the rows the hot leg returns, not what it reads: the shipped PostgreSQL scan copies whole tables, and that volume grows with the whole database (§7.1).
+
 ---
 
 ## 3. Query Classification and Routing
@@ -317,7 +319,7 @@ The two-phase merge strategy avoids expensive global sorting across all data tie
 | Two-Phase Merge | O((H+W) log(H+W)) + O((M+B') log(M+B')) | Bounded working sets |
 
 Where:
-- H = Hot rows (≤ 10K)
+- H = Hot rows entering the merge (≤ 10K; the PostgreSQL scan that produces them reads whole tables, §7.1)
 - W = Warm rows (≤ 240K)
 - M = Phase-1 intermediate result (bounded)
 - B' = Relevant Base subset (pruned by cursor/boundary)
@@ -338,8 +340,10 @@ Phase 1: Merge Hot + Warm (Bounded: ≤ 250K rows)
   │  ≤ 10K rows │         │  ≤ 240K rows│
   └──────┬──────┘         └──────┬──────┘
          │                       │
-         │   Full Scan OK        │   Parquet Predicate Pushdown
-         │   (bounded volume)    │
+         │   Whole-table COPY,   │   Parquet Predicate Pushdown
+         │   filtered in DuckDB  │
+         │   (input unbounded,   │
+         │   §7.1)               │
          │                       │
          └───────────┬───────────┘
                      │
@@ -769,7 +773,7 @@ ORDER BY created_at DESC, row_id DESC;
 
 ### 7.1 Phase-1 Simplification (No PG Pushdown)
 
-**Rationale:** Given the bounded Hot tier (≤ 10K rows), predicate pushdown to PostgreSQL is unnecessary and introduces complexity/risk.
+**Rationale (original decision):** Given the bounded Hot tier (≤ 10K rows), predicate pushdown to PostgreSQL is unnecessary and introduces complexity/risk. That bound is on the Hot rows returned, not on the rows the scan copies; *What ships* below gives the real input.
 
 | Approach | Complexity | Security Risk | Performance |
 |----------|------------|---------------|-------------|
@@ -1330,4 +1334,4 @@ class ColumnStats:
 | 2.5 | - | Replaced the unimplemented §10 observability sketches with the shipped metric catalogue, logging and response diagnostics (#597) |
 | 2.6 | - | §10.1 and §10.2: the DuckDB circuit breaker's transition metric and log lines (#634) |
 | 2.7 | - | §10.2: the degraded fallback's log line (#638) |
-| 2.8 | - | §7.1: the full scan copies whole tables, not the Hot tier; §10.3: the plan never reports a pushed predicate (#631) |
+| 2.8 | - | §2.3, §5.1, §5.2 and §7.1: the full scan copies whole tables, not the Hot tier; §10.3: the plan never reports a pushed predicate (#631) |
