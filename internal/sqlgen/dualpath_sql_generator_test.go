@@ -175,7 +175,8 @@ func TestClassifyPredicate_ValueTypeOperatorBoundAttribute_PushdownAcceptance(t 
 	// Prepare a pseudo KvCondition (attr name is unused by classifyPredicate except for Value)
 	kvText := &forma.KvCondition{Attr: "txt", Value: "starts_with:foo"}
 	kvTextEq := &forma.KvCondition{Attr: "txt", Value: "equals:bar"}
-	kvTextBad := &forma.KvCondition{Attr: "txt", Value: "gt:5"}
+	kvTextRange := &forma.KvCondition{Attr: "txt", Value: "gt:5"}
+	kvTextBad := &forma.KvCondition{Attr: "txt", Value: "similar_to:5"}
 
 	kvNum := &forma.KvCondition{Attr: "n", Value: "gt:5"}
 	kvNumBad := &forma.KvCondition{Attr: "n", Value: "contains:5"}
@@ -192,7 +193,7 @@ func TestClassifyPredicate_ValueTypeOperatorBoundAttribute_PushdownAcceptance(t 
 	dateMeta := forma.AttributeMetadata{ValueType: forma.ValueTypeDate, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("date_01")}}
 	boolMeta := forma.AttributeMetadata{ValueType: forma.ValueTypeBool, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("bool_01")}}
 
-	// Text: starts_with and equals supported; numeric operator is not
+	// Text: starts_with, equals and ranges supported (#676); an unknown operator is not
 	ok, reason := classifyPredicate(kvText, textMeta)
 	require.True(t, ok, "starts_with should be accepted for text")
 	require.Contains(t, reason, "text")
@@ -200,8 +201,11 @@ func TestClassifyPredicate_ValueTypeOperatorBoundAttribute_PushdownAcceptance(t 
 	ok, _ = classifyPredicate(kvTextEq, textMeta)
 	require.True(t, ok, "equals should be accepted for text")
 
+	ok, _ = classifyPredicate(kvTextRange, textMeta)
+	require.True(t, ok, "gt should be accepted for text (#676)")
+
 	ok, reason = classifyPredicate(kvTextBad, textMeta)
-	require.False(t, ok, "gt should not be accepted for text")
+	require.False(t, ok, "similar_to should not be accepted for text")
 	require.Contains(t, reason, "text operator not supported")
 
 	// Numeric: gt supported; contains not
@@ -244,8 +248,8 @@ func TestToDualClauses_BoundAttributeUnsupportedOperator_ReturnsError(t *testing
 		},
 	}
 
-	// Use a text attribute but pass a numeric-style operator which is unsupported for text
-	cond := &forma.KvCondition{Attr: "title", Value: "gt:foo"}
+	// Use a text attribute but pass an operator the DSL does not define
+	cond := &forma.KvCondition{Attr: "title", Value: "similar_to:foo"}
 
 	pgClause, pgArgs, err := buildPgMainClause(cond, cache, &paramIndex)
 	require.Error(t, err)

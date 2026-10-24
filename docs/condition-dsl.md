@@ -72,6 +72,12 @@ Operand rules shared by every operator:
   `\u0000`.
 - A comparison never matches a row where the attribute has no value. In
   particular `not_equals` and `not_in` do not match absent values.
+- `gt`, `gte`, `lt` and `lte` order text by bytes on the DuckDB route and
+  by the database's collation on the Postgres route, so mixed-case or
+  non-ASCII text can answer differently by route (#728). A `uuid` orders by
+  its bytes, except in `eav_data` on the Postgres route, where it is text
+  under the collation; there its canonical lowercase form sorts the same
+  under `en_US.utf8`.
 
 ## `in` and `not_in`
 
@@ -230,13 +236,17 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
   evaluates (the hot leg pushes nothing into PostgreSQL, #631); `in` /
   `not_in` are evaluated by DuckDB at the S3 semijoin and on the merged
   result.
+- An ordered comparison on a `uuid` attribute casts the column to `VARCHAR`
+  on DuckDB. DuckDB compares `UUID` with `VARCHAR` only for equality, and the
+  attribute is `UUID` in a bound column's parquet but `VARCHAR` in the hot
+  leg and in `eav_data`.
 
 ## Backends
 
 | Backend | Status |
 | --- | --- |
 | PostgreSQL | Verified: a real-PostgreSQL truth table over every storage form, with `NUMERIC` and `DOUBLE PRECISION` EAV values, and a `$now` test seeded from `SELECT now()`. Numeric and `starts_with`/`contains` operands are checked against exact arithmetic and Go string matching rather than against another route (`TestConditionOperandConformance_*`), over `smallint`, `integer`, `bigint` and `double` columns and both EAV value types. |
-| DuckDB (federated) | Verified: `in`, `not_in`, `is_null` and `is_not_null` return the same rows on the DuckDB route and the Postgres route across cold, warm and hot tiers (`TestConditionDSLOperatorParityAcrossTiers`). The DuckDB renders of numeric and `starts_with`/`contains` leaves run against an in-memory DuckDB with exact expected rows (`TestNumericOperand_DuckDBConformance`, `TestLikeOperand_DuckDBConformance`); the hot-tier pushdown runs there over native tables. `TestConditionOperandSemanticsAcrossRoutes` runs the same operands through the production harness on the Postgres route and on the DuckDB route over hot rows (`postgres_scan`) and warm parquet. `$now` is refused. |
+| DuckDB (federated) | Verified: `in`, `not_in`, `is_null` and `is_not_null` return the same rows on the DuckDB route and the Postgres route across cold, warm and hot tiers (`TestConditionDSLOperatorParityAcrossTiers`). The DuckDB renders of numeric and `starts_with`/`contains` leaves run against an in-memory DuckDB with exact expected rows (`TestNumericOperand_DuckDBConformance`, `TestLikeOperand_DuckDBConformance`); the hot-tier pushdown runs there over native tables. `TestConditionOperandSemanticsAcrossRoutes` runs the same operands through the production harness on the Postgres route and on the DuckDB route over hot rows (`postgres_scan`) and warm parquet, and `TestTextUUIDOperatorsAcrossRoutes` does the same for every comparison operator on column-bound and `eav_data` text and uuid attributes. `TestPgMainTextUUIDOrderMatchesTheLogicalClause` checks in DuckDB that the hot-tier pushdown of a text or uuid range selects exactly what the logical clause selects. `$now` is refused. |
 | Aurora DSQL | DSQL: specified, not verified (#633). The PostgreSQL rendering uses array binds with `= ANY` / `<> ALL`, `now()`, `extract(epoch ...)`, `floor`, `mod`, `to_timestamp` and `to_char`; none of it has run against a DSQL cluster. |
 
 ## Compatibility
@@ -244,6 +254,12 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
 The new operators and `$now` were refused before #646 (an unknown operator,
 or an unparseable date), so no query that worked before changes meaning.
 `$now` on a non-date attribute was, and still is, a literal.
+
+Before #676 the federated route refused `not_equals`, `gt`, `gte`, `lt`
+and `lte` on a text or uuid attribute bound to an `entity_main` column
+(`unsupported operator`), though it accepted them on the same attribute
+stored in `eav_data`. They are accepted now, and no query that worked
+before changes meaning.
 
 The operand rules above corrected three answers, and each changes what an
 existing query returns:

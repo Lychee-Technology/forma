@@ -6,7 +6,6 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/conditionexpr"
-	"github.com/lychee-technology/forma/internal/model"
 )
 
 // normalizeTargets selects which per-target payloads normalizePredicates
@@ -111,86 +110,18 @@ func normalizeLeaf(kv *forma.KvCondition, cache forma.SchemaAttributeCache, targ
 	return leaf
 }
 
-// normalizeHybridPayload converts a leaf for the hybrid condition builder.
-// Routing mirrors the retired hybridConditionBuilder.resolveColumnName: a raw
-// entity_main column (IsMainTableColumn) or a cache-bound attribute emits
-// against the main table; everything else falls to the EAV EXISTS form. For
-// the main branch the operator parse error is surfaced before the
-// descriptor-validation error, matching the retired buildMainTableCondition
-// ordering. The EAV branch reuses the strict-parse PgEav payload verbatim.
-func normalizeHybridPayload(
-	kv *forma.KvCondition,
-	meta forma.AttributeMetadata,
-	hasMeta bool,
-	lenient conditionexpr.OperatorValue,
-	lenientSQL conditionexpr.SQLOperatorResult,
-	lenientSQLErr error,
-) HybridLeafPayload {
-	colName := hybridMainColumn(kv.Attr, meta, hasMeta)
-	if colName == "" {
-		return HybridLeafPayload{IsMain: false, Eav: normalizePgEavPayload(kv, meta, hasMeta)}
-	}
-
-	// Main-table branch. Operator parse error first (pre-#154 ordering).
-	if lenientSQLErr != nil {
-		return HybridLeafPayload{IsMain: true, Err: lenientSQLErr}
-	}
-	leafMeta, err := resolveHybridLeafMeta(colName, meta, hasMeta)
-	if err != nil {
-		return HybridLeafPayload{IsMain: true, Err: err}
-	}
-	if err := checkOperatorForType(kv.Attr, lenient.Operator, lenientSQL.SQLOperator, leafMeta.ValueType); err != nil {
-		return HybridLeafPayload{IsMain: true, Err: err}
-	}
-	if p, ok, err := pgMainBoolPredicate(leafMeta, lenientSQL.SQLOperator, lenientSQL.Value, kv.Attr); err != nil {
-		return HybridLeafPayload{IsMain: true, Err: err}
-	} else if ok {
-		return HybridLeafPayload{IsMain: true, MainColumn: colName, MainBool: &p}
-	}
-	value, err := ConvertPgMainValue(lenientSQL.Value, kv.Attr, leafMeta)
-	if err != nil {
-		return HybridLeafPayload{IsMain: true, Err: err}
-	}
-	return hybridMainComparison(colName, leafMeta.ValueType, lenientSQL.SQLOperator, value)
-}
-
-// hybridMainColumn is the entity_main column a hybrid leaf emits against:
-// the raw column itself, the cache binding's column, or "" for the EAV form.
-func hybridMainColumn(attr string, meta forma.AttributeMetadata, hasMeta bool) string {
-	if model.IsMainTableColumn(attr) {
-		return attr
-	}
-	if hasMeta && meta.ColumnBinding != nil {
-		return string(meta.ColumnBinding.ColumnName)
-	}
-	return ""
-}
-
-// resolveHybridLeafMeta returns the attribute metadata driving value
-// conversion for a main-table hybrid leaf. The physical column is always
-// validated against the entity_main descriptors (preserving the pre-#140
-// "unknown main table column" contract even for cache-bound attributes);
-// cache-bound attributes that omit value_type derive it from the descriptor
-// kind, and raw column references without metadata derive a minimal metadata.
-func resolveHybridLeafMeta(colName string, meta forma.AttributeMetadata, hasMeta bool) (forma.AttributeMetadata, error) {
-	desc := model.GetMainColumnDescriptor(colName)
-	if desc == nil {
-		return forma.AttributeMetadata{}, fmt.Errorf("unknown main table column: %s", colName)
-	}
-	if hasMeta {
-		if meta.ValueType == "" {
-			meta.ValueType = model.ColumnKindToValueType(desc.Kind)
-		}
-		return meta, nil
-	}
-	return forma.AttributeMetadata{ValueType: model.ColumnKindToValueType(desc.Kind)}, nil
-}
-
 // classifyPredicate returns whether a KvCondition can be pushed to main table based on metadata.
 // It splits the raw value at the first colon itself (no lenient date fallback), so
 // a bare ISO timestamp classifies as unpushable. The operator is canonicalized as on
 // every other target (#469): an alias ("eq", "neq") or letter-case spelling classifies
 // like its canonical name, which the shape-keyed plan cache relies on.
+//
+// Text and uuid columns take every scalar operator their eav_data form takes
+// (#676; checkOperatorForType still refuses LIKE on uuid). DuckDB evaluates
+// the pushed clause over the postgres_scan rows, so a text or uuid range
+// orders by bytes as the logical clause does and never drops a row that
+// clause keeps. A text compare the postgres extension did forward to
+// PostgreSQL carried COLLATE "C" in #631's probe, which keeps that order.
 func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (bool, string) {
 	if meta.ColumnBinding == nil {
 		return false, "no column binding"
@@ -211,10 +142,12 @@ func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (boo
 	// Decide based on value type and operator
 	switch meta.ValueType {
 	case forma.ValueTypeText, forma.ValueTypeUUID:
-		if opStr == "equals" || opStr == "starts_with" || opStr == "contains" {
+		switch opStr {
+		case "equals", "gt", "gte", "lt", "lte", "not_equals", "starts_with", "contains":
 			return true, "text supported"
+		default:
+			return false, "text operator not supported"
 		}
-		return false, "text operator not supported"
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
 		switch opStr {
 		case "equals", "gt", "gte", "lt", "lte", "not_equals":
