@@ -153,8 +153,8 @@ func assertTierMatrixHasHot(ctx context.Context, t *testing.T, env *Env, wide Sc
 	if calls := sqlgentest.FindPostgresScanCalls(sqlText); len(calls) < 3 {
 		t.Errorf("%s: hot requested: want >=3 postgres_scan calls (dirty_ids + pg_source), got %d", name, len(calls))
 	}
-	if !planHasReason(result.Plan, "pushdown fragment") {
-		t.Errorf("%s: hot requested but no pushdown-fragment source recorded", name)
+	if !planHasReason(result.Plan, "hot-leg predicate (evaluated in DuckDB)") {
+		t.Errorf("%s: hot requested but no hot-leg predicate source recorded", name)
 	}
 	if !planHasReason(result.Plan, "dirty id set fetched") {
 		t.Errorf("%s: hot requested: dirty source must keep the data-source reason", name)
@@ -194,8 +194,8 @@ func assertTierMatrixS3Only(ctx context.Context, t *testing.T, env *Env, wide Sc
 	if len(calls) != 1 || !strings.Contains(calls[0], "change_log") {
 		t.Errorf("%s: want exactly the dirty_ids change_log scan, got %d calls: %v", name, len(calls), calls)
 	}
-	if planHasReason(result.Plan, "pushdown fragment") {
-		t.Errorf("%s: hot excluded but a pushdown-fragment source was recorded", name)
+	if planHasReason(result.Plan, "hot-leg predicate (evaluated in DuckDB)") {
+		t.Errorf("%s: hot excluded but a hot-leg predicate source was recorded", name)
 	}
 	if !planHasReason(result.Plan, "consistency barrier (dirty-id anti-join)") {
 		t.Errorf("%s: hot excluded: dirty source must be labeled a consistency barrier", name)
