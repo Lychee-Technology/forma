@@ -85,7 +85,8 @@ func TestPlanCacheHitRendersLikeDirectBuild(t *testing.T) {
 
 	cases := []struct {
 		name string
-		a, b forma.Condition
+		attr string
+		a, b string // operator:value of the two single-leaf conditions
 		// hit requires the second request to be served from the first's
 		// entry, so the case exercises the hit path today.
 		hit bool
@@ -96,35 +97,33 @@ func TestPlanCacheHitRendersLikeDirectBuild(t *testing.T) {
 			// attribute (#469). As a skip, eq:x would render no
 			// PG_WHERE_CLAUSE where equals:x renders one.
 			name: "operator alias on a column-bound attribute",
-			a:    &forma.KvCondition{Attr: "symbol", Value: "equals:x"},
-			b:    &forma.KvCondition{Attr: "symbol", Value: "eq:x"},
+			attr: "symbol", a: "equals:x", b: "eq:x",
 		},
 		{
 			// The DuckDB leg infers an unregistered attribute's type from
 			// the operand (detectValueType), which the shape hash does not
 			// see. The EAV leg refuses an unregistered attribute.
 			name: "operand type on an unregistered attribute",
-			a:    &forma.KvCondition{Attr: "ghost", Value: "equals:5"},
-			b:    &forma.KvCondition{Attr: "ghost", Value: "equals:abc"},
+			attr: "ghost", a: "equals:5", b: "equals:abc",
 		},
 		{
 			// The operand class the key does see (#677): equals:7 renders
 			// "=" on a bigint column, equals:7.5 a different comparison.
+			// Without the class in the shape hash this case fails.
 			name: "fractional operand on a whole-number column",
-			a:    &forma.KvCondition{Attr: "qty", Value: "equals:7"},
-			b:    &forma.KvCondition{Attr: "qty", Value: "equals:7.5"},
+			attr: "qty", a: "equals:7", b: "equals:7.5",
 		},
 		{
 			name: "values only",
-			a:    &forma.KvCondition{Attr: "qty", Value: "gt:7"},
-			b:    &forma.KvCondition{Attr: "qty", Value: "gt:8"},
-			hit:  true,
+			attr: "qty", a: "gt:7", b: "gt:8",
+			hit: true,
 		},
 	}
 	for _, tc := range cases {
-		for _, order := range [][2]forma.Condition{{tc.a, tc.b}, {tc.b, tc.a}} {
-			first, second := order[0], order[1]
-			t.Run(tc.name+"/"+second.(*forma.KvCondition).Value+" after "+first.(*forma.KvCondition).Value, func(t *testing.T) {
+		for _, order := range [][2]string{{tc.a, tc.b}, {tc.b, tc.a}} {
+			first := &forma.KvCondition{Attr: tc.attr, Value: order[0]}
+			second := &forma.KvCondition{Attr: tc.attr, Value: order[1]}
+			t.Run(tc.name+"/"+order[1]+" after "+order[0], func(t *testing.T) {
 				cached := newPlanKeyEngine(mc, true)
 				cached.run(t, first)
 				hitsBefore, _ := cached.cache.Stats()
