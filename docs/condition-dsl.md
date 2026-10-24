@@ -72,10 +72,12 @@ Operand rules shared by every operator:
   `\u0000`.
 - A comparison never matches a row where the attribute has no value. In
   particular `not_equals` and `not_in` do not match absent values.
-- `gt`, `gte`, `lt` and `lte` order a `uuid` by its bytes on every route.
-  They order text by bytes on the DuckDB route, and by the database's
-  collation on the Postgres route, so mixed-case or non-ASCII text can
-  answer differently by route (#728).
+- `gt`, `gte`, `lt` and `lte` order text by bytes on the DuckDB route and
+  by the database's collation on the Postgres route, so mixed-case or
+  non-ASCII text can answer differently by route (#728). A `uuid` orders by
+  its bytes, except in `eav_data` on the Postgres route, where it is text
+  under the collation; there its canonical lowercase form sorts the same
+  under `en_US.utf8`.
 
 ## `in` and `not_in`
 
