@@ -226,8 +226,10 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
 - `not_in` renders as `(lhs IS NOT NULL AND lhs <> ALL(list))`. The explicit
   `IS NOT NULL` is load-bearing: `NULL <> ALL(empty)` is true.
 - On the federated route, `is_null` / `is_not_null` on a column-bound
-  attribute push into the hot-tier pushdown; `in` / `not_in` are evaluated by
-  DuckDB at the S3 semijoin and on the merged result.
+  attribute render into the hot leg's main-table clause, which DuckDB
+  evaluates (the hot leg pushes nothing into PostgreSQL, #631); `in` /
+  `not_in` are evaluated by DuckDB at the S3 semijoin and on the merged
+  result.
 
 ## Backends
 

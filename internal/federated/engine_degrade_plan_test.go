@@ -41,7 +41,7 @@ func degradedPlanCases() []degradedPlanCase {
 		},
 		{
 			// The shape of the #636 review's reproduction ([hot, cold],
-			// Limit 2000): the dirty-ID, pushdown-fragment and duckdb sources
+			// Limit 2000): the dirty-ID, hot-leg predicate and duckdb sources
 			// and translate/duckdb_fetch/total are recorded before duck.Query
 			// fails.
 			name: "duck.Query failure",

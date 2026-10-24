@@ -78,10 +78,10 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 		}
 	}
 
-	// Record Postgres pushdown fragment — only when the tier form renders
-	// pg_source; a hot-excluded query has no hot data scan to push into (#184).
+	// Record the hot leg's main-table predicate — only when the tier form
+	// renders pg_source; a hot-excluded query has no hot data scan (#184).
 	if sqlgen.FederatedQueryHasHot(q) {
-		planCtx.recordPushdownFragment(dc.PgMainClause)
+		planCtx.recordHotLegPredicate(dc.PgMainClause)
 	}
 
 	// The DuckDB logical WHERE clause already references attribute names, which
