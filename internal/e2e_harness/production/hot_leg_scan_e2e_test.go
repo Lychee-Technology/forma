@@ -16,9 +16,9 @@ import (
 )
 
 // hotLegCopyPattern matches the statement DuckDB's postgres_scan sends for
-// one table: a COPY of the projected columns. Group 2 is the table, group 3
+// one table: a COPY of the projected columns. Group 1 is the table, group 2
 // whatever follows it inside the COPY's SELECT.
-var hotLegCopyPattern = regexp.MustCompile(`statement: COPY \(SELECT (.+?) FROM "public"\."(\w+)"\s*(.*?)\s*\) TO STDOUT`)
+var hotLegCopyPattern = regexp.MustCompile(`statement: COPY \(SELECT .+? FROM "public"\."(\w+)"\s*(.*?)\s*\) TO STDOUT`)
 
 // scannerCTIDRange is the only filter the scanner adds on its own: the
 // ctid range it splits a table scan into. The DuckDB 1.4.5 probe in #631
@@ -79,26 +79,29 @@ func TestHotLegCopiesWholeTables(t *testing.T) {
 
 	copies := awaitHotLegCopies(ctx, t, cluster, logOffset)
 	for _, c := range copies {
-		if c[2] != "" && !scannerCTIDRange.MatchString(c[2]) {
+		if c.rest != "" && !scannerCTIDRange.MatchString(c.rest) {
 			t.Errorf("PostgreSQL received a filtered scan of %s (%q): the hot leg now pushes a predicate, "+
-				"so design.md §6.1 and requirements.md §7.1 are stale", c[1], c[2])
+				"so design.md §6.1 and requirements.md §7.1 are stale", c.table, c.rest)
 		}
 	}
 }
 
+// hotLegCopy is one COPY statement: the table it scans and whatever follows
+// the table name inside its SELECT.
+type hotLegCopy struct{ table, rest string }
+
 // awaitHotLegCopies polls the container log, which can lag the statements,
-// until it holds the hot leg's four COPY statements after offset. It returns
-// each as {columns, table, rest}.
-func awaitHotLegCopies(ctx context.Context, t *testing.T, cluster *Cluster, offset int) [][3]string {
+// until it holds the hot leg's four COPY statements after offset.
+func awaitHotLegCopies(ctx context.Context, t *testing.T, cluster *Cluster, offset int) []hotLegCopy {
 	t.Helper()
 	want := map[string]int{"change_log": 2, "entity_main": 1, "eav_data": 1}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		var copies [][3]string
+		var copies []hotLegCopy
 		got := map[string]int{}
 		for _, m := range hotLegCopyPattern.FindAllStringSubmatch(readPostgresLog(ctx, t, cluster)[offset:], -1) {
-			copies = append(copies, [3]string{m[1], m[2], m[3]})
-			got[m[2]]++
+			copies = append(copies, hotLegCopy{table: m[1], rest: m[2]})
+			got[m[1]]++
 		}
 		if got["change_log"] >= want["change_log"] && got["entity_main"] >= want["entity_main"] && got["eav_data"] >= want["eav_data"] {
 			return copies
