@@ -267,6 +267,7 @@ func TestToDualClauses_Characterization(t *testing.T) {
 	cases = append(cases, buildCharBigIntCases()...)
 	cases = append(cases, buildCharTemporalUuidCases()...)
 	cases = append(cases, buildCharCompositeCases()...)
+	cases = append(cases, buildCharTextUuidOrderCases()...)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

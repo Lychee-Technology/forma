@@ -115,6 +115,13 @@ func normalizeLeaf(kv *forma.KvCondition, cache forma.SchemaAttributeCache, targ
 // a bare ISO timestamp classifies as unpushable. The operator is canonicalized as on
 // every other target (#469): an alias ("eq", "neq") or letter-case spelling classifies
 // like its canonical name, which the shape-keyed plan cache relies on.
+//
+// Text and uuid columns take every scalar operator their eav_data form takes
+// (#676; checkOperatorForType still refuses LIKE on uuid). DuckDB evaluates
+// the pushed clause over the postgres_scan rows, so a text or uuid range
+// orders by bytes as the logical clause does and never drops a row that
+// clause keeps. A text compare the postgres extension did forward to
+// PostgreSQL carried COLLATE "C" in #631's probe, which keeps that order.
 func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (bool, string) {
 	if meta.ColumnBinding == nil {
 		return false, "no column binding"
@@ -135,10 +142,12 @@ func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (boo
 	// Decide based on value type and operator
 	switch meta.ValueType {
 	case forma.ValueTypeText, forma.ValueTypeUUID:
-		if opStr == "equals" || opStr == "starts_with" || opStr == "contains" {
+		switch opStr {
+		case "equals", "gt", "gte", "lt", "lte", "not_equals", "starts_with", "contains":
 			return true, "text supported"
+		default:
+			return false, "text operator not supported"
 		}
-		return false, "text operator not supported"
 	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
 		switch opStr {
 		case "equals", "gt", "gte", "lt", "lte", "not_equals":

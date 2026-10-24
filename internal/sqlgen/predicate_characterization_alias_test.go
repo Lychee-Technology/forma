@@ -34,9 +34,7 @@ func TestToDualClauses_OperatorAliasesRenderAsCanonical(t *testing.T) {
 		{"eav numeric eq", charKv("score", "equals:1.5"), charKv("score", "eq:1.5")},
 		{"eav numeric neq", charKv("score", "not_equals:1.5"), charKv("score", "neq:1.5")},
 		{"eav bool neq", charKv("flag", "not_equals:true"), charKv("flag", "neq:true")},
-		// not_equals on a bound text column is refused today (#676); neq
-		// must share that answer rather than diverge from it.
-		{"bound text neq refused like not_equals", charKv("username", "not_equals:x"), charKv("username", "neq:x")},
+		{"bound text neq", charKv("username", "not_equals:x"), charKv("username", "neq:x")},
 		{"upper-case alias", charKv("age", "equals:2"), charKv("age", "EQ:2")},
 		{"mixed-case canonical", charKv("age", "not_equals:7"), charKv("age", "Not_Equals:7")},
 		{"upper-case range operator", charKv("age", "gt:7"), charKv("age", "GT:7")},

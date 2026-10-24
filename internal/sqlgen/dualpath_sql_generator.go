@@ -177,8 +177,16 @@ func (duckTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, error
 		return clause, []any{p.Param}, nil
 	}
 
+	column := p.Column
+	if p.ValueType == forma.ValueTypeUUID && p.SQLOp != "=" && p.SQLOp != "!=" {
+		// DuckDB compares UUID with VARCHAR for (in)equality only, and a uuid
+		// attribute is UUID on one tier (a bound column's parquet) and VARCHAR
+		// on others (pg_source, the EAV pivot). An ordered compare casts the
+		// column too; canonical lowercase text orders as the UUID bytes (#676).
+		column = CastExpression(column, p.ValueType)
+	}
 	castExpr := CastExpression("?", p.ValueType)
-	clause := fmt.Sprintf("%s %s %s", p.Column, p.SQLOp, castExpr)
+	clause := fmt.Sprintf("%s %s %s", column, p.SQLOp, castExpr)
 	return clause, []any{p.Param}, nil
 }
 
