@@ -62,14 +62,15 @@ type WorkloadRunResult struct {
 	PaginationMode string            `json:"pagination_mode,omitempty"`
 }
 
-// PerTierMetrics captures per-engine row counts and pushdown efficiency from the execution plan.
+// PerTierMetrics captures per-engine row counts from the execution plan.
+// PushdownRatio is the postgres sources' share of the rows the plan records,
+// not a pushdown measure: the hot leg pushes no predicate to Postgres (#631).
 type PerTierMetrics struct {
 	PGRows        int64   `json:"pg_rows"`
 	DuckDBRows    int64   `json:"duckdb_rows"`
 	FinalRows     int64   `json:"final_rows"`
 	PushdownRatio float64 `json:"pushdown_ratio"`
 	PGDirtyCount  int64   `json:"pg_dirty_count,omitempty"`
-	HasPushdown   bool    `json:"has_pushdown"`
 	Sources       int     `json:"sources"`
 }
 

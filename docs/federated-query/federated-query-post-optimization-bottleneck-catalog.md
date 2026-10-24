@@ -68,18 +68,22 @@ This catalog harvests remaining performance ceilings, tail-latency regressions, 
 | **Recommended follow-up** | Add tier-specific EAV extraction cost measurement to pushdown workloads. Investigate CDC-side flattening for common EAV attributes. |
 | **Linked issue** | None (medium priority — document and revisit after large-scale baseline) |
 
-### 2.2 Pushdown efficiency baseline unpublished
+### 2.2 Pushdown efficiency baseline unpublished — superseded (#631)
+
+The correction below the table explains why: the hot leg pushes nothing down, and the ratios this entry asked to publish do not measure pushdown. The table keeps the original entry, with retired claims struck through and the assertion list, classification and follow-up updated.
 
 | Field | Value |
 |-------|-------|
 | **Workload** | `tier-pushdown-hot`, `tier-pushdown-eav`, `tier-pushdown-mixed`, `tier-pushdown-cold-only` |
-| **Observed ceiling** | The pushdown measurement infrastructure exists (PR #87) and the workloads have automated assertions (`pushdown-active`, `pushdown-efficiency-reasonable`), but no published baseline shows actual pushdown efficiency ratios. Without a published baseline, it is impossible to evaluate whether pushdown is working as expected or detect regressions. |
+| **Observed ceiling** | The pushdown measurement infrastructure exists (PR #87) and the workloads have automated assertions (`pushdown-efficiency-reasonable`, and `pushdown-active` until #631 removed it), but no published baseline shows actual pushdown efficiency ratios. ~~Without a published baseline, it is impossible to evaluate whether pushdown is working as expected or detect regressions.~~ |
 | **Metric evidence** | PR #87 body does not include benchmark deltas or pushdown efficiency numbers. The test suite validates that assertions pass but does not publish the values. |
 | **Suspected cause** | These workloads were introduced as a measurement tool rather than a gating mechanism. A baseline run and publication step was deferred. |
-| **Evidence reference** | PR #87, `internal/e2e_harness/federated/benchmark/runner.go` (`extractPerTierMetrics`, `validatePushdownAssertions`) |
-| **Tunable vs architectural** | Methodology debt — tunable by running and publishing a baseline |
-| **Recommended follow-up** | Run `small-live` and `medium-live` baselines with pushdown workloads, publish the efficiency ratios, and add pushdown efficiency to the protected workload guardrail set. |
-| **Linked issue** | None (can be done as part of `#100` large-scale baseline work) |
+| **Evidence reference** | PR #87, `internal/e2e_harness/federated/benchmark/assertions.go` (`extractPerTierMetrics`, `validatePushdownAssertions`) |
+| **Tunable vs architectural** | Catalogued as methodology debt. Since #631: architectural — the hot leg copies whole tables (`design.md` §6.1), and no baseline of plan-recorded ratios changes or reveals that |
+| **Recommended follow-up** | ~~Run `small-live` and `medium-live` baselines with pushdown workloads, publish the efficiency ratios, and add pushdown efficiency to the protected workload guardrail set.~~ Do not publish `pushdown_ratio` baselines. If the hot leg's cost needs a benchmark signal, measure what PostgreSQL sends (rows or bytes per `postgres_scan` COPY, the statements `TestHotLegCopiesWholeTables` observes), as part of #631's pushdown decision. |
+| **Linked issue** | #631 (design half: whether and how to push down) |
+
+**Correction (#631).** The hot leg has no pushdown to measure: `postgres_scan` sends PostgreSQL no predicate (`design.md` §6.1). `pushdown-active` only reported the plan's `predicate_pushdown` flag, which was set whenever the query had a main-table clause, so it could not fail. The assertion is removed and the plan no longer sets the flag. `pushdown_ratio` and `pushdown-efficiency-reasonable` divide row counts recorded on plan sources and do not measure pushdown either, so a published baseline of them would not show whether pushdown works.
 
 ### 2.3 Service path vs harness path unification — resolved
 
@@ -202,7 +206,7 @@ No committed baseline artifacts (`benchmark-result.json`, `benchmark-summary.jso
 | P1 | Cold-tier EAV JSON extraction cost | 2.1 | Mostly architectural | None |
 | P1 | DuckDB threads not workload-aware | 4.3 | Tunable | None |
 | P1 | Routing threshold cross-scale validation | 3.2 | Tunable | #100 (co-track) |
-| P2 | Pushdown efficiency baseline unpublished | 2.2 | Methodology | #100 (co-track) |
+| Note | Pushdown efficiency baseline unpublished — superseded: no hot-leg pushdown to measure | 2.2 | Architectural | #631 |
 | P2 | Production resilience patterns untested | 4.2 | Methodology/Arch | #98, #99 |
 | P2 | Large-scale live evidence missing | 4.1 | Methodology | #100 |
 | P2 | Route instability under concurrency | 3.3 | Methodology | #104 (verify) |

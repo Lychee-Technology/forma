@@ -300,21 +300,24 @@ func (c *duckDBExecutionPlanContext) recordDirtyIDSource(changeLogTable string, 
 	c.opts.ExecutionPlan.Sources = append(c.opts.ExecutionPlan.Sources, dpDirty)
 }
 
-// recordPushdownFragment records the Postgres pushdown fragment in the execution plan.
-func (c *duckDBExecutionPlanContext) recordPushdownFragment(pgMainClause string) {
+// hotLegPredicateReason names the plan source that carries the hot leg's
+// main-table predicate.
+const hotLegPredicateReason = "hot-leg predicate (evaluated in DuckDB)"
+
+// recordHotLegPredicate records the hot leg's main-table predicate in the
+// execution plan. It never sets PredicatePushdown: postgres_scan sends
+// PostgreSQL no predicate, so DuckDB evaluates the clause on whole copied
+// tables (#631, design.md §6.1).
+func (c *duckDBExecutionPlanContext) recordHotLegPredicate(pgMainClause string) {
 	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
 		return
 	}
 
 	pgDP := model.DataSourcePlan{
-		Tier:              model.DataTierHot,
-		Engine:            "postgres",
-		SQL:               pgMainClause,
-		RowEstimate:       0,
-		PredicatePushdown: pgMainClause != "",
-		ActualRows:        0,
-		DurationMs:        0,
-		Reason:            "pushdown fragment",
+		Tier:   model.DataTierHot,
+		Engine: "postgres",
+		SQL:    pgMainClause,
+		Reason: hotLegPredicateReason,
 	}
 	c.opts.ExecutionPlan.Sources = append(c.opts.ExecutionPlan.Sources, pgDP)
 }
@@ -342,9 +345,9 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any
 		SQL:    redact.ConnStringPassword(sqlStr),
 		Params: formatPlanParams(args),
 		// The anchor hint is a no-op in the advanced template, so it must not
-		// masquerade as actual pushdown here (#184); real pushdown facts live
-		// on the pushdown-fragment source. The hint itself is recorded as a
-		// request in the Notes below.
+		// masquerade as actual pushdown here (#184). No source claims a
+		// pushdown: the hot leg pushes none (#631). The hint itself is
+		// recorded as a request in the Notes below.
 		PredicatePushdown: false,
 		Reason:            "duckdb template rendered",
 	}

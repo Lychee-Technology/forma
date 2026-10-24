@@ -379,9 +379,6 @@ func extractPerTierMetrics(plan *model.ExecutionPlan) *PerTierMetrics {
 			if src.Reason == "dirty id set fetched" {
 				metrics.PGDirtyCount = src.ActualRows
 			}
-			if src.PredicatePushdown {
-				metrics.HasPushdown = true
-			}
 		case "duckdb":
 			if src.ActualRows > 0 {
 				metrics.DuckDBRows += src.ActualRows
@@ -423,14 +420,6 @@ func validatePushdownAssertions(run WorkloadRunResult) []AssertionResult {
 			Name:    "pushdown-pg-rows-tracked",
 			Passed:  true,
 			Message: fmt.Sprintf("pg_rows=%d", pt.PGRows),
-		})
-	}
-
-	if pt.HasPushdown {
-		assertions = append(assertions, AssertionResult{
-			Name:    "pushdown-active",
-			Passed:  true,
-			Message: "at least one source has pushdown enabled",
 		})
 	}
 

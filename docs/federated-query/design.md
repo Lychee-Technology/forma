@@ -120,9 +120,9 @@ When the federated block is absent or `enabled` is false, the query executes on 
 
 The translator must traverse the filter tree and generate two distinct SQL fragments:
 
-**A. PostgreSQL Pushdown Fragment ($PG_WHERE_CLAUSE)**
+**A. Main-Table Fragment ($PG_WHERE_CLAUSE)**
 
-* **Target:** pg_source `WHERE` clause (DuckDB's postgres scanner pushes it down into the scan).
+* **Target:** pg_source `WHERE` clause. DuckDB evaluates it after `postgres_scan` has copied `entity_main` out of PostgreSQL; PostgreSQL never sees it (§6.1).
 * **Scope:** Only attributes mapping to entity_main.
 * **Syntax:** Physical Column Names.
 * **Sanitization:** Strict literal escaping to prevent SQL injection.
@@ -420,7 +420,7 @@ PRAGMA threads=4;
 -- 2. Define Query Parameters (To be interpolated by the Host Application)
 -- $SCHEMA_ID:       Integer (e.g., 1)
 -- $PG_CONN:         String (Postgres Connection String)
--- $PG_WHERE_CLAUSE: String (Generated Physical SQL for Pushdown)
+-- $PG_WHERE_CLAUSE: String (Generated Physical SQL; DuckDB evaluates it, §6.1)
 -- $S3_PATHS:        List (e.g., ['s3://bucket/base/*.parquet'])
 -- $FLUSH_GRACE_CUTOFF_MS: BIGINT (the instant this query resolved $S3_PATHS,
 --                    minus the clock-skew margin, #252; MaxInt64 disables
@@ -511,7 +511,7 @@ s3_source AS (
 
 -- =========================================================================
 -- CTE 3: PostgreSQL Source (Hot)
--- Performs Dynamic Pivoting and Predicate Pushdown.
+-- Performs Dynamic Pivoting and filters the hot rows in DuckDB.
 -- =========================================================================
 pg_source AS (
     SELECT
@@ -531,9 +531,11 @@ pg_source AS (
 
     FROM postgres_scan($PG_CONN, 'public', 'change_log') cl
 
-    -- [Optimization] PUSHDOWN: $PG_WHERE_CLAUSE is a plain predicate in the
-    -- WHERE clause below; DuckDB's postgres scanner pushes it down to
-    -- PostgreSQL so entity_main is filtered by PG indexes, not in DuckDB.
+    -- [No pushdown] $PG_WHERE_CLAUSE is a plain predicate in the WHERE
+    -- clause below, and DuckDB evaluates it. postgres_scan sends PostgreSQL
+    -- no predicate at all, so each scan in this CTE copies its whole table,
+    -- every schema and every flushed row included, and the filters run on
+    -- the copy (§6.1, #631).
     JOIN postgres_scan($PG_CONN, 'public', 'entity_main_dev') m
       ON cl.schema_id = m.ltbase_schema_id AND cl.row_id = m.ltbase_row_id
 
@@ -916,11 +918,16 @@ stamp existing.
 
 ## **6. Optimization Strategies**
 
-### **6.1 Predicate Pushdown (Critical)**
+### **6.1 Hot-Leg Predicate Placement (No Pushdown)**
 
-* **Mechanism:** `$PG_WHERE_CLAUSE` is rendered as a plain predicate in the pg_source `WHERE` clause; DuckDB's postgres scanner pushes supported predicates down into the PostgreSQL scan.
-* **Rationale:** entity_main may contain millions of rows. Pulling all rows to DuckDB for filtering is unacceptable. Pushdown leverages PostgreSQL indexes.
-* **Limitation:** Only applicable to entity_main columns. EAV columns and complex functions must be filtered in DuckDB memory after the join.
+The hot leg pushes no predicate into PostgreSQL. This section used to say the opposite; #631 found that it does not happen.
+
+* **Mechanism:** the template reads PostgreSQL through `postgres_scan(conn, schema, table)`. On the pinned engine (DuckDB 1.5.6 and its `postgres` extension) each such scan reaches PostgreSQL as `COPY (SELECT <projected columns> FROM <table>) TO STDOUT` with no `WHERE` clause (the DuckDB 1.4.5 probe in #631 also saw only the scanner's own `ctid` range there). Only the column projection reaches PostgreSQL. `$PG_WHERE_CLAUSE`, the `schema_id` and `flushed_at` filters and the EAV pivot's `attr_id IN (...)` all run in DuckDB on the copied rows, and no PostgreSQL index serves this path. `TestHotLegCopiesWholeTables` (production e2e) pins this, so a DuckDB upgrade that starts pushing filters fails it instead of leaving this section wrong again.
+* **What one query copies:** a query whose tier form renders `pg_source` copies `change_log` twice (`dirty_ids` and `pg_source`), all of `entity_main`, and all of `eav_data` when the EAV pivot renders. A hot-excluded query copies `change_log` once, for `dirty_ids`. The engine's separate dirty-set fetch over pgx (§3.2) is a filtered PostgreSQL query and is not part of this cost.
+* **Bound:** the copied volume is the total size of those tables, across every schema, and does not depend on the queried schema, the predicate or the size of the hot tier. Nothing keeps it small. Under the storage invariant (§3.3), `entity_main` and `eav_data` hold every live entity. `change_log` gains a row each time a flushed row changes again, and the flush marks rows rather than deleting them (#669). So the hot-leg cost of every query that reaches DuckDB grows with the whole database. A page that routing answers from PostgreSQL alone (§4.3) does not pay it. The ≤ 10K-row hot-tier bound that `requirements.md` §7.1 relies on limits the rows `pg_source` returns, not the rows it reads.
+* **Operational assumption:** this path is acceptable only while those three tables are small enough to copy on every query that reaches DuckDB. That is a deployment-size limit, not a property the engine enforces or measures. The engine does not observe the copied row counts (§8, `fed_query_row_count`).
+* **Diagnostics:** the execution plan records the main-table fragment as a `postgres` source whose reason is `hot-leg predicate (evaluated in DuckDB)`. It never sets `predicate_pushdown`.
+* **Open decision:** whether and how to push down is #631's remaining design question, decided together with #621's exact numeric transport. The candidates are `postgres_scan_pushdown`, `ATTACH` with `postgres_query` and Forma-rendered PostgreSQL SQL (the CDC exporter's shape), and reading PostgreSQL over pgx with the merge in Go (#719).
 
 ### **6.2 Streaming Result Processing**
 
@@ -1021,7 +1028,7 @@ applied on both sides:
   1/0, `VARCHAR` '1'/'0') so the federated reader scans it by column kind.
   The entity_main pushdown is on the same contract (#565): a filter on a
   column-bound bool reaches `entity_main` through the pg-main clause the
-  DuckDB hot leg embeds in its `postgres_scan` and through the hybrid
+  DuckDB hot leg evaluates over its `postgres_scan` (§6.1) and through the hybrid
   builder's main branch on the Postgres route, and both render
   `sqlgen.BoolMainPredicate` rather than a raw `= 1` / `= '0'` compare —
   `<col> BETWEEN $lo AND $hi` with bounds `(1, 32767)` for the truthy side
