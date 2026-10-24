@@ -106,6 +106,18 @@ jobs:
       - name: Run production e2e suite under -race
         run: go test -v ./internal/e2e_harness/production/ -tags=e2e -race -timeout=30m
 
+      # See ci.yml's e2e-job upload note (#718): the harness's failure
+      # diagnostics, uploaded only on failure. The federated-full job has no
+      # such step because the federated harness writes no .artifacts/e2e/.
+      - name: Upload e2e harness artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-race-e2e-artifacts-attempt-${{ github.run_attempt }}
+          path: .artifacts/e2e/
+          retention-days: 14
+          if-no-files-found: ignore
+
       # Same script, own label — see the label note on the federated job.
       - name: File or update failure issue
         if: failure()
