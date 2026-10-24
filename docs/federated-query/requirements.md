@@ -1083,12 +1083,13 @@ else its `federated` block says.
     (`docs/federated-query/design.md` §4.3).
   - A page answered by DuckDB has a `postgres` source for the dirty-ID set,
     with the set's size as `row_estimate`. When the hot tier is read, a second
-    `postgres` source carries the hot leg's main-table predicate as its `sql`,
-    with the reason `hot-leg predicate (evaluated in DuckDB)`. It never sets
-    `predicate_pushdown`, because DuckDB evaluates that predicate after copying
-    the table (design.md §6.1). One `duckdb` source carries `actual_rows` (the rows
-    returned for the page) and `duration_ms`; its `tier` names one requested
-    Parquet tier, but the scan reads warm and cold together. `timings` holds
+    `postgres` source has the reason `hot-leg predicate (evaluated in DuckDB)`
+    and never sets `predicate_pushdown`, because DuckDB evaluates that
+    predicate after copying the table (design.md §6.1). The predicate itself
+    stays in the engine's internal plan, like all generated SQL. One `duckdb`
+    source carries `actual_rows` (the rows returned for the page) and
+    `duration_ms`; its `tier` names one requested Parquet tier, but the scan
+    reads warm and cold together. `timings` holds
     `translate`, `duckdb_fetch` and `total` in milliseconds, plus
     `plan_cache_hit` or `plan_cache_miss` (value 1) when the compiled-plan
     cache rendered the query.
