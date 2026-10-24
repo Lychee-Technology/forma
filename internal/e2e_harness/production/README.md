@@ -203,6 +203,13 @@ On failure (or `KEEP_E2E_ENV=1`) the Env writes
 `.artifacts/e2e/<runID>/<testName>/` (override root with
 `E2E_ARTIFACTS_DIR`); the path is printed in the failure message.
 
+In CI, a failed E2E Smoke or nightly production `-race` job uploads this
+tree as a workflow artifact (`e2e-harness-artifacts-attempt-<n>` or
+`production-race-e2e-artifacts-attempt-<n>`, kept 14 days). The repository
+is public, so those artifacts are too: whatever the harness dumps must stay
+free of credentials. Today `run.json` carries a redacted DSN and the plan
+SQL in `query_<n>.json` has its connection-string password redacted.
+
 | File | Content |
 |---|---|
 | `run.json` | seed, run ID, test, DB DSN, bucket/prefix, endpoints, git SHA |

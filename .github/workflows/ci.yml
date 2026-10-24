@@ -154,6 +154,26 @@ jobs:
       - name: Run E2E production harness smoke
         run: make test-e2e-production
 
+      # A failing production-harness test dumps its diagnostics under
+      # .artifacts/e2e/ (run info, event log, change_log, S3 listing,
+      # manifests, parquet samples, the queries it ran, the diff); without
+      # this step they die with the runner (#718). A passing run dumps
+      # nothing, so only a failure uploads. This repository is public and
+      # so are its artifacts: the harness redacts the DSN and the plan SQL,
+      # and CI's credentials are the containers' fixed test defaults.
+      # Artifact names are unique per run and immutable, so the attempt
+      # suffix gives a re-run of a flaky failure its own artifact beside the
+      # first attempt's. TestProductionHarnessJobsUploadArtifactsOnFailure
+      # guards this step.
+      - name: Upload e2e harness artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-harness-artifacts-attempt-${{ github.run_attempt }}
+          path: .artifacts/e2e/
+          retention-days: 14
+          if-no-files-found: ignore
+
   k6-smoke:
     name: k6 Smoke
     runs-on: ubuntu-latest
