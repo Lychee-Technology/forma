@@ -187,9 +187,10 @@ func resolveHybridLeafMeta(colName string, meta forma.AttributeMetadata, hasMeta
 }
 
 // classifyPredicate returns whether a KvCondition can be pushed to main table based on metadata.
-// Note it splits the raw value at the first colon itself (no lenient date
-// fallback, no alias canonicalization) — bare ISO timestamps and alias
-// operators like "neq" therefore classify as unpushable.
+// It splits the raw value at the first colon itself (no lenient date fallback), so
+// a bare ISO timestamp classifies as unpushable. The operator is canonicalized as on
+// every other target (#469): an alias ("eq", "neq") or letter-case spelling classifies
+// like its canonical name, which the shape-keyed plan cache relies on.
 func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (bool, string) {
 	if meta.ColumnBinding == nil {
 		return false, "no column binding"
@@ -204,7 +205,7 @@ func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (boo
 	}
 	opStr := "equals"
 	if opPart != "" && valPart != "" {
-		opStr = opPart
+		opStr = conditionexpr.CanonicalOperator(opPart)
 	}
 
 	// Decide based on value type and operator

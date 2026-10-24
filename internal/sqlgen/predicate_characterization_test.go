@@ -314,14 +314,6 @@ func buildCharErrCases() []charErrCase {
 			clientError: true,
 		},
 		{
-			// neq is canonicalized by ToSQLOperator but NOT by
-			// classifyPredicate, so it is unpushable on a bound column.
-			name:        "neq alias on bound column errors in pg-main",
-			cond:        charKv("age", "neq:7"),
-			wantErr:     "pg main generation: unsupported operator: neq",
-			clientError: true,
-		},
-		{
 			// Strict parse splits at the colon: op "2024-01-02T03" passes the
 			// non-empty check, and the value "04:05Z" is no date either. The
 			// operator is judged first, as on the entity_main routes.
