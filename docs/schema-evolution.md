@@ -211,8 +211,11 @@ on the change.
 
 Making the parquet legs read old values with `TRY_CAST` at the new type was the
 alternative #710 named. It would stop the statement failures, but `1e30` would
-read as absent and `1000.5` as `1000`. Every query would then silently answer
-values that no longer exist anywhere. `TRY_CAST(...) = NULL` is a lost value,
+read as absent and `1000.5` as `1000`. A query whose filter keeps an
+incompatible row would then silently answer values that no longer exist
+anywhere, and a predicate on the attribute would match against the cast value
+(the `ratio equals 1001` case above). A query whose filter excludes every
+incompatible row would not be affected. `TRY_CAST(...) = NULL` is a lost value,
 not a migrated one. The cast also runs on every query and forever: nothing is
 ever converted, so a later reader still sees the old type underneath.
 
