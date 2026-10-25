@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/lychee-technology/forma"
@@ -265,4 +267,95 @@ func TestCheckTypesCachesOnlyCleanProofs(t *testing.T) {
 		require.True(t, errors.Is(err, forma.ErrParquetTypeIncompatible))
 	}
 	require.Len(t, duck.proofs, 4, "a refusal is re-judged every query")
+}
+
+// gatedProofDuck holds every proof scan until release closes, so callers that
+// miss the cache while the first scan runs overlap it. started closes when
+// the first scan begins.
+type gatedProofDuck struct {
+	scriptedDescribeExecutor
+	started chan struct{}
+	release chan struct{}
+	proofs  atomic.Int32
+}
+
+func newGatedProofDuck() *gatedProofDuck {
+	return &gatedProofDuck{
+		scriptedDescribeExecutor: scriptedDescribeExecutor{cols: map[string][][2]string{"old.parquet": qtyCols("DOUBLE")}},
+		started:                  make(chan struct{}),
+		release:                  make(chan struct{}),
+	}
+}
+
+func (d *gatedProofDuck) Query(ctx context.Context, query string, args ...any) (duckDBRowsIterator, error) {
+	if !strings.HasPrefix(query, "SELECT CAST(") {
+		return d.scriptedDescribeExecutor.Query(ctx, query, args...)
+	}
+	if d.proofs.Add(1) == 1 {
+		close(d.started)
+	}
+	select {
+	case <-d.release:
+		return &fakeStringRows{}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// checkGatedQty validates the object once, then returns a guard call over
+// that union that can run concurrently with others.
+func checkGatedQty(t *testing.T, v *parquetSchemaValidator, duck *gatedProofDuck, path string) func(context.Context) ([]unverifiedProof, error) {
+	t.Helper()
+	union, _, err := v.Validate(context.Background(), duck, []string{path}, nil)
+	require.NoError(t, err)
+	return func(ctx context.Context) ([]unverifiedProof, error) {
+		return v.CheckTypes(ctx, duck, 7, forma.SchemaAttributeCache{"qty": bigintOnDouble}, union, nil)
+	}
+}
+
+// A clean proof reads the whole column, so a burst of queries that miss the
+// cache together must not each scan the object: one scan answers them all.
+func TestCheckTypesCoalescesConcurrentProofs(t *testing.T) {
+	duck := newGatedProofDuck()
+	check := checkGatedQty(t, newParquetSchemaValidator(), duck, "s3://b/7/old.parquet")
+
+	const callers = 8
+	results := make(chan error, callers)
+	run := func() {
+		unverified, err := check(context.Background())
+		if err == nil && len(unverified) > 0 {
+			err = fmt.Errorf("unverified: %v", unverified)
+		}
+		results <- err
+	}
+	go run()
+	<-duck.started
+	for range callers - 1 {
+		go run()
+	}
+	time.Sleep(50 * time.Millisecond) // let the other callers reach the leader's scan
+	close(duck.release)
+	for range callers {
+		require.NoError(t, <-results)
+	}
+	require.EqualValues(t, 1, duck.proofs.Load(), "concurrent misses share the leader's scan")
+}
+
+// A caller whose own context ends while it waits on another caller's scan is
+// unverified with that context error, which keeps a spent budget
+// non-degradable; it is never admitted on a proof it did not see.
+func TestCheckTypesWaiterReportsItsOwnContext(t *testing.T) {
+	duck := newGatedProofDuck()
+	defer close(duck.release)
+	check := checkGatedQty(t, newParquetSchemaValidator(), duck, "s3://b/7/old.parquet")
+
+	go func() { _, _ = check(context.Background()) }()
+	<-duck.started
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	unverified, err := check(ctx)
+	require.NoError(t, err)
+	require.Len(t, unverified, 1)
+	require.ErrorIs(t, unverified[0].err, context.DeadlineExceeded)
+	require.EqualValues(t, 1, duck.proofs.Load(), "the waiter must not start its own scan")
 }

@@ -149,13 +149,54 @@ func valueEvidence(fileType, value, demand string) string {
 // prove scans one object for the first value j's violation predicate
 // accepts. A clean scan is cached; a violation is not, so a repaired object
 // is re-judged on the next query.
+//
+// A clean proof reads the whole column — LIMIT 1 bounds the rows returned,
+// not the bytes scanned — so concurrent misses on one (object, column,
+// predicate, stamp) are single-flighted through the footer probe's inflight
+// map, under a "proof" prefix no object key can start with. Followers behave
+// as in probeColumns: on the leader's finish they re-read the cache and, finding
+// no clean proof there (a violation, or a leader whose read failed), prove
+// for themselves, so a refusal reaches every caller and a leader's expired
+// budget does not fail a follower that has budget left. A follower whose own
+// context ends while waiting reports that as its read error.
 func (v *parquetSchemaValidator) prove(
 	ctx context.Context, duck DuckDBQueryExecutor, path string, stamp map[string]string, col string, j typeJudgement,
 ) (string, bool, error) {
-	key := strings.Join([]string{path, col, j.violation}, "\x00")
+	key := proofKey(path, col, j)
 	if v.lookupProof(key, stamp) {
 		return "", false, nil
 	}
+	flight := probeKey("proof\x00"+key, stamp)
+	done, leader := v.beginProbe(flight)
+	if leader {
+		defer v.finishProbe(flight)
+		// A leader that finished between our lookup and our claim has
+		// already published.
+		if v.lookupProof(key, stamp) {
+			return "", false, nil
+		}
+		return v.runProof(ctx, duck, path, stamp, col, j)
+	}
+	select {
+	case <-done:
+		if v.lookupProof(key, stamp) {
+			return "", false, nil
+		}
+		return v.runProof(ctx, duck, path, stamp, col, j)
+	case <-ctx.Done():
+		return "", false, fmt.Errorf("wait for the proof of column %s in %s: %w", col, path, ctx.Err())
+	}
+}
+
+// proofKey is a proof's cache key: the object, the column and the predicate.
+func proofKey(path, col string, j typeJudgement) string {
+	return strings.Join([]string{path, col, j.violation}, "\x00")
+}
+
+// runProof is the un-deduplicated proof scan.
+func (v *parquetSchemaValidator) runProof(
+	ctx context.Context, duck DuckDBQueryExecutor, path string, stamp map[string]string, col string, j typeJudgement,
+) (string, bool, error) {
 	quoted := quoteDuckIdent(col)
 	rows, err := duck.Query(ctx, fmt.Sprintf(
 		"SELECT CAST(%[1]s AS VARCHAR) FROM read_parquet('%[2]s') WHERE %[1]s IS NOT NULL AND (%[3]s) LIMIT 1",
@@ -174,7 +215,7 @@ func (v *parquetSchemaValidator) prove(
 	if err := rows.Err(); err != nil {
 		return "", false, fmt.Errorf("prove column %s of %s: %w", col, path, err)
 	}
-	v.recordProof(key, maps.Clone(stamp))
+	v.recordProof(proofKey(path, col, j), maps.Clone(stamp))
 	return "", false, nil
 }
 
