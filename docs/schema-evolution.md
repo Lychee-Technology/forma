@@ -39,7 +39,9 @@ declared range. Anything else in such a column is history: written before the
 funnel, or by direct SQL.
 
 Before #708 the OLTP read converted such an image with Go's `int32()` /
-`int16()`, so `4294967296` read as `-2147483648` and `1001.5` as `1001`. An
+`int16()`, so `1001.5` read as `1001` and `4294967296` as some other integer.
+Go leaves an out-of-range float conversion to the platform: it was
+`-2147483648` on amd64, where every measurement on this page was taken. An
 update that did not name the attribute merged the converted value into the
 document it wrote, the funnel admitted it, and the column was overwritten. The
 stored value changed without anyone naming the attribute.
@@ -51,6 +53,8 @@ fraction, a value outside the declared range, NaN, or an infinity. The refusal
 is a read-path consistency error, which is operator-visible and never a 4xx
 (see [Error Handling](./error-handling.md)). The read never wraps, truncates,
 rounds, or drops the value, and never answers it as an absent attribute.
+Anything on the OLTP route that decodes the row fails the same way: a GET, a
+query page holding the row, and relation enrichment that reads it as a parent.
 
 **Implemented** (`transform.checkBoundIntegerImage`). The error names the schema
 id, the row, the attribute, the bound column, the declared type and the stored
@@ -62,8 +66,9 @@ in bound column bigint_01 does not fit declared type integer (expected a whole n
 [-2147483648, 2147483647]); rewrite the attribute to repair the row (#708)
 ```
 
-A `bigint_*` image is judged on its exact int64, and a `double_*` image on its
-float64, against bounds that are float64 integers. Both comparisons are exact,
+A `bigint_*` image is judged on its exact int64. An `integer_*` image (a
+`smallint`'s) and a `double_*` image are judged on their float64, against
+bounds that are float64 integers. Every comparison is exact,
 so the declared type's own bounds are never refused
 (`TestReadKeepsBoundIntegerImageInsideDeclaredType`).
 
@@ -127,15 +132,16 @@ the routes answer differently until #621 or a later decision unifies them.
 | any whole number in range | the value | the value |
 
 Valid data reads the same on every route. The federated reading never justifies
-an OLTP conversion. The census is the guard that finds these rows on every
-tier.
+an OLTP conversion. The census is the guard: it reads `entity_main`, which
+holds the current version of every row, whether or not that row has been
+flushed to parquet yet.
 
 ### Not covered: EAV-only integers (#729)
 
 An EAV-only `smallint`/`integer` keeps #384's conversion on the OLTP read. The
 same unrelated-update write-back happens there, measured on PostgreSQL:
-`value_numeric` `4294967296` becomes `-2147483648`, and `1001.5` becomes
-`1001`. Whether D1's refusal extends to `eav_data` is #729's decision.
+`value_numeric` `4294967296` becomes `-2147483648` (on amd64), and `1001.5`
+becomes `1001`. Whether D1's refusal extends to `eav_data` is #729's decision.
 
 ## D2: Schema type evolution fails closed (#710)
 
@@ -165,7 +171,7 @@ row was written and flushed under the second:
 | `numeric → bigint`, EAV-only | `1e30`, `1000.5`, `5` | every query fails, same error |
 | `numeric → integer`, `double_01` | `1e10`, `1000.5`, `5` | every query fails: `… 10000000000.0 … INT32` |
 | `numeric → bigint`, `double_01` | `1000.5`, `1001.5`, `5` | succeeds silently: `1000.5` reads `1000`, `1001.5` reads `1002`, and `ratio equals 1001` matches nothing |
-| `numeric → integer`, EAV-only | `1e10`, `1000.5`, `5` | succeeds silently: `1e10` decodes to `-2147483648`, and `ratio equals 1000` matches nothing although a row decodes to `1000` |
+| `numeric → integer`, EAV-only | `1e10`, `1000.5`, `5` | succeeds silently: `1e10` decodes to `-2147483648` (amd64), and `ratio equals 1000` matches nothing although a row decodes to `1000` |
 
 So the change either takes every federated query over the schema down, or
 silently changes values. Which one happens depends on the data, not on the

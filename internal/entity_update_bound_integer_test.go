@@ -33,6 +33,7 @@ func boundIntRegistry() forma.SchemaRegistry {
 		"small": {AttributeID: 5, ValueType: forma.ValueTypeSmallInt, ColumnBinding: bind(forma.MainColumnBigint02)},
 		"frac":  {AttributeID: 6, ValueType: forma.ValueTypeSmallInt, ColumnBinding: bind(forma.MainColumnDouble03)},
 		"same":  {AttributeID: 7, ValueType: forma.ValueTypeInteger, ColumnBinding: bind(forma.MainColumnInteger02)},
+		"loose": {AttributeID: 8, ValueType: forma.ValueTypeInteger},
 	}}
 }
 
@@ -249,4 +250,19 @@ func TestUpdateNamingBoundIntegerImageRepairsIt(t *testing.T) {
 			}
 		}
 	}
+}
+
+// #708 covers bound columns only. An EAV-only integer is read from eav_data,
+// whose records name no bound column, so a fraction there still converts
+// (#384) instead of being refused; whether it should is #729's decision.
+// This pins the scope: a change that lets eav_data records reach the
+// bound-column check fails here.
+func TestEAVOnlyIntegerImageStaysOutsideBoundCheck(t *testing.T) {
+	row := seedBoundIntRow(t, nil, 0)
+	record := row.repo.records[boundIntSchema][row.rowID]
+	image := 1001.5
+	record.OtherAttributes = append(record.OtherAttributes, model.EAVRecord{
+		SchemaID: boundIntSchema, RowID: row.rowID, AttrID: 8, ValueNumeric: &image,
+	})
+	assertEqualValue(t, "loose", int32(1001), storedBoundIntRow(t, row)["loose"])
 }

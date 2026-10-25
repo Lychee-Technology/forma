@@ -52,31 +52,7 @@ func TestBoundIntegerWideColumnCensusReadAndRepair(t *testing.T) {
 	defer srv.Close()
 	tables := widthaudit.Tables{EAV: env.Tables.EAVData, EntityMain: env.Tables.EntityMain, ChangeLog: env.Tables.ChangeLog}
 
-	for _, payload := range []string{
-		`{"name":"upper","qty":2147483647,"cnt":2147483647,"tiny":32767}`,
-		`{"name":"lower","qty":-2147483648,"cnt":-2147483648,"tiny":-32768}`,
-	} {
-		status, body := postWide(t, srv.URL, schema.Name, payload)
-		if status != http.StatusCreated {
-			t.Fatalf("create %s: status %d body %s", payload, status, body)
-		}
-		rowID := uuid.MustParse(decodeCreatedRowID(t, body))
-		got, err := env.EntityManager().Get(ctx, &forma.QueryRequest{SchemaName: schema.Name, RowID: &rowID})
-		if err != nil {
-			t.Fatalf("read the boundary row %s: %v", payload, err)
-		}
-		upper := strings.Contains(payload, "upper")
-		wantInt, wantSmall := int32(-2147483648), int16(-32768)
-		if upper {
-			wantInt, wantSmall = 2147483647, 32767
-		}
-		if got.Attributes["qty"] != wantInt || got.Attributes["cnt"] != wantInt || got.Attributes["tiny"] != wantSmall {
-			t.Fatalf("boundary row %s reads %#v", payload, got.Attributes)
-		}
-	}
-	if findings := boundBigintCensus(t, ctx, env, tables); len(findings) != 0 {
-		t.Fatalf("census reports values the funnel admitted: %+v", findings)
-	}
+	assertBoundIntegerBoundsRead(t, ctx, env, srv.URL, tables)
 
 	for _, tc := range []struct {
 		attr, column string
@@ -89,6 +65,7 @@ func TestBoundIntegerWideColumnCensusReadAndRepair(t *testing.T) {
 		{"cnt", "double_02", forma.ValueTypeInteger, "1001.5", "1001.5"},
 		{"cnt", "double_02", forma.ValueTypeInteger, "2147483648", "2147483648"},
 		{"cnt", "double_02", forma.ValueTypeInteger, "'NaN'", "NaN"},
+		{"cnt", "double_02", forma.ValueTypeInteger, "'Infinity'", "Infinity"},
 		{"cnt", "double_02", forma.ValueTypeInteger, "'-Infinity'", "-Infinity"},
 		{"tiny", "integer_01", forma.ValueTypeSmallInt, "32768", "32768"},
 		{"tiny", "integer_01", forma.ValueTypeSmallInt, "-32769", "-32769"},
@@ -145,6 +122,38 @@ func TestBoundIntegerWideColumnCensusReadAndRepair(t *testing.T) {
 		if findings := boundBigintCensus(t, ctx, env, tables); len(findings) != 0 {
 			t.Fatalf("%s: census still reports the repaired row: %+v", label, findings)
 		}
+	}
+}
+
+// assertBoundIntegerBoundsRead writes each declared type's own bounds through
+// the API, reads them back exactly, and requires a clean census.
+func assertBoundIntegerBoundsRead(t *testing.T, ctx context.Context, env *Env, baseURL string, tables widthaudit.Tables) {
+	t.Helper()
+	schema := DefaultSchemaFixtures()[0]
+	for _, payload := range []string{
+		`{"name":"upper","qty":2147483647,"cnt":2147483647,"tiny":32767}`,
+		`{"name":"lower","qty":-2147483648,"cnt":-2147483648,"tiny":-32768}`,
+	} {
+		status, body := postWide(t, baseURL, schema.Name, payload)
+		if status != http.StatusCreated {
+			t.Fatalf("create %s: status %d body %s", payload, status, body)
+		}
+		rowID := uuid.MustParse(decodeCreatedRowID(t, body))
+		got, err := env.EntityManager().Get(ctx, &forma.QueryRequest{SchemaName: schema.Name, RowID: &rowID})
+		if err != nil {
+			t.Fatalf("read the boundary row %s: %v", payload, err)
+		}
+		upper := strings.Contains(payload, "upper")
+		wantInt, wantSmall := int32(-2147483648), int16(-32768)
+		if upper {
+			wantInt, wantSmall = 2147483647, 32767
+		}
+		if got.Attributes["qty"] != wantInt || got.Attributes["cnt"] != wantInt || got.Attributes["tiny"] != wantSmall {
+			t.Fatalf("boundary row %s reads %#v", payload, got.Attributes)
+		}
+	}
+	if findings := boundBigintCensus(t, ctx, env, tables); len(findings) != 0 {
+		t.Fatalf("census reports values the funnel admitted: %+v", findings)
 	}
 }
 

@@ -776,7 +776,9 @@ exponent form from 1e21 up. `last_flushed_at` is shown when the row has been
 exported, as for an EAV line.
 
 The census needs `--entity-main-table` whenever a schema declares such a
-binding. With an empty table name it stops with an error naming the first
+binding, and since `#708` also whenever one binds a `smallint` or `integer` to
+a wider column, so a validator run that passed before can now stop on an
+empty table name. With an empty table name it stops with an error naming the first
 such attribute instead of skipping the scan. Without such a binding the
 census does not read the table.
 
@@ -813,7 +815,8 @@ Each line is a failure that is never requeued. Until the row is repaired the
 OLTP route refuses it with a server error naming the schema id, the row, the
 attribute, the column, and the stored image. An update that leaves the
 attribute out fails the same way and changes nothing. Before `#708` that read
-converted the image (`4294967296` read as `-2147483648`, `1001.5` as `1001`),
+converted the image (`1001.5` read as `1001`, and `4294967296` as
+`-2147483648` on amd64),
 and an unrelated update wrote the converted value back. The federated route
 keeps reading the column at the declared type through `TRY_CAST` (`#627`): a
 fraction rounds half to even, and a value out of range, `NaN`, or an infinity
