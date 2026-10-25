@@ -29,9 +29,11 @@ import (
 // footer cache, so a write-once object is scanned once per process while the
 // entry lives.
 //
-// It returns the objects whose proof scan failed to read: the guard cannot
-// judge them, and the caller fails the read closed on them. A refusal wins
-// over unverified objects, because it is a verdict and they are not.
+// It returns the objects whose proof scan failed to read, each with its read
+// error: the guard cannot judge them, and the caller fails the read closed on
+// them. The error is kept because it can carry the request's expired budget,
+// which must keep the failure non-degradable (#465). A refusal wins over
+// unverified objects, because it is a verdict and they are not.
 //
 // What it cannot see: a redeclaration that keeps the exported type, such as
 // numeric → integer on an EAV-only attribute (both write DOUBLE) or bigint →
@@ -39,11 +41,11 @@ import (
 func (v *parquetSchemaValidator) CheckTypes(
 	ctx context.Context, duck DuckDBQueryExecutor, schemaID int16,
 	cache forma.SchemaAttributeCache, union columnUnion, stamps map[string]map[string]string,
-) ([]string, error) {
+) ([]unverifiedProof, error) {
 	if v == nil || duck == nil || union.types == nil {
 		return nil, nil
 	}
-	var unverified []string
+	var unverified []unverifiedProof
 	for _, name := range slices.Sorted(maps.Keys(cache)) {
 		meta := cache[name]
 		col := sqlgen.ParquetAttrColumn(name)
@@ -73,7 +75,12 @@ func (v *parquetSchemaValidator) CheckTypes(
 			}
 			value, found, err := v.prove(ctx, duck, f.path, currentStamp(stamps, f.path), col, j)
 			if err != nil {
-				unverified = append(unverified, f.path)
+				unverified = append(unverified, unverifiedProof{path: f.path, err: err})
+				if ctx.Err() != nil {
+					// The request ended, not the object: every later
+					// proof would fail the same way.
+					return unverified, nil
+				}
 				continue
 			}
 			if found {
@@ -83,6 +90,12 @@ func (v *parquetSchemaValidator) CheckTypes(
 		}
 	}
 	return unverified, nil
+}
+
+// unverifiedProof is an object whose value proof could not be read, and why.
+type unverifiedProof struct {
+	path string
+	err  error
 }
 
 // columnAtRisk is the #371 pin's test: the column is present and either seen

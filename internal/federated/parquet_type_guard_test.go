@@ -53,7 +53,7 @@ func writeQtyObject(t *testing.T, duck *sqlDBExecutor, dir, name, typ string, va
 }
 
 func checkQty(t *testing.T, v *parquetSchemaValidator, duck DuckDBQueryExecutor, meta forma.AttributeMetadata,
-	stamps map[string]map[string]string, paths ...string) ([]string, error) {
+	stamps map[string]map[string]string, paths ...string) ([]unverifiedProof, error) {
 	t.Helper()
 	union, _, err := v.Validate(context.Background(), duck, paths, stamps)
 	require.NoError(t, err)
@@ -215,8 +215,8 @@ func TestCheckTypesRefusesWithoutAScan(t *testing.T) {
 }
 
 // An object whose proof scan cannot be read is unverified, not admitted: the
-// caller fails the read closed on it. A refusal elsewhere in the set wins,
-// because it is a verdict.
+// caller fails the read closed on it, with the read error as the cause. A
+// refusal elsewhere in the set wins, because it is a verdict.
 func TestCheckTypesReportsUnreadableProofsAsUnverified(t *testing.T) {
 	duck := &proofScriptedDuck{
 		scriptedDescribeExecutor: scriptedDescribeExecutor{cols: map[string][][2]string{
@@ -227,7 +227,9 @@ func TestCheckTypesReportsUnreadableProofsAsUnverified(t *testing.T) {
 	a, b := "s3://b/7/a.parquet", "s3://b/7/b.parquet"
 	unverified, err := checkQty(t, newParquetSchemaValidator(), duck, bigintOnDouble, nil, a, b)
 	require.NoError(t, err)
-	require.Equal(t, []string{a}, unverified)
+	require.Len(t, unverified, 1)
+	require.Equal(t, a, unverified[0].path)
+	require.ErrorContains(t, unverified[0].err, "IO Error: cannot read a.parquet")
 
 	duck.offending = map[string]string{"b.parquet": "1000.5"}
 	unverified, err = checkQty(t, newParquetSchemaValidator(), duck, bigintOnDouble, nil, a, b)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -20,18 +21,30 @@ const (
 // guardEngineDuck is the engine fake with the #732 proof scans scripted:
 // schema 7's age (integer on integer_01) is DOUBLE in the old object, so the
 // guard proves it before the main scan. drainFail makes the #251 verification
-// drain of that object fail as well, i.e. the object is corrupt.
+// drain of that object fail as well, i.e. the object is corrupt. blockProofs
+// and blockDescribe hold a proof scan, or the footer probe of one path, until
+// the request's context is done, as a read that outlives the budget would.
 type guardEngineDuck struct {
 	fakeDuckDBExecutor
-	offending string // the proof's answer; empty means a clean scan
-	proofErr  error
-	drainFail string
-	proofs    int
+	offending     string // the proof's answer; empty means a clean scan
+	proofErr      error
+	drainFail     string
+	blockProofs   bool
+	blockDescribe string
+	proofs        int
 }
 
 func (d *guardEngineDuck) Query(ctx context.Context, query string, args ...any) (duckDBRowsIterator, error) {
+	if d.blockDescribe != "" && strings.HasPrefix(query, "DESCRIBE ") && strings.Contains(query, d.blockDescribe) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	if strings.HasPrefix(query, "SELECT CAST(") {
 		d.proofs++
+		if d.blockProofs {
+			<-ctx.Done()
+			return nil, fmt.Errorf("INTERRUPT Error: Interrupted!: %w", ctx.Err())
+		}
 		if d.proofErr != nil {
 			return nil, d.proofErr
 		}
@@ -58,10 +71,15 @@ func newGuardEngineDuck() *guardEngineDuck {
 
 func queryGuardEngine(t *testing.T, duck *guardEngineDuck, pg *fakePostgresFederatedSource, opts *model.FederatedQueryOptions, paths ...string) (*model.PersistentRecordPage, error) {
 	t.Helper()
+	return queryGuardEngineWith(t, hybridDuckConfig(), duck, pg, opts, paths...)
+}
+
+func queryGuardEngineWith(t *testing.T, cfg forma.DuckDBConfig, duck *guardEngineDuck, pg *fakePostgresFederatedSource, opts *model.FederatedQueryOptions, paths ...string) (*model.PersistentRecordPage, error) {
+	t.Helper()
 	restore := initTestDescriptors()
 	t.Cleanup(restore)
 	e := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(&fakeParquetSource{paths: paths}))
+		cfg, testMetadataCacheSchema7(t), "host=x", WithParquetSource(&fakeParquetSource{paths: paths}))
 	return e.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, coldTierQuery(), opts)
 }
@@ -131,4 +149,33 @@ func TestUnverifiedCorruptObjectKeepsPartialSemantics(t *testing.T) {
 	require.NotContains(t, duck.lastSQL, typeGuardOldPath, "the corrupt object is excluded from the scan")
 	require.NotNil(t, opts.PartialScan)
 	require.Equal(t, []string{typeGuardOldPath}, opts.PartialScan.ExcludedObjects)
+}
+
+// A pre-read check the budget cuts short is a timeout, not an unreadable
+// object: the read fails with the deadline in its chain and is not degraded,
+// exactly as a main scan past the budget is not (#465). Answering from
+// Postgres would spend more time past a limit that exists to bound latency.
+func TestTypeGuardTimeoutIsNotDegraded(t *testing.T) {
+	for name, block := range map[string]func(*guardEngineDuck){
+		"proof scan":   func(d *guardEngineDuck) { d.blockProofs = true },
+		"footer probe": func(d *guardEngineDuck) { d.blockDescribe = typeGuardOldPath },
+	} {
+		t.Run(name, func(t *testing.T) {
+			duck := newGuardEngineDuck()
+			block(duck)
+			cfg := hybridDuckConfig()
+			cfg.QueryTimeout = 50 * time.Millisecond
+			pg := &fakePostgresFederatedSource{}
+
+			start := time.Now()
+			_, err := queryGuardEngineWith(t, cfg, duck, pg, &model.FederatedQueryOptions{AllowPartialDegradedMode: true},
+				typeGuardHealthyPath, typeGuardOldPath)
+
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+			require.Contains(t, err.Error(), typeGuardOldPath)
+			require.Less(t, time.Since(start), 5*time.Second, "the check was not cancelled by the budget")
+			require.Zero(t, duck.calls, "an unverified object must not reach the main scan")
+			require.Zero(t, pg.queryCalls, "a spent budget must not degrade to postgres-only")
+		})
+	}
 }

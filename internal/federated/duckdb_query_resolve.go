@@ -2,6 +2,7 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -102,7 +103,9 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 // values. Objects it could not judge — a manifest-listed object whose footer
 // could not be read, or any object whose value proof failed to read — fail
 // the read closed as an unverifiedParquetError, which the caller classifies
-// like a failed scan. A glob-expanded hint set is not a manifest inventory,
+// like a failed scan. Its cause carries the read errors and, when the request
+// ran out of budget, the context error, so a pre-read timeout is as
+// non-degradable as a main-scan one. A glob-expanded hint set is not a manifest inventory,
 // so its unreadable footers keep deferring to the main read.
 func (e *DBFederatedQueryEngine) validateScanSet(
 	ctx context.Context, schemaID int16, paths []string, fromSource bool, stamps map[string]map[string]string,
@@ -116,17 +119,24 @@ func (e *DBFederatedQueryEngine) validateScanSet(
 		// The build refuses a query without metadata (#151); nothing to judge.
 		return coldScanSet{}, nil
 	}
-	unverified, err := e.schemaValidator.CheckTypes(ctx, e.duck, schemaID, cache, union, stamps)
+	proofs, err := e.schemaValidator.CheckTypes(ctx, e.duck, schemaID, cache, union, stamps)
 	if err != nil {
 		return coldScanSet{}, fmt.Errorf("pre-read parquet type guard: %w", err)
 	}
+	var unverified []string
 	if fromSource {
-		unverified = append(slices.Clone(union.unverified), unverified...)
+		unverified = slices.Clone(union.unverified)
+	}
+	causes := make([]error, 0, len(proofs)+1)
+	for _, p := range proofs {
+		unverified = append(unverified, p.path)
+		causes = append(causes, p.err)
 	}
 	if len(unverified) > 0 {
 		slices.Sort(unverified)
 		return coldScanSet{}, &unverifiedParquetError{
-			SchemaID: schemaID, Paths: slices.Compact(unverified), scanned: paths, fromSource: fromSource,
+			SchemaID: schemaID, Paths: slices.Compact(unverified), cause: unverifiedCause(ctx, causes),
+			scanned: paths, fromSource: fromSource,
 		}
 	}
 	// Never-flushed column augmentation (#255) and stale-type pinning
@@ -160,6 +170,10 @@ func (e *DBFederatedQueryEngine) validateScanSet(
 type unverifiedParquetError struct {
 	SchemaID int16
 	Paths    []string
+	// cause is why the objects could not be read. It stays in the chain so
+	// failDuckDBScan's classification keeps an expired budget
+	// non-degradable, exactly as for a timed-out main scan (#465).
+	cause error
 	// scanned and fromSource are the resolved path set the classification
 	// probes, as for a failed scan.
 	scanned    []string
@@ -167,6 +181,25 @@ type unverifiedParquetError struct {
 }
 
 func (e *unverifiedParquetError) Error() string {
-	return fmt.Sprintf("schema %d: %d live parquet object(s) could not be read to verify their column types against the declared attribute types, so the read fails closed: %s",
+	msg := fmt.Sprintf("schema %d: %d live parquet object(s) could not be read to verify their column types against the declared attribute types, so the read fails closed: %s",
 		e.SchemaID, len(e.Paths), strings.Join(e.Paths, ", "))
+	if e.cause != nil {
+		msg += ": " + e.cause.Error()
+	}
+	return msg
+}
+
+func (e *unverifiedParquetError) Unwrap() error { return e.cause }
+
+// unverifiedCause joins the failed proof reads with the request's context
+// error. The context error is added unless a proof already carries it: an
+// unreadable footer records no error (it is inconclusive by design), so a
+// footer probe the budget cut short would otherwise leave nothing in the
+// chain to say the budget is spent.
+func unverifiedCause(ctx context.Context, proofErrs []error) error {
+	cause := errors.Join(proofErrs...)
+	if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(cause, ctxErr) {
+		cause = errors.Join(cause, ctxErr)
+	}
+	return cause
 }
