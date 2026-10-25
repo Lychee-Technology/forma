@@ -1069,7 +1069,10 @@ expression, so a filter matches the row the same way before and after its
 flush. That leaf is a DuckDB expression over `postgres_scan`, not a plain
 column compare. Before #627 the hot leg read the raw column, so the outer
 select's strict cast failed the whole query on such an image. The OLTP route
-and the census do not cover the smallint/integer bindings yet (#708).
+refuses a smallint/integer image its declared type cannot hold, and the
+census reports it (#708), so for such a row the two routes answer
+differently until #621; valid images read the same on both
+([Schema Evolution and Declared Types](../schema-evolution.md)).
 The remaining asymmetry class is #205's float64 ceiling: values only a full
 NUMERIC can hold (planted by direct SQL, never by the funnel) still read
 exactly on Postgres and as their float64 image on DuckDB.

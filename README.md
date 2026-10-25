@@ -252,6 +252,7 @@ make benchmark-heavy       # Heavy planning set
 - [Row IDs and Unique Keys (`x-forma-unique-keys`)](docs/unique-keys.md)
 - [Claims (`Tx.Claim`)](docs/claims.md)
 - [Schema Consistency Migration Guide](docs/schema-consistency-migration.md)
+- [Schema Evolution and Declared Types](docs/schema-evolution.md)
 - [E2E Test Matrix](docs/e2e-tests-en.md)
 - [Integration Test Cases](docs/integ-tests-en.md)
 - [Go E2E Harness README](internal/e2e_harness/README.md)
@@ -261,7 +262,7 @@ make benchmark-heavy       # Heavy planning set
 
 Forma targets the gap between rigid RDBMS schemas and schema-less NoSQL stores:
 
-- **Zero-Downtime Schema Evolution** — Add or modify fields by updating JSON Schema metadata; no `ALTER TABLE` required.
+- **Zero-Downtime Schema Evolution** — Add or modify fields by updating JSON Schema metadata; no `ALTER TABLE` required. Changing an existing field's type is not covered: it must be lossless for the stored data ([Schema Evolution and Declared Types](docs/schema-evolution.md)).
 - **ACID on PostgreSQL** — Inherits full transactional guarantees from Postgres.
 - **Smart SQL Generation** — CTE + JSON_AGG eliminates N+1 queries in EAV models.
 - **Federated Query (Lakehouse)** — PostgreSQL for OLTP, DuckDB + Parquet on S3 for OLAP. Anti-Join + Dirty Set ensures consistency across tiers.

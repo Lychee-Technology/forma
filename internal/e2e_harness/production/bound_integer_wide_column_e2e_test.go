@@ -22,8 +22,9 @@ import (
 // and the pg_source pushdown and the `visible` filter compared the raw
 // image, so a filter matched the row differently before and after its
 // flush. Both hot projections read it the export's way now. The OLTP route
-// is not exercised here: it refuses the bigint's image with a consistency
-// error (#590), and converts the integer's instead (#708).
+// is not exercised here: it refuses both images with a consistency error
+// (#590 for the bigint, #708 for the integer;
+// width_audit_bound_integer_e2e_test.go).
 
 const wideIntegerProps = `{
     "name": {"type": "string"},

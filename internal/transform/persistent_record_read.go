@@ -169,6 +169,7 @@ func (t *persistentRecordTransformer) readWithDefaultEncoding(record *model.Pers
 		if val, ok := record.Int16Items[columnName]; ok {
 			f := float64(val)
 			attr.ValueNumeric = &f
+			attr.BoundColumn = columnName
 			return attr, true, nil
 		}
 
@@ -176,6 +177,7 @@ func (t *persistentRecordTransformer) readWithDefaultEncoding(record *model.Pers
 		if val, ok := record.Int32Items[columnName]; ok {
 			f := float64(val)
 			attr.ValueNumeric = &f
+			attr.BoundColumn = columnName
 			return attr, true, nil
 		}
 
@@ -185,12 +187,14 @@ func (t *persistentRecordTransformer) readWithDefaultEncoding(record *model.Pers
 			exact := val
 			attr.ValueNumeric = &f
 			attr.ValueInt64 = &exact
+			attr.BoundColumn = columnName
 			return attr, true, nil
 		}
 
 	case forma.MainColumnTypeDouble:
 		if val, ok := record.Float64Items[columnName]; ok {
 			attr.ValueNumeric = &val
+			attr.BoundColumn = columnName
 			return attr, true, nil
 		}
 

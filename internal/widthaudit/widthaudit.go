@@ -1,7 +1,9 @@
 // Package widthaudit finds stored values that do not fit the attribute's
 // declared integer width, and says which tier disagreement each one can
 // cause (#501). It reads eav_data.value_numeric for EAV-only attributes and
-// the double_* columns of entity_main for a bigint bound to one (#618).
+// the entity_main column of an integer bound to a column wider than its
+// declared type: a bigint in a double_* column (#618), a smallint or integer
+// in a wider one (#708).
 //
 // #384 made the write funnel reject such values and moved the DuckDB
 // projection of EAV-only smallint/integer to storage width DOUBLE. Rows that
@@ -16,7 +18,8 @@
 // stored past that was rounded on the write and reads back as the rounded
 // value on every route, so the census reports it too. A bigint bound to a
 // double_* column is stored as the same image under the same contract, so
-// the census scans those columns as well (column_census.go).
+// the census scans those columns as well, and the wider columns a smallint or
+// integer can be bound to (column_census.go).
 package widthaudit
 
 import (
@@ -51,24 +54,26 @@ type Tables struct {
 }
 
 // Target is one attribute whose stored value the census checks against an
-// integer width: an EAV-only smallint/integer/bigint, or a bigint bound to a
-// double_* column. For a list attribute, Declared is the items type, since
-// each element is stored as its own eav_data row.
+// integer width: an EAV-only smallint/integer/bigint, or an integer bound to
+// a column wider than its declared type (columnHoldsWider). For a list
+// attribute, Declared is the items type, since each element is stored as its
+// own eav_data row.
 type Target struct {
 	SchemaID   int16
 	SchemaName string
 	AttrID     int16
 	AttrName   string
 	Declared   forma.ValueType
-	// Column is the double_* column of entity_main a column-bound bigint is
-	// stored in. It is empty for an EAV-only target.
+	// Column is the entity_main column a column-bound target is stored in.
+	// It is empty for an EAV-only target.
 	Column string
 }
 
 // Finding is one stored value that does not fit its target's width: an
 // eav_data row, or the target's column of an entity_main row. StoredValue is
-// the NUMERIC text exactly as Postgres holds it for eav_data, and the float8
-// in plain digits for a column (formatDoubleImage).
+// the NUMERIC text exactly as Postgres holds it for eav_data, the float8 in
+// plain digits for a double_* column (formatDoubleImage), and the exact
+// digits for an integer_* or bigint_* column.
 type Finding struct {
 	Target
 	RowID        uuid.UUID
@@ -83,10 +88,10 @@ type Finding struct {
 }
 
 // Targets lists every EAV-only smallint/integer/bigint attribute, including
-// list attributes with such items, and every bigint bound to a double_*
-// column, in (schema_id, attr_id) order. Other column-bound attributes are
-// excluded: a smallint, integer or bigint column holds the value at its own
-// integer width.
+// list attributes with such items, and every integer bound to a column wider
+// than its declared type, in (schema_id, attr_id) order. Other column-bound
+// attributes are excluded: a column as narrow as the declared type holds the
+// value at its own width, and numeric has no integer width.
 func Targets(cache *schemameta.MetadataCache) []Target {
 	var targets []Target
 	for _, schemaName := range cache.ListSchemas() {
@@ -123,7 +128,7 @@ func Targets(cache *schemameta.MetadataCache) []Target {
 func targetStorage(meta forma.AttributeMetadata) (declared forma.ValueType, column string, ok bool) {
 	if binding := meta.ColumnBinding; binding != nil {
 		column = string(binding.ColumnName)
-		return meta.ValueType, column, meta.ValueType == forma.ValueTypeBigInt && isDoubleColumn(column)
+		return meta.ValueType, column, columnHoldsWider(meta.ValueType, column)
 	}
 	declared = meta.ValueType
 	if declared == forma.ValueTypeList {

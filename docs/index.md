@@ -82,6 +82,7 @@ make test
 - [Engineering Blog Series](/blog-series/) - Deep dive into Forma's architecture
 - [Documentation](/cn/README.cn) - API reference and guides
 - [Error Handling](./error-handling.md) - Write-path vs read-path error semantics
+- [Schema Evolution and Declared Types](./schema-evolution.md) - What a declared `valueType` guarantees for stored data, and the fail-closed policy for changing one
 - [Transactions](./transactions.md) - Several reads and writes across schemas in one transaction with `Transactor.InTx`, row fences with `Tx.AssertRow`, predicate mutation with `Tx.UpdateWhere`/`DeleteWhere`, and claims with `Tx.Claim`
 - [Conditional Writes](./conditional-writes.md) - Preconditions, `increment` and `server_time` on Update and Delete
 - [Condition DSL](./condition-dsl.md) - Filter operators, `in`/`not_in`, null tests and `$now`

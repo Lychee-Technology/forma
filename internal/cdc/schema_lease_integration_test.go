@@ -146,19 +146,26 @@ func TestLeaseSchemaLockTakesOverOnlyAnExpiredLease(t *testing.T) {
 	release()
 }
 
+// TestLeaseSchemaLockRenewsPastItsTTL holds a lease well past its TTL. The
+// holder stops by design when no renewal succeeds within ttl - renewEvery,
+// so the timings leave renewals a 1.5s window. At 600ms/150ms the window was
+// 450ms, which CI runs that rebuild most packages under -race exhausted: a
+// 1.5s sleep there overran by up to 0.6s, and run 40141248359 ended held.
 func TestLeaseSchemaLockRenewsPastItsTTL(t *testing.T) {
 	db, _ := leaseTarget(t, "")
 	table := leaseTestTable(t, db)
 	ctx := context.Background()
-	locker := newLeaseSchemaLocker(db, table, 600*time.Millisecond, 150*time.Millisecond)
+	locker := newLeaseSchemaLocker(db, table, 2*time.Second, 500*time.Millisecond)
 
 	held, release, ok, err := locker.TryLock(ctx, 7)
 	require.NoError(t, err)
 	require.True(t, ok)
 	defer release()
 
-	time.Sleep(1500 * time.Millisecond)
-	require.NoError(t, held.Err(), "a renewed lease must outlive its TTL")
+	time.Sleep(3 * time.Second)
+	if held.Err() != nil {
+		t.Fatalf("a renewed lease must outlive its TTL: held ended with %v", context.Cause(held))
+	}
 	_, _, ok, err = newLeaseSchemaLocker(db, table, time.Minute, 15*time.Second).TryLock(ctx, 7)
 	require.NoError(t, err)
 	require.False(t, ok, "a renewed lease must still exclude")
