@@ -8,7 +8,12 @@ import (
 	"testing"
 )
 
-func TestGenerateAttributesJSONUpdateValueType(t *testing.T) {
+// TestGenerateAttributesJSONRefusesTextToDate: adding `format: date` to a
+// string the ledger records as text asks for a different physical type (text
+// lives in value_text, a date in value_numeric as epoch millis). The generator
+// used to write the new type straight through; it now refuses and leaves the
+// attributes file as it was (#732).
+func TestGenerateAttributesJSONRefusesTextToDate(t *testing.T) {
 	tempDir := t.TempDir()
 	schemaPath := filepath.Join(tempDir, "schema.json")
 	outputPath := filepath.Join(tempDir, "attributes.json")
@@ -25,7 +30,10 @@ func TestGenerateAttributesJSONUpdateValueType(t *testing.T) {
 	schemaData, _ := json.Marshal(schema1)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	_ = generateAttributesJSON(schemaPath, outputPath, true)
+	if err := generateAttributesJSON(schemaPath, outputPath, true); err != nil {
+		t.Fatalf("initial generation: %v", err)
+	}
+	before, _ := os.ReadFile(outputPath)
 
 	// Update schema to add date format
 	schema2 := map[string]any{
@@ -40,17 +48,18 @@ func TestGenerateAttributesJSONUpdateValueType(t *testing.T) {
 	schemaData, _ = json.Marshal(schema2)
 	_ = os.WriteFile(schemaPath, schemaData, 0o644)
 
-	_ = generateAttributesJSON(schemaPath, outputPath, true)
-
-	// Verify value type was updated
-	data, _ := os.ReadFile(outputPath)
-	var result map[string]map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("failed to unmarshal result: %v", err)
+	err := generateAttributesJSON(schemaPath, outputPath, true)
+	if err == nil {
+		t.Fatal("text -> date must be refused")
 	}
-
-	if valueType, ok := result["createdAt"]["valueType"].(string); !ok || valueType != "date" {
-		t.Errorf("expected valueType to be updated to 'date', got %v", result["createdAt"]["valueType"])
+	for _, want := range []string{"createdAt", "valueType text", "date"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err.Error(), want)
+		}
+	}
+	after, _ := os.ReadFile(outputPath)
+	if string(after) != string(before) {
+		t.Errorf("refused run rewrote the attributes file:\n%s", after)
 	}
 }
 

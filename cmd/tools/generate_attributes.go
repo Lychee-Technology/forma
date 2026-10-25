@@ -129,7 +129,7 @@ func generateAttributesJSON(schemaPath, outputPath string, allowNew bool) error 
 	// Build the result. First, preserve ALL existing attributes (even ones the
 	// schema dropped): this file is the attributeID ledger (#342).
 	if err := mergeExistingAttributes(existingAttrs, newAttributes, result); err != nil {
-		return fmt.Errorf("merge existing attributes from %s: %w", outputPath, err)
+		return fmt.Errorf("merge schema %s into existing attributes %s (file left unchanged): %w", schemaPath, outputPath, err)
 	}
 
 	// Then, add new attributes from the schema
@@ -156,19 +156,22 @@ func generateAttributesJSON(schemaPath, outputPath string, allowNew bool) error 
 }
 
 // mergeExistingAttributes folds every existing ledger entry into result.
-// Entries still present in the schema get their type and required policy
-// refreshed (and a retired marker cleared when the re-add is type-compatible);
-// entries the schema dropped are branded retired so their attributeID stays
-// bound to the EAV rows it already owns instead of being handed to a later
-// attribute (#342), and forced optional so no reader requires a value that can
-// no longer be written.
+// Entries still present in the schema keep their type when the schema's
+// inferred type is in the same family, and are refused otherwise (#732); their
+// required policy is refreshed, and a retired marker is cleared when the
+// re-add is type-compatible. Entries the schema dropped are branded retired so
+// their attributeID stays bound to the EAV rows it already owns instead of
+// being handed to a later attribute (#342), and forced optional so no reader
+// requires a value that can no longer be written. Every refused entry is
+// reported, sorted by name, so one run names all of them.
 func mergeExistingAttributes(
 	existingAttrs map[string]map[string]any,
 	newAttributes map[string]attributeSpec,
 	result map[string]map[string]any,
 ) error {
+	refused := map[string]error{}
 	for name, existingData := range existingAttrs {
-		spec, stillInSchema := newAttributes[name]
+		inferred, stillInSchema := newAttributes[name]
 		if !stillInSchema {
 			existingData["retired"] = true
 			applyRequiredPolicy(existingData, requiredPolicyOptional)
@@ -176,6 +179,11 @@ func mergeExistingAttributes(
 			continue
 		}
 
+		spec, err := resolveExistingType(name, existingData, inferred)
+		if err != nil {
+			refused[name] = err
+			continue
+		}
 		if err := clearRetiredOnReAdd(name, existingData, spec); err != nil {
 			return fmt.Errorf("re-add retired attribute: %w", err)
 		}
@@ -189,7 +197,19 @@ func mergeExistingAttributes(
 		result[name] = existingData
 	}
 
-	return nil
+	if len(refused) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(refused))
+	for name := range refused {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	joined := make([]error, 0, len(names))
+	for _, name := range names {
+		joined = append(joined, refused[name])
+	}
+	return fmt.Errorf("refuse %d implicit type change(s): %w", len(refused), errors.Join(joined...))
 }
 
 // clearRetiredOnReAdd un-retires an attribute the schema has re-added under

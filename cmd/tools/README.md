@@ -48,6 +48,12 @@ generate-attributes
 - `-out`：输出文件路径；默认写到 schema 同目录的 `<name>_attributes.json`。
 - `-init`：允许创建全新的 attributes 文件；不指定此标志时，输出文件缺失会导致错误（因为生成会将所有 attributeID 从 1 重新编号）。
 
+既有属性的类型（#732）：类型推断只产出每个类型族中的一个成员（数值 `numeric`、文本 `text`、日期 `date`、`bool`）。
+既有条目的 `valueType`/`items_type` 与推断类型同族时保持不变，因此手工设置的 `bigint`、`integer`、`smallint`、`uuid`、`datetime`
+在重新生成后依然保留。跨族变化（如 number 变 string、给 `text` 加上 `format: date`、标量变数组）会被拒绝：
+错误列出每个属性及新旧类型，attributes 文件保持原样。这只保护本工具，手工编辑的 attributes 文件不受检查，
+见 `docs/schema-evolution.md`。
+
 示例：
 - `go run ./cmd/tools generate-attributes -schema lead`（更新既有 attributes 文件）
 - `go run ./cmd/tools generate-attributes -schema-file /path/to/schema.json`（再生成）
