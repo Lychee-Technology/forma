@@ -731,14 +731,16 @@ lossless widening passes. A pair the values decide, such as DOUBLE under
 `bigint` or VARCHAR under `integer`, costs one `LIMIT 1` scan of that object
 for a violating value: a fraction, a value outside the bound column's domain,
 or text that does not read back unchanged (`'9'` passes, `'09'` and `'n/a'` do
-not). The scan is cached under the object's stamp like the footer cache. A
+not). The scan is cached under the object's stamp like the footer cache, and
+concurrent queries that miss the cache together share one scan. A
 different family, such as the INTEGER generation of an `integer`→`text` edit,
 is refused from the footer alone. A refusal fails every read of the scan set
 with `ParquetTypeIncompatibleError`, before DuckDB's Conversion Error or a
 silent rounding can occur, including reads that never consume the column. It
 is not degradable. A manifest-listed object whose footer or proof scan cannot
 be read fails the read closed through the same classification a failed scan
-gets, so the #251 corrupt-object exclusion still applies.
+gets, so the #251 corrupt-object exclusion still applies, and a check cut short
+by the request budget is as non-degradable as a timed-out scan (#465).
 
 The pin's trust boundary is the same as the #256 stamp trust below: the union
 it compares against is fed by manifest column stamps that pass the
