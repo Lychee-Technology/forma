@@ -91,6 +91,10 @@ func TestCheckTypesProvesValuesUnderTheNewDeclaration(t *testing.T) {
 		"text→bigint decimal":                    {bigintEAV, "VARCHAR", []string{"'9.5'"}, "it holds a text value"},
 		"text→bigint padded":                     {bigintEAV, "VARCHAR", []string{"' 42'"}, "it holds a text value"},
 		"text→bigint word":                       {bigintEAV, "VARCHAR", []string{"'n/a'"}, "it holds a text value"},
+		"text→numeric canonical":                 {numericEAV, "VARCHAR", []string{"'9.5'", "'-0.25'", "'-12.0'"}, ""},
+		"text→numeric NaN":                       {numericEAV, "VARCHAR", []string{"'nan'"}, "it holds a text value that is not a finite number"},
+		"text→numeric infinity":                  {numericEAV, "VARCHAR", []string{"'inf'"}, "it holds a text value that is not a finite number"},
+		"text→numeric negative infinity":         {numericEAV, "VARCHAR", []string{"'-inf'"}, "it holds a text value that is not a finite number"},
 		"text→bool canonical":                    {boolEAV, "VARCHAR", []string{"'true'", "'false'"}, ""},
 		"text→bool word":                         {boolEAV, "VARCHAR", []string{"'maybe'"}, "it holds a text value that is not a boolean"},
 	} {

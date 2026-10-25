@@ -169,7 +169,9 @@ func judgeWhole(col, fileType string, r intRange) typeJudgement {
 }
 
 // judgeDouble judges fileType against numeric (DOUBLE). A SMALLINT or
-// INTEGER widens exactly; a BIGINT only within ±2^53.
+// INTEGER widens exactly; a BIGINT only within ±2^53. Text must also parse to
+// a finite number: 'nan' and 'inf' read back unchanged, but the numeric write
+// path refuses non-finite values (transform.finiteForEAV).
 func judgeDouble(col, fileType string) typeJudgement {
 	switch fileType {
 	case "SMALLINT", "INTEGER", "DOUBLE":
@@ -181,7 +183,9 @@ func judgeDouble(col, fileType string) typeJudgement {
 			demand:    fmt.Sprintf("a whole number in [%d, %d], where a float64 is exact", exactDoubleRange.lo, exactDoubleRange.hi),
 		}
 	case "VARCHAR":
-		return roundTrip(col, "DOUBLE", "a number")
+		j := roundTrip(col, "DOUBLE", "a finite number")
+		j.violation += fmt.Sprintf(" OR NOT isfinite(TRY_CAST(%s AS DOUBLE))", col)
+		return j
 	}
 	return typeJudgement{kind: judgeIncompatible}
 }
