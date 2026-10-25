@@ -145,7 +145,12 @@ becomes `1001`. Whether D1's refusal extends to `eav_data` is #729's decision.
 
 ## D2: Schema type evolution fails closed (#710)
 
-Decided 2026-10-24. **Not implemented:** nothing in Forma enforces it yet. The
+Decided 2026-10-24. **Partially implemented** by Phase 1 (#732), a mitigation
+rather than enforcement: `generate-attributes` no longer changes an existing
+attribute's type, and a federated read refuses live parquet that the current
+declaration cannot read losslessly. A redeclaration is still activated by
+every process that loads it; the record, check and fence that would refuse it
+up front are Phases 2 and 3 (#733, #734). #710 stays open until they land. The
 sections below separate the policy from what the code does today.
 
 ### Context
@@ -183,6 +188,12 @@ incompatible row still answers.
 So the change either fails every federated query that reaches an incompatible
 value, or silently changes values. Which one happens depends on the data, not
 on the change.
+
+These measurements predate #732. Since then the first four rows fail every
+federated read with a `parquet_type_incompatible` refusal that names the
+object, and none of them is read silently. The last row is unchanged: an
+EAV-only `integer` exports the same DOUBLE column as `numeric`, so the parquet
+footer carries no trace of the change (see the limits below).
 
 ### Decision
 
@@ -250,16 +261,43 @@ recover the written digits.
 
 ### What the code does today
 
-- Nothing refuses a type change. Each process loads the new declaration at
-  start.
+- Nothing refuses a type change up front. Each process loads the new
+  declaration at start.
 - No persisted record of an earlier declaration exists in PostgreSQL:
   `schema_registry` maps a schema name to its id, and nothing else. The only
   persisted trace of an earlier type is the parquet column type, which
   manifests stamp per file (`FileEntry.Columns`, #256).
-- `generate-attributes` rewrites an existing attribute's `valueType` to the type
-  it infers from the JSON Schema. Measured: a hand-set `bigint` bound to
-  `double_01` came back as `numeric`. It refuses a type change only when
-  re-adding a retired attribute (#342).
+- **Implemented (#732):** `generate-attributes` keeps an existing attribute's
+  `valueType` and `items_type` while the JSON Schema still maps it to the same
+  family (numeric, text/uuid, date/datetime, bool, list), so a hand-set
+  `bigint` bound to `double_01` no longer comes back as `numeric`. A change of
+  family is refused for live and retired attributes alike; every refused
+  attribute is listed and the attributes file is left unchanged
+  (`TestGenerateAttributesRefusesFamilyChange`). It cannot see a change made
+  by editing the attributes file by hand.
+- **Implemented (#732):** before the main scan, a federated read judges every
+  live parquet object holding a column whose type the declaration does not
+  export. A lossless widening (SMALLINT under `integer`) reads as before. A
+  pair the values decide (DOUBLE under `bigint`, BIGINT under `integer`, text
+  under a number) is proved by one bounded scan of the object for a violating
+  value, using the domain of the bound column (±2^53 for `bigint` in
+  `double_*`). A different family, or a list element, is refused from the
+  footer alone. A violation fails the read with
+  `forma.ParquetTypeIncompatibleError`, which names the schema, attribute,
+  declared type, bound column, object and offending value (text values are
+  not quoted). It is never degraded to a Postgres-only answer, and nothing is
+  pruned or rewritten. A manifest-listed object whose footer or proof cannot
+  be read fails the read closed with the usual read-failure classification,
+  so a corrupt object is still excluded as a #251 partial scan. Pinned by
+  `TestCheckTypesProvesValuesUnderTheNewDeclaration` and the production
+  harness's `TestTypeGuard*` scenarios.
+- **Not implemented:** the guard reads only what parquet footers show. A
+  redeclaration that keeps the exported type is invisible to it: `numeric →
+  integer` or `numeric → smallint` on an EAV-only attribute (all DOUBLE, the
+  #729 gap), and `bigint → date` (both BIGINT). It does not check Postgres rows
+  under the new declaration, and it does not prove list elements, which it
+  refuses instead. Closing these needs the declaration record of Phase 2
+  (#733).
 - The OLTP route is protected row by row for some types: a bound or EAV
   `bigint` image that names no int64 (#590), and a bound `smallint`/`integer`
   image (D1), are refused on read. An EAV-only `smallint`/`integer` is not
@@ -280,14 +318,19 @@ Fail-closed enforcement needs three things the code does not have:
    while the check runs, and after it, until they restart.
 
 The proposed design, its open decisions, and the rollout plan are on #710.
-Until it lands, D2 is policy that operators uphold by hand: do not change an
+Phase 1 (#732) catches the common cases on the federated read, after the fact.
+Until the rest lands, operators still uphold D2 by hand: do not change an
 existing attribute's `valueType` except through a widening that is lossless
 for its storage.
 
 ### Existing incompatible deployments
 
-**Identify one.** An attribute is affected when a live parquet file holds its
-column at a type the current declaration does not losslessly contain. For
+**Identify one.** Since #732 the federated read names it. The HTTP response
+carries only the `parquet_type_incompatible` class, the schema id and an
+`error_id`; the server's log line for that `error_id` names the attribute, the
+object and the offending value. More generally, an attribute is affected when
+a live parquet file holds its column at a type the current declaration does
+not losslessly contain. For
 example, the manifest lists a `DOUBLE` column `ratio` while `ratio` is now
 declared `bigint`. The manifest JSON names each file's column types (`columns`).
 For entries without them, `DESCRIBE SELECT * FROM read_parquet('<file>')` in
