@@ -105,8 +105,9 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 // the read closed as an unverifiedParquetError, which the caller classifies
 // like a failed scan. Its cause carries the read errors and, when the request
 // ran out of budget, the context error, so a pre-read timeout is as
-// non-degradable as a main-scan one. A glob-expanded hint set is not a manifest inventory,
-// so its unreadable footers keep deferring to the main read.
+// non-degradable as a main-scan one. A glob-expanded hint set is not a
+// manifest inventory, so its unreadable footers keep deferring to the main
+// read.
 func (e *DBFederatedQueryEngine) validateScanSet(
 	ctx context.Context, schemaID int16, paths []string, fromSource bool, stamps map[string]map[string]string,
 ) (coldScanSet, error) {

@@ -179,3 +179,16 @@ func TestTypeGuardTimeoutIsNotDegraded(t *testing.T) {
 		})
 	}
 }
+
+// A proof's read error now reaches the error text, so it is scrubbed at the
+// source like a main-scan error (#306): a credential DuckDB echoes must not
+// enter the chain's message.
+func TestUnverifiedObjectErrorIsScrubbed(t *testing.T) {
+	duck := newGuardEngineDuck()
+	duck.proofErr = fmt.Errorf("IO Error: connect host=db user=forma password=hunter2 failed")
+
+	_, err := queryGuardEngine(t, duck, &fakePostgresFederatedSource{}, nil, typeGuardHealthyPath, typeGuardOldPath)
+	require.ErrorIs(t, err, ErrFederatedReadFailed)
+	require.Contains(t, err.Error(), "IO Error: connect")
+	require.NotContains(t, err.Error(), "hunter2")
+}

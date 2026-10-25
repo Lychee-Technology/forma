@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
@@ -154,11 +155,11 @@ func valueEvidence(fileType, value, demand string) string {
 // not the bytes scanned — so concurrent misses on one (object, column,
 // predicate, stamp) are single-flighted through the footer probe's inflight
 // map, under a "proof" prefix no object key can start with. Followers behave
-// as in probeColumns: on the leader's finish they re-read the cache and, finding
-// no clean proof there (a violation, or a leader whose read failed), prove
-// for themselves, so a refusal reaches every caller and a leader's expired
-// budget does not fail a follower that has budget left. A follower whose own
-// context ends while waiting reports that as its read error.
+// as in probeColumns: on the leader's finish they re-read the cache and,
+// finding no clean proof there (a violation, or a leader whose read failed),
+// prove for themselves, so a refusal reaches every caller and a leader's
+// expired budget does not fail a follower that has budget left. A follower
+// whose own context ends while waiting reports that as its read error.
 func (v *parquetSchemaValidator) prove(
 	ctx context.Context, duck DuckDBQueryExecutor, path string, stamp map[string]string, col string, j typeJudgement,
 ) (string, bool, error) {
@@ -202,7 +203,9 @@ func (v *parquetSchemaValidator) runProof(
 		"SELECT CAST(%[1]s AS VARCHAR) FROM read_parquet('%[2]s') WHERE %[1]s IS NOT NULL AND (%[3]s) LIMIT 1",
 		quoted, sqlutil.EscapeLiteral(path), j.violation))
 	if err != nil {
-		return "", false, fmt.Errorf("prove column %s of %s: %w", col, path, err)
+		// Scrubbed at the source like a main-scan error (#306): the read
+		// error now reaches the unverified-object error's text.
+		return "", false, fmt.Errorf("prove column %s of %s: %w", col, path, redact.Error(err))
 	}
 	defer func() { _ = rows.Close() }()
 	if rows.Next() {
@@ -213,7 +216,7 @@ func (v *parquetSchemaValidator) runProof(
 		return value, true, nil
 	}
 	if err := rows.Err(); err != nil {
-		return "", false, fmt.Errorf("prove column %s of %s: %w", col, path, err)
+		return "", false, fmt.Errorf("prove column %s of %s: %w", col, path, redact.Error(err))
 	}
 	v.recordProof(proofKey(path, col, j), maps.Clone(stamp))
 	return "", false, nil
