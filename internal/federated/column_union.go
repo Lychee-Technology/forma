@@ -10,20 +10,37 @@ package federated
 //
 // A zero columnUnion (types == nil) means "unknown": nothing was validated,
 // and neither augmentation nor pinning may run on it.
+//
+// files keeps each contributing object's own columns, in validation order, for
+// the #732 type guard: a column the union reports as mixed or stale is judged
+// object by object, and the refusal names the object. The maps are the
+// validator's cached ones, never copied, so keeping them costs one slice entry
+// per object. unverified lists the concrete objects whose columns could not be
+// read at all — the guard cannot judge them, and the read fails closed on them
+// when the manifest authored the path set.
 type columnUnion struct {
-	types map[string]string
-	mixed map[string]struct{}
+	types      map[string]string
+	mixed      map[string]struct{}
+	files      []unionFile
+	unverified []string
+}
+
+// unionFile is one validated object's columns (name → DuckDB type).
+type unionFile struct {
+	path string
+	cols map[string]string
 }
 
 func newColumnUnion() columnUnion {
 	return columnUnion{types: map[string]string{}, mixed: map[string]struct{}{}}
 }
 
-// merge folds one footer's columns into the running union. The first-seen
+// merge folds one object's footer columns into the running union. The first-seen
 // type stays the reported one; a later footer that disagrees marks the
 // column mixed instead of overwriting, so the report is order-independent
 // in what it flags even though the surviving type name is not.
-func (u columnUnion) merge(cols map[string]string) {
+func (u *columnUnion) merge(path string, cols map[string]string) {
+	u.files = append(u.files, unionFile{path: path, cols: cols})
 	for name, typ := range cols {
 		seen, ok := u.types[name]
 		if !ok {

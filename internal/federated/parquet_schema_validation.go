@@ -60,12 +60,17 @@ type parquetSchemaValidator struct {
 	// logger reports the stamp/footer cross-check (#256). Optional; see
 	// WithLogger. Nil is safe — log() substitutes a nop.
 	logger *zap.Logger
+	// proved caches the #732 type guard's clean value proofs, keyed by
+	// object, column and predicate under the object's stamp, with the same
+	// bounds as valid. See CheckTypes.
+	proved *validatedParquetCache
 }
 
 func newParquetSchemaValidator() *parquetSchemaValidator {
 	return &parquetSchemaValidator{
 		valid:    newValidatedParquetCache(defaultValidatedParquetIdleTTL, defaultValidatedParquetCapacity),
 		inflight: map[string]chan struct{}{},
+		proved:   newValidatedParquetCache(defaultValidatedParquetIdleTTL, defaultValidatedParquetCapacity),
 	}
 }
 
@@ -83,8 +88,13 @@ func (v *parquetSchemaValidator) log() *zap.Logger {
 // matches first — an unexpanded glob would let a malformed matched file
 // bypass the invariant and vanish silently under union_by_name. Unreadable
 // footers and failed glob listings are inconclusive — byte corruption or
-// storage failure, not schema drift — so the main read keeps producing
-// today's classified execution failure (#187 CorruptBytes/Truncated).
+// storage failure, not schema drift — so Validate itself does not fail on
+// them. A concrete object whose footer could not be read is listed in the
+// union's unverified set: on a manifest-authored path set the read fails
+// closed on it through the same classification a failed scan gets (#732),
+// so a corrupt object is still excluded as a #251 partial scan and a missing
+// one still reports as #187 manifest inconsistency. A failed glob listing
+// names no object and keeps deferring to the main read.
 //
 // It also returns the union of the probed footers' columns (name → DuckDB
 // type, plus the names seen at more than one type; see columnUnion) and
@@ -147,14 +157,14 @@ func (v *parquetSchemaValidator) Validate(
 				complete = false // inconclusive: defer to the execution-path classifier
 				continue
 			}
-			ok, err := v.validateConcrete(ctx, duck, expanded, union, stamps)
+			ok, err := v.validateConcrete(ctx, duck, expanded, &union, stamps)
 			if err != nil {
 				return columnUnion{}, false, err
 			}
 			complete = complete && ok
 			continue
 		}
-		ok, err := v.validateConcrete(ctx, duck, []string{path}, union, stamps)
+		ok, err := v.validateConcrete(ctx, duck, []string{path}, &union, stamps)
 		if err != nil {
 			return columnUnion{}, false, err
 		}
@@ -166,16 +176,17 @@ func (v *parquetSchemaValidator) Validate(
 // validateConcrete checks concrete (non-glob) paths against the invariant,
 // consulting and feeding the stamp-keyed cache from either feeder — a passing
 // manifest stamp (#256) or a footer probe. It merges every contributing column
-// map into union and reports whether all of the given paths contributed.
+// map into union, records each path that could not contribute as unverified,
+// and reports whether all of the given paths contributed.
 func (v *parquetSchemaValidator) validateConcrete(
-	ctx context.Context, duck DuckDBQueryExecutor, paths []string, union columnUnion,
+	ctx context.Context, duck DuckDBQueryExecutor, paths []string, union *columnUnion,
 	stamps map[string]map[string]string,
 ) (bool, error) {
 	complete := true
 	for _, path := range paths {
 		stamp := currentStamp(stamps, path)
 		if cols, ok := v.lookupValidatedCols(path, stamp); ok {
-			union.merge(cols)
+			union.merge(path, cols)
 			continue
 		}
 		if len(stamp) > 0 && parquetcheck.Check(path, stamp) == nil {
@@ -186,7 +197,7 @@ func (v *parquetSchemaValidator) validateConcrete(
 			// either — so a bounded entry costs one column map, not two.
 			owned := maps.Clone(stamp)
 			v.markValidated(path, owned, owned)
-			union.merge(stamp)
+			union.merge(path, owned)
 			continue
 		}
 		// Either there is no stamp, or the stamp fails the invariant. A stamp
@@ -199,9 +210,10 @@ func (v *parquetSchemaValidator) validateConcrete(
 		}
 		if !ok {
 			complete = false // inconclusive: defer to the execution-path classifier
+			union.unverified = append(union.unverified, path)
 			continue
 		}
-		union.merge(cols)
+		union.merge(path, cols)
 	}
 	return complete, nil
 }

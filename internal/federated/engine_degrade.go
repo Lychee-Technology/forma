@@ -107,7 +107,7 @@ func (e *DBFederatedQueryEngine) logDegradedFallback(fq *model.FederatedAttribut
 
 // degradableFederatedError reports whether a DuckDB-path failure may be
 // absorbed by the Postgres-only fallback under AllowPartialDegradedMode.
-// Five classes must surface instead: a missing schema metadata cache is a
+// Six classes must surface instead: a missing schema metadata cache is a
 // configuration/data-contract error whose masking #151 made loud; manifest
 // inconsistency (#187) exists to make cold-tier loss loud, and a fallback
 // would return exactly the silent-loss answer it prevents; an empty parquet
@@ -116,15 +116,19 @@ func (e *DBFederatedQueryEngine) logDegradedFallback(fq *model.FederatedAttribut
 // answer would be silently short precisely where the cold tier was wanted; a
 // manifest stamped for a different schema means the read surface is
 // misaddressed, and a partial answer is the wrong response to a state that can
-// serve another schema's rows under this identity; and invalid caller input (e.g. an unrenderable path template) is the
-// caller's error to see, not infrastructure to degrade around. A sixth,
-// an expired deadline (#465), is the budget doing its job: the pass was
+// serve another schema's rows under this identity; invalid caller input (e.g.
+// an unrenderable path template) is the caller's error to see, not
+// infrastructure to degrade around; and a live object whose stored type the
+// declaration cannot read losslessly (#732) is a deterministic data-contract
+// refusal that a fallback would hide on every query. A seventh, an expired
+// deadline (#465), is the budget doing its job: the pass was
 // cancelled because it ran too long, and answering from Postgres afterwards
 // would spend more time past a limit that exists to bound latency; a DuckDB
 // that keeps timing out opens the breaker, and *that* rejection degrades.
 func degradableFederatedError(err error) bool {
 	return !errors.Is(err, ErrSchemaMetadataCacheRequired) &&
 		!errors.Is(err, ErrParquetSetInconsistent) &&
+		!errors.Is(err, forma.ErrParquetTypeIncompatible) &&
 		!errors.Is(err, ErrNoParquetPaths) &&
 		!errors.Is(err, ErrManifestSchemaMismatch) &&
 		!errors.Is(err, forma.ErrInvalidInput) &&
