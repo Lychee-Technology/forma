@@ -167,15 +167,22 @@ row was written and flushed under the second:
 
 | redeclaration | old values | federated read after |
 |---|---|---|
-| `numeric → bigint`, `double_01` | `1e30`, `1000.5`, `5` | every query fails: `Conversion Error: Type DOUBLE with value 1e+30 can't be cast … INT64` |
-| `numeric → bigint`, EAV-only | `1e30`, `1000.5`, `5` | every query fails, same error |
-| `numeric → integer`, `double_01` | `1e10`, `1000.5`, `5` | every query fails: `… 10000000000.0 … INT32` |
+| `numeric → bigint`, `double_01` | `1e30`, `1000.5`, `5` | the read fails: `Conversion Error: Type DOUBLE with value 1e+30 can't be cast … INT64` |
+| `numeric → bigint`, EAV-only | `1e30`, `1000.5`, `5` | the read fails, same error |
+| `numeric → integer`, `double_01` | `1e10`, `1000.5`, `5` | the read fails: `… 10000000000.0 … INT32` |
 | `numeric → bigint`, `double_01` | `1000.5`, `1001.5`, `5` | succeeds silently: `1000.5` reads `1000`, `1001.5` reads `1002`, and `ratio equals 1001` matches nothing |
 | `numeric → integer`, EAV-only | `1e10`, `1000.5`, `5` | succeeds silently: `1e10` decodes to `-2147483648` (amd64), and `ratio equals 1000` matches nothing although a row decodes to `1000` |
 
-So the change either takes every federated query over the schema down, or
-silently changes values. Which one happens depends on the data, not on the
-change.
+The error comes from the strict cast to the declared type in the query's final
+projection (`buildOuterSelect`), which DuckDB evaluates on every row the
+query's filter keeps, before the page is cut. A query therefore fails whenever
+its filter keeps an incompatible row, even when that row would fall outside the
+returned page; every unfiltered list does. A query whose filter excludes every
+incompatible row still answers.
+
+So the change either fails every federated query that reaches an incompatible
+value, or silently changes values. Which one happens depends on the data, not
+on the change.
 
 ### Decision
 

@@ -43,7 +43,7 @@
 4.  **修改字段类型 (Change Field Type)**
     *   修改字段的 `type` 属性（例如从 `"string"` 改为 `"integer"`，或 `"array"` 改为 `"object"`）。
     *   **原因**：历史数据的存储格式与新定义不兼容，导致解析错误。
-    *   修改属性的 `valueType`（例如 `numeric` 改为 `bigint`）同样适用。既定策略是 fail-closed：只有当所有层（Postgres 与 parquet）中的已存储数据都能无损满足新类型时，变更才可生效；有损转换（舍入、截断、置 NULL）必须通过显式迁移完成（#730）。该策略尚未实现（#710）。实测在 `numeric` 改为 `bigint` 后，含 `1e30` 的旧 parquet 会使该 schema 的所有联邦查询失败，而 `1000.5` 会被静默读成 `1000`。详见 [Schema Evolution and Declared Types](../schema-evolution.md)。
+    *   修改属性的 `valueType`（例如 `numeric` 改为 `bigint`）同样适用。既定策略是 fail-closed：只有当所有层（Postgres 与 parquet）中的已存储数据都能无损满足新类型时，变更才可生效；有损转换（舍入、截断、置 NULL）必须通过显式迁移完成（#730）。该策略尚未实现（#710）。实测在 `numeric` 改为 `bigint` 后，含 `1e30` 的旧 parquet 会使该 schema 上过滤条件保留了该行的联邦查询失败（即使该行不在返回的页内，未过滤的列表查询都会失败），而 `1000.5` 会被静默读成 `1000`。详见 [Schema Evolution and Declared Types](../schema-evolution.md)。
 
 5.  **收紧验证约束 (Tighten Validation Constraints)**
     *   **减小** `maxLength`。
