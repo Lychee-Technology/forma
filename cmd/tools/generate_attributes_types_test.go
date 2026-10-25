@@ -81,7 +81,12 @@ func TestGenerateAttributesRefusesFamilyChange(t *testing.T) {
 		"uuid to date-time": {`{"type":"string","format":"date-time"}`, `{"attributeID":1,"valueType":"uuid"}`, []string{"valueType uuid", "date (date family)"}},
 		"list to scalar":    {`{"type":"string"}`, `{"attributeID":1,"valueType":"list","items_type":"text"}`, []string{"valueType list", "text (text family)"}},
 		"scalar to list":    {`{"type":"array","items":{"type":"string"}}`, `{"attributeID":1,"valueType":"bigint"}`, []string{"valueType bigint", "list (list family)"}},
-		"list element":      {`{"type":"array","items":{"type":"string"}}`, `{"attributeID":1,"valueType":"list","items_type":"integer"}`, []string{"items_type integer (numeric family)", "text (text family)"}},
+		// The same family as the element: the ledger cannot tell a live
+		// scalar from a pre-#204 flattened array, so it is refused too, with
+		// the by-hand remedy for the legacy case.
+		"text to array of strings":    {`{"type":"array","items":{"type":"string"}}`, `{"attributeID":1,"valueType":"text"}`, []string{"valueType text", "list (list family)", "#204", "items_type text"}},
+		"bigint to array of integers": {`{"type":"array","items":{"type":"integer"}}`, `{"attributeID":1,"valueType":"bigint"}`, []string{"valueType bigint", "list (list family)", "#204", "items_type bigint"}},
+		"list element":                {`{"type":"array","items":{"type":"string"}}`, `{"attributeID":1,"valueType":"list","items_type":"integer"}`, []string{"items_type integer (numeric family)", "text (text family)"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()

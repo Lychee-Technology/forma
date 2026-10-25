@@ -346,6 +346,12 @@ when the JSON Schema still maps to the same family, so a hand-set `bigint`,
 `integer`, `smallint`, `uuid` or `datetime` survives regeneration. It refuses
 a family change (a number becoming a string, `format: date` added to a `text`
 string, a scalar becoming an array) and leaves the attributes file untouched.
+That includes an array of the scalar's own family: a pre-`#204` ledger
+recorded a primitive array as its element type, and the file cannot show
+whether such an entry is that or a live scalar whose rows are still scalar
+rows (see the `#372` section below). If the property was always an array,
+record `valueType: list` with the old type as `items_type` by hand; the
+generator keeps it from then on.
 Treat a live type change as a remove-then-add-under-a-new-name, not an edit.
 The refusal protects only this tool: an attributes file edited by hand is
 loaded as written. The policy for type changes is fail-closed (`#710`); see
@@ -593,7 +599,7 @@ Example validator output:
 
 The attribute's metadata now says `valueType: list` (typically because the
 schema property changed from a scalar to an array and `generate-attributes` was
-re-run), but these rows still hold the value the way a scalar is stored: one row
+re-run before `#732`, which now refuses that change), but these rows still hold the value the way a scalar is stored: one row
 with `array_indices = ''` and a non-NULL value column. List elements are stored
 one row per element with `array_indices` set to the element index (`'0'`,
 `'1'`, ...). The write path has rejected a scalar body for an array property

@@ -37,17 +37,12 @@ func resolveExistingType(name string, existingData map[string]any, inferred attr
 	if oldType == "" {
 		return inferred, nil
 	}
-	if isLegacyFlattenedList(oldType, inferred) {
-		// Before #204 the generator recorded a primitive array as its element
-		// type. The JSON Schema always said array and the EAV rows are already
-		// one per element, so recording list is the ledger catching up with the
-		// stored shape, not a type change. The element keeps its width.
-		resolved := inferred
-		resolved.ItemsType = oldType
-		return resolved, nil
-	}
 	if typeFamily(oldType) != typeFamily(inferred.ValueType) {
-		return attributeSpec{}, typeChangeError(name, existingData, "valueType", oldType, inferred.ValueType)
+		err := typeChangeError(name, existingData, "valueType", oldType, inferred.ValueType)
+		if looksLikeFlattenedList(oldType, inferred) {
+			err = fmt.Errorf("%w. %s", err, flattenedListHint(oldType))
+		}
+		return attributeSpec{}, err
 	}
 	resolved := inferred
 	resolved.ValueType = oldType
@@ -63,12 +58,22 @@ func resolveExistingType(name string, existingData map[string]any, inferred attr
 	return resolved, nil
 }
 
-// isLegacyFlattenedList reports a pre-#204 ledger entry: a scalar valueType
-// recorded for what the JSON Schema declares as an array of the same family.
-func isLegacyFlattenedList(oldType string, inferred attributeSpec) bool {
+// looksLikeFlattenedList reports a scalar entry for what the JSON Schema
+// declares as an array of the same family. Before #204 the generator recorded
+// a primitive array as its element type, so a ledger that old has this shape;
+// so does a live scalar whose schema became an array, whose rows are scalar
+// rows a list read disagrees on across tiers (#372). The ledger cannot tell
+// the two apart, so both are refused and only the operator can attest which.
+func looksLikeFlattenedList(oldType string, inferred attributeSpec) bool {
 	return inferred.ValueType == string(forma.ValueTypeList) &&
-		oldType != string(forma.ValueTypeList) &&
 		typeFamily(oldType) == typeFamily(inferred.ItemsType)
+}
+
+// flattenedListHint is the remedy for the legacy case: recording the list by
+// hand states the shape the rows already have, and regeneration keeps it.
+func flattenedListHint(oldType string) string {
+	return fmt.Sprintf("If the property was always an array and this entry predates #204, which recorded an array as its "+
+		"element type, set valueType list and items_type %s in the attributes file by hand and regenerate", oldType)
 }
 
 // typeChangeError names the attribute, both types and their families, and the
