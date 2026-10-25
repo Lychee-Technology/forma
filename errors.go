@@ -158,3 +158,46 @@ func (e *ParquetSetInconsistentError) Error() string {
 }
 
 func (e *ParquetSetInconsistentError) Unwrap() error { return ErrParquetSetInconsistent }
+
+// ErrParquetTypeIncompatible marks a federated read refused because a live
+// parquet object stores an attribute's column in a form the attribute's
+// current declaration cannot read without changing values: a type from
+// another family, or a value outside what the declared type and its bound
+// column can hold (#732). It is a read-path consistency error, never a 4xx:
+// the declaration changed after the object was written, and reading on would
+// round, truncate, substitute NULL or fail the statement. Not degradable: the
+// refusal is deterministic, and a Postgres-only answer would hide it on every
+// query until an operator acts.
+var ErrParquetTypeIncompatible = errors.New("live parquet stores an attribute in a form its declared type cannot read losslessly")
+
+// ParquetTypeIncompatibleError names the schema, the attribute and its current
+// declaration, the offending object and the evidence, per the read-path error
+// style. Path is a storage location — operator detail that internal/httpapi
+// keeps out of response bodies, like ParquetSetInconsistentError's keys.
+type ParquetTypeIncompatibleError struct {
+	SchemaID  int16
+	Attribute string
+	// Declared is the attribute's declared type, "list<items>" for a list.
+	Declared string
+	// Column is the bound entity_main column, empty for an EAV-only attribute.
+	Column MainColumn
+	// Path is the live object; FileType the column's DuckDB type in it.
+	Path     string
+	FileType string
+	// Evidence says why the stored column cannot be read as declared: the
+	// type pair, or the first offending value a scan found.
+	Evidence string
+}
+
+func (e *ParquetTypeIncompatibleError) Error() string {
+	storage := "EAV-only"
+	if e.Column != "" {
+		storage = "bound to " + string(e.Column)
+	}
+	return fmt.Sprintf("schema %d attribute %s (declared %s, %s) cannot be read from live parquet %s, which stores it as %s: %s; "+
+		"the declaration changed after the object was written. Restore the declaration the object was written under; "+
+		"converting stored values is an explicit migration (#730). See docs/schema-evolution.md (#710)",
+		e.SchemaID, e.Attribute, e.Declared, storage, e.Path, e.FileType, e.Evidence)
+}
+
+func (e *ParquetTypeIncompatibleError) Unwrap() error { return ErrParquetTypeIncompatible }

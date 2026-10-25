@@ -2166,8 +2166,8 @@ pairs `"error_class": "internal"` with `"error": "internal error"` and carries
 carrier to read one from.
 
 Classes: `parquet_set_inconsistent`, `no_parquet_paths`,
-`manifest_schema_mismatch`, and `internal` for everything else. They resolve via
-`errors.Is`, never message text.
+`manifest_schema_mismatch`, `parquet_type_incompatible` (#732), and `internal`
+for everything else. They resolve via `errors.Is`, never message text.
 
 ### Why an allowlist
 

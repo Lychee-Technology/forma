@@ -63,6 +63,12 @@ func TestErrorSchemaIDResolvesCarriersThroughWraps(t *testing.T) {
 			want: 41,
 		},
 		{
+			name: "parquet type incompatible",
+			err: fmt.Errorf("a: %w", fmt.Errorf("b: %w",
+				&forma.ParquetTypeIncompatibleError{SchemaID: 33, Attribute: "ratio", Path: "s3://b/delta/k.parquet"})),
+			want: 33,
+		},
+		{
 			name: "multi-cause chain alongside driver text",
 			err: fmt.Errorf("execute duckdb query: %w: %w",
 				&forma.ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{"base/k.parquet"}},

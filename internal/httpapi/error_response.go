@@ -37,6 +37,10 @@ const (
 	errorClassParquetSetInconsistent = "parquet_set_inconsistent"
 	errorClassNoParquetPaths         = "no_parquet_paths"
 	errorClassManifestSchemaMismatch = "manifest_schema_mismatch"
+	// errorClassParquetTypeIncompatible marks a federated read refused because
+	// a live parquet object stores an attribute in a form its current
+	// declaration cannot read losslessly (#732).
+	errorClassParquetTypeIncompatible = "parquet_type_incompatible"
 	// errorClassTimeout marks a request the server gave up on because a
 	// configured bound expired (#465): a manager budget
 	// (QueryConfig.DefaultTimeout, TransactionConfig.DefaultTimeout,
@@ -69,6 +73,8 @@ func errorClass(err error) string {
 		return errorClassNoParquetPaths
 	case errors.Is(err, forma.ErrManifestSchemaMismatch):
 		return errorClassManifestSchemaMismatch
+	case errors.Is(err, forma.ErrParquetTypeIncompatible):
+		return errorClassParquetTypeIncompatible
 	// Same precedence as classifyManagerError: an unknown commit is never
 	// reported as anything else, and in particular never as a timeout.
 	case errors.Is(err, forma.ErrCommitOutcomeUnknown):
@@ -145,6 +151,11 @@ func errorSchemaID(err error) int16 {
 	var unstamped *forma.ManifestUnstampedError
 	if errors.As(err, &unstamped) {
 		return unstamped.RequestedSchemaID
+	}
+
+	var incompatible *forma.ParquetTypeIncompatibleError
+	if errors.As(err, &incompatible) {
+		return incompatible.SchemaID
 	}
 
 	return 0

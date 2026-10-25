@@ -241,6 +241,10 @@ func TestReadPathErrorsClassifyAs5xx(t *testing.T) {
 		"manifest unstamped": &forma.ManifestUnstampedError{
 			RequestedSchemaID: 1, Path: "manifests/shared.json", Entries: 2,
 		},
+		"parquet type incompatible": &forma.ParquetTypeIncompatibleError{
+			SchemaID: 1, Attribute: "ratio", Declared: "bigint", Path: "s3://b/delta/k.parquet", FileType: "DOUBLE",
+			Evidence: "it holds 1000.5, which is not a whole number in [-9007199254740992, 9007199254740992]",
+		},
 	}
 
 	for name, err := range errs {
