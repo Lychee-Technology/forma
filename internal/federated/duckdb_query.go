@@ -254,7 +254,22 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 
 	src, err := e.resolveScanSources(ctx, q)
 	if err != nil {
-		return 0, err
+		// Objects the #732 type guard could not read fail the read closed,
+		// classified exactly like a failed scan over the same path set, so
+		// corrupt-object exclusion (#251) and missing-object inconsistency
+		// (#187) keep their semantics, and an expired budget in its cause
+		// stays non-degradable (#465). The guard consulted storage, so the
+		// classification resolves the probe like any failed scan.
+		var unverified *unverifiedParquetError
+		if !errors.As(err, &unverified) {
+			return 0, err
+		}
+		probeResolved = true
+		return 0, e.failDuckDBScan(ctx, q, scan{
+			parquetPaths:    unverified.scanned,
+			pathsFromSource: unverified.fromSource,
+			probe:           probe,
+		}, err, "pre-read parquet type verification")
 	}
 	// A partial scan must be loud (#251): the plan names every excluded
 	// object. Notes stay internal — toExecutionPlan drops them at the HTTP

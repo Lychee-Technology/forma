@@ -508,8 +508,11 @@ schema 类型修改（例如 `text`→`list`、`integer`→`text`）之后重跑
 旧类型的 delta 会同时进入同一次 federated 扫描：类型不兼容时 DuckDB 直接报
 Conversion Error；类型可以静默拓宽时（INTEGER 与 VARCHAR 并存）则 `union_by_name`
 绑成 VARCHAR，ORDER BY 悄悄变成字典序。读路径现在对这类列做选择性 `CAST` 重钉
-（见 `docs/federated-query/design.md` 中的 #371 段落），但那只是读守卫；把旧代
-delta 真正退役的是 cdc-init 本身：
+（见 `docs/federated-query/design.md` 中的 #371 段落）。自 #732 起，重钉之前先逐个
+对象判定类型：会改变取值的对象，或类型族不同的对象（例如 `integer`→`text` 留下的
+INTEGER 旧代），会让整次读取以 `parquet_type_incompatible` 失败（D2，见
+`docs/schema-evolution.md`）。但这些都只是读守卫；把旧代 delta 真正退役的是 cdc-init
+本身：
 
 - **默认拒绝。** 每个 schema 在导出前、在 per-schema advisory lock 之下先盘点 delta 层：
   manifest 的 delta 条目，加上 `--delta-prefix`（默认 `delta`，与 `cdc-flush --s3-prefix`

@@ -338,15 +338,25 @@ Re-adding under a different `valueType` or `items_type` is
 a generator error naming the attribute and both the old and the new
 type/items — the stored rows carry the old physical type and would be
 unreadable. Renaming an attribute is *not* a re-add: it needs a fresh
-`attributeID`, and the old entry stays retired. Note the boundary: this type
-check fires **only** on retired entries. Changing the `valueType` of a *live*
-attribute is still written straight through by `generate-attributes`, which
-leaves that attribute's existing EAV rows in the wrong physical column — the
-condition the next section tells you to repair. Treat a live type change as a
-remove-then-add-under-a-new-name, not an edit. The policy for type changes is
-fail-closed: a change activates only when every stored value on every tier
-satisfies the new type (`#710`). Nothing enforces it yet, so it is up to you;
-see [Schema Evolution and Declared Types](./schema-evolution.md#d2-schema-type-evolution-fails-closed-710).
+`attributeID`, and the old entry stays retired.
+
+The same type rule covers *live* attributes since `#732`.
+`generate-attributes` keeps an existing entry's `valueType` and `items_type`
+when the JSON Schema still maps to the same family, so a hand-set `bigint`,
+`integer`, `smallint`, `uuid` or `datetime` survives regeneration. It refuses
+a family change (a number becoming a string, `format: date` added to a `text`
+string, a scalar becoming an array) and leaves the attributes file untouched.
+That includes an array of the scalar's own family: a pre-`#204` ledger
+recorded a primitive array as its element type, and the file cannot show
+whether such an entry is that or a live scalar whose rows are still scalar
+rows (see the `#372` section below). If the property was always an array,
+record `valueType: list` with the old type as `items_type` by hand; the
+generator keeps it from then on.
+Treat a live type change as a remove-then-add-under-a-new-name, not an edit.
+The refusal protects only this tool: an attributes file edited by hand is
+loaded as written. The policy for type changes is fail-closed (`#710`); see
+[Schema Evolution and Declared Types](./schema-evolution.md#d2-schema-type-evolution-fails-closed-710)
+for what is and is not enforced.
 
 **Shipped schemas already carrying the marker.** Two entries are now
 `retired: true`, for different reasons — in both cases because
@@ -589,7 +599,7 @@ Example validator output:
 
 The attribute's metadata now says `valueType: list` (typically because the
 schema property changed from a scalar to an array and `generate-attributes` was
-re-run), but these rows still hold the value the way a scalar is stored: one row
+re-run before `#732`, which now refuses that change), but these rows still hold the value the way a scalar is stored: one row
 with `array_indices = ''` and a non-NULL value column. List elements are stored
 one row per element with `array_indices` set to the element index (`'0'`,
 `'1'`, ...). The write path has rejected a scalar body for an array property

@@ -160,6 +160,7 @@ func TestStorageOutcomeClassesOnlyAddTokens(t *testing.T) {
 		{&forma.ParquetSetInconsistentError{SchemaID: 1}, errorClassParquetSetInconsistent},
 		{&forma.NoParquetPathsError{SchemaID: 1}, errorClassNoParquetPaths},
 		{&forma.ManifestSchemaMismatchError{RequestedSchemaID: 1, ManifestSchemaID: 2}, errorClassManifestSchemaMismatch},
+		{&forma.ParquetTypeIncompatibleError{SchemaID: 1}, errorClassParquetTypeIncompatible},
 		{fmt.Errorf("query: %w", context.DeadlineExceeded), errorClassTimeout},
 		{fmt.Errorf("conflict: %w", forma.ErrConflict), errorClassInternal},
 		{errors.New("db down"), errorClassInternal},

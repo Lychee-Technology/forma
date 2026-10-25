@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -137,9 +138,11 @@ func TestTraverseSchemaArrayOfStrings(t *testing.T) {
 	}
 }
 
-// TestRunGenerateAttributesListRegeneration: regenerating over an existing
-// attributes file must flip a legacy scalar-typed array to list+items_type
-// while preserving its attributeID; scalar attrs never gain items_type.
+// TestRunGenerateAttributesListRegeneration: a pre-#204 ledger recorded a
+// primitive array as its element type, which looks the same as a live scalar
+// whose schema became an array. Regeneration refuses both and writes nothing
+// (#732); once the operator records the list by hand, regeneration keeps its
+// attributeID and element type, and scalar attrs never gain items_type.
 func TestRunGenerateAttributesListRegeneration(t *testing.T) {
 	tempDir := t.TempDir()
 	schemaPath := filepath.Join(tempDir, "test.json")
@@ -170,6 +173,22 @@ func TestRunGenerateAttributesListRegeneration(t *testing.T) {
 	}
 
 	args := []string{"-schema-dir", tempDir, "-schema", "test", "-out", outputPath}
+	err := runGenerateAttributes(context.Background(), args)
+	if err == nil || !strings.Contains(err.Error(), "items_type numeric") {
+		t.Fatalf("expected the scalar-to-list change to be refused with the #204 remedy, got %v", err)
+	}
+	if data, _ := os.ReadFile(outputPath); string(data) != legacy {
+		t.Fatalf("refused run rewrote the attributes file:\n%s", data)
+	}
+
+	// The operator's by-hand repair records the stored shape.
+	repaired := `{
+  "name": { "attributeID": 1, "valueType": "text" },
+  "tags": { "attributeID": 2, "valueType": "list", "items_type": "numeric" }
+}`
+	if err := os.WriteFile(outputPath, []byte(repaired), 0o644); err != nil {
+		t.Fatalf("failed to write repaired attributes file: %v", err)
+	}
 	if err := runGenerateAttributes(context.Background(), args); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

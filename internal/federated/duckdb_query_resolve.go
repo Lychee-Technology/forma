@@ -2,7 +2,10 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/lychee-technology/forma"
@@ -29,9 +32,9 @@ func (e *DBFederatedQueryEngine) schemaCacheByID(schemaID int16) (forma.SchemaAt
 
 // resolveScanSources is the storage-facing pre-flight of a DuckDB federated
 // query: it stamps the #252 flush-grace cutoff, resolves the parquet path
-// set, validates the parquet system-column invariant, and computes the #255
-// cold-missing and #371 cold-pinned column sets from the footer union the
-// validation produced.
+// set, validates the parquet system-column invariant and the #732 attribute
+// types, and computes the #255 cold-missing and #371 cold-pinned column sets
+// from the footer union the validation produced.
 func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *model.FederatedAttributeQuery) (scanSources, error) {
 	// The flush-grace cutoff is stamped BEFORE resolution (#252): any row
 	// marked flushed at or after this instant may belong to a delta this
@@ -63,44 +66,16 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 		}
 	}
 
+	// Benchmark schemas (100-102) are exempt from the pre-read checks: their
+	// parquet is the legacy CSV-sniffed harness shape (row_id VARCHAR, cast by
+	// the hardcoded benchmark projections) — the parquetcheck invariant
+	// codifies the PRODUCTION exporters, which never write those IDs
+	// (ValidateFixtureSchemaID reserves the range).
 	var cold coldScanSet
-	// Pre-read schema-invariant validation (#189): the scan's union_by_name
-	// tolerates attribute-column drift across parquet generations, which
-	// would let a wrong-schema object's rows silently vanish (NULL row_id
-	// drops out of the dirty anti-join) instead of failing loudly (#187).
-	// Schema violations fail here, classified and degradable; unreadable
-	// footers are inconclusive and stay with the execution-path classifier.
-	// No recordQueryFailure: the query never started, and its timing fields
-	// would read from an unset start time. Benchmark schemas (100-102) are
-	// exempt: their parquet is the legacy CSV-sniffed harness shape (row_id
-	// VARCHAR, cast by the hardcoded benchmark projections) — the
-	// parquetcheck invariant codifies the PRODUCTION exporters, which never
-	// write those IDs (ValidateFixtureSchemaID reserves the range).
 	if !isBenchmarkSchemaID(q.SchemaID) {
-		union, complete, err := e.schemaValidator.Validate(ctx, e.duck, paths, stamps)
+		cold, err = e.validateScanSet(ctx, q.SchemaID, paths, fromSource, stamps)
 		if err != nil {
-			return scanSources{}, fmt.Errorf("pre-read parquet schema validation: %w", err)
-		}
-		// Never-flushed column augmentation (#255) and stale-type pinning
-		// (#371): only a COMPLETE footer union may drive them — augmenting
-		// a column that exists in an unprobed file would collide with the
-		// real column, and a pin decided without the drifted file would
-		// miss it. Incomplete unions fall back to the plain guarded scan,
-		// whose binder or conversion failure stays loud, classified, and
-		// degradable (today's contract).
-		//
-		// Accepted listing skew (adjudicated): for a GLOB path set the
-		// validator expands the glob itself while read_parquet re-lists at
-		// execution, so a flush landing between the two puts an unprobed
-		// file in the scan while complete=true. The augmented NULL alias
-		// then collides with that file's real column — a one-time loud,
-		// classified binder failure that self-heals on the next query,
-		// because the scan set is recomputed per query. This is
-		// accepted; do not widen the gate to avoid it.
-		if complete {
-			if cache, ok := e.schemaCacheByID(q.SchemaID); ok {
-				cold = coldScanColumns(cache, union)
-			}
+			return scanSources{}, err
 		}
 	}
 	return scanSources{
@@ -110,4 +85,122 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 		cold:            cold,
 		excludedCorrupt: excludedCorrupt,
 	}, nil
+}
+
+// validateScanSet runs the pre-read checks over the resolved path set and
+// returns the cold scan treatment they license.
+//
+// Schema-invariant validation (#189): the scan's union_by_name tolerates
+// attribute-column drift across parquet generations, which would let a
+// wrong-schema object's rows silently vanish (NULL row_id drops out of the
+// dirty anti-join) instead of failing loudly (#187). Schema violations fail
+// here, classified and degradable; unreadable footers are inconclusive. No
+// recordQueryFailure: the query never started, and its timing fields would
+// read from an unset start time.
+//
+// The type guard (#732) then judges every object holding a column whose type
+// the declaration does not export, and refuses a read that would change
+// values. Objects it could not judge — a manifest-listed object whose footer
+// could not be read, or any object whose value proof failed to read — fail
+// the read closed as an unverifiedParquetError, which the caller classifies
+// like a failed scan. Its cause carries the read errors and, when the request
+// ran out of budget, the context error, so a pre-read timeout is as
+// non-degradable as a main-scan one. A glob-expanded hint set is not a
+// manifest inventory, so its unreadable footers keep deferring to the main
+// read.
+func (e *DBFederatedQueryEngine) validateScanSet(
+	ctx context.Context, schemaID int16, paths []string, fromSource bool, stamps map[string]map[string]string,
+) (coldScanSet, error) {
+	union, complete, err := e.schemaValidator.Validate(ctx, e.duck, paths, stamps)
+	if err != nil {
+		return coldScanSet{}, fmt.Errorf("pre-read parquet schema validation: %w", err)
+	}
+	cache, ok := e.schemaCacheByID(schemaID)
+	if !ok {
+		// The build refuses a query without metadata (#151); nothing to judge.
+		return coldScanSet{}, nil
+	}
+	proofs, err := e.schemaValidator.CheckTypes(ctx, e.duck, schemaID, cache, union, stamps)
+	if err != nil {
+		return coldScanSet{}, fmt.Errorf("pre-read parquet type guard: %w", err)
+	}
+	var unverified []string
+	if fromSource {
+		unverified = slices.Clone(union.unverified)
+	}
+	causes := make([]error, 0, len(proofs)+1)
+	for _, p := range proofs {
+		unverified = append(unverified, p.path)
+		causes = append(causes, p.err)
+	}
+	if len(unverified) > 0 {
+		slices.Sort(unverified)
+		return coldScanSet{}, &unverifiedParquetError{
+			SchemaID: schemaID, Paths: slices.Compact(unverified), cause: unverifiedCause(ctx, causes),
+			scanned: paths, fromSource: fromSource,
+		}
+	}
+	// Never-flushed column augmentation (#255) and stale-type pinning
+	// (#371): only a COMPLETE footer union may drive them — augmenting a
+	// column that exists in an unprobed file would collide with the real
+	// column, and a pin decided without the drifted file would miss it.
+	// Incomplete unions fall back to the plain guarded scan, whose binder or
+	// conversion failure stays loud, classified, and degradable (today's
+	// contract).
+	//
+	// Accepted listing skew (adjudicated): for a GLOB path set the validator
+	// expands the glob itself while read_parquet re-lists at execution, so a
+	// flush landing between the two puts an unprobed file in the scan while
+	// complete=true. The augmented NULL alias then collides with that file's
+	// real column — a one-time loud, classified binder failure that
+	// self-heals on the next query, because the scan set is recomputed per
+	// query. This is accepted; do not widen the gate to avoid it.
+	if !complete {
+		return coldScanSet{}, nil
+	}
+	return coldScanColumns(cache, union), nil
+}
+
+// unverifiedParquetError names the objects the pre-read checks could not
+// read, so their column types could not be judged against the declarations
+// (#732). It is the cause handed to failDuckDBScan, which classifies it the
+// way it classifies a failed scan: a missing object is #187 inconsistency, a
+// corrupt one is excluded for a #251 partial retry, and anything else is a
+// degradable ErrFederatedReadFailed. Paths are storage locations, which the
+// HTTP boundary redacts with the rest of an internal-class error.
+type unverifiedParquetError struct {
+	SchemaID int16
+	Paths    []string
+	// cause is why the objects could not be read. It stays in the chain so
+	// failDuckDBScan's classification keeps an expired budget
+	// non-degradable, exactly as for a timed-out main scan (#465).
+	cause error
+	// scanned and fromSource are the resolved path set the classification
+	// probes, as for a failed scan.
+	scanned    []string
+	fromSource bool
+}
+
+func (e *unverifiedParquetError) Error() string {
+	msg := fmt.Sprintf("schema %d: %d live parquet object(s) could not be read to verify their column types against the declared attribute types, so the read fails closed: %s",
+		e.SchemaID, len(e.Paths), strings.Join(e.Paths, ", "))
+	if e.cause != nil {
+		msg += ": " + e.cause.Error()
+	}
+	return msg
+}
+
+func (e *unverifiedParquetError) Unwrap() error { return e.cause }
+
+// unverifiedCause joins the failed proof reads with the request's context
+// error. The context error is added unless a proof already carries it: an
+// unreadable footer records no error (it is inconclusive by design), so a
+// footer probe the budget cut short would otherwise leave nothing in the
+// chain to say the budget is spent.
+func unverifiedCause(ctx context.Context, proofErrs []error) error {
+	cause := errors.Join(proofErrs...)
+	if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(cause, ctxErr) {
+		cause = errors.Join(cause, ctxErr)
+	}
+	return cause
 }
