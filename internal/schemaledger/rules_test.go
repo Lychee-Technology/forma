@@ -48,6 +48,12 @@ func TestJudgeFollowsTheD2Table(t *testing.T) {
 		{"integer to smallint", bound(1, "a", integer, "integer_1"), bound(1, "a", small, "integer_1"), Refused, "narrows"},
 		{"EAV-only smallint to integer", eav(1, "a", small), eav(1, "a", integer), Refused, "#729"},
 		{"EAV-only integer to numeric", eav(1, "a", integer), eav(1, "a", num), Refused, "#729"},
+		{"EAV-only smallint to bigint", eav(1, "a", small), eav(1, "a", big), Refused, "#729"},
+		// #729 gates only the widenings: a narrowing or a family change of an
+		// EAV-only integer stays refused after it, so its reason names #730.
+		{"EAV-only integer to smallint", eav(1, "a", integer), eav(1, "a", small), Refused, "narrows"},
+		{"EAV-only integer to text", eav(1, "a", integer), eav(1, "a", forma.ValueTypeText), Refused, "#730"},
+		{"EAV-only smallint to date", eav(1, "a", small), eav(1, "a", forma.ValueTypeDate), Refused, "#730"},
 		{"family change", bound(1, "a", big, "bigint_1"), bound(1, "a", forma.ValueTypeDate, "bigint_1"), Refused, "not a type change D2 allows"},
 		{"date to datetime", bound(1, "a", forma.ValueTypeDate, "bigint_1"), bound(1, "a", forma.ValueTypeDateTime, "bigint_1"), Refused, "not a type change"},
 		{"text to uuid", eav(1, "a", forma.ValueTypeText), eav(1, "a", forma.ValueTypeUUID), Refused, "not a type change"},

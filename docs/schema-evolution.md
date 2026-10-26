@@ -214,7 +214,7 @@ footer carries no trace of the change (see the limits below).
    | `smallint`/`integer → numeric` | allowed; exact in every storage |
    | `bigint → numeric`, `double_*` column or EAV-only | allowed; exact, since that storage holds only ±2^53 (#590) |
    | `bigint → numeric`, `bigint_*` column | allowed with a warning: a value beyond ±2^53 reads rounded to its float64 on every route |
-   | any change of an EAV-only attribute whose old type is `smallint` or `integer` | refused until #729 is fixed |
+   | `smallint → integer`/`bigint`, `integer → bigint`, or `smallint`/`integer → numeric`, on an EAV-only attribute | refused until #729 is fixed; a narrowing or a family change of one stays refused as above |
 
 2. Implicit evolution is lossless. Rounding, truncation, clamping, and
    substituting NULL are not implicitly approved. They require an explicit,
@@ -321,8 +321,8 @@ against the storage it actually runs on.
   allowed change without a separate approval step, prints the warning and
   stores it on the generation. It is all-or-nothing: one refused change in
   any schema records nothing, and the refusal names the schema, the
-  attribute, the old and new types and the remediation (#730, or #729 for an
-  EAV-only `smallint`/`integer`). Concurrent runs compare-and-set the pointer
+  attribute, the old and new types and the remediation (#730, or #729 for
+  widening an EAV-only `smallint`/`integer`). Concurrent runs compare-and-set the pointer
   in one transaction: the second waits on the first's row lock, then finds the
   pointer moved and records nothing.
 - **The data plane only reads:** the server, the Lambda entrypoint,

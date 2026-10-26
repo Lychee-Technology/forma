@@ -66,14 +66,14 @@ func Judge(old, next Entry) Change {
 // typeChange judges a valueType change under an unchanged binding.
 func typeChange(c Change) Change {
 	from, to := c.Old.ValueType, c.New.ValueType
-	if c.Old.Column == "" && (from == forma.ValueTypeSmallInt || from == forma.ValueTypeInteger) {
-		return c.refuse("an EAV-only %s attribute cannot change type until #729 is fixed: a process still on the old "+
-			"declaration reads a value the new type allows converted, and an unrelated update writes it back", from)
-	}
 	switch {
-	case widensInteger(from, to):
-		c.Verdict = Allowed
-	case to == forma.ValueTypeNumeric && (from == forma.ValueTypeSmallInt || from == forma.ValueTypeInteger):
+	case widensInteger(from, to) || (to == forma.ValueTypeNumeric && (from == forma.ValueTypeSmallInt || from == forma.ValueTypeInteger)):
+		// Only these widenings wait on #729; a narrowing or a family change
+		// of the same attribute is refused below with its own remediation.
+		if c.Old.Column == "" {
+			return c.refuse("an EAV-only %s attribute cannot change to %s until #729 is fixed: a process still on the old "+
+				"declaration reads a value the new type allows converted, and an unrelated update writes it back", from, to)
+		}
 		c.Verdict = Allowed
 	case from == forma.ValueTypeBigInt && to == forma.ValueTypeNumeric:
 		if c.Old.columnType() == forma.MainColumnTypeBigint {
