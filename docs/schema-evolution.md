@@ -514,7 +514,11 @@ Fail-closed enforcement needs two things the code does not have:
    footer settle compatibility only when they show a type whose every value
    the declaration admits. Otherwise the baseline scans the object's values for
    one outside the declared domain, as Phase 1's proof does, and refuses the
-   baseline if it finds one or cannot read the object. A footer that shows the
+   baseline if it finds one or cannot read the object. The domain is the one
+   the declaration's storage admits, which is narrower than what a read
+   converts: a `bigint` kept as a float64 image (EAV-only, a `double_*`
+   column, a list element) admits ±2^53, as the write funnel and the width
+   census do, and `numeric` admits only finite values. A footer that shows the
    declaration's own export type does not settle it: an EAV-only `integer`
    exports DOUBLE, like `numeric`, so an object holding `1001.5` from an earlier
    `numeric` declaration has the same footer as valid `integer` data. A

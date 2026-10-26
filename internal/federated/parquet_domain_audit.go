@@ -35,7 +35,9 @@ type DomainFinding struct {
 // can still hold 1001.5. A footer or manifest type settles a column only when
 // every value of that type is admitted (judgeDomain); otherwise the object's
 // values are scanned with the Phase 1 proof predicates, list elements
-// included. An object whose footer or values cannot be read is a finding, and
+// included, bounded by the declaration's storage domain rather than by what
+// the read converts: ±2^53 for a bigint kept as a float64 image, and finite
+// values for numeric. An object whose footer or values cannot be read is a finding, and
 // a glob whose listing fails is an error: a baseline never blesses what it
 // could not see.
 //
@@ -133,11 +135,21 @@ func judgeDomain(col, fileType string, meta forma.AttributeMetadata) typeJudgeme
 	return j
 }
 
+// judgeDomainScalar judges against the declaration's storage domain, which
+// is narrower than what the read path converts (judgeScalar) in two places:
+// storedRange for a bigint, and a finite proof for DOUBLE under numeric. A
+// BIGINT under numeric stays lossless: D2 admits its rounding (judgeDouble).
 func judgeDomainScalar(col, fileType string, meta forma.AttributeMetadata) typeJudgement {
 	switch meta.ValueType {
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
-		return judgeWhole(col, fileType, declaredRange(meta))
+		return judgeWhole(col, fileType, storedRange(meta))
 	case forma.ValueTypeNumeric:
+		if fileType == "DOUBLE" {
+			// The write path refuses NaN and the infinities
+			// (transform.finiteForEAV), and the read transformer reports
+			// one as a consistency error.
+			return typeJudgement{kind: judgeNeedsProof, violation: fmt.Sprintf("NOT isfinite(%s)", col), demand: "a finite number"}
+		}
 		return judgeDouble(col, fileType)
 	}
 	if sqlgen.ScanTypesCompatible(fileType, sqlgen.DuckDBNullScanType(meta)) {
@@ -147,6 +159,23 @@ func judgeDomainScalar(col, fileType string, meta forma.AttributeMetadata) typeJ
 		return roundTrip(col, "BOOLEAN", "a boolean")
 	}
 	return typeJudgement{kind: judgeIncompatible}
+}
+
+// storedRange is the whole-number domain meta's storage admits. Only a
+// bigint differs from declaredRange: unless it is bound to a bigint_* column,
+// its storage keeps the float64 image alone (eav_data, a double_* column; a
+// list element is EAV), where the write funnel admits [-2^53, 2^53]
+// (transform.checkBigintImageFit) and the PostgreSQL census bounds the same
+// storage by the same range. declaredRange gives an EAV-only bigint the full
+// int64 range because the read path converts any whole image in it.
+func storedRange(meta forma.AttributeMetadata) intRange {
+	if meta.ValueType != forma.ValueTypeBigInt {
+		return declaredRange(meta)
+	}
+	if meta.ColumnBinding != nil && meta.ColumnBinding.ColumnType() == forma.MainColumnTypeBigint {
+		return bigintRange
+	}
+	return exactDoubleRange
 }
 
 // duckSQLPool runs the audit's DuckDB statements on a database/sql pool,

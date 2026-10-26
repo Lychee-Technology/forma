@@ -27,6 +27,9 @@ func TestAuditParquetDomainScansWhatTheFooterCannotSettle(t *testing.T) {
 	boundSmallint := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeSmallInt,
 		ColumnBinding: &forma.MainColumnBinding{ColumnName: "smallint_01"}}
 	numeric := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeNumeric}
+	eavBigint := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeBigInt}
+	doubleBigint := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeBigInt,
+		ColumnBinding: &forma.MainColumnBinding{ColumnName: "double_01"}}
 	cases := []struct {
 		name     string
 		typ      string
@@ -39,6 +42,18 @@ func TestAuditParquetDomainScansWhatTheFooterCannotSettle(t *testing.T) {
 		{"wider integer under smallint", "INTEGER", []string{"40000"}, boundSmallint, "it holds 40000"},
 		{"text under numeric", "VARCHAR", []string{"'12'"}, numeric, "it holds a text value that is not a finite number"},
 		{"boolean under numeric", "BOOLEAN", []string{"true"}, numeric, "a different type family"},
+		// The storage domain, not what the read path converts: an EAV-only
+		// bigint keeps its float64 image, admitted only within ±2^53, and
+		// numeric storage refuses non-finite values.
+		{"past 2^53 under EAV-only bigint", "DOUBLE", []string{"1152921504606846976"}, eavBigint, "which is not a whole number in [-9007199254740992, 9007199254740992]"},
+		{"BIGINT past 2^53 under EAV-only bigint", "BIGINT", []string{"1152921504606846976"}, eavBigint, "it holds 1152921504606846976"},
+		{"past 2^53 under double-bound bigint", "BIGINT", []string{"-1152921504606846976"}, doubleBigint, "it holds -1152921504606846976"},
+		{"NaN under numeric", "DOUBLE", []string{"1", "'NaN'"}, numeric, "it holds nan, which is not a finite number"},
+		{"infinity under numeric", "DOUBLE", []string{"'-Infinity'"}, numeric, "which is not a finite number"},
+		{"list element past 2^53 under list<bigint>", "DOUBLE[]", []string{"[1, 1152921504606846976]"}, listOf(forma.ValueTypeBigInt),
+			"a list element that is not a whole number in [-9007199254740992, 9007199254740992]"},
+		{"infinite list element under list<numeric>", "DOUBLE[]", []string{"['1', 'inf']"}, listOf(forma.ValueTypeNumeric),
+			"a list element that is not a finite number"},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -60,6 +75,28 @@ func TestAuditParquetDomainPassesAdmittedObjects(t *testing.T) {
 	narrow := writeQtyObject(t, duck, dir, "narrow.parquet", "SMALLINT", "7")
 	require.Empty(t, auditQty(t, duck, eavInteger, whole, narrow))
 	require.Empty(t, auditQty(t, duck, eavInteger, filepath.Join(dir, "*.parquet")), "a glob audits each object it matches")
+
+	// The edges of the storage domains: ±2^53 for a bigint's float64 image,
+	// the full int64 range in a bigint_* column, any finite number under
+	// numeric, and a BIGINT under numeric, which D2 lets round.
+	eavBigint := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeBigInt}
+	boundBigint := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeBigInt,
+		ColumnBinding: &forma.MainColumnBinding{ColumnName: "bigint_01"}}
+	numeric := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeNumeric}
+	sub := t.TempDir()
+	require.Empty(t, auditQty(t, duck, eavBigint,
+		writeQtyObject(t, duck, sub, "image_edge.parquet", "DOUBLE", "9007199254740992", "-9007199254740992")))
+	require.Empty(t, auditQty(t, duck, listOf(forma.ValueTypeBigInt),
+		writeQtyObject(t, duck, sub, "list_edge.parquet", "DOUBLE[]", "[9007199254740992, NULL]")))
+	require.Empty(t, auditQty(t, duck, boundBigint,
+		writeQtyObject(t, duck, sub, "column_edge.parquet", "BIGINT", "9223372036854775807")))
+	require.Empty(t, auditQty(t, duck, numeric,
+		writeQtyObject(t, duck, sub, "finite.parquet", "DOUBLE", "1001.5", "1e308", "NULL"),
+		writeQtyObject(t, duck, sub, "rounding.parquet", "BIGINT", "9223372036854775807")))
+}
+
+func listOf(items forma.ValueType) forma.AttributeMetadata {
+	return forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeList, ItemsType: items}
 }
 
 func TestAuditParquetDomainScansListElements(t *testing.T) {
