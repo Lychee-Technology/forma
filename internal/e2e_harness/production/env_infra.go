@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma/internal/schemameta"
 )
 
 // Infrastructure lifecycle verbs: restart/halt/resume of the per-test
@@ -14,8 +15,10 @@ import (
 // every per-test handle that referenced the old server: the pgx pool, the
 // CDC config (the host-mapped port can change), the DuckDB client (so no
 // cached postgres attachment survives), and the lazily built EntityManager
-// and federated engine. Registry and Metadata are load-once snapshots and
-// need no rebuild. Only for tests owning a DedicatedCluster.
+// and federated engine. Metadata is a load-once snapshot and needs no
+// rebuild. The Registry is rebuilt because it re-reads the active generation
+// through its pool at each CDC run (#733); a real process keeps one pool
+// across the restart instead. Only for tests owning a DedicatedCluster.
 func (e *Env) RestartPostgres(ctx context.Context) error {
 	if err := e.Cluster.RestartPostgres(ctx); err != nil {
 		return fmt.Errorf("restart cluster postgres: %w", err)
@@ -34,6 +37,11 @@ func (e *Env) reconnectAfterRestart(ctx context.Context) error {
 		return fmt.Errorf("reconnect test database after restart: %w", err)
 	}
 	e.Pool = pool
+	registry, err := schemameta.NewFileSchemaRegistryContext(ctx, pool, e.Tables.SchemaRegistry, e.schemaDir())
+	if err != nil {
+		return fmt.Errorf("rebuild schema registry after restart: %w", err)
+	}
+	e.Registry = registry
 
 	if e.Duck != nil {
 		_ = e.Duck.Close()
@@ -126,4 +134,12 @@ func (e *Env) ResumePostgres(ctx context.Context) error {
 		return fmt.Errorf("resume cluster postgres: %w", err)
 	}
 	return e.reconnectAfterRestart(ctx)
+}
+
+// schemaDir is the declaration directory the Env currently runs on.
+func (e *Env) schemaDir() string {
+	if e.opts.schemaDir == "" {
+		return FixtureSchemasDir()
+	}
+	return e.opts.schemaDir
 }

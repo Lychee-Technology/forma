@@ -214,10 +214,7 @@ func (e *Env) provision(ctx context.Context) error {
 		return err
 	}
 
-	schemaDir := e.opts.schemaDir
-	if schemaDir == "" {
-		schemaDir = FixtureSchemasDir()
-	}
+	schemaDir := e.schemaDir()
 	if err := RegisterSchemas(ctx, pool, DefaultSchemaFixtures()...); err != nil {
 		return err
 	}
