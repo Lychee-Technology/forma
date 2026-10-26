@@ -61,9 +61,9 @@ func (n *nullDuckDBUUID) Scan(src any) error {
 // duckDBScanBuffers holds pre-allocated scan buffers for DuckDB row scanning.
 type duckDBScanBuffers struct {
 	textVals   []sql.NullString
-	smallVals  []sql.NullInt64
-	intVals    []sql.NullInt64
-	bigVals    []sql.NullInt64
+	smallVals  []nullDuckDBInt
+	intVals    []nullDuckDBInt
+	bigVals    []nullDuckDBInt
 	doubleVals []sql.NullFloat64
 	uuidVals   []nullDuckDBUUID
 }
@@ -90,9 +90,9 @@ func newDuckDBScanBuffers() *duckDBScanBuffers {
 
 	return &duckDBScanBuffers{
 		textVals:   make([]sql.NullString, textCount),
-		smallVals:  make([]sql.NullInt64, smallCount),
-		intVals:    make([]sql.NullInt64, intCount),
-		bigVals:    make([]sql.NullInt64, bigCount),
+		smallVals:  make([]nullDuckDBInt, smallCount),
+		intVals:    make([]nullDuckDBInt, intCount),
+		bigVals:    make([]nullDuckDBInt, bigCount),
 		doubleVals: make([]sql.NullFloat64, doubleCount),
 		uuidVals:   make([]nullDuckDBUUID, uuidCount),
 	}
