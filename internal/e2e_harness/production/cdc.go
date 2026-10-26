@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 
+	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/manifest"
@@ -47,6 +48,9 @@ type FlushOverrides struct {
 	S3     cdc.S3FullClient // nil: e.Cluster.S3
 	Config *cdc.CDCConfig   // nil: e.CDC
 	DryRun bool
+	// Registry is the run's schema registry (nil: e.Registry), for a test
+	// that acts between the run's start and its batches (#733).
+	Registry forma.SchemaRegistry
 }
 
 func (e *Env) runFlush(ctx context.Context, dryRun bool) (*FlushReport, error) {
@@ -80,9 +84,13 @@ func (e *Env) RunFlushWith(ctx context.Context, ov FlushOverrides) (*FlushReport
 		s3Client = ov.S3
 	}
 
+	registry := e.Registry
+	if ov.Registry != nil {
+		registry = ov.Registry
+	}
 	runner := cdc.NewRunner(e.logger)
 	defer func() { _ = runner.Close() }()
-	runErr := runner.RunOnce(ctx, cfg, s3Client, ov.DryRun, e.Registry)
+	runErr := runner.RunOnce(ctx, cfg, s3Client, ov.DryRun, registry)
 	if runErr != nil {
 		runErr = fmt.Errorf("cdc run once (dry=%t): %w", ov.DryRun, runErr)
 	}
