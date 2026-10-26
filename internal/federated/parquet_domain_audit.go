@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/sqlgen"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // DomainFinding is one parquet object baseline-schema refuses to bless: a
@@ -42,10 +44,11 @@ type DomainFinding struct {
 // scanned with the Phase 1 proof predicates, list elements included, bounded
 // by the declaration's storage domain rather than by what the read converts:
 // ±2^53 for a bigint kept as a float64 image, and finite values for numeric.
-// An object whose footer or scanned values cannot be read is a finding, and a
-// glob whose listing fails is an error: a baseline never blesses what it
-// could not see. A column a footer settles is not scanned, so its data pages
-// are not decoded.
+// Every object is also decoded in full (decodeObject), so a corrupt data page
+// is found even under a column its footer settles: the baseline reads every
+// live object once. An object whose footer or data cannot be read is a
+// finding, and a glob whose listing fails is an error: a baseline never
+// blesses what it could not see.
 //
 // A scan proves the domain, not the meaning: a reinterpretation that keeps
 // the domain (bigint to date, both BIGINT) passes.
@@ -65,12 +68,22 @@ func AuditParquetDomain(
 	if !complete && len(union.unverified) == 0 {
 		return nil, errors.New("a parquet glob could not be listed, so the object set is unknown")
 	}
+	undecoded := make(map[string]bool)
+	for _, f := range union.files {
+		if err := decodeObject(ctx, duck, f.path); err != nil {
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("decode %s: %w", f.path, ctx.Err())
+			}
+			undecoded[f.path] = true
+			findings = append(findings, DomainFinding{Path: f.path, Evidence: "its data could not be read: " + err.Error()})
+		}
+	}
 	for _, name := range slices.Sorted(maps.Keys(cache)) {
 		meta := cache[name]
 		col := sqlgen.ParquetAttrColumn(name)
 		for _, f := range union.files {
 			fileType, ok := f.cols[col]
-			if !ok {
+			if !ok || undecoded[f.path] {
 				continue
 			}
 			finding, bad, err := auditColumn(ctx, v, duck, f.path, col, fileType, meta)
@@ -84,6 +97,28 @@ func AuditParquetDomain(
 		}
 	}
 	return findings, nil
+}
+
+// decodeObject reads every column of every row of path, so a corrupt data
+// page fails it whichever column it is under. The aggregate is the result,
+// so DuckDB can neither prune a column nor answer from the footer, as it
+// answers count(*). *COLUMNS(*) names no alias an object column could shadow.
+func decodeObject(ctx context.Context, duck DuckDBQueryExecutor, path string) error {
+	rows, err := duck.Query(ctx, fmt.Sprintf("SELECT bit_xor(hash(*COLUMNS(*))) FROM read_parquet('%s')", sqlutil.EscapeLiteral(path)))
+	if err != nil {
+		return redact.Error(err)
+	}
+	defer func() { _ = rows.Close() }()
+	if rows.Next() {
+		var digest any
+		if err := rows.Scan(&digest); err != nil {
+			return fmt.Errorf("scan the digest of %s: %w", path, err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return redact.Error(err)
+	}
+	return nil
 }
 
 func auditColumn(

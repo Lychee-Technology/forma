@@ -395,11 +395,11 @@ start on that release, with the `SCHEMA_DIR` the deployment runs today:
    and either `--s3-bucket` and `--manifest-template` (the server's DuckDB
    manifest settings) or `--no-parquet-tier` when there is no lakehouse tier.
    It audits Postgres with the width census and a `numeric` domain census,
-   and every live parquet object with a domain scan, and refuses, recording
-   nothing, when stored data contradicts the declaration or cannot be read.
-   Correct the data or the declaration and run it again; converting stored
-   values is a migration (#730). `--dry-run` reports the audit without
-   recording. On DSQL, pass the IAM token as the
+   and decodes every live parquet object in full and checks it with a domain
+   scan. It refuses, recording nothing, when stored data contradicts the
+   declaration or cannot be read. Correct the data or the declaration and
+   run it again; converting stored values is a migration (#730). `--dry-run`
+   reports the audit without recording. On DSQL, pass the IAM token as the
    database password; this path has not been verified either.
 3. **Start the release.** Later declaration edits go through `apply-schema`
    before the data plane rolls. `build-unique-keys` loads the declaration
@@ -515,13 +515,14 @@ Fail-closed enforcement needs two things the code does not have:
    included) or a `double_*` column is checked to be a finite float64: not
    NaN, an infinity, or a magnitude a float64 overflows on. Every parquet
    object's footer is read, so a missing or unreadable object refuses the
-   baseline even when its manifest entry lists column types. The footer
-   settles compatibility only when it shows a type whose every value the
-   declaration admits. Otherwise the baseline
-   scans the object's values for one outside the declared domain, as Phase
-   1's proof does, and refuses the baseline if it finds one or cannot read
-   the object. The domain is the one
-   the declaration's storage admits, which is narrower than what a read
+   baseline even when its manifest entry lists column types, and every object
+   is decoded in full, so a corrupt data page refuses it even under a column
+   the footer settles. The baseline therefore reads every live object once.
+   The footer settles compatibility only when it shows a type whose every
+   value the declaration admits. Otherwise the baseline scans the object's
+   values for one outside the declared domain, as Phase 1's proof does, and
+   refuses the baseline if it finds one or cannot read the object. The domain
+   is the one the declaration's storage admits, which is narrower than what a read
    converts: a `bigint` kept as a float64 image (EAV-only, a `double_*`
    column, a list element) admits ±2^53, as the write funnel and the width
    census do, and `numeric` admits only finite values. A footer that shows the

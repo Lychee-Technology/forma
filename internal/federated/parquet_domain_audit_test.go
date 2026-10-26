@@ -137,3 +137,47 @@ func TestAuditParquetDomainReportsUnreadableObjects(t *testing.T) {
 		require.Contains(t, findings[0].Evidence, "could not be read")
 	}
 }
+
+// TestAuditParquetDomainDecodesEveryObject: a footer that settles a column
+// says nothing about its data pages. Here the footer is intact and shows a
+// SMALLINT under a smallint bound to smallint_01, which needs no scan, and
+// the column's only data is corrupt, so a read of it fails.
+func TestAuditParquetDomainDecodesEveryObject(t *testing.T) {
+	duck := newGuardDuck(t)
+	path := filepath.Join(t.TempDir(), "corrupt_page.parquet")
+	_, err := duck.db.Exec(fmt.Sprintf("COPY (SELECT gen_random_uuid() AS row_id, CAST(100 AS BIGINT) AS changed_at, "+
+		"CAST(0 AS BIGINT) AS deleted_at, CAST(50 AS BIGINT) AS ltbase_created_at, CAST(i %% 30000 AS SMALLINT) AS qty "+
+		"FROM range(5000) AS r(i)) TO '%s' (FORMAT PARQUET)", path))
+	require.NoError(t, err)
+	meta := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeSmallInt,
+		ColumnBinding: &forma.MainColumnBinding{ColumnName: "smallint_01"}}
+	require.Empty(t, auditQty(t, duck, meta, path), "the intact object")
+
+	corruptColumnChunk(t, duck, path, "qty")
+	var rows int64
+	require.NoError(t, duck.db.QueryRow(fmt.Sprintf("SELECT count(*) FROM read_parquet('%s')", path)).Scan(&rows))
+	require.EqualValues(t, 5000, rows, "the footer still reads")
+	_, err = duck.db.Exec(fmt.Sprintf("SELECT sum(qty) FROM read_parquet('%s')", path))
+	require.Error(t, err, "the column's data no longer reads")
+
+	findings := auditQty(t, duck, meta, path)
+	require.Len(t, findings, 1)
+	require.Equal(t, path, findings[0].Path)
+	require.Contains(t, findings[0].Evidence, "its data could not be read")
+}
+
+// corruptColumnChunk overwrites every byte of col's column chunk, leaving
+// the footer as written.
+func corruptColumnChunk(t *testing.T, duck *sqlDBExecutor, path, col string) {
+	t.Helper()
+	var start, size int64
+	require.NoError(t, duck.db.QueryRow(fmt.Sprintf(
+		"SELECT COALESCE(dictionary_page_offset, data_page_offset), total_compressed_size FROM parquet_metadata('%s') WHERE path_in_schema = '%s'",
+		path, col)).Scan(&start, &size))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	for i := start; i < start+size; i++ {
+		data[i] = 0xFF
+	}
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+}
