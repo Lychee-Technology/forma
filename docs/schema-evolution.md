@@ -401,7 +401,9 @@ start on that release, with the `SCHEMA_DIR` the deployment runs today:
    reports the audit without recording. On DSQL, pass the IAM token as the
    database password; this path has not been verified either.
 3. **Start the release.** Later declaration edits go through `apply-schema`
-   before the data plane rolls.
+   before the data plane rolls. `build-unique-keys` loads the declaration
+   through the same gate, so a key build pending on the deployment runs after
+   the baseline; before it, the tool refuses, naming the missing baseline.
 
 ### Why query-time casting is not migration
 
