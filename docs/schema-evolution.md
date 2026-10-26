@@ -146,20 +146,23 @@ becomes `1001`. Whether D1's refusal extends to `eav_data` is #729's decision.
 ## D2: Schema type evolution fails closed (#710)
 
 Decided 2026-10-24, amended 2026-10-25 ([amendment](https://github.com/Lychee-Technology/forma/issues/710#issuecomment-6406151727)).
-**Partially implemented** by Phase 1 (#732), a mitigation rather than
-enforcement: `generate-attributes` no longer changes an existing attribute's
-type, and a federated read refuses live parquet that the current declaration
-cannot read losslessly. A redeclaration is still activated by every process
-that loads it; the record and check that would refuse it up front are Phase 2
-(#733). #710 stays open until it lands. The sections below separate the policy
-from what the code does today.
+**Implemented** in two phases. Phase 1 (#732) is a mitigation on the read:
+`generate-attributes` no longer changes an existing attribute's type, and a
+federated read refuses live parquet that the current declaration cannot read
+losslessly. Phase 2 (#733) enforces the decision up front: a ledger records
+each schema's declarations as generations, `apply-schema` records an edit only
+when the type rules allow it, and every data-plane process refuses to start on
+a declaration that is not the active generation. The sections below separate
+the policy from what the code does.
 
 ### Context
 
-A declaration is active wherever a process loads `SCHEMA_DIR`: the server, the
-Lambda entrypoint, `cdc-flush`, `compactor`, `cdc-init` and the validator each
-load it on their own. When an attribute's `valueType` changes, the next
-process to start simply uses the new type. Nothing compares it with the old one.
+Before #733, a declaration was active wherever a process loaded `SCHEMA_DIR`:
+the server, the Lambda entrypoint, `cdc-flush`, `cdc-init` and the validator
+each load it on their own. When an attribute's `valueType` changed, the next
+process to start simply used the new type, and nothing compared it with the
+old one. The compactor loads no declaration: it merges parquet objects by
+column name and reads no Postgres.
 
 The data written under the old type stays where it is. Postgres keeps the stored
 values, and parquet keeps the exported column at the old DuckDB type. The
@@ -253,18 +256,23 @@ the table. Two other paths of an old process convert the value instead:
   `40000` as NULL. The new declaration reads a SMALLINT column as lossless, so
   the federated route serves the converted value while that object is live,
   and Postgres keeps `1001.5`. The start-up check in [Generations](#generations)
-  does not stop a run already in progress. This path was traced from the code,
-  not reproduced end to end.
+  does not stop a run already in progress. The production harness reproduces
+  this path end to end: the export a stopped run strands holds `1002`.
 
-**Policy. Not implemented (#733):** no value a CDC run read after an apply
-leaves its `_tmp` key. After each batch's export and before its copy to the
+**Implemented (#733):** no value a CDC run read after an apply leaves its
+`_tmp` key. After each batch's export and before its copy to the
 final key, `cdc-flush` and `cdc-init` read the active generation again. If it
 differs from the generation the run started under, the run stops with an
 error before that batch's copy, manifest change or mark. Its rows stay dirty
 for a run on the new declaration, and the `_tmp` object is left to
 `manifest-reconcile --gc`. Batches copied earlier passed the same read, so
 they hold only values written before the apply, which the new type admits. Any new generation
-stops a run, including one that only adds an attribute.
+stops a run, including one that only adds an attribute. Each run also checks
+the active generation at its start, so a long-lived process (the CDC runner, a
+warm Lambda) does not begin a run on a superseded declaration. Pinned by
+`TestCDCFlushStopsABatchExportedAcrossAnApply` and
+`TestCDCInitStopsABatchExportedAcrossAnApply`, which also run
+`manifest-reconcile --repair` over the stranded object and find it unlisted.
 
 Two placements are not enough:
 
@@ -285,34 +293,60 @@ The read needs no fence, on DSQL included. A process that can write a value
 only the new declaration admits passed the start-up check, so it started after
 the apply committed. Every such value the export read was committed before the
 export finished, so a snapshot taken after the export contains the apply too.
-Until #733 ships, the gap does not arise if every CDC run in progress finishes
-before the apply.
 
-`items_type` changes are not separately ruled.
+Three cases the table leaves open were ruled by the owner on 2026-10-26
+([#733](https://github.com/Lychee-Technology/forma/issues/733)): every
+`items_type` change is refused; every `valueType` change the table does not
+list is refused; and a binding change alone is allowed, while a type change
+and a binding change in one apply are refused, so that each is judged
+against the storage it actually runs on.
 
 ### Generations
 
-**Policy.**
+**Implemented (#733).**
 
-- A generation is a per-schema monotonic number plus a content hash over the
-  JSON Schema file and its attributes file. Every edit is a new generation.
-  The active generation is a column on `schema_registry`.
+- A generation is a per-schema monotonic number plus a content hash, a
+  SHA-256 over the JSON Schema file and its attributes file. Every edit is a
+  new generation, including one that changes no attribute. The active
+  generation is the `active_generation` column of the schema registry table;
+  NULL means the schema has no baseline. Two tables named after the registry,
+  `<registry>_generation` and `<registry>_generation_attr`, keep every
+  generation and, per attribute, its ID, name, `valueType`, `items_type`,
+  binding and retired flag. They hold plain rows only (no JSONB, arrays,
+  foreign keys or sequences), so the same DDL suits Aurora DSQL.
 - **Only the control plane records a generation:** `init-db` records
-  generation 1 when it registers a new schema; a baseline command seeds an
+  generation 1 when it registers a new schema; `baseline-schema` seeds an
   existing schema after auditing its stored data against the current
-  declaration; an apply command records each later edit. Apply accepts an
+  declaration; `apply-schema` records each later edit. Apply records an
   allowed change without a separate approval step, prints the warning and
-  records it on the generation.
+  stores it on the generation. It is all-or-nothing: one refused change in
+  any schema records nothing, and the refusal names the schema, the
+  attribute, the old and new types and the remediation (#730, or #729 for an
+  EAV-only `smallint`/`integer`). Concurrent runs compare-and-set the pointer
+  in one transaction: the second waits on the first's row lock, then finds the
+  pointer moved and records nothing.
 - **The data plane only reads:** the server, the Lambda entrypoint,
-  `cdc-flush`, `cdc-init` and the compactor refuse to start when the schema
-  has no active generation, or when an attribute they declare is missing from
-  the active generation or differs from it in type, `items_type` or binding.
-  Lacking an attribute the active generation has is allowed: that is an older
-  process. So apply runs first, then the data plane rolls. The check runs at
-  start; a CDC run already in progress instead reads the active generation
-  again before each batch leaves its `_tmp` key (see above).
-- A removed attribute keeps its ledger entry, with its type, permanently. A
-  rename stays a removal plus an addition under a new ID.
+  `cdc-flush` and `cdc-init` refuse to start when a schema has no active
+  generation, or when an attribute they declare is missing from the active
+  generation or differs from it in name, type, `items_type` or binding. One
+  query reads every schema, and the refusal lists each failing one. Lacking
+  an attribute the active generation has is allowed: that is an older process.
+  A differing retired flag is allowed too, so a process from before a removal
+  still starts. So apply runs first, then the data plane rolls. The check runs
+  at start; a CDC run already in progress instead reads the active generation
+  again before each batch leaves its `_tmp` key (see above). The compactor is
+  not gated, because it loads no declaration.
+- The control-plane steps that must load a declaration the ledger does not
+  hold yet, or report on one, load it ungated: `init-db`'s declared-index and
+  unique-key steps and `validate-schema-consistency`. The directory-mode
+  registry (`NewFileSchemaRegistryFromDirectory`), which has no database to
+  gate on, is confined to `cmd/sample` and the benchmark harness. A guard test
+  (`TestGateBypassesStayInTheControlPlane`) fails when any other production
+  code uses one of these entry points.
+- A removed attribute keeps its ledger entry, with its type, permanently, and
+  every later generation carries it as retired, so its ID cannot come back
+  under another type. A rename stays a removal plus an addition under a new
+  ID: an ID declared under a different name than the ledger records is refused.
 - Rollback is a roll-forward: a new generation with the old content, judged by
   the same rules.
 
@@ -322,9 +356,48 @@ cold start or a scale-out during the rollout, and applying the old
 `SCHEMA_DIR` again is refused. Rolling the code back with the new `SCHEMA_DIR`
 works. `bigint → numeric` is one-way; its reverse needs #730.
 
-An existing deployment needs the `schema_registry` column and a baseline
-before its first start on a release that enforces this; #733 owns that upgrade
-procedure, including DSQL, where `init-db` cannot run yet (#690).
+### Upgrading an existing deployment
+
+A deployment that predates #733 has no ledger, and the enforcing release
+refuses to start on it, naming this procedure. Run it once, before the first
+start on that release, with the `SCHEMA_DIR` the deployment runs today:
+
+1. **Add the ledger.** On PostgreSQL, run `init-db` with the deployment's
+   `-schema-table`. It adds the `active_generation` column and creates both
+   ledger tables, all `IF NOT EXISTS`. On Aurora DSQL `init-db` cannot run yet
+   (#690), so run these statements by hand, with `schema_registry` replaced by
+   the configured registry table name:
+
+   ```sql
+   ALTER TABLE schema_registry ADD COLUMN IF NOT EXISTS active_generation BIGINT;
+   CREATE TABLE IF NOT EXISTS schema_registry_generation (
+       schema_id SMALLINT NOT NULL, generation BIGINT NOT NULL,
+       content_hash TEXT NOT NULL, recorded_by TEXT NOT NULL,
+       recorded_at BIGINT NOT NULL, warnings TEXT NOT NULL DEFAULT '',
+       PRIMARY KEY (schema_id, generation));
+   CREATE TABLE IF NOT EXISTS schema_registry_generation_attr (
+       schema_id SMALLINT NOT NULL, generation BIGINT NOT NULL,
+       attr_id SMALLINT NOT NULL, attr_name TEXT NOT NULL,
+       value_type TEXT NOT NULL, items_type TEXT NOT NULL DEFAULT '',
+       column_name TEXT NOT NULL DEFAULT '', encoding TEXT NOT NULL DEFAULT '',
+       retired BOOLEAN NOT NULL DEFAULT FALSE,
+       PRIMARY KEY (schema_id, generation, attr_id));
+   ```
+
+   Whether DSQL accepts `ALTER TABLE … ADD COLUMN` has not been verified. If
+   it refuses, stop and raise it on #733: the pointer cannot live anywhere
+   else without a code change.
+2. **Baseline.** Run `baseline-schema` with the deployment's `-schema-dir`
+   and either `--s3-bucket` and `--manifest-template` (the server's DuckDB
+   manifest settings) or `--no-parquet-tier` when there is no lakehouse tier.
+   It audits Postgres with the width census and every live parquet object with
+   a domain scan, and refuses, recording nothing, when stored data contradicts
+   the declaration or cannot be read. Correct the data or the declaration and
+   run it again; converting stored values is a migration (#730). `--dry-run`
+   reports the audit without recording. On DSQL, pass the IAM token as the
+   database password; this path has not been verified either.
+3. **Start the release.** Later declaration edits go through `apply-schema`
+   before the data plane rolls.
 
 ### Why query-time casting is not migration
 
@@ -371,12 +444,12 @@ refuse, and the census reports them. A `numeric` value written as
 
 ### What the code does today
 
-- Nothing refuses a type change up front. Each process loads the new
-  declaration at start.
-- No persisted record of an earlier declaration exists in PostgreSQL:
-  `schema_registry` maps a schema name to its id, and nothing else. The only
-  persisted trace of an earlier type is the parquet column type, which
-  manifests stamp per file (`FileEntry.Columns`, #256).
+- **Implemented (#733):** `apply-schema` refuses every change the table
+  refuses, whether it came from `generate-attributes` or a hand-edited
+  attributes file, and a data-plane process refuses to start on a declaration
+  that is not the active generation ([Generations](#generations)). Pinned by
+  `TestJudgeFollowsTheD2Table`, the `cmd/tools` apply and baseline
+  integration tests, and the production harness's `TestApply*` scenarios.
 - **Implemented (#732):** `generate-attributes` keeps an existing attribute's
   `valueType` and `items_type` while the JSON Schema still maps it to the same
   family (numeric, text/uuid, date/datetime, bool, list), so a hand-set
@@ -401,17 +474,21 @@ refuse, and the census reports them. A `numeric` value written as
   so a corrupt object is still excluded as a #251 partial scan. Pinned by
   `TestCheckTypesProvesValuesUnderTheNewDeclaration` and the production
   harness's `TestTypeGuard*` scenarios.
-- **Not implemented:** under the amendment, a BIGINT object under a `numeric`
-  declaration reads as lossless, rounding a value beyond ±2^53. The guard
-  still demands a proof that every value is within ±2^53 and refuses the rest;
-  #733 changes the rule.
-- **Not implemented:** the guard reads only what parquet footers show. A
-  redeclaration that keeps the exported type is invisible to it: `numeric →
-  integer` or `numeric → smallint` on an EAV-only attribute (all DOUBLE, the
-  #729 gap), and `bigint → date` (both BIGINT). It does not check Postgres rows
-  under the new declaration, and it does not prove list elements, which it
-  refuses instead. Closing these needs the declaration record of Phase 2
-  (#733).
+- **Implemented (#733):** a BIGINT object under a `numeric` declaration
+  reads as lossless, rounding a value beyond ±2^53, as the OLTP route does.
+  Both routes answer the same rounded value
+  (`TestApplyWarnsOnBigintToNumericInABigintColumn`). Reaching it exposed a
+  defect older than D2: the DuckDB route read every `numeric` attribute bound
+  to a `smallint_*`, `integer_*` or `bigint_*` column through `database/sql`'s
+  float-to-integer conversion, which refuses any whole value from `1e6` up, so
+  such a read failed. It now converts a whole float64 exactly.
+- The guard reads only what parquet footers show, so a redeclaration that
+  keeps the exported type is invisible to it: `numeric → integer` or
+  `numeric → smallint` on an EAV-only attribute (all DOUBLE, the #729 gap),
+  and `bigint → date` (both BIGINT). Since #733 such a redeclaration is
+  refused up front, and `baseline-schema` scans values, list elements
+  included, before it blesses a declaration. `bigint → date` stays
+  undetectable from stored data (see below).
 - The OLTP route is protected row by row for some types: a bound or EAV
   `bigint` image that names no int64 (#590), and a bound `smallint`/`integer`
   image (D1), are refused on read. An EAV-only `smallint`/`integer` is not
@@ -447,10 +524,10 @@ activation, and a write fence against old-generation processes. The amendment
 removed both by deciding each change from the types alone, as the D2 decision
 above explains.
 
-The mechanism is decided on #710 and implemented by #733. Phase 1 (#732)
-catches the common cases on the federated read, after the fact. Until #733
-lands, operators still uphold D2 by hand: change an existing attribute's
-`valueType` only as the table above allows.
+The mechanism is decided on #710 and implemented by #733: the ledger and the
+start-up gate are the first need, and `baseline-schema` the second. Phase 1
+(#732) still catches, on the federated read, any object that history from
+before the gate left behind.
 
 ### Existing incompatible deployments
 
@@ -472,7 +549,10 @@ their width.
 
 - Restoring the previous declaration, by restarting every process on the
   earlier `SCHEMA_DIR`, brings federated reads back with the old values intact.
-  `1e30` and `1000.5` read as stored. This is the supported recovery.
+  `1e30` and `1000.5` read as stored. This is the supported recovery. On a
+  release with the ledger, the upgrade's baseline refuses the current
+  declaration of such a deployment; run it on the earlier `SCHEMA_DIR`
+  instead, which the stored data matches.
 - Rewriting every affected row through the API and re-flushing does **not**
   clear the failure. The superseded version of each row stays live in parquet,
   and the cast still reaches it. A compaction pass in the same harness promoted

@@ -17,6 +17,8 @@ Forma Tools CLI
 - `generate-attributes`：从 JSON Schema 生成 `<schema>_attributes.json`。
 - `init-db`：创建 schema registry、entity main、EAV 数据表及索引。
 - `build-unique-keys`：从 schema 的存活行构建 `x-forma-unique-keys` 声明的唯一键（#651）。须先停止所有写入方。
+- `apply-schema`：按 D2 类型规则把修改后的 schema 声明记录为下一个 generation（#733）。
+- `baseline-schema`：审计已存储的 PostgreSQL 与 parquet 数据，为尚无 generation 的 schema 记录第一个 generation（升级步骤，#733）。
 - `manifest-reconcile`：比对 S3 parquet 对象与 manifest 条目，报告孤儿/dangling，
   `--repair` 补录 #197 flush 孤儿，`--gc` 清理 #188 compaction 遗留。
   详见 `docs/manifest-reconcile.md`。退出码：0 一致 / 2 有差异 / 1 失败。
@@ -95,9 +97,47 @@ unreferenced，由运维自行删除。详见 `docs/schema-indexes.md`。
 `build-unique-keys` 命令。有声明的唯一键尚未构建时，服务端拒绝启动。即使 schema 没有存活行，也须在第一个带声明的写入方
 启动前停止所有不带该声明的写入方：后者写入的行没有唯一键条目。详见 `docs/unique-keys.md`。
 
+`init-db` 还会为 `-schema-table` 增加 `active_generation` 列并创建 generation 账本表 `<schema-table>_generation` 与 `<schema-table>_generation_attr`（#733），
+并为本次新注册且有 attributes 文件的 schema 记录 generation 1。没有 attributes 文件的 schema 注册后没有 generation，`init-db` 打印提示，
+待文件就绪后运行 `baseline-schema`。已注册的 schema 不受影响。详见 `docs/schema-evolution.md`。
+
 示例：
 - `go run ./cmd/tools init-db`
 - `go run ./cmd/tools init-db -db-host 127.0.0.1 -db-name forma_dev -entity-main-table entity_main_dev -eav-table eav_dev`
+
+apply-schema
+------------
+把每个已注册 schema 在 `-schema-dir` 中的声明与其 active generation 比较，在每一处变更都被 D2 类型规则允许时记录为下一个 generation（#733）。
+规则拒绝任何一处变更时整体不记录，错误列出每个 schema、属性、新旧类型与处理方法；允许但有警告的变更（绑定 `bigint_*` 列的 `bigint` 改为 `numeric`）
+打印警告并记录在 generation 上。内容未变的 schema 不记录。先运行 `apply-schema`，再滚动发布服务端、Lambda 与 CDC 进程：
+仍加载旧声明的进程在新 generation 记录后拒绝启动。
+
+选项（数据库选项及其环境变量默认值与 `init-db` 相同）：
+- `-schema-dir`（`SCHEMA_DIR`，必填）：JSON Schema 目录。
+- `-schema`：只处理这个已注册的 schema；省略时处理全部。
+- `-schema-table`（`SCHEMA_TABLE`，默认 `schema_registry`）。
+- `-dry-run`：只报告将要记录的变更，不写入。
+
+示例：
+- `go run ./cmd/tools apply-schema -schema-dir schemas -dry-run`
+- `go run ./cmd/tools apply-schema -schema-dir schemas`
+
+baseline-schema
+---------------
+已有部署升级到带 generation 账本的版本前运行一次（#733）：用宽度普查（width census）审计 PostgreSQL，对每个存活的 parquet 对象按声明的值域扫描（含 list 元素），
+数据与当前声明不符或无法读取时拒绝且不记录任何内容；通过后为尚无 generation 的 schema 记录 generation 1。已有 generation 的 schema 被跳过。
+运行前须已有账本表（PostgreSQL 上运行 `init-db`；DSQL 上按 `docs/schema-evolution.md` 手工建表）。
+
+选项（数据库与表名选项及其环境变量默认值与 `validate-schema-consistency` 相同）：
+- `-schema-dir`（`SCHEMA_DIR`，必填）：部署当前使用的 JSON Schema 目录。
+- `-schema`：只处理这个已注册的 schema。
+- `--no-parquet-tier`：部署没有 lakehouse 层，只审计 PostgreSQL。否则必须给出 `--s3-bucket` 与 `--manifest-template`
+  （与服务端的 DuckDB manifest 配置一致），可选 `--manifest-prefix`（`MANIFEST_PREFIX`）、`--data-prefix`（`S3_PREFIX`）及 S3 与 DuckDB 选项。
+- `-dry-run`：只报告审计结果，不写入。
+
+示例：
+- `go run ./cmd/tools baseline-schema -schema-dir schemas --no-parquet-tier`
+- `go run ./cmd/tools baseline-schema -schema-dir schemas --s3-bucket my-bucket --manifest-template 'manifest/{{.SchemaID}}.json'`
 
 build-unique-keys
 -----------------
