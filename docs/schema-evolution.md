@@ -145,13 +145,14 @@ becomes `1001`. Whether D1's refusal extends to `eav_data` is #729's decision.
 
 ## D2: Schema type evolution fails closed (#710)
 
-Decided 2026-10-24. **Partially implemented** by Phase 1 (#732), a mitigation
-rather than enforcement: `generate-attributes` no longer changes an existing
-attribute's type, and a federated read refuses live parquet that the current
-declaration cannot read losslessly. A redeclaration is still activated by
-every process that loads it; the record, check and fence that would refuse it
-up front are Phases 2 and 3 (#733, #734). #710 stays open until they land. The
-sections below separate the policy from what the code does today.
+Decided 2026-10-24, amended 2026-10-25 ([amendment](https://github.com/Lychee-Technology/forma/issues/710#issuecomment-6406151727)).
+**Partially implemented** by Phase 1 (#732), a mitigation rather than
+enforcement: `generate-attributes` no longer changes an existing attribute's
+type, and a federated read refuses live parquet that the current declaration
+cannot read losslessly. A redeclaration is still activated by every process
+that loads it; the record and check that would refuse it up front are Phase 2
+(#733). #710 stays open until it lands. The sections below separate the policy
+from what the code does today.
 
 ### Context
 
@@ -199,24 +200,80 @@ footer carries no trace of the change (see the limits below).
 
 **Policy.**
 
-1. A type change becomes active only if the existing data, on every tier, is
-   shown to satisfy the new type. The changes fall into three classes:
-   - **proven lossless:** every value the old type can hold, in the storage
-     the attribute is bound to, is a value of the new type;
-   - **proven incompatible:** a stored value violates the new type;
-   - **unverified:** compatibility cannot currently be established.
+1. Whether a type change is allowed depends only on the old and new types and
+   the storage the attribute is bound to, **never on the stored values**:
 
-   Only the first class may activate. The second and the third fail closed.
+   | change | outcome |
+   |---|---|
+   | narrowing: `numeric → bigint`/`integer`/`smallint`, `bigint → integer`/`smallint`, `integer → smallint` | refused, even when every stored value fits; use a migration (#730) |
+   | another family: text ↔ number, `bigint → date`, bool ↔ anything | refused |
+   | `smallint → integer → bigint` | allowed |
+   | `smallint`/`integer → numeric` | allowed; exact in every storage |
+   | `bigint → numeric`, `double_*` column or EAV-only | allowed; exact, since that storage holds only ±2^53 (#590) |
+   | `bigint → numeric`, `bigint_*` column | allowed with a warning: a value beyond ±2^53 reads rounded to its float64 on every route |
+   | any change of an EAV-only attribute whose old type is `smallint` or `integer` | refused until #729 is fixed |
+
 2. Implicit evolution is lossless. Rounding, truncation, clamping, and
    substituting NULL are not implicitly approved. They require an explicit,
-   operator-authorized migration (#730).
+   operator-authorized migration (#730). The one exception is `bigint →
+   numeric` in a `bigint_*` column, accepted with the warning above.
 3. A refused change leaves the previous declaration active and its data
    unmodified, and nothing partially activates. The refusal names the schema,
-   the attribute, the old and new types, the evidence, and the remediation.
+   the attribute, the old and new types, and the remediation.
 4. Changes that do not alter an existing attribute's type keep working. These
    are the #189 evolutions: adding and removing attributes, renaming them (as a
    remove plus an add), and promoting an EAV-only attribute to a bound column
    under the same type.
+
+The first version of D2 (2026-10-24) let a narrowing activate when the stored
+data happened to fit, such as `numeric → bigint` over only whole values. That
+proof holds only at one moment: an old-generation process can write `1000.5`
+after it. Guaranteeing it needed a writer fence across every process, and on
+Aurora DSQL a read does not make two transactions conflict, so a writer that
+checks the generation inside its transaction can still commit after
+activation. With every allowed change decided by type alone, an old writer's
+values stay valid under the new type, and no fence is needed.
+
+Old processes that meet a value the new type allows and theirs does not fail
+closed: a bound `smallint`/`integer` image by D1, a `bigint` image that names
+no int64 by #590. An EAV-only `smallint`/`integer` does not (#729), hence the
+last row of the table.
+
+`items_type` changes are not separately ruled.
+
+### Generations
+
+**Policy.**
+
+- A generation is a per-schema monotonic number plus a content hash over the
+  JSON Schema file and its attributes file. Every edit is a new generation.
+  The active generation is a column on `schema_registry`.
+- **Only the control plane records a generation:** `init-db` records
+  generation 1 when it registers a new schema; a baseline command seeds an
+  existing schema after auditing its stored data against the current
+  declaration; an apply command records each later edit. Apply accepts an
+  allowed change without a separate approval step, prints the warning and
+  records it on the generation.
+- **The data plane only reads:** the server, the Lambda entrypoint,
+  `cdc-flush`, `cdc-init` and the compactor refuse to start when the schema
+  has no active generation, or when an attribute they declare is missing from
+  the active generation or differs from it in type, `items_type` or binding.
+  Lacking an attribute the active generation has is allowed: that is an older
+  process. So apply runs first, then the data plane rolls.
+- A removed attribute keeps its ledger entry, with its type, permanently. A
+  rename stays a removal plus an addition under a new ID.
+- Rollback is a roll-forward: a new generation with the old content, judged by
+  the same rules.
+
+Accepted consequences: once a widening or `bigint → numeric` is applied, a
+process still on the old `SCHEMA_DIR` refuses to start, including a Lambda
+cold start or a scale-out during the rollout, and applying the old
+`SCHEMA_DIR` again is refused. Rolling the code back with the new `SCHEMA_DIR`
+works. `bigint → numeric` is one-way; its reverse needs #730.
+
+An existing deployment needs the `schema_registry` column and a baseline
+before its first start on a release that enforces this; #733 owns that upgrade
+procedure, including DSQL, where `init-db` cannot run yet (#690).
 
 ### Why query-time casting is not migration
 
@@ -234,30 +291,32 @@ ever converted, so a later reader still sees the old type underneath.
 
 A strongly typed OLTP database changes a column's type in one statement that
 converts every stored row, and either the whole change commits or none of it
-does. D2 adopts that principle: verify the stored data, then activate, or leave
-the old type in place.
+does. D2 keeps the all-or-nothing half of that principle and drops the
+conversion: a change that would need any stored value converted is refused,
+and an allowed change needs none, except the rounding that `bigint → numeric`
+accepts in a `bigint_*` column.
 
 Forma's default is **stricter than PostgreSQL**, on purpose. PostgreSQL
 `ALTER TABLE … ALTER COLUMN r TYPE bigint` over a `float8` column fails the
 statement on `1e30` ("bigint out of range"). Over `5, 1000.5, 1001.5` it
 succeeds and stores `5, 1000, 1002`, rounding half to even. Its `numeric`
 cast rounds half away from zero (`1000.5::numeric::bigint` is `1001`). Forma
-refuses the fraction instead. A rounding conversion is a migration policy an
-operator chooses (#730), never an implicit consequence of editing a
-declaration.
+refuses `numeric → bigint` whatever the values. A rounding conversion is a
+migration policy an operator chooses (#730), never an implicit consequence of
+editing a declaration.
 
 ### Physical storage precision
 
 A logical value of the new type is not necessarily one the bound column can
 store exactly. A `bigint` in a `double_*` column keeps only its float64 image,
 which is exact within ±2^53, and the write funnel admits exactly
-`[-9007199254740992, 9007199254740992]` there (#590). So `numeric → bigint`
-over a `double_*` column needs every stored value to be a whole number within
-±2^53, not merely within int64. In the measurement above, `2^60` and
-`2^53 + 2` read back as int64 values the funnel would refuse, and the census
-reports them. A `numeric` value written as `9007199254740993` was already
-stored as `9007199254740992` under `numeric` (#205), so no migration can
-recover the written digits.
+`[-9007199254740992, 9007199254740992]` there (#590); an EAV-only `bigint` has
+the same limit. That is why `bigint → numeric` is exact in those storages,
+while a `bigint_*` column holds the full int64 and is not. In the measurement
+above, `2^60` and `2^53 + 2` read back as int64 values the funnel would
+refuse, and the census reports them. A `numeric` value written as
+`9007199254740993` was already stored as `9007199254740992` under `numeric`
+(#205), so no migration can recover the written digits.
 
 ### What the code does today
 
@@ -291,6 +350,10 @@ recover the written digits.
   so a corrupt object is still excluded as a #251 partial scan. Pinned by
   `TestCheckTypesProvesValuesUnderTheNewDeclaration` and the production
   harness's `TestTypeGuard*` scenarios.
+- **Not implemented:** under the amendment, a BIGINT object under a `numeric`
+  declaration reads as lossless, rounding a value beyond ±2^53. The guard
+  still demands a proof that every value is within ±2^53 and refuses the rest;
+  #733 changes the rule.
 - **Not implemented:** the guard reads only what parquet footers show. A
   redeclaration that keeps the exported type is invisible to it: `numeric →
   integer` or `numeric → smallint` on an EAV-only attribute (all DOUBLE, the
@@ -305,23 +368,26 @@ recover the written digits.
 
 ### Why enforcement is not a narrow patch
 
-Fail-closed enforcement needs three things the code does not have:
+Fail-closed enforcement needs two things the code does not have:
 
 1. **A record of the active declaration** that every process checks before it
    serves. Today there is nothing to compare a new declaration against, and a
    check inside one tool would be bypassed by every other process.
-2. **A data check across tiers.** Postgres rows can be checked with the width
-   census. Parquet files need a DuckDB scan of each live file holding the
-   attribute, or a proof from the old type alone. A manifest entry written
-   before #256 has no column types.
-3. **A write fence.** Old-generation processes keep writing old-type values
-   while the check runs, and after it, until they restart.
+2. **A baseline for existing deployments.** The first record of a schema that
+   already holds data must not bless a declaration the data contradicts, so the
+   baseline audits the stored data once: Postgres with the width census,
+   parquet through manifest `Columns` or the file footers. A manifest entry
+   written before #256 has no column types.
 
-The proposed design, its open decisions, and the rollout plan are on #710.
-Phase 1 (#732) catches the common cases on the federated read, after the fact.
-Until the rest lands, operators still uphold D2 by hand: do not change an
-existing attribute's `valueType` except through a widening that is lossless
-for its storage.
+The first version of D2 needed two more: a check of every tier's data on each
+activation, and a write fence against old-generation processes. The amendment
+removed both by deciding each change from the types alone, as the D2 decision
+above explains.
+
+The mechanism is decided on #710 and implemented by #733. Phase 1 (#732)
+catches the common cases on the federated read, after the fact. Until #733
+lands, operators still uphold D2 by hand: change an existing attribute's
+`valueType` only as the table above allows.
 
 ### Existing incompatible deployments
 

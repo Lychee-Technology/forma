@@ -1090,8 +1090,8 @@ LIMIT 50;
   type is reported (`#708`): the upgraded server refuses to read such rows on
   the OLTP route, and an unrelated update over one fails; rewrite each one
   through the API, naming the attribute
-- no attribute's `valueType` changed since the last deploy, unless the change
-  is lossless for every stored value on every tier (`#710`; see
+- no attribute's `valueType` changed since the last deploy, unless D2 allows
+  that change from its types alone, such as `smallint → integer` (`#710`; see
   [Schema Evolution and Declared Types](./schema-evolution.md#d2-schema-type-evolution-fails-closed-710))
 - no unbound `date`/`datetime` image past ±2^53 or off a whole number is
   reported (`#592`): rewrite each one through the API, naming the attribute.
