@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -158,13 +159,14 @@ func TestApplyAllowsWideningAndRefusesTheOldDirectory(t *testing.T) {
 
 // TestApplyWarnsOnBigintToNumericInABigintColumn: the change applies with
 // the warning, stored on the generation, and both routes read 2^53+1 as the
-// same rounded float64, 2^53.
+// same rounded float64, 2^53, and MaxInt64 as 2^63, which no int64 holds.
 func TestApplyWarnsOnBigintToNumericInABigintColumn(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(qtyDir(t, "bigint", "bigint_01")))
 	simple := DefaultSchemaFixtures()[0]
 	past := qtyCreate(simple, 0, int64(1)<<53+1)
-	mustApplyEvents(ctx, t, env, "qty past 2^53", past)
+	top := qtyCreate(simple, 1, int64(math.MaxInt64))
+	mustApplyEvents(ctx, t, env, "qty past 2^53", past, top)
 	mustFlush(ctx, t, env) // the federated route now reads the delta object
 
 	if err := env.EvolveSchema(ctx, qtyDir(t, "numeric", "bigint_01")); err != nil {
@@ -180,10 +182,17 @@ func TestApplyWarnsOnBigintToNumericInABigintColumn(t *testing.T) {
 		t.Fatalf("generation 2 stores warnings %q, want the bigint_01 rounding warning", warnings)
 	}
 
-	oltp, federated := readQtyBothRoutes(ctx, t, env, simple, past.RowID)
-	want := float64(int64(1) << 53)
-	if fmt.Sprint(oltp) != fmt.Sprint(want) || fmt.Sprint(federated) != fmt.Sprint(want) {
-		t.Fatalf("qty reads %v (OLTP) and %v (federated), want both rounded to %v", oltp, federated, want)
+	for _, tc := range []struct {
+		event *Event
+		want  float64
+	}{
+		{past, float64(int64(1) << 53)},
+		{top, 0x1p63},
+	} {
+		oltp, federated := readQtyBothRoutes(ctx, t, env, simple, tc.event.RowID)
+		if fmt.Sprint(oltp) != fmt.Sprint(tc.want) || fmt.Sprint(federated) != fmt.Sprint(tc.want) {
+			t.Fatalf("qty reads %v (OLTP) and %v (federated), want both rounded to %v", oltp, federated, tc.want)
+		}
 	}
 }
 

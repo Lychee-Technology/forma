@@ -36,3 +36,29 @@ func (n *nullDuckDBInt) Scan(src any) error {
 	n.Int64, n.Valid = int64(f), true
 	return nil
 }
+
+// nullDuckDBBigint scans a nullable bigint main column. Under a numeric
+// declaration the column reads DOUBLE, and every int64 from 2^63-512 up
+// rounds to 2^63 there, as float64() rounds it on the OLTP route: a valid
+// numeric value no int64 holds. A whole DOUBLE past the int64 range is
+// therefore kept as the float64 Image rather than refused. The record
+// carries it as the column's float64 image, which a numeric declaration
+// reads as is and a bigint declaration refuses as naming no int64
+// (transform.int64FromBigintImage), so it never wraps into an int64.
+// Everything else scans as nullDuckDBInt.
+type nullDuckDBBigint struct {
+	nullDuckDBInt
+	Image    float64
+	HasImage bool
+}
+
+// Scan implements sql.Scanner.
+func (n *nullDuckDBBigint) Scan(src any) error {
+	n.Image, n.HasImage = 0, false
+	if f, ok := src.(float64); ok && !math.IsInf(f, 0) && f == math.Trunc(f) && (f < math.MinInt64 || f >= math.MaxInt64) {
+		n.nullDuckDBInt = nullDuckDBInt{}
+		n.Image, n.HasImage = f, true
+		return nil
+	}
+	return n.nullDuckDBInt.Scan(src)
+}

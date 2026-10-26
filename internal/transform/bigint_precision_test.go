@@ -162,3 +162,28 @@ func TestToInt64ExactForEAVPointerShapes(t *testing.T) {
 		t.Fatal("nil *int must not report exact")
 	}
 }
+
+// TestFromPersistentRecordReadsTheRoundedImageOfABigintColumn: the DuckDB
+// route reads a numeric attribute's bigint_* column as DOUBLE, where
+// MaxInt64 rounds to 2^63, and hands the record that image alone (#733). A
+// numeric declaration reads it as the OLTP route's float64(MaxInt64) does;
+// a bigint declaration refuses it rather than wrapping it into an int64.
+func TestFromPersistentRecordReadsTheRoundedImageOfABigintColumn(t *testing.T) {
+	rec := func() *model.PersistentRecord {
+		return &model.PersistentRecord{
+			SchemaID: 202, RowID: uuid.New(),
+			TextItems: map[string]string{}, Int16Items: map[string]int16{}, Int32Items: map[string]int32{},
+			Int64Items: map[string]int64{}, Float64Items: map[string]float64{"bigint_01": 0x1p63}, UUIDItems: map[string]uuid.UUID{},
+		}
+	}
+	numericReg := newBigintPrecisionRegistry()
+	meta := numericReg.cache["amount"]
+	meta.ValueType = forma.ValueTypeNumeric
+	numericReg.cache["amount"] = meta
+	out, err := NewPersistentRecordTransformer(numericReg).FromPersistentRecord(context.Background(), rec())
+	require.NoError(t, err)
+	require.Equal(t, float64(math.MaxInt64), out["amount"])
+
+	_, err = NewPersistentRecordTransformer(newBigintPrecisionRegistry()).FromPersistentRecord(context.Background(), rec())
+	require.ErrorContains(t, err, "outside the bigint range")
+}

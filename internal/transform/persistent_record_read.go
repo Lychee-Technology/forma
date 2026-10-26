@@ -190,6 +190,14 @@ func (t *persistentRecordTransformer) readWithDefaultEncoding(record *model.Pers
 			attr.BoundColumn = columnName
 			return attr, true, nil
 		}
+		// A DuckDB-routed read of a numeric attribute past the int64 range
+		// (2^63, the float64 of every int64 from 2^63-512 up) carries only
+		// the float64 image; see federated.nullDuckDBBigint.
+		if val, ok := record.Float64Items[columnName]; ok {
+			attr.ValueNumeric = &val
+			attr.BoundColumn = columnName
+			return attr, true, nil
+		}
 
 	case forma.MainColumnTypeDouble:
 		if val, ok := record.Float64Items[columnName]; ok {

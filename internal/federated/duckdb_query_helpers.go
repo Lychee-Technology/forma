@@ -63,7 +63,7 @@ type duckDBScanBuffers struct {
 	textVals   []sql.NullString
 	smallVals  []nullDuckDBInt
 	intVals    []nullDuckDBInt
-	bigVals    []nullDuckDBInt
+	bigVals    []nullDuckDBBigint
 	doubleVals []sql.NullFloat64
 	uuidVals   []nullDuckDBUUID
 }
@@ -92,7 +92,7 @@ func newDuckDBScanBuffers() *duckDBScanBuffers {
 		textVals:   make([]sql.NullString, textCount),
 		smallVals:  make([]nullDuckDBInt, smallCount),
 		intVals:    make([]nullDuckDBInt, intCount),
-		bigVals:    make([]nullDuckDBInt, bigCount),
+		bigVals:    make([]nullDuckDBBigint, bigCount),
 		doubleVals: make([]sql.NullFloat64, doubleCount),
 		uuidVals:   make([]nullDuckDBUUID, uuidCount),
 	}
@@ -180,7 +180,9 @@ func (b *duckDBScanBuffers) buildRecordFromBuffers() *model.PersistentRecord {
 			intIdx++
 		case model.ColumnKindBigint:
 			val := b.bigVals[bigIdx]
-			if val.Valid {
+			if val.HasImage {
+				record.Float64Items[desc.Name] = val.Image
+			} else if val.Valid {
 				// Handle known system columns
 				switch desc.Name {
 				case "ltbase_created_at":
