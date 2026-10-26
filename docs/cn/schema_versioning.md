@@ -43,7 +43,7 @@
 4.  **修改字段类型 (Change Field Type)**
     *   修改字段的 `type` 属性（例如从 `"string"` 改为 `"integer"`，或 `"array"` 改为 `"object"`）。
     *   **原因**：历史数据的存储格式与新定义不兼容，导致解析错误。
-    *   修改属性的 `valueType`（例如 `numeric` 改为 `bigint`）同样适用。既定策略是 fail-closed：只有当所有层（Postgres 与 parquet）中的已存储数据都能无损满足新类型时，变更才可生效；有损转换（舍入、截断、置 NULL）必须通过显式迁移完成（#730）。该策略尚未实现（#710）。实测在 `numeric` 改为 `bigint` 后，含 `1e30` 的旧 parquet 会使该 schema 上过滤条件保留了该行的联邦查询失败（即使该行不在返回的页内，未过滤的列表查询都会失败），而 `1000.5` 会被静默读成 `1000`。详见 [Schema Evolution and Declared Types](../schema-evolution.md)。
+    *   修改属性的 `valueType`（例如 `numeric` 改为 `bigint`）同样适用。既定策略是 fail-closed，且是否允许只看新旧类型和绑定的存储，不看已存储的值：收窄（如 `numeric` 改为 `bigint`）和跨类型族的变更一律拒绝，即使现有数据恰好都满足新类型；整数族内拓宽和改为 `numeric` 允许，其中绑定 `bigint_*` 列的 `bigint` 改为 `numeric` 会给出警告，因为超过 ±2^53 的值会被舍入。例外：在 #729 修复之前，未绑定主表列（仅存于 EAV）的 `smallint`/`integer` 属性的任何类型变更一律拒绝，包括拓宽和改为 `numeric`，因为仍在运行的旧进程会把新允许的值（如 `1001.5`）转换后读出，并在无关的更新中写回。有损转换（舍入、截断、置 NULL）必须通过显式迁移完成（#730）。该策略尚未完全实现（#710、#733）。实测在 `numeric` 改为 `bigint` 后，含 `1e30` 的旧 parquet 会使该 schema 上过滤条件保留了该行的联邦查询失败（即使该行不在返回的页内，未过滤的列表查询都会失败），而 `1000.5` 会被静默读成 `1000`；自 #732 起，联邦读取对这两种情况都会明确拒绝。详见 [Schema Evolution and Declared Types](../schema-evolution.md)。
 
 5.  **收紧验证约束 (Tighten Validation Constraints)**
     *   **减小** `maxLength`。
