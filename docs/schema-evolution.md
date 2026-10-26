@@ -397,9 +397,21 @@ Fail-closed enforcement needs two things the code does not have:
    check inside one tool would be bypassed by every other process.
 2. **A baseline for existing deployments.** The first record of a schema that
    already holds data must not bless a declaration the data contradicts, so the
-   baseline audits the stored data once: Postgres with the width census,
-   parquet through manifest `Columns` or the file footers. A manifest entry
-   written before #256 has no column types.
+   baseline audits the stored data once, on every tier. Postgres is audited
+   with the width census. For a parquet object, manifest `Columns` or the
+   footer settle compatibility only when they show a type whose every value
+   the declaration admits. Otherwise the baseline scans the object's values for
+   one outside the declared domain, as Phase 1's proof does, and refuses the
+   baseline if it finds one or cannot read the object. A footer that shows the
+   declaration's own export type does not settle it: an EAV-only `integer`
+   exports DOUBLE, like `numeric`, so an object holding `1001.5` from an earlier
+   `numeric` declaration has the same footer as valid `integer` data. A
+   manifest entry written before #256 has no column types and is scanned too.
+
+   A value scan proves the domain, not the meaning. A column that held `bigint`
+   values and is now declared `date` passes, because every in-range int64 is a
+   valid epoch-ms. No stored data records such a reinterpretation, so the
+   baseline cannot detect it.
 
 The first version of D2 needed two more: a check of every tier's data on each
 activation, and a write fence against old-generation processes. The amendment
