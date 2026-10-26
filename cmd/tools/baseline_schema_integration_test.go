@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -120,5 +121,41 @@ func TestBaselineSchemaRefusesAParquetValueTheFooterHides(t *testing.T) {
 	}
 	if _, ok := lt.pointer(t, 100); ok {
 		t.Fatal("a refused baseline recorded a generation")
+	}
+}
+
+// TestBaselineSchemaRecordsNothingWhenASchemaIsSeededDuringItsAudit: the
+// audit holds no transaction, so another run can seed a schema after it was
+// audited. The compare-and-set is what keeps that run's generation, and the
+// refusal records nothing for any schema.
+func TestBaselineSchemaRecordsNothingWhenASchemaIsSeededDuringItsAudit(t *testing.T) {
+	lt := newLedgerTarget(t, map[string]string{"alpha": eavIntegerAttrs, "beta": eavIntegerAttrs})
+	lt.forgetLedger(t)
+	const alpha, beta = int16(100), int16(101)
+	audit := func(ctx context.Context, schemaID int16, cache forma.SchemaAttributeCache) ([]federated.DomainFinding, error) {
+		if schemaID != beta {
+			return nil, nil
+		}
+		tx, err := lt.pool.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("begin the concurrent seed: %w", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		rec := schemaledger.Record{SchemaID: alpha, Hash: "concurrent", RecordedBy: "concurrent"}
+		if err := schemaledger.Write(ctx, tx, lt.opts.schemaTable, rec); err != nil {
+			return nil, fmt.Errorf("seed alpha concurrently: %w", err)
+		}
+		return nil, tx.Commit(ctx)
+	}
+
+	out, err := lt.baseline(t, audit)
+	if !errors.Is(err, schemaledger.ErrGenerationConflict) {
+		t.Fatalf("baseline = %v, want ErrGenerationConflict\n%s", err, out)
+	}
+	if gen := lt.active(t, alpha); gen.Number != 1 || gen.Hash != "concurrent" {
+		t.Fatalf("alpha's active generation = %d (%s), want the concurrent run's generation 1", gen.Number, gen.Hash)
+	}
+	if _, ok := lt.pointer(t, beta); ok {
+		t.Fatal("a baseline that lost the compare-and-set recorded beta")
 	}
 }

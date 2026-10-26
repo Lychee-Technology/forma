@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/federated"
@@ -33,21 +32,21 @@ type baselineOptions struct {
 // PostgreSQL through the integer-width census, the live parquet objects
 // through federated.AuditParquetDomain. A schema with any finding is refused,
 // and a refusal records nothing for any schema, as apply-schema does.
+//
+// The audit reads through the pool, and only the writes share a transaction:
+// an audit can outlast Aurora DSQL's transaction duration limit, and holding
+// a transaction open across it guards nothing. No write is held off by it,
+// and a run that seeds a schema concurrently moves the pointer off NULL, so
+// this run's compare-and-set fails and it records nothing.
 func baselineSchemas(ctx context.Context, pool *pgxpool.Pool, opts baselineOptions, out io.Writer) error {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin the baseline transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	targets, err := selectRegisteredSchemas(ctx, tx, opts.ledgerToolOptions)
+	targets, err := selectRegisteredSchemas(ctx, pool, opts.ledgerToolOptions)
 	if err != nil {
 		return err
 	}
 	var seeds []schemaledger.Declaration
 	var refusals []string
 	for _, target := range targets {
-		decl, problems, err := auditForBaseline(ctx, tx, opts, target, out)
+		decl, problems, err := auditForBaseline(ctx, pool, opts, target, out)
 		if err != nil {
 			return err
 		}
@@ -68,9 +67,19 @@ func baselineSchemas(ctx context.Context, pool *pgxpool.Pool, opts baselineOptio
 		fmt.Fprintln(out, "Dry run: no generation was recorded.")
 		return nil
 	}
+	return recordBaselines(ctx, pool, opts.schemaTable, seeds, out)
+}
+
+// recordBaselines records generation 1 of every seed in one transaction.
+func recordBaselines(ctx context.Context, pool *pgxpool.Pool, schemaTable string, seeds []schemaledger.Declaration, out io.Writer) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin the baseline transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	for _, decl := range seeds {
 		rec := schemaledger.Record{SchemaID: decl.SchemaID, Hash: decl.Hash, Entries: decl.Entries, RecordedBy: "baseline-schema"}
-		if err := schemaledger.Write(ctx, tx, opts.schemaTable, rec); err != nil {
+		if err := schemaledger.Write(ctx, tx, schemaTable, rec); err != nil {
 			return fmt.Errorf("record generation 1 of schema %s: %w", decl.SchemaName, err)
 		}
 	}
@@ -86,8 +95,8 @@ func baselineSchemas(ctx context.Context, pool *pgxpool.Pool, opts baselineOptio
 // auditForBaseline audits one schema. It answers a nil declaration for a
 // schema that already has an active generation: a baseline seeds, it never
 // replaces (apply-schema records later edits).
-func auditForBaseline(ctx context.Context, tx pgx.Tx, opts baselineOptions, target registeredSchema, out io.Writer) (*schemaledger.Declaration, []string, error) {
-	active, ok, err := schemaledger.ReadPointer(ctx, tx, opts.schemaTable, target.id)
+func auditForBaseline(ctx context.Context, q widthaudit.Querier, opts baselineOptions, target registeredSchema, out io.Writer) (*schemaledger.Declaration, []string, error) {
+	active, ok, err := schemaledger.ReadPointer(ctx, q, opts.schemaTable, target.id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the active generation of schema %s: %w", target.name, err)
 	}
@@ -103,7 +112,7 @@ func auditForBaseline(ctx context.Context, tx pgx.Tx, opts baselineOptions, targ
 	if err := cache.RegisterSchema(target.name, target.id, full); err != nil {
 		return nil, nil, fmt.Errorf("load the declaration of schema %s: %w", target.name, err)
 	}
-	findings, err := widthaudit.Census(ctx, tx, opts.tables, widthaudit.Targets(cache))
+	findings, err := widthaudit.Census(ctx, q, opts.tables, widthaudit.Targets(cache))
 	if err != nil {
 		return nil, nil, fmt.Errorf("census the stored values of schema %s: %w", target.name, err)
 	}

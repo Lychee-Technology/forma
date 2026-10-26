@@ -164,8 +164,8 @@ type registeredSchema struct {
 
 // selectRegisteredSchemas answers the registered schemas a run acts on, by
 // name: every one, or opts.schema alone.
-func selectRegisteredSchemas(ctx context.Context, tx pgx.Tx, opts ledgerToolOptions) ([]registeredSchema, error) {
-	registered, err := loadRegisteredSchemaIDs(ctx, tx, opts.schemaTable)
+func selectRegisteredSchemas(ctx context.Context, q schemaledger.Querier, opts ledgerToolOptions) ([]registeredSchema, error) {
+	registered, err := loadRegisteredSchemaIDs(ctx, q, opts.schemaTable)
 	if err != nil {
 		return nil, err
 	}
