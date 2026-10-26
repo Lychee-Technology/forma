@@ -41,7 +41,7 @@ func TestJudgeColumnClassifiesEveryPair(t *testing.T) {
 		"bigint under integer":             {"BIGINT", integerOnColumn, false, judgeNeedsProof},
 		"text under bigint":                {"VARCHAR", bigintEAV, false, judgeNeedsProof},
 		"bigint read through double":       {"BIGINT", bigintEAV, true, judgeNeedsProof},
-		"bigint under numeric":             {"BIGINT", numericEAV, false, judgeNeedsProof},
+		"bigint under numeric":             {"BIGINT", numericEAV, false, judgeLossless}, // rounds beyond ±2^53 (#733)
 		"integer under numeric":            {"INTEGER", numericEAV, false, judgeLossless},
 		"text under numeric":               {"VARCHAR", numericEAV, false, judgeNeedsProof},
 		"text under bool":                  {"VARCHAR", boolEAV, false, judgeNeedsProof},
