@@ -233,6 +233,7 @@ func TestLoadMetadata_StripsRetiredFromFileCache(t *testing.T) {
 		"old_col": map[string]any{"attributeID": float64(3), "valueType": "text", "retired": true},
 	})
 
+	expectActiveLedger(t, mock, dir, map[string]int16{"user": 1})
 	loader := NewMetadataLoader(mock, "test_registry", dir)
 	cache, err := loader.LoadMetadata(ctx)
 	require.NoError(t, err)
@@ -297,6 +298,7 @@ func TestLoadMetadata_RetiredLedgerPopulatedFromFiles(t *testing.T) {
 		"old_col": map[string]any{"attributeID": float64(3), "valueType": "text", "retired": true},
 	})
 
+	expectActiveLedger(t, mock, dir, map[string]int16{"user": 7})
 	cache, err := NewMetadataLoader(mock, "test_registry", dir).LoadMetadata(ctx)
 	require.NoError(t, err, "LoadMetadata")
 

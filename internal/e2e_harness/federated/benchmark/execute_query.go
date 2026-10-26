@@ -8,6 +8,8 @@ import (
 	forma "github.com/lychee-technology/forma"
 	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemaledger"
+	"github.com/lychee-technology/forma/internal/schemaledger/ledgertest"
 	"github.com/lychee-technology/forma/internal/transform"
 )
 
@@ -21,13 +23,23 @@ func ensureBenchmarkSchemaRegistry(ctx context.Context, pool *pgxpool.Pool) (str
 		)`); err != nil {
 		return "", err
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM benchmark_schema_registry`); err != nil {
-		return "", err
+	// The ledger is reset with the registry: a re-registered schema starts
+	// with no generation, and Seed records generation 1 of the fixtures.
+	tables := schemaledger.TablesFor(tableName)
+	stmts := append(schemaledger.Statements(tableName),
+		"DELETE FROM "+tables.Attribute, "DELETE FROM "+tables.Generation, "DELETE FROM "+tables.Registry)
+	for _, stmt := range stmts {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			return "", fmt.Errorf("reset %s: %w", tableName, err)
+		}
 	}
 	for _, fixture := range DefaultSchemaFixtures() {
 		if _, err := pool.Exec(ctx, `INSERT INTO benchmark_schema_registry (schema_id, schema_name) VALUES ($1, $2)`, fixture.ID, fixture.Name); err != nil {
 			return "", err
 		}
+	}
+	if err := ledgertest.Seed(ctx, pool, tableName, FixturesDir()); err != nil {
+		return "", fmt.Errorf("record the benchmark fixtures' generation: %w", err)
 	}
 	return tableName, nil
 }

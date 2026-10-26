@@ -162,6 +162,7 @@ func TestNewEntityManagerWithConfig_Integration_Success(t *testing.T) {
 		EntityMain:     entityMainTable,
 	}
 	config.Entity.SchemaDirectory = dir
+	seedLedger(t, ctx, pool, schemaRegistryTable, dir)
 
 	em, err := NewEntityManagerWithConfig(config, pool)
 
@@ -214,6 +215,8 @@ func TestNewEntityManagerWithConfig_Integration_NilSchemaRegistry(t *testing.T) 
 			"valueType":   "text",
 		},
 	})
+
+	seedLedger(t, ctx, pool, schemaRegistryTable, dir)
 
 	// Create config with nil SchemaRegistry
 	config := forma.DefaultConfig(nil)

@@ -16,6 +16,8 @@ import (
 	"github.com/lychee-technology/forma/internal/declaredindex"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/rowguard"
+	"github.com/lychee-technology/forma/internal/schemaledger"
+	"github.com/lychee-technology/forma/internal/schemaledger/ledgertest"
 	"github.com/lychee-technology/forma/internal/testdb"
 	"github.com/lychee-technology/forma/internal/uniquekey"
 	"github.com/stretchr/testify/require"
@@ -227,13 +229,16 @@ func (e *env) createTables(t *testing.T) {
 		_, err := e.pool.Exec(e.ctx, fmt.Sprintf("INSERT INTO %s (schema_name, schema_id) VALUES ($1, $2)", e.tables.schemaRegistry), name, id)
 		require.NoError(t, err)
 	}
+	// Generation 1 of each schema, as init-db records it (#733).
+	require.NoError(t, ledgertest.Seed(e.ctx, e.pool, e.tables.schemaRegistry, schemaDir))
 }
 
 func (e *env) dropTables() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for _, table := range []string{e.tables.schemaRegistry, e.tables.entityMain, e.tables.eavData, e.tables.changeLog,
-		uniquekey.KeyTable(e.tables.entityMain), uniquekey.StateTable(e.tables.entityMain), rowguard.Table(e.tables.entityMain)} {
+		uniquekey.KeyTable(e.tables.entityMain), uniquekey.StateTable(e.tables.entityMain), rowguard.Table(e.tables.entityMain),
+		schemaledger.TablesFor(e.tables.schemaRegistry).Generation, schemaledger.TablesFor(e.tables.schemaRegistry).Attribute} {
 		_, _ = e.pool.Exec(ctx, "DROP TABLE IF EXISTS "+table)
 	}
 }

@@ -339,6 +339,9 @@ func TestSchemaEvolutionRemovedColumn(t *testing.T) {
 // are corrupted in place and only the oracle catches it (attr mismatches,
 // totals identical). That failure mode is the strongest reason the fix must
 // widen the union rather than pin first-file-wins.
+//
+// apply-schema refuses this change until #729 is fixed (#733), so the
+// restart is forced: it reads data a deployment from before the gate holds.
 func TestSchemaEvolutionChangedType(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
@@ -347,7 +350,7 @@ func TestSchemaEvolutionChangedType(t *testing.T) {
 	env := NewEnv(t, cluster, WithSchemaDir(v1))
 	simple := DefaultSchemaFixtures()[0]
 
-	baseKey, deltaKey, _ := seedEvolutionTiers(ctx, t, env, simple, v2,
+	baseKey, deltaKey, _ := seedEvolutionTiersVia(ctx, t, env, env.ForceEvolveSchema, simple, v2,
 		buildEvolutionProfile(buildLabeledExtras(func(ordinal int) map[string]any {
 			return map[string]any{"score": float64(ordinal * 10)}
 		})),
@@ -445,6 +448,10 @@ func TestSchemaEvolutionMixedGenerations(t *testing.T) {
 // attr_id-keyed, so a v1-written row still HOT at evolution time would
 // surface its old value under the new name from pg_source. This recipe keeps
 // every v1 row parquet-resident, the generation boundary the issue is about.
+//
+// apply-schema refuses a rename under the same id (#733): a rename is a
+// removal plus an addition under a new id. The restart is forced, so this
+// pins the read over data a deployment from before the gate holds.
 func TestSchemaEvolutionRenamedColumn(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
@@ -453,7 +460,7 @@ func TestSchemaEvolutionRenamedColumn(t *testing.T) {
 	env := NewEnv(t, cluster, WithSchemaDir(v1))
 	simple := DefaultSchemaFixtures()[0]
 
-	baseKey, deltaKey, _ := seedEvolutionTiers(ctx, t, env, simple, v2,
+	baseKey, deltaKey, _ := seedEvolutionTiersVia(ctx, t, env, env.ForceEvolveSchema, simple, v2,
 		buildEvolutionProfile(buildLabeledExtras(func(ordinal int) map[string]any {
 			return map[string]any{"score": float64(ordinal * 10)}
 		})),

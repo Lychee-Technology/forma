@@ -44,7 +44,7 @@ const upgradeHint = "add the ledger (init-db on PostgreSQL; on DSQL the manual s
 func wrapReadError(err error, registry string) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && (pgErr.Code == sqlstateUndefinedColumn || pgErr.Code == sqlstateUndefinedTable) {
-		return fmt.Errorf("schema registry table %s has no generation ledger (%s): %s: %w", registry, pgErr.Message, upgradeHint, err)
+		return fmt.Errorf("schema registry table %s has no generation ledger: %s: %w", registry, upgradeHint, err)
 	}
 	return fmt.Errorf("failed to read the generation ledger of schema registry table %s: %w", registry, err)
 }

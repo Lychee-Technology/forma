@@ -63,6 +63,7 @@ func setupUniqueKeyEnvWith(t *testing.T, tune func(*pgxpool.Config)) *txEnv {
 	})
 	tables := createTempPersistentTables(t, ctx, pool)
 	schemaTable := createSchemaRegistryTableWith(t, ctx, pool, ukSchemaIDs)
+	seedSchemaLedger(t, ctx, pool, schemaTable, ukSchemaDir)
 
 	registry, err := schemameta.NewFileSchemaRegistry(pool, schemaTable, ukSchemaDir)
 	require.NoError(t, err)

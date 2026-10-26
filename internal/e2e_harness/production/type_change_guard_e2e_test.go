@@ -66,7 +66,7 @@ func redeclareQty(ctx context.Context, t *testing.T, bound bool, qtys ...float64
 	simple := DefaultSchemaFixtures()[0]
 	key := seedQty(ctx, t, env, simple, qtys...)
 	requireParquetCols(t, "numeric generation", describeParquetCols(ctx, t, env, key), map[string]string{"qty": "DOUBLE"})
-	if err := env.EvolveSchema(ctx, writeSimpleSchemaDir(t, qtyProps, qtyAttrs("bigint", bound))); err != nil {
+	if err := env.ForceEvolveSchema(ctx, writeSimpleSchemaDir(t, qtyProps, qtyAttrs("bigint", bound))); err != nil {
 		t.Fatalf("redeclare qty as bigint: %v", err)
 	}
 	return env, simple, key
@@ -173,7 +173,7 @@ func TestTypeGuardJudgesBaseObjects(t *testing.T) {
 		return map[string]any{"name": fmt.Sprintf("row-%04d", ordinal), "value": float64(ordinal), "qty": 1000.5}
 	})
 	base := runInitBase(ctx, t, env, simple)
-	if err := env.EvolveSchema(ctx, writeSimpleSchemaDir(t, qtyProps, qtyAttrs("bigint", true))); err != nil {
+	if err := env.ForceEvolveSchema(ctx, writeSimpleSchemaDir(t, qtyProps, qtyAttrs("bigint", true))); err != nil {
 		t.Fatalf("redeclare qty as bigint: %v", err)
 	}
 	requireTypeRefusal(ctx, t, env, simple, base, "double_01", "it holds 1000.5")

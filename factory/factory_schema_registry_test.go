@@ -61,6 +61,8 @@ func TestNewFileSchemaRegistry_Integration_Success(t *testing.T) {
 		},
 	})
 
+	seedLedger(t, ctx, pool, tableName, dir)
+
 	registry, err := NewFileSchemaRegistry(pool, tableName, dir)
 
 	assert.NoError(t, err)

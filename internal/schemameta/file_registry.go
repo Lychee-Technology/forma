@@ -33,6 +33,8 @@ type fileSchemaRegistry struct {
 
 // NewFileSchemaRegistry creates a new schema registry that reads schema mappings
 // from a PostgreSQL table and loads attribute definitions from JSON files.
+// It is the data plane's registry: it refuses to load unless every schema's
+// declaration is its active generation (gateRegistry, #733).
 //
 // Parameters:
 //   - pool: PostgreSQL connection pool
@@ -44,11 +46,11 @@ func NewFileSchemaRegistry(pool *pgxpool.Pool, schemaTable string, schemaDir str
 
 func NewFileSchemaRegistryContext(ctx context.Context, pool *pgxpool.Pool, schemaTable string, schemaDir string) (forma.SchemaRegistry, error) {
 	registry := newFileSchemaRegistry(pool, schemaTable, schemaDir)
-	if err := registry.loadSchemasFromDB(ctx); err != nil {
+	decls, err := registry.loadSchemasFromDB(ctx)
+	if err != nil {
 		return nil, err
 	}
-
-	return registry, nil
+	return gateRegistry(ctx, registry, decls)
 }
 
 // newFileSchemaRegistry answers an empty registry. pool is nil and
@@ -165,12 +167,12 @@ func buildAttrIDToName(schemaName string, cache forma.SchemaAttributeCache) (map
 
 // loadSchemasFromDB reads schema mappings from the database and loads attribute
 // definitions from JSON files on disk.
-func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) error {
+func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) ([]schemaledger.Declaration, error) {
 	// Step 1: Read schema_name -> schema_id mappings from database
 	query := fmt.Sprintf("SELECT schema_name, schema_id FROM %s ORDER BY schema_name", sqlutil.SanitizeIdentifier(r.schemaTable))
 	rows, err := r.pool.Query(ctx, query)
 	if err != nil {
-		return fmt.Errorf("failed to query schema registry table: %w", err)
+		return nil, fmt.Errorf("failed to query schema registry table: %w", err)
 	}
 	defer rows.Close()
 
@@ -185,40 +187,42 @@ func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) error {
 		var name string
 		var id int16
 		if err := rows.Scan(&name, &id); err != nil {
-			return fmt.Errorf("failed to scan schema row: %w", err)
+			return nil, fmt.Errorf("failed to scan schema row: %w", err)
 		}
 		mappings = append(mappings, schemaMapping{name: name, id: id})
 	}
 
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("error iterating schema rows: %w", err)
+		return nil, fmt.Errorf("error iterating schema rows: %w", err)
 	}
 
 	if len(mappings) == 0 {
-		return fmt.Errorf("no schemas found in table: %s", r.schemaTable)
+		return nil, fmt.Errorf("no schemas found in table: %s", r.schemaTable)
 	}
 
 	// Step 2: For each schema, load attribute metadata from the corresponding _attributes.json file
+	decls := make([]schemaledger.Declaration, 0, len(mappings))
 	for _, mapping := range mappings {
 		schemaName := mapping.name
 		schemaID := mapping.id
 		if existingName, exists := r.idToName[schemaID]; exists {
-			return fmt.Errorf("duplicate schema id %d for %s and %s", schemaID, existingName, schemaName)
+			return nil, fmt.Errorf("duplicate schema id %d for %s and %s", schemaID, existingName, schemaName)
 		}
 		if existingID, exists := r.nameToID[schemaName]; exists {
-			return fmt.Errorf("duplicate schema name %s for ids %d and %d", schemaName, existingID, schemaID)
+			return nil, fmt.Errorf("duplicate schema name %s for ids %d and %d", schemaName, existingID, schemaID)
 		}
 
 		artifacts, err := r.loadSchemaArtifacts(schemaName, schemaID)
 		if err != nil {
-			return fmt.Errorf("failed to load schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
+			return nil, fmt.Errorf("failed to load schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
 		}
 		if err := r.admitSchema(schemaName, schemaID, artifacts.cache, artifacts.schema); err != nil {
-			return fmt.Errorf("schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
+			return nil, fmt.Errorf("schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
 		}
+		decls = append(decls, artifacts.declaration(schemaName, schemaID))
 	}
 
-	return nil
+	return decls, nil
 }
 
 // admitSchema validates one loaded schema and registers it; both load paths
