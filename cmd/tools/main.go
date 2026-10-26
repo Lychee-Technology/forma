@@ -73,6 +73,7 @@ func toolCommands() []toolCommand {
 	return []toolCommand{
 		{name: "generate-attributes", run: runGenerateAttributes},
 		{name: "init-db", run: runInitDB},
+		{name: "apply-schema", run: runApplySchema},
 		{name: "build-unique-keys", run: runBuildUniqueKeys},
 		{name: "inline-schema", run: runInlineSchema},
 		{name: "validate-schema-consistency", run: runValidateSchemaConsistencyFn},
@@ -89,6 +90,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "Commands:")
 	fmt.Fprintln(out, "  generate-attributes   Generate <schema>_attributes.json from a JSON schema file")
 	fmt.Fprintln(out, "  init-db               Create PostgreSQL tables and indexes for Forma")
+	fmt.Fprintln(out, "  apply-schema          Record edited schema declarations as new generations when the type rules allow them")
 	fmt.Fprintln(out, "  build-unique-keys     Build a schema's unique keys from its live rows (stop every writer first)")
 	fmt.Fprintln(out, "  inline-schema         Inline $ref references and remove x-* extension properties from a JSON schema")
 	fmt.Fprintln(out, "  validate-schema-consistency Validate schema metadata and EAV storage before upgrade")
