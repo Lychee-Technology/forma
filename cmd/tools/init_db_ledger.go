@@ -46,7 +46,7 @@ func ledgerDDL(opts initDBOptions) []tableDDL {
 // attributes file is registered with no generation, as before the ledger;
 // baseline-schema seeds it once the file exists.
 func recordFirstGeneration(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir, schemaName string, schemaID int16) error {
-	decl, err := schemameta.ReadDeclaration(schemaDir, schemaName, schemaID)
+	decl, _, err := schemameta.ReadDeclaration(schemaDir, schemaName, schemaID)
 	if errors.Is(err, fs.ErrNotExist) {
 		fmt.Printf("Schema %s has no attributes file, so no generation is recorded; run baseline-schema once it has one\n", schemaName)
 		return nil

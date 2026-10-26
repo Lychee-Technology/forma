@@ -138,7 +138,7 @@ func planSchemas(ctx context.Context, tx pgx.Tx, opts ledgerToolOptions) ([]sche
 	var plans []schemaledger.Plan
 	var refusals []string
 	for _, target := range targets {
-		decl, err := schemameta.ReadDeclaration(opts.schemaDir, target.name, target.id)
+		decl, _, err := schemameta.ReadDeclaration(opts.schemaDir, target.name, target.id)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read the declaration of schema %s: %w", target.name, err)
 		}
