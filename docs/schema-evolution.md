@@ -343,10 +343,14 @@ against the storage it actually runs on.
   gate on, is confined to `cmd/sample` and the benchmark harness. A guard test
   (`TestGateBypassesStayInTheControlPlane`) fails when any other production
   code uses one of these entry points.
-- A removed attribute keeps its ledger entry, with its type, permanently, and
-  every later generation carries it as retired, so its ID cannot come back
-  under another type. A rename stays a removal plus an addition under a new
-  ID: an ID declared under a different name than the ledger records is refused.
+- A removed attribute keeps its ledger entry, with its type and binding,
+  permanently, and every later generation carries it as retired. Its ID stays
+  bound to its recorded name. Declaring it again under that name is judged
+  against the retired entry by the same rules as a change to a live
+  attribute: re-adding a retired `numeric` as `bigint` is refused as a
+  narrowing, while a change the table allows goes through. Declaring the ID
+  under a different name is refused, so a rename stays a removal plus an
+  addition under a new ID.
 - Rollback is a roll-forward: a new generation with the old content, judged by
   the same rules.
 

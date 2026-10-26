@@ -24,7 +24,7 @@ func TestPlanApplyWithTheActiveHashPlansNothing(t *testing.T) {
 }
 
 // TestPlanApplyKeepsARemovedAttributeAsRetired: a removed attribute's entry
-// is kept permanently, so its id can never be rebound to another type.
+// is kept permanently, so a later re-add of its id is judged against it.
 func TestPlanApplyKeepsARemovedAttributeAsRetired(t *testing.T) {
 	active := gen(2, "h1", eav(1, "a", forma.ValueTypeText), eav(2, "b", forma.ValueTypeInteger))
 	plan := PlanApply(active, decl("h2", eav(1, "a", forma.ValueTypeText), eav(3, "c", forma.ValueTypeBigInt)))
