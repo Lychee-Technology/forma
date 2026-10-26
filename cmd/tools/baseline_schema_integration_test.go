@@ -94,6 +94,70 @@ func TestBaselineSchemaRefusesAPostgresValueOutsideTheDeclaration(t *testing.T) 
 	}
 }
 
+// TestBaselineSchemaRefusesANonFiniteNumericInPostgres: numeric storage
+// admits only finite float64 values, and the integer-width census has no
+// numeric target, so each storage shape a numeric can hold NaN, an infinity
+// or a magnitude past float64 in is audited on its own.
+func TestBaselineSchemaRefusesANonFiniteNumericInPostgres(t *testing.T) {
+	const eavNumeric = `{"price":{"attributeID":1,"valueType":"numeric"}}`
+	eav := func(value string) string {
+		return fmt.Sprintf("INSERT INTO %%[1]s (schema_id, row_id, attr_id, value_numeric) VALUES (100, gen_random_uuid(), 1, %s)", value)
+	}
+	cases := []struct {
+		name, attrs, insert, stored, where string
+	}{
+		{"EAV NaN", eavNumeric, eav("'NaN'"), "holds NaN", "in eav_data"},
+		{"EAV infinity", eavNumeric, eav("'-Infinity'"), "holds -Infinity", "in eav_data"},
+		{"EAV magnitude past float64", eavNumeric, eav("1e400"), "holds 1" + strings.Repeat("0", 400), "in eav_data"},
+		{"list element infinity", `{"price":{"attributeID":1,"valueType":"list","items_type":"numeric"}}`,
+			"INSERT INTO %[1]s (schema_id, row_id, attr_id, array_indices, value_numeric) VALUES (100, gen_random_uuid(), 1, '0', 'Infinity')",
+			"holds Infinity", "in eav_data element 0"},
+		{"double column NaN", "{" + boundAttr("price", 1, "numeric", "double_01") + "}",
+			"INSERT INTO %[2]s (ltbase_schema_id, ltbase_row_id, ltbase_created_at, ltbase_updated_at, double_01) VALUES (100, gen_random_uuid(), 1, 1, 'NaN')",
+			"holds NaN", "in column double_01"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lt := newLedgerTarget(t, map[string]string{"orders": tc.attrs})
+			lt.forgetLedger(t)
+			insert := fmt.Sprintf(tc.insert, quoteIdentifier(lt.opts.eavTable), quoteIdentifier(lt.opts.entityMain))
+			if _, err := lt.pool.Exec(context.Background(), insert); err != nil {
+				t.Fatalf("seed a row: %v", err)
+			}
+			out, err := lt.baseline(t, nil)
+			if err == nil || !strings.Contains(out, "attribute price (id 1) declared numeric") ||
+				!strings.Contains(out, tc.stored+" "+tc.where) {
+				t.Fatalf("baseline = %v, want the row refused (%s %s)\n%s", err, tc.stored, tc.where, out)
+			}
+			if _, ok := lt.pointer(t, 100); ok {
+				t.Fatal("a refused baseline recorded a generation")
+			}
+		})
+	}
+}
+
+// TestBaselineSchemaAdmitsFiniteNumericEdges: the largest finite magnitudes
+// are inside numeric's domain on both storage shapes.
+func TestBaselineSchemaAdmitsFiniteNumericEdges(t *testing.T) {
+	lt := newLedgerTarget(t, map[string]string{"orders": `{"price":{"attributeID":1,"valueType":"numeric"},` +
+		boundAttr("cost", 2, "numeric", "double_01") + "}"})
+	lt.forgetLedger(t)
+	for _, stmt := range []string{
+		fmt.Sprintf("INSERT INTO %s (schema_id, row_id, attr_id, value_numeric) VALUES (100, gen_random_uuid(), 1, -1.7976931348623157e308)",
+			quoteIdentifier(lt.opts.eavTable)),
+		fmt.Sprintf("INSERT INTO %s (ltbase_schema_id, ltbase_row_id, ltbase_created_at, ltbase_updated_at, double_01) "+
+			"VALUES (100, gen_random_uuid(), 1, 1, 1.7976931348623157e308)", quoteIdentifier(lt.opts.entityMain)),
+	} {
+		if _, err := lt.pool.Exec(context.Background(), stmt); err != nil {
+			t.Fatalf("seed a row: %v", err)
+		}
+	}
+	out, err := lt.baseline(t, nil)
+	if err != nil || !strings.Contains(out, "Recorded generation 1 of schema orders") {
+		t.Fatalf("baseline = %v\n%s", err, out)
+	}
+}
+
 // TestBaselineSchemaRefusesAParquetValueTheFooterHides is the acceptance
 // case: PostgreSQL is clean, and a live DOUBLE object, the export type of an
 // EAV-only integer, still holds 1001.5.

@@ -124,7 +124,7 @@ apply-schema
 
 baseline-schema
 ---------------
-已有部署升级到带 generation 账本的版本前运行一次（#733）：用宽度普查（width census）审计 PostgreSQL，对每个存活的 parquet 对象按声明的值域扫描（含 list 元素），
+已有部署升级到带 generation 账本的版本前运行一次（#733）：用宽度普查（width census）和 numeric 值域普查（NaN、无穷大或超出 float64 的值）审计 PostgreSQL，对每个存活的 parquet 对象按声明的值域扫描（含 list 元素），
 数据与当前声明不符或无法读取时拒绝且不记录任何内容；通过后为尚无 generation 的 schema 记录 generation 1。已有 generation 的 schema 被跳过。
 运行前须已有账本表（PostgreSQL 上运行 `init-db`；DSQL 上按 `docs/schema-evolution.md` 手工建表）。
 

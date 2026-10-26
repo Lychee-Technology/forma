@@ -93,6 +93,13 @@ type Finding struct {
 // attributes are excluded: a column as narrow as the declared type holds the
 // value at its own width, and numeric has no integer width.
 func Targets(cache *schemameta.MetadataCache) []Target {
+	return collectTargets(cache, targetStorage)
+}
+
+// collectTargets lists, in (schema_id, attr_id) order, every attribute
+// storage selects, held to the type it answers and stored in the column it
+// names ("" for eav_data).
+func collectTargets(cache *schemameta.MetadataCache, storage func(forma.AttributeMetadata) (forma.ValueType, string, bool)) []Target {
 	var targets []Target
 	for _, schemaName := range cache.ListSchemas() {
 		schemaID, ok := cache.GetSchemaID(schemaName)
@@ -104,7 +111,7 @@ func Targets(cache *schemameta.MetadataCache) []Target {
 			continue
 		}
 		for _, meta := range schemaCache {
-			declared, column, ok := targetStorage(meta)
+			declared, column, ok := storage(meta)
 			if !ok {
 				continue
 			}
@@ -238,12 +245,19 @@ func censusEAV(ctx context.Context, q Querier, tables Tables, targets []Target) 
 	if len(targets) == 0 {
 		return nil, nil
 	}
-	byKey := targetIndex(targets)
-
 	query, args := BuildCensusQuery(tables, targets)
+	return queryEAVFindings(ctx, q, tables.EAV, "integer-width census", query, args, targets)
+}
+
+// queryEAVFindings runs a census query over eav_data that selects (schema_id,
+// attr_id, row_id, array_indices, value_numeric text, pending,
+// last_flushed_at) and resolves each row to its target. census names the
+// query in errors.
+func queryEAVFindings(ctx context.Context, q Querier, table, census, query string, args []any, targets []Target) ([]Finding, error) {
+	byKey := targetIndex(targets)
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query integer-width census over %s: %w", tables.EAV, err)
+		return nil, fmt.Errorf("query %s over %s: %w", census, table, err)
 	}
 	defer rows.Close()
 
@@ -252,17 +266,17 @@ func censusEAV(ctx context.Context, q Querier, tables Tables, targets []Target) 
 		var f Finding
 		var schemaID, attrID int16
 		if err := rows.Scan(&schemaID, &attrID, &f.RowID, &f.ArrayIndices, &f.StoredValue, &f.Pending, &f.LastFlushedAt); err != nil {
-			return nil, fmt.Errorf("scan integer-width census row from %s: %w", tables.EAV, err)
+			return nil, fmt.Errorf("scan %s row from %s: %w", census, table, err)
 		}
 		target, ok := byKey[[2]int16{schemaID, attrID}]
 		if !ok {
-			return nil, fmt.Errorf("integer-width census over %s returned schema_id=%d attr_id=%d, which is not a census target", tables.EAV, schemaID, attrID)
+			return nil, fmt.Errorf("%s over %s returned schema_id=%d attr_id=%d, which is not a census target", census, table, schemaID, attrID)
 		}
 		f.Target = target
 		findings = append(findings, f)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate integer-width census over %s: %w", tables.EAV, err)
+		return nil, fmt.Errorf("iterate %s over %s: %w", census, table, err)
 	}
 	return findings, nil
 }

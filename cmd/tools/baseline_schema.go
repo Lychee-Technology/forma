@@ -29,9 +29,10 @@ type baselineOptions struct {
 
 // baselineSchemas seeds generation 1 of every selected schema that has none,
 // after auditing its stored data against its current declaration (#733):
-// PostgreSQL through the integer-width census, the live parquet objects
-// through federated.AuditParquetDomain. A schema with any finding is refused,
-// and a refusal records nothing for any schema, as apply-schema does.
+// PostgreSQL through the integer-width and numeric-domain censuses, the live
+// parquet objects through federated.AuditParquetDomain. A schema with any
+// finding is refused, and a refusal records nothing for any schema, as
+// apply-schema does.
 //
 // The audit reads through the pool, and only the writes share a transaction:
 // an audit can outlast Aurora DSQL's transaction duration limit, and holding
@@ -112,7 +113,7 @@ func auditForBaseline(ctx context.Context, q widthaudit.Querier, opts baselineOp
 	if err := cache.RegisterSchema(target.name, target.id, full); err != nil {
 		return nil, nil, fmt.Errorf("load the declaration of schema %s: %w", target.name, err)
 	}
-	findings, err := widthaudit.Census(ctx, q, opts.tables, widthaudit.Targets(cache))
+	findings, err := censusPostgres(ctx, q, opts.tables, cache)
 	if err != nil {
 		return nil, nil, fmt.Errorf("census the stored values of schema %s: %w", target.name, err)
 	}
@@ -129,6 +130,21 @@ func auditForBaseline(ctx context.Context, q widthaudit.Querier, opts baselineOp
 		fmt.Fprintf(out, "Schema %s (id %d): stored data is within the declaration\n", target.name, target.id)
 	}
 	return &decl, problems, nil
+}
+
+// censusPostgres finds every PostgreSQL value outside its declared storage
+// domain: an integer outside its width (widthaudit.Census), and a numeric
+// that is not a finite float64 (widthaudit.NumericCensus).
+func censusPostgres(ctx context.Context, q widthaudit.Querier, tables widthaudit.Tables, cache *schemameta.MetadataCache) ([]widthaudit.Finding, error) {
+	findings, err := widthaudit.Census(ctx, q, tables, widthaudit.Targets(cache))
+	if err != nil {
+		return nil, err
+	}
+	numeric, err := widthaudit.NumericCensus(ctx, q, tables, widthaudit.NumericTargets(cache))
+	if err != nil {
+		return nil, err
+	}
+	return append(findings, numeric...), nil
 }
 
 func auditParquetForBaseline(ctx context.Context, opts baselineOptions, target registeredSchema, cache *schemameta.MetadataCache) ([]string, error) {
