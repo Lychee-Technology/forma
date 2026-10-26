@@ -20,12 +20,12 @@ func testInitDBOptions() initDBOptions {
 }
 
 // allDDLStatements flattens the builder groups in the exact order
-// ensureTables executes them: 8 core tables, 2 EAV indexes, 10 main-column
-// indexes, and the unique key row index.
+// ensureTables executes them: 8 core tables, the 3 ledger statements, 2 EAV
+// indexes, 10 main-column indexes, and the unique key row index.
 func allDDLStatements(opts initDBOptions) []tableDDL {
 	var all []tableDDL
 	_, uniqueKeyIndex := uniqueKeyDDL(opts)
-	for _, group := range [][]tableDDL{coreTableDDL(opts), eavIndexDDL(opts), mainColumnIndexDDL(opts), {uniqueKeyIndex}} {
+	for _, group := range [][]tableDDL{coreTableDDL(opts), ledgerDDL(opts), eavIndexDDL(opts), mainColumnIndexDDL(opts), {uniqueKeyIndex}} {
 		all = append(all, group...)
 	}
 	return all
@@ -106,6 +106,7 @@ func wantDDLStatements() []string {
 		);`,
 	}
 	statements = append(statements, wantUniqueKeyTableDDL()...)
+	statements = append(statements, wantLedgerDDL()...)
 	return append(statements,
 		// eav numeric index
 		"CREATE INDEX IF NOT EXISTS \"eav_data_numeric_idx\" ON \"eav_data\" (schema_id, attr_id, value_numeric, row_id) WHERE value_numeric IS NOT NULL",
@@ -171,6 +172,35 @@ func wantUniqueKeyTableDDL() []string {
 		holder     UUID     NOT NULL,
 		expires_at BIGINT   NOT NULL,
 		PRIMARY KEY (schema_id)
+	)`,
+	}
+}
+
+// wantLedgerDDL is the golden text of the schema generation ledger (#733),
+// issued after the core tables because it alters the registry table.
+func wantLedgerDDL() []string {
+	return []string{
+		`ALTER TABLE "schema_registry" ADD COLUMN IF NOT EXISTS active_generation BIGINT`,
+		`CREATE TABLE IF NOT EXISTS "schema_registry_generation" (
+		schema_id    SMALLINT NOT NULL,
+		generation   BIGINT   NOT NULL,
+		content_hash TEXT     NOT NULL,
+		recorded_by  TEXT     NOT NULL,
+		recorded_at  BIGINT   NOT NULL,
+		warnings     TEXT     NOT NULL DEFAULT '',
+		PRIMARY KEY (schema_id, generation)
+	)`,
+		`CREATE TABLE IF NOT EXISTS "schema_registry_generation_attr" (
+		schema_id   SMALLINT NOT NULL,
+		generation  BIGINT   NOT NULL,
+		attr_id     SMALLINT NOT NULL,
+		attr_name   TEXT     NOT NULL,
+		value_type  TEXT     NOT NULL,
+		items_type  TEXT     NOT NULL DEFAULT '',
+		column_name TEXT     NOT NULL DEFAULT '',
+		encoding    TEXT     NOT NULL DEFAULT '',
+		retired     BOOLEAN  NOT NULL DEFAULT FALSE,
+		PRIMARY KEY (schema_id, generation, attr_id)
 	)`,
 	}
 }

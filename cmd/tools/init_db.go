@@ -287,6 +287,7 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 	_, uniqueKeyIndex := uniqueKeyDDL(opts)
 	groups := [][]tableDDL{
 		coreTableDDL(opts),
+		ledgerDDL(opts),
 		eavIndexDDL(opts),
 		mainColumnIndexDDL(opts),
 		{uniqueKeyIndex},
@@ -358,6 +359,9 @@ func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir stri
 
 		if inserted {
 			fmt.Printf("Registered schema, name: %s, id: %d\n", schemaName, schemaID)
+			if err := recordFirstGeneration(ctx, tx, schemaTable, schemaDir, schemaName, schemaID); err != nil {
+				return err
+			}
 		} else {
 			fmt.Printf("Schema already exists, schema name: %s\n", schemaName)
 		}
