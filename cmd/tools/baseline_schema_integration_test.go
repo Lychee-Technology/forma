@@ -112,7 +112,7 @@ func TestBaselineSchemaRefusesAParquetValueTheFooterHides(t *testing.T) {
 		t.Fatalf("write object: %v", err)
 	}
 	audit := func(ctx context.Context, schemaID int16, cache forma.SchemaAttributeCache) ([]federated.DomainFinding, error) {
-		return federated.AuditParquetDomain(ctx, duck, []string{object}, nil, cache)
+		return federated.AuditParquetDomain(ctx, duck, []string{object}, cache)
 	}
 
 	out, err := lt.baseline(t, audit)

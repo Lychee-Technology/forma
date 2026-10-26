@@ -76,11 +76,11 @@ func (f baselineParquetFlags) open(ctx context.Context, logger *zap.Logger) (par
 		return nil, nil, fmt.Errorf("open duckdb: %w", err)
 	}
 	audit := func(ctx context.Context, schemaID int16, cache forma.SchemaAttributeCache) ([]federated.DomainFinding, error) {
-		paths, stamps, err := source.Paths(ctx, schemaID)
+		paths, _, err := source.Paths(ctx, schemaID)
 		if err != nil {
 			return nil, fmt.Errorf("resolve the parquet objects of schema id %d: %w", schemaID, err)
 		}
-		return federated.AuditParquetDomain(ctx, exporter.DB, paths, stamps, cache)
+		return federated.AuditParquetDomain(ctx, exporter.DB, paths, cache)
 	}
 	return audit, func() { _ = exporter.DB.Close() }, nil
 }

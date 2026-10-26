@@ -3,6 +3,7 @@ package federated
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 
 func auditQty(t *testing.T, duck *sqlDBExecutor, meta forma.AttributeMetadata, paths ...string) []DomainFinding {
 	t.Helper()
-	findings, err := AuditParquetDomain(context.Background(), duck.db, paths, nil, forma.SchemaAttributeCache{"qty": meta})
+	findings, err := AuditParquetDomain(context.Background(), duck.db, paths, forma.SchemaAttributeCache{"qty": meta})
 	require.NoError(t, err)
 	return findings
 }
@@ -119,12 +120,20 @@ func TestAuditParquetDomainScansListElements(t *testing.T) {
 
 // TestAuditParquetDomainReportsUnreadableObjects: a baseline never blesses
 // an object it could not read.
+// Each object here is listed with nothing to scan: a numeric qty whose
+// footer would show DOUBLE, the case a manifest stamp used to settle without
+// the object being opened.
 func TestAuditParquetDomainReportsUnreadableObjects(t *testing.T) {
 	duck := newGuardDuck(t)
-	missing := filepath.Join(t.TempDir(), "missing.parquet")
-	meta := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeText}
-	findings := auditQty(t, duck, meta, missing)
-	require.Len(t, findings, 1)
-	require.Equal(t, missing, findings[0].Path)
-	require.Contains(t, findings[0].Evidence, "could not be read")
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.parquet")
+	corrupt := filepath.Join(dir, "corrupt.parquet")
+	require.NoError(t, os.WriteFile(corrupt, []byte("not a parquet object"), 0o600))
+	meta := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeNumeric}
+	for _, path := range []string{missing, corrupt} {
+		findings := auditQty(t, duck, meta, path)
+		require.Len(t, findings, 1, path)
+		require.Equal(t, path, findings[0].Path)
+		require.Contains(t, findings[0].Evidence, "could not be read")
+	}
 }

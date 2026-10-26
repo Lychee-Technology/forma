@@ -25,30 +25,36 @@ type DomainFinding struct {
 }
 
 // AuditParquetDomain checks every live object in paths (concrete URIs or
-// globs, with their manifest stamps) against the declaration cache: whether
-// each attribute column holds only values the declaration admits (#733).
+// globs) against the declaration cache: whether each attribute column holds
+// only values the declaration admits (#733).
+//
+// It reads every object's footer and takes no manifest stamps. A stamp lets
+// the read path skip opening an object, which here would bless one that is
+// missing or unreadable; and once the footer is read, its types are the
+// bytes' own, so a stamp would add nothing.
 //
 // It differs from CheckTypes, which asks whether a read converts a value:
 // there, the type the declaration exports is lossless by definition. Here it
 // is not, since a declaration can share its export type with a wider one: an
 // EAV-only integer exports DOUBLE, like numeric, so a DOUBLE object under it
-// can still hold 1001.5. A footer or manifest type settles a column only when
-// every value of that type is admitted (judgeDomain); otherwise the object's
-// values are scanned with the Phase 1 proof predicates, list elements
-// included, bounded by the declaration's storage domain rather than by what
-// the read converts: ±2^53 for a bigint kept as a float64 image, and finite
-// values for numeric. An object whose footer or values cannot be read is a finding, and
-// a glob whose listing fails is an error: a baseline never blesses what it
-// could not see.
+// can still hold 1001.5. A footer type settles a column only when every value
+// of that type is admitted (judgeDomain); otherwise the object's values are
+// scanned with the Phase 1 proof predicates, list elements included, bounded
+// by the declaration's storage domain rather than by what the read converts:
+// ±2^53 for a bigint kept as a float64 image, and finite values for numeric.
+// An object whose footer or scanned values cannot be read is a finding, and a
+// glob whose listing fails is an error: a baseline never blesses what it
+// could not see. A column a footer settles is not scanned, so its data pages
+// are not decoded.
 //
 // A scan proves the domain, not the meaning: a reinterpretation that keeps
 // the domain (bigint to date, both BIGINT) passes.
 func AuditParquetDomain(
-	ctx context.Context, db *sql.DB, paths []string, stamps map[string]map[string]string, cache forma.SchemaAttributeCache,
+	ctx context.Context, db *sql.DB, paths []string, cache forma.SchemaAttributeCache,
 ) ([]DomainFinding, error) {
 	duck := duckSQLPool{db: db}
 	v := newParquetSchemaValidator()
-	union, complete, err := v.Validate(ctx, duck, paths, stamps)
+	union, complete, err := v.Validate(ctx, duck, paths, nil)
 	if err != nil {
 		return nil, fmt.Errorf("read the parquet footers: %w", err)
 	}

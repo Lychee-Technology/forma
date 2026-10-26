@@ -510,19 +510,20 @@ Fail-closed enforcement needs two things the code does not have:
 2. **A baseline for existing deployments.** The first record of a schema that
    already holds data must not bless a declaration the data contradicts, so the
    baseline audits the stored data once, on every tier. Postgres is audited
-   with the width census. For a parquet object, manifest `Columns` or the
-   footer settle compatibility only when they show a type whose every value
-   the declaration admits. Otherwise the baseline scans the object's values for
-   one outside the declared domain, as Phase 1's proof does, and refuses the
-   baseline if it finds one or cannot read the object. The domain is the one
+   with the width census. Every parquet object's footer is read, so a missing
+   or unreadable object refuses the baseline even when its manifest entry
+   lists column types. The footer settles compatibility only when it shows a
+   type whose every value the declaration admits. Otherwise the baseline
+   scans the object's values for one outside the declared domain, as Phase
+   1's proof does, and refuses the baseline if it finds one or cannot read
+   the object. The domain is the one
    the declaration's storage admits, which is narrower than what a read
    converts: a `bigint` kept as a float64 image (EAV-only, a `double_*`
    column, a list element) admits ±2^53, as the write funnel and the width
    census do, and `numeric` admits only finite values. A footer that shows the
    declaration's own export type does not settle it: an EAV-only `integer`
    exports DOUBLE, like `numeric`, so an object holding `1001.5` from an earlier
-   `numeric` declaration has the same footer as valid `integer` data. A
-   manifest entry written before #256 has no column types and is scanned too.
+   `numeric` declaration has the same footer as valid `integer` data.
 
    A value scan proves the domain, not the meaning. A column that held `bigint`
    values and is now declared `date` passes, because every in-range int64 is a
