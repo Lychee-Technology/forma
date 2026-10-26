@@ -12,6 +12,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/schemaledger"
 	"go.uber.org/zap"
 )
 
@@ -219,7 +220,7 @@ func processInitSchemas(ctx context.Context, runCtx *initRunContext, schemaIDs [
 	runCtx.attrCaches = make(map[int16]forma.SchemaAttributeCache, len(schemaIDs))
 	for _, sid := range schemaIDs {
 		schemaID := int16(sid)
-		cache, err := resolveRequiredAttrCache(runCtx.schemaRegistry, schemaID)
+		cache, err := resolveRunAttrCache(ctx, runCtx.schemaRegistry, schemaID)
 		if err != nil {
 			return InitSummary{}, fmt.Errorf("cdc init pre-flight: %w", err)
 		}
@@ -468,6 +469,9 @@ func exportBatch(ctx context.Context, runCtx *initRunContext, state *schemaInitS
 
 	if err := exportBaseFileForBatch(ctx, runCtx, state, batch); err != nil {
 		return fmt.Errorf("export batch: %w", err)
+	}
+	if err := schemaledger.RequireUnchanged(ctx, runCtx.schemaRegistry, state.schemaID); err != nil {
+		return fmt.Errorf("publish batch: %w", err) // the export used this run's declared types (#733)
 	}
 	if err := CopyTmpToFinal(ctx, runCtx.s3Client, runCtx.cfg.S3Bucket, batch.tmpKey, batch.finalKey, runCtx.logger); err != nil {
 		return fmt.Errorf("copy tmp->final: %w", err)

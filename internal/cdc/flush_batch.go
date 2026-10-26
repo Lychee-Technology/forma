@@ -10,6 +10,7 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/parquetcheck"
+	"github.com/lychee-technology/forma/internal/schemaledger"
 	"go.uber.org/zap"
 )
 
@@ -24,9 +25,12 @@ type flushBatchExecutor struct {
 	// versions holds the changed_at listed per batch row at selection time;
 	// marking is exact against it (MarkFlushedVersions), so a clock-ahead
 	// version flushes normally and a concurrently advanced row stays dirty.
-	versions         map[uuid.UUID]int64
-	pgConnForDuck    string
-	attrCache        forma.SchemaAttributeCache
+	versions      map[uuid.UUID]int64
+	pgConnForDuck string
+	attrCache     forma.SchemaAttributeCache
+	// registry is the run's schema registry; a gated one is re-read for a
+	// generation recorded during the export (schemaledger.RequireUnchanged).
+	registry         forma.SchemaRegistry
 	dryRun           bool
 	logger           *zap.Logger
 	manifestStore    manifest.Store
@@ -63,6 +67,11 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 
 	if err := e.exportBatchToTmp(ctx, batchIDs, tmpKey, batchKind); err != nil {
 		return fmt.Errorf("export flush batch to tmp: %w", err)
+	}
+	// The export wrote through this run's declared types; a batch exported
+	// across a newly recorded generation never leaves _tmp (#733).
+	if err := schemaledger.RequireUnchanged(ctx, e.registry, e.schemaID); err != nil {
+		return fmt.Errorf("publish flush batch (%s): %w", batchKind, err)
 	}
 
 	if err := CopyTmpToFinal(ctx, e.s3Client, e.cfg.S3Bucket, tmpKey, finalKey, e.logger); err != nil {

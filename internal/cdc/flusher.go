@@ -236,7 +236,7 @@ func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int
 	caches := make(map[int16]forma.SchemaAttributeCache, len(schemaIDs))
 	for _, sid := range schemaIDs {
 		schemaID := int16(sid)
-		cache, err := resolveRequiredAttrCache(c.schemaRegistry, schemaID)
+		cache, err := resolveRunAttrCache(ctx, c.schemaRegistry, schemaID)
 		if err != nil {
 			return fmt.Errorf("cdc flush pre-flight: %w", err)
 		}
@@ -361,6 +361,7 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 		versions:         versions,
 		pgConnForDuck:    pgConnForDuck,
 		attrCache:        attrCache,
+		registry:         c.schemaRegistry,
 		dryRun:           c.dryRun,
 		logger:           c.logger,
 		manifestStore:    c.manifestStore,
