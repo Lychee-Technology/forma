@@ -26,7 +26,7 @@
 
 ## 不允许的Schema变更操作类型 （NOT backwards compatible）
 
-以下变更不向后兼容。注意：目前 Forma **并不会**自动拒绝其中大部分变更，进程启动时直接加载 `SCHEMA_DIR` 中的新定义，不与旧定义比较；避免这些变更是运维方的责任。已实现的检查仅限于：已退役（`retired`）属性的 ID、列绑定与类型复用（#342），以及 `valueType` 与列编码的绑定校验（#459）。不允许的Schema变更类型包括但不限于：
+以下变更不向后兼容。注意：目前 Forma **并不会**自动拒绝其中大部分变更；避免这些变更是运维方的责任。已实现的检查仅限于：已退役（`retired`）属性的 ID、列绑定与类型复用（#342），`valueType` 与列编码的绑定校验（#459），以及自 #733 起 `apply-schema` 对 `valueType`、`items_type` 与列绑定变更的判定（见第 4 条）。不允许的Schema变更类型包括但不限于：
 
 1.  **添加新的必填字段 (Add Required Field)**
     *   在 `properties` 中增加新字段，并将其加入 `required` 列表。
