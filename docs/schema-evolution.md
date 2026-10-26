@@ -256,9 +256,37 @@ the table. Two other paths of an old process convert the value instead:
   does not stop a run already in progress. This path was traced from the code,
   not reproduced end to end.
 
-**Not decided:** how a CDC run that started before an apply is drained, or kept
-from exporting values only the new declaration admits. Until it is, the gap
-does not arise if every CDC run in progress finishes before the apply.
+**Policy. Not implemented (#733):** no value a CDC run read after an apply
+leaves its `_tmp` key. After each batch's export and before its copy to the
+final key, `cdc-flush` and `cdc-init` read the active generation again. If it
+differs from the generation the run started under, the run stops with an
+error before that batch's copy, manifest change or mark. Its rows stay dirty
+for a run on the new declaration, and the `_tmp` object is left to
+`manifest-reconcile --gc`. Batches copied earlier passed the same read, so
+they hold only values written before the apply, which the new type admits. Any new generation
+stops a run, including one that only adds an attribute.
+
+Two placements are not enough:
+
+- **At batch selection.** DuckDB reads the rows over its own connection after
+  the batch is selected, so a write can land in between. The exact-version
+  mark leaves that row dirty. But when the write's `changed_at` does not
+  exceed the batch's snapshot bound, for example from a writer whose clock is
+  behind, the export holds its converted value at the new version. The correct
+  copy a later run exports has the same `(row_id, ver_ts)`, and the federated
+  dedup cannot order the two. A read at selection as well only saves a wasted
+  export.
+- **Before the manifest append only.** An object at a final key is
+  repairable. `manifest-reconcile --repair` appends a delta object whose rows
+  are live in Postgres and not covered by a listed file, which is exactly a
+  stopped run's object. A `_tmp` object is never repaired, only collected.
+
+The read needs no fence, on DSQL included. A process that can write a value
+only the new declaration admits passed the start-up check, so it started after
+the apply committed. Every such value the export read was committed before the
+export finished, so a snapshot taken after the export contains the apply too.
+Until #733 ships, the gap does not arise if every CDC run in progress finishes
+before the apply.
 
 `items_type` changes are not separately ruled.
 
@@ -281,7 +309,8 @@ does not arise if every CDC run in progress finishes before the apply.
   the active generation or differs from it in type, `items_type` or binding.
   Lacking an attribute the active generation has is allowed: that is an older
   process. So apply runs first, then the data plane rolls. The check runs at
-  start, so it does not cover a CDC run already in progress (see above).
+  start; a CDC run already in progress instead reads the active generation
+  again before each batch leaves its `_tmp` key (see above).
 - A removed attribute keeps its ledger entry, with its type, permanently. A
   rename stays a removal plus an addition under a new ID.
 - Rollback is a roll-forward: a new generation with the old content, judged by
