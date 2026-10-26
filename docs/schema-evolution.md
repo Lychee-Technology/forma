@@ -232,12 +232,33 @@ after it. Guaranteeing it needed a writer fence across every process, and on
 Aurora DSQL a read does not make two transactions conflict, so a writer that
 checks the generation inside its transaction can still commit after
 activation. With every allowed change decided by type alone, an old writer's
-values stay valid under the new type, and no fence is needed.
+values stay valid under the new type, and no fence against old writers is
+needed.
 
-Old processes that meet a value the new type allows and theirs does not fail
-closed: a bound `smallint`/`integer` image by D1, a `bigint` image that names
-no int64 by #590. An EAV-only `smallint`/`integer` does not (#729), hence the
-last row of the table.
+Old readers and exporters are a separate matter. An old process's OLTP route
+fails closed on a value the new type allows and its own does not: a bound
+`smallint`/`integer` image by D1, a `bigint` image that names no int64 by
+#590. An EAV-only `smallint`/`integer` does not (#729), hence the last row of
+the table. Two other paths of an old process convert the value instead:
+
+- **Its federated reads** read the value at its own declared type, as D1's
+  table of route differences shows (`1001.5` as `1002`). Nothing is stored,
+  and the answer is right again once the process restarts on the new
+  `SCHEMA_DIR`.
+- **A CDC run that started before the apply** (`cdc-flush`, `cdc-init`)
+  resolves its attribute metadata once per run, exports each bound column
+  through `TRY_CAST` at its own declared type (`castMainValue`), and marks the
+  rows flushed. With `qty` changed from `smallint` to `numeric` in
+  `double_01`, a new writer's `1001.5` is exported as SMALLINT `1002`, and
+  `40000` as NULL. The new declaration reads a SMALLINT column as lossless, so
+  the federated route serves the converted value while that object is live,
+  and Postgres keeps `1001.5`. The start-up check in [Generations](#generations)
+  does not stop a run already in progress. This path was traced from the code,
+  not reproduced end to end.
+
+**Not decided:** how a CDC run that started before an apply is drained, or kept
+from exporting values only the new declaration admits. Until it is, the gap
+does not arise if every CDC run in progress finishes before the apply.
 
 `items_type` changes are not separately ruled.
 
@@ -259,7 +280,8 @@ last row of the table.
   has no active generation, or when an attribute they declare is missing from
   the active generation or differs from it in type, `items_type` or binding.
   Lacking an attribute the active generation has is allowed: that is an older
-  process. So apply runs first, then the data plane rolls.
+  process. So apply runs first, then the data plane rolls. The check runs at
+  start, so it does not cover a CDC run already in progress (see above).
 - A removed attribute keeps its ledger entry, with its type, permanently. A
   rename stays a removal plus an addition under a new ID.
 - Rollback is a roll-forward: a new generation with the old content, judged by
