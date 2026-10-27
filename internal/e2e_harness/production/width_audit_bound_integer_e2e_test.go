@@ -84,7 +84,7 @@ func TestBoundIntegerWideColumnCensusReadAndRepair(t *testing.T) {
 			finding.Column != tc.column || finding.Declared != tc.declared || finding.StoredValue != tc.stored || !finding.Pending {
 			t.Fatalf("%s: finding on row %s = %+v", label, rowID, finding)
 		}
-		if class := finding.Classify(0); class != widthaudit.ClassBoundIntegerOutOfContract || class.Requeueable() {
+		if class := finding.Classify(); class != widthaudit.ClassBoundIntegerOutOfContract {
 			t.Fatalf("%s: classified %v", label, class)
 		}
 

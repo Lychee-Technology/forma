@@ -189,16 +189,10 @@ func TestCensusScansBothStores(t *testing.T) {
 	}, got)
 	require.Equal(t, "double_02", got[1].Column)
 	for _, f := range got[:3] {
-		require.Equal(t, ClassBigIntOutOfContract, f.Classify(0))
-		require.False(t, f.Classify(0).Requeueable())
+		require.Equal(t, ClassBigIntOutOfContract, f.Classify())
 	}
-	// A bound smallint/integer is its own class whatever the cutover: a
-	// re-flush reads the column the same way, so it is never requeued.
 	for _, f := range got[3:] {
-		for _, cutover := range []int64{0, 1, 1 << 40} {
-			require.Equal(t, ClassBoundIntegerOutOfContract, f.Classify(cutover))
-			require.False(t, f.Classify(cutover).Requeueable())
-		}
+		require.Equal(t, ClassBoundIntegerOutOfContract, f.Classify())
 	}
 	require.NoError(t, mock.ExpectationsWereMet())
 }

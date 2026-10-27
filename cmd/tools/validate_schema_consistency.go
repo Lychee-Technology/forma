@@ -20,7 +20,6 @@ var runValidateSchemaConsistencyOutFn = runValidateSchemaConsistencyOut
 
 type schemaConsistencyValidator struct {
 	pool        toolDBPool
-	engine      forma.DatabaseEngine
 	schemaDir   string
 	schemaTable string
 	eavTable    string
@@ -84,7 +83,9 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 		passwordUsage:   "database password",
 		databaseUsage:   "database name",
 		sslModeUsage:    "database sslmode",
-		// -requeue-stale-width-exports writes rows, which lock per engine.
+		// The validator writes nothing since #729 retired
+		// -requeue-stale-width-exports; --db-engine is still accepted and
+		// validated so existing invocations keep working.
 		engineFlag:    "db-engine",
 		engineDefault: bootstrap.Env("DB_ENGINE", string(forma.EnginePostgreSQL)),
 	})
@@ -127,7 +128,6 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 
 	validator := schemaConsistencyValidator{
 		pool:        pool,
-		engine:      engine,
 		schemaDir:   schemaRegistry.dir,
 		schemaTable: schemaRegistry.table,
 		eavTable:    *eavTable,

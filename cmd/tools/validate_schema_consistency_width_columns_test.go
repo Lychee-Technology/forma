@@ -28,15 +28,29 @@ func columnCensusRows() *pgxmock.Rows {
 
 func ptr[T any](v T) *T { return &v }
 
+// boundBigintEAVCensusArgs are the eav_data census targets of
+// boundBigintSchemaDir: big, and the eav_data rows ratio and qty may have
+// kept from before their promotion, each at its declared width (#729).
+var boundBigintEAVCensusArgs = []any{
+	int16(100), int16(2), "-9007199254740992", "9007199254740992",
+	int16(100), int16(3), "-9007199254740992", "9007199254740992",
+	int16(100), int16(4), "-2147483648", "2147483647",
+}
+
 // newBoundBigintMock wires validator.run's five fixed queries and an empty
-// eav_data census over big, then the entity_main census over ratio (#618)
-// and qty (#708) returning census.
+// eav_data census over big and the retained rows of ratio and qty, then the
+// entity_main census over ratio (#618) and qty (#708) returning census.
 func newBoundBigintMock(t *testing.T, census *pgxmock.Rows) pgxmock.PgxPoolIface {
+	t.Helper()
+	return newBoundBigintMockWithEAV(t, widthCensusRows(), census)
+}
+
+func newBoundBigintMockWithEAV(t *testing.T, eav, census *pgxmock.Rows) pgxmock.PgxPoolIface {
 	t.Helper()
 	mock := newSchemaConsistencyMock(t, attrCensusRows())
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, e\.row_id, e\.array_indices, e\.value_numeric::text`).
-		WithArgs(int16(100), int16(2), "-9007199254740992", "9007199254740992").
-		WillReturnRows(widthCensusRows())
+		WithArgs(boundBigintEAVCensusArgs...).
+		WillReturnRows(eav)
 	mock.ExpectQuery(`SELECT m\.ltbase_schema_id, w\.attr_id, m\.ltbase_row_id, v\.image,[\s\S]*FROM "entity_main_dev" AS m`).
 		WithArgs(int16(100), int16(3), "double_01", int64(-9007199254740992), int64(9007199254740992),
 			int16(100), int16(4), "bigint_01", int64(-2147483648), int64(2147483647)).
@@ -77,7 +91,7 @@ func TestValidateSchemaConsistencyFailsBoundBigIntOutOfContract(t *testing.T) {
 			t.Fatalf("output missing %q, got %q", want, got)
 		}
 	}
-	if strings.Contains(got, "requeued") || strings.Contains(got, "informational") {
+	if strings.Contains(got, "requeued for re-flush") || strings.Contains(got, "informational") {
 		t.Fatalf("a bound bigint finding must fail and never requeue, got %q", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -105,7 +119,7 @@ func TestValidateSchemaConsistencyFailsBoundIntegerOutOfDeclaredType(t *testing.
 	if !strings.Contains(got, want+widthRowA.String()+" column=bigint_01 value=4294967296 last_flushed_at=1700\n") {
 		t.Fatalf("output missing the bound-integer line, got %q", got)
 	}
-	if strings.Contains(got, "requeued") || strings.Contains(got, "informational") {
+	if strings.Contains(got, "requeued for re-flush") || strings.Contains(got, "informational") {
 		t.Fatalf("a bound integer finding must fail and never requeue, got %q", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -136,7 +150,7 @@ func TestValidateSchemaConsistencyPassesBoundBigIntInContract(t *testing.T) {
 func TestValidateSchemaConsistencyBoundBigIntNeedsEntityMainTable(t *testing.T) {
 	mock := newSchemaConsistencyMock(t, attrCensusRows())
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, e\.row_id, e\.array_indices, e\.value_numeric::text`).
-		WithArgs(int16(100), int16(2), "-9007199254740992", "9007199254740992").
+		WithArgs(boundBigintEAVCensusArgs...).
 		WillReturnRows(widthCensusRows())
 
 	var out strings.Builder
@@ -149,6 +163,30 @@ func TestValidateSchemaConsistencyBoundBigIntNeedsEntityMainTable(t *testing.T) 
 	}
 	if got := out.String(); strings.Contains(got, "passed") {
 		t.Fatalf("the run must not report a pass, got %q", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet db expectations: %v", err)
+	}
+}
+
+// TestValidateSchemaConsistencyFailsRetainedEAVInteger: an eav_data row a
+// column-bound integer kept from before its promotion is decoded under the
+// declared type, so the OLTP read refuses it when the type cannot hold it
+// (#729). The census reports it as an eav_data value, naming no column.
+func TestValidateSchemaConsistencyFailsRetainedEAVInteger(t *testing.T) {
+	mock := newBoundBigintMockWithEAV(t,
+		widthCensusRows().AddRow(int16(100), int16(4), widthRowA, "", "1001.5", false, int64(0)),
+		columnCensusRows())
+
+	var out strings.Builder
+	err := newBoundBigintValidator(t, mock, &out, widthAuditOptions{}).run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "1 issue(s)") {
+		t.Fatalf("expected one retained-row failure, got %v", err)
+	}
+	want := eavIntegerRefused + ", in eav_data_dev: schema=contact schema_id=100 attr_id=4 attribute=qty declared=integer row_id=" +
+		widthRowA.String() + " value=1001.5"
+	if got := out.String(); !strings.Contains(got, want) || strings.Contains(got, "column=") {
+		t.Fatalf("output missing %q or names a column, got %q", want, got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet db expectations: %v", err)

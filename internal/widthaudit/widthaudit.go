@@ -1,17 +1,18 @@
 // Package widthaudit finds stored values that do not fit the attribute's
-// declared integer width, and says which tier disagreement each one can
-// cause (#501). It reads eav_data.value_numeric for EAV-only attributes and
-// the entity_main column of an integer bound to a column wider than its
+// declared integer width, and says what each one means for the routes
+// (#501). It reads eav_data.value_numeric for EAV-only attributes and the
+// entity_main column of an integer bound to a column wider than its
 // declared type: a bigint in a double_* column (#618), a smallint or integer
 // in a wider one (#708).
 //
 // #384 made the write funnel reject such values and moved the DuckDB
 // projection of EAV-only smallint/integer to storage width DOUBLE. Rows that
-// were written before that change still exist. A row exported before it has a
-// parquet copy made by TRY_CAST(value_numeric AS INTEGER/SMALLINT): an
-// out-of-range value became NULL and a non-integral one was rounded. Merging
-// parquet never recovers either, so the federated route serves the damaged
-// copy while the OLTP route reads the true value. Declared bigint still
+// were written before that change still exist. The OLTP read refuses them
+// (#729), so only rewriting the attribute repairs one. A row exported before
+// #384 also has a parquet copy made by TRY_CAST(value_numeric AS
+// INTEGER/SMALLINT): an out-of-range value became NULL and a non-integral one
+// was rounded, and the federated route serves that copy until the rewrite's
+// flush replaces it (Finding.ExportPredates). Declared bigint still
 // projects at BIGINT on every DuckDB leg, so its out-of-contract values
 // diverge whether or not they were ever exported. Its contract is the range
 // the float64 image eav_data keeps exactly, [-2^53, 2^53] (#590): a value
@@ -100,8 +101,11 @@ func Targets(cache *schemameta.MetadataCache) []Target {
 
 // TargetsWithRetainedEAV lists Targets plus the eav_data rows each
 // column-bound smallint/integer/bigint kept from before an EAV-to-bound
-// promotion, held to the declared width (see collectTargets). The baseline
-// audit needs them; the #501 tier classification does not cover them.
+// promotion, held to the declared width (see collectTargets). The OLTP read
+// decodes those rows under the declared type and refuses one outside it
+// (#729), so the baseline audit and validate-schema-consistency both census
+// them; a retained row's finding names no column and classifies as an
+// eav_data value.
 func TargetsWithRetainedEAV(cache *schemameta.MetadataCache) []Target {
 	return collectTargets(cache, targetStorage, true)
 }

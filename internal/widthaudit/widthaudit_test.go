@@ -134,37 +134,53 @@ func censusRows() *pgxmock.Rows {
 	return pgxmock.NewRows(strings.Fields("schema_id attr_id row_id array_indices value_numeric pending last_flushed_at"))
 }
 
+// TestClassify: every finding is a stored value outside its contract, placed
+// by declared type and storage alone. Flush state never makes an EAV
+// smallint/integer consistent or requeueable: the OLTP read refuses it
+// (#729), so only rewriting the attribute repairs it.
 func TestClassify(t *testing.T) {
 	narrow := Target{Declared: forma.ValueTypeInteger}
+	bound := Target{Declared: forma.ValueTypeSmallInt, Column: "integer_01"}
 	big := Target{Declared: forma.ValueTypeBigInt}
-	const cutover = int64(5000)
 	tests := []struct {
 		name    string
 		finding Finding
-		cutover int64
 		want    Class
 	}{
-		{"never exported", Finding{Target: narrow}, cutover, ClassConsistent},
-		{"pending is served hot", Finding{Target: narrow, Pending: true, LastFlushedAt: 10}, cutover, ClassConsistent},
-		{"exported before cutover", Finding{Target: narrow, LastFlushedAt: cutover - 1}, cutover, ClassStaleExport},
-		{"exported at cutover", Finding{Target: narrow, LastFlushedAt: cutover}, cutover, ClassConsistent},
-		{"exported, cutover unknown", Finding{Target: narrow, LastFlushedAt: 10}, 0, ClassStaleCandidate},
-		{"bigint never exported", Finding{Target: big}, cutover, ClassBigIntOutOfContract},
-		{"bigint pending", Finding{Target: big, Pending: true}, 0, ClassBigIntOutOfContract},
+		{"never exported", Finding{Target: narrow}, ClassEAVIntegerOutOfContract},
+		{"pending is served hot", Finding{Target: narrow, Pending: true, LastFlushedAt: 10}, ClassEAVIntegerOutOfContract},
+		{"exported", Finding{Target: narrow, LastFlushedAt: 10}, ClassEAVIntegerOutOfContract},
+		{"bound to a wider column", Finding{Target: bound, LastFlushedAt: 10}, ClassBoundIntegerOutOfContract},
+		{"bigint never exported", Finding{Target: big}, ClassBigIntOutOfContract},
+		{"bigint pending", Finding{Target: big, Pending: true}, ClassBigIntOutOfContract},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, tt.finding.Classify(tt.cutover))
+			require.Equal(t, tt.want, tt.finding.Classify())
 		})
 	}
 }
 
-// TestRequeueableClasses: only the classes a re-export repairs are
-// requeueable. bigint re-exports through the same BIGINT cast, and a
-// consistent row needs nothing.
-func TestRequeueableClasses(t *testing.T) {
-	require.True(t, ClassStaleExport.Requeueable())
-	require.True(t, ClassStaleCandidate.Requeueable())
-	require.False(t, ClassConsistent.Requeueable())
-	require.False(t, ClassBigIntOutOfContract.Requeueable())
+// TestExportPredates: only a row whose newest parquet copy was written
+// before a known cutover, and that is not dirty, still serves that copy.
+func TestExportPredates(t *testing.T) {
+	const cutover = int64(5000)
+	narrow := Target{Declared: forma.ValueTypeInteger}
+	tests := []struct {
+		name    string
+		finding Finding
+		cutover int64
+		want    bool
+	}{
+		{"exported before cutover", Finding{Target: narrow, LastFlushedAt: cutover - 1}, cutover, true},
+		{"exported at cutover", Finding{Target: narrow, LastFlushedAt: cutover}, cutover, false},
+		{"pending is served hot", Finding{Target: narrow, Pending: true, LastFlushedAt: 10}, cutover, false},
+		{"never exported", Finding{Target: narrow}, cutover, false},
+		{"cutover unknown", Finding{Target: narrow, LastFlushedAt: 10}, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.finding.ExportPredates(tt.cutover))
+		})
+	}
 }

@@ -25,13 +25,10 @@ var (
 	}
 )
 
-// toolDBPool is the pool surface validate-schema-consistency needs. QueryRow
-// and BeginTx let -requeue-stale-width-exports drive the persistent
-// repository's requeue (#501); *pgxpool.Pool and pgxmock satisfy it.
+// toolDBPool is the pool surface validate-schema-consistency needs: it only
+// reads. *pgxpool.Pool and pgxmock satisfy it.
 type toolDBPool interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
 	Close()
 }
 

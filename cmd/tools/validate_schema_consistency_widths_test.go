@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v4"
 )
 
@@ -60,49 +59,67 @@ func newWidthValidator(t *testing.T, mock pgxmock.PgxPoolIface, out *strings.Bui
 	}
 }
 
-// TestValidateSchemaConsistencyFailsStaleWidthExport pins #501's detection:
-// with a cutover, an out-of-width integer row last exported before it has a
-// parquet copy cast at declared width, so the federated route serves NULL or
-// a rounded value. That is a failure naming the row. A pending row is served
-// hot and a row flushed after the cutover was re-exported at storage width,
-// so neither is reported.
-func TestValidateSchemaConsistencyFailsStaleWidthExport(t *testing.T) {
+// eavIntegerRefused is the category every out-of-width EAV smallint/integer
+// is reported under since #729, before its table name.
+const eavIntegerRefused = "smallint/integer EAV values outside the declared range or non-integral, which the OLTP read refuses"
+
+// TestValidateSchemaConsistencyFailsEveryEAVIntegerOutOfContract pins #729's
+// classification: the OLTP read refuses an out-of-width EAV integer, so every
+// such row is a failure whatever its flush state. With a cutover, a row last
+// exported before it is told apart, since its parquet copy was cast at
+// declared width and the federated route serves NULL or a rounded value for
+// it until the rewrite's flush. A pending row and one flushed after the
+// cutover carry no stale copy.
+func TestValidateSchemaConsistencyFailsEveryEAVIntegerOutOfContract(t *testing.T) {
+	rowC := uuid.New()
 	mock := newWidthCensusMock(t, widthCensusRows().
 		AddRow(int16(100), int16(2), widthRowA, "", "4294967296", false, int64(1000)).
 		AddRow(int16(100), int16(2), widthRowB, "", "1.5", true, int64(1000)).
-		AddRow(int16(100), int16(2), uuid.New(), "", "7.25", false, int64(6000)))
+		AddRow(int16(100), int16(2), rowC, "", "7.25", false, int64(6000)))
 
 	var out strings.Builder
 	validator := newWidthValidator(t, mock, &out, widthAuditOptions{cutoverMillis: 5000})
 	err := validator.run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "1 issue(s)") {
-		t.Fatalf("expected one stale-export failure, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "3 issue(s)") {
+		t.Fatalf("expected three failures, got %v", err)
 	}
-	want := "EAV integer values whose parquet copy predates the #384 storage-width export in eav_data_dev: " +
-		"schema=contact schema_id=100 attr_id=2 attribute=qty declared=integer row_id=" + widthRowA.String() +
-		" value=4294967296 last_flushed_at=1000"
-	if got := out.String(); !strings.Contains(got, want) || strings.Contains(got, "informational") {
-		t.Fatalf("output missing %q or carries notices, got %q", want, got)
+	got := out.String()
+	for _, want := range []string{
+		eavIntegerRefused + ", whose parquet copy also predates the #384 storage-width export, in eav_data_dev: " +
+			"schema=contact schema_id=100 attr_id=2 attribute=qty declared=integer row_id=" + widthRowA.String() +
+			" value=4294967296 last_flushed_at=1000",
+		eavIntegerRefused + ", in eav_data_dev: schema=contact schema_id=100 attr_id=2 attribute=qty declared=integer row_id=" +
+			widthRowB.String() + " value=1.5 last_flushed_at=1000",
+		eavIntegerRefused + ", in eav_data_dev: schema=contact schema_id=100 attr_id=2 attribute=qty declared=integer row_id=" +
+			rowC.String() + " value=7.25 last_flushed_at=6000",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output missing %q, got %q", want, got)
+		}
+	}
+	if strings.Contains(got, "informational") {
+		t.Fatalf("an out-of-width EAV integer is never informational, got %q", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet db expectations: %v", err)
 	}
 }
 
-// TestValidateSchemaConsistencyReportsWidthCandidatesWithoutCutover: with no
-// cutover, the validator cannot tell a pre-#384 export from a later one, so an
-// exported out-of-width row is informational and the pre-flight stays green.
-func TestValidateSchemaConsistencyReportsWidthCandidatesWithoutCutover(t *testing.T) {
+// TestValidateSchemaConsistencyFailsEAVIntegerWithoutCutover: before #729 an
+// exported row with no cutover was an informational candidate and the
+// pre-flight stayed green. The Postgres value is now the defect, which the
+// cutover does not change, so it fails.
+func TestValidateSchemaConsistencyFailsEAVIntegerWithoutCutover(t *testing.T) {
 	mock := newWidthCensusMock(t, widthCensusRows().
 		AddRow(int16(100), int16(2), widthRowA, "", "4294967296", false, int64(1000)))
 
 	var out strings.Builder
-	if err := newWidthValidator(t, mock, &out, widthAuditOptions{}).run(context.Background()); err != nil {
-		t.Fatalf("a candidate must not fail the pre-flight: %v", err)
+	err := newWidthValidator(t, mock, &out, widthAuditOptions{}).run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "1 issue(s)") {
+		t.Fatalf("expected one failure, got %v", err)
 	}
-	got := out.String()
-	if !strings.Contains(got, "1 informational finding(s)") || !strings.Contains(got, "pass -width-export-cutover to confirm") {
-		t.Fatalf("expected an informational candidate, got %q", got)
+	if got := out.String(); !strings.Contains(got, eavIntegerRefused+", in eav_data_dev: ") || strings.Contains(got, "informational") {
+		t.Fatalf("expected a failure without a stale-copy note, got %q", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet db expectations: %v", err)
@@ -123,7 +140,7 @@ func TestValidateSchemaConsistencyFailsBigIntOutOfContract(t *testing.T) {
 		t.Fatalf("expected one bigint failure, got %v", err)
 	}
 	want := "bigint EAV values outside ±2^53 (the float64-exact range) or non-integral in eav_data_dev: schema=contact schema_id=100 attr_id=3 attribute=big declared=bigint"
-	if got := out.String(); !strings.Contains(got, want) || strings.Contains(got, "requeued") {
+	if got := out.String(); !strings.Contains(got, want) || strings.Contains(got, "requeued for re-flush") {
 		t.Fatalf("output missing %q or requeued a bigint row, got %q", want, got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -131,52 +148,26 @@ func TestValidateSchemaConsistencyFailsBigIntOutOfContract(t *testing.T) {
 	}
 }
 
-// expectWidthRequeue wires one RequeueForFlush transaction for rowID.
-func expectWidthRequeue(mock pgxmock.PgxPoolIface, rowID uuid.UUID) {
-	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).WithArgs(pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectQuery(`UPDATE "entity_main_dev" SET ltbase_updated_at = GREATEST`).
-		WithArgs(pgxmock.AnyArg(), int16(100), rowID).
-		WillReturnRows(pgxmock.NewRows([]string{"ltbase_updated_at", "ltbase_deleted_at"}).AddRow(int64(9000), (*int64)(nil)))
-	mock.ExpectExec(`INSERT INTO "change_log_dev"`).
-		WithArgs(int16(100), rowID, int64(0), int64(9000), nil).
-		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectCommit()
-}
-
-// TestValidateSchemaConsistencyRequeuesStaleWidthExports pins the repair:
-// each row with a stale export is requeued once, however many of its
-// elements are out of width. Requeued rows report as informational, so a
-// repair run exits green. A row whose entity_main row is gone cannot be
-// requeued and stays a failure without stopping the sweep.
-func TestValidateSchemaConsistencyRequeuesStaleWidthExports(t *testing.T) {
+// TestValidateSchemaConsistencyRequeueFlagRequeuesNothing: the retired
+// -requeue-stale-width-exports is still accepted, so scripts that pass it
+// run, but it writes nothing and says why. A re-flush re-exports a value the
+// OLTP read refuses (#729), so it would report a row repaired that is not;
+// every row stays a failure. The mock fails any write it was not told to
+// expect.
+func TestValidateSchemaConsistencyRequeueFlagRequeuesNothing(t *testing.T) {
 	mock := newWidthCensusMock(t, widthCensusRows().
 		AddRow(int16(100), int16(2), widthRowA, "", "4294967296", false, int64(1000)).
 		AddRow(int16(100), int16(2), widthRowA, "1", "2.5", false, int64(1000)).
 		AddRow(int16(100), int16(2), widthRowB, "", "-4294967296", false, int64(1000)))
-	expectWidthRequeue(mock, widthRowA)
-	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-	mock.ExpectExec(`^SELECT pg_advisory_xact_lock`).WithArgs(pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectQuery(`UPDATE "entity_main_dev"`).WithArgs(pgxmock.AnyArg(), int16(100), widthRowB).
-		WillReturnError(pgx.ErrNoRows)
-	mock.ExpectRollback()
 
 	var out strings.Builder
 	err := newWidthValidator(t, mock, &out, widthAuditOptions{cutoverMillis: 5000, requeue: true}).run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "1 issue(s)") {
-		t.Fatalf("expected the missing row as the only failure, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "3 issue(s)") {
+		t.Fatalf("expected every row as a failure, got %v", err)
 	}
 	got := out.String()
-	for _, want := range []string{
-		"requeued 1 row(s) for re-flush",
-		"EAV rows with no entity_main row, which cannot be requeued, in eav_data_dev: schema=contact schema_id=100 attr_id=2 attribute=qty declared=integer row_id=" + widthRowB.String(),
-		"EAV rows requeued for re-flush under the #384 storage-width export in eav_data_dev: schema=contact schema_id=100 attr_id=2 attribute=qty declared=integer row_id=" + widthRowA.String() + " array_indices=1 value=2.5",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("output missing %q, got %q", want, got)
-		}
+	if !strings.Contains(got, "-requeue-stale-width-exports requeued nothing") || strings.Contains(got, "requeued for re-flush") {
+		t.Fatalf("expected the retired flag's notice and no requeued row, got %q", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet db expectations: %v", err)
@@ -189,8 +180,6 @@ func TestWidthAuditFlagsRejectBadInput(t *testing.T) {
 		want string
 	}{
 		{[]string{"-width-export-cutover", "2026-08-29"}, "invalid -width-export-cutover"},
-		{[]string{"-change-log-table", "", "-requeue-stale-width-exports"}, "-requeue-stale-width-exports needs -change-log-table"},
-		{[]string{"-entity-main-table", "", "-requeue-stale-width-exports"}, "-requeue-stale-width-exports needs -entity-main-table"},
 	} {
 		args := append([]string{"-schema-dir", t.TempDir(), "-schema-registry-table", "schema_registry_dev"}, tc.args...)
 		err := runValidateSchemaConsistencyOut(context.Background(), args, &strings.Builder{})
