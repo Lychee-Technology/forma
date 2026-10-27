@@ -124,7 +124,9 @@ func TestDateTime_TokenAndFloatRulesAgree(t *testing.T) {
 // stored NaN or infinity reaches the smallint, integer and numeric arms,
 // which refuse it as a read-path consistency error naming the attribute.
 // It used to read as absent, so the client saw null and an update erased
-// the stored value. bigint and bool already refused it.
+// the stored value. bigint and bool already refused it. The smallint and
+// integer arms refuse it as an image their declared type cannot hold
+// (#729), naming the range they expect.
 func TestNumericArms_RefuseNonFiniteImages(t *testing.T) {
 	for _, token := range []string{"NaN", "Infinity", "-Infinity", "1e400"} {
 		for _, vt := range []forma.ValueType{forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeNumeric, forma.ValueTypeBigInt, forma.ValueTypeBool} {
@@ -132,22 +134,27 @@ func TestNumericArms_RefuseNonFiniteImages(t *testing.T) {
 				got, err := extractValueFromEAVRecord(tokenRecord(t, token), vt)
 				require.Error(t, err)
 				require.NotErrorIs(t, err, forma.ErrInvalidInput)
-				if vt == forma.ValueTypeSmallInt || vt == forma.ValueTypeInteger || vt == forma.ValueTypeNumeric {
+				switch vt {
+				case forma.ValueTypeNumeric:
 					require.Nil(t, got)
-					require.Equal(t, "stored "+string(vt)+" image "+token+" of attribute 9 in value_numeric has no finite float64 value", err.Error())
+					require.Equal(t, "stored numeric image "+token+" of attribute 9 in value_numeric has no finite float64 value", err.Error())
+				case forma.ValueTypeSmallInt, forma.ValueTypeInteger:
+					require.Nil(t, got)
+					require.Contains(t, err.Error(), "stored "+string(vt)+" image "+token+" in value_numeric does not fit declared type "+string(vt))
 				}
 			})
 		}
 	}
 
-	// Finite tokens keep their conversions in those arms (#384), and the
-	// numeric arm reads the float64 of a token past 2^53 as it always did.
-	for token, want := range map[string]any{"12": int16(12), "1000.5": int16(1000)} {
-		got, err := extractValueFromEAVRecord(tokenRecord(t, token), forma.ValueTypeSmallInt)
-		require.NoError(t, err)
-		require.Equal(t, want, got)
-	}
-	got, err := extractValueFromEAVRecord(tokenRecord(t, "9007199254740993"), forma.ValueTypeNumeric)
+	// A finite token the smallint arm can hold reads exactly; a fraction is
+	// refused rather than truncated (#729). The numeric arm reads the
+	// float64 of a token past 2^53 as it always did.
+	got, err := extractValueFromEAVRecord(tokenRecord(t, "12"), forma.ValueTypeSmallInt)
+	require.NoError(t, err)
+	require.Equal(t, int16(12), got)
+	_, err = extractValueFromEAVRecord(tokenRecord(t, "1000.5"), forma.ValueTypeSmallInt)
+	require.ErrorContains(t, err, "stored smallint image 1000.5 in value_numeric does not fit declared type smallint")
+	got, err = extractValueFromEAVRecord(tokenRecord(t, "9007199254740993"), forma.ValueTypeNumeric)
 	require.NoError(t, err)
 	require.Equal(t, float64(9007199254740992), got)
 }
