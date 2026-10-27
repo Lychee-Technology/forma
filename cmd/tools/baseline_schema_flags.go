@@ -51,10 +51,10 @@ func (f baselineParquetFlags) validate() error {
 	return validateManifestTemplateFlag(f.manifestTemplate)
 }
 
-// open builds the parquet audit: the manifest source the read resolves its
+// open builds the parquet tier: the manifest source the read resolves its
 // object set from, and a DuckDB session with the S3 credentials the CDC
 // tools use. The returned close releases the DuckDB pool.
-func (f baselineParquetFlags) open(ctx context.Context, logger *zap.Logger) (parquetAuditFn, func(), error) {
+func (f baselineParquetFlags) open(ctx context.Context, logger *zap.Logger) (*parquetTier, func(), error) {
 	if f.none {
 		return nil, func() {}, nil
 	}
@@ -75,14 +75,19 @@ func (f baselineParquetFlags) open(ctx context.Context, logger *zap.Logger) (par
 	if err != nil {
 		return nil, nil, fmt.Errorf("open duckdb: %w", err)
 	}
-	audit := func(ctx context.Context, schemaID int16, cache forma.SchemaAttributeCache) ([]federated.DomainFinding, error) {
-		paths, _, err := source.Paths(ctx, schemaID)
-		if err != nil {
-			return nil, fmt.Errorf("resolve the parquet objects of schema id %d: %w", schemaID, err)
-		}
-		return federated.AuditParquetDomain(ctx, exporter.DB, paths, cache)
+	tier := &parquetTier{
+		objects: func(ctx context.Context, schemaID int16) ([]string, error) {
+			paths, _, err := source.Paths(ctx, schemaID)
+			if err != nil {
+				return nil, fmt.Errorf("read the manifest of schema id %d: %w", schemaID, err)
+			}
+			return paths, nil
+		},
+		audit: func(ctx context.Context, _ int16, paths []string, cache forma.SchemaAttributeCache) ([]federated.DomainFinding, error) {
+			return federated.AuditParquetDomain(ctx, exporter.DB, paths, cache)
+		},
 	}
-	return audit, func() { _ = exporter.DB.Close() }, nil
+	return tier, func() { _ = exporter.DB.Close() }, nil
 }
 
 // runBaselineSchema seeds the first generation of registered schemas that
@@ -96,6 +101,10 @@ func runBaselineSchema(ctx context.Context, args []string) error {
 		fmt.Println("Records generation 1 of each registered schema with no active generation, after auditing its")
 		fmt.Println("stored PostgreSQL and parquet data against the declaration in --schema-dir. Any stored value the")
 		fmt.Println("declaration does not admit, or any object that cannot be read, refuses the baseline.")
+		fmt.Println("")
+		fmt.Println("It is offline: stop every writer and exporter of the old release and pause the compactor first,")
+		fmt.Println("and start only the enforcing release afterwards. A write or an object set change during the")
+		fmt.Println("audit refuses the baseline. --dry-run can run beside the old release.")
 		fmt.Println("")
 		fmt.Println("Options:")
 		flags.PrintDefaults()
@@ -132,12 +141,12 @@ func runBaseline(ctx context.Context, pg *postgresFlags, parquet baselineParquet
 		return fmt.Errorf("build logger: %w", err)
 	}
 	defer func() { _ = logger.Sync() }()
-	audit, closeAudit, err := parquet.open(ctx, logger)
+	tier, closeTier, err := parquet.open(ctx, logger)
 	if err != nil {
 		return err
 	}
-	defer closeAudit()
-	opts.auditParquet = audit
+	defer closeTier()
+	opts.parquet = tier
 	pool, err := buildToolPostgresPool(ctx, pg.databaseConfig("DB_PASSWORD", toolPostgresPoolSettings{
 		maxConnections: 2,
 		timeout:        30 * time.Second,

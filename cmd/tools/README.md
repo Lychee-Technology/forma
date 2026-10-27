@@ -127,6 +127,10 @@ baseline-schema
 已有部署升级到带 generation 账本的版本前运行一次（#733）：按 OLTP 读取自身的规则审计 PostgreSQL（含 list 元素）：宽度普查（width census）；`numeric` 与 EAV 中的 `bool` 须为有限 float64（拒绝 NaN、无穷大或超出 float64 的值）；EAV 中的 `date`/`datetime` 须为 ±2^53 内的整数毫秒；EAV 中的 `uuid` 须能被 `uuid.Parse` 解析；值不得存放在另一个 `eav_data` 值列中；`bool_text` 列只能是 `"1"`/`"0"`，`iso8601` 列须能按 RFC3339 解析。绑定主表列的属性在 EAV 提升为列绑定之前写入的 `eav_data` 行仍会被读取，同样按上述 EAV 规则审计。完整解码每个存活的 parquet 对象并按声明的值域扫描（含 list 元素），
 数据与当前声明不符或无法读取时拒绝且不记录任何内容；通过后为尚无 generation 的 schema 记录 generation 1。已有 generation 的 schema 被跳过。
 运行前须已有账本表（PostgreSQL 上运行 `init-db`；DSQL 上按 `docs/schema-evolution.md` 手工建表）。
+基线是离线的：运行前须停止旧版本中所有写入的服务端、Lambda 与嵌入方，以及所有 `cdc-flush`、`cdc-init` 运行，并暂停 compactor、不运行
+`manifest-reconcile --repair`，直到新版本取代它们为止。旧版本没有启动门禁，它在基线期间或之后写入的值不会被审计。记录基线的事务会再次读取每个
+schema 的 `entity_main` 行数与版本号之和以及存活的 parquet 对象集合，与该 schema 审计开始时不同则拒绝且不记录任何内容；这只能发现审计期间仍在运行的
+写入方或导出方，发现不了基线提交后才写入的进程。`-dry-run` 可在旧版本运行时执行，用于停机前找出须修正的数据。
 
 选项（数据库与表名选项及其环境变量默认值与 `validate-schema-consistency` 相同）：
 - `-schema-dir`（`SCHEMA_DIR`，必填）：部署当前使用的 JSON Schema 目录。

@@ -13,18 +13,30 @@ import (
 	"github.com/lychee-technology/forma/internal/widthaudit"
 )
 
-// parquetAuditFn audits one schema's live parquet objects against its
-// declaration's active attributes. It is nil for a deployment with no
-// lakehouse tier.
-type parquetAuditFn func(ctx context.Context, schemaID int16, cache forma.SchemaAttributeCache) ([]federated.DomainFinding, error)
+// parquetTier is the lakehouse tier a baseline audits. objects resolves a
+// schema's live objects, the set the federated read scans, and audit audits
+// those paths against the declaration's active attributes. The baseline
+// audits the set it resolved before the audit and resolves it again when it
+// records, so the objects it certifies are the ones it audited.
+type parquetTier struct {
+	objects func(ctx context.Context, schemaID int16) ([]string, error)
+	audit   func(ctx context.Context, schemaID int16, paths []string, cache forma.SchemaAttributeCache) ([]federated.DomainFinding, error)
+}
 
 // baselineOptions is what baseline-schema audits and seeds.
 type baselineOptions struct {
 	ledgerToolOptions
 	tables widthaudit.Tables
-	// auditParquet is nil when --no-parquet-tier says there is no lakehouse
-	// tier to audit.
-	auditParquet parquetAuditFn
+	// parquet is nil when --no-parquet-tier says there is no lakehouse tier
+	// to audit.
+	parquet *parquetTier
+}
+
+// baselineSeed is a schema whose audit found nothing, with the stored state
+// that audit read.
+type baselineSeed struct {
+	decl  schemaledger.Declaration
+	state storedState
 }
 
 // baselineSchemas seeds generation 1 of every selected schema that has none,
@@ -36,24 +48,26 @@ type baselineOptions struct {
 //
 // The audit reads through the pool, and only the writes share a transaction:
 // an audit can outlast Aurora DSQL's transaction duration limit, and holding
-// a transaction open across it guards nothing. No write is held off by it,
-// and a run that seeds a schema concurrently moves the pointer off NULL, so
-// this run's compare-and-set fails and it records nothing.
+// a transaction open across it guards nothing. No write is held off by it.
+// A run that seeds a schema concurrently moves the pointer off NULL, so this
+// run's compare-and-set fails and it records nothing. A write to a schema's
+// stored data during its audit moves its storedState, and the transaction
+// that records refuses it.
 func baselineSchemas(ctx context.Context, pool *pgxpool.Pool, opts baselineOptions, out io.Writer) error {
 	targets, err := selectRegisteredSchemas(ctx, pool, opts.ledgerToolOptions)
 	if err != nil {
 		return err
 	}
-	var seeds []schemaledger.Declaration
+	var seeds []baselineSeed
 	var refusals []string
 	for _, target := range targets {
-		decl, problems, err := auditForBaseline(ctx, pool, opts, target, out)
+		seed, problems, err := auditForBaseline(ctx, pool, opts, target, out)
 		if err != nil {
 			return err
 		}
 		refusals = append(refusals, problems...)
-		if decl != nil && len(problems) == 0 {
-			seeds = append(seeds, *decl)
+		if seed != nil && len(problems) == 0 {
+			seeds = append(seeds, *seed)
 		}
 	}
 	if len(refusals) > 0 {
@@ -68,35 +82,50 @@ func baselineSchemas(ctx context.Context, pool *pgxpool.Pool, opts baselineOptio
 		fmt.Fprintln(out, "Dry run: no generation was recorded.")
 		return nil
 	}
-	return recordBaselines(ctx, pool, opts.schemaTable, seeds, out)
+	return recordBaselines(ctx, pool, opts, seeds, out)
 }
 
-// recordBaselines records generation 1 of every seed in one transaction.
-func recordBaselines(ctx context.Context, pool *pgxpool.Pool, schemaTable string, seeds []schemaledger.Declaration, out io.Writer) error {
+// recordBaselines records generation 1 of every seed in one transaction,
+// once the stored state of each reads as its audit read it.
+func recordBaselines(ctx context.Context, pool *pgxpool.Pool, opts baselineOptions, seeds []baselineSeed, out io.Writer) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the baseline transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	for _, decl := range seeds {
+	moved, err := movedDuringAudit(ctx, tx, opts, seeds)
+	if err != nil {
+		return err
+	}
+	if len(moved) > 0 {
+		fmt.Fprintln(out, "Refused: stored data changed while it was audited, so the audit no longer describes it:")
+		for _, m := range moved {
+			fmt.Fprintf(out, "  %s\n", m)
+		}
+		return fmt.Errorf("refused %d change(s) made during the audit; no generation was recorded. A process of the old release "+
+			"still writes or exports: stop every server, Lambda function, embedder, cdc-flush and cdc-init run and pause the "+
+			"compactor (docs/schema-evolution.md, \"Upgrading an existing deployment\"), then run baseline-schema again", len(moved))
+	}
+	for _, seed := range seeds {
+		decl := seed.decl
 		rec := schemaledger.Record{SchemaID: decl.SchemaID, Hash: decl.Hash, Entries: decl.Entries, RecordedBy: "baseline-schema"}
-		if err := schemaledger.Write(ctx, tx, schemaTable, rec); err != nil {
+		if err := schemaledger.Write(ctx, tx, opts.schemaTable, rec); err != nil {
 			return fmt.Errorf("record generation 1 of schema %s: %w", decl.SchemaName, err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the baseline: %w", err)
 	}
-	for _, decl := range seeds {
-		fmt.Fprintf(out, "Recorded generation 1 of schema %s\n", decl.SchemaName)
+	for _, seed := range seeds {
+		fmt.Fprintf(out, "Recorded generation 1 of schema %s\n", seed.decl.SchemaName)
 	}
 	return nil
 }
 
-// auditForBaseline audits one schema. It answers a nil declaration for a
-// schema that already has an active generation: a baseline seeds, it never
+// auditForBaseline audits one schema. It answers a nil seed for a schema
+// that already has an active generation: a baseline seeds, it never
 // replaces (apply-schema records later edits).
-func auditForBaseline(ctx context.Context, q widthaudit.Querier, opts baselineOptions, target registeredSchema, out io.Writer) (*schemaledger.Declaration, []string, error) {
+func auditForBaseline(ctx context.Context, q widthaudit.Querier, opts baselineOptions, target registeredSchema, out io.Writer) (*baselineSeed, []string, error) {
 	active, ok, err := schemaledger.ReadPointer(ctx, q, opts.schemaTable, target.id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the active generation of schema %s: %w", target.name, err)
@@ -113,6 +142,10 @@ func auditForBaseline(ctx context.Context, q widthaudit.Querier, opts baselineOp
 	if err := cache.RegisterSchema(target.name, target.id, full); err != nil {
 		return nil, nil, fmt.Errorf("load the declaration of schema %s: %w", target.name, err)
 	}
+	state, err := readStoredState(ctx, q, opts, target.id)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the stored state of schema %s: %w", target.name, err)
+	}
 	findings, err := censusPostgres(ctx, q, opts.tables, cache)
 	if err != nil {
 		return nil, nil, fmt.Errorf("census the stored values of schema %s: %w", target.name, err)
@@ -121,7 +154,7 @@ func auditForBaseline(ctx context.Context, q widthaudit.Querier, opts baselineOp
 	for _, f := range findings {
 		problems = append(problems, censusRefusal(f))
 	}
-	parquetProblems, err := auditParquetForBaseline(ctx, opts, target, cache)
+	parquetProblems, err := auditParquetForBaseline(ctx, opts, target, state.objects, cache)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -129,7 +162,7 @@ func auditForBaseline(ctx context.Context, q widthaudit.Querier, opts baselineOp
 	if len(problems) == 0 {
 		fmt.Fprintf(out, "Schema %s (id %d): stored data is within the declaration\n", target.name, target.id)
 	}
-	return &decl, problems, nil
+	return &baselineSeed{decl: decl, state: state}, problems, nil
 }
 
 // censusPostgres finds every PostgreSQL value outside its declared storage
@@ -154,12 +187,12 @@ func censusPostgres(ctx context.Context, q widthaudit.Querier, tables widthaudit
 	return append(append(findings, numeric...), domain...), nil
 }
 
-func auditParquetForBaseline(ctx context.Context, opts baselineOptions, target registeredSchema, cache *schemameta.MetadataCache) ([]string, error) {
-	if opts.auditParquet == nil {
+func auditParquetForBaseline(ctx context.Context, opts baselineOptions, target registeredSchema, paths []string, cache *schemameta.MetadataCache) ([]string, error) {
+	if opts.parquet == nil {
 		return nil, nil
 	}
 	active, _ := cache.GetSchemaCacheByID(target.id)
-	findings, err := opts.auditParquet(ctx, target.id, active)
+	findings, err := opts.parquet.audit(ctx, target.id, paths, active)
 	if err != nil {
 		return nil, fmt.Errorf("audit the parquet objects of schema %s: %w", target.name, err)
 	}

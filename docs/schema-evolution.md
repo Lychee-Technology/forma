@@ -391,20 +391,48 @@ start on that release, with the `SCHEMA_DIR` the deployment runs today:
    Whether DSQL accepts `ALTER TABLE … ADD COLUMN` has not been verified. If
    it refuses, stop and raise it on #733: the pointer cannot live anywhere
    else without a code change.
-2. **Baseline.** Run `baseline-schema` with the deployment's `-schema-dir`
+2. **Stop the old release's writers and exporters.** Stop every server,
+   Lambda function and embedder of the old release that writes, and every
+   `cdc-flush` and `cdc-init` run. A Lambda function cold-starts on its next
+   invocation, so disable its triggers or set its reserved concurrency to
+   zero. Pause the compactor and do not run `manifest-reconcile --repair`,
+   so the live object set stays the one the baseline audits. Everything
+   stays stopped until step 4 starts the enforcing release in its place.
+   The old release has no gate: a process of it that writes during the
+   baseline or after it can store a value the baseline never audited, and
+   nothing audits it afterwards. For example, a process still on an older
+   `SCHEMA_DIR` that declares `numeric` writes `1001.5` where the baseline
+   records `integer`. The upgrade is therefore a write outage that lasts as
+   long as the baseline, which reads every row and every live object once.
+   `baseline-schema --dry-run` can run beside the old release beforehand: it
+   reports what the baseline would refuse, so the data can be corrected
+   before the outage.
+3. **Baseline.** Run `baseline-schema` with the deployment's `-schema-dir`
    and either `--s3-bucket` and `--manifest-template` (the server's DuckDB
    manifest settings) or `--no-parquet-tier` when there is no lakehouse tier.
-   It audits Postgres with the width census and a `numeric` domain census,
+   It audits Postgres with the width, `numeric` and storage-domain censuses,
    and decodes every live parquet object in full and checks it with a domain
    scan. It refuses, recording nothing, when stored data contradicts the
    declaration or cannot be read. Correct the data or the declaration and
    run it again; converting stored values is a migration (#730). `--dry-run`
    reports the audit without recording. On DSQL, pass the IAM token as the
    database password; this path has not been verified either.
-3. **Start the release.** Later declaration edits go through `apply-schema`
-   before the data plane rolls. `build-unique-keys` loads the declaration
-   through the same gate, so a key build pending on the deployment runs after
-   the baseline; before it, the tool refuses, naming the missing baseline.
+
+   It also refuses, recording nothing, when a schema's stored data changed
+   while it was audited. The transaction that records the baseline reads
+   each schema's `entity_main` row count and version sum, and its live
+   object set, again, and compares them with what they were when that
+   schema's audit began. A create or a delete moves the count, an update
+   raises the row's version (#274), and an export or a compaction changes
+   the object set. The check catches a writer or exporter that step 2
+   missed while it is still running. It cannot catch one that only writes
+   after the baseline commits, which is why step 2 keeps them stopped.
+4. **Start the release.** Start the enforcing release in place of the old
+   one, and resume the compactor. Do not start the old release again. Later
+   declaration edits go through `apply-schema` before the data plane rolls.
+   `build-unique-keys` loads the declaration through the same gate, so a key
+   build pending on the deployment runs after the baseline; before it, the
+   tool refuses, naming the missing baseline.
 
 ### Why query-time casting is not migration
 
@@ -552,6 +580,14 @@ Fail-closed enforcement needs two things the code does not have:
    values and is now declared `date` passes, because every in-range int64 is a
    valid epoch-ms. No stored data records such a reinterpretation, so the
    baseline cannot detect it.
+
+   The audit describes the data as it was while the audit ran. A process of
+   the release before the ledger has no gate, so nothing would refuse a value
+   it writes during the baseline or after it. The upgrade therefore stops
+   those processes before the baseline and replaces them with the enforcing
+   release, and the baseline refuses to record when a schema's rows or live
+   objects changed during its audit (see "Upgrading an existing deployment").
+   This is a one-time boundary, not the write fence below.
 
 The first version of D2 needed two more: a check of every tier's data on each
 activation, and a write fence against old-generation processes. The amendment

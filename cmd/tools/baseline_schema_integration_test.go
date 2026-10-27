@@ -34,16 +34,21 @@ func (lt *ledgerTarget) forgetLedger(t *testing.T) {
 	}
 }
 
-func (lt *ledgerTarget) baseline(t *testing.T, audit parquetAuditFn) (string, error) {
+func (lt *ledgerTarget) baseline(t *testing.T, parquet *parquetTier) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
 	opts := baselineOptions{
 		ledgerToolOptions: ledgerToolOptions{schemaTable: lt.opts.schemaTable, schemaDir: lt.opts.schemaDir},
 		tables:            widthaudit.Tables{EAV: lt.opts.eavTable, EntityMain: lt.opts.entityMain, ChangeLog: lt.opts.changeLog},
-		auditParquet:      audit,
+		parquet:           parquet,
 	}
 	err := baselineSchemas(context.Background(), lt.pool, opts, &out)
 	return out.String(), err
+}
+
+// staticObjects is a parquet tier's object set that nothing changes.
+func staticObjects(paths ...string) func(context.Context, int16) ([]string, error) {
+	return func(context.Context, int16) ([]string, error) { return paths, nil }
 }
 
 func (lt *ledgerTarget) pointer(t *testing.T, schemaID int16) (int64, bool) {
@@ -175,11 +180,14 @@ func TestBaselineSchemaRefusesAParquetValueTheFooterHides(t *testing.T) {
 	if _, err := duck.Exec(copyStmt); err != nil {
 		t.Fatalf("write object: %v", err)
 	}
-	audit := func(ctx context.Context, schemaID int16, cache forma.SchemaAttributeCache) ([]federated.DomainFinding, error) {
-		return federated.AuditParquetDomain(ctx, duck, []string{object}, cache)
+	tier := &parquetTier{
+		objects: staticObjects(object),
+		audit: func(ctx context.Context, _ int16, paths []string, cache forma.SchemaAttributeCache) ([]federated.DomainFinding, error) {
+			return federated.AuditParquetDomain(ctx, duck, paths, cache)
+		},
 	}
 
-	out, err := lt.baseline(t, audit)
+	out, err := lt.baseline(t, tier)
 	if err == nil || !strings.Contains(out, "object "+object) || !strings.Contains(out, "1001.5") {
 		t.Fatalf("baseline = %v, want the object refused\n%s", err, out)
 	}
@@ -196,7 +204,7 @@ func TestBaselineSchemaRecordsNothingWhenASchemaIsSeededDuringItsAudit(t *testin
 	lt := newLedgerTarget(t, map[string]string{"alpha": eavIntegerAttrs, "beta": eavIntegerAttrs})
 	lt.forgetLedger(t)
 	const alpha, beta = int16(100), int16(101)
-	audit := func(ctx context.Context, schemaID int16, cache forma.SchemaAttributeCache) ([]federated.DomainFinding, error) {
+	audit := func(ctx context.Context, schemaID int16, _ []string, _ forma.SchemaAttributeCache) ([]federated.DomainFinding, error) {
 		if schemaID != beta {
 			return nil, nil
 		}
@@ -212,7 +220,7 @@ func TestBaselineSchemaRecordsNothingWhenASchemaIsSeededDuringItsAudit(t *testin
 		return nil, tx.Commit(ctx)
 	}
 
-	out, err := lt.baseline(t, audit)
+	out, err := lt.baseline(t, &parquetTier{objects: staticObjects(), audit: audit})
 	if !errors.Is(err, schemaledger.ErrGenerationConflict) {
 		t.Fatalf("baseline = %v, want ErrGenerationConflict\n%s", err, out)
 	}
