@@ -37,7 +37,9 @@ import (
 // OLTP route is transitional and documented, and #621 owns a row-scoped
 // representation both routes could share. An EAV-only attribute reaches the
 // federated legs at storage width, DOUBLE (#384), so the federated route
-// refuses its out-of-contract image as the OLTP route does.
+// refuses its out-of-contract image as the OLTP route does, except for what
+// DOUBLE loses on the way (#621): a fraction a float64 cannot keep arrives
+// whole, and a non-finite value fails the attributes JSON instead.
 
 // checkIntegerImage refuses the image a smallint or integer record holds
 // when the declared type cannot hold it: a fraction, a magnitude past the
