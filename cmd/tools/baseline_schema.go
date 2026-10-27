@@ -136,9 +136,10 @@ func auditForBaseline(ctx context.Context, q widthaudit.Querier, opts baselineOp
 // domain: an integer outside its width (widthaudit.Census), a numeric that
 // is not a finite float64 (widthaudit.NumericCensus), and any other value
 // the read refuses, a value in the wrong eav_data column included
-// (widthaudit.DomainCensus).
+// (widthaudit.DomainCensus). Each also holds the eav_data rows a bound
+// attribute kept from before its promotion, which the read still decodes.
 func censusPostgres(ctx context.Context, q widthaudit.Querier, tables widthaudit.Tables, cache *schemameta.MetadataCache) ([]widthaudit.Finding, error) {
-	findings, err := widthaudit.Census(ctx, q, tables, widthaudit.Targets(cache))
+	findings, err := widthaudit.Census(ctx, q, tables, widthaudit.TargetsWithRetainedEAV(cache))
 	if err != nil {
 		return nil, err
 	}

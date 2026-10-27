@@ -525,6 +525,10 @@ Fail-closed enforcement needs two things the code does not have:
    - a `bool_text` column value other than `"1"` and `"0"`, and an `iso8601`
      column value that does not parse as RFC3339.
 
+   The `eav_data` rules cover a column-bound attribute too. An EAV-to-bound
+   promotion leaves the rows written before it in `eav_data`, and the
+   whole-row read still decodes them under the declared type.
+
    Every parquet
    object's footer is read, so a missing or unreadable object refuses the
    baseline even when its manifest entry lists column types, and every object

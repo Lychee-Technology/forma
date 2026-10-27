@@ -55,6 +55,18 @@ func TestBaselineSchemaRefusesAStoredValueTheReadRefuses(t *testing.T) {
 			mainTextInsert("'true'"), `declared bool: row %s holds "true" in column text_01,`},
 		{"iso8601 day outside its month", "{" + encodedAttr("a", 1, "date", "text_01", "iso8601") + "}",
 			mainTextInsert("'2023-02-29T00:00:00Z'"), `declared date: row %s holds "2023-02-29T00:00:00Z" in column text_01,`},
+		// A bound attribute keeps the eav_data rows written before its
+		// promotion, and the read decodes them under the declared type.
+		{"promoted bool_text bool with an EAV NaN", "{" + encodedAttr("a", 1, "bool", "text_01", "bool_text") + "}",
+			eavInsert("", "value_numeric", "'NaN'"), "declared bool: row %s holds NaN in eav_data,"},
+		{"promoted iso8601 date with an EAV fraction", "{" + encodedAttr("a", 1, "date", "text_01", "iso8601") + "}",
+			eavInsert("", "value_numeric", "1.5"), "declared date: row %s holds 1.5 in eav_data,"},
+		{"promoted integer with an EAV fraction", "{" + encodedAttr("a", 1, "integer", "integer_01", "default") + "}",
+			eavInsert("", "value_numeric", "1001.5"), "declared integer: row %s holds 1001.5 in eav_data,"},
+		{"promoted numeric with an EAV infinity", "{" + encodedAttr("a", 1, "numeric", "double_01", "default") + "}",
+			eavInsert("", "value_numeric", "'-Infinity'"), "declared numeric: row %s holds -Infinity in eav_data,"},
+		{"promoted text in value_numeric", "{" + encodedAttr("a", 1, "text", "text_01", "default") + "}",
+			eavInsert("", "value_numeric", "42"), "declared text: row %s holds 42 in eav_data,"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,7 +89,8 @@ func TestBaselineSchemaRefusesAStoredValueTheReadRefuses(t *testing.T) {
 }
 
 // TestBaselineSchemaAdmitsWhatTheReadAdmits: the edges of each domain are
-// inside it, including images the read admits and the write never renders.
+// inside it, including images the read admits and the write never renders,
+// and eav_data rows a bound attribute kept from before its promotion.
 func TestBaselineSchemaAdmitsWhatTheReadAdmits(t *testing.T) {
 	const canonical = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 	lt := newLedgerTarget(t, map[string]string{"orders": `{` +
@@ -100,7 +113,9 @@ func TestBaselineSchemaAdmitsWhatTheReadAdmits(t *testing.T) {
 			"(100, gen_random_uuid(), 3, '', NULL, '{%[2]s}'), "+
 			"(100, gen_random_uuid(), 4, '0', NULL, '%[2]s'), "+
 			"(100, gen_random_uuid(), 4, '', NULL, NULL), "+
-			"(100, gen_random_uuid(), 5, '', NULL, 'anything')", eav, canonical),
+			"(100, gen_random_uuid(), 5, '', NULL, 'anything'), "+
+			"(100, gen_random_uuid(), 6, '', 1, NULL), "+
+			"(100, gen_random_uuid(), 7, '', -9007199254740992, NULL)", eav, canonical),
 		fmt.Sprintf("INSERT INTO %s (ltbase_schema_id, ltbase_row_id, ltbase_created_at, ltbase_updated_at, text_01, text_02, smallint_01) "+
 			"VALUES (100, gen_random_uuid(), 1, 1, '1', '2024-02-29T12:00:00.5+05:30', 7)", quoteIdentifier(lt.opts.entityMain)),
 	}

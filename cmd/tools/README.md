@@ -124,7 +124,7 @@ apply-schema
 
 baseline-schema
 ---------------
-已有部署升级到带 generation 账本的版本前运行一次（#733）：按 OLTP 读取自身的规则审计 PostgreSQL（含 list 元素）：宽度普查（width census）；`numeric` 与 EAV 中的 `bool` 须为有限 float64（拒绝 NaN、无穷大或超出 float64 的值）；EAV 中的 `date`/`datetime` 须为 ±2^53 内的整数毫秒；EAV 中的 `uuid` 须能被 `uuid.Parse` 解析；值不得存放在另一个 `eav_data` 值列中；`bool_text` 列只能是 `"1"`/`"0"`，`iso8601` 列须能按 RFC3339 解析。完整解码每个存活的 parquet 对象并按声明的值域扫描（含 list 元素），
+已有部署升级到带 generation 账本的版本前运行一次（#733）：按 OLTP 读取自身的规则审计 PostgreSQL（含 list 元素）：宽度普查（width census）；`numeric` 与 EAV 中的 `bool` 须为有限 float64（拒绝 NaN、无穷大或超出 float64 的值）；EAV 中的 `date`/`datetime` 须为 ±2^53 内的整数毫秒；EAV 中的 `uuid` 须能被 `uuid.Parse` 解析；值不得存放在另一个 `eav_data` 值列中；`bool_text` 列只能是 `"1"`/`"0"`，`iso8601` 列须能按 RFC3339 解析。绑定主表列的属性在 EAV 提升为列绑定之前写入的 `eav_data` 行仍会被读取，同样按上述 EAV 规则审计。完整解码每个存活的 parquet 对象并按声明的值域扫描（含 list 元素），
 数据与当前声明不符或无法读取时拒绝且不记录任何内容；通过后为尚无 generation 的 schema 记录 generation 1。已有 generation 的 schema 被跳过。
 运行前须已有账本表（PostgreSQL 上运行 `init-db`；DSQL 上按 `docs/schema-evolution.md` 手工建表）。
 

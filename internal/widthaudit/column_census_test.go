@@ -54,6 +54,33 @@ func TestTargetsSelectsIntegersBoundToWiderColumns(t *testing.T) {
 	}, Targets(ledgerCache(t)))
 }
 
+// TestTargetsWithRetainedEAVHoldsEveryBoundIntegerToItsWidth: an
+// EAV-to-bound promotion leaves the eav_data rows written before it, which
+// the read decodes under the declared type, so every bound integer is also
+// an eav_data target, after its column target when it has one. A numeric
+// has no width in either store. Targets, which feeds the #501 tier
+// classification, is unchanged.
+func TestTargetsWithRetainedEAVHoldsEveryBoundIntegerToItsWidth(t *testing.T) {
+	target := func(id int16, name string, vt forma.ValueType, column string) Target {
+		return Target{SchemaID: 300, SchemaName: "ledger", AttrID: id, AttrName: name, Declared: vt, Column: column}
+	}
+	require.Equal(t, []Target{
+		target(1, "total", forma.ValueTypeBigInt, ""),
+		target(2, "ratio", forma.ValueTypeBigInt, "double_02"),
+		target(2, "ratio", forma.ValueTypeBigInt, ""),
+		target(3, "amount", forma.ValueTypeBigInt, ""),
+		target(4, "share", forma.ValueTypeInteger, "double_01"),
+		target(4, "share", forma.ValueTypeInteger, ""),
+		target(6, "qty", forma.ValueTypeInteger, "bigint_02"),
+		target(6, "qty", forma.ValueTypeInteger, ""),
+		target(7, "count", forma.ValueTypeInteger, ""),
+		target(8, "tier", forma.ValueTypeSmallInt, "integer_02"),
+		target(8, "tier", forma.ValueTypeSmallInt, ""),
+		target(9, "rank", forma.ValueTypeSmallInt, ""),
+		target(10, "wide", forma.ValueTypeInteger, ""),
+	}, TargetsWithRetainedEAV(ledgerCache(t)))
+}
+
 // TestTargetStorageMatchesColumnsExactly: a binding to a name entity_main
 // does not have is not a stored value. The validator loads metadata with the
 // binding check deferred, so such a binding can reach the census. It is

@@ -11,7 +11,8 @@ import (
 // TestDomainTargetsSelectsStorageTheReadJudges: every EAV-only attribute is
 // held to its value column (a list by its items type), and of the bound
 // ones only bool_text and iso8601 can hold an image their column type
-// admits and the read refuses.
+// admits and the read refuses. Every bound attribute's eav_data rows from
+// before its promotion are held to the EAV rules.
 func TestDomainTargetsSelectsStorageTheReadJudges(t *testing.T) {
 	bound := func(name string, id int16, vt forma.ValueType, col string, enc forma.MainColumnEncoding) forma.AttributeMetadata {
 		return forma.AttributeMetadata{AttributeName: name, AttributeID: id, ValueType: vt,
@@ -32,7 +33,13 @@ func TestDomainTargetsSelectsStorageTheReadJudges(t *testing.T) {
 		{SchemaID: 300, SchemaName: "events", AttrID: 1, AttrName: "note", Declared: forma.ValueTypeText},
 		{SchemaID: 300, SchemaName: "events", AttrID: 2, AttrName: "seen", Declared: forma.ValueTypeDateTime},
 		{SchemaID: 300, SchemaName: "events", AttrID: 3, AttrName: "on", Declared: forma.ValueTypeBool, Column: "text_01"},
+		{SchemaID: 300, SchemaName: "events", AttrID: 3, AttrName: "on", Declared: forma.ValueTypeBool},
+		{SchemaID: 300, SchemaName: "events", AttrID: 4, AttrName: "set", Declared: forma.ValueTypeBool},
 		{SchemaID: 300, SchemaName: "events", AttrID: 5, AttrName: "due", Declared: forma.ValueTypeDate, Column: "text_02"},
+		{SchemaID: 300, SchemaName: "events", AttrID: 5, AttrName: "due", Declared: forma.ValueTypeDate},
+		{SchemaID: 300, SchemaName: "events", AttrID: 6, AttrName: "at", Declared: forma.ValueTypeDateTime},
+		{SchemaID: 300, SchemaName: "events", AttrID: 7, AttrName: "title", Declared: forma.ValueTypeText},
+		{SchemaID: 300, SchemaName: "events", AttrID: 8, AttrName: "amount", Declared: forma.ValueTypeNumeric},
 	}
 	require.Equal(t, want, DomainTargets(mc))
 }

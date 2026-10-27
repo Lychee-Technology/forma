@@ -13,7 +13,8 @@ import (
 
 // TestNumericTargetsSelectsStorageThatCanLeaveTheDomain: eav_data and a
 // double_* column can hold a non-finite numeric; the integer columns a
-// numeric can also bind to cannot, and other types are not numeric.
+// numeric can also bind to cannot, and other types are not numeric. A bound
+// numeric's eav_data rows from before its promotion are targets too.
 func TestNumericTargetsSelectsStorageThatCanLeaveTheDomain(t *testing.T) {
 	mc := schemameta.NewMetadataCache()
 	require.NoError(t, mc.RegisterSchema("prices", 300, forma.SchemaAttributeCache{
@@ -30,6 +31,8 @@ func TestNumericTargetsSelectsStorageThatCanLeaveTheDomain(t *testing.T) {
 		{SchemaID: 300, SchemaName: "prices", AttrID: 1, AttrName: "price", Declared: forma.ValueTypeNumeric},
 		{SchemaID: 300, SchemaName: "prices", AttrID: 2, AttrName: "prices", Declared: forma.ValueTypeNumeric},
 		{SchemaID: 300, SchemaName: "prices", AttrID: 3, AttrName: "cost", Declared: forma.ValueTypeNumeric, Column: "double_01"},
+		{SchemaID: 300, SchemaName: "prices", AttrID: 3, AttrName: "cost", Declared: forma.ValueTypeNumeric},
+		{SchemaID: 300, SchemaName: "prices", AttrID: 4, AttrName: "whole", Declared: forma.ValueTypeNumeric},
 	}
 	require.Equal(t, want, NumericTargets(mc))
 }

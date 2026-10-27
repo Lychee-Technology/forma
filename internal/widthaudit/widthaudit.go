@@ -95,13 +95,28 @@ type Finding struct {
 // attributes are excluded: a column as narrow as the declared type holds the
 // value at its own width, and numeric has no integer width.
 func Targets(cache *schemameta.MetadataCache) []Target {
-	return collectTargets(cache, targetStorage)
+	return collectTargets(cache, targetStorage, false)
+}
+
+// TargetsWithRetainedEAV lists Targets plus the eav_data rows each
+// column-bound smallint/integer/bigint kept from before an EAV-to-bound
+// promotion, held to the declared width (see collectTargets). The baseline
+// audit needs them; the #501 tier classification does not cover them.
+func TargetsWithRetainedEAV(cache *schemameta.MetadataCache) []Target {
+	return collectTargets(cache, targetStorage, true)
 }
 
 // collectTargets lists, in (schema_id, attr_id) order, every attribute
 // storage selects, held to the type it answers and stored in the column it
 // names ("" for eav_data).
-func collectTargets(cache *schemameta.MetadataCache, storage func(forma.AttributeMetadata) (forma.ValueType, string, bool)) []Target {
+//
+// With retainedEAV set, a column-bound attribute is also offered to storage
+// as if it were unbound. An EAV-to-bound promotion leaves the eav_data rows
+// written before it in place, and the whole-row read aggregates every
+// eav_data row of the row and decodes each under the declared type, bound
+// or not (internal.rowSelectWithAttributes, transform.fromPersistentRecord).
+// Such an attribute can then yield two targets, its column first.
+func collectTargets(cache *schemameta.MetadataCache, storage func(forma.AttributeMetadata) (forma.ValueType, string, bool), retainedEAV bool) []Target {
 	var targets []Target
 	for _, schemaName := range cache.ListSchemas() {
 		schemaID, ok := cache.GetSchemaID(schemaName)
@@ -113,21 +128,32 @@ func collectTargets(cache *schemameta.MetadataCache, storage func(forma.Attribut
 			continue
 		}
 		for _, meta := range schemaCache {
-			declared, column, ok := storage(meta)
-			if !ok {
-				continue
+			views := []forma.AttributeMetadata{meta}
+			if retainedEAV && meta.ColumnBinding != nil {
+				unbound := meta
+				unbound.ColumnBinding = nil
+				views = append(views, unbound)
 			}
-			targets = append(targets, Target{
-				SchemaID: schemaID, SchemaName: schemaName,
-				AttrID: meta.AttributeID, AttrName: meta.AttributeName, Declared: declared, Column: column,
-			})
+			for _, view := range views {
+				declared, column, ok := storage(view)
+				if !ok {
+					continue
+				}
+				targets = append(targets, Target{
+					SchemaID: schemaID, SchemaName: schemaName,
+					AttrID: meta.AttributeID, AttrName: meta.AttributeName, Declared: declared, Column: column,
+				})
+			}
 		}
 	}
 	sort.Slice(targets, func(i, j int) bool {
 		if targets[i].SchemaID != targets[j].SchemaID {
 			return targets[i].SchemaID < targets[j].SchemaID
 		}
-		return targets[i].AttrID < targets[j].AttrID
+		if targets[i].AttrID != targets[j].AttrID {
+			return targets[i].AttrID < targets[j].AttrID
+		}
+		return targets[i].Column > targets[j].Column
 	})
 	return targets
 }

@@ -34,9 +34,10 @@ var float64Overflow = new(big.Int).Sub(
 
 // NumericTargets lists every numeric attribute whose storage can hold a value
 // outside numeric's domain, in (schema_id, attr_id) order: an EAV-only one, a
-// list with numeric items, and one bound to a double_* column.
+// list with numeric items, one bound to a double_* column, and the eav_data
+// rows any bound one kept from before its promotion (collectTargets).
 func NumericTargets(cache *schemameta.MetadataCache) []Target {
-	return collectTargets(cache, numericStorage)
+	return collectTargets(cache, numericStorage, true)
 }
 
 func numericStorage(meta forma.AttributeMetadata) (declared forma.ValueType, column string, ok bool) {

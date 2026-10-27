@@ -22,7 +22,8 @@ import (
 //   - eav_data keeps text and uuid in value_text and every other type in
 //     value_numeric; the read refuses a value in the other column
 //     (transform.extractValueFromEAVRecord). That holds for every EAV-only
-//     attribute, so each one is a target here.
+//     attribute, and for the eav_data rows a bound attribute kept from
+//     before its promotion, so each one is a target here.
 //   - A uuid in value_text must parse (uuid.Parse, sqlutil.UUIDTextPattern).
 //   - A bool in value_numeric must be finite (transform.finiteBoolInput),
 //     which is numeric's domain: float64Overflow bounds it the same way.
@@ -39,10 +40,11 @@ import (
 // A list's elements are eav_data rows held to the items type.
 
 // DomainTargets lists, in (schema_id, attr_id) order, every EAV-only
-// attribute (a list held to its items type) and every bool bound with
-// bool_text or date/datetime bound with iso8601.
+// attribute (a list held to its items type), every bool bound with
+// bool_text or date/datetime bound with iso8601, and the eav_data rows every
+// bound attribute kept from before its promotion (collectTargets).
 func DomainTargets(cache *schemameta.MetadataCache) []Target {
-	return collectTargets(cache, domainStorage)
+	return collectTargets(cache, domainStorage, true)
 }
 
 func domainStorage(meta forma.AttributeMetadata) (declared forma.ValueType, column string, ok bool) {
