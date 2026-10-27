@@ -69,11 +69,13 @@ type Target struct {
 	Column string
 }
 
-// Finding is one stored value that does not fit its target's width: an
-// eav_data row, or the target's column of an entity_main row. StoredValue is
-// the NUMERIC text exactly as Postgres holds it for eav_data, the float8 in
-// plain digits for a double_* column (formatDoubleImage), and the exact
-// digits for an integer_* or bigint_* column.
+// Finding is one stored value that does not fit its target's width, or,
+// from DomainCensus, its type's domain: an eav_data row, or the target's
+// column of an entity_main row. StoredValue is the NUMERIC text exactly as
+// Postgres holds it for eav_data, the float8 in plain digits for a double_*
+// column (formatDoubleImage), the exact digits for an integer_* or bigint_*
+// column, and Go-quoted text for a value read from value_text or a text_*
+// column.
 type Finding struct {
 	Target
 	RowID        uuid.UUID

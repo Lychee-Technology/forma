@@ -29,8 +29,8 @@ type baselineOptions struct {
 
 // baselineSchemas seeds generation 1 of every selected schema that has none,
 // after auditing its stored data against its current declaration (#733):
-// PostgreSQL through the integer-width and numeric-domain censuses, the live
-// parquet objects through federated.AuditParquetDomain. A schema with any
+// PostgreSQL through the integer-width, numeric-domain and storage-domain
+// censuses, the live parquet objects through federated.AuditParquetDomain. A schema with any
 // finding is refused, and a refusal records nothing for any schema, as
 // apply-schema does.
 //
@@ -133,8 +133,10 @@ func auditForBaseline(ctx context.Context, q widthaudit.Querier, opts baselineOp
 }
 
 // censusPostgres finds every PostgreSQL value outside its declared storage
-// domain: an integer outside its width (widthaudit.Census), and a numeric
-// that is not a finite float64 (widthaudit.NumericCensus).
+// domain: an integer outside its width (widthaudit.Census), a numeric that
+// is not a finite float64 (widthaudit.NumericCensus), and any other value
+// the read refuses, a value in the wrong eav_data column included
+// (widthaudit.DomainCensus).
 func censusPostgres(ctx context.Context, q widthaudit.Querier, tables widthaudit.Tables, cache *schemameta.MetadataCache) ([]widthaudit.Finding, error) {
 	findings, err := widthaudit.Census(ctx, q, tables, widthaudit.Targets(cache))
 	if err != nil {
@@ -144,7 +146,11 @@ func censusPostgres(ctx context.Context, q widthaudit.Querier, tables widthaudit
 	if err != nil {
 		return nil, err
 	}
-	return append(findings, numeric...), nil
+	domain, err := widthaudit.DomainCensus(ctx, q, tables, widthaudit.DomainTargets(cache))
+	if err != nil {
+		return nil, err
+	}
+	return append(append(findings, numeric...), domain...), nil
 }
 
 func auditParquetForBaseline(ctx context.Context, opts baselineOptions, target registeredSchema, cache *schemameta.MetadataCache) ([]string, error) {
@@ -168,8 +174,9 @@ func auditParquetForBaseline(ctx context.Context, opts baselineOptions, target r
 	return problems, nil
 }
 
-// censusRefusal names one stored value outside the declared width. It is a
-// number, the only image the operator needs to find the row.
+// censusRefusal names one stored value outside the declared type: a number,
+// or quoted text when it was read from a text column, which is the image the
+// operator needs to find the row.
 func censusRefusal(f widthaudit.Finding) string {
 	where := "eav_data"
 	if f.Column != "" {

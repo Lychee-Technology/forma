@@ -2,9 +2,9 @@ package transform
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -126,7 +126,7 @@ func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentR
 	case forma.MainColumnEncodingISO8601:
 		// Read ISO 8601 string from text column and convert to time
 		if val, ok := record.TextItems[columnName]; ok {
-			parsedTime, err := time.Parse(time.RFC3339, val)
+			parsedTime, err := iso8601.Parse(val)
 			if err != nil {
 				return nil, false, fmt.Errorf("failed to parse ISO 8601 date: %w", err)
 			}

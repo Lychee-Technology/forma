@@ -510,10 +510,22 @@ Fail-closed enforcement needs two things the code does not have:
    check inside one tool would be bypassed by every other process.
 2. **A baseline for existing deployments.** The first record of a schema that
    already holds data must not bless a declaration the data contradicts, so the
-   baseline audits the stored data once, on every tier. Postgres is audited
-   with the width census, and each `numeric` in `eav_data` (list elements
-   included) or a `double_*` column is checked to be a finite float64: not
-   NaN, an infinity, or a magnitude a float64 overflows on. Every parquet
+   baseline audits the stored data once, on every tier. In Postgres, every
+   stored value the OLTP read would refuse refuses the baseline, judged by the
+   read's own rule, list elements included:
+   - an integer outside its width (the width census);
+   - a `numeric` or `bool` in `eav_data`, or a `numeric` in a `double_*`
+     column, that is not a finite float64: NaN, an infinity, or a magnitude a
+     float64 overflows on;
+   - a `date` or `datetime` in `eav_data` that is not a whole number of epoch
+     milliseconds within ±2^53;
+   - a `uuid` in `eav_data` that `uuid.Parse` refuses;
+   - a value in the other `eav_data` value column (`value_text` holds `text`
+     and `uuid`, `value_numeric` every other type);
+   - a `bool_text` column value other than `"1"` and `"0"`, and an `iso8601`
+     column value that does not parse as RFC3339.
+
+   Every parquet
    object's footer is read, so a missing or unreadable object refuses the
    baseline even when its manifest entry lists column types, and every object
    is decoded in full, so a corrupt data page refuses it even under a column
@@ -525,7 +537,9 @@ Fail-closed enforcement needs two things the code does not have:
    is the one the declaration's storage admits, which is narrower than what a read
    converts: a `bigint` kept as a float64 image (EAV-only, a `double_*`
    column, a list element) admits ±2^53, as the write funnel and the width
-   census do, and `numeric` admits only finite values. A footer that shows the
+   census do, and so does an EAV-only `date` or `datetime`; `numeric` admits
+   only finite values; and a `uuid` exported as text admits only text
+   `uuid.Parse` reads. A footer that shows the
    declaration's own export type does not settle it: an EAV-only `integer`
    exports DOUBLE, like `numeric`, so an object holding `1001.5` from an earlier
    `numeric` declaration has the same footer as valid `integer` data.

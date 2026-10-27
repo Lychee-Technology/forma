@@ -96,6 +96,52 @@ func TestAuditParquetDomainPassesAdmittedObjects(t *testing.T) {
 		writeQtyObject(t, duck, sub, "rounding.parquet", "BIGINT", "9223372036854775807")))
 }
 
+// TestAuditParquetDomainJudgesDatesAndUUIDsByStorage: an EAV date keeps a
+// float64 image, so its BIGINT export is held to ±2^53 like an EAV bigint's,
+// while a bigint_* date is any int64; and an EAV uuid exported as text must
+// be text uuid.Parse reads, which DuckDB's UUID cast is not.
+func TestAuditParquetDomainJudgesDatesAndUUIDsByStorage(t *testing.T) {
+	duck := newGuardDuck(t)
+	dir := t.TempDir()
+	eavDate := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeDateTime}
+	boundDate := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeDateTime,
+		ColumnBinding: &forma.MainColumnBinding{ColumnName: "bigint_01", Encoding: forma.MainColumnEncodingUnixMs}}
+	eavUUID := forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeUUID}
+	const canonical = "'6ba7b810-9dad-11d1-80b4-00c04fd430c8'"
+
+	refused := []struct {
+		name, typ, value string
+		meta             forma.AttributeMetadata
+		evidence         string
+	}{
+		{"EAV date past 2^53", "BIGINT", "9007199254740993", eavDate, "it holds 9007199254740993"},
+		{"list<date> element past 2^53", "BIGINT[]", "[0, -9007199254740993]", listOf(forma.ValueTypeDate),
+			"a list element that is not a whole number in [-9007199254740992, 9007199254740992]"},
+		{"EAV uuid that does not parse", "VARCHAR", "'not-a-uuid'", eavUUID, "a uuid"},
+		{"EAV uuid DuckDB casts and uuid.Parse refuses", "VARCHAR", "'6ba7b810-9dad11d1-80b4-00c04fd430c8'", eavUUID, "a uuid"},
+		{"list<uuid> element that does not parse", "VARCHAR[]", "[" + canonical + ", 'x']", listOf(forma.ValueTypeUUID),
+			"a list element that is not a uuid"},
+	}
+	for i, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeQtyObject(t, duck, dir, fmt.Sprintf("refused_%d.parquet", i), tc.typ, tc.value)
+			findings := auditQty(t, duck, tc.meta, path)
+			require.Len(t, findings, 1)
+			require.Contains(t, findings[0].Evidence, tc.evidence)
+		})
+	}
+
+	require.Empty(t, auditQty(t, duck, eavDate,
+		writeQtyObject(t, duck, dir, "date_edge.parquet", "BIGINT", "9007199254740992", "-9007199254740992", "NULL")))
+	require.Empty(t, auditQty(t, duck, boundDate,
+		writeQtyObject(t, duck, dir, "bound_date.parquet", "BIGINT", "9223372036854775807")))
+	require.Empty(t, auditQty(t, duck, eavUUID,
+		writeQtyObject(t, duck, dir, "uuid_forms.parquet", "VARCHAR", canonical,
+			"'urn:uuid:6ba7b810-9dad-11d1-80b4-00c04fd430c8'", "'{6ba7b810-9dad-11d1-80b4-00c04fd430c8}'", "NULL")))
+	require.Empty(t, auditQty(t, duck, listOf(forma.ValueTypeUUID),
+		writeQtyObject(t, duck, dir, "uuid_list.parquet", "VARCHAR[]", "["+canonical+", NULL]")))
+}
+
 func listOf(items forma.ValueType) forma.AttributeMetadata {
 	return forma.AttributeMetadata{AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeList, ItemsType: items}
 }

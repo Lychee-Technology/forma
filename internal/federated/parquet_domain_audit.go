@@ -43,7 +43,8 @@ type DomainFinding struct {
 // of that type is admitted (judgeDomain); otherwise the object's values are
 // scanned with the Phase 1 proof predicates, list elements included, bounded
 // by the declaration's storage domain rather than by what the read converts:
-// ±2^53 for a bigint kept as a float64 image, and finite values for numeric.
+// ±2^53 for a bigint or a date kept as a float64 image, finite values for
+// numeric, and text uuid.Parse reads for a uuid exported as VARCHAR.
 // Every object is also decoded in full (decodeObject), so a corrupt data page
 // is found even under a column its footer settles: the baseline reads every
 // live object once. An object whose footer or data cannot be read is a
@@ -177,9 +178,11 @@ func judgeDomain(col, fileType string, meta forma.AttributeMetadata) typeJudgeme
 }
 
 // judgeDomainScalar judges against the declaration's storage domain, which
-// is narrower than what the read path converts (judgeScalar) in two places:
-// storedRange for a bigint, and a finite proof for DOUBLE under numeric. A
-// BIGINT under numeric stays lossless: D2 admits its rounding (judgeDouble).
+// is narrower than what the read path converts (judgeScalar) in four places:
+// storedRange for a bigint, a finite proof for DOUBLE under numeric, the
+// same ±2^53 for an EAV date as for an EAV bigint, and a parse proof for a
+// uuid exported as text. A BIGINT under numeric stays lossless: D2 admits
+// its rounding (judgeDouble).
 func judgeDomainScalar(col, fileType string, meta forma.AttributeMetadata) typeJudgement {
 	switch meta.ValueType {
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
@@ -192,6 +195,24 @@ func judgeDomainScalar(col, fileType string, meta forma.AttributeMetadata) typeJ
 			return typeJudgement{kind: judgeNeedsProof, violation: fmt.Sprintf("NOT isfinite(%s)", col), demand: "a finite number"}
 		}
 		return judgeDouble(col, fileType)
+	case forma.ValueTypeDate, forma.ValueTypeDateTime:
+		if fileType == "BIGINT" && meta.ColumnBinding == nil {
+			// eav_data keeps a date as a float64 image, exact to ±2^53
+			// (transform.fitsFloat64Image); the export carries it as BIGINT.
+			// A bound date is a bigint_* value or an iso8601 image with a
+			// four-digit year, both of which every int64 names.
+			return judgeWhole(col, fileType, exactDoubleRange)
+		}
+	case forma.ValueTypeUUID:
+		if fileType == "VARCHAR" {
+			// An EAV uuid is exported verbatim from value_text and read
+			// through uuid.Parse; DuckDB's UUID cast is a different rule.
+			return typeJudgement{
+				kind:      judgeNeedsProof,
+				violation: fmt.Sprintf("NOT regexp_full_match(%s, '%s')", col, sqlutil.EscapeLiteral(sqlutil.UUIDTextPattern)),
+				demand:    "a uuid",
+			}
+		}
 	}
 	if sqlgen.ScanTypesCompatible(fileType, sqlgen.DuckDBNullScanType(meta)) {
 		return typeJudgement{kind: judgeLossless}
