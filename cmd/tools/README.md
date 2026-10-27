@@ -28,17 +28,18 @@ Forma Tools CLI
   - `column_binding.col_name` 不是 `entity_main` 实际拥有的列（#557）；
   - `valueType`↔column-encoding 绑定无法 round-trip 的情况（#459）；
   - `eav_data` 中未知的 `attr_id`、存储列错位、list 属性下残留的标量行；
-  - EAV-only `smallint`/`integer`/`bigint` 值超出声明宽度或非整数（#501）；
+  - EAV-only `smallint`/`integer`/`bigint` 值超出声明宽度或非整数（#501）；自 #729 起 OLTP 读取会拒绝
+    超出声明类型的 EAV `smallint`/`integer`（含 list 元素与提升为绑定列前遗留的 `eav_data` 行），
+    每一条都报为失败，需通过 API 重写；
     绑定到 `double_*` 列的 `bigint` 值超出 ±2^53 或非整数（#618，读取 `-entity-main-table`，
     报告行、属性与列名；存在此类绑定而表名为空时报错）；
     绑定到更宽列的 `smallint`/`integer` 值超出声明类型范围、非整数、NaN 或无穷（#708，
     OLTP 读取会拒绝此类行；同样读取 `-entity-main-table`，需通过 API 重写，不会被重新排队）。
     `-change-log-table`（`CHANGE_LOG_TABLE`，默认 `change_log_dev`）用于区分已导出与待刷新的行；
     无 CDC 的部署传空值（`-change-log-table ''` 或显式 `CHANGE_LOG_TABLE=`，make 目标同样保留空值）；
-    `-width-export-cutover`（RFC3339）为 #384 导出开始生效的时间，早于它导出的行报为失败；
-    `-requeue-stale-width-exports` 通过推进版本并写入 `change_log` 将过期导出的
-    `smallint`/`integer` 行重新排队（`bigint` 类需通过 API 重写，不会被重新排队），
-    需在 `-entity-main-table`（`ENTITY_MAIN_TABLE`，默认 `entity_main_dev`）上执行，之后运行 `cdc-flush`。
+    `-width-export-cutover`（RFC3339）为 #384 导出开始生效的时间，早于它导出的行会额外标注其 parquet 副本已过期，
+    不改变判定；`-requeue-stale-width-exports` 已于 #729 停用：重新刷新无法修复任何一条报告，
+    该标志仍被接受但不再重新排队任何行，只打印原因。
   详见 `docs/schema-consistency-migration.md`。
 
 generate-attributes

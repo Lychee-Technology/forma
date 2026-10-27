@@ -1070,9 +1070,10 @@ applied on both sides:
 Parquet files written before this contract carry INT32/INT16 attribute columns
 and NULLs where a value exceeded the declared width; `union_by_name=true` scans
 promote the mixed widths losslessly, and the NULLs are unrecoverable from
-parquet alone. `validate-schema-consistency` finds the affected rows and
-`--requeue-stale-width-exports` re-queues them for a re-flush from PG (#501;
-see `docs/schema-consistency-migration.md`). Declared bigint still projects at
+parquet alone. `validate-schema-consistency` finds the affected rows (#501).
+Since #729 the OLTP read refuses the Postgres value such a row holds, so a
+re-flush would only export it again: the repair is a rewrite through the API,
+whose flush replaces the stale copy (see `docs/schema-consistency-migration.md`). Declared bigint still projects at
 BIGINT, so a bigint value past int64 diverges on every DuckDB leg, and the
 OLTP read refuses it as a consistency error (#590); the same census reports
 it, together with every stored bigint past ±2^53, for a rewrite. A bigint

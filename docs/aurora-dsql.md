@@ -25,7 +25,7 @@ engine. You configure it.
 | Library | `forma.DatabaseConfig.Engine`: `forma.EnginePostgreSQL` (`"postgresql"`, the default when empty) or `forma.EngineAuroraDSQL` (`"aurora-dsql"`) |
 | `cmd/server` | `DB_ENGINE` |
 | `cmd/lambda` | `DSQL_ENDPOINT` opens the IAM-authenticated DSQL pool and selects `aurora-dsql`. The pool signs a fresh IAM token for each connection it opens, so a warm environment keeps connecting after the cold start's token expires. A `DB_ENGINE` that names another engine beside it fails the cold start |
-| `forma-tools validate-schema-consistency` | `--db-engine` (default `DB_ENGINE`), used by `-requeue-stale-width-exports` |
+| `forma-tools validate-schema-consistency` | `--db-engine` (default `DB_ENGINE`), still validated; nothing uses it since #729 retired `-requeue-stale-width-exports` |
 | `forma-tools cdc-flush`, `cdc-init`, `manifest-reconcile` | `--pg-engine` (default `postgresql`). `cdc-flush --pg-use-iam` authenticates to DSQL, so it implies `aurora-dsql` and refuses another engine beside it |
 
 An unknown name fails `Config.Validate` and the factory before any

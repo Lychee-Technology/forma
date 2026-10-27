@@ -665,7 +665,9 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   census reports these rows with the column. The federated legs still read
   the column through `TRY_CAST` (#627), a documented transitional difference
   ([Schema Evolution and Declared Types](./schema-evolution.md#d1-invalid-legacy-integer-images-on-oltp-reads-708)).
-  An EAV-only `smallint`/`integer` keeps the #384 conversion on read (#729).
+  Since #729 the same refusal holds an EAV-only `smallint`/`integer`, a list
+  element of one, and a kept `eav_data` record of a bound one, judged on the
+  exact `value_numeric` text and naming `value_numeric` in place of a column.
 - `text`→`uuid_*`: the value must parse as a UUID (published 4xx, not the
   redacted 500 `uuid.Parse` used to raise in `storeInMainColumn`).
 - A value whose typed slot does not match the column family is refused, never
