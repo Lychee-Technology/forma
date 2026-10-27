@@ -86,7 +86,7 @@ func TestCheckTypesProvesValuesUnderTheNewDeclaration(t *testing.T) {
 		"numeric→integer(integer_01) whole":      {integerOnColumn, "DOUBLE", []string{"7", "-2147483648"}, ""},
 		"bigint→integer(integer_01) overflow":    {integerOnColumn, "BIGINT", []string{"2147483648"}, "2147483648"},
 		"bigint→integer(integer_01) in range":    {integerOnColumn, "BIGINT", []string{"5"}, ""},
-		"bigint→numeric past 2^53":               {numericEAV, "BIGINT", []string{"9007199254740993"}, "9007199254740993"},
+		"bigint→numeric past 2^53 rounds":        {numericEAV, "BIGINT", []string{"9007199254740993"}, ""}, // D2 allows the rounding (#733)
 		"bigint→numeric in range":                {numericEAV, "BIGINT", []string{"42"}, ""},
 		"text→bigint canonical digits":           {bigintEAV, "VARCHAR", []string{"'9'", "'-12'"}, ""},
 		"text→bigint leading zero":               {bigintEAV, "VARCHAR", []string{"'09'"}, "it holds a text value that is not a whole number"},

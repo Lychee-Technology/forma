@@ -38,6 +38,7 @@ func ukEnvWithAttributes(t *testing.T, env *txEnv, edit func(attrs map[string]ma
 	raw, err = json.Marshal(attrs)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, raw, 0o600))
+	applySchemaLedger(t, env.ctx, env.postgresPool, env.schemaTable, dir)
 
 	registry, err := schemameta.NewFileSchemaRegistry(env.postgresPool, env.schemaTable, dir)
 	require.NoError(t, err)

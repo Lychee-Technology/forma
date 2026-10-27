@@ -139,8 +139,9 @@ func runValidateSchemaConsistencyOut(ctx context.Context, args []string, out io.
 
 func (v schemaConsistencyValidator) run(ctx context.Context) error {
 	// Deferred so checkColumnBindings can list every mismatch across the
-	// deployed set instead of the loader stopping at the first (#459).
-	loader := schemameta.NewMetadataLoader(v.pool, v.schemaTable, v.schemaDir).DeferColumnBindingCheck()
+	// deployed set instead of the loader stopping at the first (#459). It
+	// reports on the declaration whatever the generation ledger holds (#733).
+	loader := schemameta.NewMetadataLoader(v.pool, v.schemaTable, v.schemaDir).DeferColumnBindingCheck().ControlPlane()
 	cache, err := loader.LoadMetadata(ctx)
 	if err != nil {
 		return fmt.Errorf("load schema metadata: %w", err)

@@ -1,8 +1,10 @@
 // Package iso8601 holds the one RFC3339 image the iso8601 main-column
-// encoding stores for a date/datetime. The write funnel (internal/transform)
-// renders the stored image through it and the query-filter binders
-// (internal/sqlgen) render a filter literal through it, so the two cannot
-// drift (#582, #588). It is a leaf package: sqlgen cannot import transform
+// encoding stores for a date/datetime, and the rule that reads one back. The
+// write funnel (internal/transform) renders the stored image through it and
+// the query-filter binders (internal/sqlgen) render a filter literal through
+// it, so the two cannot drift (#582, #588). The OLTP read and the
+// baseline-schema census (internal/widthaudit) both judge a stored image by
+// Parse, so the census refuses exactly what the read refuses (#733). It is a leaf package: sqlgen cannot import transform
 // (transform → schemameta → sqlgen), so the rule lives below both.
 package iso8601
 
@@ -47,4 +49,12 @@ func Image(ms int64) (string, Rule) {
 		return "", KeepsFourDigitYear
 	}
 	return time.UnixMilli(ms).UTC().Format(time.RFC3339), ""
+}
+
+// Parse is the read path's rule for a stored iso8601 image: time.Parse with
+// the RFC3339 layout. It is wider than Image (a fraction or an offset reads
+// too), since a read admits what it can name, not only what the write
+// renders. An image it refuses fails every read of the row.
+func Parse(image string) (time.Time, error) {
+	return time.Parse(time.RFC3339, image)
 }

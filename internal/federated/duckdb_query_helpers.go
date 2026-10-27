@@ -61,9 +61,9 @@ func (n *nullDuckDBUUID) Scan(src any) error {
 // duckDBScanBuffers holds pre-allocated scan buffers for DuckDB row scanning.
 type duckDBScanBuffers struct {
 	textVals   []sql.NullString
-	smallVals  []sql.NullInt64
-	intVals    []sql.NullInt64
-	bigVals    []sql.NullInt64
+	smallVals  []nullDuckDBInt
+	intVals    []nullDuckDBInt
+	bigVals    []nullDuckDBBigint
 	doubleVals []sql.NullFloat64
 	uuidVals   []nullDuckDBUUID
 }
@@ -90,9 +90,9 @@ func newDuckDBScanBuffers() *duckDBScanBuffers {
 
 	return &duckDBScanBuffers{
 		textVals:   make([]sql.NullString, textCount),
-		smallVals:  make([]sql.NullInt64, smallCount),
-		intVals:    make([]sql.NullInt64, intCount),
-		bigVals:    make([]sql.NullInt64, bigCount),
+		smallVals:  make([]nullDuckDBInt, smallCount),
+		intVals:    make([]nullDuckDBInt, intCount),
+		bigVals:    make([]nullDuckDBBigint, bigCount),
 		doubleVals: make([]sql.NullFloat64, doubleCount),
 		uuidVals:   make([]nullDuckDBUUID, uuidCount),
 	}
@@ -180,7 +180,9 @@ func (b *duckDBScanBuffers) buildRecordFromBuffers() *model.PersistentRecord {
 			intIdx++
 		case model.ColumnKindBigint:
 			val := b.bigVals[bigIdx]
-			if val.Valid {
+			if val.HasImage {
+				record.Float64Items[desc.Name] = val.Image
+			} else if val.Valid {
 				// Handle known system columns
 				switch desc.Name {
 				case "ltbase_created_at":

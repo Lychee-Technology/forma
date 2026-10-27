@@ -43,6 +43,7 @@ func setupIntegrationEnv(t *testing.T) *integrationEnv {
 	// built on this env may leave a key-table entry or built state (#651).
 	t.Cleanup(func() { assertNoUniqueKeyRows(t, pool, tables) })
 	schemaRegistryTable := createSchemaRegistryTable(t, ctx, pool)
+	seedSchemaLedger(t, ctx, pool, schemaRegistryTable, "../cmd/server/schemas")
 
 	registry, err := schemameta.NewFileSchemaRegistry(pool, schemaRegistryTable, "../cmd/server/schemas")
 	require.NoError(t, err)

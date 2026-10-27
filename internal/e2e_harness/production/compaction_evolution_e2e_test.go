@@ -116,7 +116,9 @@ func seedMixedGenerationTiers(ctx context.Context, t *testing.T, env *Env, schem
 	s := &evolutionSeed{}
 	s.creates = seedGeneration(ctx, t, env, schema, 5, buildEvoV1Profile())
 	s.baseKey = runInitBase(ctx, t, env, schema)
-	if err := env.EvolveSchema(ctx, v2Dir); err != nil {
+	// Forced: apply-schema refuses the EAV-only integer to numeric retype
+	// until #729 is fixed (#733); this is data from before the gate.
+	if err := env.ForceEvolveSchema(ctx, v2Dir); err != nil {
 		t.Fatalf("evolve schema to v2: %v", err)
 	}
 	s.updates = []*Event{

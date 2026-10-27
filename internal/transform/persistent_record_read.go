@@ -2,9 +2,9 @@ package transform
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -126,7 +126,7 @@ func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentR
 	case forma.MainColumnEncodingISO8601:
 		// Read ISO 8601 string from text column and convert to time
 		if val, ok := record.TextItems[columnName]; ok {
-			parsedTime, err := time.Parse(time.RFC3339, val)
+			parsedTime, err := iso8601.Parse(val)
 			if err != nil {
 				return nil, false, fmt.Errorf("failed to parse ISO 8601 date: %w", err)
 			}
@@ -187,6 +187,14 @@ func (t *persistentRecordTransformer) readWithDefaultEncoding(record *model.Pers
 			exact := val
 			attr.ValueNumeric = &f
 			attr.ValueInt64 = &exact
+			attr.BoundColumn = columnName
+			return attr, true, nil
+		}
+		// A DuckDB-routed read of a numeric attribute past the int64 range
+		// (2^63, the float64 of every int64 from 2^63-512 up) carries only
+		// the float64 image; see federated.nullDuckDBBigint.
+		if val, ok := record.Float64Items[columnName]; ok {
+			attr.ValueNumeric = &val
 			attr.BoundColumn = columnName
 			return attr, true, nil
 		}

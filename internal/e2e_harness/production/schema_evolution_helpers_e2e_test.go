@@ -112,9 +112,19 @@ func buildLabeledExtras(more func(ordinal int) map[string]any) func(ordinal int)
 // parquet keys plus the base-generation events (for LWW probes).
 func seedEvolutionTiers(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, v2SchemaDir string, v1Profile, v2Profile AttrProfile) (baseKey, deltaKey string, baseEvents []*Event) {
 	t.Helper()
+	return seedEvolutionTiersVia(ctx, t, env, env.EvolveSchema, schema, v2SchemaDir, v1Profile, v2Profile)
+}
+
+// seedEvolutionTiersVia is seedEvolutionTiers with the restart's recording
+// step chosen: env.ForceEvolveSchema reaches a history apply-schema now
+// refuses (#733), whose stored data a deployment from before the gate can
+// still hold.
+func seedEvolutionTiersVia(ctx context.Context, t *testing.T, env *Env, evolve func(context.Context, string) error,
+	schema SchemaRef, v2SchemaDir string, v1Profile, v2Profile AttrProfile) (baseKey, deltaKey string, baseEvents []*Event) {
+	t.Helper()
 	baseEvents = seedGeneration(ctx, t, env, schema, 5, v1Profile)
 	baseKey = runInitBase(ctx, t, env, schema)
-	if err := env.EvolveSchema(ctx, v2SchemaDir); err != nil {
+	if err := evolve(ctx, v2SchemaDir); err != nil {
 		t.Fatalf("evolve schema to v2: %v", err)
 	}
 	seedGeneration(ctx, t, env, schema, 4, v2Profile)

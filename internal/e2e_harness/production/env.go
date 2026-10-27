@@ -18,6 +18,7 @@ import (
 	"github.com/lychee-technology/forma/internal/cdc"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemaledger/ledgertest"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"go.uber.org/zap"
 )
@@ -213,12 +214,13 @@ func (e *Env) provision(ctx context.Context) error {
 		return err
 	}
 
-	schemaDir := e.opts.schemaDir
-	if schemaDir == "" {
-		schemaDir = FixtureSchemasDir()
-	}
+	schemaDir := e.schemaDir()
 	if err := RegisterSchemas(ctx, pool, DefaultSchemaFixtures()...); err != nil {
 		return err
+	}
+	// init-db records generation 1 of each schema it registers (#733).
+	if err := ledgertest.Seed(ctx, pool, e.Tables.SchemaRegistry, schemaDir); err != nil {
+		return fmt.Errorf("record the fixtures' generation: %w", err)
 	}
 
 	registry, err := schemameta.NewFileSchemaRegistryContext(ctx, pool, e.Tables.SchemaRegistry, schemaDir)

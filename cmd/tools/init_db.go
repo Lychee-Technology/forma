@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/bootstrap"
+	"github.com/lychee-technology/forma/internal/schemaledger"
 )
 
 type initDBOptions struct {
@@ -287,6 +288,7 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 	_, uniqueKeyIndex := uniqueKeyDDL(opts)
 	groups := [][]tableDDL{
 		coreTableDDL(opts),
+		ledgerDDL(opts),
 		eavIndexDDL(opts),
 		mainColumnIndexDDL(opts),
 		{uniqueKeyIndex},
@@ -358,6 +360,9 @@ func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir stri
 
 		if inserted {
 			fmt.Printf("Registered schema, name: %s, id: %d\n", schemaName, schemaID)
+			if err := recordFirstGeneration(ctx, tx, schemaTable, schemaDir, schemaName, schemaID); err != nil {
+				return err
+			}
 		} else {
 			fmt.Printf("Schema already exists, schema name: %s\n", schemaName)
 		}
@@ -395,8 +400,8 @@ func listSchemaNames(schemaDir string) ([]string, error) {
 
 // loadRegisteredSchemaIDs reads the registry table's schema_name -> schema_id
 // rows.
-func loadRegisteredSchemaIDs(ctx context.Context, tx pgx.Tx, schemaTable string) (map[string]int16, error) {
-	rows, err := tx.Query(ctx, fmt.Sprintf(`SELECT schema_name, schema_id FROM %s`, quoteIdentifier(schemaTable)))
+func loadRegisteredSchemaIDs(ctx context.Context, q schemaledger.Querier, schemaTable string) (map[string]int16, error) {
+	rows, err := q.Query(ctx, fmt.Sprintf(`SELECT schema_name, schema_id FROM %s`, quoteIdentifier(schemaTable)))
 	if err != nil {
 		return nil, fmt.Errorf("read registered schemas from %s: %w", schemaTable, err)
 	}

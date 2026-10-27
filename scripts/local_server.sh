@@ -109,6 +109,37 @@ done
   --schema-dir "$SCHEMA_DIR"
 
 # ============================================================================
+# 6. Bring the schema generation ledger in step with $SCHEMA_DIR
+# ============================================================================
+# The server starts only on declarations the active generation holds (#733).
+# init-db records generation 1 only for a schema it registers, so seed a
+# database from before the ledger, then record any edit since the last run.
+# Both steps record nothing when the ledger is already current.
+LEDGER_FLAGS=(
+  --db-host "$DB_HOST"
+  --db-port "$DB_PORT"
+  --db-name "$DB_NAME"
+  --db-user "$DB_USER"
+  --db-password "$DB_PASSWORD"
+  --db-ssl-mode "$DB_SSL_MODE"
+  --schema-table "schema_registry_dev"
+  --schema-dir "$SCHEMA_DIR"
+)
+RESET_HINT="To start from an empty local database, stop the containers and remove $PROJECT_DIR/deploy/data."
+if ! ./build/tools baseline-schema "${LEDGER_FLAGS[@]}" \
+  --eav-table "eav_data_dev" \
+  --entity-main-table "entity_main_dev" \
+  --change-log-table "change_log_dev" \
+  --no-parquet-tier; then
+    print_error "baseline-schema refused the stored data. $RESET_HINT"
+    exit 1
+fi
+if ! ./build/tools apply-schema "${LEDGER_FLAGS[@]}"; then
+    print_error "apply-schema refused the edit to $SCHEMA_DIR. $RESET_HINT"
+    exit 1
+fi
+
+# ============================================================================
 # 7. Start server process
 # ============================================================================
 print_success "All preparations complete!"

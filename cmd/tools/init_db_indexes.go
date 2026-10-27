@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/declaredindex"
+	"github.com/lychee-technology/forma/internal/schemameta"
 )
 
 // ensureDeclaredIndexes is init-db's declared-index step (#647). It runs after
@@ -48,7 +49,8 @@ func ensureDeclaredIndexes(ctx context.Context, pool *pgxpool.Pool, conn declare
 // loadDeclaringRegistry loads every registered schema from opts.schemaDir. A
 // directory without schema files yields a nil registry, which declares
 // nothing; the step still runs, so an index whose declaration was removed is
-// reported.
+// reported. It loads without the generation gate (#733): init-db runs on an
+// upgrade before baseline-schema has recorded any generation.
 func loadDeclaringRegistry(ctx context.Context, pool *pgxpool.Pool, opts initDBOptions) (forma.SchemaRegistry, error) {
 	names, err := listSchemaNames(opts.schemaDir)
 	if err != nil {
@@ -57,7 +59,7 @@ func loadDeclaringRegistry(ctx context.Context, pool *pgxpool.Pool, opts initDBO
 	if len(names) == 0 {
 		return nil, nil
 	}
-	registry, err := buildToolSchemaRegistry(ctx, pool, opts.schemaTable, opts.schemaDir)
+	registry, err := schemameta.NewControlPlaneSchemaRegistryContext(ctx, pool, opts.schemaTable, opts.schemaDir)
 	if err != nil {
 		return nil, fmt.Errorf("load schemas from %s for declared indexes: %w", opts.schemaDir, err)
 	}

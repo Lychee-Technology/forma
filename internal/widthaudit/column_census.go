@@ -117,12 +117,19 @@ func censusColumns(ctx context.Context, q Querier, tables Tables, targets []Targ
 		return nil, fmt.Errorf("no entity main table is configured to scan %d integer attribute(s) bound to a wider column (first: schema=%s attribute=%s column=%s)",
 			len(targets), t.SchemaName, t.AttrName, t.Column)
 	}
-	byKey := targetIndex(targets)
-
 	query, args := BuildColumnCensusQuery(tables, targets)
+	return queryColumnFindings(ctx, q, tables.EntityMain, "integer-width census", query, args, targets)
+}
+
+// queryColumnFindings runs a census query over entity_main that selects
+// (schema_id, attr_id, row_id, float8 image, exact bigint, pending,
+// last_flushed_at), one of the two values set, and resolves each row to its
+// target. census names the query in errors.
+func queryColumnFindings(ctx context.Context, q Querier, table, census, query string, args []any, targets []Target) ([]Finding, error) {
+	byKey := targetIndex(targets)
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query integer-width census over %s: %w", tables.EntityMain, err)
+		return nil, fmt.Errorf("query %s over %s: %w", census, table, err)
 	}
 	defer rows.Close()
 
@@ -133,11 +140,11 @@ func censusColumns(ctx context.Context, q Querier, tables Tables, targets []Targ
 		var image *float64
 		var exact *int64
 		if err := rows.Scan(&schemaID, &attrID, &f.RowID, &image, &exact, &f.Pending, &f.LastFlushedAt); err != nil {
-			return nil, fmt.Errorf("scan integer-width census row from %s: %w", tables.EntityMain, err)
+			return nil, fmt.Errorf("scan %s row from %s: %w", census, table, err)
 		}
 		target, ok := byKey[[2]int16{schemaID, attrID}]
 		if !ok {
-			return nil, fmt.Errorf("integer-width census over %s returned schema_id=%d attr_id=%d, which is not a census target", tables.EntityMain, schemaID, attrID)
+			return nil, fmt.Errorf("%s over %s returned schema_id=%d attr_id=%d, which is not a census target", census, table, schemaID, attrID)
 		}
 		f.Target = target
 		switch {
@@ -146,13 +153,13 @@ func censusColumns(ctx context.Context, q Querier, tables Tables, targets []Targ
 		case exact != nil:
 			f.StoredValue = strconv.FormatInt(*exact, 10)
 		default:
-			return nil, fmt.Errorf("integer-width census over %s returned row %s of schema_id=%d attr_id=%d with no value in column %s",
-				tables.EntityMain, f.RowID, schemaID, attrID, target.Column)
+			return nil, fmt.Errorf("%s over %s returned row %s of schema_id=%d attr_id=%d with no value in column %s",
+				census, table, f.RowID, schemaID, attrID, target.Column)
 		}
 		findings = append(findings, f)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate integer-width census over %s: %w", tables.EntityMain, err)
+		return nil, fmt.Errorf("iterate %s over %s: %w", census, table, err)
 	}
 	return findings, nil
 }

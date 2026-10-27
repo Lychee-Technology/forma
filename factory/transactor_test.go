@@ -34,6 +34,7 @@ func TestNewTransactorAcceptsAFactoryManager_Integration(t *testing.T) {
 	writeAttributesFile(t, dir, "test", map[string]any{"id": map[string]any{"attributeID": float64(1), "valueType": "text"}})
 	writeSchemaFile(t, dir, "test", map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}}})
 
+	seedLedger(t, ctx, pool, schemaRegistryTable, dir)
 	config := forma.DefaultConfig(newMockSchemaRegistry())
 	config.Database.TableNames = forma.TableNames{SchemaRegistry: schemaRegistryTable, EAVData: eavDataTable, EntityMain: entityMainTable}
 	config.Entity.SchemaDirectory = dir

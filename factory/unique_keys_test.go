@@ -62,6 +62,7 @@ func refusesAnUnbuiltUniqueKey(t *testing.T, longEntityMain bool) {
 		"properties":          map[string]any{"handle": map[string]any{"type": "string"}},
 		"x-forma-unique-keys": []any{map[string]any{"id": 1, "name": "handle", "attributes": []any{"handle"}}},
 	})
+	seedLedger(t, ctx, pool, schemaRegistryTable, dir)
 	registry, err := schemameta.NewFileSchemaRegistry(pool, schemaRegistryTable, dir)
 	require.NoError(t, err)
 	config := forma.DefaultConfig(registry)

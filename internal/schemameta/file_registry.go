@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/schemaledger"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
@@ -32,6 +33,8 @@ type fileSchemaRegistry struct {
 
 // NewFileSchemaRegistry creates a new schema registry that reads schema mappings
 // from a PostgreSQL table and loads attribute definitions from JSON files.
+// It is the data plane's registry: it refuses to load unless every schema's
+// declaration is its active generation (gateRegistry, #733).
 //
 // Parameters:
 //   - pool: PostgreSQL connection pool
@@ -42,7 +45,18 @@ func NewFileSchemaRegistry(pool *pgxpool.Pool, schemaTable string, schemaDir str
 }
 
 func NewFileSchemaRegistryContext(ctx context.Context, pool *pgxpool.Pool, schemaTable string, schemaDir string) (forma.SchemaRegistry, error) {
-	registry := &fileSchemaRegistry{
+	registry := newFileSchemaRegistry(pool, schemaTable, schemaDir)
+	decls, err := registry.loadSchemasFromDB(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gateRegistry(ctx, registry, decls)
+}
+
+// newFileSchemaRegistry answers an empty registry. pool is nil and
+// schemaTable empty in directory mode.
+func newFileSchemaRegistry(pool *pgxpool.Pool, schemaTable, schemaDir string) *fileSchemaRegistry {
+	return &fileSchemaRegistry{
 		pool:                  pool,
 		schemaTable:           schemaTable,
 		schemaDir:             schemaDir,
@@ -52,12 +66,6 @@ func NewFileSchemaRegistryContext(ctx context.Context, pool *pgxpool.Pool, schem
 		attrIDToName:          make(map[int16]map[int16]string),
 		schemas:               make(map[int16]forma.JSONSchema),
 	}
-
-	if err := registry.loadSchemasFromDB(ctx); err != nil {
-		return nil, err
-	}
-
-	return registry, nil
 }
 
 // attributesFilePath returns the on-disk path of a schema's attribute metadata
@@ -73,23 +81,33 @@ func (r *fileSchemaRegistry) schemaFilePath(schemaName string) string {
 	return filepath.Join(r.schemaDir, schemaName+".json")
 }
 
-func (r *fileSchemaRegistry) loadSchemaArtifacts(schemaName string, schemaID int16) (forma.SchemaAttributeCache, *forma.JSONSchema, error) {
+// schemaArtifacts is one schema as read from its two files.
+type schemaArtifacts struct {
+	// cache is the full attributes file, retired entries included.
+	cache forma.SchemaAttributeCache
+	// schema is nil when the schema has no JSON Schema file.
+	schema *forma.JSONSchema
+	// hash is the ledger's content hash over the bytes both were parsed from.
+	hash string
+}
+
+func (r *fileSchemaRegistry) loadSchemaArtifacts(schemaName string, schemaID int16) (schemaArtifacts, error) {
 	attributesFile := r.attributesFilePath(schemaName)
 	attributeData, err := os.ReadFile(attributesFile)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
+		return schemaArtifacts{}, fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
 	}
 
 	var rawAttributes map[string]map[string]any
 	if err := json.Unmarshal(attributeData, &rawAttributes); err != nil {
-		return nil, nil, fmt.Errorf("failed to parse attributes file %s: %w", attributesFile, err)
+		return schemaArtifacts{}, fmt.Errorf("failed to parse attributes file %s: %w", attributesFile, err)
 	}
 
 	cache := make(forma.SchemaAttributeCache)
 	for attrName, attrData := range rawAttributes {
 		meta, err := parseAttributeMetadata(attrName, attrData, attributesFile)
 		if err != nil {
-			return nil, nil, err
+			return schemaArtifacts{}, err
 		}
 		cache[attrName] = meta
 	}
@@ -98,16 +116,21 @@ func (r *fileSchemaRegistry) loadSchemaArtifacts(schemaName string, schemaID int
 	schemaData, err := os.ReadFile(schemaFile)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			return nil, nil, fmt.Errorf("failed to read schema file %s: %w", schemaFile, err)
+			return schemaArtifacts{}, fmt.Errorf("failed to read schema file %s: %w", schemaFile, err)
 		}
-		return cache, nil, nil
+		return schemaArtifacts{cache: cache, hash: schemaledger.ContentHash(nil, attributeData)}, nil
 	}
 
 	jsonSchema, err := parseJSONSchemaFile(schemaData, schemaID, schemaName)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse schema file %s: %w", schemaFile, err)
+		return schemaArtifacts{}, fmt.Errorf("failed to parse schema file %s: %w", schemaFile, err)
 	}
-	return cache, &jsonSchema, nil
+	return schemaArtifacts{cache: cache, schema: &jsonSchema, hash: schemaledger.ContentHash(schemaData, attributeData)}, nil
+}
+
+// declaration records a. Retired entries are included: the ledger keeps them.
+func (a schemaArtifacts) declaration(schemaName string, schemaID int16) schemaledger.Declaration {
+	return schemaledger.Declaration{SchemaName: schemaName, SchemaID: schemaID, Hash: a.hash, Entries: schemaledger.EntriesOf(a.cache)}
 }
 
 // registerSchema indexes one schema. Its only error comes from
@@ -144,12 +167,12 @@ func buildAttrIDToName(schemaName string, cache forma.SchemaAttributeCache) (map
 
 // loadSchemasFromDB reads schema mappings from the database and loads attribute
 // definitions from JSON files on disk.
-func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) error {
+func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) ([]schemaledger.Declaration, error) {
 	// Step 1: Read schema_name -> schema_id mappings from database
 	query := fmt.Sprintf("SELECT schema_name, schema_id FROM %s ORDER BY schema_name", sqlutil.SanitizeIdentifier(r.schemaTable))
 	rows, err := r.pool.Query(ctx, query)
 	if err != nil {
-		return fmt.Errorf("failed to query schema registry table: %w", err)
+		return nil, fmt.Errorf("failed to query schema registry table: %w", err)
 	}
 	defer rows.Close()
 
@@ -164,40 +187,42 @@ func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) error {
 		var name string
 		var id int16
 		if err := rows.Scan(&name, &id); err != nil {
-			return fmt.Errorf("failed to scan schema row: %w", err)
+			return nil, fmt.Errorf("failed to scan schema row: %w", err)
 		}
 		mappings = append(mappings, schemaMapping{name: name, id: id})
 	}
 
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("error iterating schema rows: %w", err)
+		return nil, fmt.Errorf("error iterating schema rows: %w", err)
 	}
 
 	if len(mappings) == 0 {
-		return fmt.Errorf("no schemas found in table: %s", r.schemaTable)
+		return nil, fmt.Errorf("no schemas found in table: %s", r.schemaTable)
 	}
 
 	// Step 2: For each schema, load attribute metadata from the corresponding _attributes.json file
+	decls := make([]schemaledger.Declaration, 0, len(mappings))
 	for _, mapping := range mappings {
 		schemaName := mapping.name
 		schemaID := mapping.id
 		if existingName, exists := r.idToName[schemaID]; exists {
-			return fmt.Errorf("duplicate schema id %d for %s and %s", schemaID, existingName, schemaName)
+			return nil, fmt.Errorf("duplicate schema id %d for %s and %s", schemaID, existingName, schemaName)
 		}
 		if existingID, exists := r.nameToID[schemaName]; exists {
-			return fmt.Errorf("duplicate schema name %s for ids %d and %d", schemaName, existingID, schemaID)
+			return nil, fmt.Errorf("duplicate schema name %s for ids %d and %d", schemaName, existingID, schemaID)
 		}
 
-		cache, schema, err := r.loadSchemaArtifacts(schemaName, schemaID)
+		artifacts, err := r.loadSchemaArtifacts(schemaName, schemaID)
 		if err != nil {
-			return fmt.Errorf("failed to load schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
+			return nil, fmt.Errorf("failed to load schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
 		}
-		if err := r.admitSchema(schemaName, schemaID, cache, schema); err != nil {
-			return fmt.Errorf("schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
+		if err := r.admitSchema(schemaName, schemaID, artifacts.cache, artifacts.schema); err != nil {
+			return nil, fmt.Errorf("schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
 		}
+		decls = append(decls, artifacts.declaration(schemaName, schemaID))
 	}
 
-	return nil
+	return decls, nil
 }
 
 // admitSchema validates one loaded schema and registers it; both load paths
@@ -355,17 +380,7 @@ func hasSuffix(name, suffix string) bool {
 // Parameters:
 //   - schemaDir: Directory containing the schema files (*.json and *_attributes.json)
 func NewFileSchemaRegistryFromDirectory(schemaDir string) (forma.SchemaRegistry, error) {
-	registry := &fileSchemaRegistry{
-		pool:                  nil, // no database connection
-		schemaTable:           "",  // empty when using directory-based mode
-		schemaDir:             schemaDir,
-		nameToID:              make(map[string]int16),
-		idToName:              make(map[int16]string),
-		schemaAttributeCaches: make(map[int16]forma.SchemaAttributeCache),
-		attrIDToName:          make(map[int16]map[int16]string),
-		schemas:               make(map[int16]forma.JSONSchema),
-	}
-
+	registry := newFileSchemaRegistry(nil, "", schemaDir)
 	if err := registry.loadSchemasFromDirectory(); err != nil {
 		return nil, err
 	}
@@ -401,11 +416,11 @@ func (r *fileSchemaRegistry) loadSchemasFromDirectory() error {
 	for _, schemaName := range schemaNames {
 		schemaID := nextSchemaID
 
-		cache, schema, err := r.loadSchemaArtifacts(schemaName, schemaID)
+		artifacts, err := r.loadSchemaArtifacts(schemaName, schemaID)
 		if err != nil {
 			return fmt.Errorf("failed to load schema %s discovered in schema directory: %w", schemaName, err)
 		}
-		if err := r.admitSchema(schemaName, schemaID, cache, schema); err != nil {
+		if err := r.admitSchema(schemaName, schemaID, artifacts.cache, artifacts.schema); err != nil {
 			return fmt.Errorf("schema %s discovered in schema directory: %w", schemaName, err)
 		}
 		nextSchemaID++

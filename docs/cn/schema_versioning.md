@@ -26,7 +26,7 @@
 
 ## 不允许的Schema变更操作类型 （NOT backwards compatible）
 
-以下变更不向后兼容。注意：目前 Forma **并不会**自动拒绝其中大部分变更，进程启动时直接加载 `SCHEMA_DIR` 中的新定义，不与旧定义比较；避免这些变更是运维方的责任。已实现的检查仅限于：已退役（`retired`）属性的 ID、列绑定与类型复用（#342），以及 `valueType` 与列编码的绑定校验（#459）。不允许的Schema变更类型包括但不限于：
+以下变更不向后兼容。注意：目前 Forma **并不会**自动拒绝其中大部分变更；避免这些变更是运维方的责任。已实现的检查仅限于：已退役（`retired`）属性的 ID、列绑定与类型复用（#342），`valueType` 与列编码的绑定校验（#459），以及自 #733 起 `apply-schema` 对 `valueType`、`items_type` 与列绑定变更的判定（见第 4 条）。不允许的Schema变更类型包括但不限于：
 
 1.  **添加新的必填字段 (Add Required Field)**
     *   在 `properties` 中增加新字段，并将其加入 `required` 列表。
@@ -43,7 +43,7 @@
 4.  **修改字段类型 (Change Field Type)**
     *   修改字段的 `type` 属性（例如从 `"string"` 改为 `"integer"`，或 `"array"` 改为 `"object"`）。
     *   **原因**：历史数据的存储格式与新定义不兼容，导致解析错误。
-    *   修改属性的 `valueType`（例如 `numeric` 改为 `bigint`）同样适用。既定策略是 fail-closed，且是否允许只看新旧类型和绑定的存储，不看已存储的值：收窄（如 `numeric` 改为 `bigint`）和跨类型族的变更一律拒绝，即使现有数据恰好都满足新类型；整数族内拓宽和改为 `numeric` 允许，其中绑定 `bigint_*` 列的 `bigint` 改为 `numeric` 会给出警告，因为超过 ±2^53 的值会被舍入。例外：在 #729 修复之前，未绑定主表列（仅存于 EAV）的 `smallint`/`integer` 属性的任何类型变更一律拒绝，包括拓宽和改为 `numeric`，因为仍在运行的旧进程会把新允许的值（如 `1001.5`）转换后读出，并在无关的更新中写回。有损转换（舍入、截断、置 NULL）必须通过显式迁移完成（#730）。该策略尚未完全实现（#710、#733）。实测在 `numeric` 改为 `bigint` 后，含 `1e30` 的旧 parquet 会使该 schema 上过滤条件保留了该行的联邦查询失败（即使该行不在返回的页内，未过滤的列表查询都会失败），而 `1000.5` 会被静默读成 `1000`；自 #732 起，联邦读取对这两种情况都会明确拒绝。详见 [Schema Evolution and Declared Types](../schema-evolution.md)。
+    *   修改属性的 `valueType`（例如 `numeric` 改为 `bigint`）同样适用。既定策略是 fail-closed，且是否允许只看新旧类型和绑定的存储，不看已存储的值：收窄（如 `numeric` 改为 `bigint`）和跨类型族的变更一律拒绝，即使现有数据恰好都满足新类型；整数族内拓宽和改为 `numeric` 允许，其中绑定 `bigint_*` 列的 `bigint` 改为 `numeric` 会给出警告，因为超过 ±2^53 的值会被舍入。例外：在 #729 修复之前，未绑定主表列（仅存于 EAV）的 `smallint`/`integer` 属性的拓宽和改为 `numeric` 也被拒绝（其收窄和跨类型族的变更按上述规则拒绝，#729 修复后仍然拒绝），因为仍在运行的旧进程会把新允许的值（如 `1001.5`）转换后读出，并在无关的更新中写回。有损转换（舍入、截断、置 NULL）必须通过显式迁移完成（#730）。自 #733 起该策略已强制执行：声明的每个版本记录为一个 generation，修改后的声明须先由 `apply-schema` 按上述规则记录，规则拒绝的变更不会生效；服务端、Lambda、`cdc-flush` 与 `cdc-init` 只在所加载的声明属于当前 active generation 时才会启动。已有部署升级到该版本前，须先运行 `init-db`（DSQL 上手工执行建表语句），再停止旧版本的所有写入与导出进程并运行 `baseline-schema`，之后只启动新版本：旧版本没有启动门禁，它在基线期间或之后写入的值不会被审计。实测在 `numeric` 改为 `bigint` 后，含 `1e30` 的旧 parquet 会使该 schema 上过滤条件保留了该行的联邦查询失败（即使该行不在返回的页内，未过滤的列表查询都会失败），而 `1000.5` 会被静默读成 `1000`；自 #732 起，联邦读取对这两种情况都会明确拒绝。详见 [Schema Evolution and Declared Types](../schema-evolution.md)。
 
 5.  **收紧验证约束 (Tighten Validation Constraints)**
     *   **减小** `maxLength`。

@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/schemaledger"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"go.uber.org/zap"
 )
@@ -245,6 +246,8 @@ type MetadataLoader struct {
 	// (validate-schema-consistency) can see every one instead of the first.
 	// Runtime loads never set it.
 	deferBindingCheck bool
+	// controlPlane skips the generation gate (ControlPlane).
+	controlPlane bool
 }
 
 // NewMetadataLoader creates a new metadata loader
@@ -265,7 +268,18 @@ func (ml *MetadataLoader) DeferColumnBindingCheck() *MetadataLoader {
 	return ml
 }
 
-// LoadMetadata loads all metadata and returns a cache
+// ControlPlane makes LoadMetadata skip the generation gate, for
+// validate-schema-consistency, which reports on a declaration whatever the
+// ledger holds; it returns the receiver for chaining. A guard test confines
+// its callers; the data plane never uses it.
+func (ml *MetadataLoader) ControlPlane() *MetadataLoader {
+	ml.controlPlane = true
+	return ml
+}
+
+// LoadMetadata loads all metadata and returns a cache. It refuses, like the
+// file registry, unless every schema's declaration is its active generation
+// (schemaledger.Gate, #733).
 func (ml *MetadataLoader) LoadMetadata(ctx context.Context) (*MetadataCache, error) {
 	cache := NewMetadataCache()
 
@@ -275,10 +289,18 @@ func (ml *MetadataLoader) LoadMetadata(ctx context.Context) (*MetadataCache, err
 	}
 
 	// Step 2: Load attribute metadata from JSON files
-	if err := ml.loadAttributeMetadataFromFiles(cache); err != nil {
+	decls, err := ml.loadAttributeMetadataFromFiles(cache)
+	if err != nil {
 		return nil, fmt.Errorf("failed to load attribute metadata: %w", err)
 	}
 
+	// Step 3: Admit the declaration only when it is the active generation
+	if ml.controlPlane {
+		return cache, nil
+	}
+	if _, err := schemaledger.Gate(ctx, ml.pool, ml.schemaTableName, decls); err != nil {
+		return nil, fmt.Errorf("schema directory %s: %w", ml.schemaDirectory, err)
+	}
 	return cache, nil
 }
 
@@ -328,15 +350,16 @@ func (ml *MetadataLoader) loadSchemaRegistry(ctx context.Context, cache *Metadat
 }
 
 // loadAttributeMetadataFromFiles loads attribute metadata from JSON files
-func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) error {
+func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) ([]schemaledger.Declaration, error) {
 	entries, err := os.ReadDir(ml.schemaDirectory)
 	if err != nil {
-		return fmt.Errorf("failed to read schema directory: %w", err)
+		return nil, fmt.Errorf("failed to read schema directory: %w", err)
 	}
 
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
+	decls := make([]schemaledger.Declaration, 0, len(cache.schemaNameToID))
 	// Load attribute metadata for each schema that exists in the registry
 	for schemaName, schemaID := range cache.schemaNameToID {
 		zap.S().Infow("Loading attributes for schema", "schema_name", schemaName, "schema_id", schemaID)
@@ -348,18 +371,18 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 		// Registry entries without attribute files are a bootstrap error. If we
 		// continue, requests will fail later with missing cache lookups.
 		if _, err := os.Stat(attributesFile); os.IsNotExist(err) {
-			return fmt.Errorf("attributes file not found for schema %s: %s", schemaName, attributesFile)
+			return nil, fmt.Errorf("attributes file not found for schema %s: %s", schemaName, attributesFile)
 		}
 
 		// Read and parse attribute metadata
 		data, err := os.ReadFile(attributesFile)
 		if err != nil {
-			return fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
+			return nil, fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
 		}
 
 		var rawAttributes map[string]map[string]any
 		if err := json.Unmarshal(data, &rawAttributes); err != nil {
-			return fmt.Errorf("failed to parse attributes file %s: %w", attributesFile, err)
+			return nil, fmt.Errorf("failed to parse attributes file %s: %w", attributesFile, err)
 		}
 
 		// Convert to AttributeMeta map
@@ -368,13 +391,13 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 		for attrName, attrData := range rawAttributes {
 			meta, err := parseAttributeMetadata(attrName, attrData, attributesFile)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			schemaCache[attrName] = meta
 		}
 		// Validate the FULL cache before stripping — see activeAttributeCache (#342).
 		if err := validateSchemaAttributeCacheOpts(schemaName, schemaCache, !ml.deferBindingCheck); err != nil {
-			return fmt.Errorf("attributes file %s: %w", attributesFile, err)
+			return nil, fmt.Errorf("attributes file %s: %w", attributesFile, err)
 		}
 		active := activeAttributeCache(schemaCache)
 
@@ -383,6 +406,7 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 		cache.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(copySchemaAttributeCache(active))
 		cache.schemaCaches[schemaID] = active
 		cache.retiredAttrIDs[schemaID] = retiredAttributeIDs(schemaCache)
+		decls = append(decls, schemaledger.Declaration{SchemaName: schemaName, SchemaID: schemaID, Entries: schemaledger.EntriesOf(schemaCache)})
 
 		zap.S().Infow("Loaded attributes for schema", "count", len(active), "schema", schemaName)
 	}
@@ -402,5 +426,5 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) e
 		}
 	}
 
-	return nil
+	return decls, nil
 }
