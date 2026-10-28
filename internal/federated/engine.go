@@ -209,6 +209,9 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		recordHotOnlyGatePlan(opts, tables)
 		return e.queryPostgresOnlyWithPlan(ctx, tables, fq, opts)
 	}
+	if fq.ParquetUnrepresentable != "" {
+		return e.queryParquetUnrepresentable(ctx, tables, fq, opts)
+	}
 
 	if opts != nil && opts.IncludeExecutionPlan {
 		if opts.ExecutionPlan == nil {

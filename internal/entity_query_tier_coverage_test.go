@@ -79,3 +79,33 @@ func TestQueryResultCarriesHotTierOnlyMarker(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(blob), `"partial":{"reason":"hot_tier_only","unconsulted_tiers":["warm","cold"]}`)
 }
+
+// TestQueryTellsTheEngineWhenTheParquetTiersCannotHoldTheSchema is the
+// wiring leg of #704 on the shipped schemas: the registry derives lead's
+// arrays of objects, so its federated query reaches the engine with the
+// reason, and visit's, which has none, without one.
+func TestQueryTellsTheEngineWhenTheParquetTiersCannotHoldTheSchema(t *testing.T) {
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
+	require.NoError(t, err)
+
+	engine := &mockFederatedQueryEngine{}
+	engine.queryFunc = func(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) (*model.PersistentRecordPage, error) {
+		return &model.PersistentRecordPage{CurrentPage: 1}, nil
+	}
+	em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry),
+		newMockPersistentRecordRepository(), engine, registry, createTestConfig(), nil)
+
+	for schema, want := range map[string]string{"lead": `inside the array of objects "propertyInterests"`, "visit": ""} {
+		_, err = em.Query(context.Background(), &forma.QueryRequest{
+			SchemaName: schema, Page: 1, ItemsPerPage: 10,
+			Federated: &forma.FederatedQueryRequest{Enabled: true},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, engine.lastQuery)
+		if want == "" {
+			require.Empty(t, engine.lastQuery.ParquetUnrepresentable, schema)
+			continue
+		}
+		require.Contains(t, engine.lastQuery.ParquetUnrepresentable, want, schema)
+	}
+}
