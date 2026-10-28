@@ -22,8 +22,8 @@ import (
 // enabling DuckDB.
 func (e *DBFederatedQueryEngine) queryParquetUnrepresentable(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) (*model.PersistentRecordPage, error) {
 	if hasKeysetCursor(fq) {
-		return nil, fmt.Errorf("keyset cursor cannot be served for schema id %d: its queries route to the postgres-only path, which applies no cursor predicate, because the parquet tiers cannot hold it (%s); paginate with limit/offset: %w",
-			fq.SchemaID, fq.ParquetUnrepresentable, ErrKeysetUnsupportedOnPostgres)
+		return nil, fmt.Errorf("keyset cursor cannot be served for schema id %d: its queries route to the postgres-only path, which applies no cursor predicate, because the parquet tiers cannot hold it (%s); paginate with limit/offset: %w: %w",
+			fq.SchemaID, fq.ParquetUnrepresentable, ErrKeysetUnsupportedOnPostgres, ErrParquetUnrepresentable)
 	}
 	decision := model.RoutingDecision{
 		Tiers:  []model.DataTier{model.DataTierHot},
@@ -42,4 +42,19 @@ func (e *DBFederatedQueryEngine) queryParquetUnrepresentable(ctx context.Context
 	}
 	markHotTierOnly(page, opts, fq)
 	return page, nil
+}
+
+// refuseParquetUnrepresentable refuses a DuckDB pass over a query whose
+// schema the parquet tiers cannot hold. Query never starts one (it answers
+// such a query above), so this guards the entry points that reach a pass
+// directly: ExecuteFederatedKeysetQuery, ExecuteDuckDBFederatedQuery and
+// StreamDuckDBFederatedQuery, all of which run through
+// StreamDuckDBFederatedQuery. It runs before circuit-breaker admission, so a
+// refusal neither takes the half-open probe nor counts as a DuckDB failure.
+func refuseParquetUnrepresentable(fq *model.FederatedAttributeQuery) error {
+	if fq.ParquetUnrepresentable == "" {
+		return nil
+	}
+	return fmt.Errorf("duckdb pass refused for schema id %d: the parquet tiers cannot hold it (%s), and the hot-tier pivot would reduce it the same way; read it through Query, which answers it from postgres: %w",
+		fq.SchemaID, fq.ParquetUnrepresentable, ErrParquetUnrepresentable)
 }

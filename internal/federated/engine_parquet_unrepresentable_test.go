@@ -76,7 +76,55 @@ func TestQueryParquetUnrepresentableRefusesAKeysetCursor(t *testing.T) {
 	_, err := engine.Query(context.Background(), testTables, fq, &model.FederatedQueryOptions{})
 
 	require.True(t, errors.Is(err, ErrKeysetUnsupportedOnPostgres), "got %v", err)
+	require.True(t, errors.Is(err, ErrParquetUnrepresentable), "got %v", err)
 	require.Contains(t, err.Error(), unrepresentableReason)
 	require.Zero(t, pg.queryCalls)
 	require.Zero(t, duck.calls)
+}
+
+// TestDuckDBEntryPointsRefuseAParquetUnrepresentableSchema: the entry points
+// that reach a DuckDB pass without going through Query refuse the schema
+// before any DuckDB or S3 work, with a cursor and on the cursorless first
+// page alike. A pass would collapse each member of the array of objects.
+func TestDuckDBEntryPointsRefuseAParquetUnrepresentableSchema(t *testing.T) {
+	firstPage := func() *model.FederatedAttributeQuery {
+		fq := keysetTestQuery()
+		fq.KeysetCursor = nil
+		return fq
+	}
+	calls := map[string]func(*DBFederatedQueryEngine, *model.FederatedAttributeQuery) error{
+		"keyset coordinator": func(e *DBFederatedQueryEngine, fq *model.FederatedAttributeQuery) error {
+			_, _, err := e.ExecuteFederatedKeysetQuery(context.Background(), testTables, fq, 10, nil, &model.FederatedQueryOptions{})
+			return err
+		},
+		"buffered pass": func(e *DBFederatedQueryEngine, fq *model.FederatedAttributeQuery) error {
+			_, _, err := e.ExecuteDuckDBFederatedQuery(context.Background(), testTables, fq, 10, 0, nil, &model.FederatedQueryOptions{})
+			return err
+		},
+		"streamed pass": func(e *DBFederatedQueryEngine, fq *model.FederatedAttributeQuery) error {
+			_, err := e.StreamDuckDBFederatedQuery(context.Background(), testTables, fq, 10, 0, nil, &model.FederatedQueryOptions{},
+				func(context.Context, *model.PersistentRecord) error { return nil })
+			return err
+		},
+	}
+	queries := map[string]func() *model.FederatedAttributeQuery{"with a cursor": keysetTestQuery, "first page": firstPage}
+	for callName, call := range calls {
+		for queryName, query := range queries {
+			t.Run(callName+"/"+queryName, func(t *testing.T) {
+				pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{}}
+				duck := &fakeDuckDBExecutor{}
+				engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, hybridEnabledCfg(), nil, "")
+				fq := query()
+				fq.ParquetUnrepresentable = unrepresentableReason
+
+				err := call(engine, fq)
+
+				require.True(t, errors.Is(err, ErrParquetUnrepresentable), "got %v", err)
+				require.Contains(t, err.Error(), unrepresentableReason)
+				require.Zero(t, duck.calls)
+				require.Zero(t, duck.describeCalls)
+				require.Zero(t, pg.queryCalls)
+			})
+		}
+	}
 }
