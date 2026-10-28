@@ -340,8 +340,8 @@ func TestSchemaEvolutionRemovedColumn(t *testing.T) {
 // totals identical). That failure mode is the strongest reason the fix must
 // widen the union rather than pin first-file-wins.
 //
-// apply-schema refuses this change until #729 is fixed (#733), so the
-// restart is forced: it reads data a deployment from before the gate holds.
+// The change goes through apply-schema's D2 rules (#733), which allow an
+// EAV-only integer → numeric widening since #729.
 func TestSchemaEvolutionChangedType(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
@@ -350,7 +350,7 @@ func TestSchemaEvolutionChangedType(t *testing.T) {
 	env := NewEnv(t, cluster, WithSchemaDir(v1))
 	simple := DefaultSchemaFixtures()[0]
 
-	baseKey, deltaKey, _ := seedEvolutionTiersVia(ctx, t, env, env.ForceEvolveSchema, simple, v2,
+	baseKey, deltaKey, _ := seedEvolutionTiers(ctx, t, env, simple, v2,
 		buildEvolutionProfile(buildLabeledExtras(func(ordinal int) map[string]any {
 			return map[string]any{"score": float64(ordinal * 10)}
 		})),

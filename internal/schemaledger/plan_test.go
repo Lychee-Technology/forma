@@ -71,18 +71,18 @@ func TestPlanApplyReportsEveryRefusalAndWarning(t *testing.T) {
 	active := gen(1, "h1",
 		bound(1, "price", forma.ValueTypeNumeric, "double_1"),
 		bound(2, "total", forma.ValueTypeBigInt, "bigint_1"),
-		eav(3, "count", forma.ValueTypeSmallInt))
+		eav(3, "count", forma.ValueTypeInteger))
 	plan := PlanApply(active, decl("h2",
 		bound(1, "price", forma.ValueTypeBigInt, "double_1"),
 		bound(2, "total", forma.ValueTypeNumeric, "bigint_1"),
-		eav(3, "count", forma.ValueTypeInteger)))
+		eav(3, "count", forma.ValueTypeSmallInt)))
 	refusals := plan.Refusals()
 	if len(refusals) != 2 {
 		t.Fatalf("refusals = %v, want price and count", refusals)
 	}
 	for i, want := range [][]string{
 		{"schema orders (id 9)", "price (id 1)", "numeric bound to double_1", "bigint bound to double_1", "#730"},
-		{"count (id 3)", "smallint EAV-only", "integer EAV-only", "#729"},
+		{"count (id 3)", "integer EAV-only", "smallint EAV-only", "narrows", "#730"},
 	} {
 		for _, part := range want {
 			if !strings.Contains(refusals[i], part) {

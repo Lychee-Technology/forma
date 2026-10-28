@@ -269,7 +269,6 @@ footer carries no trace of the change (see the limits below).
    | `smallint`/`integer → numeric` | allowed; exact in every storage |
    | `bigint → numeric`, `double_*` column or EAV-only | allowed; exact, since that storage holds only ±2^53 (#590) |
    | `bigint → numeric`, `bigint_*` column | allowed with a warning: a value beyond ±2^53 reads rounded to its float64 on every route |
-   | `smallint → integer`/`bigint`, `integer → bigint`, or `smallint`/`integer → numeric`, on an EAV-only attribute | refused until every process runs #729's read refusal (see below); a narrowing or a family change of one stays refused as above |
 
 2. Implicit evolution is lossless. Rounding, truncation, clamping, and
    substituting NULL are not implicitly approved. They require an explicit,
@@ -294,18 +293,32 @@ values stay valid under the new type, and no fence against old writers is
 needed.
 
 Old readers and exporters are a separate matter. An old process's OLTP route
-fails closed on a value the new type allows and its own does not: a bound
-`smallint`/`integer` image by D1, a `bigint` image that names no int64 by
-#590. An EAV-only `smallint`/`integer` does only on a process that runs
-#729's refusal. A process from before it converts `4294967296` to
-`-2147483648`, and an unrelated update through it writes that back, hence the
-last row of the table: it is lifted only once no such process can run. Two
-other paths of an old process convert the value instead:
+fails closed on a value the new type allows and its own does not: a
+`smallint`/`integer` image by D1, bound (#708) or EAV-only (#729), and a
+`bigint` image that names no int64 by #590. An unrelated update through it
+fails the same way and writes nothing
+(`TestApplyAllowsEAVOnlyWideningAndAnOldProcessFailsClosed`).
 
-- **Its federated reads** read the value at its own declared type, as D1's
-  table of route differences shows (`1001.5` as `1002`). Nothing is stored,
-  and the answer is right again once the process restarts on the new
-  `SCHEMA_DIR`.
+A process from before #729 does not refuse an EAV-only image: it converts
+`40000` under `smallint` to `-25536` and `1001.5` under `integer` to `1001`,
+and an unrelated update through it writes that back. Until #729, apply
+refused the EAV-only widenings for that reason. They are allowed now because
+no deployment can run such a writer beside the ledger. The
+[upgrade](#upgrading-an-existing-deployment) stops every writer of a release
+from before the ledger (#733) for good. The only build with the ledger
+and without #729's refusal is `main` at `7b75a9d`, the merge of #733, which
+#729's merge followed; no tagged release has it. A deployment running that build replaces every writer
+with a later one before it applies an EAV-only widening. Two other paths of an
+old process convert a bound column's value instead:
+
+- **Its federated reads** read a bound column at its own declared type
+  through `TRY_CAST`, as D1's table of route differences shows (`1001.5` as
+  `1002`). An EAV-only value reaches them at storage width, DOUBLE, so the
+  same check refuses the row as on the OLTP route, with
+  [#621's two gaps](#eav-only-integers-729): a fraction a float64 cannot keep
+  reads as the whole number, and a NaN or an infinity fails the query without
+  naming the row. Either way nothing is stored, and the answer is right again
+  once the process restarts on the new `SCHEMA_DIR`.
 - **A CDC run that started before the apply** (`cdc-flush`, `cdc-init`)
   resolves its attribute metadata once per run, exports each bound column
   through `TRY_CAST` at its own declared type (`castMainValue`), and marks the
@@ -315,7 +328,9 @@ other paths of an old process convert the value instead:
   the federated route serves the converted value while that object is live,
   and Postgres keeps `1001.5`. The start-up check in [Generations](#generations)
   does not stop a run already in progress. The production harness reproduces
-  this path end to end: the export a stopped run strands holds `1002`.
+  this path end to end: the export a stopped run strands holds `1002`. An
+  EAV-only `smallint`/`integer` exports at storage width, DOUBLE
+  (`castEAVValue`), so such a run converts nothing.
 
 **Implemented (#733):** no value a CDC run read after an apply leaves its
 `_tmp` key. After each batch's export and before its copy to the
@@ -379,9 +394,8 @@ against the storage it actually runs on.
   allowed change without a separate approval step, prints the warning and
   stores it on the generation. It is all-or-nothing: one refused change in
   any schema records nothing, and the refusal names the schema, the
-  attribute, the old and new types and the remediation (#730, or #729 for
-  widening an EAV-only `smallint`/`integer`). Concurrent runs compare-and-set the pointer
-  in one transaction: the second waits on the first's row lock, then finds the
+  attribute, the old and new types and the remediation (#730). Concurrent
+  runs compare-and-set the pointer in one transaction: the second waits on the first's row lock, then finds the
   pointer moved and records nothing.
 - **The data plane only reads:** the server, the Lambda entrypoint,
   `cdc-flush` and `cdc-init` refuse to start when a schema has no active

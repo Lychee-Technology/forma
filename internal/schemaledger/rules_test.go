@@ -46,11 +46,14 @@ func TestJudgeFollowsTheD2Table(t *testing.T) {
 		{"numeric to smallint, EAV-only", eav(1, "a", num), eav(1, "a", small), Refused, "narrows"},
 		{"bigint to integer", bound(1, "a", big, "bigint_1"), bound(1, "a", integer, "bigint_1"), Refused, "#730"},
 		{"integer to smallint", bound(1, "a", integer, "integer_1"), bound(1, "a", small, "integer_1"), Refused, "narrows"},
-		{"EAV-only smallint to integer", eav(1, "a", small), eav(1, "a", integer), Refused, "#729"},
-		{"EAV-only integer to numeric", eav(1, "a", integer), eav(1, "a", num), Refused, "#729"},
-		{"EAV-only smallint to bigint", eav(1, "a", small), eav(1, "a", big), Refused, "#729"},
-		// #729 gates only the widenings: a narrowing or a family change of an
-		// EAV-only integer stays refused after it, so its reason names #730.
+		// Since #729 a process on the old declaration refuses a wider EAV-only
+		// image instead of converting it, so these widenings apply as bound
+		// ones do.
+		{"EAV-only smallint to integer", eav(1, "a", small), eav(1, "a", integer), Allowed, ""},
+		{"EAV-only smallint to bigint", eav(1, "a", small), eav(1, "a", big), Allowed, ""},
+		{"EAV-only integer to bigint", eav(1, "a", integer), eav(1, "a", big), Allowed, ""},
+		{"EAV-only smallint to numeric", eav(1, "a", small), eav(1, "a", num), Allowed, ""},
+		{"EAV-only integer to numeric", eav(1, "a", integer), eav(1, "a", num), Allowed, ""},
 		{"EAV-only integer to smallint", eav(1, "a", integer), eav(1, "a", small), Refused, "narrows"},
 		{"EAV-only integer to text", eav(1, "a", integer), eav(1, "a", forma.ValueTypeText), Refused, "#730"},
 		{"EAV-only smallint to date", eav(1, "a", small), eav(1, "a", forma.ValueTypeDate), Refused, "#730"},
