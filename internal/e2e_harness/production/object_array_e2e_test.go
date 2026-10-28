@@ -4,6 +4,7 @@ package production
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ const objectArrayAttrs = `{
 // missed a filter on the smaller element. The flush now leaves the schema's
 // rows unflushed, and every federated read of it, an explicit warm/cold
 // declaration included, is answered from PostgreSQL with both elements and
-// the hot_tier_only marker.
+// the hot_tier_only marker. A read that pins a parquet source is refused.
 func TestObjectArraySchemaReadsEveryElementOnTheFederatedRoute(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, objectArrayProps, objectArrayAttrs)))
@@ -83,6 +84,17 @@ func TestObjectArraySchemaReadsEveryElementOnTheFederatedRoute(t *testing.T) {
 				tiers, answered, stored.Attributes["items"])
 		}
 		assertObjectArrayRoute(t, tiers, res)
+	}
+
+	// A pinned parquet source cannot be honored by a PostgreSQL answer, so it
+	// is refused even though this deployment permits the hint for the glob.
+	_, err = env.EntityManager().Query(ctx, &forma.QueryRequest{
+		SchemaName: simple.Name, Page: 1, ItemsPerPage: 10,
+		Federated: &forma.FederatedQueryRequest{Enabled: true, PreferredTiers: []string{"warm", "cold"},
+			S3ParquetPathTemplate: env.ParquetGlob()},
+	})
+	if !errors.Is(err, forma.ErrInvalidInput) || !strings.Contains(err.Error(), `array of objects "items"`) {
+		t.Fatalf("federated query with a pinned parquet path: err %v, want invalid input naming the array of objects", err)
 	}
 
 	if flush.UnflushedAfter != flush.UnflushedBefore || len(flush.NewObjects) != 0 {

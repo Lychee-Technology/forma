@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/stretchr/testify/require"
 )
@@ -124,6 +125,45 @@ func TestDuckDBEntryPointsRefuseAParquetUnrepresentableSchema(t *testing.T) {
 				require.Zero(t, duck.calls)
 				require.Zero(t, duck.describeCalls)
 				require.Zero(t, pg.queryCalls)
+			})
+		}
+	}
+}
+
+// TestQueryParquetUnrepresentableRefusesAPinnedParquetPath: a pinned
+// s3_parquet_path_template names the parquet population to read, which a
+// Postgres-only answer cannot honor, so the request is refused as invalid
+// input before Postgres is read. This holds for a hint the deployment would
+// honor for another schema and for one it would reject: either way the
+// answer would otherwise come from a different source than the caller named.
+func TestQueryParquetUnrepresentableRefusesAPinnedParquetPath(t *testing.T) {
+	const hint = "s3://bucket/data/{{.SchemaID}}/base/*.parquet"
+	permitted := hybridEnabledCfg()
+	permitted.AllowCallerParquetPaths = true
+	permitted.S3Bucket = "bucket"
+	configs := map[string]forma.DuckDBConfig{"hint permitted": permitted, "hint disabled": hybridEnabledCfg()}
+	for cfgName, cfg := range configs {
+		for tiersName, tiers := range map[string][]model.DataTier{"omitted": nil, "warm and cold": warmCold} {
+			t.Run(cfgName+"/"+tiersName, func(t *testing.T) {
+				pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{}}
+				duck := &fakeDuckDBExecutor{}
+				engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, cfg, nil, "")
+
+				_, err := engine.Query(context.Background(), testTables, &model.FederatedAttributeQuery{
+					AttributeQuery:         model.AttributeQuery{SchemaID: 7, Limit: 10},
+					PreferredTiers:         tiers,
+					DuckDBHints:            &model.DuckDBRenderHints{S3ParquetPathTemplate: hint},
+					ParquetUnrepresentable: unrepresentableReason,
+				}, &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+
+				require.True(t, errors.Is(err, forma.ErrInvalidInput), "got %v", err)
+				require.True(t, errors.Is(err, ErrParquetUnrepresentable), "got %v", err)
+				msg, ok := forma.ResolvePublicMessage(err)
+				require.True(t, ok, "got %v", err)
+				require.Contains(t, msg, unrepresentableReason)
+				require.Contains(t, msg, hint)
+				require.Zero(t, pg.queryCalls)
+				require.Zero(t, duck.calls)
 			})
 		}
 	}
