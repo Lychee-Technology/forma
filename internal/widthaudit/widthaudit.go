@@ -215,12 +215,16 @@ func changeLogJoin(tables Tables, schemaID, rowID string) string {
 ) AS cl ON TRUE`, sqlutil.SanitizeIdentifier(tables.ChangeLog), schemaID, rowID)
 }
 
+// censusParamsPerTarget is how many parameters BuildCensusQuery binds for
+// each target.
+const censusParamsPerTarget = 4
+
 // BuildCensusQuery renders the eav_data census over the given EAV-only
 // targets. Each target binds (schema_id, attr_id, lo, hi) through a VALUES
 // list.
 func BuildCensusQuery(tables Tables, targets []Target) (string, []any) {
 	values := make([]string, 0, len(targets))
-	args := make([]any, 0, len(targets)*4)
+	args := make([]any, 0, len(targets)*censusParamsPerTarget)
 	for _, t := range targets {
 		lo, hi, _ := integerBounds(t.Declared)
 		n := len(args)
@@ -274,11 +278,35 @@ func targetIndex(targets []Target) map[[2]int16]Target {
 }
 
 func censusEAV(ctx context.Context, q Querier, tables Tables, targets []Target) ([]Finding, error) {
-	if len(targets) == 0 {
-		return nil, nil
+	return inBatches(targets, censusParamsPerTarget, func(batch []Target) ([]Finding, error) {
+		query, args := BuildCensusQuery(tables, batch)
+		return queryEAVFindings(ctx, q, tables.EAV, "integer-width census", query, args, batch)
+	})
+}
+
+// maxBindParams is the most parameters one statement can bind: the extended
+// protocol counts them in 16 bits, and pgx refuses a statement with more.
+const maxBindParams = math.MaxUint16
+
+// inBatches runs census over consecutive slices of targets, each small
+// enough that a query binding perTarget parameters per target stays within
+// maxBindParams, since a registry can hold more targets than one statement
+// binds. The targets arrive in (schema_id, attr_id) order and every census
+// query orders its rows by those first, so the findings keep that order.
+func inBatches(targets []Target, perTarget int, census func([]Target) ([]Finding, error)) ([]Finding, error) {
+	size := maxBindParams / perTarget
+	var findings []Finding
+	for len(targets) > 0 {
+		batch := targets[:min(size, len(targets))]
+		targets = targets[len(batch):]
+		found, err := census(batch)
+		if err != nil {
+			return nil, fmt.Errorf("batch of %d target(s) from schema_id=%d attr_id=%d: %w",
+				len(batch), batch[0].SchemaID, batch[0].AttrID, err)
+		}
+		findings = append(findings, found...)
 	}
-	query, args := BuildCensusQuery(tables, targets)
-	return queryEAVFindings(ctx, q, tables.EAV, "integer-width census", query, args, targets)
+	return findings, nil
 }
 
 // queryEAVFindings runs a census query over eav_data that selects (schema_id,
