@@ -38,7 +38,9 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *model.Persisten
 }
 
 // readFromSystemColumn handles reading from system columns (RowID, SchemaID, timestamps).
-// Returns nil if the column is not a system column.
+// Returns nil if the column is not a system column. A numeric alias names its
+// column in BoundColumn, which keeps it out of the integer-image refusal
+// (checkIntegerImage): the value is the store's own, not a stored image.
 func (t *persistentRecordTransformer) readFromSystemColumn(record *model.PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) *model.EAVRecord {
 	baseAttr := model.EAVRecord{
 		SchemaID:     record.SchemaID,
@@ -56,16 +58,19 @@ func (t *persistentRecordTransformer) readFromSystemColumn(record *model.Persist
 	case forma.MainColumnSchemaID:
 		schemaIDFloat := float64(record.SchemaID)
 		baseAttr.ValueNumeric = &schemaIDFloat
+		baseAttr.BoundColumn = string(binding.ColumnName)
 		return &baseAttr
 
 	case forma.MainColumnCreatedAt:
 		createdAtFloat := float64(record.CreatedAt)
 		baseAttr.ValueNumeric = &createdAtFloat
+		baseAttr.BoundColumn = string(binding.ColumnName)
 		return &baseAttr
 
 	case forma.MainColumnUpdatedAt:
 		updatedAtFloat := float64(record.UpdatedAt)
 		baseAttr.ValueNumeric = &updatedAtFloat
+		baseAttr.BoundColumn = string(binding.ColumnName)
 		return &baseAttr
 
 	case forma.MainColumnDeletedAt:
@@ -74,6 +79,7 @@ func (t *persistentRecordTransformer) readFromSystemColumn(record *model.Persist
 		}
 		deletedAtFloat := float64(*record.DeletedAt)
 		baseAttr.ValueNumeric = &deletedAtFloat
+		baseAttr.BoundColumn = string(binding.ColumnName)
 		return &baseAttr
 	}
 

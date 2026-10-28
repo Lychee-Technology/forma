@@ -78,7 +78,7 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 // error (#592). A smallint or integer image its declared type cannot hold,
 // in eav_data (#729) or a wider bound column (#708), is refused the same
 // way (checkIntegerImage), so the conversions below only ever see a whole
-// number inside the type's range.
+// number inside the type's range, except for a system column alias (#745).
 func numericFromEAVRecord(record model.EAVRecord, valueType forma.ValueType) (any, error) {
 	if record.ValueText != nil {
 		return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")

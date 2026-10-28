@@ -152,6 +152,15 @@ record a column-bound attribute kept from before an EAV-to-bound promotion,
 which the whole-row read still decodes. The refusal, the update behavior and
 the repair are the ones above.
 
+A `smallint`/`integer` alias of a system column is exempt. Registration admits
+one bound to `ltbase_created_at`, `ltbase_updated_at` or `ltbase_deleted_at`,
+whose epoch millis are past either range. That value is the store's own: no
+write reaches the column and an update cannot name the alias (#674). Refusing
+it would leave nothing to repair and would fail every read, update and Create
+response (after the insert has committed) on the schema. The alias keeps its
+conversion, which wraps; #745 owns the binding
+(`TestSystemTimestampAliasDeclaredIntegerStaysUsable`).
+
 **Implemented** (`transform.checkIntegerImage`). The error names
 `value_numeric` in place of a column:
 

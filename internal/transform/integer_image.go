@@ -40,6 +40,15 @@ import (
 // refuses its out-of-contract image as the OLTP route does, except for what
 // DOUBLE loses on the way (#621): a fraction a float64 cannot keep arrives
 // whole, and a non-finite value fails the attributes JSON instead.
+//
+// A system column alias is exempt. Registration admits a smallint or
+// integer bound to ltbase_created_at and the other bigint stamps
+// (schemameta.ValidateColumnBinding), and their epoch millis are past either
+// range. The value is the store's own: no write reaches the column
+// (isSystemManagedColumn) and an update cannot name the alias (#674), so a
+// refusal could never be repaired and would fail every read, Create response
+// and update of the schema. The alias keeps its conversion; #745 owns the
+// binding.
 
 // checkIntegerImage refuses the image a smallint or integer record holds
 // when the declared type cannot hold it: a fraction, a magnitude past the
@@ -48,9 +57,9 @@ import (
 // read query emitted (integerTokenFits), and a double_* or integer_* record
 // its float64, which holds every whole number of either type exactly. The
 // caller wraps the error with the record's schema, row and attribute
-// (decodeEAVRecord).
+// (decodeEAVRecord). A system column alias is not judged.
 func checkIntegerImage(record model.EAVRecord, vt forma.ValueType) error {
-	if record.ValueNumeric == nil || !isDeclaredIntegerType(vt) {
+	if record.ValueNumeric == nil || !isDeclaredIntegerType(vt) || model.IsSystemColumn(record.BoundColumn) {
 		return nil
 	}
 	lo, hi := integerRange(vt)
