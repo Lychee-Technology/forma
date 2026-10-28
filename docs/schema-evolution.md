@@ -309,12 +309,16 @@ from before the ledger (#733) for good. The only build with the ledger
 and without #729's refusal is `main` at `7b75a9d`, the merge of #733, which
 #729's merge followed; no tagged release has it. A deployment running that build replaces every writer
 with a later one before it applies an EAV-only widening. Two other paths of an
-old process convert the value instead:
+old process convert a bound column's value instead:
 
-- **Its federated reads** read the value at its own declared type, as D1's
-  table of route differences shows (`1001.5` as `1002`). Nothing is stored,
-  and the answer is right again once the process restarts on the new
-  `SCHEMA_DIR`.
+- **Its federated reads** read a bound column at its own declared type
+  through `TRY_CAST`, as D1's table of route differences shows (`1001.5` as
+  `1002`). An EAV-only value reaches them at storage width, DOUBLE, so the
+  same check refuses the row as on the OLTP route, with
+  [#621's two gaps](#eav-only-integers-729): a fraction a float64 cannot keep
+  reads as the whole number, and a NaN or an infinity fails the query without
+  naming the row. Either way nothing is stored, and the answer is right again
+  once the process restarts on the new `SCHEMA_DIR`.
 - **A CDC run that started before the apply** (`cdc-flush`, `cdc-init`)
   resolves its attribute metadata once per run, exports each bound column
   through `TRY_CAST` at its own declared type (`castMainValue`), and marks the
@@ -324,7 +328,9 @@ old process convert the value instead:
   the federated route serves the converted value while that object is live,
   and Postgres keeps `1001.5`. The start-up check in [Generations](#generations)
   does not stop a run already in progress. The production harness reproduces
-  this path end to end: the export a stopped run strands holds `1002`.
+  this path end to end: the export a stopped run strands holds `1002`. An
+  EAV-only `smallint`/`integer` exports at storage width, DOUBLE
+  (`castEAVValue`), so such a run converts nothing.
 
 **Implemented (#733):** no value a CDC run read after an apply leaves its
 `_tmp` key. After each batch's export and before its copy to the
