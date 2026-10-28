@@ -69,8 +69,8 @@ func typeChange(c Change) Change {
 	switch {
 	case widensInteger(from, to) || (to == forma.ValueTypeNumeric && (from == forma.ValueTypeSmallInt || from == forma.ValueTypeInteger)):
 		// A process still on the old declaration refuses a wider image on
-		// its OLTP read, bound (#708) or EAV-only (#729), so nothing it
-		// writes back can convert one.
+		// its OLTP read, bound (#708) or EAV-only (#729), so an unrelated
+		// update through it fails instead of writing a converted value back.
 		c.Verdict = Allowed
 	case from == forma.ValueTypeBigInt && to == forma.ValueTypeNumeric:
 		if c.Old.columnType() == forma.MainColumnTypeBigint {
