@@ -68,12 +68,9 @@ func typeChange(c Change) Change {
 	from, to := c.Old.ValueType, c.New.ValueType
 	switch {
 	case widensInteger(from, to) || (to == forma.ValueTypeNumeric && (from == forma.ValueTypeSmallInt || from == forma.ValueTypeInteger)):
-		// Only these widenings wait on #729; a narrowing or a family change
-		// of the same attribute is refused below with its own remediation.
-		if c.Old.Column == "" {
-			return c.refuse("an EAV-only %s attribute cannot change to %s until #729 is fixed: a process still on the old "+
-				"declaration reads a value the new type allows converted, and an unrelated update writes it back", from, to)
-		}
+		// A process still on the old declaration refuses a wider image on
+		// its OLTP read, bound (#708) or EAV-only (#729), so nothing it
+		// writes back can convert one.
 		c.Verdict = Allowed
 	case from == forma.ValueTypeBigInt && to == forma.ValueTypeNumeric:
 		if c.Old.columnType() == forma.MainColumnTypeBigint {
