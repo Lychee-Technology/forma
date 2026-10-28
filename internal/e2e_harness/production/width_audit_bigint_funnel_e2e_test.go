@@ -94,7 +94,7 @@ func TestIntegerWidthAuditAgreesWithBigintWriteFunnel(t *testing.T) {
 		}
 		if f.RowID.String() == legacyRowID {
 			flaggedLegacy = true
-			if class := f.Classify(0); class != widthaudit.ClassBigIntOutOfContract {
+			if class := f.Classify(); class != widthaudit.ClassBigIntOutOfContract {
 				t.Fatalf("legacy image classified %v, want ClassBigIntOutOfContract: %+v", class, f)
 			}
 			if f.StoredValue != "9007199254740994" {

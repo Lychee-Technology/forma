@@ -101,8 +101,8 @@ Direct tool invocation:
   --width-export-cutover 2026-08-29T00:00:00Z
 ```
 
-Add `--requeue-stale-width-exports` to repair the stale exports the
-integer-width census reports; see
+Repair what the integer-width census reports by rewriting each attribute
+through the API; see
 [EAV integer values past their declared width](#eav-integer-values-past-their-declared-width-501).
 
 ## What Each Checker Covers
@@ -664,12 +664,11 @@ from the warm/cold tiers until the entity is written again.
 Example validator output:
 
 ```text
-- EAV integer values whose parquet copy predates the #384 storage-width export in eav_data_dev: schema=lead schema_id=100 attr_id=14 attribute=qty declared=integer row_id=6f1c… value=4294967296 last_flushed_at=1756300000000
+- smallint/integer EAV values outside the declared range or non-integral, which the OLTP read refuses, whose parquet copy also predates the #384 storage-width export, in eav_data_dev: schema=lead schema_id=100 attr_id=14 attribute=qty declared=integer row_id=6f1c… value=4294967296 last_flushed_at=1756300000000
+- smallint/integer EAV values outside the declared range or non-integral, which the OLTP read refuses, in eav_data_dev: schema=lead schema_id=100 attr_id=14 attribute=qty declared=integer row_id=91d2… value=1.5
 - bigint EAV values outside ±2^53 (the float64-exact range) or non-integral in eav_data_dev: schema=lead schema_id=100 attr_id=15 attribute=big declared=bigint row_id=0b7e… value=9007199254740994
 - bigint values in double columns outside ±2^53 (the float64-exact range) or non-integral in entity_main_dev: schema=lead schema_id=100 attr_id=16 attribute=ratio declared=bigint row_id=3c9a… column=double_01 value=9007199254740994
 - smallint/integer values in wider bound columns outside the declared range or non-integral, which the OLTP read refuses, in entity_main_dev: schema=lead schema_id=100 attr_id=17 attribute=cnt declared=integer row_id=5d2e… column=double_02 value=1001.5
-informational (not a failure):
-- exported EAV integer values outside the declared width, which may predate the #384 storage-width export (pass -width-export-cutover to confirm), in eav_data_dev: schema=lead schema_id=100 attr_id=14 attribute=qty declared=integer row_id=91d2… value=1.5 last_flushed_at=1756300000000
 ```
 
 `eav_data.value_numeric` is an unconstrained `NUMERIC`. Before `#384` the write
@@ -684,20 +683,21 @@ stored rounded to its float64 image (`9007199254740993` as
 the funnel admits exactly `[-9007199254740992, 9007199254740992]`, the range
 the image keeps exactly, and the census reports every stored `bigint` outside
 it. The census lists every such row, one line per stored element
-(`array_indices` is shown for list items), and classifies it by what the tiers
-serve for it:
+(`array_indices` is shown for list items), each as a failure:
 
-- **Stale export (failure).** A `smallint`/`integer` row whose last flush ran
-  before `--width-export-cutover`. That flush exported the value through
-  `TRY_CAST(value_numeric AS INTEGER/SMALLINT)`, so the parquet copy holds
-  NULL (out of range) or a rounded value (`1.5` → `2`). The row is not in the
-  dirty set, so the federated route serves that copy while the OLTP route
-  reads the true value. Compaction only merges parquet, so it never repairs
-  the copy.
-- **Candidate (informational).** The same row shape when no cutover is given:
-  the validator cannot tell whether the last flush predates `#384`. Pass the
-  cutover to turn candidates into either failures or nothing.
-- **bigint out of contract (failure).** A `bigint` value past ±2^53 or with
+- **smallint/integer out of contract.** A value that is a fraction, outside
+  the declared range (`[-2147483648, 2147483647]` for `integer`,
+  `[-32768, 32767]` for `smallint`), `NaN`, or an infinity, judged exactly on
+  the stored NUMERIC text, so the type's own bounds are never reported. Since
+  `#729` the OLTP read refuses the row with a server error naming the schema
+  id, the row, the attribute and the image, and an update that leaves the
+  attribute out fails the same way and changes nothing. Before `#729` the read
+  converted the value (`4294967296` read as `-2147483648` on amd64, `1001.5` as
+  `1001`), and an unrelated update wrote the converted value back. The census
+  covers the `eav_data` rows a column-bound `smallint`/`integer` kept from
+  before an EAV-to-bound promotion too, because the whole-row read still
+  decodes them; their lines name no column.
+- **bigint out of contract.** A `bigint` value past ±2^53 or with
   a fraction. One past 2^53 was rounded on the write, so no route can recover
   the caller's value; every route reads the rounded image. One past int64 or
   with a fraction is projected by every DuckDB leg, the unflushed hot leg
@@ -707,46 +707,42 @@ serve for it:
   result past int64 depends on the platform). A re-flush reproduces the same
   image, so only rewriting the value repairs it.
 
-Rows that are pending (`change_log.flushed_at = 0`), never exported, or last
-exported at or after the cutover are not reported: every tier reads them the
-same way under `#384`'s storage-width (`DOUBLE`) projection, even though the
-value is still outside the declared width.
+A `smallint`/`integer` row is reported whatever its flush state: pending,
+never exported, or exported at any time. Before `#729` the census reported
+only a row whose parquet copy disagreed with Postgres, treating the Postgres
+value as the truth a re-flush would restore. The OLTP read now refuses that
+value, so the Postgres value is the defect, and a re-flush would only export
+it again.
 
-**The cutover** is the time from which every `cdc-flush` run used the `#384`
-export: the first flush of the first build carrying `#384`, or any later time
-you are sure of. Passing a later cutover is safe. It only turns more rows into
-failures, and requeuing a row whose copy was already correct only re-exports
-the same values. Passing an earlier one lets stale exports through.
+**The cutover** (`--width-export-cutover`) is the time from which every
+`cdc-flush` run used the `#384` export: the first flush of the first build
+carrying `#384`, or any later time you are sure of. It changes no verdict. A
+`smallint`/`integer` row last flushed before it is labeled "whose parquet copy
+also predates the #384 storage-width export": that flush exported the value
+through `TRY_CAST(value_numeric AS INTEGER/SMALLINT)`, so the copy holds NULL
+(out of range) or a rounded value (`1.5` → `2`), and the federated route
+serves that copy, not a refusal, until the repair's flush replaces it.
+Compaction only merges parquet, so it never repairs the copy.
 
-**Repair the smallint/integer classes** by re-running the validator with
-`--requeue-stale-width-exports`, then running `cdc-flush`:
+**Repair the smallint/integer class** by rewriting the value through the API,
+naming the attribute, with a whole number inside the declared range you choose
+yourself; Forma does not pick one. An update that names the attribute
+discards the stored value without decoding it, so it succeeds over any image
+and keeps the attributes it does not name. An update replaces a list as a
+whole, so repair a list item by sending the whole list. The write stamps
+`change_log`, so run `cdc-flush` afterwards: its export has a newer `ver_ts`
+than any stale copy, which therefore loses the merge on the warm and cold
+tiers. Then re-run the validator to confirm the report is clean.
 
-```bash
-./build/tools validate-schema-consistency ... \
-  --width-export-cutover 2026-08-29T00:00:00Z \
-  --requeue-stale-width-exports
-./build/tools cdc-flush ...
-```
+`--requeue-stale-width-exports` is retired. Before `#729` it re-flushed rows
+whose parquet copy was stale, so the federated route would serve the Postgres
+value. Since the Postgres value is now the defect, a requeue repairs no
+finding: the flag is still accepted, so scripts that pass it keep running, and
+it prints why it requeued nothing.
 
-The requeue touches no value. For each reported row, once, it takes the row's
-version lock, advances `entity_main.ltbase_updated_at` by the same
-`GREATEST(now, previous + 1)` rule a write uses, and stamps `change_log` slot 0
-with that version. The row enters the dirty set immediately, so the federated
-route serves the Postgres value from that moment. The next flush re-exports it
-at storage width with a newer `ver_ts` than the stale copy, which therefore
-loses the merge on the warm and cold tiers. Requeued rows are listed in the
-informational block, so a repair run exits zero unless something else fails. A
-row with no `entity_main` row cannot be requeued and stays a failure; it is an
-orphan to delete or restore by hand. A requeue does not need
-`--width-export-cutover`: without one it requeues every candidate. It does need
-non-empty `--change-log-table` and `--entity-main-table`; the validator rejects
-an empty one before the census runs, so no row is requeued. After
-`cdc-flush`, re-run the validator with the same cutover to confirm the report
-is clean.
-
-A direct SQL `UPDATE` of `eav_data` does **not** repair a stale export: it does
-not stamp `change_log`, so the row stays out of the dirty set and the warm and
-cold tiers keep serving the old copy.
+A direct SQL `UPDATE` of `eav_data` is not a repair: it does not stamp
+`change_log`, so the row stays out of the dirty set and the warm and cold
+tiers keep serving their old copy.
 
 **Repair the bigint class** by rewriting the value through the API as an
 integral value from `-9007199254740992` to `9007199254740992`. That is the
@@ -793,9 +789,8 @@ such attribute instead of skipping the scan. Without such a binding the
 census does not read the table.
 
 Repair each reported row the same way as an EAV `bigint`: rewrite the value
-through the API, naming the attribute. `--requeue-stale-width-exports` never
-requeues these rows, because a re-flush does not change what the column
-holds. What the routes serve until the repair depends on the image. A whole
+through the API, naming the attribute. A re-flush does not change what the
+column holds, so it repairs nothing. What the routes serve until the repair depends on the image. A whole
 number past ±2^53 inside int64 reads as the stored value on every route. Any
 other image is refused by the OLTP route with an error naming the attribute
 and the row. The federated route reads the column the way the CDC export
@@ -821,7 +816,7 @@ own bounds are never reported:
 - smallint/integer values in wider bound columns outside the declared range or non-integral, which the OLTP read refuses, in entity_main_dev: schema=lead schema_id=100 attr_id=17 attribute=cnt declared=integer row_id=5d2e… column=double_02 value=1001.5
 ```
 
-Each line is a failure that is never requeued. Until the row is repaired the
+Each line is a failure. Until the row is repaired the
 OLTP route refuses it with a server error naming the schema id, the row, the
 attribute, the column, and the stored image. An update that leaves the
 attribute out fails the same way and changes nothing. Before `#708` that read
@@ -834,11 +829,6 @@ reads as absent. The two routes answer differently for such a row on purpose,
 until `#621` or a later decision unifies them. Repair the row by rewriting the
 attribute through the API, choosing the value yourself. See
 [Schema Evolution and Declared Types](./schema-evolution.md#d1-invalid-legacy-integer-images-on-oltp-reads-708).
-
-An EAV-only `smallint` or `integer` outside its width is still converted on
-the OLTP read, and an unrelated update writes the converted value back
-(`#729`). The stale-export classes above report it only when its parquet copy
-is stale.
 
 ### Date images the read path refuses (`#592`)
 
@@ -1074,10 +1064,11 @@ LIMIT 50;
 - every schema name in `schema_registry` has a resolvable `<name>.json` in `SCHEMA_DIR` (`#314` startup check)
 - no active attribute reuses a `retired` attributeID, main-column binding, or folded parquet column (`#342` startup check)
 - every active `column_binding.col_name` is a column `entity_main` has (`#557` startup check)
-- no stale integer-width export is reported (`#501`): run the validator with
+- no EAV `smallint`/`integer` value outside its declared type is reported
+  (`#501`, `#729`): the upgraded server refuses to read such rows; rewrite
+  each one through the API, naming the attribute, then run `cdc-flush`. Pass
   `--width-export-cutover` set to the time the `#384` build's `cdc-flush`
-  first ran, and if it fails, run it again with
-  `--requeue-stale-width-exports` followed by `cdc-flush`
+  first ran to see which rows also have a stale parquet copy
 - no bigint EAV value outside ±2^53 is reported (`#501`, `#612`, `#590`):
   rewrite each one through the API, naming the attribute, before an unrelated
   update is refused over it

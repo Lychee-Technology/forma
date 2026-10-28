@@ -51,11 +51,12 @@ type EAVRecord struct {
 	// cannot decide (the date contract, #592) judges this token instead.
 	ValueNumericRaw string
 	// BoundColumn is the numeric entity_main column a column-bound record
-	// was read from with the default encoding, set by the main-column read
-	// only; it is empty for an eav_data record. It is read-only like
-	// ValueNumericRaw. A smallint or integer read from a column wider than
-	// its declared type is held to that type on decode (#708), while an
-	// EAV-only one keeps its #384 conversion.
+	// was read from with the default encoding, or the numeric system column
+	// an alias reads, set by the main-column read only; it is empty for an
+	// eav_data record. It is read-only like ValueNumericRaw. A smallint or
+	// integer is held to its declared type on decode wherever it is stored
+	// (#708, #729); this names the column in the refusal, and exempts a
+	// system column alias, whose value is the store's own (#745).
 	BoundColumn string
 }
 

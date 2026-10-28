@@ -56,7 +56,7 @@ rounds, or drops the value, and never answers it as an absent attribute.
 Anything on the OLTP route that decodes the row fails the same way: a GET, a
 query page holding the row, and relation enrichment that reads it as a parent.
 
-**Implemented** (`transform.checkBoundIntegerImage`). The error names the schema
+**Implemented** (`transform.checkIntegerImage`). The error names the schema
 id, the row, the attribute, the bound column, the declared type and the stored
 image:
 
@@ -136,12 +136,67 @@ an OLTP conversion. The census is the guard: it reads `entity_main`, which
 holds the current version of every row, whether or not that row has been
 flushed to parquet yet.
 
-### Not covered: EAV-only integers (#729)
+### EAV-only integers (#729)
 
-An EAV-only `smallint`/`integer` keeps #384's conversion on the OLTP read. The
-same unrelated-update write-back happens there, measured on PostgreSQL:
-`value_numeric` `4294967296` becomes `-2147483648` (on amd64), and `1001.5`
-becomes `1001`. Whether D1's refusal extends to `eav_data` is #729's decision.
+Decided 2026-10-27: the owner chose option A of
+[the #729 question](https://github.com/Lychee-Technology/forma/issues/729#issuecomment-6450800554).
+
+Until then an EAV-only `smallint`/`integer` kept #384's conversion on the
+OLTP read, and the unrelated-update write-back above happened there too,
+measured on PostgreSQL: `value_numeric` `4294967296` became `-2147483648` (on
+amd64), and `1001.5` became `1001`.
+
+**Policy.** D1 holds `eav_data` to the declared type too: an EAV-only
+`smallint` or `integer`, every element of a list of either, and an `eav_data`
+record a column-bound attribute kept from before an EAV-to-bound promotion,
+which the whole-row read still decodes. The refusal, the update behavior and
+the repair are the ones above.
+
+A `smallint`/`integer` alias of a system column is exempt. Registration admits
+one bound to `ltbase_created_at`, `ltbase_updated_at` or `ltbase_deleted_at`,
+whose epoch millis are past either range. That value is the store's own: no
+write reaches the column and an update cannot name the alias (#674). Refusing
+it would leave nothing to repair and would fail every read, update and Create
+response (after the insert has committed) on the schema. The alias keeps its
+conversion, which wraps; #745 owns the binding
+(`TestSystemTimestampAliasDeclaredIntegerStaysUsable`).
+
+**Implemented** (`transform.checkIntegerImage`). The error names
+`value_numeric` in place of a column:
+
+```text
+convert attribute 'qty': record schema=729 row=0b5f2e84-… attrID=2: stored integer image 4294967296
+in value_numeric does not fit declared type integer (expected a whole number in
+[-2147483648, 2147483647]); rewrite the attribute to repair the row (#729)
+```
+
+The image is judged on the exact NUMERIC text Postgres sends, never on its
+float64: `1001.0000000000000001` is `1001` as a float64 and is refused, and
+`2147483647.000` is a whole number in range and reads as `2147483647`
+(`TestCheckIntegerImageJudgesTheToken`). Every update surface carries the
+stored value through the same merge and decode, so an update, an atomic batch,
+and `UpdateWhere` and upserts (which update through the same merge) fail whole
+over the row, and a best-effort batch fails that item as an internal error.
+Naming a list attribute replaces every element, so it repairs an invalid
+element (`TestUnrelatedUpdateOverEAVIntegerImageFails`,
+`TestUpdateNamingEAVIntegerImageRepairsIt`; on PostgreSQL,
+`TestEAVIntegerImageReadRefusalAndRepair` checks `value_numeric`, the row
+version and `change_log` after the failed update, and
+`TestEAVIntegerRetainedRecordRefusalAndRepair` covers a kept record).
+
+The federated route reads an EAV-only value at its storage width, DOUBLE
+(#384), and decodes it with the same check, so it refuses the row too, unlike
+a bound column's `TRY_CAST` legs in the table above. Two gaps remain, both
+#621's: the hot leg narrows the NUMERIC to DOUBLE inside DuckDB, so a fraction
+a float64 cannot keep reads as the whole number; and a NaN or an infinity
+breaks the attributes JSON, failing the query without naming the row.
+
+The census reports these rows as failures, never as stale exports a re-flush
+repairs; see
+[the migration guide](./schema-consistency-migration.md#eav-integer-values-past-their-declared-width-501).
+On a deployment with a generation ledger (#733), `baseline-schema` already
+refused them before recording the baseline, so they come from direct SQL
+after it.
 
 ## D2: Schema type evolution fails closed (#710)
 
@@ -214,7 +269,7 @@ footer carries no trace of the change (see the limits below).
    | `smallint`/`integer → numeric` | allowed; exact in every storage |
    | `bigint → numeric`, `double_*` column or EAV-only | allowed; exact, since that storage holds only ±2^53 (#590) |
    | `bigint → numeric`, `bigint_*` column | allowed with a warning: a value beyond ±2^53 reads rounded to its float64 on every route |
-   | `smallint → integer`/`bigint`, `integer → bigint`, or `smallint`/`integer → numeric`, on an EAV-only attribute | refused until #729 is fixed; a narrowing or a family change of one stays refused as above |
+   | `smallint → integer`/`bigint`, `integer → bigint`, or `smallint`/`integer → numeric`, on an EAV-only attribute | refused until every process runs #729's read refusal (see below); a narrowing or a family change of one stays refused as above |
 
 2. Implicit evolution is lossless. Rounding, truncation, clamping, and
    substituting NULL are not implicitly approved. They require an explicit,
@@ -241,8 +296,11 @@ needed.
 Old readers and exporters are a separate matter. An old process's OLTP route
 fails closed on a value the new type allows and its own does not: a bound
 `smallint`/`integer` image by D1, a `bigint` image that names no int64 by
-#590. An EAV-only `smallint`/`integer` does not (#729), hence the last row of
-the table. Two other paths of an old process convert the value instead:
+#590. An EAV-only `smallint`/`integer` does only on a process that runs
+#729's refusal. A process from before it converts `4294967296` to
+`-2147483648`, and an unrelated update through it writes that back, hence the
+last row of the table: it is lifted only once no such process can run. Two
+other paths of an old process convert the value instead:
 
 - **Its federated reads** read the value at its own declared type, as D1's
   table of route differences shows (`1001.5` as `1002`). Nothing is stored,
@@ -519,15 +577,15 @@ refuse, and the census reports them. A `numeric` value written as
   such a read failed. It now converts a whole float64 exactly.
 - The guard reads only what parquet footers show, so a redeclaration that
   keeps the exported type is invisible to it: `numeric → integer` or
-  `numeric → smallint` on an EAV-only attribute (all DOUBLE, the #729 gap),
+  `numeric → smallint` on an EAV-only attribute (all DOUBLE),
   and `bigint → date` (both BIGINT). Since #733 such a redeclaration is
   refused up front, and `baseline-schema` scans values, list elements
   included, before it blesses a declaration. `bigint → date` stays
   undetectable from stored data (see below).
 - The OLTP route is protected row by row for some types: a bound or EAV
-  `bigint` image that names no int64 (#590), and a bound `smallint`/`integer`
-  image (D1), are refused on read. An EAV-only `smallint`/`integer` is not
-  (#729).
+  `bigint` image that names no int64 (#590), and a bound or EAV
+  `smallint`/`integer` image outside its declared type (D1, #729), are
+  refused on read.
 
 ### Why enforcement is not a narrow patch
 

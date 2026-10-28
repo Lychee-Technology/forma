@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/pashagolub/pgxmock/v4"
@@ -130,41 +131,101 @@ func TestCensusWithoutTargetsIssuesNoQuery(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// bindCounter answers every census query with no rows and records how many
+// parameters each one bound.
+type bindCounter struct{ binds []int }
+
+func (b *bindCounter) Query(_ context.Context, _ string, args ...any) (pgx.Rows, error) {
+	b.binds = append(b.binds, len(args))
+	return pgxmock.NewRows([]string{"schema_id"}).Kind(), nil
+}
+
+// TestCensusBatchesWithinTheBindLimit: one statement binds at most 65,535
+// parameters, so the census splits each leg into full batches at or under
+// that and a remainder, rather than failing the whole census.
+func TestCensusBatchesWithinTheBindLimit(t *testing.T) {
+	eavBatch, columnBatch := maxBindParams/censusParamsPerTarget, maxBindParams/columnCensusParamsPerTarget
+	var targets []Target
+	for i := range eavBatch + 1 {
+		targets = append(targets, Target{SchemaID: int16(i / 1000), AttrID: int16(i % 1000), Declared: forma.ValueTypeInteger})
+	}
+	for i := range columnBatch + 1 {
+		targets = append(targets, Target{SchemaID: int16(i / 1000), AttrID: int16(i % 1000), Declared: forma.ValueTypeSmallInt, Column: "integer_01"})
+	}
+
+	q := &bindCounter{}
+	_, err := Census(context.Background(), q, Tables{EAV: "eav_data", EntityMain: "entity_main"}, targets)
+	require.NoError(t, err)
+	require.Equal(t, []int{
+		eavBatch * censusParamsPerTarget, censusParamsPerTarget,
+		columnBatch * columnCensusParamsPerTarget, columnCensusParamsPerTarget,
+	}, q.binds)
+	require.LessOrEqual(t, eavBatch*censusParamsPerTarget, maxBindParams)
+	require.LessOrEqual(t, columnBatch*columnCensusParamsPerTarget, maxBindParams)
+}
+
+// TestCensusBuildersBindTheirPerTargetCount pins the counts the batches are
+// sized by: a builder binding more per target than its constant says would
+// let a full batch pass the limit.
+func TestCensusBuildersBindTheirPerTargetCount(t *testing.T) {
+	_, args := BuildCensusQuery(Tables{EAV: "eav_data"}, []Target{{SchemaID: 1, AttrID: 2, Declared: forma.ValueTypeInteger}})
+	require.Len(t, args, censusParamsPerTarget)
+	_, args = BuildColumnCensusQuery(Tables{EntityMain: "entity_main"},
+		[]Target{{SchemaID: 1, AttrID: 2, Declared: forma.ValueTypeSmallInt, Column: "integer_01"}})
+	require.Len(t, args, columnCensusParamsPerTarget)
+}
+
 func censusRows() *pgxmock.Rows {
 	return pgxmock.NewRows(strings.Fields("schema_id attr_id row_id array_indices value_numeric pending last_flushed_at"))
 }
 
+// TestClassify: every finding is a stored value outside its contract, placed
+// by declared type and storage alone. Flush state never makes an EAV
+// smallint/integer consistent or requeueable: the OLTP read refuses it
+// (#729), so only rewriting the attribute repairs it.
 func TestClassify(t *testing.T) {
 	narrow := Target{Declared: forma.ValueTypeInteger}
+	bound := Target{Declared: forma.ValueTypeSmallInt, Column: "integer_01"}
 	big := Target{Declared: forma.ValueTypeBigInt}
-	const cutover = int64(5000)
 	tests := []struct {
 		name    string
 		finding Finding
-		cutover int64
 		want    Class
 	}{
-		{"never exported", Finding{Target: narrow}, cutover, ClassConsistent},
-		{"pending is served hot", Finding{Target: narrow, Pending: true, LastFlushedAt: 10}, cutover, ClassConsistent},
-		{"exported before cutover", Finding{Target: narrow, LastFlushedAt: cutover - 1}, cutover, ClassStaleExport},
-		{"exported at cutover", Finding{Target: narrow, LastFlushedAt: cutover}, cutover, ClassConsistent},
-		{"exported, cutover unknown", Finding{Target: narrow, LastFlushedAt: 10}, 0, ClassStaleCandidate},
-		{"bigint never exported", Finding{Target: big}, cutover, ClassBigIntOutOfContract},
-		{"bigint pending", Finding{Target: big, Pending: true}, 0, ClassBigIntOutOfContract},
+		{"never exported", Finding{Target: narrow}, ClassEAVIntegerOutOfContract},
+		{"pending is served hot", Finding{Target: narrow, Pending: true, LastFlushedAt: 10}, ClassEAVIntegerOutOfContract},
+		{"exported", Finding{Target: narrow, LastFlushedAt: 10}, ClassEAVIntegerOutOfContract},
+		{"bound to a wider column", Finding{Target: bound, LastFlushedAt: 10}, ClassBoundIntegerOutOfContract},
+		{"bigint never exported", Finding{Target: big}, ClassBigIntOutOfContract},
+		{"bigint pending", Finding{Target: big, Pending: true}, ClassBigIntOutOfContract},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, tt.finding.Classify(tt.cutover))
+			require.Equal(t, tt.want, tt.finding.Classify())
 		})
 	}
 }
 
-// TestRequeueableClasses: only the classes a re-export repairs are
-// requeueable. bigint re-exports through the same BIGINT cast, and a
-// consistent row needs nothing.
-func TestRequeueableClasses(t *testing.T) {
-	require.True(t, ClassStaleExport.Requeueable())
-	require.True(t, ClassStaleCandidate.Requeueable())
-	require.False(t, ClassConsistent.Requeueable())
-	require.False(t, ClassBigIntOutOfContract.Requeueable())
+// TestExportPredates: only a row whose newest parquet copy was written
+// before a known cutover, and that is not dirty, still serves that copy.
+func TestExportPredates(t *testing.T) {
+	const cutover = int64(5000)
+	narrow := Target{Declared: forma.ValueTypeInteger}
+	tests := []struct {
+		name    string
+		finding Finding
+		cutover int64
+		want    bool
+	}{
+		{"exported before cutover", Finding{Target: narrow, LastFlushedAt: cutover - 1}, cutover, true},
+		{"exported at cutover", Finding{Target: narrow, LastFlushedAt: cutover}, cutover, false},
+		{"pending is served hot", Finding{Target: narrow, Pending: true, LastFlushedAt: 10}, cutover, false},
+		{"never exported", Finding{Target: narrow}, cutover, false},
+		{"cutover unknown", Finding{Target: narrow, LastFlushedAt: 10}, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.finding.ExportPredates(tt.cutover))
+		})
+	}
 }

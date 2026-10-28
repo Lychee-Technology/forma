@@ -2,16 +2,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/bootstrap"
-	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/widthaudit"
 )
@@ -23,8 +18,9 @@ type widthAuditOptions struct {
 	// cutoverMillis is the epoch millisecond from which cdc-flush ran the
 	// #384 storage-width export. 0 means it is unknown.
 	cutoverMillis int64
-	// requeue re-marks every requeueable row dirty so the next flush
-	// re-exports it (widthaudit.Class.Requeueable).
+	// requeue is the retired -requeue-stale-width-exports. Since #729 no
+	// finding is repaired by a re-flush, so it only prints why it requeued
+	// nothing; the flag stays so scripts that pass it still run.
 	requeue bool
 }
 
@@ -40,11 +36,11 @@ func registerWidthAuditFlags(flags *flag.FlagSet) widthAuditFlags {
 		changeLogTable: flags.String("change-log-table", bootstrap.EnvAllowEmpty("CHANGE_LOG_TABLE", "change_log_dev"),
 			"change_log table the integer-width census reads flush state from; empty (or CHANGE_LOG_TABLE= set empty) skips it (no CDC)"),
 		entityMainTable: flags.String("entity-main-table", bootstrap.Env("ENTITY_MAIN_TABLE", "entity_main_dev"),
-			"entity main table the integer-width census reads the columns of integers bound to a wider column from (#618, #708), and -requeue-stale-width-exports advances row versions in"),
+			"entity main table the integer-width census reads the columns of integers bound to a wider column from (#618, #708)"),
 		cutover: flags.String("width-export-cutover", "",
-			"RFC3339 time from which cdc-flush ran the #384 storage-width export; rows last flushed before it fail as stale exports"),
+			"RFC3339 time from which cdc-flush ran the #384 storage-width export; EAV rows last flushed before it are reported as also holding a stale parquet copy"),
 		requeue: flags.Bool("requeue-stale-width-exports", false,
-			"re-mark every exported out-of-width smallint/integer row for re-flush so the next cdc-flush re-exports it"),
+			"retired (#729): requeues nothing, since every width finding is a stored value only rewriting the attribute repairs"),
 	}
 }
 
@@ -52,14 +48,6 @@ func (f widthAuditFlags) options() (widthAuditOptions, error) {
 	cutover, err := parseWidthExportCutover(*f.cutover)
 	if err != nil {
 		return widthAuditOptions{}, err
-	}
-	// Reject a requeue that cannot run before the census or any row is
-	// requeued, rather than failing mid-sweep.
-	if *f.requeue && *f.changeLogTable == "" {
-		return widthAuditOptions{}, errors.New("-requeue-stale-width-exports needs -change-log-table: a requeue is a change_log entry")
-	}
-	if *f.requeue && *f.entityMainTable == "" {
-		return widthAuditOptions{}, errors.New("-requeue-stale-width-exports needs -entity-main-table: a requeue advances the row version there")
 	}
 	return widthAuditOptions{
 		changeLogTable:  *f.changeLogTable,
@@ -82,94 +70,53 @@ func parseWidthExportCutover(value string) (int64, error) {
 	return cutover.UnixMilli(), nil
 }
 
-// checkIntegerWidthExports reports EAV rows whose value does not fit the
-// declared integer width, classified by what the tiers serve for them (#501),
-// and entity_main rows whose bound column holds an integer outside its
-// contract: a bigint's float64 image past ±2^53 or non-integral (#618), a
-// smallint or integer image its declared type cannot hold (#708). With requeue set, it repairs the
-// stale-export classes first and reports those rows as requeued instead.
+// checkIntegerWidthExports reports every stored integer outside its
+// contract as a failure: an eav_data smallint/integer image its declared
+// type cannot hold, an EAV-only attribute's or one a column-bound attribute
+// kept from before its promotion (#729), with whether its parquet copy also predates the
+// #384 export (#501); a bigint's float64 image past ±2^53 or non-integral,
+// in eav_data or a double_* column (#618); and a smallint or integer image
+// a wider bound column holds that its declared type cannot (#708). Each is
+// repaired by rewriting the attribute, never by a re-flush.
 func (v schemaConsistencyValidator) checkIntegerWidthExports(ctx context.Context, cache *schemameta.MetadataCache) ([]validationIssue, error) {
 	tables := widthaudit.Tables{EAV: v.eavTable, EntityMain: v.widths.entityMainTable, ChangeLog: v.widths.changeLogTable}
-	findings, err := widthaudit.Census(ctx, v.pool, tables, widthaudit.Targets(cache))
+	findings, err := widthaudit.Census(ctx, v.pool, tables, widthaudit.TargetsWithRetainedEAV(cache))
 	if err != nil {
 		return nil, fmt.Errorf("integer-width census: %w", err)
 	}
-
-	requeued := map[widthRowKey]bool{}
-	missing := map[widthRowKey]bool{}
 	if v.widths.requeue {
-		requeued, missing, err = v.requeueStaleWidthExports(ctx, cache, findings)
-		if err != nil {
-			return nil, err
-		}
+		fmt.Fprintln(v.out, "-requeue-stale-width-exports requeued nothing: since #729 the OLTP read refuses every out-of-width "+
+			"EAV smallint/integer, so a re-flush repairs no finding; rewrite the attribute, then run cdc-flush")
 	}
 
 	var issues []validationIssue
 	for _, f := range findings {
-		class := f.Classify(v.widths.cutoverMillis)
-		switch {
-		case requeued[rowKeyOf(f)] && class.Requeueable():
-			issues = append(issues, widthIssue("EAV rows requeued for re-flush under the #384 storage-width export in "+v.eavTable, f, severityInfo))
-		case missing[rowKeyOf(f)] && class.Requeueable():
-			issues = append(issues, widthIssue("EAV rows with no entity_main row, which cannot be requeued, in "+v.eavTable, f, severityError))
-		case class == widthaudit.ClassStaleExport:
-			issues = append(issues, widthIssue("EAV integer values whose parquet copy predates the #384 storage-width export in "+v.eavTable, f, severityError))
-		case class == widthaudit.ClassStaleCandidate:
-			issues = append(issues, widthIssue("exported EAV integer values outside the declared width, which may predate the #384 storage-width export (pass -width-export-cutover to confirm), in "+v.eavTable, f, severityInfo))
-		case class == widthaudit.ClassBigIntOutOfContract && f.Column != "":
-			issues = append(issues, widthIssue("bigint values in double columns outside ±2^53 (the float64-exact range) or non-integral in "+v.widths.entityMainTable, f, severityError))
-		case class == widthaudit.ClassBigIntOutOfContract:
+		switch f.Classify() {
+		case widthaudit.ClassEAVIntegerOutOfContract:
+			issues = append(issues, widthIssue(eavIntegerCategory(f, v.widths.cutoverMillis, v.eavTable), f, severityError))
+		case widthaudit.ClassBigIntOutOfContract:
+			if f.Column != "" {
+				issues = append(issues, widthIssue("bigint values in double columns outside ±2^53 (the float64-exact range) or non-integral in "+v.widths.entityMainTable, f, severityError))
+				continue
+			}
 			issues = append(issues, widthIssue("bigint EAV values outside ±2^53 (the float64-exact range) or non-integral in "+v.eavTable, f, severityError))
-		case class == widthaudit.ClassBoundIntegerOutOfContract:
+		case widthaudit.ClassBoundIntegerOutOfContract:
 			issues = append(issues, widthIssue("smallint/integer values in wider bound columns outside the declared range or non-integral, which the OLTP read refuses, in "+v.widths.entityMainTable, f, severityError))
 		}
 	}
 	return issues, nil
 }
 
-// requeueStaleWidthExports requeues each row that holds a requeueable
-// finding, once per row, through the repository's version-advancing requeue.
-// A row with no entity_main row is collected in missing, not treated as
-// fatal. Any other failure aborts, and rows already requeued stay requeued,
-// which is harmless.
-func (v schemaConsistencyValidator) requeueStaleWidthExports(ctx context.Context, cache *schemameta.MetadataCache, findings []widthaudit.Finding) (requeued, missing map[widthRowKey]bool, err error) {
-	engine, err := internal.WithDatabaseEngine(v.engine)
-	if err != nil {
-		return nil, nil, fmt.Errorf("requeue stale width exports: %w", err)
+// eavIntegerCategory names an EAV smallint/integer finding, telling apart a
+// row whose parquet copy also predates the #384 export: until the rewrite's
+// flush replaces it, the federated route serves that copy's NULL or rounded
+// value instead of refusing the row.
+func eavIntegerCategory(f widthaudit.Finding, cutoverMillis int64, eavTable string) string {
+	const refused = "smallint/integer EAV values outside the declared range or non-integral, which the OLTP read refuses"
+	if f.ExportPredates(cutoverMillis) {
+		return refused + ", whose parquet copy also predates the #384 storage-width export, in " + eavTable
 	}
-	repo := internal.NewDBPersistentRecordRepository(v.pool, cache, engine)
-	tables := model.StorageTables{EntityMain: v.widths.entityMainTable, EAVData: v.eavTable, ChangeLog: v.widths.changeLogTable}
-	requeued, missing = map[widthRowKey]bool{}, map[widthRowKey]bool{}
-	for _, f := range findings {
-		key := rowKeyOf(f)
-		if !f.Classify(v.widths.cutoverMillis).Requeueable() || requeued[key] || missing[key] {
-			continue
-		}
-		err := repo.RequeueForFlush(ctx, tables, f.SchemaID, f.RowID)
-		if errors.Is(err, forma.ErrNotFound) {
-			missing[key] = true
-			continue
-		}
-		if err != nil {
-			return nil, nil, fmt.Errorf("requeue schema=%s row_id=%s for re-flush: %w", f.SchemaName, f.RowID, err)
-		}
-		requeued[key] = true
-	}
-	if len(requeued) > 0 {
-		fmt.Fprintf(v.out, "requeued %d row(s) for re-flush; run cdc-flush to re-export them\n", len(requeued))
-	}
-	return requeued, missing, nil
-}
-
-// widthRowKey is a row's identity in change_log: row_id is only unique
-// within a schema.
-type widthRowKey struct {
-	schemaID int16
-	rowID    uuid.UUID
-}
-
-func rowKeyOf(f widthaudit.Finding) widthRowKey {
-	return widthRowKey{schemaID: f.SchemaID, rowID: f.RowID}
+	return refused + ", in " + eavTable
 }
 
 func widthIssue(category string, f widthaudit.Finding, severity issueSeverity) validationIssue {

@@ -91,7 +91,7 @@ func TestBoundBigintDoubleColumnCensusAndRepair(t *testing.T) {
 			f.Declared != forma.ValueTypeBigInt || f.StoredValue != tc.stored || !f.Pending {
 			t.Fatalf("finding for the planted image %s on row %s = %+v, want pending ratio in double_01 holding %s", tc.image, rowID, f, tc.stored)
 		}
-		if class := f.Classify(0); class != widthaudit.ClassBigIntOutOfContract {
+		if class := f.Classify(); class != widthaudit.ClassBigIntOutOfContract {
 			t.Fatalf("planted image %s classified %v, want ClassBigIntOutOfContract", tc.image, class)
 		}
 

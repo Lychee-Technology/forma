@@ -4,28 +4,31 @@ package production
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/lychee-technology/forma/internal"
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/widthaudit"
 )
 
-// This file is the #501 acceptance test: the integer-width census finds an
-// EAV row whose parquet copy disagrees with Postgres, RequeueForFlush brings
-// the federated route back to the Postgres value at once, and the next flush
-// and compaction make the repair durable on every tier.
+// This file pins the integer-width census over an EAV row whose Postgres
+// value is out of width and whose parquet copy disagrees with it (#501), as
+// #729 changed its repair. The Postgres value is the defect: the OLTP read
+// refuses it, so the census reports the row as a failure, never as a stale
+// export a re-flush repairs. Rewriting the attribute through the API is the
+// repair, and the flush and compaction after it replace the stale copy on
+// every tier.
 //
 // The stale export is staged by flushing the row while its value is in
 // range, then rewriting eav_data past the declared width without stamping
 // change_log. The warm parquet copy disagrees with Postgres and the row is
 // not dirty. That is the state a declared-width TRY_CAST export left behind,
 // though the stale bytes differ: history holds NULL or a rounded value, this
-// fixture holds the old in-range value. The census, dirty-set routing and
-// versioned re-export depend only on the disagreement and the flush state,
-// never on the stale bytes, so the fixture exercises the same repair path.
+// fixture holds the old in-range value. The census and the repair depend
+// only on the disagreement and the flush state, never on the stale bytes.
 
-func TestIntegerWidthAuditRequeueRepairsStaleExport(t *testing.T) {
+func TestIntegerWidthAuditStaleExportIsRepairedByARewrite(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
 	ctx := context.Background()
@@ -42,14 +45,13 @@ func TestIntegerWidthAuditRequeueRepairsStaleExport(t *testing.T) {
 		"UPDATE eav_data SET value_numeric = 4294967296 WHERE schema_id = $1 AND row_id = $2 AND attr_id = 14",
 		wide.ID, stale.RowID)
 
-	probe := Filter{Attr: "qty", Op: "equals", Value: "4294967296"}
-	hot := Query{Schema: wide, PreferHot: true, Limit: 100, Filters: []Filter{probe}}
-	duck := Query{Schema: wide, Limit: 100, Filters: []Filter{probe}}
-	assertWidthRowSet(t, "staged/hot-pg", mustQuery(ctx, t, env, hot), []*Event{stale})
+	// The warm tier still serves the old copy, which no filter on the
+	// Postgres value finds.
+	duck := Query{Schema: wide, Limit: 100, Filters: []Filter{{Attr: "qty", Op: "equals", Value: "4294967296"}}}
 	assertWidthRowSet(t, "staged/warm-duck", mustQuery(ctx, t, env, duck), nil)
 
 	tables := widthaudit.Tables{EAV: env.Tables.EAVData, ChangeLog: env.Tables.ChangeLog}
-	targets := widthaudit.Targets(env.Metadata)
+	targets := widthaudit.TargetsWithRetainedEAV(env.Metadata)
 	cutover := time.Now().UnixMilli() + 1
 	findings, err := widthaudit.Census(ctx, env.Pool, tables, targets)
 	if err != nil {
@@ -58,45 +60,49 @@ func TestIntegerWidthAuditRequeueRepairsStaleExport(t *testing.T) {
 	if len(findings) != 1 || findings[0].RowID != stale.RowID || findings[0].StoredValue != "4294967296" {
 		t.Fatalf("census = %+v, want the one staged row", findings)
 	}
-	if got := findings[0].Classify(cutover); got != widthaudit.ClassStaleExport {
-		t.Fatalf("staged row classified %v, want ClassStaleExport", got)
+	if got := findings[0].Classify(); got != widthaudit.ClassEAVIntegerOutOfContract || !findings[0].ExportPredates(cutover) {
+		t.Fatalf("staged row classified %v (export predates the cutover: %t), want an EAV integer out of contract with a stale copy",
+			got, findings[0].ExportPredates(cutover))
 	}
 
-	repo := internal.NewDBPersistentRecordRepository(env.Pool, env.Metadata)
-	if err := repo.RequeueForFlush(ctx, env.Tables, findings[0].SchemaID, stale.RowID); err != nil {
-		t.Fatalf("requeue: %v", err)
+	_, err = env.EntityManager().Get(ctx, &forma.QueryRequest{SchemaName: wide.Name, RowID: &stale.RowID})
+	if err == nil || !strings.Contains(err.Error(), "stored integer image 4294967296 in value_numeric does not fit declared type integer") {
+		t.Fatalf("OLTP read of the staged row = %v, want the #729 refusal", err)
 	}
-	// The dirty set now routes the row to Postgres before any flush.
-	assertWidthRowSet(t, "requeued/warm-duck", mustQuery(ctx, t, env, duck), []*Event{stale})
+
+	mustApplyEvents(ctx, t, env, "rewrite the attribute", UpdateEvent(wide, stale.RowID, map[string]any{"qty": 4242}))
+	if findings, err := widthaudit.Census(ctx, env.Pool, tables, targets); err != nil || len(findings) != 0 {
+		t.Fatalf("census after the rewrite = %+v, %v; want clean", findings, err)
+	}
+	rewritten := Query{Schema: wide, Limit: 100, Filters: []Filter{{Attr: "qty", Op: "equals", Value: "4242"}}}
+	assertWidthRowSet(t, "rewritten/dirty-duck", mustQuery(ctx, t, env, rewritten), []*Event{stale})
 
 	if _, err := env.RunFlush(ctx); err != nil {
 		t.Fatalf("repair flush: %v", err)
 	}
-	assertWidthRowSet(t, "reflushed/warm-duck", mustQuery(ctx, t, env, duck), []*Event{stale})
-	assertWidthAuditClean(ctx, t, env, tables, targets, cutover)
-
+	assertWidthRowSet(t, "reflushed/warm-duck", mustQuery(ctx, t, env, rewritten), []*Event{stale})
 	if _, err := env.RunCompaction(ctx, wide); err != nil {
 		t.Fatalf("compaction: %v", err)
 	}
-	assertWidthRowSet(t, "compacted/cold-duck", mustQuery(ctx, t, env, duck), []*Event{stale})
+	assertWidthRowSet(t, "compacted/cold-duck", mustQuery(ctx, t, env, rewritten), []*Event{stale})
 	assertWidthRowSet(t, "compacted/in-range-row", mustQuery(ctx, t, env,
 		Query{Schema: wide, Limit: 100, Filters: []Filter{{Attr: "qty", Op: "equals", Value: "7"}}}), []*Event{clean})
-}
 
-// assertWidthAuditClean fails unless every census finding is consistent under
-// the cutover: the re-export happened after it, so the repaired row no longer
-// counts as stale although its value is still past the declared width.
-func assertWidthAuditClean(ctx context.Context, t *testing.T, env *Env, tables widthaudit.Tables,
-	targets []widthaudit.Target, cutover int64) {
-	t.Helper()
-	findings, err := widthaudit.Census(ctx, env.Pool, tables, targets)
+	page, err := federatedWideQuery(ctx, env, wide)
 	if err != nil {
-		t.Fatalf("census after repair: %v", err)
+		t.Fatalf("federated read after the repair: %v", err)
 	}
-	for _, f := range findings {
-		if got := f.Classify(cutover); got != widthaudit.ClassConsistent {
-			t.Errorf("after repair row %s classified %v (last_flushed_at=%d, cutover=%d), want ClassConsistent",
-				f.RowID, got, f.LastFlushedAt, cutover)
+	found := false
+	for _, rec := range page.Data {
+		if rec.RowID != stale.RowID {
+			continue
 		}
+		found = true
+		if rec.Attributes["qty"] != int32(4242) {
+			t.Fatalf("federated read of the repaired row = %#v", rec.Attributes)
+		}
+	}
+	if !found {
+		t.Fatalf("federated read after the repair has no row %s", stale.RowID)
 	}
 }

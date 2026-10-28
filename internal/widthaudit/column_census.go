@@ -66,6 +66,10 @@ func caseOverColumns(columns []string, cast string) string {
 	return "CASE w.col " + strings.Join(arms, " ") + " END"
 }
 
+// columnCensusParamsPerTarget is how many parameters BuildColumnCensusQuery
+// binds for each target.
+const columnCensusParamsPerTarget = 5
+
 // BuildColumnCensusQuery renders the entity_main census over the given
 // column-bound targets. Each target binds (schema_id, attr_id, column, lo,
 // hi) through a VALUES list, and a CASE over the candidate columns picks the
@@ -78,7 +82,7 @@ func caseOverColumns(columns []string, cast string) string {
 // every bound is a float8 integer, and the column is a float8.
 func BuildColumnCensusQuery(tables Tables, targets []Target) (string, []any) {
 	values := make([]string, 0, len(targets))
-	args := make([]any, 0, len(targets)*5)
+	args := make([]any, 0, len(targets)*columnCensusParamsPerTarget)
 	for _, t := range targets {
 		lo, hi := columnBounds(t.Declared)
 		n := len(args)
@@ -117,8 +121,10 @@ func censusColumns(ctx context.Context, q Querier, tables Tables, targets []Targ
 		return nil, fmt.Errorf("no entity main table is configured to scan %d integer attribute(s) bound to a wider column (first: schema=%s attribute=%s column=%s)",
 			len(targets), t.SchemaName, t.AttrName, t.Column)
 	}
-	query, args := BuildColumnCensusQuery(tables, targets)
-	return queryColumnFindings(ctx, q, tables.EntityMain, "integer-width census", query, args, targets)
+	return inBatches(targets, columnCensusParamsPerTarget, func(batch []Target) ([]Finding, error) {
+		query, args := BuildColumnCensusQuery(tables, batch)
+		return queryColumnFindings(ctx, q, tables.EntityMain, "integer-width census", query, args, batch)
+	})
 }
 
 // queryColumnFindings runs a census query over entity_main that selects

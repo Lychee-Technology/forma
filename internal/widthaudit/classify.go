@@ -2,27 +2,12 @@ package widthaudit
 
 import "github.com/lychee-technology/forma"
 
-// Class says what a finding means for the tiers, given what change_log
-// records about the row.
+// Class says what a finding means and how it is repaired. Every class is a
+// stored value the declared type cannot hold, which only rewriting the
+// attribute repairs: a re-flush re-exports the same value.
 type Class int
 
 const (
-	// ClassConsistent: every tier reads the same value. The row is either
-	// pending (served hot, and re-exported under DOUBLE by its next flush),
-	// never exported, or last exported at or after the cutover. Its value is
-	// still outside the declared width, but #384 reads such values the same
-	// way on every tier.
-	ClassConsistent Class = iota
-	// ClassStaleCandidate: a smallint/integer row last exported at an unknown
-	// point relative to the #384 export change, because no cutover was
-	// given. If that export predates #384, its parquet copy is NULL or
-	// rounded.
-	ClassStaleCandidate
-	// ClassStaleExport: a smallint/integer row whose winning parquet copy
-	// was written before the cutover. That copy was cast at declared width,
-	// so the federated route serves NULL or a rounded value. The row is not
-	// dirty, so its Postgres state has not changed since that export.
-	ClassStaleExport
 	// ClassBigIntOutOfContract: a bigint value outside [-2^53, 2^53] (the
 	// range the float64 image eav_data keeps exactly) or not integral. A
 	// value past 2^53 was rounded on the write, so no route can recover the
@@ -38,7 +23,7 @@ const (
 	// column stores the same image under the same contract, the OLTP read
 	// refuses the same values, and the same rewrite repairs it. Its
 	// Finding names the column.
-	ClassBigIntOutOfContract
+	ClassBigIntOutOfContract Class = iota
 	// ClassBoundIntegerOutOfContract: a smallint or integer bound to a column
 	// wider than its declared type holds an image that type cannot: a
 	// fraction, a value past its range, NaN or an infinity (#708). The OLTP
@@ -49,33 +34,38 @@ const (
 	// even. A re-flush reproduces that, so only rewriting the attribute
 	// repairs the row.
 	ClassBoundIntegerOutOfContract
+	// ClassEAVIntegerOutOfContract: an EAV-only smallint or integer, or a
+	// list item of one, holds an eav_data image its declared type cannot: a
+	// fraction, a value past its range, NaN or an infinity (#729). The OLTP
+	// read refuses the row with a consistency error, so an unrelated update
+	// is blocked, and so does the federated read of a copy exported since
+	// #384, which carries the same value at storage width. A copy exported
+	// before #384 (ExportPredates) holds NULL or a rounded value instead,
+	// which the federated route serves until the row is rewritten. Either
+	// way the Postgres value is the defect, so a re-flush repairs nothing:
+	// rewriting the attribute repairs the row, and the flush that follows
+	// replaces any parquet copy.
+	ClassEAVIntegerOutOfContract
 )
 
-// Classify places f given the cutover, the epoch millisecond from which
-// cdc-flush ran the #384 export. A cutover of 0 means it is unknown.
-func (f Finding) Classify(cutoverMillis int64) Class {
-	if f.Declared == forma.ValueTypeBigInt {
+// Classify places f by its declared type and storage.
+func (f Finding) Classify() Class {
+	switch {
+	case f.Declared == forma.ValueTypeBigInt:
 		return ClassBigIntOutOfContract
-	}
-	if f.Column != "" {
+	case f.Column != "":
 		return ClassBoundIntegerOutOfContract
 	}
-	if f.Pending || f.LastFlushedAt == 0 {
-		return ClassConsistent
-	}
-	if cutoverMillis == 0 {
-		return ClassStaleCandidate
-	}
-	if f.LastFlushedAt < cutoverMillis {
-		return ClassStaleExport
-	}
-	return ClassConsistent
+	return ClassEAVIntegerOutOfContract
 }
 
-// Requeueable reports whether RequeueForFlush repairs the class: a re-export
-// under the storage-width projection replaces the stale copy. A candidate is
-// requeueable too, because re-exporting a row whose copy was already correct
-// only rewrites the same values at a newer version.
-func (c Class) Requeueable() bool {
-	return c == ClassStaleCandidate || c == ClassStaleExport
+// ExportPredates reports whether the row's newest parquet copy was written
+// before cutoverMillis, the epoch millisecond from which cdc-flush ran the
+// #384 storage-width export. That export cast a smallint/integer at
+// declared width through TRY_CAST, so the copy holds NULL for an
+// out-of-range value and a rounded one for a fraction, and the federated
+// route serves it while the row is not dirty. A cutover of 0 means it is
+// unknown, and the answer is false.
+func (f Finding) ExportPredates(cutoverMillis int64) bool {
+	return cutoverMillis > 0 && !f.Pending && f.LastFlushedAt > 0 && f.LastFlushedAt < cutoverMillis
 }

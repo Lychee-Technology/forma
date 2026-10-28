@@ -75,9 +75,10 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 // NaN or infinity names no value of any of them: it used to read as an absent
 // attribute, since Postgres renders it as a JSON string the float64 decode
 // skipped, and an update then erased it. It is now a read-path consistency
-// error (#592). In eav_data, fractions and out-of-range images keep their
-// conversions (#384). Read from a bound column wider than the declared
-// smallint or integer, they are refused (#708, checkBoundIntegerImage).
+// error (#592). A smallint or integer image its declared type cannot hold,
+// in eav_data (#729) or a wider bound column (#708), is refused the same
+// way (checkIntegerImage), so the conversions below only ever see a whole
+// number inside the type's range, except for a system column alias (#745).
 func numericFromEAVRecord(record model.EAVRecord, valueType forma.ValueType) (any, error) {
 	if record.ValueText != nil {
 		return nil, storageTypeMismatchError(valueType, "value_text", "value_numeric")
@@ -85,7 +86,7 @@ func numericFromEAVRecord(record model.EAVRecord, valueType forma.ValueType) (an
 	if record.ValueNumeric == nil {
 		return nil, nil
 	}
-	if err := checkBoundIntegerImage(record, valueType); err != nil {
+	if err := checkIntegerImage(record, valueType); err != nil {
 		return nil, err
 	}
 	image := *record.ValueNumeric
