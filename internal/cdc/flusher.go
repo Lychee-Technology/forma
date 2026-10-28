@@ -243,6 +243,7 @@ func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int
 		caches[schemaID] = cache
 	}
 	c.attrCaches = caches
+	schemaIDs = exportableSchemaIDs(c.logger, schemaIDs, caches)
 
 	processSchema := c.processSchemaFn
 	if processSchema == nil {

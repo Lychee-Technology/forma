@@ -7,6 +7,8 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/schemaledger"
+	"github.com/lychee-technology/forma/internal/sqlgen"
+	"go.uber.org/zap"
 )
 
 // ErrSchemaAttrCacheUnavailable marks a CDC export that cannot proceed because a
@@ -51,4 +53,23 @@ func resolveRunAttrCache(ctx context.Context, reg forma.SchemaRegistry, schemaID
 		return nil, fmt.Errorf("schema %d: %w", schemaID, err)
 	}
 	return cache, nil
+}
+
+// exportableSchemaIDs drops from schemaIDs, after the run pre-flight
+// resolved caches, every schema the parquet tiers cannot hold (#704), with a
+// warning naming the offending attribute. Such a schema's rows stay
+// unflushed: the federated engine answers its reads from PostgreSQL, so
+// exporting would only write a collapsed row and mark it flushed. The run's
+// other schemas proceed, and the run does not fail on the skip.
+func exportableSchemaIDs(logger *zap.Logger, schemaIDs []int64, caches map[int16]forma.SchemaAttributeCache) []int64 {
+	out := make([]int64, 0, len(schemaIDs))
+	for _, sid := range schemaIDs {
+		if err := sqlgen.ValidateParquetRepresentable(caches[int16(sid)]); err != nil {
+			logger.Warn("schema not exported: its rows stay in PostgreSQL, which answers its federated reads",
+				zap.Int64("schema_id", sid), zap.Error(err))
+			continue
+		}
+		out = append(out, sid)
+	}
+	return out
 }

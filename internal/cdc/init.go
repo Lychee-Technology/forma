@@ -226,7 +226,7 @@ func processInitSchemas(ctx context.Context, runCtx *initRunContext, schemaIDs [
 		}
 		runCtx.attrCaches[schemaID] = cache
 	}
-
+	schemaIDs = exportableSchemaIDs(runCtx.logger, schemaIDs, runCtx.attrCaches)
 	summary := InitSummary{}
 	var schemaErrors []error
 
