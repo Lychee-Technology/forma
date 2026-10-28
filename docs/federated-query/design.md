@@ -156,7 +156,7 @@ The `"federated"` object carries optional controls that affect execution routing
 * `cdc-flush` and `cdc-init` skip the schema with a warning naming the attribute, so its rows stay unflushed and nothing is exported for it. The run's other schemas proceed, and the run does not fail. Parquet a flush wrote before this change stays in place and is no longer read.
 * The array ancestry that decides this is derived by the schema registry from the schema document. A schema the registry leaves underived, such as one reaching an array of objects through another file's `$ref` (#705), is not detected and reads as before.
 
-Storing each element in the parquet tiers would lift the restriction; no issue tracks it yet.
+Storing each element in the parquet tiers would lift the restriction (#749).
 
 **There are no consistency modes.** The `strict`/`eventual` switch, and the S3-only execution during a PostgreSQL outage that `eventual` was meant to permit (#98), were never built, and #635 dropped them. Read consistency is fixed per API (§3.3), and a PostgreSQL outage always fails a federated query (§7.2).
 
