@@ -161,14 +161,10 @@ func (r *Runner) Close() error {
 	return nil
 }
 
-func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, schemaRegistry forma.SchemaRegistry) error {
-	_, err := r.Flush(ctx, cfg, s3Client, dryRun, schemaRegistry)
-	return err
-}
-
-// Flush is RunOnce plus the run's report: the schemas it skipped (#704).
-// The report is returned alongside a schema's flush error too.
-func (r *Runner) Flush(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, schemaRegistry forma.SchemaRegistry) (FlushReport, error) {
+// RunOnce performs one flush pass over every schema with unflushed rows. The
+// report lists the schemas it skipped (#704), and is returned alongside a
+// schema's flush error too.
+func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, schemaRegistry forma.SchemaRegistry) (FlushReport, error) {
 	if schemaRegistry == nil {
 		return FlushReport{}, fmt.Errorf("schema registry is required for CDC export")
 	}

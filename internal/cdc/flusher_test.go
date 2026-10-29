@@ -13,7 +13,7 @@ import (
 )
 
 func TestRunOnce_RequiresSchemaRegistry(t *testing.T) {
-	err := RunOnce(context.Background(), CDCConfig{}, nil, false, zap.NewNop(), nil)
+	_, err := RunOnce(context.Background(), CDCConfig{}, nil, false, zap.NewNop(), nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "schema registry is required")
 }

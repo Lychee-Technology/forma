@@ -29,9 +29,11 @@ type InitReport struct {
 	FilesCreated int
 	NewObjects   []string
 	Manifest     *manifest.Manifest
+	// Skipped is the run's own report of schemas it did not export (#704).
+	Skipped []cdc.SkippedSchema
 }
 
-// RunFlush executes the real CDC runner (cdc.Runner.Flush) against the
+// RunFlush executes the real CDC runner (cdc.Runner.RunOnce) against the
 // Env's database and S3 prefix and reports what changed.
 func (e *Env) RunFlush(ctx context.Context) (*FlushReport, error) {
 	return e.runFlush(ctx, false)
@@ -92,9 +94,9 @@ func (e *Env) RunFlushWith(ctx context.Context, ov FlushOverrides) (*FlushReport
 	}
 	runner := cdc.NewRunner(e.logger)
 	defer func() { _ = runner.Close() }()
-	runReport, runErr := runner.Flush(ctx, cfg, s3Client, ov.DryRun, registry)
+	runReport, runErr := runner.RunOnce(ctx, cfg, s3Client, ov.DryRun, registry)
 	if runErr != nil {
-		runErr = fmt.Errorf("cdc flush (dry=%t): %w", ov.DryRun, runErr)
+		runErr = fmt.Errorf("cdc run once (dry=%t): %w", ov.DryRun, runErr)
 	}
 
 	report := &FlushReport{DryRun: ov.DryRun, UnflushedBefore: before, Skipped: runReport.Skipped}
@@ -127,6 +129,9 @@ type InitOverrides struct {
 	// the base swap (#371). Without it a schema with delta objects refuses
 	// with cdc.ErrDeltaTierPresent, exactly as the CLI does.
 	ReplaceDelta bool
+	// AllSchemas runs init over every registered schema, as cdc-init does
+	// without --schema-id, instead of the one schema named.
+	AllSchemas bool
 }
 
 // RunInitWith executes one real init pass with per-run overrides. In dry-run
@@ -143,11 +148,15 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 	if ov.Config != nil {
 		cfg = *ov.Config
 	}
+	schemaIDFilter := int(schema.ID)
+	if ov.AllSchemas {
+		schemaIDFilter = 0
+	}
 	summary, err := cdc.RunInit(ctx, cdc.InitOptions{
 		Config:               cfg,
 		S3Client:             e.Cluster.S3,
 		SchemaRegistryTable:  e.Tables.SchemaRegistry,
-		SchemaIDFilter:       int(schema.ID),
+		SchemaIDFilter:       schemaIDFilter,
 		DryRun:               ov.DryRun,
 		AutoEstimateRowBytes: true,
 		Logger:               e.logger,
@@ -169,6 +178,7 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 		RowsExported: summary.TotalRowsExported,
 		FilesCreated: summary.TotalFilesCreated,
 		NewObjects:   diffKeys(keysBefore, keysAfter),
+		Skipped:      summary.Skipped,
 	}
 	manifests, err := e.loadManifests(ctx)
 	if err != nil {

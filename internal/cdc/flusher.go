@@ -54,15 +54,9 @@ type S3FullClient interface {
 // RunOnce performs one full pass over schemas and attempts flush where needed.
 // Caller may provide an S3ObjectClient; when nil, AWS config will be loaded from
 // environment (still respecting cfg.S3Region). Optional schemaRegistry enables
-// schema-aware projections in DuckDB export.
-func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, logger *zap.Logger, schemaRegistry forma.SchemaRegistry) error {
-	_, err := Flush(ctx, cfg, s3Client, dryRun, logger, schemaRegistry)
-	return err
-}
-
-// Flush is RunOnce plus the run's report: the schemas it skipped (#704).
-// The report is returned alongside a schema's flush error too.
-func Flush(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, logger *zap.Logger, schemaRegistry forma.SchemaRegistry) (FlushReport, error) {
+// schema-aware projections in DuckDB export. The report lists the schemas the
+// run skipped (#704), and is returned alongside a schema's flush error too.
+func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, logger *zap.Logger, schemaRegistry forma.SchemaRegistry) (FlushReport, error) {
 	if schemaRegistry == nil {
 		return FlushReport{}, fmt.Errorf("schema registry is required for CDC export")
 	}
@@ -240,14 +234,9 @@ func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int
 		return FlushReport{}, nil
 	}
 
-	caches := make(map[int16]forma.SchemaAttributeCache, len(schemaIDs))
-	for _, sid := range schemaIDs {
-		schemaID := int16(sid)
-		cache, err := resolveRunAttrCache(ctx, c.schemaRegistry, schemaID)
-		if err != nil {
-			return FlushReport{}, fmt.Errorf("cdc flush pre-flight: %w", err)
-		}
-		caches[schemaID] = cache
+	caches, err := resolveRunAttrCaches(ctx, c.schemaRegistry, schemaIDs)
+	if err != nil {
+		return FlushReport{}, fmt.Errorf("cdc flush pre-flight: %w", err)
 	}
 	c.attrCaches = caches
 	schemaIDs, skipped := exportableSchemaIDs(c.logger, schemaIDs, caches)

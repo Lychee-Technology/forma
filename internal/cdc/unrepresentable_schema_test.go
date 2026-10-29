@@ -134,3 +134,18 @@ func TestBuildSchemaDrivenProjection_RefusesAnObjectArrayMember(t *testing.T) {
 	_, err := buildSchemaDrivenProjection(objectArrayAttrCache())
 	require.ErrorContains(t, err, `refusing to export: attribute "items.sku" lies inside the array of objects "items"`)
 }
+
+// TestRefuseNamedSkippedSchema: a cdc-init run whose --schema-id names a
+// schema the parquet tiers cannot hold fails with ErrSchemaNotExportable and
+// the reason. A bulk run (no filter) and a filtered run that skipped nothing
+// pass.
+func TestRefuseNamedSkippedSchema(t *testing.T) {
+	skipped := []SkippedSchema{{SchemaID: 8, Reason: `attribute "items.sku" lies inside the array of objects "items"`}}
+
+	err := refuseNamedSkippedSchema(8, skipped)
+	require.ErrorIs(t, err, ErrSchemaNotExportable)
+	require.ErrorContains(t, err, `schema 8: attribute "items.sku" lies inside the array of objects "items"`)
+
+	require.NoError(t, refuseNamedSkippedSchema(0, skipped), "a bulk run skips and reports")
+	require.NoError(t, refuseNamedSkippedSchema(7, nil), "a filtered run that skipped nothing")
+}
