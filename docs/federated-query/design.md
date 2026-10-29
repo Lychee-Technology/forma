@@ -125,6 +125,7 @@ The translator must traverse the filter tree and generate two distinct SQL fragm
 * **Target:** pg_source `WHERE` clause. DuckDB evaluates it after `postgres_scan` has copied `entity_main` out of PostgreSQL; PostgreSQL never sees it (§6.1).
 * **Scope:** Only attributes mapping to entity_main.
 * **Syntax:** Physical Column Names.
+* **Never stricter than the hot read:** `$LOGICAL_WHERE_CLAUSE` filters the projected value again, so this fragment may keep a row the logical fragment drops, but must not drop one it keeps, or a filter answers differently before and after the row's flush. Where the hot leg reads a column through an expression, the fragment tests that expression: an integer in a wider column (#627, §6.4), and a null test on a date bound with the `iso8601` encoding, whose read `epoch_ms(TRY_CAST(<col> AS TIMESTAMP))` is NULL for a string that is not a timestamp (#709). Comparisons on such a date keep the raw column against the canonical image: a string that is not a timestamp may pass them, and the logical fragment, which reads NULL, then drops it. A timestamp image that is not canonical can be dropped wrongly (#755).
 * **Sanitization:** Strict literal escaping to prevent SQL injection.
 * *Example:* (integer_01 > 18 AND text_01 LIKE 'John%')
 

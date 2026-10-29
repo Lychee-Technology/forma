@@ -289,7 +289,8 @@ func resolveMainTableColumn(attr string, meta forma.AttributeMetadata) string {
 // raw column dropped such an unflushed row from pg_source although `visible`
 // and its parquet copy read it as NULL (#709). Comparisons keep the raw
 // column against the canonical image (iso8601FilterImage): a non-timestamp
-// string may pass that pre-filter, and `visible` then drops it.
+// string may pass that pre-filter, and `visible` then drops it (a
+// non-canonical timestamp image is #755).
 func resolveMainNullTestColumn(attr string, meta forma.AttributeMetadata) string {
 	if meta.ColumnBinding != nil {
 		if expr, ok := mainColISO8601Read(meta); ok {
