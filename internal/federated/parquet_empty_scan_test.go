@@ -112,6 +112,43 @@ func TestEmptyScanAsksAtThePathResolutionAnchor(t *testing.T) {
 	}
 }
 
+// TestEmptyScanKeepsARacingFirstFlushHotWithWideningDisabled: the empty scan
+// source cannot see a delta a first flush publishes after the check, so the
+// rows it marks must stay in the hot leg. With the #252 widening disabled the
+// strict barrier would drop them from both legs; the empty scan renders the
+// anchor instead.
+func TestEmptyScanKeepsARacingFirstFlushHotWithWideningDisabled(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	cfg := hybridDuckConfig()
+	cfg.FlushVisibilityGraceMs = -1
+	duck := &fakeDuckDBExecutor{globFiles: []string{}, rows: &singleDuckDBRow{rowID: uuid.New()}}
+	dirty := &fakeDirtyIDFetcher{}
+	engine := newEmptyScanTestEngineWithConfig(t, cfg, duck, dirty, []string{fallbackGlob})
+
+	before := time.Now().UnixMilli()
+	_, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
+	after := time.Now().UnixMilli()
+	require.NoError(t, err)
+	require.Contains(t, duck.lastSQL, emptyScanMarker)
+	for _, cutoff := range renderedBarrierCutoffs(t, duck.lastSQL) {
+		require.GreaterOrEqual(t, cutoff, before)
+		require.LessOrEqual(t, cutoff, after, "the hot leg must keep rows marked after the anchor")
+		require.Equal(t, dirty.parquetOnlyCutoffMs, cutoff, "the hot leg serves at the instant the check asked about")
+	}
+
+	// A path set that does scan parquet keeps the operator's strict barrier.
+	duck.globFiles = []string{"s3://b/7/delta.parquet"}
+	duck.rows = &singleDuckDBRow{rowID: uuid.New()}
+	_, err = engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
+	require.NoError(t, err)
+	require.NotContains(t, duck.lastSQL, emptyScanMarker)
+	for _, cutoff := range renderedBarrierCutoffs(t, duck.lastSQL) {
+		require.Equal(t, sqlgen.FlushGraceCutoffDisabled, cutoff)
+	}
+}
+
 // TestNeverFlushedHotExcludedQueryUsesTheStrictBarrier: a hot-excluded query
 // keeps flushed_at = 0 as its barrier, so any flushed row means parquet
 // should hold data for it.

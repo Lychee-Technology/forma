@@ -53,9 +53,13 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 		}
 		opts = append(opts, fedengine.WithParquetSource(src))
 	}
+	var dirty fedengine.DirtyIDFetcher = fedengine.NewPostgresDirtyIDFetcher(e.Pool)
+	if e.DirtyIDFetcherWrap != nil {
+		dirty = e.DirtyIDFetcherWrap(dirty)
+	}
 	e.engine = fedengine.NewDBFederatedQueryEngine(
 		repo,
-		fedengine.NewPostgresDirtyIDFetcher(e.Pool),
+		dirty,
 		fedengine.NewDuckDBClientQueryExecutor(e.Duck),
 		e.breaker,
 		e.DuckCfg,

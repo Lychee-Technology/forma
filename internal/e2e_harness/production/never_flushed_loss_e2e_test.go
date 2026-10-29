@@ -84,3 +84,51 @@ func assertLostParquetFailsBothShapes(ctx context.Context, t *testing.T, env *En
 		}
 	}
 }
+
+// TestFirstFlushAfterTheEmptyScanCheckStaysHot (#720 review): the empty scan
+// source is fixed once the check clears the schema, so it cannot read the
+// delta a first flush publishes afterwards. With the #252 widening disabled
+// the strict barrier would then drop the flushed rows from the hot leg as
+// well. The empty scan's hot leg serves at the check's anchor instead.
+func TestFirstFlushAfterTheEmptyScanCheckStaysHot(t *testing.T) {
+	ctx := context.Background()
+	env := NewEnv(t, SharedCluster(t))
+	env.DuckCfg.FlushVisibilityGraceMs = -1
+	wide := DefaultSchemaFixtures()[1]
+
+	racer := &flushAfterEmptyScanCheck{env: env}
+	env.DirtyIDFetcherWrap = func(f fedengine.DirtyIDFetcher) fedengine.DirtyIDFetcher {
+		racer.DirtyIDFetcher = f
+		return racer
+	}
+	if err := env.ApplyEvents(ctx, env.GenerateScript(ScriptSpec{Schema: wide, Creates: 3})...); err != nil {
+		t.Fatalf("apply events: %v", err)
+	}
+
+	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20, PreferredTiers: allTiers})
+	if racer.flush == nil {
+		t.Fatalf("the query never cleared the empty-scan check, so no flush raced it (flush error: %v)", racer.err)
+	}
+	if racer.flush.UnflushedAfter != 0 || len(racer.flush.NewObjects) == 0 {
+		t.Fatalf("the racing flush wrote %v and left %d rows unflushed, want every row flushed",
+			racer.flush.NewObjects, racer.flush.UnflushedAfter)
+	}
+}
+
+// flushAfterEmptyScanCheck runs one real CDC flush right after the engine's
+// first empty-scan check clears the schema, before DuckDB reads it.
+type flushAfterEmptyScanCheck struct {
+	fedengine.DirtyIDFetcher
+	env   *Env
+	flush *FlushReport
+	err   error
+}
+
+func (r *flushAfterEmptyScanCheck) HasRowsOnlyInParquet(ctx context.Context, tables model.StorageTables, schemaID int16, cutoffMs int64) (bool, error) {
+	found, err := r.DirtyIDFetcher.HasRowsOnlyInParquet(ctx, tables, schemaID, cutoffMs)
+	if err != nil || found || r.flush != nil || r.err != nil {
+		return found, err
+	}
+	r.flush, r.err = r.env.RunFlush(ctx)
+	return found, err
+}

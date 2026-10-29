@@ -34,7 +34,7 @@ import (
 // marks rows, so a row marked before the anchor has a manifest the
 // resolution would have found: its flush is a prior publication, and a
 // recent one is as lost as an old one. Only a flush racing this query marks
-// at or after the anchor, and the grace barrier keeps those rows hot.
+// at or after the anchor, and emptyScanCutoffMs keeps those rows hot.
 //
 // A hot-excluded query keeps the strict flushed_at = 0 barrier, so any
 // flushed entry counts for it. Path sets from a caller hint are left alone:
@@ -67,6 +67,17 @@ func (e *DBFederatedQueryEngine) hasNoParquetToRead(
 		return false, fmt.Errorf("check whether schema %d has rows only parquet serves: %w: %w", q.SchemaID, ErrPostgresReadFailed, err)
 	}
 	return !found, nil
+}
+
+// emptyScanCutoffMs is the dirty-barrier cutoff of a read that
+// hasNoParquetToRead cleared. The empty scan source is fixed before DuckDB
+// runs, and it cannot pick up a delta a racing first flush publishes, so
+// rows marked after the check must stay hot-readable. They are marked at or
+// after the anchor, so the cutoff never lies above it, even when the #252
+// widening is disabled: the strict barrier would hand them to a parquet leg
+// that reads nothing.
+func emptyScanCutoffMs(graceCutoffMs, anchorMs int64) int64 {
+	return min(graceCutoffMs, anchorMs)
 }
 
 // emptyParquetScanSet is the scan treatment of a read that hasNoParquetToRead

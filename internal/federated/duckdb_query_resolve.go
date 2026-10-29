@@ -81,7 +81,11 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables 
 		}
 		if noParquet {
 			cache, _ := e.schemaCacheByID(q.SchemaID)
-			return scanSources{fromSource: true, graceCutoffMs: graceCutoffMs, cold: emptyParquetScanSet(cache)}, nil
+			return scanSources{
+				fromSource:    true,
+				graceCutoffMs: emptyScanCutoffMs(graceCutoffMs, anchorMs),
+				cold:          emptyParquetScanSet(cache),
+			}, nil
 		}
 		cold, err = e.validateScanSet(ctx, q.SchemaID, paths, fromSource, stamps)
 		if err != nil {
