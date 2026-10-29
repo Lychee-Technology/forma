@@ -55,21 +55,40 @@ func resolveRunAttrCache(ctx context.Context, reg forma.SchemaRegistry, schemaID
 	return cache, nil
 }
 
+// SkippedSchema is a schema a CDC run left unexported because the parquet
+// tiers cannot hold it (#704). Its change_log rows stay unflushed, and the
+// federated engine answers its reads from PostgreSQL. Reason names the
+// offending attribute.
+type SkippedSchema struct {
+	SchemaID int16
+	Reason   string
+}
+
+// FlushReport is what a flush run reports besides its error. Skipped does
+// not depend on the run's logger, so a caller with a no-op logger still
+// learns which schemas were not exported.
+type FlushReport struct {
+	Skipped []SkippedSchema
+}
+
 // exportableSchemaIDs drops from schemaIDs, after the run pre-flight
 // resolved caches, every schema the parquet tiers cannot hold (#704), with a
-// warning naming the offending attribute. Such a schema's rows stay
-// unflushed: the federated engine answers its reads from PostgreSQL, so
-// exporting would only write a collapsed row and mark it flushed. The run's
-// other schemas proceed, and the run does not fail on the skip.
-func exportableSchemaIDs(logger *zap.Logger, schemaIDs []int64, caches map[int16]forma.SchemaAttributeCache) []int64 {
+// warning naming the offending attribute, and returns the dropped schemas
+// too. Such a schema's rows stay unflushed: the federated engine answers its
+// reads from PostgreSQL, so exporting would only write a collapsed row and
+// mark it flushed. The run's other schemas proceed, and the run does not
+// fail on the skip.
+func exportableSchemaIDs(logger *zap.Logger, schemaIDs []int64, caches map[int16]forma.SchemaAttributeCache) ([]int64, []SkippedSchema) {
 	out := make([]int64, 0, len(schemaIDs))
+	var skipped []SkippedSchema
 	for _, sid := range schemaIDs {
 		if err := sqlgen.ValidateParquetRepresentable(caches[int16(sid)]); err != nil {
 			logger.Warn("schema not exported: its rows stay in PostgreSQL, which answers its federated reads",
 				zap.Int64("schema_id", sid), zap.Error(err))
+			skipped = append(skipped, SkippedSchema{SchemaID: int16(sid), Reason: err.Error()})
 			continue
 		}
 		out = append(out, sid)
 	}
-	return out
+	return out, skipped
 }

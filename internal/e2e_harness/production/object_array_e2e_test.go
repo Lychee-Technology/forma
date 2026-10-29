@@ -101,6 +101,10 @@ func TestObjectArraySchemaReadsEveryElementOnTheFederatedRoute(t *testing.T) {
 		t.Fatalf("flush marked %d of %d rows flushed and wrote %v, want the schema left unflushed and nothing written",
 			flush.UnflushedBefore-flush.UnflushedAfter, flush.UnflushedBefore, flush.NewObjects)
 	}
+	if len(flush.Skipped) != 1 || flush.Skipped[0].SchemaID != simple.ID ||
+		!strings.Contains(flush.Skipped[0].Reason, `array of objects "items"`) {
+		t.Fatalf("flush reported skipped schemas %+v, want schema %d skipped for the array of objects", flush.Skipped, simple.ID)
+	}
 }
 
 // assertObjectArrayRoute: res was answered from PostgreSQL alone, says why

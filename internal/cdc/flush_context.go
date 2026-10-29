@@ -46,7 +46,7 @@ func resolveS3Clients(
 	return resolvedS3Clients{object: provided, full: fullClient}, nil
 }
 
-// flushContextParams carries the per-run values both RunOnce frames resolve
+// flushContextParams carries the per-run values both Flush frames resolve
 // before a flush context can be built.
 type flushContextParams struct {
 	cfg            CDCConfig

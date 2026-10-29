@@ -2,6 +2,7 @@ package cdc
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -49,6 +50,15 @@ func assertSkipWarning(t *testing.T, logs *observer.ObservedLogs) {
 	require.Contains(t, fields["error"], `"items.sku" lies inside the array of objects "items"`)
 }
 
+// assertSkippedSchema8: the run reported schema 8 as skipped, naming the
+// attribute that keeps it out of the parquet tiers.
+func assertSkippedSchema8(t *testing.T, skipped []SkippedSchema) {
+	t.Helper()
+	require.Len(t, skipped, 1)
+	require.EqualValues(t, 8, skipped[0].SchemaID)
+	require.Contains(t, skipped[0].Reason, `"items.sku" lies inside the array of objects "items"`)
+}
+
 // TestProcessSchemas_SkipsASchemaTheParquetTiersCannotHold pins #704 on the
 // flush: the schema holding an array of objects is neither exported nor
 // marked flushed, its neighbours flush, and the run does not fail.
@@ -64,9 +74,31 @@ func TestProcessSchemas_SkipsASchemaTheParquetTiersCannotHold(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, flushCtx.processSchemas(context.Background(), []int64{7, 8, 9}))
+	report, err := flushCtx.processSchemas(context.Background(), []int64{7, 8, 9})
+	require.NoError(t, err)
 	require.Equal(t, []int16{7, 9}, processed)
+	assertSkippedSchema8(t, report.Skipped)
 	assertSkipWarning(t, logs)
+}
+
+// TestProcessSchemas_ReportsASkipWithoutALogger: an embedder running the
+// flush with a no-op logger, as cdc.NewFlushRunner(nil) does, still learns
+// from the report which schema was skipped, alongside a neighbour's error.
+func TestProcessSchemas_ReportsASkipWithoutALogger(t *testing.T) {
+	flushCtx := &schemaFlushContext{
+		logger:         zap.NewNop(),
+		schemaRegistry: objectArrayRegistry(),
+		processSchemaFn: func(_ context.Context, schemaID int16) error {
+			if schemaID == 9 {
+				return errors.New("export failed")
+			}
+			return nil
+		},
+	}
+
+	report, err := flushCtx.processSchemas(context.Background(), []int64{7, 8, 9})
+	require.ErrorContains(t, err, "schema 9: export failed")
+	assertSkippedSchema8(t, report.Skipped)
 }
 
 // TestProcessInitSchemas_SkipsASchemaTheParquetTiersCannotHold is the
@@ -89,7 +121,9 @@ func TestProcessInitSchemas_SkipsASchemaTheParquetTiersCannotHold(t *testing.T) 
 	summary, err := processInitSchemas(context.Background(), runCtx, []int64{7, 8, 9})
 	require.NoError(t, err)
 	require.Equal(t, []int16{7, 9}, initialized)
-	require.Equal(t, InitSummary{TotalRowsExported: 2, TotalFilesCreated: 2}, summary)
+	require.EqualValues(t, 2, summary.TotalRowsExported)
+	require.Equal(t, 2, summary.TotalFilesCreated)
+	assertSkippedSchema8(t, summary.Skipped)
 	assertSkipWarning(t, logs)
 }
 

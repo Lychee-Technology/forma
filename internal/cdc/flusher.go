@@ -56,25 +56,32 @@ type S3FullClient interface {
 // environment (still respecting cfg.S3Region). Optional schemaRegistry enables
 // schema-aware projections in DuckDB export.
 func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, logger *zap.Logger, schemaRegistry forma.SchemaRegistry) error {
+	_, err := Flush(ctx, cfg, s3Client, dryRun, logger, schemaRegistry)
+	return err
+}
+
+// Flush is RunOnce plus the run's report: the schemas it skipped (#704).
+// The report is returned alongside a schema's flush error too.
+func Flush(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, logger *zap.Logger, schemaRegistry forma.SchemaRegistry) (FlushReport, error) {
 	if schemaRegistry == nil {
-		return fmt.Errorf("schema registry is required for CDC export")
+		return FlushReport{}, fmt.Errorf("schema registry is required for CDC export")
 	}
 	// Setup AWS credentials and default S3 client.
 	region, credProvider, defaultS3Client, err := setupAWSClient(ctx, cfg)
 	if err != nil {
-		return err
+		return FlushReport{}, fmt.Errorf("setup aws client: %w", err)
 	}
 
 	requireFullS3 := cfg.ManifestTemplate != ""
 	clients, err := resolveS3Clients(s3Client, defaultS3Client, requireFullS3)
 	if err != nil {
-		return err
+		return FlushReport{}, fmt.Errorf("resolve s3 clients: %w", err)
 	}
 
 	// Setup Postgres connection
 	db, pgPassword, err := setupPostgresConnection(ctx, cfg, region, credProvider, logger)
 	if err != nil {
-		return err
+		return FlushReport{}, fmt.Errorf("setup postgres connection: %w", err)
 	}
 	defer db.Close()
 
@@ -88,7 +95,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	s3Key, s3Secret, s3Token := ResolveStaticS3Credentials(cfg)
 	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, s3Token, logger)
 	if err != nil {
-		return fmt.Errorf("new duck exporter: %w", err)
+		return FlushReport{}, fmt.Errorf("new duck exporter: %w", err)
 	}
 	defer duck.DB.Close()
 
@@ -103,13 +110,13 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 		schemaRegistry: schemaRegistry,
 	})
 	if err != nil {
-		return fmt.Errorf("prepare flush: %w", err)
+		return FlushReport{}, fmt.Errorf("prepare flush: %w", err)
 	}
 
 	// Get schemas with unflushed rows
 	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, flushCtx.tableName)
 	if err != nil {
-		return fmt.Errorf("list schemas with unflushed rows: %w", err)
+		return FlushReport{}, fmt.Errorf("list schemas with unflushed rows: %w", err)
 	}
 
 	return flushCtx.processSchemas(ctx, schemaIDs)
@@ -228,9 +235,9 @@ type schemaFlushContext struct {
 	processSchemaFn func(context.Context, int16) error
 }
 
-func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int64) error {
+func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int64) (FlushReport, error) {
 	if len(schemaIDs) == 0 {
-		return nil
+		return FlushReport{}, nil
 	}
 
 	caches := make(map[int16]forma.SchemaAttributeCache, len(schemaIDs))
@@ -238,12 +245,13 @@ func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int
 		schemaID := int16(sid)
 		cache, err := resolveRunAttrCache(ctx, c.schemaRegistry, schemaID)
 		if err != nil {
-			return fmt.Errorf("cdc flush pre-flight: %w", err)
+			return FlushReport{}, fmt.Errorf("cdc flush pre-flight: %w", err)
 		}
 		caches[schemaID] = cache
 	}
 	c.attrCaches = caches
-	schemaIDs = exportableSchemaIDs(c.logger, schemaIDs, caches)
+	schemaIDs, skipped := exportableSchemaIDs(c.logger, schemaIDs, caches)
+	report := FlushReport{Skipped: skipped}
 
 	processSchema := c.processSchemaFn
 	if processSchema == nil {
@@ -259,10 +267,10 @@ func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int
 		}
 	}
 	if len(schemaErrs) > 0 {
-		return errors.Join(schemaErrs...)
+		return report, errors.Join(schemaErrs...)
 	}
 
-	return nil
+	return report, nil
 }
 
 // processSchema handles the flush process for a single schema.

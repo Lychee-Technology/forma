@@ -81,22 +81,22 @@ func TestNewSchemaFlushContextWiresManifestStoreAndTableDefault(t *testing.T) {
 	require.Equal(t, "custom_log", withoutManifest.tableName)
 }
 
-// Both flush entrypoints — package-level RunOnce (cmd/tools cdc-flush) and
-// Runner.RunOnce — must assemble their context through newSchemaFlushContext,
+// Both flush entrypoints — package-level Flush (cmd/tools cdc-flush, via
+// RunOnce) and Runner.Flush — must assemble their context through newSchemaFlushContext,
 // handing it the resolved client pair. Neither frame has DB and AWS
 // preconditions a unit test can satisfy, so this is what keeps the wiring from
 // existing on one path only: a hand-rolled schemaFlushContext literal at either
 // site, or a params literal that drops the clients, silently unstamps every
 // manifest entry that path writes while the constructor's own tests stay green
 // (#318, #347).
-func TestRunOnceFramesBuildFlushContextThroughConstructor(t *testing.T) {
+func TestFlushFramesBuildFlushContextThroughConstructor(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	require.NoError(t, err)
 
 	fset := token.NewFileSet()
 
 	var literalSites []string
-	var runOnceFrames []string
+	var flushFrames []string
 	frameBuildsThroughConstructor := map[string]bool{}
 	framePassesClients := map[string]bool{}
 
@@ -134,14 +134,14 @@ func TestRunOnceFramesBuildFlushContextThroughConstructor(t *testing.T) {
 				return true
 			})
 
-			if fn.Name.Name == "RunOnce" {
-				runOnceFrames = append(runOnceFrames, frame)
+			if fn.Name.Name == "Flush" {
+				flushFrames = append(flushFrames, frame)
 			}
 		}
 	}
 
-	require.Len(t, runOnceFrames, 2, "expected exactly two RunOnce frames (package-level and Runner), found %v", runOnceFrames)
-	for _, frame := range runOnceFrames {
+	require.Len(t, flushFrames, 2, "expected exactly two Flush frames (package-level and Runner), found %v", flushFrames)
+	for _, frame := range flushFrames {
 		require.True(t, frameBuildsThroughConstructor[frame],
 			"%s does not build its flush context through newSchemaFlushContext, so the checksum seam is unwired on that path", frame)
 		require.True(t, framePassesClients[frame],

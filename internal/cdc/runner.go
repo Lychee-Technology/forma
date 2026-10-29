@@ -162,26 +162,33 @@ func (r *Runner) Close() error {
 }
 
 func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, schemaRegistry forma.SchemaRegistry) error {
+	_, err := r.Flush(ctx, cfg, s3Client, dryRun, schemaRegistry)
+	return err
+}
+
+// Flush is RunOnce plus the run's report: the schemas it skipped (#704).
+// The report is returned alongside a schema's flush error too.
+func (r *Runner) Flush(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, schemaRegistry forma.SchemaRegistry) (FlushReport, error) {
 	if schemaRegistry == nil {
-		return fmt.Errorf("schema registry is required for CDC export")
+		return FlushReport{}, fmt.Errorf("schema registry is required for CDC export")
 	}
 
 	cfg = cfg.WithDefaults()
 
 	s3Runtime, err := r.getOrCreateS3Runtime(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("prepare s3 runtime: %w", err)
+		return FlushReport{}, fmt.Errorf("prepare s3 runtime: %w", err)
 	}
 
 	requireFullS3 := cfg.ManifestTemplate != ""
 	clients, err := resolveS3Clients(s3Client, s3Runtime.client, requireFullS3)
 	if err != nil {
-		return fmt.Errorf("resolve s3 clients: %w", err)
+		return FlushReport{}, fmt.Errorf("resolve s3 clients: %w", err)
 	}
 
 	db, pgPassword, err := setupPostgresConnection(ctx, cfg, s3Runtime.region, s3Runtime.credProvider, r.logger)
 	if err != nil {
-		return fmt.Errorf("setup postgres connection: %w", err)
+		return FlushReport{}, fmt.Errorf("setup postgres connection: %w", err)
 	}
 	defer db.Close()
 
@@ -189,7 +196,7 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 	if err != nil {
 		// getOrCreateDuckExporter carries the "new duck exporter:" prefix; this
 		// layer adds the run-level step so the two never duplicate.
-		return fmt.Errorf("prepare duck exporter: %w", err)
+		return FlushReport{}, fmt.Errorf("prepare duck exporter: %w", err)
 	}
 	defer releaseDuck()
 
@@ -204,12 +211,12 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 		schemaRegistry: schemaRegistry,
 	})
 	if err != nil {
-		return fmt.Errorf("prepare flush: %w", err)
+		return FlushReport{}, fmt.Errorf("prepare flush: %w", err)
 	}
 
 	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, flushCtx.tableName)
 	if err != nil {
-		return fmt.Errorf("list schemas with unflushed rows: %w", err)
+		return FlushReport{}, fmt.Errorf("list schemas with unflushed rows: %w", err)
 	}
 
 	// Delegate to processSchemas so the Runner path runs the same pre-flight

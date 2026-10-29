@@ -19,6 +19,8 @@ type FlushReport struct {
 	Manifests       map[int16]*manifest.Manifest
 	UnflushedBefore int64
 	UnflushedAfter  int64
+	// Skipped is the runner's own report of schemas it did not export (#704).
+	Skipped []cdc.SkippedSchema
 }
 
 // InitReport captures the effects of one base-file initialization export.
@@ -29,7 +31,7 @@ type InitReport struct {
 	Manifest     *manifest.Manifest
 }
 
-// RunFlush executes the real CDC runner (cdc.Runner.RunOnce) against the
+// RunFlush executes the real CDC runner (cdc.Runner.Flush) against the
 // Env's database and S3 prefix and reports what changed.
 func (e *Env) RunFlush(ctx context.Context) (*FlushReport, error) {
 	return e.runFlush(ctx, false)
@@ -90,12 +92,12 @@ func (e *Env) RunFlushWith(ctx context.Context, ov FlushOverrides) (*FlushReport
 	}
 	runner := cdc.NewRunner(e.logger)
 	defer func() { _ = runner.Close() }()
-	runErr := runner.RunOnce(ctx, cfg, s3Client, ov.DryRun, registry)
+	runReport, runErr := runner.Flush(ctx, cfg, s3Client, ov.DryRun, registry)
 	if runErr != nil {
-		runErr = fmt.Errorf("cdc run once (dry=%t): %w", ov.DryRun, runErr)
+		runErr = fmt.Errorf("cdc flush (dry=%t): %w", ov.DryRun, runErr)
 	}
 
-	report := &FlushReport{DryRun: ov.DryRun, UnflushedBefore: before}
+	report := &FlushReport{DryRun: ov.DryRun, UnflushedBefore: before, Skipped: runReport.Skipped}
 	if report.UnflushedAfter, err = e.countUnflushed(ctx); err != nil {
 		return report, errors.Join(runErr, err)
 	}

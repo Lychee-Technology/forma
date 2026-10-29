@@ -43,6 +43,7 @@ type InitOptions struct {
 type InitSummary struct {
 	TotalRowsExported int64
 	TotalFilesCreated int
+	Skipped           []SkippedSchema // schemas the parquet tiers cannot hold (#704)
 }
 
 type initRunContext struct {
@@ -226,8 +227,8 @@ func processInitSchemas(ctx context.Context, runCtx *initRunContext, schemaIDs [
 		}
 		runCtx.attrCaches[schemaID] = cache
 	}
-	schemaIDs = exportableSchemaIDs(runCtx.logger, schemaIDs, runCtx.attrCaches)
-	summary := InitSummary{}
+	schemaIDs, skipped := exportableSchemaIDs(runCtx.logger, schemaIDs, runCtx.attrCaches)
+	summary := InitSummary{Skipped: skipped}
 	var schemaErrors []error
 
 	for _, sid := range schemaIDs {

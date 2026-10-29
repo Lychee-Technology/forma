@@ -139,7 +139,8 @@ func TestRunPreflightRefusesASupersededGeneration(t *testing.T) {
 	require.ErrorIs(t, err, schemaledger.ErrGenerationChanged)
 	flushCtx := &schemaFlushContext{schemaRegistry: registry, logger: zap.NewNop(),
 		processSchemaFn: func(context.Context, int16) error { return errors.New("must not run") }}
-	require.ErrorIs(t, flushCtx.processSchemas(ctx, []int64{7}), schemaledger.ErrGenerationChanged)
+	_, err = flushCtx.processSchemas(ctx, []int64{7})
+	require.ErrorIs(t, err, schemaledger.ErrGenerationChanged)
 
 	untracked := struct{ forma.SchemaRegistry }{registry}
 	_, err = resolveRunAttrCache(ctx, untracked, 7)
