@@ -24,7 +24,7 @@ import (
 // objects since deleted, looks the same. The flush history tells the two
 // apart. The dirty barrier hands the hot leg every entry with flushed_at = 0
 // or at or after the cutoff, so with no entry flushed before the cutoff the
-// parquet tiers can contribute no version the anti-join would keep, and the
+// anti-join would discard any parquet version of a change_log row, and the
 // hot leg's answer is the whole answer. Flushed entries are never deleted,
 // so a schema that has been flushed keeps failing the read as before.
 //
