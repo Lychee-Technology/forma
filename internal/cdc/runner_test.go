@@ -32,7 +32,7 @@ func TestNewRunner_UsesNopLoggerWhenNil(t *testing.T) {
 
 func TestRunnerRunOnce_RequiresSchemaRegistry(t *testing.T) {
 	runner := NewRunner(zap.NewNop())
-	err := runner.RunOnce(context.Background(), CDCConfig{}, nil, false, nil)
+	_, err := runner.RunOnce(context.Background(), CDCConfig{}, nil, false, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "schema registry is required")
 }

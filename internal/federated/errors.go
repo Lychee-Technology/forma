@@ -46,6 +46,13 @@ var ErrPostgresReadFailed = errors.New("postgres read failed")
 // degraded fallback IS the Postgres-only path.
 var ErrKeysetUnsupportedOnPostgres = errors.New("keyset cursor unsupported on the postgres-only path")
 
+// ErrParquetUnrepresentable marks a request refused because its schema holds
+// data the parquet tiers cannot (model.FederatedAttributeQuery.
+// ParquetUnrepresentable, #704): a DuckDB pass over it would collapse each
+// member of an array of objects to one value. Not degradable — it describes
+// the schema, not a transient failure.
+var ErrParquetUnrepresentable = errors.New("schema cannot be read from the parquet tiers")
+
 // ErrNoParquetPaths and ErrManifestSchemaMismatch are defined in the public
 // root package and re-exported here for internal call sites. They must be
 // matchable by embedders that reach the engine through factory.NewEntityManager*

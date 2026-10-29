@@ -97,7 +97,7 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 	defer cancel()
 
 	startTime := time.Now()
-	page, err := s.queryRecords(ctx, query, req)
+	page, err := s.queryRecords(ctx, query, req, schemaCache)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query persistent records: %w", err)
 	}
@@ -167,7 +167,11 @@ func validateFederatedCondition(req *forma.QueryRequest, cache forma.SchemaAttri
 	return nil
 }
 
-func (s *entityQueryService) queryRecords(ctx context.Context, query *model.PersistentRecordQuery, req *forma.QueryRequest) (*model.PersistentRecordPage, error) {
+// queryRecords serves query on the route req asks for. A federated request
+// carries why the parquet tiers cannot hold the schema, if they cannot
+// (#704): only the registry's cache, schemaCache, derives the array
+// ancestry that decides it.
+func (s *entityQueryService) queryRecords(ctx context.Context, query *model.PersistentRecordQuery, req *forma.QueryRequest, schemaCache forma.SchemaAttributeCache) (*model.PersistentRecordPage, error) {
 	if query == nil {
 		return nil, fmt.Errorf("query cannot be nil")
 	}
@@ -186,9 +190,10 @@ func (s *entityQueryService) queryRecords(ctx context.Context, query *model.Pers
 			Limit:           query.Limit,
 			Offset:          query.Offset,
 		},
-		PreferredTiers:  federatedPreferredTiers(req.Federated.PreferredTiers),
-		PreferHot:       req.Federated.PreferHot,
-		UseMainAsAnchor: req.Federated.UseMainAsAnchor,
+		PreferredTiers:         federatedPreferredTiers(req.Federated.PreferredTiers),
+		PreferHot:              req.Federated.PreferHot,
+		UseMainAsAnchor:        req.Federated.UseMainAsAnchor,
+		ParquetUnrepresentable: sqlgen.ParquetUnrepresentableReason(schemaCache),
 	}
 	if req.Federated.S3ParquetPathTemplate != "" {
 		fq.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: req.Federated.S3ParquetPathTemplate}

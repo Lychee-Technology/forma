@@ -202,10 +202,12 @@ func runCDCFlush(ctx context.Context, args []string) error {
 		zap.String("manifest_template", cfg.ManifestTemplate),
 		zap.Bool("dry_run", opts.dryRun))
 
-	if err := publiccdc.RunOnce(ctx, cfg, s3Client, opts.dryRun, logger, registry); err != nil {
+	report, err := publiccdc.RunOnce(ctx, cfg, s3Client, opts.dryRun, logger, registry)
+	if err != nil {
 		return fmt.Errorf("CDC flush failed: %w", err)
 	}
 
-	logger.Info("CDC flush completed")
+	// A skipped schema is not a failure (#704): the run exits 0 and names it.
+	logger.Info("CDC flush completed", zap.Any("skipped_schemas", report.Skipped))
 	return nil
 }

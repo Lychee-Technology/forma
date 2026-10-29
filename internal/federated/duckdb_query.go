@@ -197,6 +197,9 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	if err := validateKeysetCursor(q.KeysetCursor, attributeOrders); err != nil {
 		return 0, fmt.Errorf("validate keyset cursor: %w", err)
 	}
+	if err := refuseParquetUnrepresentable(q); err != nil {
+		return 0, err
+	}
 
 	// Initialize execution plan tracking
 	planCtx := newDuckDBExecutionPlanContext(opts, e.clock())

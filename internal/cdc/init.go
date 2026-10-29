@@ -43,6 +43,7 @@ type InitOptions struct {
 type InitSummary struct {
 	TotalRowsExported int64
 	TotalFilesCreated int
+	Skipped           []SkippedSchema // schemas the parquet tiers cannot hold (#704)
 }
 
 type initRunContext struct {
@@ -212,22 +213,22 @@ func RunInit(ctx context.Context, opts InitOptions) (InitSummary, error) {
 	summary, schemaErr := processInitSchemas(ctx, runCtx, schemaIDs)
 	opts.Logger.Info("CDC init summary",
 		zap.Int64("total_rows_exported", summary.TotalRowsExported),
-		zap.Int("total_files_created", summary.TotalFilesCreated))
+		zap.Int("total_files_created", summary.TotalFilesCreated),
+		zap.Any("skipped_schemas", summary.Skipped))
+	if err := refuseNamedSkippedSchema(opts.SchemaIDFilter, summary.Skipped); err != nil {
+		return summary, err
+	}
 	return summary, schemaErr
 }
 
 func processInitSchemas(ctx context.Context, runCtx *initRunContext, schemaIDs []int64) (InitSummary, error) {
-	runCtx.attrCaches = make(map[int16]forma.SchemaAttributeCache, len(schemaIDs))
-	for _, sid := range schemaIDs {
-		schemaID := int16(sid)
-		cache, err := resolveRunAttrCache(ctx, runCtx.schemaRegistry, schemaID)
-		if err != nil {
-			return InitSummary{}, fmt.Errorf("cdc init pre-flight: %w", err)
-		}
-		runCtx.attrCaches[schemaID] = cache
+	caches, err := resolveRunAttrCaches(ctx, runCtx.schemaRegistry, schemaIDs)
+	if err != nil {
+		return InitSummary{}, fmt.Errorf("cdc init pre-flight: %w", err)
 	}
-
-	summary := InitSummary{}
+	runCtx.attrCaches = caches
+	schemaIDs, skipped := exportableSchemaIDs(runCtx.logger, schemaIDs, runCtx.attrCaches)
+	summary := InitSummary{Skipped: skipped}
 	var schemaErrors []error
 
 	for _, sid := range schemaIDs {

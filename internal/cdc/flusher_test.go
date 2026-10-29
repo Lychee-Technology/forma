@@ -13,7 +13,7 @@ import (
 )
 
 func TestRunOnce_RequiresSchemaRegistry(t *testing.T) {
-	err := RunOnce(context.Background(), CDCConfig{}, nil, false, zap.NewNop(), nil)
+	_, err := RunOnce(context.Background(), CDCConfig{}, nil, false, zap.NewNop(), nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "schema registry is required")
 }
@@ -230,7 +230,7 @@ func TestProcessSchemas_ContinuesAcrossFailuresAndJoinsErrors(t *testing.T) {
 		},
 	}
 
-	err := flushCtx.processSchemas(context.Background(), []int64{1, 2, 3})
+	_, err := flushCtx.processSchemas(context.Background(), []int64{1, 2, 3})
 	require.Error(t, err)
 	require.Equal(t, []int16{1, 2, 3}, processed)
 	require.Contains(t, err.Error(), "schema 2")
@@ -248,7 +248,7 @@ func TestProcessSchemas_ReturnsNilForNilOrEmptySchemaIDsWithoutProcessing(t *tes
 			},
 		}
 
-		err := flushCtx.processSchemas(context.Background(), nil)
+		_, err := flushCtx.processSchemas(context.Background(), nil)
 		require.NoError(t, err)
 		require.Zero(t, calls)
 	})
@@ -263,7 +263,7 @@ func TestProcessSchemas_ReturnsNilForNilOrEmptySchemaIDsWithoutProcessing(t *tes
 			},
 		}
 
-		err := flushCtx.processSchemas(context.Background(), []int64{})
+		_, err := flushCtx.processSchemas(context.Background(), []int64{})
 		require.NoError(t, err)
 		require.Zero(t, calls)
 	})
@@ -412,7 +412,7 @@ func TestProcessSchemas_AbortsWhenSchemaCacheUnavailable(t *testing.T) {
 		},
 	}
 
-	err := flushCtx.processSchemas(context.Background(), []int64{7})
+	_, err := flushCtx.processSchemas(context.Background(), []int64{7})
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrSchemaAttrCacheUnavailable)
 	require.Contains(t, err.Error(), "7")
@@ -430,7 +430,7 @@ func TestProcessSchemas_ResolvesCachesBeforeProcessing(t *testing.T) {
 		},
 	}
 
-	err := flushCtx.processSchemas(context.Background(), []int64{7, 8})
+	_, err := flushCtx.processSchemas(context.Background(), []int64{7, 8})
 	require.NoError(t, err)
 	require.Equal(t, []int16{7, 8}, processedIDs)
 	require.NotEmpty(t, flushCtx.attrCaches[7])

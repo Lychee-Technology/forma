@@ -124,6 +124,11 @@ func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) (schemaDr
 	if err := sqlgen.ValidateParquetAttrColumns(attrCache); err != nil {
 		return schemaDrivenProjection{}, fmt.Errorf("refusing to export ambiguous parquet columns: %w", err)
 	}
+	// The run skips such a schema (exportableSchemaIDs); this refuses a
+	// caller that bypasses it before any side effect.
+	if err := sqlgen.ValidateParquetRepresentable(attrCache); err != nil {
+		return schemaDrivenProjection{}, fmt.Errorf("refusing to export: %w", err)
+	}
 
 	for _, attrName := range sortedAttrKeys(attrCache) {
 		meta := attrCache[attrName]
