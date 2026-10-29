@@ -3,10 +3,13 @@ package federated
 import (
 	"context"
 	"errors"
+	"regexp"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/lychee-technology/forma/internal/sqlgen"
@@ -30,10 +33,29 @@ func allTierQuery() *model.FederatedAttributeQuery {
 
 func newEmptyScanTestEngine(t *testing.T, duck *fakeDuckDBExecutor, dirty *fakeDirtyIDFetcher, paths []string, opts ...EngineOption) *DBFederatedQueryEngine {
 	t.Helper()
+	return newEmptyScanTestEngineWithConfig(t, hybridDuckConfig(), duck, dirty, paths, opts...)
+}
+
+func newEmptyScanTestEngineWithConfig(t *testing.T, cfg forma.DuckDBConfig, duck *fakeDuckDBExecutor, dirty *fakeDirtyIDFetcher, paths []string, opts ...EngineOption) *DBFederatedQueryEngine {
+	t.Helper()
 	opts = append(opts, WithParquetSource(&fakeParquetSource{paths: paths}))
 	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, dirty, duck,
 		NewCircuitBreaker(1, time.Minute, time.Minute),
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", opts...)
+		cfg, testMetadataCacheSchema7(t), "host=x", opts...)
+}
+
+// renderedBarrierCutoffs returns every flushed_at cutoff literal the dirty
+// barrier renders in sql: one in dirty_ids and one in pg_source.
+func renderedBarrierCutoffs(t *testing.T, sql string) []int64 {
+	t.Helper()
+	var cutoffs []int64
+	for _, m := range regexp.MustCompile(`flushed_at >= (\d+)`).FindAllStringSubmatch(sql, -1) {
+		n, err := strconv.ParseInt(m[1], 10, 64)
+		require.NoError(t, err)
+		cutoffs = append(cutoffs, n)
+	}
+	require.Len(t, cutoffs, 2, "an all-tier query renders the barrier in dirty_ids and pg_source")
+	return cutoffs
 }
 
 // TestNeverFlushedSchemaScansNoParquet pins #720: the source's fallback glob
@@ -61,7 +83,33 @@ func TestNeverFlushedSchemaScansNoParquet(t *testing.T) {
 	require.NotContains(t, duck.lastSQL, fallbackGlob)
 	require.Equal(t, 3, dirty.parquetOnlyCalls)
 	require.Less(t, dirty.parquetOnlyCutoffMs, sqlgen.FlushGraceCutoffDisabled,
-		"an all-tier query asks about rows flushed before its grace cutoff, the ones its hot leg does not serve")
+		"an all-tier query asks at its path-resolution anchor, not with the strict barrier")
+}
+
+// TestEmptyScanAsksAtThePathResolutionAnchor: a flush marked before the
+// anchor published a manifest the resolution would have found, so a lost one
+// must keep failing the read even inside the #252 grace margin. The check
+// therefore asks at the anchor, while the hot leg keeps the margin.
+func TestEmptyScanAsksAtThePathResolutionAnchor(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	cfg := hybridDuckConfig()
+	cfg.FlushVisibilityGraceMs = 60_000
+	duck := &fakeDuckDBExecutor{globFiles: []string{}, rows: &singleDuckDBRow{rowID: uuid.New()}}
+	dirty := &fakeDirtyIDFetcher{}
+	engine := newEmptyScanTestEngineWithConfig(t, cfg, duck, dirty, []string{fallbackGlob})
+
+	before := time.Now().UnixMilli()
+	_, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
+	after := time.Now().UnixMilli()
+	require.NoError(t, err)
+	require.Contains(t, duck.lastSQL, emptyScanMarker)
+	require.GreaterOrEqual(t, dirty.parquetOnlyCutoffMs, before, "the check must not reach back by the grace margin")
+	require.LessOrEqual(t, dirty.parquetOnlyCutoffMs, after)
+	for _, cutoff := range renderedBarrierCutoffs(t, duck.lastSQL) {
+		require.Equal(t, dirty.parquetOnlyCutoffMs-60_000, cutoff, "the hot leg keeps the configured margin")
+	}
 }
 
 // TestNeverFlushedHotExcludedQueryUsesTheStrictBarrier: a hot-excluded query

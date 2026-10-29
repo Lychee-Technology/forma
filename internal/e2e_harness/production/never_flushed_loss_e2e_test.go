@@ -40,6 +40,31 @@ func TestLostInitializedDataStillFails(t *testing.T) {
 	assertLostParquetFailsBothShapes(ctx, t, env, wide)
 }
 
+// TestLostRecentFlushStillFailsInsideTheGraceMargin (#720 review): a flush
+// marked inside the #252 grace margin published its manifest before the
+// query resolved its paths, so losing that manifest is as much a loss as
+// losing an old one. The read must fail at once, not only after the margin
+// expires, and the hot-excluded shape must agree.
+func TestLostRecentFlushStillFailsInsideTheGraceMargin(t *testing.T) {
+	ctx := context.Background()
+	env := NewEnv(t, SharedCluster(t))
+	env.DuckCfg.FlushVisibilityGraceMs = 60_000
+	wide := DefaultSchemaFixtures()[1]
+
+	if err := env.ApplyEvents(ctx, env.GenerateScript(ScriptSpec{Schema: wide, Creates: 3})...); err != nil {
+		t.Fatalf("apply events: %v", err)
+	}
+	flush := mustFlush(ctx, t, env)
+	if len(flush.NewObjects) < 2 {
+		t.Fatalf("precondition: first flush wrote %v, want a parquet object and the manifest", flush.NewObjects)
+	}
+	for _, key := range flush.NewObjects {
+		deleteObject(ctx, t, env, key)
+	}
+
+	assertLostParquetFailsBothShapes(ctx, t, env, wide)
+}
+
 // assertLostParquetFailsBothShapes adds hot rows beside a schema whose
 // parquet is lost, then requires both the all-tier and the hot-excluded
 // query to fail rather than answer short.

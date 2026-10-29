@@ -13,7 +13,8 @@ import (
 // hasNoParquetToRead reports whether a source-authored path set can be
 // answered without scanning parquet (#720): every path is a glob, every glob
 // matches no object, and the schema holds no version that only parquet can
-// serve (HasRowsOnlyInParquet) under the query's dirty-barrier cutoff.
+// serve (HasRowsOnlyInParquet) under a barrier at the query's path-resolution
+// anchor.
 //
 // A source authors a glob only as its level-3 fallback (design.md §4.3.1),
 // for a schema whose manifest is confirmed absent or empty. That is the
@@ -23,10 +24,17 @@ import (
 // a lost manifest over objects written under another prefix, or over
 // objects since deleted, looks the same. PostgreSQL tells the two apart.
 // It keeps every live row, so when every live row has a change_log entry
-// the hot leg serves, and no entry was flushed before the cutoff, the hot
+// the hot leg serves, and no entry was flushed before the anchor, the hot
 // leg's answer is the whole answer. A flushed entry, or a live row a
 // cdc-init export left without one, means parquet should hold data, and
 // the read keeps failing as before.
+//
+// The check asks at anchorMs, the instant stamped before path resolution,
+// not at the grace cutoff below it. The flush appends the manifest before it
+// marks rows, so a row marked before the anchor has a manifest the
+// resolution would have found: its flush is a prior publication, and a
+// recent one is as lost as an old one. Only a flush racing this query marks
+// at or after the anchor, and the grace barrier keeps those rows hot.
 //
 // A hot-excluded query keeps the strict flushed_at = 0 barrier, so any
 // flushed entry counts for it. Path sets from a caller hint are left alone:
@@ -34,7 +42,7 @@ import (
 // A failed glob listing is inconclusive and leaves the scan to report it.
 func (e *DBFederatedQueryEngine) hasNoParquetToRead(
 	ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery,
-	paths []string, fromSource bool, graceCutoffMs int64,
+	paths []string, fromSource bool, anchorMs int64,
 ) (bool, error) {
 	if !fromSource || tables.ChangeLog == "" || tables.EntityMain == "" || e.duck == nil || e.dirtyIDFetcher == nil {
 		return false, nil
@@ -50,7 +58,7 @@ func (e *DBFederatedQueryEngine) hasNoParquetToRead(
 			return false, nil
 		}
 	}
-	cutoffMs := graceCutoffMs
+	cutoffMs := anchorMs
 	if !sqlgen.FederatedQueryHasHot(q) {
 		cutoffMs = sqlgen.FlushGraceCutoffDisabled
 	}
