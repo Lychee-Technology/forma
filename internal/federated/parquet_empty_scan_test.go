@@ -37,7 +37,7 @@ func newEmptyScanTestEngine(t *testing.T, duck *fakeDuckDBExecutor, dirty *fakeD
 }
 
 // TestNeverFlushedSchemaScansNoParquet pins #720: the source's fallback glob
-// matches no object and no row is flushed, so the read renders the empty
+// matches no object and every row is served hot, so the read renders the empty
 // scan source instead of a read_parquet that DuckDB would refuse. The
 // breaker opens on one failure, so the later queries prove none was recorded.
 func TestNeverFlushedSchemaScansNoParquet(t *testing.T) {
@@ -59,8 +59,8 @@ func TestNeverFlushedSchemaScansNoParquet(t *testing.T) {
 	require.Contains(t, duck.lastSQL, emptyScanMarker)
 	require.NotContains(t, duck.lastSQL, "read_parquet(", "a glob that matches nothing must not reach read_parquet")
 	require.NotContains(t, duck.lastSQL, fallbackGlob)
-	require.Equal(t, 3, dirty.flushedCalls)
-	require.Less(t, dirty.flushedCutoffMs, sqlgen.FlushGraceCutoffDisabled,
+	require.Equal(t, 3, dirty.parquetOnlyCalls)
+	require.Less(t, dirty.parquetOnlyCutoffMs, sqlgen.FlushGraceCutoffDisabled,
 		"an all-tier query asks about rows flushed before its grace cutoff, the ones its hot leg does not serve")
 }
 
@@ -80,7 +80,7 @@ func TestNeverFlushedHotExcludedQueryUsesTheStrictBarrier(t *testing.T) {
 	_, err := engine.Query(context.Background(), emptyScanTables, q, nil)
 	require.NoError(t, err)
 	require.Contains(t, duck.lastSQL, emptyScanMarker)
-	require.Equal(t, sqlgen.FlushGraceCutoffDisabled, dirty.flushedCutoffMs)
+	require.Equal(t, sqlgen.FlushGraceCutoffDisabled, dirty.parquetOnlyCutoffMs)
 }
 
 // TestEmptyFallbackGlobKeepsTheScanWhenItCannotProveNoParquet covers the
@@ -88,17 +88,18 @@ func TestNeverFlushedHotExcludedQueryUsesTheStrictBarrier(t *testing.T) {
 // keeps today's read_parquet over the resolved set.
 func TestEmptyFallbackGlobKeepsTheScanWhenItCannotProveNoParquet(t *testing.T) {
 	cases := []struct {
-		name           string
-		paths          []string
-		globFiles      []string
-		flushed        bool
-		wantFlushCheck bool
+		name        string
+		paths       []string
+		globFiles   []string
+		parquetOnly bool
+		wantCheck   bool
 	}{
 		{
-			// A lost manifest over flushed rows: the hot leg does not serve
-			// them, so the read must still fail on the empty glob.
-			name: "flushed rows exist", paths: []string{fallbackGlob}, globFiles: []string{},
-			flushed: true, wantFlushCheck: true,
+			// A lost manifest over flushed rows, or over rows a cdc-init
+			// export left without a change_log entry: the hot leg does not
+			// serve them, so the read must still fail on the empty glob.
+			name: "rows only parquet serves", paths: []string{fallbackGlob}, globFiles: []string{},
+			parquetOnly: true, wantCheck: true,
 		},
 		{
 			name: "glob listing failed", paths: []string{fallbackGlob}, globFiles: nil,
@@ -116,14 +117,14 @@ func TestEmptyFallbackGlobKeepsTheScanWhenItCannotProveNoParquet(t *testing.T) {
 			defer restore()
 
 			duck := &fakeDuckDBExecutor{globFiles: tc.globFiles, rows: &singleDuckDBRow{rowID: uuid.New()}}
-			dirty := &fakeDirtyIDFetcher{flushed: tc.flushed}
+			dirty := &fakeDirtyIDFetcher{parquetOnly: tc.parquetOnly}
 			engine := newEmptyScanTestEngine(t, duck, dirty, tc.paths)
 
 			_, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
 			require.NoError(t, err, "the fake scan succeeds; only the rendered SQL is under test")
 			require.Contains(t, duck.lastSQL, "read_parquet(")
 			require.NotContains(t, duck.lastSQL, emptyScanMarker)
-			require.Equal(t, tc.wantFlushCheck, dirty.flushedCalls > 0)
+			require.Equal(t, tc.wantCheck, dirty.parquetOnlyCalls > 0)
 		})
 	}
 }
@@ -144,18 +145,18 @@ func TestHintGlobMatchingNothingIsNotTreatedAsNeverFlushed(t *testing.T) {
 	_, err := engine.Query(context.Background(), emptyScanTables, q, nil)
 	require.NoError(t, err)
 	require.Contains(t, duck.lastSQL, "s3://b/hinted/7/*.parquet")
-	require.Zero(t, dirty.flushedCalls)
+	require.Zero(t, dirty.parquetOnlyCalls)
 }
 
-// TestFlushHistoryReadFailureFailsTheRead: without the flush history the
+// TestParquetOnlyCheckFailureFailsTheRead: without the PostgreSQL check the
 // engine cannot tell a never-flushed schema from a lost manifest, so it
 // neither scans nor answers. The failure is the Postgres side's.
-func TestFlushHistoryReadFailureFailsTheRead(t *testing.T) {
+func TestParquetOnlyCheckFailureFailsTheRead(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
 	duck := &fakeDuckDBExecutor{globFiles: []string{}}
-	dirty := &fakeDirtyIDFetcher{flushedErr: errors.New("connection reset")}
+	dirty := &fakeDirtyIDFetcher{parquetOnlyErr: errors.New("connection reset")}
 	engine := newEmptyScanTestEngine(t, duck, dirty, []string{fallbackGlob})
 
 	_, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)

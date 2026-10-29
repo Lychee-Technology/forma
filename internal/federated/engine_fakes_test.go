@@ -36,18 +36,18 @@ type fakeDirtyIDFetcher struct {
 	ids   []uuid.UUID
 	err   error
 
-	// flushed and flushedErr answer HasFlushedRows (#720); flushedCalls and
-	// flushedCutoffMs record what it was asked.
-	flushed         bool
-	flushedErr      error
-	flushedCalls    int
-	flushedCutoffMs int64
+	// parquetOnly and parquetOnlyErr answer HasRowsOnlyInParquet (#720);
+	// parquetOnlyCalls and parquetOnlyCutoffMs record what it was asked.
+	parquetOnly         bool
+	parquetOnlyErr      error
+	parquetOnlyCalls    int
+	parquetOnlyCutoffMs int64
 }
 
-func (f *fakeDirtyIDFetcher) HasFlushedRows(ctx context.Context, changeLogTable string, schemaID int16, cutoffMs int64) (bool, error) {
-	f.flushedCalls++
-	f.flushedCutoffMs = cutoffMs
-	return f.flushed, f.flushedErr
+func (f *fakeDirtyIDFetcher) HasRowsOnlyInParquet(ctx context.Context, tables model.StorageTables, schemaID int16, cutoffMs int64) (bool, error) {
+	f.parquetOnlyCalls++
+	f.parquetOnlyCutoffMs = cutoffMs
+	return f.parquetOnly, f.parquetOnlyErr
 }
 
 func (f *fakeDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error) {

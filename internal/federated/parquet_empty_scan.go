@@ -12,8 +12,8 @@ import (
 
 // hasNoParquetToRead reports whether a source-authored path set can be
 // answered without scanning parquet (#720): every path is a glob, every glob
-// matches no object, and no change_log entry of the schema was flushed
-// before the query's dirty-barrier cutoff.
+// matches no object, and the schema holds no version that only parquet can
+// serve (HasRowsOnlyInParquet) under the query's dirty-barrier cutoff.
 //
 // A source authors a glob only as its level-3 fallback (design.md §4.3.1),
 // for a schema whose manifest is confirmed absent or empty. That is the
@@ -21,12 +21,12 @@ import (
 // refuses a glob that matches nothing, so such a query used to fail and
 // count against the breaker. An empty glob is not proof by itself, though:
 // a lost manifest over objects written under another prefix, or over
-// objects since deleted, looks the same. The flush history tells the two
-// apart. The dirty barrier hands the hot leg every entry with flushed_at = 0
-// or at or after the cutoff, so with no entry flushed before the cutoff the
-// anti-join would discard any parquet version of a change_log row, and the
-// hot leg's answer is the whole answer. Flushed entries are never deleted,
-// so a schema that has been flushed keeps failing the read as before.
+// objects since deleted, looks the same. PostgreSQL tells the two apart.
+// It keeps every live row, so when every live row has a change_log entry
+// the hot leg serves, and no entry was flushed before the cutoff, the hot
+// leg's answer is the whole answer. A flushed entry, or a live row a
+// cdc-init export left without one, means parquet should hold data, and
+// the read keeps failing as before.
 //
 // A hot-excluded query keeps the strict flushed_at = 0 barrier, so any
 // flushed entry counts for it. Path sets from a caller hint are left alone:
@@ -36,7 +36,7 @@ func (e *DBFederatedQueryEngine) hasNoParquetToRead(
 	ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery,
 	paths []string, fromSource bool, graceCutoffMs int64,
 ) (bool, error) {
-	if !fromSource || tables.ChangeLog == "" || e.duck == nil || e.dirtyIDFetcher == nil {
+	if !fromSource || tables.ChangeLog == "" || tables.EntityMain == "" || e.duck == nil || e.dirtyIDFetcher == nil {
 		return false, nil
 	}
 	for _, path := range paths {
@@ -54,11 +54,11 @@ func (e *DBFederatedQueryEngine) hasNoParquetToRead(
 	if !sqlgen.FederatedQueryHasHot(q) {
 		cutoffMs = sqlgen.FlushGraceCutoffDisabled
 	}
-	flushed, err := e.dirtyIDFetcher.HasFlushedRows(ctx, tables.ChangeLog, q.SchemaID, cutoffMs)
+	found, err := e.dirtyIDFetcher.HasRowsOnlyInParquet(ctx, tables, q.SchemaID, cutoffMs)
 	if err != nil {
-		return false, fmt.Errorf("check whether schema %d has flushed rows: %w: %w", q.SchemaID, ErrPostgresReadFailed, err)
+		return false, fmt.Errorf("check whether schema %d has rows only parquet serves: %w: %w", q.SchemaID, ErrPostgresReadFailed, err)
 	}
-	return !flushed, nil
+	return !found, nil
 }
 
 // emptyParquetScanSet is the scan treatment of a read that hasNoParquetToRead
@@ -73,7 +73,7 @@ func emptyParquetScanSet(cache forma.SchemaAttributeCache) coldScanSet {
 // NoteEmptyParquetScan marks a plan whose parquet leg scanned nothing because
 // the schema has no parquet to read yet (#720). Notes stay internal, like
 // NotePartialParquetExclusion.
-const NoteEmptyParquetScan = "parquet scan skipped: the fallback glob matches no object and no row is flushed"
+const NoteEmptyParquetScan = "parquet scan skipped: the fallback glob matches no object and every row is served hot"
 
 // recordEmptyParquetScan notes an empty parquet leg on the plan. No-op when
 // the leg scanned objects or no plan was requested.
