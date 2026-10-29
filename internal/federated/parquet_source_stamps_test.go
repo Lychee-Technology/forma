@@ -59,7 +59,7 @@ func TestResolveScanSourcesUsesStampsWithoutProbing(t *testing.T) {
 	e := NewDBFederatedQueryEngine(nil, nil, duck, nil, forma.DuckDBConfig{},
 		stampsTestMetadataCache(t), "", WithParquetSource(src))
 
-	sc, err := e.resolveScanSources(context.Background(), exclusionTestQuery())
+	sc, err := e.resolveScanSources(context.Background(), model.StorageTables{}, exclusionTestQuery())
 
 	require.NoError(t, err)
 	require.Equal(t, paths, sc.paths)
@@ -94,7 +94,7 @@ func TestResolveScanSourcesHintPathsHaveNoStamps(t *testing.T) {
 
 	q := exclusionTestQuery()
 	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: hinted}
-	sc, err := e.resolveScanSources(context.Background(), q)
+	sc, err := e.resolveScanSources(context.Background(), model.StorageTables{}, q)
 
 	require.NoError(t, err)
 	require.Equal(t, []string{hinted}, sc.paths)

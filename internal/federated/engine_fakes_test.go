@@ -35,6 +35,19 @@ type fakeDirtyIDFetcher struct {
 	calls int
 	ids   []uuid.UUID
 	err   error
+
+	// flushed and flushedErr answer HasFlushedRows (#720); flushedCalls and
+	// flushedCutoffMs record what it was asked.
+	flushed         bool
+	flushedErr      error
+	flushedCalls    int
+	flushedCutoffMs int64
+}
+
+func (f *fakeDirtyIDFetcher) HasFlushedRows(ctx context.Context, changeLogTable string, schemaID int16, cutoffMs int64) (bool, error) {
+	f.flushedCalls++
+	f.flushedCutoffMs = cutoffMs
+	return f.flushed, f.flushedErr
 }
 
 func (f *fakeDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error) {

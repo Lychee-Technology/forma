@@ -255,7 +255,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		}
 	}()
 
-	src, err := e.resolveScanSources(ctx, q)
+	src, err := e.resolveScanSources(ctx, tables, q)
 	if err != nil {
 		// Objects the #732 type guard could not read fail the read closed,
 		// classified exactly like a failed scan over the same path set, so
@@ -278,6 +278,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// object. Notes stay internal — toExecutionPlan drops them at the HTTP
 	// boundary (#301/#306).
 	planCtx.recordCorruptExclusion(src.excludedCorrupt)
+	planCtx.recordEmptyParquetScan(src.cold.noObjects)
 
 	// #348: the partial-scan marker is an out-parameter on opts, overwritten
 	// by every pass so it describes the pass that actually produced the

@@ -9,13 +9,16 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
-// The engine's Postgres change_log reads, moved out of engine.go as a pure
-// move to keep it under the 500-line limit.
+// The engine's Postgres change_log reads.
 
 // DirtyIDFetcher retrieves row IDs from the change log that are newer than
 // the flushed Parquet tiers and must be excluded from DuckDB results.
 type DirtyIDFetcher interface {
 	FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error)
+	// HasFlushedRows reports whether any change_log entry of schemaID was
+	// marked flushed before cutoffMs: a version the dirty barrier hands to
+	// the parquet tiers rather than to the hot leg (#720).
+	HasFlushedRows(ctx context.Context, changeLogTable string, schemaID int16, cutoffMs int64) (bool, error)
 }
 
 type dirtyIDPool interface {
@@ -63,4 +66,37 @@ func (f *PostgresDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLog
 		return nil, fmt.Errorf("iterate dirty row ids: %w", err)
 	}
 	return ids, nil
+}
+
+// HasFlushedRows reports whether changeLogTable holds an entry of schemaID
+// with 0 < flushed_at < cutoffMs. Flushed entries are never deleted (a later
+// write adds a new flushed_at = 0 entry beside them), so once a schema has
+// been flushed the answer stays true.
+func (f *PostgresDirtyIDFetcher) HasFlushedRows(ctx context.Context, changeLogTable string, schemaID int16, cutoffMs int64) (bool, error) {
+	if changeLogTable == "" {
+		return false, fmt.Errorf("change log table name cannot be empty")
+	}
+	if f == nil || f.pool == nil {
+		return false, fmt.Errorf("postgres dirty id fetcher is not available")
+	}
+	query := fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s WHERE schema_id = $1 AND flushed_at <> 0 AND flushed_at < $2)`,
+		sqlutil.SanitizeIdentifier(changeLogTable))
+	rows, err := f.pool.Query(ctx, query, schemaID, cutoffMs)
+	if err != nil {
+		return false, fmt.Errorf("query flushed change_log entries of schema %d: %w", schemaID, err)
+	}
+	defer rows.Close()
+	// EXISTS always answers one row; reading none means the read failed, and
+	// the answer must not default to "never flushed".
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return false, fmt.Errorf("read flushed change_log entries of schema %d: %w", schemaID, err)
+		}
+		return false, fmt.Errorf("read flushed change_log entries of schema %d: no row returned", schemaID)
+	}
+	var flushed bool
+	if err := rows.Scan(&flushed); err != nil {
+		return false, fmt.Errorf("scan flushed change_log entries of schema %d: %w", schemaID, err)
+	}
+	return flushed, nil
 }
