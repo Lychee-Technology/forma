@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/parquetcheck"
 )
 
 // ScanColumn names one current-schema attribute column the scan source
@@ -183,6 +184,27 @@ func BuildParquetScanSource(pathsSQL string, missing, pinned []ScanColumn) strin
 		parts = append(parts, fmt.Sprintf("NULL::%s AS %s", mc.DuckDBType, mc.Name))
 	}
 	return fmt.Sprintf("(SELECT %s FROM %s) AS cold_scan", strings.Join(parts, ", "), base)
+}
+
+// BuildEmptyParquetScanSource renders the scan source for a path set that
+// holds no object (#720): a schema whose fallback glob matches nothing and
+// none of whose rows has been flushed. DuckDB's read_parquet refuses a glob
+// that matches no file, so the scan becomes a relation with no rows carrying
+// the columns the guarded scan would: the parquetcheck system columns at
+// their invariant types, plus every attribute column as `missing`, which the
+// caller computes against an empty footer union. Both scan sites, the
+// s3_source projection and the semijoin's logical clause, then bind as they
+// would over real parquet, and the UNION ALL with pg_source keeps its types.
+func BuildEmptyParquetScanSource(missing []ScanColumn) string {
+	system := parquetcheck.SystemColumns()
+	parts := make([]string, 0, len(system)+len(missing))
+	for _, sc := range system {
+		parts = append(parts, fmt.Sprintf("NULL::%s AS %s", sc.DuckType, sc.Name))
+	}
+	for _, mc := range missing {
+		parts = append(parts, fmt.Sprintf("NULL::%s AS %s", mc.DuckDBType, mc.Name))
+	}
+	return fmt.Sprintf("(SELECT %s WHERE false) AS cold_scan", strings.Join(parts, ", "))
 }
 
 // ScanTypesCompatible reports whether a parquet column's observed DuckDB
