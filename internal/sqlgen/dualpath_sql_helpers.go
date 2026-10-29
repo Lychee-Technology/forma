@@ -282,6 +282,23 @@ func resolveMainTableColumn(attr string, meta forma.AttributeMetadata) string {
 	return "m." + string(meta.ColumnBinding.ColumnName)
 }
 
+// resolveMainNullTestColumn returns what a pg-main is_null / is_not_null
+// leaf tests: resolveMainTableColumn, except for a date bound with the
+// iso8601 encoding, whose hot-leg read (mainColISO8601Read) is NULL for a
+// string that is not a timestamp while the column is not. A null test on the
+// raw column dropped such an unflushed row from pg_source although `visible`
+// and its parquet copy read it as NULL (#709). Comparisons keep the raw
+// column against the canonical image (iso8601FilterImage): a non-timestamp
+// string may pass that pre-filter, and `visible` then drops it.
+func resolveMainNullTestColumn(attr string, meta forma.AttributeMetadata) string {
+	if meta.ColumnBinding != nil {
+		if expr, ok := mainColISO8601Read(meta); ok {
+			return expr
+		}
+	}
+	return resolveMainTableColumn(attr, meta)
+}
+
 // resolveDuckDBColumn returns the column name the DuckClause must reference.
 //
 // The DuckClause (LOGICAL_WHERE_CLAUSE) is only ever applied against the DuckDB

@@ -130,6 +130,19 @@ func mainColISO8601Expr(colName string) string {
 	return fmt.Sprintf("epoch_ms(TRY_CAST(m.%s AS TIMESTAMP))", colName)
 }
 
+// mainColISO8601Read returns the hot-leg read of a column-bound
+// date/datetime stored with the iso8601 encoding (mainColISO8601Expr), or
+// false for any other binding.
+func mainColISO8601Read(meta forma.AttributeMetadata) (string, bool) {
+	if meta.ValueType != forma.ValueTypeDate && meta.ValueType != forma.ValueTypeDateTime {
+		return "", false
+	}
+	if meta.ColumnBinding.Encoding != forma.MainColumnEncodingISO8601 {
+		return "", false
+	}
+	return mainColISO8601Expr(string(meta.ColumnBinding.ColumnName)), true
+}
+
 // integerWidths and columnWidths rank the integer valueTypes and the numeric
 // main column types on one scale: each holds every value of the ranks below
 // it, and a double column also holds fractions, NaN and the infinities. A
@@ -181,9 +194,7 @@ func boundMainExpr(meta forma.AttributeMetadata) (string, bool) {
 	case forma.ValueTypeBool:
 		return mainColBoolExpr(colName, meta.ColumnBinding.Encoding), true
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		if meta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601 {
-			return mainColISO8601Expr(colName), true
-		}
+		return mainColISO8601Read(meta)
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
 		return mainColIntegerExpr(meta)
 	}
