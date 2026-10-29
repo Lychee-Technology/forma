@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/lychee-technology/forma/internal/conditionexpr"
 	"github.com/lychee-technology/forma/internal/numutil"
 
 	"github.com/google/uuid"
@@ -280,6 +281,27 @@ func resolveMainTableColumn(attr string, meta forma.AttributeMetadata) string {
 		return expr
 	}
 	return "m." + string(meta.ColumnBinding.ColumnName)
+}
+
+// resolveMainNullTestColumn returns what a pg-main is_null / is_not_null
+// leaf tests: resolveMainTableColumn, except for is_null on a date bound
+// with the iso8601 encoding, whose hot-leg read (mainColISO8601Read) is NULL
+// for a string that is not a timestamp while the column is not. A null test
+// on the raw column dropped such an unflushed row from pg_source although
+// `visible` and its parquet copy read it as NULL (#709). is_not_null keeps
+// the raw column: the read is non-NULL only where the column is, so the raw
+// test already keeps every row the read keeps, and it also keeps one whose
+// EAV-joined projection takes a retained eav_data value over a NULL read.
+// Comparisons keep the raw column against the canonical image
+// (iso8601FilterImage): a non-timestamp string may pass that pre-filter, and
+// `visible` then drops it (a non-canonical timestamp image is #755).
+func resolveMainNullTestColumn(attr string, meta forma.AttributeMetadata, nullTest string) string {
+	if meta.ColumnBinding != nil && nullTest == conditionexpr.SQLOpIsNull {
+		if expr, ok := mainColISO8601Read(meta); ok {
+			return expr
+		}
+	}
+	return resolveMainTableColumn(attr, meta)
 }
 
 // resolveDuckDBColumn returns the column name the DuckClause must reference.

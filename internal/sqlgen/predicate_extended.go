@@ -136,7 +136,7 @@ func extendedPgMainPayload(attr string, meta forma.AttributeMetadata, hasMeta bo
 	if ext.kind == extSet {
 		return PgMainLeafPayload{Skip: true}
 	}
-	return PgMainLeafPayload{Column: resolveMainTableColumn(attr, meta), NullTest: ext.sqlOp}
+	return PgMainLeafPayload{Column: resolveMainNullTestColumn(attr, meta, ext.sqlOp), NullTest: ext.sqlOp}
 }
 
 func extendedDuckPayload(attr string, meta forma.AttributeMetadata, hasMeta bool, ext extendedLeaf) DuckLeafPayload {
