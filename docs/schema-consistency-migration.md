@@ -993,15 +993,38 @@ column:
 
 ```sql
 -- one query per iso8601-bound column; text_02 stands for the bound column
-SELECT ltbase_row_id, text_02
+SELECT ltbase_row_id, text_02,
+       text_02 ~ '\.[0-9]+[+-][0-9]{2}:[0-9]{2}$'
+         OR text_02 ~ '^9999-12-31T.*-[0-9]{2}:[0-9]{2}$'
+         OR text_02 ~ '^0000-01-01T.*\+[0-9]{2}:[0-9]{2}$' AS check_by_hand
   FROM entity_main
  WHERE ltbase_schema_id = <schema id> AND text_02 ~ '[+-][0-9]{2}:[0-9]{2}$';
 ```
 
-Rewrite each with an update that names the attribute. The write funnel
-stores the UTC image of the instant the OLTP read decodes, and stamps
-`change_log`, so the next flush replaces the old copy. A direct SQL rewrite
-does not stamp `change_log` and leaves the old copy in place.
+Rewrite each row whose image has whole seconds and names an instant in
+years 0000 to 9999 UTC (every row `check_by_hand` leaves false) with an
+update that names the attribute, giving that instant. The write
+funnel stores its UTC image and stamps `change_log`, so the next flush
+replaces the old copy. A direct SQL rewrite does not stamp `change_log` and
+leaves the old copy in place.
+
+The API cannot store two kinds of image at the instant they name, because
+the write funnel keeps whole seconds within years 0000 to 9999:
+
+- a fraction, such as `2024-01-02T03:04:05.250+08:00`: the write funnel
+  refuses the instant with `… with encoding iso8601, which keeps whole
+  seconds`;
+- an offset that carries the instant out of those years, such as
+  `9999-12-31T23:30:00-01:00` (`10000-01-01T00:30:00Z`): the write funnel
+  refuses the instant with `… which keeps years 0000 to 9999`.
+
+`check_by_hand` flags both. Its date test is a superset: a 9999-12-31 image
+with a negative offset can still land on that day in UTC, so check each such
+row's instant. No mechanical repair keeps these values. Writing a rounded or
+clamped instant changes the stored value, so it is a per-row decision that
+Forma does not make for you. Until such a row is written again, its warm and
+cold copy keeps the old instant. `#762` tracks a re-export that needs no
+rewrite.
 
 ### Registered schema with no `<schema>.json` (`#314`)
 
