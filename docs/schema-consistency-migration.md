@@ -973,6 +973,35 @@ After the repair, re-run the validator. As with the other SQL repairs, a
 direct rewrite does not stamp `change_log`: a flushed row keeps its last
 exported image on the warm/cold tiers until its next write re-flushes it.
 
+### iso8601 images with a UTC offset (`#756`)
+
+A `date`/`datetime` bound to a text column with the `iso8601` encoding is
+written through the API only as a UTC image (`2024-01-02T03:04:06Z`). A row
+written another way can hold an RFC3339 image with a numeric offset, such
+as `2024-01-02T11:04:06+08:00`. The OLTP read always applied the offset.
+Before `#756` the DuckDB tiers dropped it and read that image as
+`11:04:06Z`, so a `GET` and a federated read of the row named instants
+8 hours apart, and federated filters and sorts followed the wrong one. The
+hot leg and the CDC export now apply the offset. The validator reports
+nothing here, because the OLTP read parses these images.
+
+**Parquet copies exported before the upgrade keep the old instant.**
+Compaction carries a copy's value over unchanged, so a flushed row reads
+its wall clock as UTC on the warm/cold tiers until its next write
+re-exports it. List the affected rows per bound column:
+
+```sql
+-- one query per iso8601-bound column; text_02 stands for the bound column
+SELECT ltbase_row_id, text_02
+  FROM entity_main
+ WHERE ltbase_schema_id = <schema id> AND text_02 ~ '[+-][0-9]{2}:[0-9]{2}$';
+```
+
+Rewrite each with an update that names the attribute. The write funnel
+stores the UTC image of the instant the OLTP read decodes, and stamps
+`change_log`, so the next flush replaces the old copy. A direct SQL rewrite
+does not stamp `change_log` and leaves the old copy in place.
+
 ### Registered schema with no `<schema>.json` (`#314`)
 
 Symptom: the server refuses to start with `failed to build the schema guards
