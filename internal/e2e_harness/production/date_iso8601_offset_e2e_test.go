@@ -24,21 +24,26 @@ import (
 // on the unflushed DuckDB hot leg, delta parquet and base parquet, through
 // the production DuckDB reader and CDC exporter and their session settings.
 
-// The planted images and the instant each names. offset and negOffset are
-// RFC3339, so the OLTP read parses them; spaced is not, so a Get refuses
-// it while every DuckDB tier reads it as UTC.
+// The planted images and the instant each names. offset, negOffset, upper
+// and lower are RFC3339, so the OLTP read parses them; spaced is not, so a
+// Get refuses it while every DuckDB tier reads it as UTC. upper and lower
+// keep a four-digit year, but their offset carries the instant past it
+// (10000-01-01T00:30:00Z, -0001-12-31T23:30:00Z), which the DuckDB outer
+// select spelled with a year iso8601.Parse refuses, failing the page.
 const (
 	iso8601Offset    = "2024-01-02T11:04:06+08:00"
 	iso8601NegOffset = "2024-01-01T22:04:04-05:00"
 	iso8601Fraction  = "2024-01-02T03:04:05.5Z"
 	iso8601Spaced    = "2024-01-02 03:04:06"
+	iso8601Upper     = "9999-12-31T23:30:00-01:00"
+	iso8601Lower     = "0000-01-01T00:30:00+01:00"
 )
 
 // iso8601OffsetRows is the seeded row set: an anchor flushed before the
 // others, a row keeping its canonical image, one row per planted image, and
 // a row with the datetime unset.
 type iso8601OffsetRows struct {
-	anchor, canonical, offset, negOffset, fraction, spaced, unset *Event
+	anchor, canonical, offset, negOffset, fraction, spaced, upper, lower, unset *Event
 }
 
 func seedISO8601OffsetRows(ctx context.Context, t *testing.T, env *Env, withNote bool) iso8601OffsetRows {
@@ -68,6 +73,8 @@ func seedISO8601OffsetRows(ctx context.Context, t *testing.T, env *Env, withNote
 	rows.negOffset = create("off-neg-offset", true)
 	rows.fraction = create("off-fraction", true)
 	rows.spaced = create("off-spaced", true)
+	rows.upper = create("off-upper", true)
+	rows.lower = create("off-lower", true)
 	rows.unset = create("off-unset", false)
 
 	plant := func(ev *Event, image string) {
@@ -78,11 +85,14 @@ func seedISO8601OffsetRows(ctx context.Context, t *testing.T, env *Env, withNote
 	plant(rows.negOffset, iso8601NegOffset)
 	plant(rows.fraction, iso8601Fraction)
 	plant(rows.spaced, iso8601Spaced)
+	plant(rows.upper, iso8601Upper)
+	plant(rows.lower, iso8601Lower)
 	return rows
 }
 
-// iso8601OffsetProbes orders the rows by instant: negOffset 03:04:04Z,
-// canonical 03:04:05Z, fraction 03:04:05.5Z, offset and spaced 03:04:06Z.
+// iso8601OffsetProbes orders the rows by instant: lower in year -1, then on
+// 2024-01-02 negOffset 03:04:04Z, canonical 03:04:05Z, fraction
+// 03:04:05.5Z, offset and spaced 03:04:06Z, then upper in year 10000.
 // Every DuckDB tier must reach it; the unset row matches no comparison.
 func iso8601OffsetProbes(rows iso8601OffsetRows) []widthProbe {
 	const at4, at5, at6 = "2024-01-02T03:04:04Z", "2024-01-02T03:04:05Z", "2024-01-02T03:04:06Z"
@@ -90,18 +100,20 @@ func iso8601OffsetProbes(rows iso8601OffsetRows) []widthProbe {
 		{"eq_offset_instant", Filter{Attr: "seenAt", Op: "equals", Value: at6}, []*Event{rows.offset, rows.spaced}},
 		{"eq_offset_literal", Filter{Attr: "seenAt", Op: "equals", Value: iso8601Offset}, []*Event{rows.offset, rows.spaced}},
 		{"eq_neg_offset_instant", Filter{Attr: "seenAt", Op: "equals", Value: at4}, []*Event{rows.negOffset}},
-		{"gt", Filter{Attr: "seenAt", Op: "gt", Value: at5}, []*Event{rows.fraction, rows.offset, rows.spaced}},
-		{"gte", Filter{Attr: "seenAt", Op: "gte", Value: at5}, []*Event{rows.canonical, rows.fraction, rows.offset, rows.spaced}},
-		{"lt", Filter{Attr: "seenAt", Op: "lt", Value: at5}, []*Event{rows.negOffset}},
-		{"lte", Filter{Attr: "seenAt", Op: "lte", Value: at5}, []*Event{rows.canonical, rows.negOffset}},
-		{"not_equals", Filter{Attr: "seenAt", Op: "not_equals", Value: at5}, []*Event{rows.fraction, rows.offset, rows.negOffset, rows.spaced}},
+		{"gt", Filter{Attr: "seenAt", Op: "gt", Value: at5}, []*Event{rows.fraction, rows.offset, rows.spaced, rows.upper}},
+		{"gte", Filter{Attr: "seenAt", Op: "gte", Value: at5}, []*Event{rows.canonical, rows.fraction, rows.offset, rows.spaced, rows.upper}},
+		{"lt", Filter{Attr: "seenAt", Op: "lt", Value: at5}, []*Event{rows.negOffset, rows.lower}},
+		{"lte", Filter{Attr: "seenAt", Op: "lte", Value: at5}, []*Event{rows.canonical, rows.negOffset, rows.lower}},
+		{"not_equals", Filter{Attr: "seenAt", Op: "not_equals", Value: at5}, []*Event{rows.fraction, rows.offset, rows.negOffset, rows.spaced, rows.upper, rows.lower}},
 	}
 }
 
 // assertISO8601OffsetReads pins #756's value: the instant the OLTP read
 // (a Get) decodes from each RFC3339 image equals the instant a DuckDB read
 // of the whole set decodes. The DuckDB outer select renders whole seconds,
-// so the fraction row is left to the probes.
+// so the fraction row is left to the probes. The decoded time.Time is read
+// as is, not through jsonNormalizedAttrs: time.MarshalJSON refuses the
+// upper and lower instants' years (the API renders them as epoch ms, #591).
 func assertISO8601OffsetReads(ctx context.Context, t *testing.T, env *Env, label string, rows iso8601OffsetRows) {
 	t.Helper()
 	simple := DefaultSchemaFixtures()[0]
@@ -116,11 +128,15 @@ func assertISO8601OffsetReads(ctx context.Context, t *testing.T, env *Env, label
 		if err != nil {
 			t.Fatalf("%s: decode row %s: %v", label, rec.RowID, err)
 		}
-		if ms, ok := decodedMillis(t, label, jsonNormalizedAttrs(t, attrs), "seenAt"); ok {
-			duck[rec.RowID] = ms
+		switch v := attrs["seenAt"].(type) {
+		case nil:
+		case time.Time:
+			duck[rec.RowID] = v.UnixMilli()
+		default:
+			t.Fatalf("%s: decode row %s: seenAt = %v (%T), want a time.Time", label, rec.RowID, v, v)
 		}
 	}
-	for _, ev := range []*Event{rows.canonical, rows.offset, rows.negOffset} {
+	for _, ev := range []*Event{rows.canonical, rows.offset, rows.negOffset, rows.upper, rows.lower} {
 		got, err := env.EntityManager().Get(ctx, &forma.QueryRequest{SchemaName: simple.Name, RowID: &ev.RowID})
 		if err != nil {
 			t.Fatalf("%s: get %v: %v", label, ev.Attrs["name"], err)
