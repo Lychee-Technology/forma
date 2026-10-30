@@ -994,33 +994,45 @@ column:
 ```sql
 -- one query per iso8601-bound column; text_02 stands for the bound column
 SELECT ltbase_row_id, text_02,
-       text_02 ~ '\.[0-9]+[+-][0-9]{2}:[0-9]{2}$'
-         OR text_02 ~ '^9999-12-31T.*-[0-9]{2}:[0-9]{2}$'
-         OR text_02 ~ '^0000-01-01T.*\+[0-9]{2}:[0-9]{2}$' AS check_by_hand
+       NOT (text_02 ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$'
+            AND left(text_02, 10) NOT IN ('0000-01-01', '0000-01-02',
+                                          '9999-12-30', '9999-12-31')) AS check_by_hand
   FROM entity_main
  WHERE ltbase_schema_id = <schema id> AND text_02 ~ '[+-][0-9]{2}:[0-9]{2}$';
 ```
 
-Rewrite each row whose image has whole seconds and names an instant in
-years 0000 to 9999 UTC (every row `check_by_hand` leaves false) with an
-update that names the attribute, giving that instant. The write
+`check_by_hand` is false only for an image of exactly the shape
+`YYYY-MM-DDThh:mm:ss±hh:mm`, dated on none of the first two or last two days
+of years 0000 to 9999. If the read parses such an image, it names a whole
+second, and its offset (at most 25 hours, see below) cannot carry it out of
+those years, so the API can store that instant. Rewrite each of these rows
+with an update that names the attribute, giving that instant. The write
 funnel stores its UTC image and stamps `change_log`, so the next flush
 replaces the old copy. A direct SQL rewrite does not stamp `change_log` and
-leaves the old copy in place.
+leaves the old copy in place. The query also lists images the read refuses,
+such as an offset of `+25:00` or a day that does not exist. Every `GET` of
+such a row fails, and they are the baseline-schema census's findings
+(`docs/schema-evolution.md`), not this repair's.
 
 The API cannot store two kinds of image at the instant they name, because
 the write funnel keeps whole seconds within years 0000 to 9999:
 
-- a fraction, such as `2024-01-02T03:04:05.250+08:00`: the write funnel
-  refuses the instant with `… with encoding iso8601, which keeps whole
+- a fraction, such as `2024-01-02T03:04:05.250+08:00` or, in the comma
+  spelling the read also accepts, `2024-01-02T03:04:05,250+08:00`: the write
+  funnel refuses the instant with `… with encoding iso8601, which keeps whole
   seconds`;
 - an offset that carries the instant out of those years, such as
   `9999-12-31T23:30:00-01:00` (`10000-01-01T00:30:00Z`): the write funnel
-  refuses the instant with `… which keeps years 0000 to 9999`.
+  refuses the instant with `… which keeps years 0000 to 9999`. The read
+  accepts an offset of up to 25 hours (`±24:60`), so an image one day
+  further inside the years can cross too: `9999-12-30T23:30:00-24:60` is also
+  `10000-01-01T00:30:00Z`, and `0000-01-02T00:30:00+24:60` falls in year -1.
 
-`check_by_hand` flags both. Its date test is a superset: a 9999-12-31 image
-with a negative offset can still land on that day in UTC, so check each such
-row's instant. No mechanical repair keeps these values. Writing a rounded or
+`check_by_hand` flags both kinds, and every image whose spelling differs
+from that shape at all. It is a superset: a `.000` fraction, a one-digit hour
+(`T3:04:05`) or a boundary-day image whose instant stays in range can be
+stored, so check each flagged row's instant (a `GET` returns it). No
+mechanical repair keeps the values the API cannot store. Writing a rounded or
 clamped instant changes the stored value, so it is a per-row decision that
 Forma does not make for you. Until such a row is written again, its warm and
 cold copy keeps the old instant. `#762` tracks a re-export that needs no
