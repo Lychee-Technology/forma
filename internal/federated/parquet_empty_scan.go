@@ -73,6 +73,9 @@ func (e *DBFederatedQueryEngine) hasNoParquetToRead(
 // order, not on any clock. It covers every publication the reader can see
 // at all. A writer that keeps no manifest and writes outside the reader's
 // glob is invisible to every read, as design.md §4.3.1 level 3 documents.
+// A publication whose manifest and objects are lost before this check runs
+// is not seen either; the page is short, and the next read fails on the
+// change_log history it left. #760 tracks closing that window.
 func (e *DBFederatedQueryEngine) confirmNoParquetPublished(ctx context.Context, q *model.FederatedAttributeQuery) error {
 	if e.sourceResolvesNoObjects(ctx, q) {
 		return nil
