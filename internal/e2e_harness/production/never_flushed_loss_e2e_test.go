@@ -5,7 +5,9 @@ package production
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	fedengine "github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/model"
@@ -65,6 +67,32 @@ func TestLostRecentFlushStillFailsInsideTheGraceMargin(t *testing.T) {
 	assertLostParquetFailsBothShapes(ctx, t, env, wide)
 }
 
+// TestLostFlushStampedAheadOfTheReaderStillFails (#720 review): flushed_at
+// comes from the CDC host's clock, which can run ahead of the reader's. A
+// completed flush stamped after the reader's "now" is still a prior
+// publication, and losing it must fail the read.
+func TestLostFlushStampedAheadOfTheReaderStillFails(t *testing.T) {
+	ctx := context.Background()
+	env := NewEnv(t, SharedCluster(t))
+	env.DuckCfg.FlushVisibilityGraceMs = 60_000
+	wide := DefaultSchemaFixtures()[1]
+
+	if err := env.ApplyEvents(ctx, env.GenerateScript(ScriptSpec{Schema: wide, Creates: 3})...); err != nil {
+		t.Fatalf("apply events: %v", err)
+	}
+	flush := mustFlush(ctx, t, env)
+	if len(flush.NewObjects) < 2 {
+		t.Fatalf("precondition: first flush wrote %v, want a parquet object and the manifest", flush.NewObjects)
+	}
+	env.ExecSQL(ctx, "UPDATE change_log SET flushed_at = $2 WHERE schema_id = $1 AND flushed_at <> 0",
+		wide.ID, time.Now().UnixMilli()+30_000)
+	for _, key := range flush.NewObjects {
+		deleteObject(ctx, t, env, key)
+	}
+
+	assertLostParquetFailsBothShapes(ctx, t, env, wide)
+}
+
 // assertLostParquetFailsBothShapes adds hot rows beside a schema whose
 // parquet is lost, then requires both the all-tier and the hot-excluded
 // query to fail rather than answer short.
@@ -85,18 +113,67 @@ func assertLostParquetFailsBothShapes(ctx context.Context, t *testing.T, env *En
 	}
 }
 
-// TestFirstFlushAfterTheEmptyScanCheckStaysHot (#720 review): the empty scan
-// source is fixed once the check clears the schema, so it cannot read the
-// delta a first flush publishes afterwards. With the #252 widening disabled
-// the strict barrier would then drop the flushed rows from the hot leg as
-// well. The empty scan's hot leg serves at the check's anchor instead.
-func TestFirstFlushAfterTheEmptyScanCheckStaysHot(t *testing.T) {
+// The tests below run a writer between the #720 empty-scan check and the
+// DuckDB read, the window where the empty scan source is already fixed. The
+// writer publishes and then changes change_log, moving the rows out of the
+// hot leg. The recheck after the pass sees the publication and retries, so
+// the answer stays complete whatever the CDC host's clock says.
+
+// TestFirstFlushAfterTheEmptyScanCheckStaysComplete: with the #252 widening
+// disabled, the strict barrier drops the rows the flush marked from the hot
+// leg of the raced pass.
+func TestFirstFlushAfterTheEmptyScanCheckStaysComplete(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t))
 	env.DuckCfg.FlushVisibilityGraceMs = -1
-	wide := DefaultSchemaFixtures()[1]
+	runFirstFlushRace(ctx, t, env, func(ctx context.Context, schema SchemaRef) error {
+		return expectFlushedEverything(env.RunFlush(ctx))
+	})
+}
 
-	racer := &flushAfterEmptyScanCheck{env: env}
+// TestFirstFlushOnASlowClockAfterTheEmptyScanCheckStaysComplete (#720
+// review): a CDC host 30 seconds behind the reader stamps the marks below
+// any cutoff the reader could pick, so no barrier keeps them hot.
+func TestFirstFlushOnASlowClockAfterTheEmptyScanCheckStaysComplete(t *testing.T) {
+	ctx := context.Background()
+	env := NewEnv(t, SharedCluster(t))
+	env.DuckCfg.FlushVisibilityGraceMs = 5_000
+	runFirstFlushRace(ctx, t, env, func(ctx context.Context, schema SchemaRef) error {
+		if err := expectFlushedEverything(env.RunFlush(ctx)); err != nil {
+			return err
+		}
+		env.ExecSQL(ctx, "UPDATE change_log SET flushed_at = $2 WHERE schema_id = $1 AND flushed_at <> 0",
+			schema.ID, time.Now().UnixMilli()-30_000)
+		return nil
+	})
+}
+
+// TestInitHandoffAfterTheEmptyScanCheckStaysComplete (#720 review): cdc-init
+// publishes base parquet and the onboarding handoff then clears change_log,
+// which leaves the hot leg with no entry to serve the rows by.
+func TestInitHandoffAfterTheEmptyScanCheckStaysComplete(t *testing.T) {
+	ctx := context.Background()
+	env := NewEnv(t, SharedCluster(t))
+	runFirstFlushRace(ctx, t, env, func(ctx context.Context, schema SchemaRef) error {
+		report, err := env.RunInit(ctx, schema)
+		if err != nil {
+			return err
+		}
+		if report.RowsExported != 3 {
+			return fmt.Errorf("init exported %d rows, want 3", report.RowsExported)
+		}
+		env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", schema.ID)
+		return nil
+	})
+}
+
+// runFirstFlushRace creates three rows on a never-flushed schema, runs
+// publish once right after the first empty-scan check clears the schema,
+// and requires the query that raced it to match the oracle.
+func runFirstFlushRace(ctx context.Context, t *testing.T, env *Env, publish func(context.Context, SchemaRef) error) {
+	t.Helper()
+	wide := DefaultSchemaFixtures()[1]
+	racer := &publishAfterEmptyScanCheck{publish: func(ctx context.Context) error { return publish(ctx, wide) }}
 	env.DirtyIDFetcherWrap = func(f fedengine.DirtyIDFetcher) fedengine.DirtyIDFetcher {
 		racer.DirtyIDFetcher = f
 		return racer
@@ -106,29 +183,40 @@ func TestFirstFlushAfterTheEmptyScanCheckStaysHot(t *testing.T) {
 	}
 
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20, PreferredTiers: allTiers})
-	if racer.flush == nil {
-		t.Fatalf("the query never cleared the empty-scan check, so no flush raced it (flush error: %v)", racer.err)
+	if !racer.ran {
+		t.Fatal("the query never cleared the empty-scan check, so nothing raced it")
 	}
-	if racer.flush.UnflushedAfter != 0 || len(racer.flush.NewObjects) == 0 {
-		t.Fatalf("the racing flush wrote %v and left %d rows unflushed, want every row flushed",
-			racer.flush.NewObjects, racer.flush.UnflushedAfter)
+	if racer.err != nil {
+		t.Fatalf("the racing writer failed: %v", racer.err)
 	}
 }
 
-// flushAfterEmptyScanCheck runs one real CDC flush right after the engine's
-// first empty-scan check clears the schema, before DuckDB reads it.
-type flushAfterEmptyScanCheck struct {
+func expectFlushedEverything(report *FlushReport, err error) error {
+	if err != nil {
+		return err
+	}
+	if report.UnflushedAfter != 0 || len(report.NewObjects) == 0 {
+		return fmt.Errorf("the flush wrote %v and left %d rows unflushed, want every row flushed",
+			report.NewObjects, report.UnflushedAfter)
+	}
+	return nil
+}
+
+// publishAfterEmptyScanCheck runs publish once, right after the engine's
+// first empty-scan check finds no parquet history, before DuckDB reads.
+type publishAfterEmptyScanCheck struct {
 	fedengine.DirtyIDFetcher
-	env   *Env
-	flush *FlushReport
-	err   error
+	publish func(context.Context) error
+	ran     bool
+	err     error
 }
 
-func (r *flushAfterEmptyScanCheck) HasRowsOnlyInParquet(ctx context.Context, tables model.StorageTables, schemaID int16, cutoffMs int64) (bool, error) {
-	found, err := r.DirtyIDFetcher.HasRowsOnlyInParquet(ctx, tables, schemaID, cutoffMs)
-	if err != nil || found || r.flush != nil || r.err != nil {
+func (r *publishAfterEmptyScanCheck) HasParquetHistory(ctx context.Context, tables model.StorageTables, schemaID int16) (bool, error) {
+	found, err := r.DirtyIDFetcher.HasParquetHistory(ctx, tables, schemaID)
+	if err != nil || found || r.ran {
 		return found, err
 	}
-	r.flush, r.err = r.env.RunFlush(ctx)
-	return found, err
+	r.ran = true
+	r.err = r.publish(ctx)
+	return found, nil
 }

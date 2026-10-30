@@ -36,18 +36,21 @@ type fakeDirtyIDFetcher struct {
 	ids   []uuid.UUID
 	err   error
 
-	// parquetOnly and parquetOnlyErr answer HasRowsOnlyInParquet (#720);
-	// parquetOnlyCalls and parquetOnlyCutoffMs record what it was asked.
-	parquetOnly         bool
-	parquetOnlyErr      error
-	parquetOnlyCalls    int
-	parquetOnlyCutoffMs int64
+	// history and historyErr answer HasParquetHistory (#720), which
+	// historyCalls counts. afterHistory, when set, runs after each answer:
+	// the seam for a writer publishing between the check and the scan.
+	history      bool
+	historyErr   error
+	historyCalls int
+	afterHistory func()
 }
 
-func (f *fakeDirtyIDFetcher) HasRowsOnlyInParquet(ctx context.Context, tables model.StorageTables, schemaID int16, cutoffMs int64) (bool, error) {
-	f.parquetOnlyCalls++
-	f.parquetOnlyCutoffMs = cutoffMs
-	return f.parquetOnly, f.parquetOnlyErr
+func (f *fakeDirtyIDFetcher) HasParquetHistory(ctx context.Context, tables model.StorageTables, schemaID int16) (bool, error) {
+	f.historyCalls++
+	if f.afterHistory != nil {
+		defer f.afterHistory()
+	}
+	return f.history, f.historyErr
 }
 
 func (f *fakeDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error) {

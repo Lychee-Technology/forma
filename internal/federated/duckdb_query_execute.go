@@ -34,6 +34,26 @@ type scan struct {
 	// closed at admission), so the corrupt-confirmed release below can only
 	// free a slot this caller actually holds (#349 review R2-2).
 	probe ProbeToken
+	// emptyParquetScan marks a pass whose parquet leg scans nothing (#720);
+	// its page stands only once confirmNoParquetPublished has run.
+	emptyParquetScan bool
+}
+
+// retryablePassFailure reports whether a failed pass earns the one retry,
+// and why. A pass that confirmed corrupt objects cached them, so the retry's
+// path resolution excludes them and answers from the readable remainder
+// (#251). A pass whose empty parquet scan a publication raced is discarded,
+// and the retry's resolution finds the published objects (#720).
+func retryablePassFailure(err error) (string, bool) {
+	var corrupt *corruptParquetRetryError
+	if errors.As(err, &corrupt) {
+		return fmt.Sprintf("excluding corrupt parquet %v", corrupt.Corrupt), true
+	}
+	var raced *parquetPublishedDuringReadError
+	if errors.As(err, &raced) {
+		return "a parquet publication raced the empty scan", true
+	}
+	return "", false
 }
 
 // executeAndStreamDuckDB runs the compiled query, streams its rows through
@@ -90,6 +110,13 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 	}
 
 	e.breakerRecordSuccess(ctx)
+	if sc.emptyParquetScan {
+		// The recheck queries DuckDB, and the pool holds one connection.
+		_ = rows.Close()
+		if err := e.confirmNoParquetPublished(ctx, q); err != nil {
+			return 0, err
+		}
+	}
 	outcome := duckDBScanOutcome{
 		translateMs: sc.translateMs,
 		executeMs:   executeMs,

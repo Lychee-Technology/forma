@@ -16,10 +16,10 @@ import (
 // the flushed Parquet tiers and must be excluded from DuckDB results.
 type DirtyIDFetcher interface {
 	FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error)
-	// HasRowsOnlyInParquet reports whether schemaID holds a version that
-	// only the parquet tiers can serve under a dirty barrier at cutoffMs
-	// (#720). See PostgresDirtyIDFetcher.HasRowsOnlyInParquet.
-	HasRowsOnlyInParquet(ctx context.Context, tables model.StorageTables, schemaID int16, cutoffMs int64) (bool, error)
+	// HasParquetHistory reports whether PostgreSQL records that parquet was
+	// published for schemaID (#720). See
+	// PostgresDirtyIDFetcher.HasParquetHistory.
+	HasParquetHistory(ctx context.Context, tables model.StorageTables, schemaID int16) (bool, error)
 }
 
 type dirtyIDPool interface {
@@ -69,22 +69,27 @@ func (f *PostgresDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLog
 	return ids, nil
 }
 
-// HasRowsOnlyInParquet reports whether schemaID holds a version the dirty
-// barrier at cutoffMs leaves to the parquet tiers, which the hot leg
-// therefore does not serve. Two kinds of version qualify:
+// HasParquetHistory reports whether PostgreSQL records that parquet was
+// published for schemaID. Two records qualify, and neither depends on a
+// clock:
 //
-//   - a change_log entry with 0 < flushed_at < cutoffMs. Flushed entries are
-//     never deleted (a later write adds a new flushed_at = 0 entry beside
-//     them), so once a schema has been flushed the answer stays true;
-//   - a live entity_main row with no change_log entry at flushed_at = 0 or
-//     at or after cutoffMs. The hot leg joins entity_main through change_log,
-//     so such a row has no hot reader. A cdc-init export leaves exactly this
-//     behind once the onboarding handoff clears change_log: the row lives in
-//     PostgreSQL and in base parquet, and no flush history records it.
+//   - a change_log entry with flushed_at <> 0. Flushed entries are never
+//     deleted (a later write adds a new flushed_at = 0 entry beside them), so
+//     once a schema has been flushed the answer stays true;
+//   - a live entity_main row with no change_log entry. Every write leaves an
+//     entry, so such a row is one a cdc-init export holds after the onboarding
+//     handoff cleared change_log: it lives in PostgreSQL and in base parquet,
+//     and the hot leg, which joins entity_main through change_log, does not
+//     serve it.
 //
-// PostgreSQL keeps every live row (design.md §3.3, storage invariant), so a
-// false answer means the hot leg serves every current row of the schema.
-func (f *PostgresDirtyIDFetcher) HasRowsOnlyInParquet(ctx context.Context, tables model.StorageTables, schemaID int16, cutoffMs int64) (bool, error) {
+// A false answer means every change_log entry is unflushed and every live row
+// has one. The dirty barrier then shadows every row_id that has a change_log
+// entry, so no flushed version can reach the answer and the hot leg's answer
+// is the whole answer. It does not mean no parquet was ever written: a
+// cdc-init export whose rows have all been written again since the handoff
+// leaves no record here. Each of those rows has an entry, so the barrier
+// shadows the export row for row, and losing it changes no answer.
+func (f *PostgresDirtyIDFetcher) HasParquetHistory(ctx context.Context, tables model.StorageTables, schemaID int16) (bool, error) {
 	if tables.ChangeLog == "" || tables.EntityMain == "" {
 		return false, fmt.Errorf("change log and entity main table names cannot be empty")
 	}
@@ -92,26 +97,26 @@ func (f *PostgresDirtyIDFetcher) HasRowsOnlyInParquet(ctx context.Context, table
 		return false, fmt.Errorf("postgres dirty id fetcher is not available")
 	}
 	changeLog := sqlutil.SanitizeIdentifier(tables.ChangeLog)
-	query := fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %[1]s WHERE schema_id = $1 AND flushed_at <> 0 AND flushed_at < $2)
+	query := fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %[1]s WHERE schema_id = $1 AND flushed_at <> 0)
 	OR EXISTS (SELECT 1 FROM %[2]s m WHERE m.ltbase_schema_id = $1 AND NOT EXISTS (
-		SELECT 1 FROM %[1]s c WHERE c.schema_id = $1 AND c.row_id = m.ltbase_row_id AND (c.flushed_at = 0 OR c.flushed_at >= $2)))`,
+		SELECT 1 FROM %[1]s c WHERE c.schema_id = $1 AND c.row_id = m.ltbase_row_id))`,
 		changeLog, sqlutil.SanitizeIdentifier(tables.EntityMain))
-	rows, err := f.pool.Query(ctx, query, schemaID, cutoffMs)
+	rows, err := f.pool.Query(ctx, query, schemaID)
 	if err != nil {
-		return false, fmt.Errorf("query parquet-only rows of schema %d: %w", schemaID, err)
+		return false, fmt.Errorf("query parquet history of schema %d: %w", schemaID, err)
 	}
 	defer rows.Close()
 	// EXISTS always answers one row; reading none means the read failed, and
 	// the answer must not default to "nothing to read".
 	if !rows.Next() {
 		if err := rows.Err(); err != nil {
-			return false, fmt.Errorf("read parquet-only rows of schema %d: %w", schemaID, err)
+			return false, fmt.Errorf("read parquet history of schema %d: %w", schemaID, err)
 		}
-		return false, fmt.Errorf("read parquet-only rows of schema %d: no row returned", schemaID)
+		return false, fmt.Errorf("read parquet history of schema %d: no row returned", schemaID)
 	}
 	var found bool
 	if err := rows.Scan(&found); err != nil {
-		return false, fmt.Errorf("scan parquet-only rows of schema %d: %w", schemaID, err)
+		return false, fmt.Errorf("scan parquet history of schema %d: %w", schemaID, err)
 	}
 	return found, nil
 }

@@ -33,15 +33,31 @@ func allTierQuery() *model.FederatedAttributeQuery {
 
 func newEmptyScanTestEngine(t *testing.T, duck *fakeDuckDBExecutor, dirty *fakeDirtyIDFetcher, paths []string, opts ...EngineOption) *DBFederatedQueryEngine {
 	t.Helper()
-	return newEmptyScanTestEngineWithConfig(t, hybridDuckConfig(), duck, dirty, paths, opts...)
+	return newEmptyScanTestEngineWithSource(t, hybridDuckConfig(), duck, dirty, &fakeParquetSource{paths: paths}, opts...)
 }
 
-func newEmptyScanTestEngineWithConfig(t *testing.T, cfg forma.DuckDBConfig, duck *fakeDuckDBExecutor, dirty *fakeDirtyIDFetcher, paths []string, opts ...EngineOption) *DBFederatedQueryEngine {
+// newEmptyScanTestEngineWithSource builds the engine over src, so a test can
+// change what the source resolves mid-query. The breaker opens on one
+// failure.
+func newEmptyScanTestEngineWithSource(t *testing.T, cfg forma.DuckDBConfig, duck *fakeDuckDBExecutor, dirty *fakeDirtyIDFetcher, src ParquetSource, opts ...EngineOption) *DBFederatedQueryEngine {
 	t.Helper()
-	opts = append(opts, WithParquetSource(&fakeParquetSource{paths: paths}))
+	opts = append(opts, WithParquetSource(src))
 	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, dirty, duck,
 		NewCircuitBreaker(1, time.Minute, time.Minute),
 		cfg, testMetadataCacheSchema7(t), "host=x", opts...)
+}
+
+// rowPerScan answers every main scan with one row: Close rewinds it, so a
+// retried pass reads a row again.
+type rowPerScan struct{ singleDuckDBRow }
+
+func (r *rowPerScan) Close() error {
+	r.scanned = false
+	return nil
+}
+
+func planOpts() *model.FederatedQueryOptions {
+	return &model.FederatedQueryOptions{IncludeExecutionPlan: true, ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}}}
 }
 
 // renderedBarrierCutoffs returns every flushed_at cutoff literal the dirty
@@ -72,7 +88,7 @@ func TestNeverFlushedSchemaScansNoParquet(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		duck.rows = &singleDuckDBRow{rowID: uuid.New()}
-		opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true, ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}}}
+		opts := planOpts()
 		page, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), opts)
 		require.NoError(t, err, "query %d", i)
 		require.Len(t, page.Records, 1, "the hot leg's row is the answer")
@@ -81,78 +97,119 @@ func TestNeverFlushedSchemaScansNoParquet(t *testing.T) {
 	require.Contains(t, duck.lastSQL, emptyScanMarker)
 	require.NotContains(t, duck.lastSQL, "read_parquet(", "a glob that matches nothing must not reach read_parquet")
 	require.NotContains(t, duck.lastSQL, fallbackGlob)
-	require.Equal(t, 3, dirty.parquetOnlyCalls)
-	require.Less(t, dirty.parquetOnlyCutoffMs, sqlgen.FlushGraceCutoffDisabled,
-		"an all-tier query asks at its path-resolution anchor, not with the strict barrier")
+	require.Equal(t, 3, dirty.historyCalls)
 }
 
-// TestEmptyScanAsksAtThePathResolutionAnchor: a flush marked before the
-// anchor published a manifest the resolution would have found, so a lost one
-// must keep failing the read even inside the #252 grace margin. The check
-// therefore asks at the anchor, while the hot leg keeps the margin.
-func TestEmptyScanAsksAtThePathResolutionAnchor(t *testing.T) {
-	restore := initTestDescriptors()
-	defer restore()
-
-	cfg := hybridDuckConfig()
-	cfg.FlushVisibilityGraceMs = 60_000
-	duck := &fakeDuckDBExecutor{globFiles: []string{}, rows: &singleDuckDBRow{rowID: uuid.New()}}
-	dirty := &fakeDirtyIDFetcher{}
-	engine := newEmptyScanTestEngineWithConfig(t, cfg, duck, dirty, []string{fallbackGlob})
-
-	before := time.Now().UnixMilli()
-	_, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
-	after := time.Now().UnixMilli()
-	require.NoError(t, err)
-	require.Contains(t, duck.lastSQL, emptyScanMarker)
-	require.GreaterOrEqual(t, dirty.parquetOnlyCutoffMs, before, "the check must not reach back by the grace margin")
-	require.LessOrEqual(t, dirty.parquetOnlyCutoffMs, after)
-	for _, cutoff := range renderedBarrierCutoffs(t, duck.lastSQL) {
-		require.Equal(t, dirty.parquetOnlyCutoffMs-60_000, cutoff, "the hot leg keeps the configured margin")
-	}
-}
-
-// TestEmptyScanKeepsARacingFirstFlushHotWithWideningDisabled: the empty scan
-// source cannot see a delta a first flush publishes after the check, so the
-// rows it marks must stay in the hot leg. With the #252 widening disabled the
-// strict barrier would drop them from both legs; the empty scan renders the
-// anchor instead.
-func TestEmptyScanKeepsARacingFirstFlushHotWithWideningDisabled(t *testing.T) {
+// TestEmptyScanKeepsTheConfiguredBarrier: the empty scan's completeness
+// does not rest on the dirty barrier, so its hot leg renders the operator's
+// barrier like any other read. With the #252 widening disabled that is the
+// strict one.
+func TestEmptyScanKeepsTheConfiguredBarrier(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
 	cfg := hybridDuckConfig()
 	cfg.FlushVisibilityGraceMs = -1
 	duck := &fakeDuckDBExecutor{globFiles: []string{}, rows: &singleDuckDBRow{rowID: uuid.New()}}
-	dirty := &fakeDirtyIDFetcher{}
-	engine := newEmptyScanTestEngineWithConfig(t, cfg, duck, dirty, []string{fallbackGlob})
+	engine := newEmptyScanTestEngineWithSource(t, cfg, duck, &fakeDirtyIDFetcher{}, &fakeParquetSource{paths: []string{fallbackGlob}})
 
-	before := time.Now().UnixMilli()
 	_, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
-	after := time.Now().UnixMilli()
 	require.NoError(t, err)
 	require.Contains(t, duck.lastSQL, emptyScanMarker)
-	for _, cutoff := range renderedBarrierCutoffs(t, duck.lastSQL) {
-		require.GreaterOrEqual(t, cutoff, before)
-		require.LessOrEqual(t, cutoff, after, "the hot leg must keep rows marked after the anchor")
-		require.Equal(t, dirty.parquetOnlyCutoffMs, cutoff, "the hot leg serves at the instant the check asked about")
-	}
-
-	// A path set that does scan parquet keeps the operator's strict barrier.
-	duck.globFiles = []string{"s3://b/7/delta.parquet"}
-	duck.rows = &singleDuckDBRow{rowID: uuid.New()}
-	_, err = engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
-	require.NoError(t, err)
-	require.NotContains(t, duck.lastSQL, emptyScanMarker)
 	for _, cutoff := range renderedBarrierCutoffs(t, duck.lastSQL) {
 		require.Equal(t, sqlgen.FlushGraceCutoffDisabled, cutoff)
 	}
 }
 
-// TestNeverFlushedHotExcludedQueryUsesTheStrictBarrier: a hot-excluded query
-// keeps flushed_at = 0 as its barrier, so any flushed row means parquet
-// should hold data for it.
-func TestNeverFlushedHotExcludedQueryUsesTheStrictBarrier(t *testing.T) {
+// TestEmptyScanRetriesWhenAPublicationRacesIt (#720 review): a flush or a
+// cdc-init handoff that publishes after the check can move rows out of the
+// hot leg, and the fixed empty scan cannot read what it published. The
+// recheck after the pass sees the publication, so the page is discarded and
+// the retry scans the new object. No clock is involved, and the breaker
+// records no failure.
+func TestEmptyScanRetriesWhenAPublicationRacesIt(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &fakeDuckDBExecutor{globFiles: []string{}, rows: &rowPerScan{singleDuckDBRow{rowID: uuid.New()}}}
+	dirty := &fakeDirtyIDFetcher{}
+	dirty.afterHistory = func() { duck.globFiles = []string{"s3://b/7/delta.parquet"} }
+	engine := newEmptyScanTestEngine(t, duck, dirty, []string{fallbackGlob})
+
+	opts := planOpts()
+	page, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), opts)
+	require.NoError(t, err)
+	require.Len(t, page.Records, 1)
+	require.Equal(t, 2, duck.calls, "the raced pass and its retry")
+	require.Contains(t, duck.lastSQL, "read_parquet('"+fallbackGlob+"'", "the retry scans the published object")
+	require.NotContains(t, opts.ExecutionPlan.Notes, NoteEmptyParquetScan, "the plan describes the retry only")
+	require.Equal(t, 1, dirty.historyCalls)
+
+	_, err = engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
+	require.NoError(t, err, "the breaker opens on one failure, so the race recorded none")
+}
+
+// TestEmptyScanRacedTwiceFailsTheRead: a retry that races a publication
+// again fails the read as a degradable ErrFederatedReadFailed rather than
+// looping or answering short, and still records no breaker failure.
+func TestEmptyScanRacedTwiceFailsTheRead(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &fakeDuckDBExecutor{globFiles: []string{}, rows: &rowPerScan{singleDuckDBRow{rowID: uuid.New()}}}
+	src := &recheckFailingSource{fakeParquetSource: fakeParquetSource{paths: []string{fallbackGlob}}}
+	engine := newEmptyScanTestEngineWithSource(t, hybridDuckConfig(), duck, &fakeDirtyIDFetcher{}, src)
+
+	_, _, err := engine.ExecuteDuckDBFederatedQuery(context.Background(), emptyScanTables, allTierQuery(), 10, 0, nil, nil)
+	var raced *parquetPublishedDuringReadError
+	require.ErrorAs(t, err, &raced)
+	require.ErrorIs(t, err, ErrFederatedReadFailed)
+	require.Equal(t, 2, duck.calls, "one retry, no loop")
+	require.False(t, engine.breaker.IsOpen(), "a race is not a DuckDB failure")
+}
+
+// recheckFailingSource resolves the fallback glob on a pass's first
+// resolution and fails every recheck, as a store would that a writer keeps
+// publishing to.
+type recheckFailingSource struct {
+	fakeParquetSource
+}
+
+func (s *recheckFailingSource) Paths(ctx context.Context, schemaID int16) ([]string, map[string]map[string]string, error) {
+	s.pathsCalls++
+	if s.pathsCalls%2 == 0 {
+		return nil, nil, errors.New("manifest changed under the read")
+	}
+	return s.paths, nil, nil
+}
+
+// TestParquetHistoryFromAPublicationTheResolutionMissedRetries: a flush
+// that publishes between path resolution and the check leaves a flushed
+// entry the check finds. That is not a loss, so the source is resolved again
+// and the read retries over the new manifest instead of failing on the
+// stale glob.
+func TestParquetHistoryFromAPublicationTheResolutionMissedRetries(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &fakeDuckDBExecutor{globFiles: []string{}, rows: &rowPerScan{singleDuckDBRow{rowID: uuid.New()}}}
+	src := &fakeParquetSource{paths: []string{fallbackGlob}}
+	dirty := &fakeDirtyIDFetcher{history: true}
+	dirty.afterHistory = func() { src.paths = []string{testParquetPath} }
+	engine := newEmptyScanTestEngineWithSource(t, hybridDuckConfig(), duck, dirty, src)
+
+	page, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
+	require.NoError(t, err)
+	require.Len(t, page.Records, 1)
+	require.Equal(t, 1, duck.calls, "the stale glob is never scanned")
+	require.Contains(t, duck.lastSQL, testParquetPath)
+	require.Equal(t, 1, dirty.historyCalls, "the retry resolves a manifest and asks nothing")
+}
+
+// TestNeverFlushedHotExcludedQueryScansNoParquet: a hot-excluded query on a
+// never-flushed schema asks for flushed data only, and there is none, so it
+// takes the empty scan too and answers an empty page.
+func TestNeverFlushedHotExcludedQueryScansNoParquet(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
@@ -165,7 +222,7 @@ func TestNeverFlushedHotExcludedQueryUsesTheStrictBarrier(t *testing.T) {
 	_, err := engine.Query(context.Background(), emptyScanTables, q, nil)
 	require.NoError(t, err)
 	require.Contains(t, duck.lastSQL, emptyScanMarker)
-	require.Equal(t, sqlgen.FlushGraceCutoffDisabled, dirty.parquetOnlyCutoffMs)
+	require.Equal(t, 1, dirty.historyCalls)
 }
 
 // TestEmptyFallbackGlobKeepsTheScanWhenItCannotProveNoParquet covers the
@@ -173,18 +230,18 @@ func TestNeverFlushedHotExcludedQueryUsesTheStrictBarrier(t *testing.T) {
 // keeps today's read_parquet over the resolved set.
 func TestEmptyFallbackGlobKeepsTheScanWhenItCannotProveNoParquet(t *testing.T) {
 	cases := []struct {
-		name        string
-		paths       []string
-		globFiles   []string
-		parquetOnly bool
-		wantCheck   bool
+		name      string
+		paths     []string
+		globFiles []string
+		history   bool
+		wantCheck bool
 	}{
 		{
 			// A lost manifest over flushed rows, or over rows a cdc-init
-			// export left without a change_log entry: the hot leg does not
-			// serve them, so the read must still fail on the empty glob.
-			name: "rows only parquet serves", paths: []string{fallbackGlob}, globFiles: []string{},
-			parquetOnly: true, wantCheck: true,
+			// export left without a change_log entry: PostgreSQL records a
+			// publication, so the read must still fail on the empty glob.
+			name: "parquet history", paths: []string{fallbackGlob}, globFiles: []string{},
+			history: true, wantCheck: true,
 		},
 		{
 			name: "glob listing failed", paths: []string{fallbackGlob}, globFiles: nil,
@@ -202,14 +259,14 @@ func TestEmptyFallbackGlobKeepsTheScanWhenItCannotProveNoParquet(t *testing.T) {
 			defer restore()
 
 			duck := &fakeDuckDBExecutor{globFiles: tc.globFiles, rows: &singleDuckDBRow{rowID: uuid.New()}}
-			dirty := &fakeDirtyIDFetcher{parquetOnly: tc.parquetOnly}
+			dirty := &fakeDirtyIDFetcher{history: tc.history}
 			engine := newEmptyScanTestEngine(t, duck, dirty, tc.paths)
 
 			_, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
 			require.NoError(t, err, "the fake scan succeeds; only the rendered SQL is under test")
 			require.Contains(t, duck.lastSQL, "read_parquet(")
 			require.NotContains(t, duck.lastSQL, emptyScanMarker)
-			require.Equal(t, tc.wantCheck, dirty.parquetOnlyCalls > 0)
+			require.Equal(t, tc.wantCheck, dirty.historyCalls > 0)
 		})
 	}
 }
@@ -230,7 +287,7 @@ func TestHintGlobMatchingNothingIsNotTreatedAsNeverFlushed(t *testing.T) {
 	_, err := engine.Query(context.Background(), emptyScanTables, q, nil)
 	require.NoError(t, err)
 	require.Contains(t, duck.lastSQL, "s3://b/hinted/7/*.parquet")
-	require.Zero(t, dirty.parquetOnlyCalls)
+	require.Zero(t, dirty.historyCalls)
 }
 
 // TestParquetOnlyCheckFailureFailsTheRead: without the PostgreSQL check the
@@ -241,7 +298,7 @@ func TestParquetOnlyCheckFailureFailsTheRead(t *testing.T) {
 	defer restore()
 
 	duck := &fakeDuckDBExecutor{globFiles: []string{}}
-	dirty := &fakeDirtyIDFetcher{parquetOnlyErr: errors.New("connection reset")}
+	dirty := &fakeDirtyIDFetcher{historyErr: errors.New("connection reset")}
 	engine := newEmptyScanTestEngine(t, duck, dirty, []string{fallbackGlob})
 
 	_, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)

@@ -41,8 +41,7 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables 
 	// marked flushed at or after this instant may belong to a delta this
 	// path set does not list yet, so the dirty barrier keeps it hot-readable
 	// for this query.
-	anchorMs := time.Now().UnixMilli()
-	graceCutoffMs := e.flushGraceCutoffMs(anchorMs)
+	graceCutoffMs := e.flushGraceCutoffMs(time.Now().UnixMilli())
 
 	// Resolve the parquet path set once (#187): explicit render hints win,
 	// otherwise the manifest-driven source authors the list. Provenance
@@ -75,7 +74,7 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables 
 	// (ValidateFixtureSchemaID reserves the range).
 	var cold coldScanSet
 	if !isBenchmarkSchemaID(q.SchemaID) {
-		noParquet, err := e.hasNoParquetToRead(ctx, tables, q, paths, fromSource, anchorMs)
+		noParquet, err := e.hasNoParquetToRead(ctx, tables, q, paths, fromSource)
 		if err != nil {
 			return scanSources{}, fmt.Errorf("resolve parquet paths: %w", err)
 		}
@@ -83,7 +82,7 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables 
 			cache, _ := e.schemaCacheByID(q.SchemaID)
 			return scanSources{
 				fromSource:    true,
-				graceCutoffMs: emptyScanCutoffMs(graceCutoffMs, anchorMs),
+				graceCutoffMs: graceCutoffMs,
 				cold:          emptyParquetScanSet(cache),
 			}, nil
 		}
