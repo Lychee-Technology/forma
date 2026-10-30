@@ -38,9 +38,9 @@ func TestBuildPgMainClause_ISO8601NullTestFiltersTheHotRead(t *testing.T) {
 		want string
 		args []any
 	}{
-		{"seenAt", "is_null:true", "epoch_ms(TRY_CAST(m.text_02 AS TIMESTAMP)) IS NULL", nil},
+		{"seenAt", "is_null:true", ISO8601EpochMs("m.text_02") + " IS NULL", nil},
 		{"seenAt", "is_not_null:true", "m.text_02 IS NOT NULL", nil},
-		{"bornOn", "is_null:true", "epoch_ms(TRY_CAST(m.text_03 AS TIMESTAMP)) IS NULL", nil},
+		{"bornOn", "is_null:true", ISO8601EpochMs("m.text_03") + " IS NULL", nil},
 		{"seenAt", "gt:2024-01-02T03:04:05Z", "m.text_02 > ?", []any{"2024-01-02T03:04:05Z"}},
 		{"stamp", "is_null:true", "m.bigint_01 IS NULL", nil},
 	} {

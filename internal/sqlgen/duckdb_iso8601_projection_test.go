@@ -41,15 +41,15 @@ func TestHotLegProjections_ISO8601ColumnsNormaliseToEpochMs(t *testing.T) {
 	require.False(t, sp.HasEAVAttrs, "fixture must qualify for the no-EAV shortcut")
 
 	require.Contains(t, sp.PGSourceSelect,
-		"COALESCE(ANY_VALUE(hot_vals.seenAt), epoch_ms(TRY_CAST(m.text_02 AS TIMESTAMP))) AS seenAt")
+		"COALESCE(ANY_VALUE(hot_vals.seenAt), "+ISO8601EpochMs("m.text_02")+") AS seenAt")
 	require.Contains(t, sp.PGSourceSelect,
-		"COALESCE(ANY_VALUE(hot_vals.bornOn), epoch_ms(TRY_CAST(m.text_03 AS TIMESTAMP))) AS bornOn")
+		"COALESCE(ANY_VALUE(hot_vals.bornOn), "+ISO8601EpochMs("m.text_03")+") AS bornOn")
 	require.Contains(t, sp.PGSourceSelect, "COALESCE(ANY_VALUE(hot_vals.name), m.text_01) AS name",
 		"a plain text column still projects raw")
 
 	noEAV := sp.BuildPGSelectNoEAV()
-	require.Contains(t, noEAV, "epoch_ms(TRY_CAST(m.text_02 AS TIMESTAMP)) AS seenAt")
-	require.Contains(t, noEAV, "epoch_ms(TRY_CAST(m.text_03 AS TIMESTAMP)) AS bornOn")
+	require.Contains(t, noEAV, ISO8601EpochMs("m.text_02")+" AS seenAt")
+	require.Contains(t, noEAV, ISO8601EpochMs("m.text_03")+" AS bornOn")
 	require.Contains(t, noEAV, "m.text_01 AS name")
 	require.NotContains(t, noEAV, "m.text_02 AS seenAt", "the raw ISO string must not reach the UNION ALL")
 	require.NotContains(t, noEAV, "m.text_03 AS bornOn")
@@ -59,10 +59,8 @@ func TestHotLegProjections_ISO8601ColumnsNormaliseToEpochMs(t *testing.T) {
 // DuckDB over the images a text column can carry: the write path's UTC
 // RFC3339 string (transform.storeWithEncoding), one carrying fractional
 // seconds, a non-date string (NULL through TRY_CAST rather than a read-path
-// crash, matching the export) and NULL. The TIMESTAMP cast is deliberately
-// the export's, not TIMESTAMPTZ: with the bundled ICU an offset-less string
-// would parse in the session TimeZone, host-dependent, whereas the funnel
-// only ever writes `Z`.
+// crash, matching the export) and NULL. Offsets and session TimeZones are
+// iso8601_read_duckdb_test.go's (#756).
 func TestMainColISO8601Expr_ExecutesToEpochMs(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")
 	require.NoError(t, err)
