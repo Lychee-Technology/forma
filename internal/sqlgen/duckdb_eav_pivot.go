@@ -136,7 +136,7 @@ func mainColISO8601Read(meta forma.AttributeMetadata) (string, bool) {
 	if meta.ValueType != forma.ValueTypeDate && meta.ValueType != forma.ValueTypeDateTime {
 		return "", false
 	}
-	if meta.ColumnBinding.Encoding != forma.MainColumnEncodingISO8601 {
+	if meta.ColumnBinding == nil || meta.ColumnBinding.Encoding != forma.MainColumnEncodingISO8601 {
 		return "", false
 	}
 	return mainColISO8601Expr(string(meta.ColumnBinding.ColumnName)), true
