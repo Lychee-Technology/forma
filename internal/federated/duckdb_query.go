@@ -45,8 +45,9 @@ type duckDBRowsIterator interface {
 //   - current_page (int)
 //
 // A read failure attributed to specific corrupt parquet objects is retried
-// exactly once against the readable remainder (#251), so one call can issue two
-// scans plus a per-object verification drain — worth knowing when sizing the
+// exactly once against the readable remainder (#251), and so is an empty
+// parquet scan a publication raced (#720), so one call can issue two scans
+// plus a per-object verification drain — worth knowing when sizing the
 // caller's deadline. The execution plan and the fed_query_* metrics describe
 // only the pass that produced the returned page: the failed pass is rewound
 // from the plan and emits no metric sample at all.
@@ -68,17 +69,14 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 	}
 	mark := markExecutionPlan(opts)
 	recs, total, err := e.collectDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts)
-	var retry *corruptParquetRetryError
-	if errors.As(err, &retry) {
-		// The failed pass confirmed and cached the corrupt objects; path
-		// resolution now excludes them, so one retry answers from the
-		// readable remainder (#251). A second retryable failure surfaces:
-		// corruption appearing mid-flight is indistinguishable from a sick
-		// store and must not loop.
+	if reason, ok := retryablePassFailure(err); ok {
+		// One retry answers from the state the failed pass uncovered. A
+		// second retryable failure surfaces: corruption or publication
+		// racing the same request twice must not loop.
 		mark.rewind(opts)
 		recs, total, err = e.collectDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts)
 		if err != nil {
-			return nil, 0, fmt.Errorf("retry after excluding corrupt parquet %v: %w", retry.Corrupt, err)
+			return nil, 0, fmt.Errorf("retry after %s: %w", reason, err)
 		}
 	}
 	if err != nil {
@@ -255,7 +253,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		}
 	}()
 
-	src, err := e.resolveScanSources(ctx, q)
+	src, err := e.resolveScanSources(ctx, tables, q)
 	if err != nil {
 		// Objects the #732 type guard could not read fail the read closed,
 		// classified exactly like a failed scan over the same path set, so
@@ -278,6 +276,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// object. Notes stay internal — toExecutionPlan drops them at the HTTP
 	// boundary (#301/#306).
 	planCtx.recordCorruptExclusion(src.excludedCorrupt)
+	planCtx.recordEmptyParquetScan(src.cold.noObjects)
 
 	// #348: the partial-scan marker is an out-parameter on opts, overwritten
 	// by every pass so it describes the pass that actually produced the
@@ -309,11 +308,12 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// on every path and the helper below owns resolving the probe.
 	probeResolved = true
 	return e.executeAndStreamDuckDB(ctx, q, sqlStr, args, scan{
-		parquetPaths:    src.paths,
-		pathsFromSource: src.fromSource,
-		dirtyIDs:        dirtyIDs,
-		translateMs:     translateMs,
-		probe:           probe,
+		parquetPaths:     src.paths,
+		pathsFromSource:  src.fromSource,
+		dirtyIDs:         dirtyIDs,
+		translateMs:      translateMs,
+		probe:            probe,
+		emptyParquetScan: src.cold.noObjects,
 	}, rowHandler, planCtx)
 }
 

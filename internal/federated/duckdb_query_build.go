@@ -193,6 +193,11 @@ func (e *DBFederatedQueryEngine) buildDuckDBTemplateBaseParams(
 		// renderer adds them to the scan's REPLACE list.
 		sqlParams["ColdPinnedColumns"] = cold.pinned
 	}
+	if cold.noObjects {
+		// No parquet object to read (#720): the renderer replaces the scan
+		// with a relation holding no rows.
+		sqlParams["EmptyParquetScan"] = true
+	}
 	// Per-request dirty-barrier cutoff (#252), anchored at the query's
 	// path-resolution instant. The direct builder renders it as a literal;
 	// the compiled path overwrites it with the splice sentinel so the cached
@@ -241,6 +246,12 @@ func duckPlanScopeParts(
 	parts = append(parts, "cold-pinned")
 	for _, pc := range cold.pinned {
 		parts = append(parts, pc.Name, pc.DuckDBType)
+	}
+	if cold.noObjects {
+		// The empty scan source (#720) renders no path, so the path parts
+		// above cannot tell it apart; it is part of the skeleton, so it
+		// scopes the key itself.
+		parts = append(parts, "no-parquet-objects")
 	}
 	return parts
 }

@@ -35,6 +35,22 @@ type fakeDirtyIDFetcher struct {
 	calls int
 	ids   []uuid.UUID
 	err   error
+
+	// history and historyErr answer HasParquetHistory (#720), which
+	// historyCalls counts. afterHistory, when set, runs after each answer:
+	// the seam for a writer publishing between the check and the scan.
+	history      bool
+	historyErr   error
+	historyCalls int
+	afterHistory func()
+}
+
+func (f *fakeDirtyIDFetcher) HasParquetHistory(ctx context.Context, tables model.StorageTables, schemaID int16) (bool, error) {
+	f.historyCalls++
+	if f.afterHistory != nil {
+		defer f.afterHistory()
+	}
+	return f.history, f.historyErr
 }
 
 func (f *fakeDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error) {

@@ -48,6 +48,11 @@ type Env struct {
 	// observing/pausing path resolution mid-query (#252). Mirrors the DuckCfg
 	// mutate-before-first-use pattern; nil leaves the source untouched.
 	ParquetSourceWrap func(fedengine.ParquetSource) fedengine.ParquetSource
+	// DirtyIDFetcherWrap, when set before the Env's first query, decorates
+	// the engine's change_log reader — the seam for running a CDC step
+	// between the #720 empty-scan check and the DuckDB read. Same
+	// mutate-before-first-use pattern; nil leaves the reader untouched.
+	DirtyIDFetcherWrap func(fedengine.DirtyIDFetcher) fedengine.DirtyIDFetcher
 
 	logger *zap.Logger
 	opts   envOptions

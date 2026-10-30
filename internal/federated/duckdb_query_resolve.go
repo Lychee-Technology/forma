@@ -34,8 +34,9 @@ func (e *DBFederatedQueryEngine) schemaCacheByID(schemaID int16) (forma.SchemaAt
 // query: it stamps the #252 flush-grace cutoff, resolves the parquet path
 // set, validates the parquet system-column invariant and the #732 attribute
 // types, and computes the #255 cold-missing and #371 cold-pinned column sets
-// from the footer union the validation produced.
-func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *model.FederatedAttributeQuery) (scanSources, error) {
+// from the footer union the validation produced. A schema with no parquet to
+// read yet skips the validation and scans nothing (#720).
+func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery) (scanSources, error) {
 	// The flush-grace cutoff is stamped BEFORE resolution (#252): any row
 	// marked flushed at or after this instant may belong to a delta this
 	// path set does not list yet, so the dirty barrier keeps it hot-readable
@@ -73,6 +74,18 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, q *mode
 	// (ValidateFixtureSchemaID reserves the range).
 	var cold coldScanSet
 	if !isBenchmarkSchemaID(q.SchemaID) {
+		noParquet, err := e.hasNoParquetToRead(ctx, tables, q, paths, fromSource)
+		if err != nil {
+			return scanSources{}, fmt.Errorf("resolve parquet paths: %w", err)
+		}
+		if noParquet {
+			cache, _ := e.schemaCacheByID(q.SchemaID)
+			return scanSources{
+				fromSource:    true,
+				graceCutoffMs: graceCutoffMs,
+				cold:          emptyParquetScanSet(cache),
+			}, nil
+		}
 		cold, err = e.validateScanSet(ctx, q.SchemaID, paths, fromSource, stamps)
 		if err != nil {
 			return scanSources{}, err

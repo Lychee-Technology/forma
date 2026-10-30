@@ -257,9 +257,13 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 	// single point both the direct builder and CompileDuckDBQuery flow
 	// through — so the compiled skeleton and the direct render can never
 	// disagree.
+	// EmptyParquetScan (#720) replaces the read with a relation holding no
+	// rows, for a schema the engine has shown has no parquet to read.
 	if _, ok := params["S3_SCAN_SOURCE"]; !ok {
-		if pathsSQL, ok := params["S3_PATHS"].(string); ok && pathsSQL != "" {
-			missing, _ := params["ColdMissingColumns"].([]ScanColumn)
+		missing, _ := params["ColdMissingColumns"].([]ScanColumn)
+		if empty, _ := params["EmptyParquetScan"].(bool); empty {
+			params["S3_SCAN_SOURCE"] = BuildEmptyParquetScanSource(missing)
+		} else if pathsSQL, ok := params["S3_PATHS"].(string); ok && pathsSQL != "" {
 			pinned, _ := params["ColdPinnedColumns"].([]ScanColumn)
 			params["S3_SCAN_SOURCE"] = BuildParquetScanSource(pathsSQL, missing, pinned)
 		}

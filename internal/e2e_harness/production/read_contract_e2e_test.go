@@ -26,24 +26,19 @@ import (
 // Every federated request also sets consistency_mode "eventual", which is
 // accepted and ignored until #715 deletes it.
 //
-// A baseline row is flushed first so the schema's manifest lists a parquet
-// object before the row under test exists: a schema that was never flushed
-// resolves the fallback glob, which matches nothing, and a DuckDB pass over
-// it fails (#720).
+// The first step reads a schema that has never been flushed, whose fallback
+// glob matches no object (#720).
 func TestReadContract(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t))
 	simple := DefaultSchemaFixtures()[0]
 	manager := env.EntityManager()
 
-	baseline := createSimpleRow(ctx, t, manager, simple, "baseline")
-	mustFlush(ctx, t, env)
-
 	rowID := createSimpleRow(ctx, t, manager, simple, "v1")
-	assertCommittedRows(ctx, t, env, simple, map[uuid.UUID]string{baseline: "baseline", rowID: "v1"})
+	assertCommittedRows(ctx, t, env, simple, map[uuid.UUID]string{rowID: "v1"})
 
 	mustFlush(ctx, t, env) // v1 is now in a delta parquet and no longer dirty
-	assertCommittedRows(ctx, t, env, simple, map[uuid.UUID]string{baseline: "baseline", rowID: "v1"})
+	assertCommittedRows(ctx, t, env, simple, map[uuid.UUID]string{rowID: "v1"})
 
 	if _, err := manager.Update(ctx, &forma.EntityOperation{
 		EntityIdentifier: forma.EntityIdentifier{SchemaName: simple.Name, RowID: rowID},
@@ -52,7 +47,7 @@ func TestReadContract(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	assertCommittedRows(ctx, t, env, simple, map[uuid.UUID]string{baseline: "baseline", rowID: "v2"})
+	assertCommittedRows(ctx, t, env, simple, map[uuid.UUID]string{rowID: "v2"})
 
 	if err := manager.Delete(ctx, &forma.EntityOperation{
 		EntityIdentifier: forma.EntityIdentifier{SchemaName: simple.Name, RowID: rowID},
@@ -62,11 +57,11 @@ func TestReadContract(t *testing.T) {
 	}
 	// The parquet tiers still hold a live v1.
 	assertNotFound(ctx, t, env, simple, rowID)
-	assertCommittedRows(ctx, t, env, simple, map[uuid.UUID]string{baseline: "baseline"})
+	assertCommittedRows(ctx, t, env, simple, map[uuid.UUID]string{})
 
 	mustFlush(ctx, t, env) // the tombstone is now in a delta parquet
 	assertNotFound(ctx, t, env, simple, rowID)
-	assertCommittedRows(ctx, t, env, simple, map[uuid.UUID]string{baseline: "baseline"})
+	assertCommittedRows(ctx, t, env, simple, map[uuid.UUID]string{})
 }
 
 func createSimpleRow(ctx context.Context, t *testing.T, manager forma.EntityManager, schema SchemaRef, name string) uuid.UUID {
