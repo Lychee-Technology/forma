@@ -982,13 +982,14 @@ as `2024-01-02T11:04:06+08:00`. The OLTP read always applied the offset.
 Before `#756` the DuckDB tiers dropped it and read that image as
 `11:04:06Z`, so a `GET` and a federated read of the row named instants
 8 hours apart, and federated filters and sorts followed the wrong one. The
-hot leg and the CDC export now apply the offset. The validator reports
-nothing here, because the OLTP read parses these images.
+hot leg and the CDC export now apply the offset.
 
 **Parquet copies exported before the upgrade keep the old instant.**
 Compaction carries a copy's value over unchanged, so a flushed row reads
 its wall clock as UTC on the warm/cold tiers until its next write
-re-exports it. List the affected rows per bound column:
+re-exports it. The validator does not report these rows, because the OLTP
+read parses their images (`#762` tracks detection); list them per bound
+column:
 
 ```sql
 -- one query per iso8601-bound column; text_02 stands for the bound column
