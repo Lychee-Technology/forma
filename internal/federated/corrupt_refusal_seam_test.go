@@ -267,6 +267,69 @@ func TestCachedCorruptRefusalSurfacesAnotherMissingObject(t *testing.T) {
 	}
 }
 
+// budgetBlockedParquetSource lists its paths but holds every missing-object
+// probe until the request's context is done, standing in for existence
+// checks that run past the query budget.
+type budgetBlockedParquetSource struct {
+	fakeParquetSource
+}
+
+func (s *budgetBlockedParquetSource) MissingIn(ctx context.Context, scanned []string) ([]string, error) {
+	s.missingCalls++
+	<-ctx.Done()
+	return nil, fmt.Errorf("probe %d parquet objects: %w", len(scanned), ctx.Err())
+}
+
+// TestMissingObjectProbePreservesTheExpiredBudget pins the #722 review
+// finding: when the missing-object probe runs into the request's deadline,
+// the failure still reports context.DeadlineExceeded and does not degrade
+// (#465). The probe proves no loss, so the classification is unchanged. That
+// holds for a cached refusal, whose cause chain is otherwise only the
+// sentinel, and for a scan that failed for another reason before the probe
+// spent the rest of the budget. The Postgres fake ignores its context, so a
+// fallback taken on the spent budget would answer instead of failing.
+func TestMissingObjectProbePreservesTheExpiredBudget(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		for _, degraded := range []bool{false, true} {
+			t.Run(fmt.Sprintf("cached=%v/degraded=%v", cached, degraded), func(t *testing.T) {
+				restore := initTestDescriptors()
+				defer restore()
+
+				duck := &retryFakeDuck{passes: []retryPass{{midStreamFail: true}}}
+				pg := &fakePostgresFederatedSource{}
+				src := &budgetBlockedParquetSource{fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}}
+				cfg := hybridDuckConfig()
+				cfg.QueryTimeout = 50 * time.Millisecond
+				e := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
+					cfg, testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+				if cached {
+					e.corruptPaths.Add([]string{retryCorruptPath1})
+				}
+
+				opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded}
+				_, err := e.Query(context.Background(), corruptTables, coldTierQuery(), opts)
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				require.Equal(t, 1, src.missingCalls, "the probe is what ran into the budget")
+				require.Zero(t, pg.queryCalls, "a spent budget must not take the Postgres fallback")
+				if cached {
+					requireCachedRefusalKept(t, err)
+					require.Empty(t, duck.mainSQL, "the cached verdict still refuses before the scan")
+				}
+			})
+		}
+	}
+}
+
+// requireCachedRefusalKept asserts the deadline joined the cached refusal
+// rather than replacing it: the corrupt object is still named.
+func requireCachedRefusalKept(t *testing.T, err error) {
+	t.Helper()
+	var corrupt *CorruptParquetError
+	require.ErrorAs(t, err, &corrupt)
+	require.Equal(t, []string{retryCorruptPath1}, corrupt.Paths)
+	require.ErrorIs(t, err, ErrFederatedReadFailed)
+}
+
 // TestCorruptRefusalDegradesToPostgresOnly pins the #722 answer under
 // AllowPartialDegradedMode, for a fresh confirmation and for a cached
 // verdict: the page comes from PostgreSQL alone, which holds every live row

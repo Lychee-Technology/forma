@@ -102,7 +102,9 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 // (non-degradable, breaker-worthy) rather than being absorbed by the
 // degradable refusal for the rest of the retention window. The probe is one
 // existence check per listed object, far below the drains a re-verification
-// would cost. A probe that cannot run proves no loss and keeps the refusal.
+// would cost. A probe that cannot run proves no loss and keeps the refusal;
+// one the request's deadline or cancellation stopped keeps that context error
+// in the refusal's chain, so a spent budget does not degrade (#465).
 func (e *DBFederatedQueryEngine) refuseCachedCorrupt(ctx context.Context, q *model.FederatedAttributeQuery, listed, corrupt []string) error {
 	classified := e.classifyDuckDBReadError(ctx, q, listed, true)
 	var inconsistent *ParquetSetInconsistentError
@@ -112,7 +114,7 @@ func (e *DBFederatedQueryEngine) refuseCachedCorrupt(ctx context.Context, q *mod
 	return &CorruptParquetError{
 		SchemaID: q.SchemaID,
 		Paths:    corrupt,
-		cause:    fmt.Errorf("verified corrupt by an earlier read and still cached: %w", ErrFederatedReadFailed),
+		cause:    fmt.Errorf("verified corrupt by an earlier read and still cached: %w", classified),
 	}
 }
 
@@ -121,14 +123,21 @@ func (e *DBFederatedQueryEngine) refuseCachedCorrupt(ctx context.Context, q *mod
 // scanned set finds listed keys missing from storage, the failure is
 // manifest inconsistency (cold-tier loss); anything else — probe errors
 // included, since an unreachable store cannot prove loss — stays a plain
-// read failure.
+// read failure. A probe the request's deadline or cancellation stopped proves
+// no loss either, but the context error joins the chain: the caller's own
+// cause may not carry it (a cached refusal has none, and a scan can fail for
+// another reason before the probe spends the rest of the budget), and without
+// it an expired budget would read as degradable (#465).
 func (e *DBFederatedQueryEngine) classifyDuckDBReadError(ctx context.Context, q *model.FederatedAttributeQuery, scanned []string, pathsFromSource bool) error {
 	if !pathsFromSource || e == nil || e.parquetSource == nil || q == nil {
 		return ErrFederatedReadFailed
 	}
 	missing, err := e.parquetSource.MissingIn(ctx, scanned)
-	if err != nil || len(missing) == 0 {
-		return ErrFederatedReadFailed
+	if err == nil && len(missing) > 0 {
+		return &ParquetSetInconsistentError{SchemaID: q.SchemaID, MissingKeys: missing}
 	}
-	return &ParquetSetInconsistentError{SchemaID: q.SchemaID, MissingKeys: missing}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("%w: missing-object probe stopped: %w", ErrFederatedReadFailed, ctxErr)
+	}
+	return ErrFederatedReadFailed
 }
