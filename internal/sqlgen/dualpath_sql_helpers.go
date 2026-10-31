@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/lychee-technology/forma/internal/conditionexpr"
 	"github.com/lychee-technology/forma/internal/numutil"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -132,19 +132,16 @@ func uuidOperand(attr, valStr string) (string, error) {
 	return v, nil
 }
 
-// checkTextLiteral refuses a text operand that PostgreSQL text cannot hold:
-// one with a NUL character, or bytes that are not valid UTF-8. It names no
-// value a row can store, and bound as a parameter it failed the statement
-// (22021), which in a conditional write came after the row lock and aborted
-// the Tx (#674 review). Escaping a LIKE operand and adding its wildcards
-// inserts only ASCII bytes outside any multi-byte sequence, so a pattern
-// passes exactly when its operand does.
+// checkTextLiteral refuses a text operand that PostgreSQL text cannot hold
+// (sqlutil.CheckText, the rule the write path applies to stored values,
+// #679). It names no value a row can store, and bound as a parameter it
+// failed the statement (22021), which in a conditional write came after the
+// row lock and aborted the Tx (#674 review). Escaping a LIKE operand and
+// adding its wildcards inserts only ASCII bytes outside any multi-byte
+// sequence, so a pattern passes exactly when its operand does.
 func checkTextLiteral(literal string) error {
-	if strings.IndexByte(literal, 0) >= 0 {
-		return forma.InvalidInputf("text cannot contain a NUL character (U+0000)")
-	}
-	if !utf8.ValidString(literal) {
-		return forma.InvalidInputf("text must be valid UTF-8")
+	if err := sqlutil.CheckText(literal); err != nil {
+		return forma.InvalidInputf("%v", err)
 	}
 	return nil
 }
