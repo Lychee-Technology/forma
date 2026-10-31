@@ -1160,8 +1160,12 @@ The guarantees, and what pins each:
    `TestEveryWritePathClassifiesItsLockStatement` drives all seven paths.
 2. **Unknown is never retryable.** `ErrCommitOutcomeUnknown` never maps to `503`
    or `504`, and `IsRetryable` is false for it.
-3. **Retryable means rolled back.** `ErrRetryableConflict` is returned only for
-   a server-side abort of `ERROR` severity.
+3. **Retryable means rolled back.** `ErrRetryableConflict` is returned for
+   a server-side abort of `ERROR` severity, and for a write Forma gave up on
+   after other transactions kept taking and releasing a unique-key value it
+   needed: `Tx.Upsert` on a key target, and a unique-key reservation that ran
+   out of rounds (#699). Such a write leaves nothing behind. Inside a Tx it
+   poisons the Tx, so the transaction is rolled back there too.
 4. **Backward compatibility.** The conflict species satisfy `ErrConflict`, and a
    row-identity `23505` still answers `409` with the same published message.
 5. **No string matching.** Classification reads the SQLSTATE, the protocol's
