@@ -35,10 +35,13 @@ type flushBatchExecutor struct {
 	logger           *zap.Logger
 	manifestStore    manifest.Store
 	manifestResolver manifest.PathResolver
-	executeSingle    func(*flushBatchExecutor, []uuid.UUID) error
-	executeInChunks  func(*flushBatchExecutor, []uuid.UUID, int) error
-	exportSnapshot   func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error
-	markFlushed      markFlushedFunc
+	// probeUnwiredManifest backs the #474 guard when manifestStore is nil;
+	// nil skips the guard (see newUnwiredManifestProbe).
+	probeUnwiredManifest unwiredManifestProbe
+	executeSingle        func(*flushBatchExecutor, []uuid.UUID) error
+	executeInChunks      func(*flushBatchExecutor, []uuid.UUID, int) error
+	exportSnapshot       func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error
+	markFlushed          markFlushedFunc
 	// describeColumns is a test seam for the write-time footer probe that
 	// stamps manifest entries (#256); nil uses the exporter's DuckDB session.
 	describeColumns func(ctx context.Context, uri string) (map[string]string, error)
@@ -57,6 +60,10 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 			"schema_id", e.schemaID, "batch_kind", batchKind,
 			"batch_size", len(batchIDs), "would_create_key", finalKey)
 		return nil
+	}
+
+	if err := e.refuseUnlistedFlush(ctx); err != nil {
+		return fmt.Errorf("flush batch (%s): %w", batchKind, err)
 	}
 
 	if e.cfg.BeforeExportHook != nil {

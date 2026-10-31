@@ -82,7 +82,7 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 
 	// Manifest settings (optional - enables manifest tracking)
 	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3 (enables manifest tracking)")
-	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
+	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template (empty disables manifest writes; a schema whose default-path manifest already lists files is then refused)")
 
 	var schemaRegistry schemaRegistryFlags
 	schemaRegistry.register(fs, false)
