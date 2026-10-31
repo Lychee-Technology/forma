@@ -168,6 +168,12 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 	if schemaRegistry == nil {
 		return FlushReport{}, fmt.Errorf("schema registry is required for CDC export")
 	}
+	// A manifest configuration the run cannot flush under (#474) is refused
+	// before any AWS, Postgres or DuckDB setup; newSchemaFlushContext checks
+	// it again for every frame that builds a flush context.
+	if err := checkManifestMode(cfg); err != nil {
+		return FlushReport{}, fmt.Errorf("cdc flush manifest configuration: %w", err)
+	}
 
 	cfg = cfg.WithDefaults()
 
