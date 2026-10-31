@@ -320,6 +320,59 @@ func TestMissingObjectProbePreservesTheExpiredBudget(t *testing.T) {
 	}
 }
 
+// cancellingParquetSource cancels the request from inside its missing-object
+// probe, as a caller that goes away while the existence checks run.
+type cancellingParquetSource struct {
+	fakeParquetSource
+	cancel context.CancelFunc
+}
+
+func (s *cancellingParquetSource) MissingIn(ctx context.Context, scanned []string) ([]string, error) {
+	s.missingCalls++
+	s.cancel()
+	<-ctx.Done()
+	return nil, fmt.Errorf("probe %d parquet objects: %w", len(scanned), ctx.Err())
+}
+
+// TestMissingObjectProbeCancelledByTheCallerDoesNotDegrade is the
+// cancellation half of TestMissingObjectProbePreservesTheExpiredBudget (#722
+// review): a caller that cancels during the probe gets context.Canceled, with
+// degraded mode off and on, and no Postgres fallback runs on its behalf.
+func TestMissingObjectProbeCancelledByTheCallerDoesNotDegrade(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		for _, degraded := range []bool{false, true} {
+			t.Run(fmt.Sprintf("cached=%v/degraded=%v", cached, degraded), func(t *testing.T) {
+				restore := initTestDescriptors()
+				defer restore()
+
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				duck := &retryFakeDuck{passes: []retryPass{{midStreamFail: true}}}
+				pg := &fakePostgresFederatedSource{}
+				src := &cancellingParquetSource{
+					fakeParquetSource: fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}},
+					cancel:            cancel,
+				}
+				e := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
+					hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+				if cached {
+					e.corruptPaths.Add([]string{retryCorruptPath1})
+				}
+
+				opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded}
+				_, err := e.Query(ctx, corruptTables, coldTierQuery(), opts)
+				require.ErrorIs(t, err, context.Canceled)
+				require.Equal(t, 1, src.missingCalls, "the caller cancelled during the probe")
+				require.Zero(t, pg.queryCalls, "a cancelled request must not take the Postgres fallback")
+				if cached {
+					requireCachedRefusalKept(t, err)
+					require.Empty(t, duck.mainSQL, "the cached verdict still refuses before the scan")
+				}
+			})
+		}
+	}
+}
+
 // requireCachedRefusalKept asserts the deadline joined the cached refusal
 // rather than replacing it: the corrupt object is still named.
 func requireCachedRefusalKept(t *testing.T, err error) {

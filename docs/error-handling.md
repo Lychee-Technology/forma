@@ -1742,7 +1742,8 @@ shape:
   is **not** degradable to Postgres-only under `AllowPartialDegradedMode`; a
   DuckDB that keeps timing out opens the circuit breaker, and that rejection
   degrades as before. `context.Canceled` (the client went away) stays `500`;
-  nobody reads that status.
+  nobody reads that status. It is not degradable either: no caller is left to
+  read a Postgres-only answer.
 - **`http.Server`.** cmd/server sets `ReadHeaderTimeout`, `ReadTimeout`,
   `WriteTimeout`, `IdleTimeout` and `MaxHeaderBytes`
   (`bootstrap.DefaultHTTPServerConfig`, `HTTP_*` overrides in the README).

@@ -122,7 +122,10 @@ func (e *DBFederatedQueryEngine) logDegradedFallback(fq *model.FederatedAttribut
 // deadline (#465), is the budget doing its job: the pass was
 // cancelled because it ran too long, and answering from Postgres afterwards
 // would spend more time past a limit that exists to bound latency; a DuckDB
-// that keeps timing out opens the breaker, and *that* rejection degrades.
+// that keeps timing out opens the breaker, and *that* rejection degrades. An
+// eighth, a cancelled request, has no caller left to answer: the fallback
+// would run on the same cancelled context, and if it failed its error would
+// replace the cause it was absorbing.
 func degradableFederatedError(err error) bool {
 	return !errors.Is(err, ErrSchemaMetadataCacheRequired) &&
 		!errors.Is(err, ErrParquetSetInconsistent) &&
@@ -130,5 +133,6 @@ func degradableFederatedError(err error) bool {
 		!errors.Is(err, ErrNoParquetPaths) &&
 		!errors.Is(err, ErrManifestSchemaMismatch) &&
 		!errors.Is(err, forma.ErrInvalidInput) &&
-		!errors.Is(err, context.DeadlineExceeded)
+		!errors.Is(err, context.DeadlineExceeded) &&
+		!errors.Is(err, context.Canceled)
 }
