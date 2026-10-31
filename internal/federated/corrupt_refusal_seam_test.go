@@ -41,8 +41,9 @@ type retryFakeDuck struct {
 	fakeDuckDBExecutor
 	passes []retryPass
 
-	mainSQL []string // one entry per main-scan attempt
-	drains  int
+	mainSQL   []string // one entry per main-scan attempt
+	describes []string // every footer probe, in order
+	drains    int
 	// drainsAtClose records how many verification drains had run when the
 	// failed scan's iterator was first closed. #285 requires zero: the
 	// engine pool holds a single connection, so the rows must be released
@@ -69,6 +70,7 @@ func (d *retryFakeDuck) noteClose() {
 
 func (d *retryFakeDuck) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
 	if strings.HasPrefix(sql, "DESCRIBE ") || strings.HasPrefix(sql, "SELECT file FROM glob(") {
+		d.describes = append(d.describes, sql)
 		return d.fakeDuckDBExecutor.Query(ctx, sql, args...)
 	}
 	if isGuardedParquetDrainSQL(sql) {
@@ -155,8 +157,10 @@ func TestConfirmedCorruptionFailsThePassWithoutRetry(t *testing.T) {
 
 // TestCachedCorruptObjectRefusesWithoutScan pins the cached half of #722:
 // while a confirmed-corrupt object is cached, a set that lists it fails at
-// path resolution. No main scan, verification drain or schema probe runs, so
-// the retention window does not repeat the failure-path cost per query.
+// path resolution. No main scan or verification drain runs, so the retention
+// window does not repeat the failure-path cost per query. The pre-read checks
+// still probe the readable remainder for the #732 type guard, but never the
+// corrupt object, whose footer may not read.
 func TestCachedCorruptObjectRefusesWithoutScan(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
@@ -169,7 +173,8 @@ func TestCachedCorruptObjectRefusesWithoutScan(t *testing.T) {
 	requireCorruptRefusal(t, err, retryCorruptPath1)
 	require.Empty(t, duck.mainSQL, "a cached verdict must refuse before the scan")
 	require.Zero(t, duck.drains, "a cached verdict must not re-verify the set")
-	require.Zero(t, duck.describeCalls, "a cached verdict must refuse before the pre-read probes")
+	require.Len(t, duck.describes, 1, "only the readable remainder is probed")
+	require.Contains(t, duck.describes[0], retryKeptPathA)
 }
 
 // TestCachedCorruptRefusalIsBreakerNeutral: the refusal happens before DuckDB

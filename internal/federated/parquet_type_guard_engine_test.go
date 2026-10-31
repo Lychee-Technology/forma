@@ -2,6 +2,7 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -103,6 +104,43 @@ func TestTypeRefusalStopsTheReadAndIsNotDegraded(t *testing.T) {
 	require.Equal(t, typeGuardOldPath, refusal.Path)
 	require.Zero(t, duck.calls, "no main scan may run over the refused object")
 	require.Zero(t, pg.queryCalls, "the refusal must not degrade to postgres-only")
+}
+
+// TestCachedCorruptRefusalKeepsAnotherObjectsTypeRefusal pins the #722
+// review finding: while one object's corruption verdict is cached, the type
+// guard still judges the rest of the listed set. A readable object the
+// declaration cannot read is refused as non-degradable, exactly as without the
+// cached verdict, instead of hiding behind the degradable corruption refusal.
+func TestCachedCorruptRefusalKeepsAnotherObjectsTypeRefusal(t *testing.T) {
+	const corruptPath = "s3://b/7/rot.parquet"
+	for _, degraded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("degraded=%v", degraded), func(t *testing.T) {
+			restore := initTestDescriptors()
+			defer restore()
+
+			duck := newGuardEngineDuck()
+			duck.offending = "1000.5"
+			pg := &fakePostgresFederatedSource{}
+			e := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
+				hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x",
+				WithParquetSource(&fakeParquetSource{paths: []string{typeGuardHealthyPath, typeGuardOldPath, corruptPath}}))
+			e.corruptPaths.Add([]string{corruptPath})
+
+			opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded}
+			_, err := e.Query(context.Background(),
+				model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, coldTierQuery(), opts)
+
+			var refusal *forma.ParquetTypeIncompatibleError
+			require.ErrorAs(t, err, &refusal)
+			require.Equal(t, typeGuardOldPath, refusal.Path)
+			require.False(t, degradableFederatedError(err))
+			var corrupt *CorruptParquetError
+			require.False(t, errors.As(err, &corrupt), "the cached verdict must not mask the type refusal")
+			require.Equal(t, 1, duck.proofs)
+			require.Zero(t, duck.calls, "no main scan may run")
+			require.Zero(t, pg.queryCalls, "the type refusal must not degrade to postgres-only")
+		})
+	}
 }
 
 // A clean proof admits the object and the main scan runs as before.
