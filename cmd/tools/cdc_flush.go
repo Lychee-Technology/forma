@@ -82,7 +82,8 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 
 	// Manifest settings (optional - enables manifest tracking)
 	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3 (enables manifest tracking)")
-	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
+	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template (empty disables manifest writes and requires -glob-only)")
+	globOnly := fs.Bool("glob-only", false, "Declare that no reader uses a manifest (every read globs the S3 prefix): flush without manifest writes. Clears the default -manifest-template; a schema whose default-path manifest lists files is still refused")
 
 	var schemaRegistry schemaRegistryFlags
 	schemaRegistry.register(fs, false)
@@ -106,6 +107,9 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	if err := validateManifestTemplateFlag(*manifestTemplate); err != nil {
 		return nil, err
 	}
+	if err := resolveGlobOnlyFlag(fs, manifestTemplate, *globOnly); err != nil {
+		return nil, err
+	}
 	engine, err := pg.cdcEngine("pg-engine")
 	if err != nil {
 		return nil, err
@@ -116,8 +120,31 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 		minRecords, maxAgeMs, batchSize, estimatedRowBytes, maxBatchBytes, duck,
 		s3Config, manifestPrefix, manifestTemplate)
 	cfg.Engine = engine
+	cfg.GlobOnly = *globOnly
 
 	return &cdcFlushOptions{cfg: cfg, pg: pg, registry: schemaRegistry, dryRun: *dryRun}, nil
+}
+
+// resolveGlobOnlyFlag settles the flush's manifest mode (#474). A flush with
+// no template cannot list its delta in any manifest, and cannot see a
+// manifest a reader uses under a custom template, so it runs only when the
+// operator declares -glob-only. That declaration clears the default
+// template; naming a template alongside it is a contradiction.
+func resolveGlobOnlyFlag(fs *flag.FlagSet, manifestTemplate *string, globOnly bool) error {
+	if !globOnly {
+		if *manifestTemplate == "" {
+			return fmt.Errorf("-manifest-template is empty: a flush without manifest writes would hide its batches " +
+				"from any reader that uses a manifest; pass the template the readers use, or -glob-only when no reader uses one")
+		}
+		return nil
+	}
+	templateSet := false
+	fs.Visit(func(f *flag.Flag) { templateSet = templateSet || f.Name == "manifest-template" })
+	if templateSet && *manifestTemplate != "" {
+		return fmt.Errorf("-glob-only contradicts -manifest-template=%q: drop one of them", *manifestTemplate)
+	}
+	*manifestTemplate = ""
+	return nil
 }
 
 // buildCDCConfig constructs a CDC config from parsed flag values.

@@ -60,6 +60,12 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	if schemaRegistry == nil {
 		return FlushReport{}, fmt.Errorf("schema registry is required for CDC export")
 	}
+	// A manifest configuration the run cannot flush under (#474) is refused
+	// before any AWS, Postgres or DuckDB setup; newSchemaFlushContext checks
+	// it again for every frame that builds a flush context.
+	if err := checkManifestMode(cfg); err != nil {
+		return FlushReport{}, fmt.Errorf("cdc flush manifest configuration: %w", err)
+	}
 	// Setup AWS credentials and default S3 client.
 	region, credProvider, defaultS3Client, err := setupAWSClient(ctx, cfg)
 	if err != nil {
@@ -218,6 +224,9 @@ type schemaFlushContext struct {
 	attrCaches       map[int16]forma.SchemaAttributeCache
 	manifestStore    manifest.Store
 	manifestResolver manifest.PathResolver
+	// probeUnwiredManifest is the #474 guard probe, set only when
+	// manifestStore is not.
+	probeUnwiredManifest unwiredManifestProbe
 	// checksumObject is the executor's content-hash seam (#347), resolved once
 	// per run from the full S3 client; nil leaves manifest entries unstamped.
 	checksumObject func(ctx context.Context, key string) (string, error)
@@ -349,24 +358,25 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 	attrCache := c.attrCaches[schemaID]
 
 	executor := &flushBatchExecutor{
-		db:               c.db,
-		duck:             c.duck,
-		s3Client:         c.s3Client,
-		cfg:              c.cfg,
-		tableName:        c.tableName,
-		schemaID:         schemaID,
-		snapshot:         snapshot,
-		versions:         versions,
-		pgConnForDuck:    pgConnForDuck,
-		attrCache:        attrCache,
-		registry:         c.schemaRegistry,
-		dryRun:           c.dryRun,
-		logger:           c.logger,
-		manifestStore:    c.manifestStore,
-		manifestResolver: c.manifestResolver,
-		checksumObject:   c.checksumObject,
-		executeSingle:    c.executeSingle,
-		executeInChunks:  c.executeInChunks,
+		db:                   c.db,
+		duck:                 c.duck,
+		s3Client:             c.s3Client,
+		cfg:                  c.cfg,
+		tableName:            c.tableName,
+		schemaID:             schemaID,
+		snapshot:             snapshot,
+		versions:             versions,
+		pgConnForDuck:        pgConnForDuck,
+		attrCache:            attrCache,
+		registry:             c.schemaRegistry,
+		dryRun:               c.dryRun,
+		logger:               c.logger,
+		manifestStore:        c.manifestStore,
+		manifestResolver:     c.manifestResolver,
+		probeUnwiredManifest: c.probeUnwiredManifest,
+		checksumObject:       c.checksumObject,
+		executeSingle:        c.executeSingle,
+		executeInChunks:      c.executeInChunks,
 	}
 
 	executeInChunks := executor.executeInChunks

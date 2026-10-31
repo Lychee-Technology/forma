@@ -13,11 +13,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+// S3HeadClient is the HeadObject surface an existence probe needs.
+type S3HeadClient interface {
+	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+}
+
 // S3ProbeClient is the S3 surface a manifest-driven QuerySource needs: the
 // manifest object IO of S3Client plus HeadObject for existence probes.
 type S3ProbeClient interface {
 	S3Client
-	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	S3HeadClient
 }
 
 // S3QuerySourceConfig is the S3 wiring for a manifest-driven QuerySource.
@@ -63,7 +68,7 @@ func NewS3QuerySource(client S3ProbeClient, cfg S3QuerySourceConfig) *QuerySourc
 // wrapped — a probe that merely failed does not prove the object is gone,
 // and misreading it would fabricate a data-loss report (see
 // QuerySource.MissingIn).
-func S3ExistsProbe(client S3ProbeClient, bucket string) func(ctx context.Context, key string) (bool, error) {
+func S3ExistsProbe(client S3HeadClient, bucket string) func(ctx context.Context, key string) (bool, error) {
 	return func(ctx context.Context, key string) (bool, error) {
 		_, err := client.HeadObject(ctx, &s3.HeadObjectInput{
 			Bucket: aws.String(bucket),
@@ -75,7 +80,7 @@ func S3ExistsProbe(client S3ProbeClient, bucket string) func(ctx context.Context
 		if isNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("head parquet object %s/%s: %w", bucket, key, err)
+		return false, fmt.Errorf("head object %s/%s: %w", bucket, key, err)
 	}
 }
 

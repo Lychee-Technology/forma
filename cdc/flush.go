@@ -28,6 +28,21 @@ type FlushReport = internalcdc.FlushReport
 // from PostgreSQL. Skipping it does not fail the pass.
 type SkippedSchema = internalcdc.SkippedSchema
 
+// ErrManifestStoreUnwired matches a flush refused because it names no
+// ManifestTemplate, so it cannot list its delta in a manifest, while a
+// manifest-driven reader may depend on one (#474): either the run does not
+// declare GlobOnly, or it does and the schema's manifest at the default
+// location lists files. It is a configuration error, not a transient one:
+// retrying the same configuration is refused again, and the refused rows stay
+// in the hot tier. It is the same value internal/cdc returns, so errors.Is
+// matches the errors RunOnce returns.
+var ErrManifestStoreUnwired = internalcdc.ErrManifestStoreUnwired
+
+// ErrGlobOnlyWithTemplate matches a flush configuration that declares
+// GlobOnly and also names a ManifestTemplate. Like ErrManifestStoreUnwired it
+// is a configuration error that RunOnce returns before any side effect.
+var ErrGlobOnlyWithTemplate = internalcdc.ErrGlobOnlyWithTemplate
+
 // FlushRunner reuses AWS/S3/DuckDB initialization across multiple flush
 // passes. Safe for long-lived use under credential rotation: superseded
 // cached exporters are evicted and closed once idle (#331), so rotations do

@@ -318,7 +318,11 @@ func (e *Env) buildCDCConfig() cdc.CDCConfig {
 		S3AccessKeyID:     c.S3AccessKey,
 		S3SecretAccessKey: c.S3SecretKey,
 	}
-	if !e.opts.withoutManifest {
+	if e.opts.withoutManifest {
+		// A template-less flush must declare that no reader uses a
+		// manifest (#474); this Env's reads glob.
+		cfg.GlobOnly = true
+	} else {
 		cfg.ManifestPrefix = e.S3Prefix
 		cfg.ManifestTemplate = "manifest/{{.SchemaID}}.json"
 	}

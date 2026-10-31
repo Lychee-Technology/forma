@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/manifest"
 	"go.uber.org/zap"
@@ -70,6 +69,9 @@ func newSchemaFlushContext(p flushContextParams) (*schemaFlushContext, error) {
 	if tableName == "" {
 		tableName = "change_log"
 	}
+	if err := checkManifestMode(p.cfg); err != nil {
+		return nil, fmt.Errorf("cdc flush manifest configuration: %w", err)
+	}
 	// The schema lock follows the configured engine (#633); an unknown one
 	// fails the run here, before any schema is touched.
 	locker, err := NewSchemaLocker(p.db, p.cfg.Engine, p.cfg.EntityMainTable)
@@ -91,7 +93,17 @@ func newSchemaFlushContext(p flushContextParams) (*schemaFlushContext, error) {
 		checksumObject: newChecksumSeam(p.clients.full, p.cfg.S3Bucket),
 	}
 
-	if p.cfg.ManifestTemplate != "" {
+	if p.cfg.ManifestTemplate == "" {
+		// A declared glob-only run (checkManifestMode) has no store to
+		// append to: the probe still refuses a batch whose schema has a
+		// default-path manifest listing files, which contradicts the
+		// declaration (#474).
+		var probeStore manifest.Store
+		if usableFullClient(p.clients.full) {
+			probeStore = &manifest.S3Store{Client: p.clients.full, Bucket: p.cfg.S3Bucket}
+		}
+		flushCtx.probeUnwiredManifest = newUnwiredManifestProbe(p.cfg.ManifestPrefix, probeStore, p.clients.object, p.cfg.S3Bucket)
+	} else {
 		flushCtx.manifestStore = &manifest.S3Store{
 			Client: p.clients.full,
 			Bucket: p.cfg.S3Bucket,
@@ -115,10 +127,7 @@ func newSchemaFlushContext(p flushContextParams) (*schemaFlushContext, error) {
 // interface holding a typed-nil pointer passes `!= nil` and would panic on the
 // first GetObject (#302).
 func newChecksumSeam(client S3FullClient, bucket string) func(ctx context.Context, key string) (string, error) {
-	if client == nil {
-		return nil
-	}
-	if c, ok := client.(*s3.Client); ok && c == nil {
+	if !usableFullClient(client) {
 		return nil
 	}
 	return func(ctx context.Context, key string) (string, error) {

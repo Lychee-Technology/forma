@@ -212,7 +212,7 @@ func TestExecuteBatchSkipsStampWhenNoManifestStore(t *testing.T) {
 		db:            db,
 		duck:          &DuckExporter{Logger: zap.NewNop()},
 		s3Client:      &objectOnlyS3Client{},
-		cfg:           CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc"},
+		cfg:           CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc", GlobOnly: true},
 		tableName:     "change_log",
 		schemaID:      7,
 		snapshot:      snapshot,

@@ -21,7 +21,7 @@ func TestNewSchemaFlushContextWiresChecksumSeam(t *testing.T) {
 	full := &hashableFullS3Client{body: []byte("hello parquet")}
 
 	flushCtx, err := newSchemaFlushContext(flushContextParams{
-		cfg:     CDCConfig{S3Bucket: "test-bucket"},
+		cfg:     CDCConfig{S3Bucket: "test-bucket", GlobOnly: true},
 		clients: resolvedS3Clients{object: full, full: full},
 		logger:  zap.NewNop(),
 	})
@@ -40,7 +40,7 @@ func TestNewSchemaFlushContextLeavesChecksumSeamNilWithoutFullClient(t *testing.
 	object := &objectOnlyS3Client{}
 
 	flushCtx, err := newSchemaFlushContext(flushContextParams{
-		cfg:     CDCConfig{S3Bucket: "test-bucket"},
+		cfg:     CDCConfig{S3Bucket: "test-bucket", GlobOnly: true},
 		clients: resolvedS3Clients{object: object},
 		logger:  zap.NewNop(),
 	})
@@ -72,7 +72,7 @@ func TestNewSchemaFlushContextWiresManifestStoreAndTableDefault(t *testing.T) {
 	require.Equal(t, "change_log", withManifest.tableName)
 
 	withoutManifest, err := newSchemaFlushContext(flushContextParams{
-		cfg:     CDCConfig{S3Bucket: "test-bucket", ChangeLogTable: "custom_log"},
+		cfg:     CDCConfig{S3Bucket: "test-bucket", ChangeLogTable: "custom_log", GlobOnly: true},
 		clients: resolvedS3Clients{object: full, full: full},
 		logger:  zap.NewNop(),
 	})
