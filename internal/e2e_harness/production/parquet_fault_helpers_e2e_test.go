@@ -165,17 +165,3 @@ func setMinus(a, b map[string]struct{}) map[string]struct{} {
 	}
 	return out
 }
-
-func assertIDSetEqual(t *testing.T, got, want map[string]struct{}) {
-	t.Helper()
-	for k := range want {
-		if _, ok := got[k]; !ok {
-			t.Errorf("result missing expected row_id %s", k)
-		}
-	}
-	for k := range got {
-		if _, ok := want[k]; !ok {
-			t.Errorf("result has unexpected row_id %s", k)
-		}
-	}
-}
