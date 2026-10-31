@@ -143,6 +143,10 @@ func TestEmptyScanRetriesWhenAPublicationRacesIt(t *testing.T) {
 	require.Equal(t, 2, duck.calls, "the raced pass and its retry")
 	require.Contains(t, duck.lastSQL, "read_parquet('"+fallbackGlob+"'", "the retry scans the published object")
 	require.NotContains(t, opts.ExecutionPlan.Notes, NoteEmptyParquetScan, "the plan describes the retry only")
+	require.Equal(t, 1, countPlanSources(opts.ExecutionPlan, "duckdb template rendered"),
+		"the plan must describe the pass that produced the page, not both passes")
+	require.Equal(t, 1, countPlanSources(opts.ExecutionPlan, "dirty id set fetched"),
+		"a retried request must not double-count the hot-tier row estimate")
 	require.Equal(t, 1, dirty.historyCalls)
 
 	_, err = engine.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
@@ -189,6 +193,45 @@ func TestRetryRewindPreservesPrePassPlan(t *testing.T) {
 		"a caller-recorded pre-pass note must survive the rewind")
 	require.Equal(t, int64(7), opts.ExecutionPlan.Timings["caller_pre_pass"],
 		"a caller-recorded pre-pass timing must survive the snapshot-restore")
+}
+
+// TestRaceRetryTimingsDescribeOnlyTheRetryPass pins #348 on the #720 retry:
+// Timings cross the HTTP boundary, unlike Notes. Request 1 warms the plan
+// cache for the empty-scan skeleton, so request 2's raced pass hits it and
+// its retry compiles the read_parquet skeleton, a miss. Without the Timings
+// restore one request would publicly report both stamps.
+func TestRaceRetryTimingsDescribeOnlyTheRetryPass(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &fakeDuckDBExecutor{globFiles: []string{}, rows: &rowPerScan{singleDuckDBRow{rowID: uuid.New()}}}
+	dirty := &fakeDirtyIDFetcher{}
+	engine := newEmptyScanTestEngine(t, duck, dirty, []string{fallbackGlob},
+		WithPlanCache(queryplan.NewCache(16)))
+
+	_, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), planOpts())
+	require.NoError(t, err, "request 1 must succeed and warm the plan cache")
+
+	dirty.afterHistory = func() { duck.globFiles = []string{"s3://b/7/delta.parquet"} }
+	opts := planOpts()
+	_, err = engine.Query(context.Background(), emptyScanTables, allTierQuery(), opts)
+	require.NoError(t, err)
+	require.Equal(t, 3, duck.calls, "one clean pass, the raced pass, and its retry")
+
+	_, hitStamp := opts.ExecutionPlan.Timings["plan_cache_hit"]
+	_, missStamp := opts.ExecutionPlan.Timings["plan_cache_miss"]
+	require.False(t, hitStamp, "the raced pass's cache-hit stamp must not survive the rewind")
+	require.True(t, missStamp, "the retry compiled the read_parquet skeleton")
+}
+
+func countPlanSources(plan *model.ExecutionPlan, reason string) int {
+	n := 0
+	for _, src := range plan.Sources {
+		if src.Reason == reason {
+			n++
+		}
+	}
+	return n
 }
 
 // TestEmptyScanRacedTwiceFailsTheRead: a retry that races a publication
