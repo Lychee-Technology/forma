@@ -1,4 +1,4 @@
-package federated
+package duckdbinit
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	duckdb "github.com/duckdb/duckdb-go/v2"
-	"github.com/lychee-technology/forma/internal/duckdbinit"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -110,7 +109,7 @@ func (r *fakeIDRows) Next(dest []driver.Value) error {
 
 func openRecoveringDB(t *testing.T, fake *fakeDuck, maxConns int) *sql.DB {
 	t.Helper()
-	connector, err := newRecoveringConnector(fake.open)
+	connector, err := NewRecoveringConnector(fake.open, zap.S())
 	require.NoError(t, err)
 	db := sql.OpenDB(connector)
 	db.SetMaxOpenConns(maxConns)
@@ -205,11 +204,11 @@ func TestRecoveringConnectorRetriesReopenAfterFailure(t *testing.T) {
 // per-connection init hook.
 func TestRecoveringConnectorReopensRealDuckDBWithConnectionInit(t *testing.T) {
 	ctx := context.Background()
-	steps := []duckdbinit.Step{duckdbinit.SingleStmtStep("PRAGMA threads=3;", "set threads")}
-	connInit := duckdbinit.MakeConnInit(steps, zap.S(), duckdbinit.DefaultInitTimeout)
-	connector, err := newRecoveringConnector(func() (driver.Connector, error) {
+	steps := []Step{SingleStmtStep("PRAGMA threads=3;", "set threads")}
+	connInit := MakeConnInit(steps, zap.S(), DefaultInitTimeout)
+	connector, err := NewRecoveringConnector(func() (driver.Connector, error) {
 		return duckdb.NewConnector(":memory:", connInit)
-	})
+	}, zap.S())
 	require.NoError(t, err)
 	db := sql.OpenDB(connector)
 	db.SetMaxOpenConns(1)
@@ -259,14 +258,14 @@ func (g *gatedConnector) Close() error {
 func TestRecoveringConnectorKeepsReplacedDatabaseOpenForInFlightConnect(t *testing.T) {
 	ctx := context.Background()
 	var gate *gatedConnector
-	connector, err := newRecoveringConnector(func() (driver.Connector, error) {
+	connector, err := NewRecoveringConnector(func() (driver.Connector, error) {
 		real, err := duckdb.NewConnector(":memory:", nil)
 		if err != nil || gate != nil {
 			return real, err
 		}
 		gate = &gatedConnector{Connector: real, entered: make(chan struct{}), release: make(chan struct{})}
 		return gate, nil
-	})
+	}, zap.S())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = connector.Close() })
 
@@ -298,9 +297,9 @@ func TestRecoveringConnectorKeepsReplacedDatabaseOpenForInFlightConnect(t *testi
 // -race this also checks no Connect overlaps closing its connector.
 func TestRecoveringConnectorConnectsConcurrentlyWithReplacement(t *testing.T) {
 	ctx := context.Background()
-	connector, err := newRecoveringConnector(func() (driver.Connector, error) {
+	connector, err := NewRecoveringConnector(func() (driver.Connector, error) {
 		return duckdb.NewConnector(":memory:", nil)
-	})
+	}, zap.S())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = connector.Close() })
 
@@ -333,9 +332,9 @@ func TestRecoveringConnectorConnectsConcurrentlyWithReplacement(t *testing.T) {
 func TestRecoveringConnectorReopensFileBackedDuckDBAsNewInstance(t *testing.T) {
 	ctx := context.Background()
 	dsn := filepath.Join(t.TempDir(), "federated.duckdb")
-	connector, err := newRecoveringConnector(func() (driver.Connector, error) {
+	connector, err := NewRecoveringConnector(func() (driver.Connector, error) {
 		return duckdb.NewConnector(dsn, nil)
-	})
+	}, zap.S())
 	require.NoError(t, err)
 	db := sql.OpenDB(connector)
 	db.SetMaxOpenConns(1)

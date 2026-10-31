@@ -79,9 +79,9 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 	// The recovering connector reopens the database with the same hook when
 	// DuckDB invalidates it (#702).
 	connInit := duckdbinit.MakeConnInit(steps, zap.S(), duckdbinit.DefaultInitTimeout)
-	connector, err := newRecoveringConnector(func() (driver.Connector, error) {
+	connector, err := duckdbinit.NewRecoveringConnector(func() (driver.Connector, error) {
 		return duckdb.NewConnector(dsn, connInit)
-	})
+	}, zap.S())
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb connector: %w", err)
 	}

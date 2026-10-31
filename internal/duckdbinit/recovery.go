@@ -1,4 +1,4 @@
-package federated
+package duckdbinit
 
 import (
 	"context"
@@ -35,7 +35,7 @@ type duckInstance struct {
 	connector driver.Connector
 	invalid   atomic.Bool
 
-	// Guarded by recoveringConnector.mu. duckdb-go does not synchronize
+	// Guarded by RecoveringConnector.mu. duckdb-go does not synchronize
 	// Connector.Connect with Connector.Close, so a retired connector is
 	// closed only once no Connect on it is in flight.
 	connecting int
@@ -43,8 +43,10 @@ type duckInstance struct {
 	closed     bool
 }
 
-// recoveringConnector keeps one *sql.DB usable across DuckDB database
-// invalidation (#702). A FATAL error, or an INTERNAL error after which the
+// RecoveringConnector keeps one *sql.DB usable across DuckDB database
+// invalidation (#702). Both DuckDB handles Forma keeps for a process
+// lifetime open over it: the federated engine's DuckDBClient and the CDC
+// exporter a long-lived cdc.Runner caches per config group (#717). A FATAL error, or an INTERNAL error after which the
 // connection can no longer run SELECT 1, invalidates the whole DuckDB
 // database: every later statement fails until the database is reopened.
 // The connector marks the instance invalid, database/sql drops its pooled
@@ -59,25 +61,33 @@ type duckInstance struct {
 // while anything still holds it: a connection database/sql has not dropped
 // yet, or a Connect in flight on it. Such a reopen fails again and repeats
 // until those are gone.
-type recoveringConnector struct {
+type RecoveringConnector struct {
 	open func() (driver.Connector, error)
+	log  *zap.SugaredLogger
 
 	mu     sync.Mutex
 	cur    *duckInstance
 	closed bool
 }
 
-func newRecoveringConnector(open func() (driver.Connector, error)) (*recoveringConnector, error) {
+// NewRecoveringConnector opens the first database instance with open, and
+// calls open again for every reopen, so open must build the connector the
+// same way each time: same DSN, same connection init hook. The invalidation
+// and the reopen are logged to log; a nil log logs nowhere.
+func NewRecoveringConnector(open func() (driver.Connector, error), log *zap.SugaredLogger) (*RecoveringConnector, error) {
+	if log == nil {
+		log = zap.NewNop().Sugar()
+	}
 	first, err := open()
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb database: %w", err)
 	}
-	return &recoveringConnector{open: open, cur: &duckInstance{connector: first}}, nil
+	return &RecoveringConnector{open: open, log: log, cur: &duckInstance{connector: first}}, nil
 }
 
 // Connect opens a connection on the live instance, reopening the database
 // first when the current instance has been invalidated.
-func (r *recoveringConnector) Connect(ctx context.Context) (driver.Conn, error) {
+func (r *RecoveringConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	inst, err := r.acquire()
 	if err != nil {
 		return nil, err
@@ -92,12 +102,12 @@ func (r *recoveringConnector) Connect(ctx context.Context) (driver.Conn, error) 
 		_ = conn.Close()
 		return nil, fmt.Errorf("duckdb connection %T lacks the context-aware driver interfaces", conn)
 	}
-	return &instanceConn{duckConn: dc, inst: inst}, nil
+	return &instanceConn{duckConn: dc, inst: inst, log: r.log}, nil
 }
 
 // acquire returns the live instance, reopening it if it was invalidated,
 // and holds its connector open until release.
-func (r *recoveringConnector) acquire() (*duckInstance, error) {
+func (r *RecoveringConnector) acquire() (*duckInstance, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -112,12 +122,12 @@ func (r *recoveringConnector) acquire() (*duckInstance, error) {
 	return r.cur, nil
 }
 
-func (r *recoveringConnector) release(inst *duckInstance) {
+func (r *RecoveringConnector) release(inst *duckInstance) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	inst.connecting--
 	if err := closeIfDrainedLocked(inst); err != nil {
-		zap.S().Warnw("duckdb: closing the invalidated database failed", "error", err)
+		r.log.Warnw("duckdb: closing the invalidated database failed", "error", err)
 	}
 }
 
@@ -128,18 +138,18 @@ func (r *recoveringConnector) release(inst *duckInstance) {
 // open on it keep it alive in DuckDB until database/sql discards them. If
 // the reopen fails, the retired instance stays current, still invalid, so
 // the next Connect retries.
-func (r *recoveringConnector) replaceLocked() error {
+func (r *RecoveringConnector) replaceLocked() error {
 	stale := r.cur
 	stale.retired = true
 	if err := closeIfDrainedLocked(stale); err != nil {
-		zap.S().Warnw("duckdb: closing the invalidated database failed", "error", err)
+		r.log.Warnw("duckdb: closing the invalidated database failed", "error", err)
 	}
 	next, err := r.open()
 	if err != nil {
 		return fmt.Errorf("reopen invalidated duckdb database: %w", err)
 	}
 	r.cur = &duckInstance{connector: next}
-	zap.S().Warnw("duckdb: reopened the database after it was invalidated")
+	r.log.Warnw("duckdb: reopened the database after it was invalidated")
 	return nil
 }
 
@@ -154,7 +164,7 @@ func closeIfDrainedLocked(inst *duckInstance) error {
 }
 
 // Driver returns the DuckDB driver.
-func (r *recoveringConnector) Driver() driver.Driver {
+func (r *RecoveringConnector) Driver() driver.Driver {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.cur.connector.Driver()
@@ -162,7 +172,7 @@ func (r *recoveringConnector) Driver() driver.Driver {
 
 // Close closes the live instance; database/sql calls it from DB.Close. A
 // Connect still in flight closes it when it finishes.
-func (r *recoveringConnector) Close() error {
+func (r *RecoveringConnector) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -189,6 +199,7 @@ func closeConnector(c driver.Connector) error {
 type instanceConn struct {
 	duckConn
 	inst *duckInstance
+	log  *zap.SugaredLogger
 }
 
 // QueryContext runs the query and watches its error for invalidation. A
@@ -235,7 +246,7 @@ func (c *instanceConn) observe(err error) {
 		return
 	}
 	if c.inst.invalid.CompareAndSwap(false, true) {
-		zap.S().Errorw("duckdb: the database was invalidated; the next connection reopens it", "error", err)
+		c.log.Errorw("duckdb: the database was invalidated; the next connection reopens it", "error", err)
 	}
 }
 
