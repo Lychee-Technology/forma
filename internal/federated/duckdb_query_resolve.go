@@ -14,11 +14,10 @@ import (
 
 // scanSources is the resolved storage context of one federated read.
 type scanSources struct {
-	paths           []string
-	fromSource      bool
-	graceCutoffMs   int64
-	cold            coldScanSet
-	excludedCorrupt []string
+	paths         []string
+	fromSource    bool
+	graceCutoffMs int64
+	cold          coldScanSet
 }
 
 // schemaCacheByID is the nil-safe metadata-cache accessor shared by the
@@ -48,7 +47,7 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables 
 	// gates the read-error classification. A source also hands back its
 	// recorded footer stamps (#256) so the validation below can skip probing
 	// the objects the manifest already vouches for.
-	paths, fromSource, stamps, excludedCorrupt, err := e.resolveParquetPaths(ctx, q)
+	paths, fromSource, stamps, err := e.resolveParquetPaths(ctx, q)
 	if err != nil {
 		return scanSources{}, fmt.Errorf("resolve parquet paths: %w", err)
 	}
@@ -92,11 +91,10 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables 
 		}
 	}
 	return scanSources{
-		paths:           paths,
-		fromSource:      fromSource,
-		graceCutoffMs:   graceCutoffMs,
-		cold:            cold,
-		excludedCorrupt: excludedCorrupt,
+		paths:         paths,
+		fromSource:    fromSource,
+		graceCutoffMs: graceCutoffMs,
+		cold:          cold,
 	}, nil
 }
 

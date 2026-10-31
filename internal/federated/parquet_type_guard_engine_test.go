@@ -134,21 +134,19 @@ func TestUnverifiedObjectFailsTheReadClosed(t *testing.T) {
 	require.Equal(t, 1, pg.queryCalls)
 }
 
-// An object that is unverified because it is corrupt keeps #251's partial
-// semantics: verification attributes the failure to it, and the readable
-// remainder answers with the exclusion reported.
-func TestUnverifiedCorruptObjectKeepsPartialSemantics(t *testing.T) {
+// An object that is unverified because it is corrupt is confirmed corrupt
+// like a failed scan's (#251): verification attributes the failure to it,
+// and the read fails rather than scanning the remainder (#722).
+func TestUnverifiedCorruptObjectFailsAsCorrupt(t *testing.T) {
 	duck := newGuardEngineDuck()
 	duck.proofErr = fmt.Errorf("parquet page decode failed")
 	duck.drainFail = typeGuardOldPath
-	opts := &model.FederatedQueryOptions{}
 
-	_, err := queryGuardEngine(t, duck, &fakePostgresFederatedSource{}, opts, typeGuardHealthyPath, typeGuardOldPath)
-	require.NoError(t, err, "the readable remainder must still answer")
-	require.Equal(t, 1, duck.calls)
-	require.NotContains(t, duck.lastSQL, typeGuardOldPath, "the corrupt object is excluded from the scan")
-	require.NotNil(t, opts.PartialScan)
-	require.Equal(t, []string{typeGuardOldPath}, opts.PartialScan.ExcludedObjects)
+	_, err := queryGuardEngine(t, duck, &fakePostgresFederatedSource{}, &model.FederatedQueryOptions{}, typeGuardHealthyPath, typeGuardOldPath)
+	var corrupt *CorruptParquetError
+	require.ErrorAs(t, err, &corrupt)
+	require.Equal(t, []string{typeGuardOldPath}, corrupt.Paths)
+	require.Zero(t, duck.calls, "no main scan runs over the remainder")
 }
 
 // A pre-read check the budget cuts short is a timeout, not an unreadable

@@ -52,10 +52,8 @@ func recordDegradedFallbackPlan(opts *model.FederatedQueryOptions, tables model.
 // rewind below.
 func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, mark executionPlanMark, cause error) (*model.PersistentRecordPage, error) {
 	if opts != nil {
-		// The failed DuckDB pass may have recorded a #348 partial marker; the
-		// out-parameter must agree with the page this path returns, and the
-		// marker's scope (#251 corrupt exclusion) never describes a
-		// postgres-only answer.
+		// The out-parameter must agree with the page this path returns;
+		// markHotTierOnly below sets it again for the Postgres-only answer.
 		opts.PartialScan = nil
 	}
 	// The same holds for the plan (#639): whatever the abandoned attempt

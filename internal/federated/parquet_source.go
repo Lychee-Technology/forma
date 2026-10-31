@@ -52,26 +52,26 @@ func WithParquetSource(src ParquetSource) EngineOption {
 // input and must not silently fall through to the manifest source. The
 // source is the default when no hint is present. fromSource reports whether
 // the paths came from the source, so read-error classification only probes
-// path sets the source authored. Only source-authored sets are filtered
-// against the verification-confirmed corrupt objects (#251); excludedCorrupt
-// names what was dropped so the execution plan can say the scan was partial.
+// path sets the source authored. Only source-authored sets are checked
+// against the verification-confirmed corrupt objects (#251): a set that lists
+// one fails with CorruptParquetError before DuckDB is consulted, rather than
+// scanning without it (#722).
 //
 // stamps are the source's manifest-recorded footer columns (#256), keyed by
 // the returned paths, for the pre-read validator to consult instead of
 // probing. Only a source can author them: hint-authored paths name objects no
 // manifest entry vouches for, so they stay nil and probe as before. They are
-// forwarded unfiltered — a stamp key for a #251-excluded object is harmless
-// because the validator looks up by surviving path.
-func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, stamps map[string]map[string]string, excludedCorrupt []string, err error) {
+// forwarded as the source returned them.
+func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, stamps map[string]map[string]string, err error) {
 	hinted, err := duckDBParquetPathsForQuery(q, e.cfg)
 	if err != nil {
-		return nil, false, nil, nil, fmt.Errorf("render parquet path hint: %w", err)
+		return nil, false, nil, fmt.Errorf("render parquet path hint: %w", err)
 	}
 	if len(hinted) > 0 {
-		return hinted, false, nil, nil, nil
+		return hinted, false, nil, nil
 	}
 	if e == nil || e.parquetSource == nil || q == nil {
-		return nil, false, nil, nil, nil
+		return nil, false, nil, nil
 	}
 	resolved, stamps, err := e.parquetSource.Paths(ctx, q.SchemaID)
 	if err != nil {
@@ -82,18 +82,21 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 		// hand it to the degraded fallback — silencing exactly the state it
 		// exists to report.
 		if errors.Is(err, forma.ErrManifestSchemaMismatch) {
-			return nil, false, nil, nil, fmt.Errorf("manifest parquet source: %w", err)
+			return nil, false, nil, fmt.Errorf("manifest parquet source: %w", err)
 		}
-		return nil, false, nil, nil, fmt.Errorf("manifest parquet source: %w: %w", ErrFederatedReadFailed, err)
+		return nil, false, nil, fmt.Errorf("manifest parquet source: %w: %w", ErrFederatedReadFailed, err)
 	}
-	// Exclude verification-confirmed corrupt objects (#251). If that would
-	// empty the set, scan the full set instead: total corruption must fail
-	// loudly with its own classification, not as ErrNoParquetPaths.
-	kept, excluded := e.corruptPaths.Split(resolved)
-	if len(kept) == 0 {
-		return resolved, true, stamps, nil, nil
+	// A cached verdict refuses the read without scanning (#722). The scan
+	// would fail on the same bytes, and re-verifying would drain every
+	// object of the set again on every query of the retention window.
+	if corrupt := e.corruptPaths.Cached(resolved); len(corrupt) > 0 {
+		return nil, false, nil, &CorruptParquetError{
+			SchemaID: q.SchemaID,
+			Paths:    corrupt,
+			cause:    fmt.Errorf("verified corrupt by an earlier read and still cached: %w", ErrFederatedReadFailed),
+		}
 	}
-	return kept, true, stamps, excluded, nil
+	return resolved, true, stamps, nil
 }
 
 // classifyDuckDBReadError classifies a failed DuckDB read by storage state:

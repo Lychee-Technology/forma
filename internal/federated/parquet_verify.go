@@ -87,18 +87,27 @@ func drainParquet(ctx context.Context, duck DuckDBQueryExecutor, path string) er
 	return nil
 }
 
-// corruptParquetRetryError marks a scan failure attributed to specific
-// corrupt objects that are now cached for exclusion (#251): one immediate
-// retry will scan without them. Unwrap keeps the original classification
-// chain (ErrFederatedReadFailed), so a caller that does not retry — a direct
-// Stream consumer — degrades exactly as before.
-type corruptParquetRetryError struct {
-	Corrupt []string
-	cause   error
+// CorruptParquetError fails a federated read whose path set holds objects
+// confirmed corrupt by per-file verification (#251), either confirmed by this
+// pass or still cached from an earlier one. The read is not answered from the
+// readable remainder (#722): excluding an object drops every version it holds
+// from the last-write-wins input, so an older version in a readable object
+// would win over a newer update or tombstone, and the hot leg holds neither
+// once the row is past the flush grace. Unwrap keeps ErrFederatedReadFailed,
+// so the error is degradable: AllowPartialDegradedMode answers from
+// PostgreSQL alone, which the storage invariant makes complete for live rows.
+type CorruptParquetError struct {
+	// SchemaID is the schema the failed federated read was addressed to.
+	SchemaID int16
+	// Paths are the full storage URIs of the corrupt objects. Operator
+	// detail: httpapi redacts non-published error text (#301/#306).
+	Paths []string
+	cause error
 }
 
-func (e *corruptParquetRetryError) Error() string {
-	return fmt.Sprintf("corrupt parquet objects excluded, retry available %v: %v", e.Corrupt, e.cause)
+func (e *CorruptParquetError) Error() string {
+	return fmt.Sprintf("schema %d: %d parquet object(s) confirmed corrupt %v: %v",
+		e.SchemaID, len(e.Paths), e.Paths, e.cause)
 }
 
-func (e *corruptParquetRetryError) Unwrap() error { return e.cause }
+func (e *CorruptParquetError) Unwrap() error { return e.cause }

@@ -149,6 +149,48 @@ func TestEmptyScanRetriesWhenAPublicationRacesIt(t *testing.T) {
 	require.NoError(t, err, "the breaker opens on one failure, so the race recorded none")
 }
 
+// TestRetryRewindPreservesPrePassPlan pins #348 item 2 on the retry that
+// remains (#720): rewind is a truncate-to-mark, and the strongest wrong
+// implementation — rewinding to an empty mark (executionPlanMark{}) —
+// destroys what the CALLER recorded before the first pass (e.g. the keyset
+// coordinator's "keyset pagination" note). Routing alone cannot catch that:
+// rewind never touches Routing.
+func TestRetryRewindPreservesPrePassPlan(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &fakeDuckDBExecutor{globFiles: []string{}, rows: &rowPerScan{singleDuckDBRow{rowID: uuid.New()}}}
+	dirty := &fakeDirtyIDFetcher{}
+	dirty.afterHistory = func() { duck.globFiles = []string{"s3://b/7/delta.parquet"} }
+	engine := newEmptyScanTestEngine(t, duck, dirty, []string{fallbackGlob})
+
+	opts := &model.FederatedQueryOptions{
+		IncludeExecutionPlan: true,
+		ExecutionPlan: &model.ExecutionPlan{
+			Timings: map[string]int64{"caller_pre_pass": 7},
+			Notes:   []string{"caller pre-pass note"},
+			Sources: []model.DataSourcePlan{{
+				Tier: model.DataTierHot, Engine: "postgres", Reason: "caller pre-pass source",
+			}},
+		},
+	}
+	_, err := engine.Query(context.Background(), emptyScanTables, allTierQuery(), opts)
+	require.NoError(t, err)
+	require.Equal(t, 2, duck.calls, "the rewind under test is only reached on the retry path")
+
+	pre := 0
+	for _, src := range opts.ExecutionPlan.Sources {
+		if src.Reason == "caller pre-pass source" {
+			pre++
+		}
+	}
+	require.Equal(t, 1, pre, "a caller-recorded pre-pass source must survive the rewind")
+	require.Contains(t, opts.ExecutionPlan.Notes, "caller pre-pass note",
+		"a caller-recorded pre-pass note must survive the rewind")
+	require.Equal(t, int64(7), opts.ExecutionPlan.Timings["caller_pre_pass"],
+		"a caller-recorded pre-pass timing must survive the snapshot-restore")
+}
+
 // TestEmptyScanRacedTwiceFailsTheRead: a retry that races a publication
 // again fails the read as a degradable ErrFederatedReadFailed rather than
 // looping or answering short, and still records no breaker failure.

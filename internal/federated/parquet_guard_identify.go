@@ -101,7 +101,7 @@ type ParquetGuardViolationError struct {
 	// single-file drain failed deterministically while their bare drain read
 	// clean. Operator detail; safe internally because httpapi redacts
 	// non-published error text and toExecutionPlan drops Notes (#301/#306),
-	// the same boundary contract corruptParquetRetryError relies on.
+	// the same boundary contract CorruptParquetError relies on.
 	Paths []string
 	cause error
 }

@@ -118,9 +118,8 @@ func TestGuardViolationIsNeverExcluded(t *testing.T) {
 	require.Contains(t, duck.mainSQL[1], guardRoguePath,
 		"identification must not shrink the second query's scan set")
 
-	kept, excluded := e.corruptPaths.Split([]string{guardHealthyPath, guardRoguePath})
-	require.Empty(t, excluded, "an identified guard violator must never be cached for exclusion")
-	require.Len(t, kept, 2)
+	require.Empty(t, e.corruptPaths.Cached([]string{guardHealthyPath, guardRoguePath}),
+		"an identified guard violator must never be cached as corrupt")
 }
 
 // TestGuardIdentificationLogsUnderDegradedMode pins the loud outlet: degraded

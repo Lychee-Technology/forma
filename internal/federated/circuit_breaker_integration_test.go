@@ -264,11 +264,11 @@ func TestHalfOpenZeroPathStaysLoudForConsecutiveRequests(t *testing.T) {
 // enters half-open, the probe query hits confirmed per-object corruption —
 // which is NOT engine sickness (verification just read every other object
 // through the same engine) — so failDuckDBScan hands the probe slot back via
-// ReleaseProbe instead of recording evidence. The retry's own Allow then
-// re-reserves the slot and its success closes the breaker. Delete the
-// corrupt branch's ReleaseProbe and the live reservation rejects the retry;
-// replace it with RecordFailure and the breaker re-opens — either mutation
-// fails this test.
+// ReleaseProbe instead of recording evidence. The read itself fails (#722),
+// and the breaker stays half-open with its probe slot free for the next
+// caller. Delete the corrupt branch's ReleaseProbe and the live reservation
+// rejects that caller; replace it with RecordFailure and the breaker
+// re-opens — either mutation fails this test.
 func TestBreakerHalfOpenProbeReleasedOnConfirmedCorruption(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
@@ -285,16 +285,14 @@ func TestBreakerHalfOpenProbeReleasedOnConfirmedCorruption(t *testing.T) {
 	require.True(t, breaker.IsOpen())
 	time.Sleep(100 * time.Millisecond) // open period lapses → half-open
 
-	page, err := e.Query(context.Background(),
+	_, err := e.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
 		coldTierQuery(), nil)
-	require.NoError(t, err, "probe released on confirmed corruption must admit the retry")
-	require.NotNil(t, page)
-	require.Len(t, duck.mainSQL, 2, "the failed probe pass plus exactly one admitted retry")
+	var corrupt *CorruptParquetError
+	require.ErrorAs(t, err, &corrupt, "the probe pass confirms the corruption and fails the read")
+	require.Len(t, duck.mainSQL, 1, "confirmed corruption earns no retry")
 
-	// RecordSuccess closed the breaker: only the closed state admits with the
-	// zero token (no probe reservation).
 	admitted, probe, _ := breaker.Allow()
-	require.True(t, admitted, "breaker must be closed after the retry's success")
-	require.Zero(t, probe, "closed-state admission carries no probe reservation")
+	require.True(t, admitted, "the released probe slot must admit the next caller")
+	require.NotZero(t, probe, "the breaker is still half-open: the next caller is its probe")
 }

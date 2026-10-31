@@ -67,16 +67,17 @@ func (e *DBFederatedQueryEngine) log() *zap.Logger {
 }
 
 // defaultCorruptPathRetention bounds how long a confirmed-corrupt parquet
-// object stays excluded before being re-verified (#251).
+// object keeps refusing reads before being re-verified (#251, #722).
 const defaultCorruptPathRetention = 5 * time.Minute
 
 // WithCorruptPathRetention overrides how long a verification-confirmed
-// corrupt parquet object stays excluded from path resolution (#251). The
-// entry always expires — a terminal verdict must never be memoized forever
-// (#326): repair, compaction, or manifest reconcile self-heal only through
-// re-verification. A non-positive d effectively disables exclusion — entries
-// expire the moment they are added — so misconfigured callers fail open to
-// today's all-or-nothing scan; production callers should keep the default.
+// corrupt parquet object stays cached (#251): while it is, path resolution
+// refuses a set that lists it without scanning (#722). The entry always
+// expires — a terminal verdict must never be memoized forever (#326):
+// repair, compaction, or manifest reconcile self-heal only through
+// re-verification. A non-positive d disables the cache — entries expire the
+// moment they are added — so every query on the schema scans and verifies
+// the set again before failing; production callers should keep the default.
 func WithCorruptPathRetention(d time.Duration) EngineOption {
 	return func(e *DBFederatedQueryEngine) { e.corruptPaths = newCorruptParquetCache(d) }
 }

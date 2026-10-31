@@ -24,8 +24,7 @@ func unconsultedTiers(fq *model.FederatedAttributeQuery) []model.DataTier {
 // markHotTierOnly stamps a Postgres-only page with the #468 coverage marker
 // for the tiers fq asked for and never got, and mirrors it onto the
 // out-parameter so opts.PartialScan and page.Partial describe the same
-// answer. The marker replaces anything a failed DuckDB pass recorded: the
-// #251 corrupt-exclusion scope never describes a postgres-only answer. A
+// answer, and replaces any marker a reused options value still carries. A
 // request whose only asked-for tier is hot (an explicit [hot] that slipped
 // past the gate, or a caller-built query) leaves the page unmarked.
 func markHotTierOnly(page *model.PersistentRecordPage, opts *model.FederatedQueryOptions, fq *model.FederatedAttributeQuery) {
