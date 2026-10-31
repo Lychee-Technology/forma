@@ -69,7 +69,8 @@ Operand rules shared by every operator:
   a NUL character (U+0000), the text PostgreSQL stores. One that is not
   names no value a row can hold, and is `ErrInvalidInput` naming the
   attribute, refused before the query runs. A JSON body can carry a NUL as
-  `\u0000`.
+  `\u0000`. A write refuses the same strings as values (#679, see
+  [Error Handling](./error-handling.md)).
 - A comparison never matches a row where the attribute has no value. In
   particular `not_equals` and `not_in` do not match absent values.
 - `gt`, `gte`, `lt` and `lte` order text by bytes on the DuckDB route and

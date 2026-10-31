@@ -359,7 +359,9 @@ Two cases surprise people:
   validation failure there poisons the Tx, while the same failure from
   `Create` does not. The same holds for an update operator judged against the
   row: an `increment` with no current value or past its type's range poisons.
-  A failed precondition does not.
+  A failed precondition does not, and neither does text PostgreSQL cannot
+  store (a NUL character or invalid UTF-8) in `Updates`, which is refused
+  before the read (#679).
 - **Concurrent use.** A `Tx` must be used from one goroutine at a time. A
   call that arrives while another is running returns `ErrInvalidInput` and
   poisons the Tx; the running call finishes normally. If `fn` returns while a
