@@ -11,6 +11,7 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // checkStorageFit is the single write-side fidelity rule shared by #384 and
@@ -25,6 +26,10 @@ import (
 // The declared-type check runs first even for bound attributes: the column
 // may be wider than the declared type (smallint declared, integer column),
 // and the declared type is what every DuckDB tier projects by (#384).
+//
+// Text is judged for every destination the value reaches (eav_data's
+// value_text or a bound text column), and only there: a value bound to a
+// system column is dropped, not stored, so it is not judged (#679).
 func checkStorageFit(attr *model.EAVRecord, meta forma.AttributeMetadata) error {
 	if isNumericFamily(meta.ValueType) && attr.ValueNumeric != nil {
 		if err := checkIntegerFit(attr, meta.ValueType, "declared type "+string(meta.ValueType)); err != nil {
@@ -32,13 +37,30 @@ func checkStorageFit(attr *model.EAVRecord, meta forma.AttributeMetadata) error 
 		}
 	}
 	binding := meta.ColumnBinding
+	if binding != nil && isSystemManagedColumn(binding.ColumnName) {
+		return nil
+	}
+	if err := checkTextFit(attr); err != nil {
+		return err
+	}
 	if binding == nil {
 		return checkEAVFit(attr, meta.ValueType)
 	}
-	if isSystemManagedColumn(binding.ColumnName) {
+	return checkBoundColumnFit(attr, meta.ValueType, binding)
+}
+
+// checkTextFit refuses a text slot PostgreSQL text cannot hold (a NUL
+// character or invalid UTF-8): bound as a parameter, it failed the INSERT
+// with 22021 and aborted the transaction (#679). The rule is the one the
+// condition renderer applies to text operands (sqlutil.CheckText), so a
+// write refuses exactly what a query refuses. Only a caller's text can
+// fail it: a uuid slot holds the canonical spelling and the iso8601 and
+// bool_text renderings are ASCII.
+func checkTextFit(attr *model.EAVRecord) error {
+	if attr.ValueText == nil {
 		return nil
 	}
-	return checkBoundColumnFit(attr, meta.ValueType, binding)
+	return sqlutil.CheckText(*attr.ValueText)
 }
 
 // checkEAVFit is the unbound destination's rule: eav_data persists the
