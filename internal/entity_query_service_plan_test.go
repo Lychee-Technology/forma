@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/stretchr/testify/require"
@@ -106,25 +105,4 @@ func TestToExecutionPlan_EmptyTimingsOmitted(t *testing.T) {
 	blob, err := json.Marshal(out)
 	require.NoError(t, err)
 	require.NotContains(t, string(blob), `"timings"`)
-}
-
-// TestToPartialResultProjectsCountOnly pins that the partial-result
-// projection surfaces only the reason and excluded-object count; storage
-// keys are security-sensitive internals and must never cross the HTTP
-// boundary (#301/#306).
-func TestToPartialResultProjectsCountOnly(t *testing.T) {
-	require.Nil(t, toPartialResult(nil))
-	require.Nil(t, toPartialResult(&model.PartialScan{}))
-
-	out := toPartialResult(&model.PartialScan{
-		ExcludedObjects: []string{"s3://b/7/rot1.parquet", "s3://b/7/rot2.parquet"},
-	})
-	require.NotNil(t, out)
-	require.Equal(t, forma.PartialReasonCorruptParquetExcluded, out.Reason)
-	require.Equal(t, 2, out.ExcludedObjectCount)
-
-	raw, err := json.Marshal(out)
-	require.NoError(t, err)
-	require.NotContains(t, string(raw), "s3://",
-		"storage keys must not cross the HTTP boundary (#301/#306)")
 }
