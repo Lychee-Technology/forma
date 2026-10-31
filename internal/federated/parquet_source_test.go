@@ -416,30 +416,40 @@ func newExclusionTestEngine(src ParquetSource) *DBFederatedQueryEngine {
 		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}, nil, "", WithParquetSource(src))
 }
 
+// newCachedRefusalTestEngine is newExclusionTestEngine with schema 7's
+// metadata registered. The cached corrupt refusal runs the SQL build's
+// refusals first (#722), so without metadata every refusal would be
+// ErrSchemaMetadataCacheRequired.
+func newCachedRefusalTestEngine(t *testing.T, src ParquetSource) *DBFederatedQueryEngine {
+	t.Helper()
+	return NewDBFederatedQueryEngine(nil, nil, nil, nil,
+		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}, testMetadataCacheSchema7(t), "", WithParquetSource(src))
+}
+
 func exclusionTestQuery() *model.FederatedAttributeQuery {
 	return &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7}}
 }
 
-// TestResolveParquetPathsRefusesCachedCorrupt pins the #722 resolve-time
+// TestResolveScanSourcesRefusesCachedCorrupt pins the #722 pre-flight
 // refusal: a source-authored set that lists a verification-confirmed corrupt
 // object fails, degradably, instead of scanning without it. The refusal names
 // only the cached objects, and it holds when every object is cached too.
-func TestResolveParquetPathsRefusesCachedCorrupt(t *testing.T) {
+func TestResolveScanSourcesRefusesCachedCorrupt(t *testing.T) {
 	for name, listed := range map[string][]string{
 		"one of two cached": {"s3://b/a.parquet", "s3://b/bad.parquet"},
 		"all cached":        {"s3://b/bad.parquet"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			e := newExclusionTestEngine(&fakeParquetSource{paths: listed})
+			e := newCachedRefusalTestEngine(t, &fakeParquetSource{paths: listed})
 			e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
 
-			paths, _, _, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
+			sc, err := e.resolveScanSources(context.Background(), corruptTables, exclusionTestQuery())
 			var corrupt *CorruptParquetError
 			require.ErrorAs(t, err, &corrupt)
 			require.Equal(t, []string{"s3://b/bad.parquet"}, corrupt.Paths)
 			require.ErrorIs(t, err, ErrFederatedReadFailed)
 			require.True(t, degradableFederatedError(err))
-			require.Nil(t, paths, "a refused set must not be handed to the scan")
+			require.Nil(t, sc.paths, "a refused set must not be handed to the scan")
 		})
 	}
 }

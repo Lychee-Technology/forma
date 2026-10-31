@@ -43,16 +43,10 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 
 	startTranslate := time.Now()
 
-	// Build dual clauses (PG pushdown + DuckDB logical) if metadata cache available
+	// Build dual clauses (PG pushdown + DuckDB logical) and the
+	// schema-driven projections for the template.
 	cache, _ := e.schemaCacheByID(q.SchemaID)
-	paramIndex := 0
-	dc, err := sqlgen.ToDualClauses(q.Condition, sqlutil.SanitizeIdentifier(tables.EAVData), q.SchemaID, cache, &paramIndex)
-	if err != nil {
-		return "", nil, 0, fmt.Errorf("to dual clauses: %w", err)
-	}
-
-	// Compute schema-driven projections for the template
-	projectionCacheHit, err := e.injectSchemaProjections(ctx, sqlParams, q.SchemaID, cache)
+	dc, projectionCacheHit, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, sqlParams)
 	if err != nil {
 		return "", nil, 0, err
 	}
@@ -107,6 +101,29 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 	}
 
 	return sqlStr, args, translateMs, nil
+}
+
+// translateDuckDBQuery renders q's condition into the dual clauses and writes
+// the schema projections into sqlParams. Its refusals depend only on the query
+// and the schema's metadata: a filter literal the attribute cannot take is
+// invalid input, and a schema with no usable metadata fails with
+// ErrSchemaMetadataCacheRequired. Both are non-degradable. A read refused
+// before it builds (a cached corrupt verdict, #722) runs this too, so it
+// raises them as the build would rather than degrading past them.
+func (e *DBFederatedQueryEngine) translateDuckDBQuery(
+	ctx context.Context, eavTable string, q *model.FederatedAttributeQuery,
+	cache forma.SchemaAttributeCache, sqlParams map[string]any,
+) (sqlgen.DualClauses, bool, error) {
+	paramIndex := 0
+	dc, err := sqlgen.ToDualClauses(q.Condition, sqlutil.SanitizeIdentifier(eavTable), q.SchemaID, cache, &paramIndex)
+	if err != nil {
+		return sqlgen.DualClauses{}, false, fmt.Errorf("to dual clauses: %w", err)
+	}
+	projectionCacheHit, err := e.injectSchemaProjections(ctx, sqlParams, q.SchemaID, cache)
+	if err != nil {
+		return sqlgen.DualClauses{}, false, err
+	}
+	return dc, projectionCacheHit, nil
 }
 
 // dispatchedQuery returns a copy of q whose Limit, Offset and AttributeOrders

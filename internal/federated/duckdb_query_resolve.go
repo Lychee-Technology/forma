@@ -31,9 +31,10 @@ func (e *DBFederatedQueryEngine) schemaCacheByID(schemaID int16) (forma.SchemaAt
 
 // resolveScanSources is the storage-facing pre-flight of a DuckDB federated
 // query: it stamps the #252 flush-grace cutoff, resolves the parquet path
-// set, validates the parquet system-column invariant and the #732 attribute
-// types, and computes the #255 cold-missing and #371 cold-pinned column sets
-// from the footer union the validation produced. A schema with no parquet to
+// set, refuses one listing a cached corrupt object (#722), validates the
+// parquet system-column invariant and the #732 attribute types, and computes
+// the #255 cold-missing and #371 cold-pinned column sets from the footer
+// union the validation produced. A schema with no parquet to
 // read yet skips the validation and scans nothing (#720).
 func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery) (scanSources, error) {
 	// The flush-grace cutoff is stamped BEFORE resolution (#252): any row
@@ -63,6 +64,15 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables 
 		return scanSources{}, &NoParquetPathsError{
 			SchemaID:         q.SchemaID,
 			SourceConfigured: e.parquetSource != nil,
+		}
+	}
+
+	// A source-authored set listing an object a recent verification
+	// confirmed corrupt is refused without scanning (#722); hint-authored
+	// sets are operator-pinned and never verified (#184).
+	if fromSource {
+		if corrupt := e.corruptPaths.Cached(paths); len(corrupt) > 0 {
+			return scanSources{}, e.refuseCachedCorrupt(ctx, tables, q, paths, corrupt, stamps)
 		}
 	}
 

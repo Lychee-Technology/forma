@@ -53,10 +53,9 @@ func WithParquetSource(src ParquetSource) EngineOption {
 // input and must not silently fall through to the manifest source. The
 // source is the default when no hint is present. fromSource reports whether
 // the paths came from the source, so read-error classification only probes
-// path sets the source authored. Only source-authored sets are checked
-// against the verification-confirmed corrupt objects (#251): a set that lists
-// one fails with CorruptParquetError before DuckDB is consulted, rather than
-// scanning without it (#722).
+// path sets the source authored. Only source-authored sets are later checked
+// against the verification-confirmed corrupt objects (#251, #722; see
+// refuseCachedCorrupt).
 //
 // stamps are the source's manifest-recorded footer columns (#256), keyed by
 // the returned paths, for the pre-read validator to consult instead of
@@ -87,18 +86,16 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 		}
 		return nil, false, nil, fmt.Errorf("manifest parquet source: %w: %w", ErrFederatedReadFailed, err)
 	}
-	// A cached verdict refuses the read without scanning (#722). The scan
-	// would fail on the same bytes, and re-verifying would drain every
-	// object of the set again on every query of the retention window.
-	if corrupt := e.corruptPaths.Cached(resolved); len(corrupt) > 0 {
-		return nil, false, nil, e.refuseCachedCorrupt(ctx, q, resolved, corrupt, stamps)
-	}
 	return resolved, true, stamps, nil
 }
 
 // refuseCachedCorrupt fails a source-authored set that lists cached corrupt
-// objects. The refusal is degradable, so the non-degradable findings the rest
-// of the set would have produced run first, in the uncached path's order.
+// objects, without scanning (#722): the scan would fail on the same bytes,
+// and re-verifying would drain every object of the set again on every query
+// of the retention window. The refusal is degradable, so the non-degradable
+// findings an uncached read would have produced before or instead of it run
+// first, in the uncached path's order: the pre-read checks, then the SQL
+// build, then the scan's missing-object classification.
 //
 // The #732 type guard judges the listed objects not cached as corrupt, which
 // the uncached path's pre-read checks would also have judged: a readable
@@ -107,6 +104,12 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 // for the rest of the retention window. Nothing is scanned to answer. Other
 // pre-read findings over that remainder (a schema violation, an object the
 // guard could not read) are degradable like the refusal and leave it as is.
+//
+// The build's own refusals come next (translateDuckDBQuery): a filter literal
+// the attribute cannot take is invalid input, and a schema whose active
+// metadata is missing or empty fails with ErrSchemaMetadataCacheRequired. An
+// uncached read builds its SQL before it scans, so both precede the probe
+// below and hand the breaker probe back, as any pre-flight refusal does.
 //
 // Missing-before-corrupt holds here as it does in failDuckDBScan: the whole
 // listed set is probed next, cached objects included, so a listed object
@@ -117,9 +120,16 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 // cancellation stopped keeps that context error in the refusal's chain, so a
 // spent or abandoned request does not degrade (#465). Running the type guard
 // before the probe keeps that true when the guard is what spent the budget.
-func (e *DBFederatedQueryEngine) refuseCachedCorrupt(ctx context.Context, q *model.FederatedAttributeQuery, listed, corrupt []string, stamps map[string]map[string]string) error {
+func (e *DBFederatedQueryEngine) refuseCachedCorrupt(
+	ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery,
+	listed, corrupt []string, stamps map[string]map[string]string,
+) error {
 	if err := e.typeGuardReadableRemainder(ctx, q.SchemaID, listed, corrupt, stamps); err != nil {
 		return fmt.Errorf("type-check the objects listed beside ones cached as corrupt: %w", err)
+	}
+	cache, _ := e.schemaCacheByID(q.SchemaID)
+	if _, _, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, map[string]any{}); err != nil {
+		return fmt.Errorf("build the query over a set listing objects cached as corrupt: %w", err)
 	}
 	classified := e.classifyDuckDBReadError(ctx, q, listed, true)
 	var inconsistent *ParquetSetInconsistentError

@@ -199,12 +199,12 @@ func TestCachedCorruptRefusalIsBreakerNeutral(t *testing.T) {
 	require.False(t, breaker.IsOpen(), "threshold 1: a single recorded failure would have opened it")
 }
 
-// TestResolveParquetPathsCachedCorruptClassifiesMissingFirst pins
+// TestResolveScanSourcesCachedCorruptClassifiesMissingFirst pins
 // missing-before-corrupt on the cached refusal (#722 review): a listed object
 // absent from storage, the cached one or any other, is manifest inconsistency
 // and must not be absorbed by the degradable corruption refusal. The probe
 // covers the whole listed set, and a probe that cannot run proves no loss.
-func TestResolveParquetPathsCachedCorruptClassifiesMissingFirst(t *testing.T) {
+func TestResolveScanSourcesCachedCorruptClassifiesMissingFirst(t *testing.T) {
 	listed := []string{"s3://b/a.parquet", "s3://b/bad.parquet"}
 	for name, missing := range map[string][]string{
 		"another listed object deleted": {"a.parquet"},
@@ -212,10 +212,10 @@ func TestResolveParquetPathsCachedCorruptClassifiesMissingFirst(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			src := &fakeParquetSource{paths: listed, missing: missing}
-			e := newExclusionTestEngine(src)
+			e := newCachedRefusalTestEngine(t, src)
 			e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
 
-			_, _, _, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
+			_, err := e.resolveScanSources(context.Background(), corruptTables, exclusionTestQuery())
 			var inconsistent *ParquetSetInconsistentError
 			require.ErrorAs(t, err, &inconsistent)
 			require.Equal(t, missing, inconsistent.MissingKeys)
@@ -226,10 +226,10 @@ func TestResolveParquetPathsCachedCorruptClassifiesMissingFirst(t *testing.T) {
 	}
 
 	t.Run("probe error keeps the refusal", func(t *testing.T) {
-		e := newExclusionTestEngine(&fakeParquetSource{paths: listed, missingErr: fmt.Errorf("connection refused")})
+		e := newCachedRefusalTestEngine(t, &fakeParquetSource{paths: listed, missingErr: fmt.Errorf("connection refused")})
 		e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
 
-		_, _, _, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
+		_, err := e.resolveScanSources(context.Background(), corruptTables, exclusionTestQuery())
 		var corrupt *CorruptParquetError
 		require.ErrorAs(t, err, &corrupt)
 		require.True(t, degradableFederatedError(err))
