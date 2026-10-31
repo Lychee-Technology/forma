@@ -245,6 +245,33 @@ func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.Fe
 	return &ParquetGuardViolationError{SchemaID: q.SchemaID, Paths: violating, cause: wrapped}
 }
 
+// failScanSources resolves the probe for a pre-flight (resolveScanSources)
+// failure. Objects the #732 type guard could not read fail the read closed,
+// classified exactly like a failed scan over the same path set, so
+// corrupt-object confirmation (#251) and missing-object inconsistency (#187)
+// keep their semantics, and an expired budget in its cause stays
+// non-degradable (#465). A cached-corrupt refusal that found listed objects
+// missing (#722) probed storage and reports the same inconsistency a failed
+// scan would, so it records a failure the same way. Any other pre-flight
+// failure learned nothing about the dependency and hands the probe back.
+func (e *DBFederatedQueryEngine) failScanSources(ctx context.Context, q *model.FederatedAttributeQuery, probe ProbeToken, err error) error {
+	var unverified *unverifiedParquetError
+	if errors.As(err, &unverified) {
+		return e.failDuckDBScan(ctx, q, scan{
+			parquetPaths:    unverified.scanned,
+			pathsFromSource: unverified.fromSource,
+			probe:           probe,
+		}, err, "pre-read parquet type verification")
+	}
+	var inconsistent *ParquetSetInconsistentError
+	if errors.As(err, &inconsistent) {
+		e.breakerRecordFailure(ctx, err)
+		return err
+	}
+	e.breaker.ReleaseProbe(probe)
+	return err
+}
+
 // identifyGuardViolationPaths gates the #351 identification the way
 // confirmCorruptPaths gates #251 verification: source-authored sets only —
 // hint-authored paths name objects no manifest vouches for, and the caller

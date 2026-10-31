@@ -1430,15 +1430,13 @@ rows in that object are simply gone from the result set.
   survive and returns a shorter result set with no error at all.
 - **Direction of the contract.** Only `manifest ⊆ live objects` is enforced.
   Extra unlisted objects are tolerated and invisible to reads.
-- **One bounded exception (#251, #722).** While a per-file verification
-  verdict is cached (default 5 minutes), a read whose set lists the corrupt
-  object is refused as `CorruptParquetError` before any scan. If the object
-  is *also deleted* from storage inside that window, the deletion reports as
-  corruption, which is degradable, and the inconsistency classification fires
-  only after the cache entry expires and the object is rescanned. Delay, not
-  suppression: the loss still surfaces, up to one retention window late, and
-  no answer in the window comes from a parquet remainder. See
-  `docs/federated-query/design.md` §7.3.
+- **Cached corruption does not mask a loss (#251, #722).** While a per-file
+  verification verdict is cached (default 5 minutes), a read whose set lists
+  the corrupt object is refused as `CorruptParquetError` before any scan. The
+  refusal probes the whole listed set first, so a listed object deleted
+  inside that window, the corrupt one or any other, still fails as
+  `ParquetSetInconsistentError` and is not absorbed by the degraded
+  fallback. See `docs/federated-query/design.md` §7.3.
 - **Operator action.** The message names the schema and the missing
   bucket-relative keys. Run the reconciliation tool to diagnose and repair:
   see `docs/manifest-reconcile.md`.

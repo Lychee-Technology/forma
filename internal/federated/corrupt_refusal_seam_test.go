@@ -2,6 +2,7 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -191,6 +192,79 @@ func TestCachedCorruptRefusalIsBreakerNeutral(t *testing.T) {
 		requireCorruptRefusal(t, err, retryCorruptPath1)
 	}
 	require.False(t, breaker.IsOpen(), "threshold 1: a single recorded failure would have opened it")
+}
+
+// TestResolveParquetPathsCachedCorruptClassifiesMissingFirst pins
+// missing-before-corrupt on the cached refusal (#722 review): a listed object
+// absent from storage, the cached one or any other, is manifest inconsistency
+// and must not be absorbed by the degradable corruption refusal. The probe
+// covers the whole listed set, and a probe that cannot run proves no loss.
+func TestResolveParquetPathsCachedCorruptClassifiesMissingFirst(t *testing.T) {
+	listed := []string{"s3://b/a.parquet", "s3://b/bad.parquet"}
+	for name, missing := range map[string][]string{
+		"another listed object deleted": {"a.parquet"},
+		"the cached object deleted":     {"bad.parquet"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := &fakeParquetSource{paths: listed, missing: missing}
+			e := newExclusionTestEngine(src)
+			e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
+
+			_, _, _, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
+			var inconsistent *ParquetSetInconsistentError
+			require.ErrorAs(t, err, &inconsistent)
+			require.Equal(t, missing, inconsistent.MissingKeys)
+			require.NotErrorIs(t, err, ErrFederatedReadFailed)
+			require.False(t, degradableFederatedError(err), "a lost object must not degrade behind a cached verdict")
+			require.Equal(t, listed, src.lastScanned, "the probe covers the whole listed set")
+		})
+	}
+
+	t.Run("probe error keeps the refusal", func(t *testing.T) {
+		e := newExclusionTestEngine(&fakeParquetSource{paths: listed, missingErr: fmt.Errorf("connection refused")})
+		e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
+
+		_, _, _, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
+		var corrupt *CorruptParquetError
+		require.ErrorAs(t, err, &corrupt)
+		require.True(t, degradableFederatedError(err))
+	})
+}
+
+// TestCachedCorruptRefusalSurfacesAnotherMissingObject pins the #722 review
+// finding at the engine: while A's verdict is cached, a different listed
+// object B deleted from storage is manifest inconsistency. It fails with
+// degraded mode off and on, and it records a breaker failure, as the same
+// loss found by a failed scan would.
+func TestCachedCorruptRefusalSurfacesAnotherMissingObject(t *testing.T) {
+	for _, degraded := range []bool{false, true} {
+		t.Run(fmt.Sprintf("degraded=%v", degraded), func(t *testing.T) {
+			restore := initTestDescriptors()
+			defer restore()
+
+			duck := &retryFakeDuck{passes: []retryPass{{}}}
+			pg := &fakePostgresFederatedSource{}
+			breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
+			src := &fakeParquetSource{
+				paths:   []string{retryKeptPathA, retryCorruptPath1},
+				missing: []string{"7/keep-a.parquet"},
+			}
+			e := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, breaker,
+				hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+			e.corruptPaths.Add([]string{retryCorruptPath1})
+
+			opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded}
+			_, err := e.Query(context.Background(), corruptTables, coldTierQuery(), opts)
+			var inconsistent *ParquetSetInconsistentError
+			require.ErrorAs(t, err, &inconsistent)
+			require.Equal(t, []string{"7/keep-a.parquet"}, inconsistent.MissingKeys)
+			var corrupt *CorruptParquetError
+			require.False(t, errors.As(err, &corrupt), "the cached verdict must not mask the loss")
+			require.Zero(t, pg.queryCalls, "inconsistency is non-degradable")
+			require.Empty(t, duck.mainSQL, "the cached verdict still refuses before the scan")
+			require.True(t, breaker.IsOpen(), "threshold 1: the loss records a breaker failure")
+		})
+	}
 }
 
 // TestCorruptRefusalDegradesToPostgresOnly pins the #722 answer under

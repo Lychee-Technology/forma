@@ -90,13 +90,30 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 	// would fail on the same bytes, and re-verifying would drain every
 	// object of the set again on every query of the retention window.
 	if corrupt := e.corruptPaths.Cached(resolved); len(corrupt) > 0 {
-		return nil, false, nil, &CorruptParquetError{
-			SchemaID: q.SchemaID,
-			Paths:    corrupt,
-			cause:    fmt.Errorf("verified corrupt by an earlier read and still cached: %w", ErrFederatedReadFailed),
-		}
+		return nil, false, nil, e.refuseCachedCorrupt(ctx, q, resolved, corrupt)
 	}
 	return resolved, true, stamps, nil
+}
+
+// refuseCachedCorrupt fails a source-authored set that lists cached corrupt
+// objects. Missing-before-corrupt holds here as it does in failDuckDBScan:
+// the whole listed set is probed first, cached objects included, so a listed
+// object deleted from storage reports as manifest inconsistency
+// (non-degradable, breaker-worthy) rather than being absorbed by the
+// degradable refusal for the rest of the retention window. The probe is one
+// existence check per listed object, far below the drains a re-verification
+// would cost. A probe that cannot run proves no loss and keeps the refusal.
+func (e *DBFederatedQueryEngine) refuseCachedCorrupt(ctx context.Context, q *model.FederatedAttributeQuery, listed, corrupt []string) error {
+	classified := e.classifyDuckDBReadError(ctx, q, listed, true)
+	var inconsistent *ParquetSetInconsistentError
+	if errors.As(classified, &inconsistent) {
+		return fmt.Errorf("probe set listing objects cached as corrupt: %w", classified)
+	}
+	return &CorruptParquetError{
+		SchemaID: q.SchemaID,
+		Paths:    corrupt,
+		cause:    fmt.Errorf("verified corrupt by an earlier read and still cached: %w", ErrFederatedReadFailed),
+	}
 }
 
 // classifyDuckDBReadError classifies a failed DuckDB read by storage state:
