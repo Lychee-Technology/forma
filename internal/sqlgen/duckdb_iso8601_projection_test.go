@@ -41,15 +41,15 @@ func TestHotLegProjections_ISO8601ColumnsNormaliseToEpochMs(t *testing.T) {
 	require.False(t, sp.HasEAVAttrs, "fixture must qualify for the no-EAV shortcut")
 
 	require.Contains(t, sp.PGSourceSelect,
-		"COALESCE(ANY_VALUE(hot_vals.seenAt), epoch_ms(TRY_CAST(m.text_02 AS TIMESTAMP))) AS seenAt")
+		"COALESCE(ANY_VALUE(hot_vals.seenAt), "+ISO8601EpochMs("m.text_02")+") AS seenAt")
 	require.Contains(t, sp.PGSourceSelect,
-		"COALESCE(ANY_VALUE(hot_vals.bornOn), epoch_ms(TRY_CAST(m.text_03 AS TIMESTAMP))) AS bornOn")
+		"COALESCE(ANY_VALUE(hot_vals.bornOn), "+ISO8601EpochMs("m.text_03")+") AS bornOn")
 	require.Contains(t, sp.PGSourceSelect, "COALESCE(ANY_VALUE(hot_vals.name), m.text_01) AS name",
 		"a plain text column still projects raw")
 
 	noEAV := sp.BuildPGSelectNoEAV()
-	require.Contains(t, noEAV, "epoch_ms(TRY_CAST(m.text_02 AS TIMESTAMP)) AS seenAt")
-	require.Contains(t, noEAV, "epoch_ms(TRY_CAST(m.text_03 AS TIMESTAMP)) AS bornOn")
+	require.Contains(t, noEAV, ISO8601EpochMs("m.text_02")+" AS seenAt")
+	require.Contains(t, noEAV, ISO8601EpochMs("m.text_03")+" AS bornOn")
 	require.Contains(t, noEAV, "m.text_01 AS name")
 	require.NotContains(t, noEAV, "m.text_02 AS seenAt", "the raw ISO string must not reach the UNION ALL")
 	require.NotContains(t, noEAV, "m.text_03 AS bornOn")
@@ -59,10 +59,8 @@ func TestHotLegProjections_ISO8601ColumnsNormaliseToEpochMs(t *testing.T) {
 // DuckDB over the images a text column can carry: the write path's UTC
 // RFC3339 string (transform.storeWithEncoding), one carrying fractional
 // seconds, a non-date string (NULL through TRY_CAST rather than a read-path
-// crash, matching the export) and NULL. The TIMESTAMP cast is deliberately
-// the export's, not TIMESTAMPTZ: with the bundled ICU an offset-less string
-// would parse in the session TimeZone, host-dependent, whereas the funnel
-// only ever writes `Z`.
+// crash, matching the export) and NULL. Offsets and session TimeZones are
+// iso8601_read_duckdb_test.go's (#756).
 func TestMainColISO8601Expr_ExecutesToEpochMs(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")
 	require.NoError(t, err)
@@ -93,14 +91,14 @@ func TestMainColISO8601Expr_ExecutesToEpochMs(t *testing.T) {
 // string which transform.readWithEncoding parses as RFC3339. CAST(attr AS
 // BIGINT) put "1704164645000" into that slot. The epoch-ms verdict is cast
 // back to the image the write path stores — RFC3339, UTC, second
-// precision — so a DuckDB read decodes exactly like a Postgres read.
+// precision — so a DuckDB read decodes exactly like a Postgres read. An
+// instant an offset image carried past the four-digit UTC years keeps a
+// four-digit wall clock at a 25-hour offset.
 func TestBuildOuterSelect_ISO8601CastsBackToRFC3339(t *testing.T) {
 	sp, err := BuildSchemaProjection(7, iso8601Cache())
 	require.NoError(t, err)
-	require.Contains(t, sp.OuterSelect,
-		"strftime(epoch_ms(CAST(seenAt AS BIGINT)), '%Y-%m-%dT%H:%M:%SZ') AS text_02")
-	require.Contains(t, sp.OuterSelect,
-		"strftime(epoch_ms(CAST(bornOn AS BIGINT)), '%Y-%m-%dT%H:%M:%SZ') AS text_03")
+	require.Contains(t, sp.OuterSelect, iso8601ImageFromEpochMs("seenAt")+" AS text_02")
+	require.Contains(t, sp.OuterSelect, iso8601ImageFromEpochMs("bornOn")+" AS text_03")
 	require.Contains(t, sp.OuterSelect, "CAST(name AS VARCHAR) AS text_01")
 
 	db, err := sql.Open("duckdb", ":memory:")
@@ -114,6 +112,12 @@ func TestBuildOuterSelect_ISO8601CastsBackToRFC3339(t *testing.T) {
 		{"1704164645000", sql.NullString{String: "2024-01-02T03:04:05Z", Valid: true}},
 		{"0", sql.NullString{String: "1970-01-01T00:00:00Z", Valid: true}},
 		{"-86400000", sql.NullString{String: "1969-12-31T00:00:00Z", Valid: true}},
+		{"253402300799000", sql.NullString{String: "9999-12-31T23:59:59Z", Valid: true}},
+		{"-62167219200000", sql.NullString{String: "0000-01-01T00:00:00Z", Valid: true}},
+		// Past the four-digit UTC years: 10000-01-01T00:30:00Z and
+		// -0001-12-31T23:30:00Z, spelled at a 25-hour offset.
+		{"253402302600000", sql.NullString{String: "9999-12-30T23:30:00-24:60", Valid: true}},
+		{"-62167221000000", sql.NullString{String: "0000-01-02T00:30:00+24:60", Valid: true}},
 		{"NULL::BIGINT", sql.NullString{}},
 	} {
 		t.Run(tc.verdict, func(t *testing.T) {

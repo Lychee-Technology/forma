@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
@@ -320,8 +321,9 @@ func TestBuildSchemaDrivenProjection_BoundUnixMsDateAndDatetimeExportEpochMsBigi
 // TestCastMainValue_DateAndDatetimeEncodings pins the #219 normalization: every
 // date/datetime encoding must export epoch-ms BIGINT so the federated reader's
 // CAST(attr AS BIGINT) projection and epoch-ms predicate binds line up on every
-// tier. iso8601 (RFC3339 text) is parsed to a TIMESTAMP then to epoch millis;
-// unix_ms and default (epoch millis already in a bigint column) pass through.
+// tier. iso8601 (RFC3339 text) exports through the hot leg's own read
+// (sqlgen.ISO8601EpochMs, #756); unix_ms and default (epoch millis already
+// in a bigint column) pass through.
 func TestCastMainValue_DateAndDatetimeEncodings(t *testing.T) {
 	unixMs := &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint02, Encoding: forma.MainColumnEncodingUnixMs}
 	iso := &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingISO8601}
@@ -349,13 +351,13 @@ func TestCastMainValue_DateAndDatetimeEncodings(t *testing.T) {
 			name:     "date iso8601 parses text to epoch-ms bigint",
 			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDate, ColumnBinding: iso},
 			col:      "m.text_02",
-			expected: "epoch_ms(TRY_CAST(m.text_02 AS TIMESTAMP))",
+			expected: sqlgen.ISO8601EpochMs("m.text_02"),
 		},
 		{
 			name:     "datetime iso8601 parses text to epoch-ms bigint",
 			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDateTime, ColumnBinding: iso},
 			col:      "m.text_02",
-			expected: "epoch_ms(TRY_CAST(m.text_02 AS TIMESTAMP))",
+			expected: sqlgen.ISO8601EpochMs("m.text_02"),
 		},
 		{
 			name:     "date default encoding (epoch-ms bigint) passes through",

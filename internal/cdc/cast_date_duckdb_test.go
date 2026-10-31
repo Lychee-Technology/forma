@@ -36,6 +36,13 @@ func TestCastDateMainValue_ExecutesToEpochMs(t *testing.T) {
 			sourceExpr: "'2024-01-02T03:04:05Z'",
 		},
 		{
+			// The same instant written with a UTC offset: the export applies
+			// it, as the OLTP read does (#756).
+			name:       "iso8601_text_with_offset",
+			meta:       forma.AttributeMetadata{ValueType: forma.ValueTypeDateTime, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingISO8601}},
+			sourceExpr: "'2024-01-02T11:04:05+08:00'",
+		},
+		{
 			name:       "unix_ms_bigint",
 			meta:       forma.AttributeMetadata{ValueType: forma.ValueTypeDateTime, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint02, Encoding: forma.MainColumnEncodingUnixMs}},
 			sourceExpr: "1704164645000::BIGINT",

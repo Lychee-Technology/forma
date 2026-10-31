@@ -332,7 +332,7 @@ func normalizePgMainPayload(
 	} else if ok {
 		return PgMainLeafPayload{Column: column, Bool: &p}
 	}
-	parsedValue, err := ConvertPgMainValue(lenientSQL.Value, kv.Attr, meta)
+	parsedValue, err := pgMainOperand(lenientSQL.Value, kv.Attr, meta)
 	if err != nil {
 		return PgMainLeafPayload{Err: err}
 	}

@@ -266,13 +266,17 @@ func checkBigIntOperandRange(attr, valStr string, valueType forma.ValueType, v f
 }
 
 // resolveMainTableColumn returns what a pg-main pushdown leaf compares: the
-// column prefixed with "m.", or, for an integer in a wider column, the
-// declared-type read the hot leg projects (mainColIntegerExpr). The pushdown
-// only pre-filters pg_source, and `visible` filters the projected value
-// again, so a leaf on the raw column was stricter wherever that read changes
-// the value: `is_null` missed an image it reads as NULL, `equals:1000` a
-// `1000.5` it rounds, and the row matched only once its parquet copy served
-// it (#627).
+// column prefixed with "m.", or the read the hot leg projects where it reads
+// the column through an expression: the declared-type read of an integer in
+// a wider column (mainColIntegerExpr) and the epoch-ms read of an iso8601
+// date (mainColISO8601Read), each compared against the operand
+// pgMainOperand binds for it. The pushdown only pre-filters pg_source, and
+// `visible` filters the projected value again, so a leaf on the raw column
+// was stricter wherever that read changes the value: `is_null` missed an
+// image it reads as NULL, `equals:1000` a `1000.5` it rounds (#627), and a
+// text comparison against the canonical image a fraction or an offset it
+// orders by instant (#755). The row matched only once its parquet copy
+// served it.
 func resolveMainTableColumn(attr string, meta forma.AttributeMetadata) string {
 	if meta.ColumnBinding == nil {
 		return "m." + attr
@@ -280,28 +284,41 @@ func resolveMainTableColumn(attr string, meta forma.AttributeMetadata) string {
 	if expr, ok := mainColIntegerExpr(meta); ok {
 		return expr
 	}
+	if expr, ok := mainColISO8601Read(meta); ok {
+		return expr
+	}
 	return "m." + string(meta.ColumnBinding.ColumnName)
 }
 
 // resolveMainNullTestColumn returns what a pg-main is_null / is_not_null
-// leaf tests: resolveMainTableColumn, except for is_null on a date bound
-// with the iso8601 encoding, whose hot-leg read (mainColISO8601Read) is NULL
-// for a string that is not a timestamp while the column is not. A null test
-// on the raw column dropped such an unflushed row from pg_source although
-// `visible` and its parquet copy read it as NULL (#709). is_not_null keeps
-// the raw column: the read is non-NULL only where the column is, so the raw
-// test already keeps every row the read keeps, and it also keeps one whose
-// EAV-joined projection takes a retained eav_data value over a NULL read.
-// Comparisons keep the raw column against the canonical image
-// (iso8601FilterImage): a non-timestamp string may pass that pre-filter, and
-// `visible` then drops it (a non-canonical timestamp image is #755).
+// leaf tests: resolveMainTableColumn, so is_null on an iso8601 date tests
+// the read, which is NULL for a string that is not a timestamp while the
+// column is not (#709). is_not_null on such a date keeps the raw column: the
+// read is non-NULL only where the column is, so the raw test already keeps
+// every row the read keeps, and it also keeps one whose EAV-joined
+// projection takes a retained eav_data value over a NULL read.
 func resolveMainNullTestColumn(attr string, meta forma.AttributeMetadata, nullTest string) string {
-	if meta.ColumnBinding != nil && nullTest == conditionexpr.SQLOpIsNull {
-		if expr, ok := mainColISO8601Read(meta); ok {
-			return expr
+	if nullTest == conditionexpr.SQLOpIsNotNull {
+		if _, ok := mainColISO8601Read(meta); ok {
+			return "m." + string(meta.ColumnBinding.ColumnName)
 		}
 	}
 	return resolveMainTableColumn(attr, meta)
+}
+
+// pgMainOperand binds a pg-main comparison leaf's operand against what
+// resolveMainTableColumn compares: the literal's epoch millis for an
+// iso8601 date's read, refused on the same whole-second and four-digit-year
+// rule the stored image keeps, and ConvertPgMainValue's bind otherwise.
+func pgMainOperand(valStr, attr string, meta forma.AttributeMetadata) (any, error) {
+	if _, ok := mainColISO8601Read(meta); !ok {
+		return ConvertPgMainValue(valStr, attr, meta)
+	}
+	ms, err := parseDateMillis(attr, valStr, meta)
+	if err != nil {
+		return nil, fmt.Errorf("invalid date value for '%s': %w", attr, err)
+	}
+	return ms, nil
 }
 
 // resolveDuckDBColumn returns the column name the DuckClause must reference.

@@ -12,18 +12,36 @@ import (
 // converts it to the Go value bound against the attribute's storage. attr
 // names the attribute in the refusal an iso8601 binding can raise.
 func parseDateValue(attr, valStr string, meta forma.AttributeMetadata) (any, error) {
-	parsedTime, err := conditionexpr.ParseRFC3339OrUnixMs(valStr)
+	ms, err := parseDateMillis(attr, valStr, meta)
 	if err != nil {
 		return nil, err
 	}
 	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601 {
 		// The text column holds the canonical image; the literal must be
 		// that image or it compares against nothing the store ever wrote.
-		return iso8601FilterImage(attr, valStr, parsedTime.UnixMilli(), meta)
+		return iso8601FilterImage(attr, valStr, ms, meta)
 	}
 	// unix_ms, the bigint default and the EAV value_numeric slot are all
 	// exact epoch millis.
-	return parsedTime.UnixMilli(), nil
+	return ms, nil
+}
+
+// parseDateMillis parses a date filter literal (RFC3339 or unix millis) to
+// its epoch millis. On an iso8601 binding it refuses what the canonical
+// image cannot hold (iso8601FilterImage), so a leaf that compares the
+// column's epoch-ms read refuses the literals a text comparison refuses.
+func parseDateMillis(attr, valStr string, meta forma.AttributeMetadata) (int64, error) {
+	parsedTime, err := conditionexpr.ParseRFC3339OrUnixMs(valStr)
+	if err != nil {
+		return 0, err
+	}
+	ms := parsedTime.UnixMilli()
+	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601 {
+		if _, err := iso8601FilterImage(attr, valStr, ms, meta); err != nil {
+			return 0, err
+		}
+	}
+	return ms, nil
 }
 
 // iso8601FilterImage renders a filter literal on an iso8601-bound column as

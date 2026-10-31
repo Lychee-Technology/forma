@@ -22,10 +22,11 @@ func iso8601DateMeta(vt forma.ValueType, col forma.MainColumn) forma.AttributeMe
 		ColumnBinding: &forma.MainColumnBinding{ColumnName: col, Encoding: forma.MainColumnEncodingISO8601}}
 }
 
-// TestBuildPgMainClause_ISO8601NullTestFiltersTheHotRead: is_null on an
-// iso8601-bound date tests the hot read; is_not_null and a comparison keep
-// the raw column, and a unix_ms date keeps the raw null test.
-func TestBuildPgMainClause_ISO8601NullTestFiltersTheHotRead(t *testing.T) {
+// TestBuildPgMainClause_ISO8601LeavesFilterTheHotRead: is_null and a
+// comparison on an iso8601-bound date test the hot read, the comparison
+// against the literal's epoch millis (#755); is_not_null keeps the raw
+// column, and a unix_ms date keeps the raw null test.
+func TestBuildPgMainClause_ISO8601LeavesFilterTheHotRead(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
 		"seenAt": iso8601DateMeta(forma.ValueTypeDateTime, forma.MainColumnText02),
 		"bornOn": iso8601DateMeta(forma.ValueTypeDate, forma.MainColumnText03),
@@ -38,10 +39,11 @@ func TestBuildPgMainClause_ISO8601NullTestFiltersTheHotRead(t *testing.T) {
 		want string
 		args []any
 	}{
-		{"seenAt", "is_null:true", "epoch_ms(TRY_CAST(m.text_02 AS TIMESTAMP)) IS NULL", nil},
+		{"seenAt", "is_null:true", ISO8601EpochMs("m.text_02") + " IS NULL", nil},
 		{"seenAt", "is_not_null:true", "m.text_02 IS NOT NULL", nil},
-		{"bornOn", "is_null:true", "epoch_ms(TRY_CAST(m.text_03 AS TIMESTAMP)) IS NULL", nil},
-		{"seenAt", "gt:2024-01-02T03:04:05Z", "m.text_02 > ?", []any{"2024-01-02T03:04:05Z"}},
+		{"bornOn", "is_null:true", ISO8601EpochMs("m.text_03") + " IS NULL", nil},
+		{"seenAt", "gt:2024-01-02T03:04:05Z", ISO8601EpochMs("m.text_02") + " > ?", []any{int64(1704164645000)}},
+		{"seenAt", "lte:2024-01-02T11:04:05+08:00", ISO8601EpochMs("m.text_02") + " <= ?", []any{int64(1704164645000)}},
 		{"stamp", "is_null:true", "m.bigint_01 IS NULL", nil},
 	} {
 		t.Run(tc.attr+"_"+tc.cond, func(t *testing.T) {
@@ -96,6 +98,59 @@ func TestISO8601NullPushdownIsNoStricterThanTheHotRead(t *testing.T) {
 						image, eav).Scan(&pushed, &projectedNull))
 					if projectedNull == (op == "is_null:true") {
 						require.True(t, pushed, "the pushdown drops a row the projection matches")
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestISO8601ComparisonPushdownIsNoStricterThanTheHotRead is #755 on
+// DuckDB: over the strings an iso8601 column can hold, the pg-main
+// comparison keeps a row whenever the logical fragment's comparison of the
+// hot read (BuildPGSelectNoEAV's projection, against the epoch-ms operand
+// the DuckDB leaf binds) does. The raw text against the canonical image
+// dropped a fraction (".5Z" sorts before "Z"), an offset ordered by its wall
+// clock (#756) and an offset-less string with a space. A retained eav_data
+// value is left out: the EAV-joined projection takes it over the column,
+// which no main-column leaf can see (#742).
+func TestISO8601ComparisonPushdownIsNoStricterThanTheHotRead(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	cache := forma.SchemaAttributeCache{"seenAt": iso8601DateMeta(forma.ValueTypeDateTime, forma.MainColumnText02)}
+	read := mainColISO8601Expr(string(forma.MainColumnText02))
+	images := []sql.NullString{
+		{String: "2024-01-02T03:04:05Z", Valid: true},
+		{String: "2024-01-02T03:04:05.5Z", Valid: true},
+		{String: "2024-01-02T11:04:06+08:00", Valid: true},
+		{String: "2024-01-01T22:04:04-05:00", Valid: true},
+		{String: "2024-01-02 03:04:06", Valid: true},
+		{String: "2024-01-02", Valid: true},
+		{String: "not a date", Valid: true},
+		{String: "", Valid: true},
+		{},
+	}
+	ops := map[string]string{"equals": "=", "not_equals": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+	literals := []string{"2024-01-02T03:04:05Z", "2024-01-02T03:04:06Z", "2024-01-02T11:04:05+08:00", "1704164645000"}
+	for op, sqlOp := range ops {
+		for _, literal := range literals {
+			paramIndex := 0
+			clause, args, err := buildPgMainClause(&forma.KvCondition{Attr: "seenAt", Value: op + ":" + literal}, cache, &paramIndex)
+			require.NoError(t, err)
+			require.Len(t, args, 1)
+			ms, err := parseDateMillis("seenAt", literal, cache["seenAt"])
+			require.NoError(t, err)
+			for _, image := range images {
+				t.Run(fmt.Sprintf("%s:%s/%q", op, literal, image.String), func(t *testing.T) {
+					var pushed, matched sql.NullBool
+					require.NoError(t, db.QueryRow(
+						"SELECT "+clause+", "+read+" "+sqlOp+" CAST(? AS BIGINT)"+
+							" FROM (SELECT CAST(? AS VARCHAR) AS text_02) m",
+						args[0], ms, image).Scan(&pushed, &matched))
+					if matched.Valid && matched.Bool {
+						require.True(t, pushed.Valid && pushed.Bool, "the pushdown drops a row the hot read matches")
 					}
 				})
 			}

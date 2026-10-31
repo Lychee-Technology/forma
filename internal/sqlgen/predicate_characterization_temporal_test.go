@@ -8,6 +8,10 @@ package sqlgen
 // unbound) and the uuid storage class.
 func buildCharTemporalUuidCases() []charCase {
 	iso := "2024-01-02T03:04:05Z"
+	// #755: pg-main compares the hot leg's epoch-ms read of the iso8601
+	// column, the value `visible` filters again, instead of the raw text
+	// against the canonical image.
+	isoRead := ISO8601EpochMs("m.text_03")
 	return []charCase{
 		{
 			name: "date unix-ms encoding: main/eav int64 ms, duck epoch-ms int64",
@@ -20,10 +24,10 @@ func buildCharTemporalUuidCases() []charCase {
 			span: 3,
 		},
 		{
-			name: "datetime ISO8601 encoding: main/eav bind ISO string, duck epoch-ms int64",
+			name: "datetime ISO8601 encoding: main tests the epoch-ms read, eav binds the ISO string, duck epoch-ms int64",
 			cond: charKv("joined", "gte:"+iso),
 			want: DualClauses{
-				PgMainClause: "m.text_03 >= ?", PgMainArgs: []any{iso},
+				PgMainClause: isoRead + " >= ?", PgMainArgs: []any{int64(1704164645000)},
 				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(9), iso},
 				DuckClause: "joined >= CAST(? AS BIGINT)", DuckArgs: []any{int64(1704164645000)},
 			},
@@ -33,10 +37,10 @@ func buildCharTemporalUuidCases() []charCase {
 			// #588: the literal's offset is folded into the UTC image the
 			// column stores; before, PG bound "2024-01-02T05:04:05+02:00"
 			// and compared it lexically against "…T03:04:05Z".
-			name: "datetime ISO8601 encoding: offset literal binds the UTC image on PG, epoch-ms on duck",
+			name: "datetime ISO8601 encoding: offset literal binds the UTC image on PG EAV, epoch-ms on main and duck",
 			cond: charKv("joined", "gte:2024-01-02T05:04:05+02:00"),
 			want: DualClauses{
-				PgMainClause: "m.text_03 >= ?", PgMainArgs: []any{iso},
+				PgMainClause: isoRead + " >= ?", PgMainArgs: []any{int64(1704164645000)},
 				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(9), iso},
 				DuckClause: "joined >= CAST(? AS BIGINT)", DuckArgs: []any{int64(1704164645000)},
 			},
@@ -45,10 +49,10 @@ func buildCharTemporalUuidCases() []charCase {
 		{
 			// #588: a unix-ms literal renders in UTC, not the process zone
 			// (TestMain pins Europe/Berlin; before, this bound "…T04:04:05+01:00").
-			name: "datetime ISO8601 encoding: unix-ms literal binds the UTC image on PG, epoch-ms on duck",
+			name: "datetime ISO8601 encoding: unix-ms literal binds the UTC image on PG EAV, epoch-ms on main and duck",
 			cond: charKv("joined", "equals:1704164645000"),
 			want: DualClauses{
-				PgMainClause: "m.text_03 = ?", PgMainArgs: []any{iso},
+				PgMainClause: isoRead + " = ?", PgMainArgs: []any{int64(1704164645000)},
 				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(9), iso},
 				DuckClause: "joined = CAST(? AS BIGINT)", DuckArgs: []any{int64(1704164645000)},
 			},

@@ -380,7 +380,9 @@ func (sp *SchemaProjection) attrIDForName(name string) int {
 //   - date/datetime in a text column (iso8601): every leg carries epoch-ms
 //     BIGINT, and CAST(attr AS BIGINT) then landed "1704164645000" in the
 //     text slot transform.readWithEncoding parses as RFC3339 (#555). The
-//     write path's image — RFC3339, UTC, second precision — is re-derived.
+//     write path's image — RFC3339, UTC, second precision — is re-derived
+//     (iso8601ImageFromEpochMs), with an offset only for an instant past
+//     the four-digit UTC years.
 func duckDBMainColCast(attr string, vt forma.ValueType, kind model.ColumnKind) string {
 	switch vt {
 	case forma.ValueTypeBool:
@@ -392,7 +394,7 @@ func duckDBMainColCast(attr string, vt forma.ValueType, kind model.ColumnKind) s
 		}
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		if kind == model.ColumnKindText {
-			return fmt.Sprintf("strftime(epoch_ms(CAST(%s AS BIGINT)), '%%Y-%%m-%%dT%%H:%%M:%%SZ')", attr)
+			return iso8601ImageFromEpochMs(attr)
 		}
 	}
 	return duckDBAttrCast(attr, vt)
