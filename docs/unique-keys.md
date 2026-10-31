@@ -213,6 +213,17 @@ values in opposite orders can deadlock. PostgreSQL then aborts one of them, whic
 receives `ErrRetryableConflict` rather than `ErrUniqueConflict`; running it
 again settles the outcome.
 
+### Values that change hands
+
+The insert skips a value another transaction holds, and the write then looks
+up the holder. A holder that released the value in between holds nothing by
+the lookup, so the write tries the value again. After 3 rounds that each saw
+the value taken and then released, the write removes the entries it reserved
+and answers `ErrRetryableConflict` (#699): it wrote nothing, and running it
+again settles against whatever then holds the value. Like every
+`ErrRetryableConflict` it poisons a Tx. Nothing has measured how often a
+round repeats under a hot key, so the bound of 3 is a guess.
+
 ### Messages
 
 The published message of a key violation names the schema and the key, never

@@ -8,13 +8,16 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/uniquekey"
 )
 
 // maxReserveRounds bounds reserveUniqueKeys' retries of entries whose owner
 // was gone by the time it looked: each round needs another transaction to
-// release the value between this one's insert and its lookup.
+// release the value between this one's insert and its lookup. Running out of
+// rounds is ErrRetryableConflict (#699): the reservation is undone, so the
+// write leaves nothing behind, and a re-run of it can settle.
 const maxReserveRounds = 3
 
 // claimedEntry is one entry a write takes, with the row that takes it.
@@ -62,8 +65,7 @@ func (r *DBPersistentRecordRepository) reserveUniqueKeys(
 	reservation := &uniqueKeyReservation{}
 	for round := 0; len(pending) > 0; round++ {
 		if round == maxReserveRounds {
-			return nil, r.undoAfter(ctx, tx, tables, reservation,
-				fmt.Errorf("unique key %s: its value was released and taken again %d times while this write took it", pending[0].entry.keyName, round))
+			return nil, r.undoAfter(ctx, tx, tables, reservation, reserveRoundsExhausted(pending[0], round))
 		}
 		inserted, err := insertKeyEntries(ctx, tx, tables, pending)
 		if err != nil {
@@ -80,6 +82,16 @@ func (r *DBPersistentRecordRepository) reserveUniqueKeys(
 		}
 	}
 	return reservation, nil
+}
+
+// reserveRoundsExhausted is the outcome of a reservation that ran out of
+// rounds on c. It is contention, not a conflict with stored state, so it is
+// ErrRetryableConflict, which publishes nothing: the key name and the round
+// count stay in Error() and the log.
+func reserveRoundsExhausted(c claimedEntry, rounds int) error {
+	return &storageOutcome{sentinel: forma.ErrRetryableConflict, cause: fmt.Errorf(
+		"unique key %s: its value was released and taken again %d times while this write took it",
+		c.entry.keyName, rounds)}
 }
 
 // takenEntries answers the claims' taken entries sorted by (schema, key,
