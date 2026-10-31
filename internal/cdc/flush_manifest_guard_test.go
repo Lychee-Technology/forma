@@ -18,9 +18,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// #474: a flush with no manifest store must not mark a batch flushed while the
-// schema's manifest lists files, since the batch's delta would then be listed
-// nowhere and its rows gone from the hot tier.
+// #474: a flush with no manifest store must not mark a batch flushed while a
+// manifest-driven reader depends on a manifest that lists files, since the
+// batch's delta would then be listed nowhere and its rows gone from the hot
+// tier. A run naming no template cannot see where such a reader looks, so it
+// is refused unless it declares glob-only; a declared run still refuses a
+// schema whose default-path manifest lists files.
 
 const listingManifestJSON = `{"schema_id":7,"version":3,"files":[{"tier":"base","path":"cdc/7/base.parquet"}]}`
 
@@ -82,7 +85,8 @@ func (c objectOnlyBucketClient) HeadObject(ctx context.Context, in *s3.HeadObjec
 }
 
 // unwiredFlushFixture is a change_log holding one dirty row of schema 7 and a
-// flush context built by the real constructor with no manifest template.
+// flush context built by the real constructor with no manifest template and
+// the run declared glob-only.
 type unwiredFlushFixture struct {
 	db       *sql.DB
 	flushCtx *schemaFlushContext
@@ -90,7 +94,14 @@ type unwiredFlushFixture struct {
 	exported bool
 }
 
-func newUnwiredFlushFixture(t *testing.T, clients resolvedS3Clients) *unwiredFlushFixture {
+// unwiredFlushConfig is the fixture's run: no template, so no store.
+func unwiredFlushConfig(globOnly bool) CDCConfig {
+	return CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc", ManifestPrefix: "cdc", BatchSize: 10, GlobOnly: globOnly}
+}
+
+// newDirtyChangeLog returns a fixture whose change_log holds one dirty row of
+// schema 7 and which has no flush context yet.
+func newDirtyChangeLog(t *testing.T) *unwiredFlushFixture {
 	t.Helper()
 	db, err := sql.Open("duckdb", ":memory:")
 	require.NoError(t, err)
@@ -102,26 +113,35 @@ func newUnwiredFlushFixture(t *testing.T, clients resolvedS3Clients) *unwiredFlu
 	f := &unwiredFlushFixture{db: db, rowID: uuid.MustParse("018f05c0-0000-7000-8000-000000000001")}
 	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, ?, 0)", f.rowID, time.Now().UnixMilli()-1000)
 	require.NoError(t, err)
+	return f
+}
 
+func newUnwiredFlushFixture(t *testing.T, clients resolvedS3Clients) *unwiredFlushFixture {
+	t.Helper()
+	f := newDirtyChangeLog(t)
 	flushCtx, err := newSchemaFlushContext(flushContextParams{
-		cfg:     CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc", ManifestPrefix: "cdc", BatchSize: 10},
-		db:      db,
+		cfg:     unwiredFlushConfig(true),
+		db:      f.db,
 		duck:    &DuckExporter{Logger: zap.NewNop()},
 		clients: clients,
 		logger:  zap.NewNop(),
 	})
 	require.NoError(t, err)
 	require.Nil(t, flushCtx.manifestStore, "an empty template must leave the store unwired")
-	// The real batch path, with only the DuckDB export stubbed.
+	f.stubExport(flushCtx)
+	f.flushCtx = flushCtx
+	return f
+}
+
+// stubExport runs the real batch path with only the DuckDB export stubbed.
+func (f *unwiredFlushFixture) stubExport(flushCtx *schemaFlushContext) {
 	flushCtx.executeSingle = func(e *flushBatchExecutor, ids []uuid.UUID) error {
 		e.exportSnapshot = func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			f.exported = true
 			return nil
 		}
-		return executeFlushSingle(ctx, e, ids)
+		return executeFlushSingle(context.Background(), e, ids)
 	}
-	f.flushCtx = flushCtx
-	return f
 }
 
 func (f *unwiredFlushFixture) flushedAt(t *testing.T) int64 {
@@ -133,8 +153,8 @@ func (f *unwiredFlushFixture) flushedAt(t *testing.T) int64 {
 	return flushedAt
 }
 
-// The issue's regression: no store, a manifest that lists files → an error,
-// not a silent mark. The refusal comes before the export, so no delta object
+// No store and a manifest that lists files → an error, not a silent mark,
+// even for a run that declares glob-only. The refusal comes before the export, so no delta object
 // is written and the row stays hot.
 func TestExecuteFlush_UnwiredStoreRefusesWhenManifestListsFiles(t *testing.T) {
 	bucket := &manifestBucketClient{objects: map[string][]byte{"cdc/manifest/7.json": []byte(listingManifestJSON)}}
@@ -216,4 +236,58 @@ func TestNewSchemaFlushContextProbesOnlyWithoutTemplate(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, flushCtx.manifestStore)
 	require.Nil(t, flushCtx.probeUnwiredManifest)
+}
+
+// The issue's regression for a custom template: readers use a populated
+// manifest at cdc/inventory/7.json, and the default path cdc/manifest/7.json
+// is absent. A run that names no template cannot see the inventory, so a 404
+// at the default path must not let it flush: an undeclared run is refused
+// before it touches any schema, and the row stays hot with nothing exported,
+// published or marked.
+func TestFlush_UndeclaredUnwiredRunRefusedOverCustomTemplateManifest(t *testing.T) {
+	bucket := &manifestBucketClient{objects: map[string][]byte{"cdc/inventory/7.json": []byte(listingManifestJSON)}}
+	clients := resolvedS3Clients{object: bucket, full: bucket}
+	f := newDirtyChangeLog(t)
+
+	flushCtx, err := newSchemaFlushContext(flushContextParams{
+		cfg:     unwiredFlushConfig(false),
+		db:      f.db,
+		duck:    &DuckExporter{Logger: zap.NewNop()},
+		clients: clients,
+		logger:  zap.NewNop(),
+	})
+	require.ErrorIs(t, err, ErrManifestStoreUnwired)
+	require.Nil(t, flushCtx)
+	require.False(t, f.exported, "a refused run must not export")
+	require.Zero(t, bucket.copies, "a refused run must not publish a delta")
+	require.Zero(t, f.flushedAt(t), "a refused run must leave its rows hot")
+}
+
+// The batch guard fails closed on its own: an executor whose run never
+// declared glob-only refuses before the export even when the default-path
+// probe would answer "absent", so no caller that builds a context or an
+// executor another way can mark an unlisted batch over a custom-template
+// manifest.
+func TestExecuteFlush_UndeclaredUnwiredBatchRefusedOverCustomTemplateManifest(t *testing.T) {
+	bucket := &manifestBucketClient{objects: map[string][]byte{"cdc/inventory/7.json": []byte(listingManifestJSON)}}
+	f := newUnwiredFlushFixture(t, resolvedS3Clients{object: bucket, full: bucket})
+	f.flushCtx.cfg.GlobOnly = false
+
+	err := f.flushCtx.executeFlush(context.Background(), 7)
+	require.ErrorIs(t, err, ErrManifestStoreUnwired)
+	require.False(t, f.exported, "a refused batch must not export")
+	require.Zero(t, bucket.copies, "a refused batch must not publish a delta")
+	require.Zero(t, f.flushedAt(t), "a refused batch must leave its rows hot")
+}
+
+// Declaring glob-only and naming a template contradict each other: the run is
+// refused rather than guessing which one the operator meant.
+func TestNewSchemaFlushContextRejectsGlobOnlyWithTemplate(t *testing.T) {
+	bucket := &manifestBucketClient{objects: map[string][]byte{}}
+	_, err := newSchemaFlushContext(flushContextParams{
+		cfg:     CDCConfig{S3Bucket: "test-bucket", ManifestTemplate: "manifest/{{.SchemaID}}.json", GlobOnly: true},
+		clients: resolvedS3Clients{object: bucket, full: bucket},
+		logger:  zap.NewNop(),
+	})
+	require.ErrorIs(t, err, ErrGlobOnlyWithTemplate)
 }

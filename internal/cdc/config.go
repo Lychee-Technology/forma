@@ -65,6 +65,16 @@ type CDCConfig struct {
 	ManifestPrefix   string // root prefix for manifests in S3
 	ManifestTemplate string // path template, e.g. "manifest/{{.SchemaID}}.json"
 
+	// GlobOnly declares that no reader of this deployment resolves files
+	// from a manifest: every federated read globs the S3 prefix. A flush
+	// with an empty ManifestTemplate requires it (#474). Without a template
+	// the flush cannot list its delta anywhere, and a run that names no
+	// template cannot know where a manifest-driven reader looks (a custom
+	// template's manifest is invisible to it), so the declaration is the
+	// only thing that makes marking a batch flushed without an append safe.
+	// It is rejected together with a ManifestTemplate.
+	GlobOnly bool
+
 	// BeforeExportHook, when non-nil, runs per batch after dirty-ID selection
 	// (the snapshot is already captured) and before the DuckDB export. Test
 	// seam for driving mutations inside the selection->export race window

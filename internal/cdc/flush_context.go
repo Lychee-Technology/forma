@@ -69,6 +69,9 @@ func newSchemaFlushContext(p flushContextParams) (*schemaFlushContext, error) {
 	if tableName == "" {
 		tableName = "change_log"
 	}
+	if err := checkManifestMode(p.cfg); err != nil {
+		return nil, fmt.Errorf("cdc flush manifest configuration: %w", err)
+	}
 	// The schema lock follows the configured engine (#633); an unknown one
 	// fails the run here, before any schema is touched.
 	locker, err := NewSchemaLocker(p.db, p.cfg.Engine, p.cfg.EntityMainTable)
@@ -91,8 +94,10 @@ func newSchemaFlushContext(p flushContextParams) (*schemaFlushContext, error) {
 	}
 
 	if p.cfg.ManifestTemplate == "" {
-		// No store to append to: the probe refuses a batch whose schema
-		// already has a manifest listing files (#474).
+		// A declared glob-only run (checkManifestMode) has no store to
+		// append to: the probe still refuses a batch whose schema has a
+		// default-path manifest listing files, which contradicts the
+		// declaration (#474).
 		var probeStore manifest.Store
 		if usableFullClient(p.clients.full) {
 			probeStore = &manifest.S3Store{Client: p.clients.full, Bucket: p.cfg.S3Bucket}

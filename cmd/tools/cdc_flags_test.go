@@ -331,7 +331,8 @@ func TestParseCDCInitFlagsEstimatedRowBytes(t *testing.T) {
 // A --manifest-template that collapses every schema onto one object would
 // append schema A's delta entries into schema B's manifest. cdc-init already
 // probes the template (#518); flush must refuse it before opening Postgres
-// or S3 (#520). An empty template keeps meaning "manifest tracking off".
+// or S3 (#520). An empty template means "manifest tracking off", which a
+// run must declare with -glob-only (#474).
 func TestParseCDCFlushFlagsRejectsCollapsedManifestTemplate(t *testing.T) {
 	for _, tmpl := range []string{"manifest/all.json", "manifest/{{.SchemaId}}.json"} {
 		_, err := parseCDCFlushFlags([]string{"-s3-bucket=b", "-manifest-template=" + tmpl})
@@ -342,7 +343,38 @@ func TestParseCDCFlushFlagsRejectsCollapsedManifestTemplate(t *testing.T) {
 			t.Errorf("template %q: error %q must name the flag", tmpl, err.Error())
 		}
 	}
-	if _, err := parseCDCFlushFlags([]string{"-s3-bucket=b", "-manifest-template="}); err != nil {
-		t.Fatalf("empty template disables manifests and must parse: %v", err)
+	if _, err := parseCDCFlushFlags([]string{"-s3-bucket=b", "-manifest-template=", "-glob-only"}); err != nil {
+		t.Fatalf("empty template with -glob-only disables manifests and must parse: %v", err)
+	}
+}
+
+// #474: a flush that writes no manifest is refused unless the operator
+// declares that no reader uses one. -glob-only clears the default template,
+// and contradicts an explicit one.
+func TestParseCDCFlushFlagsGlobOnly(t *testing.T) {
+	_, err := parseCDCFlushFlags([]string{"-s3-bucket=b", "-manifest-template="})
+	if err == nil || !strings.Contains(err.Error(), "-glob-only") {
+		t.Fatalf("an empty template without -glob-only must be refused naming the flag, got %v", err)
+	}
+
+	opts, err := parseCDCFlushFlags([]string{"-s3-bucket=b", "-glob-only"})
+	if err != nil {
+		t.Fatalf("-glob-only alone must parse: %v", err)
+	}
+	if !opts.cfg.GlobOnly || opts.cfg.ManifestTemplate != "" {
+		t.Errorf("-glob-only: GlobOnly=%v ManifestTemplate=%q, want true and empty", opts.cfg.GlobOnly, opts.cfg.ManifestTemplate)
+	}
+
+	_, err = parseCDCFlushFlags([]string{"-s3-bucket=b", "-glob-only", "-manifest-template=manifest/{{.SchemaID}}.json"})
+	if err == nil || !strings.Contains(err.Error(), "-glob-only") {
+		t.Fatalf("-glob-only with an explicit template must be refused, got %v", err)
+	}
+
+	opts, err = parseCDCFlushFlags([]string{"-s3-bucket=b"})
+	if err != nil {
+		t.Fatalf("defaults must parse: %v", err)
+	}
+	if opts.cfg.GlobOnly || opts.cfg.ManifestTemplate == "" {
+		t.Errorf("defaults: GlobOnly=%v ManifestTemplate=%q, want false and the default template", opts.cfg.GlobOnly, opts.cfg.ManifestTemplate)
 	}
 }
