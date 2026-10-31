@@ -176,7 +176,7 @@ func (e *DBFederatedQueryEngine) validateScanSet(
 // read, so their column types could not be judged against the declarations
 // (#732). It is the cause handed to failDuckDBScan, which classifies it the
 // way it classifies a failed scan: a missing object is #187 inconsistency, a
-// corrupt one is excluded for a #251 partial retry, and anything else is a
+// corrupt one fails as CorruptParquetError (#722), and anything else is a
 // degradable ErrFederatedReadFailed. Paths are storage locations, which the
 // HTTP boundary redacts with the rest of an internal-class error.
 type unverifiedParquetError struct {

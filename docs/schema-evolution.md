@@ -578,7 +578,7 @@ refuse, and the census reports them. A `numeric` value written as
   not quoted). It is never degraded to a Postgres-only answer, and nothing is
   pruned or rewritten. A manifest-listed object whose footer or proof cannot
   be read fails the read closed with the usual read-failure classification,
-  so a corrupt object is still excluded as a #251 partial scan. Pinned by
+  so a corrupt object still fails or degrades as #722 specifies. Pinned by
   `TestCheckTypesProvesValuesUnderTheNewDeclaration` and the production
   harness's `TestTypeGuard*` scenarios.
 - **Implemented (#733):** a BIGINT object under a `numeric` declaration

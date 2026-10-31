@@ -227,7 +227,7 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// A zero timeout leaves the caller's context as it is. Query arms the
 	// same budget once for the whole DuckDB-routed request
 	// (queryDuckDBRouted), so under it this deadline is never later than the
-	// request's and a corrupt-parquet retry or a deep-page recount shares
+	// request's and a publication-race retry or a deep-page recount shares
 	// the remainder; the arming here is what bounds callers that reach a
 	// pass directly (ExecuteFederatedKeysetQuery, the benchmark harness).
 	// The caller's own deadline (QueryConfig.DefaultTimeout) is the ceiling
@@ -340,7 +340,7 @@ func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
 	// The dirty-set size feeds fed_query_row_count{source="pg"}, but it is
 	// emitted with the rest of the pass's series once DuckDB has succeeded
 	// (emitDuckDBScanMetrics), not here: a pass that fails after this point
-	// must leave no sample, and the #251 retry must not count twice.
+	// must leave no sample, and the #720 retry must not count twice.
 	// Record in execution plan
 	planCtx.recordDirtyIDSource(tables.ChangeLog, q.SchemaID, len(dirtyIDs), sqlgen.FederatedQueryHasHot(q))
 

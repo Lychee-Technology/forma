@@ -92,7 +92,7 @@ func (v *parquetSchemaValidator) log() *zap.Logger {
 // them. A concrete object whose footer could not be read is listed in the
 // union's unverified set: on a manifest-authored path set the read fails
 // closed on it through the same classification a failed scan gets (#732),
-// so a corrupt object is still excluded as a #251 partial scan and a missing
+// so a corrupt object still fails as CorruptParquetError (#722) and a missing
 // one still reports as #187 manifest inconsistency. A failed glob listing
 // names no object and keeps deferring to the main read.
 //

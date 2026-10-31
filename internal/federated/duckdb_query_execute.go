@@ -212,7 +212,7 @@ func (c *duckDBExecutionPlanContext) recordScanOutcome(o duckDBScanOutcome) {
 // the bare drains just read every object clean, so if a guarded single-file
 // drain fails deterministically the failure is a schema-invariant violation
 // and the error names the object(s). Identification decorates — it never
-// excludes, never retries, and never changes the classification chain.
+// caches, never retries, and never changes the classification chain.
 func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.FederatedAttributeQuery, sc scan, cause error, op string) error {
 	classified := e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource)
 	var inconsistent *ParquetSetInconsistentError
@@ -249,7 +249,8 @@ func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.Fe
 // confirmCorruptPaths gates #251 verification: source-authored sets only —
 // hint-authored paths name objects no manifest vouches for, and the caller
 // pinned them deliberately. Unlike #251 it runs for single-path sets too:
-// verification needs a readable remainder to be worth confirming, whereas
+// verification needs an object that reads clean to tell a corrupt file from
+// a sick store, whereas
 // naming the one object in the set is exactly what an operator needs.
 func (e *DBFederatedQueryEngine) identifyGuardViolationPaths(ctx context.Context, sc scan) []string {
 	if e == nil || e.duck == nil || !sc.pathsFromSource || len(sc.parquetPaths) == 0 {
@@ -261,8 +262,8 @@ func (e *DBFederatedQueryEngine) identifyGuardViolationPaths(ctx context.Context
 // confirmCorruptPaths runs per-file verification when the failed scan ran
 // over a source-authored multi-object set. It confirms corruption only when
 // at least one object verified readable — if every object fails to read, the
-// store or engine is sick, not the files, and exclusion would be both wrong
-// and useless (an empty remainder cannot answer the query).
+// store or engine is sick, not the files, and a cached verdict would refuse
+// reads that a recovered store could answer.
 func (e *DBFederatedQueryEngine) confirmCorruptPaths(ctx context.Context, sc scan) []string {
 	if !sc.pathsFromSource || len(sc.parquetPaths) < 2 || e == nil || e.duck == nil {
 		return nil

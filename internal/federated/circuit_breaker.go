@@ -56,9 +56,9 @@ type CircuitBreaker struct {
 	// moves only at the observable events — a trip or re-open, Allow
 	// reserving the probe, RecordSuccess — and never repeats a state, so
 	// extending an open period, reclaiming a lapsed probe slot and
-	// ReleaseProbe are not transitions. The #251 corrupt-confirmed path
-	// releases the probe and its retry re-reserves it in one request; that
-	// must not report half-open twice.
+	// ReleaseProbe are not transitions. A pass that releases the probe and
+	// the #720 publication-race retry that re-reserves it run in one
+	// request; that must not report half-open twice.
 	reported BreakerState
 }
 
