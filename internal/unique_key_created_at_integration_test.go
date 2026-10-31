@@ -78,6 +78,23 @@ func TestUniqueKeyOverTheCreationStampHoldsTheStoredStamp(t *testing.T) {
 	env.assertKeyTableMatchesRows(t)
 }
 
+// An atomic batch answers each row as stored: the creation stamp it answers
+// is the repository's clock read the row holds, not the transformer's earlier
+// one (#701), as single Create answers it.
+func TestAtomicBatchCreateAnswersTheStoredCreationStamp(t *testing.T) {
+	env := setupUniqueKeyEnv(t)
+	stamp := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	env.manager.(*entityManager).repository.(*DBPersistentRecordRepository).withClock(func() time.Time { return stamp })
+
+	result, err := env.manager.BatchCreate(env.ctx, ukCreatedBatch(true, "alice", "bob"))
+	require.NoError(t, err)
+	require.Len(t, result.Successful, 2)
+	for _, record := range result.Successful {
+		assert.Equal(t, stamp, record.Attributes["created"])
+		env.requireStored(t, record)
+	}
+}
+
 // ukCreatedUpsert is a do_nothing Upsert of one ukcreated row on its
 // owner_created key.
 func ukCreatedUpsert(owner string) *forma.UpsertRequest {

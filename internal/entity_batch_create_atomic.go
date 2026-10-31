@@ -21,7 +21,6 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 	startTime := time.Now()
 	tables := s.resolveTables()
 	persistentRecords := make([]*model.PersistentRecord, len(req.Operations))
-	successful := make([]*forma.DataRecord, len(req.Operations))
 
 	relationRoots := newRelationRootMemo(s.relations)
 	for i, op := range req.Operations {
@@ -64,21 +63,19 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 		if err != nil {
 			return nil, forma.WrapPublicf(fmt.Errorf("failed to transform data to persistent record: %w", err), "operation[%d]", i)
 		}
-		attributes, err := s.transformer.FromPersistentRecord(ctx, record)
-		if err != nil {
-			return nil, forma.WrapPublicf(fmt.Errorf("failed to transform persistent record to json: %w", err), "operation[%d]", i)
-		}
-
 		persistentRecords[i] = record
-		successful[i] = &forma.DataRecord{
-			SchemaName: op.SchemaName,
-			RowID:      rowID,
-			Attributes: attributes,
-		}
 	}
 
 	if err := atomicRepo.BatchInsertPersistentRecords(ctx, tables, persistentRecords); err != nil {
 		return nil, fmt.Errorf("atomic batch create failed: %w", err)
+	}
+
+	// The insert stamps each record's created_at and updated_at from the
+	// repository's clock, so the response is built only after it, from the
+	// records as stored, as single Create does (#701).
+	successful, err := s.buildStoredCreateResponses(ctx, req.Operations, persistentRecords)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build atomic batch create responses: %w", err)
 	}
 
 	duration := time.Since(startTime).Microseconds()
@@ -88,4 +85,24 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 		TotalCount: len(req.Operations),
 		Duration:   duration,
 	}, nil
+}
+
+// buildStoredCreateResponses answers each operation of an atomic create with its
+// record as the batch insert stored it. The rows are already committed, so a
+// failure here is the response's, not the write's: it is reported as a plain
+// error, as single Create reports one.
+func (s *entityBatchService) buildStoredCreateResponses(ctx context.Context, ops []forma.EntityOperation, records []*model.PersistentRecord) ([]*forma.DataRecord, error) {
+	successful := make([]*forma.DataRecord, len(records))
+	for i, record := range records {
+		attributes, err := s.transformer.FromPersistentRecord(ctx, record)
+		if err != nil {
+			return nil, fmt.Errorf("failed to transform persistent record of operation[%d] to JSON: %w", i, err)
+		}
+		successful[i] = &forma.DataRecord{
+			SchemaName: ops[i].SchemaName,
+			RowID:      record.RowID,
+			Attributes: attributes,
+		}
+	}
+	return successful, nil
 }
