@@ -22,8 +22,8 @@ import (
 // The guarded sibling — identifyGuardViolations in parquet_guard_identify.go —
 // deliberately inverts this drain's blindness: it reads through the #256 scan
 // guard to NAME a schema-wrong object (#351), where this pass reads bare to
-// EXCLUDE a byte-corrupt one. Keep the two drains distinct: guarding this one
-// would auto-exclude schema-wrong objects, which #351 forbids.
+// CONFIRM a byte-corrupt one. Keep the two drains distinct: guarding this one
+// would report schema-wrong objects as corrupt and cache refusals for them.
 //
 // Confirmation requires TWO consecutive failed drains (#349 review R2-1):
 // deterministic corruption fails every drain — same bytes, same decode —
@@ -31,8 +31,8 @@ import (
 // that fails once and reads clean on the immediate re-drain must NOT be
 // cached as corruption; a single failure is inconclusive and leaves the
 // query on the ordinary RecordFailure path. Glob entries are skipped:
-// unverifiable means unexcludable, and the main scan keeps its all-or-nothing
-// behavior for them. A cancelled context confirms nothing —
+// unverifiable means never confirmed corrupt, so a failure over them stays an
+// ordinary read failure. A cancelled context confirms nothing —
 // cancellation is indistinguishable from corruption for the remaining
 // paths. Runs only on the read-failure path, so its cost is bounded by
 // failures, not by queries.
@@ -63,8 +63,8 @@ func verifyParquetPaths(ctx context.Context, duck DuckDBQueryExecutor, paths []s
 // unverifiablePath reports whether a path cannot be probed on its own: a glob
 // names a set rather than one object, so a solo drain of it proves nothing
 // about any single object. These are exactly the entries the main scan keeps
-// all-or-nothing behavior for — unverifiable means neither excludable (#251)
-// nor nameable (#351). Quote-bearing entries used to be skipped too, back
+// all-or-nothing behavior for — unverifiable means neither confirmable as
+// corrupt (#251) nor nameable (#351). Quote-bearing entries used to be skipped too, back
 // when both drains interpolated the path raw; since #456 every render site
 // escapes it via sqlutil.EscapeLiteral, so a quote, double quote, or
 // semicolon in an object key no longer withholds per-file coverage (#479).
@@ -87,18 +87,27 @@ func drainParquet(ctx context.Context, duck DuckDBQueryExecutor, path string) er
 	return nil
 }
 
-// corruptParquetRetryError marks a scan failure attributed to specific
-// corrupt objects that are now cached for exclusion (#251): one immediate
-// retry will scan without them. Unwrap keeps the original classification
-// chain (ErrFederatedReadFailed), so a caller that does not retry — a direct
-// Stream consumer — degrades exactly as before.
-type corruptParquetRetryError struct {
-	Corrupt []string
-	cause   error
+// CorruptParquetError fails a federated read whose path set holds objects
+// confirmed corrupt by per-file verification (#251), either confirmed by this
+// pass or still cached from an earlier one. The read is not answered from the
+// readable remainder (#722): excluding an object drops every version it holds
+// from the last-write-wins input, so an older version in a readable object
+// would win over a newer update or tombstone, and the hot leg holds neither
+// once the row is past the flush grace. Unwrap keeps ErrFederatedReadFailed,
+// so the error is degradable: AllowPartialDegradedMode answers from
+// PostgreSQL alone, which the storage invariant makes complete for live rows.
+type CorruptParquetError struct {
+	// SchemaID is the schema the failed federated read was addressed to.
+	SchemaID int16
+	// Paths are the full storage URIs of the corrupt objects. Operator
+	// detail: httpapi redacts non-published error text (#301/#306).
+	Paths []string
+	cause error
 }
 
-func (e *corruptParquetRetryError) Error() string {
-	return fmt.Sprintf("corrupt parquet objects excluded, retry available %v: %v", e.Corrupt, e.cause)
+func (e *CorruptParquetError) Error() string {
+	return fmt.Sprintf("schema %d: %d parquet object(s) confirmed corrupt %v: %v",
+		e.SchemaID, len(e.Paths), e.Paths, e.cause)
 }
 
-func (e *corruptParquetRetryError) Unwrap() error { return e.cause }
+func (e *CorruptParquetError) Unwrap() error { return e.cause }

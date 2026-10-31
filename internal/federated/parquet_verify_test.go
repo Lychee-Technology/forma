@@ -181,13 +181,13 @@ func TestVerifyParquetPathsCancelledContextVerifiesNothing(t *testing.T) {
 	}
 }
 
-func TestCorruptParquetRetryErrorChain(t *testing.T) {
+func TestCorruptParquetErrorChain(t *testing.T) {
 	cause := fmt.Errorf("scan: %w: boom", ErrFederatedReadFailed)
-	err := &corruptParquetRetryError{Corrupt: []string{"s3://b/bad.parquet"}, cause: cause}
+	err := &CorruptParquetError{SchemaID: 7, Paths: []string{"s3://b/bad.parquet"}, cause: cause}
 	if !errors.Is(err, ErrFederatedReadFailed) {
-		t.Fatal("retry error must keep the ErrFederatedReadFailed classification")
+		t.Fatal("the corrupt error must keep the ErrFederatedReadFailed classification")
 	}
-	if !strings.Contains(err.Error(), "s3://b/bad.parquet") {
-		t.Fatalf("retry error must name the corrupt objects: %v", err)
+	if !strings.Contains(err.Error(), "s3://b/bad.parquet") || !strings.Contains(err.Error(), "schema 7") {
+		t.Fatalf("the corrupt error must name the schema and the corrupt objects: %v", err)
 	}
 }

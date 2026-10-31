@@ -1434,13 +1434,13 @@ rows in that object are simply gone from the result set.
   survive and returns a shorter result set with no error at all.
 - **Direction of the contract.** Only `manifest ⊆ live objects` is enforced.
   Extra unlisted objects are tolerated and invisible to reads.
-- **One bounded exception (#251).** An object confirmed corrupt by per-file
-  verification is excluded from path resolution for a retention window
-  (default 5 minutes), and an excluded object is not scanned — so if it is
-  *also deleted* from storage inside that window, the inconsistency
-  classification fires only after the cache entry expires and the object is
-  rescanned. Delay, not suppression: the loss still surfaces, up to one
-  retention window late. See `docs/federated-query/design.md` §7.3.
+- **Cached corruption does not mask a loss (#251, #722).** While a per-file
+  verification verdict is cached (default 5 minutes), a read whose set lists
+  the corrupt object is refused as `CorruptParquetError` before any scan. The
+  refusal probes the whole listed set first, so a listed object deleted
+  inside that window, the corrupt one or any other, still fails as
+  `ParquetSetInconsistentError` and is not absorbed by the degraded
+  fallback. See `docs/federated-query/design.md` §7.3.
 - **Operator action.** The message names the schema and the missing
   bucket-relative keys. Run the reconciliation tool to diagnose and repair:
   see `docs/manifest-reconcile.md`.
@@ -1732,8 +1732,8 @@ shape:
   transaction (`Create`, `Update`, `Delete`, and each atomic batch; a
   best-effort batch is bounded per operation); `DuckDBConfig.QueryTimeout`
   bounds all the DuckDB-routed work of one federated request inside the
-  query budget: it is armed once, so the page pass, a corrupt-parquet retry,
-  the deep-page recount and a degraded Postgres fallback share one deadline
+  query budget: it is armed once, so the page pass, a publication-race retry
+  (#720), the deep-page recount and a degraded Postgres fallback share one deadline
   and a multi-pass request never spends more than one budget. All three are real context
   deadlines, so pgx cancels the running statement and duckdb-go interrupts the
   running scan. An exceeded budget surfaces as `context.DeadlineExceeded` and
@@ -1746,7 +1746,8 @@ shape:
   is **not** degradable to Postgres-only under `AllowPartialDegradedMode`; a
   DuckDB that keeps timing out opens the circuit breaker, and that rejection
   degrades as before. `context.Canceled` (the client went away) stays `500`;
-  nobody reads that status.
+  nobody reads that status. It is not degradable either: no caller is left to
+  read a Postgres-only answer.
 - **`http.Server`.** cmd/server sets `ReadHeaderTimeout`, `ReadTimeout`,
   `WriteTimeout`, `IdleTimeout` and `MaxHeaderBytes`
   (`bootstrap.DefaultHTTPServerConfig`, `HTTP_*` overrides in the README).

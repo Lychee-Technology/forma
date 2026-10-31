@@ -159,12 +159,13 @@ func TestBreakerTransitionsReportedThroughQuery(t *testing.T) {
 	require.Positive(t, rec.otherMetric, "the successful passes' fed_query_* series reach the same emitter")
 }
 
-// TestBreakerCorruptRetryReportsHalfOpenOnce pins the #251 interaction: the
-// probe pass hits confirmed corruption, hands its slot back through
-// ReleaseProbe, and the retry re-reserves it inside the same request. The
-// breaker was already reported half-open, so the request reports half_open
-// once, then closed.
-func TestBreakerCorruptRetryReportsHalfOpenOnce(t *testing.T) {
+// TestBreakerCorruptRefusalReportsHalfOpenOnce pins the #251 interaction
+// under #722: the probe pass hits confirmed corruption, hands its slot back
+// through ReleaseProbe, and fails the read. The next request re-reserves the
+// slot and is refused at path resolution from the cached verdict. The
+// breaker was already reported half-open, so the two requests report
+// half_open once, and neither closes or re-opens it.
+func TestBreakerCorruptRefusalReportsHalfOpenOnce(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
@@ -181,12 +182,15 @@ func TestBreakerCorruptRetryReportsHalfOpenOnce(t *testing.T) {
 	require.Equal(t, BreakerTransition{BreakerClosed, BreakerOpen}, breaker.RecordFailure())
 	elapseOpenPeriod(breaker)
 
-	_, err := e.Query(context.Background(),
-		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
-		coldTierQuery(), nil)
-	require.NoError(t, err)
-	require.Len(t, duck.mainSQL, 2, "the failed probe pass plus exactly one admitted retry")
-	require.Equal(t, []string{"half_open", "closed"}, rec.take(),
-		"release-and-retry must not report half_open twice")
+	tables := model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
+	_, err := e.Query(context.Background(), tables, coldTierQuery(), nil)
+	var corrupt *CorruptParquetError
+	require.ErrorAs(t, err, &corrupt)
+	require.Equal(t, []string{"half_open"}, rec.take())
+
+	_, err = e.Query(context.Background(), tables, coldTierQuery(), nil)
+	require.ErrorAs(t, err, &corrupt)
+	require.Len(t, duck.mainSQL, 1, "the cached verdict refuses the second request before a scan")
+	require.Empty(t, rec.take(), "release-and-reserve must not report half_open twice")
 	require.Zero(t, rec.underLock)
 }

@@ -133,7 +133,7 @@ func (c HTTPServerConfig) Validate(budgets *forma.Config) error {
 // side instead (#465 review). Counting the DuckDB budget once is exact
 // because the federated engine arms it once per request
 // (DBFederatedQueryEngine.queryDuckDBRouted): the page pass, a
-// corrupt-parquet retry, the deep-page recount and a degraded fallback share
+// publication-race retry, the deep-page recount and a degraded fallback share
 // one deadline rather than each taking a budget of their own. The write side
 // is TransactionConfig.DefaultTimeout.
 func LargestRequestBudget(cfg *forma.Config) (time.Duration, string) {

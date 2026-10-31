@@ -88,7 +88,7 @@ func (e *DBFederatedQueryEngine) confirmNoParquetPublished(ctx context.Context, 
 // a "no": the retry it leads to resolves from scratch and reports the
 // failure through the usual paths.
 func (e *DBFederatedQueryEngine) sourceResolvesNoObjects(ctx context.Context, q *model.FederatedAttributeQuery) bool {
-	paths, fromSource, _, _, err := e.resolveParquetPaths(ctx, q)
+	paths, fromSource, _, err := e.resolveParquetPaths(ctx, q)
 	return err == nil && fromSource && globsMatchNothing(ctx, e.duck, paths)
 }
 
@@ -138,8 +138,8 @@ func emptyParquetScanSet(cache forma.SchemaAttributeCache) coldScanSet {
 }
 
 // NoteEmptyParquetScan marks a plan whose parquet leg scanned nothing because
-// the schema has no parquet to read yet (#720). Notes stay internal, like
-// NotePartialParquetExclusion.
+// the schema has no parquet to read yet (#720). Notes stay internal:
+// toExecutionPlan drops them at the HTTP boundary (#301/#306).
 const NoteEmptyParquetScan = "parquet scan skipped: the fallback glob matches no object and every row is served hot"
 
 // recordEmptyParquetScan notes an empty parquet leg on the plan. No-op when

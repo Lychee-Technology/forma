@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -417,80 +416,68 @@ func newExclusionTestEngine(src ParquetSource) *DBFederatedQueryEngine {
 		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}, nil, "", WithParquetSource(src))
 }
 
+// newCachedRefusalTestEngine is newExclusionTestEngine with schema 7's
+// metadata registered. The cached corrupt refusal runs the SQL build's
+// refusals first (#722), so without metadata every refusal would be
+// ErrSchemaMetadataCacheRequired.
+func newCachedRefusalTestEngine(t *testing.T, src ParquetSource) *DBFederatedQueryEngine {
+	t.Helper()
+	return NewDBFederatedQueryEngine(nil, nil, nil, nil,
+		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}, testMetadataCacheSchema7(t), "", WithParquetSource(src))
+}
+
 func exclusionTestQuery() *model.FederatedAttributeQuery {
 	return &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7}}
 }
 
-// TestResolveParquetPathsExcludesCachedCorrupt pins the #251 resolve-time
-// exclusion: a verification-confirmed corrupt object drops out of a
-// source-authored path set and is reported for the execution-plan note.
-func TestResolveParquetPathsExcludesCachedCorrupt(t *testing.T) {
-	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/a.parquet", "s3://b/bad.parquet"}})
-	e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
+// TestResolveScanSourcesRefusesCachedCorrupt pins the #722 pre-flight
+// refusal: a source-authored set that lists a verification-confirmed corrupt
+// object fails, degradably, instead of scanning without it. The refusal names
+// only the cached objects, and it holds when every object is cached too.
+func TestResolveScanSourcesRefusesCachedCorrupt(t *testing.T) {
+	for name, listed := range map[string][]string{
+		"one of two cached": {"s3://b/a.parquet", "s3://b/bad.parquet"},
+		"all cached":        {"s3://b/bad.parquet"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newCachedRefusalTestEngine(t, &fakeParquetSource{paths: listed})
+			e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
 
-	paths, fromSource, _, excluded, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
+			sc, err := e.resolveScanSources(context.Background(), corruptTables, exclusionTestQuery())
+			var corrupt *CorruptParquetError
+			require.ErrorAs(t, err, &corrupt)
+			require.Equal(t, []string{"s3://b/bad.parquet"}, corrupt.Paths)
+			require.ErrorIs(t, err, ErrFederatedReadFailed)
+			require.True(t, degradableFederatedError(err))
+			require.Nil(t, sc.paths, "a refused set must not be handed to the scan")
+		})
+	}
+}
+
+// TestResolveParquetPathsKeepsUncachedSet: with nothing cached the source's
+// set and stamps pass through unchanged.
+func TestResolveParquetPathsKeepsUncachedSet(t *testing.T) {
+	stamps := map[string]map[string]string{"s3://b/a.parquet": {"row_id": "UUID"}}
+	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/a.parquet", "s3://b/b.parquet"}, stamps: stamps})
+	e.corruptPaths.Add([]string{"s3://b/elsewhere.parquet"})
+
+	paths, fromSource, gotStamps, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
 	require.NoError(t, err)
 	require.True(t, fromSource, "source-authored set must report fromSource")
-	require.Equal(t, []string{"s3://b/a.parquet"}, paths)
-	require.Equal(t, []string{"s3://b/bad.parquet"}, excluded)
+	require.Equal(t, []string{"s3://b/a.parquet", "s3://b/b.parquet"}, paths)
+	require.Equal(t, stamps, gotStamps)
 }
 
-// TestResolveParquetPathsAllCorruptKeepsFullSet: excluding everything would
-// turn total corruption into a quiet ErrNoParquetPaths misconfiguration; the
-// full set must scan and fail loudly with today's classification instead.
-func TestResolveParquetPathsAllCorruptKeepsFullSet(t *testing.T) {
-	stamps := map[string]map[string]string{
-		"s3://b/bad.parquet": {"row_id": "UUID"},
-	}
-	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/bad.parquet"}, stamps: stamps})
-	e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
-
-	paths, _, gotStamps, excluded, err := e.resolveParquetPaths(context.Background(), exclusionTestQuery())
-	require.NoError(t, err)
-	require.Equal(t, []string{"s3://b/bad.parquet"}, paths,
-		"all-corrupt set must pass through unfiltered")
-	require.Equal(t, stamps, gotStamps,
-		"the full-set fallback must still forward the source's stamps")
-	require.Empty(t, excluded, "an unfiltered scan must not claim a partial read")
-}
-
-// TestResolveParquetPathsHintSetNeverFiltered: hint sets are operator-pinned
-// (#184) — the caller named the objects, so exclusion must not silently narrow
-// them.
-func TestResolveParquetPathsHintSetNeverFiltered(t *testing.T) {
+// TestResolveParquetPathsHintSetNeverRefused: hint sets are operator-pinned
+// (#184) and never verified, so the corrupt cache does not apply to them.
+func TestResolveParquetPathsHintSetNeverRefused(t *testing.T) {
 	e := newExclusionTestEngine(&fakeParquetSource{paths: []string{"s3://b/a.parquet"}})
 	e.corruptPaths.Add([]string{"s3://b/hinted.parquet"})
 	q := exclusionTestQuery()
 	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://b/hinted.parquet"}
 
-	paths, fromSource, _, excluded, err := e.resolveParquetPaths(context.Background(), q)
+	paths, fromSource, _, err := e.resolveParquetPaths(context.Background(), q)
 	require.NoError(t, err)
 	require.False(t, fromSource)
-	require.Empty(t, excluded)
 	require.Equal(t, []string{"s3://b/hinted.parquet"}, paths)
-}
-
-// TestRecordCorruptExclusionNotesExcludedObjects pins the loudness half: the
-// internal plan names every excluded object under the exported note prefix the
-// e2e harness and Go embedders assert on.
-func TestRecordCorruptExclusionNotesExcludedObjects(t *testing.T) {
-	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
-	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
-
-	planCtx.recordCorruptExclusion([]string{"s3://b/bad.parquet"})
-
-	require.Contains(t, opts.ExecutionPlan.Notes[len(opts.ExecutionPlan.Notes)-1], NotePartialParquetExclusion)
-	require.Contains(t, opts.ExecutionPlan.Notes[len(opts.ExecutionPlan.Notes)-1], "s3://b/bad.parquet")
-}
-
-// TestRecordCorruptExclusionEmptyIsNoop: a full scan must not leave a partial
-// read note behind.
-func TestRecordCorruptExclusionEmptyIsNoop(t *testing.T) {
-	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
-	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
-	before := len(opts.ExecutionPlan.Notes)
-
-	planCtx.recordCorruptExclusion(nil)
-
-	require.Len(t, opts.ExecutionPlan.Notes, before)
 }

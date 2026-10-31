@@ -40,15 +40,11 @@ type scan struct {
 }
 
 // retryablePassFailure reports whether a failed pass earns the one retry,
-// and why. A pass that confirmed corrupt objects cached them, so the retry's
-// path resolution excludes them and answers from the readable remainder
-// (#251). A pass whose empty parquet scan a publication raced is discarded,
-// and the retry's resolution finds the published objects (#720).
+// and why. A pass whose empty parquet scan a publication raced is discarded,
+// and the retry's resolution finds the published objects (#720). Confirmed
+// corruption earns no retry (#722): a remainder without the corrupt objects
+// can answer a newer row with an older version.
 func retryablePassFailure(err error) (string, bool) {
-	var corrupt *corruptParquetRetryError
-	if errors.As(err, &corrupt) {
-		return fmt.Sprintf("excluding corrupt parquet %v", corrupt.Corrupt), true
-	}
 	var raced *parquetPublishedDuringReadError
 	if errors.As(err, &raced) {
 		return "a parquet publication raced the empty scan", true
@@ -130,9 +126,9 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 	// only the ones a caller asked to see a plan for (PR #595 review).
 	// This is also the ONLY place the fed_query_* series are emitted, and it
 	// is reached only after the pass succeeded: a failed pass leaves no
-	// partial sample behind, and the #251 corrupt-parquet retry counts a
-	// logical query once (the failed first pass is silent), which is what
-	// docs/telemetry.md means by "per successful DuckDB pass".
+	// partial sample behind, and the #720 retry counts a logical query once
+	// (the failed first pass is silent), which is what docs/telemetry.md
+	// means by "per successful DuckDB pass".
 	e.emitDuckDBScanMetrics(ctx, outcome)
 	planCtx.recordScanOutcome(outcome)
 
@@ -208,12 +204,15 @@ func (c *duckDBExecutionPlanContext) recordScanOutcome(o duckDBScanOutcome) {
 // corruption (#251) is the one outcome that is NOT engine sickness: the
 // verification pass just read every other object through the same engine and
 // session, so it hands back the probe slot instead of recording a failure —
-// a permanently corrupt object must not hold the breaker open forever.
+// a permanently corrupt object must not hold the breaker open forever. The
+// objects are cached, so the queries that follow fail at path resolution
+// without a scan, and the read fails with CorruptParquetError rather than
+// answering from the remainder (#722).
 // Last, a failure neither branch claimed runs the #351 guard identification:
 // the bare drains just read every object clean, so if a guarded single-file
 // drain fails deterministically the failure is a schema-invariant violation
 // and the error names the object(s). Identification decorates — it never
-// excludes, never retries, and never changes the classification chain.
+// caches, never retries, and never changes the classification chain.
 func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.FederatedAttributeQuery, sc scan, cause error, op string) error {
 	classified := e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource)
 	var inconsistent *ParquetSetInconsistentError
@@ -225,7 +224,13 @@ func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.Fe
 	if corrupt := e.confirmCorruptPaths(ctx, sc); len(corrupt) > 0 {
 		e.corruptPaths.Add(corrupt)
 		e.breaker.ReleaseProbe(sc.probe)
-		return &corruptParquetRetryError{Corrupt: corrupt, cause: wrapped}
+		// Once per object per retention window. A degraded fallback or the
+		// HTTP layer logs each refused query, but only this line marks the
+		// verdict, and it names the objects an operator has to repair.
+		e.log().Error("parquet objects confirmed corrupt; federated reads of the schema fail or degrade until they are repaired or retired",
+			zap.Int16("schema_id", q.SchemaID),
+			zap.Strings("paths", corrupt))
+		return &CorruptParquetError{SchemaID: q.SchemaID, Paths: corrupt, cause: wrapped}
 	}
 	e.breakerRecordFailure(ctx, wrapped)
 	violating := e.identifyGuardViolationPaths(ctx, sc)
@@ -240,11 +245,39 @@ func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.Fe
 	return &ParquetGuardViolationError{SchemaID: q.SchemaID, Paths: violating, cause: wrapped}
 }
 
+// failScanSources resolves the probe for a pre-flight (resolveScanSources)
+// failure. Objects the #732 type guard could not read fail the read closed,
+// classified exactly like a failed scan over the same path set, so
+// corrupt-object confirmation (#251) and missing-object inconsistency (#187)
+// keep their semantics, and an expired budget in its cause stays
+// non-degradable (#465). A cached-corrupt refusal that found listed objects
+// missing (#722) probed storage and reports the same inconsistency a failed
+// scan would, so it records a failure the same way. Any other pre-flight
+// failure learned nothing about the dependency and hands the probe back.
+func (e *DBFederatedQueryEngine) failScanSources(ctx context.Context, q *model.FederatedAttributeQuery, probe ProbeToken, err error) error {
+	var unverified *unverifiedParquetError
+	if errors.As(err, &unverified) {
+		return e.failDuckDBScan(ctx, q, scan{
+			parquetPaths:    unverified.scanned,
+			pathsFromSource: unverified.fromSource,
+			probe:           probe,
+		}, err, "pre-read parquet type verification")
+	}
+	var inconsistent *ParquetSetInconsistentError
+	if errors.As(err, &inconsistent) {
+		e.breakerRecordFailure(ctx, err)
+		return err
+	}
+	e.breaker.ReleaseProbe(probe)
+	return err
+}
+
 // identifyGuardViolationPaths gates the #351 identification the way
 // confirmCorruptPaths gates #251 verification: source-authored sets only —
 // hint-authored paths name objects no manifest vouches for, and the caller
 // pinned them deliberately. Unlike #251 it runs for single-path sets too:
-// verification needs a readable remainder to be worth confirming, whereas
+// verification needs an object that reads clean to tell a corrupt file from
+// a sick store, whereas
 // naming the one object in the set is exactly what an operator needs.
 func (e *DBFederatedQueryEngine) identifyGuardViolationPaths(ctx context.Context, sc scan) []string {
 	if e == nil || e.duck == nil || !sc.pathsFromSource || len(sc.parquetPaths) == 0 {
@@ -256,8 +289,8 @@ func (e *DBFederatedQueryEngine) identifyGuardViolationPaths(ctx context.Context
 // confirmCorruptPaths runs per-file verification when the failed scan ran
 // over a source-authored multi-object set. It confirms corruption only when
 // at least one object verified readable — if every object fails to read, the
-// store or engine is sick, not the files, and exclusion would be both wrong
-// and useless (an empty remainder cannot answer the query).
+// store or engine is sick, not the files, and a cached verdict would refuse
+// reads that a recovered store could answer.
 func (e *DBFederatedQueryEngine) confirmCorruptPaths(ctx context.Context, sc scan) []string {
 	if !sc.pathsFromSource || len(sc.parquetPaths) < 2 || e == nil || e.duck == nil {
 		return nil

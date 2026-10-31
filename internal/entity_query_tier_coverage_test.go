@@ -49,15 +49,17 @@ func TestQueryForwardsOmittedPreferredTiersAsNil(t *testing.T) {
 
 // TestToPartialResultProjectsUnconsultedTiers pins the public projection of
 // the #468 coverage marker: reason hot_tier_only plus the unconsulted tier
-// names, no excluded-object count.
+// names, and nothing for an absent or empty report.
 func TestToPartialResultProjectsUnconsultedTiers(t *testing.T) {
+	require.Nil(t, toPartialResult(nil))
+	require.Nil(t, toPartialResult(&model.PartialScan{}))
+
 	out := toPartialResult(&model.PartialScan{
 		UnconsultedTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
 	})
 	require.NotNil(t, out)
 	require.Equal(t, forma.PartialReasonHotTierOnly, out.Reason)
 	require.Equal(t, []string{"warm", "cold"}, out.UnconsultedTiers)
-	require.Zero(t, out.ExcludedObjectCount)
 
 	raw, err := json.Marshal(out)
 	require.NoError(t, err)
@@ -65,7 +67,8 @@ func TestToPartialResultProjectsUnconsultedTiers(t *testing.T) {
 }
 
 // TestQueryResultCarriesHotTierOnlyMarker is the end-to-end service leg for
-// the coverage marker, mirroring the #348 wiring test.
+// the coverage marker (#348, #468): entityQueryService.Query must project the
+// engine page's marker onto forma.QueryResult under its published JSON key.
 func TestQueryResultCarriesHotTierOnlyMarker(t *testing.T) {
 	result := queryWithFederatedPartial(t, &model.PartialScan{
 		UnconsultedTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},

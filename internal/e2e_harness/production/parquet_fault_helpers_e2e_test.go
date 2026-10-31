@@ -12,7 +12,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	fedengine "github.com/lychee-technology/forma/internal/federated"
 )
 
 // schemaParquetKeys lists the schema's final parquet objects currently in S3
@@ -165,48 +164,4 @@ func setMinus(a, b map[string]struct{}) map[string]struct{} {
 		}
 	}
 	return out
-}
-
-func assertIDSetEqual(t *testing.T, got, want map[string]struct{}) {
-	t.Helper()
-	for k := range want {
-		if _, ok := got[k]; !ok {
-			t.Errorf("result missing expected row_id %s", k)
-		}
-	}
-	for k := range got {
-		if _, ok := want[k]; !ok {
-			t.Errorf("result has unexpected row_id %s", k)
-		}
-	}
-}
-
-// assertCorruptExclusionNote requires the plan to loudly name the excluded
-// object. Notes are internal-plan-only (#301/#306) — this is exactly the
-// surface embedders and operators get.
-func assertCorruptExclusionNote(t *testing.T, res *QueryResult, key string) {
-	t.Helper()
-	for _, note := range res.Plan.Notes {
-		if strings.Contains(note, fedengine.NotePartialParquetExclusion) && strings.Contains(note, key) {
-			return
-		}
-	}
-	t.Errorf("plan notes lack the corrupt-exclusion marker for %s: %v", key, res.Plan.Notes)
-}
-
-// assertPartialMarker requires the page to carry the #348 partial marker
-// naming the excluded object — the page-level counterpart of
-// assertCorruptExclusionNote, and the source of the HTTP-visible
-// QueryResult.partial projection.
-func assertPartialMarker(t *testing.T, res *QueryResult, key string) {
-	t.Helper()
-	if res.Partial == nil {
-		t.Fatalf("page answered from a corrupt-excluded remainder must carry a partial marker")
-	}
-	for _, obj := range res.Partial.ExcludedObjects {
-		if strings.Contains(obj, key) {
-			return
-		}
-	}
-	t.Errorf("partial marker lacks excluded object %s: %v", key, res.Partial.ExcludedObjects)
 }

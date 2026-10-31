@@ -98,9 +98,6 @@ func TestTierCoverageUnderHybridSmallPage(t *testing.T) {
 		if got := result.Partial.UnconsultedTiers; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 			t.Fatalf("UnconsultedTiers = %v, want %v", got, want)
 		}
-		if len(result.Partial.ExcludedObjects) != 0 {
-			t.Fatalf("a postgres-only page must not carry a corrupt-exclusion marker, got %v", result.Partial.ExcludedObjects)
-		}
 		// The marker is telling the truth: the pruned cold rows are absent.
 		if result.Total != 2 {
 			t.Fatalf("hot-tier-only answer total = %d, want 2 (the three pruned cold rows are unreachable from Postgres)", result.Total)

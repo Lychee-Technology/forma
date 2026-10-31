@@ -40,34 +40,6 @@ func queryWithFederatedPartial(t *testing.T, partial *model.PartialScan) *forma.
 	return result
 }
 
-// TestQueryResultCarriesPartialMarkerFromEngine pins the service-level wiring
-// of the #348 public partial marker: the engine reports the reduced scan on the
-// page, and entityQueryService.Query must project it onto forma.QueryResult.
-// Without this the projection function is unit-tested but nothing observes that
-// it is actually called — deleting the `Partial:` field from the QueryResult
-// literal leaves every other test green while the marker silently disappears
-// from every HTTP response.
-//
-// The marshal legs are load-bearing in both directions: the `partial` JSON tag
-// is the caller's only view of the field, and the excluded storage keys must
-// not ride along with it (#301/#306).
-func TestQueryResultCarriesPartialMarkerFromEngine(t *testing.T) {
-	result := queryWithFederatedPartial(t, &model.PartialScan{
-		ExcludedObjects: []string{"s3://b/7/rot1.parquet"},
-	})
-
-	require.NotNil(t, result.Partial, "a partial engine page must surface a partial result marker")
-	require.Equal(t, forma.PartialReasonCorruptParquetExcluded, result.Partial.Reason)
-	require.Equal(t, 1, result.Partial.ExcludedObjectCount)
-
-	blob, err := json.Marshal(result)
-	require.NoError(t, err)
-	require.Contains(t, string(blob), `"partial"`,
-		"the marker must reach the wire under its published key")
-	require.NotContains(t, string(blob), "s3://",
-		"storage keys must not cross the HTTP boundary (#301/#306)")
-}
-
 // TestQueryResultOmitsPartialMarkerForCleanPage is the omitempty leg: a page
 // with no partial marker must not grow a hollow `partial` object on every
 // ordinary response.

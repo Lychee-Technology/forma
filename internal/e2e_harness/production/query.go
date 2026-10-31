@@ -64,9 +64,8 @@ type QueryResult struct {
 	CurrentPage int
 	Plan        *model.ExecutionPlan
 	FQ          *model.FederatedAttributeQuery
-	// Partial mirrors page.Partial (#348): the engine-internal record of a
-	// #251 corrupt-exclusion scan, carrying full storage keys — harness-side
-	// only, never serialized to an API consumer.
+	// Partial mirrors page.Partial (#348): the #468 coverage marker of a
+	// Postgres-only answer.
 	Partial *model.PartialScan
 }
 

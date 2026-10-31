@@ -70,19 +70,27 @@ func degradedPlanCases() []degradedPlanCase {
 			cause: "forced recount failure",
 		},
 		{
-			// The #251 retry rewinds the first pass to its own mark; the
-			// retry pass then fails too and must not survive either.
-			name: "corrupt-parquet retry failure",
+			// Confirmed corruption fails its pass after the dirty-ID, hot-leg
+			// and duckdb sources are recorded (#722).
+			name: "confirmed corrupt object",
 			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
 				duck := &retryFakeDuck{passes: []retryPass{
 					{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
-					{midStreamFail: true, drainFails: []string{retryCorruptPath2}},
 				}}
-				engine := newRetryEngine(t, duck,
-					[]string{retryKeptPathA, retryKeptPathB, retryCorruptPath1, retryCorruptPath2})
+				return newRetryEngine(t, duck, []string{retryKeptPathA, retryCorruptPath1}), coldTierQuery()
+			},
+			cause: "confirmed corrupt",
+		},
+		{
+			// A cached verdict refuses at path resolution, before any source
+			// is recorded (#722).
+			name: "cached corrupt object",
+			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
+				engine := newRetryEngine(t, &retryFakeDuck{}, []string{retryKeptPathA, retryCorruptPath1})
+				engine.corruptPaths.Add([]string{retryCorruptPath1})
 				return engine, coldTierQuery()
 			},
-			cause: "retry after excluding corrupt parquet",
+			cause: "still cached",
 		},
 	}
 }

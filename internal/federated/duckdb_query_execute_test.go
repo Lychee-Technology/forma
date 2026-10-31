@@ -30,7 +30,7 @@ func execFailQuery(schemaID int16) *model.FederatedAttributeQuery {
 	return &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: schemaID}}
 }
 
-func TestFailDuckDBScanConfirmedCorruptionSkipsBreakerAndRetries(t *testing.T) {
+func TestFailDuckDBScanConfirmedCorruptionSkipsBreakerAndFails(t *testing.T) {
 	duck := &verifyFakeDuck{failOpen: map[string]bool{"s3://b/bad.parquet": true}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute) // threshold 1: any RecordFailure opens it
 	e := NewDBFederatedQueryEngine(nil, nil, duck, breaker, forma.DuckDBConfig{}, nil, "",
@@ -40,22 +40,24 @@ func TestFailDuckDBScanConfirmedCorruptionSkipsBreakerAndRetries(t *testing.T) {
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
 		fmt.Errorf("scan: %w: page corrupt", ErrFederatedReadFailed), "execute duckdb query")
 
-	var retry *corruptParquetRetryError
-	if !errors.As(err, &retry) {
-		t.Fatalf("confirmed corruption must return the retryable error, got: %v", err)
+	var corrupt *CorruptParquetError
+	if !errors.As(err, &corrupt) {
+		t.Fatalf("confirmed corruption must return CorruptParquetError, got: %v", err)
 	}
-	if len(retry.Corrupt) != 1 || retry.Corrupt[0] != "s3://b/bad.parquet" {
-		t.Fatalf("retry.Corrupt = %v", retry.Corrupt)
+	if len(corrupt.Paths) != 1 || corrupt.Paths[0] != "s3://b/bad.parquet" || corrupt.SchemaID != 7 {
+		t.Fatalf("corrupt = %+v", corrupt)
+	}
+	if _, retry := retryablePassFailure(err); retry {
+		t.Fatal("confirmed corruption must not earn the remainder retry (#722)")
 	}
 	if breaker.IsOpen() {
 		t.Fatal("confirmed per-file corruption must not feed the breaker (#251)")
 	}
-	if !errors.Is(err, ErrFederatedReadFailed) {
-		t.Fatal("classification chain must survive for non-retrying callers")
+	if !degradableFederatedError(err) || !errors.Is(err, ErrFederatedReadFailed) {
+		t.Fatal("the classification chain must survive, so degraded mode can absorb the failure")
 	}
-	kept, excluded := e.corruptPaths.Split(sc.parquetPaths)
-	if len(excluded) != 1 || len(kept) != 1 {
-		t.Fatalf("corrupt object must be cached for exclusion: kept=%v excluded=%v", kept, excluded)
+	if cached := e.corruptPaths.Cached(sc.parquetPaths); len(cached) != 1 {
+		t.Fatalf("the corrupt object must be cached so later reads refuse without a scan: %v", cached)
 	}
 }
 
@@ -65,7 +67,7 @@ func TestFailDuckDBScanConfirmedCorruptionSkipsBreakerAndRetries(t *testing.T) {
 // an object deleted from storage cannot be opened, so verification WOULD call
 // it corrupt if it ran first. That is what makes this test bite: reorder the
 // two blocks in failDuckDBScan and a manifest-listed-but-deleted object gets
-// cached, excluded and answered with a silently short page instead of the
+// cached as corrupt, and so degradable, instead of failing with the
 // non-degradable ErrParquetSetInconsistent #187 scenario 2 exists to raise.
 func TestFailDuckDBScanMissingObjectStaysInconsistentAndBreakerWorthy(t *testing.T) {
 	duck := &verifyFakeDuck{failOpen: map[string]bool{"s3://b/7/x.parquet": true}}
@@ -80,9 +82,9 @@ func TestFailDuckDBScanMissingObjectStaysInconsistentAndBreakerWorthy(t *testing
 	if !errors.Is(err, ErrParquetSetInconsistent) {
 		t.Fatalf("missing listed object must classify as inconsistency, got: %v", err)
 	}
-	var retry *corruptParquetRetryError
-	if errors.As(err, &retry) {
-		t.Fatal("manifest inconsistency must never be retried as corruption")
+	var corrupt *CorruptParquetError
+	if errors.As(err, &corrupt) {
+		t.Fatal("manifest inconsistency must never be classified as corruption")
 	}
 	if !breaker.IsOpen() {
 		t.Fatal("inconsistency failure must still feed the breaker")
@@ -93,7 +95,7 @@ func TestFailDuckDBScanMissingObjectStaysInconsistentAndBreakerWorthy(t *testing
 // R2-1 regression: a drain that fails once and reads clean on the re-drain is
 // a transient object fault, not corruption — it must take the ordinary
 // RecordFailure path (threshold-1 breaker opens), cache nothing, and return a
-// non-retryable error, exactly as before #251.
+// plain read failure, exactly as before #251.
 func TestFailDuckDBScanTransientDrainErrorStaysOnFailurePath(t *testing.T) {
 	duck := &verifyFakeDuck{failOpenOnce: map[string]int{"s3://b/flaky.parquet": 1}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
@@ -104,16 +106,15 @@ func TestFailDuckDBScanTransientDrainErrorStaysOnFailurePath(t *testing.T) {
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
 		fmt.Errorf("scan: %w: read timeout", ErrFederatedReadFailed), "execute duckdb query")
 
-	var retry *corruptParquetRetryError
-	if errors.As(err, &retry) {
+	var corrupt *CorruptParquetError
+	if errors.As(err, &corrupt) {
 		t.Fatal("a transient single-drain failure must not be confirmed as corruption")
 	}
 	if !breaker.IsOpen() {
 		t.Fatal("an unconfirmed failure must keep ordinary breaker accounting")
 	}
-	kept, excluded := e.corruptPaths.Split(sc.parquetPaths)
-	if len(excluded) != 0 || len(kept) != 2 {
-		t.Fatalf("nothing may be cached for a transient failure: kept=%v excluded=%v", kept, excluded)
+	if cached := e.corruptPaths.Cached(sc.parquetPaths); len(cached) != 0 {
+		t.Fatalf("nothing may be cached for a transient failure: %v", cached)
 	}
 }
 
@@ -129,8 +130,8 @@ func TestFailDuckDBScanAllPathsUnreadableIsEngineSickness(t *testing.T) {
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
 		fmt.Errorf("scan: %w: io error", ErrFederatedReadFailed), "execute duckdb query")
 
-	var retry *corruptParquetRetryError
-	if errors.As(err, &retry) {
+	var corrupt *CorruptParquetError
+	if errors.As(err, &corrupt) {
 		t.Fatal("every-object-unreadable is store/engine sickness, not per-file corruption")
 	}
 	// The #351 firewall: a sick store fails the guarded drain of every object,
@@ -155,9 +156,9 @@ func TestFailDuckDBScanHintPathsNeverVerified(t *testing.T) {
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
 		fmt.Errorf("scan: %w: page corrupt", ErrFederatedReadFailed), "execute duckdb query")
 
-	var retry *corruptParquetRetryError
-	if errors.As(err, &retry) {
-		t.Fatal("operator-pinned hint sets keep all-or-nothing semantics")
+	var corrupt *CorruptParquetError
+	if errors.As(err, &corrupt) {
+		t.Fatal("operator-pinned hint sets are never verified or cached")
 	}
 	if len(duck.queries) != 0 {
 		t.Fatalf("hint-set failure must not trigger verification probes: %v", duck.queries)

@@ -71,8 +71,9 @@ type DBFederatedQueryEngine struct {
 	// binder. See parquet_schema_validation.go.
 	schemaValidator *parquetSchemaValidator
 	// corruptPaths remembers verification-confirmed corrupt parquet objects
-	// (#251) so resolveParquetPaths can exclude them. TTL-bounded — see
-	// corruptParquetCache. Only source-authored path sets consult it.
+	// (#251) so resolveParquetPaths can refuse a set listing them without a
+	// scan (#722). TTL-bounded — see corruptParquetCache. Only
+	// source-authored path sets consult it.
 	corruptPaths *corruptParquetCache
 	// logger is the engine's own operator outlet; zap.NewNop() when unset
 	// (see log(), in engine_options.go beside the option that sets this).
@@ -175,8 +176,8 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		return nil, fmt.Errorf("postgres federated source is not available")
 	}
 	// #348: the partial-scan out-parameter describes THIS call only. The
-	// DuckDB path resets it per pass and the degraded fallback replaces it
-	// with the #468 coverage marker, but the hot-only gate below never
+	// DuckDB path clears it per pass and the Postgres-only answers set the
+	// #468 coverage marker, but the hot-only gate below never
 	// reaches a pass and leaves the page unmarked — without this entry
 	// reset, a caller reusing one options value across queries would read
 	// the previous call's marker after a hot-only answer (PR #412 review).
@@ -238,7 +239,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 //
 // DuckDBConfig.QueryTimeout is armed here, once, for the whole of it (#465
 // review). A request can take several DuckDB passes — the page pass, its
-// corrupt-parquet retry (#251), the recount and its retry — and a budget
+// publication-race retry (#720), the recount and its retry — and a budget
 // armed per pass would have let a request spend several budgets in a row,
 // outliving the http.Server write deadline that
 // bootstrap.HTTPServerConfig.Validate sizes on exactly one. Under one shared
@@ -301,7 +302,6 @@ func (e *DBFederatedQueryEngine) queryDuckDBRouted(ctx context.Context, tables m
 		TotalPages:    model.ComputeTotalPages(totalRecords, limit),
 		CurrentPage:   currentPage,
 		ExecutionPlan: execPlan,
-		Partial:       partialScanFromOpts(opts),
 	}, nil
 }
 
@@ -370,18 +370,6 @@ func attachExecutionPlan(page *model.PersistentRecordPage, opts *model.Federated
 		return
 	}
 	page.ExecutionPlan = opts.ExecutionPlan
-}
-
-// partialScanFromOpts lifts the engine's partial-scan out-parameter onto the
-// DuckDB-path page (#348), where its scope is the #251 corrupt exclusion.
-// The routed and degraded Postgres-only pages take the #468 coverage marker
-// through markHotTierOnly instead; only the hot-only gate leaves the page
-// unmarked.
-func partialScanFromOpts(opts *model.FederatedQueryOptions) *model.PartialScan {
-	if opts == nil {
-		return nil
-	}
-	return opts.PartialScan
 }
 
 func (e *DBFederatedQueryEngine) queryPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery) (*model.PersistentRecordPage, error) {

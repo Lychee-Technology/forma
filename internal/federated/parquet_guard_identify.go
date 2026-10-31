@@ -28,9 +28,9 @@ import (
 // Glob entries are skipped — unverifiable per-file, exactly as in
 // verifyParquetPaths. A cancelled context attributes nothing.
 //
-// Identification only (#351): callers must never exclude the returned paths —
-// unlike byte corruption, a schema-wrong object may legitimately own rows that
-// exclusion would silently drop once the object is repaired. Runs only on the
+// Identification only (#351): the returned paths are named in the error and
+// the log, and nothing caches or refuses on them, because a schema-wrong
+// object is a consistency fault for an operator to repair. Runs only on the
 // read-failure path, so cost is bounded by failures, not by queries.
 func identifyGuardViolations(ctx context.Context, duck DuckDBQueryExecutor, paths []string) []string {
 	if duck == nil {
@@ -101,7 +101,7 @@ type ParquetGuardViolationError struct {
 	// single-file drain failed deterministically while their bare drain read
 	// clean. Operator detail; safe internally because httpapi redacts
 	// non-published error text and toExecutionPlan drops Notes (#301/#306),
-	// the same boundary contract corruptParquetRetryError relies on.
+	// the same boundary contract CorruptParquetError relies on.
 	Paths []string
 	cause error
 }

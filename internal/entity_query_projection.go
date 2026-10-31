@@ -62,22 +62,10 @@ func toExecutionPlan(plan *model.ExecutionPlan) *forma.ExecutionPlan {
 }
 
 // toPartialResult projects the engine's partial-scan report into the public
-// marker (#348). SECURITY: only the reason and the excluded-object COUNT
-// cross the boundary — the object keys are storage internals (#301/#306)
-// and stay on the internal plan Notes for embedders and operators.
-//
-// The two causes are mutually exclusive by construction — corrupt exclusion
-// happens only on a DuckDB pass, a coverage gap only on a Postgres-only
-// answer (#468) — so the reason is chosen by which field is populated.
+// marker (#348): the #468 coverage gap of a Postgres-only answer.
 func toPartialResult(p *model.PartialScan) *forma.PartialResultInfo {
 	if p == nil {
 		return nil
-	}
-	if len(p.ExcludedObjects) > 0 {
-		return &forma.PartialResultInfo{
-			Reason:              forma.PartialReasonCorruptParquetExcluded,
-			ExcludedObjectCount: len(p.ExcludedObjects),
-		}
 	}
 	if len(p.UnconsultedTiers) > 0 {
 		return &forma.PartialResultInfo{

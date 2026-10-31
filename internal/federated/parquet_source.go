@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
@@ -52,26 +53,25 @@ func WithParquetSource(src ParquetSource) EngineOption {
 // input and must not silently fall through to the manifest source. The
 // source is the default when no hint is present. fromSource reports whether
 // the paths came from the source, so read-error classification only probes
-// path sets the source authored. Only source-authored sets are filtered
-// against the verification-confirmed corrupt objects (#251); excludedCorrupt
-// names what was dropped so the execution plan can say the scan was partial.
+// path sets the source authored. Only source-authored sets are later checked
+// against the verification-confirmed corrupt objects (#251, #722; see
+// refuseCachedCorrupt).
 //
 // stamps are the source's manifest-recorded footer columns (#256), keyed by
 // the returned paths, for the pre-read validator to consult instead of
 // probing. Only a source can author them: hint-authored paths name objects no
 // manifest entry vouches for, so they stay nil and probe as before. They are
-// forwarded unfiltered — a stamp key for a #251-excluded object is harmless
-// because the validator looks up by surviving path.
-func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, stamps map[string]map[string]string, excludedCorrupt []string, err error) {
+// forwarded as the source returned them.
+func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *model.FederatedAttributeQuery) (paths []string, fromSource bool, stamps map[string]map[string]string, err error) {
 	hinted, err := duckDBParquetPathsForQuery(q, e.cfg)
 	if err != nil {
-		return nil, false, nil, nil, fmt.Errorf("render parquet path hint: %w", err)
+		return nil, false, nil, fmt.Errorf("render parquet path hint: %w", err)
 	}
 	if len(hinted) > 0 {
-		return hinted, false, nil, nil, nil
+		return hinted, false, nil, nil
 	}
 	if e == nil || e.parquetSource == nil || q == nil {
-		return nil, false, nil, nil, nil
+		return nil, false, nil, nil
 	}
 	resolved, stamps, err := e.parquetSource.Paths(ctx, q.SchemaID)
 	if err != nil {
@@ -82,18 +82,83 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 		// hand it to the degraded fallback — silencing exactly the state it
 		// exists to report.
 		if errors.Is(err, forma.ErrManifestSchemaMismatch) {
-			return nil, false, nil, nil, fmt.Errorf("manifest parquet source: %w", err)
+			return nil, false, nil, fmt.Errorf("manifest parquet source: %w", err)
 		}
-		return nil, false, nil, nil, fmt.Errorf("manifest parquet source: %w: %w", ErrFederatedReadFailed, err)
+		return nil, false, nil, fmt.Errorf("manifest parquet source: %w: %w", ErrFederatedReadFailed, err)
 	}
-	// Exclude verification-confirmed corrupt objects (#251). If that would
-	// empty the set, scan the full set instead: total corruption must fail
-	// loudly with its own classification, not as ErrNoParquetPaths.
-	kept, excluded := e.corruptPaths.Split(resolved)
-	if len(kept) == 0 {
-		return resolved, true, stamps, nil, nil
+	return resolved, true, stamps, nil
+}
+
+// refuseCachedCorrupt fails a source-authored set that lists cached corrupt
+// objects, without scanning (#722): the scan would fail on the same bytes,
+// and re-verifying would drain every object of the set again on every query
+// of the retention window. The refusal is degradable, so the non-degradable
+// findings an uncached read would have produced before or instead of it run
+// first, in the uncached path's order: the pre-read checks, then the SQL
+// build, then the scan's missing-object classification.
+//
+// The #732 type guard judges the listed objects not cached as corrupt, which
+// the uncached path's pre-read checks would also have judged: a readable
+// object the current declaration cannot read losslessly is refused with
+// ParquetTypeIncompatibleError rather than absorbed by the degraded fallback
+// for the rest of the retention window. Nothing is scanned to answer. Other
+// pre-read findings over that remainder (a schema violation, an object the
+// guard could not read) are degradable like the refusal and leave it as is.
+//
+// The build's own refusals come next (translateDuckDBQuery): a filter literal
+// the attribute cannot take is invalid input, and a schema whose active
+// metadata is missing or empty fails with ErrSchemaMetadataCacheRequired. An
+// uncached read builds its SQL before it scans, so both precede the probe
+// below and hand the breaker probe back, as any pre-flight refusal does.
+//
+// Missing-before-corrupt holds here as it does in failDuckDBScan: the whole
+// listed set is probed next, cached objects included, so a listed object
+// deleted from storage reports as manifest inconsistency (non-degradable,
+// breaker-worthy). The probe is one existence check per listed object, far
+// below the drains a re-verification would cost. A probe that cannot run
+// proves no loss and keeps the refusal; one the request's deadline or
+// cancellation stopped keeps that context error in the refusal's chain, so a
+// spent or abandoned request does not degrade (#465). Running the type guard
+// before the probe keeps that true when the guard is what spent the budget.
+func (e *DBFederatedQueryEngine) refuseCachedCorrupt(
+	ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery,
+	listed, corrupt []string, stamps map[string]map[string]string,
+) error {
+	if err := e.typeGuardReadableRemainder(ctx, q.SchemaID, listed, corrupt, stamps); err != nil {
+		return fmt.Errorf("type-check the objects listed beside ones cached as corrupt: %w", err)
 	}
-	return kept, true, stamps, excluded, nil
+	cache, _ := e.schemaCacheByID(q.SchemaID)
+	if _, _, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, map[string]any{}); err != nil {
+		return fmt.Errorf("build the query over a set listing objects cached as corrupt: %w", err)
+	}
+	classified := e.classifyDuckDBReadError(ctx, q, listed, true)
+	var inconsistent *ParquetSetInconsistentError
+	if errors.As(classified, &inconsistent) {
+		return fmt.Errorf("probe set listing objects cached as corrupt: %w", classified)
+	}
+	return &CorruptParquetError{
+		SchemaID: q.SchemaID,
+		Paths:    corrupt,
+		cause:    fmt.Errorf("verified corrupt by an earlier read and still cached: %w", classified),
+	}
+}
+
+// typeGuardReadableRemainder runs the pre-read checks over the listed objects
+// not cached as corrupt and returns only a #732 type refusal. The corrupt
+// objects stay out: their footers may not read, and they are refused anyway.
+// Benchmark schemas skip the checks, as resolveScanSources does.
+func (e *DBFederatedQueryEngine) typeGuardReadableRemainder(ctx context.Context, schemaID int16, listed, corrupt []string, stamps map[string]map[string]string) error {
+	if isBenchmarkSchemaID(schemaID) {
+		return nil
+	}
+	remainder := slices.DeleteFunc(slices.Clone(listed), func(p string) bool { return slices.Contains(corrupt, p) })
+	if len(remainder) == 0 {
+		return nil
+	}
+	if _, err := e.validateScanSet(ctx, schemaID, remainder, true, stamps); errors.Is(err, forma.ErrParquetTypeIncompatible) {
+		return err
+	}
+	return nil
 }
 
 // classifyDuckDBReadError classifies a failed DuckDB read by storage state:
@@ -101,14 +166,21 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 // scanned set finds listed keys missing from storage, the failure is
 // manifest inconsistency (cold-tier loss); anything else — probe errors
 // included, since an unreachable store cannot prove loss — stays a plain
-// read failure.
+// read failure. A probe the request's deadline or cancellation stopped proves
+// no loss either, but the context error joins the chain: the caller's own
+// cause may not carry it (a cached refusal has none, and a scan can fail for
+// another reason before the probe spends the rest of the budget), and without
+// it an expired budget would read as degradable (#465).
 func (e *DBFederatedQueryEngine) classifyDuckDBReadError(ctx context.Context, q *model.FederatedAttributeQuery, scanned []string, pathsFromSource bool) error {
 	if !pathsFromSource || e == nil || e.parquetSource == nil || q == nil {
 		return ErrFederatedReadFailed
 	}
 	missing, err := e.parquetSource.MissingIn(ctx, scanned)
-	if err != nil || len(missing) == 0 {
-		return ErrFederatedReadFailed
+	if err == nil && len(missing) > 0 {
+		return &ParquetSetInconsistentError{SchemaID: q.SchemaID, MissingKeys: missing}
 	}
-	return &ParquetSetInconsistentError{SchemaID: q.SchemaID, MissingKeys: missing}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("%w: missing-object probe stopped: %w", ErrFederatedReadFailed, ctxErr)
+	}
+	return ErrFederatedReadFailed
 }

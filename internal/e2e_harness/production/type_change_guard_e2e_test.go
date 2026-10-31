@@ -180,8 +180,8 @@ func TestTypeGuardJudgesBaseObjects(t *testing.T) {
 }
 
 // A live object the guard cannot read is not skipped: it takes the #251
-// path, so the answer comes from the readable remainder and names the
-// excluded object as a partial scan, never as a complete result.
+// path, so it is confirmed corrupt and the read fails (#722) rather than
+// answering without it. Degraded mode answers from PostgreSQL.
 func TestTypeGuardDoesNotSkipAnUnreadableObject(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
@@ -194,16 +194,11 @@ func TestTypeGuardDoesNotSkipAnUnreadableObject(t *testing.T) {
 	if err := env.RegisterParquetInManifest(ctx, simple, unreadable, "delta"); err != nil {
 		t.Fatalf("register unreadable parquet: %v", err)
 	}
-	result, err := env.Query(ctx, Query{Schema: simple, Limit: 20})
-	if err != nil {
-		t.Fatalf("the readable remainder must answer: %v", err)
+	_, err := env.Query(ctx, Query{Schema: simple, Limit: 20})
+	if err == nil {
+		t.Fatal("an unreadable live object must fail the read, not be skipped")
 	}
-	if result.Partial == nil || !slices.ContainsFunc(result.Partial.ExcludedObjects, func(p string) bool {
-		return strings.HasSuffix(p, unreadable)
-	}) {
-		t.Fatalf("the unreadable object must be reported as excluded, got partial %+v", result.Partial)
-	}
-	if result.Total != 2 {
-		t.Errorf("total = %d, want the 2 readable rows", result.Total)
-	}
+	assertCorruptRefusal(t, err, unreadable)
+	degraded := env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 20, AllowPartialDegradedMode: true})
+	assertDegradedFallbackPlan(t, degraded)
 }

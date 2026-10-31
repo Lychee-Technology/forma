@@ -14,11 +14,10 @@ import (
 
 // scanSources is the resolved storage context of one federated read.
 type scanSources struct {
-	paths           []string
-	fromSource      bool
-	graceCutoffMs   int64
-	cold            coldScanSet
-	excludedCorrupt []string
+	paths         []string
+	fromSource    bool
+	graceCutoffMs int64
+	cold          coldScanSet
 }
 
 // schemaCacheByID is the nil-safe metadata-cache accessor shared by the
@@ -32,9 +31,10 @@ func (e *DBFederatedQueryEngine) schemaCacheByID(schemaID int16) (forma.SchemaAt
 
 // resolveScanSources is the storage-facing pre-flight of a DuckDB federated
 // query: it stamps the #252 flush-grace cutoff, resolves the parquet path
-// set, validates the parquet system-column invariant and the #732 attribute
-// types, and computes the #255 cold-missing and #371 cold-pinned column sets
-// from the footer union the validation produced. A schema with no parquet to
+// set, refuses one listing a cached corrupt object (#722), validates the
+// parquet system-column invariant and the #732 attribute types, and computes
+// the #255 cold-missing and #371 cold-pinned column sets from the footer
+// union the validation produced. A schema with no parquet to
 // read yet skips the validation and scans nothing (#720).
 func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery) (scanSources, error) {
 	// The flush-grace cutoff is stamped BEFORE resolution (#252): any row
@@ -48,7 +48,7 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables 
 	// gates the read-error classification. A source also hands back its
 	// recorded footer stamps (#256) so the validation below can skip probing
 	// the objects the manifest already vouches for.
-	paths, fromSource, stamps, excludedCorrupt, err := e.resolveParquetPaths(ctx, q)
+	paths, fromSource, stamps, err := e.resolveParquetPaths(ctx, q)
 	if err != nil {
 		return scanSources{}, fmt.Errorf("resolve parquet paths: %w", err)
 	}
@@ -64,6 +64,15 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables 
 		return scanSources{}, &NoParquetPathsError{
 			SchemaID:         q.SchemaID,
 			SourceConfigured: e.parquetSource != nil,
+		}
+	}
+
+	// A source-authored set listing an object a recent verification
+	// confirmed corrupt is refused without scanning (#722); hint-authored
+	// sets are operator-pinned and never verified (#184).
+	if fromSource {
+		if corrupt := e.corruptPaths.Cached(paths); len(corrupt) > 0 {
+			return scanSources{}, e.refuseCachedCorrupt(ctx, tables, q, paths, corrupt, stamps)
 		}
 	}
 
@@ -92,11 +101,10 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables 
 		}
 	}
 	return scanSources{
-		paths:           paths,
-		fromSource:      fromSource,
-		graceCutoffMs:   graceCutoffMs,
-		cold:            cold,
-		excludedCorrupt: excludedCorrupt,
+		paths:         paths,
+		fromSource:    fromSource,
+		graceCutoffMs: graceCutoffMs,
+		cold:          cold,
 	}, nil
 }
 
@@ -178,7 +186,7 @@ func (e *DBFederatedQueryEngine) validateScanSet(
 // read, so their column types could not be judged against the declarations
 // (#732). It is the cause handed to failDuckDBScan, which classifies it the
 // way it classifies a failed scan: a missing object is #187 inconsistency, a
-// corrupt one is excluded for a #251 partial retry, and anything else is a
+// corrupt one fails as CorruptParquetError (#722), and anything else is a
 // degradable ErrFederatedReadFailed. Paths are storage locations, which the
 // HTTP boundary redacts with the rest of an internal-class error.
 type unverifiedParquetError struct {

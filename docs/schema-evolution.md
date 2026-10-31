@@ -576,9 +576,11 @@ refuse, and the census reports them. A `numeric` value written as
   `forma.ParquetTypeIncompatibleError`, which names the schema, attribute,
   declared type, bound column, object and offending value (text values are
   not quoted). It is never degraded to a Postgres-only answer, and nothing is
-  pruned or rewritten. A manifest-listed object whose footer or proof cannot
+  pruned or rewritten. That holds while another listed object's corruption
+  verdict is cached too: the cached refusal type-checks the rest of the set
+  first (#722). A manifest-listed object whose footer or proof cannot
   be read fails the read closed with the usual read-failure classification,
-  so a corrupt object is still excluded as a #251 partial scan. Pinned by
+  so a corrupt object still fails or degrades as #722 specifies. Pinned by
   `TestCheckTypesProvesValuesUnderTheNewDeclaration` and the production
   harness's `TestTypeGuard*` scenarios.
 - **Implemented (#733):** a BIGINT object under a `numeric` declaration

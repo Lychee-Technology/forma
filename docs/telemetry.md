@@ -86,7 +86,7 @@ gated on the caller asking for an execution plan):
 All five samples are emitted together, after the pass has succeeded. A pass
 that fails, whether at SQL rendering, at the DuckDB `Query` call or while
 streaming rows, emits nothing, so no counter or histogram ever carries a
-failed attempt. A query answered by the corrupt-parquet retry (#251) is
+failed attempt. A query answered by the publication-race retry (#720) is
 therefore counted once, from the pass that produced the returned page, the
 same pass the execution plan describes.
 

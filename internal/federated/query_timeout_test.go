@@ -94,6 +94,32 @@ func TestZeroQueryTimeoutLeavesTheCallerContextAlone(t *testing.T) {
 	require.False(t, duck.sawDeadline, "a zero QueryTimeout must not add a deadline")
 }
 
+// TestCallerCancellationDoesNotDegrade: a request its caller cancelled is not
+// answered from Postgres under AllowPartialDegradedMode. Nobody is left to
+// read the page, and a fallback on the cancelled context would replace the
+// cancellation with its own failure. The Postgres fake ignores its context,
+// so a fallback taken here would answer instead of failing.
+func TestCallerCancellationDoesNotDegrade(t *testing.T) {
+	restore := initTestDescriptors()
+	defer restore()
+
+	duck := &budgetBlockedDuckDBExecutor{}
+	engine := newTimeoutTestEngine(t, duck, 0)
+	pg := &fakePostgresFederatedSource{}
+	engine.pgSource = pg
+	fq, tables := breakerTestQuery()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	_, err := engine.Query(ctx, tables, fq, &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, 1, duck.calls)
+	require.Zero(t, pg.queryCalls, "a cancelled request must not take the Postgres fallback")
+}
+
 // deepPageDuckDBExecutor answers the first main scan with no rows — which
 // on a deep page makes Query recount (#181) — and holds the recount until
 // its context is done, recording the deadline every main scan ran under.

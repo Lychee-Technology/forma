@@ -35,7 +35,6 @@ func TestQueryImplicitTiersSmallPageIsMarkedHotTierOnly(t *testing.T) {
 	require.Zero(t, duck.calls)
 	require.NotNil(t, page.Partial, "a postgres-only answer to an all-tier request must be marked (#468)")
 	require.Equal(t, warmCold, page.Partial.UnconsultedTiers)
-	require.Empty(t, page.Partial.ExcludedObjects)
 	require.Same(t, page.Partial, opts.PartialScan, "the out-parameter must describe the same answer")
 }
 
@@ -129,13 +128,13 @@ func TestQueryDisabledDuckDBIsMarkedForRequestedTiers(t *testing.T) {
 // TestQueryDegradedFallbackIsMarkedHotTierOnly pins the third postgres-only
 // path: the §7.2 degraded fallback promised a partial signal that until #468
 // lived only on the plan-gated Routing.Reason. It now carries the same
-// coverage marker as the routed path, replacing whatever the failed DuckDB
-// pass recorded.
+// coverage marker as the routed path, replacing a stale marker a reused
+// options value carries.
 func TestQueryDegradedFallbackIsMarkedHotTierOnly(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
 	duck := &fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}
 	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil, hybridEnabledCfg(), testMetadataCacheSchema7(t), "", withTestParquetPath())
-	opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: true, PartialScan: &model.PartialScan{ExcludedObjects: []string{"stale"}}}
+	opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: true, PartialScan: &model.PartialScan{UnconsultedTiers: []model.DataTier{model.DataTierWarm}}}
 
 	page, err := engine.Query(context.Background(), testTables, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
@@ -146,8 +145,8 @@ func TestQueryDegradedFallbackIsMarkedHotTierOnly(t *testing.T) {
 	require.Equal(t, 1, duck.calls)
 	require.Equal(t, 1, pg.queryCalls)
 	require.NotNil(t, page.Partial)
-	require.Equal(t, []model.DataTier{model.DataTierCold}, page.Partial.UnconsultedTiers)
-	require.Empty(t, page.Partial.ExcludedObjects, "a stale corrupt-exclusion marker must not survive into a postgres-only answer")
+	require.Equal(t, []model.DataTier{model.DataTierCold}, page.Partial.UnconsultedTiers,
+		"the stale marker must not survive into this answer")
 	require.Same(t, page.Partial, opts.PartialScan)
 }
 
