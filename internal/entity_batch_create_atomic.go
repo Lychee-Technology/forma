@@ -73,9 +73,9 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 	// The insert stamps each record's created_at and updated_at from the
 	// repository's clock, so the response is built only after it, from the
 	// records as stored, as single Create does (#701).
-	successful, err := s.storedCreateResponses(ctx, req.Operations, persistentRecords)
+	successful, err := s.buildStoredCreateResponses(ctx, req.Operations, persistentRecords)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to build atomic batch create responses: %w", err)
 	}
 
 	duration := time.Since(startTime).Microseconds()
@@ -87,11 +87,11 @@ func (s *entityBatchService) batchCreateAtomic(ctx context.Context, req *forma.B
 	}, nil
 }
 
-// storedCreateResponses answers each operation of an atomic create with its
+// buildStoredCreateResponses answers each operation of an atomic create with its
 // record as the batch insert stored it. The rows are already committed, so a
 // failure here is the response's, not the write's: it is reported as a plain
 // error, as single Create reports one.
-func (s *entityBatchService) storedCreateResponses(ctx context.Context, ops []forma.EntityOperation, records []*model.PersistentRecord) ([]*forma.DataRecord, error) {
+func (s *entityBatchService) buildStoredCreateResponses(ctx context.Context, ops []forma.EntityOperation, records []*model.PersistentRecord) ([]*forma.DataRecord, error) {
 	successful := make([]*forma.DataRecord, len(records))
 	for i, record := range records {
 		attributes, err := s.transformer.FromPersistentRecord(ctx, record)
