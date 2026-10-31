@@ -172,8 +172,9 @@ func TestExecuteFlush_UnwiredStoreRefusesWhenManifestListsFiles(t *testing.T) {
 // an append keeps the batch visible there: those flushes proceed.
 func TestExecuteFlush_UnwiredStoreFlushesWhenManifestAbsentOrEmpty(t *testing.T) {
 	cases := map[string]map[string][]byte{
-		"absent": {},
-		"empty":  {"cdc/manifest/7.json": []byte(`{"schema_id":7,"version":1,"files":[]}`)},
+		"absent":      {},
+		"empty":       {"cdc/manifest/7.json": []byte(`{"schema_id":7,"version":1,"files":[]}`)},
+		"bare object": {"cdc/manifest/7.json": []byte(`{}`)},
 	}
 	for name, objects := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -195,6 +196,11 @@ func TestExecuteFlush_UnwiredStoreRefusesWhenManifestUnreadable(t *testing.T) {
 		"load fails":  {objects: map[string][]byte{}, getErr: errors.New("access denied")},
 		"not a JSON":  {objects: map[string][]byte{"cdc/manifest/7.json": []byte("{")}},
 		"wrong shape": {objects: map[string][]byte{"cdc/manifest/7.json": []byte(`{"files":"x"}`)}},
+		// The JSON decoder reads null into a struct without error; it is
+		// not a manifest object and must not pass as an empty one.
+		"null":           {objects: map[string][]byte{"cdc/manifest/7.json": []byte("null")}},
+		"spaced null":    {objects: map[string][]byte{"cdc/manifest/7.json": []byte(" \n null \n")}},
+		"empty document": {objects: map[string][]byte{"cdc/manifest/7.json": {}}},
 	}
 	for name, bucket := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -204,6 +210,7 @@ func TestExecuteFlush_UnwiredStoreRefusesWhenManifestUnreadable(t *testing.T) {
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "cdc/manifest/7.json")
 			require.False(t, f.exported)
+			require.Zero(t, bucket.copies, "a refused batch must not publish a delta")
 			require.Zero(t, f.flushedAt(t))
 		})
 	}

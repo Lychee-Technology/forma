@@ -1,6 +1,7 @@
 package cdc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -87,15 +88,35 @@ func storeManifestProbe(store manifest.Store, resolver manifest.PathResolver) un
 		if err != nil {
 			return "", false, fmt.Errorf("resolve default manifest path: %w", err)
 		}
-		m, _, err := manifest.Load(ctx, store, path)
+		data, _, err := store.Load(ctx, path)
 		if manifest.IsNotFound(err) {
 			return path, false, nil
 		}
 		if err != nil {
 			return path, false, fmt.Errorf("load manifest %s: %w", path, err)
 		}
+		m, err := decodeProbedManifest(data)
+		if err != nil {
+			return path, false, fmt.Errorf("decode manifest %s: %w", path, err)
+		}
 		return path, len(m.Files) > 0, nil
 	}
+}
+
+// decodeProbedManifest decodes a manifest only from a JSON object. The JSON
+// decoder accepts the literal null into a struct as its zero value, which
+// would read as a manifest with an empty file list and let the batch flush;
+// a document that is not an object proves nothing about what a reader lists,
+// so the probe refuses it like any other malformed manifest.
+func decodeProbedManifest(data []byte) (*manifest.Manifest, error) {
+	if trimmed := bytes.TrimSpace(data); len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, errors.New("manifest document is not a JSON object")
+	}
+	m, err := manifest.Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("manifest unmarshal: %w", err)
+	}
+	return m, nil
 }
 
 func headManifestProbe(exists func(ctx context.Context, key string) (bool, error), resolver manifest.PathResolver) unwiredManifestProbe {
