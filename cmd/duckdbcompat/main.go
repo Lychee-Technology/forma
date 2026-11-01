@@ -59,7 +59,7 @@ func run(args []string) error {
 
 	version, err := engineVersion(db)
 	if err != nil {
-		return err
+		return fmt.Errorf("identify engine: %w", err)
 	}
 	fmt.Printf("engine: duckdb %s\n", version)
 
@@ -131,10 +131,10 @@ func verify(db *sql.DB, path string, copies int) error {
 		return fmt.Errorf("create fixture table: %w", err)
 	}
 	if err := describeFile(db, path); err != nil {
-		return err
+		return fmt.Errorf("describe %s before verifying it: %w", path, err)
 	}
 	if err := compareColumns(db, path); err != nil {
-		return err
+		return fmt.Errorf("compare columns of %s with the fixture: %w", path, err)
 	}
 	parts := make([]string, copies)
 	for i := range parts {
@@ -144,11 +144,11 @@ func verify(db *sql.DB, path string, copies int) error {
 	actual := fmt.Sprintf("SELECT * FROM read_parquet(%s)", literal(path))
 	missing, err := countRows(db, fmt.Sprintf("SELECT count(*) FROM (%s EXCEPT ALL %s)", expected, actual))
 	if err != nil {
-		return err
+		return fmt.Errorf("count fixture rows missing from %s: %w", path, err)
 	}
 	extra, err := countRows(db, fmt.Sprintf("SELECT count(*) FROM (%s EXCEPT ALL %s)", actual, expected))
 	if err != nil {
-		return err
+		return fmt.Errorf("count unexpected rows in %s: %w", path, err)
 	}
 	if missing != 0 || extra != 0 {
 		return fmt.Errorf("%s: %d expected rows missing or altered, %d unexpected rows (want %d copies of %d rows)",
@@ -161,11 +161,11 @@ func verify(db *sql.DB, path string, copies int) error {
 func compareColumns(db *sql.DB, path string) error {
 	want, err := describe(db, "SELECT * FROM fixture")
 	if err != nil {
-		return err
+		return fmt.Errorf("read fixture columns: %w", err)
 	}
 	got, err := describe(db, fmt.Sprintf("SELECT * FROM read_parquet(%s)", literal(path)))
 	if err != nil {
-		return err
+		return fmt.Errorf("read columns of %s: %w", path, err)
 	}
 	if strings.Join(got, ", ") != strings.Join(want, ", ") {
 		return fmt.Errorf("%s: columns read back as\n  %s\nwant\n  %s", path, strings.Join(got, ", "), strings.Join(want, ", "))
