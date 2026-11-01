@@ -8,14 +8,14 @@ Forma pins one DuckDB release through `github.com/duckdb/duckdb-go/v2` (see `go.
 |---|---|---|
 | `make test`, `make fmt-check`, `make lint` | unit and integration tests, including those that open a real in-memory DuckDB | CI on every PR; the test job runs on `ubuntu-24.04-arm` under `-race` |
 | `make test-e2e-production` | the production harness: real PostgreSQL, S3 (RustFS), CDC, compaction and the federated engine, each result checked against an independent oracle; it has no `-short` skips | CI on every PR; nightly under `-race` (`nightly-e2e.yml`, `production-race`) |
-| `go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=75m` | the full federated suite, PostgreSQL vs DuckDB comparison | nightly only (`nightly-e2e.yml`, `federated-full`) |
+| `go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=75m` | the full federated suite: tier merge, dedup, soft delete, CDC and compaction through DuckDB; its PostgreSQL comparisons are narrower than they look (see [Known gaps](#known-gaps)) | nightly only (`nightly-e2e.yml`, `federated-full`) |
 | `make duckdb-storage-compat` | Parquet written by the current engine reads back in the previous release, and the reverse | CI on every PR (test job, so on arm64) |
 
 CI runs the federated suite with `-short`, which skips the deduplication, merge-on-read, data-tier, soft-delete, `created_at` lifecycle, filter LWW regression and performance tests. An engine upgrade should not merge on CI alone: run the full federated suite and the production suite under `-race` against the new driver first, and record the commands, commit, versions and results in the upgrade PR. Report a test that could not run as not run, never as passed.
 
 ## Where each risk is covered
 
-Paths are relative to `internal/`. The production harness tests live in `e2e_harness/production/`.
+Paths are relative to `internal/`. The production harness tests live in `e2e_harness/production/`. The table says where a risk has tests, not that the risk is fully covered: [Known gaps](#known-gaps) lists what is still missing.
 
 | Risk | Tests |
 |---|---|
@@ -33,6 +33,19 @@ Paths are relative to `internal/`. The production harness tests live in `e2e_har
 | Circuit breaker and degraded modes | production `circuit_breaker_e2e_test.go`, `degraded_mode_e2e_test.go`, `postgres_halt_e2e_test.go`, `s3_recovery_e2e_test.go` |
 | SQL syntax the new release dropped | `duckdb_lambda_syntax_guard_test.go` (repository root) for lambdas; behaviour changes are found by the suites above, as #752 found the `postgres_scan` removal and the `postgres_query` column order |
 | Parquet readable across releases | `make duckdb-storage-compat` (below) |
+
+## Known gaps
+
+These are open under #753 and must not be counted as passing coverage.
+
+**The federated suite's PostgreSQL comparison covers the hot leg only.** `CompareResults` (`e2e_harness/federated/validation.go`) is applied only in `consistency_test.go`, and there only to data that is entirely in the hot tier: DuckDB reads those rows from PostgreSQL through the attached catalog, and no delta or base file is involved. The PostgreSQL side cannot serve as the oracle for S3 tiers: `buildPostgresOnlySelectQuery` reads only unflushed, live `change_log` rows, and it projects `0` as `version`. The one comparison that does involve S3 data, `TestConsistency_MissingRecordDetection`, expects the two sides to differ. Before #753, `CompareResults` also ignored the totals, collapsed duplicate row IDs, ignored numeric values and system columns, and compared a text attribute only when both sides carried it. It now fails on each of those, and `validation_test.go` pins every case without a database. No PostgreSQL oracle exists yet for federated reads over delta and base files. The production harness (`make test-e2e-production`) checks DuckDB results over S3 tiers against an independent oracle.
+
+**Not yet run or audited on DuckDB 2.0** (status on #753):
+
+- CDC flush latency: `TestPerformance_CDCFlush` runs out of its budget while seeding PostgreSQL, before it flushes (#781), on 2.0 and on 1.5.6 alike.
+- Linux arm64 beyond `make test` and `make duckdb-storage-compat`: the e2e and production suites and the Lambda layer build have not run there. Darwin and Windows native libraries are unverified.
+- The production suite under `-race` on 2.0: its first run is the nightly `production-race` job.
+- Required coverage audited against the tests #752 added, including SQL behaviour changes reachable from Forma's generated SQL beyond the lambda syntax guard.
 
 ## Storage compatibility across releases
 

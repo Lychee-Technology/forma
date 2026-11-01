@@ -149,19 +149,27 @@ type CompactionResult struct {
 	Duration       time.Duration
 }
 
-// ComparisonReport contains data comparison results.
+// ComparisonReport contains data comparison results. Match is false when the
+// totals differ, a row ID repeats on either side, a row is on one side only,
+// or any compared field of a row differs (see CompareResults).
 type ComparisonReport struct {
 	Match               bool
 	FederatedCount      int64
 	PostgresCount       int64
 	MissingInFed        []uuid.UUID
 	MissingInPG         []uuid.UUID
+	DuplicatesInFed     []uuid.UUID
+	DuplicatesInPG      []uuid.UUID
 	AttributeMismatches []AttributeMismatch
 	FederatedChecksum   string
 	PostgresChecksum    string
 }
 
-// AttributeMismatch describes a single attribute value mismatch.
+// AttributeMismatch describes a single field of a row whose value differs
+// between the two results. AttributeName is a system column (schema_id,
+// created_at, updated_at, deleted_at, other_attributes) or a typed attribute
+// as "<kind>:<name>", for example "text:name" or "float64:version". A value
+// a side does not carry at all is reported as absentValue.
 type AttributeMismatch struct {
 	RowID         uuid.UUID
 	AttributeName string
