@@ -186,3 +186,25 @@ func TestStorableTextStillRoundTrips(t *testing.T) {
 	assert.Equal(t, text, got["label"])
 	assert.Equal(t, []any{text}, got["tags"])
 }
+
+// TestMalformedListUpdateKeepsItsGuardOutcome: the intake moves only the
+// text rule ahead of the row lock. An update the merged write refuses for
+// another reason, here a scalar or a nested array sent for a text list, is
+// still judged against the row first, so a false precondition answers
+// ErrPreconditionFailed and a missing row ErrNotFound, as before #679.
+func TestMalformedListUpdateKeepsItsGuardOutcome(t *testing.T) {
+	e := newSchemaPG(t, condSchemaName, condSchemaID, textFitSchemaCache())
+	rowID := e.create(t, map[string]any{"name": "ab", "label": "ab", "tags": []any{"x"}})
+	for name, updates := range map[string]map[string]any{
+		"scalar":          {"tags": "ordinary"},
+		"scalar with NUL": {"tags": "a\x00b"},
+		"nested array":    {"tags": []any{[]any{"a"}}},
+	} {
+		_, err := e.em.Update(e.ctx, condUpdate(rowID, kv("label", "equals:other"), updates))
+		require.ErrorIs(t, err, forma.ErrPreconditionFailed, "false precondition, %s", name)
+		_, err = e.em.Update(e.ctx, condUpdate(uuid.New(), nil, updates))
+		require.ErrorIs(t, err, forma.ErrNotFound, "missing row, %s", name)
+		_, err = e.em.Update(e.ctx, condUpdate(rowID, nil, updates))
+		require.ErrorIs(t, err, forma.ErrInvalidInput, "the merged write still refuses it, %s", name)
+	}
+}

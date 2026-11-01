@@ -36,10 +36,10 @@ func checkStorageFit(attr *model.EAVRecord, meta forma.AttributeMetadata) error 
 			return err
 		}
 	}
-	binding := meta.ColumnBinding
-	if binding != nil && isSystemManagedColumn(binding.ColumnName) {
+	if boundToSystemColumn(meta) {
 		return nil
 	}
+	binding := meta.ColumnBinding
 	if err := checkTextFit(attr); err != nil {
 		return err
 	}
@@ -47,6 +47,13 @@ func checkStorageFit(attr *model.EAVRecord, meta forma.AttributeMetadata) error 
 		return checkEAVFit(attr, meta.ValueType)
 	}
 	return checkBoundColumnFit(attr, meta.ValueType, binding)
+}
+
+// boundToSystemColumn reports an attribute whose value the writer drops: its
+// binding aliases a system column (ltbase_*), which storeInMainColumn never
+// writes from caller data.
+func boundToSystemColumn(meta forma.AttributeMetadata) bool {
+	return meta.ColumnBinding != nil && isSystemManagedColumn(meta.ColumnBinding.ColumnName)
 }
 
 // checkTextFit refuses a text slot PostgreSQL text cannot hold (a NUL

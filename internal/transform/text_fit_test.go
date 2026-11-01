@@ -67,6 +67,7 @@ func TestCheckTextValues(t *testing.T) {
 		"items.note": {AttributeID: 5, ValueType: forma.ValueTypeText},
 		"age":        {AttributeID: 6, ValueType: forma.ValueTypeInteger},
 		"ref":        {AttributeID: 7, ValueType: forma.ValueTypeUUID},
+		"created":    {AttributeID: 8, ValueType: forma.ValueTypeText, ColumnBinding: &forma.MainColumnBinding{ColumnName: "ltbase_created_at"}},
 	}
 	cases := []struct {
 		name    string
@@ -85,6 +86,13 @@ func TestCheckTextValues(t *testing.T) {
 		{"not text: uuid", map[string]any{"ref": "a\x00b"}, ""},
 		{"undefined attribute", map[string]any{"nope": "a\x00b"}, ""},
 		{"null", map[string]any{"name": nil}, ""},
+		{"system column alias", map[string]any{"created": "a\x00b"}, ""},
+		// A list position the write refuses for its shape is no stored
+		// text: the shape refusal keeps its stage, even over invalid text.
+		{"scalar for a list", map[string]any{"tags": "ordinary"}, ""},
+		{"scalar for a list, NUL", map[string]any{"tags": "a\x00b"}, ""},
+		{"nested array in a list", map[string]any{"tags": []any{[]any{"a\x00b"}}}, ""},
+		{"past the nesting cap", cyclicDocument(), ""},
 	}
 	for _, tc := range cases {
 		err := CheckTextValues(tc.doc, cache)
@@ -119,4 +127,29 @@ func TestCheckTextValues_MatchesTheWrite(t *testing.T) {
 		require.Error(t, intakeErr)
 		assert.Equal(t, writeErr.Error(), intakeErr.Error())
 	}
+}
+
+// Every position CheckTextValues leaves alone, the write refuses for its own
+// reason, so leaving it changes no outcome: the write still refuses it.
+func TestCheckTextValues_LeavesOtherRefusalsToTheWrite(t *testing.T) {
+	cache := forma.SchemaAttributeCache{"tags": {AttributeID: 3, ValueType: forma.ValueTypeList}}
+	for _, doc := range []map[string]any{
+		{"tags": "ordinary"},
+		{"tags": "a\x00b"},
+		{"tags": []any{[]any{"a\x00b"}}},
+	} {
+		require.NoError(t, CheckTextValues(doc, cache), doc)
+		entries, err := walkDocument(1, uuid.New(), doc, cache)
+		require.NoError(t, err)
+		_, writeErr := flattenToAttributes(entries)
+		require.ErrorIs(t, writeErr, forma.ErrInvalidInput, doc)
+		assert.NotContains(t, writeErr.Error(), "NUL", "the write refuses the shape, not the text")
+	}
+}
+
+// cyclicDocument is a document past the nesting cap, which the write refuses.
+func cyclicDocument() map[string]any {
+	doc := map[string]any{"name": "a\x00b"}
+	doc["self"] = doc
+	return doc
 }
