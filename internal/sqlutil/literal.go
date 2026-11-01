@@ -13,7 +13,7 @@ import "strings"
 // string-literal context — use SanitizeIdentifier for identifiers.
 //
 // This is the single home of the rule; #307 showed it is load-bearing (an
-// unescaped credential in postgres_scan('…') put deployment-configured text
+// unescaped credential in postgres_scan('…') (the hot leg's form before #752) put deployment-configured text
 // into SQL structure), and #310 consolidated the copies that previously
 // lived in internal/cdc, internal/sqlgen, and the federated e2e harness.
 func EscapeLiteral(s string) string {

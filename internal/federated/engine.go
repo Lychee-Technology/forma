@@ -19,7 +19,8 @@ import (
 
 // PostgresFederatedSource is the Postgres-side seam the federated engine
 // queries for hot-tier records: the hot-only gate and the degraded fallback.
-// The DuckDB path reads the hot tier itself, through postgres_scan. The seam
+// The DuckDB path reads the hot tier itself, through the PostgreSQL catalog it
+// attaches (#752). The seam
 // once also carried RunOptimizedQuery and BuildHybridConditions for the
 // in-memory merge path of ExecuteFederatedPaginatedQuery; both left with that
 // path (#442).

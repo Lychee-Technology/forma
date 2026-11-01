@@ -307,8 +307,8 @@ func (c *duckDBExecutionPlanContext) recordDirtyIDSource(changeLogTable string, 
 const hotLegPredicateReason = "hot-leg predicate (evaluated in DuckDB)"
 
 // recordHotLegPredicate records the hot leg's main-table predicate in the
-// execution plan. It never sets PredicatePushdown: postgres_scan sends
-// PostgreSQL no predicate, so DuckDB evaluates the clause on whole copied
+// execution plan. It never sets PredicatePushdown: the hot leg's scans send
+// PostgreSQL no predicate (filter pushdown is off on the attached catalog), so DuckDB evaluates the clause on whole copied
 // tables (#631, design.md §6.1).
 func (c *duckDBExecutionPlanContext) recordHotLegPredicate(pgMainClause string) {
 	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
@@ -340,7 +340,8 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any
 	dp := model.DataSourcePlan{
 		Tier:   served[0],
 		Engine: "duckdb",
-		// #306: the rendered SQL embeds postgres_scan('…password=…'); the
+		// #306: before #752 the rendered SQL embedded postgres_scan('…password=…'),
+		// and it now names the attached catalog by alias only; the
 		// internal plan reaches Go embedders via attachExecutionPlan, so the
 		// credential is scrubbed here while the rest of the query shape stays
 		// diagnosable. The engine still executes the unscrubbed sqlStr.

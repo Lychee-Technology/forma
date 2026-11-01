@@ -89,7 +89,7 @@ func TestDuckDBNullScanTypeMirrorsTierTypes(t *testing.T) {
 func minimalAdvancedParams(t *testing.T, missing []ScanColumn) map[string]any {
 	t.Helper()
 	return injectTestRenderParams(t, map[string]any{
-		"PG_CONN":              "dbname=forma host=localhost",
+		"DuckDBPGConnString":   "dbname=forma host=localhost",
 		"ChangeLogSchema":      "public",
 		"ChangeLogScanTable":   "change_log",
 		"MainSchema":           "public",

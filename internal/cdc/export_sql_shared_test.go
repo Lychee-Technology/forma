@@ -381,9 +381,9 @@ func TestCastMainValue_DateAndDatetimeEncodings(t *testing.T) {
 }
 
 func TestBuildEAVAggregationSQL_GroupsByRowIDWhenNoAggregatesExist(t *testing.T) {
-	query := buildEAVAggregationSQL("SELECT row_id FROM eav_data", nil)
+	query := buildEAVAggregationSQL("e_rows", nil)
 
-	require.Contains(t, query, "SELECT row_id FROM postgres_query")
+	require.Contains(t, query, "SELECT row_id FROM e_rows")
 	require.Contains(t, query, "GROUP BY row_id")
 	require.NotContains(t, query, ",\n    MAX(")
 }

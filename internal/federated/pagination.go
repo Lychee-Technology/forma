@@ -9,7 +9,7 @@ import (
 
 // ExecuteFederatedKeysetQuery returns one keyset page across all three tiers
 // plus the FULL match count, not the count remaining after the cursor. The
-// page comes from DuckDB's federated template (hot via postgres_scan, warm and
+// page comes from DuckDB's federated template (hot via the attached PostgreSQL catalog, warm and
 // cold from S3), which applies the keyset WHERE in the visible CTE after the
 // LWW dedup (rn = 1), so the cursor filters LWW winners rather than row
 // versions (#212). A nil or empty cursor is the open first page
@@ -55,7 +55,7 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedKeysetQuery(
 		limit = maxRows
 	}
 
-	// Fetch from DuckDB (cold and warm via S3, hot via postgres_scan).
+	// Fetch from DuckDB (cold and warm via S3, hot via the attached PostgreSQL catalog).
 	// The template applies the keyset WHERE in the visible CTE AFTER the
 	// ROW_NUMBER dedup picks rn = 1, so the cursor filters LWW winners, not
 	// row versions. Applying it pre-dedup resurrected superseded versions for

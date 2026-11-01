@@ -238,3 +238,32 @@ func TestExportToTmpWrapsPlanErrors(t *testing.T) {
 		require.ErrorIs(t, err, ErrSchemaAttrCacheUnavailable)
 	})
 }
+
+// Every postgres_query result is read through a MATERIALIZED CTE, never
+// joined directly: DuckDB 2.0's postgres_query decodes columns in its query's
+// order even when a join reorders the projection, which swapped values and
+// failed CDC exports on UUID columns (#752). Both export shapes are covered:
+// the delta export (change_log driven) and the base export (entity_main only).
+func TestBuildExportSQL_ReadsEveryPostgresQueryThroughAMaterializedCTE(t *testing.T) {
+	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
+	delta, _, _, _, err := buildExportSQL("host=pg", "s3://b/1/_tmp/d.parquet", CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, testAttrCache())
+	require.NoError(t, err)
+	base, _, _, err := buildBaseExportSQL("host=pg", "s3://b/1/_tmp/b.parquet", CDCConfig{}, 1, []uuid.UUID{rowID}, testAttrCache())
+	require.NoError(t, err)
+
+	for name, tc := range map[string]struct {
+		sql   string
+		ctes  []string
+		count int
+	}{
+		"delta": {delta, []string{"cl", "m", "e_rows"}, 3},
+		"base":  {base, []string{"m", "e_rows"}, 2},
+	} {
+		require.Equal(t, tc.count, strings.Count(tc.sql, "postgres_query("), "%s: postgres_query count", name)
+		require.Equal(t, tc.count, strings.Count(tc.sql, " AS MATERIALIZED (SELECT * FROM postgres_query('pg_db', "),
+			"%s: every postgres_query must sit alone in a MATERIALIZED CTE", name)
+		for _, cte := range tc.ctes {
+			require.Contains(t, tc.sql, cte+" AS MATERIALIZED (SELECT * FROM postgres_query(", "%s: CTE %s", name, cte)
+		}
+	}
+}

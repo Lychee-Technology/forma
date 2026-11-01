@@ -37,7 +37,7 @@ type FederatedTestHarness struct {
 	// kept so engine construction reuses the truthful resource settings.
 	DuckCfg forma.DuckDBConfig
 
-	// Postgres connection info for DuckDB postgres_scan
+	// Postgres connection info for the PostgreSQL catalog DuckDB attaches
 	PGHost     string
 	PGPort     string
 	PGUser     string
@@ -286,7 +286,7 @@ func NewFederatedTestHarness(ctx context.Context, opts ...HarnessOption) (*Feder
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
 
-	// Parse Postgres host and port from DSN for DuckDB postgres_scan
+	// Parse Postgres host and port from DSN for the PostgreSQL catalog DuckDB attaches
 	pgHost, pgPort := parsePGDSN(base.PGDSN)
 
 	h := &FederatedTestHarness{

@@ -15,14 +15,15 @@ import (
 	forma "github.com/lychee-technology/forma"
 )
 
-// hotLegCopyPattern matches the statement DuckDB's postgres_scan sends for
-// one table: a COPY of the projected columns. Group 1 is the table, group 2
+// hotLegCopyPattern matches the statement a scan of the attached PostgreSQL
+// catalog sends for one table (postgres_scan before #752): a COPY of the
+// projected columns. Group 1 is the table, group 2
 // whatever follows it inside the COPY's SELECT.
 var hotLegCopyPattern = regexp.MustCompile(`statement: COPY \(SELECT .+? FROM "public"\."(\w+)"\s*(.*?)\s*\) TO STDOUT`)
 
 // scannerCTIDRange is the only filter the scanner adds on its own: the
 // ctid range it splits a table scan into. The DuckDB 1.4.5 probe in #631
-// saw it; 1.5.6 sends none on small tables.
+// saw it; 1.5.6 and 2.0.0 send none on small tables.
 var scannerCTIDRange = regexp.MustCompile(`^WHERE ctid BETWEEN '\(\d+,\d+\)'::tid AND '\(\d+,\d+\)'::tid$`)
 
 // TestHotLegCopiesWholeTables pins what design.md §6.1 states (#631): the
@@ -32,7 +33,8 @@ var scannerCTIDRange = regexp.MustCompile(`^WHERE ctid BETWEEN '\(\d+,\d+\)'::ti
 // DuckDB applies the schema, flush and query filters to the copies.
 //
 // The test fails when that stops being true, for example after a DuckDB
-// upgrade that starts pushing filters. design.md §6.1, requirements.md §7.1
+// upgrade that starts pushing filters, or if the engine stops turning off the
+// attached catalog's filter pushdown (sqlgen.PostgresAttachSQL, #752). design.md §6.1, requirements.md §7.1
 // and the plan's hot-leg source then need revisiting with it.
 //
 // It reads PostgreSQL's statement log, so it needs the harness's own

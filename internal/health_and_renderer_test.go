@@ -68,7 +68,7 @@ func TestBuildDuckDBQuery_Injection(t *testing.T) {
 }
 
 func TestBuildDuckDBQuery_PreservesInjectedProductionTemplateParams(t *testing.T) {
-	tpl := template.Must(template.New("test").Parse("PG={{.PG_CONN}}|S3={{.S3_PATHS}}|SCHEMA={{.SCHEMA_ID}}|PAGE={{.PAGE_SIZE}}|OFFSET={{.OFFSET}}|LOGICAL={{.LOGICAL_WHERE_CLAUSE}}|PUSH={{.PG_WHERE_CLAUSE}}"))
+	tpl := template.Must(template.New("test").Parse("PG={{.PG_CHANGE_LOG}}|S3={{.S3_PATHS}}|SCHEMA={{.SCHEMA_ID}}|PAGE={{.PAGE_SIZE}}|OFFSET={{.OFFSET}}|LOGICAL={{.LOGICAL_WHERE_CLAUSE}}|PUSH={{.PG_WHERE_CLAUSE}}"))
 	dual := &sqlgen.DualClauses{
 		DuckClause:   "age > ?",
 		DuckArgs:     []any{18},
@@ -80,7 +80,8 @@ func TestBuildDuckDBQuery_PreservesInjectedProductionTemplateParams(t *testing.T
 
 	sql, args, err := sqlgen.BuildDuckDBQuery(tpl, map[string]any{"DuckDBPGConnString": "host=pg port=5432", "S3_PATHS": "'s3://bucket/prefix/42/base/*.parquet'", "Anchor": map[string]any{}}, q, nil, dual)
 	require.NoError(t, err)
-	require.Contains(t, sql, "PG=host=pg port=5432")
+	require.Contains(t, sql, "PG="+sqlgen.PostgresCatalogAlias("host=pg port=5432")+`."".""|`,
+		"the hot-leg table references derive from the injected connection string's catalog alias")
 	require.Contains(t, sql, "S3='s3://bucket/prefix/42/base/*.parquet'")
 	require.Contains(t, sql, "SCHEMA=42")
 	require.Contains(t, sql, "PAGE=25")
@@ -135,10 +136,10 @@ func TestBuildDuckDBQuery_AdvancedTemplateUsesConfiguredTableNames(t *testing.T)
 
 	sql, _, err := sqlgen.BuildDuckDBQuery(sqlgen.AdvancedQueryTemplateDuckDB, params, q, nil, dual)
 	require.NoError(t, err)
-	require.Contains(t, sql, "postgres_scan('host=pg port=5432', 'public', 'change_log')")
-	require.Contains(t, sql, "JOIN postgres_scan('host=pg port=5432',")
-	require.Contains(t, sql, "'entity_main'")
-	require.Contains(t, sql, "postgres_scan('host=pg port=5432', 'public', 'eav_data')")
+	pg := sqlgen.PostgresCatalogAlias("host=pg port=5432")
+	require.Contains(t, sql, "FROM "+pg+`."public"."change_log" cl`)
+	require.Contains(t, sql, "JOIN "+pg+`."public"."entity_main" m`)
+	require.Contains(t, sql, "FROM "+pg+`."public"."eav_data"`)
 	require.NotContains(t, sql, "change_log_dev")
 	require.NotContains(t, sql, "entity_main_dev")
 	require.NotContains(t, sql, "eav_data_dev")

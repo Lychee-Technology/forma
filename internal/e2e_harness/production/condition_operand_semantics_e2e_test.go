@@ -24,7 +24,7 @@ type operandRow struct {
 // TestConditionOperandSemanticsAcrossRoutes runs numeric operands that are
 // fractions or beyond a column's width, and starts_with / contains operands
 // holding LIKE metacharacters, on the Postgres route, the DuckDB route over
-// hot rows (the entity_main pushdown DuckDB evaluates over postgres_scan),
+// hot rows (the entity_main pushdown DuckDB evaluates over the hot leg's scan),
 // and the DuckDB route over warm delta parquet. Expected rows come from exact
 // arithmetic and Go string matching over the seeded values, never from
 // another route. The numeric attributes cover smallint, integer and bigint,

@@ -43,7 +43,8 @@ func ValidateDuckDBConfig(cfg forma.DuckDBConfig) error {
 }
 
 // NewDuckDBClient creates and configures a DuckDB client according to the provided config.
-// It attempts to load common extensions (httpfs/parquet) and configure S3 access via PRAGMA when requested.
+// It loads httpfs and parquet when the config enables them, and fails when
+// either cannot be loaded, and configures S3 access via SET.
 func NewDuckDBClient(cfg forma.DuckDBConfig) (*DuckDBClient, error) {
 	return NewDuckDBClientContext(context.Background(), cfg)
 }
@@ -74,8 +75,10 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 	// connection — not once against the pool, which reaches a single arbitrary
 	// connection (issue #245). The connector init hook runs for each new physical
 	// connection; PingContext below opens and thereby initializes the first one.
-	// Failed init statements are logged and skipped, never blocking the
-	// connection — construction fails only on credential validation or ping.
+	// A failed optional statement is logged and skipped; a failed required one
+	// (httpfs, parquet, the S3 session settings) fails the connection, and
+	// thereby the ping and construction (#752). The factory treats a client
+	// that fails to open as DuckDB unavailable and degrades to Postgres-only.
 	// The recovering connector reopens the database with the same hook when
 	// DuckDB invalidates it (#702).
 	connInit := duckdbinit.MakeConnInit(steps, zap.S(), duckdbinit.DefaultInitTimeout)
@@ -127,56 +130,62 @@ func buildInitSteps(cfg forma.DuckDBConfig) ([]duckdbinit.Step, error) {
 }
 
 // buildExtensionSteps pairs each extension's INSTALL and LOAD into one step, so a
-// failed INSTALL skips that extension's LOAD.
+// failed INSTALL skips that extension's LOAD. httpfs (S3) and parquet are
+// required when the config enables them: a connection without them fails
+// every federated read, so it must fail to open instead of passing the
+// constructor's ping and degrading each query (#752). Extensions listed in
+// cfg.Extensions stay optional, logged and skipped as before.
 func buildExtensionSteps(cfg forma.DuckDBConfig) []duckdbinit.Step {
 	var steps []duckdbinit.Step
-	appendExt := func(ext string) {
+	for _, ext := range cfg.Extensions {
 		steps = append(steps, duckdbinit.ExtensionStep(ext))
 	}
-	for _, ext := range cfg.Extensions {
-		appendExt(ext)
-	}
 	if cfg.EnableS3 {
-		appendExt("httpfs")
+		steps = append(steps, duckdbinit.RequiredExtensionStep("httpfs"))
 	}
 	if cfg.EnableParquet {
-		appendExt("parquet")
+		steps = append(steps, duckdbinit.RequiredExtensionStep("parquet"))
 	}
 	return steps
 }
 
 // buildS3Steps builds the S3 session SET statements. Each credential passes the
 // character-denylist validation first, so invalid values fail construction. The
-// SET statements are independent of each other, hence one step apiece.
+// SET statements are independent of each other, hence one step apiece. They are
+// required: a connection that loaded httpfs but missed its endpoint or keys
+// would sign S3 requests for the wrong store (#245, #752).
 func buildS3Steps(cfg forma.DuckDBConfig) ([]duckdbinit.Step, error) {
 	if !cfg.EnableS3 {
 		return nil, nil
 	}
 
-	var steps []duckdbinit.Step
-	credentials := []struct{ name, value string }{
-		{"s3_access_key_id", cfg.S3AccessKey},
-		{"s3_secret_access_key", cfg.S3SecretKey},
-		{"s3_region", cfg.S3Region},
+	type s3Setting struct {
+		name, value string
+		secret      bool
 	}
-	for _, c := range credentials {
+	var steps []duckdbinit.Step
+	settings := []s3Setting{
+		{"s3_access_key_id", cfg.S3AccessKey, true},
+		{"s3_secret_access_key", cfg.S3SecretKey, true},
+		{"s3_region", cfg.S3Region, false},
+	}
+	if cfg.S3Endpoint != "" {
+		settings = append(settings, s3Setting{"s3_endpoint", strings.TrimPrefix(cfg.S3Endpoint, "http://"), false})
+	}
+	for _, c := range settings {
 		if c.value == "" {
 			continue
 		}
-		if err := duckdbinit.ValidateS3Credential(c.name, c.value); err != nil {
+		step, err := duckdbinit.S3SettingStep(c.name, c.value, c.secret)
+		if err != nil {
 			return nil, fmt.Errorf("invalid duckdb s3 config: %w", err)
 		}
-		steps = append(steps, duckdbinit.SingleStmtStep(fmt.Sprintf("SET %s='%s';", c.name, c.value), "set "+c.name))
+		steps = append(steps, step.AsRequired())
 	}
 	if cfg.S3Endpoint != "" {
-		endpoint := strings.TrimPrefix(cfg.S3Endpoint, "http://")
-		if err := duckdbinit.ValidateS3Credential("s3_endpoint", endpoint); err != nil {
-			return nil, fmt.Errorf("invalid duckdb s3 config: %w", err)
-		}
 		steps = append(steps,
-			duckdbinit.SingleStmtStep(fmt.Sprintf("SET s3_endpoint='%s';", endpoint), "set s3_endpoint"),
-			duckdbinit.SingleStmtStep("SET s3_use_ssl=false;", "set s3_use_ssl"),
-			duckdbinit.SingleStmtStep("SET s3_url_style='path';", "set s3_url_style"),
+			duckdbinit.SingleStmtStep("SET s3_use_ssl=false;", "set s3_use_ssl").AsRequired(),
+			duckdbinit.SingleStmtStep("SET s3_url_style='path';", "set s3_url_style").AsRequired(),
 		)
 	}
 	return steps, nil

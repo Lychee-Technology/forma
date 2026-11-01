@@ -23,7 +23,7 @@ import (
 // for history written before the rejection existed. They are probed on every
 // tier, the unflushed hot routes included: a filter on the bool itself is
 // pushed down into entity_main on both the Postgres route and the DuckDB hot
-// leg's postgres_scan, and since #565 that pushdown carries the read
+// leg's PostgreSQL scan, and since #565 that pushdown carries the read
 // contract's verdict — `smallint_01 BETWEEN 1 AND 32767` for the truthy
 // side of bool_smallint, `(text_02 = '1') = false` for the falsy side of
 // bool_text — so the planted 2 answers `equals:true` and the planted 'true'

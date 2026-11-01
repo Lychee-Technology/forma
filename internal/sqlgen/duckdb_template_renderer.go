@@ -67,7 +67,7 @@ func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttr
 		}
 		anchor["Condition"] = whereClause
 
-		// Inject PgMainClause for inspection / postgres_scan integration
+		// Inject PgMainClause for inspection / hot-leg integration
 		m["PgMainClause"] = dual.PgMainClause
 		m["PgMainArgs"] = dual.PgMainArgs
 		m["HasPgMainClause"] = dual.PgMainClause != ""
@@ -293,25 +293,7 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 		}
 	}
 
-	// PG_CONN is escaped because the templates interpolate it as
-	// postgres_scan('{{.PG_CONN}}', …). Since #301 the DSN produced by
-	// federated.DuckDBPostgresConnStringFromPool quotes its values, so it
-	// legitimately contains single quotes; without escaping the rendered SQL
-	// would terminate the literal early and fail to parse.
-	//
-	// Escaping also closes the pre-existing hole that made quoting unsafe to
-	// add: before #301 a Postgres password containing a single quote was
-	// interpolated raw, which broke the query and put deployment-configured
-	// text into SQL structure. PG_CONN comes from the pgx pool configuration,
-	// not from any HTTP caller, so this was never a caller-reachable injection
-	// vector — but escaping is still required so credential characters can
-	// never alter the rendered SQL. The same rule guards the CDC ATTACH path
-	// (#290); both sites consume sqlutil.EscapeLiteral (#310).
-	if _, ok := params["PG_CONN"]; !ok {
-		if raw, ok := params["DuckDBPGConnString"].(string); ok && raw != "" {
-			params["PG_CONN"] = sqlutil.EscapeLiteral(raw)
-		}
-	}
+	injectPostgresTableRefs(params)
 
 	// Keyset pagination: inject cursor-derived WHERE clause and ORDER BY.
 	// The clause uses positional "?" placeholders; its args are appended after
@@ -404,4 +386,31 @@ func appendKeysetArgs(params map[string]any, args []any) []any {
 	}
 	delete(params, "KEYSET_ARGS")
 	return append(args, keysetArgs...)
+}
+
+// injectPostgresTableRefs sets the hot leg's catalog-qualified table
+// references (PG_CHANGE_LOG, PG_MAIN, PG_EAV) in the catalog
+// PostgresCatalogAlias names for DuckDBPGConnString, unless the caller set
+// them. Only the alias reaches the rendered SQL: the connection string, and
+// the password in it, travel in PostgresAttachSQL, which the engine runs
+// ahead of the query (#752). Before #752 the template interpolated the
+// escaped connection string into every postgres_scan call, so each rendered
+// query, and every log line or plan that quoted one, carried the password
+// (#301, #306).
+func injectPostgresTableRefs(params map[string]any) {
+	connStr, _ := params["DuckDBPGConnString"].(string)
+	alias := PostgresCatalogAlias(connStr)
+	refs := []struct{ key, schemaKey, tableKey string }{
+		{"PG_CHANGE_LOG", "ChangeLogSchema", "ChangeLogScanTable"},
+		{"PG_MAIN", "MainSchema", "MainScanTable"},
+		{"PG_EAV", "EAVSchema", "EAVScanTable"},
+	}
+	for _, r := range refs {
+		if _, ok := params[r.key]; ok {
+			continue
+		}
+		schema, _ := params[r.schemaKey].(string)
+		table, _ := params[r.tableKey].(string)
+		params[r.key] = PostgresTableRef(alias, schema, table)
+	}
 }

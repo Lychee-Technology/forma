@@ -22,7 +22,7 @@ import (
 func flushGraceParams(t *testing.T, cutoff any) map[string]any {
 	t.Helper()
 	m := map[string]any{
-		"PG_CONN":              "dbname=forma host=localhost",
+		"DuckDBPGConnString":   "dbname=forma host=localhost",
 		"ChangeLogSchema":      "public",
 		"ChangeLogScanTable":   "change_log",
 		"MainSchema":           "public",

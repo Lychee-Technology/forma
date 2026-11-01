@@ -20,9 +20,8 @@ import (
 // calls itself the core logic of the Federated Query Engine, so it must stay
 // executable against the runtime source contract:
 //
-//   - every postgres_scan is the 3-arg (connection, schema, table) form used
-//     by AdvancedQueryTemplateDuckDB — never a 2-arg form or a predicate/query
-//     smuggled into the table argument;
+//   - every hot-leg scan is a $PG."schema"."table" reference into the attached
+//     PostgreSQL catalog, the form AdvancedQueryTemplateDuckDB renders (#752);
 //   - the S3 projection uses the runtime parquet columns from
 //     buildS3Projection (ltbase_created_at AS created_at, changed_at AS
 //     ver_ts, deleted_at AS deleted_ts) — created_at and ver_ts come from
@@ -31,8 +30,8 @@ import (
 //     semantics that PR #211 encoded.
 //
 // TestDesignDocSQL_ExecutesWithLWWFilterSemantics enforces the above
-// behaviorally: postgres_scan calls are mapped to same-named local relations
-// (a malformed call maps to nothing and fails the parse assertion), the
+// behaviorally: catalog scans are mapped to same-named local relations
+// (a malformed reference maps to nothing and fails the parse assertion), the
 // $S3_PATHS placeholder points at a real parquet file, and the whole block
 // runs on an in-memory DuckDB against seed data built for the #173 scenarios.
 
@@ -58,26 +57,21 @@ func extractDesignDocSection5SQL(t *testing.T) string {
 	return m[1]
 }
 
-// threeArgScanRe is the only valid documented postgres_scan shape: the
-// $PG_CONN placeholder plus two single-quoted identifiers (schema, table).
-// A predicate or a dynamic SELECT in any argument does not match.
-var threeArgScanRe = regexp.MustCompile(
-	`^\$PG_CONN\s*,\s*'([A-Za-z_][A-Za-z0-9_]*)'\s*,\s*'([A-Za-z_][A-Za-z0-9_]*)'$`)
-
-// TestDesignDocSQL_PostgresScanIsThreeArg pins the runtime scan arity: every
-// documented postgres_scan must be the 3-arg (connection, schema, table) form
-// of AdvancedQueryTemplateDuckDB.
-func TestDesignDocSQL_PostgresScanIsThreeArg(t *testing.T) {
+// TestDesignDocSQL_PostgresScansReadTheAttachedCatalog pins the runtime scan
+// shape: every documented hot-leg scan is a plain table reference into the
+// attached PostgreSQL catalog, $PG."schema"."table", as AdvancedQueryTemplateDuckDB
+// renders it (#752), and nothing still uses postgres_scan, which DuckDB 2.0's
+// postgres extension no longer has.
+func TestDesignDocSQL_PostgresScansReadTheAttachedCatalog(t *testing.T) {
 	sqlText := extractDesignDocSection5SQL(t)
 
-	calls := sqlgentest.FindPostgresScanCalls(sqlText)
-	require.NotEmpty(t, calls, "§5 must document postgres_scan usage")
-
-	for _, args := range calls {
-		require.Regexp(t, threeArgScanRe, args,
-			"every §5 postgres_scan must be the 3-arg ($PG_CONN, 'schema', 'table') runtime form; "+
-				"predicates such as flushed_at = 0 belong in WHERE, not in a scan argument")
+	refs := sqlgentest.FindPostgresTableRefs(sqlText)
+	require.NotEmpty(t, refs, "§5 must document the hot leg's PostgreSQL scans")
+	for _, ref := range refs {
+		require.Equal(t, "$PG", ref.Catalog, "§5 scans must name the attached catalog placeholder: %s", ref.Raw)
 	}
+	require.NotContains(t, sqlText, "postgres_scan(",
+		"§5 must not document the postgres_scan table function DuckDB 2.0 removed")
 }
 
 // extractDocS3ProjectionItems returns the individual SELECT items of the §5
@@ -163,20 +157,15 @@ func TestDesignDocSQL_ScanSourceMatchesRuntimeGuard(t *testing.T) {
 }
 
 // rewriteDocSQLForLocalExecution turns the §5 sketch into a self-contained
-// DuckDB statement: each postgres_scan($PG_CONN, 'schema', 'table') collapses
-// to its table name (bound to a local seed relation), and the remaining $
-// placeholders get concrete values. The table-name mapping is derived from
-// the call itself, so renames in the doc adapt automatically — while any
-// malformed scan form fails the arity assertion here.
+// DuckDB statement: each $PG."schema"."table" scan collapses to its table
+// name (bound to a local seed relation), and the remaining $ placeholders get
+// concrete values. The table-name mapping is derived from the reference
+// itself, so renames in the doc adapt automatically, while a malformed scan
+// stays unmapped and fails to execute.
 func rewriteDocSQLForLocalExecution(t *testing.T, sqlText, parquetPath string) string {
 	t.Helper()
 
-	for _, args := range sqlgentest.FindPostgresScanCalls(sqlText) {
-		m := threeArgScanRe.FindStringSubmatch(args)
-		require.NotNil(t, m,
-			"cannot map postgres_scan(%s) to a local relation: not the 3-arg runtime form", args)
-		sqlText = strings.Replace(sqlText, "postgres_scan("+args+")", m[2], 1)
-	}
+	sqlText = sqlgentest.CollapsePostgresTableRefs(sqlText)
 
 	replacements := [][2]string{
 		{"$S3_PATHS", "['" + parquetPath + "']"},
@@ -187,9 +176,10 @@ func rewriteDocSQLForLocalExecution(t *testing.T, sqlText, parquetPath string) s
 		// Grace disabled (MaxInt64) so the seed's flushed s3 row keeps its
 		// #173 out-of-dirty-set semantics (#252).
 		{"$FLUSH_GRACE_CUTOFF_MS", "9223372036854775807"},
-		// Scan calls collapse to local relations above; this only clears the
-		// parameter-legend comment lines.
+		// Scans collapse to local relations above; these only clear the
+		// parameter-legend comment lines. $PG_CONN goes before its prefix $PG.
 		{"$PG_CONN", "(local)"},
+		{"$PG", "(local)"},
 	}
 	for _, r := range replacements {
 		sqlText = strings.ReplaceAll(sqlText, r[0], r[1])

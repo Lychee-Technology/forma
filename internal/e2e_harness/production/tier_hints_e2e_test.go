@@ -16,7 +16,7 @@ import (
 // the physical data sources, not just routing metadata. Physical sources come
 // in two equivalence classes (#177 acceptance note: base and delta parquet
 // share one flat glob and the reader is manifest-blind, so warm and cold are
-// one physical source): hot ⇔ the pg_source postgres_scan of entity_main,
+// one physical source): hot ⇔ the pg_source scan of entity_main,
 // warm∪cold ⇔ read_parquet of the schema glob. The dirty_ids change_log scan
 // is a consistency barrier and survives every DuckDB form: excluding hot
 // makes unflushed rows consistently invisible — their stale parquet versions
@@ -150,8 +150,8 @@ func assertTierMatrixHasHot(ctx context.Context, t *testing.T, env *Env, wide Sc
 	if !strings.Contains(sqlText, "read_parquet") {
 		t.Errorf("%s: warm/cold requested but read_parquet missing from SQL", name)
 	}
-	if calls := sqlgentest.FindPostgresScanCalls(sqlText); len(calls) < 3 {
-		t.Errorf("%s: hot requested: want >=3 postgres_scan calls (dirty_ids + pg_source), got %d", name, len(calls))
+	if refs := sqlgentest.FindPostgresTableRefs(sqlText); len(refs) < 3 {
+		t.Errorf("%s: hot requested: want >=3 PostgreSQL table scans (dirty_ids + pg_source), got %d", name, len(refs))
 	}
 	if !planHasReason(result.Plan, "hot-leg predicate (evaluated in DuckDB)") {
 		t.Errorf("%s: hot requested but no hot-leg predicate source recorded", name)
@@ -190,9 +190,9 @@ func assertTierMatrixS3Only(ctx context.Context, t *testing.T, env *Env, wide Sc
 	if !strings.Contains(sqlText, "read_parquet") {
 		t.Errorf("%s: read_parquet missing from SQL", name)
 	}
-	calls := sqlgentest.FindPostgresScanCalls(sqlText)
-	if len(calls) != 1 || !strings.Contains(calls[0], "change_log") {
-		t.Errorf("%s: want exactly the dirty_ids change_log scan, got %d calls: %v", name, len(calls), calls)
+	refs := sqlgentest.FindPostgresTableRefs(sqlText)
+	if len(refs) != 1 || refs[0].Table != "change_log" {
+		t.Errorf("%s: want exactly the dirty_ids change_log scan, got %d scans: %v", name, len(refs), refs)
 	}
 	if planHasReason(result.Plan, "hot-leg predicate (evaluated in DuckDB)") {
 		t.Errorf("%s: hot excluded but a hot-leg predicate source was recorded", name)

@@ -71,7 +71,7 @@ func (f baselineParquetFlags) open(ctx context.Context, logger *zap.Logger) (*pa
 		S3Region: f.s3.region, S3UseSSL: f.s3.useSSL, S3UsePath: f.s3.usePath,
 	}
 	key, secret, token := cdc.ResolveStaticS3Credentials(duckCfg)
-	exporter, err := cdc.NewDuckExporter(ctx, duckCfg, key, secret, token, logger)
+	exporter, err := cdc.NewDuckParquetEngine(ctx, duckCfg, key, secret, token, logger)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open duckdb: %w", err)
 	}

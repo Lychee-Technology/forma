@@ -29,13 +29,13 @@ func TestBuildFederatedQueryCountSQLDynamic(t *testing.T) {
 	if !strings.Contains(query, "row_id NOT IN") {
 		t.Fatalf("expected dirty-id exclusion in count query: %s", query)
 	}
-	if !strings.Contains(query, "postgres_scan") {
+	if !strings.Contains(query, `."public"."change_log"`) {
 		t.Fatalf("expected hot tier in count query: %s", query)
 	}
 	if strings.Contains(query, "COALESCE(hot_vals.tradeTime, em.bigint_02)") {
 		t.Fatalf("sort-only count query should avoid projected tradeTime expression: %s", query)
 	}
-	if strings.Contains(query, "LEFT JOIN postgres_scan('host=localhost port=5432 user=postgres password=password dbname=postgres sslmode=disable', 'public', 'entity_main')") {
+	if strings.Contains(query, `."public"."entity_main"`) {
 		t.Fatalf("sort-only count query should avoid entity_main join: %s", query)
 	}
 }
@@ -54,7 +54,7 @@ func TestBuildFederatedCombinedQueryUsesHotFilterExpressions(t *testing.T) {
 	if !strings.Contains(query, "COALESCE(hot_vals.exchange, '')") {
 		t.Fatalf("expected hot exchange filter expression in combined query: %s", query)
 	}
-	if !strings.Contains(query, "postgres_scan") {
+	if !strings.Contains(query, `."public"."change_log"`) {
 		t.Fatalf("expected hot tier query in combined query: %s", query)
 	}
 }
@@ -106,7 +106,7 @@ func TestBuildFederatedCombinedQuerySupportsTradeTimeWindow(t *testing.T) {
 func TestBuildFederatedQueryCountSQLDynamic_UsesProjectedHotPathForTradeTimeWindow(t *testing.T) {
 	h := &FederatedTestHarness{SchemaID: benchmarkSchemaIDTrade, PGHost: "localhost", PGPort: "5432"}
 	query := h.buildFederatedQueryCountSQLDynamic("base-path", "delta-path", true, true, nil, &QueryOptions{Limit: 20, Offset: 40, SortBy: "tradeTime", SortDesc: true, TradeTimeStart: 1000, TradeTimeEnd: 2000})
-	for _, expected := range []string{"COALESCE(hot_vals.tradeTime, em.bigint_02) >= 1000", "COALESCE(hot_vals.tradeTime, em.bigint_02) <= 2000", "LEFT JOIN postgres_scan"} {
+	for _, expected := range []string{"COALESCE(hot_vals.tradeTime, em.bigint_02) >= 1000", "COALESCE(hot_vals.tradeTime, em.bigint_02) <= 2000", "LEFT JOIN forma_pg_"} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected projected count query to include %q: %s", expected, query)
 		}
@@ -349,7 +349,7 @@ func TestBuildHotTierQueryNonBenchmarkPathUnchanged(t *testing.T) {
 	if !strings.Contains(query, "COALESCE(em.ltbase_created_at, cl.changed_at) as ltbase_created_at") {
 		t.Fatalf("expected non-benchmark hot query to project the creation stamp: %s", query)
 	}
-	if !strings.Contains(query, "'public', 'entity_main') em") {
+	if !strings.Contains(query, `."public"."entity_main" em`) {
 		t.Fatalf("expected non-benchmark hot query to join entity_main for the creation stamp: %s", query)
 	}
 }

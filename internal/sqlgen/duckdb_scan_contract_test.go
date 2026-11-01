@@ -1,7 +1,6 @@
 package sqlgen
 
 import (
-	"regexp"
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/model"
@@ -10,21 +9,24 @@ import (
 )
 
 // TestAdvancedTemplate_PostgresScanContract pins the runtime scan contract
-// that docs/federated-query/design.md §5 documents (#214): every rendered
-// postgres_scan is the 3-arg (connection, schema, table) form with plain
-// identifiers, and flushed_at = 0 is expressed only as a WHERE predicate —
-// never smuggled into a scan argument as a predicate or dynamic SELECT.
+// that docs/federated-query/design.md §5 documents (#214, #752): every hot-leg
+// scan is a plain table reference into the attached PostgreSQL catalog,
+// <alias>."schema"."table", and flushed_at = 0 is expressed only as a WHERE
+// predicate. The rendered query carries the catalog's alias and never the
+// connection string: the attach that holds it runs ahead of the query
+// (PostgresAttachSQL).
 func TestAdvancedTemplate_PostgresScanContract(t *testing.T) {
 	q := &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0},
 	}
 	dual := &DualClauses{DuckClause: "1=1"}
+	const conn = "host=localhost dbname=forma password=hunter2-752"
 	// Mirror the production params from buildDuckDBQueryWithPlan
 	// (internal/federated/duckdb_query.go); the schema projection params come
 	// from the shared fixture (HasEAVPivot = true via the EAV tag attribute),
 	// mirroring the engine's injectSchemaProjections (#222).
 	params := injectTestRenderParams(t, map[string]any{
-		"PG_CONN":              "dbname=forma host=localhost",
+		"DuckDBPGConnString":   conn,
 		"ChangeLogSchema":      "public",
 		"ChangeLogScanTable":   "change_log",
 		"MainSchema":           "public",
@@ -38,19 +40,20 @@ func TestAdvancedTemplate_PostgresScanContract(t *testing.T) {
 	sqlText, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, params, q, nil, dual)
 	require.NoError(t, err)
 
-	calls := sqlgentest.FindPostgresScanCalls(sqlText)
-	require.Len(t, calls, 4,
-		"dirty_ids, pg_source change_log, entity_main, and the EAV pivot must all scan via postgres_scan")
-
-	threeArg := regexp.MustCompile(
-		`^'[^']*'\s*,\s*'[A-Za-z_][A-Za-z0-9_]*'\s*,\s*'[A-Za-z_][A-Za-z0-9_]*'$`)
-	for _, args := range calls {
-		require.Regexp(t, threeArg, args,
-			"postgres_scan must stay the 3-arg (connection, schema, table) form; "+
-				"predicates and dynamic SELECTs never belong in scan arguments")
-		require.NotContains(t, args, "flushed_at",
-			"flushed_at = 0 is a WHERE predicate, not a scan argument")
+	refs := sqlgentest.FindPostgresTableRefs(sqlText)
+	var tables []string
+	for _, ref := range refs {
+		require.Equal(t, PostgresCatalogAlias(conn), ref.Catalog,
+			"every scan must read the catalog attached for the engine's connection string")
+		require.Equal(t, "public", ref.Schema)
+		tables = append(tables, ref.Table)
 	}
+	require.Equal(t, []string{"change_log", "change_log", "entity_main_dev", "eav_data_dev"}, tables,
+		"dirty_ids, pg_source change_log, entity_main, and the EAV pivot must all scan the attached catalog")
+	require.NotContains(t, sqlText, "postgres_scan(",
+		"DuckDB 2.0's postgres extension has no postgres_scan table function (#752)")
+	require.NotContains(t, sqlText, "hunter2-752",
+		"the rendered query must not carry the connection string or its password")
 
 	require.Contains(t, sqlText, "AND (flushed_at = 0 OR flushed_at >= ",
 		"dirty_ids must restrict to unflushed-or-grace rows via a WHERE predicate (#252)")
@@ -74,7 +77,7 @@ func TestAdvancedTemplate_ColdOnlyOmitsPgSource(t *testing.T) {
 		PgMainClause: "m.integer_01 > ?", PgMainArgs: []any{int64(10)},
 	}
 	params := injectTestRenderParams(t, map[string]any{
-		"PG_CONN":              "dbname=forma host=localhost",
+		"DuckDBPGConnString":   "dbname=forma host=localhost",
 		"ChangeLogSchema":      "public",
 		"ChangeLogScanTable":   "change_log",
 		"MainSchema":           "public",
@@ -88,11 +91,11 @@ func TestAdvancedTemplate_ColdOnlyOmitsPgSource(t *testing.T) {
 	sqlText, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, params, q, nil, dual)
 	require.NoError(t, err)
 
-	calls := sqlgentest.FindPostgresScanCalls(sqlText)
-	require.Len(t, calls, 1,
+	refs := sqlgentest.FindPostgresTableRefs(sqlText)
+	require.Len(t, refs, 1,
 		"a hot-excluded query must keep only the dirty_ids change_log scan")
-	require.Contains(t, calls[0], "change_log",
-		"the sole remaining postgres_scan must be the dirty-id consistency barrier")
+	require.Equal(t, "change_log", refs[0].Table,
+		"the sole remaining PostgreSQL scan must be the dirty-id consistency barrier")
 	require.NotContains(t, sqlText, "pg_source",
 		"hot excluded: the pg_source data CTE must not render")
 	require.NotContains(t, sqlText, "UNION ALL",

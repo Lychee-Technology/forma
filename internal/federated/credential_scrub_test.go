@@ -10,6 +10,7 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/redact"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
@@ -103,11 +104,13 @@ func TestCredentialScrub_ExecutionPlanFailureNotes(t *testing.T) {
 	requireNoCanary(t, notes, "internal execution plan notes")
 }
 
-// The success path leaks too: recordTranslation stores the rendered SQL —
-// which embeds postgres_scan('…password=…') — verbatim on the internal plan
-// that attachExecutionPlan stitches onto the returned page. The public HTTP
-// projection already omits SQL (types.go SECURITY comment); this closes the
-// same credential for Go embedders, the audience #306 names.
+// The success path leaked too: recordTranslation stores the rendered SQL
+// verbatim on the internal plan that attachExecutionPlan stitches onto the
+// returned page, and before #752 that SQL embedded postgres_scan('…password=…').
+// The public HTTP projection already omits SQL (types.go SECURITY comment);
+// this keeps the credential out for Go embedders, the audience #306 names.
+// Since #752 the rendered SQL names the attached catalog by alias, and only
+// the executed batch, which begins with the ATTACH, carries the password.
 func TestCredentialScrub_PlanRenderedSQL(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
@@ -133,17 +136,19 @@ func TestCredentialScrub_PlanRenderedSQL(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, duckSQL, "plan must record the rendered duckdb SQL")
-	// Positive precondition: the DSN really rendered into this SQL (hot tier
-	// present in coldTierQuery keeps the postgres_scan sections, #184), so the
-	// NotContains checks cannot pass vacuously.
-	require.Contains(t, duckSQL, "postgres_scan")
-	require.Contains(t, duckSQL, "password="+redact.Placeholder)
+	// Positive precondition: the SQL really scans PostgreSQL (the hot tier
+	// present in coldTierQuery keeps the pg sections, #184), so the
+	// NotContains check cannot pass vacuously.
+	conn := "host=h port=5432 user=u password='" + scrubCanary + "' dbname=d"
+	require.Contains(t, duckSQL, sqlgen.PostgresCatalogAlias(conn)+`."public"."change_log"`)
 	requireNoCanary(t, duckSQL, "internal execution plan rendered SQL")
 
-	// Regression guard: the engine must execute the unscrubbed SQL. If someone
-	// later moves the scrub upstream (into the query builder or plan-cache
-	// compile), this test fails while production would emit
-	// postgres_scan('…password=***REDACTED***…') and fail at runtime.
-	require.Contains(t, duck.lastSQL, scrubCanary,
-		"the engine must execute the unscrubbed SQL; only the plan copy is scrubbed")
+	// Regression guard: the engine must execute the attach with the
+	// unscrubbed connection string ahead of the query. If someone later
+	// scrubs it upstream, this test fails while production would attach
+	// password=***REDACTED*** and fail at runtime.
+	require.True(t, strings.HasPrefix(duck.lastSQL, sqlgen.PostgresAttachSQL(conn)+"\n"),
+		"the engine must run the unscrubbed attach ahead of the query; only the plan copy is clean")
+	require.True(t, strings.HasSuffix(duck.lastSQL, duckSQL),
+		"the executed batch must end with exactly the rendered query the plan records")
 }

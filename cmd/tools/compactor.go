@@ -138,7 +138,7 @@ func openMergeEngine(ctx context.Context, opts *compactorOptions, logger *zap.Lo
 	if key == "" {
 		logger.Warn("no static S3 credentials resolved for the DuckDB engine; httpfs will read s3:// unsigned (#329)")
 	}
-	exporter, err := cdc.NewDuckExporter(ctx, duckCfg, key, secret, token, logger)
+	exporter, err := cdc.NewDuckParquetEngine(ctx, duckCfg, key, secret, token, logger)
 	if err != nil {
 		return nil, fmt.Errorf("open merge duckdb: %w", err)
 	}

@@ -83,7 +83,7 @@ func expectedWhole(values []int64, sqlOp string, operand any) []int64 {
 // equals:7.5 matched 8 and lte:7.5 matched 8 on a bigint attribute.
 //
 // The pushdown clause runs here against native DuckDB tables; in production
-// DuckDB evaluates it over postgres_scan, which this test does not reach.
+// DuckDB evaluates it over the hot leg's PostgreSQL scan, which this test does not reach.
 func TestNumericOperand_DuckDBConformance(t *testing.T) {
 	db := openDuckDB(t)
 	cache := characterizationCache()
