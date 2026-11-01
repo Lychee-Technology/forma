@@ -43,6 +43,18 @@ var ErrManifestStoreUnwired = internalcdc.ErrManifestStoreUnwired
 // is a configuration error that RunOnce returns before any side effect.
 var ErrGlobOnlyWithTemplate = internalcdc.ErrGlobOnlyWithTemplate
 
+// ErrSchemaLockLost matches a flush whose per-schema lock ended before its
+// work did: under the aurora-dsql engine, a lease the run could not renew in
+// time, or one another holder took over after it expired (#633). The schema's
+// unfinished batch stays in the hot tier, so the condition is operational,
+// not a configuration error: a later run can flush it once the lock can be
+// held again. It is the same value internal/cdc returns, so errors.Is matches
+// the errors RunOnce returns.
+//
+// A flush that finds a schema's lock held by another holder skips that schema
+// without an error, so package cdc has no contention sentinel.
+var ErrSchemaLockLost = internalcdc.ErrSchemaLockLost
+
 // FlushRunner reuses AWS/S3/DuckDB initialization across multiple flush
 // passes. Safe for long-lived use under credential rotation: superseded
 // cached exporters are evicted and closed once idle (#331), so rotations do

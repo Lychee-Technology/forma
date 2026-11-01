@@ -1287,6 +1287,15 @@ per-schema lock is a lease row instead of an advisory lock. A run whose
 lease ends before it finishes fails with an error that matches
 `cdc.ErrSchemaLockLost`, an operator-visible failure like the read-path
 consistency errors ([The CDC schema lock](aurora-dsql.md#the-cdc-schema-lock)).
+Package `cdc` exports that sentinel as the value `cdc.RunOnce` and
+`cdc.FlushRunner.RunOnce` return, so a scheduler on the public API can tell
+a lost lease, which a later run can retry, from a configuration or data error
+with `errors.Is` (#768). A flush that finds a schema's lock held by another
+holder skips that schema without an error, so the public API has no
+contention sentinel: only `cdc-init` fails on a contended lock. An S3
+listing that cannot be followed to its end fails `cdc-init` and
+`manifest-reconcile`, never a flush. Both outcomes are reported by those
+tools and are not returned through package `cdc`.
 
 Tests only PostgreSQL can run carry a `_PostgresOnly` suffix, so a run against
 another backend can exclude them with `go test -skip PostgresOnly`. They depend
