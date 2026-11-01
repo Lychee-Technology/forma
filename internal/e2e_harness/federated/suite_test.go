@@ -7,8 +7,8 @@
 // - TC-04: Soft delete filtering (soft_delete_test.go)
 // - TC-05: CDC Smart Flushing (cdc_flush_test.go)
 // - TC-06: Compaction strategy (compaction_test.go)
-// - TC-07: Data consistency (consistency_test.go)
-// - TC-08: Performance benchmarks (performance_test.go)
+// - TC-07: Data consistency (consistency_test.go, consistency_lifecycle_test.go)
+// - TC-08: Performance benchmarks (performance_test.go, performance_pipeline_test.go)
 // - TC-09: Failure modes (failure_modes_test.go)
 //
 // Run all tests:

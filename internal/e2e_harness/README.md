@@ -214,7 +214,7 @@ go test -v ./internal/e2e_harness/federated/... -run "TestCompaction" -tags=e2e
 
 ### TC-07: Data Consistency
 
-**File:** `federated/consistency_test.go`
+**Files:** `federated/consistency_test.go` (read-side comparisons), `federated/consistency_lifecycle_test.go` (after CDC flush and compaction)
 
 Validates data consistency between Postgres and federated queries.
 
@@ -236,7 +236,7 @@ go test -v ./internal/e2e_harness/federated/... -run "TestConsistency" -tags=e2e
 
 ### TC-08: Performance Benchmarks
 
-**File:** `federated/performance_test.go`
+**Files:** `federated/performance_test.go` (query latency and throughput), `federated/performance_pipeline_test.go` (CDC flush and compaction)
 
 Benchmarks query latency and throughput at medium scale (10K-20K records for tests, 100K-500K in production).
 
