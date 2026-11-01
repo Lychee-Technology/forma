@@ -678,11 +678,9 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   rule is the one the condition DSL applies to text operands
   (`sqlutil.CheckText`), so a write refuses exactly the strings a query
   refuses. An update's `Updates` are judged at intake, before the row is
-  locked (`transform.CheckTextValues`), so the refusal leaves a `Tx` usable;
-  the merged write would refuse the same value only after SQL. Only this rule
-  moves to intake: an update the write refuses for another reason, such as a
-  scalar sent for a list, still answers a false precondition or a missing row
-  first. The intake takes each value's text image once and the merged write
+  locked, with every other conversion rule (see "An update's values are
+  converted before the row lock" below), so the refusal leaves a `Tx` usable.
+  The intake takes each value's text image once and the merged write
   stores that image, so a Go `fmt.Stringer` (or `error`, or `fmt.Formatter`)
   whose output changes between calls is stored as it was checked and cannot
   be refused after the lock (#773). The exception is a value `json.Marshal`
@@ -770,6 +768,28 @@ The published message names the attribute, the value, the destination and
 the allowed range, e.g. `invalid value for attribute 'rank' (attrID=3): value
 40000 out of range for bound column smallint_01 (smallint) (allowed [-32768,
 32767])`.
+
+### An update's values are converted before the row lock (#772)
+
+An update converts its merged document only after it has locked and read the
+row. Every refusal above depends only on the value and its attribute, and a
+value in `Updates` reaches the merged document unchanged and at the same
+path, so the update's intake (`transform.CheckUpdateValues`) runs the same
+funnel over `Updates` first, after stripping relation subtrees as the merge
+does. It refuses exactly what the merged write would refuse, with the same
+published message, and nothing that write accepts. The refusal is
+`ErrInvalidInput` raised before any SQL, so it leaves a `Tx` usable on
+`Update`, `UpdateWhere`, `Claim`, `Upsert` and the atomic `BatchUpdate`
+([Transactions](./transactions.md#poisoning)). Of several such values, the
+one reported is the one the write's conversion meets first, in sorted key
+order.
+
+Only conversion moves. What the document walk refuses rather than converts
+(an undefined attribute, a `null`, an `[]` nested inside a list's value, the
+nesting cap) and the required policy, which needs the row, keep their stage
+in the merged write. A scalar or a nested array sent for a list is the
+conversion's refusal, so it moves too; before #772 it answered after the
+precondition and the row.
 
 Registration (`schemameta.ValidateColumnBinding`) refuses a `col_name` that
 is not a column `entity_main` has (#557: `foo` or `text_99` classify as text
@@ -2398,6 +2418,22 @@ returned `ErrTxAborted` and `InTx` rolled back even when `fn` returned nil. The
 write now refuses the value before any statement with `ErrInvalidInput`
 naming the attribute, a `400` over HTTP, and a `Tx` stays usable. Only the NUL
 reaches the server from a JSON body (`\u0000`); the Go API can send both.
+
+### Status change: an update's unconvertible value is refused before the row (#772)
+
+The status of the refusal is unchanged: `ErrInvalidInput`, a `400` over
+HTTP, with the same published message. What changes is what it answers ahead
+of. An update holding a value the write cannot convert (say a malformed UUID,
+`1.5` for an `integer`, or `40000` for a `smallint_01`-bound attribute) used
+to be refused by the merged write, after the row lock. A missing row
+answered `ErrNotFound` first and a failed precondition
+`ErrPreconditionFailed`. A merged document that failed strict schema
+validation or lacked a required attribute answered with that refusal. An
+`UpdateWhere` or `Claim` matching no row, or an `Upsert` that created its row,
+never converted `Updates` at all and succeeded. Each of these is now the
+conversion's `ErrInvalidInput`, raised before any SQL, so inside a `Tx` it no
+longer poisons the transaction. Unstorable text has behaved this way since
+#679.
 
 ### Status change: a parquet path hint DuckDB cannot read as text is now 400 (#771)
 

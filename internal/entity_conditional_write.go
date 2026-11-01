@@ -12,11 +12,11 @@ import (
 )
 
 // Intake rules for EntityOperation.Preconditions and UpdateOps (#649), and
-// for the text values an update's Updates write (#679). Every
-// check runs before the operation sends any SQL, so a refusal is an
-// ErrInvalidInput that leaves a Tx usable. What can only be judged against
-// the locked row (a missing value to increment, an overflow) is
-// applyUpdateOps's.
+// for the values an update's Updates write (#679, #772). Every check runs
+// before the operation sends any SQL, so a refusal is an ErrInvalidInput
+// that leaves a Tx usable. What can only be judged against the locked row (a
+// missing value to increment, an overflow, a required attribute the merged
+// document lacks) is the merge's.
 
 // validateConditionalCreate refuses both fields on a create: there is no
 // current row to test or to compute from.
@@ -33,8 +33,8 @@ func validateConditionalCreate(req *forma.EntityOperation) error {
 }
 
 // validateConditionalUpdate checks an update's precondition and operators
-// against the schema, and the text values its Updates write
-// (checkUpdatesText). It answers the Updates the update writes in place of
+// against the schema, and converts the values its Updates write
+// (checkUpdatesValues). It answers the Updates the update writes in place of
 // req.Updates, which it never mutates: a copy carrying each checked text
 // image to the merged write (#773). arrays are the paths the schema declares
 // as arrays, nil when the manager has no validator to know them.
@@ -45,26 +45,32 @@ func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAtt
 	if err := validateUpdateOps(req, cache, relations, arrays); err != nil {
 		return nil, fmt.Errorf("check update operators: %w", err)
 	}
-	return checkUpdatesText(req.SchemaName, req.Updates, cache, relations)
+	return checkUpdatesValues(req.SchemaName, req.Updates, cache, relations)
 }
 
-// checkUpdatesText refuses, before the update sends any statement, a text
-// value in updates that PostgreSQL text cannot hold (#679). The merged write
-// refuses it too, but only after the row lock and read, which poisons a Tx;
-// before #679 it reached the INSERT and failed it (22021). The relation
-// subtrees are stripped first, as the merge strips them
-// (mergeUpdateDocument).
+// checkUpdatesValues refuses, before the update sends any statement, a value
+// in updates the write cannot convert (transform.CheckUpdateValues): text
+// PostgreSQL cannot hold (#679), a malformed UUID, a fraction or an
+// out-of-width integer for an integer type, a date outside its slot's range
+// (#772). The merged write refuses it too, but only after the row lock and
+// read, which poisons a Tx. The relation subtrees are stripped first, as the
+// merge strips them (mergeUpdateDocument).
+//
+// The refusal comes ahead of everything the row decides: an update with
+// such a value is refused even where the row is missing, fails its
+// precondition, lacks a required attribute, or (for UpdateWhere, Claim and
+// Upsert) where no row is written with updates at all.
 //
 // It answers what the update writes in updates' place, and the merge must
 // take that, not updates: a copy in which each value whose text image came
-// from a method call holds the image judged here (transform.CheckTextValues),
-// so the merged write stores what was checked and cannot refuse it after the
-// lock (#773). The stripped relation subtrees are put back as sent, so the
-// merge strips exactly what it stripped before. nil stays nil: an update of
-// operators alone sends no Updates.
-func checkUpdatesText(schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, relations *RelationIndex) (map[string]any, error) {
+// from a method call holds the image judged here, so the merged write stores
+// what was checked and cannot refuse it after the lock (#773). The stripped
+// relation subtrees are put back as sent, so the merge strips exactly what it
+// stripped before. nil stays nil: an update of operators alone sends no
+// Updates.
+func checkUpdatesValues(schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, relations *RelationIndex) (map[string]any, error) {
 	written := relations.StripComputedFields(schemaName, updates)
-	checked, err := transform.CheckTextValues(written, cache)
+	checked, err := transform.CheckUpdateValues(written, cache)
 	if err != nil {
 		return nil, fmt.Errorf("check updates: %w", err)
 	}

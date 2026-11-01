@@ -5,8 +5,8 @@ import (
 )
 
 // textImage stands in an update's document for a value whose text image
-// intake judged (CheckTextValues), holding the two forms the write reads off
-// that value, each taken once (#773): the text image toString stores, and
+// intake judged (CheckUpdateValues), holding the two forms the write reads
+// off that value, each taken once (#773): the text image toString stores, and
 // the JSON form schema validation judges (schemavalidate.Validate marshals
 // the merged document). Replacing the value with its text alone would change
 // what validation sees: a time.Time marshals to RFC 3339, while its text

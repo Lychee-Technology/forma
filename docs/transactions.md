@@ -338,7 +338,7 @@ An error from a `Tx` method either leaves the Tx usable or **poisons** it.
 | --- | --- |
 | `ErrNotFound` (an unknown schema, or no row to read, assert, update or delete) | no |
 | `ErrPreconditionFailed` (an `AssertRow` or conditional write that found the row failing its precondition), `ErrUniqueConflict` (a create onto a live row ID, or a write onto a taken unique-key value: see [Row IDs and Unique Keys](unique-keys.md)), raised without a failed SQL statement | no |
-| `ErrInvalidInput` raised before the operation sent any SQL (a malformed operation, a `Create` that fails validation, a federated read, `ForUpdate` on `Query`, a `MutateWhereRequest`, `UpsertRequest` or `ClaimRequest` refused by its validation) | no |
+| `ErrInvalidInput` raised before the operation sent any SQL (a malformed operation, a `Create` that fails validation, a value in an update's `Updates` the write cannot convert, a federated read, `ForUpdate` on `Query`, a `MutateWhereRequest`, `UpsertRequest` or `ClaimRequest` refused by its validation) | no |
 | `ErrInvalidInput` for a predicate mutation that matched more than `MaxAffected` rows, after only its candidate select | no |
 | `ErrInvalidInput` raised after the operation sent SQL | yes |
 | any error from a predicate mutation after its first row was written, or from a claim once it holds a row | yes |
@@ -357,11 +357,21 @@ Two cases surprise people:
 - **`Update` validates after it reads.** Strict update validation checks the
   merged document, which exists only after the row is locked and read. A
   validation failure there poisons the Tx, while the same failure from
-  `Create` does not. The same holds for an update operator judged against the
-  row: an `increment` with no current value or past its type's range poisons.
-  A failed precondition does not, and neither does text PostgreSQL cannot
-  store (a NUL character or invalid UTF-8) in `Updates`, which is refused
-  before the read (#679).
+  `Create` does not. The same holds for what else needs the row: an update
+  operator judged against it (an `increment` with no current value or past
+  its type's range), and a required attribute the merged document lacks.
+  A failed precondition does not poison, and neither does a value in
+  `Updates` the write cannot convert: an integer past its declared or column
+  width, a fraction for an integer type, a malformed UUID, a date outside the
+  range its slot keeps, a scalar sent for a list, or text PostgreSQL cannot
+  store (a NUL character or invalid UTF-8). Each depends only on the value
+  and its attribute, so it is refused before the read, on `Update`,
+  `UpdateWhere`, `Claim`, `Upsert` and the atomic `BatchUpdate` alike (#679,
+  #772). Such a refusal answers ahead of everything the row decides: a
+  missing row, a failed precondition, a missing required attribute, or for
+  `UpdateWhere`, `Claim` and `Upsert` no row to write `Updates` to. An
+  undefined attribute or a `null` in `Updates` is still refused by the merged
+  write, after the read.
 - **Concurrent use.** A `Tx` must be used from one goroutine at a time. A
   call that arrives while another is running returns `ErrInvalidInput` and
   poisons the Tx; the running call finishes normally. If `fn` returns while a
