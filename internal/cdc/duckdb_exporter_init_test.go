@@ -2,6 +2,9 @@ package cdc
 
 import (
 	"context"
+	"database/sql/driver"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,7 +150,12 @@ func TestBuildExporterInitSteps_RequiredCapabilities(t *testing.T) {
 		require.NoError(t, err)
 		required := map[string]bool{}
 		for _, st := range steps {
-			required[st.Stmts[0].Label] = st.Required
+			label := st.Stmts[0].Label
+			required[label] = st.Required
+			if strings.HasPrefix(label, "install ") {
+				require.Equal(t, st.Required, st.Verify != nil,
+					"%s: a required extension, and only one, is verified loaded", label)
+			}
 		}
 		require.Equal(t, map[string]bool{
 			"set memory_limit":         false,
@@ -162,4 +170,79 @@ func TestBuildExporterInitSteps_RequiredCapabilities(t *testing.T) {
 			"set s3_url_style":         true,
 		}, required, "requirePostgres=%v", requirePostgres)
 	}
+}
+
+// verifyingExecer stands in for a DuckDB connection whose INSTALL and LOAD
+// statements succeed unless listed in failOn, and whose duckdb_extensions()
+// reports loaded exactly the extensions listed in loaded: a
+// RequiredExtensionStep's verify statement passes only for those.
+type verifyingExecer struct {
+	failOn map[string]bool
+	loaded map[string]bool
+}
+
+func (v *verifyingExecer) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	if strings.HasPrefix(query, "SELECT CASE WHEN EXISTS") {
+		for ext := range v.loaded {
+			if strings.Contains(query, "extension_name = '"+ext+"'") {
+				return driver.RowsAffected(0), nil
+			}
+		}
+		return nil, errors.New("Invalid Input Error: extension is not loaded")
+	}
+	if v.failOn[query] {
+		return nil, errors.New("injected init failure")
+	}
+	return driver.RowsAffected(0), nil
+}
+
+func runExporterInit(t *testing.T, requirePostgres bool, execer driver.ExecerContext) error {
+	t.Helper()
+	t.Setenv("AWS_SESSION_TOKEN", "")
+	steps, err := buildExporterInitSteps(newExporterInitTestConfig(), "AKID", "secretvalue", "", requirePostgres)
+	require.NoError(t, err)
+	return duckdbinit.MakeConnInit(steps, zaptest.NewLogger(t).Sugar(), duckdbinit.DefaultInitTimeout)(execer)
+}
+
+// A CDC exporter connection whose INSTALL and LOAD postgres_scanner both
+// "succeed" while DuckDB does not report the scanner loaded fails to open:
+// the statements succeeding is not the capability (#752).
+func TestExporterInit_ScannerNotLoadedDespiteSuccessfulStatementsFails(t *testing.T) {
+	execer := &verifyingExecer{loaded: map[string]bool{"httpfs": true, "parquet": true}}
+	err := runExporterInit(t, true, execer)
+	var stepErr *duckdbinit.RequiredStepError
+	require.ErrorAs(t, err, &stepErr)
+	require.Equal(t, "verify postgres_scanner loaded", stepErr.Label)
+
+	// The S3-only engines keep the scanner optional and never verify it.
+	require.NoError(t, runExporterInit(t, false, execer))
+}
+
+// A failed INSTALL postgres_scanner (an unreachable extension repository on
+// a host whose scanner is already loaded) does not fail a CDC exporter
+// connection the scanner works on (#752).
+func TestExporterInit_FailedInstallOfLoadedScannerPasses(t *testing.T) {
+	execer := &verifyingExecer{
+		failOn: map[string]bool{"INSTALL postgres_scanner;": true},
+		loaded: map[string]bool{"postgres_scanner": true, "httpfs": true, "parquet": true},
+	}
+	require.NoError(t, runExporterInit(t, true, execer))
+	require.NoError(t, runExporterInit(t, false, execer))
+}
+
+// A failed INSTALL of a scanner that is not loaded either fails the CDC
+// exporter's connection and names the INSTALL failure, while an S3-only
+// engine still opens.
+func TestExporterInit_FailedInstallOfMissingScanner(t *testing.T) {
+	execer := &verifyingExecer{
+		failOn: map[string]bool{"INSTALL postgres_scanner;": true},
+		loaded: map[string]bool{"httpfs": true, "parquet": true},
+	}
+	err := runExporterInit(t, true, execer)
+	var stepErr *duckdbinit.RequiredStepError
+	require.ErrorAs(t, err, &stepErr)
+	require.Equal(t, "verify postgres_scanner loaded", stepErr.Label)
+	require.ErrorContains(t, err, "install postgres_scanner failed: injected init failure")
+
+	require.NoError(t, runExporterInit(t, false, execer))
 }
