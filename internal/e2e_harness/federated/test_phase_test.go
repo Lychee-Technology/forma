@@ -41,25 +41,88 @@ func (p *testPhase) expired() bool {
 }
 
 // describe states how the phase failed with err: whether it ran out of its
-// budget or failed within it, and after how long.
+// budget or failed within it, and after how long. A nil err describes a phase
+// whose operation returned no error but only after its deadline passed.
 func (p *testPhase) describe(err error) string {
 	elapsed := time.Since(p.start).Round(time.Millisecond)
+	if err == nil {
+		return fmt.Sprintf("phase %q ran out of its %v budget after %v, though its operation returned no error",
+			p.name, p.budget, elapsed)
+	}
 	if p.expired() || errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Sprintf("phase %q ran out of its %v budget after %v: %v", p.name, p.budget, elapsed, err)
 	}
 	return fmt.Sprintf("phase %q failed after %v: %v", p.name, elapsed, err)
 }
 
-// finish ends the phase, failing tb with describe(err) when err is non-nil
-// and logging the phase's duration otherwise.
+// finish ends the phase, failing tb with describe(err) when err is non-nil or
+// the phase's deadline passed, and logging the phase's duration otherwise. The
+// deadline is checked before the context is released, because an operation
+// may return nil after its deadline: ClearAllData, for one, discards the
+// errors of its statements, so a setup that ran out of time would otherwise
+// pass as a success and let the test go on against partly cleared state.
 func (p *testPhase) finish(tb testing.TB, err error) {
 	tb.Helper()
-	if err != nil {
+	if err != nil || p.expired() {
 		msg := p.describe(err)
 		p.end()
 		tb.Fatal(msg)
+		return
 	}
 	tb.Logf("phase %q took %v of its %v budget", p.name, p.end().Round(time.Millisecond), p.budget)
+}
+
+// fatalRecorder is a testing.TB that records Fatal and Logf calls instead of
+// stopping the test, so finish's outcome can be asserted.
+type fatalRecorder struct {
+	testing.TB
+	fatal  []string
+	logged []string
+}
+
+func (r *fatalRecorder) Helper() {}
+
+func (r *fatalRecorder) Fatal(args ...any) { r.fatal = append(r.fatal, fmt.Sprint(args...)) }
+
+func (r *fatalRecorder) Logf(format string, args ...any) {
+	r.logged = append(r.logged, fmt.Sprintf(format, args...))
+}
+
+func TestPhaseFinishFailsAnExpiredPhaseWhoseOperationReturnedNil(t *testing.T) {
+	p := startPhase("harness setup", time.Millisecond)
+	<-p.ctx.Done()
+
+	rec := &fatalRecorder{TB: t}
+	p.finish(rec, nil)
+
+	if len(rec.fatal) != 1 {
+		t.Fatalf("finish(nil) after the deadline called Fatal %d times, want 1 (logged %q)", len(rec.fatal), rec.logged)
+	}
+	want := `phase "harness setup" ran out of its 1ms budget after `
+	if !strings.HasPrefix(rec.fatal[0], want) {
+		t.Fatalf("finish(nil) failed with %q, want prefix %q", rec.fatal[0], want)
+	}
+	if len(rec.logged) != 0 {
+		t.Fatalf("finish(nil) after the deadline also logged %q, want no success log", rec.logged)
+	}
+}
+
+func TestPhaseFinishLogsAPhaseThatEndedWithinItsBudget(t *testing.T) {
+	p := startPhase("harness setup", time.Minute)
+
+	rec := &fatalRecorder{TB: t}
+	p.finish(rec, nil)
+
+	if len(rec.fatal) != 0 {
+		t.Fatalf("finish(nil) within the budget failed with %q", rec.fatal)
+	}
+	want := `phase "harness setup" took `
+	if len(rec.logged) != 1 || !strings.HasPrefix(rec.logged[0], want) {
+		t.Fatalf("finish(nil) within the budget logged %q, want one line with prefix %q", rec.logged, want)
+	}
+	if err := p.ctx.Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("finish left the phase context with Err() = %v, want context.Canceled", err)
+	}
 }
 
 func TestPhaseDescribeNamesThePhaseThatRanOutOfTime(t *testing.T) {
