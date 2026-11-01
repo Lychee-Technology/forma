@@ -685,9 +685,17 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   first. The intake takes each value's text image once and the merged write
   stores that image, so a Go `fmt.Stringer` (or `error`, or `fmt.Formatter`)
   whose output changes between calls is stored as it was checked and cannot
-  be refused after the lock (#773). Schema validation still judges the
-  value's JSON form, so a `time.Time` at a string attribute is validated as
-  RFC 3339 and stored as `time.String()`, as before. A value bound to a
+  be refused after the lock (#773). The exception is a value `json.Marshal`
+  refuses (say a `json.Marshaler` that errors): it reaches the merged write
+  as sent, so the validator's refusal can still name its type. Strict schema
+  validation refuses it after the lock, before the write converts it, as it
+  does any merged document that fails validation. With no validator, or under
+  report-only validation, the write takes its text image again after the
+  lock, so an image that changes between calls can still be refused there
+  (poisoning a `Tx`) or stored as a different string from the one checked.
+  Schema validation still judges the value's JSON form, so a `time.Time` at a
+  string attribute is validated as RFC 3339 and stored as `time.String()`,
+  as before. A value bound to a
   system column is dropped, not stored, and is not judged.
 - A value whose typed slot does not match the column family is refused, never
   dropped.

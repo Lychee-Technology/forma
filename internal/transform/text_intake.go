@@ -34,8 +34,12 @@ import (
 // from a method call (carryTextImage) holds the image that was judged. The
 // merged write then stores that image instead of taking it again, so a
 // fmt.Stringer whose String() changes between calls is stored as checked
-// and cannot be refused after the row lock. A document past the nesting cap
-// is answered unchanged: the merged write refuses it.
+// and cannot be refused after the row lock. A value json.Marshal refuses is
+// the exception: carryTextImage keeps it as sent, so with no validator, or
+// under report-only validation, the write takes its image again after the
+// lock and a changing image can still be refused there or stored as a
+// different string. A document past the nesting cap is answered unchanged:
+// the merged write refuses it.
 func CheckTextValues(data map[string]any, cache forma.SchemaAttributeCache) (map[string]any, error) {
 	if _, err := walkDocument(0, uuid.Nil, data, cache); err != nil {
 		// The nesting cap, which the merged write refuses at its own stage.
