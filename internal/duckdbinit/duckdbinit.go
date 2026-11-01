@@ -3,6 +3,10 @@
 // open. Session-scoped statements issued through the pool reach only one
 // arbitrary connection (issues #245, #285); the connector init hook returned
 // by MakeConnInit runs them for each new physical connection instead.
+//
+// It also holds RecoveringConnector, which reopens a DuckDB database that
+// DuckDB invalidated after a FATAL or INTERNAL error, running the same init
+// hook on the reopened database's connections (#702, #717).
 package duckdbinit
 
 import (

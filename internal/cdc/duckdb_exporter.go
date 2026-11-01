@@ -3,6 +3,7 @@ package cdc
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"sort"
@@ -41,12 +42,19 @@ type exportSQLPlan struct {
 	eavQuery       string
 }
 
+// newDuckConnectorFn opens one DuckDB database instance for the exporter;
+// tests replace it to stand in for a database DuckDB invalidates.
+var newDuckConnectorFn = func(dsn string, connInit func(driver.ExecerContext) error) (driver.Connector, error) {
+	return duckdb.NewConnector(dsn, connInit)
+}
+
 // NewDuckExporter opens a DuckDB pool whose every physical connection
 // self-configures (pragmas, extensions, S3 session settings) via a connector
 // init hook — session-scoped statements issued through the pool reach only
 // one arbitrary connection (#285, same class as #245). Init statement
 // failures are logged and skipped, never blocking the connection;
-// construction fails only on credential validation or ping.
+// construction fails only on credential validation or ping. The pool
+// reopens its database after DuckDB invalidates it (#717).
 //
 // The caller passes the whole key/secret/token triple because a session token
 // is only valid with the pair it was issued alongside; resolving it here would
@@ -57,7 +65,14 @@ func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, 
 	if err != nil {
 		return nil, fmt.Errorf("build duckdb exporter init statements: %w", err)
 	}
-	connector, err := duckdb.NewConnector(cfg.DuckDBPath, duckdbinit.MakeConnInit(steps, logger.Sugar(), duckdbinit.DefaultInitTimeout))
+	// A Runner caches this exporter for the process lifetime (a warm Lambda),
+	// so a DuckDB invalidation must not outlive the export that hit it: the
+	// recovering connector reopens the database, with the same init hook, on
+	// the next connection, and DB stays the same *sql.DB (#717).
+	connInit := duckdbinit.MakeConnInit(steps, logger.Sugar(), duckdbinit.DefaultInitTimeout)
+	connector, err := duckdbinit.NewRecoveringConnector(func() (driver.Connector, error) {
+		return newDuckConnectorFn(cfg.DuckDBPath, connInit)
+	}, logger.Sugar())
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb connector: %w", err)
 	}
