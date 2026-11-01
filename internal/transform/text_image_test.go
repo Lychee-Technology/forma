@@ -65,7 +65,7 @@ func writtenText(t *testing.T, doc map[string]any, cache forma.SchemaAttributeCa
 // Intake judges the first image and the write stores it, at a scalar, a list
 // element and an element of an array of objects, without calling String()
 // again.
-func TestCheckTextValues_TheWriteStoresTheCheckedImage(t *testing.T) {
+func TestCheckUpdateValues_TheWriteStoresTheCheckedImage(t *testing.T) {
 	cache := textImageCache()
 	name, tag, note := newChangingText("first", "a\x00b"), newChangingText("tag", "a\x00b"), newChangingText("note", "a\x00b")
 	doc := map[string]any{
@@ -73,7 +73,7 @@ func TestCheckTextValues_TheWriteStoresTheCheckedImage(t *testing.T) {
 		"tags":  []any{"plain", tag},
 		"items": []any{map[string]any{"note": note}},
 	}
-	checked, err := CheckTextValues(doc, cache)
+	checked, err := checkUpdate(doc, cache)
 	require.NoError(t, err)
 	assert.Equal(t, map[int16][]string{1: {"first"}, 3: {"plain", "tag"}, 5: {"note"}}, writtenText(t, checked, cache))
 	assert.Equal(t, 1, *name.calls, "String() is called once, at intake")
@@ -82,7 +82,7 @@ func TestCheckTextValues_TheWriteStoresTheCheckedImage(t *testing.T) {
 
 	// Judging the copy again, as Update does for a Tx route's rows, keeps
 	// the image and calls nothing.
-	again, err := CheckTextValues(checked, cache)
+	again, err := checkUpdate(checked, cache)
 	require.NoError(t, err)
 	assert.Equal(t, checked, again)
 	assert.Equal(t, 1, *name.calls)
@@ -90,22 +90,22 @@ func TestCheckTextValues_TheWriteStoresTheCheckedImage(t *testing.T) {
 
 // A Stringer whose output changes between valid strings is stored as the
 // image intake checked.
-func TestCheckTextValues_ChangingValidTextStoresTheFirstImage(t *testing.T) {
+func TestCheckUpdateValues_ChangingValidTextStoresTheFirstImage(t *testing.T) {
 	cache := textImageCache()
 	value := newChangingText("one", "two", "three")
-	checked, err := CheckTextValues(map[string]any{"name": value}, cache)
+	checked, err := checkUpdate(map[string]any{"name": value}, cache)
 	require.NoError(t, err)
 	assert.Equal(t, map[int16][]string{1: {"one"}}, writtenText(t, checked, cache))
 }
 
 // The caller's document is never written to: the answer is a copy, and the
 // caller's values stay where they were.
-func TestCheckTextValues_LeavesTheCallersDocument(t *testing.T) {
+func TestCheckUpdateValues_LeavesTheCallersDocument(t *testing.T) {
 	value := newChangingText("first")
 	nested := map[string]any{"note": value}
 	items := []any{nested}
 	doc := map[string]any{"name": value, "items": items}
-	checked, err := CheckTextValues(doc, textImageCache())
+	checked, err := checkUpdate(doc, textImageCache())
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"name": value, "items": []any{map[string]any{"note": value}}}, doc)
 	assert.Equal(t, value, nested["note"])
@@ -117,11 +117,11 @@ func TestCheckTextValues_LeavesTheCallersDocument(t *testing.T) {
 // Validation judges the value's JSON form (schemavalidate.Validate), which
 // the carrier keeps: a time.Time at a text attribute still marshals to RFC
 // 3339, while the write stores its text image, time.String(), as before.
-func TestCheckTextValues_KeepsTheJSONFormValidationJudges(t *testing.T) {
+func TestCheckUpdateValues_KeepsTheJSONFormValidationJudges(t *testing.T) {
 	cache := textImageCache()
 	at := time.Date(2026, 11, 1, 5, 49, 22, 0, time.UTC)
 	doc := map[string]any{"name": at, "items": []any{map[string]any{"note": newChangingText("x")}}}
-	checked, err := CheckTextValues(doc, cache)
+	checked, err := checkUpdate(doc, cache)
 	require.NoError(t, err)
 	assert.IsType(t, textImage{}, checked["name"])
 
@@ -135,24 +135,25 @@ func TestCheckTextValues_KeepsTheJSONFormValidationJudges(t *testing.T) {
 
 // What carries no method-call image is kept as sent: the write takes the same
 // image again. So is a value json.Marshal refuses, whose refusal names its
-// type, and every position the write does not store as text.
-func TestCheckTextValues_KeepsWhatNeedsNoCarrier(t *testing.T) {
+// type, every position the write converts to something other than text,
+// whose conversion calls no method, and every position the walk refuses.
+func TestCheckUpdateValues_KeepsWhatNeedsNoCarrier(t *testing.T) {
 	cache := textImageCache()
 	stringer := newChangingText("1")
 	doc := map[string]any{
 		"name":  json.Number("12.5"),
 		"tags":  []any{"s", []byte("b"), 7, int64(8), 1.5, true, failingJSON{}},
-		"age":   stringer,
+		"age":   json.Number("42"),
 		"nope":  stringer,
 		"items": []any{nil, map[string]any{"note": nil}},
 	}
-	checked, err := CheckTextValues(doc, cache)
+	checked, err := checkUpdate(doc, cache)
 	require.NoError(t, err)
 	assert.Equal(t, doc, checked)
-	assert.Zero(t, *stringer.calls, "a position not stored as text is not judged")
+	assert.Zero(t, *stringer.calls, "an undefined attribute is the write's refusal, not converted here")
 
 	for _, tc := range []map[string]any{nil, {"items": []any(nil)}, {"items": map[string]any(nil)}} {
-		checked, err := CheckTextValues(tc, cache)
+		checked, err := checkUpdate(tc, cache)
 		require.NoError(t, err)
 		assert.Equal(t, tc, checked, "nil stays nil")
 	}
@@ -160,9 +161,9 @@ func TestCheckTextValues_KeepsWhatNeedsNoCarrier(t *testing.T) {
 
 // A document past the nesting cap is answered as it is: the merged write
 // refuses it at its own stage.
-func TestCheckTextValues_AnswersADocumentPastTheCapUnchanged(t *testing.T) {
+func TestCheckUpdateValues_AnswersADocumentPastTheCapUnchanged(t *testing.T) {
 	doc := cyclicDocument()
-	checked, err := CheckTextValues(doc, textImageCache())
+	checked, err := checkUpdate(doc, textImageCache())
 	require.NoError(t, err)
 	checked["marker"] = true
 	assert.Equal(t, true, doc["marker"], "the same map")

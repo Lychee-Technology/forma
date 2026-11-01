@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -46,11 +47,17 @@ type mutationPlan struct {
 	// intake checked, carrying the text images it judged (#773). nil for a
 	// delete.
 	updates map[string]any
+	// refusal is a value in Updates the write cannot convert (#772), raised
+	// only once a row survives: a mutation that takes no row writes none.
+	refusal error
 }
 
-// refusedBeforeWrite marks an ErrInvalidInput a predicate mutation answers
-// after sending only reads: the MaxAffected overflow. Nothing was written,
-// so it leaves the Tx usable although SQL was sent.
+// refusedBeforeWrite marks an ErrInvalidInput an operation answers after
+// sending only reads: a predicate mutation's MaxAffected overflow, and a
+// value in Updates the write cannot convert, which UpdateWhere, Claim and
+// Upsert raise once they know they write a row with it (#772). Nothing was
+// written, so it leaves the Tx usable although SQL was sent; a row the
+// operation locked stays locked until the Tx ends.
 type refusedBeforeWrite struct{ error }
 
 func (r refusedBeforeWrite) Unwrap() error { return r.error }
@@ -124,7 +131,7 @@ func (s *txSession) planMutation(kind mutateKind, req *forma.MutateWhereRequest)
 		return nil, fmt.Errorf("failed to prepare %s on %s: %w", method, req.SchemaName, err)
 	}
 	return &mutationPlan{kind: kind, req: req, schemaID: schemaID, tables: tables, orders: orders,
-		condition: condition, maxAffected: maxAffected, updates: updates}, nil
+		condition: condition, maxAffected: maxAffected, updates: updates.Values, refusal: updates.Refusal}, nil
 }
 
 // refuseEmptyGroups refuses a condition holding an and or or with no
@@ -172,29 +179,35 @@ func resolveMaxAffected(method string, req *forma.MutateWhereRequest) (int, erro
 
 // validateMutationValues checks Updates and UpdateOps as Update checks them
 // before its first statement (#649), and refuses both on a delete. It
-// answers the Updates each row is written with (validateConditionalUpdate).
-func (s *txSession) validateMutationValues(kind mutateKind, req *forma.MutateWhereRequest, schemaID int16, cache forma.SchemaAttributeCache) (map[string]any, error) {
+// answers the Updates each row is written with and the conversion refusal
+// raised once a row survives (validateConditionalUpdate).
+func (s *txSession) validateMutationValues(kind mutateKind, req *forma.MutateWhereRequest, schemaID int16, cache forma.SchemaAttributeCache) (transform.CheckedUpdates, error) {
 	if kind == mutateDelete {
 		if req.Updates != nil || len(req.UpdateOps) > 0 {
-			return nil, forma.InvalidInputf("DeleteWhere on %s does not accept Updates or UpdateOps: a delete writes no value", req.SchemaName)
+			return transform.CheckedUpdates{}, forma.InvalidInputf("DeleteWhere on %s does not accept Updates or UpdateOps: a delete writes no value", req.SchemaName)
 		}
-		return nil, nil
+		return transform.CheckedUpdates{}, nil
 	}
 	if req.Updates == nil && len(req.UpdateOps) == 0 {
-		return nil, forma.InvalidInputf("UpdateWhere on %s needs Updates or UpdateOps", req.SchemaName)
+		return transform.CheckedUpdates{}, forma.InvalidInputf("UpdateWhere on %s needs Updates or UpdateOps", req.SchemaName)
 	}
 	op := &forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: req.SchemaName},
 		Updates: req.Updates, UpdateOps: req.UpdateOps}
 	updates, err := validateConditionalUpdate(op, cache, s.crud.relations, s.crud.validator.ArrayPaths(schemaID))
 	if err != nil {
-		return nil, fmt.Errorf("failed to validate UpdateWhere on %s: %w", req.SchemaName, err)
+		return transform.CheckedUpdates{}, fmt.Errorf("failed to validate UpdateWhere on %s: %w", req.SchemaName, err)
+	}
+	if updates.Refusal != nil {
+		updates.Refusal = fmt.Errorf("failed to validate UpdateWhere on %s: %w", req.SchemaName, updates.Refusal)
 	}
 	return updates, nil
 }
 
 // lockSurvivors selects the candidates, refuses an overflow, locks the
 // candidates and answers the ones the re-check keeps, charged to the
-// operation limit.
+// operation limit. A conversion refusal in Updates is raised here, once a
+// row survives and before any is written, so it leaves the Tx usable; with
+// no survivor the mutation writes nothing and succeeds (#772).
 func (s *txSession) lockSurvivors(ctx context.Context, plan *mutationPlan) ([]uuid.UUID, error) {
 	req := plan.req
 	fetch := req.Limit
@@ -217,6 +230,9 @@ func (s *txSession) lockSurvivors(ctx context.Context, plan *mutationPlan) ([]uu
 	survivors, err := s.rows.LockAndRecheck(ctx, plan.tables, plan.schemaID, candidates, plan.condition)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lock %s candidates on %s: %w", plan.kind.method(), req.SchemaName, err)
+	}
+	if len(survivors) > 0 && plan.refusal != nil {
+		return nil, refusedBeforeWrite{plan.refusal}
 	}
 	if err := s.chargeOperations(len(survivors) - 1); err != nil {
 		return nil, err

@@ -41,7 +41,7 @@ func (s *txSession) planUpsert(ctx context.Context, req *forma.UpsertRequest) (*
 	prepared.record.CreatedAt = createdAt
 	plan := &upsertPlan{schemaName: create.SchemaName, create: prepared, createdAt: createdAt, update: update}
 	if update != nil {
-		if err := s.validateUpsertUpdate(update, prepared); err != nil {
+		if err := s.validateUpsertUpdate(plan, prepared); err != nil {
 			return nil, err
 		}
 	}
@@ -59,13 +59,20 @@ func (s *txSession) planUpsert(ctx context.Context, req *forma.UpsertRequest) (*
 // the update runs, so a malformed operand found there would arrive after
 // SQL and poison the Tx, and only when a row held the target. update, which
 // upsertUpdateOp built for this call, takes the Updates intake checked, so
-// the holder is written with the text images judged here (#773).
-func (s *txSession) validateUpsertUpdate(update *forma.EntityOperation, prepared *preparedCreate) error {
+// the holder is written with the text images judged here (#773). A value in
+// Updates the write cannot convert is kept as the plan's updateRefusal,
+// raised only when a row holds the target: an upsert that creates never
+// writes Updates (#772).
+func (s *txSession) validateUpsertUpdate(plan *upsertPlan, prepared *preparedCreate) error {
+	update := plan.update
 	updates, err := validateConditionalUpdate(update, prepared.cache, s.crud.relations, s.crud.validator.ArrayPaths(prepared.schemaID))
 	if err != nil {
 		return fmt.Errorf("failed to validate the update action of the upsert of %s: %w", update.SchemaName, err)
 	}
-	update.Updates = updates
+	update.Updates = updates.Values
+	if updates.Refusal != nil {
+		plan.updateRefusal = fmt.Errorf("failed to validate the update action of the upsert of %s: %w", update.SchemaName, updates.Refusal)
+	}
 	if update.Preconditions == nil {
 		return nil
 	}
