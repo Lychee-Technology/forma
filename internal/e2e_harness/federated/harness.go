@@ -167,9 +167,11 @@ type ComparisonReport struct {
 
 // AttributeMismatch describes a single field of a row whose value differs
 // between the two results. AttributeName is a system column (schema_id,
-// created_at, updated_at, deleted_at, other_attributes) or a typed attribute
-// as "<kind>:<name>", for example "text:name" or "float64:version". A value
-// a side does not carry at all is reported as absentValue.
+// created_at, updated_at, deleted_at), an EAV attribute as
+// "eav:<schema_id>/<attr_id>[<array_indices>]" (suffixed "@<row_id>" when it
+// names another row), or a typed attribute as "<kind>:<name>", for example
+// "text:name" or "float64:version". A value a side does not carry at all is
+// reported as absentValue; an EAV key a side repeats, as all its values.
 type AttributeMismatch struct {
 	RowID         uuid.UUID
 	AttributeName string

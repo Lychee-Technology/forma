@@ -2,7 +2,6 @@ package federated
 
 import (
 	"fmt"
-	"reflect"
 	"sort"
 
 	"github.com/lychee-technology/forma/internal/model"
@@ -12,9 +11,9 @@ import (
 
 // CompareResults compares federated and postgres query results. The two
 // results match only when their totals agree, neither repeats a row ID, both
-// hold the same row IDs, and every row agrees on its system columns and on
-// every typed value either side carries: an attribute present on one side
-// only is a mismatch, not a skip.
+// hold the same row IDs, and every row agrees on its system columns, on every
+// EAV attribute and on every typed value either side carries: an attribute
+// present on one side only is a mismatch, not a skip.
 func (h *FederatedTestHarness) CompareResults(federated, postgres *QueryResult) *ComparisonReport {
 	report := &ComparisonReport{
 		FederatedCount: federated.TotalRecords,
@@ -94,7 +93,8 @@ type absentValue struct{}
 func (absentValue) String() string { return "<absent>" }
 
 // compareRecordFields records every field on which two records of the same
-// row ID differ: the system columns, then each typed attribute map.
+// row ID differ: the system columns, each EAV attribute (by its key, see
+// compareEAV), then each typed attribute map.
 func compareRecordFields(report *ComparisonReport, id uuid.UUID, fedRec, pgRec *model.PersistentRecord) {
 	mismatch := func(name string, fedVal, pgVal any) {
 		report.AttributeMismatches = append(report.AttributeMismatches, AttributeMismatch{
@@ -114,9 +114,7 @@ func compareRecordFields(report *ComparisonReport, id uuid.UUID, fedRec, pgRec *
 	if fedDeleted, pgDeleted := deletedAtValue(fedRec), deletedAtValue(pgRec); fedDeleted != pgDeleted {
 		mismatch("deleted_at", fedDeleted, pgDeleted)
 	}
-	if !reflect.DeepEqual(normalizeEAV(fedRec.OtherAttributes), normalizeEAV(pgRec.OtherAttributes)) {
-		mismatch("other_attributes", fedRec.OtherAttributes, pgRec.OtherAttributes)
-	}
+	compareEAV(id, fedRec.OtherAttributes, pgRec.OtherAttributes, mismatch)
 	compareItems("text", fedRec.TextItems, pgRec.TextItems, mismatch)
 	compareItems("int16", fedRec.Int16Items, pgRec.Int16Items, mismatch)
 	compareItems("int32", fedRec.Int32Items, pgRec.Int32Items, mismatch)
@@ -132,14 +130,6 @@ func deletedAtValue(rec *model.PersistentRecord) any {
 		return nil
 	}
 	return *rec.DeletedAt
-}
-
-// normalizeEAV treats a nil and an empty attribute list alike.
-func normalizeEAV(attrs []model.EAVRecord) []model.EAVRecord {
-	if len(attrs) == 0 {
-		return nil
-	}
-	return attrs
 }
 
 // compareItems reports, in key order, every key whose value differs between
