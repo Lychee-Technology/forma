@@ -2,7 +2,6 @@ package federated
 
 import (
 	"fmt"
-	"math"
 	"sort"
 
 	"github.com/google/uuid"
@@ -31,60 +30,50 @@ func (k eavKey) name(rowID uuid.UUID) string {
 	return name
 }
 
-// eavValue is the semantic value an EAV attribute carries. It leaves out the
-// read-path representation metadata (ValueNumericRaw, BoundColumn) and folds
-// the int64 sidecar into one numeric reading, so that one value read through
-// two paths compares equal.
+// eavValue is the semantic value an EAV attribute carries: its text and its
+// numeric reading (eavNumber), which keeps the exact value the int64 sidecar
+// or the read query's token holds. It leaves out the remaining read-path
+// metadata (BoundColumn), so that one value read through two paths compares
+// equal.
 type eavValue struct {
-	text    *string
-	numeric *float64
-	exact   *int64
+	text   *string
+	number eavNumber
+	// ambiguous marks, in a report, the side whose float64 image cannot tell
+	// the other side's exact value from its neighbours (eavAmbiguous).
+	ambiguous bool
 }
 
 func (v eavValue) String() string {
-	text, numeric := "<nil>", "<nil>"
+	text := "<nil>"
 	if v.text != nil {
 		text = fmt.Sprintf("%q", *v.text)
 	}
-	switch {
-	case v.exact != nil:
-		numeric = fmt.Sprintf("%d", *v.exact)
-	case v.numeric != nil:
-		numeric = fmt.Sprintf("%v", *v.numeric)
+	s := fmt.Sprintf("{text:%s numeric:%s}", text, v.number)
+	if v.ambiguous {
+		s += " (ambiguous: a lossy float64 image the other side's exact value rounds to)"
 	}
-	return fmt.Sprintf("{text:%s numeric:%s}", text, numeric)
+	return s
 }
 
 func newEAVValue(attr model.EAVRecord) eavValue {
-	return eavValue{text: attr.ValueText, numeric: attr.ValueNumeric, exact: attr.ValueInt64}
+	return eavValue{text: attr.ValueText, number: newEAVNumber(attr)}
 }
 
-// equal compares two values semantically: texts by content, numbers exactly
-// when both sides carry the int64 sidecar and by their float64 image
-// otherwise, with NaN equal to NaN.
-func (v eavValue) equal(o eavValue) bool {
+// compare compares two values semantically: texts by content, numbers by
+// compareNumbers.
+func (v eavValue) compare(o eavValue) eavVerdict {
 	if (v.text == nil) != (o.text == nil) || (v.text != nil && *v.text != *o.text) {
-		return false
+		return eavDiffer
 	}
-	if v.exact != nil && o.exact != nil {
-		return *v.exact == *o.exact
-	}
-	vf, vok := v.float()
-	of, ook := o.float()
-	if vok != ook {
-		return false
-	}
-	return !vok || vf == of || (math.IsNaN(vf) && math.IsNaN(of))
+	return compareNumbers(v.number, o.number)
 }
 
-func (v eavValue) float() (float64, bool) {
-	switch {
-	case v.numeric != nil:
-		return *v.numeric, true
-	case v.exact != nil:
-		return float64(*v.exact), true
-	}
-	return 0, false
+// markAmbiguous returns the pair to report for an ambiguous comparison, the
+// side that holds only an image marked.
+func markAmbiguous(fed, pg eavValue) (eavValue, eavValue) {
+	fed.ambiguous = fed.number.exact == nil
+	pg.ambiguous = pg.number.exact == nil
+	return fed, pg
 }
 
 // indexEAV groups a record's EAV attributes by their key. An attribute that
@@ -103,7 +92,8 @@ func indexEAV(rowID uuid.UUID, attrs []model.EAVRecord) map[eavKey][]eavValue {
 
 // compareEAV reports, in key order, every EAV attribute on which two records
 // of the same row differ: one only one side carries, one either side repeats,
-// or one whose value differs.
+// one whose value differs, or one whose exact value the other side's float64
+// image cannot confirm (eavAmbiguous, reported with that side marked).
 func compareEAV(rowID uuid.UUID, fed, pg []model.EAVRecord, mismatch func(name string, fedVal, pgVal any)) {
 	fedByKey, pgByKey := indexEAV(rowID, fed), indexEAV(rowID, pg)
 	keys := make([]eavKey, 0, len(fedByKey)+len(pgByKey))
@@ -118,8 +108,15 @@ func compareEAV(rowID uuid.UUID, fed, pg []model.EAVRecord, mismatch func(name s
 	sort.Slice(keys, func(i, j int) bool { return lessEAVKey(keys[i], keys[j]) })
 	for _, k := range keys {
 		fedVals, pgVals := fedByKey[k], pgByKey[k]
-		if len(fedVals) == 1 && len(pgVals) == 1 && fedVals[0].equal(pgVals[0]) {
-			continue
+		if len(fedVals) == 1 && len(pgVals) == 1 {
+			switch fedVals[0].compare(pgVals[0]) {
+			case eavSame:
+				continue
+			case eavAmbiguous:
+				fedVal, pgVal := markAmbiguous(fedVals[0], pgVals[0])
+				mismatch(k.name(rowID), fedVal, pgVal)
+				continue
+			}
 		}
 		mismatch(k.name(rowID), eavReportValue(fedVals), eavReportValue(pgVals))
 	}

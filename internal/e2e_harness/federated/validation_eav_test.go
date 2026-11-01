@@ -71,6 +71,23 @@ func TestCompareResultsMatchesEquivalentEAV(t *testing.T) {
 			},
 		},
 		{
+			name: "exact values past 2^53 through sidecar and token",
+			alter: func(fed, pg []model.EAVRecord) ([]model.EAVRecord, []model.EAVRecord) {
+				fed[3].ValueNumeric, fed[3].ValueInt64 = floatPtr(9007199254740992), int64Ptr(9007199254740993)
+				pg[3].ValueNumeric, pg[3].ValueInt64 = floatPtr(9007199254740992), nil
+				pg[3].ValueNumericRaw = "9007199254740993"
+				return fed, pg
+			},
+		},
+		{
+			name: "decimal token against its float64 image",
+			alter: func(fed, pg []model.EAVRecord) ([]model.EAVRecord, []model.EAVRecord) {
+				fed[1].ValueNumeric = floatPtr(0.1)
+				pg[1].ValueNumeric, pg[1].ValueNumericRaw = floatPtr(0.1), "0.1"
+				return fed, pg
+			},
+		},
+		{
 			name: "row id named on one side only",
 			alter: func(fed, pg []model.EAVRecord) ([]model.EAVRecord, []model.EAVRecord) {
 				for i := range pg {
@@ -211,7 +228,7 @@ func eavDivergenceCases() []eavDivergenceCase {
 // TestCompareResultsDetectsEAVDivergence pins that keying by attribute
 // identity still catches a changed, moved, missing or repeated value.
 func TestCompareResultsDetectsEAVDivergence(t *testing.T) {
-	for _, tc := range eavDivergenceCases() {
+	for _, tc := range append(eavDivergenceCases(), eavNumericDivergenceCases()...) {
 		t.Run(tc.name, func(t *testing.T) {
 			report := eavComparison(tc.alter)
 			if report.Match {
