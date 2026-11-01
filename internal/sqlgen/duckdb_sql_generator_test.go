@@ -133,42 +133,42 @@ func TestBuildListPredicate_NotEquals(t *testing.T) {
 func TestBuildListPredicate_Contains(t *testing.T) {
 	sql, param, err := BuildListPredicate("names", "contains", "john", forma.ValueTypeText)
 	require.NoError(t, err)
-	require.Equal(t, "list_any_match(names, x -> x LIKE ?)", sql)
+	require.Equal(t, "len(list_filter(names, lambda x: x LIKE ?)) > 0", sql)
 	require.Equal(t, "%john%", param)
 }
 
 func TestBuildListPredicate_StartsWith(t *testing.T) {
 	sql, param, err := BuildListPredicate("prefixes", "starts_with", "pre", forma.ValueTypeText)
 	require.NoError(t, err)
-	require.Equal(t, "list_any_match(prefixes, x -> x LIKE ?)", sql)
+	require.Equal(t, "len(list_filter(prefixes, lambda x: x LIKE ?)) > 0", sql)
 	require.Equal(t, "pre%", param)
 }
 
 func TestBuildListPredicate_Gt(t *testing.T) {
 	sql, param, err := BuildListPredicate("values", "gt", "10", forma.ValueTypeNumeric)
 	require.NoError(t, err)
-	require.Equal(t, "list_any_match(values, x -> x > CAST(? AS DOUBLE))", sql)
+	require.Equal(t, "len(list_filter(values, lambda x: x > CAST(? AS DOUBLE))) > 0", sql)
 	require.Equal(t, "10", param)
 }
 
 func TestBuildListPredicate_Gte(t *testing.T) {
 	sql, param, err := BuildListPredicate("values", "gte", "5", forma.ValueTypeInteger)
 	require.NoError(t, err)
-	require.Equal(t, "list_any_match(values, x -> x >= CAST(? AS DOUBLE))", sql)
+	require.Equal(t, "len(list_filter(values, lambda x: x >= CAST(? AS DOUBLE))) > 0", sql)
 	require.Equal(t, "5", param)
 }
 
 func TestBuildListPredicate_Lt(t *testing.T) {
 	sql, param, err := BuildListPredicate("values", "lt", "100", forma.ValueTypeBigInt)
 	require.NoError(t, err)
-	require.Equal(t, "list_any_match(values, x -> x < CAST(? AS BIGINT))", sql)
+	require.Equal(t, "len(list_filter(values, lambda x: x < CAST(? AS BIGINT))) > 0", sql)
 	require.Equal(t, "100", param)
 }
 
 func TestBuildListPredicate_Lte(t *testing.T) {
 	sql, param, err := BuildListPredicate("values", "lte", "50", forma.ValueTypeSmallInt)
 	require.NoError(t, err)
-	require.Equal(t, "list_any_match(values, x -> x <= CAST(? AS DOUBLE))", sql)
+	require.Equal(t, "len(list_filter(values, lambda x: x <= CAST(? AS DOUBLE))) > 0", sql)
 	require.Equal(t, "50", param)
 }
 

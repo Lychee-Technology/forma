@@ -40,7 +40,7 @@ func TestBenchmarkAttributesJSONParsesOnDuckDB(t *testing.T) {
 	end := strings.Index(outer, "::TEXT AS attributes_json")
 	require.Greater(t, end, start)
 
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
@@ -80,7 +80,7 @@ func TestBenchmarkEAVJSONArrayListAttrPositionalIndices(t *testing.T) {
 		eavJSONAttr{id: 13, name: "tags", type_: "list"},
 	)
 	require.Contains(t, got,
-		`list_transform(tags, (x, i) -> json_object('schema_id', 102, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', 13, 'array_indices', CAST(i - 1 AS VARCHAR), 'value_text', CAST(x AS VARCHAR), 'value_numeric', NULL))`)
+		`list_transform(tags, lambda x, i: json_object('schema_id', 102, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', 13, 'array_indices', CAST(i - 1 AS VARCHAR), 'value_text', CAST(x AS VARCHAR), 'value_numeric', NULL))`)
 	require.Contains(t, got, "to_json(list_filter(flatten([")
 	// The scalar attr keeps its object, wrapped for the flatten form.
 	require.Contains(t, got,

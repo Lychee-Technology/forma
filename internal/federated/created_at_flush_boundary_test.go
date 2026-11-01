@@ -270,7 +270,7 @@ func seedFlushBoundary(t *testing.T, db *sql.DB, parquetPath string) {
 
 func newFlushBoundaryDuckDB(t *testing.T) (*sql.DB, string) {
 	t.Helper()
-	db, err := sql.Open("duckdb", "")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

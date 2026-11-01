@@ -33,7 +33,7 @@ func boundNumericMeta(vt forma.ValueType, col forma.MainColumn) forma.AttributeM
 // double_* case (#618). The strict-cast chain the hot leg used to run fails
 // on the same images.
 func TestMainColIntegerExpr_ReadsTheExportImage(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

@@ -22,7 +22,7 @@ func TestBuildOuterSelectScalarOnlyShapeUnchanged(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Contains(t, sp.OuterSelect,
-		"to_json(list_filter([CASE WHEN note IS NOT NULL THEN {'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 7, 'array_indices': '', 'value_text': CAST(note AS VARCHAR), 'value_numeric': NULL} END], x -> x IS NOT NULL))::TEXT AS attributes_json")
+		"to_json(list_filter([CASE WHEN note IS NOT NULL THEN {'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 7, 'array_indices': '', 'value_text': CAST(note AS VARCHAR), 'value_numeric': NULL} END], lambda x: x IS NOT NULL))::TEXT AS attributes_json")
 	require.NotContains(t, sp.OuterSelect, "flatten(")
 }
 
@@ -38,9 +38,9 @@ func TestBuildOuterSelectListAttrEmitsPerElementObjects(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Contains(t, sp.OuterSelect,
-		"CASE WHEN tags IS NOT NULL AND len(tags) = 0 THEN [{'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 18, 'array_indices': '', 'value_text': NULL, 'value_numeric': NULL}] WHEN tags IS NOT NULL THEN list_transform(tags, (x, i) -> {'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 18, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': CAST(x AS VARCHAR), 'value_numeric': NULL}) ELSE [] END")
+		"CASE WHEN tags IS NOT NULL AND len(tags) = 0 THEN [{'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 18, 'array_indices': '', 'value_text': NULL, 'value_numeric': NULL}] WHEN tags IS NOT NULL THEN list_transform(tags, lambda x, i: {'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 18, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': CAST(x AS VARCHAR), 'value_numeric': NULL}) ELSE [] END")
 	require.Contains(t, sp.OuterSelect,
-		"CASE WHEN nums IS NOT NULL AND len(nums) = 0 THEN [{'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 19, 'array_indices': '', 'value_text': NULL, 'value_numeric': NULL}] WHEN nums IS NOT NULL THEN list_transform(nums, (x, i) -> {'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 19, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': NULL, 'value_numeric': CAST(x AS DOUBLE)}) ELSE [] END")
+		"CASE WHEN nums IS NOT NULL AND len(nums) = 0 THEN [{'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 19, 'array_indices': '', 'value_text': NULL, 'value_numeric': NULL}] WHEN nums IS NOT NULL THEN list_transform(nums, lambda x, i: {'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 19, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': NULL, 'value_numeric': CAST(x AS DOUBLE)}) ELSE [] END")
 	// Scalar attr keeps its single object, wrapped for the flatten form.
 	require.Contains(t, sp.OuterSelect,
 		"[CASE WHEN note IS NOT NULL THEN {'schema_id': 2, 'row_id': CAST(row_id AS VARCHAR), 'attr_id': 7, 'array_indices': '', 'value_text': CAST(note AS VARCHAR), 'value_numeric': NULL} END]")
@@ -65,7 +65,7 @@ func TestListAttributesJSONRoundTripsThroughParser(t *testing.T) {
 	expr = strings.TrimSuffix(expr, ",")
 	expr = strings.TrimSuffix(strings.TrimSpace(expr), " AS attributes_json")
 
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

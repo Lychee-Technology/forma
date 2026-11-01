@@ -346,7 +346,7 @@ func TestKeysetCursorPlaceholderTracksSqlgen(t *testing.T) {
 // bypassed. "row.İd" was refused under the system-column message for a
 // column it never reaches.
 func TestKeysetCursorFoldsIdentifiersLikeDuckDB(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

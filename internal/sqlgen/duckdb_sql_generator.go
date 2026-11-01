@@ -16,14 +16,14 @@ import (
 var ErrListInOrderBy = fmt.Errorf("LIST type attributes cannot be used in ORDER BY")
 
 // ListOperatorMapping defines how DSL operators map to DuckDB LIST functions.
-// DSL operators for LIST columns use list_contains or list_any_match patterns.
+// DSL operators for LIST columns use list_contains or a list_filter lambda.
 type ListOperatorMapping struct {
 	// Operator is the DSL operator name (equals, contains, starts_with, gt, etc.)
 	Operator string
 	// DuckDBExpr is a template for the DuckDB expression.
 	// Placeholders: {{.Column}} for the column name, {{.Value}} for the parameter.
 	DuckDBExpr string
-	// RequiresLambda indicates if the expression uses a lambda (x -> predicate)
+	// RequiresLambda indicates if the expression uses a lambda (lambda x: predicate)
 	RequiresLambda bool
 }
 
@@ -31,9 +31,14 @@ type ListOperatorMapping struct {
 // Supported operators:
 //   - equals: list_contains(col, value) - checks if value is in the list
 //   - not_equals: NOT list_contains(col, value)
-//   - contains: list_any_match(col, x -> x LIKE '%value%')
-//   - starts_with: list_any_match(col, x -> x LIKE 'value%')
-//   - gt/gte/lt/lte: list_any_match(col, x -> x OP value)
+//   - contains: len(list_filter(col, lambda x: x LIKE '%value%')) > 0
+//   - starts_with: len(list_filter(col, lambda x: x LIKE 'value%')) > 0
+//   - gt/gte/lt/lte: len(list_filter(col, lambda x: x OP value)) > 0
+//
+// The element predicates are an any-match: true when some element satisfies
+// it, false for an empty list or one whose elements are all NULL or fail it,
+// NULL for a NULL list. DuckDB has no list_any_match (#751), and the lambda
+// keyword form is the only one DuckDB 2.0 parses by default.
 //
 // Returns the SQL fragment and the parameter value to bind.
 func BuildListPredicate(column, operator, value string, elementType forma.ValueType) (string, any, error) {
@@ -55,27 +60,27 @@ func BuildListPredicate(column, operator, value string, elementType forma.ValueT
 		return fmt.Sprintf("NOT list_contains(%s, CAST(? AS %s))", column, duckType), value, nil
 
 	case "contains":
-		// list_any_match with LIKE for substring matching
-		return fmt.Sprintf("list_any_match(%s, x -> x LIKE ?)", column), "%" + value + "%", nil
+		// LIKE for substring matching, on any element
+		return fmt.Sprintf("len(list_filter(%s, lambda x: x LIKE ?)) > 0", column), "%" + value + "%", nil
 
 	case "starts_with":
-		return fmt.Sprintf("list_any_match(%s, x -> x LIKE ?)", column), value + "%", nil
+		return fmt.Sprintf("len(list_filter(%s, lambda x: x LIKE ?)) > 0", column), value + "%", nil
 
 	case "gt":
 		duckType := MapValueTypeToDuckDBType(elementType)
-		return fmt.Sprintf("list_any_match(%s, x -> x > CAST(? AS %s))", column, duckType), value, nil
+		return fmt.Sprintf("len(list_filter(%s, lambda x: x > CAST(? AS %s))) > 0", column, duckType), value, nil
 
 	case "gte":
 		duckType := MapValueTypeToDuckDBType(elementType)
-		return fmt.Sprintf("list_any_match(%s, x -> x >= CAST(? AS %s))", column, duckType), value, nil
+		return fmt.Sprintf("len(list_filter(%s, lambda x: x >= CAST(? AS %s))) > 0", column, duckType), value, nil
 
 	case "lt":
 		duckType := MapValueTypeToDuckDBType(elementType)
-		return fmt.Sprintf("list_any_match(%s, x -> x < CAST(? AS %s))", column, duckType), value, nil
+		return fmt.Sprintf("len(list_filter(%s, lambda x: x < CAST(? AS %s))) > 0", column, duckType), value, nil
 
 	case "lte":
 		duckType := MapValueTypeToDuckDBType(elementType)
-		return fmt.Sprintf("list_any_match(%s, x -> x <= CAST(? AS %s))", column, duckType), value, nil
+		return fmt.Sprintf("len(list_filter(%s, lambda x: x <= CAST(? AS %s))) > 0", column, duckType), value, nil
 
 	default:
 		return "", nil, fmt.Errorf("unsupported operator '%s' for LIST column", operator)

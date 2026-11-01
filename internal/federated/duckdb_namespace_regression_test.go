@@ -45,7 +45,7 @@ func TestDuckClause_NonBenchmark_ReferencesAttributeAliasedColumns(t *testing.T)
 	require.NoError(t, err)
 	require.NotEmpty(t, dc.DuckClause)
 
-	db, err := sql.Open("duckdb", "")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	defer db.Close()
 

@@ -159,7 +159,7 @@ const eavFixtureSubquery = "(SELECT CAST(1 AS DOUBLE) AS value_numeric, CAST('x'
 // renders as `(value_numeric > 0.5)` and text as a bare `value_text`, so
 // neither carries a type literal to extract — only the engine knows.
 func TestDuckDBNullScanTypeMatchesHotLegTypeof(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
@@ -219,7 +219,7 @@ const eavPivotFixtureSubquery = "(SELECT 9 AS attr_id, CAST(1 AS DOUBLE) AS valu
 // ALL. If a future pivot arm diverges from eavElementCastExpr for some scalar,
 // this test fails where the sibling above cannot (round-2 review observation).
 func TestDuckDBNullScanTypeMatchesPivotLegTypeof(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

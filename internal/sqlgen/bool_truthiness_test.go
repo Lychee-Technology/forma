@@ -182,7 +182,7 @@ func TestBuildOuterSelect_BoundBoolCastsToPhysicalColumn(t *testing.T) {
 	require.Contains(t, sp.OuterSelect, "CAST(CAST(flagText AS TINYINT) AS VARCHAR) AS text_02")
 	require.NotContains(t, sp.OuterSelect, "AS BOOLEAN")
 
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
@@ -215,7 +215,7 @@ func TestBuildOuterSelect_BoundBoolCastsToPhysicalColumn(t *testing.T) {
 // does not produce (#565): the pushdown must reach the contract's verdict
 // on every image and stay NULL on NULL.
 func TestBoolMainPredicate_MatchesReadContract(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

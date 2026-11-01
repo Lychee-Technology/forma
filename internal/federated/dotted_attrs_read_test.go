@@ -52,7 +52,7 @@ func dottedAttrCache() forma.SchemaAttributeCache {
 // which this pipeline exercises at every surface — s3 projection, semijoin
 // WHERE, visible WHERE, outer select.
 func TestDuckDBReadDottedAttributes(t *testing.T) {
-	db, err := sql.Open("duckdb", "")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	defer db.Close()
 

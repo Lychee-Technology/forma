@@ -141,7 +141,7 @@ TO '%s' (FORMAT PARQUET)`, nFiles, k, file)
 
 func openScanFormDB(t testing.TB) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("duckdb", "")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	if err != nil {
 		t.Fatalf("failed to open in-memory duckdb: %v", err)
 	}

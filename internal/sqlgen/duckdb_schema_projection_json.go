@@ -49,7 +49,7 @@ func (sp *SchemaProjection) buildAttributesJSONExpr(schemaID int16, sortedAttrs 
 		for _, attr := range eavAttrs {
 			parts = append(parts, sp.scalarEAVJSONObject(schemaID, attr))
 		}
-		return "to_json(list_filter([" + strings.Join(parts, ", ") + "], x -> x IS NOT NULL))::TEXT AS attributes_json"
+		return "to_json(list_filter([" + strings.Join(parts, ", ") + "], lambda x: x IS NOT NULL))::TEXT AS attributes_json"
 	}
 
 	parts := make([]string, 0, len(eavAttrs))
@@ -60,7 +60,7 @@ func (sp *SchemaProjection) buildAttributesJSONExpr(schemaID int16, sortedAttrs 
 		}
 		parts = append(parts, "["+sp.scalarEAVJSONObject(schemaID, attr)+"]")
 	}
-	return "to_json(list_filter(flatten([" + strings.Join(parts, ", ") + "]), x -> x IS NOT NULL))::TEXT AS attributes_json"
+	return "to_json(list_filter(flatten([" + strings.Join(parts, ", ") + "]), lambda x: x IS NOT NULL))::TEXT AS attributes_json"
 }
 
 // scalarEAVJSONObject renders the single CASE ... END object for one scalar
@@ -98,7 +98,7 @@ func (sp *SchemaProjection) listEAVJSONPart(schemaID int16, attr string) string 
 	}
 	rowExpr := "CAST(row_id AS VARCHAR)"
 	return fmt.Sprintf(
-		"CASE WHEN %s IS NOT NULL AND len(%s) = 0 THEN [{'schema_id': %d, 'row_id': %s, 'attr_id': %d, 'array_indices': '', 'value_text': NULL, 'value_numeric': NULL}] WHEN %s IS NOT NULL THEN list_transform(%s, (x, i) -> {'schema_id': %d, 'row_id': %s, 'attr_id': %d, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': %s, 'value_numeric': %s}) ELSE [] END",
+		"CASE WHEN %s IS NOT NULL AND len(%s) = 0 THEN [{'schema_id': %d, 'row_id': %s, 'attr_id': %d, 'array_indices': '', 'value_text': NULL, 'value_numeric': NULL}] WHEN %s IS NOT NULL THEN list_transform(%s, lambda x, i: {'schema_id': %d, 'row_id': %s, 'attr_id': %d, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': %s, 'value_numeric': %s}) ELSE [] END",
 		unified, unified, schemaID, rowExpr, sp.attrIDForName(attr),
 		unified, unified, schemaID, rowExpr, sp.attrIDForName(attr), valueText, valueNumeric)
 }

@@ -99,7 +99,7 @@ func guardFixtures(t *testing.T, db *sql.DB) guardFixtureSet {
 
 func guardDuckDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	return db

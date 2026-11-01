@@ -172,7 +172,7 @@ func judgeDomain(col, fileType string, meta forma.AttributeMetadata) typeJudgeme
 	elem := forma.AttributeMetadata{ValueType: meta.EffectiveItemsType()}
 	j := judgeDomainScalar("x", strings.TrimSuffix(fileType, "[]"), elem)
 	if j.kind == judgeNeedsProof {
-		j.violation = fmt.Sprintf("len(list_filter(%s, x -> x IS NOT NULL AND (%s))) > 0", col, j.violation)
+		j.violation = fmt.Sprintf("len(list_filter(%s, lambda x: x IS NOT NULL AND (%s))) > 0", col, j.violation)
 	}
 	return j
 }

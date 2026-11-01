@@ -266,7 +266,7 @@ func TestDesignDocSQL_ExecutesWithLWWFilterSemantics(t *testing.T) {
 	docSQL := extractDesignDocSection5SQL(t)
 	parquetPath := filepath.Join(t.TempDir(), "base.parquet")
 
-	db, err := sql.Open("duckdb", "")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, db.Close(), "failed to close in-memory DuckDB")

@@ -13,12 +13,22 @@ import (
 // sublists. If a DuckDB upgrade drops any of these, this test fails before
 // the export SQL does. The ::VARCHAR casts mirror the production SQL's ::TEXT
 // (the driver does not scan the raw JSON logical type into a string).
+//
+// The lambdas use the `lambda x, i: ...` keyword form and the database
+// refuses the deprecated single-arrow form, the DuckDB 2.0 default (#751),
+// so the shapes are pinned as 2.0 parses them while 1.5.x is still the
+// runtime.
 func TestDuckDBListSyntaxSupport(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", "?lambda_syntax=DISABLE_SINGLE_ARROW")
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
 	var s string
+
+	// The single-arrow form is refused; without that every lambda below
+	// would pass in either syntax.
+	err = db.QueryRow(`SELECT to_json(list_filter(['a'], x -> x IS NOT NULL))::VARCHAR`).Scan(&s)
+	require.Error(t, err, "single-arrow lambda accepted")
 
 	// list() aggregate with ORDER BY inside the aggregate plus FILTER — the
 	// export pivot shape for list attributes.
@@ -29,13 +39,13 @@ func TestDuckDBListSyntaxSupport(t *testing.T) {
 
 	// Two-arg lambda (element, 1-based index) — the attributes_json
 	// reconstruction shape for positional array_indices.
-	err = db.QueryRow(`SELECT to_json(list_transform(['a','b'], (x, i) -> CAST(i - 1 AS VARCHAR) || ':' || x))::VARCHAR`).Scan(&s)
+	err = db.QueryRow(`SELECT to_json(list_transform(['a','b'], lambda x, i: CAST(i - 1 AS VARCHAR) || ':' || x))::VARCHAR`).Scan(&s)
 	require.NoError(t, err, "list_transform two-arg lambda")
 	require.Equal(t, `["0:a","1:b"]`, s)
 
 	// flatten of mixed typed/empty sublists then NULL filtering — how scalar
 	// single-object parts combine with per-element list parts.
-	err = db.QueryRow(`SELECT to_json(list_filter(flatten([['a', NULL], [], ['b']]), x -> x IS NOT NULL))::VARCHAR`).Scan(&s)
+	err = db.QueryRow(`SELECT to_json(list_filter(flatten([['a', NULL], [], ['b']]), lambda x: x IS NOT NULL))::VARCHAR`).Scan(&s)
 	require.NoError(t, err, "flatten mixed sublists")
 	require.Equal(t, `["a","b"]`, s)
 
@@ -43,8 +53,8 @@ func TestDuckDBListSyntaxSupport(t *testing.T) {
 	// literal list concatenated with a list_transform product.
 	err = db.QueryRow(`SELECT to_json(list_filter(flatten([
 		[CASE WHEN 1=0 THEN {'attr_id': 1, 'array_indices': '', 'value_text': 'x'} END],
-		list_transform(['a','b'], (x, i) -> {'attr_id': 18, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': x})
-	]), x -> x IS NOT NULL))::VARCHAR`).Scan(&s)
+		list_transform(['a','b'], lambda x, i: {'attr_id': 18, 'array_indices': CAST(i - 1 AS VARCHAR), 'value_text': x})
+	]), lambda x: x IS NOT NULL))::VARCHAR`).Scan(&s)
 	require.NoError(t, err, "struct unification across scalar/list parts")
 	require.Equal(t, `[{"attr_id":18,"array_indices":"0","value_text":"a"},{"attr_id":18,"array_indices":"1","value_text":"b"}]`, s)
 
@@ -64,8 +74,8 @@ func TestDuckDBListSyntaxSupport(t *testing.T) {
 	require.Equal(t, `VARCHAR[]`, typ)
 
 	// A struct literal whose fields are all NULL is itself non-NULL, so the
-	// empty-list marker object survives list_filter(x -> x IS NOT NULL).
-	err = db.QueryRow(`SELECT to_json(list_filter([{'a': CAST(NULL AS VARCHAR)}], x -> x IS NOT NULL))::VARCHAR`).Scan(&s)
+	// empty-list marker object survives list_filter(lambda x: x IS NOT NULL).
+	err = db.QueryRow(`SELECT to_json(list_filter([{'a': CAST(NULL AS VARCHAR)}], lambda x: x IS NOT NULL))::VARCHAR`).Scan(&s)
 	require.NoError(t, err, "all-NULL-field struct retention")
 	require.Equal(t, `[{"a":null}]`, s)
 }
