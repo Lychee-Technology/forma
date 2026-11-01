@@ -15,9 +15,10 @@ import (
 // schema's attribute metadata cache could not be resolved — the registry lookup
 // failed or the cache is empty. CDC export needs it to produce parquet the
 // federated reader can consume; without it the reader fails fast with
-// ErrSchemaMetadataCacheRequired (#193). This is an operator-visible
-// configuration error, not write-path validation, so it is NOT wrapped in
-// forma.ErrInvalidInput.
+// ErrSchemaMetadataCacheRequired (#193). It is an operator-visible failure, not
+// write-path validation, so it is NOT wrapped in forma.ErrInvalidInput. An
+// empty cache or a nil registry is a configuration error; a failed lookup also
+// wraps the registry's error, which may be transient (#768).
 var ErrSchemaAttrCacheUnavailable = errors.New("schema attribute metadata cache unavailable")
 
 // ErrSchemaNotExportable marks a cdc-init run refused because the one schema

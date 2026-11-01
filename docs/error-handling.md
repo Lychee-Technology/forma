@@ -1298,8 +1298,14 @@ listing that cannot be followed to its end fails `cdc-init` and
 tools and are not returned through package `cdc`. A flush whose schema
 registry cannot resolve a schema's attribute metadata cache fails before any
 side effect with an error that matches `cdc.ErrSchemaAttrCacheUnavailable`.
-That is a configuration error: unlike a lost lease, retrying with the same
-registry fails again.
+A match alone does not decide whether to retry. When the registry returns
+no metadata (an empty cache, because the schema is not registered, or a nil
+registry), it is a configuration error: retrying with the same registry
+fails again. When the registry's lookup itself fails, the returned error
+also wraps that lookup error, and a caller-supplied `SchemaRegistry` may
+fail transiently and succeed on a later attempt. A scheduler therefore
+inspects the wrapped cause with `errors.Is` or `errors.As` against the
+errors its registry returns rather than treating every match as permanent.
 
 Tests only PostgreSQL can run carry a `_PostgresOnly` suffix, so a run against
 another backend can exclude them with `go test -skip PostgresOnly`. They depend

@@ -56,12 +56,25 @@ var ErrGlobOnlyWithTemplate = internalcdc.ErrGlobOnlyWithTemplate
 var ErrSchemaLockLost = internalcdc.ErrSchemaLockLost
 
 // ErrSchemaAttrCacheUnavailable matches a flush that could not resolve a
-// schema's attribute metadata cache: the registry lookup failed, or the cache
-// is empty because the schema is not registered. A run checks every schema's
-// cache before any side effect, so one unresolvable schema fails the whole
-// pass and flushes nothing (#193). It is a configuration error, not a
-// transient one: retrying with the same registry fails again. It is the same
-// value internal/cdc returns, so errors.Is matches the errors RunOnce returns.
+// schema's attribute metadata cache. A run checks every schema's cache before
+// any side effect, so one unresolvable schema fails the whole pass and
+// flushes nothing (#193). It is the same value internal/cdc returns, so
+// errors.Is matches the errors RunOnce returns.
+//
+// A match alone does not say whether retrying can help, because it covers
+// two different failures:
+//
+//   - The registry returned no metadata: the cache is empty because the
+//     schema is not registered, or RunOnce was given a nil registry. That is
+//     a configuration error: retrying with the same registry fails again.
+//   - The registry's lookup itself returned an error. The error RunOnce
+//     returns then also wraps that lookup error, and whether it is transient
+//     is the registry's to say: a caller-supplied SchemaRegistry may fail
+//     once (a dropped connection, a timeout) and succeed on a later attempt.
+//
+// A caller deciding whether to retry inspects the wrapped cause with
+// errors.Is or errors.As against the errors its registry returns, rather
+// than treating every match as permanent.
 var ErrSchemaAttrCacheUnavailable = internalcdc.ErrSchemaAttrCacheUnavailable
 
 // FlushRunner reuses AWS/S3/DuckDB initialization across multiple flush

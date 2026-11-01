@@ -145,9 +145,19 @@ func TestErrSchemaAttrCacheUnavailableMatchesTheFlushPathError(t *testing.T) {
 				t.Fatalf("errors.Is(%v, cdc.ErrSchemaAttrCacheUnavailable) = false", err)
 			}
 			if errors.Is(err, ErrSchemaLockLost) {
-				t.Fatal("a configuration failure must not match the retryable lost-lock sentinel")
+				t.Fatal("an attribute cache failure must not match the lost-lock sentinel")
 			}
 		})
+	}
+	// The sentinel alone does not say whether a retry can help: a registry
+	// lookup failure keeps the registry's own error reachable, so a caller
+	// can recognise a transient one, while missing metadata carries no such
+	// cause (R2-F1).
+	if !errors.Is(fmt.Errorf("cdc flush pre-flight: %w", cases["registry lookup failed"]), lookupErr) {
+		t.Fatal("a registry lookup failure must keep the registry's error reachable")
+	}
+	if errors.Is(cases["empty cache"], lookupErr) {
+		t.Fatal("an empty cache must not carry a registry lookup error")
 	}
 	if errors.Is(errors.New("schema attribute metadata cache unavailable"), ErrSchemaAttrCacheUnavailable) {
 		t.Fatal("matching must be by value, not by message")
