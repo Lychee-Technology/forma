@@ -127,10 +127,18 @@ func AssertTotalRecordsInRange(t *testing.T, result *QueryResult, min, max int64
 func AssertComparisonMatch(t *testing.T, report *ComparisonReport) {
 	t.Helper()
 	if !report.Match {
-		t.Errorf("comparison failed: federated=%d, postgres=%d, missing_in_fed=%d, missing_in_pg=%d, mismatches=%d",
+		t.Errorf("comparison failed: federated=%d, postgres=%d, missing_in_fed=%d, missing_in_pg=%d, duplicates_in_fed=%d, duplicates_in_pg=%d, mismatches=%d",
 			report.FederatedCount, report.PostgresCount,
 			len(report.MissingInFed), len(report.MissingInPG),
+			len(report.DuplicatesInFed), len(report.DuplicatesInPG),
 			len(report.AttributeMismatches))
+
+		if len(report.DuplicatesInFed) > 0 {
+			t.Logf("duplicated in federated (first 5): %v", firstN(report.DuplicatesInFed, 5))
+		}
+		if len(report.DuplicatesInPG) > 0 {
+			t.Logf("duplicated in postgres (first 5): %v", firstN(report.DuplicatesInPG, 5))
+		}
 
 		if len(report.MissingInFed) > 0 {
 			t.Logf("missing in federated (first 5): %v", firstN(report.MissingInFed, 5))

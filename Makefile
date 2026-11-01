@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-e2e-production fmt-check lint check-infra coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy benchmark-heavy-live build-all build-lambda clean all create-build-dir link validate-schema-consistency
+.PHONY: test test-unit test-e2e-production duckdb-storage-compat fmt-check lint check-infra coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy benchmark-heavy-live build-all build-lambda clean all create-build-dir link validate-schema-consistency
 
 # Binary names
 BINARY_SERVER=server
@@ -65,6 +65,13 @@ test-unit:
 test-e2e-production:
 	@echo "Running production E2E harness tests..."
 	@$(GOENV) go test -v ./internal/e2e_harness/production/ -tags=e2e -timeout=10m
+
+# Cross-version Parquet storage check (#753): files the current DuckDB writes
+# must read back unchanged in the previous release (rollback), and the
+# reverse (upgrade). Builds cmd/duckdbcompat against go.mod and against
+# scripts/duckdbcompat/previous.mod; see docs/duckdb-upgrades.md.
+duckdb-storage-compat:
+	@$(GOENV) ./scripts/duckdb_storage_compat.sh
 
 # Formatter gate (#276). golangci-lint's default linter set carries no
 # formatter, and its gofmt linter is build-tag scoped: it never loads the

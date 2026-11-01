@@ -102,6 +102,13 @@ jobs:
           DB_NAME: forma_test
         run: go test -v -race -coverprofile=coverage.out . ./cdc ./cmd/... ./factory ./internal/...
 
+      # Files the current DuckDB writes must read back unchanged in the
+      # previous release, which a rollback returns to, and the reverse (#753).
+      # Here rather than in its own job so it also runs on arm64. See
+      # docs/duckdb-upgrades.md.
+      - name: Check Parquet compatibility with the previous DuckDB release
+        run: make duckdb-storage-compat
+
       # The coordination suite again, on the aurora-dsql engine (#633): the
       # same PostgreSQL with every transaction at REPEATABLE READ, DSQL's one
       # isolation level, so its contract assertions run against guard-row

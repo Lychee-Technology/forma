@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lychee-technology/forma/internal/parquetformat"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
@@ -24,9 +25,9 @@ import (
 // ties resolving the same way the reader does.
 const mergeLWWOrderBy = "changed_at DESC, deleted_at DESC NULLS LAST, row_id ASC"
 
-// defaultMergeCopyOptions matches the CDC exporters' parquet COPY options
-// (internal/cdc/export_sql_builder.go buildParquetCopyOptions defaults).
-const defaultMergeCopyOptions = "FORMAT PARQUET, PARQUET_VERSION V2, COMPRESSION 'ZSTD', COMPRESSION_LEVEL 3"
+// defaultMergeCopyOptions are the CDC exporters' default parquet COPY
+// options, from the one package both writers read them from.
+var defaultMergeCopyOptions = parquetformat.DefaultCopyOptions()
 
 // validateMergeURI refuses the one URI the writer cannot render: the empty
 // string, which is a manifest or path-contract bug rather than an object
