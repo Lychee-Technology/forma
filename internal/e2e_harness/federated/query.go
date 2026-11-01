@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 const (
@@ -50,7 +51,7 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 	countQuery := h.buildFederatedQueryCountSQLDynamic(basePath, deltaPath, tiers.hasBaseFiles, tiers.hasDeltaFiles, tiers.dirtyIDs, opts)
 
 	var totalRecords int64
-	if err := h.Duck.DB.QueryRowContext(ctx, countQuery).Scan(&totalRecords); err != nil {
+	if err := h.Duck.DB.QueryRowContext(ctx, h.withPostgresAttach(countQuery)).Scan(&totalRecords); err != nil {
 		if isFederatedTierFileError(err) {
 			return h.ExecutePostgresQuery(ctx, opts)
 		}
@@ -64,7 +65,7 @@ func (h *FederatedTestHarness) ExecuteFederatedQuery(ctx context.Context, opts *
 		return tiers.emptyPageResult(totalRecords, time.Since(start)), nil
 	}
 
-	rows, err := h.Duck.DB.QueryContext(ctx, query)
+	rows, err := h.Duck.DB.QueryContext(ctx, h.withPostgresAttach(query))
 	if err != nil {
 		if isFederatedTierFileError(err) {
 			return h.ExecutePostgresQuery(ctx, opts)
@@ -320,6 +321,13 @@ func isFederatedTierFileError(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "No files found") || strings.Contains(err.Error(), "does not exist")
+}
+
+// withPostgresAttach prefixes a hot-tier query with the attach of the
+// catalog its hotScan references name (#752): the batch form the engine
+// falls back to for executors without its pinned-connection seam.
+func (h *FederatedTestHarness) withPostgresAttach(query string) string {
+	return sqlgen.PostgresAttachSQL(h.buildPGConnString()) + "\n" + query
 }
 
 // buildPGConnString builds the Postgres connection string for DuckDB.

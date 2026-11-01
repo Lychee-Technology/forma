@@ -782,7 +782,7 @@ ORDER BY created_at DESC, row_id DESC;
 
 **Decision:** Accept 10ms latency increase for significantly reduced complexity and security risk.
 
-**What ships (#631).** No predicate reaches PostgreSQL, as decided, but the rationale's bound does not hold. `postgres_scan` copies whole tables, not the Hot tier: `change_log` twice, `entity_main`, and `eav_data` when the EAV pivot renders, across every schema and including flushed rows. The storage invariant (design.md §3.3) keeps every live entity in `entity_main` and `eav_data`, and nothing prunes `change_log`, so the copied volume grows with the whole database. The ≤ 10K-row bound limits the rows the hot leg returns, not the rows it reads. The latency figures above are from the original decision and were not re-measured. design.md §6.1 states the shipped behavior and the open pushdown decision.
+**What ships (#631).** No predicate reaches PostgreSQL, as decided, but the rationale's bound does not hold. The hot leg's scans (`postgres_scan` before #752, scans of an attached PostgreSQL catalog with filter pushdown turned off since) copy whole tables, not the Hot tier: `change_log` twice, `entity_main`, and `eav_data` when the EAV pivot renders, across every schema and including flushed rows. The storage invariant (design.md §3.3) keeps every live entity in `entity_main` and `eav_data`, and nothing prunes `change_log`, so the copied volume grows with the whole database. The ≤ 10K-row bound limits the rows the hot leg returns, not the rows it reads. The latency figures above are from the original decision and were not re-measured. design.md §6.1 states the shipped behavior and the open pushdown decision.
 
 ### 7.2 Base File Pruning
 

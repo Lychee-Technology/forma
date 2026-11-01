@@ -118,7 +118,7 @@ func normalizeLeaf(kv *forma.KvCondition, cache forma.SchemaAttributeCache, targ
 //
 // Text and uuid columns take every scalar operator their eav_data form takes
 // (#676; checkOperatorForType still refuses LIKE on uuid). DuckDB evaluates
-// the pushed clause over the postgres_scan rows, so a text or uuid range
+// the pushed clause over the hot leg's PostgreSQL rows, so a text or uuid range
 // orders by bytes as the logical clause does and never drops a row that
 // clause keeps. A text compare the postgres extension did forward to
 // PostgreSQL carried COLLATE "C" in #631's probe, which keeps that order.

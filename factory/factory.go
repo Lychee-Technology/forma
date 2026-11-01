@@ -46,7 +46,7 @@ func defaultEntityManagerDependencies() entityManagerDependencies {
 		newMetadataLoader: func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 			return schemameta.NewMetadataLoader(pool, schemaTable, schemaDir)
 		},
-		newDuckDBClient: federated.NewDuckDBClientContext,
+		newDuckDBClient: federated.NewFederatedDuckDBClientContext,
 		// A factory test that enables DuckDB + a manifest template and leaves
 		// this default in place hits the real AWS credential chain — call
 		// swapManifestS3Client (parquet_source_test.go) to stay hermetic.

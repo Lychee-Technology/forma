@@ -1,6 +1,8 @@
 package sqlgen
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"text/template"
 
@@ -163,20 +165,20 @@ func TestBuildDuckDBQuery_PropagatesRenderError(t *testing.T) {
 }
 
 // ============================================================================
-// Tests for PG_CONN SQL-literal escaping (#301)
+// Tests for the PostgreSQL attach statement's SQL-literal escaping (#301, #752)
 // ============================================================================
 
-// TestPGConnIsEscapedForSQLLiteral pins the half of the #301 producer fix that
-// lives in the renderer.
+// TestPostgresAttachSQLEscapesTheConnString pins the half of the #301
+// producer fix that lives in sqlgen.
 //
-// The templates interpolate the DSN inside a single-quoted literal —
-// postgres_scan('{{.PG_CONN}}', …) — so once
-// federated.DuckDBPostgresConnStringFromPool started quoting its values, the raw
-// string carried single quotes that would terminate that literal early and break
-// every federated query. It also closes a hole that predates the quoting: a
-// Postgres password containing a single quote was interpolated raw, putting
-// deployment-controlled text into SQL structure.
-func TestPGConnIsEscapedForSQLLiteral(t *testing.T) {
+// The attach statement interpolates the DSN inside a single-quoted literal,
+// ATTACH '<conn>' AS …, so once federated.DuckDBPostgresConnStringFromPool
+// started quoting its values, the raw string carried single quotes that would
+// terminate that literal early and break every federated query. Escaping also
+// closes a hole that predates the quoting: a Postgres password containing a
+// single quote was interpolated raw, putting deployment-controlled text into
+// SQL structure.
+func TestPostgresAttachSQLEscapesTheConnString(t *testing.T) {
 	tests := []struct {
 		name string
 		conn string
@@ -201,32 +203,47 @@ func TestPGConnIsEscapedForSQLLiteral(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			params := map[string]any{"DuckDBPGConnString": tt.conn}
-			require.NoError(t, injectDuckDBTemplateParams(params, &model.FederatedAttributeQuery{}, nil))
+			got := PostgresAttachSQL(tt.conn)
+			prefix := "ATTACH IF NOT EXISTS '"
+			suffix := "' AS " + PostgresCatalogAlias(tt.conn) + " (TYPE postgres, READ_ONLY);"
+			require.True(t, strings.HasPrefix(got, prefix+tt.want+suffix), "attach statement: %s", got)
 
-			got, ok := params["PG_CONN"].(string)
-			require.True(t, ok, "PG_CONN was not populated")
-			require.Equal(t, tt.want, got)
-
-			// Every single quote in the rendered value must be part of a doubled
-			// pair, or the enclosing literal ends early.
-			require.Equal(t, 0, countUnpairedQuotes(got),
-				"PG_CONN carries an unpaired quote and would terminate the SQL literal: %s", got)
+			// Every single quote in the literal must be part of a doubled
+			// pair, or the literal ends early.
+			literal := strings.TrimSuffix(strings.TrimPrefix(strings.SplitN(got, "\n", 2)[0], prefix), suffix)
+			require.Equal(t, 0, countUnpairedQuotes(literal),
+				"the attach literal carries an unpaired quote and would end early: %s", literal)
 		})
 	}
 }
 
-// TestPGConnExplicitOverrideIsNotDoubleEscaped pins that a caller who sets
-// PG_CONN directly owns its escaping — the renderer only escapes the value it
-// derives itself, so test fixtures and callers passing pre-rendered SQL are not
-// mangled.
-func TestPGConnExplicitOverrideIsNotDoubleEscaped(t *testing.T) {
+// The rendered query names the attached catalog by an alias that is stable
+// for one connection string and distinct across them, and never carries the
+// connection string: execution plans and logs quote the rendered query, and
+// before #752 every postgres_scan call in it held the password (#306).
+func TestRenderedQueryNamesTheCatalogWithoutTheConnString(t *testing.T) {
+	const conn = `host='h' user='u' password='do-not-render-752' dbname='d'`
 	params := map[string]any{
-		"PG_CONN":            "host=already port=1",
-		"DuckDBPGConnString": `host='ignored'`,
+		"DuckDBPGConnString": conn,
+		"ChangeLogSchema":    "public", "ChangeLogScanTable": "change_log",
+		"MainSchema": "public", "MainScanTable": "entity_main",
+		"EAVSchema": "public", "EAVScanTable": "eav_data",
 	}
 	require.NoError(t, injectDuckDBTemplateParams(params, &model.FederatedAttributeQuery{}, nil))
-	require.Equal(t, "host=already port=1", params["PG_CONN"])
+
+	alias := PostgresCatalogAlias(conn)
+	require.Regexp(t, `^forma_pg_[0-9a-f]{16}$`, alias)
+	require.Equal(t, alias, PostgresCatalogAlias(conn), "the alias must be stable for one connection string")
+	require.NotEqual(t, alias, PostgresCatalogAlias(conn+" port=5433"), "different connection strings must not share a catalog")
+	require.Equal(t, alias+`."public"."change_log"`, params["PG_CHANGE_LOG"])
+	require.Equal(t, alias+`."public"."entity_main"`, params["PG_MAIN"])
+	require.Equal(t, alias+`."public"."eav_data"`, params["PG_EAV"])
+	for key, v := range params {
+		if key == "DuckDBPGConnString" {
+			continue
+		}
+		require.NotContains(t, fmt.Sprint(v), "do-not-render-752", "param %s carries the password", key)
+	}
 }
 
 // countUnpairedQuotes returns the number of single quotes not part of a doubled

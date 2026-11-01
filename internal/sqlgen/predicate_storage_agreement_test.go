@@ -106,7 +106,7 @@ func buildCharTextUuidOrderCases() []charCase {
 }
 
 // TestPgMainTextUUIDOrderMatchesTheLogicalClause executes the #676 renders in
-// DuckDB, which evaluates PG_WHERE_CLAUSE over the postgres_scan rows of
+// DuckDB, which evaluates PG_WHERE_CLAUSE over the hot leg's PostgreSQL rows of
 // entity_main (m.text_01 VARCHAR, m.uuid_01 UUID), and the DuckClause over
 // the columns the federated CTEs project for the same attributes: VARCHAR
 // from pg_source and the EAV pivot, and UUID from a bound column's parquet.

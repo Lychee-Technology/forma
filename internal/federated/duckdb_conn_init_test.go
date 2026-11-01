@@ -10,6 +10,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,7 +24,7 @@ import (
 
 // useTestGlobalLogger routes zap's globals into the test log for the test's
 // duration: NewDuckDBClientContext's connection init logs through zap.S(), and
-// init is fail-open — a degraded init (e.g. an INSTALL timing out) surfaces
+// optional init steps are fail-open — a degraded init (e.g. an INSTALL timing out) surfaces
 // only as a logged warning. Without this, a failure shows just the downstream
 // NULL-scan error with zero trace of the real cause (#487).
 func useTestGlobalLogger(t *testing.T) {
@@ -173,7 +174,7 @@ func TestMakeConnInit_FailedInstallSkipsLoad(t *testing.T) {
 	cfg := newS3ConfiguredDuckDBConfig()
 	cfg.Extensions = []string{"bad_ext"}
 
-	steps, err := buildInitSteps(cfg)
+	steps, err := buildInitSteps(cfg, false)
 	require.NoError(t, err)
 
 	execer := &recordingExecer{failOn: "INSTALL bad_ext;"}
@@ -183,4 +184,36 @@ func TestMakeConnInit_FailedInstallSkipsLoad(t *testing.T) {
 	require.NotContains(t, execer.executed, "LOAD bad_ext;")
 	require.Contains(t, execer.executed, "LOAD httpfs;", "later steps must still run after a failed step")
 	require.Contains(t, execer.executed, "SET s3_region='us-test-1';")
+}
+
+// httpfs and parquet are required when enabled, and so are the S3 session
+// settings: a connection without them fails to open instead of passing the
+// ping and failing every federated read (#752). Operator-listed extensions
+// and the resource pragmas keep the log-and-skip contract.
+func TestBuildInitSteps_RequiredCapabilities(t *testing.T) {
+	cfg := newS3ConfiguredDuckDBConfig()
+	cfg.Extensions = []string{"json"}
+	steps, err := buildInitSteps(cfg, false)
+	require.NoError(t, err)
+
+	required := map[string]bool{}
+	for _, st := range steps {
+		required[st.Stmts[0].Label] = st.Required
+		if st.Required && strings.HasPrefix(st.Stmts[0].Label, "install ") {
+			require.NotNil(t, st.Verify, "%s: a required extension is verified loaded", st.Stmts[0].Label)
+		}
+	}
+	require.Equal(t, map[string]bool{
+		"install json":             false,
+		"install httpfs":           true,
+		"install parquet":          true,
+		"set s3_access_key_id":     true,
+		"set s3_secret_access_key": true,
+		"set s3_region":            true,
+		"set s3_endpoint":          true,
+		"set s3_use_ssl":           true,
+		"set s3_url_style":         true,
+		"set memory_limit":         false,
+		"set threads":              false,
+	}, required)
 }

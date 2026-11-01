@@ -3,14 +3,19 @@ set -euo pipefail
 
 # ===  CONFIGURATION  ===================================================
 
-# DuckDB version to download extensions for (must match your binary)
-DUCKDB_VERSION="${1:-1.4.3}"
+# DuckDB version to download extensions for (must match your binary). The
+# default is the engine the go.mod duckdb-go pin bundles (v2.20000.0 ->
+# DuckDB 2.0.0); TestRunningDuckDBEngineIsThePinnedVersion fails when that
+# pin moves, which is the cue to move this default with it.
+DUCKDB_VERSION="${1:-2.0.0}"
 
 # Platform name: linux_arm64 or linux_amd64, etc.
 PLATFORM="${2:-linux_arm64}"
 
-# Extensions list (comma-separated), e.g.: httpfs,aws,parquet
-EXTENSIONS="${3:-httpfs,aws,postgres}"
+# Extensions list (comma-separated), e.g.: httpfs,aws,parquet. Use the
+# repository file names: the PostgreSQL scanner is postgres_scanner (the
+# "postgres" alias works in INSTALL, but its URL does not exist).
+EXTENSIONS="${3:-httpfs,aws,postgres_scanner}"
 
 
 # ===  OUTPUT LOCATIONS  =================================================

@@ -15,7 +15,7 @@ import (
 // BuildPGDSN has used since #290. The unquoted form this replaced was two bugs:
 //
 //   - A password (or host, user, dbname) containing a space produced a DSN libpq
-//     could not parse, so postgres_scan failed to attach at all.
+//     could not parse, so the hot leg failed to attach PostgreSQL at all.
 //   - The credential scrubber cannot tell where an unquoted value ends. It
 //     terminates on whitespace, so an attach failure — whose prose quotes this
 //     whole string back — logged the tail of the password past the placeholder,
@@ -29,7 +29,7 @@ import (
 // rejected by libpq.
 //
 // The result is embedded in a single-quoted DuckDB SQL literal
-// (postgres_scan('{{.PG_CONN}}', …)), so the renderer escapes it with
+// (ATTACH '<conn>' AS …, sqlgen.PostgresAttachSQL), so sqlgen escapes it with
 // sqlutil.EscapeLiteral (internal/sqlutil/literal.go), called from the
 // DuckDB renderer.
 func DuckDBPostgresConnStringFromPool(pool *pgxpool.Pool) string {

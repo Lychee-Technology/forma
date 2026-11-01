@@ -32,13 +32,16 @@ import "text/template"
 // whose delta IS listed). The cutoff is a server-generated int64 (or the
 // compile-time sentinel that Bind splices); callers must always set it —
 // FlushGraceCutoffDisabled (MaxInt64) restores the exact strict barrier.
+// PG_CHANGE_LOG, PG_MAIN and PG_EAV are catalog-qualified references into the
+// PostgreSQL catalog the engine attaches ahead of the query (PostgresAttachSQL,
+// #752); the renderer derives them from the *Schema/*ScanTable params.
 var AdvancedQueryTemplateDuckDB = template.Must(template.New("optimizedQueryDuckDB").Funcs(template.FuncMap{
 	"add": func(a, b int) int { return a + b },
 }).Parse(`
 WITH
 dirty_ids AS (
   SELECT row_id
-  FROM postgres_scan('{{.PG_CONN}}', '{{.ChangeLogSchema}}', '{{.ChangeLogScanTable}}')
+  FROM {{.PG_CHANGE_LOG}}
   WHERE schema_id = {{.SCHEMA_ID}}
     AND (flushed_at = 0{{if .HasHot}} OR flushed_at >= {{.FlushGraceCutoffMs}}{{end}})
 ),
@@ -75,18 +78,15 @@ pg_source AS (
   SELECT
     {{.PGSourceSelect}},
     3 AS source_tier_priority
-  FROM postgres_scan('{{.PG_CONN}}', '{{.ChangeLogSchema}}', '{{.ChangeLogScanTable}}') cl
-  JOIN postgres_scan('{{.PG_CONN}}',
-    '{{.MainSchema}}',
-    '{{.MainScanTable}}'
-  ) m
+  FROM {{.PG_CHANGE_LOG}} cl
+  JOIN {{.PG_MAIN}} m
     ON cl.schema_id = m.ltbase_schema_id
     AND cl.row_id = m.ltbase_row_id
   {{if .HasEAVPivot}}
   LEFT JOIN (
     SELECT row_id::VARCHAR as row_id, schema_id,
       {{.EAVPivotSelect}}
-    FROM postgres_scan('{{.PG_CONN}}', '{{.EAVSchema}}', '{{.EAVScanTable}}')
+    FROM {{.PG_EAV}}
     WHERE attr_id IN ({{.EAVPivotAttrs}})
     GROUP BY schema_id, row_id
   ) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR

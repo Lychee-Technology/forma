@@ -5,7 +5,7 @@
 // unrelated places, and the matcher is subtle enough that multiple copies would drift:
 //
 //   - internal/cdc logs DuckDB ATTACH statements and DSNs (#290).
-//   - internal/httpapi logs error chains, and DuckDB quotes the whole postgres_scan
+//   - internal/httpapi logs error chains, and DuckDB quotes the whole PostgreSQL
 //     connection string back inside its own attach-failure prose, so the password
 //     arrives as driver-authored text no Forma wrap site can intercept (#301).
 //   - internal/federated scrubs driver errors at the source (#306): the engine
@@ -27,7 +27,7 @@ const Placeholder = "***REDACTED***"
 
 // connPassword matches the password= key-value pair in a libpq-style connection
 // string, including the quoted forms used inside DuckDB ATTACH statements and
-// postgres_scan literals. The alternation is ordered from most- to least-quoted so
+// the postgres_scan literals Forma rendered before #752. The alternation is ordered from most- to least-quoted so
 // each form is consumed whole and no password material survives past the
 // placeholder.
 //

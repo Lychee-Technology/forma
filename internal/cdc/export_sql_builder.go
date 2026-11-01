@@ -181,15 +181,15 @@ func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) (schemaDr
 	}, nil
 }
 
-func buildEAVAggregationSQL(eQueryEsc string, eavAgg []string) string {
+func buildEAVAggregationSQL(eavSource string, eavAgg []string) string {
 	eAggCols := []string{"row_id"}
 	if len(eavAgg) > 0 {
 		eAggCols = append(eAggCols, eavAgg...)
 	}
 
 	return fmt.Sprintf(
-		"SELECT %s FROM postgres_query('pg_db', '%s') GROUP BY row_id",
+		"SELECT %s FROM %s GROUP BY row_id",
 		strings.Join(eAggCols, ",\n    "),
-		eQueryEsc,
+		eavSource,
 	)
 }

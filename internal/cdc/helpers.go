@@ -20,7 +20,7 @@ import (
 //
 // The matcher itself now lives in internal/redact, shared with the HTTP error
 // boundary, which needs exactly the same scrub (#301) on driver text that quotes
-// the postgres_scan connection string back at us. The #290 regression tests in
+// the PostgreSQL connection string back at us. The #290 regression tests in
 // redact_test.go exercise it through this wrapper and remain the contract.
 func redactConnStr(s string) string {
 	return redact.ConnStringPassword(s)

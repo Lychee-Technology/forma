@@ -1,10 +1,21 @@
 package federated
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/lychee-technology/forma/internal/sqlgen"
+)
 
 // Hot-tier SQL assembly for benchmark projections and targeted EAV filters.
-// Split from query.go to keep execution/scanning separate from postgres_scan
+// Split from query.go to keep execution/scanning separate from the hot-tier
 // query construction (#220).
+
+// hotScan references a public table in the PostgreSQL catalog the harness
+// attaches for pgConnStr ahead of each query (withPostgresAttach). DuckDB
+// 2.0's postgres extension has no postgres_scan table function (#752).
+func hotScan(pgConnStr, table string) string {
+	return sqlgen.PostgresTableRef(sqlgen.PostgresCatalogAlias(pgConnStr), "public", table)
+}
 
 // hotCreationStampItem renders the hot leg's creation-stamp SELECT item. The
 // hot leg must report the same quantity the parquet legs report in that slot
@@ -31,8 +42,8 @@ func (h *FederatedTestHarness) buildHotTierQuery(pgConnStr string, schemaID int1
 	mainJoin := ""
 	if withCreationStamp {
 		mainJoin = fmt.Sprintf(`
-		LEFT JOIN postgres_scan('%s', 'public', 'entity_main') em
-			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id::VARCHAR = cl.row_id::VARCHAR`, pgConnStr)
+		LEFT JOIN %s em
+			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id::VARCHAR = cl.row_id::VARCHAR`, hotScan(pgConnStr, "entity_main"))
 	}
 	return fmt.Sprintf(`
 		SELECT
@@ -41,11 +52,11 @@ func (h *FederatedTestHarness) buildHotTierQuery(pgConnStr string, schemaID int1
 			%s'' as name,
 			0 as version,
 			'hot' as tier
-		FROM postgres_scan('%s', 'public', 'change_log') cl%s
+		FROM %s cl%s
 		WHERE cl.flushed_at = 0
 			AND cl.schema_id = %d
 			%s
-			%s`, hotCreationStampItem(withCreationStamp)+"cl.changed_at,\n\t\t\tcl.deleted_at,\n\t\t\t", pgConnStr, mainJoin, schemaID, rowIDFilter, timeWindowFilter)
+			%s`, hotCreationStampItem(withCreationStamp)+"cl.changed_at,\n\t\t\tcl.deleted_at,\n\t\t\t", hotScan(pgConnStr, "change_log"), mainJoin, schemaID, rowIDFilter, timeWindowFilter)
 }
 
 func buildHotTierQuery(pgConnStr string, schemaID int16, rowIDFilter, attributeFilter, timeWindowFilter string, benchmarkProjection, tradeTimeOnlyProjection, withCreationStamp bool) string {
@@ -68,19 +79,19 @@ func (h *FederatedTestHarness) buildHotTradeTimeOnlyQuery(pgConnStr string, sche
 			0 as tradeType,
 			COALESCE(hot_vals.trade_time, em.bigint_02, 0) as tradeTime,
 			'hot' as tier
-		FROM postgres_scan('%s', 'public', 'change_log') cl
-		LEFT JOIN postgres_scan('%s', 'public', 'entity_main') em
+		FROM %s cl
+		LEFT JOIN %s em
 			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id::VARCHAR = cl.row_id::VARCHAR
 		LEFT JOIN (
 			SELECT row_id::VARCHAR as row_id, schema_id,
 				MAX(CASE WHEN attr_id = %d THEN value_numeric::BIGINT END) AS trade_time
-			FROM postgres_scan('%s', 'public', 'eav_data')
+			FROM %s
 			WHERE attr_id = %d
 			GROUP BY schema_id, row_id
 		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR
 		WHERE cl.flushed_at = 0
 			AND cl.schema_id = %d
-			%s`, hotCreationStampItem(withCreationStamp), pgConnStr, pgConnStr, tradeTimeAttrID, pgConnStr, tradeTimeAttrID, schemaID, rowIDFilter)
+			%s`, hotCreationStampItem(withCreationStamp), hotScan(pgConnStr, "change_log"), hotScan(pgConnStr, "entity_main"), tradeTimeAttrID, hotScan(pgConnStr, "eav_data"), tradeTimeAttrID, schemaID, rowIDFilter)
 }
 
 type hotTierEAVMapping struct {
@@ -184,13 +195,13 @@ func (h *FederatedTestHarness) buildHotTierQueryTargeted(pgConnStr string, schem
 			0 as version,
 			%s,
 			'hot' as tier
-		FROM postgres_scan('%s', 'public', 'change_log') cl
-		LEFT JOIN postgres_scan('%s', 'public', 'entity_main') em
+		FROM %s cl
+		LEFT JOIN %s em
 			ON em.ltbase_schema_id = cl.schema_id AND em.ltbase_row_id::VARCHAR = cl.row_id::VARCHAR
 		LEFT JOIN (
 			SELECT row_id::VARCHAR as row_id, schema_id,
 				%s
-			FROM postgres_scan('%s', 'public', 'eav_data')
+			FROM %s
 			WHERE attr_id IN (%s)
 			GROUP BY schema_id, row_id
 		) hot_vals ON hot_vals.schema_id = cl.schema_id AND hot_vals.row_id = cl.row_id::VARCHAR
@@ -201,8 +212,8 @@ func (h *FederatedTestHarness) buildHotTierQueryTargeted(pgConnStr string, schem
 			%s`,
 		hotCreationStampItem(withCreationStamp),
 		m.nameExpr, m.selectExprs,
-		pgConnStr, pgConnStr,
-		m.pivotColumns, pgConnStr, m.attrIDList,
+		hotScan(pgConnStr, "change_log"), hotScan(pgConnStr, "entity_main"),
+		m.pivotColumns, hotScan(pgConnStr, "eav_data"), m.attrIDList,
 		schemaID, rowIDFilter, attributeFilter, timeWindowFilter)
 }
 

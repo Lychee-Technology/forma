@@ -2143,13 +2143,13 @@ exposure this whole section exists to prevent. Two changes closed it:
   shared `internal/pgdsn`, as `internal/cdc`'s builder already did since #290. It
   previously emitted `host=%s … password=%s dbname=%s` raw. That was two bugs in
   one: a password containing a space produced a DSN libpq cannot parse (so
-  `postgres_scan` could not attach at all), and it was unredactable. Quoting is
+  the hot leg could not attach PostgreSQL at all), and it was unredactable. Quoting is
   what makes the value's extent unambiguous.
 
 Because the DSN is interpolated into a single-quoted SQL literal
-(`postgres_scan('{{.PG_CONN}}', …)`), the renderer escapes it —
-`sqlutil.EscapeLiteral`, called from
-`internal/sqlgen/duckdb_template_renderer.go` — the same shared helper
+(`ATTACH '<conn>' AS …` since #752, `postgres_scan('{{.PG_CONN}}', …)` before),
+sqlgen escapes it — `sqlutil.EscapeLiteral`, called from
+`internal/sqlgen/duckdb_pg_attach.go` — the same shared helper
 `internal/cdc` uses, consolidated in #310. Without that, the newly-added
 quotes would terminate the literal early. It also closes a hole that
 predates the quoting: a Postgres password containing a single quote used to
@@ -2257,9 +2257,9 @@ for everything else. They resolve via `errors.Is`, never message text.
 ### Why an allowlist
 
 Redaction cannot be a blocklist of known-sensitive error types, because the
-sharpest leak does not come from one. The federated template interpolates
-`postgres_scan('{{.PG_CONN}}', …)`, and `PG_CONN` is built by
-`federated.DuckDBPostgresConnStringFromPool` as
+sharpest leak does not come from one. The federated engine attaches
+PostgreSQL with `ATTACH '<conn>' …` ahead of every query (#752), and the
+connection string is built by `federated.DuckDBPostgresConnStringFromPool` as
 `host=… user=… password=… dbname=…`. When DuckDB cannot attach, its own message
 is:
 
@@ -2274,8 +2274,9 @@ resolved endpoint URL.
 The success path has the matching rule: `toExecutionPlan`
 (`internal/entity_query_service.go:138`) allowlists plan fields and drops
 `src.SQL`, `src.Params`, `plan.Notes`, and `merge.Notes` for the same reason —
-the source SQL embeds the `postgres_scan` connection string, and notes can echo
-raw engine errors. Pinned by `TestToExecutionPlan_DoesNotLeakCredentials`.
+the source SQL embedded the `postgres_scan` connection string before #752 (it
+now names the attached catalog by an alias that reveals nothing), and notes can
+echo raw engine errors. Pinned by `TestToExecutionPlan_DoesNotLeakCredentials`.
 
 ### Formerly accepted disclosures — both closed by #313
 

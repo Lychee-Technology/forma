@@ -10,7 +10,7 @@ import (
 )
 
 // TestHotLegPredicateIsNotReportedAsPushdown pins #631: the hot leg reads
-// PostgreSQL through postgres_scan, which sends no predicate, so DuckDB
+// PostgreSQL through scans of its attached catalog, which send no predicate, so DuckDB
 // evaluates the main-table clause on the copied tables. The execution plan
 // must still show that clause, and no source may claim it was pushed down.
 func TestHotLegPredicateIsNotReportedAsPushdown(t *testing.T) {

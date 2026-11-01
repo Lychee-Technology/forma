@@ -8,7 +8,7 @@ import (
 
 // BoolMainPredicate is the entity_main pushdown form of a column-bound bool
 // equality leaf (#565). Both pushdown routes (the pg-main clause the DuckDB
-// hot leg embeds in its postgres_scan, and the hybrid builder's main branch
+// hot leg embeds over its PostgreSQL scan, and the hybrid builder's main branch
 // on the Postgres route) render it, so a stored image outside the write
 // contract answers a filter the way every reader already reads it:
 //

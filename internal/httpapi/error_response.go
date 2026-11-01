@@ -15,7 +15,7 @@ import (
 // Public error-class tokens surfaced on redacted bodies (#301). A redacted body
 // carries no error text at all — operator-detail errors reach the HTTP boundary
 // holding bucket-relative S3 object keys and, when DuckDB fails to attach
-// postgres_scan, the Postgres password verbatim inside the driver's own message —
+// PostgreSQL, the Postgres password verbatim inside the driver's own message —
 // so this token is what a client discriminates on. The only other structured
 // datum it may carry is the schema id (errorSchemaID); everything else stays on
 // the operator log line.
@@ -189,7 +189,7 @@ func publicErrorMessage(class string) string {
 //
 // #301 redacted bodies but moved the full chain into zap.S().Errorw, and this
 // package logged no errors at all beforehand. That made the log a *new* exposure
-// surface for the Postgres password, because DuckDB quotes the whole postgres_scan
+// surface for the Postgres password, because DuckDB quotes the whole PostgreSQL
 // connection string back inside its own prose when an attach fails:
 //
 //	IO Error: Unable to connect to Postgres at "host=… user=… password=… dbname=…"
@@ -312,7 +312,7 @@ func classifyManagerError(err error) int {
 //
 // Everything else carries no error text at all (#301). Errors reaching this point hold
 // bucket-relative S3 object keys and — when DuckDB fails to attach
-// postgres_scan — the Postgres password verbatim inside the driver's own
+// PostgreSQL — the Postgres password verbatim inside the driver's own
 // message. Redaction is an allowlist rather than a blocklist of known-sensitive
 // types precisely because that password originates in driver text, not in a
 // Forma error type. The detail is not discarded: it goes to the log under an
@@ -374,7 +374,7 @@ func resolvePublicMessage(err error) (string, bool) {
 //
 // Every string that leaves this function passes through redactCredentials
 // first, body and log alike. The log needs it because DuckDB puts the
-// postgres_scan connection string, password included, into its own
+// PostgreSQL connection string, password included, into its own
 // attach-failure prose, and this package's Errorw line is where that would
 // otherwise enter log collection and retention. The published message is
 // scrubbed too, as defence in depth: it is authored at a wrap site, and a wrap

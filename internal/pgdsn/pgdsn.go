@@ -2,7 +2,7 @@
 //
 // It exists so the quoting rule has one implementation. Two subsystems hand a
 // DSN to DuckDB's postgres scanner — internal/cdc (ATTACH, for CDC export) and
-// internal/federated (postgres_scan, for the federated read path) — and an
+// internal/federated (the hot leg's PostgreSQL attach, for the federated read path) — and an
 // unquoted value is two bugs at once: a password containing a space produces a
 // DSN libpq cannot parse, and the credential scrubber in internal/redact cannot
 // tell where an unquoted value ends, so it truncates at the first separator and

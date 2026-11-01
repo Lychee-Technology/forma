@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/duckdbinit"
+	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"go.uber.org/zap"
@@ -51,17 +52,31 @@ var newDuckConnectorFn = func(dsn string, connInit func(driver.ExecerContext) er
 // NewDuckExporter opens a DuckDB pool whose every physical connection
 // self-configures (pragmas, extensions, S3 session settings) via a connector
 // init hook — session-scoped statements issued through the pool reach only
-// one arbitrary connection (#285, same class as #245). Init statement
-// failures are logged and skipped, never blocking the connection;
-// construction fails only on credential validation or ping. The pool
-// reopens its database after DuckDB invalidates it (#717).
+// one arbitrary connection (#285, same class as #245). A failed optional
+// statement (a resource PRAGMA) is logged and skipped; a failed required one
+// (postgres_scanner, httpfs, parquet, an S3 setting) fails the connection,
+// so construction fails at the ping instead of returning an exporter whose
+// first export cannot reach PostgreSQL or S3 (#752). The pool reopens its
+// database after DuckDB invalidates it (#717).
 //
 // The caller passes the whole key/secret/token triple because a session token
 // is only valid with the pair it was issued alongside; resolving it here would
 // let a token from one source pair with a key from another (#329, see
 // ResolveStaticS3Credentials).
 func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger) (*DuckExporter, error) {
-	steps, err := buildExporterInitSteps(cfg, s3AccessKey, s3Secret, s3SessionToken)
+	return newDuckExporter(ctx, cfg, s3AccessKey, s3Secret, s3SessionToken, logger, true)
+}
+
+// NewDuckParquetEngine is NewDuckExporter for the tools that only read and
+// write S3 parquet (compactor, baseline statistics, manifest audit): the
+// postgres_scanner extension is still loaded when available, but its absence
+// does not fail construction (#752).
+func NewDuckParquetEngine(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger) (*DuckExporter, error) {
+	return newDuckExporter(ctx, cfg, s3AccessKey, s3Secret, s3SessionToken, logger, false)
+}
+
+func newDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger, requirePostgres bool) (*DuckExporter, error) {
+	steps, err := buildExporterInitSteps(cfg, s3AccessKey, s3Secret, s3SessionToken, requirePostgres)
 	if err != nil {
 		return nil, fmt.Errorf("build duckdb exporter init statements: %w", err)
 	}
@@ -133,7 +148,11 @@ func (e *DuckExporter) executeExportSQL(ctx context.Context, cfg CDCConfig, logM
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if _, err := e.DB.ExecContext(ctx2, sqlText); err != nil {
-		return fmt.Errorf("%s: %w", execErrPrefix, err)
+		// DuckDB's attach error quotes the whole PostgreSQL connection
+		// string, password included ("Unable to connect to Postgres at
+		// ..."), so scrub it before the text enters the chain the flush
+		// and init callers log (#290, #752).
+		return fmt.Errorf("%s: %w", execErrPrefix, redact.Error(err))
 	}
 	return nil
 }
@@ -211,42 +230,62 @@ func (spec exportModeSpec) baseSelectColumns() []string {
 }
 
 func buildProjectedExportSQL(spec exportModeSpec, opts exportSQLOptions, copyOptions, pgEsc, s3Esc, clQuery, mQuery, eQuery string, mainSelectCols, eavAgg []string) string {
-	mQueryEsc := sqlutil.EscapeLiteral(mQuery)
-	eQueryEsc := sqlutil.EscapeLiteral(eQuery)
-	eAggSQL := buildEAVAggregationSQL(eQueryEsc, eavAgg)
+	mSource := pgQuerySource("m", sqlutil.EscapeLiteral(mQuery))
+	eSource := pgQuerySource("e_rows", sqlutil.EscapeLiteral(eQuery))
+	eAggSQL := buildEAVAggregationSQL("e_rows", eavAgg)
 
 	if spec.useChangeLog {
 		// LEFT JOIN to entity_main so change_log tombstones of hard-deleted
 		// rows are exported instead of silently dropped (#173).
-		clQueryEsc := sqlutil.EscapeLiteral(clQuery)
+		clSource := pgQuerySource("cl", sqlutil.EscapeLiteral(clQuery))
 		return fmt.Sprintf(`PRAGMA memory_limit='%s';
 ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
 
 COPY (
+WITH %s,
+%s,
+%s
 SELECT
   %s
-FROM postgres_query('pg_db', '%s') cl
-LEFT JOIN postgres_query('pg_db', '%s') m
+FROM cl
+LEFT JOIN m
   ON cl.row_id = m.ltbase_row_id
 LEFT JOIN (
   %s
 ) e ON cl.row_id = e.row_id
 ) TO '%s' (%s);
-`, opts.memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), clQueryEsc, mQueryEsc, eAggSQL, s3Esc, copyOptions)
+`, opts.memoryLimit, pgEsc, clSource, mSource, eSource, strings.Join(mainSelectCols, ",\n  "), eAggSQL, s3Esc, copyOptions)
 	}
 
 	return fmt.Sprintf(`PRAGMA memory_limit='%s';
 ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
 
 COPY (
+WITH %s,
+%s
 SELECT
   %s
-FROM postgres_query('pg_db', '%s') m
+FROM m
 LEFT JOIN (
   %s
 ) e ON m.ltbase_row_id = e.row_id
 ) TO '%s' (%s);
-`, opts.memoryLimit, pgEsc, strings.Join(mainSelectCols, ",\n  "), mQueryEsc, eAggSQL, s3Esc, copyOptions)
+`, opts.memoryLimit, pgEsc, mSource, eSource, strings.Join(mainSelectCols, ",\n  "), eAggSQL, s3Esc, copyOptions)
+}
+
+// pgQuerySource renders the CTE that reads one postgres_query result. The
+// CTE is MATERIALIZED because DuckDB 2.0's postgres_query ignores the column
+// order the planner asks of it: when a join above it reorders the projected
+// columns (the join key first), it still decodes PostgreSQL's columns in the
+// query's own order, so same-typed columns silently swap values and a
+// smallint read as a UUID fails the export (#752). A materialized CTE reads
+// the result in the query's order before anything above it can reorder it.
+// On 2.0.0 an inlined subquery happens to avoid the reorder as well, but only
+// through where the optimizer currently places the projection; MATERIALIZED
+// makes it a property of the plan's shape. The cost is one materialized copy
+// of each batch-bounded result, which the hash joins above build anyway.
+func pgQuerySource(name, queryEsc string) string {
+	return fmt.Sprintf("%s AS MATERIALIZED (SELECT * FROM postgres_query('pg_db', '%s'))", name, queryEsc)
 }
 
 func quoteUUIDList(ids []uuid.UUID) string {

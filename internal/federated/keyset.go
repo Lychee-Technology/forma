@@ -230,7 +230,7 @@ func hasKeysetCursor(fq *model.FederatedAttributeQuery) bool {
 // check. Since #442 retired the in-memory merge path, which read Postgres
 // through RunOptimizedQuery with no cursor applied, queryPostgresOnly is also
 // the engine's only direct read of Postgres records: the DuckDB template
-// reaches the hot tier through postgres_scan, and applies the cursor after the
+// reaches the hot tier through its attached PostgreSQL catalog, and applies the cursor after the
 // tier merge.
 //
 // Known consequence of guarding at the confluence rather than at each gate:

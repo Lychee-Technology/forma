@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/redact"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"go.uber.org/zap"
 )
 
@@ -52,6 +53,29 @@ func retryablePassFailure(err error) (string, bool) {
 	return "", false
 }
 
+// queryDuckDB runs the rendered query. The query references the hot leg's
+// PostgreSQL catalog by alias (#752), so an executor that can attaches it on
+// the query's own connection first (queryWithPostgres). Any other executor
+// gets withPostgresAttach's batch. An engine without a PostgreSQL connection
+// string attaches nothing, and its query fails to bind the catalog instead.
+func (e *DBFederatedQueryEngine) queryDuckDB(ctx context.Context, sqlStr string, args []any) (duckDBRowsIterator, error) {
+	if querier, ok := e.duck.(postgresQuerier); ok && e.pgConnString != "" {
+		return querier.queryWithPostgres(ctx, e.pgConnString, sqlStr, args...)
+	}
+	return e.duck.Query(ctx, e.withPostgresAttach(sqlStr), args...)
+}
+
+// withPostgresAttach prefixes sqlStr with the ATTACH of the hot leg's
+// PostgreSQL catalog. The batch carries the password, so it stays local to
+// the call; sqlStr itself, which execution plans and logs may quote, does
+// not.
+func (e *DBFederatedQueryEngine) withPostgresAttach(sqlStr string) string {
+	if e.pgConnString == "" {
+		return sqlStr
+	}
+	return sqlgen.PostgresAttachSQL(e.pgConnString) + "\n" + sqlStr
+}
+
 // executeAndStreamDuckDB runs the compiled query, streams its rows through
 // rowHandler, and reports the outcome to the circuit breaker. Split from
 // StreamDuckDBFederatedQuery to keep both halves under the function-length cap
@@ -67,9 +91,9 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 	planCtx *duckDBExecutionPlanContext,
 ) (int64, error) {
 	planCtx.recordQueryStart()
-	rows, err := e.duck.Query(ctx, sqlStr, args...)
+	rows, err := e.queryDuckDB(ctx, sqlStr, args)
 	if err != nil {
-		// #306: a postgres_scan attach failure echoes the whole conn string,
+		// #306: a PostgreSQL attach failure echoes the whole conn string,
 		// password included, in DuckDB's own prose. Scrub before the text
 		// enters any chain or the execution-plan failure note — this is the
 		// source, so every consumer (embedder logs, future transports) is
@@ -150,7 +174,7 @@ type duckDBScanOutcome struct {
 	rowCount int64
 	// dirtyRows is the size of the anti-join dirty set fetched for the pass.
 	// It is the pg row count and nothing more: Forma does not observe what
-	// the postgres_scan calls inside DuckDB read, so no series claims to
+	// the hot leg's PostgreSQL scans inside DuckDB read, so no series claims to
 	// (#596 retired the gauge that used this as a stand-in for it).
 	dirtyRows int64
 }

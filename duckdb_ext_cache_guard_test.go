@@ -8,8 +8,9 @@ import (
 
 // TestDuckDBExtensionCacheCoversExposedJobs pins the CI half of the #487 fix:
 // DuckDB extension INSTALLs download from the network, and on a cold runner a
-// slow download can eat a connection-init step's deadline — the fail-open
-// init then logs-and-skips that extension. Every workflow job that opens
+// slow download can eat a connection-init step's deadline — an optional
+// extension is then logged and skipped, and a required one that ends up not
+// loaded fails the connection (#752). Every workflow job that opens
 // DuckDB connections must therefore restore the local extension repository
 // (~/.duckdb/extensions) from the actions cache, keeping INSTALL a local
 // no-op on the hot path. Comment lines are skipped so prose never satisfies a

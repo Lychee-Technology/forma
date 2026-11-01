@@ -12,6 +12,7 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/sqlgen"
+	"github.com/lychee-technology/forma/internal/sqlgen/sqlgentest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,7 +23,8 @@ import (
 //
 // These tests execute the RUNTIME template (not the §5 sketch — that is
 // design_doc_sql_test.go's job) on an in-memory DuckDB, with each
-// postgres_scan rewritten to a local relation. Nothing here needs a container.
+// PostgreSQL table reference rewritten to a local relation. Nothing here
+// needs a container.
 
 // createdAtFixtureCache is the canonical name/age/tag schema shared with the
 // sqlgen renderer fixtures and the design-doc guard.
@@ -38,8 +40,8 @@ func createdAtFixtureCache() forma.SchemaAttributeCache {
 
 // renderRuntimeQueryForLocalDuckDB renders the production advanced template
 // over the given parquet path and rewrites it to run standalone: every
-// postgres_scan(conn, schema, table) collapses to `table`, which the caller
-// has created as a local relation.
+// <catalog>."schema"."table" scan collapses to `table`, which the caller has
+// created as a local relation.
 func renderRuntimeQueryForLocalDuckDB(t *testing.T, parquetPath string, limit, offset int) string {
 	t.Helper()
 
@@ -47,7 +49,7 @@ func renderRuntimeQueryForLocalDuckDB(t *testing.T, parquetPath string, limit, o
 	require.NoError(t, err)
 
 	params := map[string]any{
-		"PG_CONN":            "dbname=forma host=localhost",
+		"DuckDBPGConnString": "dbname=forma host=localhost",
 		"ChangeLogSchema":    "public",
 		"ChangeLogScanTable": "change_log",
 		"MainSchema":         "public",
@@ -75,44 +77,7 @@ func renderRuntimeQueryForLocalDuckDB(t *testing.T, parquetPath string, limit, o
 	require.NoError(t, err)
 	require.Empty(t, args, "the 1=1 fixture clause must bind no placeholders")
 
-	return collapsePostgresScans(t, sqlText)
-}
-
-// collapsePostgresScans rewrites every postgres_scan(conn, schema, table) call
-// to a bare `table` reference. It re-walks the text with the same paren
-// matching sqlgentest uses, because the runtime template spells its
-// entity_main scan across several lines — a substring replacement keyed on the
-// trimmed argument text would not match.
-func collapsePostgresScans(t *testing.T, sqlText string) string {
-	t.Helper()
-
-	const marker = "postgres_scan("
-	var b strings.Builder
-	for i := 0; ; {
-		idx := strings.Index(sqlText[i:], marker)
-		if idx < 0 {
-			b.WriteString(sqlText[i:])
-			break
-		}
-		b.WriteString(sqlText[i : i+idx])
-		start := i + idx + len(marker)
-		depth := 1
-		j := start
-		for ; j < len(sqlText) && depth > 0; j++ {
-			switch sqlText[j] {
-			case '(':
-				depth++
-			case ')':
-				depth--
-			}
-		}
-		args := strings.TrimSpace(sqlText[start : j-1])
-		parts := strings.Split(args, ",")
-		require.Len(t, parts, 3, "postgres_scan(%s) is not the 3-arg runtime form", args)
-		b.WriteString(strings.Trim(strings.TrimSpace(parts[2]), "'"))
-		i = j
-	}
-	return b.String()
+	return sqlgentest.CollapsePostgresTableRefs(sqlText)
 }
 
 // createdAtRow is one row of the runtime query's output, read by column name
