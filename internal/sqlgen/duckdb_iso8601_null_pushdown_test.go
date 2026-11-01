@@ -67,7 +67,7 @@ func TestBuildPgMainClause_ISO8601LeavesFilterTheHotRead(t *testing.T) {
 // the leaf renders, for every bound attribute, which is #742's open question
 // of what a retained value means.
 func TestISO8601NullPushdownIsNoStricterThanTheHotRead(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
@@ -115,7 +115,7 @@ func TestISO8601NullPushdownIsNoStricterThanTheHotRead(t *testing.T) {
 // value is left out: the EAV-joined projection takes it over the column,
 // which no main-column leaf can see (#742).
 func TestISO8601ComparisonPushdownIsNoStricterThanTheHotRead(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

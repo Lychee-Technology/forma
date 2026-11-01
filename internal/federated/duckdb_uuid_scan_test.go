@@ -39,7 +39,7 @@ func duckDBLiteralTypeForKind(kind model.ColumnKind) string {
 // duckdb-go driver returns UUID columns as 16 raw bytes, and the scan buffers
 // must decode them instead of silently leaving uuid.Nil row ids.
 func TestStreamDuckDBRows_RealDriver_UUIDColumnsScan(t *testing.T) {
-	db, err := sql.Open("duckdb", "")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	defer db.Close()
 

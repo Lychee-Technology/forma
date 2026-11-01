@@ -19,7 +19,7 @@ import (
 // written before the schema declared the attribute a list) → a one-element
 // list instead of the [] that silently dropped the stored value.
 func TestBuildEAVPivotExprListShapes(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

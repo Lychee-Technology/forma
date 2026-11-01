@@ -205,7 +205,7 @@ func duckDBMergesIdentifiers(t *testing.T, db *sql.DB, a, b string) bool {
 // (#532, review F1 on PR #548; #550 for the EqualFold half: U+212A KELVIN
 // SIGN and U+017F LONG S are merged by EqualFold, U+0130 by ToLower).
 func TestDuckDBIdentifierFoldIsASCIIOnly(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
@@ -250,7 +250,7 @@ func TestDuckDBIdentifierFoldIsASCIIOnly(t *testing.T) {
 // the pass on the non-ASCII rows is the boundary being respected, not the
 // guard switched off.
 func TestValidateUnregisteredParquetAttrColumn_FoldsLikeDuckDB(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

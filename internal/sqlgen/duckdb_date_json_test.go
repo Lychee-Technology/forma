@@ -68,7 +68,7 @@ func TestAttributesJSON_DateTokensSurviveDuckDB(t *testing.T) {
 	require.NoError(t, err)
 	expr := attributesJSONExpr(t, sp)
 
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

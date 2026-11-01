@@ -26,7 +26,7 @@ var emptyScanAttrs = []ScanColumn{
 // the s3_source projection or the semijoin, and a different type would widen
 // or break the UNION ALL with pg_source.
 func TestEmptyParquetScanSourceMatchesTheGuardedScan(t *testing.T) {
-	db, err := sql.Open("duckdb", "")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	defer db.Close()
 
@@ -49,7 +49,7 @@ func TestEmptyParquetScanSourceMatchesTheGuardedScan(t *testing.T) {
 // and UNIONs it with a hot row the way pg_source does. The query must bind,
 // and the answer is the hot row alone.
 func TestEmptyParquetScanSourceServesTheHotLegAlone(t *testing.T) {
-	db, err := sql.Open("duckdb", "")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	defer db.Close()
 

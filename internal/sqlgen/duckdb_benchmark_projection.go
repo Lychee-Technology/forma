@@ -306,13 +306,13 @@ func benchmarkEAVJSONArray(schemaID, targetSchemaID int16, extra string, attrs .
 	for _, a := range attrs {
 		if a.type_ == "list" {
 			parts = append(parts, fmt.Sprintf(
-				`CASE WHEN %s IS NOT NULL AND len(%s) = 0 THEN [json_object('schema_id', %d, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', %d, 'array_indices', '', 'value_text', NULL, 'value_numeric', NULL)] ELSE list_transform(%s, (x, i) -> json_object('schema_id', %d, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', %d, 'array_indices', CAST(i - 1 AS VARCHAR), 'value_text', CAST(x AS VARCHAR), 'value_numeric', NULL)) END`,
+				`CASE WHEN %s IS NOT NULL AND len(%s) = 0 THEN [json_object('schema_id', %d, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', %d, 'array_indices', '', 'value_text', NULL, 'value_numeric', NULL)] ELSE list_transform(%s, lambda x, i: json_object('schema_id', %d, 'row_id', CAST(row_id AS VARCHAR), 'attr_id', %d, 'array_indices', CAST(i - 1 AS VARCHAR), 'value_text', CAST(x AS VARCHAR), 'value_numeric', NULL)) END`,
 				a.name, a.name, targetSchemaID, a.id, a.name, targetSchemaID, a.id))
 			continue
 		}
 		parts = append(parts, "["+benchmarkScalarJSONObject(targetSchemaID, a)+"]")
 	}
-	return "to_json(list_filter(flatten([" + strings.Join(parts, ", ") + "]), x -> x IS NOT NULL))"
+	return "to_json(list_filter(flatten([" + strings.Join(parts, ", ") + "]), lambda x: x IS NOT NULL))"
 }
 
 // benchmarkScalarJSONObject renders the single json_object for one scalar

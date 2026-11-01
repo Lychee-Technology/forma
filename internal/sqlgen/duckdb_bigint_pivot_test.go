@@ -68,7 +68,7 @@ func TestBuildEAVPivotEmitsTypedCasts(t *testing.T) {
 // the old DOUBLE-pivot shape crashes CAST-back at MaxInt64, the typed-pivot
 // shape is exact, and UNION ALL unification is what drags BIGINT to DOUBLE.
 func TestDuckDBBigintTypeUnification(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

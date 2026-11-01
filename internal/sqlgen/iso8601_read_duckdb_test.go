@@ -18,7 +18,7 @@ var iso8601ReadZones = []string{"UTC", "Asia/Tokyo", "America/New_York", "Pacifi
 // TimeZone is zone.
 func openDuckDBInZone(t *testing.T, zone string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	db.SetMaxOpenConns(1)

@@ -79,7 +79,7 @@ func TestTrustedStampAdmitsObjectMissingCreatedAt(t *testing.T) {
 // with a NULL created_at. The scan guard fires instead, loudly, naming the
 // authored message callers quote in triage.
 func TestScanGuardCatchesWhatTheTrustedStampAdmitted(t *testing.T) {
-	db, err := sql.Open("duckdb", "")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

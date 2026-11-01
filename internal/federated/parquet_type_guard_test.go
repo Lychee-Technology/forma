@@ -32,7 +32,7 @@ func (s *sqlDBExecutor) Query(ctx context.Context, query string, args ...any) (d
 
 func newGuardDuck(t *testing.T) *sqlDBExecutor {
 	t.Helper()
-	db, err := sql.Open("duckdb", "")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	return &sqlDBExecutor{db: db}

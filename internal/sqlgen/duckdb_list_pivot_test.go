@@ -48,7 +48,7 @@ func TestDuckDBAttrCastListPassesThrough(t *testing.T) {
 // type-unification of VARCHAR[] with NULL-typed legs (absent column under
 // union_by_name).
 func TestDuckDBListLegUnification(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 

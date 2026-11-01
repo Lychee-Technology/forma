@@ -62,7 +62,7 @@ func TestHotLegProjections_ISO8601ColumnsNormaliseToEpochMs(t *testing.T) {
 // crash, matching the export) and NULL. Offsets and session TimeZones are
 // iso8601_read_duckdb_test.go's (#756).
 func TestMainColISO8601Expr_ExecutesToEpochMs(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
@@ -101,7 +101,7 @@ func TestBuildOuterSelect_ISO8601CastsBackToRFC3339(t *testing.T) {
 	require.Contains(t, sp.OuterSelect, iso8601ImageFromEpochMs("bornOn")+" AS text_03")
 	require.Contains(t, sp.OuterSelect, "CAST(name AS VARCHAR) AS text_01")
 
-	db, err := sql.Open("duckdb", ":memory:")
+	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
