@@ -95,7 +95,7 @@ func TestCheckTextValues(t *testing.T) {
 		{"past the nesting cap", cyclicDocument(), ""},
 	}
 	for _, tc := range cases {
-		err := CheckTextValues(tc.doc, cache)
+		_, err := CheckTextValues(tc.doc, cache)
 		if tc.wantErr == "" {
 			assert.NoError(t, err, tc.name)
 			continue
@@ -122,7 +122,7 @@ func TestCheckTextValues_MatchesTheWrite(t *testing.T) {
 		entries, err := walkDocument(1, uuid.New(), doc, cache)
 		require.NoError(t, err)
 		_, writeErr := flattenToAttributes(entries)
-		intakeErr := CheckTextValues(doc, cache)
+		_, intakeErr := CheckTextValues(doc, cache)
 		require.Error(t, writeErr)
 		require.Error(t, intakeErr)
 		assert.Equal(t, writeErr.Error(), intakeErr.Error())
@@ -138,7 +138,8 @@ func TestCheckTextValues_LeavesOtherRefusalsToTheWrite(t *testing.T) {
 		{"tags": "a\x00b"},
 		{"tags": []any{[]any{"a\x00b"}}},
 	} {
-		require.NoError(t, CheckTextValues(doc, cache), doc)
+		_, err := CheckTextValues(doc, cache)
+		require.NoError(t, err, doc)
 		entries, err := walkDocument(1, uuid.New(), doc, cache)
 		require.NoError(t, err)
 		_, writeErr := flattenToAttributes(entries)

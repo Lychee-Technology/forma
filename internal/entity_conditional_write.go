@@ -34,14 +34,16 @@ func validateConditionalCreate(req *forma.EntityOperation) error {
 
 // validateConditionalUpdate checks an update's precondition and operators
 // against the schema, and the text values its Updates write
-// (checkUpdatesText). arrays are the paths the schema declares as arrays,
-// nil when the manager has no validator to know them.
-func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex, arrays schemavalidate.ArrayPaths) error {
+// (checkUpdatesText). It answers the Updates the update writes in place of
+// req.Updates, which it never mutates: a copy carrying each checked text
+// image to the merged write (#773). arrays are the paths the schema declares
+// as arrays, nil when the manager has no validator to know them.
+func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex, arrays schemavalidate.ArrayPaths) (map[string]any, error) {
 	if err := validatePrecondition(req.Preconditions, req.SchemaName, cache); err != nil {
-		return fmt.Errorf("check precondition: %w", err)
+		return nil, fmt.Errorf("check precondition: %w", err)
 	}
 	if err := validateUpdateOps(req, cache, relations, arrays); err != nil {
-		return fmt.Errorf("check update operators: %w", err)
+		return nil, fmt.Errorf("check update operators: %w", err)
 	}
 	return checkUpdatesText(req.SchemaName, req.Updates, cache, relations)
 }
@@ -52,11 +54,28 @@ func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAtt
 // before #679 it reached the INSERT and failed it (22021). The relation
 // subtrees are stripped first, as the merge strips them
 // (mergeUpdateDocument).
-func checkUpdatesText(schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, relations *RelationIndex) error {
-	if err := transform.CheckTextValues(relations.StripComputedFields(schemaName, updates), cache); err != nil {
-		return fmt.Errorf("check updates: %w", err)
+//
+// It answers what the update writes in updates' place, and the merge must
+// take that, not updates: a copy in which each value whose text image came
+// from a method call holds the image judged here (transform.CheckTextValues),
+// so the merged write stores what was checked and cannot refuse it after the
+// lock (#773). The stripped relation subtrees are put back as sent, so the
+// merge strips exactly what it stripped before. nil stays nil: an update of
+// operators alone sends no Updates.
+func checkUpdatesText(schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, relations *RelationIndex) (map[string]any, error) {
+	written := relations.StripComputedFields(schemaName, updates)
+	checked, err := transform.CheckTextValues(written, cache)
+	if err != nil {
+		return nil, fmt.Errorf("check updates: %w", err)
 	}
-	return nil
+	for key, value := range updates {
+		if _, kept := written[key]; !kept {
+			// written is the strip's own copy here, so is checked: the
+			// caller's map is not written to.
+			checked[key] = value
+		}
+	}
+	return checked, nil
 }
 
 // validateConditionalDelete refuses operators on a delete, which writes no

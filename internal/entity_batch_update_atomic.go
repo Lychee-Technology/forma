@@ -24,6 +24,8 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 	startTime := time.Now()
 	keys := make([]model.PersistentRecordKey, len(req.Operations))
 	caches := make([]forma.SchemaAttributeCache, len(req.Operations))
+	// Each operation's merge writes the Updates intake checked (#773).
+	writes := make([]forma.EntityOperation, len(req.Operations))
 	for i, op := range req.Operations {
 		schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(op.SchemaName)
 		if err != nil {
@@ -31,9 +33,12 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 		}
 		// Refused here, before the batch locks any row, as Update refuses
 		// it at intake (#679).
-		if err := checkUpdatesText(op.SchemaName, op.Updates, schemaCache, s.relations); err != nil {
+		updates, err := checkUpdatesText(op.SchemaName, op.Updates, schemaCache, s.relations)
+		if err != nil {
 			return nil, forma.WrapPublicf(err, "operation[%d]", i)
 		}
+		writes[i] = op
+		writes[i].Updates = updates
 		keys[i] = model.PersistentRecordKey{SchemaID: schemaID, RowID: op.RowID}
 		caches[i] = schemaCache
 	}
@@ -46,7 +51,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 	relationRoots := newRelationRootMemo(s.relations)
 	stored, err := atomicRepo.BatchMergePersistentRecords(ctx, s.resolveTables(), keys,
 		func(ctx context.Context, i int, existing *model.PersistentRecord) (*model.PersistentRecord, error) {
-			return s.mergeBatchUpdateRecord(ctx, &req.Operations[i], i, keys[i].SchemaID, caches[i], relationRoots, existing)
+			return s.mergeBatchUpdateRecord(ctx, &writes[i], i, keys[i].SchemaID, caches[i], relationRoots, existing)
 		})
 	if err != nil {
 		return nil, fmt.Errorf("atomic batch update failed: %w", err)
