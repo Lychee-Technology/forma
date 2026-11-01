@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -42,6 +43,9 @@ type claimPlan struct {
 	// updates is what each claimed row is written with: the Updates intake
 	// checked, carrying the text images it judged (#773).
 	updates map[string]any
+	// refusal is a value in Updates the write cannot convert (#772), raised
+	// only once a row is claimed: a claim that takes no row writes none.
+	refusal error
 }
 
 func (s *txSession) Claim(ctx context.Context, req *forma.ClaimRequest) (*forma.ClaimResult, error) {
@@ -101,7 +105,11 @@ func (s *txSession) planClaim(req *forma.ClaimRequest) (*claimPlan, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate Claim mutation on %s: %w", req.SchemaName, err)
 	}
-	plan := &claimPlan{req: req, schemaID: schemaID, tables: s.crud.resolveTables(), orders: orders, head: head, updates: updates}
+	plan := &claimPlan{req: req, schemaID: schemaID, tables: s.crud.resolveTables(), orders: orders, head: head,
+		updates: updates.Values, refusal: updates.Refusal}
+	if plan.refusal != nil {
+		plan.refusal = fmt.Errorf("failed to validate Claim mutation on %s: %w", req.SchemaName, plan.refusal)
+	}
 	if err := s.renderClaim(plan); err != nil {
 		return nil, fmt.Errorf("failed to prepare Claim on %s: %w", req.SchemaName, err)
 	}
@@ -131,21 +139,22 @@ func (s *txSession) renderClaim(plan *claimPlan) error {
 // before its first statement (#649), and refuses a mutation that changes an
 // attribute of a unique key: moving a key entry can wait for another
 // transaction writing the same value, and a claim never waits. It answers
-// the Updates each claimed row is written with (validateConditionalUpdate).
-func (s *txSession) validateClaimMutation(req *forma.ClaimRequest, schemaID int16, cache forma.SchemaAttributeCache) (map[string]any, error) {
+// the Updates each claimed row is written with and the conversion refusal
+// raised once a row is claimed (validateConditionalUpdate).
+func (s *txSession) validateClaimMutation(req *forma.ClaimRequest, schemaID int16, cache forma.SchemaAttributeCache) (transform.CheckedUpdates, error) {
 	if len(req.Updates) == 0 && len(req.UpdateOps) == 0 {
-		return nil, forma.InvalidInputf("Claim on %s needs Updates or UpdateOps: the claim mutation must make a claimed row stop matching the claim condition", req.SchemaName)
+		return transform.CheckedUpdates{}, forma.InvalidInputf("Claim on %s needs Updates or UpdateOps: the claim mutation must make a claimed row stop matching the claim condition", req.SchemaName)
 	}
 	op := &forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: req.SchemaName},
 		Updates: req.Updates, UpdateOps: req.UpdateOps}
 	updates, err := validateConditionalUpdate(op, cache, s.crud.relations, s.crud.validator.ArrayPaths(schemaID))
 	if err != nil {
-		return nil, fmt.Errorf("failed to validate Claim mutation on %s: %w", req.SchemaName, err)
+		return transform.CheckedUpdates{}, fmt.Errorf("failed to validate Claim mutation on %s: %w", req.SchemaName, err)
 	}
 	for _, spec := range s.rows.repo.uniqueKeys.keysOf(schemaID) {
 		for _, attr := range spec.attrs {
 			if claimWrites(req, attr.name) {
-				return nil, forma.InvalidInputf("Claim on %s cannot change attribute '%s' of unique key %s: a claim never waits for another transaction, and a unique key write can",
+				return transform.CheckedUpdates{}, forma.InvalidInputf("Claim on %s cannot change attribute '%s' of unique key %s: a claim never waits for another transaction, and a unique key write can",
 					req.SchemaName, attr.name, spec.name)
 			}
 		}
@@ -213,12 +222,19 @@ func (s *txSession) takeClaimable(ctx context.Context, plan *claimPlan) ([]uuid.
 
 // applyClaim charges the claimed rows to the operation limit, writes each in
 // selection order, then checks that the claim mutation falsified the
-// condition on every one of them. Every failure here poisons the Tx: the
-// rows are held and possibly written, so it cannot commit part of a claim.
+// condition on every one of them. Every failure once the first row is
+// written poisons the Tx: the rows are held and possibly written, so it
+// cannot commit part of a claim. A conversion refusal in Updates comes
+// first, before any row is written, so it leaves the Tx usable, with the
+// claimed rows held until the Tx ends; with no row claimed the claim writes
+// nothing and succeeds (#772).
 func (s *txSession) applyClaim(ctx context.Context, plan *claimPlan, claimed []uuid.UUID) (*forma.ClaimResult, error) {
 	result := &forma.ClaimResult{Records: make([]*forma.DataRecord, 0, len(claimed))}
 	if len(claimed) == 0 {
 		return result, nil
+	}
+	if plan.refusal != nil {
+		return nil, refusedBeforeWrite{plan.refusal}
 	}
 	if err := s.chargeOperations(len(claimed) - 1); err != nil {
 		return nil, err

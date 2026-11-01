@@ -340,6 +340,7 @@ An error from a `Tx` method either leaves the Tx usable or **poisons** it.
 | `ErrPreconditionFailed` (an `AssertRow` or conditional write that found the row failing its precondition), `ErrUniqueConflict` (a create onto a live row ID, or a write onto a taken unique-key value: see [Row IDs and Unique Keys](unique-keys.md)), raised without a failed SQL statement | no |
 | `ErrInvalidInput` raised before the operation sent any SQL (a malformed operation, a `Create` that fails validation, a value in an update's `Updates` the write cannot convert, a federated read, `ForUpdate` on `Query`, a `MutateWhereRequest`, `UpsertRequest` or `ClaimRequest` refused by its validation) | no |
 | `ErrInvalidInput` for a predicate mutation that matched more than `MaxAffected` rows, after only its candidate select | no |
+| `ErrInvalidInput` for a value in `Updates` the write cannot convert, from `UpdateWhere`, `Claim` or `Upsert` once it has read and locked a row to write it to, before any write | no |
 | `ErrInvalidInput` raised after the operation sent SQL | yes |
 | any error from a predicate mutation after its first row was written, or from a claim once it holds a row | yes |
 | any failed SQL statement, including `23505` and every retryable conflict | yes |
@@ -365,13 +366,15 @@ Two cases surprise people:
   width, a fraction for an integer type, a malformed UUID, a date outside the
   range its slot keeps, a scalar sent for a list, or text PostgreSQL cannot
   store (a NUL character or invalid UTF-8). Each depends only on the value
-  and its attribute, so it is refused before the read, on `Update`,
+  and its attribute, so it is refused before any write, on `Update`,
   `UpdateWhere`, `Claim`, `Upsert` and the atomic `BatchUpdate` alike (#679,
-  #772). Such a refusal answers ahead of everything the row decides: a
-  missing row, a failed precondition, a missing required attribute, or for
-  `UpdateWhere`, `Claim` and `Upsert` no row to write `Updates` to. An
-  undefined attribute or a `null` in `Updates` is still refused by the merged
-  write, after the read.
+  #772). `Update` refuses it before the read, ahead of a missing row, a
+  failed precondition and a missing required attribute. `UpdateWhere`,
+  `Claim` and `Upsert` refuse it once they have read and locked a row they
+  would write `Updates` to, so one that takes no row, or an upsert that
+  creates, succeeds as before; unstorable text alone they refuse before the
+  read, whatever the row. An undefined attribute or a `null` in `Updates` is
+  still refused by the merged write, after the read.
 - **Concurrent use.** A `Tx` must be used from one goroutine at a time. A
   call that arrives while another is running returns `ErrInvalidInput` and
   poisons the Tx; the running call finishes normally. If `fn` returns while a

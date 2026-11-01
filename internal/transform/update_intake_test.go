@@ -3,6 +3,7 @@ package transform
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,23 @@ func walkRefusedUpdates() []intakeCase {
 	}
 }
 
+// checkUpdate is CheckUpdateValues as a route that writes a row with
+// Updates sees it: the document to write, and the refusal it raises before
+// the write, unstorable text first.
+func checkUpdate(doc map[string]any, cache forma.SchemaAttributeCache) (map[string]any, error) {
+	checked, err := CheckUpdateValues(doc, cache)
+	if err != nil {
+		return nil, err
+	}
+	return checked.Values, checked.Refusal
+}
+
+// unstorableText reports a refused case whose refusal is text PostgreSQL
+// cannot hold, which intake answers as its error (#679).
+func unstorableText(tc intakeCase) bool {
+	return strings.HasSuffix(tc.want, nulRule) || strings.HasSuffix(tc.want, badUTF8Rule)
+}
+
 // CheckUpdateValues converts every value of a partial document the walk
 // claims, as the write converts it, and leaves the walk's own refusals to the
 // write (#772).
@@ -114,7 +132,7 @@ func TestCheckUpdateValues(t *testing.T) {
 	cache := updateIntakeCache()
 	cases := append(append(refusedUpdateValues(), acceptedUpdateValues()...), walkRefusedUpdates()...)
 	for _, tc := range cases {
-		_, err := CheckUpdateValues(tc.doc, cache)
+		_, err := checkUpdate(tc.doc, cache)
 		if tc.want == "" {
 			assert.NoError(t, err, tc.name)
 			continue
@@ -146,14 +164,14 @@ func TestCheckUpdateValues_MatchesTheWrite(t *testing.T) {
 	cache := updateIntakeCache()
 	for _, tc := range refusedUpdateValues() {
 		writeErr := writeVerdict(t, tc.doc, cache)
-		_, intakeErr := CheckUpdateValues(tc.doc, cache)
+		_, intakeErr := checkUpdate(tc.doc, cache)
 		require.Error(t, writeErr, tc.name)
 		require.Error(t, intakeErr, tc.name)
 		assert.Equal(t, writeErr.Error(), intakeErr.Error(), tc.name)
 	}
 	for _, tc := range acceptedUpdateValues() {
 		require.NoError(t, writeVerdict(t, tc.doc, cache), tc.name)
-		checked, err := CheckUpdateValues(tc.doc, cache)
+		checked, err := checkUpdate(tc.doc, cache)
 		require.NoError(t, err, tc.name)
 		require.NoError(t, writeVerdict(t, checked, cache), "%s: the write accepts what intake answers", tc.name)
 	}
@@ -165,7 +183,7 @@ func TestCheckUpdateValues_ReportsTheWritesFirstRefusal(t *testing.T) {
 	cache := updateIntakeCache()
 	doc := map[string]any{"ref": "bad", "age": 1.5, "items": []any{map[string]any{"qty": 0.5}}}
 	writeErr := writeVerdict(t, doc, cache)
-	_, intakeErr := CheckUpdateValues(doc, cache)
+	_, intakeErr := checkUpdate(doc, cache)
 	require.Error(t, intakeErr)
 	assert.Equal(t, writeErr.Error(), intakeErr.Error())
 	assert.Contains(t, intakeErr.Error(), "'age'")
@@ -176,7 +194,7 @@ func TestCheckUpdateValues_ReportsTheWritesFirstRefusal(t *testing.T) {
 func TestCheckUpdateValues_LeavesWalkRefusalsToTheWrite(t *testing.T) {
 	cache := updateIntakeCache()
 	for _, tc := range walkRefusedUpdates() {
-		checked, err := CheckUpdateValues(tc.doc, cache)
+		checked, err := checkUpdate(tc.doc, cache)
 		require.NoError(t, err, tc.name)
 		require.ErrorIs(t, writeVerdict(t, checked, cache), forma.ErrInvalidInput, tc.name)
 	}
@@ -186,7 +204,47 @@ func TestCheckUpdateValues_LeavesWalkRefusalsToTheWrite(t *testing.T) {
 // kept as sent, so schema validation and the write see the caller's value.
 func TestCheckUpdateValues_KeepsConvertedValuesAsSent(t *testing.T) {
 	doc := acceptedUpdateValues()[0].doc
-	checked, err := CheckUpdateValues(doc, updateIntakeCache())
+	checked, err := checkUpdate(doc, updateIntakeCache())
 	require.NoError(t, err)
 	assert.Equal(t, doc, checked)
+}
+
+// Unstorable text is CheckUpdateValues's error, as it was before #772, so
+// every update route refuses it at intake whatever the row. Every other
+// conversion refusal is CheckedUpdates.Refusal, which a route raises only
+// where it writes a row with Updates: an UpdateWhere or Claim that takes no
+// row, or an Upsert that creates, succeeds as it did before #772. The
+// refused value is kept as sent.
+func TestCheckUpdateValues_SeparatesUnstorableText(t *testing.T) {
+	cache := updateIntakeCache()
+	for _, tc := range refusedUpdateValues() {
+		checked, err := CheckUpdateValues(tc.doc, cache)
+		if unstorableText(tc) {
+			require.ErrorIs(t, err, forma.ErrInvalidInput, tc.name)
+			continue
+		}
+		require.NoError(t, err, tc.name)
+		require.ErrorIs(t, checked.Refusal, forma.ErrInvalidInput, tc.name)
+		assert.Contains(t, checked.Refusal.Error(), tc.want, tc.name)
+		assert.Equal(t, tc.doc, checked.Values, tc.name)
+	}
+	for _, tc := range acceptedUpdateValues() {
+		checked, err := CheckUpdateValues(tc.doc, cache)
+		require.NoError(t, err, tc.name)
+		assert.NoError(t, checked.Refusal, tc.name)
+	}
+}
+
+// Unstorable text answers ahead of another refusal that comes before it in
+// key order, and of several other refusals the first in key order is kept.
+func TestCheckUpdateValues_UnstorableTextAnswersFirst(t *testing.T) {
+	cache := updateIntakeCache()
+	_, err := CheckUpdateValues(map[string]any{"age": 1.5, "name": "a\x00b", "ref": "bad"}, cache)
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	assert.Contains(t, err.Error(), refusedValue("name", 1)+nulRule)
+
+	checked, err := CheckUpdateValues(map[string]any{"ref": "bad", "name": "ok", "age": 1.5}, cache)
+	require.NoError(t, err)
+	require.Error(t, checked.Refusal)
+	assert.Contains(t, checked.Refusal.Error(), refusedValue("age", 7))
 }

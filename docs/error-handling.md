@@ -678,9 +678,9 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   rule is the one the condition DSL applies to text operands
   (`sqlutil.CheckText`), so a write refuses exactly the strings a query
   refuses. An update's `Updates` are judged at intake, before the row is
-  locked, with every other conversion rule (see "An update's values are
-  converted before the row lock" below), so the refusal leaves a `Tx` usable.
-  The intake takes each value's text image once and the merged write
+  locked, whatever the row, so the refusal leaves a `Tx` usable (see "An
+  update's values are converted before it writes" below for the other
+  conversion rules). The intake takes each value's text image once and the merged write
   stores that image, so a Go `fmt.Stringer` (or `error`, or `fmt.Formatter`)
   whose output changes between calls is stored as it was checked and cannot
   be refused after the lock (#773). The exception is a value `json.Marshal`
@@ -769,27 +769,39 @@ the allowed range, e.g. `invalid value for attribute 'rank' (attrID=3): value
 40000 out of range for bound column smallint_01 (smallint) (allowed [-32768,
 32767])`.
 
-### An update's values are converted before the row lock (#772)
+### An update's values are converted before it writes (#772)
 
 An update converts its merged document only after it has locked and read the
 row. Every refusal above depends only on the value and its attribute, and a
 value in `Updates` reaches the merged document unchanged and at the same
 path, so the update's intake (`transform.CheckUpdateValues`) runs the same
 funnel over `Updates` first, after stripping relation subtrees as the merge
-does. It refuses exactly what the merged write would refuse, with the same
+does. It finds exactly what the merged write would refuse, with the same
 published message, and nothing that write accepts. The refusal is
-`ErrInvalidInput` raised before any SQL, so it leaves a `Tx` usable on
-`Update`, `UpdateWhere`, `Claim`, `Upsert` and the atomic `BatchUpdate`
-([Transactions](./transactions.md#poisoning)). Of several such values, the
-one reported is the one the write's conversion meets first, in sorted key
+`ErrInvalidInput` raised before the update writes anything, so it leaves a
+`Tx` usable on `Update`, `UpdateWhere`, `Claim`, `Upsert` and the atomic
+`BatchUpdate` ([Transactions](./transactions.md#poisoning)).
+
+When it is raised depends on whether the call writes a row with `Updates`.
+`Update` and the atomic `BatchUpdate` write their row whenever they succeed,
+so they raise it before any SQL. `UpdateWhere`, `Claim` and `Upsert` may
+write no row with `Updates`: a mutation or claim that takes no row, or an
+upsert that creates its row. Such a call never converted `Updates` and
+succeeded before #772, and it still does. So these three raise the refusal
+only once they have read the row they would write it to, after the
+candidate select and lock, or the upsert's target lookup and lock, and
+before any write. Unstorable text is the exception: it has been refused at
+intake on every route since #679, whatever the row, and still is, ahead of
+any other conversion refusal. Otherwise, of several such values, the one
+reported is the one the write's conversion meets first, in sorted key
 order.
 
 Only conversion moves. What the document walk refuses rather than converts
 (an undefined attribute, a `null`, an `[]` nested inside a list's value, the
 nesting cap) and the required policy, which needs the row, keep their stage
 in the merged write. A scalar or a nested array sent for a list is the
-conversion's refusal, so it moves too; before #772 it answered after the
-precondition and the row.
+conversion's refusal, so it moves too; before #772 `Update` answered it after
+the precondition and the row.
 
 Registration (`schemameta.ValidateColumnBinding`) refuses a `col_name` that
 is not a column `entity_main` has (#557: `foo` or `text_99` classify as text
@@ -2428,12 +2440,13 @@ of. An update holding a value the write cannot convert (say a malformed UUID,
 to be refused by the merged write, after the row lock. A missing row
 answered `ErrNotFound` first and a failed precondition
 `ErrPreconditionFailed`. A merged document that failed strict schema
-validation or lacked a required attribute answered with that refusal. An
-`UpdateWhere` or `Claim` matching no row, or an `Upsert` that created its row,
-never converted `Updates` at all and succeeded. Each of these is now the
-conversion's `ErrInvalidInput`, raised before any SQL, so inside a `Tx` it no
-longer poisons the transaction. Unstorable text has behaved this way since
-#679.
+validation or lacked a required attribute answered with that refusal. Each
+of these is now the conversion's `ErrInvalidInput`, raised before the update
+writes anything, so inside a `Tx` it no longer poisons the transaction.
+Unstorable text has behaved this way since #679. What does not change is an
+`UpdateWhere` or `Claim` matching no row, or an `Upsert` that creates its
+row: none writes `Updates`, so each still succeeds whatever `Updates` holds,
+unstorable text aside.
 
 ### Status change: a parquet path hint DuckDB cannot read as text is now 400 (#771)
 

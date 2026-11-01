@@ -14,9 +14,11 @@ import (
 // Intake rules for EntityOperation.Preconditions and UpdateOps (#649), and
 // for the values an update's Updates write (#679, #772). Every check runs
 // before the operation sends any SQL, so a refusal is an ErrInvalidInput
-// that leaves a Tx usable. What can only be judged against the locked row (a
-// missing value to increment, an overflow, a required attribute the merged
-// document lacks) is the merge's.
+// that leaves a Tx usable; a conversion refusal UpdateWhere, Claim or
+// Upsert holds until it writes a row is raised after reads only, and leaves
+// the Tx usable too (checkUpdatesValues). What can only be judged against
+// the locked row (a missing value to increment, an overflow, a required
+// attribute the merged document lacks) is the merge's.
 
 // validateConditionalCreate refuses both fields on a create: there is no
 // current row to test or to compute from.
@@ -36,52 +38,72 @@ func validateConditionalCreate(req *forma.EntityOperation) error {
 // against the schema, and converts the values its Updates write
 // (checkUpdatesValues). It answers the Updates the update writes in place of
 // req.Updates, which it never mutates: a copy carrying each checked text
-// image to the merged write (#773). arrays are the paths the schema declares
-// as arrays, nil when the manager has no validator to know them.
-func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex, arrays schemavalidate.ArrayPaths) (map[string]any, error) {
+// image to the merged write (#773), with the conversion refusal the caller
+// raises before it writes a row with them. arrays are the paths the schema
+// declares as arrays, nil when the manager has no validator to know them.
+func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex, arrays schemavalidate.ArrayPaths) (transform.CheckedUpdates, error) {
 	if err := validatePrecondition(req.Preconditions, req.SchemaName, cache); err != nil {
-		return nil, fmt.Errorf("check precondition: %w", err)
+		return transform.CheckedUpdates{}, fmt.Errorf("check precondition: %w", err)
 	}
 	if err := validateUpdateOps(req, cache, relations, arrays); err != nil {
-		return nil, fmt.Errorf("check update operators: %w", err)
+		return transform.CheckedUpdates{}, fmt.Errorf("check update operators: %w", err)
 	}
 	return checkUpdatesValues(req.SchemaName, req.Updates, cache, relations)
 }
 
-// checkUpdatesValues refuses, before the update sends any statement, a value
-// in updates the write cannot convert (transform.CheckUpdateValues): text
-// PostgreSQL cannot hold (#679), a malformed UUID, a fraction or an
+// checkUpdatesValues judges, before the update sends any statement, the
+// values in updates with the write's conversion (transform.CheckUpdateValues):
+// text PostgreSQL cannot hold (#679), a malformed UUID, a fraction or an
 // out-of-width integer for an integer type, a date outside its slot's range
-// (#772). The merged write refuses it too, but only after the row lock and
-// read, which poisons a Tx. The relation subtrees are stripped first, as the
-// merge strips them (mergeUpdateDocument).
+// (#772). The merged write refuses such a value too, but only after the row
+// lock and read, which poisons a Tx. The relation subtrees are stripped
+// first, as the merge strips them (mergeUpdateDocument).
 //
-// The refusal comes ahead of everything the row decides: an update with
-// such a value is refused even where the row is missing, fails its
-// precondition, lacks a required attribute, or (for UpdateWhere, Claim and
-// Upsert) where no row is written with updates at all.
+// Unstorable text is the error, refused at intake on every route, as since
+// #679. Any other conversion refusal is the answer's Refusal: Update and the
+// atomic BatchUpdate, which write their row whenever they succeed, raise it
+// at intake (updatesToWrite); UpdateWhere, Claim and Upsert raise it once
+// they know they write a row with updates, after reading only
+// (refusedBeforeWrite), so a call that writes no row with them (no row
+// taken, or an Upsert that creates) succeeds as it did before #772.
 //
-// It answers what the update writes in updates' place, and the merge must
-// take that, not updates: a copy in which each value whose text image came
-// from a method call holds the image judged here, so the merged write stores
-// what was checked and cannot refuse it after the lock (#773). The stripped
-// relation subtrees are put back as sent, so the merge strips exactly what it
-// stripped before. nil stays nil: an update of operators alone sends no
-// Updates.
-func checkUpdatesValues(schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, relations *RelationIndex) (map[string]any, error) {
+// The Values it answers are what the update writes in updates' place, and
+// the merge must take them, not updates: a copy in which each value whose
+// text image came from a method call holds the image judged here, so the
+// merged write stores what was checked and cannot refuse it after the lock
+// (#773). The stripped relation subtrees are put back as sent, so the merge
+// strips exactly what it stripped before. nil stays nil: an update of
+// operators alone sends no Updates.
+func checkUpdatesValues(schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, relations *RelationIndex) (transform.CheckedUpdates, error) {
 	written := relations.StripComputedFields(schemaName, updates)
 	checked, err := transform.CheckUpdateValues(written, cache)
 	if err != nil {
-		return nil, fmt.Errorf("check updates: %w", err)
+		return transform.CheckedUpdates{}, fmt.Errorf("check updates: %w", err)
+	}
+	if checked.Refusal != nil {
+		checked.Refusal = fmt.Errorf("check updates: %w", checked.Refusal)
 	}
 	for key, value := range updates {
 		if _, kept := written[key]; !kept {
 			// written is the strip's own copy here, so is checked: the
 			// caller's map is not written to.
-			checked[key] = value
+			checked.Values[key] = value
 		}
 	}
 	return checked, nil
+}
+
+// updatesToWrite answers the Updates a route that writes its row whenever it
+// succeeds (Update, the atomic BatchUpdate) writes, raising a conversion
+// refusal at intake, before any statement.
+func updatesToWrite(checked transform.CheckedUpdates, err error) (map[string]any, error) {
+	if err != nil {
+		return nil, err
+	}
+	if checked.Refusal != nil {
+		return nil, checked.Refusal
+	}
+	return checked.Values, nil
 }
 
 // validateConditionalDelete refuses operators on a delete, which writes no

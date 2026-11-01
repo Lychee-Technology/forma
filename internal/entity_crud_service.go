@@ -278,7 +278,9 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	updates, err := validateConditionalUpdate(req, schemaCache, s.relations, s.validator.ArrayPaths(schemaID))
+	// Update writes its row whenever it succeeds, so a conversion refusal
+	// in Updates is raised here, before any statement (#772).
+	updates, err := updatesToWrite(validateConditionalUpdate(req, schemaCache, s.relations, s.validator.ArrayPaths(schemaID)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate update of %s/%s: %w", req.SchemaName, req.RowID, err)
 	}

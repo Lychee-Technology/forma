@@ -152,8 +152,8 @@ func (s *txSession) chargeOperations(n int) error {
 // sent says the operation sent SQL, failed that one of its statements
 // failed. The expected outcomes are the ones that leave nothing half-written:
 // a lookup that found no row, a precondition or unique check answered
-// without a failed statement, invalid input refused before any SQL, and a
-// predicate mutation refused after only reading (refusedBeforeWrite).
+// without a failed statement, invalid input refused before any SQL, and an
+// operation refused after only reading (refusedBeforeWrite).
 // A failed statement always poisons: PostgreSQL has aborted the transaction,
 // or the connection is gone. An ErrInvalidInput raised after SQL was sent
 // poisons too, because the operation may have written part of its rows.

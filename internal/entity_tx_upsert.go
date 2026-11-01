@@ -43,6 +43,9 @@ type upsertPlan struct {
 	// update is the update action's operation without its row ID, nil for
 	// do_nothing.
 	update *forma.EntityOperation
+	// updateRefusal is a value in the update's Updates the write cannot
+	// convert (#772), raised only when a row holds the target.
+	updateRefusal error
 }
 
 func (s *txSession) Upsert(ctx context.Context, req *forma.UpsertRequest) (*forma.UpsertResult, error) {
@@ -161,7 +164,9 @@ func (s *txSession) createUpserted(ctx context.Context, plan *upsertPlan) (*form
 
 // resolveUpsert applies the action to the locked row that holds the target.
 // Every outcome answers the storage round-trip, as Update does, without
-// relation enrichment.
+// relation enrichment. A conversion refusal in the update's Updates is
+// raised here, after the lookup and lock only, so it leaves the Tx usable
+// (#772).
 func (s *txSession) resolveUpsert(ctx context.Context, plan *upsertPlan, holder uuid.UUID) (*forma.UpsertResult, error) {
 	if plan.update == nil {
 		record, err := s.storedRow(ctx, s.crud.resolveTables(), plan.schemaName, plan.create.schemaID, holder)
@@ -169,6 +174,9 @@ func (s *txSession) resolveUpsert(ctx context.Context, plan *upsertPlan, holder 
 			return nil, fmt.Errorf("failed to read the existing row: %w", err)
 		}
 		return &forma.UpsertResult{Outcome: forma.UpsertExisting, Record: record}, nil
+	}
+	if plan.updateRefusal != nil {
+		return nil, refusedBeforeWrite{fmt.Errorf("failed to update the existing row %s: %w", holder, plan.updateRefusal)}
 	}
 	op := *plan.update
 	op.RowID = holder

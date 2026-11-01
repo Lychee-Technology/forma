@@ -73,7 +73,7 @@ func TestCheckUpdateValues_TheWriteStoresTheCheckedImage(t *testing.T) {
 		"tags":  []any{"plain", tag},
 		"items": []any{map[string]any{"note": note}},
 	}
-	checked, err := CheckUpdateValues(doc, cache)
+	checked, err := checkUpdate(doc, cache)
 	require.NoError(t, err)
 	assert.Equal(t, map[int16][]string{1: {"first"}, 3: {"plain", "tag"}, 5: {"note"}}, writtenText(t, checked, cache))
 	assert.Equal(t, 1, *name.calls, "String() is called once, at intake")
@@ -82,7 +82,7 @@ func TestCheckUpdateValues_TheWriteStoresTheCheckedImage(t *testing.T) {
 
 	// Judging the copy again, as Update does for a Tx route's rows, keeps
 	// the image and calls nothing.
-	again, err := CheckUpdateValues(checked, cache)
+	again, err := checkUpdate(checked, cache)
 	require.NoError(t, err)
 	assert.Equal(t, checked, again)
 	assert.Equal(t, 1, *name.calls)
@@ -93,7 +93,7 @@ func TestCheckUpdateValues_TheWriteStoresTheCheckedImage(t *testing.T) {
 func TestCheckUpdateValues_ChangingValidTextStoresTheFirstImage(t *testing.T) {
 	cache := textImageCache()
 	value := newChangingText("one", "two", "three")
-	checked, err := CheckUpdateValues(map[string]any{"name": value}, cache)
+	checked, err := checkUpdate(map[string]any{"name": value}, cache)
 	require.NoError(t, err)
 	assert.Equal(t, map[int16][]string{1: {"one"}}, writtenText(t, checked, cache))
 }
@@ -105,7 +105,7 @@ func TestCheckUpdateValues_LeavesTheCallersDocument(t *testing.T) {
 	nested := map[string]any{"note": value}
 	items := []any{nested}
 	doc := map[string]any{"name": value, "items": items}
-	checked, err := CheckUpdateValues(doc, textImageCache())
+	checked, err := checkUpdate(doc, textImageCache())
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"name": value, "items": []any{map[string]any{"note": value}}}, doc)
 	assert.Equal(t, value, nested["note"])
@@ -121,7 +121,7 @@ func TestCheckUpdateValues_KeepsTheJSONFormValidationJudges(t *testing.T) {
 	cache := textImageCache()
 	at := time.Date(2026, 11, 1, 5, 49, 22, 0, time.UTC)
 	doc := map[string]any{"name": at, "items": []any{map[string]any{"note": newChangingText("x")}}}
-	checked, err := CheckUpdateValues(doc, cache)
+	checked, err := checkUpdate(doc, cache)
 	require.NoError(t, err)
 	assert.IsType(t, textImage{}, checked["name"])
 
@@ -147,13 +147,13 @@ func TestCheckUpdateValues_KeepsWhatNeedsNoCarrier(t *testing.T) {
 		"nope":  stringer,
 		"items": []any{nil, map[string]any{"note": nil}},
 	}
-	checked, err := CheckUpdateValues(doc, cache)
+	checked, err := checkUpdate(doc, cache)
 	require.NoError(t, err)
 	assert.Equal(t, doc, checked)
 	assert.Zero(t, *stringer.calls, "an undefined attribute is the write's refusal, not converted here")
 
 	for _, tc := range []map[string]any{nil, {"items": []any(nil)}, {"items": map[string]any(nil)}} {
-		checked, err := CheckUpdateValues(tc, cache)
+		checked, err := checkUpdate(tc, cache)
 		require.NoError(t, err)
 		assert.Equal(t, tc, checked, "nil stays nil")
 	}
@@ -163,7 +163,7 @@ func TestCheckUpdateValues_KeepsWhatNeedsNoCarrier(t *testing.T) {
 // refuses it at its own stage.
 func TestCheckUpdateValues_AnswersADocumentPastTheCapUnchanged(t *testing.T) {
 	doc := cyclicDocument()
-	checked, err := CheckUpdateValues(doc, textImageCache())
+	checked, err := checkUpdate(doc, textImageCache())
 	require.NoError(t, err)
 	checked["marker"] = true
 	assert.Equal(t, true, doc["marker"], "the same map")

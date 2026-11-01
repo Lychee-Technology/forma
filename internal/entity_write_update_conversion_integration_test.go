@@ -53,9 +53,10 @@ func requireRefusedValue(t *testing.T, err error, want string, msgAndArgs ...any
 
 // TestUpdateConversionRefusalInATxLeavesTheTxUsable is the issue's
 // acceptance: every Tx route whose merged write follows a row lock refuses
-// the value before any statement, the write before the refusals commits, and
-// so does the one after. Tx.Update is also tried without a precondition and
-// on a missing row.
+// the value before it writes, Tx.Update before any statement and
+// UpdateWhere, Claim and Upsert once they have read the row they would write
+// with it; the write before the refusals commits, and so does the one after.
+// Tx.Update is also tried without a precondition and on a missing row.
 func TestUpdateConversionRefusalInATxLeavesTheTxUsable(t *testing.T) {
 	e := newSchemaPG(t, condSchemaName, condSchemaID, textFitSchemaCache())
 	earlier := e.create(t, map[string]any{"name": "before"})
@@ -156,4 +157,56 @@ func TestAcceptedUpdatesStillCommit(t *testing.T) {
 	assert.EqualValues(t, 32767, got["level"])
 	assert.Equal(t, uuid.MustParse(ref), got["ref"])
 	assert.Equal(t, []any{}, got["tags"])
+}
+
+// TestUpdateConversionRefusalWithNoRowToWriteSucceeds: an UpdateWhere or a
+// Claim that takes no row, and an Upsert that creates its row, never write
+// Updates, so before #772 they succeeded whatever Updates held, and they
+// still do (no accepted update changes outcome). Unstorable text is the
+// exception it has been since #679: refused at intake whatever the row, and
+// without poisoning the Tx.
+func TestUpdateConversionRefusalWithNoRowToWriteSucceeds(t *testing.T) {
+	e := newSchemaPG(t, condSchemaName, condSchemaID, textFitSchemaCache())
+	existing := e.create(t, map[string]any{"name": "existing", "counter": 1})
+	before := e.snapshot(t, existing)
+	nobody := kv("label", "equals:nobody")
+	var created []uuid.UUID
+
+	err := e.txr.InTx(e.ctx, func(ctx context.Context, tx forma.Tx) error {
+		for _, tc := range unconvertibleUpdateCases() {
+			updated, err := tx.UpdateWhere(ctx, &forma.MutateWhereRequest{SchemaName: condSchemaName,
+				Condition: nobody, MaxAffected: 10, Updates: tc.updates})
+			require.NoError(t, err, "UpdateWhere matching no row, %s", tc.name)
+			assert.Empty(t, updated.RowIDs, "UpdateWhere matching no row, %s", tc.name)
+
+			claimed, err := tx.Claim(ctx, &forma.ClaimRequest{SchemaName: condSchemaName,
+				Condition: nobody, Limit: 1, Updates: tc.updates})
+			require.NoError(t, err, "Claim matching no row, %s", tc.name)
+			assert.Empty(t, claimed.Records, "Claim matching no row, %s", tc.name)
+
+			rowID := uuid.Must(uuid.NewV7())
+			upserted, err := tx.Upsert(ctx, &forma.UpsertRequest{
+				Create: forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: condSchemaName, RowID: rowID},
+					Data: map[string]any{"name": "created", "counter": 7}},
+				Target: forma.ConflictTarget{RowID: true}, Action: forma.UpsertUpdate, Updates: tc.updates,
+			})
+			require.NoError(t, err, "Upsert creating its row, %s", tc.name)
+			assert.Equal(t, forma.UpsertCreated, upserted.Outcome, "Upsert creating its row, %s", tc.name)
+			created = append(created, rowID)
+		}
+		unstorable := map[string]any{"name": "a\x00b"}
+		_, err := tx.UpdateWhere(ctx, &forma.MutateWhereRequest{SchemaName: condSchemaName,
+			Condition: nobody, MaxAffected: 10, Updates: unstorable})
+		requireRefusedValue(t, err, "invalid value for attribute 'name' (attrID=1): text cannot contain a NUL character", "UpdateWhere, unstorable text")
+		_, err = tx.Claim(ctx, &forma.ClaimRequest{SchemaName: condSchemaName, Condition: nobody, Limit: 1, Updates: unstorable})
+		requireRefusedValue(t, err, "invalid value for attribute 'name' (attrID=1): text cannot contain a NUL character", "Claim, unstorable text")
+		return nil
+	})
+	require.NoError(t, err, "nothing poisoned the Tx")
+	for _, rowID := range created {
+		got := e.get(t, rowID)
+		assert.Equal(t, "created", got["name"])
+		assert.EqualValues(t, 7, got["counter"])
+	}
+	assert.Equal(t, before, e.snapshot(t, existing), "no row was written with Updates")
 }
