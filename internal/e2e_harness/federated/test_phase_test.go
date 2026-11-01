@@ -72,6 +72,29 @@ func (p *testPhase) finish(tb testing.TB, err error) {
 	tb.Logf("phase %q took %v of its %v budget", p.name, p.end().Round(time.Millisecond), p.budget)
 }
 
+// timePhase runs op as the named phase under budget and returns how long op
+// took and the error it returned. It fails tb with the phase's timeout message
+// when the deadline passed, whatever op returned: an operation may finish its
+// work and still return only after its deadline (RunCDCFlush, for one,
+// releases its advisory lock in a deferred call on a background context), and
+// such a result is neither a measurement nor an ordinary failure. Within the
+// budget, op's error is left for the caller to judge.
+func timePhase(tb testing.TB, name string, budget time.Duration, op func(context.Context) error) (time.Duration, error) {
+	tb.Helper()
+	p := startPhase(name, budget)
+	start := time.Now()
+	err := op(p.ctx)
+	took := time.Since(start)
+	if p.expired() {
+		msg := p.describe(err)
+		p.end()
+		tb.Fatal(msg)
+		return took, err
+	}
+	p.end()
+	return took, err
+}
+
 // fatalRecorder is a testing.TB that records Fatal and Logf calls instead of
 // stopping the test, so finish's outcome can be asserted.
 type fatalRecorder struct {
@@ -163,5 +186,59 @@ func TestPhaseDeadlineIgnoresTimeEarlierPhasesUsed(t *testing.T) {
 	defer second.end()
 	if err := second.ctx.Err(); err != nil {
 		t.Fatalf("a phase started after an expired one has ctx.Err() = %v, want nil", err)
+	}
+}
+
+func TestTimePhaseFailsAnExpiredPhaseWhoseOperationReturnedNil(t *testing.T) {
+	rec := &fatalRecorder{TB: t}
+	_, err := timePhase(rec, "CDC flush 0", time.Millisecond, func(ctx context.Context) error {
+		// The work finishes, but the operation returns only after its
+		// deadline, as RunCDCFlush does when its deferred unlock is slow.
+		<-ctx.Done()
+		return nil
+	})
+
+	if err != nil {
+		t.Fatalf("timePhase returned err = %v, want the operation's nil", err)
+	}
+	if len(rec.fatal) != 1 {
+		t.Fatalf("timePhase after the deadline called Fatal %d times, want 1", len(rec.fatal))
+	}
+	want := `phase "CDC flush 0" ran out of its 1ms budget after `
+	if !strings.HasPrefix(rec.fatal[0], want) || !strings.HasSuffix(rec.fatal[0], "though its operation returned no error") {
+		t.Fatalf("timePhase failed with %q, want prefix %q and the no-error wording", rec.fatal[0], want)
+	}
+}
+
+func TestTimePhaseFailsAnExpiredPhaseWhoseOperationFailed(t *testing.T) {
+	rec := &fatalRecorder{TB: t}
+	_, _ = timePhase(rec, "CDC flush 1", time.Millisecond, func(ctx context.Context) error {
+		<-ctx.Done()
+		return fmt.Errorf("export delta: %w", ctx.Err())
+	})
+
+	want := `phase "CDC flush 1" ran out of its 1ms budget after `
+	if len(rec.fatal) != 1 || !strings.HasPrefix(rec.fatal[0], want) {
+		t.Fatalf("timePhase after the deadline failed with %q, want one message with prefix %q", rec.fatal, want)
+	}
+}
+
+func TestTimePhaseLeavesAFailureWithinTheBudgetToTheCaller(t *testing.T) {
+	rec := &fatalRecorder{TB: t}
+	opErr := errors.New("export delta: access denied")
+	var phaseCtx context.Context
+	_, err := timePhase(rec, "CDC flush 2", time.Minute, func(ctx context.Context) error {
+		phaseCtx = ctx
+		return opErr
+	})
+
+	if len(rec.fatal) != 0 {
+		t.Fatalf("timePhase within the budget failed with %q", rec.fatal)
+	}
+	if !errors.Is(err, opErr) {
+		t.Fatalf("timePhase returned err = %v, want %v", err, opErr)
+	}
+	if !errors.Is(phaseCtx.Err(), context.Canceled) {
+		t.Fatalf("timePhase left the phase context with Err() = %v, want context.Canceled", phaseCtx.Err())
 	}
 }

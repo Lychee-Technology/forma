@@ -73,16 +73,15 @@ func TestPerformance_CDCFlush(t *testing.T) {
 			seedHot(t, h, numRecords/numFlushes, fmt.Sprintf("seed hot records for CDC flush %d", i))
 		}
 
-		flush := startPhase(fmt.Sprintf("CDC flush %d", i), cdcFlushRunBudget)
-		start := time.Now()
-		result, err := h.RunCDCFlush(flush.ctx)
-		duration := time.Since(start)
-		flush.end()
-
+		// timePhase fails the test when the flush outlives its budget, even if
+		// RunCDCFlush returned no error, so a late result is never measured.
+		var result *FlushResult
+		duration, err := timePhase(t, fmt.Sprintf("CDC flush %d", i), cdcFlushRunBudget, func(ctx context.Context) error {
+			var err error
+			result, err = h.RunCDCFlush(ctx)
+			return err
+		})
 		if err != nil {
-			if flush.expired() {
-				t.Fatal(flush.describe(err))
-			}
 			t.Logf("Flush %d failed: %v", i, err)
 			continue
 		}
