@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,8 +51,32 @@ func NewDuckDBClient(cfg forma.DuckDBConfig) (*DuckDBClient, error) {
 }
 
 // NewDuckDBClientContext creates and configures a DuckDB client while honoring
-// the caller-provided context during bootstrap.
+// the caller-provided context during bootstrap. The postgres_scanner
+// extension stays optional on its connections: use it for a client that only
+// reads S3/parquet, and NewFederatedDuckDBClientContext for the federated
+// engine's.
 func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckDBClient, error) {
+	return newDuckDBClient(ctx, cfg, false)
+}
+
+// NewFederatedDuckDBClientContext is NewDuckDBClientContext for the client
+// the federated engine queries. Every hot-leg query attaches PostgreSQL
+// through the postgres_scanner extension, so the scanner is a required,
+// verified capability of each physical connection, fresh or opened on a
+// database the recovering connector reopened: a connection that cannot load
+// it fails to open, failing the constructor's ping, instead of passing it
+// and failing every query (#752).
+func NewFederatedDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckDBClient, error) {
+	return newDuckDBClient(ctx, cfg, true)
+}
+
+// openDuckDBConnector opens one DuckDB database whose connections run init.
+// The recovering connector calls it again for every reopen; tests wrap it.
+var openDuckDBConnector = func(dsn string, init func(driver.ExecerContext) error) (driver.Connector, error) {
+	return duckdb.NewConnector(dsn, init)
+}
+
+func newDuckDBClient(ctx context.Context, cfg forma.DuckDBConfig, requirePostgres bool) (*DuckDBClient, error) {
 	if !cfg.Enabled {
 		return nil, fmt.Errorf("duckdb disabled in config")
 	}
@@ -66,7 +91,7 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 
 	// Pre-build the init statements; S3 credential validation fails fast here,
 	// before any connection is opened.
-	steps, err := buildInitSteps(cfg)
+	steps, err := buildInitSteps(cfg, requirePostgres)
 	if err != nil {
 		return nil, fmt.Errorf("build duckdb init statements: %w", err)
 	}
@@ -76,14 +101,15 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 	// connection (issue #245). The connector init hook runs for each new physical
 	// connection; PingContext below opens and thereby initializes the first one.
 	// A failed optional statement is logged and skipped; a failed required one
-	// (httpfs, parquet, the S3 session settings) fails the connection, and
+	// (httpfs, parquet, the S3 session settings, and postgres_scanner for the
+	// federated engine's client) fails the connection, and
 	// thereby the ping and construction (#752). The factory treats a client
 	// that fails to open as DuckDB unavailable and degrades to Postgres-only.
 	// The recovering connector reopens the database with the same hook when
 	// DuckDB invalidates it (#702).
 	connInit := duckdbinit.MakeConnInit(steps, zap.S(), duckdbinit.DefaultInitTimeout)
 	connector, err := duckdbinit.NewRecoveringConnector(func() (driver.Connector, error) {
-		return duckdb.NewConnector(dsn, connInit)
+		return openDuckDBConnector(dsn, connInit)
 	}, zap.S())
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb connector: %w", err)
@@ -117,9 +143,10 @@ func NewDuckDBClientContext(ctx context.Context, cfg forma.DuckDBConfig) (*DuckD
 
 // buildInitSteps assembles the INSTALL/LOAD/SET/PRAGMA steps every pooled
 // connection must run on open: user extensions, httpfs (when S3 is enabled),
-// parquet (when parquet is enabled), S3 session settings, and resource pragmas.
-func buildInitSteps(cfg forma.DuckDBConfig) ([]duckdbinit.Step, error) {
-	steps := buildExtensionSteps(cfg)
+// parquet (when parquet is enabled), postgres_scanner (when requirePostgres
+// is set), S3 session settings, and resource pragmas.
+func buildInitSteps(cfg forma.DuckDBConfig, requirePostgres bool) ([]duckdbinit.Step, error) {
+	steps := buildExtensionSteps(cfg, requirePostgres)
 	s3, err := buildS3Steps(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("build duckdb s3 statements: %w", err)
@@ -129,24 +156,50 @@ func buildInitSteps(cfg forma.DuckDBConfig) ([]duckdbinit.Step, error) {
 	return steps, nil
 }
 
+// postgresScannerExtension is the name duckdb_extensions() reports for the
+// extension that ATTACH ... (TYPE postgres) needs; "postgres" is its alias.
+const postgresScannerExtension = "postgres_scanner"
+
 // buildExtensionSteps pairs each extension's INSTALL and LOAD into one step, so a
 // failed INSTALL skips that extension's LOAD. httpfs (S3) and parquet are
-// required when the config enables them: a connection without them fails
-// every federated read, so it must fail to open instead of passing the
-// constructor's ping and degrading each query (#752). Extensions listed in
-// cfg.Extensions stay optional, logged and skipped as before.
-func buildExtensionSteps(cfg forma.DuckDBConfig) []duckdbinit.Step {
-	var steps []duckdbinit.Step
-	for _, ext := range cfg.Extensions {
-		steps = append(steps, duckdbinit.ExtensionStep(ext))
-	}
+// required when the config enables them, and postgres_scanner when
+// requirePostgres is set: a connection without them fails every federated
+// read, so it must fail to open instead of passing the constructor's ping and
+// degrading each query (#752). Extensions listed in cfg.Extensions stay
+// optional, logged and skipped as before, unless one names a required
+// extension: listing it there must not leave an optional copy of the step
+// beside the required one.
+func buildExtensionSteps(cfg forma.DuckDBConfig, requirePostgres bool) []duckdbinit.Step {
+	var required []string
 	if cfg.EnableS3 {
-		steps = append(steps, duckdbinit.RequiredExtensionStep("httpfs"))
+		required = append(required, "httpfs")
 	}
 	if cfg.EnableParquet {
-		steps = append(steps, duckdbinit.RequiredExtensionStep("parquet"))
+		required = append(required, "parquet")
+	}
+	if requirePostgres {
+		required = append(required, postgresScannerExtension)
+	}
+	var steps []duckdbinit.Step
+	for _, ext := range cfg.Extensions {
+		if !slices.Contains(required, canonicalExtensionName(ext)) {
+			steps = append(steps, duckdbinit.ExtensionStep(ext))
+		}
+	}
+	for _, ext := range required {
+		steps = append(steps, duckdbinit.RequiredExtensionStep(ext))
 	}
 	return steps
+}
+
+// canonicalExtensionName folds an extension name as DuckDB resolves it:
+// case-insensitively, with the postgres alias naming postgres_scanner.
+func canonicalExtensionName(ext string) string {
+	name := strings.ToLower(strings.TrimSpace(ext))
+	if name == "postgres" {
+		return postgresScannerExtension
+	}
+	return name
 }
 
 // buildS3Steps builds the S3 session SET statements. Each credential passes the

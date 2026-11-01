@@ -174,7 +174,7 @@ func TestMakeConnInit_FailedInstallSkipsLoad(t *testing.T) {
 	cfg := newS3ConfiguredDuckDBConfig()
 	cfg.Extensions = []string{"bad_ext"}
 
-	steps, err := buildInitSteps(cfg)
+	steps, err := buildInitSteps(cfg, false)
 	require.NoError(t, err)
 
 	execer := &recordingExecer{failOn: "INSTALL bad_ext;"}
@@ -193,7 +193,7 @@ func TestMakeConnInit_FailedInstallSkipsLoad(t *testing.T) {
 func TestBuildInitSteps_RequiredCapabilities(t *testing.T) {
 	cfg := newS3ConfiguredDuckDBConfig()
 	cfg.Extensions = []string{"json"}
-	steps, err := buildInitSteps(cfg)
+	steps, err := buildInitSteps(cfg, false)
 	require.NoError(t, err)
 
 	required := map[string]bool{}

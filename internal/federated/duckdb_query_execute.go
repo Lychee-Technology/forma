@@ -53,14 +53,22 @@ func retryablePassFailure(err error) (string, bool) {
 	return "", false
 }
 
+// queryDuckDB runs the rendered query. The query references the hot leg's
+// PostgreSQL catalog by alias (#752), so an executor that can attaches it on
+// the query's own connection first (queryWithPostgres). Any other executor
+// gets withPostgresAttach's batch. An engine without a PostgreSQL connection
+// string attaches nothing, and its query fails to bind the catalog instead.
+func (e *DBFederatedQueryEngine) queryDuckDB(ctx context.Context, sqlStr string, args []any) (duckDBRowsIterator, error) {
+	if querier, ok := e.duck.(postgresQuerier); ok && e.pgConnString != "" {
+		return querier.queryWithPostgres(ctx, e.pgConnString, sqlStr, args...)
+	}
+	return e.duck.Query(ctx, e.withPostgresAttach(sqlStr), args...)
+}
+
 // withPostgresAttach prefixes sqlStr with the ATTACH of the hot leg's
-// PostgreSQL catalog, which the rendered query references by alias (#752).
-// ensurePostgresAttached has normally attached it already; the copy in the
-// batch runs on the query's own connection, so a database reopened in
-// between (#702) is attached again before the query binds. The batch carries the password, so it stays local to this call;
-// sqlStr itself, which execution plans and logs may quote, does not. An
-// engine without a PostgreSQL connection string attaches nothing, and its
-// query fails to bind the catalog instead.
+// PostgreSQL catalog. The batch carries the password, so it stays local to
+// the call; sqlStr itself, which execution plans and logs may quote, does
+// not.
 func (e *DBFederatedQueryEngine) withPostgresAttach(sqlStr string) string {
 	if e.pgConnString == "" {
 		return sqlStr
@@ -83,11 +91,7 @@ func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
 	planCtx *duckDBExecutionPlanContext,
 ) (int64, error) {
 	planCtx.recordQueryStart()
-	err := e.ensurePostgresAttached(ctx)
-	var rows duckDBRowsIterator
-	if err == nil {
-		rows, err = e.duck.Query(ctx, e.withPostgresAttach(sqlStr), args...)
-	}
+	rows, err := e.queryDuckDB(ctx, sqlStr, args)
 	if err != nil {
 		// #306: a PostgreSQL attach failure echoes the whole conn string,
 		// password included, in DuckDB's own prose. Scrub before the text

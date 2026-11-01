@@ -19,6 +19,16 @@ func newAttachTestExecutor(t *testing.T) *DuckDBClientQueryExecutor {
 	return &DuckDBClientQueryExecutor{client: &DuckDBClient{DB: db}}
 }
 
+// waitAttached runs a hot-leg query through exec and returns its error,
+// closing the rows of a query that got through.
+func waitAttached(ctx context.Context, exec *DuckDBClientQueryExecutor) error {
+	rows, err := exec.queryWithPostgres(ctx, "host=127.0.0.1 port=1 dbname=none", "SELECT 1")
+	if err == nil {
+		_ = rows.Close()
+	}
+	return err
+}
+
 // A request waiting for the process-wide attach guard returns at its own
 // deadline instead of waiting for the current holder, which may sit on a
 // busy pool or a slow PostgreSQL attach (#752).
@@ -30,13 +40,13 @@ func TestAttachPostgresWaiterHonorsItsDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- exec.attachPostgres(ctx, "host=127.0.0.1 port=1 dbname=none") }()
+	go func() { done <- waitAttached(ctx, exec) }()
 
 	select {
 	case err := <-done:
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("attachPostgres still blocked on the held guard after its 25ms deadline")
+		t.Fatal("queryWithPostgres still blocked on the held guard after its 25ms deadline")
 	}
 }
 
@@ -47,14 +57,14 @@ func TestAttachPostgresWaiterHonorsCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- exec.attachPostgres(ctx, "host=127.0.0.1 port=1 dbname=none") }()
+	go func() { done <- waitAttached(ctx, exec) }()
 	cancel()
 
 	select {
 	case err := <-done:
 		require.True(t, errors.Is(err, context.Canceled), "got %v", err)
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("attachPostgres still blocked on the held guard after cancellation")
+		t.Fatal("queryWithPostgres still blocked on the held guard after cancellation")
 	}
 }
 

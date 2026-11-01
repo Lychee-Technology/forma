@@ -283,7 +283,8 @@ func (e *Env) startDuckDB() error {
 	}
 	e.DuckCfg.Routing.Strategy = e.opts.routing
 
-	duck, err := fedengine.NewDuckDBClient(e.DuckCfg)
+	// The harness's engine attaches PostgreSQL, like the factory's (#752).
+	duck, err := fedengine.NewFederatedDuckDBClientContext(context.Background(), e.DuckCfg)
 	if err != nil {
 		return fmt.Errorf("start duckdb client: %w", err)
 	}

@@ -2,7 +2,10 @@ package federated
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/sqlgen"
@@ -34,40 +37,87 @@ func acquirePGAttach(ctx context.Context) error {
 
 func releasePGAttach() { <-pgAttachSem }
 
-// postgresAttacher is the optional half of DuckDBQueryExecutor that attaches
-// the hot leg's PostgreSQL catalog before a query. Executors that cannot
-// attach (the engine-seam fakes) leave it to the ATTACH at the head of the
-// query batch.
-type postgresAttacher interface {
-	attachPostgres(ctx context.Context, connStr string) error
+// postgresQuerier is the optional half of DuckDBQueryExecutor that runs a
+// hot-leg query on a connection it attached the query's PostgreSQL catalog
+// on. Executors without it (the engine-seam fakes) get the ATTACH at the
+// head of the query batch instead.
+type postgresQuerier interface {
+	queryWithPostgres(ctx context.Context, connStr, sqlStr string, args ...any) (duckDBRowsIterator, error)
 }
 
-// attachPostgres attaches the catalog the rendered query reads, under
-// pgAttachSem. Once the database holds it, this is a no-op statement; it runs
-// before every query because a database DuckDB invalidated and the
+// afterPostgresAttach, when a test sets it, runs between a query's attach
+// and the query itself: the window in which DuckDB can invalidate the
+// database and the recovering connector reopen it.
+var afterPostgresAttach func()
+
+// queryWithPostgres attaches the catalog the rendered query reads, under
+// pgAttachSem, and runs the query on the very connection the attach ran on.
+// Once the database holds the catalog the attach is a no-op statement; it
+// runs before every query because a database DuckDB invalidated and the
 // recovering connector reopened has lost it (#702).
-func (e *DuckDBClientQueryExecutor) attachPostgres(ctx context.Context, connStr string) error {
+//
+// Pinning the connection is what keeps every first attach of a database
+// under the guard (#752). Were the query free to take any pooled
+// connection, a reopen between the attach and the query would hand it a
+// connection of the new database, which lacks the catalog, and the
+// requests caught in that window would each have to attach it unguarded,
+// at once. On the pinned connection the query instead runs on the database
+// the attach reached: if DuckDB has invalidated it meanwhile, the query
+// fails like any statement on an invalidated database, and the next
+// request's guarded attach is the first on the reopened one.
+func (e *DuckDBClientQueryExecutor) queryWithPostgres(ctx context.Context, connStr, sqlStr string, args ...any) (duckDBRowsIterator, error) {
 	if e == nil || e.client == nil || e.client.DB == nil {
-		return fmt.Errorf("duckdb client not available")
+		return nil, fmt.Errorf("duckdb client not available")
 	}
+	conn, err := e.attachedConn(ctx, connStr)
+	if err != nil {
+		return nil, err
+	}
+	if afterPostgresAttach != nil {
+		afterPostgresAttach()
+	}
+	rows, err := conn.QueryContext(ctx, sqlStr, args...)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return &pinnedRows{Rows: rows, conn: conn}, nil
+}
+
+// attachedConn takes a pooled connection and attaches connStr on it, both
+// under pgAttachSem.
+func (e *DuckDBClientQueryExecutor) attachedConn(ctx context.Context, connStr string) (*sql.Conn, error) {
 	if err := acquirePGAttach(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	defer releasePGAttach()
-	if _, err := e.client.DB.ExecContext(ctx, sqlgen.PostgresAttachSQL(connStr)); err != nil {
+	conn, err := e.client.DB.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("take a duckdb connection for the hot leg: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, sqlgen.PostgresAttachSQL(connStr)); err != nil {
+		_ = conn.Close()
 		// DuckDB's attach error quotes the connection string, password
 		// included (#306).
-		return fmt.Errorf("attach the hot leg's postgres catalog: %w", redact.Error(err))
+		return nil, fmt.Errorf("attach the hot leg's postgres catalog: %w", redact.Error(err))
 	}
-	return nil
+	return conn, nil
 }
 
-// ensurePostgresAttached attaches the engine's PostgreSQL catalog when its
-// executor can.
-func (e *DBFederatedQueryEngine) ensurePostgresAttached(ctx context.Context) error {
-	attacher, ok := e.duck.(postgresAttacher)
-	if !ok || e.pgConnString == "" {
-		return nil
-	}
-	return attacher.attachPostgres(ctx, e.pgConnString)
+// pinnedRows are the rows of a query on a pinned connection. Close returns
+// the connection to the pool along with the rows, so a caller that closes
+// them early frees the pool's connection as before, and closing twice is
+// harmless.
+type pinnedRows struct {
+	*sql.Rows
+	conn     *sql.Conn
+	once     sync.Once
+	closeErr error
+}
+
+func (r *pinnedRows) Close() error {
+	r.once.Do(func() {
+		r.closeErr = errors.Join(r.Rows.Close(), r.conn.Close())
+	})
+	return r.closeErr
 }
