@@ -25,6 +25,11 @@ import (
 // text is not judged: another value type, or an alias of a system column,
 // which the write drops. The caller strips relation subtrees first, as the
 // merge does, since they are never written.
+//
+// The rule is judged on the value's text image (toString). The merged write
+// takes that image again, so the two agree for any value whose image is a
+// function of the value; a fmt.Stringer whose String() changes between calls
+// is the exception (#773).
 func CheckTextValues(data map[string]any, cache forma.SchemaAttributeCache) error {
 	entries, err := walkDocument(0, uuid.Nil, data, cache)
 	if err != nil {

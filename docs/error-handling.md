@@ -682,8 +682,10 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   the merged write would refuse the same value only after SQL. Only this rule
   moves to intake: an update the write refuses for another reason, such as a
   scalar sent for a list, still answers a false precondition or a missing row
-  first. A value bound to a system column is dropped, not stored, and is not
-  judged.
+  first. A Go `fmt.Stringer` whose `String()` changes between calls is
+  converted separately by the intake and by the write, so the guarantee does
+  not cover it (#773). A value bound to a system column is dropped, not
+  stored, and is not judged.
 - A value whose typed slot does not match the column family is refused, never
   dropped.
 - `date`/`datetime` bound with `iso8601` (#582): the RFC3339 image keeps
