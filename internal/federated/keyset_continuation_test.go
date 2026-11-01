@@ -77,3 +77,47 @@ func TestValidateKeysetCursorContinuesTheDispatchedOrder(t *testing.T) {
 	require.ErrorContains(t, validateKeysetCursor(cursor, amountDesc),
 		`keyset cursor column 1 is "count" but the request sorts on "amount"`)
 }
+
+// TestEverySeamRefusesABoundaryNoRowCanHold pins the text rule (#771) at all
+// four seams: a string boundary with a NUL or invalid UTF-8 is refused before
+// any source is read. DuckDB fails to bind invalid UTF-8 ("could not bind
+// parameter") and compares a NUL against values no row holds.
+func TestEverySeamRefusesABoundaryNoRowCanHold(t *testing.T) {
+	tables := model.StorageTables{EntityMain: "main", EAVData: "eav"}
+	for _, tc := range []struct{ name, value, want string }{
+		{"NUL", "r\x001", "text cannot contain a NUL character (U+0000)"},
+		{"invalid UTF-8", "r\xff1", "text must be valid UTF-8"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newQuery := func() *model.FederatedAttributeQuery {
+				return &model.FederatedAttributeQuery{
+					AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
+					KeysetCursor: &model.KeysetCursor{
+						Columns: []model.KeysetColumn{{Attribute: "row_id", Direction: forma.SortOrderAsc}},
+						Values:  []interface{}{tc.value},
+						Mode:    model.KeysetCursorModeAfter,
+					},
+				}
+			}
+			want := `keyset cursor value 1 (for column "row_id") is not a value a row can hold: ` + tc.want
+			source := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{}}
+			engine := NewDBFederatedQueryEngine(source, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+			ctx := context.Background()
+
+			_, err := engine.Query(ctx, tables, newQuery(), &model.FederatedQueryOptions{})
+			require.ErrorContains(t, err, want, "Query seam")
+
+			_, _, err = engine.ExecuteFederatedKeysetQuery(ctx, tables, newQuery(), 10, nil, &model.FederatedQueryOptions{})
+			require.ErrorContains(t, err, want, "keyset coordinator seam")
+
+			_, _, err = engine.ExecuteDuckDBFederatedQuery(ctx, tables, newQuery(), 10, 0, nil, nil)
+			require.ErrorContains(t, err, want, "ExecuteDuckDBFederatedQuery seam")
+
+			_, err = engine.StreamDuckDBFederatedQuery(ctx, tables, newQuery(), 10, 0, nil, nil,
+				func(context.Context, *model.PersistentRecord) error { return nil })
+			require.ErrorContains(t, err, want, "StreamDuckDBFederatedQuery seam")
+
+			require.Zero(t, source.queryCalls, "no seam may read the Postgres source for a refused cursor")
+		})
+	}
+}

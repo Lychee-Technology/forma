@@ -241,3 +241,28 @@ func TestHintGlobMetacharDataPrefixRejected(t *testing.T) {
 		require.Contains(t, err.Error(), prefix, "prefix %q: operator copy must name the prefix", prefix)
 	}
 }
+
+// TestHintTextRuleRejected pins #771: a rendered path DuckDB cannot read as
+// statement text, with a NUL (which cut the statement off inside the literal)
+// or invalid UTF-8, is invalid input naming the path, not a DuckDB failure
+// eligible for the degraded Postgres fallback. A NUL in the template text
+// renders into the path, so the rendered value is what is judged.
+func TestHintTextRuleRejected(t *testing.T) {
+	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	for _, tc := range []struct{ tmpl, want string }{
+		{"s3://b/{{.SchemaID}}/x\x00.parquet", `s3 parquet path "s3://b/7/x\x00.parquet" is not permitted: text cannot contain a NUL character (U+0000)`},
+		{"s3://b/x\xff.parquet", `s3 parquet path "s3://b/x\xff.parquet" is not permitted: text must be valid UTF-8`},
+	} {
+		paths, err := duckDBParquetPathsForQuery(hintQuery(tc.tmpl), cfg)
+		require.Nil(t, paths, "template %q", tc.tmpl)
+		require.ErrorIs(t, err, forma.ErrInvalidInput, "template %q", tc.tmpl)
+		published, ok := forma.ResolvePublicMessage(err)
+		require.True(t, ok, "template %q", tc.tmpl)
+		require.Equal(t, tc.want, published, "template %q", tc.tmpl)
+		require.False(t, degradableFederatedError(err), "template %q must not degrade to Postgres", tc.tmpl)
+	}
+
+	paths, err := duckDBParquetPathsForQuery(hintQuery("s3://b/café/x.parquet"), cfg)
+	require.NoError(t, err, "a multi-byte path is text and stays accepted")
+	require.Equal(t, []string{"s3://b/café/x.parquet"}, paths)
+}

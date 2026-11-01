@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 type KeysetCursorMode string
@@ -92,6 +93,16 @@ func (c *KeysetCursor) IsActive() bool {
 //     documented default of this repository's sort surface
 //     (internal.normalizeSortOrder), and the renderer already agrees with it.
 //
+//  6. A string boundary value must be text a row can hold: valid UTF-8 without
+//     a NUL character (sqlutil.CheckText, #771). A boundary read from a
+//     returned row always is, since every tier's text came through PostgreSQL
+//     text. One that is not names no stored value: DuckDB fails to bind
+//     invalid UTF-8 ("could not bind parameter"), and binds a NUL but compares
+//     it against values no row holds. No continuation-token codec exists
+//     today, so only a Go caller of this package can build such a cursor; the
+//     rule sits here so that a future decoder, which every cursor must pass
+//     through, cannot hand one to the renderer.
+//
 // Rules 4 and 5 compare BYTE-EXACTLY, unlike rule 2's case-insensitive
 // row_id. That is not an inconsistency: rule 2 governs a SQL identifier, which
 // DuckDB resolves without regard to case, so "ROW_ID" IS row_id. A mode and a
@@ -135,13 +146,30 @@ func (c *KeysetCursor) ValidateShape() error {
 // cursor from a row reads it as "the value for created_at", not as Values[0].
 func (c *KeysetCursor) validateBoundaryValues() error {
 	for i, v := range c.Values {
-		if !isNilBoundary(v) {
-			continue
+		if isNilBoundary(v) {
+			return fmt.Errorf("keyset cursor value %d (for column %q) is nil: a nil boundary binds SQL NULL, and a comparison against NULL is unknown rather than false, so every row tied at the page boundary is silently dropped instead of the cursor being refused",
+				i+1, c.Columns[i].Attribute)
 		}
-		return fmt.Errorf("keyset cursor value %d (for column %q) is nil: a nil boundary binds SQL NULL, and a comparison against NULL is unknown rather than false, so every row tied at the page boundary is silently dropped instead of the cursor being refused",
-			i+1, c.Columns[i].Attribute)
+		if err := checkBoundaryText(v); err != nil {
+			return fmt.Errorf("keyset cursor value %d (for column %q) is not a value a row can hold: %w",
+				i+1, c.Columns[i].Attribute, err)
+		}
 	}
 	return nil
+}
+
+// checkBoundaryText applies rule 6 to a string boundary, bare or behind a
+// pointer (a cursor decoded into typed fields carries *string). A nil
+// pointer never reaches it: rule 3 has refused it.
+func checkBoundaryText(v interface{}) error {
+	switch s := v.(type) {
+	case string:
+		return sqlutil.CheckText(s)
+	case *string:
+		return sqlutil.CheckText(*s)
+	default:
+		return nil
+	}
 }
 
 // isNilBoundary reports whether a boundary value binds SQL NULL. A typed nil
