@@ -31,7 +31,7 @@ func waitAttached(ctx context.Context, exec *DuckDBClientQueryExecutor) error {
 
 // A request waiting for the process-wide attach guard returns at its own
 // deadline instead of waiting for the current holder, which may sit on a
-// busy pool or a slow PostgreSQL attach (#752).
+// slow PostgreSQL attach (#752).
 func TestAttachPostgresWaiterHonorsItsDeadline(t *testing.T) {
 	exec := newAttachTestExecutor(t)
 	require.NoError(t, acquirePGAttach(context.Background()), "the test holds the guard")
@@ -91,5 +91,47 @@ func TestAttachGuardSerializesAttaches(t *testing.T) {
 		releasePGAttach()
 	case <-time.After(2 * time.Second):
 		t.Fatal("the waiter never took the released guard")
+	}
+}
+
+// A request waiting for its client's exhausted pool does not hold the
+// process-wide attach guard: a request to an unrelated, idle database still
+// reaches its attach meanwhile, and the waiter still honors its own
+// deadline (#752).
+func TestAttachGuardNotHeldWhileWaitingForABusyPool(t *testing.T) {
+	busy := newAttachTestExecutor(t)
+	busy.client.DB.SetMaxOpenConns(1)
+	held, err := busy.client.DB.Conn(context.Background())
+	require.NoError(t, err, "the test holds the busy client's only connection")
+	t.Cleanup(func() { _ = held.Close() })
+
+	waitCtx, cancelWait := context.WithCancel(context.Background())
+	defer cancelWait()
+	waiting := make(chan error, 1)
+	go func() { waiting <- waitAttached(waitCtx, busy) }()
+	require.Eventually(t, func() bool { return busy.client.DB.Stats().WaitCount > 0 },
+		5*time.Second, time.Millisecond, "the busy client's request waits for its pool")
+
+	// The independent client cannot load the scanner, so its attach fails
+	// at once: reaching that failure, not the guard's wait, is the point.
+	idleDB, err := sql.Open("duckdb", unavailableExtensionsDSN(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = idleDB.Close() })
+	idle := &DuckDBClientQueryExecutor{client: &DuckDBClient{DB: idleDB}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err = waitAttached(ctx, idle)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, context.DeadlineExceeded, "the idle client waited on the busy client's pool")
+	require.ErrorContains(t, err, "attach the hot leg's postgres catalog")
+
+	cancelWait()
+	select {
+	case err := <-waiting:
+		require.ErrorIs(t, err, context.Canceled)
+		require.ErrorContains(t, err, "take a duckdb connection")
+	case <-time.After(2 * time.Second):
+		t.Fatal("the busy client's request ignored its cancellation")
 	}
 }

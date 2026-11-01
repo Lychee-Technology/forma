@@ -18,10 +18,15 @@ import (
 // not one per client, because two clients can share a file-backed database
 // through duckdb-go's instance cache.
 //
+// It guards the ATTACH statement only. A request takes its pooled connection
+// before it waits for the guard, so a client whose pool is exhausted (the
+// default pool holds one connection, busy while a query streams) never
+// holds the guard while it waits for that pool, and requests to unrelated
+// databases attach meanwhile.
+//
 // It is a one-slot semaphore rather than a sync.Mutex so a waiter honors its
-// own context: the holder keeps the guard across pool acquisition and the
-// PostgreSQL attach, and a busy pool or a slow attach must not hold an
-// unrelated request past its deadline.
+// own context: a slow PostgreSQL attach must not hold an unrelated request
+// past its deadline.
 var pgAttachSem = make(chan struct{}, 1)
 
 // acquirePGAttach takes pgAttachSem, or returns the context's error once ctx
@@ -84,24 +89,34 @@ func (e *DuckDBClientQueryExecutor) queryWithPostgres(ctx context.Context, connS
 	return &pinnedRows{Rows: rows, conn: conn}, nil
 }
 
-// attachedConn takes a pooled connection and attaches connStr on it, both
-// under pgAttachSem.
+// attachedConn takes a pooled connection, then attaches connStr on it under
+// pgAttachSem. The connection comes first: waiting for a busy pool while
+// holding the process-wide guard would stall every other client's attach
+// behind this client's pool.
 func (e *DuckDBClientQueryExecutor) attachedConn(ctx context.Context, connStr string) (*sql.Conn, error) {
-	if err := acquirePGAttach(ctx); err != nil {
-		return nil, err
-	}
-	defer releasePGAttach()
 	conn, err := e.client.DB.Conn(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("take a duckdb connection for the hot leg: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, sqlgen.PostgresAttachSQL(connStr)); err != nil {
+	if err := attachOn(ctx, conn, connStr); err != nil {
 		_ = conn.Close()
-		// DuckDB's attach error quotes the connection string, password
-		// included (#306).
-		return nil, fmt.Errorf("attach the hot leg's postgres catalog: %w", redact.Error(err))
+		return nil, err
 	}
 	return conn, nil
+}
+
+// attachOn runs the hot leg's ATTACH on conn under pgAttachSem.
+func attachOn(ctx context.Context, conn *sql.Conn, connStr string) error {
+	if err := acquirePGAttach(ctx); err != nil {
+		return err
+	}
+	defer releasePGAttach()
+	if _, err := conn.ExecContext(ctx, sqlgen.PostgresAttachSQL(connStr)); err != nil {
+		// DuckDB's attach error quotes the connection string, password
+		// included (#306).
+		return fmt.Errorf("attach the hot leg's postgres catalog: %w", redact.Error(err))
+	}
+	return nil
 }
 
 // pinnedRows are the rows of a query on a pinned connection. Close returns
