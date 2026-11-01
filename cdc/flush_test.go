@@ -119,3 +119,37 @@ func TestErrSchemaLockLostMatchesTheFlushPathError(t *testing.T) {
 		t.Fatal("matching must be by value, not by message")
 	}
 }
+
+// #768: a schema whose attribute metadata cache cannot be resolved fails the
+// flush pre-flight, and both RunOnce paths return that error. The real path
+// needs AWS and PostgreSQL before it reaches the pre-flight, so this builds
+// the error the way the flush path does: the registry lookup failure wrapped
+// by resolveRequiredAttrCache, or its empty-cache refusal, then wrapped by
+// processSchemas' pre-flight frame. internal/cdc's
+// TestProcessSchemas_AbortsWhenSchemaCacheUnavailable drives that path itself.
+func TestErrSchemaAttrCacheUnavailableMatchesTheFlushPathError(t *testing.T) {
+	if ErrSchemaAttrCacheUnavailable != internalcdc.ErrSchemaAttrCacheUnavailable {
+		t.Fatal("cdc.ErrSchemaAttrCacheUnavailable must be the value internal/cdc returns")
+	}
+	lookupErr := errors.New("schema unavailable")
+	cases := map[string]error{
+		"registry lookup failed": fmt.Errorf("resolve attribute cache for schema %d: %w: %w",
+			7, internalcdc.ErrSchemaAttrCacheUnavailable, lookupErr),
+		"empty cache": fmt.Errorf("schema %d has an empty attribute metadata cache: %w",
+			7, internalcdc.ErrSchemaAttrCacheUnavailable),
+	}
+	for name, cause := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := fmt.Errorf("cdc flush pre-flight: %w", cause)
+			if !errors.Is(err, ErrSchemaAttrCacheUnavailable) {
+				t.Fatalf("errors.Is(%v, cdc.ErrSchemaAttrCacheUnavailable) = false", err)
+			}
+			if errors.Is(err, ErrSchemaLockLost) {
+				t.Fatal("a configuration failure must not match the retryable lost-lock sentinel")
+			}
+		})
+	}
+	if errors.Is(errors.New("schema attribute metadata cache unavailable"), ErrSchemaAttrCacheUnavailable) {
+		t.Fatal("matching must be by value, not by message")
+	}
+}

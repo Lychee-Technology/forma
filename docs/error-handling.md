@@ -1295,7 +1295,11 @@ holder skips that schema without an error, so the public API has no
 contention sentinel: only `cdc-init` fails on a contended lock. An S3
 listing that cannot be followed to its end fails `cdc-init` and
 `manifest-reconcile`, never a flush. Both outcomes are reported by those
-tools and are not returned through package `cdc`.
+tools and are not returned through package `cdc`. A flush whose schema
+registry cannot resolve a schema's attribute metadata cache fails before any
+side effect with an error that matches `cdc.ErrSchemaAttrCacheUnavailable`.
+That is a configuration error: unlike a lost lease, retrying with the same
+registry fails again.
 
 Tests only PostgreSQL can run carry a `_PostgresOnly` suffix, so a run against
 another backend can exclude them with `go test -skip PostgresOnly`. They depend

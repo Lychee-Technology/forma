@@ -55,6 +55,15 @@ var ErrGlobOnlyWithTemplate = internalcdc.ErrGlobOnlyWithTemplate
 // without an error, so package cdc has no contention sentinel.
 var ErrSchemaLockLost = internalcdc.ErrSchemaLockLost
 
+// ErrSchemaAttrCacheUnavailable matches a flush that could not resolve a
+// schema's attribute metadata cache: the registry lookup failed, or the cache
+// is empty because the schema is not registered. A run checks every schema's
+// cache before any side effect, so one unresolvable schema fails the whole
+// pass and flushes nothing (#193). It is a configuration error, not a
+// transient one: retrying with the same registry fails again. It is the same
+// value internal/cdc returns, so errors.Is matches the errors RunOnce returns.
+var ErrSchemaAttrCacheUnavailable = internalcdc.ErrSchemaAttrCacheUnavailable
+
 // FlushRunner reuses AWS/S3/DuckDB initialization across multiple flush
 // passes. Safe for long-lived use under credential rotation: superseded
 // cached exporters are evicted and closed once idle (#331), so rotations do
