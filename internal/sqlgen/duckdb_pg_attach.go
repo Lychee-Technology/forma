@@ -15,8 +15,13 @@ import (
 // postgres extension attaches. DuckDB 2.0's extension dropped the
 // postgres_scan(conn, schema, table) table function the template used
 // before (#752), so each scan is now a catalog-qualified table reference,
-// <alias>."schema"."table", and the statement batch that runs the query
-// begins with PostgresAttachSQL.
+// <alias>."schema"."table". The engine runs PostgresAttachSQL on a pinned
+// pooled connection, under a process-wide guard, and then runs the query on
+// that same connection (federated.DuckDBClientQueryExecutor's
+// queryWithPostgres), so the query reads the database the attach reached.
+// Only an executor without that pinned-connection seam (the engine-seam
+// fakes, the e2e harness) gets PostgresAttachSQL at the head of the query's
+// statement batch instead.
 //
 // The alias names the connection string without revealing it. An ATTACH is
 // shared by every connection of a DuckDB database, and two engines can share

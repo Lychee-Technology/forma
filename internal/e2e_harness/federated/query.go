@@ -323,13 +323,14 @@ func isFederatedTierFileError(err error) bool {
 	return strings.Contains(err.Error(), "No files found") || strings.Contains(err.Error(), "does not exist")
 }
 
-// buildPGConnString builds the Postgres connection string for DuckDB.
 // withPostgresAttach prefixes a hot-tier query with the attach of the
-// catalog its hotScan references name, as the engine does (#752).
+// catalog its hotScan references name (#752): the batch form the engine
+// falls back to for executors without its pinned-connection seam.
 func (h *FederatedTestHarness) withPostgresAttach(query string) string {
 	return sqlgen.PostgresAttachSQL(h.buildPGConnString()) + "\n" + query
 }
 
+// buildPGConnString builds the Postgres connection string for DuckDB.
 func (h *FederatedTestHarness) buildPGConnString() string {
 	host := h.PGHost
 	if host == "" {
