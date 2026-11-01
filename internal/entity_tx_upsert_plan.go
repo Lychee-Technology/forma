@@ -57,11 +57,15 @@ func (s *txSession) planUpsert(ctx context.Context, req *forma.UpsertRequest) (*
 // its first statement (#649): its operators, and its preconditions down to
 // their operands, which only rendering parses. The holder is locked before
 // the update runs, so a malformed operand found there would arrive after
-// SQL and poison the Tx, and only when a row held the target.
+// SQL and poison the Tx, and only when a row held the target. update, which
+// upsertUpdateOp built for this call, takes the Updates intake checked, so
+// the holder is written with the text images judged here (#773).
 func (s *txSession) validateUpsertUpdate(update *forma.EntityOperation, prepared *preparedCreate) error {
-	if err := validateConditionalUpdate(update, prepared.cache, s.crud.relations, s.crud.validator.ArrayPaths(prepared.schemaID)); err != nil {
+	updates, err := validateConditionalUpdate(update, prepared.cache, s.crud.relations, s.crud.validator.ArrayPaths(prepared.schemaID))
+	if err != nil {
 		return fmt.Errorf("failed to validate the update action of the upsert of %s: %w", update.SchemaName, err)
 	}
+	update.Updates = updates
 	if update.Preconditions == nil {
 		return nil
 	}

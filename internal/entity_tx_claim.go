@@ -39,6 +39,9 @@ type claimPlan struct {
 	// eligible is what the re-check tests: condition, and with a Group the
 	// head predicate too.
 	eligible *renderedGuard
+	// updates is what each claimed row is written with: the Updates intake
+	// checked, carrying the text images it judged (#773).
+	updates map[string]any
 }
 
 func (s *txSession) Claim(ctx context.Context, req *forma.ClaimRequest) (*forma.ClaimResult, error) {
@@ -94,10 +97,11 @@ func (s *txSession) planClaim(req *forma.ClaimRequest) (*claimPlan, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate Claim group on %s: %w", req.SchemaName, err)
 	}
-	if err := s.validateClaimMutation(req, schemaID, cache); err != nil {
+	updates, err := s.validateClaimMutation(req, schemaID, cache)
+	if err != nil {
 		return nil, fmt.Errorf("failed to validate Claim mutation on %s: %w", req.SchemaName, err)
 	}
-	plan := &claimPlan{req: req, schemaID: schemaID, tables: s.crud.resolveTables(), orders: orders, head: head}
+	plan := &claimPlan{req: req, schemaID: schemaID, tables: s.crud.resolveTables(), orders: orders, head: head, updates: updates}
 	if err := s.renderClaim(plan); err != nil {
 		return nil, fmt.Errorf("failed to prepare Claim on %s: %w", req.SchemaName, err)
 	}
@@ -126,25 +130,27 @@ func (s *txSession) renderClaim(plan *claimPlan) error {
 // validateClaimMutation checks Updates and UpdateOps as Update checks them
 // before its first statement (#649), and refuses a mutation that changes an
 // attribute of a unique key: moving a key entry can wait for another
-// transaction writing the same value, and a claim never waits.
-func (s *txSession) validateClaimMutation(req *forma.ClaimRequest, schemaID int16, cache forma.SchemaAttributeCache) error {
+// transaction writing the same value, and a claim never waits. It answers
+// the Updates each claimed row is written with (validateConditionalUpdate).
+func (s *txSession) validateClaimMutation(req *forma.ClaimRequest, schemaID int16, cache forma.SchemaAttributeCache) (map[string]any, error) {
 	if len(req.Updates) == 0 && len(req.UpdateOps) == 0 {
-		return forma.InvalidInputf("Claim on %s needs Updates or UpdateOps: the claim mutation must make a claimed row stop matching the claim condition", req.SchemaName)
+		return nil, forma.InvalidInputf("Claim on %s needs Updates or UpdateOps: the claim mutation must make a claimed row stop matching the claim condition", req.SchemaName)
 	}
 	op := &forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: req.SchemaName},
 		Updates: req.Updates, UpdateOps: req.UpdateOps}
-	if err := validateConditionalUpdate(op, cache, s.crud.relations, s.crud.validator.ArrayPaths(schemaID)); err != nil {
-		return fmt.Errorf("failed to validate Claim mutation on %s: %w", req.SchemaName, err)
+	updates, err := validateConditionalUpdate(op, cache, s.crud.relations, s.crud.validator.ArrayPaths(schemaID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate Claim mutation on %s: %w", req.SchemaName, err)
 	}
 	for _, spec := range s.rows.repo.uniqueKeys.keysOf(schemaID) {
 		for _, attr := range spec.attrs {
 			if claimWrites(req, attr.name) {
-				return forma.InvalidInputf("Claim on %s cannot change attribute '%s' of unique key %s: a claim never waits for another transaction, and a unique key write can",
+				return nil, forma.InvalidInputf("Claim on %s cannot change attribute '%s' of unique key %s: a claim never waits for another transaction, and a unique key write can",
 					req.SchemaName, attr.name, spec.name)
 			}
 		}
 	}
-	return nil
+	return updates, nil
 }
 
 // claimWrites reports whether the claim mutation writes attr, a dotted
@@ -243,8 +249,8 @@ func (s *txSession) claimRow(ctx context.Context, plan *claimPlan, i int, rowID 
 	}
 	op := &forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: plan.req.SchemaName, RowID: rowID},
 		UpdateOps: plan.req.UpdateOps}
-	if plan.req.Updates != nil {
-		op.Updates = copyMapDeep(plan.req.Updates)
+	if plan.updates != nil {
+		op.Updates = copyMapDeep(plan.updates)
 	}
 	return s.crud.Update(ctx, op)
 }

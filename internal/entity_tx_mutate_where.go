@@ -42,6 +42,10 @@ type mutationPlan struct {
 	orders      []model.AttributeOrder
 	condition   *renderedGuard
 	maxAffected int
+	// updates is what each surviving row is written with: the Updates
+	// intake checked, carrying the text images it judged (#773). nil for a
+	// delete.
+	updates map[string]any
 }
 
 // refusedBeforeWrite marks an ErrInvalidInput a predicate mutation answers
@@ -110,7 +114,8 @@ func (s *txSession) planMutation(kind mutateKind, req *forma.MutateWhereRequest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve %s sort on %s: %w", method, req.SchemaName, err)
 	}
-	if err := s.validateMutationValues(kind, req, schemaID, cache); err != nil {
+	updates, err := s.validateMutationValues(kind, req, schemaID, cache)
+	if err != nil {
 		return nil, err
 	}
 	tables := s.crud.resolveTables()
@@ -119,7 +124,7 @@ func (s *txSession) planMutation(kind mutateKind, req *forma.MutateWhereRequest)
 		return nil, fmt.Errorf("failed to prepare %s on %s: %w", method, req.SchemaName, err)
 	}
 	return &mutationPlan{kind: kind, req: req, schemaID: schemaID, tables: tables, orders: orders,
-		condition: condition, maxAffected: maxAffected}, nil
+		condition: condition, maxAffected: maxAffected, updates: updates}, nil
 }
 
 // refuseEmptyGroups refuses a condition holding an and or or with no
@@ -166,23 +171,25 @@ func resolveMaxAffected(method string, req *forma.MutateWhereRequest) (int, erro
 }
 
 // validateMutationValues checks Updates and UpdateOps as Update checks them
-// before its first statement (#649), and refuses both on a delete.
-func (s *txSession) validateMutationValues(kind mutateKind, req *forma.MutateWhereRequest, schemaID int16, cache forma.SchemaAttributeCache) error {
+// before its first statement (#649), and refuses both on a delete. It
+// answers the Updates each row is written with (validateConditionalUpdate).
+func (s *txSession) validateMutationValues(kind mutateKind, req *forma.MutateWhereRequest, schemaID int16, cache forma.SchemaAttributeCache) (map[string]any, error) {
 	if kind == mutateDelete {
 		if req.Updates != nil || len(req.UpdateOps) > 0 {
-			return forma.InvalidInputf("DeleteWhere on %s does not accept Updates or UpdateOps: a delete writes no value", req.SchemaName)
+			return nil, forma.InvalidInputf("DeleteWhere on %s does not accept Updates or UpdateOps: a delete writes no value", req.SchemaName)
 		}
-		return nil
+		return nil, nil
 	}
 	if req.Updates == nil && len(req.UpdateOps) == 0 {
-		return forma.InvalidInputf("UpdateWhere on %s needs Updates or UpdateOps", req.SchemaName)
+		return nil, forma.InvalidInputf("UpdateWhere on %s needs Updates or UpdateOps", req.SchemaName)
 	}
 	op := &forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: req.SchemaName},
 		Updates: req.Updates, UpdateOps: req.UpdateOps}
-	if err := validateConditionalUpdate(op, cache, s.crud.relations, s.crud.validator.ArrayPaths(schemaID)); err != nil {
-		return fmt.Errorf("failed to validate UpdateWhere on %s: %w", req.SchemaName, err)
+	updates, err := validateConditionalUpdate(op, cache, s.crud.relations, s.crud.validator.ArrayPaths(schemaID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to validate UpdateWhere on %s: %w", req.SchemaName, err)
 	}
-	return nil
+	return updates, nil
 }
 
 // lockSurvivors selects the candidates, refuses an overflow, locks the
@@ -253,8 +260,8 @@ func (s *txSession) mutateRow(ctx context.Context, plan *mutationPlan, i int, ro
 	}
 	op := &forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: plan.req.SchemaName, RowID: rowID}}
 	if plan.kind == mutateUpdate {
-		if plan.req.Updates != nil {
-			op.Updates = copyMapDeep(plan.req.Updates)
+		if plan.updates != nil {
+			op.Updates = copyMapDeep(plan.updates)
 		}
 		op.UpdateOps = plan.req.UpdateOps
 		return s.crud.Update(ctx, op)

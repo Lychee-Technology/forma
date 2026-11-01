@@ -278,9 +278,13 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		return nil, fmt.Errorf("failed to get schema: %w", err)
 	}
 
-	if err := validateConditionalUpdate(req, schemaCache, s.relations, s.validator.ArrayPaths(schemaID)); err != nil {
+	updates, err := validateConditionalUpdate(req, schemaCache, s.relations, s.validator.ArrayPaths(schemaID))
+	if err != nil {
 		return nil, fmt.Errorf("failed to validate update of %s/%s: %w", req.SchemaName, req.RowID, err)
 	}
+	// The merge writes the Updates intake checked, not the caller's (#773).
+	write := *req
+	write.Updates = updates
 
 	// The whole read-modify-write happens inside the repository's write
 	// transaction, under the per-row write lock create and delete take
@@ -293,7 +297,7 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	stored, err := s.repository.MergePersistentRecord(ctx, s.resolveTables(), schemaID, req.RowID,
 		model.RowGuard{Precondition: req.Preconditions},
 		func(ctx context.Context, existing *model.PersistentRecord, clock model.TxClock) (*model.PersistentRecord, error) {
-			return s.mergeUpdateRecord(ctx, req, schemaID, schemaCache, existing, clock)
+			return s.mergeUpdateRecord(ctx, &write, schemaID, schemaCache, existing, clock)
 		})
 	if err != nil {
 		return nil, fmt.Errorf("failed to update persistent record: %w", err)
