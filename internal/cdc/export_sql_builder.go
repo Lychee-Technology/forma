@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/parquetformat"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
@@ -15,7 +16,7 @@ type exportSQLOptions struct {
 	parquetVersion   string
 }
 
-const defaultParquetVersion = "V2"
+const defaultParquetVersion = parquetformat.Version
 
 func resolveExportSQLOptions(cfg CDCConfig, defaultMemoryLimit string) exportSQLOptions {
 	compression := cfg.ParquetCompression
@@ -42,12 +43,7 @@ func resolveExportSQLOptions(cfg CDCConfig, defaultMemoryLimit string) exportSQL
 }
 
 func buildParquetCopyOptions(opts exportSQLOptions) string {
-	return fmt.Sprintf(
-		"FORMAT PARQUET, PARQUET_VERSION %s, COMPRESSION '%s', COMPRESSION_LEVEL %d",
-		opts.parquetVersion,
-		strings.ToUpper(opts.compression),
-		opts.compressionLevel,
-	)
+	return parquetformat.CopyOptions(opts.parquetVersion, opts.compression, opts.compressionLevel)
 }
 
 func resolveMainAndEAVTableNames(cfg CDCConfig) (string, string) {

@@ -1259,6 +1259,8 @@ What a failure means is unchanged where it lands. A `DuckDBClient` that fails to
 
 **Database files.** A file-backed `DBPath` written by DuckDB 2.0 cannot be opened by 1.5.6, so a rollback to a 1.5.6 build needs a fresh file. Nothing Forma keeps in DuckDB outlives the process (the engine creates nothing there, and the attachment and extension state are rebuilt on open), so deleting the file loses nothing of Forma's.
 
+**Parquet files.** Unlike a database file, the Parquet a 2.0 build writes to S3 stays readable by 1.5.6, so a rollback keeps every delta and base object. `make duckdb-storage-compat` checks both directions, files merged by compaction included, with the production COPY options (`internal/parquetformat`), and runs in CI; on 2.0.0 and 1.5.6 both releases write every column with the same codec and page encodings (#753). See `docs/duckdb-upgrades.md`.
+
 ## **8. Observability**
 
 The following metrics MUST be emitted through the engine's metric sink, which

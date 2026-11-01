@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/parquetformat"
 )
 
 // CDCConfig controls change_log flushing and export behavior.
@@ -127,8 +128,8 @@ type ManifestConfig struct {
 
 // Default constants
 const (
-	DefaultParquetCompression      = "zstd"
-	DefaultParquetCompressionLevel = 3
+	DefaultParquetCompression      = parquetformat.DefaultCompression
+	DefaultParquetCompressionLevel = parquetformat.DefaultCompressionLevel
 	DefaultMinRecords              = 20000
 	DefaultMaxAgeMs                = 3600000 // 1 hour
 	DefaultEstimatedRowBytes       = 1024

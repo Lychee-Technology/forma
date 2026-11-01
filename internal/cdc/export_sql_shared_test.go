@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/parquetformat"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
@@ -421,4 +422,11 @@ func TestBuildSchemaDrivenProjectionReservedColumn(t *testing.T) {
 			t.Fatalf("error %q must contain %q", err, want)
 		}
 	}
+}
+
+// The exporters' defaults are the options the cross-version storage probe
+// writes with (cmd/duckdbcompat), so they must not drift from parquetformat.
+func TestBuildParquetCopyOptions_DefaultsAreParquetFormatDefaults(t *testing.T) {
+	opts := resolveExportSQLOptions(CDCConfig{}, "1GB")
+	require.Equal(t, parquetformat.DefaultCopyOptions(), buildParquetCopyOptions(opts))
 }
