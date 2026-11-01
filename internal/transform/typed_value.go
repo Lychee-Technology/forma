@@ -11,12 +11,8 @@ import (
 )
 
 func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta forma.AttributeMetadata) (bool, error) {
-	// The converter's own text is published: it describes the caller's value
-	// ("cannot convert string to float64") and is the whole point of the 400.
 	handleConversionError := func(err error) (bool, error) {
-		return false, forma.InvalidInputf(
-			"invalid value for attribute '%s' (attrID=%d): %v",
-			attrName, meta.AttributeID, err)
+		return false, conversionRefusal(attrName, meta, err)
 	}
 
 	switch meta.ValueType {
@@ -63,20 +59,10 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 		floatBool := boolToFloat64(boolVal)
 		attr.ValueNumeric = &floatBool
 	case forma.ValueTypeList:
-		// walkDocument already decomposed the array into one call per
-		// element with ArrayIndices set; type the single scalar element by the
-		// declared items type. Parquet LIST reconstruction is positional, so
-		// only flat (single-index) lists are representable across tiers (#204).
-		if attr.ArrayIndices == "" {
-			return handleConversionError(fmt.Errorf("list attribute requires an array value, got scalar %v", value))
-		}
-		if strings.Contains(attr.ArrayIndices, ",") {
-			return handleConversionError(fmt.Errorf("multi-dimensional array not supported for list attribute (indices %q)", attr.ArrayIndices))
-		}
-		elemMeta := meta
-		elemMeta.ValueType = meta.EffectiveItemsType()
-		if elemMeta.ValueType == forma.ValueTypeList {
-			return handleConversionError(fmt.Errorf("items_type 'list' is not supported"))
+		// Type the single scalar element by the declared items type.
+		elemMeta, err := listElementMeta(attr.ArrayIndices, value, meta)
+		if err != nil {
+			return handleConversionError(err)
 		}
 		return populateTypedValue(attr, attrName, value, elemMeta)
 	default:
@@ -89,6 +75,36 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 		return handleConversionError(err)
 	}
 	return true, nil
+}
+
+// conversionRefusal publishes a conversion failure of attrName's value. The
+// converter's own text is published: it describes the caller's value
+// ("cannot convert string to float64") and is the whole point of the 400.
+func conversionRefusal(attrName string, meta forma.AttributeMetadata, err error) error {
+	return forma.InvalidInputf(
+		"invalid value for attribute '%s' (attrID=%d): %v",
+		attrName, meta.AttributeID, err)
+}
+
+// listElementMeta answers the metadata a list element at arrayIndices is
+// converted by, or why the position holds no element: walkDocument has
+// decomposed the array into one claim per element, so a claim without
+// indices is a scalar sent for the list, and a claim with several is inside
+// a nested array. Parquet LIST reconstruction is positional, so only flat
+// (single-index) lists are representable across tiers (#204).
+func listElementMeta(arrayIndices string, value any, meta forma.AttributeMetadata) (forma.AttributeMetadata, error) {
+	if arrayIndices == "" {
+		return meta, fmt.Errorf("list attribute requires an array value, got scalar %v", value)
+	}
+	if strings.Contains(arrayIndices, ",") {
+		return meta, fmt.Errorf("multi-dimensional array not supported for list attribute (indices %q)", arrayIndices)
+	}
+	elemMeta := meta
+	elemMeta.ValueType = meta.EffectiveItemsType()
+	if elemMeta.ValueType == forma.ValueTypeList {
+		return meta, fmt.Errorf("items_type 'list' is not supported")
+	}
+	return elemMeta, nil
 }
 
 func toString(value any) (string, error) {

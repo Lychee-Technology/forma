@@ -29,6 +29,11 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 		if err != nil {
 			return nil, forma.WrapPublicf(fmt.Errorf("failed to get schema: %w", err), "operation[%d]", i)
 		}
+		// Refused here, before the batch locks any row, as Update refuses
+		// it at intake (#679).
+		if err := checkUpdatesText(op.SchemaName, op.Updates, schemaCache, s.relations); err != nil {
+			return nil, forma.WrapPublicf(err, "operation[%d]", i)
+		}
 		keys[i] = model.PersistentRecordKey{SchemaID: schemaID, RowID: op.RowID}
 		caches[i] = schemaCache
 	}

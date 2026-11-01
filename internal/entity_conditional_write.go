@@ -8,9 +8,11 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
+	"github.com/lychee-technology/forma/internal/transform"
 )
 
-// Intake rules for EntityOperation.Preconditions and UpdateOps (#649). Every
+// Intake rules for EntityOperation.Preconditions and UpdateOps (#649), and
+// for the text values an update's Updates write (#679). Every
 // check runs before the operation sends any SQL, so a refusal is an
 // ErrInvalidInput that leaves a Tx usable. What can only be judged against
 // the locked row (a missing value to increment, an overflow) is
@@ -31,7 +33,8 @@ func validateConditionalCreate(req *forma.EntityOperation) error {
 }
 
 // validateConditionalUpdate checks an update's precondition and operators
-// against the schema. arrays are the paths the schema declares as arrays,
+// against the schema, and the text values its Updates write
+// (checkUpdatesText). arrays are the paths the schema declares as arrays,
 // nil when the manager has no validator to know them.
 func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex, arrays schemavalidate.ArrayPaths) error {
 	if err := validatePrecondition(req.Preconditions, req.SchemaName, cache); err != nil {
@@ -39,6 +42,19 @@ func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAtt
 	}
 	if err := validateUpdateOps(req, cache, relations, arrays); err != nil {
 		return fmt.Errorf("check update operators: %w", err)
+	}
+	return checkUpdatesText(req.SchemaName, req.Updates, cache, relations)
+}
+
+// checkUpdatesText refuses, before the update sends any statement, a text
+// value in updates that PostgreSQL text cannot hold (#679). The merged write
+// refuses it too, but only after the row lock and read, which poisons a Tx;
+// before #679 it reached the INSERT and failed it (22021). The relation
+// subtrees are stripped first, as the merge strips them
+// (mergeUpdateDocument).
+func checkUpdatesText(schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, relations *RelationIndex) error {
+	if err := transform.CheckTextValues(relations.StripComputedFields(schemaName, updates), cache); err != nil {
+		return fmt.Errorf("check updates: %w", err)
 	}
 	return nil
 }

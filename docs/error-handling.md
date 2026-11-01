@@ -670,6 +670,22 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   exact `value_numeric` text and naming `value_numeric` in place of a column.
 - `text`→`uuid_*`: the value must parse as a UUID (published 4xx, not the
   redacted 500 `uuid.Parse` used to raise in `storeInMainColumn`).
+- Text, in `eav_data` or a bound text column, scalar or list element (#679):
+  the value must be valid UTF-8 without a NUL character (U+0000), the text
+  PostgreSQL stores. `invalid value for attribute 'name' (attrID=1): text
+  cannot contain a NUL character (U+0000)`. Before #679 such a value reached
+  the `INSERT`, which failed with `22021` (see the status change below). The
+  rule is the one the condition DSL applies to text operands
+  (`sqlutil.CheckText`), so a write refuses exactly the strings a query
+  refuses. An update's `Updates` are judged at intake, before the row is
+  locked (`transform.CheckTextValues`), so the refusal leaves a `Tx` usable;
+  the merged write would refuse the same value only after SQL. Only this rule
+  moves to intake: an update the write refuses for another reason, such as a
+  scalar sent for a list, still answers a false precondition or a missing row
+  first. A Go `fmt.Stringer` whose `String()` changes between calls is
+  converted separately by the intake and by the write, so the guarantee does
+  not cover it (#773). A value bound to a system column is dropped, not
+  stored, and is not judged.
 - A value whose typed slot does not match the column family is refused, never
   dropped.
 - `date`/`datetime` bound with `iso8601` (#582): the RFC3339 image keeps
@@ -2341,6 +2357,17 @@ naming the attribute instead of `22021`. Over HTTP that is `400` instead of
 a redacted `500`. Only the NUL reaches the server from a JSON body
 (`\u0000`), because the body decoder reads invalid UTF-8 as U+FFFD; the Go
 API can send both.
+
+### Status change: a written text value PostgreSQL cannot store is now 400, not 500 (#679)
+
+A create, update or batch whose `data` or `updates` held text with a NUL
+character or invalid UTF-8 reached the `INSERT`, and PostgreSQL failed it with
+`22021`. No classifier maps that code, so the caller got a redacted `500`, and
+inside a `Tx` the failed statement aborted the transaction: the next operation
+returned `ErrTxAborted` and `InTx` rolled back even when `fn` returned nil. The
+write now refuses the value before any statement with `ErrInvalidInput`
+naming the attribute, a `400` over HTTP, and a `Tx` stays usable. Only the NUL
+reaches the server from a JSON body (`\u0000`); the Go API can send both.
 
 ### Status change: a duplicate-attribute payload now succeeds
 
