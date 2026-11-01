@@ -6,7 +6,7 @@ When writing or modifying Go code in this project, ALWAYS follow these rules:
 
 ### 1. File & Function Size Limits
 - REJECT any changes that result in:
-  - Souce cod files >500 lines (excluding generated code)
+  - Source code files >500 lines (excluding generated code). `_test.go` files are source files: the limit and the per-package `sizeguard` file-size guards cover them too (#433). Split a long scenario or table-driven test file by scenario group.
   - Functions/methods >100 lines
 - If a change would exceed limits, **automatically suggest refactoring** instead
 

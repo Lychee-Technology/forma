@@ -1,12 +1,12 @@
-// Package federated provides E2E tests for Performance Benchmarks (TC-08).
+// Package federated provides E2E tests for Performance Benchmarks (TC-08):
+// the query-latency half. The write-path half (CDC flush, compaction) is
+// performance_pipeline_test.go.
 //
-// Performance thresholds for Medium Scale (100K-500K records):
+// Query thresholds for Medium Scale (100K-500K records):
 // - Simple pagination: p50=50ms, p95=150ms, p99=300ms
 // - Complex filter: p50=100ms, p95=300ms, p99=500ms
 // - Full table scan: p50=500ms, p95=1.5s, p99=3s
 // - Concurrent (50 VU): p50=80ms, p95=250ms, p99=400ms
-// - CDC Flush (20K): p95=5s, p99=10s
-// - Compaction (500K): p95=30s, p99=60s
 //
 //go:build e2e
 
@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Performance thresholds
+// Query performance thresholds
 const (
 	// Simple pagination thresholds
 	SimplePaginationP50 = 50 * time.Millisecond
@@ -46,14 +46,6 @@ const (
 	ConcurrentP50 = 150 * time.Millisecond
 	ConcurrentP95 = 300 * time.Millisecond
 	ConcurrentP99 = 500 * time.Millisecond
-
-	// CDC Flush thresholds
-	CDCFlushP95 = 10 * time.Second
-	CDCFlushP99 = 20 * time.Second
-
-	// Compaction thresholds
-	CompactionP95 = 30 * time.Second
-	CompactionP99 = 60 * time.Second
 
 	// Minimum QPS for concurrent tests
 	MinQPS = 50.0
@@ -315,122 +307,6 @@ func TestPerformance_ConcurrentQueries(t *testing.T) {
 	AssertP95Latency(t, latencies, relaxedP95)
 }
 
-// TestPerformance_CDCFlush benchmarks CDC flush operations.
-func TestPerformance_CDCFlush(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping performance test in short mode")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	h, err := NewFederatedTestHarness(ctx)
-	require.NoError(t, err)
-	defer h.CleanupOrLog(ctx, t)
-
-	// Seed hot buffer with records to flush
-	require.NoError(t, h.ClearAllData(ctx))
-
-	// Reduced from 20K to 5K for faster tests
-	numRecords := 5000
-	_, err = h.SeedHotRecords(ctx, numRecords)
-	require.NoError(t, err)
-
-	t.Logf("Seeded %d hot records for flush test", numRecords)
-
-	// Measure flush duration
-	numFlushes := 5
-	latencies := make([]time.Duration, 0, numFlushes)
-
-	for i := 0; i < numFlushes; i++ {
-		// Re-seed data for each flush
-		if i > 0 {
-			_, err = h.SeedHotRecords(ctx, numRecords/numFlushes)
-			require.NoError(t, err)
-		}
-
-		start := time.Now()
-		result, err := h.RunCDCFlush(ctx)
-		duration := time.Since(start)
-
-		if err != nil {
-			t.Logf("Flush %d failed: %v", i, err)
-			continue
-		}
-
-		if result.Flushed {
-			latencies = append(latencies, duration)
-			t.Logf("Flush %d: %d rows in %v", i, result.RowsFlushed, duration)
-		}
-	}
-
-	if len(latencies) == 0 {
-		t.Skip("no successful flushes to measure")
-	}
-
-	// Calculate statistics
-	stats := CalculateLatencyStats(latencies)
-
-	t.Logf("CDC Flush Results (n=%d):", stats.Count)
-	t.Logf("  Min: %v, Max: %v, Avg: %v", stats.Min, stats.Max, stats.Avg)
-	t.Logf("  P95: %v, P99: %v", stats.P95, stats.P99)
-
-	// Verify against thresholds
-	RequireP95Latency(t, latencies, CDCFlushP95)
-}
-
-// TestPerformance_Compaction benchmarks compaction operations.
-func TestPerformance_Compaction(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping performance test in short mode")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-	defer cancel()
-
-	h, err := NewFederatedTestHarness(ctx)
-	require.NoError(t, err)
-	defer h.CleanupOrLog(ctx, t)
-
-	// Create multiple delta files to compact
-	require.NoError(t, h.ClearAllData(ctx))
-
-	numDeltaFiles := 10
-	recordsPerFile := 2000
-
-	for i := 0; i < numDeltaFiles; i++ {
-		records := GenerateTestRecords(recordsPerFile, &GeneratorOptions{
-			SchemaID:       h.SchemaID,
-			TimeRangeHours: 24,
-			TimeOffset:     i * 24,
-			Seed:           int64(i * 1000),
-		})
-		err = h.WriteParquet(ctx, "delta", "compact_delta_"+string(rune('0'+i))+".parquet", records)
-		require.NoError(t, err)
-	}
-
-	totalRecords := numDeltaFiles * recordsPerFile
-	t.Logf("Created %d delta files with %d total records", numDeltaFiles, totalRecords)
-
-	// Measure compaction duration
-	start := time.Now()
-	result, err := h.RunCompaction(ctx)
-	duration := time.Since(start)
-	require.NoError(t, err)
-
-	t.Logf("Compaction Results:")
-	t.Logf("  Files compacted: %d", result.FilesCompacted)
-	t.Logf("  Rows merged: %d", result.RowsMerged)
-	t.Logf("  Duration: %v", duration)
-
-	// Verify completion
-	assert.Equal(t, numDeltaFiles, result.FilesCompacted, "should compact all delta files")
-	assert.Equal(t, int64(totalRecords), result.RowsMerged, "should merge all records")
-
-	// Verify duration (relaxed threshold for test environment)
-	AssertLatencyUnder(t, duration, CompactionP95, "compaction should complete within threshold")
-}
-
 // TestPerformance_QueryLatencyDistribution reports detailed latency distribution.
 func TestPerformance_QueryLatencyDistribution(t *testing.T) {
 	if testing.Short() {
@@ -562,14 +438,4 @@ func TestPerformance_MemoryUsage(t *testing.T) {
 
 	// Test passed if we got here without OOM
 	t.Log("Memory usage test completed without OOM")
-}
-
-// import internal package is available via harness
-
-// Helper function
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
