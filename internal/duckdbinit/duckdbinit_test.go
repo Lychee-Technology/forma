@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/duckdb/duckdb-go/v2"
+	duckdb "github.com/duckdb/duckdb-go/v2"
 
 	"github.com/lychee-technology/forma/internal/duckdbinit"
 	"github.com/stretchr/testify/require"
@@ -276,4 +276,25 @@ func TestMakeConnInit_FailedSecretSettingIsScrubbed(t *testing.T) {
 func TestS3SettingStep_RejectsForbiddenCharacters(t *testing.T) {
 	_, err := duckdbinit.S3SettingStep("s3_secret_access_key", "bad'key", true)
 	require.ErrorContains(t, err, "forbidden character")
+}
+
+type fatalEchoingExecer struct{}
+
+func (fatalEchoingExecer) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	return nil, &duckdb.Error{Type: duckdb.ErrorTypeFatal, Msg: "FATAL Error: database has been invalidated near " + query}
+}
+
+// Scrubbing a secret out of a DuckDB error keeps the error's type, so the
+// recovering connector still sees that a required step failed FATAL.
+func TestMakeConnInit_ScrubbedRequiredStepKeepsFatalType(t *testing.T) {
+	const secret = "s3cr3tvalue752"
+	step, err := duckdbinit.S3SettingStep("s3_secret_access_key", secret, true)
+	require.NoError(t, err)
+
+	requiredErr := duckdbinit.MakeConnInit([]duckdbinit.Step{step.AsRequired()}, zap.NewNop().Sugar(), duckdbinit.DefaultInitTimeout)(fatalEchoingExecer{})
+	require.NotContains(t, requiredErr.Error(), secret)
+	var duckErr *duckdb.Error
+	require.ErrorAs(t, requiredErr, &duckErr)
+	require.Equal(t, duckdb.ErrorTypeFatal, duckErr.Type)
+	require.NotContains(t, duckErr.Msg, secret)
 }

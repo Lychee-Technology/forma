@@ -93,6 +93,9 @@ func (r *RecoveringConnector) Connect(ctx context.Context) (driver.Conn, error) 
 		return nil, err
 	}
 	conn, err := inst.connector.Connect(ctx)
+	if err != nil {
+		observeConnectError(inst, r.log, err)
+	}
 	r.release(inst)
 	if err != nil {
 		return nil, fmt.Errorf("connect to duckdb: %w", err)
@@ -245,8 +248,28 @@ func (c *instanceConn) observe(err error) {
 	default:
 		return
 	}
-	if c.inst.invalid.CompareAndSwap(false, true) {
-		c.log.Errorw("duckdb: the database was invalidated; the next connection reopens it", "error", err)
+	markInvalid(c.inst, c.log, err)
+}
+
+// observeConnectError watches a failed Connect for invalidation. A Required
+// init step runs its statements inside Connect and fails it, so the FATAL
+// error of an invalidated database never reaches instanceConn.observe. That
+// is the state a file-backed reopen lands in when duckdb-go's instance cache
+// hands back the invalidated database while an older connection still holds
+// it: unless the replacement is marked invalid here, the connector keeps it
+// forever, and closing the older connections no longer helps. An INTERNAL
+// error cannot be probed without a connection; if it invalidated the
+// database, the next Connect's first init statement fails FATAL.
+func observeConnectError(inst *duckInstance, log *zap.SugaredLogger, err error) {
+	var duckErr *duckdb.Error
+	if errors.As(err, &duckErr) && duckErr.Type == duckdb.ErrorTypeFatal {
+		markInvalid(inst, log, err)
+	}
+}
+
+func markInvalid(inst *duckInstance, log *zap.SugaredLogger, err error) {
+	if inst.invalid.CompareAndSwap(false, true) {
+		log.Errorw("duckdb: the database was invalidated; the next connection reopens it", "error", err)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	duckdb "github.com/duckdb/duckdb-go/v2"
 	"go.uber.org/zap"
 )
 
@@ -216,12 +217,18 @@ func runStmts(execer driver.ExecerContext, stmts []Stmt, stepTimeout time.Durati
 }
 
 // scrubSecret returns err unchanged unless its message quotes secret, in
-// which case it returns a plain error with every occurrence replaced. The
+// which case it returns an error with every occurrence replaced. The
 // replacement drops the wrapped chain on purpose: a caller unwrapping it
-// would reach the unscrubbed message again.
+// would reach the unscrubbed message again. A DuckDB error keeps its type,
+// so the recovering connector still recognizes a FATAL one.
 func scrubSecret(err error, secret string) error {
 	if secret == "" || !strings.Contains(err.Error(), secret) {
 		return err
 	}
-	return errors.New(strings.ReplaceAll(err.Error(), secret, "[REDACTED]"))
+	msg := strings.ReplaceAll(err.Error(), secret, "[REDACTED]")
+	var duckErr *duckdb.Error
+	if errors.As(err, &duckErr) {
+		return &duckdb.Error{Type: duckErr.Type, Msg: msg}
+	}
+	return errors.New(msg)
 }
