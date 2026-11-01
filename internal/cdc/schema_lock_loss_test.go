@@ -45,6 +45,44 @@ func TestProcessSchema_NamesALostLock(t *testing.T) {
 	require.Equal(t, 1, released)
 }
 
+// TestProcessSchemas_ReturnsALostLock pins that a lost lock survives the
+// per-schema join processSchemas builds, which is the error RunOnce and
+// Runner.RunOnce return, so the public cdc.ErrSchemaLockLost matches it
+// (#768). A contended lock, by contrast, is a skip and fails nothing.
+func TestProcessSchemas_ReturnsALostLock(t *testing.T) {
+	db, err := sql.Open("duckdb", ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	_, err = db.Exec("CREATE TABLE change_log (schema_id SMALLINT, changed_at BIGINT, flushed_at BIGINT)")
+	require.NoError(t, err)
+
+	newCtx := func(locker SchemaLocker) *schemaFlushContext {
+		return &schemaFlushContext{
+			db:             db,
+			cfg:            CDCConfig{MinRecords: 1, MaxAgeMs: 1000},
+			tableName:      "change_log",
+			logger:         zap.NewNop(),
+			schemaRegistry: stubSchemaRegistry{cache: testAttrCache()},
+			locker:         locker,
+		}
+	}
+
+	released := 0
+	_, err = newCtx(lostLocker(&released)).processSchemas(context.Background(), []int64{7})
+	require.ErrorIs(t, err, ErrSchemaLockLost)
+	require.Contains(t, err.Error(), "schema 7")
+	require.Equal(t, 1, released)
+
+	tried := 0
+	contended := SchemaLockerFunc(func(context.Context, int16) (context.Context, func(), bool, error) {
+		tried++
+		return nil, nil, false, nil
+	})
+	_, err = newCtx(contended).processSchemas(context.Background(), []int64{7})
+	require.NoError(t, err, "a contended schema lock is a skip in the flush path, not ErrSchemaLockContended")
+	require.Equal(t, 1, tried)
+}
+
 func TestProcessInitSchemas_NamesALostLock(t *testing.T) {
 	released := 0
 	var workCtx context.Context

@@ -43,6 +43,40 @@ var ErrManifestStoreUnwired = internalcdc.ErrManifestStoreUnwired
 // is a configuration error that RunOnce returns before any side effect.
 var ErrGlobOnlyWithTemplate = internalcdc.ErrGlobOnlyWithTemplate
 
+// ErrSchemaLockLost matches a flush whose per-schema lock ended before its
+// work did: under the aurora-dsql engine, a lease the run could not renew in
+// time, or one another holder took over after it expired (#633). The schema's
+// unfinished batch stays in the hot tier, so the condition is operational,
+// not a configuration error: a later run can flush it once the lock can be
+// held again. It is the same value internal/cdc returns, so errors.Is matches
+// the errors RunOnce returns.
+//
+// A flush that finds a schema's lock held by another holder skips that schema
+// without an error, so package cdc has no contention sentinel.
+var ErrSchemaLockLost = internalcdc.ErrSchemaLockLost
+
+// ErrSchemaAttrCacheUnavailable matches a flush that could not resolve a
+// schema's attribute metadata cache. A run checks every schema's cache before
+// any side effect, so one unresolvable schema fails the whole pass and
+// flushes nothing (#193). It is the same value internal/cdc returns, so
+// errors.Is matches the errors RunOnce returns.
+//
+// A match alone does not say whether retrying can help, because it covers
+// two different failures:
+//
+//   - The registry returned no metadata: the cache is empty because the
+//     schema is not registered, or RunOnce was given a nil registry. That is
+//     a configuration error: retrying with the same registry fails again.
+//   - The registry's lookup itself returned an error. The error RunOnce
+//     returns then also wraps that lookup error, and whether it is transient
+//     is the registry's to say: a caller-supplied SchemaRegistry may fail
+//     once (a dropped connection, a timeout) and succeed on a later attempt.
+//
+// A caller deciding whether to retry inspects the wrapped cause with
+// errors.Is or errors.As against the errors its registry returns, rather
+// than treating every match as permanent.
+var ErrSchemaAttrCacheUnavailable = internalcdc.ErrSchemaAttrCacheUnavailable
+
 // FlushRunner reuses AWS/S3/DuckDB initialization across multiple flush
 // passes. Safe for long-lived use under credential rotation: superseded
 // cached exporters are evicted and closed once idle (#331), so rotations do

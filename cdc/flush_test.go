@@ -3,10 +3,12 @@ package cdc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/lychee-technology/forma"
+	internalcdc "github.com/lychee-technology/forma/internal/cdc"
 	"go.uber.org/zap"
 )
 
@@ -88,5 +90,76 @@ func TestRunOnceManifestConfigurationRefusalsMatchPublicSentinels(t *testing.T) 
 				}
 			})
 		}
+	}
+}
+
+// #768: a lost schema lock reaches RunOnce's error, so a scheduler on the
+// public API must be able to tell it (retry later) from a configuration or
+// data error with errors.Is. The real path needs a database whose lease
+// lapses mid-flush, so this builds the error the way the flush path does: a
+// held context cancelled with the loss as its cause (the lease renewal loop),
+// named by WithLockLoss over the cut-short work (processSchema), then wrapped
+// per schema and joined (processSchemas). internal/cdc's
+// TestProcessSchemas_ReturnsALostLock drives that path itself.
+func TestErrSchemaLockLostMatchesTheFlushPathError(t *testing.T) {
+	if ErrSchemaLockLost != internalcdc.ErrSchemaLockLost {
+		t.Fatal("cdc.ErrSchemaLockLost must be the value internal/cdc returns")
+	}
+	held, cancel := context.WithCancelCause(context.Background())
+	cancel(fmt.Errorf("%w: schema 7's lease was not renewed within 45s", internalcdc.ErrSchemaLockLost))
+	work := fmt.Errorf("execute flush: %w", held.Err())
+	err := errors.Join(
+		fmt.Errorf("schema 7: %w", internalcdc.WithLockLoss(held, work)),
+		fmt.Errorf("schema 8: %w", errors.New("unrelated failure")),
+	)
+	if !errors.Is(err, ErrSchemaLockLost) {
+		t.Fatalf("errors.Is(%v, cdc.ErrSchemaLockLost) = false", err)
+	}
+	if errors.Is(errors.New("schema lock lost"), ErrSchemaLockLost) {
+		t.Fatal("matching must be by value, not by message")
+	}
+}
+
+// #768: a schema whose attribute metadata cache cannot be resolved fails the
+// flush pre-flight, and both RunOnce paths return that error. The real path
+// needs AWS and PostgreSQL before it reaches the pre-flight, so this builds
+// the error the way the flush path does: the registry lookup failure wrapped
+// by resolveRequiredAttrCache, or its empty-cache refusal, then wrapped by
+// processSchemas' pre-flight frame. internal/cdc's
+// TestProcessSchemas_AbortsWhenSchemaCacheUnavailable drives that path itself.
+func TestErrSchemaAttrCacheUnavailableMatchesTheFlushPathError(t *testing.T) {
+	if ErrSchemaAttrCacheUnavailable != internalcdc.ErrSchemaAttrCacheUnavailable {
+		t.Fatal("cdc.ErrSchemaAttrCacheUnavailable must be the value internal/cdc returns")
+	}
+	lookupErr := errors.New("schema unavailable")
+	cases := map[string]error{
+		"registry lookup failed": fmt.Errorf("resolve attribute cache for schema %d: %w: %w",
+			7, internalcdc.ErrSchemaAttrCacheUnavailable, lookupErr),
+		"empty cache": fmt.Errorf("schema %d has an empty attribute metadata cache: %w",
+			7, internalcdc.ErrSchemaAttrCacheUnavailable),
+	}
+	for name, cause := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := fmt.Errorf("cdc flush pre-flight: %w", cause)
+			if !errors.Is(err, ErrSchemaAttrCacheUnavailable) {
+				t.Fatalf("errors.Is(%v, cdc.ErrSchemaAttrCacheUnavailable) = false", err)
+			}
+			if errors.Is(err, ErrSchemaLockLost) {
+				t.Fatal("an attribute cache failure must not match the lost-lock sentinel")
+			}
+		})
+	}
+	// The sentinel alone does not say whether a retry can help: a registry
+	// lookup failure keeps the registry's own error reachable, so a caller
+	// can recognise a transient one, while missing metadata carries no such
+	// cause (R2-F1).
+	if !errors.Is(fmt.Errorf("cdc flush pre-flight: %w", cases["registry lookup failed"]), lookupErr) {
+		t.Fatal("a registry lookup failure must keep the registry's error reachable")
+	}
+	if errors.Is(cases["empty cache"], lookupErr) {
+		t.Fatal("an empty cache must not carry a registry lookup error")
+	}
+	if errors.Is(errors.New("schema attribute metadata cache unavailable"), ErrSchemaAttrCacheUnavailable) {
+		t.Fatal("matching must be by value, not by message")
 	}
 }

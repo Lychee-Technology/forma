@@ -10,9 +10,13 @@ import (
 
 func TestResolveRequiredAttrCache(t *testing.T) {
 	t.Run("registry lookup error", func(t *testing.T) {
-		_, err := resolveRequiredAttrCache(errorSchemaRegistry{err: errors.New("boom")}, 7)
+		lookupErr := errors.New("boom")
+		_, err := resolveRequiredAttrCache(errorSchemaRegistry{err: lookupErr}, 7)
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrSchemaAttrCacheUnavailable)
+		// The registry's own error stays reachable, so a caller can tell a
+		// transient lookup failure from missing metadata (#768).
+		require.ErrorIs(t, err, lookupErr)
 		require.Contains(t, err.Error(), "7")
 	})
 	t.Run("empty cache", func(t *testing.T) {
