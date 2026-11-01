@@ -164,6 +164,34 @@ func TestKeysetCursorValidateShapeBoundaryValues(t *testing.T) {
 	})
 }
 
+// TestKeysetCursorValidateShapeBoundaryText pins rule 6 (#771): a string
+// boundary no row can hold, bare or behind a pointer, is refused before the
+// renderer binds it, while text a row can hold, empty or multi-byte, passes.
+func TestKeysetCursorValidateShapeBoundaryText(t *testing.T) {
+	nul, invalid, accented := "a\x00b", "a\xffb", "caf\u00e9"
+	runValidateShapeCases(t, []validateShapeCase{
+		{
+			name:    "a NUL in the tiebreak boundary is rejected",
+			cursor:  cursorOn(createdAtThenRowID(), int64(5), nul),
+			wantErr: `keyset cursor value 2 (for column "row_id") is not a value a row can hold: text cannot contain a NUL character (U+0000)`,
+		},
+		{
+			name:    "invalid UTF-8 in a prefix boundary is rejected",
+			cursor:  cursorOn(createdAtThenRowID(), invalid, "r1"),
+			wantErr: `keyset cursor value 1 (for column "created_at") is not a value a row can hold: text must be valid UTF-8`,
+		},
+		{
+			name:    "a string behind a pointer is judged too",
+			cursor:  cursorOn(createdAtThenRowID(), &invalid, "r1"),
+			wantErr: `keyset cursor value 1 (for column "created_at") is not a value a row can hold: text must be valid UTF-8`,
+		},
+		{
+			name:   "multi-byte text a row can hold stays accepted",
+			cursor: cursorOn(createdAtThenRowID(), &accented, accented),
+		},
+	})
+}
+
 func TestKeysetCursorValidateShapeMode(t *testing.T) {
 	modeCursor := func(mode KeysetCursorMode) *KeysetCursor {
 		return &KeysetCursor{

@@ -1690,7 +1690,7 @@ only it.
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
 | `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites, `body_limit.go`) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360); a request body over the configured cap (`413`, #465); a body net/http could not frame (`400`, `malformed request body`). A body the transport failed to deliver is not caller input and takes the redacted branch (`408` on a read timeout, see "Request limits") |
 | `internal/entity_request_limits.go` (`validateBatchOperation`, `pageOffset`) | a batch carrying more operations than `PerformanceConfig.MaxBatchSize`; a `page` whose offset overflows an `int` (#465); a `page` whose window ends past `QueryConfig.MaxRows` (#598) |
-| `internal/federated/duckdb_query_build.go` (`duckDBParquetPathsForQuery`), `internal/federated/parquet_hint_scope.go` (`validateHintPathScope`) | a `federated.s3_parquet_path_template` hint that is disabled by the deployment, unrenderable, renders to no usable path, contains a disallowed character, resolves outside the configured bucket / `s3DataPrefix` scope, or has a forbidden shape — `**`, a wildcard outside the object-name segment, a `_tmp` segment, a trailing `/` (#456, #477) — or any hint at all on an engine whose bucket is empty or whose `s3DataPrefix` carries a glob metacharacter, combinations startup validation normally rejects. The hint template and the offending rendered path are caller-owned and published; the configured bucket and prefix are operator detail (`WithOperatorDetail`). |
+| `internal/federated/duckdb_query_build.go` (`duckDBParquetPathsForQuery`), `internal/federated/parquet_hint_scope.go` (`validateHintPathScope`) | a `federated.s3_parquet_path_template` hint that is disabled by the deployment, unrenderable, renders to no usable path, contains a disallowed character, a NUL character or invalid UTF-8 (#771), resolves outside the configured bucket / `s3DataPrefix` scope, or has a forbidden shape — `**`, a wildcard outside the object-name segment, a `_tmp` segment, a trailing `/` (#456, #477) — or any hint at all on an engine whose bucket is empty or whose `s3DataPrefix` carries a glob metacharacter, combinations startup validation normally rejects. The hint template and the offending rendered path are caller-owned and published; the configured bucket and prefix are operator detail (`WithOperatorDetail`). |
 
 ### A success body that fails to encode (#591)
 
@@ -2387,6 +2387,23 @@ returned `ErrTxAborted` and `InTx` rolled back even when `fn` returned nil. The
 write now refuses the value before any statement with `ErrInvalidInput`
 naming the attribute, a `400` over HTTP, and a `Tx` stays usable. Only the NUL
 reaches the server from a JSON body (`\u0000`); the Go API can send both.
+
+### Status change: a parquet path hint DuckDB cannot read as text is now 400 (#771)
+
+A `federated.s3_parquet_path_template` whose rendered path held a NUL
+character or invalid UTF-8 passed every hint check. The path is interpolated
+into the DuckDB statement as a literal, and DuckDB reads statement text as a C
+string: a NUL cut the statement off inside the literal (`Parser Error:
+unterminated quoted string`), and invalid UTF-8 failed it with `Invalid Input
+Error: Invalid unicode`. Either was a DuckDB failure, not invalid input, so the
+caller got an unclassified error, or with `allow_partial_degraded_mode` a
+PostgreSQL-only answer in place of the path set it named. The hint is now
+refused before any DuckDB statement with `ErrInvalidInput` naming the path
+(`s3 parquet path "…" is not permitted: text cannot contain a NUL character
+(U+0000)`), the rule PostgreSQL text applies elsewhere (`sqlutil.CheckText`).
+Only the NUL reaches the server from a JSON body (`\u0000`); the Go API can
+send both. The hint is reachable only where `duckdb.allowCallerParquetPaths`
+is on.
 
 ### Status change: a duplicate-attribute payload now succeeds
 

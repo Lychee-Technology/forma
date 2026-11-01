@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // Scope rules for caller-supplied parquet path hints
@@ -42,6 +43,15 @@ import (
 // reaching a render site, at the cost of refusing the rare object key that
 // legitimately contains one.
 //
+// A path must also be text (sqlutil.CheckText, #771): valid UTF-8 without a
+// NUL character. The path is interpolated into the DuckDB statement as a
+// literal, and DuckDB reads statement text as a C string, so a NUL cut the
+// statement off inside the literal (a parser error) and invalid UTF-8 failed
+// it with an invalid-unicode error. Either was a DuckDB failure rather than
+// invalid input, so it was eligible for the degraded Postgres fallback, which
+// answers from a different path set than the caller named. JSON carries only
+// the NUL (\u0000); the Go API can send both.
+//
 // The configured prefix is spliced verbatim into the scope, and the shape
 // rules below inspect only the key beneath it, so a prefix carrying a glob
 // metacharacter (`data/*`, `data/**`) would hand every hint a directory
@@ -69,6 +79,9 @@ func validateHintPathScope(paths []string, bucket, dataPrefix string) error {
 		scope += trimmed + "/"
 	}
 	for _, path := range paths {
+		if err := sqlutil.CheckText(path); err != nil {
+			return forma.InvalidInputf("s3 parquet path %q is not permitted: %v", path, err)
+		}
 		if strings.ContainsAny(path, "'\";\n\r") {
 			return forma.InvalidInputf("s3 parquet path %q is not permitted: it contains a disallowed character", path)
 		}
