@@ -52,10 +52,8 @@ func (h *FederatedTestHarness) SeedHotRecords(ctx context.Context, count int) ([
 		TimeOffset:     0,
 	})
 
-	for _, r := range records {
-		if err := h.insertHotRecord(ctx, r); err != nil {
-			return nil, err
-		}
+	if err := h.insertHotRecords(ctx, records); err != nil {
+		return nil, err
 	}
 
 	h.seededRecords["hot"] = records
@@ -78,10 +76,8 @@ func (h *FederatedTestHarness) SeedAllTiers(ctx context.Context, base, delta, ho
 
 // SeedHotRecordsWithData inserts specific test records into hot buffer.
 func (h *FederatedTestHarness) SeedHotRecordsWithData(ctx context.Context, records []TestRecord) error {
-	for _, r := range records {
-		if err := h.insertHotRecord(ctx, r); err != nil {
-			return err
-		}
+	if err := h.insertHotRecords(ctx, records); err != nil {
+		return err
 	}
 	h.seededRecords["hot"] = append(h.seededRecords["hot"], records...)
 	return nil
@@ -89,6 +85,12 @@ func (h *FederatedTestHarness) SeedHotRecordsWithData(ctx context.Context, recor
 
 // insertHotRecord inserts a single record into Postgres (entity_main, eav_data, change_log).
 func (h *FederatedTestHarness) insertHotRecord(ctx context.Context, r TestRecord) error {
+	return h.insertHotRecordWith(ctx, h.PGDB, r)
+}
+
+// insertHotRecordWith inserts a single record through db: the entity_main
+// row, its eav_data rows and its unflushed change_log row.
+func (h *FederatedTestHarness) insertHotRecordWith(ctx context.Context, db sqlExecer, r TestRecord) error {
 	now := time.Now().UnixMilli()
 	if r.ChangedAt == 0 {
 		r.ChangedAt = now
@@ -100,18 +102,18 @@ func (h *FederatedTestHarness) insertHotRecord(ctx context.Context, r TestRecord
 	// tombstone is written.
 	if !r.NoCreationStamp {
 		// Insert into entity_main
-		if err := h.insertEntityMain(ctx, r); err != nil {
+		if err := h.insertEntityMain(ctx, db, r); err != nil {
 			return err
 		}
 
 		// Insert into eav_data for each attribute
-		if err := h.insertEAVData(ctx, r); err != nil {
+		if err := h.insertEAVData(ctx, db, r); err != nil {
 			return err
 		}
 	}
 
 	// Insert into change_log (unflushed)
-	if err := h.insertChangeLog(ctx, r); err != nil {
+	if err := h.insertChangeLog(ctx, db, r); err != nil {
 		return err
 	}
 
@@ -128,9 +130,9 @@ func mustCreationStamp(r TestRecord) int64 {
 }
 
 // insertEntityMain inserts a record into the entity_main table.
-func (h *FederatedTestHarness) insertEntityMain(ctx context.Context, r TestRecord) error {
+func (h *FederatedTestHarness) insertEntityMain(ctx context.Context, db sqlExecer, r TestRecord) error {
 	text01, text02, smallint01, bigint01, bigint02, double01, uuid01 := benchmarkMainColumnValues(r)
-	_, err := h.PGDB.ExecContext(ctx, `
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO entity_main (
 			ltbase_schema_id, ltbase_row_id,
 			text_01, text_02, smallint_01, bigint_01, bigint_02, double_01, uuid_01,
@@ -155,7 +157,7 @@ func (h *FederatedTestHarness) insertEntityMain(ctx context.Context, r TestRecor
 }
 
 // insertEAVData inserts attribute values into the eav_data table.
-func (h *FederatedTestHarness) insertEAVData(ctx context.Context, r TestRecord) error {
+func (h *FederatedTestHarness) insertEAVData(ctx context.Context, db sqlExecer, r TestRecord) error {
 	keys := make([]string, 0, len(r.Attributes))
 	for name := range r.Attributes {
 		keys = append(keys, name)
@@ -173,7 +175,7 @@ func (h *FederatedTestHarness) insertEAVData(ctx context.Context, r TestRecord) 
 			continue
 		}
 
-		_, err = h.PGDB.ExecContext(ctx, `
+		_, err = db.ExecContext(ctx, `
 			INSERT INTO eav_data (schema_id, row_id, attr_id, array_indices, value_text, value_numeric)
 			VALUES ($1, $2, $3, $4, $5, $6)
 			ON CONFLICT (schema_id, row_id, attr_id, array_indices) DO UPDATE SET
@@ -334,8 +336,8 @@ func nullableUnixMillis(value any) sql.NullInt64 {
 }
 
 // insertChangeLog inserts a record into the change_log table.
-func (h *FederatedTestHarness) insertChangeLog(ctx context.Context, r TestRecord) error {
-	_, err := h.PGDB.ExecContext(ctx, `
+func (h *FederatedTestHarness) insertChangeLog(ctx context.Context, db sqlExecer, r TestRecord) error {
+	_, err := db.ExecContext(ctx, `
 		INSERT INTO change_log (schema_id, row_id, changed_at, deleted_at, flushed_at)
 		VALUES ($1, $2, $3, $4, 0)
 		ON CONFLICT (schema_id, row_id, flushed_at) DO UPDATE SET
