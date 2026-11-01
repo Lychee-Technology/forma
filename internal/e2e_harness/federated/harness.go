@@ -395,12 +395,23 @@ func (h *FederatedTestHarness) Cleanup(ctx context.Context) error {
 	return nil
 }
 
+// cleanupBudget bounds the container stops CleanupOrLog runs.
+const cleanupBudget = 2 * time.Minute
+
 // CleanupOrLog releases all resources like Cleanup, reporting any failure
 // through tb instead of returning it. Deferred call sites cannot act on the
 // error, but it must not be silently discarded (errcheck, #436).
+//
+// A deferred cleanup often runs after the test's context has expired, most
+// often because that expiry is what failed the test. Stopping the containers
+// under it failed every stop with "context deadline exceeded" and could
+// leave them running (#781), so cleanup keeps ctx's values but not its
+// deadline or cancellation, and takes cleanupBudget of its own.
 func (h *FederatedTestHarness) CleanupOrLog(ctx context.Context, tb testing.TB) {
 	tb.Helper()
-	if err := h.Cleanup(ctx); err != nil {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupBudget)
+	defer cancel()
+	if err := h.Cleanup(cleanupCtx); err != nil {
 		tb.Logf("harness cleanup failed: %v", err)
 	}
 }

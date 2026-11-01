@@ -12,6 +12,7 @@ package federated
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -30,45 +31,58 @@ const (
 	CompactionP99 = 60 * time.Second
 )
 
+// Phase budgets of TestPerformance_CDCFlush. Each phase gets its own
+// deadline, so seeding and container start-up cannot use up the time meant
+// for the flushes being measured, and a failure names the phase that ran out
+// (#781). A flush budget is many times CDCFlushP99: a flush that exhausts it
+// is slow beyond doubt rather than marginally over the threshold.
+const (
+	cdcFlushSetupBudget = 5 * time.Minute
+	cdcFlushSeedBudget  = 5 * time.Minute
+	cdcFlushRunBudget   = 2 * time.Minute
+)
+
 // TestPerformance_CDCFlush benchmarks CDC flush operations.
 func TestPerformance_CDCFlush(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping performance test in short mode")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	h, err := NewFederatedTestHarness(ctx)
-	require.NoError(t, err)
-	defer h.CleanupOrLog(ctx, t)
-
-	// Seed hot buffer with records to flush
-	require.NoError(t, h.ClearAllData(ctx))
+	setup := startPhase("harness setup", cdcFlushSetupBudget)
+	h, err := NewFederatedTestHarness(setup.ctx)
+	if err == nil {
+		// CleanupOrLog takes a deadline of its own; the setup context only
+		// carries values to it.
+		defer h.CleanupOrLog(setup.ctx, t)
+		err = h.ClearAllData(setup.ctx)
+	}
+	setup.finish(t, err)
 
 	// Reduced from 20K to 5K for faster tests
 	numRecords := 5000
-	_, err = h.SeedHotRecords(ctx, numRecords)
-	require.NoError(t, err)
-
+	numFlushes := 5
+	seedHot(t, h, numRecords, "seed initial hot records")
 	t.Logf("Seeded %d hot records for flush test", numRecords)
 
 	// Measure flush duration
-	numFlushes := 5
 	latencies := make([]time.Duration, 0, numFlushes)
 
 	for i := 0; i < numFlushes; i++ {
 		// Re-seed data for each flush
 		if i > 0 {
-			_, err = h.SeedHotRecords(ctx, numRecords/numFlushes)
-			require.NoError(t, err)
+			seedHot(t, h, numRecords/numFlushes, fmt.Sprintf("seed hot records for CDC flush %d", i))
 		}
 
+		flush := startPhase(fmt.Sprintf("CDC flush %d", i), cdcFlushRunBudget)
 		start := time.Now()
-		result, err := h.RunCDCFlush(ctx)
+		result, err := h.RunCDCFlush(flush.ctx)
 		duration := time.Since(start)
+		flush.end()
 
 		if err != nil {
+			if flush.expired() {
+				t.Fatal(flush.describe(err))
+			}
 			t.Logf("Flush %d failed: %v", i, err)
 			continue
 		}
@@ -92,6 +106,16 @@ func TestPerformance_CDCFlush(t *testing.T) {
 
 	// Verify against thresholds
 	RequireP95Latency(t, latencies, CDCFlushP95)
+}
+
+// seedHot seeds count hot records as the named phase, under
+// cdcFlushSeedBudget, failing t with the phase's name if seeding fails or
+// runs out of time.
+func seedHot(t *testing.T, h *FederatedTestHarness, count int, name string) {
+	t.Helper()
+	seed := startPhase(fmt.Sprintf("%s (%d records)", name, count), cdcFlushSeedBudget)
+	_, err := h.SeedHotRecords(seed.ctx, count)
+	seed.finish(t, err)
 }
 
 // TestPerformance_Compaction benchmarks compaction operations.
