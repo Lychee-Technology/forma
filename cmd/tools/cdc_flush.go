@@ -28,8 +28,9 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	fs := flag.NewFlagSet("cdc-flush", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 
-	var pg postgresFlags
-	pg.register(fs, postgresFlagOptions{
+	var shared cdcSharedFlags
+	var flushOnly cdcFlushOnlyFlags
+	shared.pg.register(fs, postgresFlagOptions{
 		hostFlag:        "pg-host",
 		portFlag:        "pg-port",
 		userFlag:        "pg-user",
@@ -55,23 +56,21 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	})
 
 	// Change log settings
-	changeLogTable := fs.String("change-log-table", "change_log", "Change log table name")
-	entityMainTable := fs.String("entity-main-table", "entity_main", "Entity main table name")
-	eavDataTable := fs.String("eav-table", "eav_data", "EAV data table name")
-	minRecords := fs.Int("min-records", 20000, "Minimum records before flush")
-	maxAgeMs := fs.Int64("max-age-ms", 3600000, "Maximum age in ms before flush")
-	batchSize := fs.Int("batch-size", 10000, "Maximum batch size per flush")
-	estimatedRowBytes := fs.Int("estimated-row-bytes", 0, "Estimated bytes per row for batch sizing (0 to use default)")
-	maxBatchBytes := fs.Int64("max-batch-bytes", 0, "Max batch size in bytes (0 to use default)")
+	fs.StringVar(&flushOnly.changeLogTable, "change-log-table", "change_log", "Change log table name")
+	fs.StringVar(&shared.entityMainTable, "entity-main-table", "entity_main", "Entity main table name")
+	fs.StringVar(&shared.eavDataTable, "eav-table", "eav_data", "EAV data table name")
+	fs.IntVar(&flushOnly.minRecords, "min-records", 20000, "Minimum records before flush")
+	fs.Int64Var(&flushOnly.maxAgeMs, "max-age-ms", 3600000, "Maximum age in ms before flush")
+	fs.IntVar(&shared.batchSize, "batch-size", 10000, "Maximum batch size per flush")
+	fs.IntVar(&shared.estimatedRowBytes, "estimated-row-bytes", 0, "Estimated bytes per row for batch sizing (0 to use default)")
+	fs.Int64Var(&flushOnly.maxBatchBytes, "max-batch-bytes", 0, "Max batch size in bytes (0 to use default)")
 
-	var duck duckExportFlags
-	duck.register(fs, duckExportFlagOptions{
+	shared.duck.register(fs, duckExportFlagOptions{
 		memLimitDefault: "4GB",
 		queryTimeout:    5 * time.Minute,
 	})
 
-	var s3Config s3Flags
-	s3Config.register(fs, s3FlagOptions{
+	shared.s3.register(fs, s3FlagOptions{
 		includePrefix:  true,
 		prefixFlag:     "s3-prefix",
 		prefixDefault:  "delta",
@@ -81,8 +80,8 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	})
 
 	// Manifest settings (optional - enables manifest tracking)
-	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3 (enables manifest tracking)")
-	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template (empty disables manifest writes and requires -glob-only)")
+	fs.StringVar(&shared.manifestPrefix, "manifest-prefix", "", "Manifest prefix in S3 (enables manifest tracking)")
+	fs.StringVar(&shared.manifestTemplate, "manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template (empty disables manifest writes and requires -glob-only)")
 	globOnly := fs.Bool("glob-only", false, "Declare that no reader uses a manifest (every read globs the S3 prefix): flush without manifest writes. Clears the default -manifest-template; a schema whose default-path manifest lists files is still refused")
 
 	var schemaRegistry schemaRegistryFlags
@@ -98,31 +97,29 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 		return nil, err
 	}
 
-	if err := s3Config.validate(true); err != nil {
+	if err := shared.s3.validate(true); err != nil {
 		return nil, err
 	}
 	if err := schemaRegistry.validate(false); err != nil {
 		return nil, err
 	}
-	if err := validateManifestTemplateFlag(*manifestTemplate); err != nil {
+	if err := validateManifestTemplateFlag(shared.manifestTemplate); err != nil {
 		return nil, err
 	}
-	if err := resolveGlobOnlyFlag(fs, manifestTemplate, *globOnly); err != nil {
+	if err := resolveGlobOnlyFlag(fs, &shared.manifestTemplate, *globOnly); err != nil {
 		return nil, err
 	}
-	engine, err := pg.cdcEngine("pg-engine")
+	engine, err := shared.pg.cdcEngine("pg-engine")
 	if err != nil {
 		return nil, err
 	}
 
-	password := pg.resolvedPassword("PGPASSWORD")
-	cfg := buildCDCConfig(pg, password, changeLogTable, entityMainTable, eavDataTable,
-		minRecords, maxAgeMs, batchSize, estimatedRowBytes, maxBatchBytes, duck,
-		s3Config, manifestPrefix, manifestTemplate)
+	shared.password = shared.pg.resolvedPassword("PGPASSWORD")
+	cfg := buildCDCConfig(shared, flushOnly)
 	cfg.Engine = engine
 	cfg.GlobOnly = *globOnly
 
-	return &cdcFlushOptions{cfg: cfg, pg: pg, registry: schemaRegistry, dryRun: *dryRun}, nil
+	return &cdcFlushOptions{cfg: cfg, pg: shared.pg, registry: schemaRegistry, dryRun: *dryRun}, nil
 }
 
 // resolveGlobOnlyFlag settles the flush's manifest mode (#474). A flush with
@@ -147,41 +144,25 @@ func resolveGlobOnlyFlag(fs *flag.FlagSet, manifestTemplate *string, globOnly bo
 	return nil
 }
 
-// buildCDCConfig constructs a CDC config from parsed flag values.
-func buildCDCConfig(pg postgresFlags, password string, changeLogTable, entityMainTable, eavDataTable *string,
-	minRecords *int, maxAgeMs *int64, batchSize, estimatedRowBytes *int, maxBatchBytes *int64, duck duckExportFlags,
-	s3Config s3Flags, manifestPrefix, manifestTemplate *string) publiccdc.Config {
-	return publiccdc.Config{
-		ChangeLogTable:          *changeLogTable,
-		EntityMainTable:         *entityMainTable,
-		EAVDataTable:            *eavDataTable,
-		MinRecords:              *minRecords,
-		MaxAgeMs:                *maxAgeMs,
-		BatchSize:               *batchSize,
-		EstimatedRowBytes:       *estimatedRowBytes,
-		MaxBatchBytes:           *maxBatchBytes,
-		PGHost:                  pg.host,
-		PGPort:                  pg.port,
-		PGUser:                  pg.user,
-		PGPassword:              password,
-		PGDB:                    pg.database,
-		PGUseIAM:                pg.useIAM,
-		PGSSLMode:               pg.sslMode,
-		DuckDBPath:              duck.duckDBPath,
-		DuckThreads:             duck.duckThreads,
-		DuckMemLimit:            duck.duckMemLimit,
-		QueryTimeout:            duck.queryTimeout,
-		ParquetCompression:      duck.parquetCompression,
-		ParquetCompressionLevel: duck.parquetCompressionLevel,
-		S3Bucket:                s3Config.bucket,
-		S3Prefix:                s3Config.prefix,
-		S3Endpoint:              s3Config.endpoint,
-		S3Region:                s3Config.region,
-		S3UseSSL:                s3Config.useSSL,
-		S3UsePath:               s3Config.usePath,
-		ManifestPrefix:          *manifestPrefix,
-		ManifestTemplate:        *manifestTemplate,
-	}.WithDefaults()
+// cdcFlushOnlyFlags holds the cdc-flush flag values outside the block it
+// shares with cdc-init (#445).
+type cdcFlushOnlyFlags struct {
+	changeLogTable string
+	minRecords     int
+	maxAgeMs       int64
+	maxBatchBytes  int64
+}
+
+// buildCDCConfig constructs a CDC config from parsed flag values: the shared
+// block, then the flush-only fields, then WithDefaults last.
+func buildCDCConfig(shared cdcSharedFlags, flushOnly cdcFlushOnlyFlags) publiccdc.Config {
+	cfg := shared.sharedConfig()
+	cfg.ChangeLogTable = flushOnly.changeLogTable
+	cfg.MinRecords = flushOnly.minRecords
+	cfg.MaxAgeMs = flushOnly.maxAgeMs
+	cfg.MaxBatchBytes = flushOnly.maxBatchBytes
+	cfg.PGUseIAM = shared.pg.useIAM
+	return cfg.WithDefaults()
 }
 
 func runCDCFlush(ctx context.Context, args []string) error {
