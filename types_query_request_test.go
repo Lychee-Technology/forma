@@ -13,15 +13,19 @@ import (
 // QueryRequest JSON Tests
 // =============================================================================
 
-func TestQueryRequest_UnmarshalJSON(t *testing.T) { //nolint:funlen // #438: oversized test functions
+func TestQueryRequest_UnmarshalJSON(t *testing.T) {
 	rowID := uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
 
+	// A row leaves wantRowID and wantFederated nil when the JSON carries
+	// neither, and the test then checks they decode to nil.
 	tests := []struct {
 		name           string
 		json           string
 		wantSchemaName string
 		wantPage       int
 		wantCondition  bool
+		wantRowID      *uuid.UUID
+		wantFederated  *FederatedQueryRequest
 		wantErr        bool
 	}{
 		{
@@ -29,8 +33,6 @@ func TestQueryRequest_UnmarshalJSON(t *testing.T) { //nolint:funlen // #438: ove
 			json:           `{"schema_name":"users","page":1,"items_per_page":10}`,
 			wantSchemaName: "users",
 			wantPage:       1,
-			wantCondition:  false,
-			wantErr:        false,
 		},
 		{
 			name:           "with kv condition",
@@ -38,7 +40,6 @@ func TestQueryRequest_UnmarshalJSON(t *testing.T) { //nolint:funlen // #438: ove
 			wantSchemaName: "users",
 			wantPage:       1,
 			wantCondition:  true,
-			wantErr:        false,
 		},
 		{
 			name:           "with composite condition",
@@ -46,31 +47,32 @@ func TestQueryRequest_UnmarshalJSON(t *testing.T) { //nolint:funlen // #438: ove
 			wantSchemaName: "users",
 			wantPage:       1,
 			wantCondition:  true,
-			wantErr:        false,
 		},
 		{
 			name:           "with null condition",
 			json:           `{"schema_name":"users","page":1,"items_per_page":10,"condition":null}`,
 			wantSchemaName: "users",
 			wantPage:       1,
-			wantCondition:  false,
-			wantErr:        false,
 		},
 		{
 			name:           "with row_id",
 			json:           `{"schema_name":"users","page":1,"items_per_page":10,"row_id":"550e8400-e29b-41d4-a716-446655440000"}`,
 			wantSchemaName: "users",
 			wantPage:       1,
-			wantCondition:  false,
-			wantErr:        false,
+			wantRowID:      &rowID,
 		},
 		{
 			name:           "with federated hints",
 			json:           `{"schema_name":"users","page":1,"items_per_page":10,"federated":{"enabled":true,"preferred_tiers":["hot","warm","cold"],"prefer_hot":false,"use_main_as_anchor":true,"s3_parquet_path_template":"s3://bucket/prefix/{{.SchemaID}}/base/*.parquet, s3://bucket/prefix/{{.SchemaID}}/delta/*.parquet","allow_partial_degraded_mode":true}}`,
 			wantSchemaName: "users",
 			wantPage:       1,
-			wantCondition:  false,
-			wantErr:        false,
+			wantFederated: &FederatedQueryRequest{
+				Enabled:                  true,
+				PreferredTiers:           []string{"hot", "warm", "cold"},
+				UseMainAsAnchor:          true,
+				S3ParquetPathTemplate:    "s3://bucket/prefix/{{.SchemaID}}/base/*.parquet, s3://bucket/prefix/{{.SchemaID}}/delta/*.parquet",
+				AllowPartialDegradedMode: true,
+			},
 		},
 		{
 			name:    "invalid JSON",
@@ -88,37 +90,22 @@ func TestQueryRequest_UnmarshalJSON(t *testing.T) { //nolint:funlen // #438: ove
 		t.Run(tt.name, func(t *testing.T) {
 			var req QueryRequest
 			err := json.Unmarshal([]byte(tt.json), &req)
-
 			if tt.wantErr {
 				assert.Error(t, err)
-			} else {
-				require.NoError(t, err)
-				assert.Equal(t, tt.wantSchemaName, req.SchemaName)
-				assert.Equal(t, tt.wantPage, req.Page)
-				if tt.wantCondition {
-					assert.NotNil(t, req.Condition)
-				} else {
-					assert.Nil(t, req.Condition)
-				}
-				if tt.name == "with federated hints" {
-					require.NotNil(t, req.Federated)
-					assert.True(t, req.Federated.Enabled)
-					assert.Equal(t, []string{"hot", "warm", "cold"}, req.Federated.PreferredTiers)
-					assert.True(t, req.Federated.UseMainAsAnchor)
-					assert.True(t, req.Federated.AllowPartialDegradedMode)
-				}
+				return
 			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantSchemaName, req.SchemaName)
+			assert.Equal(t, tt.wantPage, req.Page)
+			if tt.wantCondition {
+				assert.NotNil(t, req.Condition)
+			} else {
+				assert.Nil(t, req.Condition)
+			}
+			assert.Equal(t, tt.wantRowID, req.RowID)
+			assert.Equal(t, tt.wantFederated, req.Federated)
 		})
 	}
-
-	// Test with row_id specifically
-	t.Run("row_id parsed correctly", func(t *testing.T) {
-		var req QueryRequest
-		err := json.Unmarshal([]byte(`{"schema_name":"users","page":1,"items_per_page":10,"row_id":"550e8400-e29b-41d4-a716-446655440000"}`), &req)
-		require.NoError(t, err)
-		require.NotNil(t, req.RowID)
-		assert.Equal(t, rowID, *req.RowID)
-	})
 }
 
 func TestQueryRequest_MarshalJSON(t *testing.T) {
