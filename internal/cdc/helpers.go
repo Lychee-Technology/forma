@@ -9,22 +9,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
-	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"go.uber.org/zap"
 )
-
-// redactConnStr replaces any password value in a connection string (or an SQL
-// string that embeds one) with redact.Placeholder. It is safe to call on any
-// string that may or may not contain a password.
-//
-// The matcher itself now lives in internal/redact, shared with the HTTP error
-// boundary, which needs exactly the same scrub (#301) on driver text that quotes
-// the PostgreSQL connection string back at us. The #290 regression tests in
-// redact_test.go exercise it through this wrapper and remain the contract.
-func redactConnStr(s string) string {
-	return redact.ConnStringPassword(s)
-}
 
 // GetChangeLogStats returns count and oldest changed_at for unflushed rows.
 func GetChangeLogStats(ctx context.Context, db *sql.DB, table string, schemaID int16) (int64, int64, error) {

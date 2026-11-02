@@ -58,7 +58,6 @@ type initRunContext struct {
 	logger               *zap.Logger
 	dryRun               bool
 	autoEstimateRowBytes bool
-	pgConnStr            string
 	replaceDelta         bool
 	deltaPrefix          string
 	// locker is the run engine's schema lock (nil: the PostgreSQL advisory
@@ -154,7 +153,6 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 		logger:               opts.Logger,
 		dryRun:               opts.DryRun,
 		autoEstimateRowBytes: opts.AutoEstimateRowBytes,
-		pgConnStr:            pgConnStr,
 		replaceDelta:         opts.ReplaceDelta,
 		deltaPrefix:          opts.DeltaPrefix,
 	}
@@ -441,7 +439,7 @@ func exportBaseFileForBatch(ctx context.Context, runCtx *initRunContext, state *
 	if runCtx.exportBaseFile != nil {
 		return runCtx.exportBaseFile(ctx, state, batch)
 	}
-	return runCtx.duck.ExportBaseFileToTmp(ctx, runCtx.cfg, runCtx.pgConnStr, batch.s3TmpPath, state.schemaID, batch.rowIDs, state.attrCache)
+	return runCtx.duck.ExportBaseFileToTmp(ctx, runCtx.cfg, runCtx.db, batch.s3TmpPath, state.schemaID, batch.rowIDs, state.attrCache)
 }
 
 func exportSchemaBatch(ctx context.Context, runCtx *initRunContext, state *schemaInitState, rowIDs []uuid.UUID) error {

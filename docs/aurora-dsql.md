@@ -16,7 +16,8 @@ engine. You configure it.
 | CDC schema lock (`cdc-flush`, `cdc-init`, `manifest-reconcile`) | Supported: a session advisory lock | Supported with `--pg-engine aurora-dsql`: a lease row (#633). CI runs it on PostgreSQL. It has not yet run against a cluster |
 | `cdc-flush`'s flush mark | Supported: one statement a batch | Supported: statements of at most 1,000 rows, each retried on `40001` (#633). Not yet run against a cluster |
 | `forma-tools init-db` | Supported | Not supported: its DDL is not valid on DSQL (#690) |
-| DuckDB `postgres` extension (CDC export, hot-tier federated reads) | Supported | Not verified (#691). `cdc-flush` and `cdc-init` export through it, so no CDC run on a cluster can succeed before it is |
+| CDC export reads (`cdc-flush`, `cdc-init`) | Supported | Over the run's pgx pool, in one `REPEATABLE READ READ ONLY` transaction per batch with the row ids as a `uuid[]` parameter (#785). Not yet run against a cluster; whether a 10,000-row batch's read fits DSQL's five-minute transaction limit is unmeasured |
+| DuckDB `postgres` extension (hot-tier federated reads) | Supported | Not verified (#691). The CDC tools no longer use it (#785) |
 
 ## Choosing the engine
 
@@ -207,7 +208,9 @@ gets `ErrRetryableConflict`.
   the token an `--expires-in` that covers the run. When renewals cannot get
   a connection, the lease ends the run with `ErrSchemaLockLost` rather than
   letting it continue unlocked. None of the three tools refreshes its token
-  yet (#694). The Lambda's pool does: it signs a token per connection.
+  yet (#694). The Lambda's pool does: it signs a token per connection. The
+  CDC export reads through the tool's own pool since #785, so a refresh
+  there would cover them too.
 - **Inspecting leases.**
 
   ```sql
@@ -304,8 +307,7 @@ only statement on the DSQL path that pairs `ON CONFLICT ... DO UPDATE ...
 WHERE` with `RETURNING`. The exclusion test checks its contract there: an
 acquire that a live lease blocks returns no row, so `TryLock` answers "not
 acquired" rather than an error. The blocked-renewal and slow-acquire tests
-skip on a cluster, since DSQL has no lock wait to block on. A `cdc-flush`
-run against a cluster also waits on the DuckDB `postgres` extension (#691).
+skip on a cluster, since DSQL has no lock wait to block on.
 
 The coordination suite runs against a cluster with
 `FORMA_COORDINATION_DSN` and `FORMA_COORDINATION_BACKEND=dsql`. It has not

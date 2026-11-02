@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/duckdbinit"
-	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"go.uber.org/zap"
@@ -36,11 +35,13 @@ type exportModeSpec struct {
 	deletedAtSelect    string
 }
 
+// exportSQLPlan is one export: the statements that prepare its pinned
+// DuckDB connection, the PostgreSQL reads staged on it, and the COPY that
+// projects the staged rows to Parquet.
 type exportSQLPlan struct {
-	sql            string
-	changeLogQuery string
-	mainQuery      string
-	eavQuery       string
+	setupSQL string
+	stages   []exportStage
+	copySQL  string
 }
 
 // newDuckConnectorFn opens one DuckDB database instance for the exporter;
@@ -54,29 +55,22 @@ var newDuckConnectorFn = func(dsn string, connInit func(driver.ExecerContext) er
 // init hook — session-scoped statements issued through the pool reach only
 // one arbitrary connection (#285, same class as #245). A failed optional
 // statement (a resource PRAGMA) is logged and skipped; a failed required one
-// (postgres_scanner, httpfs, parquet, an S3 setting) fails the connection,
-// so construction fails at the ping instead of returning an exporter whose
-// first export cannot reach PostgreSQL or S3 (#752). The pool reopens its
-// database after DuckDB invalidates it (#717).
+// (httpfs, parquet, an S3 setting) fails the connection, so construction
+// fails at the ping instead of returning an exporter whose first export
+// cannot reach S3 (#752). The pool reopens its database after DuckDB
+// invalidates it (#717).
+//
+// The engine serves the CDC exports (cdc-flush, cdc-init) and the S3-only
+// tools (compactor, baseline statistics, manifest audit) alike. None of them
+// reads PostgreSQL through DuckDB: the exports read it over pgx and stage the
+// rows (#785), so postgres_scanner is not loaded at all.
 //
 // The caller passes the whole key/secret/token triple because a session token
 // is only valid with the pair it was issued alongside; resolving it here would
 // let a token from one source pair with a key from another (#329, see
 // ResolveStaticS3Credentials).
 func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger) (*DuckExporter, error) {
-	return newDuckExporter(ctx, cfg, s3AccessKey, s3Secret, s3SessionToken, logger, true)
-}
-
-// NewDuckParquetEngine is NewDuckExporter for the tools that only read and
-// write S3 parquet (compactor, baseline statistics, manifest audit): the
-// postgres_scanner extension is still loaded when available, but its absence
-// does not fail construction (#752).
-func NewDuckParquetEngine(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger) (*DuckExporter, error) {
-	return newDuckExporter(ctx, cfg, s3AccessKey, s3Secret, s3SessionToken, logger, false)
-}
-
-func newDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, logger *zap.Logger, requirePostgres bool) (*DuckExporter, error) {
-	steps, err := buildExporterInitSteps(cfg, s3AccessKey, s3Secret, s3SessionToken, requirePostgres)
+	steps, err := buildExporterInitSteps(cfg, s3AccessKey, s3Secret, s3SessionToken)
 	if err != nil {
 		return nil, fmt.Errorf("build duckdb exporter init statements: %w", err)
 	}
@@ -94,7 +88,8 @@ func newDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, 
 	db := sql.OpenDB(connector)
 	// Exports run sequentially and file-backed DuckDB is effectively
 	// single-writer; per-connection init keeps a larger pool safe if ever
-	// needed, but nothing needs one today (#285).
+	// needed, but nothing needs one today (#285). An export pins its
+	// connection for its staged temp tables (runExport).
 	db.SetMaxOpenConns(1)
 
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -106,18 +101,19 @@ func newDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, 
 	return &DuckExporter{DB: db, Logger: logger}, nil
 }
 
-// ExportSnapshotToTmp builds an export SQL and runs COPY to the provided s3TmpPath.
-// s3TmpPath is the destination like 's3://bucket/prefix/<schema_id>/_tmp/<tmp_uuid>.parquet'
-func (e *DuckExporter) ExportSnapshotToTmp(ctx context.Context, cfg CDCConfig, pgConnStr string, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
-	sql, clQuery, mQuery, eQuery, err := buildExportSQL(pgConnStr, s3TmpPath, cfg, schemaID, snapshotTS, rowIDs, attrCache)
+// ExportSnapshotToTmp exports the batch's unflushed change_log versions, with
+// their main and EAV values, from pg (a pgx database/sql pool) to s3TmpPath,
+// e.g. 's3://bucket/prefix/<schema_id>/_tmp/<tmp_uuid>.parquet'.
+func (e *DuckExporter) ExportSnapshotToTmp(ctx context.Context, cfg CDCConfig, pg *sql.DB, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
+	plan, err := buildDeltaExportPlan(stagedTransport, s3TmpPath, cfg, schemaID, snapshotTS, rowIDs, attrCache)
 	if err != nil {
 		return fmt.Errorf("export snapshot to tmp for schema %d: %w", schemaID, err)
 	}
 
-	return e.executeExportSQL(ctx, cfg, "duckdb export sql", "duckdb copy exec", sql, clQuery, mQuery, eQuery)
+	return e.runExport(ctx, cfg, pg, plan, rowIDs, "duckdb export sql", "duckdb copy exec")
 }
 
-func buildExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (string, string, string, string, error) {
+func buildDeltaExportPlan(transport exportTransport, s3TmpPath string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (exportSQLPlan, error) {
 	plan, err := buildExportSQLPlan(exportModeSpec{
 		defaultMemoryLimit: "4GB",
 		activeOnly:         false,
@@ -128,72 +124,77 @@ func buildExportSQL(pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID 
 		// #274: live rows encode deleted_at = 0 on both tiers (base already
 		// COALESCEs in init_exporter.go). The AS alias is load-bearing: without
 		// it DuckDB names the parquet column "coalesce(cl.deleted_at, 0)". The
-		// inner change_log postgres_query and the raw m.ltbase_deleted_at main
+		// staged change_log column and the raw m.ltbase_deleted_at main
 		// column below stay untouched.
 		deletedAtSelect: "COALESCE(cl.deleted_at, 0) AS deleted_at",
-	}, pgConnStr, s3TmpPath, cfg, schemaID, snapshotTS, rowIDs, attrCache)
+	}, transport, s3TmpPath, cfg, schemaID, snapshotTS, rowIDs, attrCache)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("failed to build delta export SQL plan for schema %d: %w", schemaID, err)
+		return exportSQLPlan{}, fmt.Errorf("failed to build delta export SQL plan for schema %d: %w", schemaID, err)
 	}
-
-	return plan.sql, plan.changeLogQuery, plan.mainQuery, plan.eavQuery, nil
+	return plan, nil
 }
 
-func (e *DuckExporter) executeExportSQL(ctx context.Context, cfg CDCConfig, logMessage, execErrPrefix, sqlText, clQuery, mQuery, eQuery string) error {
-	e.Logger.Sugar().Infow(logMessage, "sql_preview", redactConnStr(sqlText), "cl_query", clQuery, "m_query", mQuery, "e_query", eQuery)
+// runExport runs plan on one pinned DuckDB connection: it creates the
+// staged temp tables, streams the PostgreSQL rows into them, COPYs the
+// projection to Parquet, and drops the tables. No PostgreSQL connection
+// string or credential enters DuckDB (#785).
+func (e *DuckExporter) runExport(ctx context.Context, cfg CDCConfig, pg *sql.DB, plan exportSQLPlan, rowIDs []uuid.UUID, logMessage, execErrPrefix string) error {
+	logArgs := []any{"sql_preview", plan.copySQL, "rows", len(rowIDs)}
+	for _, stage := range plan.stages {
+		logArgs = append(logArgs, stage.alias+"_query", stage.query)
+	}
+	e.Logger.Sugar().Infow(logMessage, logArgs...)
 	timeout := cfg.QueryTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
 	}
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if _, err := e.DB.ExecContext(ctx2, sqlText); err != nil {
-		// DuckDB's attach error quotes the whole PostgreSQL connection
-		// string, password included ("Unable to connect to Postgres at
-		// ..."), so scrub it before the text enters the chain the flush
-		// and init callers log (#290, #752).
-		return fmt.Errorf("%s: %w", execErrPrefix, redact.Error(err))
+
+	conn, err := e.DB.Conn(ctx2)
+	if err != nil {
+		return fmt.Errorf("%s: pin duckdb connection: %w", execErrPrefix, err)
 	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx2, plan.setupSQL); err != nil {
+		return fmt.Errorf("%s: create staging tables: %w", execErrPrefix, err)
+	}
+	defer e.dropStages(ctx, conn, plan.stages)
+
+	started := time.Now()
+	staged, err := stagePostgresRows(ctx2, pg, conn, plan.stages, rowIDs)
+	if err != nil {
+		return fmt.Errorf("%s: %w", execErrPrefix, err)
+	}
+	stagedAt := time.Now()
+	if _, err := conn.ExecContext(ctx2, plan.copySQL); err != nil {
+		return fmt.Errorf("%s: %w", execErrPrefix, err)
+	}
+	// The split between the PostgreSQL read and the COPY is the export's
+	// throughput question (#785); this line answers it per batch.
+	e.Logger.Sugar().Infow(logMessage+" done", "staged_rows", staged,
+		"stage_ms", stagedAt.Sub(started).Milliseconds(), "copy_ms", time.Since(stagedAt).Milliseconds())
 	return nil
 }
 
-func buildExportSQLPlan(spec exportModeSpec, pgConnStr string, s3TmpPath string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (exportSQLPlan, error) {
+// dropStages drops the export's temp tables, also after a failed or
+// cancelled export, so a pooled connection does not hold a batch's rows
+// until its next export replaces them.
+func (e *DuckExporter) dropStages(ctx context.Context, conn *sql.Conn, stages []exportStage) {
+	if len(stages) == 0 {
+		return
+	}
+	dropCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if _, err := conn.ExecContext(dropCtx, buildStageDropSQL(stages)); err != nil {
+		e.Logger.Sugar().Warnw("failed to drop cdc export staging tables", "err", err)
+	}
+}
+
+func buildExportSQLPlan(spec exportModeSpec, transport exportTransport, s3TmpPath string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (exportSQLPlan, error) {
 	if len(rowIDs) == 0 && spec.useChangeLog {
 		return exportSQLPlan{}, errors.New("export snapshot: no row ids provided")
 	}
-
-	pgEsc := sqlutil.EscapeLiteral(pgConnStr)
-	s3Esc := sqlutil.EscapeLiteral(s3TmpPath)
-	entityMain, eavData := resolveMainAndEAVTableNames(cfg)
-	// A base export with no row ids is a legitimate request (#519): a schema
-	// with zero live rows still needs one zero-row base object carrying the
-	// full projected column set, so its manifest never lists nothing (an
-	// empty manifest sends readers to the legacy glob fallback, see
-	// manifest.QuerySource.Paths). The FALSE filters keep the projection
-	// intact while selecting no rows.
-	mFilter, eFilter := "FALSE", "FALSE"
-	if len(rowIDs) > 0 {
-		rowList := quoteUUIDList(rowIDs)
-		mFilter = fmt.Sprintf("ltbase_row_id IN (%s)", rowList)
-		eFilter = fmt.Sprintf("row_id IN (%s)", rowList)
-	}
-
-	plan := exportSQLPlan{}
-	if spec.useChangeLog {
-		changeLog := sanitizeIdentifier(cfg.ChangeLogTable)
-		if changeLog == "" {
-			changeLog = "change_log"
-		}
-		clFilter := fmt.Sprintf("row_id IN (%s)", quoteUUIDList(rowIDs))
-		plan.changeLogQuery = fmt.Sprintf(
-			"SELECT schema_id, row_id, changed_at, deleted_at FROM %s WHERE schema_id = %d AND flushed_at = 0 AND changed_at <= %d AND %s",
-			changeLog, schemaID, snapshotTS, clFilter,
-		)
-	}
-
-	opts := resolveExportSQLOptions(cfg, spec.defaultMemoryLimit)
-	copyOptions := buildParquetCopyOptions(opts)
-
 	if len(attrCache) == 0 {
 		// A resolvable attribute cache is mandatory: without it we cannot derive
 		// the numeric-family typing (bool as 1/0, dates as epoch ms) the
@@ -203,18 +204,46 @@ func buildExportSQLPlan(spec exportModeSpec, pgConnStr string, s3TmpPath string,
 		// for any caller that bypasses it (#193).
 		return exportSQLPlan{}, fmt.Errorf("build export SQL for schema %d: attribute metadata cache is required but empty: %w", schemaID, ErrSchemaAttrCacheUnavailable)
 	}
-
 	projection, err := buildSchemaDrivenProjection(attrCache)
 	if err != nil {
 		return exportSQLPlan{}, fmt.Errorf("build export projection for schema %d: %w", schemaID, err)
 	}
-	plan.mainQuery = buildMainEntityQuery(entityMain, schemaID, projection.mainColumns, mFilter, spec.activeOnly)
-	plan.eavQuery = buildEAVQuery(eavData, schemaID, eFilter, projection.eavAttrIDs)
+
+	// A base export with no row ids is a legitimate request (#519): a schema
+	// with zero live rows still needs one zero-row base object carrying the
+	// full projected column set, so its manifest never lists nothing (an
+	// empty manifest sends readers to the legacy glob fallback, see
+	// manifest.QuerySource.Paths). Its reads select no rows; the staged
+	// tables keep every column.
+	entityMain, eavData := resolveMainAndEAVTableNames(cfg)
+	var stages []exportStage
+	if spec.useChangeLog {
+		changeLog := sanitizeIdentifier(cfg.ChangeLogTable)
+		if changeLog == "" {
+			changeLog = "change_log"
+		}
+		stages = append(stages, exportStage{alias: "cl", table: stageTableChangeLog, columns: changeLogStageColumns,
+			query: buildChangeLogQuery(changeLog, schemaID, snapshotTS, transport.rowFilter("row_id"))})
+	}
+	stages = append(stages,
+		exportStage{alias: "m", table: stageTableMain, columns: projection.mainColumns,
+			query: buildMainEntityQuery(entityMain, schemaID, stageColumnNames(projection.mainColumns), transport.rowFilter("ltbase_row_id"), spec.activeOnly)},
+		exportStage{alias: "e_rows", table: stageTableEAV, columns: eavStageColumns,
+			query: buildEAVQuery(eavData, schemaID, transport.rowFilter("row_id"), projection.eavAttrIDs)},
+	)
+
+	sources := make([]string, len(stages))
+	for i, stage := range stages {
+		sources[i] = transport.source(stage)
+	}
+	opts := resolveExportSQLOptions(cfg, spec.defaultMemoryLimit)
 	mainSelectCols := append(spec.baseSelectColumns(), projection.mainProjections...)
 	mainSelectCols = append(mainSelectCols, projection.eavSelect...)
-	plan.sql = buildProjectedExportSQL(spec, opts, copyOptions, pgEsc, s3Esc, plan.changeLogQuery, plan.mainQuery, plan.eavQuery, mainSelectCols, projection.eavAgg)
-
-	return plan, nil
+	return exportSQLPlan{
+		setupSQL: buildStageSetupSQL(opts.memoryLimit, stages),
+		stages:   stages,
+		copySQL:  buildProjectedExportSQL(spec, sources, buildParquetCopyOptions(opts), sqlutil.EscapeLiteral(s3TmpPath), mainSelectCols, projection.eavAgg),
+	}, nil
 }
 
 func (spec exportModeSpec) baseSelectColumns() []string {
@@ -229,71 +258,32 @@ func (spec exportModeSpec) baseSelectColumns() []string {
 	}
 }
 
-func buildProjectedExportSQL(spec exportModeSpec, opts exportSQLOptions, copyOptions, pgEsc, s3Esc, clQuery, mQuery, eQuery string, mainSelectCols, eavAgg []string) string {
-	mSource := pgQuerySource("m", sqlutil.EscapeLiteral(mQuery))
-	eSource := pgQuerySource("e_rows", sqlutil.EscapeLiteral(eQuery))
+// buildProjectedExportSQL renders the COPY of the export's projection. sources
+// are the CTEs that expose the staged rows as cl (delta only), m and e_rows.
+func buildProjectedExportSQL(spec exportModeSpec, sources []string, copyOptions, s3Esc string, mainSelectCols, eavAgg []string) string {
 	eAggSQL := buildEAVAggregationSQL("e_rows", eavAgg)
-
-	if spec.useChangeLog {
-		// LEFT JOIN to entity_main so change_log tombstones of hard-deleted
-		// rows are exported instead of silently dropped (#173).
-		clSource := pgQuerySource("cl", sqlutil.EscapeLiteral(clQuery))
-		return fmt.Sprintf(`PRAGMA memory_limit='%s';
-ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
-
-COPY (
-WITH %s,
-%s,
-%s
-SELECT
-  %s
-FROM cl
+	// LEFT JOIN to entity_main so change_log tombstones of hard-deleted rows
+	// are exported instead of silently dropped (#173).
+	from := fmt.Sprintf(`FROM cl
 LEFT JOIN m
   ON cl.row_id = m.ltbase_row_id
 LEFT JOIN (
   %s
-) e ON cl.row_id = e.row_id
-) TO '%s' (%s);
-`, opts.memoryLimit, pgEsc, clSource, mSource, eSource, strings.Join(mainSelectCols, ",\n  "), eAggSQL, s3Esc, copyOptions)
-	}
-
-	return fmt.Sprintf(`PRAGMA memory_limit='%s';
-ATTACH IF NOT EXISTS '%s' AS pg_db (TYPE postgres, READ_ONLY);
-
-COPY (
-WITH %s,
-%s
-SELECT
-  %s
-FROM m
+) e ON cl.row_id = e.row_id`, eAggSQL)
+	if !spec.useChangeLog {
+		from = fmt.Sprintf(`FROM m
 LEFT JOIN (
   %s
-) e ON m.ltbase_row_id = e.row_id
-) TO '%s' (%s);
-`, opts.memoryLimit, pgEsc, mSource, eSource, strings.Join(mainSelectCols, ",\n  "), eAggSQL, s3Esc, copyOptions)
-}
-
-// pgQuerySource renders the CTE that reads one postgres_query result. The
-// CTE is MATERIALIZED because DuckDB 2.0's postgres_query ignores the column
-// order the planner asks of it: when a join above it reorders the projected
-// columns (the join key first), it still decodes PostgreSQL's columns in the
-// query's own order, so same-typed columns silently swap values and a
-// smallint read as a UUID fails the export (#752). A materialized CTE reads
-// the result in the query's order before anything above it can reorder it.
-// On 2.0.0 an inlined subquery happens to avoid the reorder as well, but only
-// through where the optimizer currently places the projection; MATERIALIZED
-// makes it a property of the plan's shape. The cost is one materialized copy
-// of each batch-bounded result, which the hash joins above build anyway.
-func pgQuerySource(name, queryEsc string) string {
-	return fmt.Sprintf("%s AS MATERIALIZED (SELECT * FROM postgres_query('pg_db', '%s'))", name, queryEsc)
-}
-
-func quoteUUIDList(ids []uuid.UUID) string {
-	parts := make([]string, 0, len(ids))
-	for _, id := range ids {
-		parts = append(parts, fmt.Sprintf("UUID '%s'", id.String()))
+) e ON m.ltbase_row_id = e.row_id`, eAggSQL)
 	}
-	return strings.Join(parts, ", ")
+
+	return fmt.Sprintf(`COPY (
+WITH %s
+SELECT
+  %s
+%s
+) TO '%s' (%s);
+`, strings.Join(sources, ",\n"), strings.Join(mainSelectCols, ",\n  "), from, s3Esc, copyOptions)
 }
 
 func sortedAttrKeys(cache forma.SchemaAttributeCache) []string {

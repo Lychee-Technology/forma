@@ -15,12 +15,10 @@ import (
 //
 // httpfs, parquet and the S3 session settings are required: every engine
 // built here reads or writes S3 parquet, and each required extension is
-// verified loaded after its INSTALL and LOAD. postgres_scanner is required only
-// when requirePostgres is set, for the CDC exports that ATTACH PostgreSQL;
-// the S3-only engines (compactor, baseline statistics, manifest audit) keep
-// it optional, so a missing scanner never stops a tool that does not use it
-// (#752). The resource PRAGMAs stay optional.
-func buildExporterInitSteps(cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string, requirePostgres bool) ([]duckdbinit.Step, error) {
+// verified loaded after its INSTALL and LOAD (#752). postgres_scanner is not
+// loaded: no engine built here reads PostgreSQL through DuckDB since the CDC
+// exports read it over pgx (#785). The resource PRAGMAs stay optional.
+func buildExporterInitSteps(cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken string) ([]duckdbinit.Step, error) {
 	var steps []duckdbinit.Step
 	if cfg.DuckMemLimit != "" {
 		steps = append(steps, duckdbinit.SingleStmtStep(fmt.Sprintf("PRAGMA memory_limit='%s';", cfg.DuckMemLimit), "set memory_limit"))
@@ -28,15 +26,11 @@ func buildExporterInitSteps(cfg CDCConfig, s3AccessKey, s3Secret, s3SessionToken
 	if cfg.DuckThreads > 0 {
 		steps = append(steps, duckdbinit.SingleStmtStep(fmt.Sprintf("PRAGMA threads=%d;", cfg.DuckThreads), "set threads"))
 	}
-	// postgres_scanner first for postgres_query. The required form verifies
-	// that DuckDB reports the scanner loaded: INSTALL and LOAD succeeding is
-	// not proof of the capability, and a failed INSTALL of a scanner that is
-	// already loaded is no reason to fail the connection.
-	pgStep := duckdbinit.ExtensionStep("postgres_scanner")
-	if requirePostgres {
-		pgStep = duckdbinit.RequiredExtensionStep("postgres_scanner")
-	}
-	steps = append(steps, pgStep,
+	// The required form verifies that DuckDB reports the extension loaded:
+	// INSTALL and LOAD succeeding is not proof of the capability, and a
+	// failed INSTALL of an extension that is already loaded is no reason to
+	// fail the connection.
+	steps = append(steps,
 		duckdbinit.RequiredExtensionStep("httpfs"),
 		duckdbinit.RequiredExtensionStep("parquet"))
 	s3Steps, err := buildExporterS3Steps(cfg, s3AccessKey, s3Secret, s3SessionToken)

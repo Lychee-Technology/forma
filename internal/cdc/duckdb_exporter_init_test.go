@@ -77,12 +77,11 @@ func TestBuildExporterInitSteps_FullConfigStatementSet(t *testing.T) {
 		S3Region: "us-test-1", S3Endpoint: "https://s3.example.com",
 		S3UseSSL: true, S3UsePath: true,
 	}
-	steps, err := buildExporterInitSteps(cfg, "AKID", "secretvalue", "tok123", true)
+	steps, err := buildExporterInitSteps(cfg, "AKID", "secretvalue", "tok123")
 	require.NoError(t, err)
 	require.Equal(t, []string{
 		"PRAGMA memory_limit='1GB';",
 		"PRAGMA threads=2;",
-		"INSTALL postgres_scanner;", "LOAD postgres_scanner;",
 		"INSTALL httpfs;", "LOAD httpfs;",
 		"INSTALL parquet;", "LOAD parquet;",
 		"SET s3_access_key_id='AKID';",
@@ -100,7 +99,7 @@ func TestBuildExporterInitSteps_FullConfigStatementSet(t *testing.T) {
 // caller that supplies no token means no token applies (#329).
 func TestBuildExporterInitSteps_IgnoresAmbientEnvSessionToken(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "envtok")
-	steps, err := buildExporterInitSteps(newExporterInitTestConfig(), "AKID", "secretvalue", "", true)
+	steps, err := buildExporterInitSteps(newExporterInitTestConfig(), "AKID", "secretvalue", "")
 	require.NoError(t, err)
 	for _, sql := range flattenStepSQL(steps) {
 		require.NotContains(t, sql, "s3_session_token")
@@ -111,18 +110,17 @@ func TestBuildExporterInitSteps_IgnoresAmbientEnvSessionToken(t *testing.T) {
 // offers a competing one (#329).
 func TestBuildExporterInitSteps_EmitsCallerResolvedSessionToken(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "envtok")
-	steps, err := buildExporterInitSteps(newExporterInitTestConfig(), "AKID", "secretvalue", "callertok", true)
+	steps, err := buildExporterInitSteps(newExporterInitTestConfig(), "AKID", "secretvalue", "callertok")
 	require.NoError(t, err)
 	require.Contains(t, flattenStepSQL(steps), "SET s3_session_token='callertok';")
 }
 
 func TestBuildExporterInitSteps_MinimalConfigOmitsOptionalStatements(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "")
-	steps, err := buildExporterInitSteps(CDCConfig{}, "", "", "", true)
+	steps, err := buildExporterInitSteps(CDCConfig{}, "", "", "")
 	require.NoError(t, err)
 	// no pragmas, no SETs except the unconditional s3_use_ssl
 	require.Equal(t, []string{
-		"INSTALL postgres_scanner;", "LOAD postgres_scanner;",
 		"INSTALL httpfs;", "LOAD httpfs;",
 		"INSTALL parquet;", "LOAD parquet;",
 		"SET s3_use_ssl=false;",
@@ -140,36 +138,33 @@ func flattenStepSQL(steps []duckdbinit.Step) []string {
 }
 
 // httpfs, parquet and the S3 settings are required for every exporter
-// engine; postgres_scanner only for the CDC exports that ATTACH PostgreSQL,
-// so the S3-only tools never fail on a scanner they do not use (#752).
+// engine (#752). postgres_scanner is not loaded at all: the CDC exports read
+// PostgreSQL over pgx (#785), and no other engine built here reads it.
 func TestBuildExporterInitSteps_RequiredCapabilities(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "")
 	cfg := CDCConfig{DuckMemLimit: "1GB", S3Region: "us-test-1", S3Endpoint: "http://127.0.0.1:9000", S3UsePath: true}
-	for _, requirePostgres := range []bool{true, false} {
-		steps, err := buildExporterInitSteps(cfg, "AKID", "secretvalue", "", requirePostgres)
-		require.NoError(t, err)
-		required := map[string]bool{}
-		for _, st := range steps {
-			label := st.Stmts[0].Label
-			required[label] = st.Required
-			if strings.HasPrefix(label, "install ") {
-				require.Equal(t, st.Required, st.Verify != nil,
-					"%s: a required extension, and only one, is verified loaded", label)
-			}
+	steps, err := buildExporterInitSteps(cfg, "AKID", "secretvalue", "")
+	require.NoError(t, err)
+	required := map[string]bool{}
+	for _, st := range steps {
+		label := st.Stmts[0].Label
+		required[label] = st.Required
+		if strings.HasPrefix(label, "install ") {
+			require.Equal(t, st.Required, st.Verify != nil,
+				"%s: a required extension, and only one, is verified loaded", label)
 		}
-		require.Equal(t, map[string]bool{
-			"set memory_limit":         false,
-			"install postgres_scanner": requirePostgres,
-			"install httpfs":           true,
-			"install parquet":          true,
-			"set s3_access_key_id":     true,
-			"set s3_secret_access_key": true,
-			"set s3_region":            true,
-			"set s3_endpoint":          true,
-			"set s3_use_ssl":           true,
-			"set s3_url_style":         true,
-		}, required, "requirePostgres=%v", requirePostgres)
 	}
+	require.Equal(t, map[string]bool{
+		"set memory_limit":         false,
+		"install httpfs":           true,
+		"install parquet":          true,
+		"set s3_access_key_id":     true,
+		"set s3_secret_access_key": true,
+		"set s3_region":            true,
+		"set s3_endpoint":          true,
+		"set s3_use_ssl":           true,
+		"set s3_url_style":         true,
+	}, required)
 }
 
 // verifyingExecer stands in for a DuckDB connection whose INSTALL and LOAD
@@ -196,53 +191,62 @@ func (v *verifyingExecer) ExecContext(_ context.Context, query string, _ []drive
 	return driver.RowsAffected(0), nil
 }
 
-func runExporterInit(t *testing.T, requirePostgres bool, execer driver.ExecerContext) error {
+func runExporterInit(t *testing.T, execer driver.ExecerContext) error {
 	t.Helper()
 	t.Setenv("AWS_SESSION_TOKEN", "")
-	steps, err := buildExporterInitSteps(newExporterInitTestConfig(), "AKID", "secretvalue", "", requirePostgres)
+	steps, err := buildExporterInitSteps(newExporterInitTestConfig(), "AKID", "secretvalue", "")
 	require.NoError(t, err)
 	return duckdbinit.MakeConnInit(steps, zaptest.NewLogger(t).Sugar(), duckdbinit.DefaultInitTimeout)(execer)
 }
 
-// A CDC exporter connection whose INSTALL and LOAD postgres_scanner both
-// "succeed" while DuckDB does not report the scanner loaded fails to open:
-// the statements succeeding is not the capability (#752).
-func TestExporterInit_ScannerNotLoadedDespiteSuccessfulStatementsFails(t *testing.T) {
-	execer := &verifyingExecer{loaded: map[string]bool{"httpfs": true, "parquet": true}}
-	err := runExporterInit(t, true, execer)
+// An exporter connection whose INSTALL and LOAD httpfs both "succeed" while
+// DuckDB does not report httpfs loaded fails to open: the statements
+// succeeding is not the capability (#752).
+func TestExporterInit_ExtensionNotLoadedDespiteSuccessfulStatementsFails(t *testing.T) {
+	execer := &verifyingExecer{loaded: map[string]bool{"parquet": true}}
+	err := runExporterInit(t, execer)
 	var stepErr *duckdbinit.RequiredStepError
 	require.ErrorAs(t, err, &stepErr)
-	require.Equal(t, "verify postgres_scanner loaded", stepErr.Label)
-
-	// The S3-only engines keep the scanner optional and never verify it.
-	require.NoError(t, runExporterInit(t, false, execer))
+	require.Equal(t, "verify httpfs loaded", stepErr.Label)
 }
 
-// A failed INSTALL postgres_scanner (an unreachable extension repository on
-// a host whose scanner is already loaded) does not fail a CDC exporter
-// connection the scanner works on (#752).
-func TestExporterInit_FailedInstallOfLoadedScannerPasses(t *testing.T) {
+// A failed INSTALL httpfs (an unreachable extension repository on a host
+// whose httpfs is already loaded) does not fail an exporter connection
+// httpfs works on (#752).
+func TestExporterInit_FailedInstallOfLoadedExtensionPasses(t *testing.T) {
 	execer := &verifyingExecer{
-		failOn: map[string]bool{"INSTALL postgres_scanner;": true},
-		loaded: map[string]bool{"postgres_scanner": true, "httpfs": true, "parquet": true},
-	}
-	require.NoError(t, runExporterInit(t, true, execer))
-	require.NoError(t, runExporterInit(t, false, execer))
-}
-
-// A failed INSTALL of a scanner that is not loaded either fails the CDC
-// exporter's connection and names the INSTALL failure, while an S3-only
-// engine still opens.
-func TestExporterInit_FailedInstallOfMissingScanner(t *testing.T) {
-	execer := &verifyingExecer{
-		failOn: map[string]bool{"INSTALL postgres_scanner;": true},
+		failOn: map[string]bool{"INSTALL httpfs;": true},
 		loaded: map[string]bool{"httpfs": true, "parquet": true},
 	}
-	err := runExporterInit(t, true, execer)
+	require.NoError(t, runExporterInit(t, execer))
+}
+
+// A failed INSTALL of an extension that is not loaded either fails the
+// exporter's connection and names the INSTALL failure.
+func TestExporterInit_FailedInstallOfMissingExtension(t *testing.T) {
+	execer := &verifyingExecer{
+		failOn: map[string]bool{"INSTALL httpfs;": true},
+		loaded: map[string]bool{"parquet": true},
+	}
+	err := runExporterInit(t, execer)
 	var stepErr *duckdbinit.RequiredStepError
 	require.ErrorAs(t, err, &stepErr)
-	require.Equal(t, "verify postgres_scanner loaded", stepErr.Label)
-	require.ErrorContains(t, err, "install postgres_scanner failed: injected init failure")
+	require.Equal(t, "verify httpfs loaded", stepErr.Label)
+	require.ErrorContains(t, err, "install httpfs failed: injected init failure")
+}
 
-	require.NoError(t, runExporterInit(t, false, execer))
+// A host without postgres_scanner opens a CDC exporter connection: the
+// export no longer needs the scanner (#785), so nothing installs, loads or
+// verifies it.
+func TestExporterInit_NeedsNoPostgresScanner(t *testing.T) {
+	execer := &verifyingExecer{
+		failOn: map[string]bool{"INSTALL postgres_scanner;": true, "LOAD postgres_scanner;": true},
+		loaded: map[string]bool{"httpfs": true, "parquet": true},
+	}
+	require.NoError(t, runExporterInit(t, execer))
+	steps, err := buildExporterInitSteps(newExporterInitTestConfig(), "AKID", "secretvalue", "")
+	require.NoError(t, err)
+	for _, sql := range flattenStepSQL(steps) {
+		require.NotContains(t, sql, "postgres")
+	}
 }

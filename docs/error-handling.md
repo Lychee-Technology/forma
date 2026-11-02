@@ -2119,12 +2119,12 @@ retention the deployment runs. Scrubbing at the source of those wraps is tracked
 by #306; this boundary scrub is what protects deployments in the meantime.
 
 **The matcher is not local to `httpapi`.** It lives in `internal/redact`
-(`ConnStringPassword`), shared with the CDC logger, which has needed the same
-scrub since #290. Sharing is a correctness requirement, not tidying: a naive
+(`ConnStringPassword`), shared with the CDC logger, which needed the same
+scrub from #290 until #785 took the connection string out of the CDC export. Sharing is a correctness requirement, not tidying: a naive
 `'[^']*'` branch mistakes libpq's escaped `\'` for the closing quote and emits
 the password tail past the placeholder. That was a real bug fixed in #290, and
 its regression tests (`internal/cdc/redact_test.go`) exercise the shared matcher
-through `redactConnStr`, and `internal/redact/connstring_test.go` gates the
+directly, and `internal/redact/connstring_test.go` gates the
 pattern in the package that owns it. Three forms are covered — the
 `sqlutil.EscapeLiteral`-doubled `password=''…''` used inside DuckDB `ATTACH` literals,
 the libpq-quoted `password='…'`, and the bare `password=value` of legacy or

@@ -59,7 +59,7 @@ func exportSQLModeCases(rowID uuid.UUID) []exportSQLModeCase {
 					ParquetCompression:      "zstd",
 					ParquetCompressionLevel: 5,
 				}
-				sql, clQuery, mQuery, eQuery, err := buildExportSQL("host=pg", "s3://bucket/prefix/1/_tmp/tmp.parquet", cfg, 1, 1700000000000, []uuid.UUID{rowID}, attrCache)
+				sql, clQuery, mQuery, eQuery, err := buildExportSQL("s3://bucket/prefix/1/_tmp/tmp.parquet", cfg, 1, 1700000000000, []uuid.UUID{rowID}, attrCache)
 				return exportSQLResult{sql: sql, modeSQL: clQuery, mQuery: mQuery, eQuery: eQuery}, err
 			},
 			expectedMemoryLimit:   "2GB",
@@ -78,7 +78,7 @@ func exportSQLModeCases(rowID uuid.UUID) []exportSQLModeCase {
 					ParquetCompression:      "zstd",
 					ParquetCompressionLevel: 5,
 				}
-				sql, mQuery, eQuery, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", cfg, 1, []uuid.UUID{rowID}, attrCache)
+				sql, mQuery, eQuery, err := buildBaseExportSQL("s3://bucket/base/1/_tmp/tmp.parquet", cfg, 1, []uuid.UUID{rowID}, attrCache)
 				return exportSQLResult{sql: sql, mQuery: mQuery, eQuery: eQuery}, err
 			},
 			expectedMemoryLimit:   "6GB",

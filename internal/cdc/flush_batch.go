@@ -25,9 +25,8 @@ type flushBatchExecutor struct {
 	// versions holds the changed_at listed per batch row at selection time;
 	// marking is exact against it (MarkFlushedVersions), so a clock-ahead
 	// version flushes normally and a concurrently advanced row stays dirty.
-	versions      map[uuid.UUID]int64
-	pgConnForDuck string
-	attrCache     forma.SchemaAttributeCache
+	versions  map[uuid.UUID]int64
+	attrCache forma.SchemaAttributeCache
 	// registry is the run's schema registry; a gated one is re-read for a
 	// generation recorded during the export (schemaledger.RequireUnchanged).
 	registry         forma.SchemaRegistry
@@ -40,7 +39,7 @@ type flushBatchExecutor struct {
 	probeUnwiredManifest unwiredManifestProbe
 	executeSingle        func(*flushBatchExecutor, []uuid.UUID) error
 	executeInChunks      func(*flushBatchExecutor, []uuid.UUID, int) error
-	exportSnapshot       func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error
+	exportSnapshot       func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error
 	markFlushed          markFlushedFunc
 	// describeColumns is a test seam for the write-time footer probe that
 	// stamps manifest entries (#256); nil uses the exporter's DuckDB session.
@@ -162,12 +161,12 @@ func (e *flushBatchExecutor) exportBatchToTmp(ctx context.Context, batchIDs []uu
 	s3TmpPath := fmt.Sprintf("s3://%s/%s", e.cfg.S3Bucket, tmpKey)
 	exportSnapshot := e.exportSnapshot
 	if exportSnapshot == nil {
-		exportSnapshot = func(duck *DuckExporter, ctx context.Context, cfg CDCConfig, pgConnStr string, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
-			return duck.ExportSnapshotToTmp(ctx, cfg, pgConnStr, s3TmpPath, schemaID, snapshotTS, rowIDs, attrCache)
+		exportSnapshot = func(duck *DuckExporter, ctx context.Context, cfg CDCConfig, pg *sql.DB, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
+			return duck.ExportSnapshotToTmp(ctx, cfg, pg, s3TmpPath, schemaID, snapshotTS, rowIDs, attrCache)
 		}
 	}
 
-	if err := exportSnapshot(e.duck, ctx, e.cfg, e.pgConnForDuck, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
+	if err := exportSnapshot(e.duck, ctx, e.cfg, e.db, s3TmpPath, e.schemaID, e.snapshot, batchIDs, e.attrCache); err != nil {
 		if delErr := DeleteObjectKey(ctx, e.s3Client, e.cfg.S3Bucket, tmpKey); delErr != nil {
 			e.logger.Sugar().Warnw("failed to delete tmp object after export failure",
 				"schema_id", e.schemaID, "tmp_key", tmpKey, "err", delErr)

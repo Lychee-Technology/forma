@@ -188,7 +188,7 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 		return FlushReport{}, fmt.Errorf("resolve s3 clients: %w", err)
 	}
 
-	db, pgPassword, err := setupPostgresConnection(ctx, cfg, s3Runtime.region, s3Runtime.credProvider, r.logger)
+	db, _, err := setupPostgresConnection(ctx, cfg, s3Runtime.region, s3Runtime.credProvider, r.logger)
 	if err != nil {
 		return FlushReport{}, fmt.Errorf("setup postgres connection: %w", err)
 	}
@@ -207,7 +207,6 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 		db:             db,
 		duck:           duck,
 		clients:        clients,
-		pgPassword:     pgPassword,
 		dryRun:         dryRun,
 		logger:         r.logger,
 		schemaRegistry: schemaRegistry,

@@ -14,20 +14,25 @@ func TestBuildExportSQL_UsesRowIDsAndConfig(t *testing.T) {
 	cfg := CDCConfig{ChangeLogTable: "change_log_dev", DuckMemLimit: "2GB", ParquetCompression: "zstd", ParquetCompressionLevel: 5}
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
 
-	sql, clQuery, mQuery, eQuery, err := buildExportSQL("host=pg", "s3://bucket/prefix/1/_tmp/tmp.parquet", cfg, 1, 1700000000000, []uuid.UUID{rowID}, testAttrCache())
+	sql, clQuery, mQuery, eQuery, err := buildExportSQL("s3://bucket/prefix/1/_tmp/tmp.parquet", cfg, 1, 1700000000000, []uuid.UUID{rowID}, testAttrCache())
 	if err != nil {
 		t.Fatalf("buildExportSQL returned error: %v", err)
 	}
 
-	rowFilter := "row_id IN (UUID '019bed54-48eb-7cdc-aed3-8d38ec9c1394')"
+	// The batch's row ids travel as one uuid[] parameter, never as SQL
+	// literals (#785).
+	rowFilter := "row_id = ANY($1::uuid[])"
 	if !strings.Contains(clQuery, rowFilter) {
 		t.Fatalf("change log query missing row filter: %s", clQuery)
 	}
-	if !strings.Contains(mQuery, "ltbase_row_id IN (UUID '019bed54-48eb-7cdc-aed3-8d38ec9c1394')") {
+	if !strings.Contains(mQuery, "ltbase_row_id = ANY($1::uuid[])") {
 		t.Fatalf("main query missing row filter: %s", mQuery)
 	}
 	if !strings.Contains(eQuery, rowFilter) {
 		t.Fatalf("eav query missing row filter: %s", eQuery)
+	}
+	for _, q := range []string{clQuery, mQuery, eQuery, sql} {
+		require.NotContains(t, q, rowID.String())
 	}
 	if !strings.Contains(sql, "PRAGMA memory_limit='2GB'") {
 		t.Fatalf("sql missing configured memory limit: %s", sql)
@@ -42,14 +47,14 @@ func TestBuildExportSQL_UsesRowIDsAndConfig(t *testing.T) {
 
 func TestBuildExportSQL_ErrorsWithoutAttrCache(t *testing.T) {
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
-	_, _, _, _, err := buildExportSQL("host=pg", "s3://bucket/prefix/1/_tmp/tmp.parquet", CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, nil)
+	_, _, _, _, err := buildExportSQL("s3://bucket/prefix/1/_tmp/tmp.parquet", CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrSchemaAttrCacheUnavailable)
 	require.Contains(t, err.Error(), "1")
 }
 
 func TestBuildExportSQL_ErrorsOnEmptyRowIDs(t *testing.T) {
-	_, _, _, _, err := buildExportSQL("pg", "s3://bucket/prefix/1/_tmp/tmp.parquet", CDCConfig{}, 1, 0, nil, nil)
+	_, _, _, _, err := buildExportSQL("s3://bucket/prefix/1/_tmp/tmp.parquet", CDCConfig{}, 1, 0, nil, nil)
 	if err == nil {
 		t.Fatalf("expected error for empty row ids")
 	}
@@ -71,7 +76,7 @@ func TestBuildExportSQL_WithSchemaCacheProjectsColumns(t *testing.T) {
 	}
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
 
-	sql, clQuery, mQuery, eQuery, err := buildExportSQL("host=pg", "s3://bucket/prefix/1/_tmp/tmp.parquet", CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, attrCache)
+	sql, clQuery, mQuery, eQuery, err := buildExportSQL("s3://bucket/prefix/1/_tmp/tmp.parquet", CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, attrCache)
 	if err != nil {
 		t.Fatalf("buildExportSQL returned error: %v", err)
 	}
@@ -93,22 +98,14 @@ func TestBuildExportSQL_WithSchemaCacheProjectsColumns(t *testing.T) {
 	}
 }
 
-// TestExportSQLEscapesQuotedLiterals pins the CDC half of the #310 consolidation.
-//
-// Both export builders embed two deployment-controlled strings inside
-// single-quoted SQL literals: the Postgres DSN — ATTACH IF NOT EXISTS '<dsn>'
-// AS pg_db (…) — and the S3 tmp path — COPY (…) TO '<path>' (…). Both must
-// pass through sqlutil.EscapeLiteral first. Without that, a quoted DSN (the
-// form federated.DuckDBPostgresConnStringFromPool emits, and any password
-// containing a quote) or a quoted S3 prefix terminates the literal early and
-// turns deployment-controlled text into SQL structure. No other cdc test
-// passes a DSN or S3 path containing a quote, so nothing else would catch a
-// regression here.
+// TestExportSQLEscapesQuotedLiterals pins the CDC half of the #310
+// consolidation. The S3 tmp path is deployment-controlled text inside a
+// single-quoted literal — COPY (…) TO '<path>' (…) — and must pass through
+// sqlutil.EscapeLiteral first, or a quoted S3 prefix terminates the literal
+// early and turns deployment-controlled text into SQL structure. No other
+// cdc test passes an S3 path containing a quote. The PostgreSQL DSN, the
+// export's other such literal until #785, no longer enters the SQL at all.
 func TestExportSQLEscapesQuotedLiterals(t *testing.T) {
-	const hostileDSN = `host='h' password='p''w' dbname=forma`
-	const wantDSNLiteralBody = `host=''h'' password=''p''''w'' dbname=forma`
-	const wantAttach = `ATTACH IF NOT EXISTS '` + wantDSNLiteralBody + `' AS pg_db (TYPE postgres, READ_ONLY);`
-
 	const hostileS3TmpPath = `s3://bucket/pre'fix/1/_tmp/tmp.parquet`
 	const wantS3LiteralBody = `s3://bucket/pre''fix/1/_tmp/tmp.parquet`
 	// The trailing "' (" anchors the literal's closing quote to the start of
@@ -125,14 +122,14 @@ func TestExportSQLEscapesQuotedLiterals(t *testing.T) {
 		{
 			name: "snapshot export",
 			build: func() (string, error) {
-				sql, _, _, _, err := buildExportSQL(hostileDSN, hostileS3TmpPath, CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, testAttrCache())
+				sql, _, _, _, err := buildExportSQL(hostileS3TmpPath, CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, testAttrCache())
 				return sql, err
 			},
 		},
 		{
 			name: "base export",
 			build: func() (string, error) {
-				sql, _, _, err := buildBaseExportSQL(hostileDSN, hostileS3TmpPath, CDCConfig{}, 1, []uuid.UUID{rowID}, testAttrCache())
+				sql, _, _, err := buildBaseExportSQL(hostileS3TmpPath, CDCConfig{}, 1, []uuid.UUID{rowID}, testAttrCache())
 				return sql, err
 			},
 		},
@@ -142,35 +139,14 @@ func TestExportSQLEscapesQuotedLiterals(t *testing.T) {
 		t.Run(b.name, func(t *testing.T) {
 			sql, err := b.build()
 			require.NoError(t, err)
-			require.Contains(t, sql, wantAttach)
+			require.NotContains(t, sql, "ATTACH")
 
-			// The raw DSN must never be embedded verbatim: its bare quotes
-			// would close the outer literal early.
-			require.NotContains(t, sql, "ATTACH IF NOT EXISTS '"+hostileDSN+"'")
-
-			// The COPY target is the second deployment-controlled literal.
-			// The raw path's bare quote would close it early.
+			// The raw path's bare quote would close the literal early.
 			require.Contains(t, sql, wantCopyTarget)
 			require.NotContains(t, sql, "TO '"+hostileS3TmpPath+"'")
 
-			// Structural check: the ATTACH literal is delimited by exactly one
-			// outer quote pair, and undoubling its body round-trips back to the
-			// original DSN.
-			const openMarker = "ATTACH IF NOT EXISTS '"
-			const closeMarker = "' AS pg_db"
-			start := strings.Index(sql, openMarker)
-			require.NotEqual(t, -1, start, "ATTACH statement not found: %s", sql)
-			body := sql[start+len(openMarker):]
-			end := strings.Index(body, closeMarker)
-			require.NotEqual(t, -1, end, "ATTACH literal not terminated: %s", sql)
-			body = body[:end]
-
-			require.Equal(t, wantDSNLiteralBody, body)
-			require.Equal(t, hostileDSN, strings.ReplaceAll(body, "''", "'"))
-
-			// Same structural check for the COPY target: exactly one outer
-			// quote pair, and undoubling its body round-trips back to the raw
-			// S3 path.
+			// Structural check: exactly one outer quote pair, and undoubling
+			// its body round-trips back to the raw S3 path.
 			const copyOpenMarker = ") TO '"
 			const copyCloseMarker = "' ("
 			copyStart := strings.Index(sql, copyOpenMarker)
@@ -194,7 +170,7 @@ func TestBuildExportSQL_UsesCustomTableNames(t *testing.T) {
 	}
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
 
-	sql, clQuery, mQuery, eQuery, err := buildExportSQL("host=pg", "s3://bucket/prefix/1/_tmp/tmp.parquet", cfg, 1, 1700000000000, []uuid.UUID{rowID}, testAttrCache())
+	sql, clQuery, mQuery, eQuery, err := buildExportSQL("s3://bucket/prefix/1/_tmp/tmp.parquet", cfg, 1, 1700000000000, []uuid.UUID{rowID}, testAttrCache())
 	if err != nil {
 		t.Fatalf("buildExportSQL returned error: %v", err)
 	}
@@ -224,7 +200,7 @@ func TestExportToTmpWrapsPlanErrors(t *testing.T) {
 
 	t.Run("snapshot export", func(t *testing.T) {
 		err := exporter.ExportSnapshotToTmp(context.Background(), cfg,
-			"postgres://user@host/db", "s3://bucket/7/_tmp/f.parquet", 7, 0, nil, testAttrCache())
+			nil, "s3://bucket/7/_tmp/f.parquet", 7, 0, nil, testAttrCache())
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "export snapshot to tmp for schema 7")
 		require.Contains(t, err.Error(), "no row ids provided")
@@ -232,38 +208,45 @@ func TestExportToTmpWrapsPlanErrors(t *testing.T) {
 
 	t.Run("base export", func(t *testing.T) {
 		err := exporter.ExportBaseFileToTmp(context.Background(), cfg,
-			"postgres://user@host/db", "s3://bucket/base/7/_tmp/f.parquet", 7, nil, nil)
+			nil, "s3://bucket/base/7/_tmp/f.parquet", 7, nil, nil)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "export base file to tmp for schema 7")
 		require.ErrorIs(t, err, ErrSchemaAttrCacheUnavailable)
 	})
 }
 
-// Every postgres_query result is read through a MATERIALIZED CTE, never
-// joined directly: DuckDB 2.0's postgres_query decodes columns in its query's
-// order even when a join reorders the projection, which swapped values and
-// failed CDC exports on UUID columns (#752). Both export shapes are covered:
-// the delta export (change_log driven) and the base export (entity_main only).
-func TestBuildExportSQL_ReadsEveryPostgresQueryThroughAMaterializedCTE(t *testing.T) {
+// The projection reads only the staged DuckDB temp tables, each through
+// the CTE name it joins on, and nothing in the export reaches PostgreSQL from
+// DuckDB (#785). Each staged table is created with its full column set, so a
+// stage that returns no rows still projects every column (#519). Both export
+// shapes are covered: the delta export (change_log driven) and the base
+// export (entity_main only).
+func TestBuildExportSQL_ReadsOnlyStagedTables(t *testing.T) {
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
-	delta, _, _, _, err := buildExportSQL("host=pg", "s3://b/1/_tmp/d.parquet", CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, testAttrCache())
+	delta, err := buildDeltaExportPlan(stagedTransport, "s3://b/1/_tmp/d.parquet", CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, testAttrCache())
 	require.NoError(t, err)
-	base, _, _, err := buildBaseExportSQL("host=pg", "s3://b/1/_tmp/b.parquet", CDCConfig{}, 1, []uuid.UUID{rowID}, testAttrCache())
+	base, err := buildBaseExportPlan(stagedTransport, "s3://b/1/_tmp/b.parquet", CDCConfig{}, 1, []uuid.UUID{rowID}, testAttrCache())
 	require.NoError(t, err)
 
 	for name, tc := range map[string]struct {
-		sql   string
-		ctes  []string
-		count int
+		plan   exportSQLPlan
+		stages map[string]string
 	}{
-		"delta": {delta, []string{"cl", "m", "e_rows"}, 3},
-		"base":  {base, []string{"m", "e_rows"}, 2},
+		"delta": {delta, map[string]string{"cl": stageTableChangeLog, "m": stageTableMain, "e_rows": stageTableEAV}},
+		"base":  {base, map[string]string{"m": stageTableMain, "e_rows": stageTableEAV}},
 	} {
-		require.Equal(t, tc.count, strings.Count(tc.sql, "postgres_query("), "%s: postgres_query count", name)
-		require.Equal(t, tc.count, strings.Count(tc.sql, " AS MATERIALIZED (SELECT * FROM postgres_query('pg_db', "),
-			"%s: every postgres_query must sit alone in a MATERIALIZED CTE", name)
-		for _, cte := range tc.ctes {
-			require.Contains(t, tc.sql, cte+" AS MATERIALIZED (SELECT * FROM postgres_query(", "%s: CTE %s", name, cte)
+		all := tc.plan.setupSQL + tc.plan.copySQL
+		for _, banned := range []string{"postgres_query", "ATTACH", "pg_db"} {
+			require.NotContains(t, all, banned, name)
+		}
+		require.Len(t, tc.plan.stages, len(tc.stages), name)
+		for _, stage := range tc.plan.stages {
+			require.Equal(t, tc.stages[stage.alias], stage.table, "%s: stage %s", name, stage.alias)
+			require.Contains(t, tc.plan.copySQL, stage.alias+" AS (SELECT * FROM temp.main."+stage.table+")", "%s: CTE %s", name, stage.alias)
+			require.Contains(t, tc.plan.setupSQL, "CREATE OR REPLACE TEMP TABLE "+stage.table+" (", "%s: table %s", name, stage.table)
+			require.Contains(t, buildStageDropSQL(tc.plan.stages), "DROP TABLE IF EXISTS temp.main."+stage.table+";", name)
+			require.True(t, strings.HasPrefix(stage.query, "SELECT "+strings.Join(stageColumnNames(stage.columns), ", ")+" FROM "),
+				"%s: stage %s reads exactly its staged columns, in order: %s", name, stage.alias, stage.query)
 		}
 	}
 }

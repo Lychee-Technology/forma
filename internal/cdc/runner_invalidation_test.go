@@ -140,7 +140,7 @@ func TestRunnerCachedDuckExporterReopensAfterFatalError(t *testing.T) {
 	require.NoError(t, err)
 	_, err = exporter.DB.ExecContext(ctx, "CREATE TABLE instance_marker AS SELECT 1 AS x")
 	require.NoError(t, err)
-	err = exporter.executeExportSQL(ctx, cfg, "duckdb export sql", "duckdb copy exec", fatalStatement, "", "", "")
+	err = exporter.runExport(ctx, cfg, nil, exportSQLPlan{setupSQL: "SELECT 1;", copySQL: fatalStatement}, nil, "duckdb export sql", "duckdb copy exec")
 	require.ErrorContains(t, err, "FATAL Error", "the statement that hit the error still fails")
 	release()
 
@@ -152,7 +152,7 @@ func TestRunnerCachedDuckExporterReopensAfterFatalError(t *testing.T) {
 
 	out := filepath.Join(t.TempDir(), "export.csv")
 	exportSQL := fmt.Sprintf("COPY (SELECT 42 AS x) TO '%s' (FORMAT CSV)", out)
-	require.NoError(t, again.executeExportSQL(ctx, cfg, "duckdb export sql", "duckdb copy exec", exportSQL, "", "", ""),
+	require.NoError(t, again.runExport(ctx, cfg, nil, exportSQLPlan{setupSQL: "SELECT 1;", copySQL: exportSQL}, nil, "duckdb export sql", "duckdb copy exec"),
 		"the next run exports on a reopened database")
 
 	instances := opened()

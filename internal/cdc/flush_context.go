@@ -52,7 +52,6 @@ type flushContextParams struct {
 	db             *sql.DB
 	duck           *DuckExporter
 	clients        resolvedS3Clients
-	pgPassword     string
 	dryRun         bool
 	logger         *zap.Logger
 	schemaRegistry forma.SchemaRegistry
@@ -86,7 +85,6 @@ func newSchemaFlushContext(p flushContextParams) (*schemaFlushContext, error) {
 		s3Client:       p.clients.object,
 		cfg:            p.cfg,
 		tableName:      tableName,
-		pgPassword:     p.pgPassword,
 		dryRun:         p.dryRun,
 		logger:         p.logger,
 		schemaRegistry: p.schemaRegistry,

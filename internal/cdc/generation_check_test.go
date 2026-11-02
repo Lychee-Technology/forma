@@ -81,7 +81,7 @@ func TestFlushBatchStaysInTmpWhenAGenerationIsRecordedDuringTheExport(t *testing
 		logger:           zap.NewNop(),
 		manifestStore:    store,
 		manifestResolver: manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"},
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			registry.apply()
 			return nil
 		},
@@ -97,7 +97,7 @@ func TestFlushBatchStaysInTmpWhenAGenerationIsRecordedDuringTheExport(t *testing
 
 	// Unchanged, the same batch publishes.
 	registry.active = 1
-	executor.exportSnapshot = func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+	executor.exportSnapshot = func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 		return nil
 	}
 	require.NoError(t, executor.executeBatch(ctx, []uuid.UUID{rowID}, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "single"))
