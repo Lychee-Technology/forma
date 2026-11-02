@@ -27,17 +27,46 @@ type sampleRunConfig struct {
 	mapper      CSVToSchemaMapper
 }
 
+// sampleFlags holds the importer's command-line flags once they are parsed.
+type sampleFlags struct {
+	csvFile    *string
+	schemaDir  *string
+	schemaName *string
+	batchSize  *int
+	dbURL      *string
+	dryRun     *bool
+	verbose    *bool
+}
+
+// setupSample registers the importer's flags on fs, parses args into them and
+// only then builds the logger, so -verbose reaches it. Building the logger
+// before the parse read the flag's zero value and made -verbose a no-op (#439).
+// It returns the parsed flags, the sugared logger and the sync closure the
+// caller must defer.
+func setupSample(fs *flag.FlagSet, args []string) (*sampleFlags, *zap.SugaredLogger, func(), error) {
+	flags := &sampleFlags{
+		csvFile:    fs.String("csv", "", "Path to CSV file to import (required)"),
+		schemaDir:  fs.String("schema-dir", "./schemas", "Directory containing schema files"),
+		schemaName: fs.String("schema", "watch", "Target schema name"),
+		batchSize:  fs.Int("batch-size", 100, "Batch size for import operations"),
+		dbURL:      fs.String("db", "postgres://postgres:postgres@localhost:5432/ltbase", "PostgreSQL connection URL (or set DATABASE_URL env)"),
+		dryRun:     fs.Bool("dry-run", false, "Parse CSV and validate mappings without writing to database"),
+		verbose:    fs.Bool("verbose", false, "Enable verbose logging"),
+	}
+	if err := fs.Parse(args); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to parse sample importer flags: %w", err)
+	}
+	sugar, syncLogger := buildSampleLogger(*flags.verbose)
+	return flags, sugar, syncLogger, nil
+}
+
 // buildSampleLogger installs the global zap logger and returns its sugared
-// handle plus the sync closure the caller must defer.
-//
-// It is deliberately called BEFORE flag.Parse(), exactly as the code it was
-// extracted from did: *verbose is therefore always false here. That is a
-// pre-existing bug (#319 follow-up), not something this refactor may fix —
-// changing the order would change behaviour in a commit that claims not to.
-func buildSampleLogger(verbose *bool) (*zap.SugaredLogger, func()) {
+// handle plus the sync closure the caller must defer. verbose enables debug
+// level and development mode.
+func buildSampleLogger(verbose bool) (*zap.SugaredLogger, func()) {
 	cfg := zap.NewProductionConfig()
 	cfg.Encoding = "console"
-	if *verbose {
+	if verbose {
 		cfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
 		cfg.Development = true
 	}
@@ -232,28 +261,23 @@ func printSampleQueryResults(ctx context.Context, entityManager forma.EntityMana
 }
 
 func main() {
-	// Command line flags
-	csvFile := flag.String("csv", "", "Path to CSV file to import (required)")
-	schemaDir := flag.String("schema-dir", "./schemas", "Directory containing schema files")
-	schemaName := flag.String("schema", "watch", "Target schema name")
-	batchSize := flag.Int("batch-size", 100, "Batch size for import operations")
-	dbURL := flag.String("db", "postgres://postgres:postgres@localhost:5432/ltbase", "PostgreSQL connection URL (or set DATABASE_URL env)")
-	dryRun := flag.Bool("dry-run", false, "Parse CSV and validate mappings without writing to database")
-	verbose := flag.Bool("verbose", false, "Enable verbose logging")
-
-	sugar, syncLogger := buildSampleLogger(verbose)
+	// flag.CommandLine exits on a parse error (and on -h) itself, exactly as
+	// flag.Parse did, so the error branch is a guard rather than a code path.
+	flags, sugar, syncLogger, setupErr := setupSample(flag.CommandLine, os.Args[1:])
+	if setupErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", setupErr)
+		os.Exit(2)
+	}
 	defer syncLogger()
 
-	flag.Parse()
-
-	databaseURL, mapper := resolveSampleOptions(csvFile, dbURL, schemaName, dryRun, sugar)
+	databaseURL, mapper := resolveSampleOptions(flags.csvFile, flags.dbURL, flags.schemaName, flags.dryRun, sugar)
 
 	ctx := context.Background()
 
 	// Dry run mode - just validate the CSV
-	if *dryRun {
-		sugar.Infof("Dry run mode: validating CSV file %s", *csvFile)
-		result, err := dryRunImport(ctx, *csvFile, mapper, sugar)
+	if *flags.dryRun {
+		sugar.Infof("Dry run mode: validating CSV file %s", *flags.csvFile)
+		result, err := dryRunImport(ctx, *flags.csvFile, mapper, sugar)
 		if err != nil {
 			sugar.Fatalf("Dry run failed: %v", err)
 		}
@@ -263,10 +287,10 @@ func main() {
 
 	runSampleImport(ctx, sampleRunConfig{
 		databaseURL: databaseURL,
-		schemaDir:   *schemaDir,
-		schemaName:  *schemaName,
-		csvFile:     *csvFile,
-		batchSize:   *batchSize,
+		schemaDir:   *flags.schemaDir,
+		schemaName:  *flags.schemaName,
+		csvFile:     *flags.csvFile,
+		batchSize:   *flags.batchSize,
 		mapper:      mapper,
 	}, sugar)
 }
