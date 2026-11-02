@@ -22,7 +22,7 @@ func TestProductionHarnessJobsUploadArtifactsOnFailure(t *testing.T) {
 		known    []string // jobs that must be found, so the guard cannot lose its targets
 	}{
 		{".github/workflows/ci.yml", []string{"e2e"}},
-		{".github/workflows/nightly-e2e.yml", []string{"production-race"}},
+		{".github/workflows/nightly-e2e.yml", []string{"production-race", "production-race-arm64"}},
 	} {
 		wf, err := os.ReadFile(tc.workflow)
 		if err != nil {

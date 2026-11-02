@@ -7,11 +7,11 @@ Forma pins one DuckDB release through `github.com/duckdb/duckdb-go/v2` (see `go.
 | Command | What it covers | Where it runs |
 |---|---|---|
 | `make test`, `make fmt-check`, `make lint` | unit and integration tests, including those that open a real in-memory DuckDB | CI on every PR; the test job runs on `ubuntu-24.04-arm` under `-race` |
-| `make test-e2e-production` | the production harness: real PostgreSQL, S3 (RustFS), CDC, compaction and the federated engine, each result checked against an independent oracle; it has no `-short` skips | CI on every PR; nightly under `-race` (`nightly-e2e.yml`, `production-race`) |
+| `make test-e2e-production` | the production harness: real PostgreSQL, S3 (RustFS), CDC, compaction and the federated engine, each result checked against an independent oracle; it has no `-short` skips | CI on every PR; nightly under `-race` on linux/amd64 and linux/arm64 (`nightly-e2e.yml`, `production-race`, `production-race-arm64`) |
 | `go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=75m` | the full federated suite: tier merge, dedup, soft delete, CDC and compaction through DuckDB; its PostgreSQL comparisons are narrower than they look (see [Known gaps](#known-gaps)) | nightly only (`nightly-e2e.yml`, `federated-full`) |
 | `make duckdb-storage-compat` | Parquet written by the current engine reads back in the previous release, and the reverse | CI on every PR (test job, so on arm64) |
 
-CI runs the federated suite with `-short`, which skips the deduplication, merge-on-read, data-tier, soft-delete, `created_at` lifecycle, filter LWW regression and performance tests. An engine upgrade should not merge on CI alone: run the full federated suite and the production suite under `-race` against the new driver first, and record the commands, commit, versions and results in the upgrade PR. Report a test that could not run as not run, never as passed.
+CI runs the federated suite with `-short`, which skips the deduplication, merge-on-read, data-tier, soft-delete, `created_at` lifecycle, filter LWW regression and performance tests. An engine upgrade should not merge on CI alone: run the full federated suite and the production suite under `-race` against the new driver first, and record the commands, commit, versions and results in the upgrade PR. `gh workflow run nightly-e2e.yml --ref <branch>` runs all three nightly jobs on the upgrade branch, including the arm64 one. Report a test that could not run as not run, never as passed.
 
 ## Where each risk is covered
 
@@ -57,12 +57,13 @@ These are open under #753 and must not be counted as passing coverage.
 
 **The federated suite's PostgreSQL comparison covers the hot leg only.** `CompareResults` (`e2e_harness/federated/validation.go`) is applied only in `consistency_test.go`, and there only to data that is entirely in the hot tier: DuckDB reads those rows from PostgreSQL through the attached catalog, and no delta or base file is involved. The PostgreSQL side cannot serve as the oracle for S3 tiers: `buildPostgresOnlySelectQuery` reads only unflushed, live `change_log` rows, and it projects `0` as `version`. The one comparison that does involve S3 data, `TestConsistency_MissingRecordDetection`, expects the two sides to differ. Before #753, `CompareResults` also ignored the totals, collapsed duplicate row IDs, ignored numeric values and system columns, and compared a text attribute only when both sides carried it. It now fails on each of those, and `validation_test.go` pins every case without a database. No PostgreSQL oracle exists yet for federated reads over delta and base files. The production harness (`make test-e2e-production`) checks DuckDB results over S3 tiers against an independent oracle; [What the production oracle checks](#what-the-production-oracle-checks) says what that covers.
 
-**Not yet run or audited on DuckDB 2.0** (status on #753):
+**Validation limits on DuckDB 2.0** (status and evidence on #753):
 
-- CDC flush latency: `TestPerformance_CDCFlush` runs out of its budget while seeding PostgreSQL, before it flushes (#781), on 2.0 and on 1.5.6 alike.
-- Linux arm64 beyond `make test` and `make duckdb-storage-compat`: the e2e and production suites and the Lambda layer build have not run there. Darwin and Windows native libraries are unverified.
-- The production suite under `-race` on 2.0: its first run is the nightly `production-race` job.
-- Required coverage audited against the tests #752 added, including SQL behaviour changes reachable from Forma's generated SQL beyond the lambda syntax guard.
+- CDC flush latency has no production measurement in CI. `TestPerformance_CDCFlush` passes nightly, but it times the federated harness's simulated flush (a CSV converted with `read_csv_auto`, one commit per row marked), not the production exporter, which reads over pgx since #787. What the assertion should measure is #786's decision.
+- arm64: CI runs `make test` under `-race` and `make duckdb-storage-compat` on every PR, and the production suite under `-race` nightly. The full federated suite has not run on arm64.
+- The Lambda build (`make build-lambda`, linux/arm64) has no runtime DuckDB path to validate: `cmd/lambda` builds its config from `forma.DefaultConfig`, where DuckDB is disabled, and never reads `DUCKDB_ENABLED`. No workflow builds it or deploys it, and nothing loads the extension layer `scripts/duckdb_layer.sh` packages. If Lambda enables DuckDB, that path needs its own runtime check, and #754 bears on which library it links.
+- Darwin and Windows: go.mod carries their native libraries, but they are not runtime targets, and no test has run on them.
+- The audit of 2.0 behaviour changes reachable from Forma's generated SQL is on #753. Its one finding, float-to-integer casts that round past the type's bound, is pinned in `sqlgen/duckdb_bound_integer_read_test.go` (#790).
 
 ## Storage compatibility across releases
 
