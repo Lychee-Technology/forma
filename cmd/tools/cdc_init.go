@@ -35,8 +35,9 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 	fs := flag.NewFlagSet("cdc-init", flag.ContinueOnError)
 	fs.SetOutput(flag.CommandLine.Output())
 
-	var pg postgresFlags
-	pg.register(fs, postgresFlagOptions{
+	var shared cdcSharedFlags
+	var initOnly cdcInitOnlyFlags
+	shared.pg.register(fs, postgresFlagOptions{
 		hostFlag:        "pg-host",
 		portFlag:        "pg-port",
 		userFlag:        "pg-user",
@@ -59,17 +60,15 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 	})
 
 	// Table names
-	entityMainTable := fs.String("entity-main-table", "entity_main", "Entity main table name")
-	eavDataTable := fs.String("eav-table", "eav_data", "EAV data table name")
+	fs.StringVar(&shared.entityMainTable, "entity-main-table", "entity_main", "Entity main table name")
+	fs.StringVar(&shared.eavDataTable, "eav-table", "eav_data", "EAV data table name")
 
-	var duck duckExportFlags
-	duck.register(fs, duckExportFlagOptions{
+	shared.duck.register(fs, duckExportFlagOptions{
 		memLimitDefault: "8GB",
 		queryTimeout:    10 * time.Minute,
 	})
 
-	var s3Config s3Flags
-	s3Config.register(fs, s3FlagOptions{
+	shared.s3.register(fs, s3FlagOptions{
 		includePrefix:  true,
 		prefixFlag:     "s3-prefix",
 		prefixDefault:  "base",
@@ -79,17 +78,17 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 	})
 
 	// Manifest settings (optional - enables manifest tracking)
-	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3 (enables manifest tracking)")
-	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
+	fs.StringVar(&shared.manifestPrefix, "manifest-prefix", "", "Manifest prefix in S3 (enables manifest tracking)")
+	fs.StringVar(&shared.manifestTemplate, "manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
 
 	var schemaRegistry schemaRegistryFlags
 	schemaRegistry.register(fs, true)
 
 	// Init-specific options
-	batchSize := fs.Int("batch-size", defaultInitBatchSize, "Rows per batch (overridden by target-file-size-mb)")
-	targetFileSizeMB := fs.Int("target-file-size-mb", 256, "Target parquet file size in MB (0 = use batch-size)")
-	estimatedRowBytes := fs.Int("estimated-row-bytes", 0, "Override row size estimate in bytes (0 = auto from schema)")
-	maxBatchSize := fs.Int("max-batch-size", 10000000, "Maximum batch size to cap memory usage")
+	fs.IntVar(&shared.batchSize, "batch-size", defaultInitBatchSize, "Rows per batch (overridden by target-file-size-mb)")
+	fs.IntVar(&initOnly.targetFileSizeMB, "target-file-size-mb", 256, "Target parquet file size in MB (0 = use batch-size)")
+	fs.IntVar(&shared.estimatedRowBytes, "estimated-row-bytes", 0, "Override row size estimate in bytes (0 = auto from schema)")
+	fs.IntVar(&initOnly.maxBatchSize, "max-batch-size", 10000000, "Maximum batch size to cap memory usage")
 	schemaIDFilter := fs.Int("schema-id", 0, "Specific schema ID to init (0 = all schemas)")
 	dryRun := fs.Bool("dry-run", false, "Dry run mode (no actual export)")
 	replaceDelta := fs.Bool("replace-delta", false, "Purge the schema's delta tier after the base swap commits; without it init refuses while delta objects exist (#371)")
@@ -102,29 +101,27 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 		return nil, err
 	}
 
-	if err := s3Config.validate(true); err != nil {
+	if err := shared.s3.validate(true); err != nil {
 		return nil, err
 	}
 	if err := schemaRegistry.validate(true); err != nil {
 		return nil, err
 	}
-	engine, err := pg.cdcEngine("pg-engine")
+	engine, err := shared.pg.cdcEngine("pg-engine")
 	if err != nil {
 		return nil, err
 	}
 
 	// Track if user explicitly provided estimated-row-bytes (0 means auto-calculate from schema)
-	autoEstimateRowBytes := *estimatedRowBytes == 0
-	password := pg.resolvedPassword("PGPASSWORD")
+	autoEstimateRowBytes := shared.estimatedRowBytes == 0
+	shared.password = shared.pg.resolvedPassword("PGPASSWORD")
 
-	cfg := buildCDCInitConfig(pg, password, entityMainTable, eavDataTable, batchSize,
-		targetFileSizeMB, estimatedRowBytes, maxBatchSize, duck, s3Config,
-		manifestPrefix, manifestTemplate)
+	cfg := buildCDCInitConfig(shared, initOnly)
 	cfg.Engine = engine
 
 	return &cdcInitOptions{
 		cfg:                  cfg,
-		pg:                   pg,
+		pg:                   shared.pg,
 		registry:             schemaRegistry,
 		schemaIDFilter:       *schemaIDFilter,
 		dryRun:               *dryRun,
@@ -134,38 +131,20 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 	}, nil
 }
 
-// buildCDCInitConfig constructs a CDC config from parsed flag values.
-func buildCDCInitConfig(pg postgresFlags, password string, entityMainTable, eavDataTable *string,
-	batchSize, targetFileSizeMB, estimatedRowBytes, maxBatchSize *int, duck duckExportFlags,
-	s3Config s3Flags, manifestPrefix, manifestTemplate *string) cdc.CDCConfig {
-	return cdc.CDCConfig{
-		EntityMainTable:         *entityMainTable,
-		EAVDataTable:            *eavDataTable,
-		BatchSize:               *batchSize,
-		TargetFileSizeMB:        *targetFileSizeMB,
-		EstimatedRowBytes:       *estimatedRowBytes,
-		MaxBatchSize:            *maxBatchSize,
-		PGHost:                  pg.host,
-		PGPort:                  pg.port,
-		PGUser:                  pg.user,
-		PGPassword:              password,
-		PGDB:                    pg.database,
-		PGSSLMode:               pg.sslMode,
-		DuckDBPath:              duck.duckDBPath,
-		DuckThreads:             duck.duckThreads,
-		DuckMemLimit:            duck.duckMemLimit,
-		QueryTimeout:            duck.queryTimeout,
-		ParquetCompression:      duck.parquetCompression,
-		ParquetCompressionLevel: duck.parquetCompressionLevel,
-		S3Bucket:                s3Config.bucket,
-		S3Prefix:                s3Config.prefix,
-		S3Endpoint:              s3Config.endpoint,
-		S3Region:                s3Config.region,
-		S3UseSSL:                s3Config.useSSL,
-		S3UsePath:               s3Config.usePath,
-		ManifestPrefix:          *manifestPrefix,
-		ManifestTemplate:        *manifestTemplate,
-	}.WithDefaults()
+// cdcInitOnlyFlags holds the cdc-init flag values outside the block it
+// shares with cdc-flush (#445).
+type cdcInitOnlyFlags struct {
+	targetFileSizeMB int
+	maxBatchSize     int
+}
+
+// buildCDCInitConfig constructs a CDC config from parsed flag values: the
+// shared block, then the init-only fields, then WithDefaults last.
+func buildCDCInitConfig(shared cdcSharedFlags, initOnly cdcInitOnlyFlags) cdc.CDCConfig {
+	cfg := shared.sharedConfig()
+	cfg.TargetFileSizeMB = initOnly.targetFileSizeMB
+	cfg.MaxBatchSize = initOnly.maxBatchSize
+	return cfg.WithDefaults()
 }
 
 // runCDCInit parses cdc-init CLI flags and delegates the actual base-file
