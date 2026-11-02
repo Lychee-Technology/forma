@@ -20,6 +20,7 @@ Paths are relative to `internal/`. The production harness tests live in `e2e_har
 | Risk | Tests |
 |---|---|
 | Hot, warm and cold tiers, the dirty set, versions, tombstones, dedup | production `three_tier_merge_e2e_test.go`, `three_tier_soft_delete_e2e_test.go`, `three_tier_isolation_e2e_test.go`, `filter_lww*_e2e_test.go`, `tiebreak_lww_e2e_test.go`; federated `deduplication_test.go`, `merge_on_read_test.go`, `soft_delete_test.go`, `data_tier_test.go` (full suite only) |
+| One data set through every transition: flush, promotion, rewrite, hot over delta over base, tombstones before and after flush and rewrite, bound bigint past 2^53 | production `tier_transition_parity_e2e_test.go`, `tier_transition_overlap_e2e_test.go` |
 | Pagination, keyset cursors, totals | production `deep_pagination_e2e_test.go`, `keyset_lww_e2e_test.go`, `keyset_routing_e2e_test.go`, `pagination_mutation_e2e_test.go`, `bigint_keyset_boundary_e2e_test.go` |
 | LIST attributes: empty, NULL, element order, reconstruction | production `list_roundtrip_e2e_test.go` |
 | Parquet column types and value images | production `full_type_parquet_e2e_test.go` (pins the physical schema), `full_type_roundtrip_e2e_test.go`, `numeric_width_parity_e2e_test.go`, `width_audit*_e2e_test.go`, `bool_bound_parity_e2e_test.go`, `date_parity_e2e_test.go`, `date_image_tiers_e2e_test.go`, `text_uuid_operator_e2e_test.go` |
@@ -35,11 +36,26 @@ Paths are relative to `internal/`. The production harness tests live in `e2e_har
 | SQL syntax the new release dropped | `duckdb_lambda_syntax_guard_test.go` (repository root) for lambdas; behaviour changes are found by the suites above, as #752 found the `postgres_scan` removal and the `postgres_query` column order |
 | Parquet readable across releases | `make duckdb-storage-compat` (below) |
 
+## What the production oracle checks
+
+`AssertQueryMatches` (`e2e_harness/production/assert.go`) runs each query through the real engine and through `ExpectedStateFromEvents` (`oracle.go`). The oracle folds the harness's own event log: the latest event per row by `(changed_at, seq)`, deleted rows dropped, then filters, sorts with a `row_id` tiebreak, offset and limit. It reads no DuckDB SQL, Parquet file or DuckDB result, so it stays valid after a row's history has left PostgreSQL for delta and base files. The diff compares the total, the set of row IDs, their order when the query sorts, and every non-list attribute of every returned row.
+
+Integer attributes (smallint, integer, bigint) compare as exact `int64` since #753. Before, the oracle folded every numeric to `float64`, so a column-bound bigint rounded to 2^53 still matched 2^53+1, and the oracle itself mis-sorted and mis-filtered values past 2^53: tests on those values had to avoid it (`bigint_*_e2e_test.go`). numeric, bool and date/datetime still compare as `float64`, the image their storage keeps. The EAV-only bigint is bounded to ±2^53 at the write (#590), where that image is exact.
+
+Two negative controls keep the comparison honest. `oracle_diff_control_test.go` runs on every PR without a database: it injects into a correct engine result a stale version's value, a bigint rounded through `float64`, a dropped EAV value, a resurrected deleted row, a lost row, a wrong total and an inverted order, and requires the diff to report each. `TestTierTransitionParity` builds an oracle that never saw the hot writes and requires it to disagree with the engine's real answer on exactly the rows those writes changed.
+
+What the oracle does not model, so tests covering it assert results directly:
+
+- LIST attributes: `normalizeValue` refuses them. `list_roundtrip_e2e_test.go` covers them.
+- The `in`, `not_in`, `is_null` and `is_not_null` filters.
+- Keyset cursors: `Run` pages by offset only. The keyset tests check their walks themselves.
+- System columns (`created_at`, `updated_at`, versions): the diff compares schema attributes only.
+
 ## Known gaps
 
 These are open under #753 and must not be counted as passing coverage.
 
-**The federated suite's PostgreSQL comparison covers the hot leg only.** `CompareResults` (`e2e_harness/federated/validation.go`) is applied only in `consistency_test.go`, and there only to data that is entirely in the hot tier: DuckDB reads those rows from PostgreSQL through the attached catalog, and no delta or base file is involved. The PostgreSQL side cannot serve as the oracle for S3 tiers: `buildPostgresOnlySelectQuery` reads only unflushed, live `change_log` rows, and it projects `0` as `version`. The one comparison that does involve S3 data, `TestConsistency_MissingRecordDetection`, expects the two sides to differ. Before #753, `CompareResults` also ignored the totals, collapsed duplicate row IDs, ignored numeric values and system columns, and compared a text attribute only when both sides carried it. It now fails on each of those, and `validation_test.go` pins every case without a database. No PostgreSQL oracle exists yet for federated reads over delta and base files. The production harness (`make test-e2e-production`) checks DuckDB results over S3 tiers against an independent oracle.
+**The federated suite's PostgreSQL comparison covers the hot leg only.** `CompareResults` (`e2e_harness/federated/validation.go`) is applied only in `consistency_test.go`, and there only to data that is entirely in the hot tier: DuckDB reads those rows from PostgreSQL through the attached catalog, and no delta or base file is involved. The PostgreSQL side cannot serve as the oracle for S3 tiers: `buildPostgresOnlySelectQuery` reads only unflushed, live `change_log` rows, and it projects `0` as `version`. The one comparison that does involve S3 data, `TestConsistency_MissingRecordDetection`, expects the two sides to differ. Before #753, `CompareResults` also ignored the totals, collapsed duplicate row IDs, ignored numeric values and system columns, and compared a text attribute only when both sides carried it. It now fails on each of those, and `validation_test.go` pins every case without a database. No PostgreSQL oracle exists yet for federated reads over delta and base files. The production harness (`make test-e2e-production`) checks DuckDB results over S3 tiers against an independent oracle; [What the production oracle checks](#what-the-production-oracle-checks) says what that covers.
 
 **Not yet run or audited on DuckDB 2.0** (status on #753):
 

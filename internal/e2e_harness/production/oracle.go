@@ -260,12 +260,11 @@ func (s *ExpectedState) sortRows(rows []*ExpectedRow, sorts []Sort) error {
 }
 
 // normalizeValue converts a raw attribute value into the oracle's canonical
-// comparison form. The numeric normalization matches the verified EAV
-// storage convention on BOTH the mainline write path
-// (transform.populateTypedValue / ToEAVRecord) and read path
-// (extractValueFromEAVRecord): the numeric family — smallint, integer,
-// bigint, numeric, bool (as 1/0), date and datetime (as epoch millis) —
-// lives in value_numeric as float64; text and uuid live in value_text.
+// comparison form. The integer family (smallint, integer, bigint) is an
+// exact int64 (oracle_numeric.go); numeric, bool (as 1/0), date and
+// datetime (as epoch millis) are float64, the image value_numeric keeps on
+// the write path (transform.populateTypedValue / ToEAVRecord) and the read
+// path (extractValueFromEAVRecord); text and uuid are strings.
 func normalizeValue(value any, vt forma.ValueType) (any, error) {
 	if value == nil {
 		return nil, nil
@@ -279,7 +278,9 @@ func normalizeValue(value any, vt forma.ValueType) (any, error) {
 		return s, nil
 	case forma.ValueTypeUUID:
 		return normalizeUUID(value)
-	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeNumeric:
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
+		return toExactInteger(value)
+	case forma.ValueTypeNumeric:
 		return toFloat64(value)
 	case forma.ValueTypeBool:
 		return normalizeBool(value)
@@ -306,7 +307,9 @@ func normalizeFilterValue(raw string, vt forma.ValueType) (any, error) {
 			return float64(1), nil
 		}
 		return float64(0), nil
-	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeNumeric:
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
+		return parseExactInteger(raw)
+	case forma.ValueTypeNumeric:
 		f, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
 			return nil, fmt.Errorf("numeric filter value %q: %w", raw, err)
@@ -378,47 +381,13 @@ func normalizeTimeMillis(value any) (any, error) {
 	}
 }
 
-func toFloat64(value any) (float64, error) {
-	switch v := value.(type) {
-	case float64:
-		return v, nil
-	case float32:
-		return float64(v), nil
-	case int:
-		return float64(v), nil
-	case int16:
-		return float64(v), nil
-	case int32:
-		return float64(v), nil
-	case int64:
-		return float64(v), nil
-	case string:
-		f, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return 0, fmt.Errorf("numeric value %q: %w", v, err)
-		}
-		return f, nil
-	default:
-		return 0, fmt.Errorf("numeric value has type %T", value)
-	}
-}
-
-// compareValues is the single typed comparator used for filters and sorts:
-// float64 for the numeric family (per the EAV value_numeric convention),
-// lexicographic for strings. Mixed types compare by their string forms as a
-// last resort.
+// compareValues is the single typed comparator used for filters, sorts and
+// the diff: exact across the numeric forms (int64, float64, *big.Rat; see
+// oracle_numeric.go), lexicographic for strings. Mixed types compare by
+// their string forms as a last resort.
 func compareValues(a, b any) int {
-	af, aIsNum := a.(float64)
-	bf, bIsNum := b.(float64)
-	if aIsNum && bIsNum {
-		switch {
-		case af < bf:
-			return -1
-		case af > bf:
-			return 1
-		default:
-			return 0
-		}
+	if result, ok := compareNumbers(a, b); ok {
+		return result
 	}
 	as, aIsStr := a.(string)
 	bs, bIsStr := b.(string)

@@ -77,7 +77,7 @@ func TestOracle_LWWFoldAndDeletes(t *testing.T) {
 	if row.Attrs["title"] != "a2" {
 		t.Errorf("title = %v, want update to win (a2)", row.Attrs["title"])
 	}
-	if row.Attrs["count"] != float64(10) {
+	if row.Attrs["count"] != int64(10) {
 		t.Errorf("count = %v, want 10 preserved through partial update", row.Attrs["count"])
 	}
 }
@@ -161,7 +161,7 @@ func TestOracle_SortAndPaginate(t *testing.T) {
 	}
 
 	desc := mustRun(t, state, Query{Schema: testSchema(), Sorts: []Sort{{Attr: "count", Desc: true}}})
-	if desc.Rows[0].Attrs["count"] != float64(40) {
+	if desc.Rows[0].Attrs["count"] != int64(40) {
 		t.Fatalf("desc first count = %v, want 40", desc.Rows[0].Attrs["count"])
 	}
 }
@@ -177,7 +177,9 @@ func TestNormalizeValue_Conventions(t *testing.T) {
 		{"bool false is 0", false, forma.ValueTypeBool, float64(0)},
 		{"date string to millis", "1970-01-02", forma.ValueTypeDate, float64(86400000)},
 		{"datetime string to millis", "1970-01-01T00:00:01Z", forma.ValueTypeDateTime, float64(1000)},
-		{"int64 to float64", int64(7), forma.ValueTypeBigInt, float64(7)},
+		{"bigint stays exact int64", int64(7), forma.ValueTypeBigInt, int64(7)},
+		{"whole double integer to int64", float64(7), forma.ValueTypeInteger, int64(7)},
+		{"numeric stays float64", int64(7), forma.ValueTypeNumeric, float64(7)},
 		{"uuid canonical", "0198C5F2-0000-7000-8000-000000000001", forma.ValueTypeUUID, "0198c5f2-0000-7000-8000-000000000001"},
 	}
 	for _, tc := range cases {

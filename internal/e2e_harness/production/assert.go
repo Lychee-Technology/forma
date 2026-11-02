@@ -209,14 +209,20 @@ func actualAttrValue(record *model.PersistentRecord, meta forma.AttributeMetadat
 
 // normalizeEAVNumeric maps a value_numeric payload to the canonical form;
 // bool is stored as 1/0 and dates as epoch millis, both already float64.
+// An integer-family value becomes the int64 its double image holds (exact,
+// since the write bounds EAV integers to ±2^53, #590).
 func normalizeEAVNumeric(v float64, vt forma.ValueType) any {
-	if vt == forma.ValueTypeBool {
+	switch vt {
+	case forma.ValueTypeBool:
 		if v != 0 {
 			return float64(1)
 		}
 		return float64(0)
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
+		return wholeFloatToInt64(v)
+	default:
+		return v
 	}
-	return v
 }
 
 func mainColumnValue(record *model.PersistentRecord, binding *forma.MainColumnBinding) (any, bool) {
