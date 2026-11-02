@@ -173,6 +173,11 @@ func transitionQueries(wide SchemaRef) []Query {
 			Sorts: []Sort{{Attr: "amount"}}, Limit: 10},
 		{Schema: wide, Filters: []Filter{{Attr: "amount", Op: "gt", Value: "9007199254740993.5"}},
 			Sorts: []Sort{{Attr: "amount"}}, Limit: 10},
+		// MaxInt64 spelled with a fraction or an exponent rounds to the double
+		// 2^63 but still binds as the exact int64.
+		{Schema: wide, Filters: []Filter{{Attr: "amount", Value: "9223372036854775807.0"}}, Limit: 10},
+		{Schema: wide, Filters: []Filter{{Attr: "amount", Op: "lt", Value: "9.223372036854775807e18"}},
+			Sorts: []Sort{{Attr: "amount"}}, Limit: 10},
 		{Schema: wide, Filters: []Filter{{Attr: "total", Value: "9007199254740992"}}, Limit: 10},
 		{Schema: wide, Filters: []Filter{{Attr: "qty", Op: "gte", Value: "21"}},
 			Sorts: []Sort{{Attr: "qty"}}, Limit: 100},

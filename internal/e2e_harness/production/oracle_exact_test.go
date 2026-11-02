@@ -86,6 +86,15 @@ func TestOracle_BoundBigintFiltersAreExact(t *testing.T) {
 		// one, 2^53, so gt excludes 2^53 although the rational is below it.
 		{"gt halfway fraction rounds to even", Filter{Attr: "amount", Op: "gt", Value: "9007199254740991.5"},
 			[]uuid.UUID{newRowID(1), newRowID(2), newRowID(3)}},
+		// MaxInt64's decimal and exponent spellings round to the double 2^63,
+		// outside int64, yet still denote MaxInt64 exactly, as the engine binds
+		// them (numutil.TryParseNumber).
+		{"decimal spelling of MaxInt64", Filter{Attr: "amount", Value: "9223372036854775807.0"},
+			[]uuid.UUID{newRowID(1)}},
+		{"lt exponent spelling of MaxInt64", Filter{Attr: "amount", Op: "lt", Value: "9.223372036854775807e18"},
+			[]uuid.UUID{newRowID(2), newRowID(3), newRowID(4), newRowID(5)}},
+		{"lt 2^63 keeps MaxInt64", Filter{Attr: "amount", Op: "lt", Value: "9223372036854775808.0"},
+			[]uuid.UUID{newRowID(1), newRowID(2), newRowID(3), newRowID(4), newRowID(5)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,6 +112,33 @@ func TestParseExactInteger_RefusesWhatTheEngineRefuses(t *testing.T) {
 	for _, raw := range []string{"1/3", "NaN", "Inf", "-Infinity", "1e400", "abc"} {
 		if got, err := parseExactInteger(raw); err == nil {
 			t.Errorf("parseExactInteger(%q) = %v (%T), want an error", raw, got, got)
+		}
+	}
+}
+
+// At the int64 edges the float64 image of an integral literal can be ±2^63
+// whether or not the literal itself is in range: the literal decides.
+func TestParseExactInteger_Int64Edges(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want any
+	}{
+		{"9223372036854775807.0", int64(math.MaxInt64)},
+		{"9.223372036854775807e18", int64(math.MaxInt64)},
+		{"-9223372036854775808.0", int64(math.MinInt64)},
+		{"-9.223372036854775808e18", int64(math.MinInt64)},
+		{"9223372036854775808.0", math.Ldexp(1, 63)},
+		{"-9223372036854775809.0", -math.Ldexp(1, 63)},
+		{"9223372036854775806.5", math.Ldexp(1, 63)},
+	}
+	for _, tc := range cases {
+		got, err := parseExactInteger(tc.raw)
+		if err != nil {
+			t.Errorf("parseExactInteger(%q): %v", tc.raw, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("parseExactInteger(%q) = %v (%T), want %v (%T)", tc.raw, got, got, tc.want, tc.want)
 		}
 	}
 }

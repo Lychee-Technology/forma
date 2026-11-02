@@ -74,10 +74,12 @@ func parseExactInteger(raw string) (any, error) {
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return nil, fmt.Errorf("integer value %q is not a finite number", raw)
 	}
-	// Only a whole image in int64 range can stand for a literal the double
+	// Only a whole image in [-2^63, 2^63] can stand for a literal the double
 	// rounded, integral (2^53+1) or not (2^53+0.5); the exact rational tells
-	// those two apart.
-	if _, whole := wholeFloatToInt64(f).(int64); !whole {
+	// those two apart. The range is closed: MaxInt64 rounds up to 2^63, so
+	// "9223372036854775807.0" has an image outside int64 and is still
+	// MaxInt64, while "9223372036854775808.0" stays the double 2^63.
+	if f != math.Trunc(f) || f < -twoPow63 || f > twoPow63 {
 		return f, nil
 	}
 	if r, ok := new(big.Rat).SetString(raw); ok && r.IsInt() && r.Num().IsInt64() {
