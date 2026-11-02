@@ -46,11 +46,10 @@ func TestExecuteBatch_MarkStampSampledAfterManifestAppend(t *testing.T) {
 		schemaID:         7,
 		snapshot:         snapshot,
 		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    store,
 		manifestResolver: resolver,
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			return nil
 		},
 	}
@@ -98,11 +97,10 @@ func TestExecuteBatch_MarkFailsAfterManifestAppend(t *testing.T) {
 		schemaID:         7,
 		snapshot:         snapshot,
 		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    store,
 		manifestResolver: resolver,
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			return nil
 		},
 		markFlushed: func(context.Context, *sql.DB, string, int16, []uuid.UUID, map[uuid.UUID]int64, int64) ([]uuid.UUID, error) {
@@ -160,11 +158,10 @@ func TestExecuteBatch_BeforeExportHookRunsBeforeExport(t *testing.T) {
 		schemaID:         7,
 		snapshot:         snapshot,
 		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    newInMemoryManifestStore(),
 		manifestResolver: manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"},
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			calls = append(calls, "export")
 			return nil
 		},
@@ -211,10 +208,9 @@ func TestExecuteBatch_BeforeExportHookErrorAbortsBeforeSideEffects(t *testing.T)
 		schemaID:      7,
 		snapshot:      snapshot,
 		versions:      map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck: "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:        zap.NewNop(),
 		manifestStore: store,
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			exportCalled = true
 			return nil
 		},

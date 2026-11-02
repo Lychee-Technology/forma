@@ -2,6 +2,7 @@ package cdc
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/lychee-technology/forma/internal/testdb"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
@@ -17,10 +19,9 @@ import (
 // exportPGFixture is one isolated set of change_log/entity_main/eav_data
 // tables in a fresh PostgreSQL schema, with one changed row.
 type exportPGFixture struct {
-	cfg    CDCConfig
-	cc     *pgx.ConnConfig
-	pgConn string
-	rowID  uuid.UUID
+	cfg   CDCConfig
+	db    *sql.DB
+	rowID uuid.UUID
 }
 
 func newExportPGFixture(t *testing.T, ctx context.Context) exportPGFixture {
@@ -47,25 +48,24 @@ func newExportPGFixture(t *testing.T, ctx context.Context) exportPGFixture {
 		_, _ = pool.Exec(context.Background(), "DROP SCHEMA "+qs+" CASCADE")
 	})
 
-	cc := pool.Config().ConnConfig
+	db := stdlib.OpenDBFromPool(pool)
+	t.Cleanup(func() { _ = db.Close() })
 	return exportPGFixture{
 		cfg: CDCConfig{
 			ChangeLogTable:  schema + ".change_log",
 			EntityMainTable: schema + ".entity_main",
 			EAVDataTable:    schema + ".eav_data",
 		},
-		cc:     cc,
-		pgConn: BuildPGDSN(PGDSNParams{Host: cc.Host, Port: int(cc.Port), User: cc.User, Password: cc.Password, DB: cc.Database, SSLMode: "disable"}),
-		rowID:  rowID,
+		db:    db,
+		rowID: rowID,
 	}
 }
 
-// DuckDB 2.0's postgres_query decodes PostgreSQL's columns in its query's
-// order even when the planner asks for another one: the change_log join
-// reorders row_id first, so the export failed with "Postgres binary reader
-// - expected 16 bytes for a value of type UUID, got 2", and same-typed
-// columns would swap silently. The export must read every column back
-// under its own name (#752).
+// Every staged column must come back under its own name. Through DuckDB
+// 2.0's postgres_query the change_log join once reordered row_id first, so
+// the export failed with "Postgres binary reader - expected 16 bytes for a
+// value of type UUID, got 2", and same-typed columns would swap silently
+// (#752); the pgx staging must not reintroduce any such swap (#785).
 func TestExportSnapshotToTmp_RealPostgresKeepsEveryColumnInPlace(t *testing.T) {
 	ctx := context.Background()
 	fx := newExportPGFixture(t, ctx)
@@ -74,7 +74,7 @@ func TestExportSnapshotToTmp_RealPostgresKeepsEveryColumnInPlace(t *testing.T) {
 	t.Cleanup(func() { _ = exp.DB.Close() })
 
 	out := filepath.Join(t.TempDir(), "delta.parquet")
-	require.NoError(t, exp.ExportSnapshotToTmp(ctx, fx.cfg, fx.pgConn, out, 7, 9999, []uuid.UUID{fx.rowID}, testAttrCache()))
+	require.NoError(t, exp.ExportSnapshotToTmp(ctx, fx.cfg, fx.db, out, 7, 9999, []uuid.UUID{fx.rowID}, testAttrCache()))
 
 	var (
 		schemaID             int16
@@ -97,22 +97,33 @@ func TestExportSnapshotToTmp_RealPostgresKeepsEveryColumnInPlace(t *testing.T) {
 	require.True(t, flag)
 }
 
-// A bad PostgreSQL password must fail the export without the password in
-// the error, although DuckDB's attach error quotes the connection string
-// (#290, #752).
-func TestExportSnapshotToTmp_RealPostgresAttachFailureHidesPassword(t *testing.T) {
+// The export reads PostgreSQL over pgx (#785): DuckDB attaches no
+// PostgreSQL database and never sees a connection string, and the staged
+// temp tables are gone once the export ends, also when it failed.
+func TestExportSnapshotToTmp_RealPostgresAttachesNothingAndDropsStages(t *testing.T) {
 	ctx := context.Background()
 	fx := newExportPGFixture(t, ctx)
 	exp, err := NewDuckExporter(ctx, fx.cfg, "", "", "", zaptest.NewLogger(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = exp.DB.Close() })
 
-	const secret = "not-the-password-752"
-	badConn := BuildPGDSN(PGDSNParams{Host: fx.cc.Host, Port: int(fx.cc.Port), User: fx.cc.User, Password: secret, DB: fx.cc.Database, SSLMode: "disable"})
 	out := filepath.Join(t.TempDir(), "delta.parquet")
-	err = exp.ExportSnapshotToTmp(ctx, fx.cfg, badConn, out, 7, 9999, []uuid.UUID{fx.rowID}, testAttrCache())
-	if err == nil {
-		t.Skip("the integration PostgreSQL accepts any password, so no attach fails")
-	}
-	require.NotContains(t, err.Error(), secret)
+	require.NoError(t, exp.ExportSnapshotToTmp(ctx, fx.cfg, fx.db, out, 7, 9999, []uuid.UUID{fx.rowID}, testAttrCache()))
+	requireNoPostgresInDuckDB(t, exp.DB)
+
+	// A missing EAV table fails the export after the first two stages ran.
+	broken := fx.cfg
+	broken.EAVDataTable = "cdc_export_no_such_schema.eav_data"
+	err = exp.ExportSnapshotToTmp(ctx, broken, fx.db, filepath.Join(t.TempDir(), "x.parquet"), 7, 9999, []uuid.UUID{fx.rowID}, testAttrCache())
+	require.ErrorContains(t, err, "stage e_rows rows")
+	requireNoPostgresInDuckDB(t, exp.DB)
+}
+
+func requireNoPostgresInDuckDB(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var attached, staged int
+	require.NoError(t, db.QueryRow("SELECT count(*) FROM duckdb_databases() WHERE type = 'postgres'").Scan(&attached))
+	require.Zero(t, attached, "no PostgreSQL database is attached")
+	require.NoError(t, db.QueryRow("SELECT count(*) FROM duckdb_tables() WHERE table_name LIKE 'cdc_export_%'").Scan(&staged))
+	require.Zero(t, staged, "every staged table is dropped")
 }

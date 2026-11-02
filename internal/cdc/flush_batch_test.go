@@ -39,11 +39,10 @@ func TestExecuteFlush_SplitsBatchWhenByteTargetIsExceeded(t *testing.T) {
 
 	chunkCalled := false
 	flushCtx := &schemaFlushContext{
-		db:         db,
-		cfg:        CDCConfig{BatchSize: 10, MaxBatchBytes: 10, EstimatedRowBytes: 10, PGHost: "localhost", PGPort: 5432, PGUser: "pguser", PGDB: "forma"},
-		tableName:  "change_log",
-		pgPassword: "secret",
-		logger:     zap.NewNop(),
+		db:        db,
+		cfg:       CDCConfig{BatchSize: 10, MaxBatchBytes: 10, EstimatedRowBytes: 10, PGHost: "localhost", PGPort: 5432, PGUser: "pguser", PGDB: "forma"},
+		tableName: "change_log",
+		logger:    zap.NewNop(),
 		executeSingle: func(*flushBatchExecutor, []uuid.UUID) error {
 			return errors.New("unexpected single execution")
 		},
@@ -96,11 +95,10 @@ func TestExecuteBatch_ReturnsErrorWhenManifestLoadFails(t *testing.T) {
 		schemaID:         7,
 		snapshot:         snapshot,
 		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    store,
 		manifestResolver: resolver,
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			return nil
 		},
 	}
@@ -150,11 +148,10 @@ func TestExecuteBatch_ReturnsErrorWhenManifestSaveFails(t *testing.T) {
 		schemaID:         7,
 		snapshot:         snapshot,
 		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    store,
 		manifestResolver: resolver,
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			return nil
 		},
 	}
@@ -205,10 +202,9 @@ func TestExecuteBatch_ReturnsErrorWhenExportFailsAndDoesNotAdvanceState(t *testi
 		schemaID:      7,
 		snapshot:      snapshot,
 		versions:      map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck: "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:        zap.NewNop(),
 		manifestStore: store,
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			return errors.New("export failed")
 		},
 	}
@@ -253,10 +249,9 @@ func TestExecuteBatch_ReturnsErrorWhenCopyFailsAndDoesNotAdvanceState(t *testing
 		schemaID:      7,
 		snapshot:      snapshot,
 		versions:      map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck: "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:        zap.NewNop(),
 		manifestStore: store,
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			return nil
 		},
 	}
@@ -301,12 +296,11 @@ func TestExecuteBatch_DryRunPerformsNoSideEffects(t *testing.T) {
 		schemaID:         7,
 		snapshot:         snapshot,
 		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		dryRun:           true,
 		logger:           zap.NewNop(),
 		manifestStore:    store,
 		manifestResolver: manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"},
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			exportCalled = true
 			return nil
 		},

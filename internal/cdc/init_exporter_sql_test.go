@@ -13,13 +13,13 @@ func TestBuildBaseExportSQL_UsesRowIDsAndConfig(t *testing.T) {
 	cfg := CDCConfig{EntityMainTable: "entity_main_dev", DuckMemLimit: "6GB", ParquetCompression: "zstd", ParquetCompressionLevel: 5}
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
 
-	sql, mQuery, eQuery, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", cfg, 1, []uuid.UUID{rowID}, testAttrCache())
+	sql, mQuery, eQuery, err := buildBaseExportSQL("s3://bucket/base/1/_tmp/tmp.parquet", cfg, 1, []uuid.UUID{rowID}, testAttrCache())
 	if err != nil {
 		t.Fatalf("buildBaseExportSQL returned error: %v", err)
 	}
 
-	rowFilter := "row_id IN (UUID '019bed54-48eb-7cdc-aed3-8d38ec9c1394')"
-	if !strings.Contains(mQuery, "ltbase_row_id IN (UUID '019bed54-48eb-7cdc-aed3-8d38ec9c1394')") {
+	rowFilter := "row_id = ANY($1::uuid[])"
+	if !strings.Contains(mQuery, "ltbase_row_id = ANY($1::uuid[])") {
 		t.Fatalf("main query missing row filter: %s", mQuery)
 	}
 	if !strings.Contains(mQuery, "ltbase_deleted_at IS NULL") {
@@ -41,7 +41,7 @@ func TestBuildBaseExportSQL_UsesRowIDsAndConfig(t *testing.T) {
 
 func TestBuildBaseExportSQL_ErrorsWithoutAttrCache(t *testing.T) {
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
-	_, _, _, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1, []uuid.UUID{rowID}, nil)
+	_, _, _, err := buildBaseExportSQL("s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1, []uuid.UUID{rowID}, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrSchemaAttrCacheUnavailable)
 	require.Contains(t, err.Error(), "1")
@@ -49,24 +49,23 @@ func TestBuildBaseExportSQL_ErrorsWithoutAttrCache(t *testing.T) {
 
 // #519: a base export with no row ids is a zero-row export, not an error. A
 // schema with zero live rows still gets one base object with the full
-// projected column set (its manifest must never list nothing), so both
-// source queries select no rows via a FALSE filter and the projection is
-// unchanged. The attribute-cache requirement still applies.
+// projected column set (its manifest must never list nothing). Both source
+// queries bind an empty row-id array and so select no rows, the staged
+// tables keep every column, and the projection is unchanged. The
+// attribute-cache requirement still applies.
 func TestBuildBaseExportSQL_EmptyRowIDsSelectsNoRowsWithFullProjection(t *testing.T) {
-	sql, mQuery, eQuery, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1, nil, testAttrCache())
+	sql, mQuery, eQuery, err := buildBaseExportSQL("s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1, nil, testAttrCache())
 	require.NoError(t, err)
-	require.Contains(t, mQuery, "ltbase_schema_id = 1 AND ltbase_deleted_at IS NULL AND FALSE")
-	require.Contains(t, eQuery, "schema_id = 1 AND FALSE")
-	require.NotContains(t, mQuery, "ltbase_row_id IN (")
-	require.NotContains(t, eQuery, "row_id IN (")
+	require.Contains(t, mQuery, "ltbase_schema_id = 1 AND ltbase_deleted_at IS NULL AND ltbase_row_id = ANY($1::uuid[])")
+	require.Contains(t, eQuery, "schema_id = 1 AND row_id = ANY($1::uuid[])")
 	require.Contains(t, sql, "TO 's3://bucket/base/1/_tmp/tmp.parquet'")
 
-	withRows, _, _, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1,
+	withRows, _, _, err := buildBaseExportSQL("s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1,
 		[]uuid.UUID{uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")}, testAttrCache())
 	require.NoError(t, err)
 	require.Equal(t, selectClause(t, withRows), selectClause(t, sql), "zero-row export projects the same columns as a populated one")
 
-	_, _, _, err = buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1, nil, nil)
+	_, _, _, err = buildBaseExportSQL("s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1, nil, nil)
 	require.ErrorIs(t, err, ErrSchemaAttrCacheUnavailable)
 }
 
@@ -97,7 +96,7 @@ func TestBuildBaseExportSQL_WithSchemaCacheProjectsColumns(t *testing.T) {
 	}
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
 
-	sql, mQuery, eQuery, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1, []uuid.UUID{rowID}, attrCache)
+	sql, mQuery, eQuery, err := buildBaseExportSQL("s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1, []uuid.UUID{rowID}, attrCache)
 	if err != nil {
 		t.Fatalf("buildBaseExportSQL returned error: %v", err)
 	}
@@ -123,7 +122,7 @@ func TestBuildBaseExportSQL_UsesCustomTableNames(t *testing.T) {
 	}
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
 
-	_, mQuery, eQuery, err := buildBaseExportSQL("host=pg", "s3://bucket/base/1/_tmp/tmp.parquet", cfg, 1, []uuid.UUID{rowID}, testAttrCache())
+	_, mQuery, eQuery, err := buildBaseExportSQL("s3://bucket/base/1/_tmp/tmp.parquet", cfg, 1, []uuid.UUID{rowID}, testAttrCache())
 	if err != nil {
 		t.Fatalf("buildBaseExportSQL returned error: %v", err)
 	}

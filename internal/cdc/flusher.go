@@ -79,7 +79,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	}
 
 	// Setup Postgres connection
-	db, pgPassword, err := setupPostgresConnection(ctx, cfg, region, credProvider, logger)
+	db, _, err := setupPostgresConnection(ctx, cfg, region, credProvider, logger)
 	if err != nil {
 		return FlushReport{}, fmt.Errorf("setup postgres connection: %w", err)
 	}
@@ -104,7 +104,6 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 		db:             db,
 		duck:           duck,
 		clients:        clients,
-		pgPassword:     pgPassword,
 		dryRun:         dryRun,
 		logger:         logger,
 		schemaRegistry: schemaRegistry,
@@ -160,7 +159,10 @@ func setupAWSClient(ctx context.Context, cfg CDCConfig) (string, aws.Credentials
 	return awsCfg.Region, awsCfg.Credentials, fullClient, nil
 }
 
-// setupPostgresConnection creates a Postgres connection, potentially using IAM auth.
+// setupPostgresConnection creates a Postgres connection, potentially using IAM
+// auth, and answers the password it chose (the IAM token when one was
+// generated). The flush's PostgreSQL reads, the export's included (#785), all
+// go through this pool.
 func setupPostgresConnection(ctx context.Context, cfg CDCConfig, region string, credProvider aws.CredentialsProvider, logger *zap.Logger) (*sql.DB, string, error) {
 	pgPassword := cfg.PGPassword
 
@@ -217,7 +219,6 @@ type schemaFlushContext struct {
 	s3Client         S3ObjectClient
 	cfg              CDCConfig
 	tableName        string
-	pgPassword       string
 	dryRun           bool
 	logger           *zap.Logger
 	schemaRegistry   forma.SchemaRegistry
@@ -344,15 +345,7 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 		return nil
 	}
 
-	// Build postgres connection string for DuckDB postgres_query.
-	sslMode := c.cfg.PGSSLMode
-	if sslMode == "" {
-		sslMode = DefaultPGSSLMode
-	}
-	pgConnForDuck := BuildPGDSN(PGDSNParams{Host: c.cfg.PGHost, Port: c.cfg.PGPort, User: c.cfg.PGUser, Password: c.pgPassword, DB: c.cfg.PGDB, SSLMode: sslMode})
-	// Redact the real (quoted) wire DSN rather than hand-building a stale preview
-	// that no longer matches what DuckDB receives (#290).
-	c.logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids), "pgConnForDuck", redactConnStr(pgConnForDuck))
+	c.logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids))
 
 	// Cache was resolved and validated by the processSchemas pre-flight (#193).
 	attrCache := c.attrCaches[schemaID]
@@ -366,7 +359,6 @@ func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) e
 		schemaID:             schemaID,
 		snapshot:             snapshot,
 		versions:             versions,
-		pgConnForDuck:        pgConnForDuck,
 		attrCache:            attrCache,
 		registry:             c.schemaRegistry,
 		dryRun:               c.dryRun,

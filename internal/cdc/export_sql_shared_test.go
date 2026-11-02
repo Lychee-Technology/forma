@@ -43,8 +43,8 @@ func TestBuildExportSQL_CommonSemanticsAcrossModes(t *testing.T) {
 
 func assertExportModeInvariants(t *testing.T, tt exportSQLModeCase, res exportSQLResult) {
 	t.Helper()
-	rowFilter := "row_id IN (UUID '019bed54-48eb-7cdc-aed3-8d38ec9c1394')"
-	if !strings.Contains(res.mQuery, "ltbase_row_id IN (UUID '019bed54-48eb-7cdc-aed3-8d38ec9c1394')") {
+	rowFilter := "row_id = ANY($1::uuid[])"
+	if !strings.Contains(res.mQuery, "ltbase_row_id = ANY($1::uuid[])") {
 		t.Fatalf("main query missing row filter: %s", res.mQuery)
 	}
 	if !strings.Contains(res.eQuery, rowFilter) {
@@ -161,7 +161,7 @@ func TestBuildSchemaDrivenProjection_DeduplicatesMainColumnsAndSeparatesEAVAggre
 
 	mainColumnCount := 0
 	for _, col := range projection.mainColumns {
-		if col == string(forma.MainColumnText01) {
+		if col.name == string(forma.MainColumnText01) {
 			mainColumnCount++
 		}
 	}
@@ -208,7 +208,7 @@ func TestBuildSchemaDrivenProjection_MixedBoundAndUnboundAttributesKeepCastsAlia
 	})
 	require.NoError(t, err)
 
-	require.Contains(t, projection.mainColumns, string(forma.MainColumnText01))
+	require.Contains(t, projection.mainColumns, stageColumn{string(forma.MainColumnText01), stageVarchar})
 	require.Len(t, projection.mainProjections, 1)
 	require.Contains(t, projection.mainProjections[0], "CAST(m.text_01 AS VARCHAR)")
 	require.Contains(t, projection.mainProjections[0], "AS display_name")
@@ -241,7 +241,7 @@ func TestBuildSchemaDrivenProjection_PreservesProjectionSplitAcrossBoundAndUnbou
 	})
 	require.NoError(t, err)
 
-	require.Contains(t, projection.mainColumns, string(forma.MainColumnText02))
+	require.Contains(t, projection.mainColumns, stageColumn{string(forma.MainColumnText02), stageVarchar})
 	require.Equal(t, []string{"CAST(m.text_02 AS VARCHAR) AS company_name"}, projection.mainProjections)
 	require.Equal(t, []string{"MAX(CASE WHEN attr_id = 31 THEN TRY_CAST(value_numeric AS DOUBLE) END) AS annual_revenue"}, projection.eavAgg)
 	require.Equal(t, []string{"e.annual_revenue"}, projection.eavSelect)

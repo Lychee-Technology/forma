@@ -51,7 +51,6 @@ func newChecksumStampExecutor(
 		schemaID:         7,
 		snapshot:         snapshot,
 		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    store,
 		manifestResolver: manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"},
@@ -59,7 +58,7 @@ func newChecksumStampExecutor(
 		describeColumns: func(ctx context.Context, uri string) (map[string]string, error) {
 			return map[string]string{"row_id": "UUID"}, nil
 		},
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			return nil
 		},
 	}
@@ -138,11 +137,10 @@ func TestExecuteFlushCarriesChecksumSeamToExecutor(t *testing.T) {
 
 	var seen string
 	flushCtx := &schemaFlushContext{
-		db:         db,
-		cfg:        CDCConfig{BatchSize: 10, PGHost: "localhost", PGPort: 5432, PGUser: "pguser", PGDB: "forma"},
-		tableName:  "change_log",
-		pgPassword: "secret",
-		logger:     zap.NewNop(),
+		db:        db,
+		cfg:       CDCConfig{BatchSize: 10, PGHost: "localhost", PGPort: 5432, PGUser: "pguser", PGDB: "forma"},
+		tableName: "change_log",
+		logger:    zap.NewNop(),
 		checksumObject: func(ctx context.Context, key string) (string, error) {
 			return "sha256:wired", nil
 		},

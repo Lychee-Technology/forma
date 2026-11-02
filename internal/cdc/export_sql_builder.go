@@ -79,13 +79,22 @@ func buildEAVQuery(eavData string, schemaID int16, eavFilter string, eavAttrIDs 
 		attrFilter = fmt.Sprintf(" AND attr_id IN (%s)", joinInt16(eavAttrIDs))
 	}
 	return fmt.Sprintf(
-		"SELECT schema_id, row_id, attr_id, array_indices, value_text, value_numeric FROM %s WHERE schema_id = %d AND %s%s",
-		eavData, schemaID, eavFilter, attrFilter,
+		"SELECT %s FROM %s WHERE schema_id = %d AND %s%s",
+		strings.Join(stageColumnNames(eavStageColumns), ", "), eavData, schemaID, eavFilter, attrFilter,
+	)
+}
+
+func buildChangeLogQuery(changeLog string, schemaID int16, snapshotTS int64, rowFilter string) string {
+	return fmt.Sprintf(
+		"SELECT %s FROM %s WHERE schema_id = %d AND flushed_at = 0 AND changed_at <= %d AND %s",
+		strings.Join(stageColumnNames(changeLogStageColumns), ", "), changeLog, schemaID, snapshotTS, rowFilter,
 	)
 }
 
 type schemaDrivenProjection struct {
-	mainColumns     []string
+	// mainColumns are the entity_main columns the export reads, with the
+	// type each is staged as.
+	mainColumns     []stageColumn
 	mainProjections []string
 	eavAgg          []string
 	eavSelect       []string
@@ -93,19 +102,10 @@ type schemaDrivenProjection struct {
 }
 
 func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) (schemaDrivenProjection, error) {
-	mainColumns := []string{
-		"ltbase_row_id",
-		"ltbase_schema_id",
-		"ltbase_created_at",
-		"ltbase_updated_at",
-		"ltbase_deleted_at",
-	}
-	mainColSet := map[string]struct{}{
-		"ltbase_row_id":     {},
-		"ltbase_schema_id":  {},
-		"ltbase_created_at": {},
-		"ltbase_updated_at": {},
-		"ltbase_deleted_at": {},
+	mainColumns := append([]stageColumn(nil), mainSystemStageColumns...)
+	mainColSet := make(map[string]struct{}, len(mainColumns))
+	for _, c := range mainColumns {
+		mainColSet[c.name] = struct{}{}
 	}
 
 	mainProjections := make([]string, 0, len(attrCache))
@@ -132,7 +132,7 @@ func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) (schemaDr
 		if meta.ColumnBinding != nil {
 			colName := string(meta.ColumnBinding.ColumnName)
 			if _, ok := mainColSet[colName]; !ok {
-				mainColumns = append(mainColumns, colName)
+				mainColumns = append(mainColumns, stageColumn{colName, stageTypeForMainColumn(meta.ColumnBinding)})
 				mainColSet[colName] = struct{}{}
 			}
 

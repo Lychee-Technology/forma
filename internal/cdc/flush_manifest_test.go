@@ -158,7 +158,6 @@ func TestExecuteBatchStampsManifestColumns(t *testing.T) {
 		schemaID:         7,
 		snapshot:         snapshot,
 		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    store,
 		manifestResolver: resolver,
@@ -170,7 +169,7 @@ func TestExecuteBatchStampsManifestColumns(t *testing.T) {
 				"deleted_at": "BIGINT",
 			}, nil
 		},
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			return nil
 		},
 	}
@@ -217,14 +216,13 @@ func TestExecuteBatchSkipsStampWhenNoManifestStore(t *testing.T) {
 		schemaID:      7,
 		snapshot:      snapshot,
 		versions:      map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck: "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:        zap.NewNop(),
 		manifestStore: nil,
 		describeColumns: func(ctx context.Context, uri string) (map[string]string, error) {
 			t.Fatalf("describe must not be called when manifestStore is nil (uri=%s)", uri)
 			return nil, nil
 		},
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			return nil
 		},
 	}
@@ -263,14 +261,13 @@ func TestExecuteBatchDescribeFailureLeavesEntryUnstamped(t *testing.T) {
 		schemaID:         7,
 		snapshot:         snapshot,
 		versions:         map[uuid.UUID]int64{rowID: snapshot - 1000},
-		pgConnForDuck:    "host=pg port=5432 user=pguser password=secret dbname=forma sslmode=disable",
 		logger:           zap.NewNop(),
 		manifestStore:    store,
 		manifestResolver: resolver,
 		describeColumns: func(ctx context.Context, uri string) (map[string]string, error) {
 			return nil, errors.New("footer read failed")
 		},
-		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, string, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+		exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			return nil
 		},
 	}

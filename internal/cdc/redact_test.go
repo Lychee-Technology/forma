@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma/internal/redact"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +47,7 @@ func redactHostileParams() PGDSNParams {
 // leak, and the trailing keys must survive un-mangled.
 func TestRedactConnStr_HostilePasswordRawQuoted(t *testing.T) {
 	dsn := BuildPGDSN(redactHostileParams())
-	redacted := redactConnStr(dsn)
+	redacted := redact.ConnStringPassword(dsn)
 	t.Logf("raw dsn:      %q", dsn)
 	t.Logf("raw redacted: %q", redacted)
 
@@ -61,7 +62,7 @@ func TestRedactConnStr_HostilePasswordRawQuoted(t *testing.T) {
 // through the sqlutil.EscapeLiteral'd (doubled-quote) form embedded in a DuckDB literal.
 func TestRedactConnStr_HostilePasswordEscapedQuoted(t *testing.T) {
 	sqlLiteral := sqlutil.EscapeLiteral(BuildPGDSN(redactHostileParams()))
-	redacted := redactConnStr(sqlLiteral)
+	redacted := redact.ConnStringPassword(sqlLiteral)
 	t.Logf("escaped literal:  %q", sqlLiteral)
 	t.Logf("escaped redacted: %q", redacted)
 
@@ -82,7 +83,7 @@ func TestRedactConnStr_HostilePasswordEscapedQuoted(t *testing.T) {
 func TestRedactConnStr_EmptyPasswordRawQuoted(t *testing.T) {
 	p := redactTestParams()
 	p.Password = ""
-	redacted := redactConnStr(BuildPGDSN(p))
+	redacted := redact.ConnStringPassword(BuildPGDSN(p))
 	require.Contains(t, redacted, "***REDACTED***")
 	require.Contains(t, redacted, "dbname=")
 	require.Contains(t, redacted, "sslmode=")
@@ -95,15 +96,16 @@ func TestRedactConnStr_EmptyPasswordRawQuoted(t *testing.T) {
 func TestRedactConnStr_EmptyPasswordEscapedQuoted(t *testing.T) {
 	p := redactTestParams()
 	p.Password = ""
-	redacted := redactConnStr(sqlutil.EscapeLiteral(BuildPGDSN(p)))
+	redacted := redact.ConnStringPassword(sqlutil.EscapeLiteral(BuildPGDSN(p)))
 	require.Contains(t, redacted, "***REDACTED***")
 	require.Contains(t, redacted, "dbname=''")
 	require.Contains(t, redacted, "sslmode=''")
 }
 
-// TestRedactConnStr_EscapedQuotedDSN pins the #290 regression: the flusher/init
-// feed BuildPGDSN's quoted DSN through sqlutil.EscapeLiteral (doubling single quotes)
-// into a DuckDB ATTACH literal, then log it via redactConnStr. The doubled-quote
+// TestRedactConnStr_EscapedQuotedDSN pins the #290 regression: BuildPGDSN's
+// quoted DSN fed through sqlutil.EscapeLiteral (doubling single quotes), the
+// form a DuckDB ATTACH literal carries (the CDC export's until #785), then
+// redacted by redact.ConnStringPassword. The doubled-quote
 // form must still be fully redacted — the old regex matched the empty string
 // between the doubled quotes and leaked the password:
 //
@@ -113,7 +115,7 @@ func TestRedactConnStr_EscapedQuotedDSN(t *testing.T) {
 	require.Contains(t, sqlLiteral, "password=''"+redactSecret+"''",
 		"precondition: escaped DSN must carry the doubled-quote form")
 
-	redacted := redactConnStr(sqlLiteral)
+	redacted := redact.ConnStringPassword(sqlLiteral)
 	require.NotContains(t, redacted, redactSecret, "password leaked in redacted output: %q", redacted)
 	require.Contains(t, redacted, "***REDACTED***")
 	// The trailing keys after password must survive redaction.
@@ -123,7 +125,7 @@ func TestRedactConnStr_EscapedQuotedDSN(t *testing.T) {
 // TestRedactConnStr_PlainQuotedDSN pins the un-escaped quoted form as produced
 // by BuildPGDSN directly (password='secret').
 func TestRedactConnStr_PlainQuotedDSN(t *testing.T) {
-	redacted := redactConnStr(BuildPGDSN(redactTestParams()))
+	redacted := redact.ConnStringPassword(BuildPGDSN(redactTestParams()))
 	require.NotContains(t, redacted, redactSecret, "password leaked: %q", redacted)
 	require.Contains(t, redacted, "***REDACTED***")
 	require.Contains(t, redacted, "dbname=")
@@ -133,7 +135,7 @@ func TestRedactConnStr_PlainQuotedDSN(t *testing.T) {
 // (password=secret) so the fix keeps redacting it.
 func TestRedactConnStr_LegacyUnquotedDSN(t *testing.T) {
 	legacy := "host=db.internal port=5432 user=flusher password=" + redactSecret + " dbname=forma sslmode=require"
-	redacted := redactConnStr(legacy)
+	redacted := redact.ConnStringPassword(legacy)
 	require.NotContains(t, redacted, redactSecret, "password leaked: %q", redacted)
 	require.Contains(t, redacted, "***REDACTED***")
 	require.Contains(t, redacted, "dbname=forma")
