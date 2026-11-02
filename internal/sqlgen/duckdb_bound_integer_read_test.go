@@ -58,6 +58,16 @@ func TestMainColIntegerExpr_ReadsTheExportImage(t *testing.T) {
 		{"integer MaxInt32", boundNumericMeta(forma.ValueTypeInteger, forma.MainColumnBigint01), model.ColumnKindBigint, "2147483647::BIGINT", valid(math.MaxInt32), true},
 		{"integer 2^32", boundNumericMeta(forma.ValueTypeInteger, forma.MainColumnBigint01), model.ColumnKindBigint, "4294967296::BIGINT", sql.NullInt64{}, false},
 		{"smallint 2^15", boundNumericMeta(forma.ValueTypeSmallInt, forma.MainColumnInteger01), model.ColumnKindInteger, "32768::INTEGER", sql.NullInt64{}, false},
+		// A fraction that rounds past the declared type's bound is out of
+		// range like any other image the type cannot hold, and one that
+		// rounds onto the bound is the bound. DuckDB 1.5.6 got both wrong
+		// on the hot leg and in the parquet copy: 2^31-0.5 wrapped to
+		// -2^31, and -2^31-0.5 read NULL (smallint alike). 2.0 range-checks
+		// the rounded value (duckdb#24393); these rows pin that (#753).
+		{"integer rounds past 2^31-1", boundNumericMeta(forma.ValueTypeInteger, forma.MainColumnDouble01), model.ColumnKindDouble, "2147483647.5::DOUBLE", sql.NullInt64{}, false},
+		{"integer rounds to -2^31", boundNumericMeta(forma.ValueTypeInteger, forma.MainColumnDouble01), model.ColumnKindDouble, "-2147483648.5::DOUBLE", valid(math.MinInt32), true},
+		{"smallint rounds past 2^15-1", boundNumericMeta(forma.ValueTypeSmallInt, forma.MainColumnDouble01), model.ColumnKindDouble, "32767.5::DOUBLE", sql.NullInt64{}, false},
+		{"smallint rounds to -2^15", boundNumericMeta(forma.ValueTypeSmallInt, forma.MainColumnDouble01), model.ColumnKindDouble, "-32768.5::DOUBLE", valid(math.MinInt16), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			read, ok := mainColIntegerExpr(tc.meta)
