@@ -19,6 +19,7 @@ type Diff struct {
 	ActualTotal   int64          `json:"actual_total"`
 	Missing       []string       `json:"missing_row_ids,omitempty"`
 	Extra         []string       `json:"extra_row_ids,omitempty"`
+	Duplicate     []string       `json:"duplicate_row_ids,omitempty"`
 	Misordered    bool           `json:"misordered,omitempty"`
 	ExpectedOrder []string       `json:"expected_order,omitempty"`
 	ActualOrder   []string       `json:"actual_order,omitempty"`
@@ -36,7 +37,7 @@ type AttrMismatch struct {
 // IsEmpty reports whether the diff carries no divergence.
 func (d *Diff) IsEmpty() bool {
 	return d.ExpectedTotal == d.ActualTotal && len(d.Missing) == 0 &&
-		len(d.Extra) == 0 && !d.Misordered && len(d.Attrs) == 0
+		len(d.Extra) == 0 && len(d.Duplicate) == 0 && !d.Misordered && len(d.Attrs) == 0
 }
 
 // ExpectedState folds the Env's event log into the oracle model for one
@@ -76,8 +77,9 @@ func (e *Env) AssertQueryMatches(ctx context.Context, q Query) *QueryResult {
 	if !diff.IsEmpty() {
 		e.lastDiff = diff
 		e.failWithArtifacts(ctx, fmt.Sprintf(
-			"query result diverges from oracle (expected_total=%d actual_total=%d missing=%d extra=%d misordered=%t attr_mismatches=%d)",
-			diff.ExpectedTotal, diff.ActualTotal, len(diff.Missing), len(diff.Extra), diff.Misordered, len(diff.Attrs)))
+			"query result diverges from oracle (expected_total=%d actual_total=%d missing=%d extra=%d duplicate=%d misordered=%t attr_mismatches=%d)",
+			diff.ExpectedTotal, diff.ActualTotal, len(diff.Missing), len(diff.Extra), len(diff.Duplicate),
+			diff.Misordered, len(diff.Attrs)))
 		return nil
 	}
 	return actual
@@ -93,7 +95,10 @@ func (e *Env) failWithArtifacts(ctx context.Context, msg string) {
 	e.T.Fatalf("%s\ndiagnostic artifacts: %s", msg, dir)
 }
 
-// computeDiff compares the oracle result with the engine result.
+// computeDiff compares the oracle result with the engine result. A row ID
+// the engine returns more than once is a divergence in itself (two versions
+// of one row surviving the tier merge, say): the attribute comparison keys
+// on row ID and would otherwise check only the last copy.
 func computeDiff(q Query, expected *ExpectedResult, actual *QueryResult, cache forma.SchemaAttributeCache) *Diff {
 	diff := &Diff{Query: q, ExpectedTotal: expected.Total, ActualTotal: actual.Total}
 
@@ -106,6 +111,9 @@ func computeDiff(q Query, expected *ExpectedResult, actual *QueryResult, cache f
 	actualByID := make(map[uuid.UUID]*model.PersistentRecord, len(actual.Records))
 	actualOrder := make([]string, 0, len(actual.Records))
 	for _, rec := range actual.Records {
+		if _, seen := actualByID[rec.RowID]; seen {
+			diff.Duplicate = append(diff.Duplicate, rec.RowID.String())
+		}
 		actualByID[rec.RowID] = rec
 		actualOrder = append(actualOrder, rec.RowID.String())
 	}
@@ -123,7 +131,7 @@ func computeDiff(q Query, expected *ExpectedResult, actual *QueryResult, cache f
 
 	// Order is asserted only for sorted queries; unsorted result order is an
 	// engine implementation detail.
-	if len(q.Sorts) > 0 && len(diff.Missing) == 0 && len(diff.Extra) == 0 {
+	if len(q.Sorts) > 0 && len(diff.Missing) == 0 && len(diff.Extra) == 0 && len(diff.Duplicate) == 0 {
 		for i := range expectedOrder {
 			if expectedOrder[i] != actualOrder[i] {
 				diff.Misordered = true
@@ -209,14 +217,20 @@ func actualAttrValue(record *model.PersistentRecord, meta forma.AttributeMetadat
 
 // normalizeEAVNumeric maps a value_numeric payload to the canonical form;
 // bool is stored as 1/0 and dates as epoch millis, both already float64.
+// An integer-family value becomes the int64 its double image holds (exact,
+// since the write bounds EAV integers to ±2^53, #590).
 func normalizeEAVNumeric(v float64, vt forma.ValueType) any {
-	if vt == forma.ValueTypeBool {
+	switch vt {
+	case forma.ValueTypeBool:
 		if v != 0 {
 			return float64(1)
 		}
 		return float64(0)
+	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
+		return wholeFloatToInt64(v)
+	default:
+		return v
 	}
-	return v
 }
 
 func mainColumnValue(record *model.PersistentRecord, binding *forma.MainColumnBinding) (any, bool) {
