@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Files or updates the labeled failure issue for a nightly e2e job (#434,
-# #410). One definition shared by both nightly jobs so the mechanics — label
+# #410). One definition shared by every nightly job so the mechanics — label
 # idempotency, first-open-issue selection, run URL construction — cannot
 # diverge. The label keys the update lookup, so each job MUST pass its own
 # label: with a shared label one suite's failures get appended to the other

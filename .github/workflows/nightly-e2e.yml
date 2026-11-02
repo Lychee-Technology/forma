@@ -12,7 +12,7 @@
 # the race detector's slowdown would invalidate the wall-clock regression
 # tripwires #434 calibrated for race-free runs, and this workflow already
 # has the budget and the failure-issue reporting. Jobs run on separate
-# hosted runners, so the two suites' containers never contend.
+# hosted runners, so the suites' containers never contend.
 name: Nightly Full E2E
 
 on:
@@ -62,7 +62,7 @@ jobs:
       - name: Run full federated e2e suite (no -short)
         run: go test -v ./internal/e2e_harness/federated/... -tags=e2e -timeout=75m
 
-      # The two nightly jobs share one reporting script but MUST NOT share a
+      # The nightly jobs share one reporting script but MUST NOT share a
       # label: the label keys the open-issue lookup, so a shared one appends
       # this suite's failures to the other suite's thread (#410 review).
       - name: File or update failure issue
@@ -131,3 +131,60 @@ jobs:
           "Nightly production e2e suite failed under -race again"
           "The scheduled production suite run (\`-tags=e2e -race\`) failed"
           "#410"
+
+  # The production suite again on linux/arm64 (#753), the architecture the
+  # repository's only named deployment target uses (Lambda provided.al2023
+  # arm64, docs/ci-cd-design.md). CI's arm64 coverage is otherwise the unit
+  # suite and the Parquet compatibility probe; this is the only arm64 run of
+  # real PostgreSQL, CDC, S3 Parquet, compaction and federated reads.
+  # -race because TestNightlyRacesProductionSuite requires it of every
+  # production-suite line here, and the race detector supports linux/arm64.
+  production-race-arm64:
+    name: Production Suite (-race, arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # See ci.yml's test-job cache-step note (#487). The key carries
+      # runner.arch, so this job never restores the amd64 extensions.
+      - name: Cache DuckDB extensions
+        uses: actions/cache@v6
+        with:
+          path: ~/.duckdb/extensions
+          key: duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Run production e2e suite under -race
+        run: go test -v ./internal/e2e_harness/production/ -tags=e2e -race -timeout=30m
+
+      # See the production-race job's upload note (#718).
+      - name: Upload e2e harness artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-race-arm64-e2e-artifacts-attempt-${{ github.run_attempt }}
+          path: .artifacts/e2e/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # Same script, own label — see the label note on the federated job.
+      - name: File or update failure issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          bash scripts/nightly_failure_issue.sh
+          nightly-e2e-race-arm64
+          "Nightly production e2e -race failure on arm64"
+          "nightly: production e2e suite failed under -race on arm64"
+          "Nightly production e2e suite failed under -race on arm64 again"
+          "The scheduled production suite run on linux/arm64 (\`-tags=e2e -race\`) failed"
+          "#753"
