@@ -15,7 +15,8 @@ import (
 // would itself mis-sort and mis-filter values past 2^53. numeric, bool (as
 // 1/0) and date/datetime (as epoch millis) stay float64, the image their
 // storage keeps. An integer operand that is not a whole int64 (a filter
-// value such as "5.5") stays a *big.Rat, so every comparison stays exact.
+// value such as "5.5") is its float64 image, as the engine binds it, and
+// compares exactly against the int64 values.
 
 // twoPow63 is the first float64 past MaxInt64; float64 values in
 // [-2^63, 2^63) convert to int64 exactly when they are whole.
@@ -53,21 +54,36 @@ func wholeFloatToInt64(v float64) any {
 }
 
 // parseExactInteger parses the string form of an integer-family value or
-// filter operand without a float64 hop: bare digits, a decimal spelling
-// ("…993.0") and an exponent spelling ("9.007199254740993e15") of the same
-// whole number all give the same int64, as the engine's exact bind does.
+// filter operand under the engine's operand contract (#357, the one parse
+// sqlgen.numericOperand applies on every route), modeled here without
+// sharing its code. A literal that denotes a whole int64 is that int64
+// without a float64 hop: bare digits, a decimal spelling ("…993.0") and an
+// exponent spelling ("9.007199254740993e15") all give the same integer. Any
+// other finite literal is its float64 image, the value the engine compares:
+// "9007199254740992.5" rounds to the double 2^53, so lt:9007199254740992.5
+// excludes 2^53 and an equals on it matches 2^53. ParseFloat decides what is
+// a number, as it does for the engine, and NaN and ±Inf are refused.
 func parseExactInteger(raw string) (any, error) {
 	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
 		return n, nil
 	}
-	r, ok := new(big.Rat).SetString(raw)
-	if !ok {
-		return nil, fmt.Errorf("integer value %q is not a number", raw)
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return nil, fmt.Errorf("integer value %q is not a number: %w", raw, err)
 	}
-	if r.IsInt() && r.Num().IsInt64() {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return nil, fmt.Errorf("integer value %q is not a finite number", raw)
+	}
+	// Only a whole image in int64 range can stand for a literal the double
+	// rounded, integral (2^53+1) or not (2^53+0.5); the exact rational tells
+	// those two apart.
+	if _, whole := wholeFloatToInt64(f).(int64); !whole {
+		return f, nil
+	}
+	if r, ok := new(big.Rat).SetString(raw); ok && r.IsInt() && r.Num().IsInt64() {
 		return r.Num().Int64(), nil
 	}
-	return r, nil
+	return f, nil
 }
 
 // compareNumbers compares two numeric oracle values exactly. ok is false
@@ -104,12 +120,11 @@ func compareFloats(a, b float64) int {
 	}
 }
 
-// toBigFloat widens a numeric oracle value to an exact big.Float. The
-// precision covers an int64, a float64 and the quotient of a decimal
-// filter operand closely enough to order it against any int64. NaN has no
-// exact form and is not comparable this way.
+// toBigFloat widens a numeric oracle value to an exact big.Float: 64 bits
+// of precision hold any int64 or float64 mantissa without rounding. NaN has
+// no exact form and is not comparable this way.
 func toBigFloat(v any) (*big.Float, bool) {
-	const prec = 256
+	const prec = 64
 	switch x := v.(type) {
 	case int64:
 		return new(big.Float).SetPrec(prec).SetInt64(x), true
@@ -118,8 +133,6 @@ func toBigFloat(v any) (*big.Float, bool) {
 			return nil, false
 		}
 		return new(big.Float).SetPrec(prec).SetFloat64(x), true
-	case *big.Rat:
-		return new(big.Float).SetPrec(prec).SetRat(x), true
 	default:
 		return nil, false
 	}

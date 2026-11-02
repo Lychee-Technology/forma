@@ -382,7 +382,7 @@ func normalizeTimeMillis(value any) (any, error) {
 }
 
 // compareValues is the single typed comparator used for filters, sorts and
-// the diff: exact across the numeric forms (int64, float64, *big.Rat; see
+// the diff: exact across the numeric forms (int64 and float64; see
 // oracle_numeric.go), lexicographic for strings. Mixed types compare by
 // their string forms as a last resort.
 func compareValues(a, b any) int {

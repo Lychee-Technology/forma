@@ -141,7 +141,8 @@ func updateTransitionRows(ctx context.Context, t *testing.T, env *Env, wide Sche
 // assertTransitionQueries runs the query set every step must answer like
 // the oracle: the whole set (values and total), exact sorts on the bound
 // bigint, a page window, a multi-key sort with ties on the first key, and
-// filters on the bound and the EAV bigint at their exactness boundaries.
+// filters on the bound and the EAV bigint at their exactness boundaries,
+// integral and fractional.
 // Each query must take the DuckDB path, or the S3 tiers were never read.
 func assertTransitionQueries(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, label string) {
 	t.Helper()
@@ -165,6 +166,12 @@ func transitionQueries(wide SchemaRef) []Query {
 		{Schema: wide, Sorts: []Sort{{Attr: "rank"}, {Attr: "count", Desc: true}}, Limit: 4, Offset: 1},
 		{Schema: wide, Filters: []Filter{{Attr: "amount", Value: "9007199254740993"}}, Limit: 10},
 		{Schema: wide, Filters: []Filter{{Attr: "amount", Op: "gt", Value: "9007199254740992"}},
+			Sorts: []Sort{{Attr: "amount"}}, Limit: 10},
+		// Fractional operands bind as their float64 image (2^53 and 2^53+2
+		// here), not the exact rational, on every route.
+		{Schema: wide, Filters: []Filter{{Attr: "amount", Op: "lt", Value: "9007199254740992.5"}},
+			Sorts: []Sort{{Attr: "amount"}}, Limit: 10},
+		{Schema: wide, Filters: []Filter{{Attr: "amount", Op: "gt", Value: "9007199254740993.5"}},
 			Sorts: []Sort{{Attr: "amount"}}, Limit: 10},
 		{Schema: wide, Filters: []Filter{{Attr: "total", Value: "9007199254740992"}}, Limit: 10},
 		{Schema: wide, Filters: []Filter{{Attr: "qty", Op: "gte", Value: "21"}},

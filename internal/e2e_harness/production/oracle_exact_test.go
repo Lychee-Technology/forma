@@ -71,14 +71,39 @@ func TestOracle_BoundBigintFiltersAreExact(t *testing.T) {
 		{"equals MaxInt64-1", Filter{Attr: "amount", Value: "9223372036854775806"}, []uuid.UUID{newRowID(2)}},
 		{"gt 2^53", Filter{Attr: "amount", Op: "gt", Value: "9007199254740992"},
 			[]uuid.UUID{newRowID(1), newRowID(2), newRowID(3)}},
-		{"lt between integers", Filter{Attr: "amount", Op: "lt", Value: "9007199254740992.5"},
-			[]uuid.UUID{newRowID(4), newRowID(5)}},
+		// A fractional operand compares as its float64 image, as the engine
+		// binds it (sqlgen.numericOperand): 2^53+0.5 rounds to 2^53 and
+		// 2^53+1.5 to 2^53+2, so these differ from the exact rational.
+		{"lt fraction compares its image", Filter{Attr: "amount", Op: "lt", Value: "9007199254740992.5"},
+			[]uuid.UUID{newRowID(5)}},
+		{"gte fraction compares its image", Filter{Attr: "amount", Op: "gte", Value: "9007199254740992.5"},
+			[]uuid.UUID{newRowID(1), newRowID(2), newRowID(3), newRowID(4)}},
+		{"equals fraction matches its image", Filter{Attr: "amount", Value: "9007199254740992.5"},
+			[]uuid.UUID{newRowID(4)}},
+		{"gt fraction rounding up", Filter{Attr: "amount", Op: "gt", Value: "9007199254740993.5"},
+			[]uuid.UUID{newRowID(1), newRowID(2)}},
+		// 2^53-0.5 lies halfway between two doubles and rounds to the even
+		// one, 2^53, so gt excludes 2^53 although the rational is below it.
+		{"gt halfway fraction rounds to even", Filter{Attr: "amount", Op: "gt", Value: "9007199254740991.5"},
+			[]uuid.UUID{newRowID(1), newRowID(2), newRowID(3)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			result := mustRun(t, state, Query{Schema: testSchema(), Filters: []Filter{tc.filter}})
 			assertOracleRows(t, result, tc.want)
 		})
+	}
+}
+
+// The oracle accepts the operands the engine accepts: ParseFloat's grammar,
+// finite values only. A rational spelling, NaN, an infinity and a literal
+// past float64 are refused, so no oracle result exists for a query the
+// engine rejects.
+func TestParseExactInteger_RefusesWhatTheEngineRefuses(t *testing.T) {
+	for _, raw := range []string{"1/3", "NaN", "Inf", "-Infinity", "1e400", "abc"} {
+		if got, err := parseExactInteger(raw); err == nil {
+			t.Errorf("parseExactInteger(%q) = %v (%T), want an error", raw, got, got)
+		}
 	}
 }
 
