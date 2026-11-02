@@ -209,138 +209,41 @@ func WithDuckDBResources(threads, memoryLimitMB, maxConnections int) HarnessOpti
 	}
 }
 
-// NewFederatedTestHarness creates a new federated test harness with all dependencies.
-func NewFederatedTestHarness(ctx context.Context, opts ...HarnessOption) (*FederatedTestHarness, error) { //nolint:funlen // refs #431: splitting this is that issue's job, which also widens the AST guard to harness*.go
+// NewFederatedTestHarness creates a new federated test harness with all
+// dependencies. It runs in four phases: bring up (or connect to) Postgres, S3
+// and DuckDB; prepare the S3 bucket and scratch directory; assemble the
+// harness; create the database schema. A phase that fails stops the
+// containers and DuckDB the earlier ones started.
+func NewFederatedTestHarness(ctx context.Context, opts ...HarnessOption) (*FederatedTestHarness, error) {
 	options := harnessOptions{}
 	for _, opt := range opts {
 		opt(&options)
 	}
 	logger, _ := zap.NewDevelopment()
-	base := &e2e_harness.TestHarness{}
 	externalCfg, err := loadExternalFederatedConfigFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("load external federated config: %w", err)
 	}
 
-	bucket := "test-bucket"
-	prefix := "test-project"
-	pgUser := "postgres"
-	pgPassword := "password"
-	pgDatabase := "postgres"
-	pgSSLMode := "disable"
-	s3Region := "us-east-1"
-	s3AccessKey := "minioadmin"
-	s3SecretKey := "minioadmin"
-
-	var duckCfg forma.DuckDBConfig
-	if externalCfg.Enabled {
-		if externalCfg.UseExternalPG {
-			if err := base.ConnectPostgres(ctx, externalCfg.PGDSN); err != nil {
-				return nil, fmt.Errorf("connect external postgres: %w", err)
-			}
-		} else {
-			if _, err := base.StartPostgres(ctx); err != nil {
-				return nil, fmt.Errorf("start postgres: %w", err)
-			}
-		}
-
-		base.S3Endpoint = externalCfg.S3Endpoint
-		var err error
-		duckCfg, err = startDuckDB(base, externalCfg.S3Endpoint, externalCfg.S3AccessKey, externalCfg.S3SecretKey, externalCfg.S3Region, options)
-		if err != nil {
-			cleanupContainers(ctx, base)
-			return nil, fmt.Errorf("start duckdb: %w", err)
-		}
-
-		bucket = externalCfg.S3Bucket
-		prefix = externalCfg.S3Prefix
-		s3Region = externalCfg.S3Region
-		s3AccessKey = externalCfg.S3AccessKey
-		s3SecretKey = externalCfg.S3SecretKey
-		if externalCfg.UseExternalPG {
-			pgUser = externalCfg.PGUser
-			pgPassword = externalCfg.PGPassword
-			pgDatabase = externalCfg.PGDatabase
-			pgSSLMode = externalCfg.PGSSLMode
-		}
-	} else {
-		var err error
-		duckCfg, err = startContainers(ctx, base, options)
-		if err != nil {
-			return nil, err
-		}
+	base := &e2e_harness.TestHarness{}
+	duckCfg, conn, err := startHarnessInfra(ctx, base, externalCfg, options)
+	if err != nil {
+		return nil, fmt.Errorf("start harness infrastructure: %w", err)
 	}
 
 	// #456: the federated (and benchmark) harnesses exercise the
 	// caller-supplied S3ParquetPathTemplate hint, so opt into the feature and
-	// scope it to this harness's bucket. Both branches above have finalized
-	// duckCfg and bucket by here.
-	duckCfg.S3Bucket = bucket
+	// scope it to this harness's bucket.
+	duckCfg.S3Bucket = conn.bucket
 	duckCfg.AllowCallerParquetPaths = true
 
-	// Create S3 client
-	s3Client, err := createS3Client(ctx, base.S3Endpoint, s3Region, s3AccessKey, s3SecretKey)
+	s3Client, tmpDir, err := prepareHarnessStorage(ctx, base.S3Endpoint, conn)
 	if err != nil {
 		cleanupContainers(ctx, base)
-		return nil, fmt.Errorf("create s3 client: %w", err)
+		return nil, fmt.Errorf("prepare harness storage: %w", err)
 	}
 
-	// Create test bucket
-	_, _ = s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
-		Bucket: aws.String(bucket),
-	})
-
-	tmpDir, err := os.MkdirTemp("", "federated-e2e-*")
-	if err != nil {
-		cleanupContainers(ctx, base)
-		return nil, fmt.Errorf("create temp dir: %w", err)
-	}
-
-	// Parse Postgres host and port from DSN for the PostgreSQL catalog DuckDB attaches
-	pgHost, pgPort := parsePGDSN(base.PGDSN)
-
-	h := &FederatedTestHarness{
-		TestHarness:   base,
-		DuckCfg:       duckCfg,
-		SchemaID:      1,
-		S3Bucket:      bucket,
-		S3Prefix:      prefix,
-		PGHost:        pgHost,
-		PGPort:        pgPort,
-		PGUser:        pgUser,
-		PGPassword:    pgPassword,
-		PGDatabase:    pgDatabase,
-		PGSSLMode:     pgSSLMode,
-		S3Region:      s3Region,
-		S3AccessKey:   s3AccessKey,
-		S3SecretKey:   s3SecretKey,
-		s3Client:      s3Client,
-		logger:        logger,
-		seededRecords: make(map[string][]TestRecord),
-		tmpDir:        tmpDir,
-		CDCConfig: cdc.CDCConfig{
-			ChangeLogTable:    "change_log",
-			EntityMainTable:   "entity_main",
-			EAVDataTable:      "eav_data",
-			MinRecords:        100, // Lower threshold for testing
-			MaxAgeMs:          60000,
-			BatchSize:         1000,
-			S3Bucket:          bucket,
-			S3Prefix:          prefix,
-			S3Endpoint:        base.S3Endpoint,
-			S3Region:          s3Region,
-			S3UsePath:         true,
-			S3AccessKeyID:     s3AccessKey,
-			S3SecretAccessKey: s3SecretKey,
-		},
-		tables: model.StorageTables{
-			EntityMain: "entity_main",
-			EAVData:    "eav_data",
-			ChangeLog:  "change_log",
-		},
-	}
-
-	// Initialize database schema
+	h := assembleHarness(base, duckCfg, conn, s3Client, tmpDir, logger)
 	if err := h.initDatabaseSchema(ctx); err != nil {
 		// Best-effort: construction is already failing, and the schema error
 		// below is the one the caller must see. No testing.TB exists here, so
@@ -350,6 +253,87 @@ func NewFederatedTestHarness(ctx context.Context, opts ...HarnessOption) (*Feder
 	}
 
 	return h, nil
+}
+
+// prepareHarnessStorage creates the S3 client and the harness bucket, and the
+// scratch directory Cleanup removes. Bucket creation is best-effort: its
+// error, such as the bucket already existing, is ignored.
+func prepareHarnessStorage(ctx context.Context, s3Endpoint string, conn harnessConnection) (*s3.Client, string, error) {
+	s3Client, err := createS3Client(ctx, s3Endpoint, conn.s3Region, conn.s3AccessKey, conn.s3SecretKey)
+	if err != nil {
+		return nil, "", fmt.Errorf("create s3 client: %w", err)
+	}
+
+	_, _ = s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: aws.String(conn.bucket),
+	})
+
+	tmpDir, err := os.MkdirTemp("", "federated-e2e-*")
+	if err != nil {
+		return nil, "", fmt.Errorf("create temp dir: %w", err)
+	}
+	return s3Client, tmpDir, nil
+}
+
+// assembleHarness builds the harness from the started infrastructure and the
+// connection settings it was started with.
+func assembleHarness(
+	base *e2e_harness.TestHarness,
+	duckCfg forma.DuckDBConfig,
+	conn harnessConnection,
+	s3Client *s3.Client,
+	tmpDir string,
+	logger *zap.Logger,
+) *FederatedTestHarness {
+	// Postgres host and port for the PostgreSQL catalog DuckDB attaches.
+	pgHost, pgPort := parsePGDSN(base.PGDSN)
+
+	return &FederatedTestHarness{
+		TestHarness:   base,
+		DuckCfg:       duckCfg,
+		SchemaID:      1,
+		S3Bucket:      conn.bucket,
+		S3Prefix:      conn.prefix,
+		PGHost:        pgHost,
+		PGPort:        pgPort,
+		PGUser:        conn.pgUser,
+		PGPassword:    conn.pgPassword,
+		PGDatabase:    conn.pgDatabase,
+		PGSSLMode:     conn.pgSSLMode,
+		S3Region:      conn.s3Region,
+		S3AccessKey:   conn.s3AccessKey,
+		S3SecretKey:   conn.s3SecretKey,
+		s3Client:      s3Client,
+		logger:        logger,
+		seededRecords: make(map[string][]TestRecord),
+		tmpDir:        tmpDir,
+		CDCConfig:     harnessCDCConfig(base.S3Endpoint, conn),
+		tables: model.StorageTables{
+			EntityMain: "entity_main",
+			EAVData:    "eav_data",
+			ChangeLog:  "change_log",
+		},
+	}
+}
+
+// harnessCDCConfig is the CDC configuration the harness flushes with: the
+// harness tables and S3 location, with a threshold lowered for testing.
+func harnessCDCConfig(s3Endpoint string, conn harnessConnection) cdc.CDCConfig {
+	return cdc.CDCConfig{
+		ChangeLogTable:    "change_log",
+		EntityMainTable:   "entity_main",
+		EAVDataTable:      "eav_data",
+		MinRecords:        100, // Lower threshold for testing
+		MaxAgeMs:          60000,
+		BatchSize:         1000,
+		S3Bucket:          conn.bucket,
+		S3Prefix:          conn.prefix,
+		S3Endpoint:        s3Endpoint,
+		S3Region:          conn.s3Region,
+		S3UsePath:         true,
+		S3AccessKeyID:     conn.s3AccessKey,
+		S3SecretAccessKey: conn.s3SecretKey,
+	}
 }
 
 // initDatabaseSchema creates the required tables for testing.

@@ -1,6 +1,7 @@
-// Federated harness container/client infrastructure, extracted from
-// harness.go (#220): testcontainer lifecycle and the MinIO-configured S3
-// client. Pure move, no behavior change.
+// Federated harness infrastructure, extracted from harness.go: testcontainer
+// lifecycle and the MinIO-configured S3 client (#220), and the choice between
+// started containers and the external Postgres/S3 the environment names, with
+// the connection settings each one implies (#431).
 
 package federated
 
@@ -16,6 +17,89 @@ import (
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/e2e_harness"
 )
+
+// harnessConnection is the S3 location and the Postgres and S3 credentials
+// the harness connects with, which depend on whether it started its own
+// containers or was pointed at external services.
+type harnessConnection struct {
+	bucket      string
+	prefix      string
+	pgUser      string
+	pgPassword  string
+	pgDatabase  string
+	pgSSLMode   string
+	s3Region    string
+	s3AccessKey string
+	s3SecretKey string
+}
+
+// containerConnection is the connection to the containers startContainers
+// starts: the testcontainer defaults for Postgres and MinIO.
+func containerConnection() harnessConnection {
+	return harnessConnection{
+		bucket:      "test-bucket",
+		prefix:      "test-project",
+		pgUser:      "postgres",
+		pgPassword:  "password",
+		pgDatabase:  "postgres",
+		pgSSLMode:   "disable",
+		s3Region:    "us-east-1",
+		s3AccessKey: "minioadmin",
+		s3SecretKey: "minioadmin",
+	}
+}
+
+// startHarnessInfra brings up Postgres, S3 and DuckDB for the harness, either
+// as containers or, when the environment configures it, against the external
+// services it names. It returns the DuckDB configuration DuckDB was started
+// with and the connection settings that go with the services in use. If a
+// later service fails to start, it stops the ones already started, except
+// that a connection to an external Postgres is left open.
+func startHarnessInfra(ctx context.Context, base *e2e_harness.TestHarness, externalCfg *externalFederatedConfig, opts harnessOptions) (forma.DuckDBConfig, harnessConnection, error) {
+	if externalCfg.Enabled {
+		return startExternalInfra(ctx, base, externalCfg, opts)
+	}
+	duckCfg, err := startContainers(ctx, base, opts)
+	if err != nil {
+		return forma.DuckDBConfig{}, harnessConnection{}, fmt.Errorf("start containers: %w", err)
+	}
+	return duckCfg, containerConnection(), nil
+}
+
+// startExternalInfra connects to the external S3 and, when configured, the
+// external Postgres; otherwise it starts a Postgres container. DuckDB always
+// runs in-process. The Postgres credentials stay the container defaults
+// unless the external Postgres is in use.
+func startExternalInfra(ctx context.Context, base *e2e_harness.TestHarness, externalCfg *externalFederatedConfig, opts harnessOptions) (forma.DuckDBConfig, harnessConnection, error) {
+	if externalCfg.UseExternalPG {
+		if err := base.ConnectPostgres(ctx, externalCfg.PGDSN); err != nil {
+			return forma.DuckDBConfig{}, harnessConnection{}, fmt.Errorf("connect external postgres: %w", err)
+		}
+	} else if _, err := base.StartPostgres(ctx); err != nil {
+		return forma.DuckDBConfig{}, harnessConnection{}, fmt.Errorf("start postgres: %w", err)
+	}
+
+	base.S3Endpoint = externalCfg.S3Endpoint
+	duckCfg, err := startDuckDB(base, externalCfg.S3Endpoint, externalCfg.S3AccessKey, externalCfg.S3SecretKey, externalCfg.S3Region, opts)
+	if err != nil {
+		cleanupContainers(ctx, base)
+		return forma.DuckDBConfig{}, harnessConnection{}, fmt.Errorf("start duckdb: %w", err)
+	}
+
+	conn := containerConnection()
+	conn.bucket = externalCfg.S3Bucket
+	conn.prefix = externalCfg.S3Prefix
+	conn.s3Region = externalCfg.S3Region
+	conn.s3AccessKey = externalCfg.S3AccessKey
+	conn.s3SecretKey = externalCfg.S3SecretKey
+	if externalCfg.UseExternalPG {
+		conn.pgUser = externalCfg.PGUser
+		conn.pgPassword = externalCfg.PGPassword
+		conn.pgDatabase = externalCfg.PGDatabase
+		conn.pgSSLMode = externalCfg.PGSSLMode
+	}
+	return duckCfg, conn, nil
+}
 
 // startContainers starts Postgres, S3, and DuckDB containers. It returns the
 // DuckDB configuration DuckDB was started with.
