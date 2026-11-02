@@ -181,7 +181,11 @@ func (h *FederatedTestHarness) checkTierFiles(ctx context.Context) (hasBase, has
 	return len(baseFiles) > 0, len(deltaFiles) > 0, nil
 }
 
-// scanQueryResults scans DuckDB query rows into PersistentRecords.
+// scanQueryResults scans query rows into PersistentRecords, for both the DuckDB
+// federated select and the Postgres-only one. tradeTime is scanned into any
+// because DuckDB returns it as several Go types; normalizeBenchmarkTradeTimeValue
+// folds them to Unix milliseconds. A row whose iteration fails part-way surfaces
+// as an error rather than a silently truncated result set (#430).
 func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows, benchmarkProjection bool) ([]*model.PersistentRecord, error) {
 	var records []*model.PersistentRecord
 	for rows.Next() {
@@ -250,6 +254,9 @@ func (h *FederatedTestHarness) scanQueryResults(rows *sql.Rows, benchmarkProject
 		}
 
 		records = append(records, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows after %d scanned: %w", len(records), err)
 	}
 	return records, nil
 }
@@ -367,7 +374,7 @@ func (h *FederatedTestHarness) getDirtyIDs(ctx context.Context) ([]uuid.UUID, er
 		WHERE schema_id = $1 AND flushed_at = 0
 	`, h.SchemaID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query unflushed change_log rows for schema %d: %w", h.SchemaID, err)
 	}
 	defer rows.Close()
 
@@ -375,21 +382,27 @@ func (h *FederatedTestHarness) getDirtyIDs(ctx context.Context) ([]uuid.UUID, er
 	for rows.Next() {
 		var id uuid.UUID
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan unflushed change_log row_id for schema %d: %w", h.SchemaID, err)
 		}
 		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate unflushed change_log rows for schema %d: %w", h.SchemaID, err)
 	}
 	return ids, nil
 }
 
-// ExecutePostgresQuery executes a direct Postgres query (no DuckDB).
+// ExecutePostgresQuery executes a direct Postgres query (no DuckDB). Its rows
+// share scanQueryResults with the DuckDB path: the Postgres-only select emits
+// the same column list, and tradeTime arrives as int64 (a COALESCE over BIGINT
+// columns), which normalizeBenchmarkTradeTimeValue passes through unchanged.
 func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *QueryOptions) (*QueryResult, error) {
 	opts = normalizeQueryOptions(opts)
 	start := time.Now()
 	countQuery, countArgs := h.buildPostgresOnlyCountQuery(opts)
 	var total int64
 	if err := h.PGDB.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("postgres-only count query for schema %d: %w", h.SchemaID, err)
 	}
 	if opts.CountOnly {
 		return &QueryResult{TotalRecords: total, Duration: time.Since(start), Plan: buildPostgresOnlyExecutionPlan(time.Since(start), opts.PreferHot)}, nil
@@ -398,61 +411,13 @@ func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *Q
 	query, args := h.buildPostgresOnlySelectQuery(opts)
 	rows, err := h.PGDB.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("postgres-only select query for schema %d: %w", h.SchemaID, err)
 	}
 	defer rows.Close()
 
-	benchmarkProjection := usesBenchmarkProjectionForSelect(opts)
-	var records []*model.PersistentRecord
-	for rows.Next() {
-		var rowID string
-		var schemaID int16
-		var changedAt, deletedAt int64
-		var createdAt sql.NullInt64 // nullable for the same reason as above
-		var name sql.NullString
-		var version sql.NullInt64
-		var symbol, exchange, region sql.NullString
-		var tradeType, tradeTime sql.NullInt64
-		if benchmarkProjection {
-			if err := rows.Scan(&rowID, &schemaID, &createdAt, &changedAt, &deletedAt, &name, &version, &symbol, &exchange, &region, &tradeType, &tradeTime); err != nil {
-				return nil, err
-			}
-		} else {
-			if err := rows.Scan(&rowID, &schemaID, &createdAt, &changedAt, &deletedAt, &name, &version); err != nil {
-				return nil, err
-			}
-		}
-		rec := &model.PersistentRecord{RowID: uuid.MustParse(rowID), SchemaID: schemaID, CreatedAt: createdAt.Int64, UpdatedAt: changedAt, TextItems: map[string]string{}, Float64Items: map[string]float64{}}
-		if deletedAt > 0 {
-			rec.DeletedAt = &deletedAt
-		}
-		if name.Valid {
-			rec.TextItems["name"] = name.String
-		}
-		if benchmarkProjection {
-			if symbol.Valid {
-				rec.TextItems["symbol"] = symbol.String
-			}
-			if exchange.Valid {
-				rec.TextItems["exchange"] = exchange.String
-			}
-			if region.Valid {
-				rec.TextItems["region"] = region.String
-			}
-		}
-		if version.Valid {
-			rec.Float64Items["version"] = float64(version.Int64)
-		}
-		if benchmarkProjection && (tradeType.Valid || tradeTime.Valid) {
-			rec.Int64Items = make(map[string]int64)
-			if tradeType.Valid {
-				rec.Int64Items["tradeType"] = tradeType.Int64
-			}
-			if tradeTime.Valid {
-				rec.Int64Items["tradeTime"] = tradeTime.Int64
-			}
-		}
-		records = append(records, rec)
+	records, err := h.scanQueryResults(rows, usesBenchmarkProjectionForSelect(opts))
+	if err != nil {
+		return nil, fmt.Errorf("scan postgres-only results for schema %d: %w", h.SchemaID, err)
 	}
 
 	return &QueryResult{
@@ -467,12 +432,12 @@ func (h *FederatedTestHarness) ExecutePostgresQuery(ctx context.Context, opts *Q
 func (h *FederatedTestHarness) StreamFederatedQuery(ctx context.Context, opts *QueryOptions, handler func(*model.PersistentRecord) error) error {
 	result, err := h.ExecuteFederatedQuery(ctx, opts)
 	if err != nil {
-		return err
+		return fmt.Errorf("stream federated query: %w", err)
 	}
 
 	for _, rec := range result.Records {
 		if err := handler(rec); err != nil {
-			return err
+			return fmt.Errorf("stream handler for row %s: %w", rec.RowID, err)
 		}
 	}
 	return nil
