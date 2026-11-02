@@ -8,195 +8,201 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseAttributeMetadata(t *testing.T) { //nolint:funlen // #438: oversized test functions
-	source := "test-source"
-	tests := []struct {
-		name      string
-		attrName  string
-		attrData  map[string]any
-		expectErr string
-		expect    func(t *testing.T, meta forma.AttributeMetadata)
-	}{
-		{
-			name:     "success with binding and trimmed encoding",
-			attrName: "foo",
-			attrData: map[string]any{
-				"attributeID": 1.0,
-				"valueType":   "text",
-				"column_binding": map[string]any{
-					"col_name": "text_01",
-					"encoding": " bool_text ",
-				},
-			},
-			expect: func(t *testing.T, meta forma.AttributeMetadata) {
-				assert.Equal(t, int16(1), meta.AttributeID)
-				assert.Equal(t, forma.ValueType("text"), meta.ValueType)
-				assert.False(t, meta.Required)
-				assert.Equal(t, forma.RequiredPolicyOptional, meta.RequiredPolicy)
-				if assert.NotNil(t, meta.ColumnBinding) {
-					assert.Equal(t, forma.MainColumn("text_01"), meta.ColumnBinding.ColumnName)
-					assert.Equal(t, forma.MainColumnEncodingBoolText, meta.ColumnBinding.Encoding)
-				}
-			},
-		},
-		{
-			name:     "success with nil binding when absent",
-			attrName: "bar",
-			attrData: map[string]any{
-				"attributeID": 2.0,
-				"valueType":   "integer",
-			},
-			expect: func(t *testing.T, meta forma.AttributeMetadata) {
-				assert.Equal(t, int16(2), meta.AttributeID)
-				assert.Equal(t, forma.ValueType("integer"), meta.ValueType)
-				assert.False(t, meta.Required)
-				assert.Equal(t, forma.RequiredPolicyOptional, meta.RequiredPolicy)
-				assert.Nil(t, meta.ColumnBinding)
-			},
-		},
-		{
-			name:     "success with legacy required true flag",
-			attrName: "baz",
-			attrData: map[string]any{
-				"attributeID": 3.0,
-				"valueType":   "text",
-				"required":    true,
-			},
-			expect: func(t *testing.T, meta forma.AttributeMetadata) {
-				assert.Equal(t, int16(3), meta.AttributeID)
-				assert.Equal(t, forma.ValueType("text"), meta.ValueType)
-				assert.True(t, meta.Required)
-				assert.Equal(t, forma.RequiredPolicyIfParentPresent, meta.RequiredPolicy)
-			},
-		},
-		{
-			name:     "success with required_policy always",
-			attrName: "always_required",
-			attrData: map[string]any{
-				"attributeID":     4.0,
-				"valueType":       "text",
-				"required_policy": "required_always",
-			},
-			expect: func(t *testing.T, meta forma.AttributeMetadata) {
-				assert.Equal(t, int16(4), meta.AttributeID)
-				assert.True(t, meta.Required)
-				assert.Equal(t, forma.RequiredPolicyAlways, meta.RequiredPolicy)
-			},
-		},
-		{
-			name:     "success with required_policy if parent present",
-			attrName: "local_required",
-			attrData: map[string]any{
-				"attributeID":     5.0,
-				"valueType":       "text",
-				"required_policy": "required_if_parent_present",
-			},
-			expect: func(t *testing.T, meta forma.AttributeMetadata) {
-				assert.Equal(t, int16(5), meta.AttributeID)
-				assert.True(t, meta.Required)
-				assert.Equal(t, forma.RequiredPolicyIfParentPresent, meta.RequiredPolicy)
-			},
-		},
-		{
-			name:     "success with required_policy optional",
-			attrName: "optional_policy",
-			attrData: map[string]any{
-				"attributeID":     6.0,
-				"valueType":       "text",
-				"required_policy": "optional",
-			},
-			expect: func(t *testing.T, meta forma.AttributeMetadata) {
-				assert.Equal(t, int16(6), meta.AttributeID)
-				assert.False(t, meta.Required)
-				assert.Equal(t, forma.RequiredPolicyOptional, meta.RequiredPolicy)
-			},
-		},
-		{
-			name:      "error missing attributeID",
-			attrName:  "missingID",
-			attrData:  map[string]any{"valueType": "text"},
-			expectErr: "attributeID",
-		},
-		{
-			name:     "error fractional attributeID",
-			attrName: "fractionalID",
-			attrData: map[string]any{
-				"attributeID": 1.5,
-				"valueType":   "text",
-			},
-			expectErr: "integer",
-		},
-		{
-			name:     "error out of range attributeID",
-			attrName: "overflowID",
-			attrData: map[string]any{
-				"attributeID": 40000.0,
-				"valueType":   "text",
-			},
-			expectErr: "out of range",
-		},
-		{
-			name:      "error invalid valueType",
-			attrName:  "missingValueType",
-			attrData:  map[string]any{"attributeID": 3.0},
-			expectErr: "valueType",
-		},
-		{
-			name:     "error invalid required flag",
-			attrName: "badRequired",
-			attrData: map[string]any{
-				"attributeID": 5.0,
-				"valueType":   "text",
-				"required":    "yes",
-			},
-			expectErr: "required",
-		},
-		{
-			name:     "error invalid required_policy",
-			attrName: "badRequiredPolicy",
-			attrData: map[string]any{
-				"attributeID":     7.0,
-				"valueType":       "text",
-				"required_policy": "global",
-			},
-			expectErr: "required_policy",
-		},
-		{
-			name:     "error required and required_policy coexist",
-			attrName: "conflictRequired",
-			attrData: map[string]any{
-				"attributeID":     8.0,
-				"valueType":       "text",
-				"required":        true,
-				"required_policy": "required_always",
-			},
-			expectErr: "both required and required_policy",
-		},
-		{
-			name:     "error from binding parsing",
-			attrName: "badBinding",
-			attrData: map[string]any{
-				"attributeID": 4.0,
-				"valueType":   "text",
-				"column_binding": map[string]any{
-					"col_name": "",
-				},
-			},
-			expectErr: "columnName",
-		},
-		{
-			name:     "error from non-object binding",
-			attrName: "badBindingType",
-			attrData: map[string]any{
-				"attributeID":    9.0,
-				"valueType":      "text",
-				"column_binding": "not-a-map",
-			},
-			expectErr: "invalid column_binding format",
-		},
-	}
+// parseAttributeMetadataCase is one row of TestParseAttributeMetadata: a
+// success row sets expect, an error row sets expectErr.
+type parseAttributeMetadataCase struct {
+	name      string
+	attrName  string
+	attrData  map[string]any
+	expectErr string
+	expect    func(t *testing.T, meta forma.AttributeMetadata)
+}
 
-	for _, tt := range tests {
+// parseAttributeMetadataCases lives at package level so the test body stays
+// under the 100-line funlen cap (#438).
+var parseAttributeMetadataCases = []parseAttributeMetadataCase{
+	{
+		name:     "success with binding and trimmed encoding",
+		attrName: "foo",
+		attrData: map[string]any{
+			"attributeID": 1.0,
+			"valueType":   "text",
+			"column_binding": map[string]any{
+				"col_name": "text_01",
+				"encoding": " bool_text ",
+			},
+		},
+		expect: func(t *testing.T, meta forma.AttributeMetadata) {
+			assert.Equal(t, int16(1), meta.AttributeID)
+			assert.Equal(t, forma.ValueType("text"), meta.ValueType)
+			assert.False(t, meta.Required)
+			assert.Equal(t, forma.RequiredPolicyOptional, meta.RequiredPolicy)
+			if assert.NotNil(t, meta.ColumnBinding) {
+				assert.Equal(t, forma.MainColumn("text_01"), meta.ColumnBinding.ColumnName)
+				assert.Equal(t, forma.MainColumnEncodingBoolText, meta.ColumnBinding.Encoding)
+			}
+		},
+	},
+	{
+		name:     "success with nil binding when absent",
+		attrName: "bar",
+		attrData: map[string]any{
+			"attributeID": 2.0,
+			"valueType":   "integer",
+		},
+		expect: func(t *testing.T, meta forma.AttributeMetadata) {
+			assert.Equal(t, int16(2), meta.AttributeID)
+			assert.Equal(t, forma.ValueType("integer"), meta.ValueType)
+			assert.False(t, meta.Required)
+			assert.Equal(t, forma.RequiredPolicyOptional, meta.RequiredPolicy)
+			assert.Nil(t, meta.ColumnBinding)
+		},
+	},
+	{
+		name:     "success with legacy required true flag",
+		attrName: "baz",
+		attrData: map[string]any{
+			"attributeID": 3.0,
+			"valueType":   "text",
+			"required":    true,
+		},
+		expect: func(t *testing.T, meta forma.AttributeMetadata) {
+			assert.Equal(t, int16(3), meta.AttributeID)
+			assert.Equal(t, forma.ValueType("text"), meta.ValueType)
+			assert.True(t, meta.Required)
+			assert.Equal(t, forma.RequiredPolicyIfParentPresent, meta.RequiredPolicy)
+		},
+	},
+	{
+		name:     "success with required_policy always",
+		attrName: "always_required",
+		attrData: map[string]any{
+			"attributeID":     4.0,
+			"valueType":       "text",
+			"required_policy": "required_always",
+		},
+		expect: func(t *testing.T, meta forma.AttributeMetadata) {
+			assert.Equal(t, int16(4), meta.AttributeID)
+			assert.True(t, meta.Required)
+			assert.Equal(t, forma.RequiredPolicyAlways, meta.RequiredPolicy)
+		},
+	},
+	{
+		name:     "success with required_policy if parent present",
+		attrName: "local_required",
+		attrData: map[string]any{
+			"attributeID":     5.0,
+			"valueType":       "text",
+			"required_policy": "required_if_parent_present",
+		},
+		expect: func(t *testing.T, meta forma.AttributeMetadata) {
+			assert.Equal(t, int16(5), meta.AttributeID)
+			assert.True(t, meta.Required)
+			assert.Equal(t, forma.RequiredPolicyIfParentPresent, meta.RequiredPolicy)
+		},
+	},
+	{
+		name:     "success with required_policy optional",
+		attrName: "optional_policy",
+		attrData: map[string]any{
+			"attributeID":     6.0,
+			"valueType":       "text",
+			"required_policy": "optional",
+		},
+		expect: func(t *testing.T, meta forma.AttributeMetadata) {
+			assert.Equal(t, int16(6), meta.AttributeID)
+			assert.False(t, meta.Required)
+			assert.Equal(t, forma.RequiredPolicyOptional, meta.RequiredPolicy)
+		},
+	},
+	{
+		name:      "error missing attributeID",
+		attrName:  "missingID",
+		attrData:  map[string]any{"valueType": "text"},
+		expectErr: "attributeID",
+	},
+	{
+		name:     "error fractional attributeID",
+		attrName: "fractionalID",
+		attrData: map[string]any{
+			"attributeID": 1.5,
+			"valueType":   "text",
+		},
+		expectErr: "integer",
+	},
+	{
+		name:     "error out of range attributeID",
+		attrName: "overflowID",
+		attrData: map[string]any{
+			"attributeID": 40000.0,
+			"valueType":   "text",
+		},
+		expectErr: "out of range",
+	},
+	{
+		name:      "error invalid valueType",
+		attrName:  "missingValueType",
+		attrData:  map[string]any{"attributeID": 3.0},
+		expectErr: "valueType",
+	},
+	{
+		name:     "error invalid required flag",
+		attrName: "badRequired",
+		attrData: map[string]any{
+			"attributeID": 5.0,
+			"valueType":   "text",
+			"required":    "yes",
+		},
+		expectErr: "required",
+	},
+	{
+		name:     "error invalid required_policy",
+		attrName: "badRequiredPolicy",
+		attrData: map[string]any{
+			"attributeID":     7.0,
+			"valueType":       "text",
+			"required_policy": "global",
+		},
+		expectErr: "required_policy",
+	},
+	{
+		name:     "error required and required_policy coexist",
+		attrName: "conflictRequired",
+		attrData: map[string]any{
+			"attributeID":     8.0,
+			"valueType":       "text",
+			"required":        true,
+			"required_policy": "required_always",
+		},
+		expectErr: "both required and required_policy",
+	},
+	{
+		name:     "error from binding parsing",
+		attrName: "badBinding",
+		attrData: map[string]any{
+			"attributeID": 4.0,
+			"valueType":   "text",
+			"column_binding": map[string]any{
+				"col_name": "",
+			},
+		},
+		expectErr: "columnName",
+	},
+	{
+		name:     "error from non-object binding",
+		attrName: "badBindingType",
+		attrData: map[string]any{
+			"attributeID":    9.0,
+			"valueType":      "text",
+			"column_binding": "not-a-map",
+		},
+		expectErr: "invalid column_binding format",
+	},
+}
+
+func TestParseAttributeMetadata(t *testing.T) {
+	source := "test-source"
+	for _, tt := range parseAttributeMetadataCases {
 		t.Run(tt.name, func(t *testing.T) {
 			meta, err := parseAttributeMetadata(tt.attrName, tt.attrData, source)
 			if tt.expectErr != "" {

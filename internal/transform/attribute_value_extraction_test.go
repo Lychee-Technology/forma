@@ -12,173 +12,183 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-func TestExtractValueFromEAVRecord(t *testing.T) { //nolint:funlen // #438: oversized test functions
-	textVal := "hello"
-	numericVal := 42.0
-	uuidVal := uuid.New()
-	unixTime := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
-	unixMillis := float64(unixTime.UnixMilli())
+// Fixtures shared by extractValueFromEAVRecordCases.
+const (
+	eavFixtureText    = "hello"
+	eavFixtureNumeric = 42.0
+)
 
-	tests := []struct {
-		name      string
-		record    model.EAVRecord
-		valueType forma.ValueType
-		want      any
-		wantErr   string
-	}{
-		{
-			name:      "text nil returns nil",
-			record:    model.EAVRecord{},
-			valueType: forma.ValueTypeText,
-			want:      nil,
-		},
-		{
-			name: "text returns string",
-			record: model.EAVRecord{
-				ValueText: &textVal,
-			},
-			valueType: forma.ValueTypeText,
-			want:      "hello",
-		},
-		{
-			name: "smallint from numeric",
-			record: model.EAVRecord{
-				ValueNumeric: &numericVal,
-			},
-			valueType: forma.ValueTypeSmallInt,
-			want:      int16(42),
-		},
-		{
-			name: "integer from numeric",
-			record: model.EAVRecord{
-				ValueNumeric: &numericVal,
-			},
-			valueType: forma.ValueTypeInteger,
-			want:      int32(42),
-		},
-		{
-			name: "bigint from numeric",
-			record: model.EAVRecord{
-				ValueNumeric: &numericVal,
-			},
-			valueType: forma.ValueTypeBigInt,
-			want:      int64(42),
-		},
-		{
-			// #590: a stored image past 2^53 is legacy state the funnel no
-			// longer writes; it still reads as the value the table holds.
-			name: "bigint from whole image past 2^53",
-			record: model.EAVRecord{
-				ValueNumeric: new(float64(9007199254740994)),
-			},
-			valueType: forma.ValueTypeBigInt,
-			want:      int64(9007199254740994),
-		},
-		{
-			name: "bigint from fractional image",
-			record: model.EAVRecord{
-				ValueNumeric: new(1000.5),
-			},
-			valueType: forma.ValueTypeBigInt,
-			wantErr:   "stored bigint image 1000.5 is not a whole number",
-		},
-		{
-			name: "bigint from image past int64",
-			record: model.EAVRecord{
-				ValueNumeric: new(math.Ldexp(1, 63)),
-			},
-			valueType: forma.ValueTypeBigInt,
-			wantErr:   "stored bigint image 9223372036854775808 is outside the bigint range",
-		},
-		{
-			name: "numeric returns float64",
-			record: model.EAVRecord{
-				ValueNumeric: &numericVal,
-			},
-			valueType: forma.ValueTypeNumeric,
-			want:      numericVal,
-		},
-		{
-			name: "date from unix millis",
-			record: model.EAVRecord{
-				ValueNumeric: &unixMillis,
-			},
-			valueType: forma.ValueTypeDate,
-			want:      unixTime,
-		},
-		{
-			name: "datetime from unix millis",
-			record: model.EAVRecord{
-				ValueNumeric: &unixMillis,
-			},
-			valueType: forma.ValueTypeDateTime,
-			want:      unixTime,
-		},
-		{
-			name: "uuid from text",
-			record: model.EAVRecord{
-				ValueText: new(uuidVal.String()),
-			},
-			valueType: forma.ValueTypeUUID,
-			want:      uuidVal,
-		},
-		{
-			name: "uuid parse error",
-			record: model.EAVRecord{
-				ValueText: new("not-a-uuid"),
-			},
-			valueType: forma.ValueTypeUUID,
-			wantErr:   "parse uuid",
-		},
-		{
-			name: "bool true",
-			record: model.EAVRecord{
-				ValueNumeric: new(0.6),
-			},
-			valueType: forma.ValueTypeBool,
-			want:      true,
-		},
-		{
-			name: "bool false at threshold",
-			record: model.EAVRecord{
-				ValueNumeric: new(0.5),
-			},
-			valueType: forma.ValueTypeBool,
-			want:      false,
-		},
-		{
-			name: "unsupported uses text fallback",
-			record: model.EAVRecord{
-				ValueText: &textVal,
-			},
-			valueType: forma.ValueType("unknown"),
-			want:      "hello",
-		},
-		{
-			name: "unsupported uses numeric fallback",
-			record: model.EAVRecord{
-				ValueNumeric: &numericVal,
-			},
-			valueType: forma.ValueType("unknown"),
-			want:      numericVal,
-		},
-		{
-			name:      "unsupported nil returns nil",
-			record:    model.EAVRecord{},
-			valueType: forma.ValueType("unknown"),
-			want:      nil,
-		},
-		{
-			name: "numeric nil returns nil",
-			record: model.EAVRecord{
-				ValueNumeric: nil,
-			},
-			valueType: forma.ValueTypeNumeric,
-			want:      nil,
-		},
-	}
+var (
+	eavFixtureUUID = uuid.New()
+	eavFixtureTime = time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+)
 
-	for _, tt := range tests {
+// extractValueCase is one row of TestExtractValueFromEAVRecord.
+type extractValueCase struct {
+	name      string
+	record    model.EAVRecord
+	valueType forma.ValueType
+	want      any
+	wantErr   string
+}
+
+// extractValueFromEAVRecordCases lives at package level so the test body
+// stays under the 100-line funlen cap (#438).
+var extractValueFromEAVRecordCases = []extractValueCase{
+	{
+		name:      "text nil returns nil",
+		record:    model.EAVRecord{},
+		valueType: forma.ValueTypeText,
+		want:      nil,
+	},
+	{
+		name: "text returns string",
+		record: model.EAVRecord{
+			ValueText: new(eavFixtureText),
+		},
+		valueType: forma.ValueTypeText,
+		want:      "hello",
+	},
+	{
+		name: "smallint from numeric",
+		record: model.EAVRecord{
+			ValueNumeric: new(eavFixtureNumeric),
+		},
+		valueType: forma.ValueTypeSmallInt,
+		want:      int16(42),
+	},
+	{
+		name: "integer from numeric",
+		record: model.EAVRecord{
+			ValueNumeric: new(eavFixtureNumeric),
+		},
+		valueType: forma.ValueTypeInteger,
+		want:      int32(42),
+	},
+	{
+		name: "bigint from numeric",
+		record: model.EAVRecord{
+			ValueNumeric: new(eavFixtureNumeric),
+		},
+		valueType: forma.ValueTypeBigInt,
+		want:      int64(42),
+	},
+	{
+		// #590: a stored image past 2^53 is legacy state the funnel no
+		// longer writes; it still reads as the value the table holds.
+		name: "bigint from whole image past 2^53",
+		record: model.EAVRecord{
+			ValueNumeric: new(float64(9007199254740994)),
+		},
+		valueType: forma.ValueTypeBigInt,
+		want:      int64(9007199254740994),
+	},
+	{
+		name: "bigint from fractional image",
+		record: model.EAVRecord{
+			ValueNumeric: new(1000.5),
+		},
+		valueType: forma.ValueTypeBigInt,
+		wantErr:   "stored bigint image 1000.5 is not a whole number",
+	},
+	{
+		name: "bigint from image past int64",
+		record: model.EAVRecord{
+			ValueNumeric: new(math.Ldexp(1, 63)),
+		},
+		valueType: forma.ValueTypeBigInt,
+		wantErr:   "stored bigint image 9223372036854775808 is outside the bigint range",
+	},
+	{
+		name: "numeric returns float64",
+		record: model.EAVRecord{
+			ValueNumeric: new(eavFixtureNumeric),
+		},
+		valueType: forma.ValueTypeNumeric,
+		want:      eavFixtureNumeric,
+	},
+	{
+		name: "date from unix millis",
+		record: model.EAVRecord{
+			ValueNumeric: new(float64(eavFixtureTime.UnixMilli())),
+		},
+		valueType: forma.ValueTypeDate,
+		want:      eavFixtureTime,
+	},
+	{
+		name: "datetime from unix millis",
+		record: model.EAVRecord{
+			ValueNumeric: new(float64(eavFixtureTime.UnixMilli())),
+		},
+		valueType: forma.ValueTypeDateTime,
+		want:      eavFixtureTime,
+	},
+	{
+		name: "uuid from text",
+		record: model.EAVRecord{
+			ValueText: new(eavFixtureUUID.String()),
+		},
+		valueType: forma.ValueTypeUUID,
+		want:      eavFixtureUUID,
+	},
+	{
+		name: "uuid parse error",
+		record: model.EAVRecord{
+			ValueText: new("not-a-uuid"),
+		},
+		valueType: forma.ValueTypeUUID,
+		wantErr:   "parse uuid",
+	},
+	{
+		name: "bool true",
+		record: model.EAVRecord{
+			ValueNumeric: new(0.6),
+		},
+		valueType: forma.ValueTypeBool,
+		want:      true,
+	},
+	{
+		name: "bool false at threshold",
+		record: model.EAVRecord{
+			ValueNumeric: new(0.5),
+		},
+		valueType: forma.ValueTypeBool,
+		want:      false,
+	},
+	{
+		name: "unsupported uses text fallback",
+		record: model.EAVRecord{
+			ValueText: new(eavFixtureText),
+		},
+		valueType: forma.ValueType("unknown"),
+		want:      "hello",
+	},
+	{
+		name: "unsupported uses numeric fallback",
+		record: model.EAVRecord{
+			ValueNumeric: new(eavFixtureNumeric),
+		},
+		valueType: forma.ValueType("unknown"),
+		want:      eavFixtureNumeric,
+	},
+	{
+		name:      "unsupported nil returns nil",
+		record:    model.EAVRecord{},
+		valueType: forma.ValueType("unknown"),
+		want:      nil,
+	},
+	{
+		name: "numeric nil returns nil",
+		record: model.EAVRecord{
+			ValueNumeric: nil,
+		},
+		valueType: forma.ValueTypeNumeric,
+		want:      nil,
+	},
+}
+
+func TestExtractValueFromEAVRecord(t *testing.T) {
+	for _, tt := range extractValueFromEAVRecordCases {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := extractValueFromEAVRecord(tt.record, tt.valueType)
 			if tt.wantErr != "" {
@@ -193,33 +203,40 @@ func TestExtractValueFromEAVRecord(t *testing.T) { //nolint:funlen // #438: over
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			switch want := tt.want.(type) {
-			case time.Time:
-				gotTime, ok := got.(time.Time)
-				if !ok {
-					t.Fatalf("expected time.Time, got %T", got)
-				}
-				if !gotTime.Equal(want) {
-					t.Fatalf("expected time %v, got %v", want, gotTime)
-				}
-			case uuid.UUID:
-				gotUUID, ok := got.(uuid.UUID)
-				if !ok {
-					t.Fatalf("expected uuid.UUID, got %T", got)
-				}
-				if gotUUID != want {
-					t.Fatalf("expected uuid %v, got %v", want, gotUUID)
-				}
-			case nil:
-				if got != nil {
-					t.Fatalf("expected nil, got %v", got)
-				}
-			default:
-				if !reflect.DeepEqual(got, want) {
-					t.Fatalf("expected %v (%T), got %v (%T)", want, want, got, got)
-				}
-			}
+			assertExtractedValue(t, got, tt.want)
 		})
+	}
+}
+
+// assertExtractedValue compares by value semantics: time.Time with Equal (so
+// location differences do not matter), everything else by type and value.
+func assertExtractedValue(t *testing.T, got, want any) {
+	t.Helper()
+	switch want := want.(type) {
+	case time.Time:
+		gotTime, ok := got.(time.Time)
+		if !ok {
+			t.Fatalf("expected time.Time, got %T", got)
+		}
+		if !gotTime.Equal(want) {
+			t.Fatalf("expected time %v, got %v", want, gotTime)
+		}
+	case uuid.UUID:
+		gotUUID, ok := got.(uuid.UUID)
+		if !ok {
+			t.Fatalf("expected uuid.UUID, got %T", got)
+		}
+		if gotUUID != want {
+			t.Fatalf("expected uuid %v, got %v", want, gotUUID)
+		}
+	case nil:
+		if got != nil {
+			t.Fatalf("expected nil, got %v", got)
+		}
+	default:
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("expected %v (%T), got %v (%T)", want, want, got, got)
+		}
 	}
 }
 
