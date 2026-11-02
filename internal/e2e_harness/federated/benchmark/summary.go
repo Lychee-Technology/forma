@@ -189,48 +189,7 @@ func summarizeWorkloads(result *RunResult) []WorkloadSummary {
 			totalDuration += run.Duration
 			totalResultCount += run.ResultCount
 			totalRecords += run.TotalRecords
-			workload.ExecutionCount++
-			workload.FailureCount += maxInt(run.FailureCount, countFailedAssertions(run.Assertions))
-			if run.InfraError != "" {
-				workload.InfraFailures++
-			}
-			if run.FailureKind == FailureKindCorrectness {
-				workload.CorrectnessFailures++
-			}
-			if !run.Passed {
-				workload.Passed = false
-			}
-			if run.PageSize > 0 && workload.PageSize == 0 {
-				workload.PageSize = run.PageSize
-			}
-			if run.Offset > workload.MaxOffset {
-				workload.MaxOffset = run.Offset
-			}
-			if workload.OracleMode == "" && run.OracleMode != "" {
-				workload.OracleMode = run.OracleMode
-			}
-			if run.PreferHot {
-				workload.PreferHot = true
-			}
-			if run.RouteEngine != "" {
-				if workload.RouteEngineCounts == nil {
-					workload.RouteEngineCounts = make(map[string]int)
-					workload.RouteReasonCounts = make(map[string]int)
-				}
-				workload.RouteEngineCounts[run.RouteEngine]++
-				if run.RouteReason != "" {
-					workload.RouteReasonCounts[run.RouteReason]++
-				}
-			}
-			for _, assertion := range run.Assertions {
-				stat := workload.AssertionStats[assertion.Name]
-				if assertion.Passed {
-					stat.Passed++
-				} else {
-					stat.Failed++
-				}
-				workload.AssertionStats[assertion.Name] = stat
-			}
+			tallyWorkloadRun(&workload, run)
 		}
 		sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 		workload.Min = durations[0]
@@ -248,6 +207,54 @@ func summarizeWorkloads(result *RunResult) []WorkloadSummary {
 		workloads = append(workloads, workload)
 	}
 	return workloads
+}
+
+// tallyWorkloadRun folds one run's counters, provenance, route and assertion
+// outcomes into its workload summary. Durations, result counts and totals are
+// accumulated by summarizeWorkloads, which derives the latency statistics.
+func tallyWorkloadRun(workload *WorkloadSummary, run WorkloadRunResult) {
+	workload.ExecutionCount++
+	workload.FailureCount += maxInt(run.FailureCount, countFailedAssertions(run.Assertions))
+	if run.InfraError != "" {
+		workload.InfraFailures++
+	}
+	if run.FailureKind == FailureKindCorrectness {
+		workload.CorrectnessFailures++
+	}
+	if !run.Passed {
+		workload.Passed = false
+	}
+	if run.PageSize > 0 && workload.PageSize == 0 {
+		workload.PageSize = run.PageSize
+	}
+	if run.Offset > workload.MaxOffset {
+		workload.MaxOffset = run.Offset
+	}
+	if workload.OracleMode == "" && run.OracleMode != "" {
+		workload.OracleMode = run.OracleMode
+	}
+	if run.PreferHot {
+		workload.PreferHot = true
+	}
+	if run.RouteEngine != "" {
+		if workload.RouteEngineCounts == nil {
+			workload.RouteEngineCounts = make(map[string]int)
+			workload.RouteReasonCounts = make(map[string]int)
+		}
+		workload.RouteEngineCounts[run.RouteEngine]++
+		if run.RouteReason != "" {
+			workload.RouteReasonCounts[run.RouteReason]++
+		}
+	}
+	for _, assertion := range run.Assertions {
+		stat := workload.AssertionStats[assertion.Name]
+		if assertion.Passed {
+			stat.Passed++
+		} else {
+			stat.Failed++
+		}
+		workload.AssertionStats[assertion.Name] = stat
+	}
 }
 
 func summarizeOracleProvenance(result *RunResult) []OracleProvenance {

@@ -45,9 +45,10 @@ func TestTruthPassBatchEqualsPerCandidate(t *testing.T) {
 	}.WithDefaults())
 	require.NoError(t, err)
 
-	// Replicate the RunWithHarness load path so we hold the same loaded state
-	// the oracle sees.
-	loadedRecords := loadHarnessDataset(ctx, t, h, runner)
+	// Run RunWithHarness's own load path so we hold the same loaded state the
+	// oracle sees.
+	loadedRecords, _, err := runner.loadDataset(ctx, h, TierMixBalanced)
+	require.NoError(t, err)
 
 	checked := 0
 	for _, workload := range runner.workloads {
@@ -79,21 +80,4 @@ func TestTruthPassBatchEqualsPerCandidate(t *testing.T) {
 	}
 	require.Positive(t, checked, "expected at least one truth-pass candidate to be compared")
 	t.Logf("compared %d candidates across truth-pass workloads; batch == per-candidate", checked)
-}
-
-// loadHarnessDataset mirrors the RunWithHarness generate → split → load → snapshot
-// sequence and returns the loaded-state records the oracle reconstructs from.
-func loadHarnessDataset(ctx context.Context, t *testing.T, h *federated.FederatedTestHarness, runner *Runner) []GeneratedRecord {
-	t.Helper()
-	generator, err := NewGenerator(runner.genConfig)
-	require.NoError(t, err)
-	dataset, err := generator.Generate()
-	require.NoError(t, err)
-	tiered, err := SplitIntoTiers(dataset, TierMixBalanced)
-	require.NoError(t, err)
-	require.NoError(t, h.UseRegistry(ctx, runner.registry))
-	require.NoError(t, LoadTieredDataset(ctx, h, tiered))
-	loadedRecords, _, err := buildLoadedStateSnapshot(ctx, h, tiered)
-	require.NoError(t, err)
-	return loadedRecords
 }
