@@ -49,13 +49,12 @@ func measureFunctionLines(filename string, source []byte) ([]guardedFunction, er
 }
 
 // listFunctionGuardedSourceFiles scans a narrower set than the file-size guard,
-// which since #369 covers the whole package: two functions outside query*.go are
-// over the trigger and would make this guard unsatisfiable on arrival —
-// NewFederatedTestHarness in harness.go at 131 lines, past even AGENTS.md's
-// 100-line hard limit (#431), and loadExternalFederatedConfigFromEnv in
-// helpers.go at 84. Each needs a refactor this guard does not own, so the scope
-// widens one file group at a time; only once both are under the trigger can this
-// guard drop its query prefix and take the file guard's listing as it stands.
+// which since #369 covers the whole package: functions outside query*.go are
+// still over the trigger, and would make this guard unsatisfiable on arrival.
+// Which ones, and how long, is not written here: it rots the moment one is
+// touched. TestFunctionGuardScopeIsStillBlocked enforces the reason instead, and
+// fails once nothing outside this scope is over the trigger, which is the signal
+// to drop the query prefix and take the file guard's listing as it stands.
 func listFunctionGuardedSourceFiles() ([]string, error) {
 	sources, err := sizeguard.List(os.DirFS("."), sizeguard.ExcludeTests)
 	if err != nil {
@@ -120,6 +119,28 @@ func TestListFunctionGuardedSourceFilesScopesToQuerySources(t *testing.T) {
 	}
 }
 
+// oversizedFunctions reports every function in the named files that is over
+// the refactoring trigger, as "file: function has N lines".
+func oversizedFunctions(names []string) ([]string, error) {
+	var oversized []string
+	for _, name := range names {
+		source, err := os.ReadFile(name)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", name, err)
+		}
+		functions, err := measureFunctionLines(name, source)
+		if err != nil {
+			return nil, fmt.Errorf("measure %s: %w", name, err)
+		}
+		for _, fn := range functions {
+			if fn.lines > maxGuardedFunctionLines {
+				oversized = append(oversized, fmt.Sprintf("%s: %s has %d lines", name, fn.name, fn.lines))
+			}
+		}
+	}
+	return oversized, nil
+}
+
 // TestGuardedFunctionsStayWithinRefactoringTrigger keeps the query assembly
 // entry points from accumulating back into oversized functions. ExecuteFederatedQuery
 // reached 94 lines because nothing was watching; this is what watches (#324).
@@ -128,21 +149,52 @@ func TestGuardedFunctionsStayWithinRefactoringTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list function-guarded source files: %v", err)
 	}
+	oversized, err := oversizedFunctions(names)
+	if err != nil {
+		t.Fatalf("measure function-guarded source files: %v", err)
+	}
+	for _, problem := range oversized {
+		t.Errorf("%s, exceeds the %d-line refactoring trigger", problem, maxGuardedFunctionLines)
+	}
+}
 
-	for _, name := range names {
-		source, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
+// TestFunctionGuardScopeIsStillBlocked is the self-retiring tripwire for the
+// guard's narrow scope (#447). It holds while some non-test file outside
+// query*.go has a function over the trigger, which is the only reason the
+// function guard does not watch the whole package as the file guard does. Once
+// none does, it fails, so whoever finishes the last refactor learns here that
+// the scope can widen rather than from a comment in a neighbouring file.
+func TestFunctionGuardScopeIsStillBlocked(t *testing.T) {
+	sources, err := sizeguard.List(os.DirFS("."), sizeguard.ExcludeTests)
+	if err != nil {
+		t.Fatalf("list package source files: %v", err)
+	}
+	guarded, err := listFunctionGuardedSourceFiles()
+	if err != nil {
+		t.Fatalf("list function-guarded source files: %v", err)
+	}
+	inScope := make(map[string]bool, len(guarded))
+	for _, name := range guarded {
+		inScope[name] = true
+	}
+	var unguarded []string
+	for _, name := range sources {
+		if !inScope[name] {
+			unguarded = append(unguarded, name)
 		}
-		functions, err := measureFunctionLines(name, source)
-		if err != nil {
-			t.Fatalf("measure %s: %v", name, err)
-		}
-		for _, fn := range functions {
-			if fn.lines > maxGuardedFunctionLines {
-				t.Errorf("%s: %s has %d lines, exceeds the %d-line refactoring trigger",
-					name, fn.name, fn.lines, maxGuardedFunctionLines)
-			}
-		}
+	}
+
+	blockers, err := oversizedFunctions(unguarded)
+	if err != nil {
+		t.Fatalf("measure unguarded source files: %v", err)
+	}
+	if len(blockers) == 0 {
+		t.Fatalf("no function outside the function guard's query*.go scope is over the %d-line trigger: "+
+			"the function guard can now widen. Make listFunctionGuardedSourceFiles return the file guard's "+
+			"sizeguard.List(os.DirFS(\".\"), sizeguard.ExcludeTests) listing, drop the query*.go scope test, "+
+			"and delete this tripwire", maxGuardedFunctionLines)
+	}
+	for _, blocker := range blockers {
+		t.Logf("still blocking a whole-package function guard: %s", blocker)
 	}
 }
