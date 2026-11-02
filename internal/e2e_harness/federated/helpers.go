@@ -101,6 +101,10 @@ func parsePGDSN(dsn string) (host, port string) {
 	return
 }
 
+// loadExternalFederatedConfigFromEnv reads the external-infrastructure
+// settings. Neither a Postgres DSN nor an S3 endpoint means the harness starts
+// its own containers; either one switches to external mode, which always needs
+// the S3 endpoint and uses external Postgres only when the DSN is set.
 func loadExternalFederatedConfigFromEnv() (*externalFederatedConfig, error) {
 	pgDSN := strings.TrimSpace(os.Getenv(externalPGDSNEnv))
 	s3Endpoint := strings.TrimRight(strings.TrimSpace(os.Getenv(externalS3EndpointEnv)), "/")
@@ -111,79 +115,85 @@ func loadExternalFederatedConfigFromEnv() (*externalFederatedConfig, error) {
 		return nil, fmt.Errorf("external federated harness requires %s when external configuration is enabled", externalS3EndpointEnv)
 	}
 
-	useExternalPG := pgDSN != ""
-
-	pgUser := strings.TrimSpace(os.Getenv(externalPGUserEnv))
-	pgPassword := os.Getenv(externalPGPasswordEnv)
-	pgDatabase := strings.TrimSpace(os.Getenv(externalPGDBEnv))
-	pgSSLMode := strings.TrimSpace(os.Getenv(externalPGSSLModeEnv))
-	if useExternalPG && (pgUser == "" || pgDatabase == "") {
-		parsedURL, err := url.Parse(pgDSN)
-		if err != nil {
-			return nil, fmt.Errorf("parse external postgres dsn: %w", err)
-		}
-		if pgUser == "" && parsedURL.User != nil {
-			pgUser = parsedURL.User.Username()
-		}
-		if pgPassword == "" && parsedURL.User != nil {
-			if password, ok := parsedURL.User.Password(); ok {
-				pgPassword = password
-			}
-		}
-		if pgDatabase == "" {
-			pgDatabase = strings.TrimPrefix(parsedURL.Path, "/")
-		}
-		if pgSSLMode == "" {
-			pgSSLMode = parsedURL.Query().Get("sslmode")
-		}
-	}
-	if pgUser == "" {
-		pgUser = "postgres"
-	}
-	if pgDatabase == "" {
-		pgDatabase = "postgres"
-	}
-	if pgSSLMode == "" {
-		pgSSLMode = "disable"
-	}
-
-	pgHost, pgPort := parsePGDSN(pgDSN)
-	s3Bucket := strings.TrimSpace(os.Getenv(externalS3BucketEnv))
-	if s3Bucket == "" {
-		s3Bucket = "test-bucket"
-	}
-	s3Prefix := strings.TrimSpace(os.Getenv(externalS3PrefixEnv))
-	if s3Prefix == "" {
-		s3Prefix = "test-project"
-	}
-	s3Region := strings.TrimSpace(os.Getenv(externalS3RegionEnv))
-	if s3Region == "" {
-		s3Region = "us-east-1"
-	}
-	s3AccessKey := strings.TrimSpace(os.Getenv(externalS3AccessKeyEnv))
-	s3SecretKey := os.Getenv(externalS3SecretKeyEnv)
-	if s3AccessKey == "" || s3SecretKey == "" {
-		return nil, fmt.Errorf("external federated harness requires both %s and %s", externalS3AccessKeyEnv, externalS3SecretKeyEnv)
-	}
-
-	return &externalFederatedConfig{
+	cfg := &externalFederatedConfig{
 		Enabled:       true,
-		UseExternalPG: useExternalPG,
+		UseExternalPG: pgDSN != "",
 		UseExternalS3: true,
 		PGDSN:         pgDSN,
-		PGHost:        pgHost,
-		PGPort:        pgPort,
-		PGUser:        pgUser,
-		PGPassword:    pgPassword,
-		PGDatabase:    pgDatabase,
-		PGSSLMode:     pgSSLMode,
 		S3Endpoint:    s3Endpoint,
-		S3Bucket:      s3Bucket,
-		S3Prefix:      s3Prefix,
-		S3Region:      s3Region,
-		S3AccessKey:   s3AccessKey,
-		S3SecretKey:   s3SecretKey,
-	}, nil
+	}
+	if err := loadExternalPGSettings(cfg); err != nil {
+		return nil, fmt.Errorf("load external postgres settings: %w", err)
+	}
+	if err := loadExternalS3Settings(cfg); err != nil {
+		return nil, fmt.Errorf("load external s3 settings: %w", err)
+	}
+	return cfg, nil
+}
+
+// loadExternalPGSettings fills the Postgres connection settings of cfg. Each
+// comes from its environment variable first; when external Postgres is in use
+// and the user or database is unset, the unset ones are taken from the DSN;
+// whatever is still empty falls back to the local-container default.
+func loadExternalPGSettings(cfg *externalFederatedConfig) error {
+	cfg.PGUser = strings.TrimSpace(os.Getenv(externalPGUserEnv))
+	cfg.PGPassword = os.Getenv(externalPGPasswordEnv)
+	cfg.PGDatabase = strings.TrimSpace(os.Getenv(externalPGDBEnv))
+	cfg.PGSSLMode = strings.TrimSpace(os.Getenv(externalPGSSLModeEnv))
+	if cfg.UseExternalPG && (cfg.PGUser == "" || cfg.PGDatabase == "") {
+		parsedURL, err := url.Parse(cfg.PGDSN)
+		if err != nil {
+			return fmt.Errorf("parse external postgres dsn: %w", err)
+		}
+		fillPGSettingsFromDSN(cfg, parsedURL)
+	}
+	cfg.PGUser = valueOrDefault(cfg.PGUser, "postgres")
+	cfg.PGDatabase = valueOrDefault(cfg.PGDatabase, "postgres")
+	cfg.PGSSLMode = valueOrDefault(cfg.PGSSLMode, "disable")
+	cfg.PGHost, cfg.PGPort = parsePGDSN(cfg.PGDSN)
+	return nil
+}
+
+// fillPGSettingsFromDSN sets every Postgres setting of cfg that is still empty
+// from the matching part of the parsed DSN, leaving the ones already set alone.
+func fillPGSettingsFromDSN(cfg *externalFederatedConfig, parsedURL *url.URL) {
+	if parsedURL.User != nil {
+		if cfg.PGUser == "" {
+			cfg.PGUser = parsedURL.User.Username()
+		}
+		if password, ok := parsedURL.User.Password(); ok && cfg.PGPassword == "" {
+			cfg.PGPassword = password
+		}
+	}
+	if cfg.PGDatabase == "" {
+		cfg.PGDatabase = strings.TrimPrefix(parsedURL.Path, "/")
+	}
+	if cfg.PGSSLMode == "" {
+		cfg.PGSSLMode = parsedURL.Query().Get("sslmode")
+	}
+}
+
+// loadExternalS3Settings fills the S3 bucket, prefix, region and credentials of
+// cfg. The first three default to the layout the local MinIO container uses;
+// the credentials have no default, so external mode fails without both.
+func loadExternalS3Settings(cfg *externalFederatedConfig) error {
+	cfg.S3Bucket = valueOrDefault(strings.TrimSpace(os.Getenv(externalS3BucketEnv)), "test-bucket")
+	cfg.S3Prefix = valueOrDefault(strings.TrimSpace(os.Getenv(externalS3PrefixEnv)), "test-project")
+	cfg.S3Region = valueOrDefault(strings.TrimSpace(os.Getenv(externalS3RegionEnv)), "us-east-1")
+	cfg.S3AccessKey = strings.TrimSpace(os.Getenv(externalS3AccessKeyEnv))
+	cfg.S3SecretKey = os.Getenv(externalS3SecretKeyEnv)
+	if cfg.S3AccessKey == "" || cfg.S3SecretKey == "" {
+		return fmt.Errorf("external federated harness requires both %s and %s", externalS3AccessKeyEnv, externalS3SecretKeyEnv)
+	}
+	return nil
+}
+
+// valueOrDefault returns value, or fallback when value is empty.
+func valueOrDefault(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 // GetS3Client returns the S3 client for direct access.
