@@ -106,6 +106,11 @@ func TestComputeDiff_ReportsEachInjectedDiscrepancy(t *testing.T) {
 		{"total counts a duplicate version", func(r *QueryResult) {
 			r.Total = 3
 		}, func(d *Diff) bool { return d.ActualTotal == 3 && d.ExpectedTotal == 2 }},
+		// Every field of the copy matches and the total is right, so only the
+		// duplicate check can see it.
+		{"a row returned twice with the right total", func(r *QueryResult) {
+			r.Records = append(r.Records, controlRecord(newRowID(1), "one-v2", 1, 1<<53+1, textEAV(7, "n1")))
+		}, func(d *Diff) bool { return len(d.Duplicate) == 1 && d.Duplicate[0] == newRowID(1).String() }},
 		{"sort order inverted", func(r *QueryResult) {
 			r.Records[0], r.Records[1] = r.Records[1], r.Records[0]
 		}, func(d *Diff) bool { return d.Misordered }},
