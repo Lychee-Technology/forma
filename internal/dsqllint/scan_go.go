@@ -47,14 +47,41 @@ const (
 // alone decides: error prose is told apart by where it is written (an
 // argument of an error constructor, errorCalls), never by its characters,
 // so SQL that holds %w, such as LIKE '%weekly%', is still SQL (#740
-// review R9-F1).
+// review R9-F1). Text of several statements starts one when its first
+// statement is one a pattern only takes whole, such as BEGIN or SAVEPOINT
+// s, and the rest starts one, so a transaction-wrapped migration (BEGIN;
+// CREATE TABLE a ...; COMMIT;) is SQL however its first statement reads
+// (#740 review R10-F1).
 func LooksLikeSQL(s string) bool {
 	for _, form := range []string{skipLeadingComments(s), sqlTokens(s)} {
-		if sqlStatement.MatchString(form) || beginStatement.MatchString(form) {
+		if formStartsSQL(form) {
 			return true
 		}
 	}
 	return false
+}
+
+// formStartsSQL reports whether form, one of LooksLikeSQL's readings,
+// starts a SQL statement, or is a run of whole statements, each ended by a
+// semicolon, followed by text that starts one. The first semicolon is
+// taken as the end of the first statement; a semicolon inside one of its
+// string literals only hides it in the form as written, never in the
+// token form, which empties every literal.
+func formStartsSQL(form string) bool {
+	for {
+		if wholeOrStart(form) {
+			return true
+		}
+		head, rest, ok := strings.Cut(form, ";")
+		if !ok || !wholeOrStart(head+";") {
+			return false
+		}
+		form = skipLeadingComments(rest)
+	}
+}
+
+func wholeOrStart(form string) bool {
+	return sqlStatement.MatchString(form) || beginStatement.MatchString(form)
 }
 
 func skipLeadingComments(s string) string {

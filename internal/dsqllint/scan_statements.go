@@ -124,8 +124,9 @@ var statementHeads = []string{
 // UPDATE"t"SET a = 1) or a comment the way it runs into a space (#740
 // review R5-F1). The statement may sit inside parentheses: (SELECT 1)
 // UNION (SELECT 2). A leading BEGIN or START TRANSACTION only counts as
-// the whole text (beginStatement), so error text such as "begin tx: ..."
-// is not SQL.
+// a whole statement (beginStatement), the whole text or ended by a
+// semicolon that more SQL follows (formStartsSQL), so error text such as
+// "begin tx: ..." is not SQL but "BEGIN; CREATE TABLE ..." is.
 var sqlStatement = regexp.MustCompile(`(?i)^(?:\(\s*)*(?:` + strings.Join(statementHeads, "|") + `)`)
 
 var beginStatement = regexp.MustCompile(`(?i)^(?:BEGIN|START\s+TRANSACTION)(?:\s+(?:TRANSACTION|WORK))?` +
