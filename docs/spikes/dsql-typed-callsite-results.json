@@ -3,7 +3,7 @@
     "origin_main": "7ebe2b53a928f56c9c3c2c12a80d960647fe1cbf",
     "pr_801_head": "9776c2bbb24fc308bfd20b4849c6afcc2fdba023"
   },
-  "prototype_revision": "local branch spike/dsql-typed-callsite (commit recorded in the report header); never pushed",
+  "prototype_revision": "d6e96c8107e08731e8b28aa0ed2edbe5bd7cfcc2 (local branch spike/dsql-typed-callsite, never pushed)",
   "environment": {
     "go": "go1.26.0 (GOTOOLCHAIN=go1.26.0+auto; local go1.27.3)",
     "os_arch": "linux/amd64, 8 CPUs, 15 GiB RAM",

@@ -8,7 +8,7 @@ This is an investigation with a disposable prototype. Nothing here is production
 |---|---|
 | `origin/main` | `7ebe2b53a928` (also the PR's merge base) |
 | PR #801 HEAD | `9776c2bbb24f` |
-| Spike | local branch `spike/dsql-typed-callsite`, forked from the PR HEAD so the existing corpus recorders could be reused |
+| Spike | `d6e96c8` on local branch `spike/dsql-typed-callsite` (this file's commit amends it), forked from the PR HEAD so the existing corpus recorders could be reused |
 
 Environment: Go 1.26.0 through `GOTOOLCHAIN=go1.26.0+auto` (the local Go is 1.27.3), linux/amd64, 8 CPUs, 15 GiB of RAM, and dsql-lint 0.2.22 from the PR's pinned wheel. Every number below was measured in this environment unless it is marked otherwise. The raw outputs are in `docs/spikes/dsql-typed-callsite-data/`, and the summary is in `docs/spikes/dsql-typed-callsite-results.json`.
 
