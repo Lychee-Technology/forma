@@ -5,6 +5,29 @@ This plan implements `docs/architecture/adr-dsql-typed-callsite-coverage.md` for
 - **Base:** `origin/main` at `7ebe2b5`, unchanged since PR #801 was opened.
 - **Sources of reused code:** PR #801 at `9776c2b` and the spike at `ab3f1ea`. Neither is merged or cherry-picked wholesale.
 
+## 0. Issue map (owner decision, 2026-11-03)
+
+The work is split into six issues, sequenced by GitHub "blocked by" links:
+
+| Issue | Content | Blocked by |
+|---|---|---|
+| #740 (1/5) | Lint baseline (M1): pinned dsql-lint, the production SQL corpus as typed records, exact-count known findings, emptiness check, CI wiring. No inventory; criterion 4 is not claimed | — |
+| #803 | Engine seam: a DSQL-subset shared core, a narrow engine interface, engine packages, a DDL seam carrying #690's strategy. First step: an executed update/merge corpus unit | #740 |
+| #804 (2/5) | Typed call-site discovery (M2) | #740 (can run in parallel with #803) |
+| #805 (3/5) | Audited site manifest (M3), done once on #803's layout | #804, #803 |
+| #806 (4/5) | Attribution and evidence join (M4); re-keys known findings | #805 |
+| #807 (5/5) | Corpus migration and close-out (M5 + the remainder of M6) | #806 |
+
+```
+#740 ──► #803 ──┐
+   └───► #804 ──┴─► #805 ──► #806 ──► #807
+```
+
+Why this order:
+- #803 moves most SQL into new packages, which re-keys almost every site ID. The manifest audit (#805) is therefore done once, after it.
+- #740's baseline does not depend on site IDs. It lands first, as the safety net for #803.
+- M6's main task, deleting PR #801's SQL-text scanner, does not exist on `main`, so the rest of M6 is folded into #807.
+
 ## 1. Owner decisions
 
 ### Already made (D1–D7)
@@ -30,12 +53,12 @@ This plan implements `docs/architecture/adr-dsql-typed-callsite-coverage.md` for
 
 | ID | Question | Recommendation | Blocks |
 |---|---|---|---|
-| **OD-1** | Approve the operational interpretation of criterion 4 (ADR §5–6): new *sites* are caught statically; new *variants* at existing sites only when the corpus represents them | Approve | Implementation start |
-| **OD-2** | Which tool subcommands are supported on DSQL: validate-schema-consistency, baseline-schema, apply-schema, the widthaudit census, manifest-reconcile, build-unique-keys | If undecided, classify their sites `uncovered #802`. Never classify them `dsql` without evidence | Manifest audit (M3); the default is safe |
-| **OD-3** | Forma-specific blocking rules | Block `FOR SHARE` and `FOR NO KEY UPDATE`, which AWS documents as unsupported. Block advisory-lock calls in the DSQL corpus under Forma's own engine contract (`docs/aurora-dsql.md`, #633), not on an AWS claim. Do **not** block `FOR UPDATE` or `FOR KEY SHARE` | M5; can follow later |
-| **OD-4** | May a PR add a new DSQL-reachable site as `uncovered #issue`? | Yes, if the issue is open and names the site. Review it like code | M3 |
-| **OD-5** | Is executed coverage of the update/merge write transaction part of #740's definition of done? | Yes. It is the critical DSQL write path and has no corpus evidence today | Definition of done |
-| **OD-6** | Delivery topology | One replacement PR with milestone commits (§7) | PR creation |
+| **OD-1** | Approve the operational interpretation of criterion 4 (ADR §5–6): new *sites* are caught statically; new *variants* at existing sites only when the corpus represents them | Approve | #804 onward. Does not block #740 |
+| **OD-2** | Which tool subcommands are supported on DSQL: validate-schema-consistency, baseline-schema, apply-schema, the widthaudit census, manifest-reconcile, build-unique-keys | If undecided, classify their sites `uncovered #802`. Never classify them `dsql` without evidence | Manifest audit (#805); the default is safe |
+| **OD-3** | Forma-specific blocking rules | Block `FOR SHARE` and `FOR NO KEY UPDATE`, which AWS documents as unsupported. Block advisory-lock calls in the DSQL corpus under Forma's own engine contract (`docs/aurora-dsql.md`, #633), not on an AWS claim. Do **not** block `FOR UPDATE` or `FOR KEY SHARE` | #807; can follow later |
+| **OD-4** | May a PR add a new DSQL-reachable site as `uncovered #issue`? | Yes, if the issue is open and names the site. Review it like code | #805 |
+| OD-5 | Executed coverage of the update/merge write transaction | **Resolved:** it is the first step of #803, before the write path is refactored | — |
+| OD-6 | Delivery topology | **Resolved by the owner:** six issues (§0) instead of one replacement PR | — |
 
 ## 2. Coverage and evidence model
 
@@ -68,7 +91,7 @@ sql-file <path> <dsql|postgres-only|duckdb|uncovered> [issue=#N] -- <reason>
 
 In every class, the gate fails on a duplicate line, an unknown class, a missing reason, a stale ID, or a site that has no line.
 
-**Initial manifest.** A generated draft is only a starting point. Every line is audited at source level in M3:
+**Initial manifest.** A generated draft is only a starting point. Every line is audited at source level in #805:
 - the reviewer reads each site and records the engine switch or the reason;
 - the audit table goes into the PR description;
 - evidence does *not* decide the class. The spike's sample manifest is circular and is discarded.
@@ -137,7 +160,7 @@ The gate compares exact counts per key. It fails on:
 - an entry whose site is not `dsql`, is stale, has no `#issue`, or uses a wildcard;
 - a key whose origin is `asserted`.
 
-The baseline, measured on PR #801 and to be re-keyed after M5, is 15 diagnostics, all #690:
+The baseline, measured on PR #801 and to be re-keyed in #806, is 15 diagnostics, all #690:
 
 | Generator | Rule | Count |
 |---|---|---|
@@ -146,6 +169,8 @@ The baseline, measured on PR #801 and to be re-keyed after M5, is 15 diagnostics
 | `keyRowIndexDDL` | `index_async` | 1 |
 | `withTx` | `multi_ddl_transaction` | 1 |
 | `Index.CreateSQL` | `index_concurrently` | 1 |
+
+**Temporary keys in #740.** Until #806 there are no site IDs, so #740 keys known findings on *corpus origin label + rule + exact count*. Those labels are asserted by the corpus tests. The rule that an `asserted` origin cannot key a finding takes effect in #806, which re-keys every entry to *site + verified origin + rule + count*. Exact counting holds throughout.
 
 Compatibility checking stays separate from discovery and runtime behaviour. dsql-lint 0.2.22 limitations (documented, measured):
 - it does not flag advisory locks, `FOR UPDATE` or `NOWAIT`;
@@ -173,7 +198,7 @@ There are 106 statements from 64 generators today: 61 executed and 45 rendered.
 | Declared indexes: `catalogQuery`, `tableSchemaQuery`, `Index.CreateSQL` | 0/3 | DSQL | **executed** via `declaredindex.Ensure` on pgxmock (its `Conn` interface already exists); `CreateSQL` also rendered | exec-site + verified-match | **yes** | medium: cheap, and shows autocommit `CONCURRENTLY` as actually sent | T-32 |
 | Write transaction boundaries: `writeTxOptions` BEGIN ×4, `inWriteTx` COMMIT ×4 | 8/0 | DSQL | executed (wire-client) | exec-site; options `asserted` | no | low | T-16, T-17 |
 | Write DML: `guardUpsertSQL`, `upsertChangeLog`, `nextRowVersion`, `deleteRecordInTx`, `batchDeleteInTx`, `insertEAVAttributes`, `replaceEAVAttributesScoped`, `buildRequeueMainStatement`, unique-key reads and writes (7), `lockRowInTx`, `checkRowGuard`, `txClock`, `buildInsertMainStatement` | 34/3 | DSQL | executed; the 3 rendered branch variants (three-row guard, live and deleted inserts for every typed family) stay rendered as **extra** variant coverage | exec-site / verified-builder | no | low | T-32 |
-| **Update/merge transaction** (`MergePersistentRecord`, batch merge, `updateMainRow`) | 0/2 (`buildUpdateMainStatement` rendered only) | DSQL | **new executed unit** under `aurora-dsql`; rendered variants kept | exec-site / verified-builder | **yes (new)** | high: the critical write path has no evidence today | T-34 |
+| **Update/merge transaction** (`MergePersistentRecord`, batch merge, `updateMainRow`) | 0/2 (`buildUpdateMainStatement` rendered only) | DSQL | **new executed unit** under `aurora-dsql`, added as #803's first step; rendered variants kept | exec-site / verified-builder | **yes (new)** | high: the critical write path has no evidence today | T-34 |
 | CDC lease, mark and reads (`acquire`, `renew`, `deleteLease`, `MarkFlushedVersions`, flush and init reads ×7) | 11/0 | DSQL | executed (sqlmock) | exec-site | no | low | T-32 |
 | CDC export snapshot: `stageInSnapshot` BEGIN/COMMIT | 4/0 | DSQL | executed (wire-client) | exec-site | no | low | T-17 |
 | CDC export queries: `buildChangeLogQuery`, `buildMainEntityQuery`(2), `buildEAVQuery`(2) | 0/5 | DSQL | **rendered**, linked to the `appendStageRows` site through a typed struct-field link (`exportStage.query`; validated in planning). Executing them would need extended-protocol support in `WireConn` for little gain; runtime belongs to #739 | verified-closure | no | low–medium | T-22, T-32 |
@@ -230,50 +255,52 @@ Not every one of the 45 rendered statements is converted to execution:
 
 ## 7. Delivery
 
-**Topology: one replacement PR** from a new branch off `main`, with milestone commits, and with the review contract below. The reason is concrete: M4 changes the corpus format (a typed sidecar plus attribution). If M1 merged on its own, its corpus code would be rewritten again in the next PR, and a merged M1 would ship a required gate with no inventory guard. Each milestone is reviewable as its own commit range.
+The issue map is in §0. Each issue is delivered by its own PR (or PRs) from `main`.
 
-**Review contract**, stated in the PR description. A finding blocks only if it cites a failing T-test or a violated G1–G3. A shape outside the guarantees (ADR §6) goes into the non-guarantee documentation and an issue, not into the PR.
+**Review contract**, stated in every PR description. A finding blocks only if it cites a failing T-test or a violated G1–G3. A shape outside the guarantees (ADR §6) goes into the non-guarantee documentation and an issue, not into the PR.
 
-**Recovering PR #801 (by file):**
-- **Port**, adapting to the new API:
+**#740, the lint baseline (M1).**
+- **Port from PR #801**, adapting to typed records:
   - `internal/dsqllint/tool.go`;
-  - `ParseLintOutput`, `FormatFinding`, `runLint` and `selfTest` from `lint.go` and `targets.go`;
+  - `ParseLintOutput`, `FormatFinding`, `runLint` and `selfTest`;
   - `testdata/regression/*`;
   - `cmd/dsqllint/main.go`;
-  - `corpus/corpus.go` (`Export`, `Recorder`, without `CountStatements`);
-  - `corpus/wire.go`;
-  - every `*dsql_corpus*_test.go`;
-  - the `tableTransactionDDL` refactor and test in `cmd/tools/init_db.go`;
-  - the Makefile, `ci.yml` step and `dsql_lint_guard_test.go`;
-  - `docs/dsql-lint.md`, rewritten from §1 of its guarantees.
-- **Drop:**
-  - `scan.go`, `scan_go.go`, `scan_fragments.go`, `scan_statements.go` and all `scan_*_test.go`;
-  - `corpus/statements.go`;
-  - `inventory.txt` and `inventory.go`'s class model (`passthrough`, `not-dsql`, wildcards);
-  - `Judge`'s count-free matching.
-- **From the spike:** reimplement `sites` (verbatim only, plus field linking), `attr` and `evidence` to repository standards (≤500-line files, ≤100-line functions, wrapped errors). The mutation shapes become fixture packages under `internal/dsqllint/testdata/`.
+  - `corpus/corpus.go` (`Export`, `Recorder`) and `corpus/wire.go`;
+  - all nine `*dsql_corpus*_test.go` files (106 statements, 64 generators);
+  - the `tableTransactionDDL` refactor in `cmd/tools/init_db.go`;
+  - the Makefile `lint-dsql` and `all` targets, the CI lint-job step, `dsql_lint_guard_test.go`;
+  - `docs/dsql-lint.md`, which must state that there is no inventory yet.
+- **New:**
+  - a typed JSONL record sidecar (kind, SQL, engine, mechanism, unit, sequence, label), replacing origin comments and statement counting;
+  - the DuckDB empty-statement check;
+  - exact-count known findings on temporary label keys (§3);
+  - a per-unit engine stamp.
+- **Do not port:** `scan*.go`, `corpus/statements.go`, `inventory.*` or count-free `Judge`.
+- **Exit:** T-25 to T-27, T-29 (label-keyed), T-32 (no loss of the 106 statements and 64 generators), T-35 to T-37.
 
-**Milestones (commit ranges):**
+**#803, engine seam.** See the issue for scope. Exit: its acceptance criteria. #740's corpus stays green, and every change to the known findings is listed.
 
-| M | Content | Depends on | Exit |
-|---|---|---|---|
-| M1 | Lint infrastructure: tool pin, exit-code and JSON handling, fixtures and controls, exact-count known findings, typed JSONL sidecar, emptiness check, Makefile/CI/guards | — | T-25 to T-27, T-29, T-35 to T-37 |
-| M2 | Typed discovery: catalogue and completeness test, verbatim wrappers, interfaces, `boundary`, unsupported findings, scope and build-tag checks, expression IDs plus directive | M1 | T-01 to T-12, T-39 |
-| M3 | Manifest: parser and validation, regeneration command, **source-level audit** of every site (table in the PR) | M2, OD-2, OD-4 | T-13 to T-15; audit reviewed |
-| M4 | Evidence: client-side wire capture, stack attribution, origin levels and field linking, the join, engine stamp | M1, M3 | T-16 to T-24 |
-| M5 | Corpus migration: `withTx` seam and executed init-db, executed declared indexes, the update/merge unit, known findings re-keyed with counts, Forma rules (OD-3) | M4, OD-5 | T-28 to T-34 |
-| M6 | Cutover: delete the scanner and lexers, update docs and AGENTS.md, re-key #802's gaps to site IDs, record #690's findings, CI timing and churn replay | M5 | T-38, T-40, Gate F exits; full suite green |
+**#804 to #807.** Each issue states its scope and exit tests. The spike's `sites`, `attr` and `evidence` packages are reimplemented to repository standards (≤500-line files, ≤100-line functions, wrapped errors). The mutation shapes become fixture packages under `internal/dsqllint/testdata/`.
 
-**Definition of done for #740:**
-- T-01 to T-40 are green in CI;
-- the audit table is reviewed;
+**Definition of done for #740's original scope:**
+- #807 is closed with T-01 to T-40 green in CI;
+- the #805 audit is reviewed;
 - #802 lists every `uncovered` site;
-- the ADR is accepted;
-- PR #801 is closed with a link to the replacement, which is the owner's action. #801 stays open until then.
+- the ADR is accepted.
+
+**PR #801.** It is superseded by #740's baseline PR together with #803–#807. The owner closes it with links once #740's baseline PR is open.
 
 ## 8. Acceptance test matrix
 
-"B" means blocking. AC numbers refer to #740's acceptance criteria.
+"B" means blocking. AC numbers refer to #740's original acceptance criteria.
+
+Tests by issue:
+- **#740:** T-25 to T-27, T-29 (label-keyed), T-32 (no loss), T-35 to T-37.
+- **#803:** keeps #740's tests green.
+- **#804:** T-03 to T-12, T-39; T-01 and T-02 at the inventory level.
+- **#805:** T-01, T-02 and T-13 to T-15 as gate failures.
+- **#806:** T-16 to T-24, T-38; T-29 re-keyed to sites.
+- **#807:** T-28 to T-34, T-40.
 
 | ID | Input or mutation | Expected | Enforced by | B | AC |
 |---|---|---|---|---|---|
@@ -325,7 +352,7 @@ Not every one of the 45 rendered statements is converted to execution:
 3. **Can an unknown sink bypass discovery?** Only an uncatalogued API, reflection or cgo. T-06 bounds the first; the rest are documented non-guarantees.
 4. **Can a classification transfer silently?** No: there are no ordinals, a duplicate key fails, and regeneration never assigns a class.
 5. **Can a variant at an existing site be missed?** Yes. ADR §6 and T-30/T-31 state it.
-6. **Is the initial manifest self-validating?** No: the M3 audit is source-level, and evidence never sets a class.
+6. **Is the initial manifest self-validating?** No: the #805 audit is source-level, and evidence never sets a class.
 7. **Can rendered SQL fake execution?** No (T-22).
 8. **Can an asserted origin pass as verified?** No (T-23).
 9. **Can a comment-only statement count?** No (T-25).

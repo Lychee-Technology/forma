@@ -8,6 +8,7 @@
   - spike: https://github.com/Lychee-Technology/forma/pull/801#issuecomment-6596557050
   - spike branch: `spike/dsql-typed-callsite` at `ab3f1ea`
 - **Plan:** `docs/plans/dsql-lint-typed-callsite-replacement.md`
+- **Delivery issues:** #740 (lint baseline), #803 (engine seam), #804–#807 (gate parts 2–5)
 
 ## 1. Problem
 
@@ -144,7 +145,17 @@ Plan §8 (tests T-01 to T-40) is the acceptance suite. It covers every PR #801 f
 
 ## 11. Migration
 
-One replacement PR from `main`, with milestone commits (plan §7). It recovers PR #801's infrastructure selectively and does not merge the spike. Of the 106 corpus statements, 61 stay executed, 29 move to execution (init-db tables, declared indexes), and 16 stay rendered and statically linked. A new executed update/merge transaction unit is added (plan §5).
+Delivery is split by issue (plan §0):
+1. #740 lands the lint baseline. It reuses PR #801's infrastructure, has no inventory, and claims nothing about criterion 4.
+2. #803 restructures engine-specific SQL behind an engine seam.
+3. #804–#807 add discovery, the audited manifest, the evidence join and the corpus migration.
+
+The spike is not merged. Of the 106 corpus statements:
+- 61 stay executed;
+- 29 move to execution (init-db tables, declared indexes) in #807;
+- 16 stay rendered and statically linked.
+
+An executed update/merge transaction unit is added as #803's first step.
 
 ## 12. Residual risks
 
