@@ -92,6 +92,10 @@ func TestLooksLikeSQL(t *testing.T) {
 		"WITH ids(id) AS (SELECT 1) SELECT id FROM ids", "with recursive t (n, m) as (select 1, 2) select n from t",
 		`WITH "Ids" AS (SELECT 1) SELECT 1`, `with "a""b"(x)as (select 1) select x from "a""b"`,
 		"WITH ids AS MATERIALIZED (SELECT 1) SELECT 1", "WITH a AS (SELECT 1), b(x) AS (SELECT 2) SELECT x FROM b",
+		"SELECT(1)", "select*from t", `SELECT"a"FROM t`, "SELECT'x'", "SELECT-1", "SELECT/* c */1", "SELECT--c\n1",
+		"(SELECT 1) UNION (SELECT 2)", "((select 1))", `UPDATE"t"SET a = 1`, `UPDATE "my table" SET a = 1`,
+		`update "s"."t" as x set a = 1`, "INSERT/**/INTO t VALUES (1)", `WITH"x"AS(SELECT 1)SELECT 1`,
+		"DELETE/* c */FROM t", "UPDATE %s SET a = 1",
 	} {
 		if !LooksLikeSQL(s) {
 			t.Errorf("LooksLikeSQL(%q) = false, want true", s)
@@ -100,6 +104,7 @@ func TestLooksLikeSQL(t *testing.T) {
 	for _, s := range []string{
 		"begin tx: %w", "select batch row ids: %w", "commit failed", "the table to create", "", "-- only a comment",
 		"with alias x", "with ids(id) handling", "with the (optional) list",
+		"selected rows", "select", "selection(1)", "(see below)", "update(s) settings",
 	} {
 		if LooksLikeSQL(s) {
 			t.Errorf("LooksLikeSQL(%q) = true, want false", s)
@@ -329,6 +334,90 @@ func TestCTEColumnListGeneratorsFeedingAClassifiedExecutorFail(t *testing.T) {
 	}
 	if site, ok := snap.Sites["p/p.go:run"]; ok {
 		t.Errorf("p/p.go:run only calls the generator and the executor, but the scan reported %+v", site)
+	}
+
+	classified := []Entry{{Class: ClassPassthrough, Location: "p/p.go:exec", Line: 1}}
+	joined := ""
+	for _, p := range CheckInventory(classified, snap) {
+		joined += p.Error() + "\n"
+	}
+	for loc, why := range want {
+		if !strings.Contains(joined, loc+" "+why) || !strings.Contains(joined, "no inventory entry classifies it") {
+			t.Errorf("CheckInventory did not refuse the unclassified generator %s:\n%s", loc, joined)
+		}
+	}
+
+	line := 2
+	for loc := range want {
+		classified = append(classified, Entry{Class: ClassUncovered, Location: loc, Line: line, Gap: "later"})
+		line++
+	}
+	if problems := CheckInventory(classified, snap); len(problems) != 0 {
+		t.Errorf("CheckInventory with every generator classified = %v, want none", problems)
+	}
+}
+
+// punctGo holds generators whose statement keyword runs straight into
+// punctuation, a comment or a parenthesis, each feeding the classified
+// passthrough executor (#740 review R5-F1).
+const punctGo = `package p
+
+import (
+	"context"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// exec is the classified passthrough executor.
+func exec(ctx context.Context, tx pgx.Tx, sql string) error {
+	_, err := tx.Exec(ctx, sql)
+	return err
+}
+
+func parenthesized() string { return "SELECT(1)" }
+
+func run(ctx context.Context, tx pgx.Tx) error { return exec(ctx, tx, parenthesized()) }
+
+func star() string { return "select*from t" }
+
+func quotedTable() string { return ` + "`" + `UPDATE"t"SET a = 1` + "`" + ` }
+
+func commented() string { return "INSERT/* v2 */INTO t VALUES (1)" }
+
+func union() string { return "(SELECT 1) UNION (SELECT 2)" }
+
+func dynamic(ctx context.Context, tx pgx.Tx, cols string) error {
+	return exec(ctx, tx, strings.Join([]string{"SELECT", "(", cols, ") FROM t"}, ""))
+}
+
+func selection(n int) string { return "selection(" + "n" + ")" }
+`
+
+// TestPunctuatedGeneratorsFeedingAClassifiedExecutorFail is the regression
+// for a generator whose statement keyword needs no space after it, such as
+// SELECT(1): the scan reads SQL as tokens, so the generator is a site the
+// passthrough executor's entry does not cover, and the guard fails until
+// it is classified itself.
+func TestPunctuatedGeneratorsFeedingAClassifiedExecutorFail(t *testing.T) {
+	snap := scanFixture(t, map[string]string{"p/p.go": punctGo})
+	want := map[string]string{
+		"p/p.go:parenthesized": whyLiteral,
+		"p/p.go:star":          whyLiteral,
+		"p/p.go:quotedTable":   whyLiteral,
+		"p/p.go:commented":     whyLiteral,
+		"p/p.go:union":         whyLiteral,
+		"p/p.go:dynamic":       whyFragments,
+	}
+	for loc, why := range want {
+		if got := snap.Sites[loc]; got.Why != why {
+			t.Errorf("Sites[%s] = %+v, want a site that %s", loc, got, why)
+		}
+	}
+	for _, loc := range []string{"p/p.go:run", "p/p.go:selection"} {
+		if site, ok := snap.Sites[loc]; ok {
+			t.Errorf("%s holds no SQL of its own, but the scan reported %+v", loc, site)
+		}
 	}
 
 	classified := []Entry{{Class: ClassPassthrough, Location: "p/p.go:exec", Line: 1}}

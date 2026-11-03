@@ -13,7 +13,8 @@ import (
 //
 //   - it holds SQL text: a string literal, or a constant expression folded
 //     from literals and same-package string constants, that starts a SQL
-//     statement in any letter case, after any leading SQL comments;
+//     statement in any letter case, after any leading SQL comments, read
+//     as written or as SQL tokens (SELECT(1) starts a SELECT);
 //   - it assembles SQL text from fragments: its string literals and
 //     same-package string constants, read in source order and joined by
 //     spaces, start a SQL statement at one of them, however they are put
@@ -48,9 +49,14 @@ const (
 const cteHead = `(?:\w+\s+|"(?:[^"]|"")+"\s*|(?:\w+|"(?:[^"]|"")+")\s*\([^()]*\)\s*)AS\b`
 
 // sqlStatement matches text that starts a SQL statement, in any letter
-// case. A leading BEGIN or START TRANSACTION only counts as the whole text
-// (beginStatement), so error text such as "begin tx: ..." is not SQL.
-var sqlStatement = regexp.MustCompile(`(?i)^(?:` +
+// case. LooksLikeSQL also reads it in the token form sqlTokens writes, so
+// a keyword may run into punctuation (SELECT(1), SELECT*FROM t,
+// UPDATE"t"SET a = 1) or a comment the way it runs into a space (#740
+// review R5-F1). The statement may sit inside parentheses:
+// (SELECT 1) UNION (SELECT 2). A leading BEGIN or
+// START TRANSACTION only counts as the whole text (beginStatement), so
+// error text such as "begin tx: ..." is not SQL.
+var sqlStatement = regexp.MustCompile(`(?i)^(?:\(\s*)*(?:` +
 	`CREATE\s+(?:OR\s+REPLACE\s+)?(?:UNIQUE\s+)?(?:TEMP(?:ORARY)?\s+)?(?:TABLE|INDEX|SEQUENCE|VIEW|SCHEMA|EXTENSION|TYPE|FUNCTION|TRIGGER|DOMAIN|ROLE)\b|` +
 	`ALTER\s+(?:TABLE|INDEX|SEQUENCE|VIEW|SCHEMA|TYPE|ROLE)\b|` +
 	`DROP\s+(?:TABLE|INDEX|SEQUENCE|VIEW|SCHEMA|TYPE|FUNCTION|ROLE)\b|` +
@@ -67,14 +73,21 @@ var beginStatement = regexp.MustCompile(`(?i)^(?:BEGIN|START\s+TRANSACTION)(?:\s
 	`(?:[\s,]+(?:ISOLATION\s+LEVEL\s+(?:SERIALIZABLE|REPEATABLE\s+READ|READ\s+COMMITTED|READ\s+UNCOMMITTED)|READ\s+(?:ONLY|WRITE)|(?:NOT\s+)?DEFERRABLE))*\s*;?\s*$`)
 
 // LooksLikeSQL reports whether s starts a SQL statement once leading
-// whitespace and SQL comments are skipped. Text holding an error-wrapping
-// verb is never SQL.
+// whitespace and SQL comments are skipped, read as written or in the token
+// form sqlTokens writes, so a keyword that runs into punctuation, such as
+// SELECT(1), still counts (#740 review R5-F1). Reading the text as written
+// too keeps heads the token form splits, such as UPDATE %s SET. Text
+// holding an error-wrapping verb is never SQL.
 func LooksLikeSQL(s string) bool {
 	if strings.Contains(s, "%w") {
 		return false
 	}
-	s = skipLeadingComments(s)
-	return sqlStatement.MatchString(s) || beginStatement.MatchString(s)
+	for _, form := range []string{skipLeadingComments(s), sqlTokens(s)} {
+		if sqlStatement.MatchString(form) || beginStatement.MatchString(form) {
+			return true
+		}
+	}
+	return false
 }
 
 func skipLeadingComments(s string) string {
@@ -97,6 +110,92 @@ func skipLeadingComments(s string) string {
 			return s
 		}
 	}
+}
+
+// sqlTokens rewrites s as its SQL tokens joined by single spaces, which is
+// the form sqlStatement and beginStatement read: comments are dropped, each
+// punctuation character is a token of its own, a quoted identifier is the
+// name _ (dynamicText's stand-in), a string literal is an empty literal,
+// and a dotted name (s.t, "s"."t") stays one token. SQL needs no space between a keyword
+// and punctuation, so without this SELECT(1) would not read as a SELECT.
+// Leading statement separators are dropped, too.
+func sqlTokens(s string) string {
+	var toks []string
+	glue := false // the next name continues the previous one after a dot
+	name := func(tok string) {
+		if glue && len(toks) > 0 {
+			toks[len(toks)-1] += "." + tok
+		} else {
+			toks = append(toks, tok)
+		}
+		glue = false
+	}
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f':
+			i++
+			glue = false
+		case strings.HasPrefix(s[i:], "--"):
+			end := strings.IndexByte(s[i:], '\n')
+			if end < 0 {
+				end = len(s) - i
+			}
+			i += end
+			glue = false
+		case strings.HasPrefix(s[i:], "/*"):
+			end := strings.Index(s[i+2:], "*/")
+			if end < 0 {
+				i = len(s)
+			} else {
+				i += end + 4
+			}
+			glue = false
+		case c == '"' || c == '\'':
+			j := i + 1
+			for j < len(s) {
+				if s[j] == c {
+					if j+1 < len(s) && s[j+1] == c {
+						j += 2
+						continue
+					}
+					break
+				}
+				j++
+			}
+			i = j + 1
+			if c == '"' {
+				name(dynamicText)
+			} else {
+				toks = append(toks, "''")
+				glue = false
+			}
+		case isWordByte(c):
+			j := i
+			for j < len(s) && isWordByte(s[j]) {
+				j++
+			}
+			name(s[i:j])
+			i = j
+		case c == '.' && len(toks) > 0 && i+1 < len(s) && (isWordByte(s[i+1]) && !isDigit(s[i+1]) || s[i+1] == '"') &&
+			(i == 0 || s[i-1] == '"' || isWordByte(s[i-1])):
+			glue = true
+			i++
+		default:
+			if c != ';' || len(toks) > 0 {
+				toks = append(toks, string(c))
+			}
+			glue = false
+			i++
+		}
+	}
+	return strings.Join(toks, " ")
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+func isWordByte(c byte) bool {
+	return c == '_' || c == '$' || isDigit(c) || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
 }
 
 // dbMethods are the database methods whose call makes a symbol a site, with

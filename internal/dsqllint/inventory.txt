@@ -27,7 +27,8 @@
 # make lint-dsql) scans every non-test Go file. It fails on any symbol not
 # listed here that holds SQL text (a literal, or a constant folded from
 # literals and the package's string constants, in any letter case, after
-# leading SQL comments), calls a database method (Exec, Query, QueryRow,
+# leading SQL comments, read as written and as SQL tokens, so SELECT(1)
+# counts), calls a database method (Exec, Query, QueryRow,
 # Begin, BeginTx, SendBatch, CopyFrom, Prepare, Queue and their Context
 # forms), or names pgx or database/sql transaction options. It also fails on
 # an entry whose symbol is gone, and on an entry other than rendered whose
@@ -203,6 +204,8 @@ duckdb        internal/federated/parquet_type_guard.go:parquetSchemaValidator.ru
 duckdb        internal/federated/parquet_verify.go:drainParquet federated engine SQL run in DuckDB
 duckdb        internal/parquetcheck/describe.go:DescribeColumns Parquet schema read in DuckDB
 duckdb        internal/sqlgen/advanced_query_template_duckdb.go:AdvancedQueryTemplateDuckDB federated query template run in DuckDB
+duckdb        internal/sqlgen/duckdb_cold_scan.go:BuildEmptyParquetScanSource cold-tier scan subquery of the federated DuckDB query template
+duckdb        internal/sqlgen/duckdb_cold_scan.go:BuildParquetScanSource cold-tier read_parquet scan subquery of the federated DuckDB query template
 
 # --- Never sent to DSQL ---
 not-dsql      cmd/duckdbcompat/fixture.go:* DuckDB storage compatibility check (#753), runs DuckDB only

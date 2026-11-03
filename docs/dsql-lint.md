@@ -70,7 +70,11 @@ that does any of these:
 
 - holds SQL text. That is a string literal, or a constant expression folded
   from literals and the package's string constants, that starts a SQL
-  statement in any letter case, after any leading SQL comments.
+  statement in any letter case, after any leading SQL comments. The scan also
+  reads the text as SQL tokens, so a keyword that runs straight into
+  punctuation or a comment (`SELECT(1)`, `select*from t`, `UPDATE"t"SET`,
+  `INSERT/**/INTO`) or a statement inside parentheses
+  (`(SELECT 1) UNION (SELECT 2)`) counts as well.
 - assembles SQL text from fragments. Its string literals and the package's
   string constants, read in source order, start a SQL statement however they
   are put together (`strings.Join`, `fmt.Sprintf` arguments, a
