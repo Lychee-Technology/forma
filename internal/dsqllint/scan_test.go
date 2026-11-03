@@ -108,13 +108,15 @@ func TestLooksLikeSQL(t *testing.T) {
 		"REFRESH MATERIALIZED VIEW v", "COMMENT ON TABLE t IS 'x'", "MERGE INTO t USING s ON t.a = s.a",
 		"merge into t as x using s on x.a = s.a", "COMMENT ON COLUMN t.a IS 'x'",
 		"CREATE/* v2 */MATERIALIZED VIEW v AS SELECT 1",
+		"CREATE TABLE t (id SERIAL PRIMARY KEY, pattern TEXT DEFAULT '%weekly%')",
+		"SELECT * FROM t WHERE pattern LIKE '%weekly%'", "-- 100%width\nCREATE TABLE t (a INT)", "select batch row ids: %w",
 	} {
 		if !LooksLikeSQL(s) {
 			t.Errorf("LooksLikeSQL(%q) = false, want true", s)
 		}
 	}
 	for _, s := range []string{
-		"begin tx: %w", "select batch row ids: %w", "commit failed", "the table to create", "", "-- only a comment",
+		"begin tx: %w", "commit failed", "the table to create", "", "-- only a comment",
 		"with alias x", "with ids(id) handling", "with the (optional) list",
 		"selected rows", "select", "selection(1)", "(see below)", "update(s) settings",
 		"set", "set up the pool", "settings: %v", "reset the connection after an error", "show",

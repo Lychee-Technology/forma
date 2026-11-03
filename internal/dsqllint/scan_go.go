@@ -43,12 +43,12 @@ const (
 // whitespace and SQL comments are skipped, read as written or in the token
 // form sqlTokens writes, so a keyword that runs into punctuation, such as
 // SELECT(1), still counts (#740 review R5-F1). Reading the text as written
-// too keeps heads the token form splits, such as UPDATE %s SET. Text
-// holding an error-wrapping verb is never SQL.
+// too keeps heads the token form splits, such as UPDATE %s SET. The text
+// alone decides: error prose is told apart by where it is written (an
+// argument of an error constructor, errorCalls), never by its characters,
+// so SQL that holds %w, such as LIKE '%weekly%', is still SQL (#740
+// review R9-F1).
 func LooksLikeSQL(s string) bool {
-	if strings.Contains(s, "%w") {
-		return false
-	}
 	for _, form := range []string{skipLeadingComments(s), sqlTokens(s)} {
 		if sqlStatement.MatchString(form) || beginStatement.MatchString(form) {
 			return true
@@ -187,6 +187,36 @@ var txOptionNames = map[string]map[string]bool{
 		"LevelWriteCommitted": true, "LevelRepeatableRead": true, "LevelSnapshot": true, "LevelSerializable": true, "LevelLinearizable": true},
 }
 
+// errorCalls are the error constructors whose string arguments are error
+// prose, never SQL, by package path: fmt.Errorf("create table %s: %w",
+// name, err) only describes a failure. The scan reads them by where they
+// are written, so a literal that merely holds an error-wrapping verb, such
+// as a LIKE '%weekly%' pattern, is SQL like any other (#740 review R9-F1).
+var errorCalls = map[string]map[string]bool{
+	"fmt":    {"Errorf": true},
+	"errors": {"New": true},
+}
+
+// errorArgs answers the arguments of call that are error prose: those of an
+// error constructor (errorCalls) that are string constants.
+func (fs fileScope) errorArgs(call *ast.CallExpr) []ast.Expr {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok || !errorCalls[fs.imports[pkg.Name]][sel.Sel.Name] {
+		return nil
+	}
+	var args []ast.Expr
+	for _, arg := range call.Args {
+		if _, ok := foldString(arg, fs.consts); ok {
+			args = append(args, arg)
+		}
+	}
+	return args
+}
+
 // importNames maps each import's local name in file to its path.
 func importNames(file *ast.File) map[string]string {
 	names := make(map[string]string, len(file.Imports))
@@ -288,7 +318,12 @@ func (fs fileScope) siteOf(node ast.Node) Site {
 		}
 	}
 	var frags fragments
+	prose := map[ast.Node]bool{}
 	ast.Inspect(node, func(n ast.Node) bool {
+		if prose[n] {
+			frags.prose(n.Pos())
+			return false
+		}
 		frags.collect(n, fs.consts)
 		switch x := n.(type) {
 		case *ast.BasicLit, *ast.BinaryExpr:
@@ -297,6 +332,9 @@ func (fs fileScope) siteOf(node ast.Node) Site {
 				return false
 			}
 		case *ast.CallExpr:
+			for _, arg := range fs.errorArgs(x) {
+				prose[arg] = true
+			}
 			if sel, ok := x.Fun.(*ast.SelectorExpr); ok {
 				if min, db := dbMethods[sel.Sel.Name]; db && len(x.Args) >= min {
 					note(sel.Sel.Pos(), whyExec)

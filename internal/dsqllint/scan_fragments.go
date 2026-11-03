@@ -23,6 +23,9 @@ type fragment struct {
 	pos     token.Pos
 	text    string
 	dynamic bool
+	// prose marks an error constructor's string argument (errorCalls): it
+	// is error text, so no window starts at or crosses it.
+	prose bool
 }
 
 // dynamicText stands in for a dynamic piece when the scan reads a window
@@ -88,21 +91,21 @@ func (f *fragments) collect(n ast.Node, consts map[string]string) {
 // or more fragments start a SQL statement (startsStatement). A window
 // starts at a string fragment, never at a dynamic piece, and not at one
 // that is a whole statement on its own: a literal one is a site already,
-// and a constant one is the constant's site, not its user's. A fragment
-// holding an error-wrapping verb is error text: no window starts at or
-// crosses it. Only string fragments count against a window's size, but a
-// dynamic piece is one of its fragments, so "SAVEPOINT " + name is a
-// window of two.
+// and a constant one is the constant's site, not its user's. An error
+// constructor's string argument is error text (errorCalls): no window
+// starts at or crosses it, whatever characters it holds. Only string
+// fragments count against a window's size, but a dynamic piece is one of
+// its fragments, so "SAVEPOINT " + name is a window of two.
 func (f *fragments) statementStart() (token.Pos, bool) {
 	list := f.ordered()
 	for i := range list {
-		if list[i].dynamic || LooksLikeSQL(list[i].text) {
+		if list[i].dynamic || list[i].prose || LooksLikeSQL(list[i].text) {
 			continue
 		}
 		var parts []fragment
 		strs := 0
 		for j := i; j < len(list) && strs < fragmentWindow; j++ {
-			if strings.Contains(list[j].text, "%w") {
+			if list[j].prose {
 				break
 			}
 			parts = append(parts, list[j])
@@ -115,6 +118,12 @@ func (f *fragments) statementStart() (token.Pos, bool) {
 		}
 	}
 	return token.NoPos, false
+}
+
+// prose records an error constructor's string argument at pos as a
+// fragment no window starts at or crosses.
+func (f *fragments) prose(pos token.Pos) {
+	f.list = append(f.list, fragment{pos: pos, prose: true})
 }
 
 // ordered answers the fragments in source order, with each run of
