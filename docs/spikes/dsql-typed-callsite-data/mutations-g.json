@@ -1,0 +1,138 @@
+[
+  {
+    "describe": "generator (no DB call) feeding a new caller of the existing verbatim wrapper scanRowPage",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "g1a_generator_new_wrapper_caller",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal.spikeCaller_g1a_generator_new_wrapper_caller:wrap:internal/unique_key_build.go:scanRowPage:3760ae7e"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal.spikeCaller_g1a_generator_new_wrapper_caller:wrap:internal/unique_key_build.go:scanRowPage#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/spike_g1a_generator_new_wrapper_caller.go:12:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal.spikeCaller_g1a_generator_new_wrapper_caller:wrap:internal/unique_key_build.go:scanRowPage:3760ae7e"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal.spikeCaller_g1a_generator_new_wrapper_caller:wrap:internal/unique_key_build.go:scanRowPage#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/spike_g1a_generator_new_wrapper_caller.go:12:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "generator (no DB call) feeding a new caller of the existing verbatim wrapper scanRowPage",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "g1b_vtab_generator_new_wrapper_caller",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal.spikeCaller_g1b_vtab_generator_new_wrapper_caller:wrap:internal/unique_key_build.go:scanRowPage:5068fe2f"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal.spikeCaller_g1b_vtab_generator_new_wrapper_caller:wrap:internal/unique_key_build.go:scanRowPage#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/spike_g1b_vtab_generator_new_wrapper_caller.go:12:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal.spikeCaller_g1b_vtab_generator_new_wrapper_caller:wrap:internal/unique_key_build.go:scanRowPage:5068fe2f"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal.spikeCaller_g1b_vtab_generator_new_wrapper_caller:wrap:internal/unique_key_build.go:scanRowPage#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/spike_g1b_vtab_generator_new_wrapper_caller.go:12:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "existing rendered site GetChangeLogStats switched to a new generator",
+    "expect": "runtime-only",
+    "group": "adversarial",
+    "name": "g2a_existing_site_new_generator",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "miss-documented"
+  },
+  {
+    "describe": "existing rendered site GetChangeLogStats switched to a new generator",
+    "expect": "runtime-only",
+    "group": "adversarial",
+    "name": "g2b_existing_site_vtab_generator",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "miss-documented"
+  }
+]

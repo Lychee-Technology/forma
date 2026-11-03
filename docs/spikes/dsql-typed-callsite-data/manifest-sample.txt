@@ -1,0 +1,131 @@
+# SAMPLE manifest generated for the spike from corpus evidence and PR #801 classes; not a reviewed classification
+uncovered cmd/tools.applySchemas:pgxpool.Pool.Begin:cbe5cfdf not exercised by the corpus yet, sample tracking #802
+boundary cmd/tools.applySchemas:pgx.Tx.Rollback:cbe5cfdf COMMIT/ROLLBACK the driver writes
+boundary cmd/tools.applySchemas:pgx.Tx.Commit:cbe5cfdf COMMIT/ROLLBACK the driver writes
+uncovered cmd/tools.recordBaselines:pgxpool.Pool.Begin:cbe5cfdf not exercised by the corpus yet, sample tracking #802
+boundary cmd/tools.recordBaselines:pgx.Tx.Rollback:cbe5cfdf COMMIT/ROLLBACK the driver writes
+boundary cmd/tools.recordBaselines:pgx.Tx.Commit:cbe5cfdf COMMIT/ROLLBACK the driver writes
+uncovered cmd/tools.readStoredState:widthaudit.Querier.Query:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered cmd/tools.ensureTables:pgx.Tx.Exec:9edead20 not exercised by the corpus yet, sample tracking #802
+dsql cmd/tools.registerSchemas:pgx.Tx.Exec:46db7cd2 exercised by the corpus
+dsql cmd/tools.loadRegisteredSchemaIDs:schemaledger.Querier.Query:5ad189b0 exercised by the corpus
+uncovered cmd/tools.withTx:pgxpool.Conn.Begin:cbe5cfdf not exercised by the corpus yet, sample tracking #802
+boundary cmd/tools.withTx:pgx.Tx.Rollback:cbe5cfdf COMMIT/ROLLBACK the driver writes
+boundary cmd/tools.withTx:pgx.Tx.Commit:cbe5cfdf COMMIT/ROLLBACK the driver writes
+uncovered cmd/tools.schemaConsistencyValidator.checkUnknownAttributeIDs:main.toolDBPool.Query:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered cmd/tools.schemaConsistencyValidator.checkStorageMismatches:wrap:cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.scanStorageIssueRows:af9ed431 not exercised by the corpus yet, sample tracking #802
+uncovered cmd/tools.schemaConsistencyValidator.checkStorageMismatches:wrap:cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.scanStorageIssueRows:e9e68fa7 not exercised by the corpus yet, sample tracking #802
+uncovered cmd/tools.schemaConsistencyValidator.checkEAVDateImages:main.toolDBPool.Query:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered cmd/tools.schemaConsistencyValidator.checkScalarRowsUnderListAttrs:main.toolDBPool.Query:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered factory.collectTablesFromPool:factory.queryPool.Query:cd43c48a not exercised by the corpus yet, sample tracking #802
+duckdb internal/cdc.DuckExporter.runExport:sql.Conn.ExecContext:319ac339 DuckDB connection
+duckdb internal/cdc.DuckExporter.runExport:sql.Conn.ExecContext:02e982e0 DuckDB connection
+duckdb internal/cdc.DuckExporter.dropStages:sql.Conn.ExecContext:70d3a883 DuckDB connection
+dsql internal/cdc.stageInSnapshot:pgx.Conn.BeginTx:83d2fe70 exercised by the corpus
+boundary internal/cdc.stageInSnapshot:pgx.Tx.Rollback:cbe5cfdf COMMIT/ROLLBACK the driver writes
+boundary internal/cdc.stageInSnapshot:pgx.Tx.Commit:cbe5cfdf COMMIT/ROLLBACK the driver writes
+uncovered internal/cdc.appendStageRows:pgx.Tx.Query:296ec13d not exercised by the corpus yet, sample tracking #802
+dsql internal/cdc.getUnflushedSchemaIDs:sql.DB.QueryContext:2b563475 exercised by the corpus
+dsql internal/cdc.GetChangeLogStats:sql.DB.QueryRowContext:8ab36014 exercised by the corpus
+dsql internal/cdc.SelectBatchRowIDs:sql.DB.QueryContext:8ab36014 exercised by the corpus
+dsql internal/cdc.MarkFlushedVersions:sql.DB.QueryContext:8ab36014 exercised by the corpus
+dsql internal/cdc.getSchemaIDsToInit:sql.DB.QueryContext:8ab36014 exercised by the corpus
+dsql internal/cdc.getEntityMainCount:sql.DB.QueryRowContext:8ab36014 exercised by the corpus
+dsql internal/cdc.selectEntityMainBatch:sql.DB.QueryContext:8ab36014 exercised by the corpus
+dsql internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext:8ab36014 exercised by the corpus
+dsql internal/cdc.leaseSchemaLocker.renew:sql.DB.ExecContext:8ab36014 exercised by the corpus
+dsql internal/cdc.leaseSchemaLocker.deleteLease:sql.DB.ExecContext:8ab36014 exercised by the corpus
+postgres-only internal/cdc.TrySchemaLock:sql.Conn.QueryRowContext:b54f5b3b PostgreSQL engine only
+postgres-only internal/cdc.TrySchemaLock:sql.Conn.ExecContext:2e8c1466 PostgreSQL engine only
+duckdb internal/compaction.DuckMerger.MergeToTmp:sql.DB.ExecContext:6915d4a6 DuckDB connection
+duckdb internal/compaction.DuckMerger.MergeToTmp:sql.DB.QueryRowContext:cbef955a DuckDB connection
+duckdb internal/compaction.DuckMerger.MergeToTmp:sql.DB.QueryRowContext:3f3f676f DuckDB connection
+duckdb internal/compaction.SingleFileStats:sql.DB.QueryRowContext:3f3f676f DuckDB connection
+duckdb internal/compaction.UncoveredRows:sql.DB.QueryContext:8ab36014 DuckDB connection
+uncovered internal/declaredindex.Ensure:declaredindex.Conn.QueryRow:a7f89ac3 not exercised by the corpus yet, sample tracking #802
+uncovered internal/declaredindex.Ensure:declaredindex.Conn.Exec:f5bc33b6 not exercised by the corpus yet, sample tracking #802
+uncovered internal/declaredindex.listIndexes:declaredindex.Conn.Query:f0618a2a not exercised by the corpus yet, sample tracking #802
+uncovered internal.transactor.InTx:internal.persistentRecordPool.BeginTx:447f7436 not exercised by the corpus yet, sample tracking #802
+boundary internal.transactor.InTx:pgx.Tx.Rollback:cbe5cfdf COMMIT/ROLLBACK the driver writes
+boundary internal.settle:pgx.Tx.Rollback:cbe5cfdf COMMIT/ROLLBACK the driver writes
+boundary internal.settle:pgx.Tx.Commit:cbe5cfdf COMMIT/ROLLBACK the driver writes
+dsql internal/federated.PostgresDirtyIDFetcher.FetchDirtyRowIDs:federated.dirtyIDPool.Query:8ab36014 exercised by the corpus
+dsql internal/federated.PostgresDirtyIDFetcher.HasParquetHistory:federated.dirtyIDPool.Query:8ab36014 exercised by the corpus
+duckdb internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:0f028235 DuckDB connection
+duckdb internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:099d1b5a DuckDB connection
+duckdb internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:acd7408e DuckDB connection
+duckdb internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:3656be78 DuckDB connection
+duckdb internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:613e1a77 DuckDB connection
+duckdb internal/federated.DuckDBClient.HealthCheck:sql.DB.ExecContext:f62efdce DuckDB connection
+duckdb internal/federated.attachOn:sql.Conn.ExecContext:6ae77173 DuckDB connection
+duckdb internal/federated.DBFederatedQueryEngine.StreamDuckDBFederatedQuery:wrap:internal/federated/duckdb_query_execute.go:DBFederatedQueryEngine.executeAndStreamDuckDB:c23b0f32 DuckDB connection
+duckdb internal/federated.DBFederatedQueryEngine.queryDuckDB:federated.DuckDBQueryExecutor.Query:11d403f4 DuckDB connection
+duckdb internal/federated.decodeObject:federated.DuckDBQueryExecutor.Query:81bef208 DuckDB connection
+duckdb internal/federated.drainGuardedParquet:federated.DuckDBQueryExecutor.Query:8a9baf6c DuckDB connection
+duckdb internal/federated.globParquetPaths:federated.DuckDBQueryExecutor.Query:8aa6bc83 DuckDB connection
+duckdb internal/federated.describeParquetColumns:federated.DuckDBQueryExecutor.Query:83faf251 DuckDB connection
+duckdb internal/federated.parquetSchemaValidator.runProof:federated.DuckDBQueryExecutor.Query:9cdf7b0b DuckDB connection
+duckdb internal/federated.drainParquet:federated.DuckDBQueryExecutor.Query:870164ec DuckDB connection
+duckdb internal/parquetcheck.DescribeColumns:sql.DB.QueryContext:9f868cdc DuckDB connection
+uncovered internal.PostgresHealthCheck:pgxpool.Pool.Exec:564163fc not exercised by the corpus yet, sample tracking #802
+postgres-only internal.lockRowVersion:pgx.Tx.Exec:65c18078 PostgreSQL engine only
+dsql internal.nextRowVersion:pgx.Tx.QueryRow:8ab36014 exercised by the corpus
+dsql internal.DBPersistentRecordRepository.upsertChangeLog:pgx.Tx.Exec:8ab36014 exercised by the corpus
+dsql internal.DBPersistentRecordRepository.deleteRecordInTx:pgx.Tx.QueryRow:ce3f83e3 exercised by the corpus
+dsql internal.DBPersistentRecordRepository.deleteRecordInTx:pgx.Tx.Exec:a921284e exercised by the corpus
+dsql internal.DBPersistentRecordRepository.batchDeleteInTx:pgx.Tx.QueryRow:ce3f83e3 exercised by the corpus
+dsql internal.DBPersistentRecordRepository.batchDeleteInTx:pgx.Tx.Exec:a921284e exercised by the corpus
+postgres-only internal.tryLockRowsInTx:pgx.Tx.Query:44574816 PostgreSQL engine only
+uncovered internal.matchingRowsInTx:pgx.Tx.Query:8ab36014 not exercised by the corpus yet, sample tracking #802
+dsql internal.DBPersistentRecordRepository.insertEAVAttributes:pgx.Tx.Exec:8ab36014 exercised by the corpus
+dsql internal.DBPersistentRecordRepository.replaceEAVAttributesScoped:pgx.Tx.Exec:049016de exercised by the corpus
+dsql internal.checkRowGuard:pgx.Tx.QueryRow:1091e8e6 exercised by the corpus
+dsql internal.txClock:pgx.Tx.QueryRow:d19c99a5 exercised by the corpus
+dsql internal.DBPersistentRecordRepository.insertMainRow:pgx.Tx.Exec:8ab36014 exercised by the corpus
+uncovered internal.DBPersistentRecordRepository.updateMainRow:pgx.Tx.QueryRow:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal.DBPersistentRecordRepository.StreamOptimizedQuery:internal.persistentRecordPool.Query:8ab36014 not exercised by the corpus yet, sample tracking #802
+dsql internal.DBPersistentRecordRepository.requeueInTx:pgx.Tx.QueryRow:55c0c135 exercised by the corpus
+dsql internal.lockRowInTx:pgx.Tx.QueryRow:1091e8e6 exercised by the corpus
+dsql internal.writeGuardRows:pgx.Tx.Exec:572d91aa exercised by the corpus
+uncovered internal.DBPersistentRecordRepository.loadRecordWithAttributes:internal.singleRowQuerier.QueryRow:8ab36014 not exercised by the corpus yet, sample tracking #802
+dsql internal.DBPersistentRecordRepository.inWriteTx:internal.persistentRecordPool.BeginTx:ab0ec186 exercised by the corpus
+boundary internal.DBPersistentRecordRepository.inWriteTx:pgx.Tx.Rollback:cbe5cfdf COMMIT/ROLLBACK the driver writes
+boundary internal.DBPersistentRecordRepository.inWriteTx:pgx.Tx.Commit:cbe5cfdf COMMIT/ROLLBACK the driver writes
+dsql internal.DBPersistentRecordRepository.undoReservation:pgx.Tx.Exec:8ab36014 exercised by the corpus
+dsql internal.insertKeyEntries:pgx.Tx.Query:8ab36014 exercised by the corpus
+dsql internal.keyEntryOwners:pgx.Tx.Query:8ab36014 exercised by the corpus
+dsql internal.heldUniqueKeys:pgx.Tx.Query:8ab36014 exercised by the corpus
+dsql internal.uniqueKeyOwner:pgx.Tx.QueryRow:8ab36014 exercised by the corpus
+dsql internal.DBPersistentRecordRepository.applyUniqueKeys:pgx.Tx.Exec:c216a2da exercised by the corpus
+dsql internal.DBPersistentRecordRepository.releaseRowUniqueKeys:pgx.Tx.Exec:8ab36014 exercised by the corpus
+uncovered internal.meteredTx.CopyFrom:pgx.Tx.CopyFrom:cbe5cfdf not exercised by the corpus yet, sample tracking #802
+uncovered internal/reconcile.RegistrySchemaEnumerator.SchemaIDs:sql.DB.QueryContext:89893310 not exercised by the corpus yet, sample tracking #802
+uncovered internal/reconcile.RegistrySchemaEnumerator.SchemaIDs:sql.DB.QueryContext:436a5af4 not exercised by the corpus yet, sample tracking #802
+uncovered internal/reconcile.PGLiveRows.MissingLiveRows:sql.DB.QueryContext:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal/reconcile.PGLiveRows.LiveRowCount:sql.DB.QueryRowContext:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal/schemaledger.readAllActive:schemaledger.Querier.Query:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal/schemaledger.ReadPointer:schemaledger.Querier.Query:0cdd80b0 not exercised by the corpus yet, sample tracking #802
+uncovered internal/schemaledger.ReadActive:schemaledger.Querier.Query:06a70fc5 not exercised by the corpus yet, sample tracking #802
+uncovered internal/schemaledger.readEntries:schemaledger.Querier.Query:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal/schemaledger.Write:schemaledger.Execer.Exec:bb82dce7 not exercised by the corpus yet, sample tracking #802
+uncovered internal/schemaledger.Write:schemaledger.Execer.Exec:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal/schemaledger.movePointer:schemaledger.Execer.Exec:c0f6ac70 not exercised by the corpus yet, sample tracking #802
+uncovered internal/schemameta.fileSchemaRegistry.loadSchemasFromDB:pgxpool.Pool.Query:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal/schemameta.MetadataLoader.loadSchemaRegistry:schemameta.DBPool.Query:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal.scanUniqueKeyOwners:wrap:internal/unique_key_build.go:scanRowPage:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal.writeBuiltKey:internal.UniqueKeyStore.Exec:542e0fa9 not exercised by the corpus yet, sample tracking #802
+uncovered internal.writeBuiltKey:internal.UniqueKeyStore.Exec:f39a756d not exercised by the corpus yet, sample tracking #802
+uncovered internal.unbuildKey:internal.UniqueKeyStore.Exec:f39a756d not exercised by the corpus yet, sample tracking #802
+uncovered internal.unbuildKey:internal.UniqueKeyStore.Exec:8d8ab088 not exercised by the corpus yet, sample tracking #802
+uncovered internal.readUniqueKeyState:internal.UniqueKeyStore.Query:9b7b1dc9 not exercised by the corpus yet, sample tracking #802
+uncovered internal.UniqueKeyCatalog.schemaIsEmpty:internal.UniqueKeyStore.QueryRow:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal/widthaudit.censusColumns:wrap:internal/widthaudit/column_census.go:queryColumnFindings:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal/widthaudit.DomainCensus:wrap:internal/widthaudit/domain_census.go:queryDomainEAVFindings:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal/widthaudit.DomainCensus:wrap:internal/widthaudit/domain_census.go:queryDomainColumnFindings:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal/widthaudit.NumericCensus:wrap:internal/widthaudit/widthaudit.go:queryEAVFindings:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal/widthaudit.NumericCensus:wrap:internal/widthaudit/column_census.go:queryColumnFindings:8ab36014 not exercised by the corpus yet, sample tracking #802
+uncovered internal/widthaudit.censusEAV:wrap:internal/widthaudit/widthaudit.go:queryEAVFindings:8ab36014 not exercised by the corpus yet, sample tracking #802
+unshipped-main github.com/lychee-technology/forma/cmd/benchmark not a shipped binary (sample)
+unshipped-main github.com/lychee-technology/forma/cmd/dsqllint not a shipped binary (sample)
+unshipped-main github.com/lychee-technology/forma/cmd/duckdbcompat not a shipped binary (sample)
+unshipped-main github.com/lychee-technology/forma/cmd/sample not a shipped binary (sample)

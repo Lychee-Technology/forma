@@ -33,7 +33,7 @@ func WireConn(tb testing.TB, rec *Recorder) *pgx.Conn {
 	cfg.DialFunc = func(context.Context, string, string) (net.Conn, error) {
 		client, server := net.Pipe()
 		go serveWire(server, rec)
-		return client, nil
+		return spikeWrapClient(client, rec), nil
 	}
 	conn, err := pgx.ConnectConfig(context.Background(), cfg)
 	if err != nil {
@@ -71,7 +71,7 @@ func serveWire(c net.Conn, rec *Recorder) {
 		case *pgproto3.Terminate:
 			return
 		case *pgproto3.Query:
-			_ = rec.Match("", m.String)
+			rec.matchWire(m.String)
 			be.Send(&pgproto3.CommandComplete{CommandTag: []byte(commandTag(m.String))})
 		default:
 			rec.fail(fmt.Errorf("corpus wire: unsupported %T: it records only argument-free statements", msg))

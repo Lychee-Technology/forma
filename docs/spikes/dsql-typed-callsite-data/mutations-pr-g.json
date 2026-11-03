@@ -1,0 +1,6 @@
+{
+  "g1a_generator_new_wrapper_caller": "flagged",
+  "g1b_vtab_generator_new_wrapper_caller": "passes (not flagged)",
+  "g2a_existing_site_new_generator": "flagged",
+  "g2b_existing_site_vtab_generator": "passes (not flagged)"
+}

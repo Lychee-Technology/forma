@@ -147,10 +147,19 @@ type Recorder struct {
 
 // Match records actual and accepts it.
 func (r *Recorder) Match(_, actual string) error {
+	spikeOnMatch(r, false)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.SQL = append(r.SQL, actual)
 	return nil
+}
+
+// matchWire is Match for the corpus wire's server goroutine (spike).
+func (r *Recorder) matchWire(actual string) {
+	spikeOnMatch(r, true)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.SQL = append(r.SQL, actual)
 }
 
 func (r *Recorder) fail(err error) {
@@ -172,6 +181,7 @@ func (r *Recorder) Take(tb testing.TB, origins ...string) []Statement {
 	if len(r.SQL) != len(origins) {
 		tb.Fatalf("recorded %d statements, test names origins for %d: %q", len(r.SQL), len(origins), r.SQL)
 	}
+	spikeOnTake(tb, r, r.SQL, origins)
 	out := make([]Statement, len(origins))
 	for i, o := range origins {
 		out[i] = Statement{Origin: o, SQL: r.SQL[i]}

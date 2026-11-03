@@ -1,0 +1,612 @@
+[
+  {
+    "test": "TestDSQLCorpus",
+    "label": "internal/postgres_persistent_repository_row_locking.go:guardUpsertSQL",
+    "sql": "INSERT INTO \"entity_main_row_guard\" AS g (ltbase_schema_id, ltbase_row_id, generation) VALUES ($1, $2, 1) ON CONFLICT (ltbase_schema_id, ltbase_row_id) DO UPDATE SET generation = g.generation + 1",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.writeGuardRows:pgx.Tx.Exec:572d91aa",
+    "frame": "internal/postgres_persistent_repository_row_locking.go:175 github.com/lychee-technology/forma/internal.writeGuardRows-range1",
+    "label_check": "label=builder-of-site"
+  },
+  {
+    "test": "TestDSQLCorpus",
+    "label": "internal/postgres_persistent_repository_row_lock.go:lockRowInTx",
+    "sql": "SELECT COALESCE((m.text_01 = $3), false) FROM \"entity_main\" m WHERE m.ltbase_schema_id = $1 AND m.ltbase_row_id = $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.lockRowInTx:pgx.Tx.QueryRow:1091e8e6",
+    "frame": "internal/postgres_persistent_repository_row_lock.go:50 github.com/lychee-technology/forma/internal.lockRowInTx",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpus",
+    "label": "internal/postgres_persistent_repository_guard.go:checkRowGuard",
+    "sql": "SELECT COALESCE((m.text_01 = $3), false) FROM \"entity_main\" m WHERE m.ltbase_schema_id = $1 AND m.ltbase_row_id = $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.checkRowGuard:pgx.Tx.QueryRow:1091e8e6",
+    "frame": "internal/postgres_persistent_repository_guard.go:68 github.com/lychee-technology/forma/internal.checkRowGuard",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpus",
+    "label": "internal/postgres_persistent_repository_guard.go:txClock",
+    "sql": "SELECT floor(extract(epoch from now()) * 1000)::bigint",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.txClock:pgx.Tx.QueryRow:d19c99a5",
+    "frame": "internal/postgres_persistent_repository_guard.go:95 github.com/lychee-technology/forma/internal.TestDSQLCorpus.txClock.func3",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusUniqueKeyStatements",
+    "label": "internal/postgres_persistent_repository_unique_key_reserve.go:insertKeyEntries",
+    "sql": "INSERT INTO \"entity_main_unique_key\" (ltbase_schema_id, key_id, key_value, ltbase_row_id)\nSELECT u.s, u.kid, u.v, u.r FROM unnest($1::smallint[], $2::smallint[], $3::text[], $4::uuid[]) WITH ORDINALITY AS u(s, kid, v, r, n)\nORDER BY u.n\nON CONFLICT (ltbase_schema_id, key_id, key_value) DO NOTHING\nRETURNING ltbase_schema_id, key_id, key_value",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.insertKeyEntries:pgx.Tx.Query:8ab36014",
+    "frame": "internal/postgres_persistent_repository_unique_key_reserve.go:193 github.com/lychee-technology/forma/internal.insertKeyEntries",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusUniqueKeyStatements",
+    "label": "internal/postgres_persistent_repository_unique_key_reserve.go:keyEntryOwners",
+    "sql": "SELECT u.n, k.ltbase_row_id FROM unnest($1::smallint[], $2::smallint[], $3::text[]) WITH ORDINALITY AS u(s, kid, v, n)\nJOIN \"entity_main_unique_key\" AS k ON k.ltbase_schema_id = u.s AND k.key_id = u.kid AND k.key_value = u.v",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.keyEntryOwners:pgx.Tx.Query:8ab36014",
+    "frame": "internal/postgres_persistent_repository_unique_key_reserve.go:227 github.com/lychee-technology/forma/internal.keyEntryOwners",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusUniqueKeyStatements",
+    "label": "internal/postgres_persistent_repository_unique_key_reserve.go:DBPersistentRecordRepository.undoReservation",
+    "sql": "DELETE FROM \"entity_main_unique_key\" AS k USING unnest($1::smallint[], $2::smallint[], $3::text[], $4::uuid[]) AS u(s, kid, v, r)\nWHERE k.ltbase_schema_id = u.s AND k.key_id = u.kid AND k.key_value = u.v AND k.ltbase_row_id = u.r",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.undoReservation:pgx.Tx.Exec:8ab36014",
+    "frame": "internal/postgres_persistent_repository_unique_key_reserve.go:177 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).undoReservation",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusUniqueKeyStatements",
+    "label": "internal/postgres_persistent_repository_unique_keys.go:heldUniqueKeys",
+    "sql": "SELECT key_id, key_value FROM \"entity_main_unique_key\" WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.heldUniqueKeys:pgx.Tx.Query:8ab36014",
+    "frame": "internal/postgres_persistent_repository_unique_keys.go:90 github.com/lychee-technology/forma/internal.heldUniqueKeys",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusUniqueKeyStatements",
+    "label": "internal/postgres_persistent_repository_unique_keys.go:uniqueKeyOwner",
+    "sql": "SELECT ltbase_row_id FROM \"entity_main_unique_key\" WHERE ltbase_schema_id = $1 AND key_id = $2 AND key_value = $3",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.uniqueKeyOwner:pgx.Tx.QueryRow:8ab36014",
+    "frame": "internal/postgres_persistent_repository_unique_keys.go:145 github.com/lychee-technology/forma/internal.uniqueKeyOwner",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusUniqueKeyStatements",
+    "label": "internal/postgres_persistent_repository_unique_keys.go:DBPersistentRecordRepository.applyUniqueKeys",
+    "sql": "DELETE FROM \"entity_main_unique_key\" WHERE ltbase_schema_id = $1 AND key_id = $2 AND key_value = $3 AND ltbase_row_id = $4",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.applyUniqueKeys:pgx.Tx.Exec:c216a2da",
+    "frame": "internal/postgres_persistent_repository_unique_keys.go:183 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).applyUniqueKeys",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_row_locking.go:guardRowLocking.writeTxOptions",
+    "sql": "begin",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.inWriteTx:internal.persistentRecordPool.BeginTx:ab0ec186",
+    "frame": "internal/postgres_persistent_repository_tx.go:23 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).inWriteTx",
+    "label_check": "label-differs"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_row_locking.go:guardUpsertSQL",
+    "sql": "INSERT INTO \"entity_main_row_guard\" AS g (ltbase_schema_id, ltbase_row_id, generation) VALUES ($1, $2, 1) ON CONFLICT (ltbase_schema_id, ltbase_row_id) DO UPDATE SET generation = g.generation + 1",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.writeGuardRows:pgx.Tx.Exec:572d91aa",
+    "frame": "internal/postgres_persistent_repository_row_locking.go:175 github.com/lychee-technology/forma/internal.writeGuardRows-range1",
+    "label_check": "label=builder-of-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository.go:nextRowVersion",
+    "sql": "SELECT COALESCE(MAX(changed_at), 0) FROM \"change_log\" WHERE schema_id = $1 AND row_id = $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.nextRowVersion:pgx.Tx.QueryRow:8ab36014",
+    "frame": "internal/postgres_persistent_repository.go:175 github.com/lychee-technology/forma/internal.nextRowVersion",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_main_table.go:buildInsertMainStatement",
+    "sql": "INSERT INTO \"entity_main\" (ltbase_schema_id, ltbase_row_id, ltbase_created_at, ltbase_updated_at, text_01) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (ltbase_schema_id, ltbase_row_id) DO NOTHING",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.insertMainRow:pgx.Tx.Exec:8ab36014",
+    "frame": "internal/postgres_persistent_repository_main_table.go:200 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).insertMainRow",
+    "label_check": "label=builder-of-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes",
+    "sql": "INSERT INTO \"eav_data\" (schema_id, row_id, attr_id, array_indices, value_text, value_numeric) VALUES ($1, $2, $3, $4, $5, $6)",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.insertEAVAttributes:pgx.Tx.Exec:8ab36014",
+    "frame": "internal/postgres_persistent_repository_eav.go:68 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).insertEAVAttributes",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+    "sql": "INSERT INTO \"change_log\" (schema_id, row_id, flushed_at, changed_at, deleted_at)\n\t\t\tVALUES ($1, $2, $3, $4, $5)\n\t\t\tON CONFLICT (schema_id, row_id, flushed_at)\n\t\t\tDO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.upsertChangeLog:pgx.Tx.Exec:8ab36014",
+    "frame": "internal/postgres_persistent_repository.go:208 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).upsertChangeLog",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_tx.go:DBPersistentRecordRepository.inWriteTx",
+    "sql": "commit",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.inWriteTx:pgx.Tx.Commit:cbe5cfdf",
+    "frame": "internal/postgres_persistent_repository_tx.go:32 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).inWriteTx",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_row_locking.go:guardRowLocking.writeTxOptions",
+    "sql": "begin",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.inWriteTx:internal.persistentRecordPool.BeginTx:ab0ec186",
+    "frame": "internal/postgres_persistent_repository_tx.go:23 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).inWriteTx",
+    "label_check": "label-differs"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_row_locking.go:guardUpsertSQL",
+    "sql": "INSERT INTO \"entity_main_row_guard\" AS g (ltbase_schema_id, ltbase_row_id, generation) VALUES ($1, $2, 1) ON CONFLICT (ltbase_schema_id, ltbase_row_id) DO UPDATE SET generation = g.generation + 1",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.writeGuardRows:pgx.Tx.Exec:572d91aa",
+    "frame": "internal/postgres_persistent_repository_row_locking.go:175 github.com/lychee-technology/forma/internal.writeGuardRows-range1",
+    "label_check": "label=builder-of-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository.go:DBPersistentRecordRepository.deleteRecordInTx",
+    "sql": "DELETE FROM \"entity_main\" WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2 RETURNING ltbase_updated_at",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.deleteRecordInTx:pgx.Tx.QueryRow:ce3f83e3",
+    "frame": "internal/postgres_persistent_repository.go:342 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).deleteRecordInTx",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository.go:DBPersistentRecordRepository.deleteRecordInTx",
+    "sql": "DELETE FROM \"eav_data\" WHERE schema_id = $1 AND row_id = $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.deleteRecordInTx:pgx.Tx.Exec:a921284e",
+    "frame": "internal/postgres_persistent_repository.go:350 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).deleteRecordInTx",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_unique_keys.go:DBPersistentRecordRepository.releaseRowUniqueKeys",
+    "sql": "DELETE FROM \"entity_main_unique_key\" WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.releaseRowUniqueKeys:pgx.Tx.Exec:8ab36014",
+    "frame": "internal/postgres_persistent_repository_unique_keys.go:199 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).releaseRowUniqueKeys",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+    "sql": "INSERT INTO \"change_log\" (schema_id, row_id, flushed_at, changed_at, deleted_at)\n\t\t\tVALUES ($1, $2, $3, $4, $5)\n\t\t\tON CONFLICT (schema_id, row_id, flushed_at)\n\t\t\tDO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.upsertChangeLog:pgx.Tx.Exec:8ab36014",
+    "frame": "internal/postgres_persistent_repository.go:208 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).upsertChangeLog",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_tx.go:DBPersistentRecordRepository.inWriteTx",
+    "sql": "commit",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.inWriteTx:pgx.Tx.Commit:cbe5cfdf",
+    "frame": "internal/postgres_persistent_repository_tx.go:32 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).inWriteTx",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_row_locking.go:guardRowLocking.writeTxOptions",
+    "sql": "begin",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.inWriteTx:internal.persistentRecordPool.BeginTx:ab0ec186",
+    "frame": "internal/postgres_persistent_repository_tx.go:23 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).inWriteTx",
+    "label_check": "label-differs"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_row_locking.go:guardUpsertSQL",
+    "sql": "INSERT INTO \"entity_main_row_guard\" AS g (ltbase_schema_id, ltbase_row_id, generation) VALUES ($1, $2, 1), ($3, $4, 1) ON CONFLICT (ltbase_schema_id, ltbase_row_id) DO UPDATE SET generation = g.generation + 1",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.writeGuardRows:pgx.Tx.Exec:572d91aa",
+    "frame": "internal/postgres_persistent_repository_row_locking.go:175 github.com/lychee-technology/forma/internal.writeGuardRows-range1",
+    "label_check": "label=builder-of-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_batch.go:DBPersistentRecordRepository.batchDeleteInTx",
+    "sql": "DELETE FROM \"entity_main\" WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2 RETURNING ltbase_updated_at",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.batchDeleteInTx:pgx.Tx.QueryRow:ce3f83e3",
+    "frame": "internal/postgres_persistent_repository_batch.go:113 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).batchDeleteInTx",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_batch.go:DBPersistentRecordRepository.batchDeleteInTx",
+    "sql": "DELETE FROM \"eav_data\" WHERE schema_id = $1 AND row_id = $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.batchDeleteInTx:pgx.Tx.Exec:a921284e",
+    "frame": "internal/postgres_persistent_repository_batch.go:120 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).batchDeleteInTx",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_unique_keys.go:DBPersistentRecordRepository.releaseRowUniqueKeys",
+    "sql": "DELETE FROM \"entity_main_unique_key\" WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.releaseRowUniqueKeys:pgx.Tx.Exec:8ab36014",
+    "frame": "internal/postgres_persistent_repository_unique_keys.go:199 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).releaseRowUniqueKeys",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+    "sql": "INSERT INTO \"change_log\" (schema_id, row_id, flushed_at, changed_at, deleted_at)\n\t\t\tVALUES ($1, $2, $3, $4, $5)\n\t\t\tON CONFLICT (schema_id, row_id, flushed_at)\n\t\t\tDO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.upsertChangeLog:pgx.Tx.Exec:8ab36014",
+    "frame": "internal/postgres_persistent_repository.go:208 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).upsertChangeLog",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_batch.go:DBPersistentRecordRepository.batchDeleteInTx",
+    "sql": "DELETE FROM \"entity_main\" WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2 RETURNING ltbase_updated_at",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.batchDeleteInTx:pgx.Tx.QueryRow:ce3f83e3",
+    "frame": "internal/postgres_persistent_repository_batch.go:113 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).batchDeleteInTx",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_batch.go:DBPersistentRecordRepository.batchDeleteInTx",
+    "sql": "DELETE FROM \"eav_data\" WHERE schema_id = $1 AND row_id = $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.batchDeleteInTx:pgx.Tx.Exec:a921284e",
+    "frame": "internal/postgres_persistent_repository_batch.go:120 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).batchDeleteInTx",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_unique_keys.go:DBPersistentRecordRepository.releaseRowUniqueKeys",
+    "sql": "DELETE FROM \"entity_main_unique_key\" WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.releaseRowUniqueKeys:pgx.Tx.Exec:8ab36014",
+    "frame": "internal/postgres_persistent_repository_unique_keys.go:199 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).releaseRowUniqueKeys",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+    "sql": "INSERT INTO \"change_log\" (schema_id, row_id, flushed_at, changed_at, deleted_at)\n\t\t\tVALUES ($1, $2, $3, $4, $5)\n\t\t\tON CONFLICT (schema_id, row_id, flushed_at)\n\t\t\tDO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.upsertChangeLog:pgx.Tx.Exec:8ab36014",
+    "frame": "internal/postgres_persistent_repository.go:208 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).upsertChangeLog",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_tx.go:DBPersistentRecordRepository.inWriteTx",
+    "sql": "commit",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.inWriteTx:pgx.Tx.Commit:cbe5cfdf",
+    "frame": "internal/postgres_persistent_repository_tx.go:32 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).inWriteTx",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_row_locking.go:guardRowLocking.writeTxOptions",
+    "sql": "begin",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.inWriteTx:internal.persistentRecordPool.BeginTx:ab0ec186",
+    "frame": "internal/postgres_persistent_repository_tx.go:23 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).inWriteTx",
+    "label_check": "label-differs"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_row_locking.go:guardUpsertSQL",
+    "sql": "INSERT INTO \"entity_main_row_guard\" AS g (ltbase_schema_id, ltbase_row_id, generation) VALUES ($1, $2, 1) ON CONFLICT (ltbase_schema_id, ltbase_row_id) DO UPDATE SET generation = g.generation + 1",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.writeGuardRows:pgx.Tx.Exec:572d91aa",
+    "frame": "internal/postgres_persistent_repository_row_locking.go:175 github.com/lychee-technology/forma/internal.writeGuardRows-range1",
+    "label_check": "label=builder-of-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_requeue.go:buildRequeueMainStatement",
+    "sql": "UPDATE \"entity_main\" SET ltbase_updated_at = GREATEST($1, ltbase_updated_at + 1) WHERE ltbase_schema_id = $2 AND ltbase_row_id = $3 RETURNING ltbase_updated_at, ltbase_deleted_at",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.requeueInTx:pgx.Tx.QueryRow:55c0c135",
+    "frame": "internal/postgres_persistent_repository_requeue.go:67 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).requeueInTx",
+    "label_check": "label=builder-of-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+    "sql": "INSERT INTO \"change_log\" (schema_id, row_id, flushed_at, changed_at, deleted_at)\n\t\t\tVALUES ($1, $2, $3, $4, $5)\n\t\t\tON CONFLICT (schema_id, row_id, flushed_at)\n\t\t\tDO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.upsertChangeLog:pgx.Tx.Exec:8ab36014",
+    "frame": "internal/postgres_persistent_repository.go:208 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).upsertChangeLog",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusWriteTransactions",
+    "label": "internal/postgres_persistent_repository_tx.go:DBPersistentRecordRepository.inWriteTx",
+    "sql": "commit",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.inWriteTx:pgx.Tx.Commit:cbe5cfdf",
+    "frame": "internal/postgres_persistent_repository_tx.go:32 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).inWriteTx",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusMainTableStatements",
+    "label": "internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped",
+    "sql": "DELETE FROM \"eav_data\" WHERE schema_id = $1 AND row_id = $2 AND attr_id = ANY($3)",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.replaceEAVAttributesScoped:pgx.Tx.Exec:049016de",
+    "frame": "internal/postgres_persistent_repository_eav.go:118 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).replaceEAVAttributesScoped",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusMainTableStatements",
+    "label": "internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes",
+    "sql": "INSERT INTO \"eav_data\" (schema_id, row_id, attr_id, array_indices, value_text, value_numeric) VALUES ($1, $2, $3, $4, $5, $6), ($7, $8, $9, $10, $11, $12)",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal.DBPersistentRecordRepository.insertEAVAttributes:pgx.Tx.Exec:8ab36014",
+    "frame": "internal/postgres_persistent_repository_eav.go:68 github.com/lychee-technology/forma/internal.(*DBPersistentRecordRepository).insertEAVAttributes",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpus",
+    "label": "cmd/tools/init_db.go:loadRegisteredSchemaIDs",
+    "sql": "SELECT schema_name, schema_id FROM \"schema_registry\"",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "cmd/tools.loadRegisteredSchemaIDs:schemaledger.Querier.Query:5ad189b0",
+    "frame": "cmd/tools/init_db.go:413 github.com/lychee-technology/forma/cmd/tools.loadRegisteredSchemaIDs",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpus",
+    "label": "cmd/tools/init_db.go:registerSchemas",
+    "sql": "INSERT INTO \"schema_registry\" (schema_name, schema_id) VALUES ($1, $2) ON CONFLICT (schema_name) DO NOTHING",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "cmd/tools.registerSchemas:pgx.Tx.Exec:46db7cd2",
+    "frame": "cmd/tools/init_db.go:363 github.com/lychee-technology/forma/cmd/tools.registerSchemas",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusExport",
+    "label": "internal/cdc/export_pg_stage.go:stageInSnapshot",
+    "sql": "begin isolation level repeatable read read only",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal/cdc.stageInSnapshot:pgx.Conn.BeginTx:83d2fe70",
+    "frame": "internal/cdc/export_pg_stage.go:54 github.com/lychee-technology/forma/internal/cdc.stageInSnapshot",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusExport",
+    "label": "internal/cdc/export_pg_stage.go:stageInSnapshot",
+    "sql": "commit",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal/cdc.stageInSnapshot:pgx.Tx.Commit:cbe5cfdf",
+    "frame": "internal/cdc/export_pg_stage.go:70 github.com/lychee-technology/forma/internal/cdc.stageInSnapshot",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusExport",
+    "label": "internal/cdc/export_pg_stage.go:stageInSnapshot",
+    "sql": "begin isolation level repeatable read read only",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal/cdc.stageInSnapshot:pgx.Conn.BeginTx:83d2fe70",
+    "frame": "internal/cdc/export_pg_stage.go:54 github.com/lychee-technology/forma/internal/cdc.stageInSnapshot",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusExport",
+    "label": "internal/cdc/export_pg_stage.go:stageInSnapshot",
+    "sql": "commit",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal/cdc.stageInSnapshot:pgx.Tx.Commit:cbe5cfdf",
+    "frame": "internal/cdc/export_pg_stage.go:70 github.com/lychee-technology/forma/internal/cdc.stageInSnapshot",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusFlushReads",
+    "label": "internal/cdc/flusher.go:getUnflushedSchemaIDs",
+    "sql": "SELECT DISTINCT schema_id FROM \"change_log\" WHERE flushed_at = 0",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/cdc.getUnflushedSchemaIDs:sql.DB.QueryContext:2b563475",
+    "frame": "internal/cdc/flusher.go:196 github.com/lychee-technology/forma/internal/cdc.getUnflushedSchemaIDs",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusFlushReads",
+    "label": "internal/cdc/helpers.go:GetChangeLogStats",
+    "sql": "SELECT COUNT(*), COALESCE(MIN(changed_at),0) FROM \"change_log\" WHERE schema_id = $1 AND flushed_at = 0",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/cdc.GetChangeLogStats:sql.DB.QueryRowContext:8ab36014",
+    "frame": "internal/cdc/helpers.go:22 github.com/lychee-technology/forma/internal/cdc.GetChangeLogStats",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusFlushReads",
+    "label": "internal/cdc/helpers.go:SelectBatchRowIDs",
+    "sql": "SELECT row_id, changed_at FROM \"change_log\" WHERE schema_id = $1 AND flushed_at = 0 ORDER BY changed_at ASC LIMIT $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/cdc.SelectBatchRowIDs:sql.DB.QueryContext:8ab36014",
+    "frame": "internal/cdc/helpers.go:48 github.com/lychee-technology/forma/internal/cdc.SelectBatchRowIDs",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusFlushReads",
+    "label": "internal/cdc/init.go:getSchemaIDsToInit",
+    "sql": "SELECT schema_id FROM \"schema_registry\" ORDER BY schema_id",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/cdc.getSchemaIDsToInit:sql.DB.QueryContext:8ab36014",
+    "frame": "internal/cdc/init.go:251 github.com/lychee-technology/forma/internal/cdc.getSchemaIDsToInit",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusFlushReads",
+    "label": "internal/cdc/init.go:getSchemaIDsToInit",
+    "sql": "SELECT schema_id FROM \"schema_registry\" WHERE schema_id = $1",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/cdc.getSchemaIDsToInit:sql.DB.QueryContext:8ab36014",
+    "frame": "internal/cdc/init.go:251 github.com/lychee-technology/forma/internal/cdc.getSchemaIDsToInit",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusFlushReads",
+    "label": "internal/cdc/init_batch_select.go:getEntityMainCount",
+    "sql": "SELECT COUNT(*) FROM \"entity_main\" WHERE ltbase_schema_id = $1 AND ltbase_deleted_at IS NULL",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/cdc.getEntityMainCount:sql.DB.QueryRowContext:8ab36014",
+    "frame": "internal/cdc/init_batch_select.go:18 github.com/lychee-technology/forma/internal/cdc.getEntityMainCount",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpusFlushReads",
+    "label": "internal/cdc/init_batch_select.go:selectEntityMainBatch",
+    "sql": "\n\t\tSELECT ltbase_row_id\n\t\tFROM \"entity_main\"\n\t\tWHERE ltbase_schema_id = $1 AND ltbase_deleted_at IS NULL AND ($3::uuid IS NULL OR ltbase_row_id \u003e $3)\n\t\tORDER BY ltbase_row_id\n\t\tLIMIT $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/cdc.selectEntityMainBatch:sql.DB.QueryContext:8ab36014",
+    "frame": "internal/cdc/init_batch_select.go:45 github.com/lychee-technology/forma/internal/cdc.selectEntityMainBatch",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpus",
+    "label": "internal/cdc/schema_lease.go:leaseSchemaLocker.acquire",
+    "sql": "INSERT INTO \"entity_main_schema_lease\" AS l (schema_id, holder, expires_at) VALUES ($1, $2, floor(extract(epoch from now()) * 1000)::bigint + $3)\n\t\tON CONFLICT (schema_id) DO UPDATE SET holder = EXCLUDED.holder, expires_at = EXCLUDED.expires_at\n\t\tWHERE l.expires_at \u003c= floor(extract(epoch from now()) * 1000)::bigint\n\t\tRETURNING l.holder",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext:8ab36014",
+    "frame": "internal/cdc/schema_lease.go:90 github.com/lychee-technology/forma/internal/cdc.(*leaseSchemaLocker).acquire",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpus",
+    "label": "internal/cdc/schema_lease.go:leaseSchemaLocker.renew",
+    "sql": "UPDATE \"entity_main_schema_lease\" SET expires_at = floor(extract(epoch from now()) * 1000)::bigint + $3\n\t\tWHERE schema_id = $1 AND holder = $2 AND expires_at \u003e floor(extract(epoch from now()) * 1000)::bigint",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/cdc.leaseSchemaLocker.renew:sql.DB.ExecContext:8ab36014",
+    "frame": "internal/cdc/schema_lease.go:115 github.com/lychee-technology/forma/internal/cdc.(*leaseSchemaLocker).renew",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpus",
+    "label": "internal/cdc/schema_lease.go:leaseSchemaLocker.deleteLease",
+    "sql": "DELETE FROM \"entity_main_schema_lease\" WHERE schema_id = $1 AND holder = $2",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/cdc.leaseSchemaLocker.deleteLease:sql.DB.ExecContext:8ab36014",
+    "frame": "internal/cdc/schema_lease.go:192 github.com/lychee-technology/forma/internal/cdc.(*leaseSchemaLocker).deleteLease",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpus",
+    "label": "internal/cdc/helpers.go:MarkFlushedVersions",
+    "sql": "UPDATE \"change_log\" cl SET flushed_at = $1\n\t\t FROM (VALUES ($3::uuid, $4::bigint),($5::uuid, $6::bigint)) AS v(row_id, version)\n\t\t WHERE cl.schema_id = $2 AND cl.flushed_at = 0\n\t\t   AND cl.row_id = v.row_id AND cl.changed_at = v.version\n\t\t RETURNING cl.row_id",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/cdc.MarkFlushedVersions:sql.DB.QueryContext:8ab36014",
+    "frame": "internal/cdc/helpers.go:114 github.com/lychee-technology/forma/internal/cdc.MarkFlushedVersions",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpus",
+    "label": "internal/federated/change_log_reads.go:PostgresDirtyIDFetcher.FetchDirtyRowIDs",
+    "sql": "SELECT row_id FROM \"change_log\" WHERE schema_id = $1 AND flushed_at = 0",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/federated.PostgresDirtyIDFetcher.FetchDirtyRowIDs:federated.dirtyIDPool.Query:8ab36014",
+    "frame": "internal/federated/change_log_reads.go:52 github.com/lychee-technology/forma/internal/federated.(*PostgresDirtyIDFetcher).FetchDirtyRowIDs",
+    "label_check": "label=exec-site"
+  },
+  {
+    "test": "TestDSQLCorpus",
+    "label": "internal/federated/change_log_reads.go:PostgresDirtyIDFetcher.HasParquetHistory",
+    "sql": "SELECT EXISTS (SELECT 1 FROM \"change_log\" WHERE schema_id = $1 AND flushed_at \u003c\u003e 0)\n\tOR EXISTS (SELECT 1 FROM \"entity_main\" m WHERE m.ltbase_schema_id = $1 AND NOT EXISTS (\n\t\tSELECT 1 FROM \"change_log\" c WHERE c.schema_id = $1 AND c.row_id = m.ltbase_row_id))",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/federated.PostgresDirtyIDFetcher.HasParquetHistory:federated.dirtyIDPool.Query:8ab36014",
+    "frame": "internal/federated/change_log_reads.go:104 github.com/lychee-technology/forma/internal/federated.(*PostgresDirtyIDFetcher).HasParquetHistory",
+    "label_check": "label=exec-site"
+  }
+]

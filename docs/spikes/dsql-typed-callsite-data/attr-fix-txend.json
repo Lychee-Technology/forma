@@ -1,0 +1,202 @@
+[
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "DirectExec|direct",
+    "sql": "CREATE TABLE direct (id BIGINT PRIMARY KEY)",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.DirectExec:pgx.Tx.Exec:ec28da80",
+    "frame": "internal/dsqllint/spikefix/prod.go:17 github.com/lychee-technology/forma/internal/dsqllint/spikefix.DirectExec",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "TwoCalls|two-first",
+    "sql": "SELECT 'two-first'",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.TwoCalls:pgx.Tx.Exec:3ee398cb",
+    "frame": "internal/dsqllint/spikefix/prod.go:23 github.com/lychee-technology/forma/internal/dsqllint/spikefix.TwoCalls",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "TwoCalls|two-second",
+    "sql": "SELECT 'two-second'",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.TwoCalls:pgx.Tx.Exec:d5578085",
+    "frame": "internal/dsqllint/spikefix/prod.go:26 github.com/lychee-technology/forma/internal/dsqllint/spikefix.TwoCalls",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "OneLine|line-a",
+    "sql": "SELECT 'line-a'",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.OneLine:pgx.Tx.QueryRow:a7bcc743",
+    "frame": "internal/dsqllint/spikefix/prod.go:33 github.com/lychee-technology/forma/internal/dsqllint/spikefix.OneLine",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "OneLine|line-b",
+    "sql": "SELECT 'line-b'",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.OneLine:pgx.Tx.QueryRow:c83ab381",
+    "frame": "internal/dsqllint/spikefix/prod.go:33 github.com/lychee-technology/forma/internal/dsqllint/spikefix.OneLine",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "WrapperCallerA|wrap-a",
+    "sql": "SELECT 'wrap-a'",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.WrapperCallerA:wrap:internal/dsqllint/spikefix/prod.go:execSQL:9b0f6259",
+    "frame": "internal/dsqllint/spikefix/prod.go:43 github.com/lychee-technology/forma/internal/dsqllint/spikefix.WrapperCallerA",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "WrapperCallerB|wrap-b",
+    "sql": "SELECT 'wrap-b'",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.WrapperCallerB:wrap:internal/dsqllint/spikefix/prod.go:execSQL:79c0e73c",
+    "frame": "internal/dsqllint/spikefix/prod.go:46 github.com/lychee-technology/forma/internal/dsqllint/spikefix.WrapperCallerB",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "NestedCaller|nested",
+    "sql": "SELECT 'nested'",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.NestedCaller:wrap:internal/dsqllint/spikefix/prod.go:outer:33d7a560",
+    "frame": "internal/dsqllint/spikefix/prod.go:53 github.com/lychee-technology/forma/internal/dsqllint/spikefix.NestedCaller",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "MultiLine|multi",
+    "sql": "SELECT 'multi' WHERE $1 \u003e 0",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.MultiLine:pgx.Tx.Exec:57a6c9ce",
+    "frame": "internal/dsqllint/spikefix/prod.go:57 github.com/lychee-technology/forma/internal/dsqllint/spikefix.MultiLine",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "UsesBuilder|built",
+    "sql": "CREATE TABLE built (id BIGINT PRIMARY KEY)",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.UsesBuilder:pgx.Tx.Exec:a45b4094",
+    "frame": "internal/dsqllint/spikefix/prod.go:69 github.com/lychee-technology/forma/internal/dsqllint/spikefix.UsesBuilder",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "Batched|batch-1",
+    "sql": "SELECT 'batch-1'",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.Batched:pgx.Tx.SendBatch:cbe5cfdf",
+    "frame": "internal/dsqllint/spikefix/prod.go:78 github.com/lychee-technology/forma/internal/dsqllint/spikefix.Batched",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "Batched|batch-2",
+    "sql": "SELECT 'batch-2'",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.Batched:pgx.Tx.SendBatch:cbe5cfdf",
+    "frame": "internal/dsqllint/spikefix/prod.go:78 github.com/lychee-technology/forma/internal/dsqllint/spikefix.Batched",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "Batched|batch-1",
+    "sql": "SELECT 'batch-1'",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.Batched:pgx.Tx.SendBatch:cbe5cfdf",
+    "frame": "internal/dsqllint/spikefix/prod.go:78 github.com/lychee-technology/forma/internal/dsqllint/spikefix.Batched",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "Batched|batch-2",
+    "sql": "SELECT 'batch-2'",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.Batched:pgx.Tx.SendBatch:cbe5cfdf",
+    "frame": "internal/dsqllint/spikefix/prod.go:78 github.com/lychee-technology/forma/internal/dsqllint/spikefix.Batched",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "BeginWithOptions|begin",
+    "sql": "begin isolation level repeatable read read only",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.BeginWithOptions:pgx.Conn.BeginTx:83d2fe70",
+    "frame": "internal/dsqllint/spikefix/prod.go:83 github.com/lychee-technology/forma/internal/dsqllint/spikefix.BeginWithOptions",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "BeginWithOptions|commit",
+    "sql": "commit",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.BeginWithOptions:pgx.Tx.Commit:cbe5cfdf",
+    "frame": "internal/dsqllint/spikefix/prod.go:87 github.com/lychee-technology/forma/internal/dsqllint/spikefix.BeginWithOptions",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "InClosure|begin",
+    "sql": "begin",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.InClosure:pgx.BeginFunc:ac34af38",
+    "frame": "internal/dsqllint/spikefix/prod.go:92 github.com/lychee-technology/forma/internal/dsqllint/spikefix.InClosure",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "InClosure|closure",
+    "sql": "SELECT 'closure'",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.InClosure:pgx.Tx.Exec:cf155ce5",
+    "frame": "internal/dsqllint/spikefix/prod.go:93 github.com/lychee-technology/forma/internal/dsqllint/spikefix.TestDSQLCorpusSpikeAttribution.InClosure.func3",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "InClosure|commit",
+    "sql": "commit",
+    "mechanism": "wire-client-write",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.InClosure:pgx.BeginFunc:ac34af38",
+    "frame": "internal/dsqllint/spikefix/prod.go:92 github.com/lychee-technology/forma/internal/dsqllint/spikefix.InClosure",
+    "label_check": "correct"
+  },
+  {
+    "test": "TestDSQLCorpusSpikeAttribution",
+    "label": "SQLDirect|database-sql",
+    "sql": "SELECT 'database-sql'",
+    "mechanism": "mock-matcher",
+    "status": "attributed",
+    "site_id": "internal/dsqllint/spikefix.SQLDirect:sql.DB.ExecContext:39c6b88a",
+    "frame": "internal/dsqllint/spikefix/prod.go:100 github.com/lychee-technology/forma/internal/dsqllint/spikefix.SQLDirect",
+    "label_check": "correct"
+  }
+]

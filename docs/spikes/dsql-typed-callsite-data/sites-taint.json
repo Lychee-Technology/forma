@@ -1,0 +1,4108 @@
+{
+  "mode": "taint",
+  "packages": 38,
+  "sites": [
+    {
+      "id": "cmd/tools.applySchemas:pgxpool.Pool.Begin:cbe5cfdf",
+      "ids": {
+        "expr": "cmd/tools.applySchemas:pgxpool.Pool.Begin:cbe5cfdf",
+        "ordinal": "cmd/tools.applySchemas:pgxpool.Pool.Begin#1",
+        "pos": "cmd/tools/apply_schema.go:98:13"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/apply_schema.go",
+      "line": 98,
+      "end_line": 98,
+      "column": 13,
+      "function": "applySchemas",
+      "family": "pgx-begin",
+      "callee": "pgxpool.Pool.Begin",
+      "via": "driver",
+      "arg_kind": "none"
+    },
+    {
+      "id": "cmd/tools.planSchemas:wrap:internal/schemaledger/store.go:ReadActive:a55b077a",
+      "ids": {
+        "expr": "cmd/tools.planSchemas:wrap:internal/schemaledger/store.go:ReadActive:a55b077a",
+        "ordinal": "cmd/tools.planSchemas:wrap:internal/schemaledger/store.go:ReadActive#1",
+        "pos": "cmd/tools/apply_schema.go:145:22"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/apply_schema.go",
+      "line": 145,
+      "end_line": 145,
+      "column": 22,
+      "function": "planSchemas",
+      "family": "wrapper",
+      "callee": "wrap:internal/schemaledger/store.go:ReadActive",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "cmd/tools.selectRegisteredSchemas:wrap:cmd/tools/init_db.go:loadRegisteredSchemaIDs:a55b077a",
+      "ids": {
+        "expr": "cmd/tools.selectRegisteredSchemas:wrap:cmd/tools/init_db.go:loadRegisteredSchemaIDs:a55b077a",
+        "ordinal": "cmd/tools.selectRegisteredSchemas:wrap:cmd/tools/init_db.go:loadRegisteredSchemaIDs#1",
+        "pos": "cmd/tools/apply_schema.go:168:21"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/apply_schema.go",
+      "line": 168,
+      "end_line": 168,
+      "column": 21,
+      "function": "selectRegisteredSchemas",
+      "family": "wrapper",
+      "callee": "wrap:cmd/tools/init_db.go:loadRegisteredSchemaIDs",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "cmd/tools.recordPlans:wrap:internal/schemaledger/store.go:Write:a55b077a",
+      "ids": {
+        "expr": "cmd/tools.recordPlans:wrap:internal/schemaledger/store.go:Write:a55b077a",
+        "ordinal": "cmd/tools.recordPlans:wrap:internal/schemaledger/store.go:Write#1",
+        "pos": "cmd/tools/apply_schema.go:217:13"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/apply_schema.go",
+      "line": 217,
+      "end_line": 217,
+      "column": 13,
+      "function": "recordPlans",
+      "family": "wrapper",
+      "callee": "wrap:internal/schemaledger/store.go:Write",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "cmd/tools.recordBaselines:pgxpool.Pool.Begin:cbe5cfdf",
+      "ids": {
+        "expr": "cmd/tools.recordBaselines:pgxpool.Pool.Begin:cbe5cfdf",
+        "ordinal": "cmd/tools.recordBaselines:pgxpool.Pool.Begin#1",
+        "pos": "cmd/tools/baseline_schema.go:91:13"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/baseline_schema.go",
+      "line": 91,
+      "end_line": 91,
+      "column": 13,
+      "function": "recordBaselines",
+      "family": "pgx-begin",
+      "callee": "pgxpool.Pool.Begin",
+      "via": "driver",
+      "arg_kind": "none"
+    },
+    {
+      "id": "cmd/tools.recordBaselines:wrap:internal/schemaledger/store.go:Write:a55b077a",
+      "ids": {
+        "expr": "cmd/tools.recordBaselines:wrap:internal/schemaledger/store.go:Write:a55b077a",
+        "ordinal": "cmd/tools.recordBaselines:wrap:internal/schemaledger/store.go:Write#1",
+        "pos": "cmd/tools/baseline_schema.go:112:13"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/baseline_schema.go",
+      "line": 112,
+      "end_line": 112,
+      "column": 13,
+      "function": "recordBaselines",
+      "family": "wrapper",
+      "callee": "wrap:internal/schemaledger/store.go:Write",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "cmd/tools.auditForBaseline:wrap:internal/schemaledger/store.go:ReadPointer:a55b077a",
+      "ids": {
+        "expr": "cmd/tools.auditForBaseline:wrap:internal/schemaledger/store.go:ReadPointer:a55b077a",
+        "ordinal": "cmd/tools.auditForBaseline:wrap:internal/schemaledger/store.go:ReadPointer#1",
+        "pos": "cmd/tools/baseline_schema.go:129:21"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/baseline_schema.go",
+      "line": 129,
+      "end_line": 129,
+      "column": 21,
+      "function": "auditForBaseline",
+      "family": "wrapper",
+      "callee": "wrap:internal/schemaledger/store.go:ReadPointer",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "cmd/tools.readStoredState:widthaudit.Querier.Query:8ab36014",
+      "ids": {
+        "expr": "cmd/tools.readStoredState:widthaudit.Querier.Query:8ab36014",
+        "ordinal": "cmd/tools.readStoredState:widthaudit.Querier.Query#1",
+        "pos": "cmd/tools/baseline_schema_state.go:41:15"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/baseline_schema_state.go",
+      "line": 41,
+      "end_line": 41,
+      "column": 15,
+      "function": "readStoredState",
+      "family": "pgx-query",
+      "callee": "widthaudit.Querier.Query",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/sqlutil/identifier.go:SanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "cmd/tools.ensureTables:pgx.Tx.Exec:9edead20",
+      "ids": {
+        "expr": "cmd/tools.ensureTables:pgx.Tx.Exec:9edead20",
+        "ordinal": "cmd/tools.ensureTables:pgx.Tx.Exec#1",
+        "pos": "cmd/tools/init_db.go:308:16"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/init_db.go",
+      "line": 308,
+      "end_line": 308,
+      "column": 16,
+      "function": "ensureTables",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "ddl.statement",
+      "arg_kind": "selector"
+    },
+    {
+      "id": "cmd/tools.ensureTables:wrap:cmd/tools/init_db.go:registerSchemas:a55b077a",
+      "ids": {
+        "expr": "cmd/tools.ensureTables:wrap:cmd/tools/init_db.go:registerSchemas:a55b077a",
+        "ordinal": "cmd/tools.ensureTables:wrap:cmd/tools/init_db.go:registerSchemas#1",
+        "pos": "cmd/tools/init_db.go:318:13"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/init_db.go",
+      "line": 318,
+      "end_line": 318,
+      "column": 13,
+      "function": "ensureTables",
+      "family": "wrapper",
+      "callee": "wrap:cmd/tools/init_db.go:registerSchemas",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "cmd/tools.registerSchemas:wrap:cmd/tools/init_db.go:loadRegisteredSchemaIDs:a55b077a",
+      "ids": {
+        "expr": "cmd/tools.registerSchemas:wrap:cmd/tools/init_db.go:loadRegisteredSchemaIDs:a55b077a",
+        "ordinal": "cmd/tools.registerSchemas:wrap:cmd/tools/init_db.go:loadRegisteredSchemaIDs#1",
+        "pos": "cmd/tools/init_db.go:344:21"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/init_db.go",
+      "line": 344,
+      "end_line": 344,
+      "column": 21,
+      "function": "registerSchemas",
+      "family": "wrapper",
+      "callee": "wrap:cmd/tools/init_db.go:loadRegisteredSchemaIDs",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "cmd/tools.registerSchemas:pgx.Tx.Exec:46db7cd2",
+      "ids": {
+        "expr": "cmd/tools.registerSchemas:pgx.Tx.Exec:46db7cd2",
+        "ordinal": "cmd/tools.registerSchemas:pgx.Tx.Exec#1",
+        "pos": "cmd/tools/init_db.go:363:19"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/init_db.go",
+      "line": 363,
+      "end_line": 363,
+      "column": 19,
+      "function": "registerSchemas",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "insertSQL",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "cmd/tools/init_db.go:quoteIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "cmd/tools.loadRegisteredSchemaIDs:schemaledger.Querier.Query:5ad189b0",
+      "ids": {
+        "expr": "cmd/tools.loadRegisteredSchemaIDs:schemaledger.Querier.Query:5ad189b0",
+        "ordinal": "cmd/tools.loadRegisteredSchemaIDs:schemaledger.Querier.Query#1",
+        "pos": "cmd/tools/init_db.go:413:15"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/init_db.go",
+      "line": 413,
+      "end_line": 413,
+      "column": 15,
+      "function": "loadRegisteredSchemaIDs",
+      "family": "pgx-query",
+      "callee": "schemaledger.Querier.Query",
+      "via": "interface",
+      "sql_arg": "fmt.Sprintf(`SELECT schema_name, schema_id FROM %s`, quoteIdentifier(schemaTable))",
+      "arg_kind": "call",
+      "builders": [
+        "cmd/tools/init_db.go:quoteIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "cmd/tools.withTx:pgxpool.Conn.Begin:cbe5cfdf",
+      "ids": {
+        "expr": "cmd/tools.withTx:pgxpool.Conn.Begin:cbe5cfdf",
+        "ordinal": "cmd/tools.withTx:pgxpool.Conn.Begin#1",
+        "pos": "cmd/tools/init_db.go:457:13"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/init_db.go",
+      "line": 457,
+      "end_line": 457,
+      "column": 13,
+      "function": "withTx",
+      "family": "pgx-begin",
+      "callee": "pgxpool.Conn.Begin",
+      "via": "driver",
+      "arg_kind": "none"
+    },
+    {
+      "id": "cmd/tools.recordFirstGeneration:wrap:internal/schemaledger/store.go:Write:a55b077a",
+      "ids": {
+        "expr": "cmd/tools.recordFirstGeneration:wrap:internal/schemaledger/store.go:Write:a55b077a",
+        "ordinal": "cmd/tools.recordFirstGeneration:wrap:internal/schemaledger/store.go:Write#1",
+        "pos": "cmd/tools/init_db_ledger.go:58:12"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/init_db_ledger.go",
+      "line": 58,
+      "end_line": 58,
+      "column": 12,
+      "function": "recordFirstGeneration",
+      "family": "wrapper",
+      "callee": "wrap:internal/schemaledger/store.go:Write",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "cmd/tools.schemaConsistencyValidator.checkUnknownAttributeIDs:main.toolDBPool.Query:8ab36014",
+      "ids": {
+        "expr": "cmd/tools.schemaConsistencyValidator.checkUnknownAttributeIDs:main.toolDBPool.Query:8ab36014",
+        "ordinal": "cmd/tools.schemaConsistencyValidator.checkUnknownAttributeIDs:main.toolDBPool.Query#1",
+        "pos": "cmd/tools/validate_schema_consistency.go:286:15"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/validate_schema_consistency.go",
+      "line": 286,
+      "end_line": 286,
+      "column": 15,
+      "function": "schemaConsistencyValidator.checkUnknownAttributeIDs",
+      "family": "pgx-query",
+      "callee": "main.toolDBPool.Query",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "cmd/tools/init_db.go:quoteIdentifier"
+      ]
+    },
+    {
+      "id": "cmd/tools.schemaConsistencyValidator.checkStorageMismatches:wrap:cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.scanStorageIssueRows:af9ed431",
+      "ids": {
+        "expr": "cmd/tools.schemaConsistencyValidator.checkStorageMismatches:wrap:cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.scanStorageIssueRows:af9ed431",
+        "ordinal": "cmd/tools.schemaConsistencyValidator.checkStorageMismatches:wrap:cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.scanStorageIssueRows#1",
+        "pos": "cmd/tools/validate_schema_consistency.go:366:21"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/validate_schema_consistency.go",
+      "line": 366,
+      "end_line": 376,
+      "column": 21,
+      "function": "schemaConsistencyValidator.checkStorageMismatches",
+      "family": "wrapper",
+      "callee": "wrap:cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.scanStorageIssueRows",
+      "via": "wrapper",
+      "sql_arg": "textQuery",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "cmd/tools/init_db.go:quoteIdentifier"
+      ]
+    },
+    {
+      "id": "cmd/tools.schemaConsistencyValidator.checkStorageMismatches:wrap:cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.scanStorageIssueRows:e9e68fa7",
+      "ids": {
+        "expr": "cmd/tools.schemaConsistencyValidator.checkStorageMismatches:wrap:cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.scanStorageIssueRows:e9e68fa7",
+        "ordinal": "cmd/tools.schemaConsistencyValidator.checkStorageMismatches:wrap:cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.scanStorageIssueRows#2",
+        "pos": "cmd/tools/validate_schema_consistency.go:386:24"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/validate_schema_consistency.go",
+      "line": 386,
+      "end_line": 396,
+      "column": 24,
+      "function": "schemaConsistencyValidator.checkStorageMismatches",
+      "family": "wrapper",
+      "callee": "wrap:cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.scanStorageIssueRows",
+      "via": "wrapper",
+      "sql_arg": "numericQuery",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "cmd/tools/init_db.go:quoteIdentifier"
+      ]
+    },
+    {
+      "id": "cmd/tools.schemaConsistencyValidator.checkEAVDateImages:main.toolDBPool.Query:8ab36014",
+      "ids": {
+        "expr": "cmd/tools.schemaConsistencyValidator.checkEAVDateImages:main.toolDBPool.Query:8ab36014",
+        "ordinal": "cmd/tools.schemaConsistencyValidator.checkEAVDateImages:main.toolDBPool.Query#1",
+        "pos": "cmd/tools/validate_schema_consistency_dates.go:84:15"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/validate_schema_consistency_dates.go",
+      "line": 84,
+      "end_line": 84,
+      "column": 15,
+      "function": "schemaConsistencyValidator.checkEAVDateImages",
+      "family": "pgx-query",
+      "callee": "main.toolDBPool.Query",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "cmd/tools/init_db.go:quoteIdentifier",
+        "internal/transform/epoch_millis.go:StoredDateImageRefusedSQL"
+      ]
+    },
+    {
+      "id": "cmd/tools.schemaConsistencyValidator.checkScalarRowsUnderListAttrs:main.toolDBPool.Query:8ab36014",
+      "ids": {
+        "expr": "cmd/tools.schemaConsistencyValidator.checkScalarRowsUnderListAttrs:main.toolDBPool.Query:8ab36014",
+        "ordinal": "cmd/tools.schemaConsistencyValidator.checkScalarRowsUnderListAttrs:main.toolDBPool.Query#1",
+        "pos": "cmd/tools/validate_schema_consistency_lists.go:62:15"
+      },
+      "package": "github.com/lychee-technology/forma/cmd/tools",
+      "file": "cmd/tools/validate_schema_consistency_lists.go",
+      "line": 62,
+      "end_line": 62,
+      "column": 15,
+      "function": "schemaConsistencyValidator.checkScalarRowsUnderListAttrs",
+      "family": "pgx-query",
+      "callee": "main.toolDBPool.Query",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "cmd/tools/init_db.go:quoteIdentifier"
+      ]
+    },
+    {
+      "id": "factory.collectTablesFromPool:factory.queryPool.Query:cd43c48a",
+      "ids": {
+        "expr": "factory.collectTablesFromPool:factory.queryPool.Query:cd43c48a",
+        "ordinal": "factory.collectTablesFromPool:factory.queryPool.Query#1",
+        "pos": "factory/factory.go:62:15"
+      },
+      "package": "github.com/lychee-technology/forma/factory",
+      "file": "factory/factory.go",
+      "line": 62,
+      "end_line": 64,
+      "column": 15,
+      "function": "collectTablesFromPool",
+      "family": "pgx-query",
+      "callee": "factory.queryPool.Query",
+      "via": "interface",
+      "sql_arg": "`SELECT table_name FROM information_schema.tables t\nWHERE table_schema = $1 AND table_type = 'BASE TABLE'\nUNION SELECT table_name FROM information_schema.views v WHERE table_schema = $1;`",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/cdc.DuckExporter.runExport:sql.Conn.ExecContext:319ac339",
+      "ids": {
+        "expr": "internal/cdc.DuckExporter.runExport:sql.Conn.ExecContext:319ac339",
+        "ordinal": "internal/cdc.DuckExporter.runExport:sql.Conn.ExecContext#1",
+        "pos": "internal/cdc/duckdb_exporter.go:159:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/duckdb_exporter.go",
+      "line": 159,
+      "end_line": 159,
+      "column": 15,
+      "function": "DuckExporter.runExport",
+      "family": "sql-exec",
+      "callee": "sql.Conn.ExecContext",
+      "via": "driver",
+      "sql_arg": "plan.setupSQL",
+      "arg_kind": "selector"
+    },
+    {
+      "id": "internal/cdc.DuckExporter.runExport:sql.Conn.ExecContext:02e982e0",
+      "ids": {
+        "expr": "internal/cdc.DuckExporter.runExport:sql.Conn.ExecContext:02e982e0",
+        "ordinal": "internal/cdc.DuckExporter.runExport:sql.Conn.ExecContext#2",
+        "pos": "internal/cdc/duckdb_exporter.go:170:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/duckdb_exporter.go",
+      "line": 170,
+      "end_line": 170,
+      "column": 15,
+      "function": "DuckExporter.runExport",
+      "family": "sql-exec",
+      "callee": "sql.Conn.ExecContext",
+      "via": "driver",
+      "sql_arg": "plan.copySQL",
+      "arg_kind": "selector"
+    },
+    {
+      "id": "internal/cdc.DuckExporter.dropStages:sql.Conn.ExecContext:70d3a883",
+      "ids": {
+        "expr": "internal/cdc.DuckExporter.dropStages:sql.Conn.ExecContext:70d3a883",
+        "ordinal": "internal/cdc.DuckExporter.dropStages:sql.Conn.ExecContext#1",
+        "pos": "internal/cdc/duckdb_exporter.go:189:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/duckdb_exporter.go",
+      "line": 189,
+      "end_line": 189,
+      "column": 15,
+      "function": "DuckExporter.dropStages",
+      "family": "sql-exec",
+      "callee": "sql.Conn.ExecContext",
+      "via": "driver",
+      "sql_arg": "buildStageDropSQL(stages)",
+      "arg_kind": "call",
+      "builders": [
+        "internal/cdc/export_staging.go:buildStageDropSQL"
+      ]
+    },
+    {
+      "id": "internal/cdc.stageInSnapshot:pgx.Conn.BeginTx:83d2fe70",
+      "ids": {
+        "expr": "internal/cdc.stageInSnapshot:pgx.Conn.BeginTx:83d2fe70",
+        "ordinal": "internal/cdc.stageInSnapshot:pgx.Conn.BeginTx#1",
+        "pos": "internal/cdc/export_pg_stage.go:54:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/export_pg_stage.go",
+      "line": 54,
+      "end_line": 54,
+      "column": 13,
+      "function": "stageInSnapshot",
+      "family": "pgx-begin",
+      "callee": "pgx.Conn.BeginTx",
+      "via": "driver",
+      "arg_kind": "none",
+      "options": "pgx.TxOptions{…}"
+    },
+    {
+      "id": "internal/cdc.appendStageRows:pgx.Tx.Query:296ec13d",
+      "ids": {
+        "expr": "internal/cdc.appendStageRows:pgx.Tx.Query:296ec13d",
+        "ordinal": "internal/cdc.appendStageRows:pgx.Tx.Query#1",
+        "pos": "internal/cdc/export_pg_stage.go:102:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/export_pg_stage.go",
+      "line": 102,
+      "end_line": 102,
+      "column": 15,
+      "function": "appendStageRows",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.Query",
+      "via": "driver",
+      "sql_arg": "stage.query",
+      "arg_kind": "selector"
+    },
+    {
+      "id": "internal/cdc.flushBatchExecutor.stampColumns:wrap:internal/parquetcheck/describe.go:DescribeColumns:a55b077a",
+      "ids": {
+        "expr": "internal/cdc.flushBatchExecutor.stampColumns:wrap:internal/parquetcheck/describe.go:DescribeColumns:a55b077a",
+        "ordinal": "internal/cdc.flushBatchExecutor.stampColumns:wrap:internal/parquetcheck/describe.go:DescribeColumns#1",
+        "pos": "internal/cdc/flush_batch.go:198:11"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/flush_batch.go",
+      "line": 198,
+      "end_line": 198,
+      "column": 11,
+      "function": "flushBatchExecutor.stampColumns",
+      "family": "wrapper",
+      "callee": "wrap:internal/parquetcheck/describe.go:DescribeColumns",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/cdc.RunOnce:wrap:internal/cdc/flusher.go:getUnflushedSchemaIDs:a55b077a",
+      "ids": {
+        "expr": "internal/cdc.RunOnce:wrap:internal/cdc/flusher.go:getUnflushedSchemaIDs:a55b077a",
+        "ordinal": "internal/cdc.RunOnce:wrap:internal/cdc/flusher.go:getUnflushedSchemaIDs#1",
+        "pos": "internal/cdc/flusher.go:116:20"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/flusher.go",
+      "line": 116,
+      "end_line": 116,
+      "column": 20,
+      "function": "RunOnce",
+      "family": "wrapper",
+      "callee": "wrap:internal/cdc/flusher.go:getUnflushedSchemaIDs",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/cdc.getUnflushedSchemaIDs:sql.DB.QueryContext:2b563475",
+      "ids": {
+        "expr": "internal/cdc.getUnflushedSchemaIDs:sql.DB.QueryContext:2b563475",
+        "ordinal": "internal/cdc.getUnflushedSchemaIDs:sql.DB.QueryContext#1",
+        "pos": "internal/cdc/flusher.go:196:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/flusher.go",
+      "line": 196,
+      "end_line": 196,
+      "column": 15,
+      "function": "getUnflushedSchemaIDs",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryContext",
+      "via": "driver",
+      "sql_arg": "fmt.Sprintf(\"SELECT DISTINCT schema_id FROM %s WHERE flushed_at = 0\", sanitizeIdentifier(tableName))",
+      "arg_kind": "call",
+      "builders": [
+        "internal/cdc/helpers.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/cdc.schemaFlushContext.flushUnderLock:wrap:internal/cdc/helpers.go:GetChangeLogStats:a55b077a",
+      "ids": {
+        "expr": "internal/cdc.schemaFlushContext.flushUnderLock:wrap:internal/cdc/helpers.go:GetChangeLogStats:a55b077a",
+        "ordinal": "internal/cdc.schemaFlushContext.flushUnderLock:wrap:internal/cdc/helpers.go:GetChangeLogStats#1",
+        "pos": "internal/cdc/flusher.go:299:22"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/flusher.go",
+      "line": 299,
+      "end_line": 299,
+      "column": 22,
+      "function": "schemaFlushContext.flushUnderLock",
+      "family": "wrapper",
+      "callee": "wrap:internal/cdc/helpers.go:GetChangeLogStats",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/cdc.schemaFlushContext.executeFlush:wrap:internal/cdc/helpers.go:SelectBatchRowIDs:a55b077a",
+      "ids": {
+        "expr": "internal/cdc.schemaFlushContext.executeFlush:wrap:internal/cdc/helpers.go:SelectBatchRowIDs:a55b077a",
+        "ordinal": "internal/cdc.schemaFlushContext.executeFlush:wrap:internal/cdc/helpers.go:SelectBatchRowIDs#1",
+        "pos": "internal/cdc/flusher.go:339:34"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/flusher.go",
+      "line": 339,
+      "end_line": 339,
+      "column": 34,
+      "function": "schemaFlushContext.executeFlush",
+      "family": "wrapper",
+      "callee": "wrap:internal/cdc/helpers.go:SelectBatchRowIDs",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/cdc.GetChangeLogStats:sql.DB.QueryRowContext:8ab36014",
+      "ids": {
+        "expr": "internal/cdc.GetChangeLogStats:sql.DB.QueryRowContext:8ab36014",
+        "ordinal": "internal/cdc.GetChangeLogStats:sql.DB.QueryRowContext#1",
+        "pos": "internal/cdc/helpers.go:22:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/helpers.go",
+      "line": 22,
+      "end_line": 22,
+      "column": 9,
+      "function": "GetChangeLogStats",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/cdc/helpers.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/cdc.SelectBatchRowIDs:sql.DB.QueryContext:8ab36014",
+      "ids": {
+        "expr": "internal/cdc.SelectBatchRowIDs:sql.DB.QueryContext:8ab36014",
+        "ordinal": "internal/cdc.SelectBatchRowIDs:sql.DB.QueryContext#1",
+        "pos": "internal/cdc/helpers.go:48:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/helpers.go",
+      "line": 48,
+      "end_line": 48,
+      "column": 15,
+      "function": "SelectBatchRowIDs",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryContext",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/cdc/helpers.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/cdc.MarkFlushedVersions:sql.DB.QueryContext:8ab36014",
+      "ids": {
+        "expr": "internal/cdc.MarkFlushedVersions:sql.DB.QueryContext:8ab36014",
+        "ordinal": "internal/cdc.MarkFlushedVersions:sql.DB.QueryContext#1",
+        "pos": "internal/cdc/helpers.go:114:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/helpers.go",
+      "line": 114,
+      "end_line": 114,
+      "column": 15,
+      "function": "MarkFlushedVersions",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryContext",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/cdc/helpers.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/cdc.RunInit:wrap:internal/cdc/init.go:getSchemaIDsToInit:a55b077a",
+      "ids": {
+        "expr": "internal/cdc.RunInit:wrap:internal/cdc/init.go:getSchemaIDsToInit:a55b077a",
+        "ordinal": "internal/cdc.RunInit:wrap:internal/cdc/init.go:getSchemaIDsToInit#1",
+        "pos": "internal/cdc/init.go:188:20"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/init.go",
+      "line": 188,
+      "end_line": 188,
+      "column": 20,
+      "function": "RunInit",
+      "family": "wrapper",
+      "callee": "wrap:internal/cdc/init.go:getSchemaIDsToInit",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/cdc.getSchemaIDsToInit:sql.DB.QueryContext:8ab36014",
+      "ids": {
+        "expr": "internal/cdc.getSchemaIDsToInit:sql.DB.QueryContext:8ab36014",
+        "ordinal": "internal/cdc.getSchemaIDsToInit:sql.DB.QueryContext#1",
+        "pos": "internal/cdc/init.go:251:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/init.go",
+      "line": 251,
+      "end_line": 251,
+      "column": 15,
+      "function": "getSchemaIDsToInit",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryContext",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/cdc/helpers.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/cdc.prepareSchemaInit:wrap:internal/cdc/init_batch_select.go:getEntityMainCount:a55b077a",
+      "ids": {
+        "expr": "internal/cdc.prepareSchemaInit:wrap:internal/cdc/init_batch_select.go:getEntityMainCount:a55b077a",
+        "ordinal": "internal/cdc.prepareSchemaInit:wrap:internal/cdc/init_batch_select.go:getEntityMainCount#1",
+        "pos": "internal/cdc/init.go:328:20"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/init.go",
+      "line": 328,
+      "end_line": 328,
+      "column": 20,
+      "function": "prepareSchemaInit",
+      "family": "wrapper",
+      "callee": "wrap:internal/cdc/init_batch_select.go:getEntityMainCount",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/cdc.iterateSchemaBatches:wrap:internal/cdc/init_batch_select.go:selectEntityMainBatch:a55b077a",
+      "ids": {
+        "expr": "internal/cdc.iterateSchemaBatches:wrap:internal/cdc/init_batch_select.go:selectEntityMainBatch:a55b077a",
+        "ordinal": "internal/cdc.iterateSchemaBatches:wrap:internal/cdc/init_batch_select.go:selectEntityMainBatch#1",
+        "pos": "internal/cdc/init.go:361:18"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/init.go",
+      "line": 361,
+      "end_line": 361,
+      "column": 18,
+      "function": "iterateSchemaBatches",
+      "family": "wrapper",
+      "callee": "wrap:internal/cdc/init_batch_select.go:selectEntityMainBatch",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/cdc.getEntityMainCount:sql.DB.QueryRowContext:8ab36014",
+      "ids": {
+        "expr": "internal/cdc.getEntityMainCount:sql.DB.QueryRowContext:8ab36014",
+        "ordinal": "internal/cdc.getEntityMainCount:sql.DB.QueryRowContext#1",
+        "pos": "internal/cdc/init_batch_select.go:18:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/init_batch_select.go",
+      "line": 18,
+      "end_line": 18,
+      "column": 9,
+      "function": "getEntityMainCount",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/cdc/helpers.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/cdc.selectEntityMainBatch:sql.DB.QueryContext:8ab36014",
+      "ids": {
+        "expr": "internal/cdc.selectEntityMainBatch:sql.DB.QueryContext:8ab36014",
+        "ordinal": "internal/cdc.selectEntityMainBatch:sql.DB.QueryContext#1",
+        "pos": "internal/cdc/init_batch_select.go:45:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/init_batch_select.go",
+      "line": 45,
+      "end_line": 45,
+      "column": 15,
+      "function": "selectEntityMainBatch",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryContext",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/cdc/helpers.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/cdc.initStampColumns:wrap:internal/parquetcheck/describe.go:DescribeColumns:a55b077a",
+      "ids": {
+        "expr": "internal/cdc.initStampColumns:wrap:internal/parquetcheck/describe.go:DescribeColumns:a55b077a",
+        "ordinal": "internal/cdc.initStampColumns:wrap:internal/parquetcheck/describe.go:DescribeColumns#1",
+        "pos": "internal/cdc/init_stamp.go:29:11"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/init_stamp.go",
+      "line": 29,
+      "end_line": 29,
+      "column": 11,
+      "function": "initStampColumns",
+      "family": "wrapper",
+      "callee": "wrap:internal/parquetcheck/describe.go:DescribeColumns",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/cdc.Runner.RunOnce:wrap:internal/cdc/flusher.go:getUnflushedSchemaIDs:a55b077a",
+      "ids": {
+        "expr": "internal/cdc.Runner.RunOnce:wrap:internal/cdc/flusher.go:getUnflushedSchemaIDs:a55b077a",
+        "ordinal": "internal/cdc.Runner.RunOnce:wrap:internal/cdc/flusher.go:getUnflushedSchemaIDs#1",
+        "pos": "internal/cdc/runner.go:218:20"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/runner.go",
+      "line": 218,
+      "end_line": 218,
+      "column": 20,
+      "function": "Runner.RunOnce",
+      "family": "wrapper",
+      "callee": "wrap:internal/cdc/flusher.go:getUnflushedSchemaIDs",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext:8ab36014",
+      "ids": {
+        "expr": "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext:8ab36014",
+        "ordinal": "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext#1",
+        "pos": "internal/cdc/schema_lease.go:90:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/schema_lease.go",
+      "line": 90,
+      "end_line": 90,
+      "column": 9,
+      "function": "leaseSchemaLocker.acquire",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/sqlgen/server_time_operand.go:ServerTimeMillisSQL"
+      ]
+    },
+    {
+      "id": "internal/cdc.leaseSchemaLocker.renew:sql.DB.ExecContext:8ab36014",
+      "ids": {
+        "expr": "internal/cdc.leaseSchemaLocker.renew:sql.DB.ExecContext:8ab36014",
+        "ordinal": "internal/cdc.leaseSchemaLocker.renew:sql.DB.ExecContext#1",
+        "pos": "internal/cdc/schema_lease.go:115:14"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/schema_lease.go",
+      "line": 115,
+      "end_line": 115,
+      "column": 14,
+      "function": "leaseSchemaLocker.renew",
+      "family": "sql-exec",
+      "callee": "sql.DB.ExecContext",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/sqlgen/server_time_operand.go:ServerTimeMillisSQL"
+      ]
+    },
+    {
+      "id": "internal/cdc.leaseSchemaLocker.deleteLease:sql.DB.ExecContext:8ab36014",
+      "ids": {
+        "expr": "internal/cdc.leaseSchemaLocker.deleteLease:sql.DB.ExecContext:8ab36014",
+        "ordinal": "internal/cdc.leaseSchemaLocker.deleteLease:sql.DB.ExecContext#1",
+        "pos": "internal/cdc/schema_lease.go:192:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/schema_lease.go",
+      "line": 192,
+      "end_line": 192,
+      "column": 9,
+      "function": "leaseSchemaLocker.deleteLease",
+      "family": "sql-exec",
+      "callee": "sql.DB.ExecContext",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/cdc.TrySchemaLock:sql.Conn.QueryRowContext:b54f5b3b",
+      "ids": {
+        "expr": "internal/cdc.TrySchemaLock:sql.Conn.QueryRowContext:b54f5b3b",
+        "ordinal": "internal/cdc.TrySchemaLock:sql.Conn.QueryRowContext#1",
+        "pos": "internal/cdc/schema_lock.go:92:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/schema_lock.go",
+      "line": 92,
+      "end_line": 92,
+      "column": 9,
+      "function": "TrySchemaLock",
+      "family": "sql-query",
+      "callee": "sql.Conn.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "\"SELECT pg_try_advisory_lock($1, $2)\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/cdc.TrySchemaLock:sql.Conn.ExecContext:2e8c1466",
+      "ids": {
+        "expr": "internal/cdc.TrySchemaLock:sql.Conn.ExecContext:2e8c1466",
+        "ordinal": "internal/cdc.TrySchemaLock:sql.Conn.ExecContext#1",
+        "pos": "internal/cdc/schema_lock.go:102:10"
+      },
+      "package": "github.com/lychee-technology/forma/internal/cdc",
+      "file": "internal/cdc/schema_lock.go",
+      "line": 102,
+      "end_line": 102,
+      "column": 10,
+      "function": "TrySchemaLock",
+      "family": "sql-exec",
+      "callee": "sql.Conn.ExecContext",
+      "via": "driver",
+      "sql_arg": "\"SELECT pg_advisory_unlock($1, $2)\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/compaction.DuckMerger.MergeToTmp:sql.DB.ExecContext:6915d4a6",
+      "ids": {
+        "expr": "internal/compaction.DuckMerger.MergeToTmp:sql.DB.ExecContext:6915d4a6",
+        "ordinal": "internal/compaction.DuckMerger.MergeToTmp:sql.DB.ExecContext#1",
+        "pos": "internal/compaction/merge.go:84:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/compaction",
+      "file": "internal/compaction/merge.go",
+      "line": 84,
+      "end_line": 84,
+      "column": 15,
+      "function": "DuckMerger.MergeToTmp",
+      "family": "sql-exec",
+      "callee": "sql.DB.ExecContext",
+      "via": "driver",
+      "sql_arg": "mergeSQL",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/compaction/merge_sql.go:buildMergeSQL"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/compaction.DuckMerger.MergeToTmp:sql.DB.QueryRowContext:cbef955a",
+      "ids": {
+        "expr": "internal/compaction.DuckMerger.MergeToTmp:sql.DB.QueryRowContext:cbef955a",
+        "ordinal": "internal/compaction.DuckMerger.MergeToTmp:sql.DB.QueryRowContext#1",
+        "pos": "internal/compaction/merge.go:93:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal/compaction",
+      "file": "internal/compaction/merge.go",
+      "line": 93,
+      "end_line": 93,
+      "column": 12,
+      "function": "DuckMerger.MergeToTmp",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "rowsInSQL",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/compaction/merge_sql.go:buildMergeRowsInSQL"
+      ]
+    },
+    {
+      "id": "internal/compaction.DuckMerger.MergeToTmp:sql.DB.QueryRowContext:3f3f676f",
+      "ids": {
+        "expr": "internal/compaction.DuckMerger.MergeToTmp:sql.DB.QueryRowContext:3f3f676f",
+        "ordinal": "internal/compaction.DuckMerger.MergeToTmp:sql.DB.QueryRowContext#2",
+        "pos": "internal/compaction/merge.go:101:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal/compaction",
+      "file": "internal/compaction/merge.go",
+      "line": 101,
+      "end_line": 101,
+      "column": 12,
+      "function": "DuckMerger.MergeToTmp",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "statsSQL",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/compaction/merge_sql.go:buildMergeStatsSQL"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/compaction.DuckMerger.MergeToTmp:wrap:internal/parquetcheck/describe.go:DescribeColumns:a55b077a",
+      "ids": {
+        "expr": "internal/compaction.DuckMerger.MergeToTmp:wrap:internal/parquetcheck/describe.go:DescribeColumns:a55b077a",
+        "ordinal": "internal/compaction.DuckMerger.MergeToTmp:wrap:internal/parquetcheck/describe.go:DescribeColumns#1",
+        "pos": "internal/compaction/merge.go:110:11"
+      },
+      "package": "github.com/lychee-technology/forma/internal/compaction",
+      "file": "internal/compaction/merge.go",
+      "line": 110,
+      "end_line": 110,
+      "column": 11,
+      "function": "DuckMerger.MergeToTmp",
+      "family": "wrapper",
+      "callee": "wrap:internal/parquetcheck/describe.go:DescribeColumns",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/compaction.validateMergeSourceSchemas:wrap:internal/parquetcheck/describe.go:DescribeColumns:a55b077a",
+      "ids": {
+        "expr": "internal/compaction.validateMergeSourceSchemas:wrap:internal/parquetcheck/describe.go:DescribeColumns:a55b077a",
+        "ordinal": "internal/compaction.validateMergeSourceSchemas:wrap:internal/parquetcheck/describe.go:DescribeColumns#1",
+        "pos": "internal/compaction/merge.go:143:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal/compaction",
+      "file": "internal/compaction/merge.go",
+      "line": 143,
+      "end_line": 143,
+      "column": 16,
+      "function": "validateMergeSourceSchemas",
+      "family": "wrapper",
+      "callee": "wrap:internal/parquetcheck/describe.go:DescribeColumns",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/compaction.Compactor.runRewrite:compaction.Merger.MergeToTmp:a55b077a",
+      "ids": {
+        "expr": "internal/compaction.Compactor.runRewrite:compaction.Merger.MergeToTmp:a55b077a",
+        "ordinal": "internal/compaction.Compactor.runRewrite:compaction.Merger.MergeToTmp#1",
+        "pos": "internal/compaction/rewrite.go:73:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal/compaction",
+      "file": "internal/compaction/rewrite.go",
+      "line": 73,
+      "end_line": 73,
+      "column": 16,
+      "function": "Compactor.runRewrite",
+      "family": "wrapper",
+      "callee": "compaction.Merger.MergeToTmp",
+      "via": "interface",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/compaction.SingleFileStats:sql.DB.QueryRowContext:3f3f676f",
+      "ids": {
+        "expr": "internal/compaction.SingleFileStats:sql.DB.QueryRowContext:3f3f676f",
+        "ordinal": "internal/compaction.SingleFileStats:sql.DB.QueryRowContext#1",
+        "pos": "internal/compaction/single_file_stats.go:22:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal/compaction",
+      "file": "internal/compaction/single_file_stats.go",
+      "line": 22,
+      "end_line": 22,
+      "column": 12,
+      "function": "SingleFileStats",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "statsSQL",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/compaction/merge_sql.go:buildMergeStatsSQL"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/compaction.UncoveredRows:sql.DB.QueryContext:8ab36014",
+      "ids": {
+        "expr": "internal/compaction.UncoveredRows:sql.DB.QueryContext:8ab36014",
+        "ordinal": "internal/compaction.UncoveredRows:sql.DB.QueryContext#1",
+        "pos": "internal/compaction/uncovered_rows.go:60:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/compaction",
+      "file": "internal/compaction/uncovered_rows.go",
+      "line": 60,
+      "end_line": 60,
+      "column": 15,
+      "function": "UncoveredRows",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryContext",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/sqlutil/literal.go:EscapeLiteral"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/declaredindex.Ensure:declaredindex.Conn.QueryRow:a7f89ac3",
+      "ids": {
+        "expr": "internal/declaredindex.Ensure:declaredindex.Conn.QueryRow:a7f89ac3",
+        "ordinal": "internal/declaredindex.Ensure:declaredindex.Conn.QueryRow#1",
+        "pos": "internal/declaredindex/ensure.go:148:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal/declaredindex",
+      "file": "internal/declaredindex/ensure.go",
+      "line": 148,
+      "end_line": 148,
+      "column": 12,
+      "function": "Ensure",
+      "family": "pgx-query",
+      "callee": "declaredindex.Conn.QueryRow",
+      "via": "interface",
+      "sql_arg": "tableSchemaQuery",
+      "arg_kind": "const",
+      "builders": [
+        "internal/declaredindex/ensure.go:tableSchemaQuery"
+      ]
+    },
+    {
+      "id": "internal/declaredindex.Ensure:declaredindex.Conn.Exec:f5bc33b6",
+      "ids": {
+        "expr": "internal/declaredindex.Ensure:declaredindex.Conn.Exec:f5bc33b6",
+        "ordinal": "internal/declaredindex.Ensure:declaredindex.Conn.Exec#1",
+        "pos": "internal/declaredindex/ensure.go:162:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal/declaredindex",
+      "file": "internal/declaredindex/ensure.go",
+      "line": 162,
+      "end_line": 162,
+      "column": 16,
+      "function": "Ensure",
+      "family": "pgx-exec",
+      "callee": "declaredindex.Conn.Exec",
+      "via": "interface",
+      "sql_arg": "ix.CreateSQL()",
+      "arg_kind": "call",
+      "builders": [
+        "internal/declaredindex/plan.go:Index.CreateSQL"
+      ]
+    },
+    {
+      "id": "internal/declaredindex.listIndexes:declaredindex.Conn.Query:f0618a2a",
+      "ids": {
+        "expr": "internal/declaredindex.listIndexes:declaredindex.Conn.Query:f0618a2a",
+        "ordinal": "internal/declaredindex.listIndexes:declaredindex.Conn.Query#1",
+        "pos": "internal/declaredindex/ensure.go:249:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/declaredindex",
+      "file": "internal/declaredindex/ensure.go",
+      "line": 249,
+      "end_line": 249,
+      "column": 15,
+      "function": "listIndexes",
+      "family": "pgx-query",
+      "callee": "declaredindex.Conn.Query",
+      "via": "interface",
+      "sql_arg": "catalogQuery",
+      "arg_kind": "const",
+      "builders": [
+        "internal/declaredindex/ensure.go:catalogQuery"
+      ]
+    },
+    {
+      "id": "internal.transactor.InTx:internal.persistentRecordPool.BeginTx:447f7436",
+      "ids": {
+        "expr": "internal.transactor.InTx:internal.persistentRecordPool.BeginTx:447f7436",
+        "ordinal": "internal.transactor.InTx:internal.persistentRecordPool.BeginTx#1",
+        "pos": "internal/entity_transactor.go:77:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/entity_transactor.go",
+      "line": 77,
+      "end_line": 77,
+      "column": 15,
+      "function": "transactor.InTx",
+      "family": "pgx-begin",
+      "callee": "internal.persistentRecordPool.BeginTx",
+      "via": "interface",
+      "arg_kind": "none",
+      "options": "t.repo.locks.writeTxOptions(true)"
+    },
+    {
+      "id": "internal/federated.PostgresDirtyIDFetcher.FetchDirtyRowIDs:federated.dirtyIDPool.Query:8ab36014",
+      "ids": {
+        "expr": "internal/federated.PostgresDirtyIDFetcher.FetchDirtyRowIDs:federated.dirtyIDPool.Query:8ab36014",
+        "ordinal": "internal/federated.PostgresDirtyIDFetcher.FetchDirtyRowIDs:federated.dirtyIDPool.Query#1",
+        "pos": "internal/federated/change_log_reads.go:52:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/change_log_reads.go",
+      "line": 52,
+      "end_line": 52,
+      "column": 15,
+      "function": "PostgresDirtyIDFetcher.FetchDirtyRowIDs",
+      "family": "pgx-query",
+      "callee": "federated.dirtyIDPool.Query",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/sqlutil/identifier.go:SanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/federated.PostgresDirtyIDFetcher.HasParquetHistory:federated.dirtyIDPool.Query:8ab36014",
+      "ids": {
+        "expr": "internal/federated.PostgresDirtyIDFetcher.HasParquetHistory:federated.dirtyIDPool.Query:8ab36014",
+        "ordinal": "internal/federated.PostgresDirtyIDFetcher.HasParquetHistory:federated.dirtyIDPool.Query#1",
+        "pos": "internal/federated/change_log_reads.go:104:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/change_log_reads.go",
+      "line": 104,
+      "end_line": 104,
+      "column": 15,
+      "function": "PostgresDirtyIDFetcher.HasParquetHistory",
+      "family": "pgx-query",
+      "callee": "federated.dirtyIDPool.Query",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/sqlutil/identifier.go:SanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:0f028235",
+      "ids": {
+        "expr": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:0f028235",
+        "ordinal": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext#1",
+        "pos": "internal/federated/duckdb_conn.go:276:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/duckdb_conn.go",
+      "line": 276,
+      "end_line": 276,
+      "column": 9,
+      "function": "DuckDBClient.HealthCheck",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "\"SELECT 1;\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:099d1b5a",
+      "ids": {
+        "expr": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:099d1b5a",
+        "ordinal": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext#2",
+        "pos": "internal/federated/duckdb_conn.go:288:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/duckdb_conn.go",
+      "line": 288,
+      "end_line": 288,
+      "column": 13,
+      "function": "DuckDBClient.HealthCheck",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "\"PRAGMA memory_limit;\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:acd7408e",
+      "ids": {
+        "expr": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:acd7408e",
+        "ordinal": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext#3",
+        "pos": "internal/federated/duckdb_conn.go:299:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/duckdb_conn.go",
+      "line": 299,
+      "end_line": 299,
+      "column": 13,
+      "function": "DuckDBClient.HealthCheck",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "\"PRAGMA threads;\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:3656be78",
+      "ids": {
+        "expr": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:3656be78",
+        "ordinal": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext#4",
+        "pos": "internal/federated/duckdb_conn.go:313:14"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/duckdb_conn.go",
+      "line": 313,
+      "end_line": 313,
+      "column": 14,
+      "function": "DuckDBClient.HealthCheck",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "\"PRAGMA s3_endpoint;\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:613e1a77",
+      "ids": {
+        "expr": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext:613e1a77",
+        "ordinal": "internal/federated.DuckDBClient.HealthCheck:sql.DB.QueryRowContext#5",
+        "pos": "internal/federated/duckdb_conn.go:319:14"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/duckdb_conn.go",
+      "line": 319,
+      "end_line": 319,
+      "column": 14,
+      "function": "DuckDBClient.HealthCheck",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "\"PRAGMA s3_region;\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/federated.DuckDBClient.HealthCheck:sql.DB.ExecContext:f62efdce",
+      "ids": {
+        "expr": "internal/federated.DuckDBClient.HealthCheck:sql.DB.ExecContext:f62efdce",
+        "ordinal": "internal/federated.DuckDBClient.HealthCheck:sql.DB.ExecContext#1",
+        "pos": "internal/federated/duckdb_conn.go:327:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/duckdb_conn.go",
+      "line": 327,
+      "end_line": 327,
+      "column": 16,
+      "function": "DuckDBClient.HealthCheck",
+      "family": "sql-exec",
+      "callee": "sql.DB.ExecContext",
+      "via": "driver",
+      "sql_arg": "\"PRAGMA compile_options;\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/federated.DuckDBClientQueryExecutor.attachedConn:wrap:internal/federated/duckdb_pg_attach.go:attachOn:a55b077a",
+      "ids": {
+        "expr": "internal/federated.DuckDBClientQueryExecutor.attachedConn:wrap:internal/federated/duckdb_pg_attach.go:attachOn:a55b077a",
+        "ordinal": "internal/federated.DuckDBClientQueryExecutor.attachedConn:wrap:internal/federated/duckdb_pg_attach.go:attachOn#1",
+        "pos": "internal/federated/duckdb_pg_attach.go:101:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/duckdb_pg_attach.go",
+      "line": 101,
+      "end_line": 101,
+      "column": 12,
+      "function": "DuckDBClientQueryExecutor.attachedConn",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/duckdb_pg_attach.go:attachOn",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.attachOn:sql.Conn.ExecContext:6ae77173",
+      "ids": {
+        "expr": "internal/federated.attachOn:sql.Conn.ExecContext:6ae77173",
+        "ordinal": "internal/federated.attachOn:sql.Conn.ExecContext#1",
+        "pos": "internal/federated/duckdb_pg_attach.go:114:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/duckdb_pg_attach.go",
+      "line": 114,
+      "end_line": 114,
+      "column": 15,
+      "function": "attachOn",
+      "family": "sql-exec",
+      "callee": "sql.Conn.ExecContext",
+      "via": "driver",
+      "sql_arg": "sqlgen.PostgresAttachSQL(connStr)",
+      "arg_kind": "call",
+      "builders": [
+        "internal/sqlgen/duckdb_pg_attach.go:PostgresAttachSQL"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/federated.DBFederatedQueryEngine.StreamDuckDBFederatedQuery:wrap:internal/federated/duckdb_query_execute.go:DBFederatedQueryEngine.executeAndStreamDuckDB:c23b0f32",
+      "ids": {
+        "expr": "internal/federated.DBFederatedQueryEngine.StreamDuckDBFederatedQuery:wrap:internal/federated/duckdb_query_execute.go:DBFederatedQueryEngine.executeAndStreamDuckDB:c23b0f32",
+        "ordinal": "internal/federated.DBFederatedQueryEngine.StreamDuckDBFederatedQuery:wrap:internal/federated/duckdb_query_execute.go:DBFederatedQueryEngine.executeAndStreamDuckDB#1",
+        "pos": "internal/federated/duckdb_query.go:288:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/duckdb_query.go",
+      "line": 288,
+      "end_line": 295,
+      "column": 9,
+      "function": "DBFederatedQueryEngine.StreamDuckDBFederatedQuery",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/duckdb_query_execute.go:DBFederatedQueryEngine.executeAndStreamDuckDB",
+      "via": "wrapper",
+      "sql_arg": "sqlStr",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/federated/duckdb_query_build.go:DBFederatedQueryEngine.buildDuckDBQueryWithPlan"
+      ]
+    },
+    {
+      "id": "internal/federated.DBFederatedQueryEngine.fetchAndRecordDirtyIDs:federated.DirtyIDFetcher.FetchDirtyRowIDs:a55b077a",
+      "ids": {
+        "expr": "internal/federated.DBFederatedQueryEngine.fetchAndRecordDirtyIDs:federated.DirtyIDFetcher.FetchDirtyRowIDs:a55b077a",
+        "ordinal": "internal/federated.DBFederatedQueryEngine.fetchAndRecordDirtyIDs:federated.DirtyIDFetcher.FetchDirtyRowIDs#1",
+        "pos": "internal/federated/duckdb_query.go:321:19"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/duckdb_query.go",
+      "line": 321,
+      "end_line": 321,
+      "column": 19,
+      "function": "DBFederatedQueryEngine.fetchAndRecordDirtyIDs",
+      "family": "wrapper",
+      "callee": "federated.DirtyIDFetcher.FetchDirtyRowIDs",
+      "via": "interface",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.DBFederatedQueryEngine.queryDuckDB:federated.DuckDBQueryExecutor.Query:11d403f4",
+      "ids": {
+        "expr": "internal/federated.DBFederatedQueryEngine.queryDuckDB:federated.DuckDBQueryExecutor.Query:11d403f4",
+        "ordinal": "internal/federated.DBFederatedQueryEngine.queryDuckDB:federated.DuckDBQueryExecutor.Query#1",
+        "pos": "internal/federated/duckdb_query_execute.go:65:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/duckdb_query_execute.go",
+      "line": 65,
+      "end_line": 65,
+      "column": 9,
+      "function": "DBFederatedQueryEngine.queryDuckDB",
+      "family": "wrapper",
+      "callee": "federated.DuckDBQueryExecutor.Query",
+      "via": "interface",
+      "sql_arg": "e.withPostgresAttach(sqlStr)",
+      "arg_kind": "call",
+      "builders": [
+        "internal/federated/duckdb_query_execute.go:DBFederatedQueryEngine.withPostgresAttach"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/federated.AuditParquetDomain:wrap:internal/federated/parquet_domain_audit.go:decodeObject:a55b077a",
+      "ids": {
+        "expr": "internal/federated.AuditParquetDomain:wrap:internal/federated/parquet_domain_audit.go:decodeObject:a55b077a",
+        "ordinal": "internal/federated.AuditParquetDomain:wrap:internal/federated/parquet_domain_audit.go:decodeObject#1",
+        "pos": "internal/federated/parquet_domain_audit.go:74:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_domain_audit.go",
+      "line": 74,
+      "end_line": 74,
+      "column": 13,
+      "function": "AuditParquetDomain",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/parquet_domain_audit.go:decodeObject",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.decodeObject:federated.DuckDBQueryExecutor.Query:81bef208",
+      "ids": {
+        "expr": "internal/federated.decodeObject:federated.DuckDBQueryExecutor.Query:81bef208",
+        "ordinal": "internal/federated.decodeObject:federated.DuckDBQueryExecutor.Query#1",
+        "pos": "internal/federated/parquet_domain_audit.go:108:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_domain_audit.go",
+      "line": 108,
+      "end_line": 108,
+      "column": 15,
+      "function": "decodeObject",
+      "family": "wrapper",
+      "callee": "federated.DuckDBQueryExecutor.Query",
+      "via": "interface",
+      "sql_arg": "fmt.Sprintf(\"SELECT bit_xor(hash(*COLUMNS(*))) FROM read_parquet('%s')\", sqlutil.EscapeLiteral(path))",
+      "arg_kind": "call",
+      "builders": [
+        "internal/sqlutil/literal.go:EscapeLiteral"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/federated.auditColumn:wrap:internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof:a55b077a",
+      "ids": {
+        "expr": "internal/federated.auditColumn:wrap:internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof:a55b077a",
+        "ordinal": "internal/federated.auditColumn:wrap:internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof#1",
+        "pos": "internal/federated/parquet_domain_audit.go:137:23"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_domain_audit.go",
+      "line": 137,
+      "end_line": 137,
+      "column": 23,
+      "function": "auditColumn",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.globsMatchNothing:wrap:internal/federated/parquet_schema_validation.go:globParquetPaths:a55b077a",
+      "ids": {
+        "expr": "internal/federated.globsMatchNothing:wrap:internal/federated/parquet_schema_validation.go:globParquetPaths:a55b077a",
+        "ordinal": "internal/federated.globsMatchNothing:wrap:internal/federated/parquet_schema_validation.go:globParquetPaths#1",
+        "pos": "internal/federated/parquet_empty_scan.go:107:19"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_empty_scan.go",
+      "line": 107,
+      "end_line": 107,
+      "column": 19,
+      "function": "globsMatchNothing",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/parquet_schema_validation.go:globParquetPaths",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.identifyGuardViolations:wrap:internal/federated/parquet_guard_identify.go:drainGuardedParquet:a55b077a",
+      "ids": {
+        "expr": "internal/federated.identifyGuardViolations:wrap:internal/federated/parquet_guard_identify.go:drainGuardedParquet:a55b077a",
+        "ordinal": "internal/federated.identifyGuardViolations:wrap:internal/federated/parquet_guard_identify.go:drainGuardedParquet#1",
+        "pos": "internal/federated/parquet_guard_identify.go:44:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_guard_identify.go",
+      "line": 44,
+      "end_line": 44,
+      "column": 13,
+      "function": "identifyGuardViolations",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/parquet_guard_identify.go:drainGuardedParquet",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.identifyGuardViolations:wrap:internal/federated/parquet_guard_identify.go:drainGuardedParquet:a55b077a#2",
+      "ids": {
+        "expr": "internal/federated.identifyGuardViolations:wrap:internal/federated/parquet_guard_identify.go:drainGuardedParquet:a55b077a#2",
+        "ordinal": "internal/federated.identifyGuardViolations:wrap:internal/federated/parquet_guard_identify.go:drainGuardedParquet#2",
+        "pos": "internal/federated/parquet_guard_identify.go:50:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_guard_identify.go",
+      "line": 50,
+      "end_line": 50,
+      "column": 13,
+      "function": "identifyGuardViolations",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/parquet_guard_identify.go:drainGuardedParquet",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.identifyGuardViolations:wrap:internal/federated/parquet_verify.go:drainParquet:a55b077a",
+      "ids": {
+        "expr": "internal/federated.identifyGuardViolations:wrap:internal/federated/parquet_verify.go:drainParquet:a55b077a",
+        "ordinal": "internal/federated.identifyGuardViolations:wrap:internal/federated/parquet_verify.go:drainParquet#1",
+        "pos": "internal/federated/parquet_guard_identify.go:56:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_guard_identify.go",
+      "line": 56,
+      "end_line": 56,
+      "column": 13,
+      "function": "identifyGuardViolations",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/parquet_verify.go:drainParquet",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.drainGuardedParquet:federated.DuckDBQueryExecutor.Query:8a9baf6c",
+      "ids": {
+        "expr": "internal/federated.drainGuardedParquet:federated.DuckDBQueryExecutor.Query:8a9baf6c",
+        "ordinal": "internal/federated.drainGuardedParquet:federated.DuckDBQueryExecutor.Query#1",
+        "pos": "internal/federated/parquet_guard_identify.go:75:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_guard_identify.go",
+      "line": 75,
+      "end_line": 75,
+      "column": 15,
+      "function": "drainGuardedParquet",
+      "family": "wrapper",
+      "callee": "federated.DuckDBQueryExecutor.Query",
+      "via": "interface",
+      "sql_arg": "\"SELECT * FROM \" + src",
+      "arg_kind": "concat",
+      "builders": [
+        "internal/sqlgen/duckdb_cold_scan.go:BuildParquetScanSource",
+        "internal/sqlutil/literal.go:EscapeLiteral"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/federated.parquetSchemaValidator.Validate:wrap:internal/federated/parquet_schema_validation.go:globParquetPaths:a55b077a",
+      "ids": {
+        "expr": "internal/federated.parquetSchemaValidator.Validate:wrap:internal/federated/parquet_schema_validation.go:globParquetPaths:a55b077a",
+        "ordinal": "internal/federated.parquetSchemaValidator.Validate:wrap:internal/federated/parquet_schema_validation.go:globParquetPaths#1",
+        "pos": "internal/federated/parquet_schema_validation.go:155:21"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_schema_validation.go",
+      "line": 155,
+      "end_line": 155,
+      "column": 21,
+      "function": "parquetSchemaValidator.Validate",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/parquet_schema_validation.go:globParquetPaths",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.parquetSchemaValidator.runProbe:wrap:internal/federated/parquet_schema_validation.go:describeParquetColumns:a55b077a",
+      "ids": {
+        "expr": "internal/federated.parquetSchemaValidator.runProbe:wrap:internal/federated/parquet_schema_validation.go:describeParquetColumns:a55b077a",
+        "ordinal": "internal/federated.parquetSchemaValidator.runProbe:wrap:internal/federated/parquet_schema_validation.go:describeParquetColumns#1",
+        "pos": "internal/federated/parquet_schema_validation.go:323:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_schema_validation.go",
+      "line": 323,
+      "end_line": 323,
+      "column": 15,
+      "function": "parquetSchemaValidator.runProbe",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/parquet_schema_validation.go:describeParquetColumns",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.globParquetPaths:federated.DuckDBQueryExecutor.Query:8aa6bc83",
+      "ids": {
+        "expr": "internal/federated.globParquetPaths:federated.DuckDBQueryExecutor.Query:8aa6bc83",
+        "ordinal": "internal/federated.globParquetPaths:federated.DuckDBQueryExecutor.Query#1",
+        "pos": "internal/federated/parquet_schema_validation.go:393:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_schema_validation.go",
+      "line": 393,
+      "end_line": 393,
+      "column": 15,
+      "function": "globParquetPaths",
+      "family": "wrapper",
+      "callee": "federated.DuckDBQueryExecutor.Query",
+      "via": "interface",
+      "sql_arg": "fmt.Sprintf(\"SELECT file FROM glob('%s')\", sqlutil.EscapeLiteral(pattern))",
+      "arg_kind": "call",
+      "builders": [
+        "internal/sqlutil/literal.go:EscapeLiteral"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/federated.describeParquetColumns:federated.DuckDBQueryExecutor.Query:83faf251",
+      "ids": {
+        "expr": "internal/federated.describeParquetColumns:federated.DuckDBQueryExecutor.Query:83faf251",
+        "ordinal": "internal/federated.describeParquetColumns:federated.DuckDBQueryExecutor.Query#1",
+        "pos": "internal/federated/parquet_schema_validation.go:418:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_schema_validation.go",
+      "line": 418,
+      "end_line": 418,
+      "column": 15,
+      "function": "describeParquetColumns",
+      "family": "wrapper",
+      "callee": "federated.DuckDBQueryExecutor.Query",
+      "via": "interface",
+      "sql_arg": "fmt.Sprintf(\"DESCRIBE SELECT * FROM read_parquet('%s')\", sqlutil.EscapeLiteral(path))",
+      "arg_kind": "call",
+      "builders": [
+        "internal/sqlutil/literal.go:EscapeLiteral"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/federated.parquetSchemaValidator.prove:wrap:internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof:a55b077a",
+      "ids": {
+        "expr": "internal/federated.parquetSchemaValidator.prove:wrap:internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof:a55b077a",
+        "ordinal": "internal/federated.parquetSchemaValidator.prove:wrap:internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof#1",
+        "pos": "internal/federated/parquet_type_guard.go:179:10"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_type_guard.go",
+      "line": 179,
+      "end_line": 179,
+      "column": 10,
+      "function": "parquetSchemaValidator.prove",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.parquetSchemaValidator.prove:wrap:internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof:a55b077a#2",
+      "ids": {
+        "expr": "internal/federated.parquetSchemaValidator.prove:wrap:internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof:a55b077a#2",
+        "ordinal": "internal/federated.parquetSchemaValidator.prove:wrap:internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof#2",
+        "pos": "internal/federated/parquet_type_guard.go:186:10"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_type_guard.go",
+      "line": 186,
+      "end_line": 186,
+      "column": 10,
+      "function": "parquetSchemaValidator.prove",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.parquetSchemaValidator.runProof:federated.DuckDBQueryExecutor.Query:9cdf7b0b",
+      "ids": {
+        "expr": "internal/federated.parquetSchemaValidator.runProof:federated.DuckDBQueryExecutor.Query:9cdf7b0b",
+        "ordinal": "internal/federated.parquetSchemaValidator.runProof:federated.DuckDBQueryExecutor.Query#1",
+        "pos": "internal/federated/parquet_type_guard.go:202:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_type_guard.go",
+      "line": 202,
+      "end_line": 204,
+      "column": 15,
+      "function": "parquetSchemaValidator.runProof",
+      "family": "wrapper",
+      "callee": "federated.DuckDBQueryExecutor.Query",
+      "via": "interface",
+      "sql_arg": "fmt.Sprintf(\"SELECT CAST(%[1]s AS VARCHAR) FROM read_parquet('%[2]s') WHERE %[1]s IS NOT NULL AND (%[3]s) LIMIT 1\", quoted, sqlutil.EscapeLiteral(path), j.violation)",
+      "arg_kind": "call",
+      "builders": [
+        "internal/federated/parquet_type_guard.go:quoteDuckIdent",
+        "internal/sqlutil/literal.go:EscapeLiteral"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/federated.verifyParquetPaths:wrap:internal/federated/parquet_verify.go:drainParquet:a55b077a",
+      "ids": {
+        "expr": "internal/federated.verifyParquetPaths:wrap:internal/federated/parquet_verify.go:drainParquet:a55b077a",
+        "ordinal": "internal/federated.verifyParquetPaths:wrap:internal/federated/parquet_verify.go:drainParquet#1",
+        "pos": "internal/federated/parquet_verify.go:48:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_verify.go",
+      "line": 48,
+      "end_line": 48,
+      "column": 13,
+      "function": "verifyParquetPaths",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/parquet_verify.go:drainParquet",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.verifyParquetPaths:wrap:internal/federated/parquet_verify.go:drainParquet:a55b077a#2",
+      "ids": {
+        "expr": "internal/federated.verifyParquetPaths:wrap:internal/federated/parquet_verify.go:drainParquet:a55b077a#2",
+        "ordinal": "internal/federated.verifyParquetPaths:wrap:internal/federated/parquet_verify.go:drainParquet#2",
+        "pos": "internal/federated/parquet_verify.go:52:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_verify.go",
+      "line": 52,
+      "end_line": 52,
+      "column": 15,
+      "function": "verifyParquetPaths",
+      "family": "wrapper",
+      "callee": "wrap:internal/federated/parquet_verify.go:drainParquet",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/federated.drainParquet:federated.DuckDBQueryExecutor.Query:870164ec",
+      "ids": {
+        "expr": "internal/federated.drainParquet:federated.DuckDBQueryExecutor.Query:870164ec",
+        "ordinal": "internal/federated.drainParquet:federated.DuckDBQueryExecutor.Query#1",
+        "pos": "internal/federated/parquet_verify.go:77:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/federated",
+      "file": "internal/federated/parquet_verify.go",
+      "line": 77,
+      "end_line": 77,
+      "column": 15,
+      "function": "drainParquet",
+      "family": "wrapper",
+      "callee": "federated.DuckDBQueryExecutor.Query",
+      "via": "interface",
+      "sql_arg": "fmt.Sprintf(\"SELECT * FROM read_parquet('%s')\", sqlutil.EscapeLiteral(path))",
+      "arg_kind": "call",
+      "builders": [
+        "internal/sqlutil/literal.go:EscapeLiteral"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/parquetcheck.DescribeColumns:sql.DB.QueryContext:9f868cdc",
+      "ids": {
+        "expr": "internal/parquetcheck.DescribeColumns:sql.DB.QueryContext:9f868cdc",
+        "ordinal": "internal/parquetcheck.DescribeColumns:sql.DB.QueryContext#1",
+        "pos": "internal/parquetcheck/describe.go:53:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/parquetcheck",
+      "file": "internal/parquetcheck/describe.go",
+      "line": 53,
+      "end_line": 53,
+      "column": 15,
+      "function": "DescribeColumns",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryContext",
+      "via": "driver",
+      "sql_arg": "fmt.Sprintf(\"DESCRIBE SELECT * FROM read_parquet('%s')\", sqlutil.EscapeLiteral(uri))",
+      "arg_kind": "call",
+      "builders": [
+        "internal/sqlutil/literal.go:EscapeLiteral"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.PostgresHealthCheck:pgxpool.Pool.Exec:564163fc",
+      "ids": {
+        "expr": "internal.PostgresHealthCheck:pgxpool.Pool.Exec:564163fc",
+        "ordinal": "internal.PostgresHealthCheck:pgxpool.Pool.Exec#1",
+        "pos": "internal/postgres_health.go:55:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_health.go",
+      "line": 55,
+      "end_line": 55,
+      "column": 15,
+      "function": "PostgresHealthCheck",
+      "family": "pgx-exec",
+      "callee": "pgxpool.Pool.Exec",
+      "via": "driver",
+      "sql_arg": "\"SELECT 1\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal.lockRowVersion:pgx.Tx.Exec:65c18078",
+      "ids": {
+        "expr": "internal.lockRowVersion:pgx.Tx.Exec:65c18078",
+        "ordinal": "internal.lockRowVersion:pgx.Tx.Exec#1",
+        "pos": "internal/postgres_persistent_repository.go:155:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository.go",
+      "line": 155,
+      "end_line": 155,
+      "column": 15,
+      "function": "lockRowVersion",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "\"SELECT pg_advisory_xact_lock($1)\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal.nextRowVersion:pgx.Tx.QueryRow:8ab36014",
+      "ids": {
+        "expr": "internal.nextRowVersion:pgx.Tx.QueryRow:8ab36014",
+        "ordinal": "internal.nextRowVersion:pgx.Tx.QueryRow#1",
+        "pos": "internal/postgres_persistent_repository.go:175:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository.go",
+      "line": 175,
+      "end_line": 175,
+      "column": 12,
+      "function": "nextRowVersion",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.QueryRow",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/utils.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.upsertChangeLog:pgx.Tx.Exec:8ab36014",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.upsertChangeLog:pgx.Tx.Exec:8ab36014",
+        "ordinal": "internal.DBPersistentRecordRepository.upsertChangeLog:pgx.Tx.Exec#1",
+        "pos": "internal/postgres_persistent_repository.go:208:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository.go",
+      "line": 208,
+      "end_line": 208,
+      "column": 15,
+      "function": "DBPersistentRecordRepository.upsertChangeLog",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/utils.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.insertRecordInTx:wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.insertMainRow:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.insertRecordInTx:wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.insertMainRow:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.insertRecordInTx:wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.insertMainRow#1",
+        "pos": "internal/postgres_persistent_repository.go:252:19"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository.go",
+      "line": 252,
+      "end_line": 252,
+      "column": 19,
+      "function": "DBPersistentRecordRepository.insertRecordInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.insertMainRow",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.insertRecordInTx:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.insertRecordInTx:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.insertRecordInTx:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes#1",
+        "pos": "internal/postgres_persistent_repository.go:263:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository.go",
+      "line": 263,
+      "end_line": 263,
+      "column": 12,
+      "function": "DBPersistentRecordRepository.insertRecordInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.insertRecordInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.insertRecordInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.insertRecordInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog#1",
+        "pos": "internal/postgres_persistent_repository.go:268:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository.go",
+      "line": 268,
+      "end_line": 268,
+      "column": 13,
+      "function": "DBPersistentRecordRepository.insertRecordInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.prepareCreate:wrap:internal/postgres_persistent_repository.go:nextRowVersion:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.prepareCreate:wrap:internal/postgres_persistent_repository.go:nextRowVersion:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.prepareCreate:wrap:internal/postgres_persistent_repository.go:nextRowVersion#1",
+        "pos": "internal/postgres_persistent_repository.go:285:20"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository.go",
+      "line": 285,
+      "end_line": 285,
+      "column": 20,
+      "function": "DBPersistentRecordRepository.prepareCreate",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository.go:nextRowVersion",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.deleteRecordInTx:pgx.Tx.QueryRow:ce3f83e3",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.deleteRecordInTx:pgx.Tx.QueryRow:ce3f83e3",
+        "ordinal": "internal.DBPersistentRecordRepository.deleteRecordInTx:pgx.Tx.QueryRow#1",
+        "pos": "internal/postgres_persistent_repository.go:342:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository.go",
+      "line": 342,
+      "end_line": 342,
+      "column": 12,
+      "function": "DBPersistentRecordRepository.deleteRecordInTx",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.QueryRow",
+      "via": "driver",
+      "sql_arg": "deleteMain",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.deleteRecordInTx:pgx.Tx.Exec:a921284e",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.deleteRecordInTx:pgx.Tx.Exec:a921284e",
+        "ordinal": "internal.DBPersistentRecordRepository.deleteRecordInTx:pgx.Tx.Exec#1",
+        "pos": "internal/postgres_persistent_repository.go:350:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository.go",
+      "line": 350,
+      "end_line": 350,
+      "column": 15,
+      "function": "DBPersistentRecordRepository.deleteRecordInTx",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "deleteEAV",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.deleteRecordInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.deleteRecordInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.deleteRecordInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog#1",
+        "pos": "internal/postgres_persistent_repository.go:359:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository.go",
+      "line": 359,
+      "end_line": 359,
+      "column": 13,
+      "function": "DBPersistentRecordRepository.deleteRecordInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.batchInsertInTx:wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.insertMainRow:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.batchInsertInTx:wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.insertMainRow:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.batchInsertInTx:wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.insertMainRow#1",
+        "pos": "internal/postgres_persistent_repository_batch.go:60:20"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_batch.go",
+      "line": 60,
+      "end_line": 60,
+      "column": 20,
+      "function": "DBPersistentRecordRepository.batchInsertInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.insertMainRow",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.batchInsertInTx:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.batchInsertInTx:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.batchInsertInTx:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes#1",
+        "pos": "internal/postgres_persistent_repository_batch.go:70:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_batch.go",
+      "line": 70,
+      "end_line": 70,
+      "column": 13,
+      "function": "DBPersistentRecordRepository.batchInsertInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.batchInsertInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.batchInsertInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.batchInsertInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog#1",
+        "pos": "internal/postgres_persistent_repository_batch.go:74:14"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_batch.go",
+      "line": 74,
+      "end_line": 74,
+      "column": 14,
+      "function": "DBPersistentRecordRepository.batchInsertInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.batchDeleteInTx:pgx.Tx.QueryRow:ce3f83e3",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.batchDeleteInTx:pgx.Tx.QueryRow:ce3f83e3",
+        "ordinal": "internal.DBPersistentRecordRepository.batchDeleteInTx:pgx.Tx.QueryRow#1",
+        "pos": "internal/postgres_persistent_repository_batch.go:113:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_batch.go",
+      "line": 113,
+      "end_line": 113,
+      "column": 13,
+      "function": "DBPersistentRecordRepository.batchDeleteInTx",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.QueryRow",
+      "via": "driver",
+      "sql_arg": "deleteMain",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.batchDeleteInTx:pgx.Tx.Exec:a921284e",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.batchDeleteInTx:pgx.Tx.Exec:a921284e",
+        "ordinal": "internal.DBPersistentRecordRepository.batchDeleteInTx:pgx.Tx.Exec#1",
+        "pos": "internal/postgres_persistent_repository_batch.go:120:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_batch.go",
+      "line": 120,
+      "end_line": 120,
+      "column": 16,
+      "function": "DBPersistentRecordRepository.batchDeleteInTx",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "deleteEAV",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.batchDeleteInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.batchDeleteInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.batchDeleteInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog#1",
+        "pos": "internal/postgres_persistent_repository_batch.go:128:14"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_batch.go",
+      "line": 128,
+      "end_line": 128,
+      "column": 14,
+      "function": "DBPersistentRecordRepository.batchDeleteInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.batchMergeInTx:wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.updateMainRow:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.batchMergeInTx:wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.updateMainRow:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.batchMergeInTx:wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.updateMainRow#1",
+        "pos": "internal/postgres_persistent_repository_batch_merge.go:92:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_batch_merge.go",
+      "line": 92,
+      "end_line": 92,
+      "column": 13,
+      "function": "DBPersistentRecordRepository.batchMergeInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.updateMainRow",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.batchMergeInTx:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.batchMergeInTx:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.batchMergeInTx:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped#1",
+        "pos": "internal/postgres_persistent_repository_batch_merge.go:107:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_batch_merge.go",
+      "line": 107,
+      "end_line": 107,
+      "column": 13,
+      "function": "DBPersistentRecordRepository.batchMergeInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.batchMergeInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.batchMergeInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.batchMergeInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog#1",
+        "pos": "internal/postgres_persistent_repository_batch_merge.go:111:14"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_batch_merge.go",
+      "line": 111,
+      "end_line": 111,
+      "column": 14,
+      "function": "DBPersistentRecordRepository.batchMergeInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.txBoundRepository.RecheckHeld:wrap:internal/postgres_persistent_repository_claim.go:matchingRowsInTx:a55b077a",
+      "ids": {
+        "expr": "internal.txBoundRepository.RecheckHeld:wrap:internal/postgres_persistent_repository_claim.go:matchingRowsInTx:a55b077a",
+        "ordinal": "internal.txBoundRepository.RecheckHeld:wrap:internal/postgres_persistent_repository_claim.go:matchingRowsInTx#1",
+        "pos": "internal/postgres_persistent_repository_claim.go:46:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_claim.go",
+      "line": 46,
+      "end_line": 46,
+      "column": 15,
+      "function": "txBoundRepository.RecheckHeld",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_claim.go:matchingRowsInTx",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.txBoundRepository.StillMatching:wrap:internal/postgres_persistent_repository_claim.go:matchingRowsInTx:a55b077a",
+      "ids": {
+        "expr": "internal.txBoundRepository.StillMatching:wrap:internal/postgres_persistent_repository_claim.go:matchingRowsInTx:a55b077a",
+        "ordinal": "internal.txBoundRepository.StillMatching:wrap:internal/postgres_persistent_repository_claim.go:matchingRowsInTx#1",
+        "pos": "internal/postgres_persistent_repository_claim.go:56:19"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_claim.go",
+      "line": 56,
+      "end_line": 56,
+      "column": 19,
+      "function": "txBoundRepository.StillMatching",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_claim.go:matchingRowsInTx",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.tryLockRowsInTx:pgx.Tx.Query:44574816",
+      "ids": {
+        "expr": "internal.tryLockRowsInTx:pgx.Tx.Query:44574816",
+        "ordinal": "internal.tryLockRowsInTx:pgx.Tx.Query#1",
+        "pos": "internal/postgres_persistent_repository_claim.go:71:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_claim.go",
+      "line": 71,
+      "end_line": 72,
+      "column": 15,
+      "function": "tryLockRowsInTx",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.Query",
+      "via": "driver",
+      "sql_arg": "\"SELECT t.i, pg_try_advisory_xact_lock(t.k) FROM unnest($1::bigint[]) WITH ORDINALITY AS t(k, i)\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal.matchingRowsInTx:pgx.Tx.Query:8ab36014",
+      "ids": {
+        "expr": "internal.matchingRowsInTx:pgx.Tx.Query:8ab36014",
+        "ordinal": "internal.matchingRowsInTx:pgx.Tx.Query#1",
+        "pos": "internal/postgres_persistent_repository_claim.go:104:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_claim.go",
+      "line": 104,
+      "end_line": 104,
+      "column": 15,
+      "function": "matchingRowsInTx",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.Query",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/utils.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.insertEAVAttributes:pgx.Tx.Exec:8ab36014",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.insertEAVAttributes:pgx.Tx.Exec:8ab36014",
+        "ordinal": "internal.DBPersistentRecordRepository.insertEAVAttributes:pgx.Tx.Exec#1",
+        "pos": "internal/postgres_persistent_repository_eav.go:68:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_eav.go",
+      "line": 68,
+      "end_line": 68,
+      "column": 16,
+      "function": "DBPersistentRecordRepository.insertEAVAttributes",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/utils.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.replaceEAVAttributes:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.replaceEAVAttributes:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.replaceEAVAttributes:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped#1",
+        "pos": "internal/postgres_persistent_repository_eav.go:107:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_eav.go",
+      "line": 107,
+      "end_line": 107,
+      "column": 9,
+      "function": "DBPersistentRecordRepository.replaceEAVAttributes",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.replaceEAVAttributesScoped:pgx.Tx.Exec:049016de",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.replaceEAVAttributesScoped:pgx.Tx.Exec:049016de",
+        "ordinal": "internal.DBPersistentRecordRepository.replaceEAVAttributesScoped:pgx.Tx.Exec#1",
+        "pos": "internal/postgres_persistent_repository_eav.go:118:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_eav.go",
+      "line": 118,
+      "end_line": 118,
+      "column": 15,
+      "function": "DBPersistentRecordRepository.replaceEAVAttributesScoped",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "deleteQuery",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/utils.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.replaceEAVAttributesScoped:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.replaceEAVAttributesScoped:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.replaceEAVAttributesScoped:wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes#1",
+        "pos": "internal/postgres_persistent_repository_eav.go:121:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_eav.go",
+      "line": 121,
+      "end_line": 121,
+      "column": 9,
+      "function": "DBPersistentRecordRepository.replaceEAVAttributesScoped",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.checkRowGuard:pgx.Tx.QueryRow:1091e8e6",
+      "ids": {
+        "expr": "internal.checkRowGuard:pgx.Tx.QueryRow:1091e8e6",
+        "ordinal": "internal.checkRowGuard:pgx.Tx.QueryRow#1",
+        "pos": "internal/postgres_persistent_repository_guard.go:68:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_guard.go",
+      "line": 68,
+      "end_line": 68,
+      "column": 12,
+      "function": "checkRowGuard",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.QueryRow",
+      "via": "driver",
+      "sql_arg": "probe",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.txClock:pgx.Tx.QueryRow:d19c99a5",
+      "ids": {
+        "expr": "internal.txClock:pgx.Tx.QueryRow:d19c99a5",
+        "ordinal": "internal.txClock:pgx.Tx.QueryRow#1",
+        "pos": "internal/postgres_persistent_repository_guard.go:95:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_guard.go",
+      "line": 95,
+      "end_line": 95,
+      "column": 13,
+      "function": "txClock",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.QueryRow",
+      "via": "driver",
+      "sql_arg": "\"SELECT \" + sqlgen.ServerTimeMillisSQL",
+      "arg_kind": "concat",
+      "builders": [
+        "internal/sqlgen/server_time_operand.go:ServerTimeMillisSQL"
+      ]
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.insertMainRow:pgx.Tx.Exec:8ab36014",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.insertMainRow:pgx.Tx.Exec:8ab36014",
+        "ordinal": "internal.DBPersistentRecordRepository.insertMainRow:pgx.Tx.Exec#1",
+        "pos": "internal/postgres_persistent_repository_main_table.go:200:14"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_main_table.go",
+      "line": 200,
+      "end_line": 200,
+      "column": 14,
+      "function": "DBPersistentRecordRepository.insertMainRow",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/postgres_persistent_repository_main_table.go:buildInsertMainStatement"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.updateMainRow:pgx.Tx.QueryRow:8ab36014",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.updateMainRow:pgx.Tx.QueryRow:8ab36014",
+        "ordinal": "internal.DBPersistentRecordRepository.updateMainRow:pgx.Tx.QueryRow#1",
+        "pos": "internal/postgres_persistent_repository_main_table.go:217:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_main_table.go",
+      "line": 217,
+      "end_line": 217,
+      "column": 12,
+      "function": "DBPersistentRecordRepository.updateMainRow",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.QueryRow",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/postgres_persistent_repository_main_table.go:buildUpdateMainStatement"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.mergeRecordInTx:wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.updateMainRow:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.mergeRecordInTx:wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.updateMainRow:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.mergeRecordInTx:wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.updateMainRow#1",
+        "pos": "internal/postgres_persistent_repository_merge.go:119:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_merge.go",
+      "line": 119,
+      "end_line": 119,
+      "column": 12,
+      "function": "DBPersistentRecordRepository.mergeRecordInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.updateMainRow",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.mergeRecordInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.mergeRecordInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.mergeRecordInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog#1",
+        "pos": "internal/postgres_persistent_repository_merge.go:131:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_merge.go",
+      "line": 131,
+      "end_line": 131,
+      "column": 13,
+      "function": "DBPersistentRecordRepository.mergeRecordInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.lockAndRecheckInTx:wrap:internal/postgres_persistent_repository_claim.go:matchingRowsInTx:a55b077a",
+      "ids": {
+        "expr": "internal.lockAndRecheckInTx:wrap:internal/postgres_persistent_repository_claim.go:matchingRowsInTx:a55b077a",
+        "ordinal": "internal.lockAndRecheckInTx:wrap:internal/postgres_persistent_repository_claim.go:matchingRowsInTx#1",
+        "pos": "internal/postgres_persistent_repository_mutate_where.go:79:20"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_mutate_where.go",
+      "line": 79,
+      "end_line": 79,
+      "column": 20,
+      "function": "lockAndRecheckInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_claim.go:matchingRowsInTx",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.StreamOptimizedQuery:internal.persistentRecordPool.Query:8ab36014",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.StreamOptimizedQuery:internal.persistentRecordPool.Query:8ab36014",
+        "ordinal": "internal.DBPersistentRecordRepository.StreamOptimizedQuery:internal.persistentRecordPool.Query#1",
+        "pos": "internal/postgres_persistent_repository_query.go:115:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_query.go",
+      "line": 115,
+      "end_line": 115,
+      "column": 15,
+      "function": "DBPersistentRecordRepository.StreamOptimizedQuery",
+      "family": "pgx-query",
+      "callee": "internal.persistentRecordPool.Query",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/postgres_persistent_repository_query.go:DBPersistentRecordRepository.renderOptimizedQuerySQL"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.runOptimizedQuery:wrap:internal/postgres_persistent_repository_query.go:DBPersistentRecordRepository.StreamOptimizedQuery:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.runOptimizedQuery:wrap:internal/postgres_persistent_repository_query.go:DBPersistentRecordRepository.StreamOptimizedQuery:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.runOptimizedQuery:wrap:internal/postgres_persistent_repository_query.go:DBPersistentRecordRepository.StreamOptimizedQuery#1",
+        "pos": "internal/postgres_persistent_repository_query.go:204:29"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_query.go",
+      "line": 204,
+      "end_line": 207,
+      "column": 29,
+      "function": "DBPersistentRecordRepository.runOptimizedQuery",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_query.go:DBPersistentRecordRepository.StreamOptimizedQuery",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.countOptimizedQuery:wrap:internal/postgres_persistent_repository_query.go:DBPersistentRecordRepository.StreamOptimizedQuery:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.countOptimizedQuery:wrap:internal/postgres_persistent_repository_query.go:DBPersistentRecordRepository.StreamOptimizedQuery:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.countOptimizedQuery:wrap:internal/postgres_persistent_repository_query.go:DBPersistentRecordRepository.StreamOptimizedQuery#1",
+        "pos": "internal/postgres_persistent_repository_query.go:240:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_query.go",
+      "line": 240,
+      "end_line": 240,
+      "column": 16,
+      "function": "DBPersistentRecordRepository.countOptimizedQuery",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_query.go:DBPersistentRecordRepository.StreamOptimizedQuery",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.requeueInTx:pgx.Tx.QueryRow:55c0c135",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.requeueInTx:pgx.Tx.QueryRow:55c0c135",
+        "ordinal": "internal.DBPersistentRecordRepository.requeueInTx:pgx.Tx.QueryRow#1",
+        "pos": "internal/postgres_persistent_repository_requeue.go:67:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_requeue.go",
+      "line": 67,
+      "end_line": 67,
+      "column": 9,
+      "function": "DBPersistentRecordRepository.requeueInTx",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.QueryRow",
+      "via": "driver",
+      "sql_arg": "buildRequeueMainStatement(tables.EntityMain)",
+      "arg_kind": "call",
+      "builders": [
+        "internal/postgres_persistent_repository_requeue.go:buildRequeueMainStatement"
+      ]
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.requeueInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.requeueInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog:a55b077a",
+        "ordinal": "internal.DBPersistentRecordRepository.requeueInTx:wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog#1",
+        "pos": "internal/postgres_persistent_repository_requeue.go:76:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_requeue.go",
+      "line": 76,
+      "end_line": 76,
+      "column": 12,
+      "function": "DBPersistentRecordRepository.requeueInTx",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.lockRowInTx:pgx.Tx.QueryRow:1091e8e6",
+      "ids": {
+        "expr": "internal.lockRowInTx:pgx.Tx.QueryRow:1091e8e6",
+        "ordinal": "internal.lockRowInTx:pgx.Tx.QueryRow#1",
+        "pos": "internal/postgres_persistent_repository_row_lock.go:50:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_row_lock.go",
+      "line": 50,
+      "end_line": 50,
+      "column": 12,
+      "function": "lockRowInTx",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.QueryRow",
+      "via": "driver",
+      "sql_arg": "probe",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/postgres_persistent_repository_row_locking.go:rowLocking.recheckClause",
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.writeGuardRows:pgx.Tx.Exec:572d91aa",
+      "ids": {
+        "expr": "internal.writeGuardRows:pgx.Tx.Exec:572d91aa",
+        "ordinal": "internal.writeGuardRows:pgx.Tx.Exec#1",
+        "pos": "internal/postgres_persistent_repository_row_locking.go:175:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_row_locking.go",
+      "line": 175,
+      "end_line": 175,
+      "column": 16,
+      "function": "writeGuardRows",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "guardUpsertSQL(table, len(chunk))",
+      "arg_kind": "call",
+      "builders": [
+        "internal/postgres_persistent_repository_row_locking.go:guardUpsertSQL",
+        "internal/rowguard/ddl.go:Table",
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.loadRecordWithAttributes:internal.singleRowQuerier.QueryRow:8ab36014",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.loadRecordWithAttributes:internal.singleRowQuerier.QueryRow:8ab36014",
+        "ordinal": "internal.DBPersistentRecordRepository.loadRecordWithAttributes:internal.singleRowQuerier.QueryRow#1",
+        "pos": "internal/postgres_persistent_repository_single_row.go:79:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_single_row.go",
+      "line": 79,
+      "end_line": 79,
+      "column": 12,
+      "function": "DBPersistentRecordRepository.loadRecordWithAttributes",
+      "family": "pgx-query",
+      "callee": "internal.singleRowQuerier.QueryRow",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/postgres_persistent_repository_single_row.go:buildSingleRowSelect"
+      ]
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.inWriteTx:internal.persistentRecordPool.BeginTx:ab0ec186",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.inWriteTx:internal.persistentRecordPool.BeginTx:ab0ec186",
+        "ordinal": "internal.DBPersistentRecordRepository.inWriteTx:internal.persistentRecordPool.BeginTx#1",
+        "pos": "internal/postgres_persistent_repository_tx.go:23:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_tx.go",
+      "line": 23,
+      "end_line": 23,
+      "column": 13,
+      "function": "DBPersistentRecordRepository.inWriteTx",
+      "family": "pgx-begin",
+      "callee": "internal.persistentRecordPool.BeginTx",
+      "via": "interface",
+      "arg_kind": "none",
+      "options": "opts"
+    },
+    {
+      "id": "internal.txBoundRepository.uniqueKeyOwner:wrap:internal/postgres_persistent_repository_unique_keys.go:uniqueKeyOwner:a55b077a",
+      "ids": {
+        "expr": "internal.txBoundRepository.uniqueKeyOwner:wrap:internal/postgres_persistent_repository_unique_keys.go:uniqueKeyOwner:a55b077a",
+        "ordinal": "internal.txBoundRepository.uniqueKeyOwner:wrap:internal/postgres_persistent_repository_unique_keys.go:uniqueKeyOwner#1",
+        "pos": "internal/postgres_persistent_repository_txbound.go:58:23"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_txbound.go",
+      "line": 58,
+      "end_line": 58,
+      "column": 23,
+      "function": "txBoundRepository.uniqueKeyOwner",
+      "family": "wrapper",
+      "callee": "wrap:internal/postgres_persistent_repository_unique_keys.go:uniqueKeyOwner",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.undoReservation:pgx.Tx.Exec:8ab36014",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.undoReservation:pgx.Tx.Exec:8ab36014",
+        "ordinal": "internal.DBPersistentRecordRepository.undoReservation:pgx.Tx.Exec#1",
+        "pos": "internal/postgres_persistent_repository_unique_key_reserve.go:177:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_unique_key_reserve.go",
+      "line": 177,
+      "end_line": 177,
+      "column": 15,
+      "function": "DBPersistentRecordRepository.undoReservation",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/uniquekey/ddl.go:KeyTable",
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.insertKeyEntries:pgx.Tx.Query:8ab36014",
+      "ids": {
+        "expr": "internal.insertKeyEntries:pgx.Tx.Query:8ab36014",
+        "ordinal": "internal.insertKeyEntries:pgx.Tx.Query#1",
+        "pos": "internal/postgres_persistent_repository_unique_key_reserve.go:193:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_unique_key_reserve.go",
+      "line": 193,
+      "end_line": 193,
+      "column": 15,
+      "function": "insertKeyEntries",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.Query",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/uniquekey/ddl.go:KeyTable",
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.keyEntryOwners:pgx.Tx.Query:8ab36014",
+      "ids": {
+        "expr": "internal.keyEntryOwners:pgx.Tx.Query:8ab36014",
+        "ordinal": "internal.keyEntryOwners:pgx.Tx.Query#1",
+        "pos": "internal/postgres_persistent_repository_unique_key_reserve.go:227:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_unique_key_reserve.go",
+      "line": 227,
+      "end_line": 227,
+      "column": 15,
+      "function": "keyEntryOwners",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.Query",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/uniquekey/ddl.go:KeyTable",
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.heldUniqueKeys:pgx.Tx.Query:8ab36014",
+      "ids": {
+        "expr": "internal.heldUniqueKeys:pgx.Tx.Query:8ab36014",
+        "ordinal": "internal.heldUniqueKeys:pgx.Tx.Query#1",
+        "pos": "internal/postgres_persistent_repository_unique_keys.go:90:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_unique_keys.go",
+      "line": 90,
+      "end_line": 90,
+      "column": 15,
+      "function": "heldUniqueKeys",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.Query",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/uniquekey/ddl.go:KeyTable",
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.uniqueKeyOwner:pgx.Tx.QueryRow:8ab36014",
+      "ids": {
+        "expr": "internal.uniqueKeyOwner:pgx.Tx.QueryRow:8ab36014",
+        "ordinal": "internal.uniqueKeyOwner:pgx.Tx.QueryRow#1",
+        "pos": "internal/postgres_persistent_repository_unique_keys.go:145:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_unique_keys.go",
+      "line": 145,
+      "end_line": 145,
+      "column": 9,
+      "function": "uniqueKeyOwner",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.QueryRow",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/uniquekey/ddl.go:KeyTable",
+        "internal/utils.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.applyUniqueKeys:pgx.Tx.Exec:c216a2da",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.applyUniqueKeys:pgx.Tx.Exec:c216a2da",
+        "ordinal": "internal.DBPersistentRecordRepository.applyUniqueKeys:pgx.Tx.Exec#1",
+        "pos": "internal/postgres_persistent_repository_unique_keys.go:183:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_unique_keys.go",
+      "line": 183,
+      "end_line": 183,
+      "column": 16,
+      "function": "DBPersistentRecordRepository.applyUniqueKeys",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "release",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/uniquekey/ddl.go:KeyTable",
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.DBPersistentRecordRepository.releaseRowUniqueKeys:pgx.Tx.Exec:8ab36014",
+      "ids": {
+        "expr": "internal.DBPersistentRecordRepository.releaseRowUniqueKeys:pgx.Tx.Exec:8ab36014",
+        "ordinal": "internal.DBPersistentRecordRepository.releaseRowUniqueKeys:pgx.Tx.Exec#1",
+        "pos": "internal/postgres_persistent_repository_unique_keys.go:199:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_persistent_repository_unique_keys.go",
+      "line": 199,
+      "end_line": 199,
+      "column": 15,
+      "function": "DBPersistentRecordRepository.releaseRowUniqueKeys",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/uniquekey/ddl.go:KeyTable",
+        "internal/utils.go:sanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.meteredTx.CopyFrom:pgx.Tx.CopyFrom:cbe5cfdf",
+      "ids": {
+        "expr": "internal.meteredTx.CopyFrom:pgx.Tx.CopyFrom:cbe5cfdf",
+        "ordinal": "internal.meteredTx.CopyFrom:pgx.Tx.CopyFrom#1",
+        "pos": "internal/postgres_tx_meter.go:121:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/postgres_tx_meter.go",
+      "line": 121,
+      "end_line": 121,
+      "column": 12,
+      "function": "meteredTx.CopyFrom",
+      "family": "pgx-copy",
+      "callee": "pgx.Tx.CopyFrom",
+      "via": "driver",
+      "arg_kind": "none"
+    },
+    {
+      "id": "internal/reconcile.RegistrySchemaEnumerator.SchemaIDs:sql.DB.QueryContext:89893310",
+      "ids": {
+        "expr": "internal/reconcile.RegistrySchemaEnumerator.SchemaIDs:sql.DB.QueryContext:89893310",
+        "ordinal": "internal/reconcile.RegistrySchemaEnumerator.SchemaIDs:sql.DB.QueryContext#1",
+        "pos": "internal/reconcile/db.go:30:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/reconcile",
+      "file": "internal/reconcile/db.go",
+      "line": 30,
+      "end_line": 31,
+      "column": 15,
+      "function": "RegistrySchemaEnumerator.SchemaIDs",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryContext",
+      "via": "driver",
+      "sql_arg": "fmt.Sprintf(\"SELECT schema_id FROM %s WHERE schema_id = $1\", table)",
+      "arg_kind": "call",
+      "builders": [
+        "internal/sqlutil/identifier.go:SanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal/reconcile.RegistrySchemaEnumerator.SchemaIDs:sql.DB.QueryContext:436a5af4",
+      "ids": {
+        "expr": "internal/reconcile.RegistrySchemaEnumerator.SchemaIDs:sql.DB.QueryContext:436a5af4",
+        "ordinal": "internal/reconcile.RegistrySchemaEnumerator.SchemaIDs:sql.DB.QueryContext#2",
+        "pos": "internal/reconcile/db.go:33:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/reconcile",
+      "file": "internal/reconcile/db.go",
+      "line": 33,
+      "end_line": 34,
+      "column": 15,
+      "function": "RegistrySchemaEnumerator.SchemaIDs",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryContext",
+      "via": "driver",
+      "sql_arg": "fmt.Sprintf(\"SELECT schema_id FROM %s ORDER BY schema_id\", table)",
+      "arg_kind": "call",
+      "builders": [
+        "internal/sqlutil/identifier.go:SanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal/reconcile.PGLiveRows.MissingLiveRows:sql.DB.QueryContext:8ab36014",
+      "ids": {
+        "expr": "internal/reconcile.PGLiveRows.MissingLiveRows:sql.DB.QueryContext:8ab36014",
+        "ordinal": "internal/reconcile.PGLiveRows.MissingLiveRows:sql.DB.QueryContext#1",
+        "pos": "internal/reconcile/db.go:91:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/reconcile",
+      "file": "internal/reconcile/db.go",
+      "line": 91,
+      "end_line": 91,
+      "column": 15,
+      "function": "PGLiveRows.MissingLiveRows",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryContext",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/reconcile/db.go:liveRowPredicate",
+        "internal/sqlutil/identifier.go:SanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal/reconcile.PGLiveRows.LiveRowCount:sql.DB.QueryRowContext:8ab36014",
+      "ids": {
+        "expr": "internal/reconcile.PGLiveRows.LiveRowCount:sql.DB.QueryRowContext:8ab36014",
+        "ordinal": "internal/reconcile.PGLiveRows.LiveRowCount:sql.DB.QueryRowContext#1",
+        "pos": "internal/reconcile/db.go:127:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal/reconcile",
+      "file": "internal/reconcile/db.go",
+      "line": 127,
+      "end_line": 127,
+      "column": 12,
+      "function": "PGLiveRows.LiveRowCount",
+      "family": "sql-query",
+      "callee": "sql.DB.QueryRowContext",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/reconcile/db.go:liveRowPredicate",
+        "internal/sqlutil/identifier.go:SanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal/reconcile.DuckStatsReader.FileStats:wrap:internal/compaction/single_file_stats.go:SingleFileStats:a55b077a",
+      "ids": {
+        "expr": "internal/reconcile.DuckStatsReader.FileStats:wrap:internal/compaction/single_file_stats.go:SingleFileStats:a55b077a",
+        "ordinal": "internal/reconcile.DuckStatsReader.FileStats:wrap:internal/compaction/single_file_stats.go:SingleFileStats#1",
+        "pos": "internal/reconcile/deps.go:104:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal/reconcile",
+      "file": "internal/reconcile/deps.go",
+      "line": 104,
+      "end_line": 104,
+      "column": 16,
+      "function": "DuckStatsReader.FileStats",
+      "family": "wrapper",
+      "callee": "wrap:internal/compaction/single_file_stats.go:SingleFileStats",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/reconcile.DuckStatsReader.UncoveredRows:wrap:internal/compaction/uncovered_rows.go:UncoveredRows:a55b077a",
+      "ids": {
+        "expr": "internal/reconcile.DuckStatsReader.UncoveredRows:wrap:internal/compaction/uncovered_rows.go:UncoveredRows:a55b077a",
+        "ordinal": "internal/reconcile.DuckStatsReader.UncoveredRows:wrap:internal/compaction/uncovered_rows.go:UncoveredRows#1",
+        "pos": "internal/reconcile/deps.go:116:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/reconcile",
+      "file": "internal/reconcile/deps.go",
+      "line": 116,
+      "end_line": 116,
+      "column": 15,
+      "function": "DuckStatsReader.UncoveredRows",
+      "family": "wrapper",
+      "callee": "wrap:internal/compaction/uncovered_rows.go:UncoveredRows",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/reconcile.DuckStatsReader.FileColumns:wrap:internal/parquetcheck/describe.go:DescribeColumns:a55b077a",
+      "ids": {
+        "expr": "internal/reconcile.DuckStatsReader.FileColumns:wrap:internal/parquetcheck/describe.go:DescribeColumns:a55b077a",
+        "ordinal": "internal/reconcile.DuckStatsReader.FileColumns:wrap:internal/parquetcheck/describe.go:DescribeColumns#1",
+        "pos": "internal/reconcile/deps.go:126:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/reconcile",
+      "file": "internal/reconcile/deps.go",
+      "line": 126,
+      "end_line": 126,
+      "column": 15,
+      "function": "DuckStatsReader.FileColumns",
+      "family": "wrapper",
+      "callee": "wrap:internal/parquetcheck/describe.go:DescribeColumns",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/schemaledger.Gate:wrap:internal/schemaledger/gate.go:readAllActive:a55b077a",
+      "ids": {
+        "expr": "internal/schemaledger.Gate:wrap:internal/schemaledger/gate.go:readAllActive:a55b077a",
+        "ordinal": "internal/schemaledger.Gate:wrap:internal/schemaledger/gate.go:readAllActive#1",
+        "pos": "internal/schemaledger/gate.go:50:17"
+      },
+      "package": "github.com/lychee-technology/forma/internal/schemaledger",
+      "file": "internal/schemaledger/gate.go",
+      "line": 50,
+      "end_line": 50,
+      "column": 17,
+      "function": "Gate",
+      "family": "wrapper",
+      "callee": "wrap:internal/schemaledger/gate.go:readAllActive",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/schemaledger.readAllActive:schemaledger.Querier.Query:8ab36014",
+      "ids": {
+        "expr": "internal/schemaledger.readAllActive:schemaledger.Querier.Query:8ab36014",
+        "ordinal": "internal/schemaledger.readAllActive:schemaledger.Querier.Query#1",
+        "pos": "internal/schemaledger/gate.go:90:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/schemaledger",
+      "file": "internal/schemaledger/gate.go",
+      "line": 90,
+      "end_line": 90,
+      "column": 15,
+      "function": "readAllActive",
+      "family": "pgx-query",
+      "callee": "schemaledger.Querier.Query",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/schemaledger/ddl.go:PointerColumn"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/schemaledger.ReadPointer:schemaledger.Querier.Query:0cdd80b0",
+      "ids": {
+        "expr": "internal/schemaledger.ReadPointer:schemaledger.Querier.Query:0cdd80b0",
+        "ordinal": "internal/schemaledger.ReadPointer:schemaledger.Querier.Query#1",
+        "pos": "internal/schemaledger/store.go:56:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/schemaledger",
+      "file": "internal/schemaledger/store.go",
+      "line": 56,
+      "end_line": 56,
+      "column": 15,
+      "function": "ReadPointer",
+      "family": "pgx-query",
+      "callee": "schemaledger.Querier.Query",
+      "via": "interface",
+      "sql_arg": "fmt.Sprintf(\"SELECT %s FROM %s WHERE schema_id = $1\", PointerColumn, t.Registry)",
+      "arg_kind": "call",
+      "builders": [
+        "internal/schemaledger/ddl.go:PointerColumn",
+        "internal/schemaledger/ddl.go:TablesFor"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/schemaledger.ReadActive:wrap:internal/schemaledger/store.go:ReadPointer:a55b077a",
+      "ids": {
+        "expr": "internal/schemaledger.ReadActive:wrap:internal/schemaledger/store.go:ReadPointer:a55b077a",
+        "ordinal": "internal/schemaledger.ReadActive:wrap:internal/schemaledger/store.go:ReadPointer#1",
+        "pos": "internal/schemaledger/store.go:76:21"
+      },
+      "package": "github.com/lychee-technology/forma/internal/schemaledger",
+      "file": "internal/schemaledger/store.go",
+      "line": 76,
+      "end_line": 76,
+      "column": 21,
+      "function": "ReadActive",
+      "family": "wrapper",
+      "callee": "wrap:internal/schemaledger/store.go:ReadPointer",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/schemaledger.ReadActive:schemaledger.Querier.Query:06a70fc5",
+      "ids": {
+        "expr": "internal/schemaledger.ReadActive:schemaledger.Querier.Query:06a70fc5",
+        "ordinal": "internal/schemaledger.ReadActive:schemaledger.Querier.Query#1",
+        "pos": "internal/schemaledger/store.go:81:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/schemaledger",
+      "file": "internal/schemaledger/store.go",
+      "line": 81,
+      "end_line": 81,
+      "column": 15,
+      "function": "ReadActive",
+      "family": "pgx-query",
+      "callee": "schemaledger.Querier.Query",
+      "via": "interface",
+      "sql_arg": "fmt.Sprintf(\"SELECT content_hash FROM %s WHERE schema_id = $1 AND generation = $2\", t.Generation)",
+      "arg_kind": "call",
+      "builders": [
+        "internal/schemaledger/ddl.go:TablesFor"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/schemaledger.readEntries:schemaledger.Querier.Query:8ab36014",
+      "ids": {
+        "expr": "internal/schemaledger.readEntries:schemaledger.Querier.Query:8ab36014",
+        "ordinal": "internal/schemaledger.readEntries:schemaledger.Querier.Query#1",
+        "pos": "internal/schemaledger/store.go:103:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/schemaledger",
+      "file": "internal/schemaledger/store.go",
+      "line": 103,
+      "end_line": 103,
+      "column": 15,
+      "function": "readEntries",
+      "family": "pgx-query",
+      "callee": "schemaledger.Querier.Query",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/schemaledger/store.go:entryColumns"
+      ]
+    },
+    {
+      "id": "internal/schemaledger.Write:schemaledger.Execer.Exec:bb82dce7",
+      "ids": {
+        "expr": "internal/schemaledger.Write:schemaledger.Execer.Exec:bb82dce7",
+        "ordinal": "internal/schemaledger.Write:schemaledger.Execer.Exec#1",
+        "pos": "internal/schemaledger/store.go:150:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal/schemaledger",
+      "file": "internal/schemaledger/store.go",
+      "line": 150,
+      "end_line": 150,
+      "column": 12,
+      "function": "Write",
+      "family": "pgx-exec",
+      "callee": "schemaledger.Execer.Exec",
+      "via": "interface",
+      "sql_arg": "insertGeneration",
+      "arg_kind": "local-or-var",
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/schemaledger.Write:schemaledger.Execer.Exec:8ab36014",
+      "ids": {
+        "expr": "internal/schemaledger.Write:schemaledger.Execer.Exec:8ab36014",
+        "ordinal": "internal/schemaledger.Write:schemaledger.Execer.Exec#2",
+        "pos": "internal/schemaledger/store.go:158:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/schemaledger",
+      "file": "internal/schemaledger/store.go",
+      "line": 158,
+      "end_line": 158,
+      "column": 15,
+      "function": "Write",
+      "family": "pgx-exec",
+      "callee": "schemaledger.Execer.Exec",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/schemaledger/store.go:insertEntries"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/schemaledger.movePointer:schemaledger.Execer.Exec:c0f6ac70",
+      "ids": {
+        "expr": "internal/schemaledger.movePointer:schemaledger.Execer.Exec:c0f6ac70",
+        "ordinal": "internal/schemaledger.movePointer:schemaledger.Execer.Exec#1",
+        "pos": "internal/schemaledger/store.go:171:14"
+      },
+      "package": "github.com/lychee-technology/forma/internal/schemaledger",
+      "file": "internal/schemaledger/store.go",
+      "line": 171,
+      "end_line": 171,
+      "column": 14,
+      "function": "movePointer",
+      "family": "pgx-exec",
+      "callee": "schemaledger.Execer.Exec",
+      "via": "interface",
+      "sql_arg": "update",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/schemaledger/ddl.go:PointerColumn"
+      ]
+    },
+    {
+      "id": "internal/schemameta.fileSchemaRegistry.loadSchemasFromDB:pgxpool.Pool.Query:8ab36014",
+      "ids": {
+        "expr": "internal/schemameta.fileSchemaRegistry.loadSchemasFromDB:pgxpool.Pool.Query:8ab36014",
+        "ordinal": "internal/schemameta.fileSchemaRegistry.loadSchemasFromDB:pgxpool.Pool.Query#1",
+        "pos": "internal/schemameta/file_registry.go:173:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/schemameta",
+      "file": "internal/schemameta/file_registry.go",
+      "line": 173,
+      "end_line": 173,
+      "column": 15,
+      "function": "fileSchemaRegistry.loadSchemasFromDB",
+      "family": "pgx-query",
+      "callee": "pgxpool.Pool.Query",
+      "via": "driver",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/sqlutil/identifier.go:SanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal/schemameta.trackedRegistry.ActiveGeneration:wrap:internal/schemaledger/store.go:ReadPointer:a55b077a",
+      "ids": {
+        "expr": "internal/schemameta.trackedRegistry.ActiveGeneration:wrap:internal/schemaledger/store.go:ReadPointer:a55b077a",
+        "ordinal": "internal/schemameta.trackedRegistry.ActiveGeneration:wrap:internal/schemaledger/store.go:ReadPointer#1",
+        "pos": "internal/schemameta/generation_gate.go:40:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal/schemameta",
+      "file": "internal/schemameta/generation_gate.go",
+      "line": 40,
+      "end_line": 40,
+      "column": 16,
+      "function": "trackedRegistry.ActiveGeneration",
+      "family": "wrapper",
+      "callee": "wrap:internal/schemaledger/store.go:ReadPointer",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal/schemameta.MetadataLoader.loadSchemaRegistry:schemameta.DBPool.Query:8ab36014",
+      "ids": {
+        "expr": "internal/schemameta.MetadataLoader.loadSchemaRegistry:schemameta.DBPool.Query:8ab36014",
+        "ordinal": "internal/schemameta.MetadataLoader.loadSchemaRegistry:schemameta.DBPool.Query#1",
+        "pos": "internal/schemameta/loader.go:311:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/schemameta",
+      "file": "internal/schemameta/loader.go",
+      "line": 311,
+      "end_line": 311,
+      "column": 15,
+      "function": "MetadataLoader.loadSchemaRegistry",
+      "family": "pgx-query",
+      "callee": "schemameta.DBPool.Query",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/sqlutil/identifier.go:SanitizeIdentifier"
+      ]
+    },
+    {
+      "id": "internal.UniqueKeyCatalog.BuildUniqueKeys:wrap:internal/unique_key_state.go:readUniqueKeyState:a55b077a",
+      "ids": {
+        "expr": "internal.UniqueKeyCatalog.BuildUniqueKeys:wrap:internal/unique_key_state.go:readUniqueKeyState:a55b077a",
+        "ordinal": "internal.UniqueKeyCatalog.BuildUniqueKeys:wrap:internal/unique_key_state.go:readUniqueKeyState#1",
+        "pos": "internal/unique_key_build.go:107:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_build.go",
+      "line": 107,
+      "end_line": 107,
+      "column": 16,
+      "function": "UniqueKeyCatalog.BuildUniqueKeys",
+      "family": "wrapper",
+      "callee": "wrap:internal/unique_key_state.go:readUniqueKeyState",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.UniqueKeyCatalog.BuildUniqueKeys:wrap:internal/unique_key_build.go:unbuildKey:a55b077a",
+      "ids": {
+        "expr": "internal.UniqueKeyCatalog.BuildUniqueKeys:wrap:internal/unique_key_build.go:unbuildKey:a55b077a",
+        "ordinal": "internal.UniqueKeyCatalog.BuildUniqueKeys:wrap:internal/unique_key_build.go:unbuildKey#1",
+        "pos": "internal/unique_key_build.go:125:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_build.go",
+      "line": 125,
+      "end_line": 125,
+      "column": 13,
+      "function": "UniqueKeyCatalog.BuildUniqueKeys",
+      "family": "wrapper",
+      "callee": "wrap:internal/unique_key_build.go:unbuildKey",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.UniqueKeyCatalog.buildKeys:wrap:internal/unique_key_build.go:unbuildKey:a55b077a",
+      "ids": {
+        "expr": "internal.UniqueKeyCatalog.buildKeys:wrap:internal/unique_key_build.go:unbuildKey:a55b077a",
+        "ordinal": "internal.UniqueKeyCatalog.buildKeys:wrap:internal/unique_key_build.go:unbuildKey#1",
+        "pos": "internal/unique_key_build.go:189:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_build.go",
+      "line": 189,
+      "end_line": 189,
+      "column": 13,
+      "function": "UniqueKeyCatalog.buildKeys",
+      "family": "wrapper",
+      "callee": "wrap:internal/unique_key_build.go:unbuildKey",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.UniqueKeyCatalog.buildKeys:wrap:internal/unique_key_build.go:writeBuiltKey:a55b077a",
+      "ids": {
+        "expr": "internal.UniqueKeyCatalog.buildKeys:wrap:internal/unique_key_build.go:writeBuiltKey:a55b077a",
+        "ordinal": "internal.UniqueKeyCatalog.buildKeys:wrap:internal/unique_key_build.go:writeBuiltKey#1",
+        "pos": "internal/unique_key_build.go:207:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_build.go",
+      "line": 207,
+      "end_line": 207,
+      "column": 13,
+      "function": "UniqueKeyCatalog.buildKeys",
+      "family": "wrapper",
+      "callee": "wrap:internal/unique_key_build.go:writeBuiltKey",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.scanUniqueKeyOwners:wrap:internal/unique_key_build.go:scanRowPage:8ab36014",
+      "ids": {
+        "expr": "internal.scanUniqueKeyOwners:wrap:internal/unique_key_build.go:scanRowPage:8ab36014",
+        "ordinal": "internal.scanUniqueKeyOwners:wrap:internal/unique_key_build.go:scanRowPage#1",
+        "pos": "internal/unique_key_build.go:234:19"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_build.go",
+      "line": 234,
+      "end_line": 234,
+      "column": 19,
+      "function": "scanUniqueKeyOwners",
+      "family": "wrapper",
+      "callee": "wrap:internal/unique_key_build.go:scanRowPage",
+      "via": "wrapper",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/postgres_persistent_repository_single_row.go:rowSelectWithAttributes"
+      ]
+    },
+    {
+      "id": "internal.writeBuiltKey:internal.UniqueKeyStore.Exec:542e0fa9",
+      "ids": {
+        "expr": "internal.writeBuiltKey:internal.UniqueKeyStore.Exec:542e0fa9",
+        "ordinal": "internal.writeBuiltKey:internal.UniqueKeyStore.Exec#1",
+        "pos": "internal/unique_key_build.go:320:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_build.go",
+      "line": 320,
+      "end_line": 320,
+      "column": 16,
+      "function": "writeBuiltKey",
+      "family": "pgx-exec",
+      "callee": "internal.UniqueKeyStore.Exec",
+      "via": "interface",
+      "sql_arg": "insert",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/uniquekey/ddl.go:KeyTable",
+        "internal/utils.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.writeBuiltKey:internal.UniqueKeyStore.Exec:f39a756d",
+      "ids": {
+        "expr": "internal.writeBuiltKey:internal.UniqueKeyStore.Exec:f39a756d",
+        "ordinal": "internal.writeBuiltKey:internal.UniqueKeyStore.Exec#2",
+        "pos": "internal/unique_key_build.go:328:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_build.go",
+      "line": 328,
+      "end_line": 328,
+      "column": 15,
+      "function": "writeBuiltKey",
+      "family": "pgx-exec",
+      "callee": "internal.UniqueKeyStore.Exec",
+      "via": "interface",
+      "sql_arg": "state",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/uniquekey/ddl.go:StateTable",
+        "internal/utils.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.unbuildKey:internal.UniqueKeyStore.Exec:f39a756d",
+      "ids": {
+        "expr": "internal.unbuildKey:internal.UniqueKeyStore.Exec:f39a756d",
+        "ordinal": "internal.unbuildKey:internal.UniqueKeyStore.Exec#1",
+        "pos": "internal/unique_key_build.go:339:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_build.go",
+      "line": 339,
+      "end_line": 339,
+      "column": 15,
+      "function": "unbuildKey",
+      "family": "pgx-exec",
+      "callee": "internal.UniqueKeyStore.Exec",
+      "via": "interface",
+      "sql_arg": "state",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/uniquekey/ddl.go:StateTable",
+        "internal/utils.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.unbuildKey:internal.UniqueKeyStore.Exec:8d8ab088",
+      "ids": {
+        "expr": "internal.unbuildKey:internal.UniqueKeyStore.Exec:8d8ab088",
+        "ordinal": "internal.unbuildKey:internal.UniqueKeyStore.Exec#2",
+        "pos": "internal/unique_key_build.go:346:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_build.go",
+      "line": 346,
+      "end_line": 346,
+      "column": 15,
+      "function": "unbuildKey",
+      "family": "pgx-exec",
+      "callee": "internal.UniqueKeyStore.Exec",
+      "via": "interface",
+      "sql_arg": "entries",
+      "arg_kind": "local-or-var",
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.readUniqueKeyState:internal.UniqueKeyStore.Query:9b7b1dc9",
+      "ids": {
+        "expr": "internal.readUniqueKeyState:internal.UniqueKeyStore.Query:9b7b1dc9",
+        "ordinal": "internal.readUniqueKeyState:internal.UniqueKeyStore.Query#1",
+        "pos": "internal/unique_key_state.go:79:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_state.go",
+      "line": 79,
+      "end_line": 79,
+      "column": 15,
+      "function": "readUniqueKeyState",
+      "family": "pgx-query",
+      "callee": "internal.UniqueKeyStore.Query",
+      "via": "interface",
+      "sql_arg": "fmt.Sprintf(\"SELECT ltbase_schema_id, key_id, attributes_hash, storage_hash FROM %s\", sanitizeIdentifier(stateTable))",
+      "arg_kind": "call",
+      "builders": [
+        "internal/uniquekey/ddl.go:StateTable",
+        "internal/utils.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal.UniqueKeyCatalog.unbuiltKeys:wrap:internal/unique_key_state.go:readUniqueKeyState:a55b077a",
+      "ids": {
+        "expr": "internal.UniqueKeyCatalog.unbuiltKeys:wrap:internal/unique_key_state.go:readUniqueKeyState:a55b077a",
+        "ordinal": "internal.UniqueKeyCatalog.unbuiltKeys:wrap:internal/unique_key_state.go:readUniqueKeyState#1",
+        "pos": "internal/unique_key_state.go:100:16"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_state.go",
+      "line": 100,
+      "end_line": 100,
+      "column": 16,
+      "function": "UniqueKeyCatalog.unbuiltKeys",
+      "family": "wrapper",
+      "callee": "wrap:internal/unique_key_state.go:readUniqueKeyState",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.UniqueKeyCatalog.BuildUniqueKeysOfEmptySchemas:wrap:internal/unique_key_state.go:UniqueKeyCatalog.schemaIsEmpty:a55b077a",
+      "ids": {
+        "expr": "internal.UniqueKeyCatalog.BuildUniqueKeysOfEmptySchemas:wrap:internal/unique_key_state.go:UniqueKeyCatalog.schemaIsEmpty:a55b077a",
+        "ordinal": "internal.UniqueKeyCatalog.BuildUniqueKeysOfEmptySchemas:wrap:internal/unique_key_state.go:UniqueKeyCatalog.schemaIsEmpty#1",
+        "pos": "internal/unique_key_state.go:184:24"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_state.go",
+      "line": 184,
+      "end_line": 184,
+      "column": 24,
+      "function": "UniqueKeyCatalog.BuildUniqueKeysOfEmptySchemas",
+      "family": "wrapper",
+      "callee": "wrap:internal/unique_key_state.go:UniqueKeyCatalog.schemaIsEmpty",
+      "via": "wrapper",
+      "sql_arg": "ctx",
+      "arg_kind": "local-or-var"
+    },
+    {
+      "id": "internal.UniqueKeyCatalog.schemaIsEmpty:internal.UniqueKeyStore.QueryRow:8ab36014",
+      "ids": {
+        "expr": "internal.UniqueKeyCatalog.schemaIsEmpty:internal.UniqueKeyStore.QueryRow:8ab36014",
+        "ordinal": "internal.UniqueKeyCatalog.schemaIsEmpty:internal.UniqueKeyStore.QueryRow#1",
+        "pos": "internal/unique_key_state.go:209:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal",
+      "file": "internal/unique_key_state.go",
+      "line": 209,
+      "end_line": 209,
+      "column": 12,
+      "function": "UniqueKeyCatalog.schemaIsEmpty",
+      "family": "pgx-query",
+      "callee": "internal.UniqueKeyStore.QueryRow",
+      "via": "interface",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/utils.go:sanitizeIdentifier"
+      ],
+      "modifies_param_sql": true
+    },
+    {
+      "id": "internal/widthaudit.censusColumns:wrap:internal/widthaudit/column_census.go:queryColumnFindings:8ab36014",
+      "ids": {
+        "expr": "internal/widthaudit.censusColumns:wrap:internal/widthaudit/column_census.go:queryColumnFindings:8ab36014",
+        "ordinal": "internal/widthaudit.censusColumns:wrap:internal/widthaudit/column_census.go:queryColumnFindings#1",
+        "pos": "internal/widthaudit/column_census.go:126:10"
+      },
+      "package": "github.com/lychee-technology/forma/internal/widthaudit",
+      "file": "internal/widthaudit/column_census.go",
+      "line": 126,
+      "end_line": 126,
+      "column": 10,
+      "function": "censusColumns",
+      "family": "wrapper",
+      "callee": "wrap:internal/widthaudit/column_census.go:queryColumnFindings",
+      "via": "wrapper",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/widthaudit/column_census.go:BuildColumnCensusQuery"
+      ]
+    },
+    {
+      "id": "internal/widthaudit.DomainCensus:wrap:internal/widthaudit/domain_census.go:queryDomainEAVFindings:8ab36014",
+      "ids": {
+        "expr": "internal/widthaudit.DomainCensus:wrap:internal/widthaudit/domain_census.go:queryDomainEAVFindings:8ab36014",
+        "ordinal": "internal/widthaudit.DomainCensus:wrap:internal/widthaudit/domain_census.go:queryDomainEAVFindings#1",
+        "pos": "internal/widthaudit/domain_census.go:152:23"
+      },
+      "package": "github.com/lychee-technology/forma/internal/widthaudit",
+      "file": "internal/widthaudit/domain_census.go",
+      "line": 152,
+      "end_line": 152,
+      "column": 23,
+      "function": "DomainCensus",
+      "family": "wrapper",
+      "callee": "wrap:internal/widthaudit/domain_census.go:queryDomainEAVFindings",
+      "via": "wrapper",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/widthaudit/domain_census.go:BuildDomainCensusQuery"
+      ]
+    },
+    {
+      "id": "internal/widthaudit.DomainCensus:wrap:internal/widthaudit/domain_census.go:queryDomainColumnFindings:8ab36014",
+      "ids": {
+        "expr": "internal/widthaudit.DomainCensus:wrap:internal/widthaudit/domain_census.go:queryDomainColumnFindings:8ab36014",
+        "ordinal": "internal/widthaudit.DomainCensus:wrap:internal/widthaudit/domain_census.go:queryDomainColumnFindings#1",
+        "pos": "internal/widthaudit/domain_census.go:167:25"
+      },
+      "package": "github.com/lychee-technology/forma/internal/widthaudit",
+      "file": "internal/widthaudit/domain_census.go",
+      "line": 167,
+      "end_line": 167,
+      "column": 25,
+      "function": "DomainCensus",
+      "family": "wrapper",
+      "callee": "wrap:internal/widthaudit/domain_census.go:queryDomainColumnFindings",
+      "via": "wrapper",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/widthaudit/domain_census.go:BuildDomainColumnCensusQuery"
+      ]
+    },
+    {
+      "id": "internal/widthaudit.NumericCensus:wrap:internal/widthaudit/widthaudit.go:queryEAVFindings:8ab36014",
+      "ids": {
+        "expr": "internal/widthaudit.NumericCensus:wrap:internal/widthaudit/widthaudit.go:queryEAVFindings:8ab36014",
+        "ordinal": "internal/widthaudit.NumericCensus:wrap:internal/widthaudit/widthaudit.go:queryEAVFindings#1",
+        "pos": "internal/widthaudit/numeric_census.go:126:23"
+      },
+      "package": "github.com/lychee-technology/forma/internal/widthaudit",
+      "file": "internal/widthaudit/numeric_census.go",
+      "line": 126,
+      "end_line": 126,
+      "column": 23,
+      "function": "NumericCensus",
+      "family": "wrapper",
+      "callee": "wrap:internal/widthaudit/widthaudit.go:queryEAVFindings",
+      "via": "wrapper",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/widthaudit/numeric_census.go:BuildNumericCensusQuery"
+      ]
+    },
+    {
+      "id": "internal/widthaudit.NumericCensus:wrap:internal/widthaudit/column_census.go:queryColumnFindings:8ab36014",
+      "ids": {
+        "expr": "internal/widthaudit.NumericCensus:wrap:internal/widthaudit/column_census.go:queryColumnFindings:8ab36014",
+        "ordinal": "internal/widthaudit.NumericCensus:wrap:internal/widthaudit/column_census.go:queryColumnFindings#1",
+        "pos": "internal/widthaudit/numeric_census.go:141:25"
+      },
+      "package": "github.com/lychee-technology/forma/internal/widthaudit",
+      "file": "internal/widthaudit/numeric_census.go",
+      "line": 141,
+      "end_line": 141,
+      "column": 25,
+      "function": "NumericCensus",
+      "family": "wrapper",
+      "callee": "wrap:internal/widthaudit/column_census.go:queryColumnFindings",
+      "via": "wrapper",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/widthaudit/numeric_census.go:BuildNumericColumnCensusQuery"
+      ]
+    },
+    {
+      "id": "internal/widthaudit.censusEAV:wrap:internal/widthaudit/widthaudit.go:queryEAVFindings:8ab36014",
+      "ids": {
+        "expr": "internal/widthaudit.censusEAV:wrap:internal/widthaudit/widthaudit.go:queryEAVFindings:8ab36014",
+        "ordinal": "internal/widthaudit.censusEAV:wrap:internal/widthaudit/widthaudit.go:queryEAVFindings#1",
+        "pos": "internal/widthaudit/widthaudit.go:283:10"
+      },
+      "package": "github.com/lychee-technology/forma/internal/widthaudit",
+      "file": "internal/widthaudit/widthaudit.go",
+      "line": 283,
+      "end_line": 283,
+      "column": 10,
+      "function": "censusEAV",
+      "family": "wrapper",
+      "callee": "wrap:internal/widthaudit/widthaudit.go:queryEAVFindings",
+      "via": "wrapper",
+      "sql_arg": "query",
+      "arg_kind": "local-or-var",
+      "builders": [
+        "internal/widthaudit/widthaudit.go:BuildCensusQuery"
+      ]
+    }
+  ],
+  "forwarding_sites_folded": 16,
+  "wrappers": [
+    {
+      "func": "cmd/tools/init_db.go:loadRegisteredSchemaIDs",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "cmd/tools/init_db.go:registerSchemas",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.scanStorageIssueRows",
+      "param": 1,
+      "verbatim": true
+    },
+    {
+      "func": "internal/cdc/flusher.go:getUnflushedSchemaIDs",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/cdc/helpers.go:GetChangeLogStats",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/cdc/helpers.go:MarkFlushedVersions",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/cdc/helpers.go:SelectBatchRowIDs",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/cdc/init.go:getSchemaIDsToInit",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/cdc/init_batch_select.go:getEntityMainCount",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/cdc/init_batch_select.go:selectEntityMainBatch",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/compaction/merge.go:DuckMerger.MergeToTmp",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/compaction/single_file_stats.go:SingleFileStats",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/compaction/uncovered_rows.go:UncoveredRows",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/federated/change_log_reads.go:PostgresDirtyIDFetcher.FetchDirtyRowIDs",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/federated/duckdb_pg_attach.go:DuckDBClientQueryExecutor.queryWithPostgres",
+      "param": 2,
+      "verbatim": true
+    },
+    {
+      "func": "internal/federated/duckdb_pg_attach.go:attachOn",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/federated/duckdb_query_execute.go:DBFederatedQueryEngine.executeAndStreamDuckDB",
+      "param": 2,
+      "verbatim": true
+    },
+    {
+      "func": "internal/federated/duckdb_query_execute.go:DBFederatedQueryEngine.queryDuckDB",
+      "param": 1,
+      "verbatim": true
+    },
+    {
+      "func": "internal/federated/engine.go:DuckDBClientQueryExecutor.Query",
+      "param": 1,
+      "verbatim": true
+    },
+    {
+      "func": "internal/federated/parquet_domain_audit.go:decodeObject",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/federated/parquet_domain_audit.go:duckSQLPool.Query",
+      "param": 1,
+      "verbatim": true
+    },
+    {
+      "func": "internal/federated/parquet_guard_identify.go:drainGuardedParquet",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/federated/parquet_schema_validation.go:describeParquetColumns",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/federated/parquet_schema_validation.go:globParquetPaths",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/federated/parquet_verify.go:drainParquet",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/parquetcheck/describe.go:DescribeColumns",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/postgres_persistent_repository.go:nextRowVersion",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/postgres_persistent_repository_claim.go:matchingRowsInTx",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.insertMainRow",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.updateMainRow",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/postgres_persistent_repository_query.go:DBPersistentRecordRepository.StreamOptimizedQuery",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/postgres_persistent_repository_txbound.go:txStatementPool.Query",
+      "param": 1,
+      "verbatim": true
+    },
+    {
+      "func": "internal/postgres_persistent_repository_txbound.go:txStatementPool.QueryRow",
+      "param": 1,
+      "verbatim": true
+    },
+    {
+      "func": "internal/postgres_persistent_repository_unique_keys.go:uniqueKeyOwner",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/postgres_tx_meter.go:meteredTx.Exec",
+      "param": 1,
+      "verbatim": true
+    },
+    {
+      "func": "internal/postgres_tx_meter.go:meteredTx.Query",
+      "param": 1,
+      "verbatim": true
+    },
+    {
+      "func": "internal/postgres_tx_meter.go:meteredTx.QueryRow",
+      "param": 1,
+      "verbatim": true
+    },
+    {
+      "func": "internal/schemaledger/gate.go:readAllActive",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/schemaledger/store.go:ReadActive",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/schemaledger/store.go:ReadPointer",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/schemaledger/store.go:Write",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/unique_key_build.go:scanRowPage",
+      "param": 2,
+      "verbatim": true
+    },
+    {
+      "func": "internal/unique_key_build.go:unbuildKey",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/unique_key_build.go:writeBuiltKey",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/unique_key_state.go:UniqueKeyCatalog.schemaIsEmpty",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/unique_key_state.go:readUniqueKeyState",
+      "param": 0,
+      "verbatim": false
+    },
+    {
+      "func": "internal/widthaudit/column_census.go:queryColumnFindings",
+      "param": 4,
+      "verbatim": true
+    },
+    {
+      "func": "internal/widthaudit/domain_census.go:queryDomainColumnFindings",
+      "param": 3,
+      "verbatim": true
+    },
+    {
+      "func": "internal/widthaudit/domain_census.go:queryDomainEAVFindings",
+      "param": 3,
+      "verbatim": true
+    },
+    {
+      "func": "internal/widthaudit/widthaudit.go:queryEAVFindings",
+      "param": 4,
+      "verbatim": true
+    }
+  ],
+  "interface_sinks": [
+    "cmd/tools/tool_bootstrap.go:toolDBPool.Query -\u003e pgx-query",
+    "factory/factory.go:queryPool.Query -\u003e pgx-query",
+    "internal/compaction/merge.go:Merger.MergeToTmp -\u003e wrapper",
+    "internal/declaredindex/ensure.go:Conn.Exec -\u003e pgx-exec",
+    "internal/declaredindex/ensure.go:Conn.Query -\u003e pgx-query",
+    "internal/declaredindex/ensure.go:Conn.QueryRow -\u003e pgx-query",
+    "internal/federated/change_log_reads.go:DirtyIDFetcher.FetchDirtyRowIDs -\u003e wrapper",
+    "internal/federated/change_log_reads.go:dirtyIDPool.Query -\u003e pgx-query",
+    "internal/federated/duckdb_pg_attach.go:postgresQuerier.queryWithPostgres -\u003e wrapper",
+    "internal/federated/engine.go:DuckDBQueryExecutor.Query -\u003e wrapper",
+    "internal/postgres_persistent_repository.go:persistentRecordPool.BeginTx -\u003e pgx-begin",
+    "internal/postgres_persistent_repository.go:persistentRecordPool.Query -\u003e pgx-query",
+    "internal/postgres_persistent_repository_single_row.go:singleRowQuerier.QueryRow -\u003e pgx-query",
+    "internal/schemaledger/store.go:Execer.Exec -\u003e pgx-exec",
+    "internal/schemaledger/store.go:Querier.Query -\u003e pgx-query",
+    "internal/schemameta/loader.go:DBPool.Query -\u003e pgx-query",
+    "internal/unique_key_state.go:UniqueKeyStore.Exec -\u003e pgx-exec",
+    "internal/unique_key_state.go:UniqueKeyStore.Query -\u003e pgx-query",
+    "internal/unique_key_state.go:UniqueKeyStore.QueryRow -\u003e pgx-query",
+    "internal/widthaudit/widthaudit.go:Querier.Query -\u003e pgx-query"
+  ],
+  "findings": [
+    {
+      "kind": "sink-as-value",
+      "pos": "internal/cdc/mark_flushed_dsql.go:39:23",
+      "function": "markFlushedFor",
+      "detail": "MarkFlushedVersions is used as a value; calls through it cannot be attributed"
+    },
+    {
+      "kind": "sink-as-value",
+      "pos": "internal/cdc/mark_flushed_dsql.go:41:9",
+      "function": "markFlushedFor",
+      "detail": "MarkFlushedVersions is used as a value; calls through it cannot be attributed"
+    }
+  ],
+  "timings": {
+    "analyse": "91ms",
+    "closure": "71ms",
+    "load": "272ms"
+  },
+  "peak_rss_kb": 89092,
+  "main_packages": [
+    "github.com/lychee-technology/forma/cmd/benchmark",
+    "github.com/lychee-technology/forma/cmd/dsqllint",
+    "github.com/lychee-technology/forma/cmd/duckdbcompat",
+    "github.com/lychee-technology/forma/cmd/lambda",
+    "github.com/lychee-technology/forma/cmd/sample",
+    "github.com/lychee-technology/forma/cmd/server",
+    "github.com/lychee-technology/forma/cmd/tools"
+  ]
+}

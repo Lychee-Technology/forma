@@ -1,0 +1,384 @@
+{
+  "mode": "verbatim",
+  "packages": 1,
+  "sites": [
+    {
+      "id": "internal/dsqllint/spikefix.DirectExec:pgx.Tx.Exec:ec28da80",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.DirectExec:pgx.Tx.Exec:ec28da80",
+        "ordinal": "internal/dsqllint/spikefix.DirectExec:pgx.Tx.Exec#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:17:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 17,
+      "end_line": 17,
+      "column": 12,
+      "function": "DirectExec",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "\"CREATE TABLE direct (id BIGINT PRIMARY KEY)\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.TwoCalls:pgx.Tx.Exec:3ee398cb",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.TwoCalls:pgx.Tx.Exec:3ee398cb",
+        "ordinal": "internal/dsqllint/spikefix.TwoCalls:pgx.Tx.Exec#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:23:15"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 23,
+      "end_line": 23,
+      "column": 15,
+      "function": "TwoCalls",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "\"SELECT 'two-first'\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.TwoCalls:pgx.Tx.Exec:d5578085",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.TwoCalls:pgx.Tx.Exec:d5578085",
+        "ordinal": "internal/dsqllint/spikefix.TwoCalls:pgx.Tx.Exec#2",
+        "pos": "internal/dsqllint/spikefix/prod.go:26:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 26,
+      "end_line": 26,
+      "column": 12,
+      "function": "TwoCalls",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "\"SELECT 'two-second'\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.OneLine:pgx.Tx.QueryRow:a7bcc743",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.OneLine:pgx.Tx.QueryRow:a7bcc743",
+        "ordinal": "internal/dsqllint/spikefix.OneLine:pgx.Tx.QueryRow#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:33:10"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 33,
+      "end_line": 33,
+      "column": 10,
+      "function": "OneLine",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.QueryRow",
+      "via": "driver",
+      "sql_arg": "\"SELECT 'line-a'\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.OneLine:pgx.Tx.QueryRow:c83ab381",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.OneLine:pgx.Tx.QueryRow:c83ab381",
+        "ordinal": "internal/dsqllint/spikefix.OneLine:pgx.Tx.QueryRow#2",
+        "pos": "internal/dsqllint/spikefix/prod.go:33:47"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 33,
+      "end_line": 33,
+      "column": 47,
+      "function": "OneLine",
+      "family": "pgx-query",
+      "callee": "pgx.Tx.QueryRow",
+      "via": "driver",
+      "sql_arg": "\"SELECT 'line-b'\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.WrapperCallerA:wrap:internal/dsqllint/spikefix/prod.go:execSQL:9b0f6259",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.WrapperCallerA:wrap:internal/dsqllint/spikefix/prod.go:execSQL:9b0f6259",
+        "ordinal": "internal/dsqllint/spikefix.WrapperCallerA:wrap:internal/dsqllint/spikefix/prod.go:execSQL#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:43:68"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 43,
+      "end_line": 43,
+      "column": 68,
+      "function": "WrapperCallerA",
+      "family": "wrapper",
+      "callee": "wrap:internal/dsqllint/spikefix/prod.go:execSQL",
+      "via": "wrapper",
+      "sql_arg": "\"SELECT 'wrap-a'\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.WrapperCallerB:wrap:internal/dsqllint/spikefix/prod.go:execSQL:79c0e73c",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.WrapperCallerB:wrap:internal/dsqllint/spikefix/prod.go:execSQL:79c0e73c",
+        "ordinal": "internal/dsqllint/spikefix.WrapperCallerB:wrap:internal/dsqllint/spikefix/prod.go:execSQL#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:46:68"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 46,
+      "end_line": 46,
+      "column": 68,
+      "function": "WrapperCallerB",
+      "family": "wrapper",
+      "callee": "wrap:internal/dsqllint/spikefix/prod.go:execSQL",
+      "via": "wrapper",
+      "sql_arg": "\"SELECT 'wrap-b'\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.NestedCaller:wrap:internal/dsqllint/spikefix/prod.go:outer:33d7a560",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.NestedCaller:wrap:internal/dsqllint/spikefix/prod.go:outer:33d7a560",
+        "ordinal": "internal/dsqllint/spikefix.NestedCaller:wrap:internal/dsqllint/spikefix/prod.go:outer#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:53:66"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 53,
+      "end_line": 53,
+      "column": 66,
+      "function": "NestedCaller",
+      "family": "wrapper",
+      "callee": "wrap:internal/dsqllint/spikefix/prod.go:outer",
+      "via": "wrapper",
+      "sql_arg": "\"SELECT 'nested'\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.MultiLine:pgx.Tx.Exec:57a6c9ce",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.MultiLine:pgx.Tx.Exec:57a6c9ce",
+        "ordinal": "internal/dsqllint/spikefix.MultiLine:pgx.Tx.Exec#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:57:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 57,
+      "end_line": 61,
+      "column": 12,
+      "function": "MultiLine",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "\"SELECT 'multi' WHERE $1 \u003e 0\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.UsesBuilder:pgx.Tx.Exec:a45b4094",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.UsesBuilder:pgx.Tx.Exec:a45b4094",
+        "ordinal": "internal/dsqllint/spikefix.UsesBuilder:pgx.Tx.Exec#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:69:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 69,
+      "end_line": 69,
+      "column": 12,
+      "function": "UsesBuilder",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "buildDDL(\"built\")",
+      "arg_kind": "call",
+      "builders": [
+        "internal/dsqllint/spikefix/prod.go:buildDDL"
+      ]
+    },
+    {
+      "id": "internal/dsqllint/spikefix.Batched:pgx.Batch.Queue:45d70c13",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.Batched:pgx.Batch.Queue:45d70c13",
+        "ordinal": "internal/dsqllint/spikefix.Batched:pgx.Batch.Queue#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:76:2"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 76,
+      "end_line": 76,
+      "column": 2,
+      "function": "Batched",
+      "family": "pgx-batch-queue",
+      "callee": "pgx.Batch.Queue",
+      "via": "driver",
+      "sql_arg": "\"SELECT 'batch-1'\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.Batched:pgx.Batch.Queue:572432cc",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.Batched:pgx.Batch.Queue:572432cc",
+        "ordinal": "internal/dsqllint/spikefix.Batched:pgx.Batch.Queue#2",
+        "pos": "internal/dsqllint/spikefix/prod.go:77:2"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 77,
+      "end_line": 77,
+      "column": 2,
+      "function": "Batched",
+      "family": "pgx-batch-queue",
+      "callee": "pgx.Batch.Queue",
+      "via": "driver",
+      "sql_arg": "\"SELECT 'batch-2'\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.Batched:pgx.Tx.SendBatch:cbe5cfdf",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.Batched:pgx.Tx.SendBatch:cbe5cfdf",
+        "ordinal": "internal/dsqllint/spikefix.Batched:pgx.Tx.SendBatch#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:78:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 78,
+      "end_line": 78,
+      "column": 9,
+      "function": "Batched",
+      "family": "pgx-batch-send",
+      "callee": "pgx.Tx.SendBatch",
+      "via": "driver",
+      "arg_kind": "none"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.BeginWithOptions:pgx.Conn.BeginTx:83d2fe70",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.BeginWithOptions:pgx.Conn.BeginTx:83d2fe70",
+        "ordinal": "internal/dsqllint/spikefix.BeginWithOptions:pgx.Conn.BeginTx#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:83:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 83,
+      "end_line": 83,
+      "column": 13,
+      "function": "BeginWithOptions",
+      "family": "pgx-begin",
+      "callee": "pgx.Conn.BeginTx",
+      "via": "driver",
+      "arg_kind": "none",
+      "options": "pgx.TxOptions{…}"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.BeginWithOptions:pgx.Tx.Commit:cbe5cfdf",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.BeginWithOptions:pgx.Tx.Commit:cbe5cfdf",
+        "ordinal": "internal/dsqllint/spikefix.BeginWithOptions:pgx.Tx.Commit#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:87:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 87,
+      "end_line": 87,
+      "column": 9,
+      "function": "BeginWithOptions",
+      "family": "tx-end",
+      "callee": "pgx.Tx.Commit",
+      "via": "driver",
+      "arg_kind": "none"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.InClosure:pgx.BeginFunc:ac34af38",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.InClosure:pgx.BeginFunc:ac34af38",
+        "ordinal": "internal/dsqllint/spikefix.InClosure:pgx.BeginFunc#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:92:9"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 92,
+      "end_line": 95,
+      "column": 9,
+      "function": "InClosure",
+      "family": "pgx-begin",
+      "callee": "pgx.BeginFunc",
+      "via": "driver",
+      "arg_kind": "none",
+      "options": "conn"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.InClosure:pgx.Tx.Exec:cf155ce5",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.InClosure:pgx.Tx.Exec:cf155ce5",
+        "ordinal": "internal/dsqllint/spikefix.InClosure:pgx.Tx.Exec#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:93:13"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 93,
+      "end_line": 93,
+      "column": 13,
+      "function": "InClosure",
+      "family": "pgx-exec",
+      "callee": "pgx.Tx.Exec",
+      "via": "driver",
+      "sql_arg": "\"SELECT 'closure'\"",
+      "arg_kind": "literal"
+    },
+    {
+      "id": "internal/dsqllint/spikefix.SQLDirect:sql.DB.ExecContext:39c6b88a",
+      "ids": {
+        "expr": "internal/dsqllint/spikefix.SQLDirect:sql.DB.ExecContext:39c6b88a",
+        "ordinal": "internal/dsqllint/spikefix.SQLDirect:sql.DB.ExecContext#1",
+        "pos": "internal/dsqllint/spikefix/prod.go:100:12"
+      },
+      "package": "github.com/lychee-technology/forma/internal/dsqllint/spikefix",
+      "file": "internal/dsqllint/spikefix/prod.go",
+      "line": 100,
+      "end_line": 100,
+      "column": 12,
+      "function": "SQLDirect",
+      "family": "sql-exec",
+      "callee": "sql.DB.ExecContext",
+      "via": "driver",
+      "sql_arg": "\"SELECT 'database-sql'\"",
+      "arg_kind": "literal"
+    }
+  ],
+  "forwarding_sites_folded": 3,
+  "wrappers": [
+    {
+      "func": "internal/dsqllint/spikefix/prod.go:execSQL",
+      "param": 2,
+      "verbatim": true
+    },
+    {
+      "func": "internal/dsqllint/spikefix/prod.go:inner",
+      "param": 2,
+      "verbatim": true
+    },
+    {
+      "func": "internal/dsqllint/spikefix/prod.go:outer",
+      "param": 2,
+      "verbatim": true
+    }
+  ],
+  "interface_sinks": null,
+  "findings": null,
+  "timings": {
+    "analyse": "0s",
+    "closure": "0s",
+    "load": "247ms"
+  },
+  "peak_rss_kb": 12644,
+  "main_packages": [
+    "github.com/lychee-technology/forma/cmd/benchmark",
+    "github.com/lychee-technology/forma/cmd/dsqllint",
+    "github.com/lychee-technology/forma/cmd/duckdbcompat",
+    "github.com/lychee-technology/forma/cmd/lambda",
+    "github.com/lychee-technology/forma/cmd/sample",
+    "github.com/lychee-technology/forma/cmd/server",
+    "github.com/lychee-technology/forma/cmd/tools"
+  ]
+}

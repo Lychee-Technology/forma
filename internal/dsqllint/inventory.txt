@@ -257,3 +257,8 @@ not-dsql      internal/httpapi/body_limit.go:respondBodyReadError the HTTP "Conn
 not-dsql      internal/postgres_tx_meter.go:meteredTx.CopyFrom "COPY <table>" is the write meter's label for a CopyFrom, not SQL
 not-dsql      internal/schemaledger/ledgertest/ledgertest.go:* test helper package, imported only by tests
 not-dsql      internal/testutil/faultproxy/faultproxy.go:* test fault-injection proxy; inspects the wire and sends nothing of its own
+
+# --- DSQL typed call-site spike (local branch only; never part of PR #801) ---
+not-dsql      internal/dsqllint/spike/sites/catalog.go:* spike prototype: driver method names, not SQL
+not-dsql      internal/dsqllint/spike/sites/load.go:* spike prototype: package patterns, not SQL
+not-dsql      internal/dsqllint/spikefix/prod.go:* synthetic attribution fixture, build tag dsqlspike, never shipped

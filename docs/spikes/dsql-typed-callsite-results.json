@@ -1,0 +1,102 @@
+{
+  "baseline_revision": {
+    "origin_main": "7ebe2b53a928f56c9c3c2c12a80d960647fe1cbf",
+    "pr_801_head": "9776c2bbb24fc308bfd20b4849c6afcc2fdba023"
+  },
+  "prototype_revision": "local branch spike/dsql-typed-callsite (commit recorded in the report header); never pushed",
+  "environment": {
+    "go": "go1.26.0 (GOTOOLCHAIN=go1.26.0+auto; local go1.27.3)",
+    "os_arch": "linux/amd64, 8 CPUs, 15 GiB RAM",
+    "dsql_lint": "0.2.22 (PR #801 pinned wheel)"
+  },
+  "baseline_pr801": {
+    "scanner_sites": 239,
+    "scanner_sites_by_reason": {"calls a database method": 111, "holds SQL text": 117, "assembles SQL text from fragments": 5, "sets transaction options": 6},
+    "inventory_entries": 204,
+    "inventory_classes": {"rendered": 64, "uncovered": 34, "passthrough": 25, "postgres-only": 4, "duckdb": 35, "not-dsql": 42},
+    "corpus_units": 16,
+    "corpus_statements": 106,
+    "corpus_statements_recorded_through_a_driver_mock": 61,
+    "corpus_statements_from_direct_generator_calls": 45,
+    "scanner_ms_best_of_5": 924,
+    "gate_wall_ms_warm": 6760,
+    "corpus_export_ms_warm": 5151
+  },
+  "static_sites": 126,
+  "static_sites_by_family": {"pgx-exec": 22, "pgx-query": 35, "pgx-begin": 6, "pgx-copy": 1, "sql-exec": 9, "sql-query": 23, "tx-end": 13, "wrapper": 17},
+  "static_sites_by_resolution": {"driver": 80, "interface": 36, "wrapper": 10},
+  "supported_sites": 126,
+  "unsupported_sites": 0,
+  "verbatim_wrappers": 16,
+  "interface_sinks_resolved": 18,
+  "taint_mode": {"sites_without_tx_end": 182, "wrappers": 54, "findings": 2, "finding_kind": "sink-as-value at internal/cdc/mark_flushed_dsql.go:39,41"},
+  "static_ms_warm_best": 588,
+  "static_ms_cold_empty_gocache": 17904,
+  "static_peak_rss_kb": 99796,
+  "runtime_capture_overhead_ms": "within noise (5310/5817/5594 without vs 5282/5410/5527 with)",
+  "attribution_correct": 81,
+  "attribution_ambiguous": 0,
+  "attribution_failed": 0,
+  "attribution_detail": {
+    "real_corpus_records": 61,
+    "real_attributed": 61,
+    "real_label_equals_exec_site": 50,
+    "real_label_is_static_builder": 7,
+    "real_label_not_statically_verifiable": 4,
+    "synthetic_records": 20,
+    "synthetic_correct_function": 20,
+    "synthetic_batch_records_attributed_to_SendBatch_not_Queue": 4,
+    "failed_before_tx_end_family": 7,
+    "identical_across_default_noinline_race": true,
+    "wire_records_attributed_via_client_write_capture": 12
+  },
+  "evidence_join": {
+    "unit_checks_passing": 10,
+    "real_sites_classified": 126,
+    "real_dsql_sites": 37,
+    "real_dsql_sites_with_evidence": 37,
+    "real_negative_controls_failing_closed": 3,
+    "pr801_rendered_generators": 64,
+    "linked_directly_to_typed_site": 46,
+    "linked_via_builder_closure": 14,
+    "not_statically_linkable": 4
+  },
+  "mutation_tests_passed": 38,
+  "mutation_tests_failed": 0,
+  "mutation_breakdown": {
+    "detected": 26,
+    "rejected_conservatively": 4,
+    "correctly_ignored": 2,
+    "not_detected_documented": 4,
+    "runtime_only_documented": 2,
+    "not_detected_silently": 0
+  },
+  "pr801_scanner_on_same_mutations": {
+    "flagged": 32,
+    "not_flagged": 6,
+    "not_flagged_cases": ["a9_exec_in_classified_function", "a13b_new_caller_of_existing_modifying_helper", "a15c_new_main_package", "a31_new_branch_at_existing_site", "g1b_vtab_generator_new_wrapper_caller", "g2b_existing_site_vtab_generator"],
+    "false_positive": ["a11_unrelated_exec_method"]
+  },
+  "identity_ids_lost_per_scheme": {
+    "i1_unrelated_statement": {"pos": 3, "ordinal": 0, "expr": 0},
+    "i2_reformat": {"pos": 3, "ordinal": 0, "expr": 0},
+    "i3_sql_call_before_same_callee": {"pos": 3, "ordinal": 0, "expr": 0, "note": "ordinal silently re-assigns #1 to the new call"},
+    "i4_rename_local": {"pos": 0, "ordinal": 0, "expr": 1},
+    "i5_move_file": {"pos": 3, "ordinal": 0, "expr": 0},
+    "i6_rename_function": {"pos": 0, "ordinal": 1, "expr": 1}
+  },
+  "emptiness": {
+    "dsql_lint_distinguishes_empty_from_clean": false,
+    "duckdb_prepare_empty_probes_correct": "12/12",
+    "duckdb_parser_errors_on_real_corpus": "3/106"
+  },
+  "gates": {
+    "A": "PASS",
+    "B": "PASS",
+    "C": "CONDITIONAL",
+    "D": "PASS",
+    "E": "CONDITIONAL",
+    "F": "CONDITIONAL"
+  },
+  "decision": "CONDITIONAL GO"
+}

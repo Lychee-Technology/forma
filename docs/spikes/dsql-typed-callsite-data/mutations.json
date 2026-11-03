@@ -1,0 +1,1593 @@
+[
+  {
+    "describe": "literal \"/* c */ CREATE TABLE t (id SERIAL)\"",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a1_leading_comment",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spike_a1_leading_comment:pgx.Tx.Exec:ce63cde0"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spike_a1_leading_comment:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a1_leading_comment.go:10:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spike_a1_leading_comment:pgx.Tx.Exec:ce63cde0"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spike_a1_leading_comment:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a1_leading_comment.go:10:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "literal \"\\vCREATE TABLE t (id SERIAL)\"",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a2_vertical_tab",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spike_a2_vertical_tab:pgx.Tx.Exec:86732069"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spike_a2_vertical_tab:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a2_vertical_tab.go:10:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spike_a2_vertical_tab:pgx.Tx.Exec:86732069"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spike_a2_vertical_tab:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a2_vertical_tab.go:10:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "literal \"create table t (id serial)\"",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a3_lowercase",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spike_a3_lowercase:pgx.Tx.Exec:fe2c6ef5"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spike_a3_lowercase:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a3_lowercase.go:10:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spike_a3_lowercase:pgx.Tx.Exec:fe2c6ef5"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spike_a3_lowercase:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a3_lowercase.go:10:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "literal \"WITH ids(id) AS (SELECT 1) SELECT id FROM ids\"",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a4_cte_columns",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spike_a4_cte_columns:pgx.Tx.Exec:7f9534e7"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spike_a4_cte_columns:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a4_cte_columns.go:10:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spike_a4_cte_columns:pgx.Tx.Exec:7f9534e7"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spike_a4_cte_columns:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a4_cte_columns.go:10:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "literal \"SELECT(1)\"",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a5_paren_select",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spike_a5_paren_select:pgx.Tx.Exec:1e0ee88b"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spike_a5_paren_select:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a5_paren_select.go:10:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spike_a5_paren_select:pgx.Tx.Exec:1e0ee88b"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spike_a5_paren_select:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a5_paren_select.go:10:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "literal strings.Join([]string{\"CREATE \", \"TABLE t (id SERIAL)\"}, \"\")",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a6_fragments",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spike_a6_fragments:pgx.Tx.Exec:06007cfa"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spike_a6_fragments:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a6_fragments.go:11:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spike_a6_fragments:pgx.Tx.Exec:06007cfa"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spike_a6_fragments:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a6_fragments.go:11:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "keyword returned by a helper",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a7_dynamic_keyword",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA7:pgx.Tx.Exec:87b96f0e"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA7:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a7.go:18:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA7:pgx.Tx.Exec:87b96f0e"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA7:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a7.go:18:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "keyword constant from a new package",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a8_const_other_package",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA8:pgx.Tx.Exec:45ab72c5"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA8:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a8.go:11:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA8:pgx.Tx.Exec:45ab72c5"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA8:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a8.go:11:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "extra ExecContext inside leaseSchemaLocker.acquire",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a9_exec_in_classified_function",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.ExecContext:acead74e"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.ExecContext#1"
+      ],
+      "pos_gone": [
+        "internal/cdc/schema_lease.go:115:14",
+        "internal/cdc/schema_lease.go:192:9",
+        "internal/cdc/schema_lease.go:90:9"
+      ],
+      "pos_new": [
+        "internal/cdc/schema_lease.go:118:14",
+        "internal/cdc/schema_lease.go:195:9",
+        "internal/cdc/schema_lease.go:89:15",
+        "internal/cdc/schema_lease.go:93:9"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.ExecContext:acead74e"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.ExecContext#1"
+      ],
+      "pos_gone": [
+        "internal/cdc/schema_lease.go:115:14",
+        "internal/cdc/schema_lease.go:192:9",
+        "internal/cdc/schema_lease.go:90:9"
+      ],
+      "pos_new": [
+        "internal/cdc/schema_lease.go:118:14",
+        "internal/cdc/schema_lease.go:195:9",
+        "internal/cdc/schema_lease.go:89:15",
+        "internal/cdc/schema_lease.go:93:9"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "go:embed template rendered then executed",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a10_embedded_template",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA10:pgx.Tx.Exec:f884ef81"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA10:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a10.go:20:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA10:pgx.Tx.Exec:f884ef81"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA10:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a10.go:20:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "project type with its own Exec(ctx, string, ...any) (pgconn.CommandTag, error)",
+    "expect": "no-change",
+    "group": "adversarial",
+    "name": "a11_unrelated_exec_method",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "correctly-ignored"
+  },
+  {
+    "describe": "verbatim helper; both callers must be sites",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a12_forwarding_helper_two_callers",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA12a:wrap:internal/cdc/spike_a12.go:spikeExec:2d757969",
+        "internal/cdc.spikeA12b:wrap:internal/cdc/spike_a12.go:spikeExec:0a1146cd"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA12a:wrap:internal/cdc/spike_a12.go:spikeExec#1",
+        "internal/cdc.spikeA12b:wrap:internal/cdc/spike_a12.go:spikeExec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a12.go:14:63",
+        "internal/cdc/spike_a12.go:16:63"
+      ],
+      "sites": 197
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA12a:wrap:internal/cdc/spike_a12.go:spikeExec:2d757969",
+        "internal/cdc.spikeA12b:wrap:internal/cdc/spike_a12.go:spikeExec:0a1146cd"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA12a:wrap:internal/cdc/spike_a12.go:spikeExec#1",
+        "internal/cdc.spikeA12b:wrap:internal/cdc/spike_a12.go:spikeExec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a12.go:14:63",
+        "internal/cdc/spike_a12.go:16:63"
+      ],
+      "sites": 128
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "new wrapper appends FOR UPDATE; its inner call is a new site",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a13_new_modifying_wrapper",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA13:wrap:internal/cdc/spike_a13.go:spikeLock:564163fc",
+        "internal/cdc.spikeLock:pgx.Tx.Exec:524ea6fb"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA13:wrap:internal/cdc/spike_a13.go:spikeLock#1",
+        "internal/cdc.spikeLock:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a13.go:10:12",
+        "internal/cdc/spike_a13.go:14:62"
+      ],
+      "sites": 197
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeLock:pgx.Tx.Exec:524ea6fb"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeLock:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a13.go:10:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "new caller of cdc.SelectBatchRowIDs, which builds SQL from its table parameter",
+    "expect": "miss-documented",
+    "group": "adversarial",
+    "name": "a13b_new_caller_of_existing_modifying_helper",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA13b:wrap:internal/cdc/helpers.go:SelectBatchRowIDs:a55b077a"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA13b:wrap:internal/cdc/helpers.go:SelectBatchRowIDs#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a13b.go:9:18"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "miss-documented"
+  },
+  {
+    "describe": "f := tx.Exec",
+    "expect": "finding",
+    "group": "adversarial",
+    "name": "a14_method_value",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [
+        "indirect-db-call internal/cdc/spike_a14.go:11:12",
+        "sink-as-value internal/cdc/spike_a14.go:10:7"
+      ],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [
+        "indirect-db-call internal/cdc/spike_a14.go:11:12",
+        "sink-as-value internal/cdc/spike_a14.go:10:7"
+      ],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "rejected-conservatively"
+  },
+  {
+    "describe": "new package with a sink, imported by cdc",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a15a_new_shipped_package",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/spikepkg.Run:pgx.Tx.Exec:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/spikepkg.Run:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/spikepkg/p.go:11:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/spikepkg.Run:pgx.Tx.Exec:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/spikepkg.Run:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/spikepkg/p.go:11:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "new package with a sink that no shipped package imports (outside the claimed scope)",
+    "expect": "no-change",
+    "group": "adversarial",
+    "name": "a15b_unimported_package",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "correctly-ignored"
+  },
+  {
+    "describe": "new cmd/spikecmd main package",
+    "expect": "mains",
+    "group": "adversarial",
+    "name": "a15c_new_main_package",
+    "new_mains": [
+      "github.com/lychee-technology/forma/cmd/spikecmd"
+    ],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "call through a new project interface satisfied by pgx.Tx",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a16_project_interface",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA16:cdc.spikeQ.Exec:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA16:cdc.spikeQ.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a16.go:14:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA16:cdc.spikeQ.Exec:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA16:cdc.spikeQ.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a16.go:14:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "outer -\u003e inner -\u003e tx.Exec",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a17_nested_wrappers",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA17:wrap:internal/cdc/spike_a17.go:spikeOuter:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA17:wrap:internal/cdc/spike_a17.go:spikeOuter#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a17.go:16:62"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA17:wrap:internal/cdc/spike_a17.go:spikeOuter:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA17:wrap:internal/cdc/spike_a17.go:spikeOuter#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a17.go:16:62"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "wrapper declared in a new package, caller in cdc",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a18_wrapper_other_package",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA18:wrap:internal/spikewrap/w.go:Exec:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA18:wrap:internal/spikewrap/w.go:Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a18.go:11:9"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA18:wrap:internal/spikewrap/w.go:Exec:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA18:wrap:internal/spikewrap/w.go:Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a18.go:11:9"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "two Exec calls on one source line",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a19_two_sinks_one_line",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA19:pgx.Tx.Exec:336f88d9",
+        "internal/cdc.spikeA19:pgx.Tx.Exec:564163fc"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA19:pgx.Tx.Exec#1",
+        "internal/cdc.spikeA19:pgx.Tx.Exec#2"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a19.go:9:56",
+        "internal/cdc/spike_a19.go:9:89"
+      ],
+      "sites": 197
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA19:pgx.Tx.Exec:336f88d9",
+        "internal/cdc.spikeA19:pgx.Tx.Exec:564163fc"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA19:pgx.Tx.Exec#1",
+        "internal/cdc.spikeA19:pgx.Tx.Exec#2"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a19.go:9:56",
+        "internal/cdc/spike_a19.go:9:89"
+      ],
+      "sites": 128
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "Batch.Queue then SendBatch",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a20_batch",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA20:pgx.Batch.Queue:bdc5c79d",
+        "internal/cdc.spikeA20:pgx.Tx.SendBatch:cbe5cfdf"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA20:pgx.Batch.Queue#1",
+        "internal/cdc.spikeA20:pgx.Tx.SendBatch#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a20.go:11:2",
+        "internal/cdc/spike_a20.go:12:9"
+      ],
+      "sites": 197
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA20:pgx.Batch.Queue:bdc5c79d",
+        "internal/cdc.spikeA20:pgx.Tx.SendBatch:cbe5cfdf"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA20:pgx.Batch.Queue#1",
+        "internal/cdc.spikeA20:pgx.Tx.SendBatch#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a20.go:11:2",
+        "internal/cdc/spike_a20.go:12:9"
+      ],
+      "sites": 128
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "call through a func-typed variable returning pgconn.CommandTag",
+    "expect": "finding",
+    "group": "adversarial",
+    "name": "a21_func_value_call",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [
+        "indirect-db-call internal/cdc/spike_a21.go:10:12"
+      ],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [
+        "indirect-db-call internal/cdc/spike_a21.go:10:12"
+      ],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "rejected-conservatively"
+  },
+  {
+    "describe": "pgx.BeginFunc with an Exec in the closure",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a22_closure_begin_func",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA22:pgx.BeginFunc:ac34af38",
+        "internal/cdc.spikeA22:pgx.Tx.Exec:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA22:pgx.BeginFunc#1",
+        "internal/cdc.spikeA22:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a22.go:10:9",
+        "internal/cdc/spike_a22.go:11:13"
+      ],
+      "sites": 197
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA22:pgx.BeginFunc:ac34af38",
+        "internal/cdc.spikeA22:pgx.Tx.Exec:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA22:pgx.BeginFunc#1",
+        "internal/cdc.spikeA22:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a22.go:10:9",
+        "internal/cdc/spike_a22.go:11:13"
+      ],
+      "sites": 128
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "new db.QueryRowContext",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a23_database_sql",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA23:sql.DB.QueryRowContext:564163fc"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA23:sql.DB.QueryRowContext#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a23.go:10:9"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA23:sql.DB.QueryRowContext:564163fc"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA23:sql.DB.QueryRowContext#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a23.go:10:9"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "project interface with an Exec method nothing implements",
+    "expect": "finding",
+    "group": "adversarial",
+    "name": "a24_interface_without_implementer",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [
+        "unresolved-interface internal/cdc/spike_a24.go:5:40"
+      ],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [
+        "unresolved-interface internal/cdc/spike_a24.go:5:40"
+      ],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "rejected-conservatively"
+  },
+  {
+    "describe": "reflect MethodByName(\"Exec\").Call",
+    "expect": "miss-documented",
+    "group": "adversarial",
+    "name": "a25_reflection",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "miss-documented"
+  },
+  {
+    "describe": "func[T pgx.Tx] calling t.Exec",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a26_generic_type_param",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA26:pgx.Tx.Exec:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA26:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a26.go:10:12"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA26:pgx.Tx.Exec:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA26:pgx.Tx.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a26.go:10:12"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "tx.Conn().PgConn().Exec",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a27_pgconn_direct",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA27:pgconn.PgConn.Exec:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA27:pgconn.PgConn.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a27.go:10:9"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA27:pgconn.PgConn.Exec:bdc5c79d"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA27:pgconn.PgConn.Exec#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a27.go:10:9"
+      ],
+      "sites": 127
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "a verbatim wrapper passed as a function value",
+    "expect": "finding",
+    "group": "adversarial",
+    "name": "a28_wrapper_as_value",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [
+        "sink-as-value internal/cdc/spike_a28.go:16:30"
+      ],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [
+        "sink-as-value internal/cdc/spike_a28.go:16:30"
+      ],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "rejected-conservatively"
+  },
+  {
+    "describe": "new BeginTx with non-default options",
+    "expect": "new-site",
+    "group": "adversarial",
+    "name": "a29_options_forwarded",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA29:pgx.Conn.BeginTx:83d2fe70",
+        "internal/cdc.spikeA29:pgx.Tx.Rollback:cbe5cfdf"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA29:pgx.Conn.BeginTx#1",
+        "internal/cdc.spikeA29:pgx.Tx.Rollback#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a29.go:10:13",
+        "internal/cdc/spike_a29.go:14:9"
+      ],
+      "sites": 197
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.spikeA29:pgx.Conn.BeginTx:83d2fe70",
+        "internal/cdc.spikeA29:pgx.Tx.Rollback:cbe5cfdf"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.spikeA29:pgx.Conn.BeginTx#1",
+        "internal/cdc.spikeA29:pgx.Tx.Rollback#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [
+        "internal/cdc/spike_a29.go:10:13",
+        "internal/cdc/spike_a29.go:14:9"
+      ],
+      "sites": 128
+    },
+    "verdict": "detected"
+  },
+  {
+    "describe": "a fourth CDC export stage whose query (a new SQL text) reaches the existing appendStageRows site through exportStage.query",
+    "expect": "miss-documented",
+    "group": "adversarial",
+    "name": "a30_new_sql_via_struct_field_into_existing_site",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "miss-documented"
+  },
+  {
+    "describe": "a new runtime branch changes the SQL text an existing site (GetChangeLogStats) sends",
+    "expect": "miss-documented",
+    "group": "adversarial",
+    "name": "a31_new_branch_at_existing_site",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [
+        "internal/cdc/helpers.go:114:15",
+        "internal/cdc/helpers.go:22:9",
+        "internal/cdc/helpers.go:48:15"
+      ],
+      "pos_new": [
+        "internal/cdc/helpers.go:117:15",
+        "internal/cdc/helpers.go:25:9",
+        "internal/cdc/helpers.go:51:15"
+      ],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [
+        "internal/cdc/helpers.go:114:15",
+        "internal/cdc/helpers.go:22:9",
+        "internal/cdc/helpers.go:48:15"
+      ],
+      "pos_new": [
+        "internal/cdc/helpers.go:117:15",
+        "internal/cdc/helpers.go:25:9",
+        "internal/cdc/helpers.go:51:15"
+      ],
+      "sites": 126
+    },
+    "verdict": "miss-documented"
+  },
+  {
+    "describe": "insert `_ = holder` at the top of acquire",
+    "expect": "",
+    "group": "identity",
+    "name": "i1_unrelated_statement",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [
+        "internal/cdc/schema_lease.go:115:14",
+        "internal/cdc/schema_lease.go:192:9",
+        "internal/cdc/schema_lease.go:90:9"
+      ],
+      "pos_new": [
+        "internal/cdc/schema_lease.go:116:14",
+        "internal/cdc/schema_lease.go:193:9",
+        "internal/cdc/schema_lease.go:91:9"
+      ],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [
+        "internal/cdc/schema_lease.go:115:14",
+        "internal/cdc/schema_lease.go:192:9",
+        "internal/cdc/schema_lease.go:90:9"
+      ],
+      "pos_new": [
+        "internal/cdc/schema_lease.go:116:14",
+        "internal/cdc/schema_lease.go:193:9",
+        "internal/cdc/schema_lease.go:91:9"
+      ],
+      "sites": 126
+    },
+    "verdict": "identity"
+  },
+  {
+    "describe": "split a call over lines and add blank lines at the top of the file",
+    "expect": "",
+    "group": "identity",
+    "name": "i2_reformat",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [
+        "internal/cdc/schema_lease.go:115:14",
+        "internal/cdc/schema_lease.go:192:9",
+        "internal/cdc/schema_lease.go:90:9"
+      ],
+      "pos_new": [
+        "internal/cdc/schema_lease.go:122:14",
+        "internal/cdc/schema_lease.go:199:9",
+        "internal/cdc/schema_lease.go:93:9"
+      ],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [
+        "internal/cdc/schema_lease.go:115:14",
+        "internal/cdc/schema_lease.go:192:9",
+        "internal/cdc/schema_lease.go:90:9"
+      ],
+      "pos_new": [
+        "internal/cdc/schema_lease.go:122:14",
+        "internal/cdc/schema_lease.go:199:9",
+        "internal/cdc/schema_lease.go:93:9"
+      ],
+      "sites": 126
+    },
+    "verdict": "identity"
+  },
+  {
+    "describe": "insert another QueryRowContext before the existing one in acquire",
+    "expect": "",
+    "group": "identity",
+    "name": "i3_sql_call_before_same_callee",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext:564163fc"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext#2"
+      ],
+      "pos_gone": [
+        "internal/cdc/schema_lease.go:115:14",
+        "internal/cdc/schema_lease.go:192:9",
+        "internal/cdc/schema_lease.go:90:9"
+      ],
+      "pos_new": [
+        "internal/cdc/schema_lease.go:116:14",
+        "internal/cdc/schema_lease.go:193:9",
+        "internal/cdc/schema_lease.go:89:6",
+        "internal/cdc/schema_lease.go:91:9"
+      ],
+      "sites": 196
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext:564163fc"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext#2"
+      ],
+      "pos_gone": [
+        "internal/cdc/schema_lease.go:115:14",
+        "internal/cdc/schema_lease.go:192:9",
+        "internal/cdc/schema_lease.go:90:9"
+      ],
+      "pos_new": [
+        "internal/cdc/schema_lease.go:116:14",
+        "internal/cdc/schema_lease.go:193:9",
+        "internal/cdc/schema_lease.go:89:6",
+        "internal/cdc/schema_lease.go:91:9"
+      ],
+      "sites": 127
+    },
+    "verdict": "identity"
+  },
+  {
+    "describe": "rename local `query` to `stmt` in acquire",
+    "expect": "",
+    "group": "identity",
+    "name": "i4_rename_local",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext:8ab36014"
+      ],
+      "expr_new": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext:2bac69d8"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext:8ab36014"
+      ],
+      "expr_new": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext:2bac69d8"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "identity"
+  },
+  {
+    "describe": "move GetChangeLogStats to a new file in the same package",
+    "expect": "",
+    "group": "identity",
+    "name": "i5_move_file",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [
+        "internal/cdc.schemaFlushContext.flushUnderLock:wrap:internal/cdc/helpers.go:GetChangeLogStats:a55b077a"
+      ],
+      "expr_new": [
+        "internal/cdc.schemaFlushContext.flushUnderLock:wrap:internal/cdc/helpers_stats.go:GetChangeLogStats:a55b077a"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [
+        "internal/cdc.schemaFlushContext.flushUnderLock:wrap:internal/cdc/helpers.go:GetChangeLogStats#1"
+      ],
+      "ordinal_new": [
+        "internal/cdc.schemaFlushContext.flushUnderLock:wrap:internal/cdc/helpers_stats.go:GetChangeLogStats#1"
+      ],
+      "pos_gone": [
+        "internal/cdc/helpers.go:114:15",
+        "internal/cdc/helpers.go:22:9",
+        "internal/cdc/helpers.go:48:15"
+      ],
+      "pos_new": [
+        "internal/cdc/helpers.go:33:15",
+        "internal/cdc/helpers.go:99:15",
+        "internal/cdc/helpers_stats.go:15:9"
+      ],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [],
+      "expr_new": [],
+      "new_findings": [],
+      "ordinal_gone": [],
+      "ordinal_new": [],
+      "pos_gone": [
+        "internal/cdc/helpers.go:114:15",
+        "internal/cdc/helpers.go:22:9",
+        "internal/cdc/helpers.go:48:15"
+      ],
+      "pos_new": [
+        "internal/cdc/helpers.go:33:15",
+        "internal/cdc/helpers.go:99:15",
+        "internal/cdc/helpers_stats.go:15:9"
+      ],
+      "sites": 126
+    },
+    "verdict": "identity"
+  },
+  {
+    "describe": "rename leaseSchemaLocker.acquire to acquireLease",
+    "expect": "",
+    "group": "identity",
+    "name": "i6_rename_function",
+    "new_mains": [],
+    "taint": {
+      "expr_gone": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext:8ab36014"
+      ],
+      "expr_new": [
+        "internal/cdc.leaseSchemaLocker.acquireLease:sql.DB.QueryRowContext:8ab36014"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext#1"
+      ],
+      "ordinal_new": [
+        "internal/cdc.leaseSchemaLocker.acquireLease:sql.DB.QueryRowContext#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 195
+    },
+    "verbatim": {
+      "expr_gone": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext:8ab36014"
+      ],
+      "expr_new": [
+        "internal/cdc.leaseSchemaLocker.acquireLease:sql.DB.QueryRowContext:8ab36014"
+      ],
+      "new_findings": [],
+      "ordinal_gone": [
+        "internal/cdc.leaseSchemaLocker.acquire:sql.DB.QueryRowContext#1"
+      ],
+      "ordinal_new": [
+        "internal/cdc.leaseSchemaLocker.acquireLease:sql.DB.QueryRowContext#1"
+      ],
+      "pos_gone": [],
+      "pos_new": [],
+      "sites": 126
+    },
+    "verdict": "identity"
+  }
+]
