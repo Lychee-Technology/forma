@@ -39,6 +39,14 @@ const (
 	whyFragments = "assembles SQL text from fragments"
 )
 
+// cteHead is the head of a WITH query up to its AS: a bare or double-quoted
+// name, optionally followed by a column list (WITH ids(id) AS ...), which
+// the head may hold as a whole or, read from fragments, as a dynamic piece
+// (#740 review R4-F1). A bare name with no column list must be followed by
+// space, so prose such as "with alias" is not a head. What follows AS
+// ([NOT] MATERIALIZED, the query) is not part of the head.
+const cteHead = `(?:\w+\s+|"(?:[^"]|"")+"\s*|(?:\w+|"(?:[^"]|"")+")\s*\([^()]*\)\s*)AS\b`
+
 // sqlStatement matches text that starts a SQL statement, in any letter
 // case. A leading BEGIN or START TRANSACTION only counts as the whole text
 // (beginStatement), so error text such as "begin tx: ..." is not SQL.
@@ -50,7 +58,7 @@ var sqlStatement = regexp.MustCompile(`(?i)^(?:` +
 	`UPDATE\s+\S+\s+(?:(?:AS\s+)?\w+\s+)?SET\b|` +
 	`DELETE\s+FROM\b|` +
 	`SELECT\s|` +
-	`WITH\s+(?:RECURSIVE\s+)?\w+\s+AS\b|` +
+	`WITH\s+(?:RECURSIVE\s+)?` + cteHead + `|` +
 	`SET\s+(?:TRANSACTION|SESSION|LOCAL)\b|` +
 	`TRUNCATE\b|LOCK\s+TABLE\b|COPY\s*[\w(]|GRANT\s+\w+\s+ON\b|REVOKE\s+\w+\s+ON\b|` +
 	`COMMIT\s*;?\s*$|ROLLBACK\s*;?\s*$|SAVEPOINT\s+\w+\s*;?\s*$)`)
