@@ -48,6 +48,23 @@ const (
 // ([NOT] MATERIALIZED, the query) is not part of the head.
 const cteHead = `(?:\w+\s+|"(?:[^"]|"")+"\s*|(?:\w+|"(?:[^"]|"")+")\s*\([^()]*\)\s*)AS\b`
 
+// ddlObject is the kind of object a CREATE, ALTER or DROP statement
+// names, every kind PostgreSQL has, so a statement about one DSQL does not
+// support (CREATE MATERIALIZED VIEW, DROP EXTENSION) is found as surely as
+// one about a table (#740 review R7-F1).
+const ddlObject = `(?:TABLE|INDEX|SEQUENCE|(?:MATERIALIZED\s+)?VIEW|SCHEMA|EXTENSION|TYPE|DOMAIN|` +
+	`FUNCTION|PROCEDURE|ROUTINE|AGGREGATE|(?:EVENT\s+)?TRIGGER|RULE|POLICY|ROLE|USER(?:\s+MAPPING)?|GROUP|` +
+	`DATABASE|TABLESPACE|LANGUAGE|CAST|COLLATION|CONVERSION|OPERATOR|STATISTICS|PUBLICATION|SUBSCRIPTION|` +
+	`SERVER|FOREIGN\s+(?:TABLE|DATA\s+WRAPPER)|TEXT\s+SEARCH|ACCESS\s+METHOD|TRANSFORM)\b`
+
+// createModifier is a word a CREATE statement may put before the kind of
+// object it creates, in any number and order: CREATE UNLOGGED TABLE, CREATE
+// GLOBAL TEMPORARY TABLE, CREATE OR REPLACE TRUSTED PROCEDURAL LANGUAGE,
+// CREATE CONSTRAINT TRIGGER, CREATE DEFAULT CONVERSION (#740 review
+// R7-F1). DSQL refuses several of them, so a generator of one must reach
+// the inventory, not slip past it on its modifier.
+const createModifier = `(?:OR\s+REPLACE|GLOBAL|LOCAL|TEMP(?:ORARY)?|UNLOGGED|UNIQUE|RECURSIVE|CONSTRAINT|DEFAULT|TRUSTED|PROCEDURAL)`
+
 // sqlStatement matches text that starts a SQL statement, in any letter
 // case. LooksLikeSQL also reads it in the token form sqlTokens writes, so
 // a keyword may run into punctuation (SELECT(1), SELECT*FROM t,
@@ -62,9 +79,11 @@ const cteHead = `(?:\w+\s+|"(?:[^"]|"")+"\s*|(?:\w+|"(?:[^"]|"")+")\s*\([^()]*\)
 // START TRANSACTION only counts as the whole text (beginStatement), so
 // error text such as "begin tx: ..." is not SQL.
 var sqlStatement = regexp.MustCompile(`(?i)^(?:\(\s*)*(?:` +
-	`CREATE\s+(?:OR\s+REPLACE\s+)?(?:UNIQUE\s+)?(?:TEMP(?:ORARY)?\s+)?(?:TABLE|INDEX|SEQUENCE|VIEW|SCHEMA|EXTENSION|TYPE|FUNCTION|TRIGGER|DOMAIN|ROLE)\b|` +
-	`ALTER\s+(?:TABLE|INDEX|SEQUENCE|VIEW|SCHEMA|TYPE|ROLE)\b|` +
-	`DROP\s+(?:TABLE|INDEX|SEQUENCE|VIEW|SCHEMA|TYPE|FUNCTION|ROLE)\b|` +
+	`CREATE\s+(?:` + createModifier + `\s+)*` + ddlObject + `|` +
+	`ALTER\s+(?:` + ddlObject + `|SYSTEM\b|DEFAULT\s+PRIVILEGES\b)|` +
+	`DROP\s+(?:` + ddlObject + `|OWNED\b)|` +
+	`REFRESH\s+MATERIALIZED\s+VIEW\b|COMMENT\s+ON\s+(?:COLUMN\b|CONSTRAINT\b|` + ddlObject + `)|` +
+	`MERGE\s+INTO\s+\S+\s+(?:(?:AS\s+)?\w+\s+)?USING\b|` +
 	`INSERT\s+INTO\b|` +
 	`UPDATE\s+\S+\s+(?:(?:AS\s+)?\w+\s+)?SET\b|` +
 	`DELETE\s+FROM\b|` +

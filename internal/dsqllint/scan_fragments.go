@@ -11,7 +11,8 @@ import (
 // fragmentWindow is how many consecutive fragments the scan joins when it
 // looks for a statement start: enough for the longest statement head
 // sqlStatement matches when every keyword is its own fragment, such as
-// CREATE OR REPLACE UNIQUE TEMP TABLE, or UPDATE <table> AS <alias> SET.
+// CREATE OR REPLACE TRUSTED PROCEDURAL LANGUAGE, or UPDATE <table> AS
+// <alias> SET.
 const fragmentWindow = 8
 
 // fragment is one piece of a symbol: a string literal, a reference to a
