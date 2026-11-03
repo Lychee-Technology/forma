@@ -2,13 +2,13 @@
 
 Question: can a type-aware inventory of SQL execution sites, joined with runtime corpus evidence, replace PR #801's SQL-text scanner as the guard for #740's criterion 4 ("newly introduced DSQL-reachable SQL cannot quietly evade the inventory")?
 
-This is an investigation with a disposable prototype. Nothing here is production code. The scanner in PR #801 is untouched, and no branch was pushed.
+This is an investigation with a disposable prototype. Nothing here is production code. The scanner in PR #801 is untouched. The prototype is published on the branch `spike/dsql-typed-callsite` for reproducibility only; it is not proposed for merge.
 
 | Revision | Commit |
 |---|---|
 | `origin/main` | `7ebe2b53a928` (also the PR's merge base) |
 | PR #801 HEAD | `9776c2bbb24f` |
-| Spike | prototype `d6e96c8` on local branch `spike/dsql-typed-callsite`, forked from the PR HEAD so the existing corpus recorders could be reused |
+| Spike | prototype `d6e96c8` on branch `spike/dsql-typed-callsite` (not for merge), forked from the PR HEAD so the existing corpus recorders could be reused |
 
 Environment: Go 1.26.0 through `GOTOOLCHAIN=go1.26.0+auto` (the local Go is 1.27.3), linux/amd64, 8 CPUs, 15 GiB of RAM, and dsql-lint 0.2.22 from the PR's pinned wheel. Every number below was measured in this environment unless it is marked otherwise. The raw outputs are in `docs/spikes/dsql-typed-callsite-data/`, and the summary is in `docs/spikes/dsql-typed-callsite-results.json`.
 
