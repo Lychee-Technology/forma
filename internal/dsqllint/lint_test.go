@@ -212,3 +212,19 @@ func TestWheelsPinEveryCIPlatform(t *testing.T) {
 		}
 	}
 }
+
+func TestReadOriginsCountsSQLNotLabels(t *testing.T) {
+	o, err := ReadOrigins(strings.NewReader("-- header\n-- origin: a.go:F\nSELECT ';' AS x;\n-- origin: a.go:G\n/* c */\nSELECT 2;\n"))
+	if err != nil || o.Statements != 2 {
+		t.Fatalf("ReadOrigins = %+v, %v; want 2 statements", o, err)
+	}
+	for text, want := range map[string]string{
+		"-- origin: a.go:F\n-- no statement\n":                 "a.go:F on line 1 labels no executable SQL statement",
+		"-- origin: a.go:F\nSELECT 1;\n-- origin: a.go:G\n;\n": "a.go:G on line 3 labels no executable SQL statement",
+		"SELECT 0;\n-- origin: a.go:F\nSELECT 1;\n":            "1 statement(s) before its first origin comment",
+	} {
+		if _, err := ReadOrigins(strings.NewReader(text)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("ReadOrigins(%q) error = %v, want one containing %q", text, err, want)
+		}
+	}
+}

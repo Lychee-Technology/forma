@@ -42,10 +42,11 @@ var ErrGateFailed = errors.New("DSQL lint gate failed")
 // regression fixtures, render the corpus, lint it, and compare the
 // findings with the known ones.
 func Run(ctx context.Context, cfg Config) error {
-	entries, known, err := loadInputs(cfg.Root)
+	inv, known, err := loadInputs(cfg.Root)
 	if err != nil {
 		return err
 	}
+	entries := inv.Entries
 	if problems := checkAll(cfg.Root, entries, known); len(problems) > 0 {
 		return report(cfg.Out, "inventory", problems)
 	}
@@ -74,33 +75,33 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	v := Judge(findings, known)
-	printSummary(cfg.Out, entries, targets, v, known)
+	printSummary(cfg.Out, inv, targets, v, known)
 	if len(v.Unexpected) > 0 || len(v.Stale) > 0 {
 		return ErrGateFailed
 	}
 	return nil
 }
 
-func loadInputs(root string) ([]Entry, []Known, error) {
+func loadInputs(root string) (Inventory, []Known, error) {
 	f, err := os.Open(filepath.Join(root, InventoryPath))
 	if err != nil {
-		return nil, nil, fmt.Errorf("open inventory: %w", err)
+		return Inventory{}, nil, fmt.Errorf("open inventory: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	entries, err := ParseInventory(f)
+	inv, err := ParseInventory(f)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", InventoryPath, err)
+		return Inventory{}, nil, fmt.Errorf("%s: %w", InventoryPath, err)
 	}
 	k, err := os.Open(filepath.Join(root, KnownPath))
 	if err != nil {
-		return nil, nil, fmt.Errorf("open known findings: %w", err)
+		return Inventory{}, nil, fmt.Errorf("open known findings: %w", err)
 	}
 	defer func() { _ = k.Close() }()
 	known, err := ParseKnown(k)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", KnownPath, err)
+		return Inventory{}, nil, fmt.Errorf("%s: %w", KnownPath, err)
 	}
-	return entries, known, nil
+	return inv, known, nil
 }
 
 // checkAll is every check that needs neither the tool nor the corpus: the
@@ -197,13 +198,13 @@ func corpusDir(keep string) (string, func(), error) {
 	return abs, func() {}, nil
 }
 
-// exportCorpus runs every TestDSQLCorpus with CorpusDirEnv set. A failing
+// exportCorpus runs every TestDSQLCorpus* test with CorpusDirEnv set. A failing
 // test fails the gate.
 func exportCorpus(ctx context.Context, cfg Config, dir string, pkgs []string) error {
 	if len(pkgs) == 0 {
 		return fmt.Errorf("the inventory has no rendered Go location: nothing to export")
 	}
-	args := append([]string{"test", "-count=1", "-run", "^TestDSQLCorpus$"}, pkgs...)
+	args := append([]string{"test", "-count=1", "-run", "^TestDSQLCorpus"}, pkgs...)
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = cfg.Root
 	cmd.Env = append(os.Environ(), corpus.CorpusDirEnv+"="+dir)

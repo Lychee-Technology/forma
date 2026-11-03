@@ -12,9 +12,10 @@ import (
 
 // TestDSQLCorpus renders the write path's Aurora DSQL row locking for the
 // DSQL lint gate (#740): the guard-row upsert and recheck probe guardRowLocking
-// sends, the precondition probe and the transaction clock read. The rest of
-// the write path builds its SQL inline per request; the inventory lists it as
-// uncovered.
+// sends, the precondition probe and the transaction clock read. Whole write
+// transactions and the unique-key statements are rendered by
+// TestDSQLCorpusWriteTransactions, TestDSQLCorpusMainTableStatements and
+// TestDSQLCorpusUniqueKeyStatements.
 func TestDSQLCorpus(t *testing.T) {
 	ctx := context.Background()
 	tables := model.StorageTables{EntityMain: "entity_main", EAVData: "eav_data"}

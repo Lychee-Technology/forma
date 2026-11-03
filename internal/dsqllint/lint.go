@@ -82,25 +82,52 @@ func ParseLintOutput(exitCode int, stdout []byte, files []string) (map[string][]
 type Origins struct {
 	lines   []int
 	origins []string
-	// Statements counts the labelled statements.
+	// Statements counts the executable statements under the origin
+	// comments, derived from the SQL itself, not from the labels.
 	Statements int
 }
 
-// ReadOrigins reads a corpus file's origin comments.
+// ReadOrigins reads a corpus file's origin comments and counts the SQL
+// statements under them. It fails closed on a label with no executable SQL
+// after it (only comments, blank lines or semicolons), which would be
+// counted yet lint nothing, and on SQL before the first label, which no
+// diagnostic could be traced from.
 func ReadOrigins(r io.Reader) (Origins, error) {
 	var o Origins
+	var body strings.Builder
+	flush := func() error {
+		n := corpus.CountStatements(body.String())
+		body.Reset()
+		switch {
+		case len(o.origins) == 0 && n > 0:
+			return fmt.Errorf("corpus file holds %d statement(s) before its first origin comment", n)
+		case len(o.origins) > 0 && n == 0:
+			return fmt.Errorf("origin %s on line %d labels no executable SQL statement", o.origins[len(o.origins)-1], o.lines[len(o.lines)-1])
+		}
+		o.Statements += n
+		return nil
+	}
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for n := 1; scanner.Scan(); n++ {
-		if rest, ok := strings.CutPrefix(scanner.Text(), corpus.OriginPrefix); ok {
-			o.lines = append(o.lines, n)
-			o.origins = append(o.origins, strings.TrimSpace(rest))
+		rest, ok := strings.CutPrefix(scanner.Text(), corpus.OriginPrefix)
+		if !ok {
+			body.WriteString(scanner.Text())
+			body.WriteByte('\n')
+			continue
 		}
+		if err := flush(); err != nil {
+			return Origins{}, err
+		}
+		o.lines = append(o.lines, n)
+		o.origins = append(o.origins, strings.TrimSpace(rest))
 	}
 	if err := scanner.Err(); err != nil {
 		return Origins{}, fmt.Errorf("read corpus origins: %w", err)
 	}
-	o.Statements = len(o.origins)
+	if err := flush(); err != nil {
+		return Origins{}, err
+	}
 	return o, nil
 }
 

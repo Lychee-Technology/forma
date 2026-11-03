@@ -15,9 +15,8 @@ import (
 // TestDSQLCorpus renders the CDC statements the Aurora DSQL engine depends
 // on for the DSQL lint gate (#740): the schema lease that replaces the
 // PostgreSQL advisory lock, and the flush mark markInChunks sends in
-// statements of at most markRowsPerStatement rows. The export reads that
-// feed a flush build their SQL from the run's column set; the inventory
-// lists them as uncovered.
+// statements of at most markRowsPerStatement rows. TestDSQLCorpusExport and
+// TestDSQLCorpusFlushReads render the export snapshots and the batch reads.
 func TestDSQLCorpus(t *testing.T) {
 	ctx := context.Background()
 	var rec corpus.Recorder

@@ -17,11 +17,11 @@ const repoRoot = "../.."
 // runs it, so the guard holds even where the dsql-lint download is not
 // available.
 func TestInventoryCoversRepository(t *testing.T) {
-	entries, known, err := loadInputs(repoRoot)
+	inv, known, err := loadInputs(repoRoot)
 	if err != nil {
 		t.Fatalf("load gate inputs: %v", err)
 	}
-	for _, p := range checkAll(repoRoot, entries, known) {
+	for _, p := range checkAll(repoRoot, inv.Entries, known) {
 		t.Error(p)
 	}
 }
@@ -32,10 +32,15 @@ func TestParseInventoryRefusesUnexplainedOrAmbiguousEntries(t *testing.T) {
 	}{
 		{"missing note", "rendered a/b.go:F\n", "want <class> <location> <note>"},
 		{"unknown class", "ignored a/b.go:F because\n", "unknown class"},
-		{"bad location", "uncovered a/b.go because\n", "is not path/file.go:Symbol"},
+		{"bad location", "not-dsql a/b.go because\n", "is not path/file.go:Symbol"},
 		{"rendered wildcard", "rendered a/b.go:* all of it\n", "must name one symbol"},
-		{"duplicate", "uncovered a/b.go:F x\nduckdb a/b.go:F y\n", "already listed on line 1"},
+		{"duplicate", "postgres-only a/b.go:F x\nduckdb a/b.go:F y\n", "already listed on line 1"},
 		{"empty", "# only a comment\n", "no entries"},
+		{"uncovered without gap", "uncovered a/b.go:F because\n", "starts with its [gap]"},
+		{"undeclared gap", "uncovered a/b.go:F [later] because\n", "gap [later] of a/b.go:F is not declared"},
+		{"gap without entries", "gap later #1 why\nrendered a/b.go:F x\n", "gap later has no uncovered entry"},
+		{"gap without tracking", "gap later soon why\nuncovered a/b.go:F [later] because\n", "must be an issue (#123)"},
+		{"duplicate gap", "gap later #1 a\ngap later #2 b\nuncovered a/b.go:F [later] because\n", "already declared"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -129,7 +134,7 @@ func TestCheckInventoryReportsEveryDiscrepancy(t *testing.T) {
 	}
 	joined := strings.Join(got, "\n")
 	for _, want := range []string{
-		"p/p.go:upd holds SQL (line 15) that no inventory entry classifies",
+		"p/p.go:upd holds SQL text (line 15) and no inventory entry classifies it",
 		"p/p.go:gone does not exist",
 		"q/q.go:upd is listed both on its own and under q/q.go:*",
 		"SQL file scripts/none.sql does not exist",

@@ -1,11 +1,12 @@
 // Package corpus is the export side of the Aurora DSQL lint gate (#740).
 //
 // The gate lints SQL that Forma's Go code generates, not a copy of it. Each
-// package whose generators can reach Aurora DSQL has a TestDSQLCorpus test
-// that calls those generators with representative arguments and hands the
-// statements to Export. Run normally, the test only checks that rendering
-// succeeds; run by the gate with CorpusDirEnv set, it also writes one .sql
-// file per unit into that directory, each statement preceded by an origin
+// package whose generators can reach Aurora DSQL has TestDSQLCorpus tests
+// (every test whose name starts with TestDSQLCorpus) that call those
+// generators with representative arguments and hand the statements to
+// Export. Run normally, a test only checks that rendering succeeds; run by
+// the gate with CorpusDirEnv set, it also writes one .sql file per unit into
+// that directory, each statement preceded by an origin
 // comment naming the generator, so a diagnostic can be traced back to it.
 package corpus
 
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -81,6 +83,11 @@ func (u Unit) Render() (string, error) {
 		if sql == "" {
 			return "", fmt.Errorf("corpus unit %s statement %d (%s) is empty", u.Name, i+1, st.Origin)
 		}
+		// A comment-only value would be labelled and counted, yet lint
+		// nothing; two statements under one label would be counted as one.
+		if n := CountStatements(sql); n != 1 {
+			return "", fmt.Errorf("corpus unit %s statement %d (%s) holds %d executable statements, want exactly 1: %s", u.Name, i+1, st.Origin, n, sql)
+		}
 		if fmtVerb.MatchString(sql) {
 			return "", fmt.Errorf("corpus unit %s statement %d (%s) holds an unrendered format verb: %s", u.Name, i+1, st.Origin, sql)
 		}
@@ -130,15 +137,26 @@ func writeExclusive(path, text string) error {
 // has the signature of both pgxmock.QueryMatcherFunc and
 // sqlmock.QueryMatcherFunc, so a mock built with it accepts every statement
 // and records it in order; the test still scripts the results the code under
-// test reads back.
+// test reads back. A WireConn records into it too, so the statements pgx
+// writes and those a mock receives interleave in the order they were sent.
 type Recorder struct {
-	SQL []string
+	mu   sync.Mutex
+	SQL  []string
+	errs []error
 }
 
 // Match records actual and accepts it.
 func (r *Recorder) Match(_, actual string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.SQL = append(r.SQL, actual)
 	return nil
+}
+
+func (r *Recorder) fail(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.errs = append(r.errs, err)
 }
 
 // Take answers the recorded statements attributed to origins, one origin
@@ -146,6 +164,11 @@ func (r *Recorder) Match(_, actual string) error {
 // tb: the code under test sent more or fewer statements than the test names.
 func (r *Recorder) Take(tb testing.TB, origins ...string) []Statement {
 	tb.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.errs) > 0 {
+		tb.Fatalf("recording failed: %v", errors.Join(r.errs...))
+	}
 	if len(r.SQL) != len(origins) {
 		tb.Fatalf("recorded %d statements, test names origins for %d: %q", len(r.SQL), len(origins), r.SQL)
 	}

@@ -35,9 +35,9 @@ and keeps working offline once modules are cached. The guards
    (including the multi-DDL-transaction and `CREATE INDEX ASYNC` DDL
    restrictions), and `valid.sql` must trigger none. If a linter upgrade stops
    catching something, this step fails.
-3. Runs `go test -run '^TestDSQLCorpus$'` in each package that has a
+3. Runs `go test -run '^TestDSQLCorpus'` in each package that has a
    rendered generator, with `FORMA_DSQL_CORPUS_DIR` set. Each test writes its
-   statements to one `.sql` unit, with an `-- origin: file.go:Symbol` comment
+   statements to `.sql` units, with an `-- origin: file.go:Symbol` comment
    before every statement.
 4. Lints every unit in one `dsql-lint --format json` run. The build never
    passes `--fix`, so the gate never rewrites SQL.
@@ -50,6 +50,10 @@ The gate fails closed. Any of these fails it:
 - a file the linter could not read
 - a render or export failure
 - zero units or zero statements
+- an origin comment with no executable SQL after it (only comments, blank
+  lines or semicolons), or SQL before a unit's first origin comment. The
+  statement count comes from the SQL, not from the labels, and every
+  exported statement must hold exactly one statement
 - a rendered generator that is missing from the corpus
 - a corpus statement whose generator is not classified `rendered`
 - a new finding
@@ -60,55 +64,95 @@ keep the rendered units for inspection.
 
 ## What is examined
 
-`inventory.txt` lists every symbol whose source holds a string literal that
-starts a SQL statement, and every checked-in `.sql` file. Each entry has one of
-these classes and a note:
+`inventory.txt` lists every site in the code and every checked-in `.sql`
+file. A site is a symbol (function, method, package-level const, var or type)
+that does any of these:
+
+- holds SQL text. That is a string literal, or a constant expression folded
+  from literals and the package's string constants, that starts a SQL
+  statement in any letter case, after any leading SQL comments.
+- calls a database method: `Exec`, `Query`, `QueryRow`, `Begin`, `BeginTx`,
+  `SendBatch`, `CopyFrom`, `Prepare`, `Queue` and their `Context` forms.
+  This catches SQL assembled from fragments that no pattern recognises,
+  where it is sent.
+- names pgx or `database/sql` transaction options. From these, pgx writes a
+  `BEGIN ... ISOLATION LEVEL` statement the code never spells.
+
+Each entry has one of these classes and a note:
 
 | Class | Meaning |
 | --- | --- |
-| `rendered` | A `TestDSQLCorpus` test renders it and the gate lints it |
-| `uncovered` | Can reach DSQL but is not linted. The note says why |
-| `postgres-only` | Runs only under the PostgreSQL engine (advisory locks). Must stay out of the corpus |
+| `rendered` | A `TestDSQLCorpus*` test renders it and the gate lints it |
+| `uncovered` | Can reach DSQL but is not linted. The note starts with its gap group, `[name]`, and says why |
+| `passthrough` | Sends, forwards or declares SQL that another entry builds: the executor of a builder, a wrapper, an interface. The note names the builder |
+| `postgres-only` | Runs only under the PostgreSQL engine (advisory locks, `READ COMMITTED` begins). Must stay out of the corpus |
 | `duckdb` | Sent to DuckDB, never to PostgreSQL or DSQL |
-| `not-dsql` | Never sent to a DSQL database: e2e harnesses, the local sample importer, text that only looks like SQL |
+| `not-dsql` | Never sent to a DSQL database: e2e harnesses, the local sample importer, text that only looks like SQL, a method that only shares a database method's name |
 
-The gate prints the counts and every uncovered entry on each run. At the time
-of writing, 28 generators are rendered (40 statements):
+The scan has no type information, so a method that only shares a database
+method's name is a site too. Classify it `not-dsql` and say so in the note.
+
+The gate prints the counts and every uncovered entry, grouped by gap, on each
+run. At the time of writing it renders 64 generators (106 statements in 16
+units):
 
 - init-db's whole table transaction, exactly as `ensureTables` sends it, with
-  `BEGIN`/`COMMIT`
-- init-db's schema registration
+  `BEGIN`/`COMMIT`, and its schema registration
 - the declared-index catalog reads and build
-- the DSQL row-guard upsert and recheck probes
-- the precondition probe and transaction clock
-- the CDC schema lease
-- the chunked flush mark
+- whole write transactions of the DSQL engine, `BEGIN` to `COMMIT`, through
+  the repository's entry points: a create, a delete, a two-row batch delete
+  and a requeue
+- the entity_main insert and update builders for a live and a deleted record
+  setting a column of every typed family, and an update's scoped EAV replace
+- the unique-key reservation, owner reads, undo and release
+- the DSQL row-guard upsert and recheck probes, the precondition probe and
+  the transaction clock
+- the CDC schema lease, the chunked flush mark, the flush and init batch
+  reads, and both export snapshots (delta and base): the `BEGIN ISOLATION
+  LEVEL REPEATABLE READ READ ONLY`, the stage reads and the `COMMIT`
+- the federated dirty-set reads
+- validate-schema-consistency's width census reads
 
-62 DSQL-reachable locations are uncovered. Most are write-path, read-path,
-CDC export and tool queries that a method builds inline per request from
-schema metadata or the condition DSL. Rendering those needs a recording
-harness per method, like the ones in `internal/dsql_corpus_test.go` and
-`internal/cdc/dsql_corpus_test.go`, and is follow-up work.
+The `BEGIN` and `COMMIT` of a transaction are what pgx writes for the
+transaction's options, not a copy. `corpus.WireConn` is a real pgx
+connection to an in-process stand-in for a PostgreSQL server that records
+each statement it receives. The statements of the body come from a pgxmock or
+sqlmock connection built with `corpus.Recorder`, which records into the same
+list in the order they are sent.
 
-Two uncovered items are linter limitations:
+### Gaps
 
-- `declaredindex.DropSQL`: `dsql-lint` 0.2.22 reports `DROP INDEX CONCURRENTLY`
-  as a `parse_error`.
-- `scripts/validate_schema_consistency.sql`: a psql script whose `\if`/`\set`
-  meta-commands the linter cannot parse.
+Each uncovered entry belongs to a gap: a `gap <name> <tracking> <note>` line of
+`inventory.txt` that declares the group and what tracks closing it. The
+tracking is an issue (`#691`) or `dsql-lint-coverage-follow-up`, the DSQL lint
+coverage follow-up issue, which lists each such gap by name with its entries.
+The gate refuses an uncovered entry without a declared gap, and a gap with no
+entry left. The gaps are:
+
+| Gap | Tracking | What is not linted |
+| --- | --- | --- |
+| `tool-statements` | follow-up | Statements that the `cmd/tools` subcommands, the schema ledger, manifest reconcile and the unique-key build send inline |
+| `startup-reads` | follow-up | Catalog and registry reads at startup, and the health probe |
+| `query-dsl` | follow-up | Read-path SQL assembled per query from the condition DSL and schema projections: the OLTP query template, the single-row read, the claim candidate read and the PostgreSQL predicate fragments. The row-guard probes that are rendered use a stand-in for the precondition fragment |
+| `parser-limits` | follow-up | SQL the pinned linter cannot parse: `declaredindex.DropSQL` (`DROP INDEX CONCURRENTLY` is a `parse_error` in 0.2.22), and `scripts/validate_schema_consistency.sql` (psql `\if`/`\set` meta-commands) |
+| `duckdb-postgres-scanner` | #691 | SQL that DuckDB's postgres extension writes for ATTACH-based reads. Forma never holds that SQL |
+
+When you render an uncovered entry, reclassify it `rendered`. Remove its gap
+once the gap has no entries, and update the tracking issue.
 
 ### Limits of the coverage
 
-- **The scan is a keyword heuristic.** It finds upper-case literals that start
-  a statement (`SELECT `, `INSERT INTO`, `CREATE TABLE`, and so on). SQL built
-  only from fragments that do not start that way evades it. So does a
-  `BEGIN ISOLATION LEVEL ...` that pgx sends from `pgx.TxOptions`, such as the
-  CDC export's `REPEATABLE READ READ ONLY` read. Review still matters.
+- **The scan is a heuristic without types.** It finds SQL text, database
+  method calls and transaction options by name. Code that reaches the
+  database only through a method with another name, such as an interface
+  method declared elsewhere, is found at the implementation that calls the
+  driver, which is itself an entry. That entry is usually `passthrough`, so
+  its callers are not listed one by one. Review still matters.
 - **Rendering uses representative inputs.** Table names are the defaults,
   generators run with one or two sample rows, and there is one sample declared
-  index. A precondition fragment that stands in for the condition DSL's output
-  is marked as such in the test. Runtime branches that a sample does not take
-  are not linted.
+  index and one sample schema projection. A precondition fragment that stands
+  in for the condition DSL's output is marked as such in the test. Runtime
+  branches that a sample does not take are not linted.
 - **Placeholders stay as `$n`.** That is what Forma sends, and `dsql-lint`
   parses them.
 
@@ -126,16 +170,21 @@ on that generator. No entry can disable a rule globally.
 **A stale known finding.** The generator no longer produces it. Remove the
 line, and update the issue it names.
 
-**An unclassified SQL site.** New code holds SQL. Add an inventory entry. If
-the SQL can reach DSQL, render it:
+**An unclassified site.** New code holds SQL, calls a database method or sets
+transaction options. Add an inventory entry. If the SQL can reach DSQL, render
+it:
 
-1. Add it to the package's `TestDSQLCorpus`. Call the production generator.
-   If the code builds and sends the SQL inline, record it from a pgxmock or
-   sqlmock connection built with `corpus.Recorder`. Never copy the SQL into
-   the test.
+1. Add it to one of the package's `TestDSQLCorpus*` tests. Call the
+   production generator, or better the entry point that sends it. If the
+   code builds and sends the SQL inline, record it from a pgxmock or sqlmock
+   connection built with `corpus.Recorder`. For SQL that pgx writes itself,
+   such as a transaction's `BEGIN`, use `corpus.WireConn`. Never copy the SQL
+   into the test.
 2. Classify it `rendered`.
 
-If you cannot render it, classify it `uncovered` with the reason.
+If the symbol only sends or forwards SQL that another entry builds, classify
+it `passthrough` and name that entry. If you cannot render it, classify it
+`uncovered` under a gap, with the reason.
 
 **A corpus coverage problem.** A rendered generator is missing from the
 corpus because its export was deleted, skipped or mislabelled. Or a corpus

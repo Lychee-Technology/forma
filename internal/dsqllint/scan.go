@@ -9,38 +9,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 )
 
-// sqlLiteral matches a string literal that starts a SQL statement. It is a
-// cheap heuristic over upper-case keywords, which is how this repository
-// spells SQL: a statement assembled entirely from fragments that do not
-// start with a keyword evades it, so review still matters.
-var sqlLiteral = regexp.MustCompile(`^\s*(?:` +
-	`CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX|SEQUENCE|VIEW|SCHEMA|EXTENSION|TYPE|FUNCTION|TRIGGER)\b|` +
-	`ALTER\s+(?:TABLE|INDEX|SEQUENCE)\b|` +
-	`DROP\s+(?:TABLE|INDEX|SEQUENCE|VIEW|SCHEMA)\b|` +
-	`INSERT\s+INTO\b|` +
-	`UPDATE\s+\S+\s+(?:(?:AS\s+)?\w+\s+)?SET\b|` +
-	`DELETE\s+FROM\b|` +
-	`SELECT\s|` +
-	`WITH\s+(?:RECURSIVE\s+)?\w+\s+AS\b|` +
-	`BEGIN\b|START\s+TRANSACTION\b|SET\s+(?:TRANSACTION|SESSION|LOCAL)\b|` +
-	`TRUNCATE\b|LOCK\s+TABLE\b|COPY\s|GRANT\s|REVOKE\s)`)
-
 // Snapshot is what Scan found in the repository.
 type Snapshot struct {
-	// Sites maps each location holding a SQL-shaped literal to the line of
-	// its first one.
-	Sites map[string]int
+	// Sites maps each location that holds SQL text, calls a database
+	// method or sets transaction options to the first such line.
+	Sites map[string]Site
 	// Symbols holds every top-level symbol location of the scanned Go files.
 	Symbols map[string]bool
 	// SQLFiles holds every checked-in .sql file outside testdata.
 	SQLFiles map[string]bool
+}
+
+// Site is where and why the scan found a location.
+type Site struct {
+	Line int
+	Why  string
 }
 
 func (s Snapshot) sortedSites() []string {
@@ -68,17 +56,22 @@ func Scan(root string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snap := Snapshot{Sites: map[string]int{}, Symbols: map[string]bool{}, SQLFiles: map[string]bool{}}
+	snap := Snapshot{Sites: map[string]Site{}, Symbols: map[string]bool{}, SQLFiles: map[string]bool{}}
+	byDir := map[string][]string{}
+	var dirs []string
 	for _, rel := range files {
 		if strings.HasSuffix(rel, ".sql") {
 			snap.SQLFiles[rel] = true
 			continue
 		}
-		src, err := os.ReadFile(filepath.Join(root, rel))
-		if err != nil {
-			return Snapshot{}, fmt.Errorf("read %s: %w", rel, err)
+		dir := filepath.Dir(rel)
+		if _, ok := byDir[dir]; !ok {
+			dirs = append(dirs, dir)
 		}
-		if err := scanGoFile(rel, src, snap); err != nil {
+		byDir[dir] = append(byDir[dir], rel)
+	}
+	for _, dir := range dirs {
+		if err := scanPackage(root, byDir[dir], snap); err != nil {
 			return Snapshot{}, err
 		}
 	}
@@ -149,21 +142,32 @@ func walkFiles(root string) ([]string, error) {
 	return files, nil
 }
 
-// scanGoFile records rel's top-level symbols and the ones holding a
-// SQL-shaped string literal. A build-tagged file is parsed like any other.
-func scanGoFile(rel string, src []byte, snap Snapshot) error {
+// scanPackage records the top-level symbols of one directory's Go files
+// and the ones that are sites. The directory's files are read together so
+// a statement split across its string constants is still recognised; a
+// build-tagged file is parsed like any other.
+func scanPackage(root string, rels []string, snap Snapshot) error {
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, rel, src, parser.SkipObjectResolution)
-	if err != nil {
-		return fmt.Errorf("parse %s: %w", rel, err)
+	files := make([]*ast.File, len(rels))
+	for i, rel := range rels {
+		src, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			return fmt.Errorf("read %s: %w", rel, err)
+		}
+		if files[i], err = parser.ParseFile(fset, rel, src, parser.SkipObjectResolution); err != nil {
+			return fmt.Errorf("parse %s: %w", rel, err)
+		}
 	}
-	for _, decl := range file.Decls {
-		for _, sym := range declSymbols(decl) {
-			loc := rel + ":" + sym.name
-			snap.Symbols[loc] = true
-			if line := firstSQLLine(fset, sym.node); line > 0 {
-				if prev, ok := snap.Sites[loc]; !ok || line < prev {
-					snap.Sites[loc] = line
+	consts := packageConsts(files)
+	for i, file := range files {
+		scope := fileScope{fset: fset, imports: importNames(file), consts: consts}
+		for _, decl := range file.Decls {
+			for _, sym := range declSymbols(decl) {
+				loc := rels[i] + ":" + sym.name
+				snap.Symbols[loc] = true
+				site := scope.siteOf(sym.node)
+				if prev, ok := snap.Sites[loc]; site.Line > 0 && (!ok || site.Line < prev.Line) {
+					snap.Sites[loc] = site
 				}
 			}
 		}
@@ -217,19 +221,4 @@ func funcName(d *ast.FuncDecl) string {
 		return id.Name + "." + d.Name.Name
 	}
 	return d.Name.Name
-}
-
-func firstSQLLine(fset *token.FileSet, node ast.Node) int {
-	line := 0
-	ast.Inspect(node, func(n ast.Node) bool {
-		lit, ok := n.(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING || line > 0 {
-			return line == 0
-		}
-		if s, err := strconv.Unquote(lit.Value); err == nil && sqlLiteral.MatchString(s) {
-			line = fset.Position(lit.Pos()).Line
-		}
-		return true
-	})
-	return line
 }

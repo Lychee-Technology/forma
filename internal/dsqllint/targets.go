@@ -63,7 +63,7 @@ func collectTargets(root, dir string, entries []Entry) (targets, error) {
 			return targets{}, err
 		}
 		if o.Statements == 0 {
-			return targets{}, fmt.Errorf("corpus unit %s has no labelled statement", filepath.Base(p))
+			return targets{}, fmt.Errorf("corpus unit %s has no statement", filepath.Base(p))
 		}
 		t.files = append(t.files, target{path: p, origins: o})
 		t.units++
@@ -202,20 +202,24 @@ func expectedRules(path string) (map[string]bool, error) {
 	return want, nil
 }
 
-// printSummary writes the coverage inventory and every finding.
-func printSummary(out io.Writer, entries []Entry, t targets, v Verdict, known []Known) {
+// printSummary writes the coverage inventory, every uncovered entry under
+// its gap and that gap's tracking, and every finding.
+func printSummary(out io.Writer, inv Inventory, t targets, v Verdict, known []Known) {
 	counts := map[Class]int{}
-	for _, e := range entries {
+	for _, e := range inv.Entries {
 		counts[e.Class]++
 	}
 	fmt.Fprintf(out, "DSQL lint gate (dsql-lint %s, lint-only)\n", ToolVersion)
-	fmt.Fprintf(out, "Inventory: %d rendered, %d uncovered, %d postgres-only, %d duckdb, %d not-dsql (%s)\n",
-		counts[ClassRendered], counts[ClassUncovered], counts[ClassPostgresOnly], counts[ClassDuckDB], counts[ClassNotDSQL], InventoryPath)
+	fmt.Fprintf(out, "Inventory: %d rendered, %d uncovered, %d passthrough, %d postgres-only, %d duckdb, %d not-dsql (%s)\n",
+		counts[ClassRendered], counts[ClassUncovered], counts[ClassPassthrough], counts[ClassPostgresOnly], counts[ClassDuckDB], counts[ClassNotDSQL], InventoryPath)
 	fmt.Fprintf(out, "Linted: %d corpus units, %d statements from %d generators\n", t.units, t.statements, len(t.origins))
-	fmt.Fprintln(out, "Not linted (DSQL-reachable, uncovered):")
-	for _, e := range entries {
-		if e.Class == ClassUncovered {
-			fmt.Fprintf(out, "  %s: %s\n", e.Location, e.Note)
+	fmt.Fprintln(out, "Not linted (DSQL-reachable, uncovered), by gap:")
+	for _, g := range inv.Gaps {
+		fmt.Fprintf(out, "  [%s] tracked by %s: %s\n", g.Name, g.Tracking, g.Note)
+		for _, e := range inv.Entries {
+			if e.Class == ClassUncovered && e.Gap == g.Name {
+				fmt.Fprintf(out, "    %s: %s\n", e.Location, strings.TrimSpace(strings.TrimPrefix(e.Note, "["+g.Name+"]")))
+			}
 		}
 	}
 	if len(v.Accepted) > 0 {

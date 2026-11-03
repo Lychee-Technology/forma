@@ -37,6 +37,9 @@ func TestRenderRefusesWhatCannotBeLinted(t *testing.T) {
 		{"empty sql", Unit{Name: "u", Statements: []Statement{{Origin: "a/b.go:F", SQL: " ; "}}}, "is empty"},
 		{"unrendered verb", Unit{Name: "u", Statements: []Statement{{Origin: "a/b.go:F", SQL: "SELECT * FROM %s"}}}, "unrendered format verb"},
 		{"fmt error marker", Unit{Name: "u", Statements: []Statement{{Origin: "a/b.go:F", SQL: "SELECT %!d(string=x)"}}}, "unrendered format verb"},
+		{"comment only", Unit{Name: "u", Statements: []Statement{{Origin: "a/b.go:F", SQL: "-- no statement"}}}, "holds 0 executable statements"},
+		{"block comment only", Unit{Name: "u", Statements: []Statement{{Origin: "a/b.go:F", SQL: "/* x */ ; /* y */"}}}, "holds 0 executable statements"},
+		{"two statements", Unit{Name: "u", Statements: []Statement{{Origin: "a/b.go:F", SQL: "SELECT 1; SELECT 2"}}}, "holds 2 executable statements"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -76,5 +79,23 @@ func TestRecorderTakesStatementsInOrder(t *testing.T) {
 	got := r.Take(t, "a.go:F", "a.go:G")
 	if got[0].SQL != "SELECT 1" || got[1].Origin != "a.go:G" || r.SQL != nil {
 		t.Fatalf("Take = %+v, recorder left %q", got, r.SQL)
+	}
+}
+
+func TestCountStatements(t *testing.T) {
+	for text, want := range map[string]int{
+		"":                                  0,
+		"-- c\n/* d */ ;\n":                 0,
+		"SELECT 1":                          1,
+		"SELECT ';' FROM t; -- x;\n":        1,
+		"SELECT \"a;b\" FROM t; SELECT 2;":  2,
+		"DO $$ BEGIN; END $$; SELECT $1":    2,
+		"SELECT 'it''s; fine'":              1,
+		"/* a; b */ SELECT 1 /* ; */ ; ; ;": 1,
+		"SELECT 1; -- trailing\n/* c */":    1,
+	} {
+		if got := CountStatements(text); got != want {
+			t.Errorf("CountStatements(%q) = %d, want %d", text, got, want)
+		}
 	}
 }

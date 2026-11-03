@@ -1,27 +1,37 @@
-# Inventory of every place in Forma's code that holds SQL (#740).
+# Inventory of every place in Forma's code that holds or sends SQL (#740).
 #
 # Format: <class> <location> <note>
+#         gap <name> <tracking> <note>
 #
 #   location   path/file.go:Symbol (function, Type.Method, or package-level
-#              const/var), path/file.go:* (every symbol of the file), or a
-#              checked-in path/file.sql.
-#   class      rendered       a TestDSQLCorpus test renders it and the DSQL lint
-#                             gate lints it; must appear as a corpus origin
+#              const/var/type), path/file.go:* (every symbol of the file),
+#              or a checked-in path/file.sql.
+#   class      rendered       a TestDSQLCorpus* test renders it and the DSQL
+#                             lint gate lints it; must appear as a corpus origin
 #              uncovered      can reach Aurora DSQL but is not linted; the note
-#                             says why
+#                             starts with its [gap] and says why
+#              passthrough    sends, forwards or declares SQL that another
+#                             entry builds; the note names it
 #              postgres-only  runs only under the PostgreSQL engine; kept out of
 #                             the DSQL corpus
 #              duckdb         sent to DuckDB, never to PostgreSQL or DSQL
 #              not-dsql       never sent to a DSQL database (test harnesses,
-#                             local tools, text that only looks like SQL)
+#                             local tools, text that only looks like SQL, a
+#                             method that only shares a database method's name)
+#   gap        declares a group of uncovered entries and what tracks closing
+#              it: an issue (#123), or dsql-lint-coverage-follow-up, the DSQL
+#              lint coverage follow-up issue, which lists every such gap by
+#              name with its entries. A gap with no entry is refused.
 #
 # The inventory guard (TestInventoryCoversRepository, run by make test and by
-# make lint-dsql) scans every non-test Go file for string literals that start
-# a SQL statement and fails on any symbol holding one that is not listed here,
-# on an entry whose symbol is gone, and on an entry (other than rendered) whose
-# symbol no longer holds SQL. The scan is a keyword heuristic: SQL assembled
-# only from fragments that do not start with a statement keyword evades it.
-# See docs/dsql-lint.md.
+# make lint-dsql) scans every non-test Go file. It fails on any symbol not
+# listed here that holds SQL text (a literal, or a constant folded from
+# literals and the package's string constants, in any letter case, after
+# leading SQL comments), calls a database method (Exec, Query, QueryRow,
+# Begin, BeginTx, SendBatch, CopyFrom, Prepare, Queue and their Context
+# forms), or names pgx or database/sql transaction options. It also fails on
+# an entry whose symbol is gone, and on an entry other than rendered whose
+# symbol is no longer a site. See docs/dsql-lint.md.
 
 # --- Rendered and linted ---
 rendered      cmd/tools/init_db.go:withTx opens and commits init-db's table transaction (BEGIN/COMMIT around tableTransactionDDL)
@@ -52,99 +62,157 @@ rendered      internal/cdc/schema_lease.go:leaseSchemaLocker.acquire DSQL schema
 rendered      internal/cdc/schema_lease.go:leaseSchemaLocker.renew DSQL schema lease
 rendered      internal/cdc/schema_lease.go:leaseSchemaLocker.deleteLease DSQL schema lease
 rendered      internal/cdc/helpers.go:MarkFlushedVersions flush mark as markInChunks sends it on DSQL (two rows)
+rendered      internal/postgres_persistent_repository_row_locking.go:guardRowLocking.writeTxOptions the DSQL write transaction's BEGIN as pgx writes it for these options (corpus wire), in every write transaction unit
+rendered      internal/postgres_persistent_repository_tx.go:DBPersistentRecordRepository.inWriteTx the write transaction's COMMIT as pgx writes it
+rendered      internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog change_log upsert of the create, delete, batch delete and requeue transactions
+rendered      internal/postgres_persistent_repository.go:nextRowVersion create version read, in the create transaction
+rendered      internal/postgres_persistent_repository.go:DBPersistentRecordRepository.deleteRecordInTx entity_main and EAV deletes, in the delete transaction
+rendered      internal/postgres_persistent_repository_batch.go:DBPersistentRecordRepository.batchDeleteInTx entity_main and EAV deletes, in a two-row batch delete transaction
+rendered      internal/postgres_persistent_repository_main_table.go:buildInsertMainStatement entity_main insert: in the create transaction, and for a live and a deleted record setting a column of every typed family
+rendered      internal/postgres_persistent_repository_main_table.go:buildUpdateMainStatement entity_main update: a live and a deleted record setting a column of every typed family
+rendered      internal/postgres_persistent_repository_requeue.go:buildRequeueMainStatement version-only update, in the requeue transaction
+rendered      internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes EAV insert: one row in the create transaction, two rows after a scoped replace
+rendered      internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped an update's scoped EAV delete
+rendered      internal/postgres_persistent_repository_unique_key_reserve.go:insertKeyEntries unique-key reservation insert, two entries
+rendered      internal/postgres_persistent_repository_unique_key_reserve.go:keyEntryOwners owner read of a value the reservation could not take
+rendered      internal/postgres_persistent_repository_unique_key_reserve.go:DBPersistentRecordRepository.undoReservation reservation undo
+rendered      internal/postgres_persistent_repository_unique_keys.go:heldUniqueKeys read of the entries a row holds
+rendered      internal/postgres_persistent_repository_unique_keys.go:uniqueKeyOwner read of the holder of one value
+rendered      internal/postgres_persistent_repository_unique_keys.go:DBPersistentRecordRepository.applyUniqueKeys release of an entry an update gives up
+rendered      internal/postgres_persistent_repository_unique_keys.go:DBPersistentRecordRepository.releaseRowUniqueKeys release of a deleted row's entries, in the delete and batch delete transactions
+rendered      internal/cdc/export_pg_stage.go:stageInSnapshot CDC export snapshot BEGIN (REPEATABLE READ READ ONLY, as pgx writes it) and COMMIT around the stage reads
+rendered      internal/cdc/export_sql_builder.go:buildChangeLogQuery CDC delta export read of change_log, as buildDeltaExportPlan stages it
+rendered      internal/cdc/export_sql_builder.go:buildMainEntityQuery CDC export read of entity_main: delta (every row) and base (live rows only)
+rendered      internal/cdc/export_sql_builder.go:buildEAVQuery CDC export read of eav_data, delta and base
+rendered      internal/cdc/flusher.go:getUnflushedSchemaIDs cdc-flush read of PostgreSQL
+rendered      internal/cdc/helpers.go:GetChangeLogStats cdc-flush read of PostgreSQL
+rendered      internal/cdc/helpers.go:SelectBatchRowIDs cdc-flush read of PostgreSQL
+rendered      internal/cdc/init.go:getSchemaIDsToInit cdc-init read, with and without a schema filter
+rendered      internal/cdc/init_batch_select.go:getEntityMainCount cdc-init read of PostgreSQL
+rendered      internal/cdc/init_batch_select.go:selectEntityMainBatch cdc-init keyset page read
+rendered      internal/federated/change_log_reads.go:PostgresDirtyIDFetcher.FetchDirtyRowIDs federated read of the change_log dirty set
+rendered      internal/federated/change_log_reads.go:PostgresDirtyIDFetcher.HasParquetHistory federated parquet-history probe
+rendered      internal/widthaudit/widthaudit.go:BuildCensusQuery validate-schema-consistency width census read, two targets
+rendered      internal/widthaudit/column_census.go:BuildColumnCensusQuery validate-schema-consistency width census read, two targets
+rendered      internal/widthaudit/numeric_census.go:BuildNumericCensusQuery validate-schema-consistency width census read, two targets
+rendered      internal/widthaudit/numeric_census.go:BuildNumericColumnCensusQuery validate-schema-consistency width census read, two targets
+rendered      internal/widthaudit/domain_census.go:BuildDomainCensusQuery validate-schema-consistency width census read, two targets
+rendered      internal/widthaudit/domain_census.go:BuildDomainColumnCensusQuery validate-schema-consistency width census read, two targets
 
-# --- DSQL-reachable, not linted yet ---
-uncovered     cmd/tools/baseline_schema_state.go:readStoredState baseline-schema read of stored attribute state, not yet rendered (follow-up)
-uncovered     cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.checkStorageMismatches validate-schema-consistency read-only check, not yet rendered (follow-up)
-uncovered     cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.checkUnknownAttributeIDs validate-schema-consistency read-only check, not yet rendered (follow-up)
-uncovered     cmd/tools/validate_schema_consistency_dates.go:schemaConsistencyValidator.checkEAVDateImages validate-schema-consistency read-only check, not yet rendered (follow-up)
-uncovered     cmd/tools/validate_schema_consistency_lists.go:schemaConsistencyValidator.checkScalarRowsUnderListAttrs validate-schema-consistency read-only check, not yet rendered (follow-up)
-uncovered     factory/factory.go:collectTablesFromPool startup catalog read, not yet rendered (follow-up)
-uncovered     internal/advanced_query_template.go:optimizedQuerySQLTemplate OLTP query template filled by the condition DSL per query, not yet rendered (follow-up)
-uncovered     internal/cdc/export_sql_builder.go:buildChangeLogQuery CDC export read of PostgreSQL; projection built from the schema's column set per run, not yet rendered (follow-up)
-uncovered     internal/cdc/export_sql_builder.go:buildEAVQuery CDC export read of PostgreSQL; projection built from the schema's column set per run, not yet rendered (follow-up)
-uncovered     internal/cdc/export_sql_builder.go:buildMainEntityQuery CDC export read of PostgreSQL; projection built from the schema's column set per run, not yet rendered (follow-up)
-uncovered     internal/cdc/flusher.go:getUnflushedSchemaIDs cdc-flush/cdc-init read of PostgreSQL, not yet rendered (follow-up)
-uncovered     internal/cdc/helpers.go:GetChangeLogStats cdc-flush/cdc-init read of PostgreSQL, not yet rendered (follow-up)
-uncovered     internal/cdc/helpers.go:SelectBatchRowIDs cdc-flush/cdc-init read of PostgreSQL, not yet rendered (follow-up)
-uncovered     internal/cdc/init.go:getSchemaIDsToInit cdc-flush/cdc-init read of PostgreSQL, not yet rendered (follow-up)
-uncovered     internal/cdc/init_batch_select.go:getEntityMainCount cdc-flush/cdc-init read of PostgreSQL, not yet rendered (follow-up)
-uncovered     internal/cdc/init_batch_select.go:selectEntityMainBatch cdc-flush/cdc-init read of PostgreSQL, not yet rendered (follow-up)
-uncovered     internal/declaredindex/ensure.go:DropSQL remedy printed for an operator, never run by Forma; dsql-lint 0.2.22 cannot parse DROP INDEX CONCURRENTLY (parse_error), so linting it reports a parser limitation, not DSQL compatibility
-uncovered     internal/federated/change_log_reads.go:PostgresDirtyIDFetcher.FetchDirtyRowIDs federated read of the change_log dirty set, not yet rendered (follow-up)
-uncovered     internal/federated/change_log_reads.go:PostgresDirtyIDFetcher.HasParquetHistory federated read of the change_log dirty set, not yet rendered (follow-up)
-uncovered     internal/postgres_health.go:PostgresHealthCheck health probe, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository.go:DBPersistentRecordRepository.deleteRecordInTx write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository.go:nextRowVersion write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_batch.go:DBPersistentRecordRepository.batchDeleteInTx write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_claim.go:matchingRowsInTx claim/mutate-where candidate read; its condition comes from the condition DSL and its lock clause from the engine, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_main_table.go:buildInsertMainStatement write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_main_table.go:buildUpdateMainStatement write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_requeue.go:buildRequeueMainStatement write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_single_row.go:rowSelectWithAttributes single-row read; projection built from schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_unique_key_reserve.go:DBPersistentRecordRepository.undoReservation write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_unique_key_reserve.go:insertKeyEntries write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_unique_key_reserve.go:keyEntryOwners write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_unique_keys.go:DBPersistentRecordRepository.applyUniqueKeys write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_unique_keys.go:DBPersistentRecordRepository.releaseRowUniqueKeys write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_unique_keys.go:heldUniqueKeys write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/postgres_persistent_repository_unique_keys.go:uniqueKeyOwner write path; SQL built inline per request from the record and schema metadata, not yet rendered (follow-up)
-uncovered     internal/reconcile/db.go:PGLiveRows.LiveRowCount manifest-reconcile read, not yet rendered (follow-up)
-uncovered     internal/reconcile/db.go:PGLiveRows.MissingLiveRows manifest-reconcile read, not yet rendered (follow-up)
-uncovered     internal/reconcile/db.go:RegistrySchemaEnumerator.SchemaIDs manifest-reconcile read, not yet rendered (follow-up)
-uncovered     internal/schemaledger/gate.go:readAllActive schema generation gate read at startup, not yet rendered (follow-up)
-uncovered     internal/schemaledger/store.go:ReadActive schema ledger read/write (init-db, baseline-schema, apply-schema), not yet rendered (follow-up)
-uncovered     internal/schemaledger/store.go:ReadPointer schema ledger read/write (init-db, baseline-schema, apply-schema), not yet rendered (follow-up)
-uncovered     internal/schemaledger/store.go:Write schema ledger read/write (init-db, baseline-schema, apply-schema), not yet rendered (follow-up)
-uncovered     internal/schemaledger/store.go:insertEntries schema ledger read/write (init-db, baseline-schema, apply-schema), not yet rendered (follow-up)
-uncovered     internal/schemaledger/store.go:movePointer schema ledger read/write (init-db, baseline-schema, apply-schema), not yet rendered (follow-up)
-uncovered     internal/schemaledger/store.go:readEntries schema ledger read/write (init-db, baseline-schema, apply-schema), not yet rendered (follow-up)
-uncovered     internal/schemameta/file_registry.go:fileSchemaRegistry.loadSchemasFromDB schema registry read at startup, not yet rendered (follow-up)
-uncovered     internal/schemameta/loader.go:MetadataLoader.loadSchemaRegistry schema registry read at startup, not yet rendered (follow-up)
-uncovered     internal/sqlgen/predicate_render.go:PgEavLeafPayload.Render PostgreSQL predicate fragment of the condition DSL, not a statement on its own (follow-up with the query template)
-uncovered     internal/unique_key_build.go:unbuildKey unique-key build and state (init-db, build-unique-keys, startup), not yet rendered (follow-up)
-uncovered     internal/unique_key_build.go:writeBuiltKey unique-key build and state (init-db, build-unique-keys, startup), not yet rendered (follow-up)
-uncovered     internal/unique_key_state.go:UniqueKeyCatalog.schemaIsEmpty unique-key build and state (init-db, build-unique-keys, startup), not yet rendered (follow-up)
-uncovered     internal/unique_key_state.go:readUniqueKeyState unique-key build and state (init-db, build-unique-keys, startup), not yet rendered (follow-up)
-uncovered     internal/widthaudit/column_census.go:BuildColumnCensusQuery validate-schema-consistency width census read, exported builder, not yet rendered (follow-up)
-uncovered     internal/widthaudit/domain_census.go:BuildDomainCensusQuery validate-schema-consistency width census read, exported builder, not yet rendered (follow-up)
-uncovered     internal/widthaudit/domain_census.go:BuildDomainColumnCensusQuery validate-schema-consistency width census read, exported builder, not yet rendered (follow-up)
-uncovered     internal/widthaudit/numeric_census.go:BuildNumericCensusQuery validate-schema-consistency width census read, exported builder, not yet rendered (follow-up)
-uncovered     internal/widthaudit/numeric_census.go:BuildNumericColumnCensusQuery validate-schema-consistency width census read, exported builder, not yet rendered (follow-up)
-uncovered     internal/widthaudit/widthaudit.go:BuildCensusQuery validate-schema-consistency width census read, exported builder, not yet rendered (follow-up)
-uncovered     scripts/validate_schema_consistency.sql psql script: its \if/\set meta-commands and :variable interpolation are not SQL dsql-lint can parse; read-only SELECTs
+# --- DSQL-reachable, not linted yet: gaps and their entries ---
+gap tool-statements dsql-lint-coverage-follow-up statements that cmd/tools subcommands, the schema ledger, manifest reconcile and the unique-key build send inline; each needs a recording export like internal/cdc/dsql_corpus_test.go
+gap startup-reads dsql-lint-coverage-follow-up catalog and registry reads the server and tools run at startup, and the health probe; each needs a recording export
+gap query-dsl dsql-lint-coverage-follow-up read-path SQL assembled per query from the condition DSL and schema projections; needs representative conditions rendered through the production query builders
+gap parser-limits dsql-lint-coverage-follow-up SQL the pinned dsql-lint 0.2.22 cannot parse; lint it once the linter can, after reporting it upstream
+gap duckdb-postgres-scanner #691 DuckDB's postgres extension writes and sends its own SQL to the database for ATTACH-based reads; Forma never holds that SQL, so no export can render it
+
+uncovered     cmd/tools/apply_schema.go:applySchemas [tool-statements] apply-schema's transaction (pgx default begin) around schema ledger writes
+uncovered     cmd/tools/baseline_schema.go:recordBaselines [tool-statements] baseline-schema's transaction (pgx default begin) around schema ledger writes
+uncovered     cmd/tools/baseline_schema_state.go:readStoredState [tool-statements] baseline-schema read of stored attribute state
+uncovered     cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.checkStorageMismatches [tool-statements] validate-schema-consistency read-only check
+uncovered     cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.checkUnknownAttributeIDs [tool-statements] validate-schema-consistency read-only check
+uncovered     cmd/tools/validate_schema_consistency_dates.go:schemaConsistencyValidator.checkEAVDateImages [tool-statements] validate-schema-consistency read-only check
+uncovered     cmd/tools/validate_schema_consistency_lists.go:schemaConsistencyValidator.checkScalarRowsUnderListAttrs [tool-statements] validate-schema-consistency read-only check
+uncovered     factory/factory.go:collectTablesFromPool [startup-reads] startup catalog read
+uncovered     internal/advanced_query_template.go:optimizedQuerySQLTemplate [query-dsl] OLTP query template filled by the condition DSL per query
+uncovered     internal/declaredindex/ensure.go:DropSQL [parser-limits] remedy printed for an operator, never run by Forma; dsql-lint 0.2.22 reports DROP INDEX CONCURRENTLY as a parse_error, so linting it reports a parser limitation, not DSQL compatibility
+uncovered     internal/federated/duckdb_pg_attach.go:DuckDBClientQueryExecutor.queryWithPostgres [duckdb-postgres-scanner] runs DuckDB SQL over an attached PostgreSQL database; the extension sends the database reads
+uncovered     internal/postgres_health.go:PostgresHealthCheck [startup-reads] health probe
+uncovered     internal/postgres_persistent_repository_claim.go:matchingRowsInTx [query-dsl] claim/mutate-where candidate read; its condition comes from the condition DSL and its lock clause from the engine
+uncovered     internal/postgres_persistent_repository_single_row.go:rowSelectWithAttributes [query-dsl] single-row read; projection built from schema metadata
+uncovered     internal/reconcile/db.go:PGLiveRows.LiveRowCount [tool-statements] manifest-reconcile read
+uncovered     internal/reconcile/db.go:PGLiveRows.MissingLiveRows [tool-statements] manifest-reconcile read
+uncovered     internal/reconcile/db.go:RegistrySchemaEnumerator.SchemaIDs [tool-statements] manifest-reconcile read
+uncovered     internal/schemaledger/gate.go:readAllActive [startup-reads] schema generation gate read at startup
+uncovered     internal/schemaledger/store.go:ReadActive [tool-statements] schema ledger read (init-db, baseline-schema, apply-schema)
+uncovered     internal/schemaledger/store.go:ReadPointer [tool-statements] schema ledger read (init-db, baseline-schema, apply-schema)
+uncovered     internal/schemaledger/store.go:Write [tool-statements] schema ledger write (init-db, baseline-schema, apply-schema)
+uncovered     internal/schemaledger/store.go:insertEntries [tool-statements] schema ledger write (init-db, baseline-schema, apply-schema)
+uncovered     internal/schemaledger/store.go:movePointer [tool-statements] schema ledger write (init-db, baseline-schema, apply-schema)
+uncovered     internal/schemaledger/store.go:readEntries [tool-statements] schema ledger read (init-db, baseline-schema, apply-schema)
+uncovered     internal/schemameta/file_registry.go:fileSchemaRegistry.loadSchemasFromDB [startup-reads] schema registry read at startup
+uncovered     internal/schemameta/loader.go:MetadataLoader.loadSchemaRegistry [startup-reads] schema registry read at startup
+uncovered     internal/sqlgen/predicate_render.go:PgEavLeafPayload.Render [query-dsl] PostgreSQL predicate fragment of the condition DSL, not a statement on its own; the rendered row-guard probes use a stand-in for its output
+uncovered     internal/unique_key_build.go:scanRowPage [tool-statements] sends the unique-key build's row page read, built from the schema's key columns
+uncovered     internal/unique_key_build.go:unbuildKey [tool-statements] unique-key build (init-db, build-unique-keys, startup)
+uncovered     internal/unique_key_build.go:writeBuiltKey [tool-statements] unique-key build (init-db, build-unique-keys, startup)
+uncovered     internal/unique_key_state.go:UniqueKeyCatalog.schemaIsEmpty [startup-reads] unique-key state read (init-db, build-unique-keys, startup)
+uncovered     internal/unique_key_state.go:readUniqueKeyState [startup-reads] unique-key state read (init-db, build-unique-keys, startup)
+uncovered     scripts/validate_schema_consistency.sql [parser-limits] psql script: its \if/\set meta-commands and :variable interpolation are not SQL dsql-lint can parse; read-only SELECTs
+
+# --- Sends or forwards SQL built elsewhere ---
+passthrough   cmd/tools/init_db.go:ensureTables sends tableTransactionDDL (rendered) inside withTx
+passthrough   cmd/tools/validate_schema_consistency.go:schemaConsistencyValidator.scanStorageIssueRows runs the checks' queries ([tool-statements] entries of validate_schema_consistency*.go)
+passthrough   internal/cdc/export_pg_stage.go:appendStageRows sends the export stage queries (buildChangeLogQuery, buildMainEntityQuery, buildEAVQuery, rendered)
+passthrough   internal/declaredindex/ensure.go:Ensure sends tableSchemaQuery and Index.CreateSQL (rendered)
+passthrough   internal/declaredindex/ensure.go:listIndexes sends catalogQuery (rendered)
+passthrough   internal/entity_transactor.go:transactor.InTx begins with the engine's writeTxOptions(true): on DSQL guardRowLocking.writeTxOptions, whose BEGIN is rendered; the body's statements are the repository's
+passthrough   internal/postgres_persistent_repository.go:persistentRecordPool the repository's pool interface
+passthrough   internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.insertMainRow sends buildInsertMainStatement (rendered)
+passthrough   internal/postgres_persistent_repository_main_table.go:DBPersistentRecordRepository.updateMainRow sends buildUpdateMainStatement (rendered)
+passthrough   internal/postgres_persistent_repository_query.go:DBPersistentRecordRepository.StreamOptimizedQuery sends the optimized query (optimizedQuerySQLTemplate, [query-dsl])
+passthrough   internal/postgres_persistent_repository_requeue.go:DBPersistentRecordRepository.requeueInTx sends buildRequeueMainStatement (rendered)
+passthrough   internal/postgres_persistent_repository_row_locking.go:rowLocking the engines' row-locking interface
+passthrough   internal/postgres_persistent_repository_row_locking.go:writeGuardRows sends guardUpsertSQL (rendered)
+passthrough   internal/postgres_persistent_repository_single_row.go:DBPersistentRecordRepository.loadRecordWithAttributes sends rowSelectWithAttributes ([query-dsl])
+passthrough   internal/postgres_persistent_repository_txbound.go:txStatementPool.BeginTx a Tx-bound pool: answers its transaction and sends nothing
+passthrough   internal/postgres_persistent_repository_txbound.go:txStatementPool.Query a Tx-bound pool forwarding its caller's SQL
+passthrough   internal/postgres_persistent_repository_txbound.go:txStatementPool.QueryRow a Tx-bound pool forwarding its caller's SQL
+passthrough   internal/postgres_tx_meter.go:meteredTx.Exec the write meter, forwarding its caller's SQL
+passthrough   internal/postgres_tx_meter.go:meteredTx.Query the write meter, forwarding its caller's SQL
+passthrough   internal/postgres_tx_meter.go:meteredTx.QueryRow the write meter, forwarding its caller's SQL
+passthrough   internal/widthaudit/column_census.go:queryColumnFindings sends BuildColumnCensusQuery (rendered)
+passthrough   internal/widthaudit/domain_census.go:queryDomainColumnFindings sends BuildDomainColumnCensusQuery (rendered)
+passthrough   internal/widthaudit/domain_census.go:queryDomainEAVFindings sends BuildDomainCensusQuery (rendered)
+passthrough   internal/widthaudit/widthaudit.go:queryEAVFindings sends BuildCensusQuery (rendered)
 
 # --- PostgreSQL engine only ---
 postgres-only internal/cdc/schema_lock.go:TrySchemaLock pg_try_advisory_lock; only advisorySchemaLocker (EnginePostgreSQL) calls it, DSQL uses the schema lease
 postgres-only internal/postgres_persistent_repository.go:lockRowVersion pg_advisory_xact_lock; only advisoryLocking (EnginePostgreSQL) calls it, guardRowLocking writes guard rows instead
 postgres-only internal/postgres_persistent_repository_claim.go:tryLockRowsInTx pg_try_advisory_xact_lock; only advisoryLocking (EnginePostgreSQL) calls it
+postgres-only internal/postgres_persistent_repository_row_locking.go:advisoryLocking.writeTxOptions READ COMMITTED begin, which DSQL refuses (dsql-lint transaction_isolation); only the PostgreSQL engine's advisoryLocking uses it
 
 # --- DuckDB ---
+duckdb        internal/cdc/duckdb_exporter.go:DuckExporter.dropStages CDC export staging on the pinned DuckDB connection
+duckdb        internal/cdc/duckdb_exporter.go:DuckExporter.runExport CDC export staging and COPY on the pinned DuckDB connection
 duckdb        internal/cdc/duckdb_exporter.go:buildProjectedExportSQL CDC export projection over DuckDB staged tables
 duckdb        internal/cdc/export_sql_builder.go:buildEAVAggregationSQL CDC export projection over DuckDB staged tables
 duckdb        internal/cdc/export_staging.go:buildStageDropSQL CDC export projection over DuckDB staged tables
+duckdb        internal/cdc/export_staging.go:buildStageSetupSQL CDC export staging tables in DuckDB
+duckdb        internal/compaction/merge.go:DuckMerger.MergeToTmp compaction over Parquet in DuckDB
 duckdb        internal/compaction/merge_sql.go:buildMergeRowsInSQL compaction over Parquet in DuckDB
 duckdb        internal/compaction/merge_sql.go:buildMergeSQL compaction over Parquet in DuckDB
 duckdb        internal/compaction/merge_sql.go:buildMergeStatsSQL compaction over Parquet in DuckDB
+duckdb        internal/compaction/single_file_stats.go:SingleFileStats compaction over Parquet in DuckDB
 duckdb        internal/compaction/uncovered_rows.go:UncoveredRows compaction over Parquet in DuckDB
 duckdb        internal/duckdbinit/duckdbinit.go:RequiredExtensionStep DuckDB connection setup
+duckdb        internal/duckdbinit/duckdbinit.go:runStmts DuckDB connection setup
+duckdb        internal/duckdbinit/recovery.go:instanceConn.ExecContext DuckDB connection wrapper
+duckdb        internal/duckdbinit/recovery.go:instanceConn.QueryContext DuckDB connection wrapper
 duckdb        internal/duckdbinit/recovery.go:instanceConn.probeInvalidated DuckDB connection setup
 duckdb        internal/federated/duckdb_conn.go:DuckDBClient.HealthCheck federated engine SQL run in DuckDB
+duckdb        internal/federated/duckdb_pg_attach.go:attachOn DuckDB ATTACH of PostgreSQL; the reads it enables are [duckdb-postgres-scanner]
+duckdb        internal/federated/duckdb_query_execute.go:DBFederatedQueryEngine.queryDuckDB federated engine SQL run in DuckDB
+duckdb        internal/federated/engine.go:DuckDBClientQueryExecutor.Query federated engine SQL run in DuckDB
 duckdb        internal/federated/parquet_domain_audit.go:decodeObject federated engine SQL run in DuckDB
+duckdb        internal/federated/parquet_domain_audit.go:duckSQLPool.Query federated engine SQL run in DuckDB
 duckdb        internal/federated/parquet_guard_identify.go:drainGuardedParquet federated engine SQL run in DuckDB
+duckdb        internal/federated/parquet_schema_validation.go:describeParquetColumns federated engine SQL run in DuckDB
 duckdb        internal/federated/parquet_schema_validation.go:globParquetPaths federated engine SQL run in DuckDB
 duckdb        internal/federated/parquet_type_guard.go:parquetSchemaValidator.runProof federated engine SQL run in DuckDB
 duckdb        internal/federated/parquet_verify.go:drainParquet federated engine SQL run in DuckDB
+duckdb        internal/parquetcheck/describe.go:DescribeColumns Parquet schema read in DuckDB
 duckdb        internal/sqlgen/advanced_query_template_duckdb.go:AdvancedQueryTemplateDuckDB federated query template run in DuckDB
 
 # --- Never sent to DSQL ---
+not-dsql      cmd/duckdbcompat/fixture.go:* DuckDB storage compatibility check (#753), runs DuckDB only
 not-dsql      cmd/duckdbcompat/main.go:* DuckDB storage compatibility check (#753), runs DuckDB only
+not-dsql      cmd/sample/main.go:printSampleQueryResults local sample importer on the dev PostgreSQL of scripts/run_sample.sh
 not-dsql      cmd/sample/main.go:runSampleImport local sample importer: TRUNCATEs its own *_sample tables on the dev PostgreSQL of scripts/run_sample.sh
+not-dsql      internal/coordinationtest/store.go:queryAll test-only adapter; calls Forma's Tx Query API, not a database method
 not-dsql      internal/dsqllint/corpus/corpus.go:Transaction the gate's own BEGIN/COMMIT rendering for corpus units
-not-dsql      internal/dsqllint/scan.go:sqlLiteral the gate's SQL-literal pattern
+not-dsql      internal/dsqllint/scan_go.go:* the gate's own SQL and database-method patterns
+not-dsql      internal/e2e_harness/federated/benchmark/execute.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/federated/benchmark/execute_query.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/federated/benchmark/loaded_state.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/federated/cdc.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
@@ -156,13 +224,24 @@ not-dsql      internal/e2e_harness/federated/query_hot.go:* e2e test harness (te
 not-dsql      internal/e2e_harness/federated/query_postgres_build.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/federated/s3_operations.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/federated/seeding.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
+not-dsql      internal/e2e_harness/federated/seeding_batch.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/fixtures.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/production/artifacts.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
+not-dsql      internal/e2e_harness/production/assert.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/production/cdc.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/production/ddl.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
+not-dsql      internal/e2e_harness/production/env.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/production/events.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
+not-dsql      internal/e2e_harness/production/faults.go:* e2e test harness: fault names such as "copy object" only look like SQL
+not-dsql      internal/e2e_harness/production/query.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/production/restore.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/production/schema.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
+not-dsql      internal/entity_manager.go:entityManager.Query Forma's EntityManager Query API; it calls the query service, not a database method
+not-dsql      internal/entity_query_service.go:entityQueryService.queryRecords calls the repository's and the federated engine's query APIs, which are inventoried where they send SQL
+not-dsql      internal/entity_tx_read.go:txSession.Query Forma's Tx Query API, not a database method
 not-dsql      internal/federated/duckdb_query_helpers.go:duckDBExecutionPlanContext.recordDirtyIDSource text recorded in the execution plan describing FetchDirtyRowIDs; never executed
+not-dsql      internal/httpapi/handlers.go:Server.handleAdvancedQuery calls the EntityManager Query API
+not-dsql      internal/httpapi/handlers.go:Server.handleQuery calls the EntityManager Query API
 not-dsql      internal/postgres_tx_meter.go:meteredTx.CopyFrom "COPY <table>" is the write meter's label for a CopyFrom, not SQL
-not-dsql      internal/schemaledger/ledgertest/ledgertest.go:record test helper package, imported only by tests
+not-dsql      internal/schemaledger/ledgertest/ledgertest.go:* test helper package, imported only by tests
+not-dsql      internal/testutil/faultproxy/faultproxy.go:* test fault-injection proxy; inspects the wire and sends nothing of its own
