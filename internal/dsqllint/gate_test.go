@@ -99,3 +99,37 @@ func TestRunFailsClosedOnACommentOnlyCorpus(t *testing.T) {
 		})
 	}
 }
+
+// TestRunRefusesAnUnclassifiedSQLFileUntilItIsClassified is the end-to-end
+// regression for #740 review R2-F1: a .sql file added to the repository
+// without an inventory entry fails the gate before anything is linted, and
+// classifying it as rendered makes the gate lint it.
+func TestRunRefusesAnUnclassifiedSQLFileUntilItIsClassified(t *testing.T) {
+	root, tool := gateFixture(t, "-- origin: p/p.go:Q\nSELECT 1;\n")
+	if err := os.MkdirAll(filepath.Join(root, "db"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "db/new_table.sql"), []byte("CREATE TABLE t (id INT);\n"), 0o644); err != nil {
+		t.Fatalf("write SQL file: %v", err)
+	}
+	var out bytes.Buffer
+	err := Run(context.Background(), Config{Root: root, Tool: tool, Out: &out})
+	if err == nil {
+		t.Fatalf("Run passed with db/new_table.sql unclassified:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "SQL file db/new_table.sql is checked in and no inventory entry classifies it") {
+		t.Fatalf("Run error = %v, want the unclassified file named:\n%s", err, out.String())
+	}
+
+	inventory := "rendered p/p.go:Q the fixture's one statement\nrendered db/new_table.sql a checked-in migration\n"
+	if err := os.WriteFile(filepath.Join(root, InventoryPath), []byte(inventory), 0o644); err != nil {
+		t.Fatalf("write inventory: %v", err)
+	}
+	out.Reset()
+	if err := Run(context.Background(), Config{Root: root, Tool: tool, Out: &out}); err != nil {
+		t.Fatalf("Run with db/new_table.sql classified: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "2 generators") {
+		t.Fatalf("the gate must lint the classified file as a second origin:\n%s", out.String())
+	}
+}

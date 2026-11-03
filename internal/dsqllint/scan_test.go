@@ -102,3 +102,89 @@ func TestLooksLikeSQL(t *testing.T) {
 		}
 	}
 }
+
+// fragmentGo holds generators that build a statement from fragments no
+// single expression completes, and an executor that sends whatever SQL its
+// caller hands it (#740 review R2-F2).
+const fragmentGo = `package p
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+)
+
+const verb = "create"
+
+type row struct {
+	Name string ` + "`json:\"select\" db:\"name\"`" + `
+}
+
+// exec is the classified passthrough executor.
+func exec(ctx context.Context, tx pgx.Tx, sql string) error {
+	_, err := tx.Exec(ctx, sql)
+	return err
+}
+
+func joined() string { return strings.Join([]string{"CREATE ", "TABLE t (id int)"}, "") }
+
+func sprinted(name string) string { return fmt.Sprintf("%s %s %s (id int)", "create", "table", name) }
+
+func built(name string) string {
+	var b strings.Builder
+	b.WriteString("INSERT")
+	b.WriteString(" INTO ")
+	b.WriteString(name)
+	return b.String()
+}
+
+func split() string { return strings.Join([]string{"INS", "ERT INTO t VALUES (1)"}, "") }
+
+func viaConstant() string { return strings.Join([]string{verb, "unique", "index", "i on t (a)"}, " ") }
+
+func send(ctx context.Context, tx pgx.Tx) error { return exec(ctx, tx, joined()) }
+
+func labels() []string { return []string{"create", "update", "delete", "copy"} }
+
+func wrapped(err error) error { return fmt.Errorf("select %s from %w", "rows", err) }
+`
+
+// TestFragmentBuiltGeneratorsFeedingAClassifiedExecutorFail is the
+// regression for a generator assembled from fragments that sends its SQL
+// through an executor the inventory already classifies: the executor's
+// entry does not cover the generator, which fails the guard until it is
+// classified itself.
+func TestFragmentBuiltGeneratorsFeedingAClassifiedExecutorFail(t *testing.T) {
+	snap := scanFixture(t, map[string]string{"p/p.go": fragmentGo})
+	generators := []string{"p/p.go:joined", "p/p.go:sprinted", "p/p.go:built", "p/p.go:split", "p/p.go:viaConstant"}
+	for _, loc := range generators {
+		if got := snap.Sites[loc]; got.Why != whyFragments {
+			t.Errorf("Sites[%s] = %+v, want a site that %s", loc, got, whyFragments)
+		}
+	}
+	for _, loc := range []string{"p/p.go:verb", "p/p.go:row", "p/p.go:labels", "p/p.go:wrapped", "p/p.go:send"} {
+		if site, ok := snap.Sites[loc]; ok {
+			t.Errorf("%s assembles no SQL, but the scan reported %+v", loc, site)
+		}
+	}
+
+	classified := []Entry{{Class: ClassPassthrough, Location: "p/p.go:exec", Line: 1}}
+	joined := ""
+	for _, p := range CheckInventory(classified, snap) {
+		joined += p.Error() + "\n"
+	}
+	for _, loc := range generators {
+		if !strings.Contains(joined, loc+" "+whyFragments) {
+			t.Errorf("CheckInventory did not refuse the unclassified generator %s:\n%s", loc, joined)
+		}
+	}
+
+	for i, loc := range generators {
+		classified = append(classified, Entry{Class: ClassUncovered, Location: loc, Line: i + 2, Gap: "later"})
+	}
+	if problems := CheckInventory(classified, snap); len(problems) != 0 {
+		t.Errorf("CheckInventory with every generator classified = %v, want none", problems)
+	}
+}

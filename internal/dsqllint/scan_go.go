@@ -8,12 +8,19 @@ import (
 	"strings"
 )
 
-// The scan marks a symbol as a site for any of three reasons. Each one
-// alone can miss SQL that another catches, which is why there are three:
+// The scan marks a symbol as a site for any of four reasons. Each one
+// alone can miss SQL that another catches, which is why there are four:
 //
 //   - it holds SQL text: a string literal, or a constant expression folded
 //     from literals and same-package string constants, that starts a SQL
 //     statement in any letter case, after any leading SQL comments;
+//   - it assembles SQL text from fragments: its string literals and
+//     same-package string constants, read in source order and joined by
+//     spaces, start a SQL statement at one of them, however they are put
+//     together (strings.Join, fmt.Sprintf arguments, a strings.Builder,
+//     append), so a generator built from fragments is found where it
+//     builds, even when it hands its result to an executor the inventory
+//     already classifies;
 //   - it calls a database method (Exec, Query, QueryRow, Begin, BeginTx,
 //     SendBatch, CopyFrom, Prepare, Queue and their Context forms), so SQL
 //     assembled from fragments no pattern recognises is still found where
@@ -24,6 +31,10 @@ const (
 	whyLiteral = "holds SQL text"
 	whyExec    = "calls a database method"
 	whyTxOpts  = "sets transaction options"
+	// whyFragments: the symbol's string fragments, read in source order,
+	// start a SQL statement although no single expression does, such as
+	// strings.Join([]string{"CREATE ", "TABLE t (a INT)"}, "").
+	whyFragments = "assembles SQL text from fragments"
 )
 
 // sqlStatement matches text that starts a SQL statement, in any letter
@@ -200,7 +211,9 @@ func (fs fileScope) siteOf(node ast.Node) Site {
 			site = Site{Line: line, Why: why}
 		}
 	}
+	var frags fragments
 	ast.Inspect(node, func(n ast.Node) bool {
+		frags.collect(n, fs.consts)
 		switch x := n.(type) {
 		case *ast.BasicLit, *ast.BinaryExpr:
 			if s, ok := foldString(x.(ast.Expr), fs.consts); ok && LooksLikeSQL(s) {
@@ -220,5 +233,8 @@ func (fs fileScope) siteOf(node ast.Node) Site {
 		}
 		return true
 	})
+	if pos, ok := frags.statementStart(); ok {
+		note(pos, whyFragments)
+	}
 	return site
 }

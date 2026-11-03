@@ -40,6 +40,15 @@ func (s Snapshot) sortedSites() []string {
 	return sites
 }
 
+func (s Snapshot) sortedSQLFiles() []string {
+	files := make([]string, 0, len(s.SQLFiles))
+	for file := range s.SQLFiles {
+		files = append(files, file)
+	}
+	sort.Strings(files)
+	return files
+}
+
 func (s Snapshot) hasSiteIn(file string) bool {
 	for site := range s.Sites {
 		if fileOf(site) == file {

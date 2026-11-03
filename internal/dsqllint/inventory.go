@@ -237,6 +237,12 @@ func CheckInventory(entries []Entry, snap Snapshot) []error {
 				site, snap.Sites[site].Why, snap.Sites[site].Line, InventoryPath))
 		}
 	}
+	for _, file := range snap.sortedSQLFiles() {
+		if _, ok := byLocation[file]; !ok {
+			problems = append(problems, fmt.Errorf("SQL file %s is checked in and no inventory entry classifies it: add it to %s as rendered (the gate lints it as it is), uncovered (with its [gap]), postgres-only, duckdb or not-dsql",
+				file, InventoryPath))
+		}
+	}
 	for _, e := range entries {
 		if err := checkEntryExists(e, snap); err != nil {
 			problems = append(problems, err)

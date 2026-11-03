@@ -161,3 +161,26 @@ func TestCheckInventoryRefusesAnExclusionWhoseSymbolHoldsNoSQL(t *testing.T) {
 		t.Fatalf("CheckInventory = %v, want the stale postgres-only entry refused", problems)
 	}
 }
+
+// TestCheckInventoryRefusesAnUnclassifiedSQLFile is the regression for a
+// checked-in .sql file the inventory does not name (#740 review R2-F1): the
+// gate lints only the files the inventory renders, so an unnamed one would
+// be neither classified nor linted. A classification resolves it.
+func TestCheckInventoryRefusesAnUnclassifiedSQLFile(t *testing.T) {
+	snap := scanFixture(t, map[string]string{
+		"p/p.go":             "package p\n\nfunc f() int { return 1 }\n",
+		"scripts/listed.sql": "SELECT 1;",
+		"db/new_table.sql":   "CREATE TABLE t (id INT);",
+		"p/testdata/x.sql":   "CREATE TABLE fixture (id INT);",
+	})
+	entries := []Entry{{Class: ClassRendered, Location: "scripts/listed.sql", Line: 1}}
+	problems := CheckInventory(entries, snap)
+	if len(problems) != 1 || !strings.Contains(problems[0].Error(), "SQL file db/new_table.sql is checked in and no inventory entry classifies it") {
+		t.Fatalf("CheckInventory = %v, want only the unclassified db/new_table.sql refused", problems)
+	}
+
+	entries = append(entries, Entry{Class: ClassRendered, Location: "db/new_table.sql", Line: 2})
+	if problems := CheckInventory(entries, snap); len(problems) != 0 {
+		t.Fatalf("CheckInventory with db/new_table.sql classified = %v, want none", problems)
+	}
+}
