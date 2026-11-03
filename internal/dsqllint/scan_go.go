@@ -18,9 +18,11 @@ import (
 //     same-package string constants, read in source order and joined by
 //     spaces, start a SQL statement at one of them, however they are put
 //     together (strings.Join, fmt.Sprintf arguments, a strings.Builder,
-//     append), so a generator built from fragments is found where it
-//     builds, even when it hands its result to an executor the inventory
-//     already classifies;
+//     append), with each run of dynamic pieces between them (variables,
+//     parameters, calls) read as one name or left out, so a generator
+//     built from fragments, a run-time table name among them, is found
+//     where it builds, even when it hands its result to an executor the
+//     inventory already classifies;
 //   - it calls a database method (Exec, Query, QueryRow, Begin, BeginTx,
 //     SendBatch, CopyFrom, Prepare, Queue and their Context forms), so SQL
 //     assembled from fragments no pattern recognises is still found where

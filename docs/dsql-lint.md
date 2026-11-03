@@ -71,6 +71,14 @@ that does any of these:
 - holds SQL text. That is a string literal, or a constant expression folded
   from literals and the package's string constants, that starts a SQL
   statement in any letter case, after any leading SQL comments.
+- assembles SQL text from fragments. Its string literals and the package's
+  string constants, read in source order, start a SQL statement however they
+  are put together (`strings.Join`, `fmt.Sprintf` arguments, a
+  `strings.Builder`, `+`). A dynamic piece between them, such as a variable
+  table name in `strings.Join([]string{"UPDATE ", table, " SET a = $1"}, "")`,
+  is read both as a name and as absent. This finds the generator where it
+  builds, even when it hands its SQL to an executor the inventory already
+  classifies.
 - calls a database method: `Exec`, `Query`, `QueryRow`, `Begin`, `BeginTx`,
   `SendBatch`, `CopyFrom`, `Prepare`, `Queue` and their `Context` forms.
   This catches SQL assembled from fragments that no pattern recognises,

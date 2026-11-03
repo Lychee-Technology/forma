@@ -188,3 +188,80 @@ func TestFragmentBuiltGeneratorsFeedingAClassifiedExecutorFail(t *testing.T) {
 		t.Errorf("CheckInventory with every generator classified = %v, want none", problems)
 	}
 }
+
+// dynamicGo holds generators whose statement head names a table, alias,
+// privilege or savepoint only known at run time, each feeding the
+// classified passthrough executor (#740 review R3-F1).
+const dynamicGo = `package p
+
+import (
+	"context"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// exec is the classified passthrough executor.
+func exec(ctx context.Context, tx pgx.Tx, sql string) error {
+	_, err := tx.Exec(ctx, sql)
+	return err
+}
+
+func dynamicTable(ctx context.Context, tx pgx.Tx, table string) error {
+	return exec(ctx, tx, strings.Join([]string{"UPDATE ", table, " SET value = $1"}, ""))
+}
+
+func sanitized(schema, table string) string {
+	return "UPDATE " + pgx.Identifier{schema, table}.Sanitize() + " AS t SET value = $1"
+}
+
+func built(name string) string {
+	var b strings.Builder
+	b.WriteString("with ")
+	b.WriteString(name)
+	b.WriteString(" as (select 1) select * from x")
+	return b.String()
+}
+
+func savepoint(name string) string { return "SAVEPOINT " + name }
+
+func spaced(kw string) string { return strings.Join([]string{"INSERT", kw, "INTO t VALUES (1)"}, " ") }
+
+func message(table string) string { return "updated " + table + " settings" }
+`
+
+// TestDynamicFragmentGeneratorsFeedingAClassifiedExecutorFail is the
+// regression for a generator whose statement head holds a dynamic piece,
+// such as a table name, between its string fragments: the scan reads the
+// piece as a name, so the generator is a site the executor's entry does
+// not cover, and the guard fails until it is classified itself.
+func TestDynamicFragmentGeneratorsFeedingAClassifiedExecutorFail(t *testing.T) {
+	snap := scanFixture(t, map[string]string{"p/p.go": dynamicGo})
+	generators := []string{"p/p.go:dynamicTable", "p/p.go:sanitized", "p/p.go:built", "p/p.go:savepoint", "p/p.go:spaced"}
+	for _, loc := range generators {
+		if got := snap.Sites[loc]; got.Why != whyFragments {
+			t.Errorf("Sites[%s] = %+v, want a site that %s", loc, got, whyFragments)
+		}
+	}
+	if site, ok := snap.Sites["p/p.go:message"]; ok {
+		t.Errorf("p/p.go:message assembles no SQL, but the scan reported %+v", site)
+	}
+
+	classified := []Entry{{Class: ClassPassthrough, Location: "p/p.go:exec", Line: 1}}
+	joined := ""
+	for _, p := range CheckInventory(classified, snap) {
+		joined += p.Error() + "\n"
+	}
+	for _, loc := range generators {
+		if !strings.Contains(joined, loc+" "+whyFragments) || !strings.Contains(joined, "no inventory entry classifies it") {
+			t.Errorf("CheckInventory did not refuse the unclassified generator %s:\n%s", loc, joined)
+		}
+	}
+
+	for i, loc := range generators {
+		classified = append(classified, Entry{Class: ClassUncovered, Location: loc, Line: i + 2, Gap: "later"})
+	}
+	if problems := CheckInventory(classified, snap); len(problems) != 0 {
+		t.Errorf("CheckInventory with every generator classified = %v, want none", problems)
+	}
+}
