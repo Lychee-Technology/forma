@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-e2e-production duckdb-storage-compat fmt-check lint check-infra coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy benchmark-heavy-live build-all build-lambda clean all create-build-dir link validate-schema-consistency
+.PHONY: test test-unit test-e2e-production duckdb-storage-compat fmt-check lint lint-dsql check-infra coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy benchmark-heavy-live build-all build-lambda clean all create-build-dir link validate-schema-consistency
 
 # Binary names
 BINARY_SERVER=server
@@ -50,8 +50,10 @@ TEST_PKGS+= ./cmd/...
 TEST_PKGS+= ./factory
 TEST_PKGS+= ./internal/...
 
-# Default target
-all: test build-all
+# Default target. lint-dsql runs here, not in build-all: build-all only
+# compiles, and must keep working offline once modules are cached, while the
+# DSQL gate downloads its pinned linter on first use.
+all: test lint-dsql build-all
 
 # Run unit tests
 test: test-unit
@@ -118,6 +120,19 @@ lint:
 	@$(GOENV) PATH="$$($(GOENV) go env GOPATH)/bin:$$PATH" golangci-lint run --build-tags e2e --timeout=10m
 	@echo "Running golangci-lint (infra module)..."
 	@cd infra && $(GOENV) PATH="$$($(GOENV) go env GOPATH)/bin:$$PATH" golangci-lint run --build-tags e2e --timeout=10m
+
+# Static Aurora DSQL compatibility gate (#740). Renders the SQL Forma's Go
+# generators produce (each package's TestDSQLCorpus), lints it lint-only with
+# the pinned AWS dsql-lint release (downloaded from PyPI on first use and
+# checked against its sha256; cached under $(BUILD_DIR)/tools), and checks the
+# SQL inventory in internal/dsqllint/inventory.txt. Needs no database, Docker
+# or AWS credentials. CI's lint job runs this exact target and `make all` runs
+# it too (TestCILintJobRunsLintDSQL, TestMakeAllRunsLintDSQL). Set
+# DSQL_LINT_BIN to use a preinstalled dsql-lint of the pinned version. See
+# docs/dsql-lint.md.
+lint-dsql:
+	@echo "Running the DSQL lint gate..."
+	@$(GOENV) go run ./cmd/dsqllint -cache $(BUILD_DIR)/tools
 
 # Build + vet the infra/ Pulumi module (#444). infra/ is its own Go module
 # (github.com/lychee-technology/forma/infra), so the root gates' ./... never

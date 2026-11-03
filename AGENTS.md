@@ -13,6 +13,7 @@ make test          # unit tests (wraps: go test . ./cdc ./cmd/... ./factory ./in
 make fmt-check     # gofmt gate over git-listed Go files — CI runs it ahead of the linter
 make lint          # golangci-lint, pinned to v1.64.8 — same as CI; covers the root AND infra/ modules; do not upgrade the pin
 make check-infra   # build + vet the infra/ Pulumi module (a separate Go module the root gates never reach)
+make lint-dsql     # static Aurora DSQL check of rendered SQL with pinned AWS dsql-lint (CI lint job + make all); docs/dsql-lint.md
 make coverage      # unit tests + coverage report in build/
 make build-all     # build server/tools/sample into build/ with platform symlinks
 ./scripts/test_with_container_runtime.sh  # auto-detect Docker/Podman, configure E2E, run make test
@@ -55,7 +56,7 @@ Bun black-box E2E and k6 load tests live in `tests/e2e/` (see its README). Bench
 
 Local server: `./scripts/local_server.sh` (Docker Compose Postgres + init-db + server on :8080).
 
-CI (`.github/workflows/ci.yml`) runs lint, unit tests with `-race`, the e2e smoke + `-tags=e2e -short` federated suite, the production harness, and `benchmark-smoke`. Note `-short` skips 37 of the 124 federated e2e tests (deduplication, merge-on-read, data-tier, soft-delete, performance); their CI signal is the nightly workflow (`.github/workflows/nightly-e2e.yml`), which runs the full federated suite (#434) and the production suite under `-race` (#410), filing a `nightly-e2e`- / `nightly-e2e-race`-labeled issue respectively on failure.
+CI (`.github/workflows/ci.yml`) runs lint, the DSQL lint gate, unit tests with `-race`, the e2e smoke + `-tags=e2e -short` federated suite, the production harness, and `benchmark-smoke`. Note `-short` skips 37 of the 124 federated e2e tests (deduplication, merge-on-read, data-tier, soft-delete, performance); their CI signal is the nightly workflow (`.github/workflows/nightly-e2e.yml`), which runs the full federated suite (#434) and the production suite under `-race` (#410), filing a `nightly-e2e`- / `nightly-e2e-race`-labeled issue respectively on failure.
 
 ## Architecture
 
