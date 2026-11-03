@@ -11,7 +11,9 @@
 #              uncovered      can reach Aurora DSQL but is not linted; the note
 #                             starts with its [gap] and says why
 #              passthrough    sends, forwards or declares SQL that another
-#                             entry builds; the note names it
+#                             entry builds, or builds a fragment (such as a
+#                             CASE expression) only a rendered entry's
+#                             statement holds; the note names it
 #              postgres-only  runs only under the PostgreSQL engine; kept out of
 #                             the DSQL corpus
 #              duckdb         sent to DuckDB, never to PostgreSQL or DSQL
@@ -134,6 +136,7 @@ uncovered     internal/schemaledger/store.go:readEntries [tool-statements] schem
 uncovered     internal/schemameta/file_registry.go:fileSchemaRegistry.loadSchemasFromDB [startup-reads] schema registry read at startup
 uncovered     internal/schemameta/loader.go:MetadataLoader.loadSchemaRegistry [startup-reads] schema registry read at startup
 uncovered     internal/sqlgen/predicate_render.go:PgEavLeafPayload.Render [query-dsl] PostgreSQL predicate fragment of the condition DSL, not a statement on its own; the rendered row-guard probes use a stand-in for its output
+uncovered     internal/sqlgen/server_time_operand.go:iso8601ServerTimeComparison [query-dsl] PostgreSQL server-time comparison fragment (CASE ... END) of the condition DSL, not a statement on its own
 uncovered     internal/unique_key_build.go:scanRowPage [tool-statements] sends the unique-key build's row page read, built from the schema's key columns
 uncovered     internal/unique_key_build.go:unbuildKey [tool-statements] unique-key build (init-db, build-unique-keys, startup)
 uncovered     internal/unique_key_build.go:writeBuiltKey [tool-statements] unique-key build (init-db, build-unique-keys, startup)
@@ -163,6 +166,7 @@ passthrough   internal/postgres_tx_meter.go:meteredTx.Exec the write meter, forw
 passthrough   internal/postgres_tx_meter.go:meteredTx.Query the write meter, forwarding its caller's SQL
 passthrough   internal/postgres_tx_meter.go:meteredTx.QueryRow the write meter, forwarding its caller's SQL
 passthrough   internal/widthaudit/column_census.go:queryColumnFindings sends BuildColumnCensusQuery (rendered)
+passthrough   internal/widthaudit/column_census.go:caseOverColumns CASE ... END fragment of BuildColumnCensusQuery, BuildNumericColumnCensusQuery and BuildDomainColumnCensusQuery (rendered), linted inside them
 passthrough   internal/widthaudit/domain_census.go:queryDomainColumnFindings sends BuildDomainColumnCensusQuery (rendered)
 passthrough   internal/widthaudit/domain_census.go:queryDomainEAVFindings sends BuildDomainCensusQuery (rendered)
 passthrough   internal/widthaudit/widthaudit.go:queryEAVFindings sends BuildCensusQuery (rendered)
@@ -218,6 +222,7 @@ not-dsql      cmd/sample/main.go:runSampleImport local sample importer: TRUNCATE
 not-dsql      internal/coordinationtest/store.go:queryAll test-only adapter; calls Forma's Tx Query API, not a database method
 not-dsql      internal/dsqllint/corpus/corpus.go:Transaction the gate's own BEGIN/COMMIT rendering for corpus units
 not-dsql      internal/dsqllint/scan_go.go:* the gate's own SQL and database-method patterns
+not-dsql      internal/dsqllint/scan_statements.go:* the gate's own SQL statement patterns
 not-dsql      internal/e2e_harness/federated/benchmark/execute.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/federated/benchmark/execute_query.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
 not-dsql      internal/e2e_harness/federated/benchmark/loaded_state.go:* e2e test harness (testcontainers PostgreSQL), not production SQL
@@ -248,6 +253,7 @@ not-dsql      internal/entity_tx_read.go:txSession.Query Forma's Tx Query API, n
 not-dsql      internal/federated/duckdb_query_helpers.go:duckDBExecutionPlanContext.recordDirtyIDSource text recorded in the execution plan describing FetchDirtyRowIDs; never executed
 not-dsql      internal/httpapi/handlers.go:Server.handleAdvancedQuery calls the EntityManager Query API
 not-dsql      internal/httpapi/handlers.go:Server.handleQuery calls the EntityManager Query API
+not-dsql      internal/httpapi/body_limit.go:respondBodyReadError the HTTP "Connection: close" header value, read with the call after it, only looks like CLOSE <cursor>
 not-dsql      internal/postgres_tx_meter.go:meteredTx.CopyFrom "COPY <table>" is the write meter's label for a CopyFrom, not SQL
 not-dsql      internal/schemaledger/ledgertest/ledgertest.go:* test helper package, imported only by tests
 not-dsql      internal/testutil/faultproxy/faultproxy.go:* test fault-injection proxy; inspects the wire and sends nothing of its own

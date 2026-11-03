@@ -38,7 +38,10 @@ const (
 	ClassNotDSQL Class = "not-dsql"
 	// ClassPassthrough: code that sends, forwards or declares SQL another
 	// inventory location builds (an executor of a builder, a wrapper, an
-	// interface) and builds none itself. The note names the builder.
+	// interface) and builds none itself, or that builds only a fragment,
+	// such as a CASE ... END expression, that a rendered location's
+	// statement holds, so the gate lints it there. The note names the
+	// builder.
 	ClassPassthrough Class = "passthrough"
 )
 

@@ -77,7 +77,14 @@ that does any of these:
   (`(SELECT 1) UNION (SELECT 2)`) counts as well. A configuration statement
   counts in every form: `SET TRANSACTION`, `SET SESSION`, `SET LOCAL`, a bare
   `SET name = value` or `SET name TO value`, `SET TIME ZONE`, `SET ROLE`, and
-  a whole `RESET`, `SHOW` or `DISCARD` statement.
+  a whole `RESET`, `SHOW` or `DISCARD` statement. Every other command of
+  PostgreSQL's SQL command reference counts too (`DO`, `CALL`, `VALUES`,
+  `TABLE`, `EXPLAIN`, a role `GRANT` or `REVOKE`, `VACUUM`, `LISTEN`,
+  `PREPARE`, cursors, savepoints, ...), whether or not DSQL supports it;
+  `TestEveryPostgresCommand` holds one example of each. A command whose
+  keyword is also an English word (`DO`, `CALL`, `CLOSE`, `END`) only counts
+  in a shape prose does not take, such as `DO $$`, `CALL p(` or the whole
+  text `CLOSE c`.
 - assembles SQL text from fragments. Its string literals and the package's
   string constants, read in source order, start a SQL statement however they
   are put together (`strings.Join`, `fmt.Sprintf` arguments, a
@@ -99,7 +106,7 @@ Each entry has one of these classes and a note:
 | --- | --- |
 | `rendered` | A `TestDSQLCorpus*` test renders it and the gate lints it |
 | `uncovered` | Can reach DSQL but is not linted. The note starts with its gap group, `[name]`, and says why |
-| `passthrough` | Sends, forwards or declares SQL that another entry builds: the executor of a builder, a wrapper, an interface. The note names the builder |
+| `passthrough` | Sends, forwards or declares SQL that another entry builds: the executor of a builder, a wrapper, an interface; or builds a fragment, such as a `CASE ... END` expression, that only a rendered entry's statement holds, so the gate lints it there. The note names the builder |
 | `postgres-only` | Runs only under the PostgreSQL engine (advisory locks, `READ COMMITTED` begins). Must stay out of the corpus |
 | `duckdb` | Sent to DuckDB, never to PostgreSQL or DSQL |
 | `not-dsql` | Never sent to a DSQL database: e2e harnesses, the local sample importer, text that only looks like SQL, a method that only shares a database method's name |

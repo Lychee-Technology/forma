@@ -3,7 +3,6 @@ package dsqllint
 import (
 	"go/ast"
 	"go/token"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -39,65 +38,6 @@ const (
 	// strings.Join([]string{"CREATE ", "TABLE t (a INT)"}, "").
 	whyFragments = "assembles SQL text from fragments"
 )
-
-// cteHead is the head of a WITH query up to its AS: a bare or double-quoted
-// name, optionally followed by a column list (WITH ids(id) AS ...), which
-// the head may hold as a whole or, read from fragments, as a dynamic piece
-// (#740 review R4-F1). A bare name with no column list must be followed by
-// space, so prose such as "with alias" is not a head. What follows AS
-// ([NOT] MATERIALIZED, the query) is not part of the head.
-const cteHead = `(?:\w+\s+|"(?:[^"]|"")+"\s*|(?:\w+|"(?:[^"]|"")+")\s*\([^()]*\)\s*)AS\b`
-
-// ddlObject is the kind of object a CREATE, ALTER or DROP statement
-// names, every kind PostgreSQL has, so a statement about one DSQL does not
-// support (CREATE MATERIALIZED VIEW, DROP EXTENSION) is found as surely as
-// one about a table (#740 review R7-F1).
-const ddlObject = `(?:TABLE|INDEX|SEQUENCE|(?:MATERIALIZED\s+)?VIEW|SCHEMA|EXTENSION|TYPE|DOMAIN|` +
-	`FUNCTION|PROCEDURE|ROUTINE|AGGREGATE|(?:EVENT\s+)?TRIGGER|RULE|POLICY|ROLE|USER(?:\s+MAPPING)?|GROUP|` +
-	`DATABASE|TABLESPACE|LANGUAGE|CAST|COLLATION|CONVERSION|OPERATOR|STATISTICS|PUBLICATION|SUBSCRIPTION|` +
-	`SERVER|FOREIGN\s+(?:TABLE|DATA\s+WRAPPER)|TEXT\s+SEARCH|ACCESS\s+METHOD|TRANSFORM)\b`
-
-// createModifier is a word a CREATE statement may put before the kind of
-// object it creates, in any number and order: CREATE UNLOGGED TABLE, CREATE
-// GLOBAL TEMPORARY TABLE, CREATE OR REPLACE TRUSTED PROCEDURAL LANGUAGE,
-// CREATE CONSTRAINT TRIGGER, CREATE DEFAULT CONVERSION (#740 review
-// R7-F1). DSQL refuses several of them, so a generator of one must reach
-// the inventory, not slip past it on its modifier.
-const createModifier = `(?:OR\s+REPLACE|GLOBAL|LOCAL|TEMP(?:ORARY)?|UNLOGGED|UNIQUE|RECURSIVE|CONSTRAINT|DEFAULT|TRUSTED|PROCEDURAL)`
-
-// sqlStatement matches text that starts a SQL statement, in any letter
-// case. LooksLikeSQL also reads it in the token form sqlTokens writes, so
-// a keyword may run into punctuation (SELECT(1), SELECT*FROM t,
-// UPDATE"t"SET a = 1) or a comment the way it runs into a space (#740
-// review R5-F1). A configuration statement counts in every form, not only
-// SET TRANSACTION, SET SESSION and SET LOCAL: a bare SET name = value or
-// SET name TO value, SET TIME ZONE, SET ROLE, and a whole RESET, SHOW or
-// DISCARD statement (#740 review R6-F1), since DSQL rejects or
-// restricts them and a generator of one would otherwise reach a classified
-// executor unclassified itself. The statement may sit inside parentheses:
-// (SELECT 1) UNION (SELECT 2). A leading BEGIN or
-// START TRANSACTION only counts as the whole text (beginStatement), so
-// error text such as "begin tx: ..." is not SQL.
-var sqlStatement = regexp.MustCompile(`(?i)^(?:\(\s*)*(?:` +
-	`CREATE\s+(?:` + createModifier + `\s+)*` + ddlObject + `|` +
-	`ALTER\s+(?:` + ddlObject + `|SYSTEM\b|DEFAULT\s+PRIVILEGES\b)|` +
-	`DROP\s+(?:` + ddlObject + `|OWNED\b)|` +
-	`REFRESH\s+MATERIALIZED\s+VIEW\b|COMMENT\s+ON\s+(?:COLUMN\b|CONSTRAINT\b|` + ddlObject + `)|` +
-	`MERGE\s+INTO\s+\S+\s+(?:(?:AS\s+)?\w+\s+)?USING\b|` +
-	`INSERT\s+INTO\b|` +
-	`UPDATE\s+\S+\s+(?:(?:AS\s+)?\w+\s+)?SET\b|` +
-	`DELETE\s+FROM\b|` +
-	`SELECT\s|` +
-	`WITH\s+(?:RECURSIVE\s+)?` + cteHead + `|` +
-	`SET\s+(?:TRANSACTION|SESSION|LOCAL|TIME\s+ZONE|ROLE|SCHEMA|NAMES|CONSTRAINTS)\b|SET\s+\S+\s*(?:=|TO\b)|` +
-	`RESET\s+(?:ALL|ROLE|SESSION\s+AUTHORIZATION|[\w$.]+)\s*;?\s*$|` +
-	`SHOW\s+(?:ALL|TRANSACTION\s+ISOLATION\s+LEVEL|TIME\s+ZONE|[\w$.]+)\s*;?\s*$|` +
-	`DISCARD\s+(?:ALL|PLANS|SEQUENCES|TEMP(?:ORARY)?)\s*;?\s*$|` +
-	`TRUNCATE\b|LOCK\s+TABLE\b|COPY\s*[\w(]|GRANT\s+\w+\s+ON\b|REVOKE\s+\w+\s+ON\b|` +
-	`COMMIT\s*;?\s*$|ROLLBACK\s*;?\s*$|SAVEPOINT\s+\w+\s*;?\s*$)`)
-
-var beginStatement = regexp.MustCompile(`(?i)^(?:BEGIN|START\s+TRANSACTION)(?:\s+(?:TRANSACTION|WORK))?` +
-	`(?:[\s,]+(?:ISOLATION\s+LEVEL\s+(?:SERIALIZABLE|REPEATABLE\s+READ|READ\s+COMMITTED|READ\s+UNCOMMITTED)|READ\s+(?:ONLY|WRITE)|(?:NOT\s+)?DEFERRABLE))*\s*;?\s*$`)
 
 // LooksLikeSQL reports whether s starts a SQL statement once leading
 // whitespace and SQL comments are skipped, read as written or in the token
