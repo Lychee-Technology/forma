@@ -177,6 +177,7 @@ postgres-only internal/postgres_persistent_repository_row_locking.go:advisoryLoc
 duckdb        internal/cdc/duckdb_exporter.go:DuckExporter.dropStages CDC export staging on the pinned DuckDB connection
 duckdb        internal/cdc/duckdb_exporter.go:DuckExporter.runExport CDC export staging and COPY on the pinned DuckDB connection
 duckdb        internal/cdc/duckdb_exporter.go:buildProjectedExportSQL CDC export projection over DuckDB staged tables
+duckdb        internal/cdc/duckdb_exporter_init.go:buildExporterS3Steps SET s3_* settings of the CDC exporter's DuckDB connection
 duckdb        internal/cdc/export_sql_builder.go:buildEAVAggregationSQL CDC export projection over DuckDB staged tables
 duckdb        internal/cdc/export_staging.go:buildStageDropSQL CDC export projection over DuckDB staged tables
 duckdb        internal/cdc/export_staging.go:buildStageSetupSQL CDC export staging tables in DuckDB
@@ -187,11 +188,13 @@ duckdb        internal/compaction/merge_sql.go:buildMergeStatsSQL compaction ove
 duckdb        internal/compaction/single_file_stats.go:SingleFileStats compaction over Parquet in DuckDB
 duckdb        internal/compaction/uncovered_rows.go:UncoveredRows compaction over Parquet in DuckDB
 duckdb        internal/duckdbinit/duckdbinit.go:RequiredExtensionStep DuckDB connection setup
+duckdb        internal/duckdbinit/duckdbinit.go:S3SettingStep SET s3_* settings of a DuckDB connection
 duckdb        internal/duckdbinit/duckdbinit.go:runStmts DuckDB connection setup
 duckdb        internal/duckdbinit/recovery.go:instanceConn.ExecContext DuckDB connection wrapper
 duckdb        internal/duckdbinit/recovery.go:instanceConn.QueryContext DuckDB connection wrapper
 duckdb        internal/duckdbinit/recovery.go:instanceConn.probeInvalidated DuckDB connection setup
 duckdb        internal/federated/duckdb_conn.go:DuckDBClient.HealthCheck federated engine SQL run in DuckDB
+duckdb        internal/federated/duckdb_conn.go:buildS3Steps SET s3_* settings of the federated engine's DuckDB connection
 duckdb        internal/federated/duckdb_pg_attach.go:attachOn DuckDB ATTACH of PostgreSQL; the reads it enables are [duckdb-postgres-scanner]
 duckdb        internal/federated/duckdb_query_execute.go:DBFederatedQueryEngine.queryDuckDB federated engine SQL run in DuckDB
 duckdb        internal/federated/engine.go:DuckDBClientQueryExecutor.Query federated engine SQL run in DuckDB

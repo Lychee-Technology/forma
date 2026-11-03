@@ -52,7 +52,12 @@ const cteHead = `(?:\w+\s+|"(?:[^"]|"")+"\s*|(?:\w+|"(?:[^"]|"")+")\s*\([^()]*\)
 // case. LooksLikeSQL also reads it in the token form sqlTokens writes, so
 // a keyword may run into punctuation (SELECT(1), SELECT*FROM t,
 // UPDATE"t"SET a = 1) or a comment the way it runs into a space (#740
-// review R5-F1). The statement may sit inside parentheses:
+// review R5-F1). A configuration statement counts in every form, not only
+// SET TRANSACTION, SET SESSION and SET LOCAL: a bare SET name = value or
+// SET name TO value, SET TIME ZONE, SET ROLE, and a whole RESET, SHOW or
+// DISCARD statement (#740 review R6-F1), since DSQL rejects or
+// restricts them and a generator of one would otherwise reach a classified
+// executor unclassified itself. The statement may sit inside parentheses:
 // (SELECT 1) UNION (SELECT 2). A leading BEGIN or
 // START TRANSACTION only counts as the whole text (beginStatement), so
 // error text such as "begin tx: ..." is not SQL.
@@ -65,7 +70,10 @@ var sqlStatement = regexp.MustCompile(`(?i)^(?:\(\s*)*(?:` +
 	`DELETE\s+FROM\b|` +
 	`SELECT\s|` +
 	`WITH\s+(?:RECURSIVE\s+)?` + cteHead + `|` +
-	`SET\s+(?:TRANSACTION|SESSION|LOCAL)\b|` +
+	`SET\s+(?:TRANSACTION|SESSION|LOCAL|TIME\s+ZONE|ROLE|SCHEMA|NAMES|CONSTRAINTS)\b|SET\s+\S+\s*(?:=|TO\b)|` +
+	`RESET\s+(?:ALL|ROLE|SESSION\s+AUTHORIZATION|[\w$.]+)\s*;?\s*$|` +
+	`SHOW\s+(?:ALL|TRANSACTION\s+ISOLATION\s+LEVEL|TIME\s+ZONE|[\w$.]+)\s*;?\s*$|` +
+	`DISCARD\s+(?:ALL|PLANS|SEQUENCES|TEMP(?:ORARY)?)\s*;?\s*$|` +
 	`TRUNCATE\b|LOCK\s+TABLE\b|COPY\s*[\w(]|GRANT\s+\w+\s+ON\b|REVOKE\s+\w+\s+ON\b|` +
 	`COMMIT\s*;?\s*$|ROLLBACK\s*;?\s*$|SAVEPOINT\s+\w+\s*;?\s*$)`)
 

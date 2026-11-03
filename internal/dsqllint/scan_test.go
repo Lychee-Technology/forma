@@ -96,6 +96,9 @@ func TestLooksLikeSQL(t *testing.T) {
 		"(SELECT 1) UNION (SELECT 2)", "((select 1))", `UPDATE"t"SET a = 1`, `UPDATE "my table" SET a = 1`,
 		`update "s"."t" as x set a = 1`, "INSERT/**/INTO t VALUES (1)", `WITH"x"AS(SELECT 1)SELECT 1`,
 		"DELETE/* c */FROM t", "UPDATE %s SET a = 1",
+		"SET default_transaction_isolation = 'serializable'", "set search_path to app, public", "SET statement_timeout=0",
+		`SET "app.tenant" = '1'`, "SET %s='%s';", "SET TIME ZONE 'UTC'", "set role app_user", "SET SESSION AUTHORIZATION u",
+		"RESET ALL", "reset search_path;", "SHOW transaction_isolation", "show transaction isolation level", "DISCARD ALL",
 	} {
 		if !LooksLikeSQL(s) {
 			t.Errorf("LooksLikeSQL(%q) = false, want true", s)
@@ -105,6 +108,8 @@ func TestLooksLikeSQL(t *testing.T) {
 		"begin tx: %w", "select batch row ids: %w", "commit failed", "the table to create", "", "-- only a comment",
 		"with alias x", "with ids(id) handling", "with the (optional) list",
 		"selected rows", "select", "selection(1)", "(see below)", "update(s) settings",
+		"set", "set up the pool", "settings: %v", "reset the connection after an error", "show",
+		"discard the batch", "set s3_use_ssl",
 	} {
 		if LooksLikeSQL(s) {
 			t.Errorf("LooksLikeSQL(%q) = true, want false", s)
@@ -216,8 +221,8 @@ func exec(ctx context.Context, tx pgx.Tx, sql string) error {
 	return err
 }
 
-func dynamicTable(ctx context.Context, tx pgx.Tx, table string) error {
-	return exec(ctx, tx, strings.Join([]string{"UPDATE ", table, " SET value = $1"}, ""))
+func dynamicTable(ctx context.Context, tx pgx.Tx, table, column string) error {
+	return exec(ctx, tx, strings.Join([]string{"UPDATE ", table, " SET ", column, " = $1"}, ""))
 }
 
 func sanitized(schema, table string) string {
@@ -415,6 +420,94 @@ func TestPunctuatedGeneratorsFeedingAClassifiedExecutorFail(t *testing.T) {
 		}
 	}
 	for _, loc := range []string{"p/p.go:run", "p/p.go:selection"} {
+		if site, ok := snap.Sites[loc]; ok {
+			t.Errorf("%s holds no SQL of its own, but the scan reported %+v", loc, site)
+		}
+	}
+
+	classified := []Entry{{Class: ClassPassthrough, Location: "p/p.go:exec", Line: 1}}
+	joined := ""
+	for _, p := range CheckInventory(classified, snap) {
+		joined += p.Error() + "\n"
+	}
+	for loc, why := range want {
+		if !strings.Contains(joined, loc+" "+why) || !strings.Contains(joined, "no inventory entry classifies it") {
+			t.Errorf("CheckInventory did not refuse the unclassified generator %s:\n%s", loc, joined)
+		}
+	}
+
+	line := 2
+	for loc := range want {
+		classified = append(classified, Entry{Class: ClassUncovered, Location: loc, Line: line, Gap: "later"})
+		line++
+	}
+	if problems := CheckInventory(classified, snap); len(problems) != 0 {
+		t.Errorf("CheckInventory with every generator classified = %v, want none", problems)
+	}
+}
+
+// settingGo holds generators of configuration statements other than SET
+// TRANSACTION, SET SESSION and SET LOCAL, each feeding the classified
+// passthrough executor (#740 review R6-F1). DSQL's lint refuses a bare SET
+// (rule set_transaction), so none may reach it unclassified.
+const settingGo = `package p
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// exec is the classified passthrough executor.
+func exec(ctx context.Context, tx pgx.Tx, sql string) error {
+	_, err := tx.Exec(ctx, sql)
+	return err
+}
+
+func setting() string { return "SET default_transaction_isolation = 'serializable'" }
+
+func run(ctx context.Context, tx pgx.Tx) error { return exec(ctx, tx, setting()) }
+
+func searchPath(schema string) string { return fmt.Sprintf("set search_path to %s", schema) }
+
+func named(name, value string) string { return strings.Join([]string{"SET ", name, " = '", value, "'"}, "") }
+
+func timeZone() string { return "SET TIME ZONE 'UTC'" }
+
+func reset(name string) string { return "RESET " + name }
+
+func show() string { return "SHOW transaction_isolation" }
+
+func discard() string { return "DISCARD ALL" }
+
+func label(name string) string { return "set up " + name + " settings" }
+`
+
+// TestSettingGeneratorsFeedingAClassifiedExecutorFail is the regression
+// for a generator of a bare configuration statement, such as SET
+// default_transaction_isolation = 'serializable': the scan recognises
+// every SET form and a whole RESET, SHOW or DISCARD, so the generator is
+// a site the passthrough executor's entry does not cover, and the guard
+// fails until it is classified itself.
+func TestSettingGeneratorsFeedingAClassifiedExecutorFail(t *testing.T) {
+	snap := scanFixture(t, map[string]string{"p/p.go": settingGo})
+	want := map[string]string{
+		"p/p.go:setting":    whyLiteral,
+		"p/p.go:searchPath": whyLiteral,
+		"p/p.go:named":      whyFragments,
+		"p/p.go:timeZone":   whyLiteral,
+		"p/p.go:reset":      whyFragments,
+		"p/p.go:show":       whyLiteral,
+		"p/p.go:discard":    whyLiteral,
+	}
+	for loc, why := range want {
+		if got := snap.Sites[loc]; got.Why != why {
+			t.Errorf("Sites[%s] = %+v, want a site that %s", loc, got, why)
+		}
+	}
+	for _, loc := range []string{"p/p.go:run", "p/p.go:label"} {
 		if site, ok := snap.Sites[loc]; ok {
 			t.Errorf("%s holds no SQL of its own, but the scan reported %+v", loc, site)
 		}

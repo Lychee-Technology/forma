@@ -74,7 +74,10 @@ that does any of these:
   reads the text as SQL tokens, so a keyword that runs straight into
   punctuation or a comment (`SELECT(1)`, `select*from t`, `UPDATE"t"SET`,
   `INSERT/**/INTO`) or a statement inside parentheses
-  (`(SELECT 1) UNION (SELECT 2)`) counts as well.
+  (`(SELECT 1) UNION (SELECT 2)`) counts as well. A configuration statement
+  counts in every form: `SET TRANSACTION`, `SET SESSION`, `SET LOCAL`, a bare
+  `SET name = value` or `SET name TO value`, `SET TIME ZONE`, `SET ROLE`, and
+  a whole `RESET`, `SHOW` or `DISCARD` statement.
 - assembles SQL text from fragments. Its string literals and the package's
   string constants, read in source order, start a SQL statement however they
   are put together (`strings.Join`, `fmt.Sprintf` arguments, a
