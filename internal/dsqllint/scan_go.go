@@ -5,6 +5,8 @@ import (
 	"go/token"
 	"strconv"
 	"strings"
+
+	"github.com/lychee-technology/forma/internal/dsqllint/corpus"
 )
 
 // The scan marks a symbol as a site for any of four reasons. Each one
@@ -40,9 +42,10 @@ const (
 )
 
 // LooksLikeSQL reports whether s starts a SQL statement once leading
-// whitespace and SQL comments are skipped, read as written or in the token
-// form sqlTokens writes, so a keyword that runs into punctuation, such as
-// SELECT(1), still counts (#740 review R5-F1). Reading the text as written
+// whitespace and SQL comments are skipped, a block comment ending where
+// PostgreSQL ends it, after its nested comments (#740 review R11-F1), read
+// as written or in the token form sqlTokens writes, so a keyword that runs
+// into punctuation, such as SELECT(1), still counts (#740 review R5-F1). Reading the text as written
 // too keeps heads the token form splits, such as UPDATE %s SET. The text
 // alone decides: error prose is told apart by where it is written (an
 // argument of an error constructor, errorCalls), never by its characters,
@@ -95,11 +98,7 @@ func skipLeadingComments(s string) string {
 			}
 			s = s[end+1:]
 		case strings.HasPrefix(s, "/*"):
-			end := strings.Index(s, "*/")
-			if end < 0 {
-				return ""
-			}
-			s = s[end+2:]
+			s = s[corpus.SkipBlockComment(s, 0):]
 		default:
 			return s
 		}
@@ -138,12 +137,7 @@ func sqlTokens(s string) string {
 			i += end
 			glue = false
 		case strings.HasPrefix(s[i:], "/*"):
-			end := strings.Index(s[i+2:], "*/")
-			if end < 0 {
-				i = len(s)
-			} else {
-				i += end + 4
-			}
+			i = corpus.SkipBlockComment(s, i)
 			glue = false
 		case c == '"' || c == '\'':
 			j := i + 1

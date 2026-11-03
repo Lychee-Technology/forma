@@ -68,8 +68,9 @@ func quoteGo(s string) string {
 }
 
 // TestRunFailsClosedOnACommentOnlyCorpus is the end-to-end regression for
-// a corpus that labels a statement but holds no SQL (#740 review R1-F3):
-// Run, exporting through a real go test, refuses it, while the same
+// a corpus that labels a statement but holds no SQL (#740 review R1-F3),
+// a nested block comment's text after its first "*/" among it (#740 review
+// R11-F1): Run, exporting through a real go test, refuses it, while the same
 // fixture with a real statement passes.
 func TestRunFailsClosedOnACommentOnlyCorpus(t *testing.T) {
 	root, tool := gateFixture(t, "-- origin: p/p.go:Q\nSELECT 1;\n")
@@ -84,6 +85,8 @@ func TestRunFailsClosedOnACommentOnlyCorpus(t *testing.T) {
 	for name, unit := range map[string]string{
 		"comment only":         "-- origin: p/p.go:Q\n-- no statement\n",
 		"delimiters only":      "-- origin: p/p.go:Q\n;\n /* nothing */ ;\n",
+		"nested comment only":  "-- origin: p/p.go:Q\n/* outer /* inner */ outer */\n",
+		"nested over lines":    "-- origin: p/p.go:Q\n/* outer\n/* inner */ SELECT 1;\n*/ ;\n",
 		"sql before any label": "SELECT 1;\n-- origin: p/p.go:Q\nSELECT 2;\n",
 	} {
 		t.Run(name, func(t *testing.T) {

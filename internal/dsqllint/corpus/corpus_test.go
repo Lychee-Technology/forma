@@ -39,6 +39,7 @@ func TestRenderRefusesWhatCannotBeLinted(t *testing.T) {
 		{"fmt error marker", Unit{Name: "u", Statements: []Statement{{Origin: "a/b.go:F", SQL: "SELECT %!d(string=x)"}}}, "unrendered format verb"},
 		{"comment only", Unit{Name: "u", Statements: []Statement{{Origin: "a/b.go:F", SQL: "-- no statement"}}}, "holds 0 executable statements"},
 		{"block comment only", Unit{Name: "u", Statements: []Statement{{Origin: "a/b.go:F", SQL: "/* x */ ; /* y */"}}}, "holds 0 executable statements"},
+		{"nested block comment only", Unit{Name: "u", Statements: []Statement{{Origin: "a/b.go:F", SQL: "/* outer /* inner */ outer */"}}}, "holds 0 executable statements"},
 		{"two statements", Unit{Name: "u", Statements: []Statement{{Origin: "a/b.go:F", SQL: "SELECT 1; SELECT 2"}}}, "holds 2 executable statements"},
 	}
 	for _, tt := range tests {
@@ -93,9 +94,43 @@ func TestCountStatements(t *testing.T) {
 		"SELECT 'it''s; fine'":              1,
 		"/* a; b */ SELECT 1 /* ; */ ; ; ;": 1,
 		"SELECT 1; -- trailing\n/* c */":    1,
+		// PostgreSQL block comments nest (#740 review R11-F1).
+		"/* outer /* inner */ outer */":                    0,
+		"/* a /* b */ SELECT 1; */ ;":                      0,
+		"/* a /* b /* c */ */ SELECT 1; */":                0,
+		"/* a /* b */ c */ SELECT 1":                       1,
+		"/* a /* b */ ; */ SELECT 1; SELECT 2":             2,
+		"/* never /* closed */ SELECT 1":                   0,
+		"SELECT 1 /* x /* y */ ; SELECT 2 */":              1,
+		"/*/ still a comment */ SELECT 1":                  1,
+		"SELECT '/* not a comment' ; /* a /* b */ c */ ; ": 1,
 	} {
 		if got := CountStatements(text); got != want {
 			t.Errorf("CountStatements(%q) = %d, want %d", text, got, want)
 		}
+	}
+}
+
+// TestSkipBlockComment holds SkipBlockComment to PostgreSQL's lexer: a
+// block comment ends at the "*/" that closes its outermost "/*", after every
+// comment nested in it, and an unclosed one runs to the end of the text.
+func TestSkipBlockComment(t *testing.T) {
+	for text, want := range map[string]string{
+		"/* a */ rest":                      " rest",
+		"/**/rest":                          "rest",
+		"/* outer /* inner */ outer */rest": "rest",
+		"/* a /* b /* c */ b */ a */ rest":  " rest",
+		"/* a **/rest":                      "rest",
+		"/*/ a */rest":                      "rest",
+		"/* a */ */rest":                    " */rest",
+		"/* a /* b */ c":                    "",
+		"/* never closed":                   "",
+	} {
+		if got := text[SkipBlockComment(text, 0):]; got != want {
+			t.Errorf("text after the comment of %q = %q, want %q", text, got, want)
+		}
+	}
+	if got := SkipBlockComment("SELECT /* a /* b */ c */ 1", 7); got != len("SELECT /* a /* b */ c */") {
+		t.Errorf("SkipBlockComment from 7 = %d, want the index after the outer comment", got)
 	}
 }

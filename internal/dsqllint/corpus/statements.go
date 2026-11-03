@@ -22,7 +22,7 @@ func CountStatements(text string) int {
 		case strings.HasPrefix(text[i:], "--"):
 			i = skipPast(text, i, "\n")
 		case strings.HasPrefix(text[i:], "/*"):
-			i = skipPast(text, i+2, "*/")
+			i = SkipBlockComment(text, i)
 		case c == ';':
 			if content {
 				count++
@@ -47,6 +47,34 @@ func CountStatements(text string) int {
 		count++
 	}
 	return count
+}
+
+// SkipBlockComment answers the index just after the block comment that
+// opens at text[from:], which starts with "/*", or len(text) when it never
+// closes. PostgreSQL block comments nest, as its lexer reads them: each
+// "/*" inside one opens another that needs its own "*/", so
+// /* outer /* inner */ outer */ is one comment, not a comment followed by
+// the text "outer */" (#740 review R11-F1). The scan's discovery and the
+// gate's statement count both skip comments with it, so neither stops at
+// the first "*/" of a nested comment.
+func SkipBlockComment(text string, from int) int {
+	depth := 0
+	for i := from; i < len(text); {
+		switch {
+		case strings.HasPrefix(text[i:], "/*"):
+			depth++
+			i += 2
+		case strings.HasPrefix(text[i:], "*/"):
+			depth--
+			i += 2
+			if depth == 0 {
+				return i
+			}
+		default:
+			i++
+		}
+	}
+	return len(text)
 }
 
 // skipPast answers the index just after the first end at or after from, or
