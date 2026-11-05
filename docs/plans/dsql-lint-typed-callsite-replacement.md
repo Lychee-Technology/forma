@@ -11,7 +11,8 @@ The work is split into six issues, sequenced by GitHub "blocked by" links:
 
 | Issue | Content | Blocked by |
 |---|---|---|
-| #740 (1/5) | Lint baseline (M1): pinned dsql-lint, the production SQL corpus as typed records, exact-count known findings, emptiness check, CI wiring. No inventory; criterion 4 is not claimed | — |
+| #808 | Implementation vehicle for #740 (same scope). It exists because PR #801 permanently occupies `autoforge/740` (see below) | — |
+| #740 (1/5) | Lint baseline (M1): pinned dsql-lint, the production SQL corpus as typed records, exact-count known findings, emptiness check, CI wiring. No inventory; criterion 4 is not claimed. Closes when #808's PR merges | #808 |
 | #803 | Engine seam: a DSQL-subset shared core, a narrow engine interface, engine packages, a DDL seam carrying #690's strategy. First step: an executed update/merge corpus unit | #740 |
 | #804 (2/5) | Typed call-site discovery (M2) | #740 (can run in parallel with #803) |
 | #805 (3/5) | Audited site manifest (M3), done once on #803's layout | #804, #803 |
@@ -19,9 +20,11 @@ The work is split into six issues, sequenced by GitHub "blocked by" links:
 | #807 (5/5) | Corpus migration and close-out (M5 + the remainder of M6) | #806 |
 
 ```
-#740 ──► #803 ──┐
-   └───► #804 ──┴─► #805 ──► #806 ──► #807
+#808 ──► #740 ──► #803 ──┐
+            └───► #804 ──┴─► #805 ──► #806 ──► #807
 ```
+
+**Why #808 exists.** PR #801 was closed on 2026-11-05 as superseded, and its branch deleted. AutoForge opens an issue's PR only on `autoforge/<issue>`, and never on a branch that has carried a closed or merged PR (its ADR 0004 D9.4). So #740 can no longer carry its own implementation PR. #808 copies #740's scope; #740 stays the authoritative requirement and is closed by hand when #808 merges.
 
 Why this order:
 - #803 moves most SQL into new packages, which re-keys almost every site ID. The manifest audit (#805) is therefore done once, after it.
