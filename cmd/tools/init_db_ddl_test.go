@@ -19,17 +19,10 @@ func testInitDBOptions() initDBOptions {
 	}
 }
 
-// allDDLStatements flattens the builder groups in the exact order
-// ensureTables executes them: 8 core tables, the 3 ledger statements, 2 EAV
-// indexes, 10 main-column indexes, and the unique key row index.
-func allDDLStatements(opts initDBOptions) []tableDDL {
-	var all []tableDDL
-	_, uniqueKeyIndex := uniqueKeyDDL(opts)
-	for _, group := range [][]tableDDL{coreTableDDL(opts), ledgerDDL(opts), eavIndexDDL(opts), mainColumnIndexDDL(opts), {uniqueKeyIndex}} {
-		all = append(all, group...)
-	}
-	return all
-}
+// allDDLStatements is every statement ensureTables executes, in order: 8
+// core tables, the 3 ledger statements, 2 EAV indexes, 10 main-column
+// indexes, and the unique key row index.
+func allDDLStatements(opts initDBOptions) []tableDDL { return tableTransactionDDL(opts) }
 
 // wantDDLStatements is the golden text of every statement init-db issues,
 // captured from the pre-#319 ensureTables and verified byte-for-byte against

@@ -284,23 +284,32 @@ func mainColumnIndexDDL(opts initDBOptions) []tableDDL {
 	return ddl
 }
 
-func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
+// tableTransactionDDL is every statement ensureTables runs in init-db's one
+// table transaction, in order: the core tables, the ledger, the EAV and
+// main-column indexes, and the unique key row index. The DSQL lint corpus
+// (#740) renders this same list, so what it checks is what init-db sends.
+func tableTransactionDDL(opts initDBOptions) []tableDDL {
 	_, uniqueKeyIndex := uniqueKeyDDL(opts)
-	groups := [][]tableDDL{
+	var all []tableDDL
+	for _, group := range [][]tableDDL{
 		coreTableDDL(opts),
 		ledgerDDL(opts),
 		eavIndexDDL(opts),
 		mainColumnIndexDDL(opts),
 		{uniqueKeyIndex},
+	} {
+		all = append(all, group...)
 	}
-	for _, group := range groups {
-		for _, ddl := range group {
-			if _, err := tx.Exec(ctx, ddl.statement); err != nil {
-				return fmt.Errorf("%s: %w", ddl.failure, err)
-			}
-			if ddl.announce != "" {
-				fmt.Print(ddl.announce)
-			}
+	return all
+}
+
+func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
+	for _, ddl := range tableTransactionDDL(opts) {
+		if _, err := tx.Exec(ctx, ddl.statement); err != nil {
+			return fmt.Errorf("%s: %w", ddl.failure, err)
+		}
+		if ddl.announce != "" {
+			fmt.Print(ddl.announce)
 		}
 	}
 

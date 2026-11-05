@@ -1,0 +1,22 @@
+# Known findings of the DSQL lint gate (#740).
+#
+# Format: <label> <rule> <count> #<issue> -- <reason>
+#
+# Each line accepts exactly <count> dsql-lint diagnostics of one rule on records
+# with one corpus origin label, because the issue named tracks fixing them. One
+# more, one fewer, a new rule on the same label, or the same rule on another
+# label all fail the gate, so a new instance cannot hide behind an old entry and
+# a fix forces its entry to shrink. Labels are asserted by the corpus tests until
+# #806 re-keys these entries to verified sites.
+
+# init-db runs every table, ledger and index statement in one transaction
+# (ensureTables via withTx); DSQL allows one DDL statement per transaction.
+cmd/tools/init_db.go:withTx multi_ddl_transaction 1 #690 -- init-db's table transaction holds 24 DDL statements
+
+# init-db builds its secondary indexes synchronously; DSQL only has CREATE INDEX ASYNC.
+cmd/tools/init_db.go:eavIndexDDL index_async 2 #690 -- the two partial EAV value indexes
+cmd/tools/init_db.go:mainColumnIndexDDL index_async 10 #690 -- the ten entity_main column indexes
+internal/uniquekey/ddl.go:keyRowIndexDDL index_async 1 #690 -- the unique-key table's row index, created by init-db and both e2e harnesses
+
+# init-db's declared-index step (x-forma-indexes) builds with CONCURRENTLY, which DSQL does not support.
+internal/declaredindex/plan.go:Index.CreateSQL index_concurrently 1 #690 -- declared indexes are init-db DDL; DSQL needs CREATE INDEX ASYNC

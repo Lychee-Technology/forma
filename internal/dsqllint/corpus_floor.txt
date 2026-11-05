@@ -1,0 +1,77 @@
+# Corpus floor of the DSQL lint gate (#740): the corpus must keep at least this
+# many records of each origin label, so a corpus test that is deleted, skipped,
+# relabelled or loses a statement fails the gate instead of shrinking it quietly.
+#
+# Format: <label> <min>
+#
+# This holds the corpus to itself. It is not an SQL inventory and says nothing
+# about SQL the corpus never held (#804, #805). A new label needs no line here;
+# add one to protect it. Lowering a number is a decision a review should see:
+# say in the PR where the statement went.
+#
+# The baseline is PR #801's corpus: 106 statements from 64 generators.
+
+cmd/tools/init_db.go:changeLogDDL 1
+cmd/tools/init_db.go:eavIndexDDL 2
+cmd/tools/init_db.go:eavTableDDL 1
+cmd/tools/init_db.go:entityMainDDL 1
+cmd/tools/init_db.go:loadRegisteredSchemaIDs 1
+cmd/tools/init_db.go:mainColumnIndexDDL 10
+cmd/tools/init_db.go:registerSchemas 1
+cmd/tools/init_db.go:schemaRegistryDDL 1
+cmd/tools/init_db.go:withTx 2
+internal/cdc/export_pg_stage.go:stageInSnapshot 4
+internal/cdc/export_sql_builder.go:buildChangeLogQuery 1
+internal/cdc/export_sql_builder.go:buildEAVQuery 2
+internal/cdc/export_sql_builder.go:buildMainEntityQuery 2
+internal/cdc/flusher.go:getUnflushedSchemaIDs 1
+internal/cdc/helpers.go:GetChangeLogStats 1
+internal/cdc/helpers.go:MarkFlushedVersions 1
+internal/cdc/helpers.go:SelectBatchRowIDs 1
+internal/cdc/init.go:getSchemaIDsToInit 2
+internal/cdc/init_batch_select.go:getEntityMainCount 1
+internal/cdc/init_batch_select.go:selectEntityMainBatch 1
+internal/cdc/schema_lease.go:leaseSchemaLocker.acquire 1
+internal/cdc/schema_lease.go:leaseSchemaLocker.deleteLease 1
+internal/cdc/schema_lease.go:leaseSchemaLocker.renew 1
+internal/declaredindex/ensure.go:catalogQuery 1
+internal/declaredindex/ensure.go:tableSchemaQuery 1
+internal/declaredindex/plan.go:Index.CreateSQL 1
+internal/federated/change_log_reads.go:PostgresDirtyIDFetcher.FetchDirtyRowIDs 1
+internal/federated/change_log_reads.go:PostgresDirtyIDFetcher.HasParquetHistory 1
+internal/postgres_persistent_repository.go:DBPersistentRecordRepository.deleteRecordInTx 2
+internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog 5
+internal/postgres_persistent_repository.go:nextRowVersion 1
+internal/postgres_persistent_repository_batch.go:DBPersistentRecordRepository.batchDeleteInTx 4
+internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.insertEAVAttributes 2
+internal/postgres_persistent_repository_eav.go:DBPersistentRecordRepository.replaceEAVAttributesScoped 1
+internal/postgres_persistent_repository_guard.go:checkRowGuard 1
+internal/postgres_persistent_repository_guard.go:txClock 1
+internal/postgres_persistent_repository_main_table.go:buildInsertMainStatement 3
+internal/postgres_persistent_repository_main_table.go:buildUpdateMainStatement 2
+internal/postgres_persistent_repository_requeue.go:buildRequeueMainStatement 1
+internal/postgres_persistent_repository_row_lock.go:lockRowInTx 1
+internal/postgres_persistent_repository_row_locking.go:guardRowLocking.writeTxOptions 4
+internal/postgres_persistent_repository_row_locking.go:guardUpsertSQL 6
+internal/postgres_persistent_repository_tx.go:DBPersistentRecordRepository.inWriteTx 4
+internal/postgres_persistent_repository_unique_key_reserve.go:DBPersistentRecordRepository.undoReservation 1
+internal/postgres_persistent_repository_unique_key_reserve.go:insertKeyEntries 1
+internal/postgres_persistent_repository_unique_key_reserve.go:keyEntryOwners 1
+internal/postgres_persistent_repository_unique_keys.go:DBPersistentRecordRepository.applyUniqueKeys 1
+internal/postgres_persistent_repository_unique_keys.go:DBPersistentRecordRepository.releaseRowUniqueKeys 3
+internal/postgres_persistent_repository_unique_keys.go:heldUniqueKeys 1
+internal/postgres_persistent_repository_unique_keys.go:uniqueKeyOwner 1
+internal/rowguard/ddl.go:tableDDL 1
+internal/schemalease/ddl.go:tableDDL 1
+internal/schemaledger/ddl.go:attributeDDL 1
+internal/schemaledger/ddl.go:generationDDL 1
+internal/schemaledger/ddl.go:pointerDDL 1
+internal/uniquekey/ddl.go:keyRowIndexDDL 1
+internal/uniquekey/ddl.go:keyTableDDL 1
+internal/uniquekey/ddl.go:stateTableDDL 1
+internal/widthaudit/column_census.go:BuildColumnCensusQuery 1
+internal/widthaudit/domain_census.go:BuildDomainCensusQuery 1
+internal/widthaudit/domain_census.go:BuildDomainColumnCensusQuery 1
+internal/widthaudit/numeric_census.go:BuildNumericCensusQuery 1
+internal/widthaudit/numeric_census.go:BuildNumericColumnCensusQuery 1
+internal/widthaudit/widthaudit.go:BuildCensusQuery 1
