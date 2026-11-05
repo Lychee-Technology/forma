@@ -53,7 +53,7 @@ Why this order:
 
 | ID | Question | Recommendation | Blocks |
 |---|---|---|---|
-| **OD-1** | Approve the operational interpretation of criterion 4 (ADR §5–6): new *sites* are caught statically; new *variants* at existing sites only when the corpus represents them | Approve | #804 onward. Does not block #740 |
+| OD-1 | Approve the operational interpretation of criterion 4 (ADR §5–6): new *sites* are caught statically; new *variants* at existing sites only when the corpus represents them | **Resolved: approved by the owner on 2026-11-05.** #804–#807 implement G1–G3 and their stated non-guarantees; #807 checks the original criteria against this reading | —
 | **OD-2** | Which tool subcommands are supported on DSQL: validate-schema-consistency, baseline-schema, apply-schema, the widthaudit census, manifest-reconcile, build-unique-keys | If undecided, classify their sites `uncovered #802`. Never classify them `dsql` without evidence | Manifest audit (#805); the default is safe |
 | **OD-3** | Forma-specific blocking rules | Block `FOR SHARE` and `FOR NO KEY UPDATE`, which AWS documents as unsupported. Block advisory-lock calls in the DSQL corpus under Forma's own engine contract (`docs/aurora-dsql.md`, #633), not on an AWS claim. Do **not** block `FOR UPDATE` or `FOR KEY SHARE` | #807; can follow later |
 | **OD-4** | May a PR add a new DSQL-reachable site as `uncovered #issue`? | Yes, if the issue is open and names the site. Review it like code | #805 |

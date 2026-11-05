@@ -1,6 +1,6 @@
 # ADR: Typed SQL call-site coverage for the Aurora DSQL lint gate
 
-- **Status:** Proposed. Approved in principle (CONDITIONAL GO); the open owner decisions are listed in the implementation plan.
+- **Status:** Accepted in principle (CONDITIONAL GO). The criterion-4 interpretation (§5) was approved by the owner on 2026-11-05 (OD-1). The remaining owner decisions are listed in the implementation plan.
 - **Issue:** #740
 - **Supersedes:** the inventory mechanism of PR #801
 - **Evidence:**
@@ -74,7 +74,7 @@ Replace text recognition with a **typed inventory of SQL execution sites**, join
 
 > Newly introduced DSQL-reachable SQL cannot quietly evade the inventory.
 
-### Operational interpretation (requires owner approval, plan OD-1)
+### Operational interpretation (approved by the owner 2026-11-05, plan OD-1)
 
 **Scope S** is the non-test files of the module packages in the transitive import closure of the entry points `.`, `./factory`, `./cdc`, `./cmd/server`, `./cmd/tools` and `./cmd/lambda`. They are loaded in the default build context (CI's linux/amd64, `CGO_ENABLED=1`, no tags). Every `main` package in the module is an entry point or is listed `unshipped-main`. A file in S whose build constraint excludes it from that context fails the gate; there are none today.
 
@@ -121,7 +121,7 @@ This is narrower than a literal reading of criterion 4, which no build-time mech
 | 1. Deterministic, pinned, no AWS or Docker, fails on diagnostics or extraction errors | PR #801's tool pin, plus G3 and exact counts |
 | 2. CI runs the same entry point | `make lint-dsql` in the lint job and in `make all` (PR #801's wiring and guard tests) |
 | 3. Generators linted; inventory says what is examined | G2 and G3; four coverage dimensions reported separately (§9) |
-| 4. New SQL cannot quietly evade | G1 for sites; non-guarantees stated; owner approval OD-1 |
+| 4. New SQL cannot quietly evade | G1 for sites; non-guarantees stated; interpretation approved (OD-1, 2026-11-05) |
 | 5. Invalid DSQL detected; PostgreSQL-only SQL kept out | regression fixtures; the `postgres-only` class fails when reached |
 | 6. No rewriting | `--fix` is never passed; tested |
 | 7. Diagnostics name SQL and generating source; gaps tracked | site plus origin confidence; `uncovered` requires an issue |
