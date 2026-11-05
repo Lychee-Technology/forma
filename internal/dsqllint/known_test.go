@@ -1,6 +1,7 @@
 package dsqllint
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,31 +166,154 @@ func TestRecordAtTracesEveryLineOfAStatement(t *testing.T) {
 	}
 }
 
-// TestCheckedInBaselines holds the checked-in data to #740's baseline: 15
-// known diagnostics, all tracked by #690, and a corpus floor of 106 statements
-// from 64 generators.
-func TestCheckedInBaselines(t *testing.T) {
-	root := filepath.Join("..", "..")
-	known, floors, err := loadInputs(root)
+// The corpus the floor must keep covering: PR #801's 106 statements from 64
+// generators. A floor edit alone cannot take it below them. A PR that really
+// removes a generator lowers these in the same change and says why.
+const (
+	baselineStatements = 106
+	baselineLabels     = 64
+)
+
+// checkBaselineInputs is what the test suite asks of a tree's checked-in gate
+// inputs: both parse, and the corpus floor still covers the baseline corpus.
+//
+// It deliberately pins no known finding. The list started at 15 diagnostics, all
+// tracked by #690, but it changes as findings are fixed or found, and the gate
+// already holds it to the corpus by exact count (Judge). ParseKnown makes every
+// entry name its issue.
+func checkBaselineInputs(root string) error {
+	_, floors, err := loadInputs(root)
 	if err != nil {
-		t.Fatalf("loadInputs: %v", err)
-	}
-	diagnostics := 0
-	for _, k := range known {
-		diagnostics += k.Count
-		if k.Issue != "#690" {
-			t.Errorf("%s: known finding tracked by %s, the baseline is all #690", k.key(), k.Issue)
-		}
-	}
-	if diagnostics != 15 {
-		t.Errorf("known findings list %d diagnostics, the baseline is 15", diagnostics)
+		return fmt.Errorf("load the gate's inputs: %w", err)
 	}
 	statements := 0
 	for _, f := range floors {
 		statements += f.Min
 	}
-	if len(floors) < 64 || statements < 106 {
-		t.Errorf("the corpus floor holds %d statements from %d labels, below PR #801's 106 from 64", statements, len(floors))
+	if len(floors) < baselineLabels || statements < baselineStatements {
+		return fmt.Errorf("the corpus floor holds %d statements from %d labels, below PR #801's %d from %d", statements, len(floors), baselineStatements, baselineLabels)
+	}
+	return nil
+}
+
+func TestCheckedInBaselines(t *testing.T) {
+	if err := checkBaselineInputs(filepath.Join("..", "..")); err != nil {
+		t.Error(err)
+	}
+}
+
+// baselineFloor answers a corpus floor with the given number of labels and
+// statements.
+func baselineFloor(labels, statements int) string {
+	var b strings.Builder
+	for i := 1; i <= labels; i++ {
+		minimum := 1
+		if i == 1 {
+			minimum = statements - labels + 1
+		}
+		fmt.Fprintf(&b, "p/p.go:F%d %d\n", i, minimum)
+	}
+	return b.String()
+}
+
+// baselineTree answers a tree holding the given gate inputs, for
+// checkBaselineInputs.
+func baselineTree(t *testing.T, known, floor string) string {
+	t.Helper()
+	f := gateFixture{root: t.TempDir()}
+	f.write(t, KnownPath, known)
+	f.write(t, FloorPath, floor)
+	return f.root
+}
+
+// TestKnownFindingsMayEvolve is the maintenance docs/dsql-lint.md asks for: each
+// edit of the list, made with the change in the corpus that calls for it, passes
+// the gate and the test suite's checks of the checked-in inputs.
+func TestKnownFindingsMayEvolve(t *testing.T) {
+	t.Parallel()
+	const index = "CREATE INDEX i ON t (a)"
+	two := labelI + " index_async 2 #690 -- two indexes\n"
+	tests := []struct {
+		name          string
+		tracked       []string // the statements labelled labelI
+		other         []string // the statements labelled labelQ
+		known         string
+		want, wantNot string
+	}{
+		{
+			name:    "a new finding tracked by another issue",
+			tracked: []string{index, index},
+			other:   []string{index},
+			known:   two + labelQ + " index_async 1 #700 -- found later\n",
+			want:    "tracked by:   #700",
+		},
+		{
+			name:    "a fixed instance lowers the count",
+			tracked: []string{index},
+			other:   []string{"SELECT 1"},
+			known:   labelI + " index_async 1 #690 -- one index left\n",
+			want:    "Known findings (1,",
+		},
+		{
+			name:    "a new instance raises the count",
+			tracked: []string{index, index, index},
+			other:   []string{"SELECT 1"},
+			known:   labelI + " index_async 3 #690 -- three indexes\n",
+			want:    "Known findings (3,",
+		},
+		{
+			name:    "the last fixed instance removes the entry",
+			tracked: []string{"SELECT 1"},
+			other:   []string{"SELECT 1"},
+			known:   "# none\n",
+			wantNot: "Known findings",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newGateFixture(t)
+			f.write(t, "p/units/p.jsonl", fixtureRecords(t, "p", labelI, tt.tracked...))
+			f.write(t, "p/units/q.jsonl", fixtureRecords(t, "q", labelQ, tt.other...))
+			f.write(t, FloorPath, labelI+" 1\n"+labelQ+" 1\n")
+			f.write(t, KnownPath, tt.known)
+			out, err := f.run()
+			if err != nil {
+				t.Fatalf("Run: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("the report lacks %q:\n%s", tt.want, out)
+			}
+			if tt.wantNot != "" && strings.Contains(out, tt.wantNot) {
+				t.Errorf("the report holds %q:\n%s", tt.wantNot, out)
+			}
+			root := baselineTree(t, tt.known, baselineFloor(baselineLabels, baselineStatements))
+			if err := checkBaselineInputs(root); err != nil {
+				t.Errorf("checkBaselineInputs: %v", err)
+			}
+		})
+	}
+}
+
+// TestCheckBaselineInputsRefusesWhatTheBaselineStillForbids holds the checks
+// that remain: an edit that drops the floor below the baseline corpus, or an
+// entry that names no issue, still fails.
+func TestCheckBaselineInputsRefusesWhatTheBaselineStillForbids(t *testing.T) {
+	const entry = "a.go:F index_async 1 #690 -- note\n"
+	tests := []struct {
+		name, known, floor, want string
+	}{
+		{"a lost label", entry, baselineFloor(baselineLabels-1, baselineStatements), "below PR #801's"},
+		{"a lost statement", entry, baselineFloor(baselineLabels, baselineStatements-1), "below PR #801's"},
+		{"an entry naming no issue", "a.go:F index_async 1 needs-an-issue -- note\n", baselineFloor(baselineLabels, baselineStatements), "does not name a tracking issue"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkBaselineInputs(baselineTree(t, tt.known, tt.floor))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("checkBaselineInputs = %v, want an error holding %q", err, tt.want)
+			}
+		})
 	}
 }
 

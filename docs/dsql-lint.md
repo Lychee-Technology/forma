@@ -143,10 +143,16 @@ something was fixed: lower the count, remove the entry at zero, and update the i
 it names. The key is the label and the rule, so the same rule from another label is
 a new finding.
 
+The list is meant to change. It started at 15 diagnostics, all tracked by #690, but
+no test pins that total or that issue: the gate's exact comparison is what holds the
+list to the corpus, and every entry must name its own issue.
+
 **A corpus problem.** A record holds no statement, is built for another engine, or
 a label fell below its floor. If a corpus test was deleted, skipped or relabelled,
 restore it or move the floor line with it, and say in the PR where the statement
-went.
+went. `TestCheckedInBaselines` also refuses a floor below the baseline's 106
+statements from 64 labels. If production code really dropped a generator, lower
+`baselineStatements` and `baselineLabels` in the same PR and say why.
 
 **A nondeterministic corpus.** Something in the named unit depends on map order or
 the clock. Fix the test or the generator: known findings and reviews depend on the
