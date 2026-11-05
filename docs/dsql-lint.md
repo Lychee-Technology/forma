@@ -58,6 +58,9 @@ The gate fails closed. Any of these fails it:
   with some
 - output that is not schema 1 JSON, a file the linter could not read, or a
   result missing for a file it was asked about
+- a file result without its `file`, `error` or `diagnostics` array (a null
+  `diagnostics` counts as none: only `[]` says a file is clean), or a diagnostic
+  without its `rule`, `line` or `message`
 - a diagnostic on a line no record holds
 - a failing or missing corpus test, or two exports that differ
 - zero units, or a unit with zero records

@@ -16,10 +16,42 @@ type lintOutput struct {
 	Files         []lintFile `json:"files"`
 }
 
+// lintFile is one file's result. Unmarshal leaves a field the document omits at
+// its zero value, so these types keep what a required field's absence looks
+// like apart from its legitimate empty value: see check.
 type lintFile struct {
-	File        string       `json:"file"`
+	File string `json:"file"`
+	// Diagnostics is nil when omitted or null, and empty, not nil, for [].
 	Diagnostics []Diagnostic `json:"diagnostics"`
-	Error       *string      `json:"error"`
+	// Error is nil when omitted, and holds the JSON text otherwise, null included.
+	Error json.RawMessage `json:"error"`
+}
+
+// check answers why this result does not say the file was linted: a required
+// field is missing, or the tool could not lint it.
+func (f lintFile) check() error {
+	if f.File == "" {
+		return errors.New("dsql-lint output has a file result with no file name")
+	}
+	if f.Error == nil {
+		return fmt.Errorf("dsql-lint result for %s has no error field: a malformed result is not a clean file", f.File)
+	}
+	var lintErr *string
+	if err := json.Unmarshal(f.Error, &lintErr); err != nil {
+		return fmt.Errorf("dsql-lint result for %s has an error field that is neither null nor a string: %w", f.File, err)
+	}
+	if lintErr != nil {
+		return fmt.Errorf("dsql-lint could not lint %s: %s", f.File, *lintErr)
+	}
+	if f.Diagnostics == nil {
+		return fmt.Errorf("dsql-lint result for %s has no diagnostics array: a malformed result is not a clean file", f.File)
+	}
+	for i, d := range f.Diagnostics {
+		if err := d.check(); err != nil {
+			return fmt.Errorf("dsql-lint result for %s: diagnostic %d %w", f.File, i+1, err)
+		}
+	}
+	return nil
 }
 
 // Diagnostic is one dsql-lint finding.
@@ -31,11 +63,26 @@ type Diagnostic struct {
 	StatementPreview string `json:"statement_preview"`
 }
 
+// check answers which field the gate reads is missing. Suggestion and
+// StatementPreview are not required: the gate decides nothing on them.
+func (d Diagnostic) check() error {
+	if d.Rule == "" {
+		return errors.New("has no rule")
+	}
+	if d.Line < 1 {
+		return fmt.Errorf("(%s) has no line: got %d", d.Rule, d.Line)
+	}
+	if d.Message == "" {
+		return fmt.Errorf("(%s) has no message", d.Rule)
+	}
+	return nil
+}
+
 // ParseLintOutput interprets one dsql-lint run over files. Exit 0 must come
 // with no diagnostics and exit 1 with at least one; anything else (a usage
 // error, exit 1 without diagnostics, which is an I/O error, a file error, an
-// unknown schema, a result for a file not asked about or none for one that
-// was) fails closed.
+// unknown schema, a file result or diagnostic missing a required field, a
+// result for a file not asked about or none for one that was) fails closed.
 func ParseLintOutput(exitCode int, stdout []byte, files []string) (map[string][]Diagnostic, error) {
 	if exitCode != 0 && exitCode != 1 {
 		return nil, fmt.Errorf("dsql-lint exited %d (2 is a usage error): %s", exitCode, strings.TrimSpace(string(stdout)))
@@ -47,6 +94,9 @@ func ParseLintOutput(exitCode int, stdout []byte, files []string) (map[string][]
 	if out.SchemaVersion != 1 {
 		return nil, fmt.Errorf("dsql-lint JSON schema_version %d, the gate reads 1: review the pinned tool upgrade", out.SchemaVersion)
 	}
+	if out.Files == nil {
+		return nil, errors.New("dsql-lint JSON output has no files array")
+	}
 	asked := make(map[string]bool, len(files))
 	for _, f := range files {
 		asked[f] = true
@@ -54,8 +104,8 @@ func ParseLintOutput(exitCode int, stdout []byte, files []string) (map[string][]
 	byFile := make(map[string][]Diagnostic, len(out.Files))
 	total := 0
 	for _, f := range out.Files {
-		if f.Error != nil {
-			return nil, fmt.Errorf("dsql-lint could not lint %s: %s", f.File, *f.Error)
+		if err := f.check(); err != nil {
+			return nil, err
 		}
 		if !asked[f.File] {
 			return nil, fmt.Errorf("dsql-lint output has a result for %s, which it was not asked to lint", f.File)

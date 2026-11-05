@@ -211,6 +211,73 @@ func TestRunFailsClosed(t *testing.T) {
 	}
 }
 
+// corruptUnitResult wraps the fixture dsql-lint so that a sed script rewrites
+// its output on the corpus run alone. The regression fixtures still pass and
+// the exit code is kept, so that only the gate's reading of the corrupted result
+// can fail the run.
+func (f gateFixture) corruptUnitResult(t *testing.T, sedScript string) {
+	t.Helper()
+	wrapped := f.tool + "-wrapped"
+	f.write(t, "tools/dsql-lint-wrapped", fixtureTool)
+	f.write(t, "tools/dsql-lint", "#!/bin/sh\nout=$('"+wrapped+"' \"$@\")\ncode=$?\nprintf '%s\\n' \"$out\" | sed -e '"+sedScript+"'\nexit $code\n")
+}
+
+// TestRunRefusesAMalformedFileResult is the whole gate on a result that claims
+// nothing wrong: a corpus unit's required field is gone, the regression fixtures
+// are untouched, and the exit code still agrees with the other results.
+func TestRunRefusesAMalformedFileResult(t *testing.T) {
+	t.Parallel()
+	const unitResult = `/\/sql\/p\.sql"/`
+	tests := []struct {
+		name      string
+		sedScript string
+		want      string
+	}{
+		{"diagnostics omitted", unitResult + `s/, "diagnostics": \[\]//`, "p.sql has no diagnostics array"},
+		{"diagnostics null", unitResult + `s/"diagnostics": \[\]/"diagnostics": null/`, "p.sql has no diagnostics array"},
+		{"error omitted", unitResult + `s/"error": null, //`, "p.sql has no error field"},
+		{"file omitted", unitResult + `s/"file": "[^"]*", //`, "no file name"},
+		{"files omitted", unitResult + `s/"files": .*/"summary": {}}/`, "no files array"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newGateFixture(t)
+			f.corruptUnitResult(t, tt.sedScript)
+			out, err := f.run()
+			if err == nil {
+				t.Fatalf("Run passed:\n%s", out)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Run error = %v, want %q in it:\n%s", err, tt.want, out)
+			}
+		})
+	}
+}
+
+// TestRunRefusesAMalformedResultBesideKnownFindings is the failure as it was
+// found: other units report the findings the known list accepts and the tool
+// exits 1, so only the one unit's missing diagnostics can fail the run.
+func TestRunRefusesAMalformedResultBesideKnownFindings(t *testing.T) {
+	t.Parallel()
+	f := newGateFixture(t)
+	f.write(t, "p/units/p.jsonl", fixtureRecords(t, "p", labelI, "CREATE INDEX i ON t (a)"))
+	f.write(t, "p/units/q.jsonl", fixtureRecords(t, "q", labelQ, "SELECT 1"))
+	f.write(t, FloorPath, labelI+" 1\n"+labelQ+" 1\n")
+	f.write(t, KnownPath, labelI+" index_async 1 #690 -- one index\n")
+	if out, err := f.run(); err != nil {
+		t.Fatalf("the uncorrupted gate must pass: %v\n%s", err, out)
+	}
+	f.corruptUnitResult(t, `s#\("file": "[^"]*/sql/q\.sql", "error": null\), "diagnostics": \[\]#\1#`)
+	out, err := f.run()
+	if err == nil {
+		t.Fatalf("Run passed:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "q.sql has no diagnostics array") {
+		t.Fatalf("Run error = %v\n%s", err, out)
+	}
+}
+
 // TestRunMatchesKnownFindingsExactly is T-29 through the whole gate, on a unit
 // whose lines dsql-lint's stand-in reports: the same list passes only the exact
 // corpus.
@@ -293,7 +360,7 @@ func TestLintUnitsRefusesADiagnosticNoRecordHolds(t *testing.T) {
 	if err := u.writeSQL(dir); err != nil {
 		t.Fatalf("writeSQL: %v", err)
 	}
-	output := `{"schema_version": 1, "files": [{"file": "` + u.sqlPath + `", "error": null, "diagnostics": [{"rule": "index_async", "line": 99}]}]}`
+	output := `{"schema_version": 1, "files": [{"file": "` + u.sqlPath + `", "error": null, "diagnostics": [{"rule": "index_async", "line": 99, "message": "m"}]}]}`
 	tool, _ := fakeTool(t, output, 1)
 	_, err := lintUnits(context.Background(), tool, []*unit{u})
 	if err == nil || !strings.Contains(err.Error(), "line 99 of corpus/u.sql, which holds no record") {
