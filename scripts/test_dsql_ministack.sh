@@ -11,9 +11,9 @@
 #
 # Set MINISTACK_DSQL_PROJECT to name the container and network, DSQL_BASE_PORT
 # for the SQL port on 127.0.0.1, DSQL_DOCKER_NETWORK for another name for the
-# network, which the run creates and removes and so must not already exist.
-# Logs go to .artifacts/dsql-ministack/. See docs/dsql-ministack.md, which also
-# says what a pass here does not establish.
+# network. The run creates and removes both, and so neither may already exist.
+# Logs go to .artifacts/dsql-ministack/<project>/. See docs/dsql-ministack.md,
+# which also says what a pass here does not establish.
 
 set -Eeuo pipefail
 
@@ -32,9 +32,18 @@ BACKEND_IMAGE="postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870
 project="${MINISTACK_DSQL_PROJECT:-forma-dsql-ministack}"
 network="${DSQL_DOCKER_NETWORK:-$project}"
 sql_port="${DSQL_BASE_PORT:-25432}"
-artifacts="$repo_root/.artifacts/dsql-ministack"
+artifacts="$repo_root/.artifacts/dsql-ministack/$project"
 skip_ledger="$repo_root/scripts/dsql_ministack_expected_skips.txt"
 dsql_host="dsql.us-east-1.amazonaws.com"
+owner_label="forma.dsql-ministack.project"
+
+# What this invocation may touch. A run records the IDs Docker gave it when it
+# created each one, and works through those IDs alone, never a name. Whatever
+# stands under the lane's names without having been created here is not the
+# lane's: another run's, or something unrelated.
+owned_container=""
+owned_network=""
+artifacts_claimed=0
 
 log() { echo "dsql-ministack: $*"; }
 die() {
@@ -46,7 +55,7 @@ die() {
 # its container is not running.
 gateway_url() {
 	local published
-	published=$(docker port "$project" 4566/tcp 2>/dev/null | head -n 1) || return 1
+	published=$(docker port "$owned_container" 4566/tcp 2>/dev/null | head -n 1) || return 1
 	[ -n "$published" ] || return 1
 	echo "http://$published"
 }
@@ -91,17 +100,22 @@ pull_images() {
 }
 
 # claim_network creates the lane's network. Docker refuses a second network of
-# one name, so this is what makes the run the owner of what teardown removes:
-# a run that loses here, to an active or interrupted one, must not tear it down.
+# one name, so a run that loses here, to an active or interrupted one, or to an
+# unrelated network, owns nothing and so removes nothing.
 claim_network() {
-	docker network create "$network" >/dev/null ||
+	owned_network=$(docker network create --label "$owner_label=$project" "$network") && [ -n "$owned_network" ] ||
 		die "cannot create Docker network $network: another run is active, or one was interrupted; 'make test-dsql-ministack-down' removes what it left"
 }
 
-start_ministack() {
+# claim_container creates MiniStack's container without starting it. Docker
+# refuses a second container of one name, so this is the claim on the project,
+# which two runs with different networks would otherwise share. Creating it apart
+# from starting it means a start that fails, on an occupied port, leaves a
+# container the run knows is its own, and one that loses here has touched nothing.
+claim_container() {
 	# The SQL port is published on loopback because the backend is a
 	# passwordless superuser behind a proxy that accepts any credentials.
-	docker run -d --name "$project" --network "$network" \
+	owned_container=$(docker create --name "$project" --label "$owner_label=$project" --network "$network" \
 		-v "$(docker_socket):/var/run/docker.sock" \
 		-e DSQL_STRICT=1 \
 		-e "DSQL_BASE_PORT=$sql_port" \
@@ -109,7 +123,20 @@ start_ministack() {
 		-e "DOCKER_NETWORK=$network" \
 		-p "127.0.0.1:$sql_port:$sql_port" \
 		-p 127.0.0.1::4566 \
-		"$MINISTACK_IMAGE" >/dev/null || die "cannot start MiniStack; is port $sql_port free? (DSQL_BASE_PORT moves it)"
+		"$MINISTACK_IMAGE") && [ -n "$owned_container" ] ||
+		die "cannot create container $project, and an existing one stays as it is: another run is active, or one was interrupted; 'make test-dsql-ministack-down' removes what it left"
+}
+
+# claim_artifacts clears the project's logs. Only the run holding the project's
+# container name gets here, so what it clears is no other run's, and a run with
+# another project has another directory.
+claim_artifacts() {
+	rm -rf "$artifacts" && mkdir -p "$artifacts" || die "cannot prepare $artifacts"
+	artifacts_claimed=1
+}
+
+start_ministack() {
+	docker start "$owned_container" >/dev/null || die "cannot start MiniStack; is port $sql_port free? (DSQL_BASE_PORT moves it)"
 
 	local url attempt
 	for attempt in $(seq 1 60); do
@@ -127,7 +154,7 @@ start_ministack() {
 # whose backend failed to start, so the backend is checked here and the SQL path
 # by the gate that follows.
 create_cluster() {
-	local created status endpoint port attempt
+	local created status endpoint port attempt backend
 	# Deletion protection, on by default as on AWS, would block the teardown.
 	created=$(api /cluster -X POST -d '{"deletionProtectionEnabled":false}') || die "CreateCluster failed"
 	cluster_id=$(echo "$created" | json_string identifier)
@@ -140,7 +167,8 @@ create_cluster() {
 	done
 	[ "$status" = ACTIVE ] || die "cluster $cluster_id is still $status after 120s"
 
-	docker container inspect "ministack-dsql-$cluster_id" >/dev/null 2>&1 ||
+	backend=$(container_named "ministack-dsql-$cluster_id") || die "cannot list containers to find the backend of cluster $cluster_id"
+	[ -n "$backend" ] ||
 		die "cluster $cluster_id is ACTIVE with no backend container: MiniStack degraded it to metadata-only (see $artifacts/ministack.log)"
 
 	endpoint=$(echo "$created" | json_string endpoint)
@@ -163,23 +191,47 @@ pin_isolation() {
 
 failed_suites=()
 
+# count_in_log prints how many lines of a log match. grep's 1 means none and
+# still prints 0. Anything else means the log could not be read, which must not
+# read as a count: a blank one would pass the floor below.
+count_in_log() {
+	local count rc=0
+	count=$(grep -cE "$1" "$2") || rc=$?
+	[ "$rc" -le 1 ] && [[ "$count" =~ ^[0-9]+$ ]] || return 1
+	echo "$count"
+}
+
 # run_suite runs one suite and records a failure without stopping, so a run
 # shows every failing suite. floor is the fewest passes that count as having
 # run it: a -run pattern that stops matching passes with no tests at all.
 run_suite() {
 	local name=$1 floor=$2
 	shift 2
-	local suite_log="$artifacts/$name.log" rc passed failed skipped
+	local suite_log="$artifacts/$name.log" passed failed skipped
+	local status
 	log "suite $name: go test $*"
 	set +e
 	go test -count=1 -v "$@" 2>&1 | tee "$suite_log" | grep -E --line-buffered '^ *--- (FAIL|SKIP)|^(ok|FAIL|panic)'
-	rc=${PIPESTATUS[0]}
+	status=("${PIPESTATUS[@]}")
 	set -e
-	passed=$(grep -cE '^ *--- PASS' "$suite_log" || true)
-	failed=$(grep -cE '^ *--- FAIL' "$suite_log" || true)
-	skipped=$(grep -cE '^ *--- SKIP' "$suite_log" || true)
-	printf '%-14s pass=%-5s fail=%-5s skip=%-5s\n' "$name" "$passed" "$failed" "$skipped" >>"$artifacts/summary.txt"
-	if [ "$rc" -ne 0 ]; then
+	if [ "${status[1]}" -ne 0 ] || [ "${status[2]}" -gt 1 ]; then
+		echo "dsql-ministack: suite $name: its output could not be written to $suite_log" >&2
+		failed_suites+=("$name")
+		return 0
+	fi
+	if ! passed=$(count_in_log '^ *--- PASS' "$suite_log") ||
+		! failed=$(count_in_log '^ *--- FAIL' "$suite_log") ||
+		! skipped=$(count_in_log '^ *--- SKIP' "$suite_log"); then
+		echo "dsql-ministack: suite $name: cannot read its results from $suite_log" >&2
+		failed_suites+=("$name")
+		return 0
+	fi
+	if ! printf '%-14s pass=%-5s fail=%-5s skip=%-5s\n' "$name" "$passed" "$failed" "$skipped" >>"$artifacts/summary.txt"; then
+		echo "dsql-ministack: suite $name: cannot write to $artifacts/summary.txt" >&2
+		failed_suites+=("$name")
+		return 0
+	fi
+	if [ "${status[0]}" -ne 0 ]; then
 		failed_suites+=("$name")
 	elif [ "$passed" -lt "$floor" ]; then
 		echo "dsql-ministack: suite $name passed only $passed tests, fewer than its floor of $floor: it stopped running what it should" >&2
@@ -238,60 +290,137 @@ run_suites() {
 	log "passed on MiniStack's strict proxy. This is an emulator result, not Aurora DSQL's: see docs/dsql-ministack.md"
 }
 
+# backends_on_network lists the backends on the lane's network, by the network's
+# name: the filter misses a container that never started when given its ID. Only
+# called with the network owned, so that the name is this run's network.
+backends_on_network() {
+	docker ps -aq --no-trunc --filter label=ministack=dsql --filter "network=$network"
+}
+
+# collect_logs writes to the artifacts only if this run claimed them: a run that
+# lost its claim would be writing over the logs of the one that holds them.
 collect_logs() {
-	mkdir -p "$artifacts"
-	docker logs "$project" >"$artifacts/ministack.log" 2>&1 || true
-	local backend
-	for backend in $(docker ps -aq --filter label=ministack=dsql --filter "network=$network"); do
-		docker logs "$backend" >"$artifacts/backend-$backend.log" 2>&1 || true
+	[ "$artifacts_claimed" -eq 1 ] || return 0
+	local failed=0 backend backends
+	mkdir -p "$artifacts" || return 1
+	docker logs "$owned_container" >"$artifacts/ministack.log" 2>&1 || failed=1
+	if backends=$(backends_on_network); then
+		for backend in $backends; do
+			docker logs "$backend" >"$artifacts/backend-$backend.log" 2>&1 || failed=1
+		done
+	else
+		failed=1
+	fi
+	[ "$failed" -eq 0 ] || echo "dsql-ministack: could not collect every container's log" >&2
+	return "$failed"
+}
+
+# container_named and network_named print "<id> <owner label>" for the resource
+# of exactly that name, nothing when there is none, and fail when Docker cannot
+# answer. A listing tells those apart; 'docker inspect' fails alike for both.
+container_named() {
+	docker ps -a --no-trunc --filter "name=$1" --format "{{.ID}} {{.Names}} {{.Label \"$owner_label\"}}" |
+		awk -v name="$1" '$2 == name { print $1, $3 }'
+}
+
+network_named() {
+	docker network ls --no-trunc --filter "name=$1" --format "{{.ID}} {{.Name}} {{.Label \"$owner_label\"}}" |
+		awk -v name="$1" '$2 == name { print $1, $3 }'
+}
+
+# wait_backend_gone waits for MiniStack to remove a deleted cluster's backend.
+wait_backend_gone() {
+	local backend attempt
+	for attempt in $(seq 1 15); do
+		if ! backend=$(container_named "ministack-dsql-$1"); then
+			echo "dsql-ministack: cannot tell whether deleted cluster $1 left its backend behind" >&2
+			return 1
+		fi
+		[ -n "$backend" ] || return 0
+		sleep 1
 	done
+	echo "dsql-ministack: MiniStack left the backend of deleted cluster $1 behind" >&2
+	return 1
 }
 
 # delete_clusters deletes every cluster through MiniStack's API and waits for
 # it to remove their backends, so a MiniStack that cannot clean up is reported.
+# It only runs against the container this run owns. A container with no published
+# API has none to call: remove_backends handles what it left, and reports Docker
+# being unavailable, which also lands here.
 delete_clusters() {
-	local failed=0 id attempt
+	local failed=0 clusters id
 	gateway_url >/dev/null 2>&1 || return 0
-	for id in $(api /cluster 2>/dev/null | grep -oE '"identifier": *"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/'); do
+	if ! clusters=$(api /cluster 2>/dev/null); then
+		echo "dsql-ministack: cannot list clusters through MiniStack's API" >&2
+		return 1
+	fi
+	for id in $(echo "$clusters" | grep -oE '"identifier": *"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/'); do
 		if ! api "/cluster/$id" -X DELETE -o /dev/null -f; then
 			echo "dsql-ministack: DeleteCluster failed for $id" >&2
 			failed=1
 			continue
 		fi
-		for attempt in $(seq 1 15); do
-			docker container inspect "ministack-dsql-$id" >/dev/null 2>&1 || break
-			sleep 1
-		done
-		if docker container inspect "ministack-dsql-$id" >/dev/null 2>&1; then
-			echo "dsql-ministack: MiniStack left the backend of deleted cluster $id behind" >&2
-			failed=1
-		fi
+		wait_backend_gone "$id" || failed=1
 	done
 	return "$failed"
 }
 
-# teardown removes the lane's container, network and backends, and only those:
-# backends are found by MiniStack's label on this lane's own network. It tries
-# every step and fails if any failed, or if anything is left.
+remove_backends() {
+	local backends
+	if ! backends=$(backends_on_network); then
+		echo "dsql-ministack: cannot list the backends on network $network" >&2
+		return 1
+	fi
+	[ -n "$backends" ] || return 0
+	# shellcheck disable=SC2086 # one container ID per word
+	docker rm -f -v $backends >/dev/null
+}
+
+# remove_container and remove_network take an ID and answer whether it is gone:
+# an ID Docker lists as absent is. An unanswered listing proves nothing, so they
+# still try the removal, and fail unless a listing then confirms it.
+remove_container() {
+	local left
+	if left=$(docker ps -aq --no-trunc --filter "id=$1") && [ -z "$left" ]; then
+		return 0
+	fi
+	docker rm -f -v "$1" >/dev/null || return 1
+	left=$(docker ps -aq --no-trunc --filter "id=$1") || return 1
+	[ -z "$left" ]
+}
+
+remove_network() {
+	local left
+	if left=$(docker network ls -q --no-trunc --filter "id=$1") && [ -z "$left" ]; then
+		return 0
+	fi
+	docker network rm "$1" >/dev/null || return 1
+	left=$(docker network ls -q --no-trunc --filter "id=$1") || return 1
+	[ -z "$left" ]
+}
+
+# teardown removes what this invocation owns and nothing else. Its callers run
+# it in an OR-list, where errexit does not apply, so every step checks its own
+# result: each step is tried, and any that failed or could not be confirmed
+# fails the whole.
 teardown() {
-	local failed=0 backends
-	delete_clusters || failed=1
-	backends=$(docker ps -aq --filter label=ministack=dsql --filter "network=$network")
-	if [ -n "$backends" ]; then
-		# shellcheck disable=SC2086 # one container ID per word
-		docker rm -f -v $backends >/dev/null || failed=1
+	local failed=0
+	[ -n "$owned_container$owned_network" ] || return 0
+	if [ -n "$owned_container" ]; then
+		delete_clusters || failed=1
 	fi
-	if docker container inspect "$project" >/dev/null 2>&1; then
-		docker rm -f -v "$project" >/dev/null || failed=1
+	if [ -n "$owned_network" ]; then
+		remove_backends || failed=1
 	fi
-	if docker network inspect "$network" >/dev/null 2>&1; then
-		docker network rm "$network" >/dev/null || failed=1
+	if [ -n "$owned_container" ]; then
+		remove_container "$owned_container" || failed=1
 	fi
-	if docker container inspect "$project" >/dev/null 2>&1 || docker network inspect "$network" >/dev/null 2>&1; then
-		failed=1
+	if [ -n "$owned_network" ]; then
+		remove_network "$owned_network" || failed=1
 	fi
 	if [ "$failed" -ne 0 ]; then
-		echo "dsql-ministack: FAILED: cleanup was incomplete; check 'docker ps -a' and 'docker network ls', then run 'make test-dsql-ministack-down'" >&2
+		echo "dsql-ministack: FAILED: cleanup was incomplete or could not be confirmed; check 'docker ps -a' and 'docker network ls', then run 'make test-dsql-ministack-down'" >&2
 		return 1
 	fi
 	log "torn down"
@@ -300,32 +429,57 @@ teardown() {
 on_exit() {
 	local rc=$?
 	trap - EXIT
-	collect_logs
+	collect_logs || rc=1
 	teardown || rc=1
 	exit "$rc"
 }
 
 run() {
 	preflight
-	rm -rf "$artifacts"
-	mkdir -p "$artifacts"
 	pull_images
-	claim_network
 	trap on_exit EXIT
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
+	claim_network
+	claim_container
+	claim_artifacts
 	start_ministack
 	create_cluster
 	pin_isolation
 	run_suites
 }
 
+# adopt prints the ID of a resource 'down' found, if the lane created it for this
+# project. The label says so, and an interrupted run's IDs are gone with it.
+adopt() {
+	local kind=$1 name=$2 found=$3 id label
+	[ -n "$found" ] || return 0
+	read -r id label <<<"$found"
+	if [ "$label" != "$project" ]; then
+		echo "dsql-ministack: $kind $name is not this lane's (no $owner_label=$project label); leaving it as it is" >&2
+		return 1
+	fi
+	echo "$id"
+}
+
+down() {
+	local found failed=0
+	docker info >/dev/null 2>&1 || die "no access to a Docker daemon ('docker info' failed)"
+	found=$(container_named "$project") || die "cannot list containers"
+	owned_container=$(adopt container "$project" "$found") || failed=1
+	found=$(network_named "$network") || die "cannot list networks"
+	owned_network=$(adopt network "$network" "$found") || failed=1
+	teardown || failed=1
+	return "$failed"
+}
+
+# The project names a path below as well as a container, so it has to be a name
+# Docker would accept before anything is created or cleared under it.
+[[ "$project" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]+$ ]] || die "MINISTACK_DSQL_PROJECT '$project' is not a valid container name"
+
 case "${1:-}" in
 run) run ;;
-down)
-	docker info >/dev/null 2>&1 || die "no access to a Docker daemon ('docker info' failed)"
-	teardown
-	;;
+down) down ;;
 *)
 	echo "usage: $0 run|down" >&2
 	exit 2

@@ -112,6 +112,17 @@ without a DSN, fails the test.
 **Sessions are named after they connect.** The proxy drops `application_name` from
 the startup message, and the tests find their own lock waits by that name.
 
+**A run removes only what it created.** It claims the network, then the container
+name, both of which Docker refuses to create twice, and only then clears its logs.
+A run that loses either claim, to another run or to something unrelated under that
+name, exits non-zero and leaves what it found as it was. From then on the run works
+through the IDs Docker gave it, so nothing it does can land on a container that
+merely has the name.
+
+**Teardown fails if it cannot confirm the result.** Removal is judged by Docker's
+listings, not `docker inspect`, whose failure looks the same for a missing container
+and an unreachable daemon. Each step still runs after an earlier one fails.
+
 ## Running it
 
 ```bash
@@ -119,20 +130,28 @@ make test-dsql-ministack        # the whole lane, torn down afterwards
 make test-dsql-ministack-down   # removes what an interrupted run left behind
 ```
 
+The down target has no IDs from the run it cleans up after, so it goes by the name
+and the `forma.dsql-ministack.project` label the run put on its container and
+network. It leaves anything without that label and exits non-zero. Set the same
+`MINISTACK_DSQL_PROJECT` and `DSQL_DOCKER_NETWORK` the run had. It cannot tell an
+interrupted run from an active one, and removes an active run's resources too.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `DSQL_BASE_PORT` | `25432` | SQL port, published on `127.0.0.1` only |
-| `MINISTACK_DSQL_PROJECT` | `forma-dsql-ministack` | Container name, and the default network name |
+| `MINISTACK_DSQL_PROJECT` | `forma-dsql-ministack` | Container name, default network name, and the logs' directory. It must not already exist as a container |
 | `DSQL_DOCKER_NETWORK` | the project name | Network the run creates and removes. It must not already exist |
 
 To run two lanes at once, give each its own `MINISTACK_DSQL_PROJECT` and
-`DSQL_BASE_PORT`.
+`DSQL_BASE_PORT`. A second run with the same project is refused.
 
-Logs and a per-suite summary go to `.artifacts/dsql-ministack/`, and CI uploads
-them when the job fails. These all fail the run rather than skip: no Docker access,
-a missing socket, a failed image pull, an occupied port, a metadata-only cluster,
-an unreachable proxy, a suite below its floor of passing tests, and an incomplete
-cleanup.
+Logs and a per-suite summary go to `.artifacts/dsql-ministack/<project>/`, and CI
+uploads them when the job fails. These all fail the run rather than skip: no Docker
+access, a missing socket, a failed image pull, an occupied port, a container or
+network already under the lane's names, a metadata-only cluster, an unreachable
+proxy, a suite below its floor of passing tests or with results that cannot be
+read, a log that cannot be written, and a cleanup that is incomplete or cannot be
+confirmed.
 
 The lane mounts the Docker socket into MiniStack, which then starts its backend
 as a sibling container. It has only been run against a Docker daemon, on
