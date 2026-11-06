@@ -45,6 +45,12 @@ jobs:
       - name: Build and vet infra module
         run: make check-infra
 
+      # Static Aurora DSQL compatibility gate (#740): the same `make lint-dsql`
+      # a local `make all` runs, so CI and local verification cannot drift.
+      # TestCILintJobRunsLintDSQL guards this directive.
+      - name: DSQL lint gate
+        run: make lint-dsql
+
   test:
     name: Test
     runs-on: ubuntu-24.04-arm

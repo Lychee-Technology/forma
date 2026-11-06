@@ -254,6 +254,12 @@ The Lambda's default is five minutes.
 
 ## Verification
 
+**Statically, without a database.** `make lint-dsql` lints the SQL in Forma's
+corpus with AWS's `dsql-lint`, and it runs in CI's lint job. It reports
+init-db's #690 DDL as known findings. A clean result is not proof of
+compatibility, and the gate has no SQL inventory yet. See
+[DSQL lint gate](dsql-lint.md) for what it covers and what it does not.
+
 **In CI, on PostgreSQL 16.** The `aurora-dsql` engine runs on a pool whose
 sessions default to REPEATABLE READ. A guard-row conflict there is a wait
 and then `40001` at the guard write. DSQL gives the same outcome at COMMIT,
