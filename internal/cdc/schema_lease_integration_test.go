@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -25,7 +24,9 @@ import (
 // READ, so the race test runs on sessions at that level too, where losing a
 // race to one row is 40001 as on DSQL. FORMA_DSQL_DSN names an Aurora DSQL
 // cluster instead (docs/aurora-dsql.md), where the test that needs a lock
-// wait skips.
+// wait skips. With FORMA_DSQL_TARGET=ministack that DSN is MiniStack's strict
+// SQL proxy (docs/dsql-ministack.md), whose backend is PostgreSQL and so has
+// that wait.
 
 // pgTestDB opens a database/sql pool on the integration Postgres whose
 // sessions default to isolation ("" keeps the server's default). Its
@@ -45,19 +46,31 @@ func pgTestDB(t *testing.T, isolation string) *sql.DB {
 	return db
 }
 
-// leaseTarget opens the schema lease's test target: the Aurora DSQL cluster
-// FORMA_DSQL_DSN names, or else the integration Postgres at isolation.
-func leaseTarget(t *testing.T, isolation string) (db *sql.DB, cluster bool) {
+// leaseTarget opens the schema lease's test target: what FORMA_DSQL_DSN and
+// FORMA_DSQL_TARGET name, or else the integration Postgres at isolation.
+// noLockWait says the target is a genuine cluster, where no statement waits.
+// fixedIsolation says the target runs only DSQL's REPEATABLE READ, so it
+// cannot honor another isolation.
+func leaseTarget(t *testing.T, isolation string) (db *sql.DB, noLockWait, fixedIsolation bool) {
 	t.Helper()
-	dsn := os.Getenv("FORMA_DSQL_DSN")
-	if dsn == "" {
-		return pgTestDB(t, isolation), false
+	dsn, kind := testdb.ResolveDSQL(t)
+	switch kind {
+	case testdb.DSQLCluster:
+		db, err := sql.Open("pgx", dsn)
+		require.NoError(t, err, "connect to FORMA_DSQL_DSN")
+		t.Cleanup(func() { _ = db.Close() })
+		require.NoError(t, db.Ping(), "connect to FORMA_DSQL_DSN")
+		return db, true, true
+	case testdb.DSQLMiniStack:
+		cfg, err := pgx.ParseConfig(dsn)
+		require.NoError(t, err, "parse FORMA_DSQL_DSN")
+		// Named after opening: waitForLockWaiter finds db's sessions by name.
+		db := stdlib.OpenDB(*cfg, stdlib.OptionAfterConnect(testdb.NameSession(fmt.Sprintf("cdc_test_%d", time.Now().UnixNano()))))
+		t.Cleanup(func() { _ = db.Close() })
+		require.NoError(t, db.Ping(), "connect to FORMA_DSQL_DSN")
+		return db, false, true
 	}
-	db, err := sql.Open("pgx", dsn)
-	require.NoError(t, err, "connect to FORMA_DSQL_DSN")
-	t.Cleanup(func() { _ = db.Close() })
-	require.NoError(t, db.Ping(), "connect to FORMA_DSQL_DSN")
-	return db, true
+	return pgTestDB(t, isolation), false, false
 }
 
 // leaseTestTable creates a schema-lease table of its own for t.
@@ -88,7 +101,7 @@ func serverMillis(t *testing.T, db *sql.DB) int64 {
 }
 
 func TestLeaseSchemaLockExcludesUntilReleased(t *testing.T) {
-	db, _ := leaseTarget(t, "")
+	db, _, _ := leaseTarget(t, "")
 	table := leaseTestTable(t, db)
 	ctx := context.Background()
 	first := newLeaseSchemaLocker(db, table, time.Minute, 15*time.Second)
@@ -123,7 +136,7 @@ func TestLeaseSchemaLockExcludesUntilReleased(t *testing.T) {
 }
 
 func TestLeaseSchemaLockTakesOverOnlyAnExpiredLease(t *testing.T) {
-	db, _ := leaseTarget(t, "")
+	db, _, _ := leaseTarget(t, "")
 	table := leaseTestTable(t, db)
 	ctx := context.Background()
 	locker := newLeaseSchemaLocker(db, table, time.Minute, 15*time.Second)
@@ -152,7 +165,7 @@ func TestLeaseSchemaLockTakesOverOnlyAnExpiredLease(t *testing.T) {
 // 450ms, which CI runs that rebuild most packages under -race exhausted: a
 // 1.5s sleep there overran by up to 0.6s, and run 40141248359 ended held.
 func TestLeaseSchemaLockRenewsPastItsTTL(t *testing.T) {
-	db, _ := leaseTarget(t, "")
+	db, _, _ := leaseTarget(t, "")
 	table := leaseTestTable(t, db)
 	ctx := context.Background()
 	locker := newLeaseSchemaLocker(db, table, 2*time.Second, 500*time.Millisecond)
@@ -175,7 +188,7 @@ func TestLeaseSchemaLockRenewsPastItsTTL(t *testing.T) {
 // holder's token at its next renewal, as after a pause longer than the TTL:
 // held ends with ErrSchemaLockLost, and release leaves the new lease alone.
 func TestLeaseSchemaLockEndsHeldOnTakeover(t *testing.T) {
-	db, _ := leaseTarget(t, "")
+	db, _, _ := leaseTarget(t, "")
 	table := leaseTestTable(t, db)
 	locker := newLeaseSchemaLocker(db, table, 600*time.Millisecond, 150*time.Millisecond)
 
@@ -202,8 +215,8 @@ func TestLeaseSchemaLockEndsHeldOnTakeover(t *testing.T) {
 // holder whose renewals cannot get through ends held while the database
 // still counts its lease live, so no other holder could have taken it.
 func TestLeaseSchemaLockStopsBeforeItsLeaseExpires(t *testing.T) {
-	db, cluster := leaseTarget(t, "")
-	if cluster {
+	db, noLockWait, _ := leaseTarget(t, "")
+	if noLockWait {
 		t.Skip("blocking the renewals needs a row lock wait, which DSQL does not have")
 	}
 	table := leaseTestTable(t, db)
@@ -238,8 +251,8 @@ func TestLeaseSchemaLockStopsBeforeItsLeaseExpires(t *testing.T) {
 // already ended. The database set the expiry from the statement's start, so
 // a hold timed from the answer instead would outlast the lease.
 func TestLeaseSchemaLockRefusesAnAcquireThatOutlivedItsLease(t *testing.T) {
-	db, cluster := leaseTarget(t, "")
-	if cluster {
+	db, noLockWait, _ := leaseTarget(t, "")
+	if noLockWait {
 		t.Skip("delaying the acquire needs a row lock wait, which DSQL does not have")
 	}
 	table := leaseTestTable(t, db)
@@ -285,9 +298,9 @@ func TestLeaseSchemaLockRefusesAnAcquireThatOutlivedItsLease(t *testing.T) {
 func TestLeaseSchemaLockOneWinnerAmongRacingAcquirers(t *testing.T) {
 	for _, isolation := range []string{"read committed", "repeatable read"} {
 		t.Run(isolation, func(t *testing.T) {
-			db, cluster := leaseTarget(t, isolation)
-			if cluster && isolation != "repeatable read" {
-				t.Skip("DSQL runs only REPEATABLE READ")
+			db, _, fixed := leaseTarget(t, isolation)
+			if fixed && isolation != "repeatable read" {
+				t.Skip("this target runs only DSQL's REPEATABLE READ")
 			}
 			db.SetMaxOpenConns(16)
 			table := leaseTestTable(t, db)

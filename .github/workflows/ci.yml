@@ -137,6 +137,37 @@ jobs:
           files: ./coverage.out
           fail_ci_if_error: false
 
+  # The aurora-dsql suites through MiniStack's strict SQL proxy (#739), beside
+  # the PostgreSQL and dsql-emulated runs above and not instead of them. The
+  # target is the one a developer runs, and it fails, never skips, when the
+  # proxy is unavailable. Its logs carry no credential: the lane has none.
+  # TestCIRunsTheMiniStackLane guards this job.
+  dsql-ministack:
+    name: DSQL MiniStack
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run the MiniStack strict DSQL lane
+        run: make test-dsql-ministack
+
+      - name: Upload MiniStack lane logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dsql-ministack-logs-attempt-${{ github.run_attempt }}
+          path: .artifacts/dsql-ministack/
+          retention-days: 14
+          if-no-files-found: ignore
+
   e2e:
     name: E2E Smoke Tests
     runs-on: ubuntu-latest

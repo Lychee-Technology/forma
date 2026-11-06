@@ -8,8 +8,8 @@ Forma runs on PostgreSQL 16 and on Amazon Aurora DSQL. DSQL has no advisory lock
 
 | Surface | PostgreSQL 16 | Aurora DSQL |
 |---------|---------------|-------------|
-| Write path (`DB_ENGINE`, `forma.DatabaseConfig.Engine`) | Supported | Supported as `aurora-dsql`; CI runs it on PostgreSQL emulating DSQL, not yet on a cluster |
-| CDC schema lock and flush mark (`--pg-engine` on `cdc-flush`, `cdc-init`, `manifest-reconcile`) | Supported | Supported as `aurora-dsql` (a lease row); CI only, not yet on a cluster |
+| Write path (`DB_ENGINE`, `forma.DatabaseConfig.Engine`) | Supported | Supported as `aurora-dsql`; CI runs it on PostgreSQL emulating DSQL and on MiniStack's SQL-validating proxy, not yet on a cluster |
+| CDC schema lock and flush mark (`--pg-engine` on `cdc-flush`, `cdc-init`, `manifest-reconcile`) | Supported | Supported as `aurora-dsql` (a lease row); CI only (PostgreSQL and [MiniStack](docs/dsql-ministack.md)), not yet on a cluster |
 | `init-db` | Supported | Not yet: its DDL is not valid on DSQL (#690) |
 | DuckDB `postgres` extension (CDC export, hot-tier reads) | Supported | Not verified (#691) |
 

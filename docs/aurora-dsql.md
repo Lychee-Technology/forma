@@ -290,6 +290,13 @@ without the wait. What runs:
   fails the mark with `40001`, and the retry marks the rows at their listed
   version and leaves dirty the row the writer advanced.
 
+**On MiniStack's strict SQL proxy.** `make test-dsql-ministack` runs the
+repository tests, the schema lease and the coordination suite through a
+SQL-validating proxy over PostgreSQL. It needs Docker and no AWS credentials.
+It shows that the SQL passes the proxy's DSQL rules, and nothing about optimistic
+concurrency, IAM or TLS. See [MiniStack lane](dsql-ministack.md) for its coverage
+matrix and what a pass does not establish.
+
 **Against a cluster.** Nothing in this section has run on a cluster yet. To
 run the repository tests and the probe against one (pgx reads the token from
 `PGPASSWORD`, which expires after 15 minutes by default):
@@ -315,11 +322,16 @@ acquire that a live lease blocks returns no row, so `TryLock` answers "not
 acquired" rather than an error. The blocked-renewal and slow-acquire tests
 skip on a cluster, since DSQL has no lock wait to block on.
 
+`FORMA_DSQL_DSN` alone means a genuine cluster, and these tests skip for it. On
+MiniStack `FORMA_DSQL_TARGET=ministack` says otherwise, and they run, because
+PostgreSQL behind its proxy has the lock waits they need.
+
 The coordination suite runs against a cluster with
 `FORMA_COORDINATION_DSN` and `FORMA_COORDINATION_BACKEND=dsql`. It has not
-yet: its fixture builds indexes with plain `CREATE INDEX`, which #690
-replaces, and it injects a storage failure with a PL/pgSQL trigger, which
-needs another mechanism there.
+yet. Its fixture now builds indexes with `CREATE INDEX ASYNC` on that backend
+and injects its storage failure with a `CHECK` constraint, which the proxy
+accepts. `TestCommitOutcomeUnknown`'s fault proxy still relays only plaintext,
+and a cluster requires TLS.
 
 ## Open questions
 

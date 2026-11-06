@@ -3,7 +3,6 @@ package internal
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -23,27 +22,39 @@ import (
 // integration PostgreSQL with every session at REPEATABLE READ, DSQL's one
 // isolation level, which CI runs. FORMA_DSQL_DSN names an Aurora DSQL
 // cluster instead (docs/aurora-dsql.md says how to build one), and the same
-// tests run there.
+// tests run there. With FORMA_DSQL_TARGET=ministack that DSN is MiniStack's
+// strict SQL proxy (docs/dsql-ministack.md), whose backend is PostgreSQL: its
+// lock waits exist, so what skips on a cluster runs there.
 type dsqlTarget struct {
 	pool *pgxpool.Pool
-	// app names the emulation's sessions, so lockWaiters sees only this
-	// test's.
+	// app names the sessions of a target with pg_stat_activity, so
+	// waitForLockWaiter sees only this test's.
 	app string
-	// cluster says pool reaches an Aurora DSQL cluster.
+	// cluster says pool reaches a genuine Aurora DSQL cluster.
 	cluster bool
 }
 
 // openDSQLTarget opens a pool on the test target of the aurora-dsql engine.
 func openDSQLTarget(t *testing.T, ctx context.Context) dsqlTarget {
 	t.Helper()
-	if dsn := os.Getenv("FORMA_DSQL_DSN"); dsn != "" {
+	app := fmt.Sprintf("dsql_mode_%d", time.Now().UnixNano())
+	dsn, kind := testdb.ResolveDSQL(t)
+	switch kind {
+	case testdb.DSQLCluster:
 		pool, err := pgxpool.New(ctx, dsn)
 		require.NoError(t, err, "connect to FORMA_DSQL_DSN")
 		t.Cleanup(pool.Close)
 		return dsqlTarget{pool: pool, cluster: true}
+	case testdb.DSQLMiniStack:
+		cfg, err := pgxpool.ParseConfig(dsn)
+		require.NoError(t, err, "parse FORMA_DSQL_DSN")
+		cfg.AfterConnect = testdb.NameSession(app)
+		pool, err := pgxpool.NewWithConfig(ctx, cfg)
+		require.NoError(t, err, "connect to FORMA_DSQL_DSN")
+		t.Cleanup(pool.Close)
+		return dsqlTarget{pool: pool, app: app}
 	}
 	testdb.Connect(t, ctx) // skips, or fails in CI, when PostgreSQL is absent
-	app := fmt.Sprintf("dsql_mode_%d", time.Now().UnixNano())
 	pool := openTunedPool(t, ctx, func(cfg *pgxpool.Config) {
 		cfg.ConnConfig.RuntimeParams["default_transaction_isolation"] = "repeatable read"
 		cfg.ConnConfig.RuntimeParams["application_name"] = app

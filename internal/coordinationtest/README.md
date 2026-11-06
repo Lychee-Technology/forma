@@ -150,8 +150,16 @@ conflict is a wait and then `40001` at the guard write, where DSQL answers
 `40001` at COMMIT without the wait. The contract assertions accept either.
 `TestDSQLEngineSendsOnlyStatementsDSQLRuns` checks that one transaction
 through every locking path sends no advisory lock, row-locking clause or
-isolation level. The `dsql` backend has not run: the fixture needs
-`CREATE INDEX ASYNC` for the declared indexes (#690), another way to inject
-the storage failure of scenario 1, which here is a PL/pgSQL trigger on
-`entity_main`, and another injection point for `TestCommitOutcomeUnknown`. Its
-fault proxy relays only plaintext connections, and DSQL requires TLS.
+isolation level.
+
+**DSQL: on MiniStack's strict proxy (#739).** `make test-dsql-ministack` runs the
+suite on the `dsql` backend through a SQL-validating proxy over PostgreSQL
+([MiniStack lane](../../docs/dsql-ministack.md)). The fixture builds every index
+with `CREATE INDEX ASYNC` there, and the storage failure of scenario 1 is a
+`CHECK` constraint on every backend, because DSQL has neither triggers nor
+PL/pgSQL. This shows the proxy accepts what the suite sends. Conflicts there are
+still PostgreSQL's, so it says nothing about OCC.
+
+**DSQL: not yet on a cluster.** `TestCommitOutcomeUnknown` is still blocked there:
+its fault proxy relays only plaintext connections, and DSQL requires TLS. The
+proxy accepts plaintext, so it runs on MiniStack.

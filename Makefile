@@ -1,4 +1,4 @@
-.PHONY: test test-unit test-e2e-production duckdb-storage-compat fmt-check lint lint-dsql check-infra coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy benchmark-heavy-live build-all build-lambda clean all create-build-dir link validate-schema-consistency
+.PHONY: test test-unit test-e2e-production test-dsql-ministack test-dsql-ministack-down duckdb-storage-compat fmt-check lint lint-dsql check-infra coverage build build-tools build-benchmark benchmark-smoke benchmark-regression benchmark-heavy benchmark-heavy-live build-all build-lambda clean all create-build-dir link validate-schema-consistency
 
 # Binary names
 BINARY_SERVER=server
@@ -67,6 +67,17 @@ test-unit:
 test-e2e-production:
 	@echo "Running production E2E harness tests..."
 	@$(GOENV) go test -v ./internal/e2e_harness/production/ -tags=e2e -timeout=10m
+
+# The MiniStack strict DSQL lane (#739): the aurora-dsql suites through a pinned
+# MiniStack's SQL-validating proxy, torn down afterwards. Needs Docker, not AWS
+# credentials. CI's dsql-ministack job runs this exact target. An emulator
+# result, not Aurora DSQL's: see docs/dsql-ministack.md. The -down target removes
+# what an interrupted run left behind.
+test-dsql-ministack:
+	@$(GOENV) ./scripts/test_dsql_ministack.sh run
+
+test-dsql-ministack-down:
+	@./scripts/test_dsql_ministack.sh down
 
 # Cross-version Parquet storage check (#753): files the current DuckDB writes
 # must read back unchanged in the previous release (rollback), and the
