@@ -15,7 +15,7 @@ one layer of three:
 | Layer | What it shows |
 | --- | --- |
 | `make lint-dsql` (this page) | The corpus passes DSQL's documented static restrictions: one DDL per transaction, `CREATE INDEX ASYNC`, no `SERIAL`, arrays, `TRUNCATE`, `SET TRANSACTION` and so on |
-| MiniStack strict-mode lane (#739) | The SQL runs against a DSQL emulator |
+| [MiniStack strict-mode lane](dsql-ministack.md) (#739) | The SQL runs against a DSQL emulator |
 | A real cluster ([Aurora DSQL](aurora-dsql.md#verification)) | It runs on DSQL |
 
 **The gate has no inventory yet.** It lints the statements in the corpus and

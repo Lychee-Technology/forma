@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -131,6 +132,8 @@ type env struct {
 	registry forma.SchemaRegistry
 	// tracer sees every statement sent through pool, recording while on.
 	tracer *statementTracer
+	// refusedSchema, when set, is the schema whose entity_main inserts fail.
+	refusedSchema string
 }
 
 var envSerial atomic.Int64
@@ -141,16 +144,34 @@ func newEnv(t *testing.T) *env {
 	return newEnvOn(t, nil)
 }
 
+// newEnvRefusingInserts is newEnv whose entity_main refuses every insert of
+// schema's rows, with a constraint named injectedFailure. Aurora DSQL has no
+// trigger or PL/pgSQL to inject a failure with and no ALTER TABLE to add a
+// constraint later, so the table is created this way, on every backend, and
+// the test cannot seed rows of schema first.
+func newEnvRefusingInserts(t *testing.T, schema string) *env {
+	t.Helper()
+	return buildEnv(t, nil, schema)
+}
+
 // newEnvOn is newEnv whose manager reaches the database through managerPool
 // when it is not nil, the pool a fault proxy sits in front of; the tables
 // and every direct check use the env's own pool.
 func newEnvOn(t *testing.T, managerPool func(*env) *pgxpool.Pool) *env {
+	t.Helper()
+	return buildEnv(t, managerPool, "")
+}
+
+func buildEnv(t *testing.T, managerPool func(*env) *pgxpool.Pool, refusedSchema string) *env {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	t.Cleanup(cancel)
 	b := activeBackend()
 	if b.name == "" {
 		t.Fatal("FORMA_COORDINATION_DSN is set without FORMA_COORDINATION_BACKEND")
+	}
+	if os.Getenv("FORMA_COORDINATION_BACKEND") == dsqlBackend && !b.named {
+		t.Fatalf("FORMA_COORDINATION_BACKEND=%s without FORMA_COORDINATION_DSN would run on the integration PostgreSQL's PostgreSQL engine", dsqlBackend)
 	}
 	if !b.named {
 		testdb.Connect(t, ctx) // skips, or fails in CI, when PostgreSQL is absent
@@ -159,7 +180,7 @@ func newEnvOn(t *testing.T, managerPool func(*env) *pgxpool.Pool) *env {
 	e := &env{ctx: ctx, app: serial, engine: &countingEngine{}, tables: tableSet{
 		schemaRegistry: serial + "_schema_registry", entityMain: serial + "_entity_main",
 		eavData: serial + "_eav_data", changeLog: serial + "_change_log",
-	}, tracer: &statementTracer{}}
+	}, tracer: &statementTracer{}, refusedSchema: refusedSchema}
 	e.pool = e.openPool(t, b.dsn)
 	e.createTables(t)
 	e.columns = loadColumns(t)
@@ -191,6 +212,9 @@ func (e *env) openPool(t *testing.T, dsn string) *pgxpool.Pool {
 	if activeBackend().name == dsqlEmulated {
 		cfg.ConnConfig.RuntimeParams["default_transaction_isolation"] = "repeatable read"
 	}
+	if testdb.MiniStackTarget() {
+		cfg.AfterConnect = testdb.NameSession(e.app) // its proxy drops the startup parameter
+	}
 	cfg.ConnConfig.Tracer = e.tracer
 	pool, err := pgxpool.NewWithConfig(e.ctx, cfg)
 	require.NoError(t, err)
@@ -209,6 +233,9 @@ func (e *env) createTables(t *testing.T) {
 	t.Helper()
 	main := entityMainDDL(e.tables.entityMain)
 	require.Empty(t, model.EntityMainDDLDrift(main), "the suite's entity_main matches Forma's column contract")
+	if e.refusedSchema != "" {
+		main = refusingInserts(main, schemaIDs[e.refusedSchema])
+	}
 	statements := append([]string{
 		fmt.Sprintf("CREATE TABLE %s (schema_name TEXT PRIMARY KEY, schema_id SMALLINT UNIQUE NOT NULL)", e.tables.schemaRegistry),
 		main,
@@ -222,8 +249,7 @@ func (e *env) createTables(t *testing.T) {
 	statements = append(statements, initDBIndexes(e.tables)...)
 	t.Cleanup(e.dropTables)
 	for _, stmt := range statements {
-		_, err := e.pool.Exec(e.ctx, stmt)
-		require.NoError(t, err, "create the suite's tables")
+		e.execDDL(t, stmt)
 	}
 	for name, id := range schemaIDs {
 		_, err := e.pool.Exec(e.ctx, fmt.Sprintf("INSERT INTO %s (schema_name, schema_id) VALUES ($1, $2)", e.tables.schemaRegistry), name, id)
@@ -231,6 +257,51 @@ func (e *env) createTables(t *testing.T) {
 	}
 	// Generation 1 of each schema, as init-db records it (#733).
 	require.NoError(t, ledgertest.Seed(e.ctx, e.pool, e.tables.schemaRegistry, schemaDir))
+}
+
+// refusingInserts adds the constraint newEnvRefusingInserts names to
+// entity_main's DDL.
+func refusingInserts(main string, schemaID int16) string {
+	return fmt.Sprintf("%s,\n\tCONSTRAINT %s CHECK (ltbase_schema_id <> %d)\n)", strings.TrimSuffix(main, "\n)"), injectedFailure, schemaID)
+}
+
+// plainIndex matches the two ways init-db's sources spell an index build,
+// neither of which DSQL runs.
+var plainIndex = regexp.MustCompile(`^CREATE INDEX (CONCURRENTLY )?`)
+
+// execDDL runs one statement of the suite's DDL. On the dsql backend an index
+// is built as DSQL builds one: CREATE INDEX ASYNC, then a wait for its job.
+// The rewrite is the fixture's alone, so production's own DDL stays what the
+// suite exercises on PostgreSQL; #690 makes init-db do this itself.
+func (e *env) execDDL(t *testing.T, stmt string) {
+	t.Helper()
+	if activeBackend().name != dsqlBackend || !plainIndex.MatchString(stmt) {
+		_, err := e.pool.Exec(e.ctx, stmt)
+		require.NoError(t, err, "create the suite's tables: %s", stmt)
+		return
+	}
+	var jobID string
+	require.NoError(t, e.pool.QueryRow(e.ctx, plainIndex.ReplaceAllString(stmt, "CREATE INDEX ASYNC ")).Scan(&jobID), "build an index: %s", stmt)
+	require.NoError(t, testdb.WaitForDSQLJob(e.ctx, e.pool, jobID), "build an index: %s", stmt)
+}
+
+// buildDeclaredIndexes builds the indexes the schemas declare (#647). Ensure
+// reads pg_index and builds with CONCURRENTLY, neither of which the dsql
+// backend's DDL path uses, so there the fixture runs the same plan itself.
+func (e *env) buildDeclaredIndexes(t *testing.T, registry forma.SchemaRegistry) {
+	t.Helper()
+	if activeBackend().name != dsqlBackend {
+		_, err := declaredindex.EnsureFromRegistry(e.ctx, e.pool, e.tables.entityMain, registry)
+		require.NoError(t, err)
+		return
+	}
+	schemas, err := declaredindex.FromRegistry(registry)
+	require.NoError(t, err)
+	planned, err := declaredindex.Plan(e.tables.entityMain, schemas)
+	require.NoError(t, err)
+	for _, ix := range planned {
+		e.execDDL(t, ix.CreateSQL())
+	}
 }
 
 func (e *env) dropTables() {
@@ -312,8 +383,7 @@ func (e *env) buildManager(t *testing.T, pool *pgxpool.Pool) forma.EntityManager
 		model.StorageTables{EntityMain: e.tables.entityMain, EAVData: e.tables.eavData, ChangeLog: e.tables.changeLog})
 	require.NoError(t, err)
 	require.Empty(t, pending, "every unique key of the empty schemas is built")
-	_, err = declaredindex.EnsureFromRegistry(e.ctx, e.pool, e.tables.entityMain, registry)
-	require.NoError(t, err)
+	e.buildDeclaredIndexes(t, registry)
 
 	config := &forma.Config{
 		Database: forma.DatabaseConfig{Engine: activeBackend().engine(), TableNames: forma.TableNames{SchemaRegistry: e.tables.schemaRegistry,

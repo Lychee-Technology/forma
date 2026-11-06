@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lychee-technology/forma/internal/testdb"
 )
 
 // TestDSQLClusterProbe runs #633's check against the Aurora DSQL cluster
@@ -28,9 +29,12 @@ import (
 // is asserted: two transactions that write one guard row, present or not,
 // never both commit.
 func TestDSQLClusterProbe(t *testing.T) {
-	dsn := os.Getenv("FORMA_DSQL_DSN")
-	if dsn == "" {
+	dsn, kind := testdb.ResolveDSQL(t)
+	if kind == testdb.DSQLEmulated {
 		t.Skip("FORMA_DSQL_DSN names no Aurora DSQL cluster")
+	}
+	if kind == testdb.DSQLMiniStack {
+		t.Log("MiniStack's proxy over PostgreSQL, not a cluster: what follows is no evidence for #633, and a conflict here is PostgreSQL's")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

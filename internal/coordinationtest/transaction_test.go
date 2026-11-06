@@ -90,8 +90,7 @@ func TestTransactionsRollBack(t *testing.T) {
 	})
 
 	t.Run("storage failure rolls back every previous operation (scenario 1, storage variant)", func(t *testing.T) {
-		e := newEnv(t)
-		e.failInserts(t, HistorySchema)
+		e := newEnvRefusingInserts(t, HistorySchema)
 		err := e.scenarioOne(t, func(uow UnitOfWork, a *Instance) error {
 			return uow.History().Insert(e.ctx, []HistoryEvent{{InstanceID: a.ID, Type: "transition"}})
 		})
@@ -183,18 +182,7 @@ func advanced(inst *Instance, state string) *Instance {
 	return &next
 }
 
-const injectedFailure = "injected storage failure"
-
-// failInserts makes every insert of a schema's entity_main row fail, a
-// storage failure injected below Forma with a trigger on the test's table.
-func (e *env) failInserts(t *testing.T, schema string) {
-	t.Helper()
-	fn := e.app + "_fail_inserts"
-	_, err := e.pool.Exec(e.ctx, fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN RAISE EXCEPTION '%s'; END $$`, fn, injectedFailure))
-	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = e.pool.Exec(e.ctx, "DROP FUNCTION IF EXISTS "+fn+" CASCADE") })
-	_, err = e.pool.Exec(e.ctx, fmt.Sprintf(`CREATE TRIGGER %s BEFORE INSERT ON %s FOR EACH ROW
-		WHEN (NEW.ltbase_schema_id = %d) EXECUTE FUNCTION %s()`, fn, e.tables.entityMain, schemaIDs[schema], fn))
-	require.NoError(t, err)
-}
+// injectedFailure names the CHECK constraint newEnvRefusingInserts adds, a
+// storage failure injected below Forma. PostgreSQL reports the name in its
+// error, and it is the only part of the failure Forma did not write.
+const injectedFailure = "injected_storage_failure"

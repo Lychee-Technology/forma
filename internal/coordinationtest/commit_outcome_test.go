@@ -85,6 +85,9 @@ func (e *env) proxiedPool(t *testing.T) (*pgxpool.Pool, *faultproxy.Proxy) {
 	cfg.ConnConfig.Host, cfg.ConnConfig.Port = host, uint16(portNum)
 	cfg.ConnConfig.TLSConfig, cfg.ConnConfig.Fallbacks = nil, nil
 	cfg.ConnConfig.RuntimeParams["application_name"] = e.app
+	if testdb.MiniStackTarget() {
+		cfg.AfterConnect = testdb.NameSession(e.app) // its proxy drops the startup parameter
+	}
 	pool, err := pgxpool.NewWithConfig(e.ctx, cfg)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)

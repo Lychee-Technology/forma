@@ -1,0 +1,11 @@
+# Skips the MiniStack lane expects (#739): scripts/test_dsql_ministack.sh fails
+# on a skip no line here covers, and on a line that covers none, so a skip is
+# always a decision with a reason.
+#
+# Format: an extended regular expression matching the whole test name (spaces
+# appear as underscores, as go test prints them), a tab, and the reason.
+.*/mechanism:_.*	Asserts how the PostgreSQL engine behaves (a wait, then ErrPreconditionFailed; no ErrRetryableConflict). The aurora-dsql engine differs by design (docs/aurora-dsql.md), so the assertion does not apply to the engine under test, on any target; it also skips on dsql-emulated and runs on the PostgreSQL lane.
+TestMechanisms/.*	The same: the PostgreSQL engine's blocking, observed in pg_locks.
+TestClaimPlanUsesTheDeclaredIndexes	The same: PostgreSQL's plan for the PostgreSQL engine's claim, which holds row locks the aurora-dsql engine does not take. DSQL's planner is not PostgreSQL's, and MiniStack's backend would prove nothing about it.
+TestClaimExclusivity/concurrent_claim_tests_run_against_real_PostgreSQL	The same: the PostgreSQL engine's SKIP LOCKED path.
+TestLeaseSchemaLockOneWinnerAmongRacingAcquirers/read_committed	DSQL has one isolation level, and the lane pins its backend to it. The READ COMMITTED race runs on the PostgreSQL lane.

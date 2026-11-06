@@ -145,7 +145,10 @@ func TestMarkInChunksStopsRetryingWhenCanceled(t *testing.T) {
 // writer's commit fails the mark with 40001; the retry then marks the rows
 // at their listed version, and leaves dirty the row the writer advanced.
 func TestMarkInChunksRetriesARealConflict(t *testing.T) {
-	db := pgTestDB(t, "repeatable read")
+	db, noLockWait, _ := leaseTarget(t, "repeatable read")
+	if noLockWait {
+		t.Skip("the writer holds the mark at a row lock wait, which DSQL does not have")
+	}
 	table := fmt.Sprintf("cdc_mark_test_%d", time.Now().UnixNano())
 	_, err := db.Exec(fmt.Sprintf(`CREATE TABLE %s (schema_id SMALLINT, row_id UUID, changed_at BIGINT, flushed_at BIGINT,
 		PRIMARY KEY (schema_id, row_id))`, table))
@@ -180,7 +183,7 @@ func TestMarkInChunksRetriesARealConflict(t *testing.T) {
 	require.ElementsMatch(t, ids[1:], marked, "the row the writer advanced must stay dirty")
 }
 
-// waitForLockWaiter returns once one of db's sessions, which pgTestDB names,
+// waitForLockWaiter returns once one of db's sessions, which leaseTarget names,
 // waits on a lock, or after five seconds.
 func waitForLockWaiter(t *testing.T, db *sql.DB) {
 	deadline := time.Now().Add(5 * time.Second)
