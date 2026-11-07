@@ -214,7 +214,10 @@ func (e *Env) dumpManifests(ctx context.Context, dir string) error {
 		return nil
 	}
 	for _, ref := range DefaultSchemaFixtures() {
-		key := fmt.Sprintf("%s/manifest/%d.json", e.S3Prefix, ref.ID)
+		key, err := e.manifestKey(ref.ID)
+		if err != nil {
+			return fmt.Errorf("dump manifest: %w", err)
+		}
 		out, err := e.Cluster.S3.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(e.Cluster.Bucket),
 			Key:    aws.String(key),

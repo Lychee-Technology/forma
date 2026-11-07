@@ -96,8 +96,30 @@ func loadKeptDeltaEntries(ctx context.Context, store manifest.Store, manifestPat
 
 // manifestAccess returns the store and resolver for the Env's manifests.
 func (e *Env) manifestAccess() (manifest.Store, manifest.PathResolver) {
-	return &manifest.S3Store{Client: e.Cluster.S3, Bucket: e.Cluster.Bucket},
-		manifest.PathResolver{Prefix: e.CDC.ManifestPrefix, PathTemplate: e.CDC.ManifestTemplate}
+	return &manifest.S3Store{Client: e.Cluster.S3, Bucket: e.Cluster.Bucket}, e.manifestResolver()
+}
+
+// manifestResolver is the PathResolver for the Env's manifests, built from
+// the same CDC config the flush, init and read paths are given.
+func (e *Env) manifestResolver() manifest.PathResolver {
+	return manifest.PathResolver{Prefix: e.CDC.ManifestPrefix, PathTemplate: e.CDC.ManifestTemplate}
+}
+
+// manifestKey resolves one schema's manifest object key through the same
+// PathResolver the flush, init and read paths use, so a harness site that
+// needs the raw key (listing it, faulting it, dumping it) follows any
+// ManifestPrefix/ManifestTemplate override instead of re-spelling the
+// default layout. It refuses an Env built WithoutManifest: the resolver
+// would fall back to an unprefixed default key outside the Env's S3 scope.
+func (e *Env) manifestKey(schemaID int16) (string, error) {
+	if e.CDC.ManifestTemplate == "" {
+		return "", fmt.Errorf("resolve manifest key for schema %d: Env built WithoutManifest", schemaID)
+	}
+	key, err := e.manifestResolver().Resolve(schemaID)
+	if err != nil {
+		return "", fmt.Errorf("resolve manifest key for schema %d: %w", schemaID, err)
+	}
+	return key, nil
 }
 
 // copyS3Object copies one object within the Env's bucket, leaving the source

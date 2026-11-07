@@ -5,7 +5,6 @@ package production
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/lychee-technology/forma/internal/cdc"
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // s3ObjectStat is one object's mutation-detection fingerprint. An in-place
@@ -54,15 +52,12 @@ func snapshotS3Inventory(t *testing.T, ctx context.Context, env *Env, prefix str
 // bug, not a skip.
 func snapshotManifest(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) ([]byte, string) {
 	t.Helper()
-	store := &manifest.S3Store{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
-	resolver := manifest.PathResolver{Prefix: env.CDC.ManifestPrefix, PathTemplate: env.CDC.ManifestTemplate}
-	path, err := resolver.Resolve(schema.ID)
-	if err != nil {
-		t.Fatalf("resolve manifest path for schema %d: %v", schema.ID, err)
-	}
+	store, _ := env.manifestAccess()
+	path := buildSchemaManifestKey(t, env, schema)
 	raw, etag, err := store.Load(ctx, path)
 	if err != nil {
-		t.Fatalf("load manifest %s (seed must have created it): %v", path, err)
+		t.Fatalf("load manifest %s (caller guarantees it exists by now; a missing one "+
+			"was never created or was deleted since): %v", path, err)
 	}
 	return raw, etag
 }
@@ -85,10 +80,17 @@ type schemaS3State struct {
 func captureSchemaS3State(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) schemaS3State {
 	t.Helper()
 	objects := snapshotS3Inventory(t, ctx, env, buildSchemaKeyPrefix(env, schema))
-	manifestKey := fmt.Sprintf("%s/manifest/%d.json", env.S3Prefix, schema.ID)
-	for k, stat := range snapshotS3Inventory(t, ctx, env, manifestKey) {
-		objects[k] = stat
+	manifestKey := buildSchemaManifestKey(t, env, schema)
+	manifestObjects := snapshotS3Inventory(t, ctx, env, manifestKey)
+	stat, ok := manifestObjects[manifestKey]
+	if !ok || len(manifestObjects) != 1 {
+		// An empty listing is not an error to ListObjectsV2, so a key that
+		// drifted from the stored manifest would silently drop the stat leg —
+		// the only one that sees a byte-identical re-put (via LastModified).
+		t.Fatalf("manifest listing for %s must hold exactly that one object, got %v",
+			manifestKey, manifestObjects)
 	}
+	objects[manifestKey] = stat
 	raw, etag := snapshotManifest(t, ctx, env, schema)
 	return schemaS3State{objects: objects, manifestRaw: raw, manifestETag: etag}
 }

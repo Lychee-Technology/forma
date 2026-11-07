@@ -118,7 +118,7 @@ func testMultiSchemaManifestSaveFault(ctx context.Context, t *testing.T) {
 	env := NewEnv(t, SharedCluster(t))
 	simple, second := seedTwoSchemas(ctx, t, env)
 
-	manifestKey := fmt.Sprintf("%s/manifest/%d.json", env.S3Prefix, second.ID)
+	manifestKey := buildSchemaManifestKey(t, env, second)
 	faulty := &FaultInjectingS3{Inner: env.Cluster.S3,
 		Fault: S3Fault{Op: S3OpPut, KeyContains: manifestKey}}
 	report, err := env.RunFlushWith(ctx, FlushOverrides{S3: faulty})
@@ -241,7 +241,7 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 
 	assertInitTouchesOnly := func(report *InitReport, target, sibling SchemaRef) {
 		t.Helper()
-		siblingManifestKey := fmt.Sprintf("%s/manifest/%d.json", env.S3Prefix, sibling.ID)
+		siblingManifestKey := buildSchemaManifestKey(t, env, sibling)
 		for _, k := range report.NewObjects {
 			if strings.HasPrefix(k, buildSchemaKeyPrefix(env, sibling)) || k == siblingManifestKey {
 				t.Errorf("init of schema %d touched sibling schema %d: %s", target.ID, sibling.ID, k)
