@@ -79,7 +79,7 @@ func normalizeSortOrder(raw forma.SortOrder) (forma.SortOrder, error) {
 // buildAttributeOrders resolves the request's sort keys against the schema
 // cache into typed AttributeOrders, tagging each with its storage location
 // (main column vs EAV) and its own direction. It errors on an unknown sort
-// attribute.
+// attribute, and on an attribute bound to a column entity_main does not have.
 func buildAttributeOrders(req *forma.QueryRequest, schemaCache forma.SchemaAttributeCache) ([]model.AttributeOrder, error) {
 	keys, err := resolveSortKeys(req)
 	if err != nil {
@@ -104,8 +104,17 @@ func buildAttributeOrders(req *forma.QueryRequest, schemaCache forma.SchemaAttri
 			AttrName:  key.attr,
 		}
 		if meta.ColumnBinding != nil {
+			column := string(meta.ColumnBinding.ColumnName)
+			if !model.IsMainTableColumn(column) {
+				// Metadata drift, not caller fault: registration refuses such a
+				// binding (#557), so a cache holding one is an operator-visible
+				// read-path failure. Checked here so the sort emitter, like the
+				// write path's allowlist, never renders an unknown column (#472).
+				return nil, fmt.Errorf("cannot sort by attribute '%s' in schema '%s': it is bound to column '%s', which entity_main does not have",
+					key.attr, req.SchemaName, column)
+			}
 			order.StorageLocation = forma.AttributeStorageLocationMain
-			order.ColumnName = string(meta.ColumnBinding.ColumnName)
+			order.ColumnName = column
 		} else {
 			order.StorageLocation = forma.AttributeStorageLocationEAV
 		}

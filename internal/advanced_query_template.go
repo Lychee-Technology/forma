@@ -4,6 +4,9 @@ import "text/template"
 
 var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Funcs(template.FuncMap{
 	"add": func(a, b int) int { return a + b },
+	// ident quotes a metadata-sourced identifier through the same sanitizer
+	// the filter emitter applies to a main column (#472).
+	"ident": sanitizeIdentifier,
 }).Parse(`
 	        WITH anchor AS (
 	            {{- /* Every condition injection is parenthesized (#269): the
@@ -53,7 +56,7 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
                 ,
                 {{- if $k.IsMainColumn }}
                 (
-                    SELECT m.{{ $k.MainColumnName }}
+                    SELECT m.{{ ident $k.MainColumnName }}
                     FROM {{$.MainTable}} m
                     WHERE m.ltbase_schema_id = {{$.SchemaID}}
                         AND m.ltbase_row_id = a.row_id
