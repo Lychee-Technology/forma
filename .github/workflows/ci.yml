@@ -156,6 +156,16 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      # The ledger upgrade suite (#738) audits parquet on MiniStack's S3
+      # through DuckDB's httpfs. See the test job's cache-step note (#487).
+      - name: Cache DuckDB extensions
+        uses: actions/cache@v6
+        with:
+          path: ~/.duckdb/extensions
+          key: duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Run the MiniStack strict DSQL lane
         run: make test-dsql-ministack
 

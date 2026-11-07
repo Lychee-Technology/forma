@@ -75,3 +75,23 @@ func TestMiniStackLanePinsStrictMode(t *testing.T) {
 		t.Errorf("%s must run the strict-proxy gate before any suite", ministackScript)
 	}
 }
+
+// TestMiniStackLaneRunsTheLedgerUpgradeSuite pins the generation-ledger
+// upgrade suite in the lane (#738): run by name under a floor of passes, with
+// MiniStack's S3 named for its parquet tier, which the suite fails without on
+// this target. A suite dropped from the lane, or one whose -run pattern stops
+// matching, would otherwise pass unnoticed.
+func TestMiniStackLaneRunsTheLedgerUpgradeSuite(t *testing.T) {
+	script, err := os.ReadFile(ministackScript)
+	if err != nil {
+		t.Fatalf("read %s: %v", ministackScript, err)
+	}
+	text := string(script)
+	suite := regexp.MustCompile(`(?m)^\s*run_suite ledger ([0-9]+) .*\./cmd/tools -run '\^TestLedgerUpgrade'$`).FindStringSubmatch(text)
+	if suite == nil || suite[1] == "0" {
+		t.Errorf("%s does not run the ledger upgrade suite under a nonzero floor", ministackScript)
+	}
+	if !strings.Contains(text, "export FORMA_DSQL_S3_ENDPOINT") {
+		t.Errorf("%s does not name MiniStack's S3 for the ledger suite's parquet tier", ministackScript)
+	}
+}

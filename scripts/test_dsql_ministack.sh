@@ -3,7 +3,9 @@
 #
 #   run   start a pinned MiniStack, create a cluster with a SQL data plane,
 #         prove the strict proxy answers, run the aurora-dsql suites through
-#         it, check their skips against the ledger, and tear everything down
+#         it (the generation-ledger upgrade suite with its parquet tier on
+#         MiniStack's S3), check their skips against the skip ledger, and
+#         tear everything down
 #   down  remove what an interrupted run left behind
 #
 # Every failure is a non-zero exit, including a failed cleanup. Nothing here
@@ -272,6 +274,10 @@ run_suites() {
 	unset DATABASE_URL DB_HOST DB_PORT DB_USER DB_PASSWORD DB_NAME DB_SSL_MODE
 	export FORMA_DSQL_TARGET=ministack FORMA_DSQL_DSN="$dsn"
 	export FORMA_COORDINATION_DSN="$dsn" FORMA_COORDINATION_BACKEND=dsql
+	# The ledger suite's parquet tier lives on MiniStack's own S3, behind the
+	# same API the cluster was created through.
+	FORMA_DSQL_S3_ENDPOINT=$(gateway_url) || die "MiniStack's API has no published address for the ledger suite's S3"
+	export FORMA_DSQL_S3_ENDPOINT
 
 	: >"$artifacts/summary.txt"
 	run_suite gate 1 -timeout=3m ./internal/testdb -run '^TestMiniStackStrictProxy$'
@@ -280,6 +286,7 @@ run_suites() {
 	fi
 	run_suite entity 8 -timeout=5m ./internal -run '^TestDSQL(Engine|ClusterProbe)'
 	run_suite cdc 8 -timeout=5m ./internal/cdc -run '^(TestLeaseSchemaLock|TestMarkInChunksRetriesARealConflict)'
+	run_suite ledger 6 -timeout=10m ./cmd/tools -run '^TestLedgerUpgrade'
 	run_suite coordination 90 -timeout=20m ./internal/coordinationtest/
 	check_skips
 
