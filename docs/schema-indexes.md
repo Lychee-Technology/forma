@@ -161,9 +161,10 @@ PostgreSQL can seek a declared index on these operators:
 - `is_null`.
 
 These hold for every attribute a declaration admits: text, uuid, the integer
-and `double` columns, and dates and date-times under `unix_ms` or `iso8601`. A
-test runs each operator against a one-attribute index of each kind and checks
-the plan.
+and `double` columns, and dates and date-times under `unix_ms` or `iso8601`. The
+exception is an ordered comparison on a text attribute, which a declared index
+does not seek (see [Text ranges](#text-ranges)). A test runs each operator against
+a one-attribute index of each kind and checks the plan.
 
 A `bool` under `bool_smallint` takes `equals`, `not_equals`, `in`, `not_in` and
 `is_null`. The first four all render as `<col> BETWEEN $lo AND $hi`, so each
@@ -187,6 +188,49 @@ multi-attribute shapes:
 
 A btree key does not serve `contains` and `starts_with`, which render as
 `LIKE` patterns.
+
+### Text ranges
+
+`gt`, `gte`, `lt` and `lte` on a text attribute compare in byte order on every
+route (#728, see [Condition DSL](condition-dsl.md)), which PostgreSQL renders as
+`<col> COLLATE "C" <op> $n`. `init-db` builds a declared index under the column's
+collation, so that compare cannot seek it. Equality can, and so can the
+`iso8601` date-times stored in text columns, which keep the column's collation.
+A database whose default collation is `C` does not help: the planner matches
+collations by OID, and the index holds the default collation's. The range reads
+the rows some other way and applies the compare as a filter.
+
+The same goes for `init-db`'s `eav_data` index on `value_text`, for text and uuid
+attributes stored there.
+
+A selective range pays for this. One run on the production harness, with 200,000
+`e2e_wide` rows and a range selecting 10 of them:
+
+| Attribute | Before #728 | With `COLLATE "C"` |
+| --- | --- | --- |
+| Column-bound, declared index | Index Only Scan, 86 buffers, about 0.3 ms | Seq Scan, 2,144 buffers, about 14 ms |
+| `eav_data`, `init-db`'s text index | Index Only Scan, 126 buffers, about 0.2 ms | Seq Scan, 3,086 buffers, about 22 ms |
+
+A column-bound range selecting nearly every row scanned the table either way and
+took about the same time.
+
+If a query needs the seek, build the key under `C` yourself, on the attribute's
+bound column:
+
+```sql
+CREATE INDEX CONCURRENTLY entity_main_title_bytes
+    ON entity_main (ltbase_schema_id, text_01 COLLATE "C", ltbase_row_id);
+CREATE INDEX CONCURRENTLY eav_data_text_bytes
+    ON eav_data (schema_id, attr_id, value_text COLLATE "C", row_id)
+    WHERE value_text IS NOT NULL;
+```
+
+In the same run, the first of these brought the column-bound range back to 86
+buffers. `TestTextRangeSeeksOnlyAByteOrderIndex` checks that both keys seek all
+four ranges. Keep the plain index alongside: `equals` and `in` compare under the
+column's collation and cannot seek a `C` key. Don't give the extra index a name
+starting with `<table>_cx_`, the prefix `init-db` reserves for declared indexes.
+Declaring a byte-order key in `x-forma-indexes` is not supported yet.
 
 ## Not supported
 

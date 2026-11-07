@@ -121,7 +121,8 @@ func normalizeLeaf(kv *forma.KvCondition, cache forma.SchemaAttributeCache, targ
 // the pushed clause over the hot leg's PostgreSQL rows, so a text or uuid range
 // orders by bytes as the logical clause does and never drops a row that
 // clause keeps. A text compare the postgres extension did forward to
-// PostgreSQL carried COLLATE "C" in #631's probe, which keeps that order.
+// PostgreSQL carried COLLATE "C" in #631's probe, which keeps that order; any
+// future pushdown must too (#728, see pgByteOrderCollation).
 func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (bool, string) {
 	if meta.ColumnBinding == nil {
 		return false, "no column binding"
@@ -215,6 +216,7 @@ func normalizePgEavPayload(kv *forma.KvCondition, meta forma.AttributeMetadata, 
 		SQLOp:       sqlOp,
 		Value:       parsedValue,
 		Truthy:      meta.ValueType == forma.ValueTypeBool,
+		ByteOrder:   valueColumn == "value_text" && isRangeComparison(sqlOp),
 	}
 }
 

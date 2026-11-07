@@ -73,12 +73,14 @@ Operand rules shared by every operator:
   [Error Handling](./error-handling.md)).
 - A comparison never matches a row where the attribute has no value. In
   particular `not_equals` and `not_in` do not match absent values.
-- `gt`, `gte`, `lt` and `lte` order text by bytes on the DuckDB route and
-  by the database's collation on the Postgres route, so mixed-case or
-  non-ASCII text can answer differently by route (#728). A `uuid` orders by
-  its bytes, except in `eav_data` on the Postgres route, where it is text
-  under the collation; there its canonical lowercase form sorts the same
-  under `en_US.utf8`.
+- `gt`, `gte`, `lt` and `lte` order text by its UTF-8 bytes, which is code point
+  order, on every route and tier, and whatever collation the PostgreSQL database
+  or column uses. `"B"` sorts before `"a"`, and `"é"` after `"z"`. This is not
+  linguistic order. It does not extend to `equals`, `starts_with`, `contains` or
+  to sort order (#728).
+- A `uuid` range orders by the UUID's bytes on every route and tier: a native
+  comparison on a `uuid` column of `entity_main`, and its canonical lowercase
+  text in byte order everywhere else.
 
 ## `in` and `not_in`
 
@@ -242,6 +244,14 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
   evaluates (the hot leg pushes nothing into PostgreSQL, #631); `in` /
   `not_in` are evaluated by DuckDB at the S3 semijoin and on the merged
   result.
+- A text range on PostgreSQL renders `<col> COLLATE "C" <op> $n`, on a text
+  column of `entity_main` and on `eav_data.value_text`, so a `uuid` in `eav_data`
+  takes it too. This holds for a query and for a write's condition. No btree
+  index built under another collation can seek that compare, including an index
+  with the default collation in a database whose default is `C`, because the
+  planner matches collations by OID. See
+  [Declared Indexes](./schema-indexes.md#text-ranges). The DuckDB renders name no
+  collation, since DuckDB compares `VARCHAR` by bytes.
 - An ordered comparison on a `uuid` attribute casts the column to `VARCHAR`
   on DuckDB. DuckDB compares `UUID` with `VARCHAR` only for equality, and the
   attribute is `UUID` in a bound column's parquet but `VARCHAR` in the hot
@@ -252,8 +262,8 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
 | Backend | Status |
 | --- | --- |
 | PostgreSQL | Verified: a real-PostgreSQL truth table over every storage form, with `NUMERIC` and `DOUBLE PRECISION` EAV values, and a `$now` test seeded from `SELECT now()`. Numeric and `starts_with`/`contains` operands are checked against exact arithmetic and Go string matching rather than against another route (`TestConditionOperandConformance_*`), over `smallint`, `integer`, `bigint` and `double` columns and both EAV value types. |
-| DuckDB (federated) | Verified: `in`, `not_in`, `is_null` and `is_not_null` return the same rows on the DuckDB route and the Postgres route across cold, warm and hot tiers (`TestConditionDSLOperatorParityAcrossTiers`). The DuckDB renders of numeric and `starts_with`/`contains` leaves run against an in-memory DuckDB with exact expected rows (`TestNumericOperand_DuckDBConformance`, `TestLikeOperand_DuckDBConformance`); the hot-tier pushdown runs there over native tables. `TestConditionOperandSemanticsAcrossRoutes` runs the same operands through the production harness on the Postgres route and on the DuckDB route over hot rows (the attached PostgreSQL catalog) and warm parquet, and `TestTextUUIDOperatorsAcrossRoutes` does the same for every comparison operator on column-bound and `eav_data` text and uuid attributes. `TestPgMainTextUUIDOrderMatchesTheLogicalClause` checks in DuckDB that the hot-tier pushdown of a text or uuid range selects exactly what the logical clause selects. `$now` is refused. |
-| Aurora DSQL | DSQL: specified, not verified (#633). The PostgreSQL rendering uses array binds with `= ANY` / `<> ALL`, `now()`, `extract(epoch ...)`, `floor`, `mod`, `to_timestamp` and `to_char`; none of it has run against a DSQL cluster. |
+| DuckDB (federated) | Verified: `in`, `not_in`, `is_null` and `is_not_null` return the same rows on the DuckDB route and the Postgres route across cold, warm and hot tiers (`TestConditionDSLOperatorParityAcrossTiers`). The DuckDB renders of numeric and `starts_with`/`contains` leaves run against an in-memory DuckDB with exact expected rows (`TestNumericOperand_DuckDBConformance`, `TestLikeOperand_DuckDBConformance`); the hot-tier pushdown runs there over native tables. `TestConditionOperandSemanticsAcrossRoutes` runs the same operands through the production harness on the Postgres route and on the DuckDB route over hot rows (the attached PostgreSQL catalog) and warm parquet, and `TestTextUUIDOperatorsAcrossRoutes` does the same for every comparison operator on column-bound and `eav_data` text and uuid attributes. `TestPgMainTextUUIDOrderMatchesTheLogicalClause` checks in DuckDB that the hot-tier pushdown of a text or uuid range selects exactly what the logical clause selects. `TestTextRangeByteOrderAcrossRoutes` runs mixed-case and non-ASCII text ranges, and uuid ranges, on both routes over hot, warm and cold rows under `en_US.utf8`, and `TestRangeOrderIgnoresTheColumnCollation` runs them on columns under an ICU collation that sorts letters before digits. `$now` is refused. |
+| Aurora DSQL | DSQL: specified, not verified (#633). The PostgreSQL rendering uses array binds with `= ANY` / `<> ALL`, `now()`, `extract(epoch ...)`, `floor`, `mod`, `to_timestamp`, `to_char` and `COLLATE "C"`; none of it has run against a DSQL cluster. |
 
 ## Compatibility
 
@@ -281,6 +291,14 @@ existing query returns:
 - `NaN` and `Inf` operands are refused; before, `lt:NaN` matched every value
   stored in `eav_data` or a `double` column, and failed on a whole-number
   column after the query started.
+
+Before #728 a text range on the Postgres route compared under the database's
+collation, so under `en_US.utf8` `gt:B` missed `"a"` and `lt:a` missed `"B"`,
+while the DuckDB route returned byte order. The Postgres route now returns byte
+order too, so such a query, or a write condition with such a range, answers
+differently on a database whose collation is not `C`. The cost is the index seek
+described under [Declared Indexes](./schema-indexes.md#text-ranges). There is no
+setting that restores the old order.
 
 A text operand with a NUL character or invalid UTF-8 used to fail the query
 after it started (PostgreSQL `22021`); it is now refused before. The one
