@@ -189,3 +189,28 @@ func TestBuildAttributeOrdersUnknownSortAttribute(t *testing.T) {
 		t.Fatalf("error %v does not wrap forma.ErrInvalidInput", err)
 	}
 }
+
+// TestBuildAttributeOrdersRefusesUnknownBoundColumn (#472): a sort key bound
+// to a column entity_main does not have is refused before any SQL is
+// rendered, like the write path's column allowlist. Registration refuses such
+// a binding (#557), so reaching here means metadata drift: an operator-visible
+// error, not caller fault, so it must not carry forma.ErrInvalidInput.
+func TestBuildAttributeOrdersRefusesUnknownBoundColumn(t *testing.T) {
+	cache := buildSortTestCache()
+	cache["drifted"] = forma.AttributeMetadata{
+		AttributeName: "drifted", AttributeID: 4, ValueType: forma.ValueTypeText,
+		ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("Text_01")},
+	}
+	req := &forma.QueryRequest{SchemaName: "e2e_wide", Sort: []forma.OrderBy{{Attribute: "drifted"}}}
+	_, err := buildAttributeOrders(req, cache)
+	if err == nil {
+		t.Fatalf("expected an unknown-column error, got nil")
+	}
+	want := "cannot sort by attribute 'drifted' in schema 'e2e_wide': it is bound to column 'Text_01', which entity_main does not have"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want it to contain %q", err.Error(), want)
+	}
+	if errors.Is(err, forma.ErrInvalidInput) {
+		t.Fatalf("error %v wraps forma.ErrInvalidInput; metadata drift is not caller fault", err)
+	}
+}

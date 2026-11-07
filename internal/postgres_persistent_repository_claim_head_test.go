@@ -117,7 +117,7 @@ func headQuery(cond forma.Condition, head *model.GroupHead) *model.PersistentRec
 }
 
 // Query's SQL is what it was before group heads: the files were rendered by
-// the commit before them.
+// the commit before them, then only the sort key's column quoted (#472).
 func TestQuerySQLIsUnchangedByTheHeadRenderer(t *testing.T) {
 	mainAnchor := &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: []forma.Condition{
 		&forma.KvCondition{Attr: "age", Value: "gt:3"}, &forma.KvCondition{Attr: "name", Value: "equals:x"}}}

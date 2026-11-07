@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/stretchr/testify/require"
@@ -150,4 +151,44 @@ func TestOptimizedQueryTemplate_WithoutChangeLogHasNoUnionBranch(t *testing.T) {
 	require.NotContains(t, anchor, "FROM change_log cl")
 	require.NotContains(t, anchor, "-- Include real-time buffer rows from change_log")
 	require.NotContains(t, anchor, "UNION")
+}
+
+// TestOptimizedQueryTemplate_SortKeyColumnIsSanitized (#472): a main-column
+// sort key's name is metadata, and it reaches SQL text only through the
+// identifier sanitizer the filter emitter also uses, so a name carrying SQL
+// renders as one quoted identifier instead of as statement text.
+func TestOptimizedQueryTemplate_SortKeyColumnIsSanitized(t *testing.T) {
+	cases := []struct {
+		name   string
+		column string
+		want   string
+	}{
+		{"allowlisted_column", "text_01", `SELECT m."text_01"`},
+		{"hostile_column", `text_01 FROM pg_user; --`, `SELECT m."text_01 FROM pg_user; --"`},
+		{"embedded_quote", `text_01"x`, `SELECT m."text_01""x"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sql, err := renderTemplate(optimizedQuerySQLTemplate, map[string]any{
+				"EAVTable":             "eav_data",
+				"MainTable":            "entity_main",
+				"ChangeLogTable":       "",
+				"MainProjection":       "m.ltbase_schema_id, m.ltbase_row_id",
+				"SchemaID":             "$1",
+				"UseMainTableAsAnchor": true,
+				"Anchor":               map[string]any{"Condition": "TRUE"},
+				"SortKeys": []model.AttributeOrder{{
+					StorageLocation: forma.AttributeStorageLocationMain,
+					ColumnName:      tc.column,
+				}},
+				"Limit":    "$2",
+				"Offset":   "$3",
+				"PageSize": "$2",
+			})
+			require.NoError(t, err)
+			require.Contains(t, sql, tc.want)
+			require.NotContains(t, sql, "SELECT m."+tc.column+"\n",
+				"sort key column rendered without the sanitizer:\n%s", sql)
+		})
+	}
 }
