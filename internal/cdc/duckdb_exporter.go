@@ -129,7 +129,7 @@ func buildDeltaExportPlan(transport exportTransport, s3TmpPath string, cfg CDCCo
 		deletedAtSelect: "COALESCE(cl.deleted_at, 0) AS deleted_at",
 	}, transport, s3TmpPath, cfg, schemaID, snapshotTS, rowIDs, attrCache)
 	if err != nil {
-		return exportSQLPlan{}, fmt.Errorf("failed to build delta export SQL plan for schema %d: %w", schemaID, err)
+		return exportSQLPlan{}, fmt.Errorf("build delta export SQL plan: %w", err)
 	}
 	return plan, nil
 }

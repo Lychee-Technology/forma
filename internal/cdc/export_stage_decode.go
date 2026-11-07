@@ -92,7 +92,7 @@ func (d *stagedDouble) ScanFloat64(v pgtype.Float8) error {
 func (d *stagedDouble) ScanNumeric(n pgtype.Numeric) error {
 	f, err := numericToDouble(n)
 	if err != nil {
-		return err
+		return fmt.Errorf("scan numeric: %w", err)
 	}
 	d.value, d.valid = f, n.Valid
 	return nil

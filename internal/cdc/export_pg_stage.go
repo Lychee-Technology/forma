@@ -42,12 +42,16 @@ func stagePostgresRows(ctx context.Context, pg *sql.DB, duckConn *sql.Conn, stag
 	err = pgConn.Raw(func(driverConn any) error {
 		stdConn, ok := driverConn.(*stdlib.Conn)
 		if !ok {
-			return fmt.Errorf("stage export rows: postgres connection %T is not a pgx connection", driverConn)
+			return fmt.Errorf("postgres connection %T is not a pgx connection", driverConn)
 		}
-		staged, err = stageInSnapshot(ctx, stdConn.Conn(), duckConn, stages, rowIDs)
-		return err
+		n, snapshotErr := stageInSnapshot(ctx, stdConn.Conn(), duckConn, stages, rowIDs)
+		staged = n
+		return snapshotErr
 	})
-	return staged, err
+	if err != nil {
+		return staged, fmt.Errorf("stage export rows: %w", err)
+	}
+	return staged, nil
 }
 
 func stageInSnapshot(ctx context.Context, pgConn *pgx.Conn, duckConn *sql.Conn, stages []exportStage, rowIDs []uuid.UUID) (int64, error) {
@@ -63,7 +67,7 @@ func stageInSnapshot(ctx context.Context, pgConn *pgx.Conn, duckConn *sql.Conn, 
 	for _, stage := range stages {
 		n, err := stageOne(ctx, tx, duckConn, stage, rowIDs)
 		if err != nil {
-			return staged, err
+			return staged, fmt.Errorf("stage %s rows: %w", stage.alias, err)
 		}
 		staged += n
 	}
@@ -79,7 +83,7 @@ func stageOne(ctx context.Context, tx pgx.Tx, duckConn *sql.Conn, stage exportSt
 	err := duckConn.Raw(func(driverConn any) error {
 		app, err := duckdbinit.NewAppender(driverConn, "temp", "main", stage.table)
 		if err != nil {
-			return fmt.Errorf("stage %s rows: %w", stage.alias, err)
+			return err // names the temp table; stageOne wraps every closure error
 		}
 		var appendErr error
 		appended, appendErr = appendStageRows(ctx, tx, stage, rowIDs, app.AppendRow)
@@ -88,14 +92,17 @@ func stageOne(ctx context.Context, tx pgx.Tx, duckConn *sql.Conn, stage exportSt
 			duckdbinit.ObserveRaw(driverConn, closeErr)
 		}
 		if appendErr != nil {
-			return fmt.Errorf("stage %s rows: %w", stage.alias, appendErr)
+			return appendErr
 		}
 		if closeErr != nil {
-			return fmt.Errorf("stage %s rows: flush duckdb appender: %w", stage.alias, closeErr)
+			return fmt.Errorf("flush duckdb appender: %w", closeErr)
 		}
 		return nil
 	})
-	return appended, err
+	if err != nil {
+		return appended, fmt.Errorf("copy postgres rows into duckdb: %w", err)
+	}
+	return appended, nil
 }
 
 func appendStageRows(ctx context.Context, tx pgx.Tx, stage exportStage, rowIDs []uuid.UUID, appendRow func(...driver.Value) error) (int64, error) {

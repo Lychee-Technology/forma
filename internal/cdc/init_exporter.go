@@ -42,7 +42,7 @@ func buildBaseExportPlan(transport exportTransport, s3TmpPath string, cfg CDCCon
 		deletedAtSelect:    "COALESCE(m.ltbase_deleted_at, 0) AS deleted_at",
 	}, transport, s3TmpPath, cfg, schemaID, 0, rowIDs, attrCache)
 	if err != nil {
-		return exportSQLPlan{}, fmt.Errorf("failed to build base export SQL plan for schema %d: %w", schemaID, err)
+		return exportSQLPlan{}, fmt.Errorf("build base export SQL plan: %w", err)
 	}
 
 	return plan, nil

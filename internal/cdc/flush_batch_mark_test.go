@@ -228,3 +228,27 @@ func TestExecuteBatch_BeforeExportHookErrorAbortsBeforeSideEffects(t *testing.T)
 	require.Zero(t, flushedAt, "hook failure must not mark rows flushed")
 	require.Zero(t, store.saved, "hook failure must not save the manifest")
 }
+
+// TestExecuteFlushInChunks_ErrorNamesTheFailedChunk pins the chunk loop's
+// wrap (#379): a failure inside one chunk names the row range it covered,
+// so an operator can tell how far a multi-chunk flush got.
+func TestExecuteFlushInChunks_ErrorNamesTheFailedChunk(t *testing.T) {
+	hookErr := errors.New("hook failed")
+	executor := &flushBatchExecutor{
+		cfg: CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc",
+			BeforeExportHook: func(context.Context, int16, []uuid.UUID, int64) error {
+				return hookErr
+			}},
+		schemaID:      7,
+		logger:        zap.NewNop(),
+		manifestStore: newInMemoryManifestStore(),
+	}
+	ids := make([]uuid.UUID, 5)
+	for i := range ids {
+		ids[i] = uuid.Must(uuid.NewV7())
+	}
+
+	err := executeFlushInChunks(context.Background(), executor, ids, 2)
+	require.ErrorIs(t, err, hookErr)
+	require.Contains(t, err.Error(), "flush rows 1-2 of 5: before-export hook (chunk)")
+}

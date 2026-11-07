@@ -161,7 +161,7 @@ func inventoryDeltaTier(ctx context.Context, runCtx *initRunContext, schemaID in
 	if runCtx.manifestStore != nil {
 		entries, err := loadManifestDeltaEntries(ctx, runCtx, schemaID)
 		if err != nil {
-			return deltaInventory{}, err
+			return deltaInventory{}, fmt.Errorf("inventory manifest-listed delta: %w", err)
 		}
 		inv.listed, inv.unnormalizable, inv.foreign = classifyDeltaEntries(runCtx, schemaID, entries)
 	}

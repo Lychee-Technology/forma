@@ -246,7 +246,7 @@ func executeFlushInChunks(
 
 		chunkTmpKey, chunkFinalKey := buildFlushS3Keys(executor.cfg, executor.schemaID)
 		if err := executor.executeBatch(ctx, sub, chunkTmpKey, chunkFinalKey, "chunk"); err != nil {
-			return err
+			return fmt.Errorf("flush rows %d-%d of %d: %w", start+1, end, len(batchIDs), err)
 		}
 	}
 	return nil
