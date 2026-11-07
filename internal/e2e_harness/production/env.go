@@ -347,6 +347,15 @@ func (e *Env) redactedPGDSN() string {
 
 const redactedPassword = "REDACTED"
 
+// ParquetURI renders a bucket-relative object key as the s3:// URI DuckDB
+// reads. The key is used verbatim, leading slash included: a relative manifest
+// path is the object key byte for byte, and under an empty data prefix that
+// key is /1/<uuid>.parquet (docs/federated-query/design.md §4.3.1, #516).
+// Trimming the slash would name a sibling key the writer never produced.
+func (e *Env) ParquetURI(key string) string {
+	return fmt.Sprintf("s3://%s/%s", e.Cluster.Bucket, key)
+}
+
 // teardown releases per-test resources: DuckDB, the connection pool, the
 // database (WITH FORCE, after pools are closed), and the S3 prefix. Under
 // KEEP_E2E_ENV=1 everything is kept and connection info is printed.

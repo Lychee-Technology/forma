@@ -5,7 +5,6 @@ package production
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -261,7 +260,7 @@ func countHits(got map[uuid.UUID]bool, events []*Event) int {
 
 func parquetRowCount(ctx context.Context, t *testing.T, env *Env, key string) int64 {
 	t.Helper()
-	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+	path := env.ParquetURI(key)
 	var count int64
 	if err := env.Duck.DB.QueryRowContext(ctx,
 		fmt.Sprintf("SELECT COUNT(*) FROM read_parquet('%s')", path)).Scan(&count); err != nil {

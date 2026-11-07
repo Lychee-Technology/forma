@@ -5,7 +5,6 @@ package production
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -165,7 +164,7 @@ func collectBoundDates(t *testing.T, label string, result *QueryResult, wantRows
 // epoch-ms values.
 func assertParquetBoundDates(ctx context.Context, t *testing.T, env *Env, key, tier string, baseline map[uuid.UUID]boundDates) {
 	t.Helper()
-	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+	path := env.ParquetURI(key)
 
 	var joinedType, touchedType string
 	if err := env.Duck.DB.QueryRowContext(ctx,

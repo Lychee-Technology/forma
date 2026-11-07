@@ -285,7 +285,7 @@ const allWideAttrsNullSQL = `"title" IS NULL AND "rank" IS NULL AND "count" IS N
 // (internal/cdc/duckdb_exporter.go).
 func assertTombstoneParquet(ctx context.Context, t *testing.T, env *Env, key string, del *Event) {
 	t.Helper()
-	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+	path := env.ParquetURI(key)
 	var n int
 	var attrsNull, ltbaseNull sql.NullBool
 	var changedAt, deletedAt sql.NullInt64
@@ -320,7 +320,7 @@ func assertTombstoneParquet(ctx context.Context, t *testing.T, env *Env, key str
 // columns are not inspected — use assertLiveParquetRow for e2e_wide rows.
 func assertSoleLiveVersion(ctx context.Context, t *testing.T, env *Env, key string, ev *Event) {
 	t.Helper()
-	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+	path := env.ParquetURI(key)
 	var n int
 	var deletedAt, changedAt sql.NullInt64
 	if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
@@ -412,7 +412,7 @@ func assertLiveParquetRow(ctx context.Context, t *testing.T, env *Env, key strin
 	}
 	wantCount := int32(countF)
 
-	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+	path := env.ParquetURI(key)
 	rows, err := env.Duck.DB.QueryContext(ctx, fmt.Sprintf(
 		`SELECT "title", "count", "changed_at", "deleted_at"
 		 FROM read_parquet('%s') WHERE CAST(row_id AS VARCHAR) = ?`, path), ev.RowID.String())

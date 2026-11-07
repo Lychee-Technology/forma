@@ -87,7 +87,7 @@ func requireTypeRefusal(ctx context.Context, t *testing.T, env *Env, schema Sche
 			t.Errorf("degraded=%v: a type refusal is not a read failure: %v", degraded, err)
 		}
 		if refusal.Attribute != "qty" || refusal.Declared != "bigint" || refusal.Column != column ||
-			refusal.Path != buildParquetS3Path(env, key) || refusal.FileType != "DOUBLE" {
+			refusal.Path != env.ParquetURI(key) || refusal.FileType != "DOUBLE" {
 			t.Errorf("degraded=%v: refusal = %+v, want qty declared bigint on %q in %s stored as DOUBLE", degraded, refusal, column, key)
 		}
 		if !strings.Contains(refusal.Evidence, evidence) {
@@ -155,7 +155,7 @@ func TestTypeGuardProbesAnUnstampedManifestEntry(t *testing.T) {
 	stale := buildSchemaKeyPrefix(env, simple) + "stale_qty_zzz.parquet"
 	writeParquetViaDuck(ctx, t, env, fmt.Sprintf(
 		"SELECT * REPLACE (gen_random_uuid() AS row_id, CAST(1000.5 AS DOUBLE) AS qty) FROM read_parquet('%s') LIMIT 1",
-		buildParquetS3Path(env, current)), stale)
+		env.ParquetURI(current)), stale)
 	if err := env.RegisterParquetInManifest(ctx, simple, stale, "delta"); err != nil {
 		t.Fatalf("register stale parquet: %v", err)
 	}
