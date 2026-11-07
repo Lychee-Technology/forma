@@ -690,9 +690,10 @@ set, and capped its total at `MaxRows`. Offset pagination is `Query`'s job.
 **Never-flushed columns (#255).** `union_by_name` can only union columns that
 exist in *some* file. An attribute added to the schema before its first flush is
 absent from the entire scan set, so the scan source (both `s3_source` and the
-semijoin) is wrapped as
-`(SELECT *, NULL::<type> AS <col> … FROM read_parquet(…)) AS cold_scan`,
-projecting each such column as a typed NULL — computed per query from the
+semijoin) unions the read by name with a typed relation that holds no rows,
+and re-pins each such column in the scan's `REPLACE` list:
+`(SELECT * REPLACE (<system items>, CAST(<col> AS <type>) AS <col>) FROM (SELECT * FROM read_parquet(…) UNION ALL BY NAME SELECT NULL::<type> AS <col> WHERE false)) AS cold_scan`.
+Each such column reads as a typed NULL. The set of columns is computed per query from the
 pre-read validator's footer-column union, and only when that union is complete
 (an incomplete union falls back to the unaugmented scan and today's loud
 classified failure). The missing-column set participates in the compiled-plan
@@ -701,9 +702,15 @@ moment the first flush lands it (the plan-cache poisoning hazard the issue
 mandates addressing). With no missing columns the rendered SQL is byte-identical
 to this document's §5 sketch. One residual race is accepted: for glob-hint path
 sets the validator's listing and the scan's listing are separate S3 LISTs, so a
-flush landing between them can collide the NULL alias with the newly-landed real
-column — a one-time loud classified failure that self-heals on the next query,
-since the missing set is recomputed per query.
+flush can land a column between them that the missing set still names. Until
+#409 the typed NULL was projected beside the star (`SELECT * REPLACE (…),
+NULL::<type> AS <col>`), so that column, like any column of a compiled
+skeleton served stale, was projected twice, and the answer depended on
+DuckDB binding the first of two identically-named columns. The union form
+projects every name once: a column the missing set names but some file
+carries reads its real values, re-pinned to the schema type as a #371 pin
+would be. The missing set is recomputed per query, so the next query drops
+the column from it.
 
 **Stale-typed attribute generations (#371).** The system-column guard above
 re-pins `changed_at`, `deleted_at` and `ltbase_created_at`, but attribute
@@ -787,14 +794,16 @@ verification pass in §7.3) is untouched because it never ran on `DESCRIBE`
 results to begin with. The column union is the one named exception to that
 guarantee: the invariant check inspects only the system columns, so a stamp
 that passes it while *under-reporting* the file's attribute columns yields a
-short union that still counts as complete, and the NULL alias then collides
-with a column the file really carries. Unlike the glob-listing race above,
-which self-heals on the next query, that failure **persists until the manifest
-entry is corrected** — but correcting it is enough: the rewritten stamp is a
-new cache key (below), so the fix lands on the next query without a restart.
-Accepted, because a stamp is a write-time `DESCRIBE` of the bytes just written:
-under-reporting takes a corrupted or tampered manifest, and the outcome is a
-loud classified failure rather than silent data loss. Stamping is best-effort
+short union that still counts as complete, so the missing set names a column
+the file really carries. Since #409 the missing column is unioned in by name
+and re-pinned rather than projected beside the star, so the scan reads the
+file's real values at the schema type instead of projecting the name twice.
+Unlike the glob-listing race above, which self-heals on the next query, the
+wrong missing set **persists until the manifest entry is corrected**. That
+takes no restart: the rewritten stamp is a new cache key (below), so the fix
+lands on the next query. Accepted, because a stamp is a write-time `DESCRIBE`
+of the bytes just written: under-reporting takes a corrupted or tampered
+manifest. Stamping is best-effort
 at write time — a failed self-describe leaves the entry unstamped at the cost
 of one probe on first read, and is logged rather than swallowed.
 

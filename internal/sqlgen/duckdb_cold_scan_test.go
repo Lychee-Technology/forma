@@ -34,15 +34,20 @@ func TestBuildParquetScanSourceEmptyIsGuardOnly(t *testing.T) {
 		got)
 }
 
+// Missing columns (#255) reach the projection through a BY NAME union with a
+// typed relation that holds no rows, and are re-pinned inside the REPLACE
+// list rather than projected beside the star, so no rendering can name a
+// column twice (#409).
 func TestBuildParquetScanSourceWrapsMissingColumnsAsTypedNulls(t *testing.T) {
 	got := BuildParquetScanSource("['s3://b/a.parquet', 's3://b/b.parquet']", []ScanColumn{
 		{Name: "score", DuckDBType: "INTEGER"},
 		{Name: "tags", DuckDBType: "BIGINT[]"},
 	}, nil)
 	require.Equal(t,
-		"(SELECT "+wantGuardREPLACE+", "+
-			"NULL::INTEGER AS score, NULL::BIGINT[] AS tags "+
-			"FROM read_parquet(['s3://b/a.parquet', 's3://b/b.parquet'], union_by_name=true)) AS cold_scan",
+		"(SELECT "+wantGuardREPLACE[:len(wantGuardREPLACE)-1]+
+			", CAST(score AS INTEGER) AS score, CAST(tags AS BIGINT[]) AS tags) "+
+			"FROM (SELECT * FROM read_parquet(['s3://b/a.parquet', 's3://b/b.parquet'], union_by_name=true) "+
+			"UNION ALL BY NAME SELECT NULL::INTEGER AS score, NULL::BIGINT[] AS tags WHERE false)) AS cold_scan",
 		got)
 }
 

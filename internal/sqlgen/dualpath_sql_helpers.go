@@ -335,9 +335,9 @@ func pgMainOperand(valStr, attr string, meta forma.AttributeMetadata) (any, erro
 // Dotted attribute names fold through ParquetAttrColumn (#260): the CTEs
 // project every attribute under its parquet column alias, because the same
 // clause also runs against the parquet scan source, which exposes the physical
-// (folded) columns. Since #255 that scan source may additionally project typed
+// (folded) columns. Since #255 that scan source may additionally union in typed
 // NULLs (BuildParquetScanSource) for attributes absent from EVERY file in the
-// set — those aliases are folded names too, so the clause binds either way.
+// set — those columns carry folded names too, so the clause binds either way.
 func resolveDuckDBColumn(attr string) string {
 	return ParquetAttrColumn(attr)
 }
