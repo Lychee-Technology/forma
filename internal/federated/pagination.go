@@ -105,6 +105,14 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedKeysetQuery(
 // computeFederatedCount returns the total number of unique rows matching the
 // filter conditions across all tiers. It strips the keyset cursor to get the
 // full unfiltered count via a lightweight query.
+//
+// The internal options it passes are discarded, and with them nothing the
+// caller's partial marker needs (#413): a DuckDB pass never sets PartialScan,
+// because it reads every listed object or fails (#722). Corruption first
+// confirmed by this pass therefore fails the count with CorruptParquetError,
+// which the keyset coordinator returns and Query's empty-page recount either
+// returns or answers through the degraded fallback, which marks its page
+// itself. The total never shrinks quietly.
 func (e *DBFederatedQueryEngine) computeFederatedCount(
 	ctx context.Context,
 	tables model.StorageTables,

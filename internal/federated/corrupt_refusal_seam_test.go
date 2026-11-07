@@ -32,6 +32,9 @@ type retryPass struct {
 	// drainFails lists path substrings whose per-object verification drain
 	// fails during THIS pass.
 	drainFails []string
+	// empty answers the scan with zero rows: a page past the last match,
+	// which sends Query to its empty-page recount (#181).
+	empty bool
 }
 
 // retryFakeDuck routes three kinds of SQL: schema probes (delegated to the
@@ -93,6 +96,9 @@ func (d *retryFakeDuck) Query(ctx context.Context, sql string, args ...any) (duc
 	d.mainSQL = append(d.mainSQL, sql)
 	if d.pass().midStreamFail {
 		return &retryMidStreamRows{duck: d}, nil
+	}
+	if d.pass().empty {
+		return &emptyDuckDBRows{}, nil
 	}
 	return &singleDuckDBRow{rowID: uuid.New()}, nil
 }

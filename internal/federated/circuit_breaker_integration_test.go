@@ -268,7 +268,13 @@ func TestHalfOpenZeroPathStaysLoudForConsecutiveRequests(t *testing.T) {
 // and the breaker stays half-open with its probe slot free for the next
 // caller. Delete the corrupt branch's ReleaseProbe and the live reservation
 // rejects that caller; replace it with RecordFailure and the breaker
-// re-opens — either mutation fails this test.
+// re-opens; replace it with RecordSuccess and the breaker closes on no
+// evidence, so the next caller is admitted with the zero token of a closed
+// breaker — each mutation fails this test (#413). The last one survived
+// while #251 retried over the readable remainder: the retry's own success
+// closed the breaker either way, and nothing could look between the passes.
+// Since #722 the read fails without a retry, so the Allow below is the
+// observation point that tells release from success.
 func TestBreakerHalfOpenProbeReleasedOnConfirmedCorruption(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
