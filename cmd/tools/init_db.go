@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/bootstrap"
 	"github.com/lychee-technology/forma/internal/schemaledger"
+	"github.com/lychee-technology/forma/internal/schemameta"
 )
 
 type initDBOptions struct {
@@ -332,7 +332,7 @@ const firstSchemaID = 100
 // id from newSchemaIDs, so re-running init-db after adding a schema file
 // succeeds (#643).
 func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir string) error {
-	schemaNames, err := listSchemaNames(schemaDir)
+	schemaNames, err := schemameta.ListInitDBSchemaNames(schemaDir)
 	if err != nil {
 		return err
 	}
@@ -379,32 +379,6 @@ func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir stri
 
 	fmt.Printf("Registered schemas from directory, count: %d, dir: %s\n", len(schemaNames), schemaDir)
 	return nil
-}
-
-// listSchemaNames returns the names of the JSON schema files in schemaDir,
-// leaving out the *_attributes.json metadata files. The order is that of the
-// file names, which on an empty registry fixes the schema ids.
-func listSchemaNames(schemaDir string) ([]string, error) {
-	entries, err := os.ReadDir(schemaDir)
-	if err != nil {
-		return nil, fmt.Errorf("read schema directory(%s): %w", schemaDir, err)
-	}
-
-	var schemaFiles []string
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, "_attributes.json") {
-			continue
-		}
-		schemaFiles = append(schemaFiles, name)
-	}
-	sort.Strings(schemaFiles)
-
-	names := make([]string, len(schemaFiles))
-	for i, file := range schemaFiles {
-		names[i] = strings.TrimSuffix(file, ".json")
-	}
-	return names, nil
 }
 
 // loadRegisteredSchemaIDs reads the registry table's schema_name -> schema_id

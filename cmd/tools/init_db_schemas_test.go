@@ -146,23 +146,3 @@ func TestRegisterSchemasAddsNewSchemaToExistingRegistry(t *testing.T) {
 		}
 	}
 }
-
-// TestListSchemaNamesOrdersByFileName pins the order that fixes a first run's
-// ids: by file name, as before #643, not by the trimmed name ("-" sorts
-// before ".", so lead-v2.json comes before lead.json).
-func TestListSchemaNamesOrdersByFileName(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"lead.json", "lead-v2.json", "lead_attributes.json", "account.json"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{}`), 0o644); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-	}
-
-	got, err := listSchemaNames(dir)
-	if err != nil {
-		t.Fatalf("listSchemaNames: %v", err)
-	}
-	if want := []string{"account", "lead-v2", "lead"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("listSchemaNames = %v, want %v", got, want)
-	}
-}

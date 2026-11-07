@@ -52,7 +52,7 @@ func ensureDeclaredIndexes(ctx context.Context, pool *pgxpool.Pool, conn declare
 // reported. It loads without the generation gate (#733): init-db runs on an
 // upgrade before baseline-schema has recorded any generation.
 func loadDeclaringRegistry(ctx context.Context, pool *pgxpool.Pool, opts initDBOptions) (forma.SchemaRegistry, error) {
-	names, err := listSchemaNames(opts.schemaDir)
+	names, err := schemameta.ListInitDBSchemaNames(opts.schemaDir)
 	if err != nil {
 		return nil, fmt.Errorf("find schemas that may declare indexes: %w", err)
 	}
