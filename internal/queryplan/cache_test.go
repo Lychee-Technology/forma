@@ -199,9 +199,7 @@ func TestCacheLeaderPanicFreesFollowers(t *testing.T) {
 	}
 	require.Equal(t, "boom", <-leaderPanic, "leader must still observe its own panic")
 
-	c.flightMu.Lock()
-	require.Empty(t, c.inflight, "panicking build must release its slot")
-	c.flightMu.Unlock()
+	require.Zero(t, c.store.InFlight(), "panicking build must release its slot")
 
 	v, hit, err := c.GetOrBuild(context.Background(), key, func() (any, error) { return "ok", nil })
 	require.NoError(t, err)
