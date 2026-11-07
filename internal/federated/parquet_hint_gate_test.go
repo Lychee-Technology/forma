@@ -223,7 +223,7 @@ func TestHintEmptyDataPrefixKeepsBucketScope(t *testing.T) {
 // the shape rules inspect only the key below it, so a prefix carrying a glob
 // metacharacter would let DuckDB expand a directory wildcard the caller never
 // wrote (`s3://b/data/*/7/x.parquet`, or `**` reaching `_tmp/`). Such a prefix
-// is rejected at startup by ValidateCallerParquetPaths; here the engine-level
+// is rejected at startup by ValidateManifestRead (#527); here the engine-level
 // guard refuses every hint on a hand-built config that skipped it, keeps the
 // prefix out of the published message, and leaves it in the operator copy.
 func TestHintGlobMetacharDataPrefixRejected(t *testing.T) {

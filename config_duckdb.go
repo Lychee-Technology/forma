@@ -61,9 +61,10 @@ type DuckDBConfig struct {
 	// Second, when AllowCallerParquetPaths is on, a non-empty prefix narrows
 	// the scope of caller-supplied parquet paths from the whole bucket to
 	// s3://<S3Bucket>/<S3DataPrefix>/ (#477); empty keeps bucket granularity.
-	// In that mode the prefix must not contain a glob metacharacter (`*`,
-	// `?`, `[`): it is spliced verbatim into every honored hint, where DuckDB
-	// would expand it (ValidateCallerParquetPaths rejects it at startup).
+	// The prefix must never contain a glob metacharacter (`*`, `?`, `[`):
+	// the writers store it as a literal S3 key while DuckDB would expand it in
+	// the fallback glob, the manifest URIs and every honored hint, so
+	// ValidateManifestRead rejects it at startup (#527).
 	S3DataPrefix string `json:"s3DataPrefix"`
 	// ManifestPrefix is the root prefix for manifest objects in S3. It must
 	// match the CDC/compaction write side's ManifestPrefix.
@@ -160,6 +161,11 @@ func (d DuckDBConfig) ValidateManifestRead() error {
 	// problem; a whitespace-only one trims to empty and would be reported as an
 	// inert prefix).
 	if err := d.validateManifestReadWhitespace(); err != nil {
+		return err
+	}
+	// Like whitespace, a glob metacharacter is a property of the value itself,
+	// so it is reported before the enable gate speaks about its consequences.
+	if err := ValidateParquetPrefix("duckdb.s3DataPrefix", d.S3DataPrefix); err != nil {
 		return err
 	}
 
@@ -397,20 +403,44 @@ func (c *Config) validateDuckDBConfig() error {
 // ParquetGlobMetacharacters are the characters DuckDB's read_parquet treats as
 // glob metacharacters in an S3 path (`**` is two of the first). The federated
 // engine uses them to place caller-supplied wildcards, and
-// ValidateCallerParquetPaths refuses them in S3DataPrefix (#477, #526 review).
+// ValidateParquetPrefix refuses them in every parquet prefix (#477, #526
+// review, #527).
 const ParquetGlobMetacharacters = "*?["
 
+// ValidateParquetPrefix rejects a parquet data prefix carrying any of
+// ParquetGlobMetacharacters (#527). The prefix means two different things on
+// the two sides of the lakehouse: the CDC writers (internal/cdc.BuildDeltaPath,
+// BuildTempPath, BuildBasePath) store it as a literal S3 key, which S3 permits,
+// while the reader hands it to DuckDB's read_parquet — in the level-3 fallback
+// glob, in every manifest URI and in the caller-hint scope — where it is
+// expanded. A prefix of `data/*` then scans every sibling directory, and
+// `data/**` recurses into the `_tmp/` staging objects the fallback must never
+// read, with nothing to say why. DuckDB's S3 glob has no documented escape
+// syntax, so the prefix is refused rather than escaped. field names the
+// setting in the returned ConfigError: the server's duckdb.s3DataPrefix calls
+// it from ValidateManifestRead, and the writer tools call it on their prefix
+// flags, so both sides apply one rule in lockstep. An empty prefix passes.
+func ValidateParquetPrefix(field, prefix string) error {
+	if strings.ContainsAny(prefix, ParquetGlobMetacharacters) {
+		return &ConfigError{
+			Field: field,
+			Message: "must not contain a glob metacharacter (*, ?, [): the writers store it as a literal S3 key " +
+				"but DuckDB's read_parquet would expand it",
+		}
+	}
+	return nil
+}
+
 // ValidateCallerParquetPaths rejects the #456 caller-path opt-in when no bucket
-// is configured to scope hints against, and when S3DataPrefix carries a glob
-// metacharacter. Honoring federated.s3_parquet_path_template requires a
-// non-empty S3Bucket: validateHintPathScope would otherwise reject every such
-// request at run time, turning an operator misconfiguration into invalid
-// caller input. The prefix rule closes a hole in the #477 shape rules: the
-// engine splices the configured prefix verbatim into the permitted scope and
-// checks wildcard placement only in the key below it, so a prefix such as
-// `data/*` or `data/**` would hand every hint a directory wildcard the caller
-// never wrote. The bucket needs no such rule — S3 bucket names cannot contain
-// these characters. Like ValidateManifestRead, validation is independent of
+// is configured to scope hints against. Honoring
+// federated.s3_parquet_path_template requires a non-empty S3Bucket:
+// validateHintPathScope would otherwise reject every such request at run time,
+// turning an operator misconfiguration into invalid caller input. A glob
+// metacharacter in S3DataPrefix, which would hand every hint a directory
+// wildcard the caller never wrote (#526 review), needs no rule here:
+// ValidateManifestRead rejects it unconditionally (#527), and
+// validateHintPathScope still refuses every hint on a hand-built config that
+// skipped validation. Like ValidateManifestRead, validation is independent of
 // Enabled — whether the setting takes effect is the factory's gate, but an
 // incoherent combination is always a configuration error. Both cmd/server and
 // the factory call this beside ValidateManifestRead so the failure lands at
@@ -423,12 +453,6 @@ func (d DuckDBConfig) ValidateCallerParquetPaths() error {
 		return &ConfigError{
 			Field:   "duckdb.s3Bucket",
 			Message: "must be set when duckdb.allowCallerParquetPaths is enabled",
-		}
-	}
-	if strings.ContainsAny(d.S3DataPrefix, ParquetGlobMetacharacters) {
-		return &ConfigError{
-			Field:   "duckdb.s3DataPrefix",
-			Message: "must not contain a glob metacharacter (*, ?, [) when duckdb.allowCallerParquetPaths is enabled",
 		}
 	}
 	return nil

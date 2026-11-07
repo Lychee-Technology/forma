@@ -103,6 +103,9 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	if err := schemaRegistry.validate(false); err != nil {
 		return nil, err
 	}
+	if err := validateParquetPrefixFlag("s3-prefix", shared.s3.prefix); err != nil {
+		return nil, err
+	}
 	if err := validateManifestTemplateFlag(shared.manifestTemplate); err != nil {
 		return nil, err
 	}

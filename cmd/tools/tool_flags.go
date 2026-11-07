@@ -229,3 +229,16 @@ func validateManifestTemplateFlag(tmpl string) error {
 	}
 	return nil
 }
+
+// validateParquetPrefixFlag applies the server's duckdb.s3DataPrefix rule to
+// a tool's parquet prefix flag (#527): a glob metacharacter is a flag error
+// before any connection is opened. The writers store the prefix as a literal
+// S3 key while the reader's read_parquet would expand it, so a writer must
+// never produce keys the reader cannot address; forma.ValidateParquetPrefix
+// is the one rule both sides share.
+func validateParquetPrefixFlag(flagName, prefix string) error {
+	if err := forma.ValidateParquetPrefix(flagName, prefix); err != nil {
+		return fmt.Errorf("validate --%s: %w", flagName, err)
+	}
+	return nil
+}
