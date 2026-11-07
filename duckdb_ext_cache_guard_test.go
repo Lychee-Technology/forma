@@ -20,7 +20,7 @@ func TestDuckDBExtensionCacheCoversExposedJobs(t *testing.T) {
 		workflow string
 		jobs     []string
 	}{
-		{".github/workflows/ci.yml", []string{"test", "e2e", "k6-smoke"}},
+		{".github/workflows/ci.yml", []string{"test", "dsql-ministack", "e2e", "k6-smoke"}},
 		{".github/workflows/nightly-e2e.yml", []string{"federated-full", "production-race", "production-race-arm64"}},
 	} {
 		wf, err := os.ReadFile(tc.workflow)

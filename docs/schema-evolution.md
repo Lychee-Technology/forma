@@ -460,9 +460,13 @@ start on that release, with the `SCHEMA_DIR` the deployment runs today:
        PRIMARY KEY (schema_id, generation, attr_id));
    ```
 
-   Whether DSQL accepts `ALTER TABLE … ADD COLUMN` has not been verified. If
-   it refuses, stop and raise it on #733: the pointer cannot live anywhere
-   else without a code change.
+   Run each statement on its own, outside an explicit transaction: DSQL
+   runs one DDL statement a transaction. CI runs exactly these statements
+   this way through MiniStack's strict proxy (see "What has been checked"
+   below). That is an emulator result. Whether a
+   real cluster accepts `ALTER TABLE … ADD COLUMN` is still unverified
+   (#821). If it refuses, stop and raise it on #821: the pointer cannot live
+   anywhere else without a code change.
 2. **Stop the old release's writers and exporters.** Stop every server,
    Lambda function and embedder of the old release that writes, and every
    `cdc-flush` and `cdc-init` run. A Lambda function cold-starts on its next
@@ -488,7 +492,8 @@ start on that release, with the `SCHEMA_DIR` the deployment runs today:
    declaration or cannot be read. Correct the data or the declaration and
    run it again; converting stored values is a migration (#730). `--dry-run`
    reports the audit without recording. On DSQL, pass the IAM token as the
-   database password; this path has not been verified either.
+   database password. That path has not been run against a cluster (#821),
+   and whether the token outlives a long audit is unmeasured (#743).
 
    It also refuses, recording nothing, when a schema's stored data changed
    while it was audited. The transaction that records the baseline reads
@@ -505,6 +510,28 @@ start on that release, with the `SCHEMA_DIR` the deployment runs today:
    `build-unique-keys` loads the declaration through the same gate, so a key
    build pending on the deployment runs after the baseline; before it, the
    tool refuses, naming the missing baseline.
+
+#### What has been checked
+
+`TestLedgerUpgrade*` in `cmd/tools/` (#738) runs this procedure on a
+deployment from before the ledger: steps 1 and 3, `apply-schema`, the
+data-plane start and the generation re-read each CDC batch makes. It runs on
+PostgreSQL in CI's Test job, and through MiniStack's strict DSQL proxy, with
+the parquet tier on MiniStack's S3, in `make test-dsql-ministack`.
+[MiniStack strict DSQL lane](dsql-ministack.md#the-ledger-upgrade-suite)
+lists what each step covers.
+
+Neither run is Aurora DSQL evidence. These remain for a real cluster (#821):
+
+- that DSQL accepts the step 1 statements;
+- that `baseline-schema` and `apply-schema` connect with an IAM token as the
+  password, and how long an audit runs against the token's lifetime (#743);
+- how two concurrent `apply-schema` runs fail under optimistic concurrency.
+  Locally the loser waits on a row lock, then fails with
+  `ErrGenerationConflict` (PostgreSQL) or `40001` (MiniStack's REPEATABLE READ
+  backend). On DSQL it is expected to fail at COMMIT with `40001`, recording
+  nothing, which has not been observed;
+- the data-plane start and the CDC re-read on a cluster.
 
 ### Why query-time casting is not migration
 

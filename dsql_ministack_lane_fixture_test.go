@@ -179,7 +179,7 @@ func (f *laneFixture) assertRan(project string) {
 	if err != nil {
 		f.t.Fatalf("read %s's summary: %v", project, err)
 	}
-	for suite, passes := range map[string]int{"gate": 1, "entity": 10, "cdc": 9, "coordination": 96} {
+	for suite, passes := range map[string]int{"gate": 1, "entity": 10, "cdc": 9, "ledger": 6, "coordination": 96} {
 		if !strings.Contains(string(summary), fmt.Sprintf("%-14s pass=%-5d", suite, passes)) {
 			f.t.Errorf("%s's summary has no %d passes for %s:\n%s", project, passes, suite, summary)
 		}

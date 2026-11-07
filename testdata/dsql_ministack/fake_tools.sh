@@ -277,6 +277,7 @@ fake_go() {
 		./internal/testdb) suite=gate passes=1 ;;
 		./internal) suite=entity passes=10 ;;
 		./internal/cdc) suite=cdc passes=9 ;;
+		./cmd/tools) suite=ledger passes=6 ;;
 		./internal/coordinationtest/) suite=coordination passes=96 ;;
 		esac
 	done

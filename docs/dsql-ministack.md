@@ -57,6 +57,7 @@ Results on MiniStack 1.5.38. "Pass" means on this lane, with the meaning above.
 | CDC schema lease | Pass, one skip | `TestLeaseSchemaLock*`, including the two lock-wait tests a cluster skips. The READ COMMITTED race skips, since the lane runs only DSQL's level |
 | CDC flush mark | Pass | `TestMarkInChunksRetriesARealConflict`. The `cdc-flush` tool itself and its export reads are not in the lane |
 | Schema and index DDL: what the fixtures build | Pass | One DDL a transaction, `CREATE INDEX ASYNC` and `sys.wait_for_job`. The ASYNC rewrite is the coordination fixture's own |
+| Generation ledger upgrade (#738) | Pass, one skip | `TestLedgerUpgrade*` in `cmd/tools/`: see [below](#the-ledger-upgrade-suite). The PostgreSQL lock-wait mechanism of a concurrent apply skips |
 | Schema and index DDL: `init-db` (#690) | Fail, not in the lane | Observed by hand: `only one DDL statement can be run in a transaction` (`25006`) at `ensure entity main table`. Declared indexes use `CREATE INDEX CONCURRENTLY`, which the proxy also refuses |
 | DuckDB `postgres` extension: reads and exports (#691) | Fail, not in the lane | Observed by hand: `ATTACH` succeeds, then every scan fails with `COPY is not supported`, because the extension reads through `COPY ... TO STDOUT (FORMAT binary)` |
 
@@ -73,6 +74,43 @@ PostgreSQL lane, so nothing goes uncovered.
 [`scripts/dsql_ministack_expected_skips.txt`](../scripts/dsql_ministack_expected_skips.txt)
 records every expected skip with its reason. The lane fails on a skip the ledger
 does not cover and on a ledger line that covers no skip.
+
+### The ledger upgrade suite
+
+`TestLedgerUpgrade*` runs the upgrade in
+[Upgrading an existing deployment](schema-evolution.md#upgrading-an-existing-deployment)
+on a deployment from before the generation ledger: a registry with two
+schemas, built from init-db's own table sources one DDL a transaction, and
+stored rows. CI runs the same tests on the integration PostgreSQL in the Test
+job, and this lane runs them through the proxy.
+
+| Step | What runs |
+| --- | --- |
+| Add the ledger | The three `schemaledger.Statements`, each in its own transaction, twice. Before them both tools name the upgrade |
+| Baseline, `--no-parquet-tier` | Dry run and real run refuse an EAV value outside the declaration and record nothing for any schema. Once the data is corrected, it records generation 1 of each schema, once. Generation 1 comes from `baseline-schema`, never `ledgertest.Seed` |
+| Baseline, parquet tier | `baseline-schema`'s tier from its flags: S3 manifests and objects on MiniStack's S3, decoded by DuckDB over httpfs. DuckDB never reads PostgreSQL here, so #691 does not apply. A live object holding `12.5` for an integer refuses the baseline, and a corrected manifest lets it record |
+| `apply-schema` | Dry run, an allowed widening, a rerun that records nothing, and a run whose one narrowing records nothing for either schema |
+| Data-plane start | The gated registry load refuses the deployment before the ledger and before the baseline, starts after it, and refuses a restart on a superseded declaration |
+| CDC re-read | `schemaledger.RequireUnchanged`, the per-batch check of `cdc-flush` and `cdc-init`, on the started registry before and after an apply |
+| Concurrent applies | Two applies judged against generation 1, held until both reach the compare-and-set. Exactly one commits a complete generation 2, and the ledger has no partial or orphan rows |
+
+The concurrency test checks only the committed state, and accepts either
+`ErrGenerationConflict` or `40001` from the loser. Behind the proxy the loser
+waits on the winner's row lock and then fails with `40001`, because the lane
+pins REPEATABLE READ. A real cluster does not wait, and fails the loser at
+COMMIT. `TestLedgerUpgradeConcurrentApplyLoserWaitsOnPostgres` asserts the
+PostgreSQL mechanism, a wait and then `ErrGenerationConflict` at READ
+COMMITTED. It runs on the PostgreSQL lane and skips here.
+
+Beyond the limits above, a pass here does not establish:
+
+- **The DDL on DSQL.** The proxy's rules accepted
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` and both `CREATE TABLE`s, and
+  PostgreSQL ran them. Whether a cluster accepts them is #821's to verify.
+- **The tools' connection.** The suite calls `baseline-schema` and
+  `apply-schema` on a pool, not through their flags. An IAM token as the
+  password, and whether a long audit outlives it, are #821's and #743's.
+- **S3.** MiniStack's S3 is an emulator: no IAM, and no TLS.
 
 ## How it knows it reached the proxy
 
