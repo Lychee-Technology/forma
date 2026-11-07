@@ -204,6 +204,19 @@ func buildSchemaKeyPrefix(env *Env, schema SchemaRef) string {
 	return fmt.Sprintf("%s/%d/", env.S3Prefix, schema.ID)
 }
 
+// buildSchemaManifestKey is buildSchemaKeyPrefix's sibling for the schema's
+// manifest object: the single source of the manifest key in the e2e tests,
+// resolved through Env.manifestKey so a ManifestTemplate override moves
+// every listing, fault filter and touch check with it (#427).
+func buildSchemaManifestKey(t *testing.T, env *Env, schema SchemaRef) string {
+	t.Helper()
+	key, err := env.manifestKey(schema.ID)
+	if err != nil {
+		t.Fatalf("manifest key: %v", err)
+	}
+	return key
+}
+
 // filterFinalsForSchema filters keys down to one schema's final parquet objects
 // (multi-schema passes legitimately mix partitions in one report, so the
 // global splitKeys alone cannot attribute objects to a schema).

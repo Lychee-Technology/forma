@@ -120,6 +120,9 @@ func assertFederatedRowCount(ctx context.Context, t *testing.T, env *Env, name s
 	if len(res.Records) != want {
 		t.Fatalf("%s returned %d rows, want %d", name, len(res.Records), want)
 	}
+	if res.Plan == nil {
+		t.Fatalf("%s returned no query plan, cannot check duckdb routing", name)
+	}
 	if !res.Plan.Routing.UseDuckDB {
 		t.Errorf("%s did not route to duckdb: %+v", name, res.Plan.Routing)
 	}
