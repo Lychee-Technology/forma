@@ -65,5 +65,8 @@ func (p HybridLeafPayload) RenderMain(column string, next func() string) (string
 	if p.MainCast != "" {
 		rhs += "::" + p.MainCast
 	}
+	if p.MainByteOrder {
+		column = inByteOrder(column)
+	}
 	return fmt.Sprintf("%s %s %s", column, p.MainSQLOp, rhs), []any{p.MainValue}
 }

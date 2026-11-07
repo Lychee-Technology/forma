@@ -120,6 +120,9 @@ type HybridLeafPayload struct {
 	// the column type it. A numeric comparison against a whole-number
 	// column binds an int64 cast to bigint (hybridMainComparison).
 	MainCast string
+	// MainByteOrder marks a text range: the column compares under
+	// pgByteOrderCollation rather than the database's collation (#728).
+	MainByteOrder bool
 	// MainBool replaces MainSQLOp/MainValue for a bool-encoded leaf under
 	// = / != (#565): the emitter allocates Arity() placeholders, renders
 	// it over them and binds Args(). Nil for every other main-branch leaf.
@@ -148,6 +151,10 @@ type PgEavLeafPayload struct {
 	// stored 2 answers the same on the OLTP route and the federated tiers
 	// (#384; the spelling is the #404 read-side rule).
 	Truthy bool
+	// ByteOrder marks a range over value_text, which holds text and uuid
+	// attributes: the column compares under pgByteOrderCollation rather than
+	// the database's collation (#728).
+	ByteOrder bool
 	// The #646 leaf kinds replace Value; at most one is set. NullTest
 	// (SQLOpIsNull/SQLOpIsNotNull) makes the leaf a presence test with no
 	// value bind; List marks a list attribute, whose empty-list marker row
@@ -161,12 +168,17 @@ type PgEavLeafPayload struct {
 
 // ComparisonLHS renders the left-hand side of the EAV EXISTS comparison for
 // the payload's value column, qualified by the eav_data alias. Bool leaves
-// compare the BoolTruthiness image instead of the raw column (#384).
+// compare the BoolTruthiness image instead of the raw column (#384), and a
+// value_text range compares in byte order (#728).
 func (p PgEavLeafPayload) ComparisonLHS(alias string) string {
 	if p.Truthy {
 		return BoolTruthiness(alias + "." + p.ValueColumn)
 	}
-	return alias + "." + p.ValueColumn
+	column := alias + "." + p.ValueColumn
+	if p.ByteOrder {
+		return inByteOrder(column)
+	}
+	return column
 }
 
 // PgMainLeafPayload is the entity_main pushdown payload (lenient parse

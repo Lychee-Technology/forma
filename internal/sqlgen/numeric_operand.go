@@ -138,9 +138,11 @@ func isNumericValueType(vt forma.ValueType) bool {
 // leaf. A numeric operand against a whole-number entity_main column
 // compares as the int64 bound wholeNumberComparison derives, bound as
 // bigint: no column width can then refuse it, and int2/int4/int8 against
-// bigint stays on the column's btree operator family.
+// bigint stays on the column's btree operator family. A text range against a
+// text column compares in byte order (#728).
 func hybridMainComparison(colName string, vt forma.ValueType, sqlOp string, value any) HybridLeafPayload {
 	p := HybridLeafPayload{IsMain: true, MainColumn: colName, MainSQLOp: sqlOp, MainValue: value}
+	p.MainByteOrder = vt == forma.ValueTypeText && isRangeComparison(sqlOp) && isTextColumn(colName)
 	if !isNumericValueType(vt) || !isNumericComparison(sqlOp) || !isWholeNumberColumn(colName) {
 		return p
 	}
