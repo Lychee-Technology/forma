@@ -62,28 +62,39 @@ func buildStrippedPayload() map[string]any {
 // this one. The converse is deliberately *not* asserted — the guard is allowed
 // to stay silent about a requirement the validator does enforce, and
 // TestGuardIsSilentOnADoubleNegatedRequirement pins one such case.
+//
+// It also holds every fact the fixture's sidecar records — the guard's verdict,
+// the validator's, and for a rejection whether the message names the root — to
+// what the guard and the validator measurably do, so a fixture that starts or
+// stops being judged or rejected, or a sidecar that records the wrong answer, is
+// a failure here rather than a silent move between the subsets the next two
+// tests draw (#395).
 func TestGuardNeverRefusesASchemaTheValidatorAccepts(t *testing.T) {
 	fixtures := listRelationFixtures(t)
 	require.NotEmpty(t, fixtures)
 
 	for _, fixture := range fixtures {
 		t.Run(fixture, func(t *testing.T) {
+			verdict := loadRelationFixtureVerdict(t, fixture)
 			_, err := LoadRelationIndex(serveRelationFixture(t, fixture))
-			if err == nil {
-				return
+			validatorErr := validateFixtureChild(t, fixture, buildStrippedPayload())
+			if err != nil {
+				// Only a relation-root refusal is evidence for the implication. The
+				// guard's other abort causes — a registry that lists a name it cannot
+				// serve, a document that does not decode — say nothing about what the
+				// validator demands, so accepting one as a refusal would let a broken
+				// fixture stand in for the property under test and pass whatever the
+				// validator did.
+				require.ErrorContains(t, err, "requires relation root",
+					"%s failed the guard for a reason that is not a relation-root refusal, "+
+						"so this test can draw no conclusion from it", fixture)
+				require.Error(t, validatorErr,
+					"the guard refused %s, so the validator must reject the post-strip payload; "+
+						"a guard that refuses a schema the validator accepts is unfixable at startup", fixture)
 			}
-			// Only a relation-root refusal is evidence for the implication. The
-			// guard's other abort causes — a registry that lists a name it cannot
-			// serve, a document that does not decode — say nothing about what the
-			// validator demands, so accepting one as a refusal would let a broken
-			// fixture stand in for the property under test and pass whatever the
-			// validator did.
-			require.ErrorContains(t, err, "requires relation root",
-				"%s failed the guard for a reason that is not a relation-root refusal, "+
-					"so this test can draw no conclusion from it", fixture)
-			require.Error(t, validateFixtureChild(t, fixture, buildStrippedPayload()),
-				"the guard refused %s, so the validator must reject the post-strip payload; "+
-					"a guard that refuses a schema the validator accepts is unfixable at startup", fixture)
+			// After the property, so a broken soundness property is reported as
+			// itself rather than as a sidecar that cannot record it.
+			require.NoError(t, relationFixtureVerdictMismatch(fixture, verdict, err, validatorErr))
 		})
 	}
 }
@@ -128,7 +139,10 @@ func TestGuardIsSilentOnADoubleNegatedRequirement(t *testing.T) {
 // actually does with each shape the guard steps over, so the cost of the
 // fragment is written down in measurements rather than in prose.
 //
-// Every fixture here boots. What differs is what happens afterwards:
+// The set is every committed fixture whose verdict.txt says the guard boots it,
+// enumerated from disk, and the expected validator verdict is the sidecar's
+// (#395). Every fixture here boots. What differs is what happens afterwards;
+// among them:
 //
 //   - anyof_true and if_false are the two shapes that were **false positives**
 //     before the fragment shrank. anyOf's first branch is the boolean schema
@@ -142,31 +156,36 @@ func TestGuardIsSilentOnADoubleNegatedRequirement(t *testing.T) {
 //   - if_only and root_ref are accepted by the validator too: if_only's "if"
 //     turns on the stripped property so its "then" never fires, and root_ref's
 //     referenced parent.json requires nothing.
+//   - double_not is rejected, and is the pinned false negative of
+//     TestGuardIsSilentOnADoubleNegatedRequirement.
+//   - the shapes outside the walk's root scope (relation_ok_not,
+//     relation_ok_property_required and the rest listed in
+//     TestLoadRelationIndexAcceptsRequiredOutsideRootScope) are all accepted.
 func TestFixturesTheGuardDeliberatelyDoesNotJudge(t *testing.T) {
-	for fixture, validatorRejects := range map[string]bool{
-		"relation_ok_anyof_true":                false,
-		"relation_ok_if_false":                  false,
-		"relation_required_if_only":             false,
-		"relation_root_ref":                     false,
-		"relation_required_oneof":               true,
-		"relation_required_ifthen":              true,
-		"relation_required_dependent":           true,
-		"relation_required_dependent_schema":    true,
-		"relation_required_dependencies_list":   true,
-		"relation_required_dependencies_schema": true,
-	} {
+	seen := map[bool]int{}
+	for _, fixture := range listRelationFixtures(t) {
+		verdict := loadRelationFixtureVerdict(t, fixture)
+		if verdict.GuardRefuses {
+			continue
+		}
+		seen[verdict.ValidatorRejects]++
 		t.Run(fixture, func(t *testing.T) {
 			_, err := LoadRelationIndex(serveRelationFixture(t, fixture))
 			require.NoError(t, err, "the guard does not judge this shape, so startup must succeed")
 
 			err = validateFixtureChild(t, fixture, buildStrippedPayload())
-			if validatorRejects {
-				require.Error(t, err)
+			if verdict.ValidatorRejects {
+				require.Error(t, err, "%s records validator: rejects", fixture)
 			} else {
-				require.NoError(t, err)
+				require.NoError(t, err, "%s records validator: accepts", fixture)
 			}
 		})
 	}
+	// Both outcomes must be present, or the fragment's cost is not measured:
+	// without a rejecting unjudged fixture there is no false negative on record,
+	// and without an accepting one no former false positive.
+	require.Positive(t, seen[true], "no unjudged fixture records validator: rejects")
+	require.Positive(t, seen[false], "no unjudged fixture records validator: accepts")
 }
 
 // TestConditionalFixturesAgainstTheValidator keeps the payload-level detail the
@@ -201,8 +220,10 @@ func TestConditionalFixturesAgainstTheValidator(t *testing.T) {
 // The narrower gate would be "fire only when the validator's message names a
 // relation root as a missing required property". The question is whether that
 // gate would cover the shapes the startup guard no longer judges, and the answer
-// is: some of them, not all. Measured here over every unjudged fixture, on the
-// post-strip payload:
+// is: some of them, not all. Measured here over every fixture the validator
+// rejects — the unjudged ones that question is about and the judged ones inside
+// the fragment alike — on the post-strip payload, against the message
+// expectation each fixture's verdict.txt records (#395):
 //
 //   - the dependent* family names the property — `dependentRequired["parentId"]:
 //     missing properties ["contactSnapshot"]` and the /dependencies/ and
@@ -219,36 +240,43 @@ func TestConditionalFixturesAgainstTheValidator(t *testing.T) {
 // would have to recognise the anonymous forms by their prose, which is fragile,
 // and would still miss any applicator not on the list.
 //
+// The judged fixtures (relation_required_root and the allOf pair) are the
+// counterpart inside the analysed fragment, where guard and message agree.
+//
 // Both halves are pinned, not just the convenient one. If jsonschema-go starts
 // naming the property under "not"/"oneOf"/"else", or stops naming it under
 // dependent*, this test fails and the trade is worth re-deriving.
 func TestValidatorNamesTheMissingRootUnderOnlySomeApplicators(t *testing.T) {
-	for fixture, namesTheRoot := range map[string]bool{
-		"relation_required_double_not":          false,
-		"relation_required_oneof":               false,
-		"relation_required_ifthen":              false,
-		"relation_required_dependent":           true,
-		"relation_required_dependent_schema":    true,
-		"relation_required_dependencies_list":   true,
-		"relation_required_dependencies_schema": true,
-	} {
+	// unjudgedSilent counts the case the wide gate exists for: a shape the guard
+	// boots whose rejection gives a message-shape gate nothing to key on.
+	namesTheRoot, unjudgedSilent := 0, 0
+	for _, fixture := range listRelationFixtures(t) {
+		verdict := loadRelationFixtureVerdict(t, fixture)
+		if !verdict.ValidatorRejects {
+			continue
+		}
+		if verdict.MessageNamesRoot {
+			namesTheRoot++
+		} else if !verdict.GuardRefuses {
+			unjudgedSilent++
+		}
 		t.Run(fixture, func(t *testing.T) {
 			err := validateFixtureChild(t, fixture, buildStrippedPayload())
 			require.Error(t, err)
 
-			if namesTheRoot {
+			if verdict.MessageNamesRoot {
 				require.ErrorContains(t, err, "contactSnapshot",
-					"a message-shape gate would fire here")
+					"%s records message: names-root, so a message-shape gate would fire here", fixture)
 				return
 			}
 			require.NotContains(t, err.Error(), "contactSnapshot",
-				"a message-shape gate would stay silent here, which is why the diagnosis does not use one")
+				"%s records message: omits-root, so a message-shape gate would stay silent here, "+
+					"which is why the diagnosis does not use one", fixture)
 		})
 	}
-
-	// The counterpart inside the analysed fragment, where guard and message agree.
-	err := validateFixtureChild(t, "relation_required_root", buildStrippedPayload())
-	require.ErrorContains(t, err, "contactSnapshot")
+	require.Positive(t, namesTheRoot, "no rejecting fixture records message: names-root")
+	require.Positive(t, unjudgedSilent,
+		"no unjudged rejecting fixture records message: omits-root, so nothing here justifies the wide gate")
 }
 
 // resolveRelationFixtureDir names a committed schema directory under testdata.
@@ -258,11 +286,12 @@ func TestValidatorNamesTheMissingRootUnderOnlySomeApplicators(t *testing.T) {
 // the factory test can point Entity.SchemaDirectory at the same bytes this
 // package asserts on (#318).
 //
-// The name prefix records what the *validator* does with the fixture, not what
-// the guard does: relation_required_* holds a document whose post-strip payload
-// the validator rejects, relation_ok_* one it accepts. The guard's own verdict
-// is a separate question and is asserted per test, because since the fragment
-// shrank the two no longer coincide.
+// What the guard and the validator do with a fixture is recorded in its
+// verdict.txt (see relationFixtureVerdict), and that sidecar, not the name, is
+// what the fixture-driven tests read. The name prefix is only a rough guide to
+// the *validator's* answer — relation_required_* mostly marks a post-strip
+// payload the validator rejects, relation_ok_* one it accepts — and it is not
+// exact: relation_required_if_only and relation_root_ref are both accepted.
 func resolveRelationFixtureDir(name string) string {
 	return filepath.Join("testdata", name)
 }
