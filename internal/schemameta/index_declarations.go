@@ -153,15 +153,17 @@ func unsupportedDeclarationKey(obj map[string]any) string {
 // already carries. Every error names the schema, the index and the attribute;
 // callers wrap it with the schema file.
 //
-// A bool attribute is refused because #647 requires equals and in on an
-// indexed attribute to be index conditions, and the entity_main SQL for a bool
-// compares the column's truth value rather than the column. bool_text renders
-// equals as (<col> = '1') = $n (sqlgen.BoolMainPredicate), which PostgreSQL
-// folds into an index condition only for a true it can see at planning time:
-// false becomes <col> <> '1', and a cached generic plan keeps the expression.
-// in / not_in compare sqlgen.BoolMainTruth under both encodings, which no
-// plan can seek (#671 tracks admitting bool_smallint). Every other admitted
-// binding compares the bare column (TestDeclaredIndexServesEveryIndexableKind).
+// A bool_text attribute is refused because #647 requires equals and in on an
+// indexed attribute to be index conditions, and bool_text compares the column's
+// truth value rather than the column. It renders equals as (<col> = '1') = $n
+// (sqlgen.BoolMainPredicate), which PostgreSQL folds into an index condition
+// only for a true it can see at planning time: false becomes <col> <> '1', and a
+// cached generic plan keeps the expression. in / not_in compare
+// sqlgen.BoolMainTruth, which no plan can seek. Its false side is every text
+// value except '1', which is not one range, so no rewrite can serve it.
+// bool_smallint renders all of them as <col> BETWEEN $lo AND $hi, so it compares
+// the bare column like every other admitted binding
+// (TestDeclaredIndexServesEveryIndexableKind).
 func validateIndexDeclarations(schemaName string, decls []forma.IndexDeclaration, cache forma.SchemaAttributeCache) error {
 	for _, decl := range decls {
 		for _, attr := range decl.Attributes {
@@ -187,8 +189,8 @@ func validateIndexedAttribute(attr string, cache forma.SchemaAttributeCache) err
 	case forma.MainColumnSchemaID, forma.MainColumnRowID:
 		return fmt.Errorf("attribute %s is bound to %s, which every declared index already carries as a key column", attr, col)
 	}
-	if meta.ValueType == forma.ValueTypeBool {
-		return fmt.Errorf("attribute %s is a bool bound to %s (encoding %s); bool filters compare the column's truth value rather than the column (in and not_in under every encoding, equals under bool_text), which an index on the column cannot reliably serve, so bool attributes cannot be indexed",
+	if meta.ValueType == forma.ValueTypeBool && meta.ColumnBinding.Encoding != forma.MainColumnEncodingBoolInt {
+		return fmt.Errorf("attribute %s is a bool bound to %s (encoding %s); its equals, in and not_in filters compare the column's truth value rather than the column, which an index on the column cannot reliably serve, so only a bool under bool_smallint can be indexed",
 			attr, meta.ColumnBinding.ColumnName, meta.ColumnBinding.Encoding)
 	}
 	return nil

@@ -2,8 +2,10 @@ package sqlgen
 
 import (
 	"math"
+	"slices"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/conditionexpr"
 )
 
 // BoolMainPredicate is the entity_main pushdown form of a column-bound bool
@@ -54,9 +56,7 @@ func (p BoolMainPredicate) Render(column string, next func() string) string {
 	if p.Encoding == forma.MainColumnEncodingBoolText {
 		return "(" + column + " = '1') = " + next()
 	}
-	lo := next()
-	hi := next()
-	return column + " BETWEEN " + lo + " AND " + hi
+	return p.smallintRange().Render(column, next)
 }
 
 // Args returns the binds in placeholder order.
@@ -64,10 +64,62 @@ func (p BoolMainPredicate) Args() []any {
 	if p.Encoding == forma.MainColumnEncodingBoolText {
 		return []any{p.Truthy}
 	}
+	return p.smallintRange().Args()
+}
+
+func (p BoolMainPredicate) smallintRange() BoolSmallintRange {
 	if p.Truthy {
-		return []any{int64(1), int64(math.MaxInt16)}
+		return boolSmallintTruthy
 	}
-	return []any{int64(math.MinInt16), int64(0)}
+	return boolSmallintFalsy
+}
+
+// BoolSmallintRange is the bool_smallint read contract as one range of the
+// SMALLINT column. The truthy and falsy sides are adjacent, so every subset of
+// {true, false} is one range, and a leaf over the column seeks an index on it
+// whatever its operator or operand (#671). BETWEEN is NULL on NULL, which keeps
+// an absent value out of every form, not_in included.
+type BoolSmallintRange struct {
+	Lo, Hi int64
+}
+
+var (
+	boolSmallintTruthy = BoolSmallintRange{Lo: 1, Hi: math.MaxInt16}
+	boolSmallintFalsy  = BoolSmallintRange{Lo: math.MinInt16, Hi: 0}
+	boolSmallintAny    = BoolSmallintRange{Lo: math.MinInt16, Hi: math.MaxInt16}
+	// boolSmallintNone holds no value: BETWEEN is false when Lo exceeds Hi.
+	boolSmallintNone = BoolSmallintRange{Lo: 1, Hi: 0}
+)
+
+// Render spells the range over an already-qualified column, drawing its two
+// placeholders from next. The text never depends on the bounds, which both plan
+// caches rely on.
+func (r BoolSmallintRange) Render(column string, next func() string) string {
+	lo := next()
+	hi := next()
+	return column + " BETWEEN " + lo + " AND " + hi
+}
+
+// Args returns the binds in placeholder order.
+func (r BoolSmallintRange) Args() []any {
+	return []any{r.Lo, r.Hi}
+}
+
+// boolSmallintSetRange is the range of the values an in / not_in leaf over list
+// accepts: the list itself for in, its complement for not_in.
+func boolSmallintSetRange(sqlOp string, list []bool) BoolSmallintRange {
+	accepts := func(v bool) bool {
+		return slices.Contains(list, v) != (sqlOp == conditionexpr.SQLOpAll)
+	}
+	switch truthy, falsy := accepts(true), accepts(false); {
+	case truthy && falsy:
+		return boolSmallintAny
+	case truthy:
+		return boolSmallintTruthy
+	case falsy:
+		return boolSmallintFalsy
+	}
+	return boolSmallintNone
 }
 
 // pgMainBoolPredicate classifies an entity_main leaf: ok is true only for a

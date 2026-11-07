@@ -86,6 +86,19 @@ func TestIndexDeclarations_AbsentKeyDeclaresNothing(t *testing.T) {
 	assert.Nil(t, schema.Indexes)
 }
 
+// bool_smallint renders every bool filter as a range of the column (#671), so
+// its attributes are declared like any other.
+func TestIndexDeclarations_AdmitBoolSmallint(t *testing.T) {
+	registry, err := loadOutboxRegistry(t, []any{index("backlog", "archived", "next_attempt_at")})
+	require.NoError(t, err)
+
+	_, schema, err := registry.GetSchemaByName("outbox_message")
+	require.NoError(t, err)
+	assert.Equal(t, []forma.IndexDeclaration{
+		{Name: "backlog", Attributes: []string{"archived", "next_attempt_at"}},
+	}, schema.Indexes)
+}
+
 // Every refused declaration fails the schema load, and the message names the
 // schema, the index and the offending attribute(s), so the author can find the
 // line without re-reading the rules.
@@ -135,12 +148,10 @@ func TestIndexDeclarations_RefusedAtSchemaLoad(t *testing.T) {
 			[]string{"index due: attribute old_status is retired"}},
 		{"attribute bound to a key column", []any{index("due", "message_id")},
 			[]string{"index due: attribute message_id is bound to ltbase_row_id", "key column"}},
-		// #647 needs equals and in to be index conditions; a bool's filters
-		// compare its truth value, not the column, under either encoding.
+		// #647 needs equals and in to be index conditions; bool_text compares
+		// the column's truth value, and its false side is not one range.
 		{"bool_text attribute", []any{index("due", "acked", "next_attempt_at")},
-			[]string{"index due: attribute acked is a bool bound to text_04 (encoding bool_text)", "bool attributes cannot be indexed"}},
-		{"bool_smallint attribute", []any{index("due", "status", "archived")},
-			[]string{"index due: attribute archived is a bool bound to smallint_01 (encoding bool_smallint)", "bool attributes cannot be indexed"}},
+			[]string{"index due: attribute acked is a bool bound to text_04 (encoding bool_text)", "only a bool under bool_smallint can be indexed"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

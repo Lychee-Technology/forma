@@ -29,8 +29,18 @@ func TestHybrid_SetOperandsOnMainColumns(t *testing.T) {
 			`m."bigint_01" = ANY($2::bigint[])`, []any{[]int64{1704164645000}}},
 		{"iso8601 datetime binds the stored image", "created_iso", "in:[1704164645000]",
 			`m."text_02" = ANY($2::text[])`, []any{[]string{"2024-01-02T03:04:05Z"}}},
-		{"bool_smallint compares the truthiness image", "active_int", "in:[true]",
-			`(m."smallint_01" > 0.5) = ANY($2::boolean[])`, []any{[]bool{true}}},
+		{"bool_smallint in true is the truthy range", "active_int", "in:[true]",
+			`m."smallint_01" BETWEEN $2 AND $3`, []any{int64(1), int64(32767)}},
+		{"bool_smallint in false is the falsy range", "active_int", "in:[false, 0]",
+			`m."smallint_01" BETWEEN $2 AND $3`, []any{int64(-32768), int64(0)}},
+		{"bool_smallint in both is every value", "active_int", "in:[true, false]",
+			`m."smallint_01" BETWEEN $2 AND $3`, []any{int64(-32768), int64(32767)}},
+		{"bool_smallint not_in true is the falsy range", "active_int", "not_in:[true]",
+			`m."smallint_01" BETWEEN $2 AND $3`, []any{int64(-32768), int64(0)}},
+		{"bool_smallint not_in false is the truthy range", "active_int", "not_in:[false]",
+			`m."smallint_01" BETWEEN $2 AND $3`, []any{int64(1), int64(32767)}},
+		{"bool_smallint not_in both is an empty range", "active_int", "not_in:[false, true]",
+			`m."smallint_01" BETWEEN $2 AND $3`, []any{int64(1), int64(0)}},
 		{"bool_text compares the read contract", "active_text", "not_in:[false]",
 			`((m."text_03" = '1') IS NOT NULL AND (m."text_03" = '1') <> ALL($2::boolean[]))`, []any{[]bool{false}}},
 		{"raw bigint column", "ltbase_created_at", "in:[1, 2]",
@@ -162,6 +172,10 @@ func TestOptimizedQueryShapeKey_IgnoresListLengthAndNowOffset(t *testing.T) {
 		key(&forma.KvCondition{Attr: "age", Value: "in:[1,2,3,4,5,6,7]"}))
 	require.Equal(t, key(&forma.KvCondition{Attr: "created", Value: "lte:$now"}),
 		key(&forma.KvCondition{Attr: "created", Value: "lte:$now-30m"}))
+	for _, value := range []string{"in:[false]", "in:[true,false]", "not_in:[true]", "not_in:[true,false]"} {
+		require.Equal(t, key(&forma.KvCondition{Attr: "active_int", Value: "in:[true]"}),
+			key(&forma.KvCondition{Attr: "active_int", Value: value}), value)
+	}
 	require.NotEqual(t, key(&forma.KvCondition{Attr: "created", Value: "lte:$now"}),
 		key(&forma.KvCondition{Attr: "created", Value: "lte:1704164645000"}),
 		"$now and an absolute timestamp are different statements")

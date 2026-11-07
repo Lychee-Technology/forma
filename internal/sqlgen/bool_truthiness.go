@@ -19,7 +19,9 @@ func BoolTruthiness(expr string) string {
 // entity_main column for the given encoding: `(<col> = '1')` for bool_text,
 // BoolTruthiness for the smallint image. Unlike BoolMainPredicate it yields
 // a boolean expression rather than a filter, for comparisons such as a set
-// membership test (#646) whose right-hand side is itself a bool list.
+// membership test (#646) whose right-hand side is itself a bool list. No index
+// on the column serves it, so a SMALLINT column renders that test as a
+// BoolSmallintRange instead (#671).
 func BoolMainTruth(column string, enc forma.MainColumnEncoding) string {
 	if enc == forma.MainColumnEncodingBoolText {
 		return "(" + column + " = '1')"

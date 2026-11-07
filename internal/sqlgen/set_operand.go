@@ -14,7 +14,8 @@ import (
 // (#646): the whole list binds as ONE array placeholder, so the clause text
 // never depends on the list's length or contents. Both plan caches rely on
 // that: the OLTP render key covers the clause text and the arg count, and
-// the federated key covers only (attribute, operator).
+// the federated key covers only (attribute, operator). A bool_smallint column
+// holds to the same rule with two binds instead of one (BoolRange).
 type SetOperand struct {
 	// SQLOp is conditionexpr.SQLOpAny (in) or conditionexpr.SQLOpAll (not_in).
 	SQLOp string
@@ -28,6 +29,10 @@ type SetOperand struct {
 	// column: the comparison then runs on the column's read-contract truth
 	// value (BoolMainTruth), not its raw image.
 	BoolEncoding forma.MainColumnEncoding
+	// BoolRange replaces the array for a bool on a SMALLINT column: the leaf
+	// compares the column itself, so an index on it can seek (#671). Values,
+	// ArrayCast and BoolEncoding are then unset.
+	BoolRange *BoolSmallintRange
 }
 
 // RenderPg spells the comparison of lhs against the array placeholder ph.
@@ -39,12 +44,17 @@ func (s SetOperand) RenderPg(lhs, ph string) string {
 	return renderSetComparison(s.SQLOp, lhs, rhs)
 }
 
-// mainLHS returns the left-hand side over an m-qualified entity_main column.
-func (s SetOperand) mainLHS(column string) string {
-	if s.BoolEncoding != "" {
-		return BoolMainTruth(column, s.BoolEncoding)
+// renderMain spells the leaf over an already-qualified entity_main column,
+// drawing placeholders from next, and returns its binds in order.
+func (s SetOperand) renderMain(column string, next func() string) (string, []any) {
+	if s.BoolRange != nil {
+		return s.BoolRange.Render(column, next), s.BoolRange.Args()
 	}
-	return column
+	lhs := column
+	if s.BoolEncoding != "" {
+		lhs = BoolMainTruth(column, s.BoolEncoding)
+	}
+	return s.RenderPg(lhs, next()), []any{s.Values}
 }
 
 // DuckSetOperand is the DuckDB form of an in / not_in leaf. The list binds
@@ -181,12 +191,10 @@ func pgMainSetOperand(sqlOp, colName string, meta forma.AttributeMetadata, elems
 	var err error
 	switch {
 	case meta.ValueType == forma.ValueTypeBool:
-		set.BoolEncoding = forma.MainColumnEncodingBoolInt
-		if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingBoolText {
-			set.BoolEncoding = forma.MainColumnEncodingBoolText
+		var list []bool
+		if list, err = exactElems[bool](attr, elems); err == nil {
+			set = pgMainBoolSet(set, desc.Kind, meta, list)
 		}
-		set.ArrayCast = "boolean[]"
-		set.Values, err = exactElems[bool](attr, elems)
 	case desc.Kind == model.ColumnKindText && (meta.ValueType == forma.ValueTypeDate || meta.ValueType == forma.ValueTypeDateTime):
 		set.ArrayCast = "text[]"
 		set.Values, err = iso8601Elems(attr, elems)
@@ -204,6 +212,25 @@ func pgMainSetOperand(sqlOp, colName string, meta forma.AttributeMetadata, elems
 		set.Values, err = int64Elems(attr, elems)
 	}
 	return set, err
+}
+
+// pgMainBoolSet picks the form of a bool leaf. The range equals the truth value
+// only on a SMALLINT domain, and a text column has no range for its false side
+// (every value except '1'), so anything else compares the truth value.
+func pgMainBoolSet(set SetOperand, kind model.ColumnKind, meta forma.AttributeMetadata, list []bool) SetOperand {
+	boolText := meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingBoolText
+	if !boolText && kind == model.ColumnKindSmallint {
+		r := boolSmallintSetRange(set.SQLOp, list)
+		set.BoolRange = &r
+		return set
+	}
+	set.BoolEncoding = forma.MainColumnEncodingBoolInt
+	if boolText {
+		set.BoolEncoding = forma.MainColumnEncodingBoolText
+	}
+	set.ArrayCast = "boolean[]"
+	set.Values = list
+	return set
 }
 
 // duckSetValues builds the operand of the DuckDB form, typed by the
