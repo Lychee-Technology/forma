@@ -75,6 +75,15 @@ func parseRelationFixtureVerdict(body string) (relationFixtureVerdict, error) {
 		return relationFixtureVerdict{}, err
 	}
 
+	// The soundness property (TestGuardNeverRefusesASchemaTheValidatorAccepts)
+	// rules this pair out, and a sidecar recording it would steer a rejecting
+	// fixture out of the message-shape subset with no message expectation at all.
+	if v.GuardRefuses && !v.ValidatorRejects {
+		return relationFixtureVerdict{}, errors.New(
+			"\"guard: refuses\" with \"validator: accepts\" is contradictory: the guard never refuses " +
+				"a schema the validator accepts, so a fixture the guard refuses records validator: rejects")
+	}
+
 	_, hasMessage := fields["message"]
 	switch {
 	case v.ValidatorRejects && !hasMessage:
@@ -90,6 +99,37 @@ func parseRelationFixtureVerdict(body string) (relationFixtureVerdict, error) {
 		}
 	}
 	return v, nil
+}
+
+// relationFixtureMessageRoot is the relation root every relation fixture strips,
+// and so the name a "message: names-root" rejection carries.
+const relationFixtureMessageRoot = "contactSnapshot"
+
+// relationFixtureVerdictMismatch compares every fact a verdict records with what
+// the real guard (guardErr, from LoadRelationIndex) and the real resolved
+// validator (validatorErr, on the post-strip payload) answered, and describes
+// each disagreement; nil when the sidecar is right. The fixture-driven tests
+// select their subsets by these facts, so each of them is measured here for
+// every fixture before any subset relies on it (#395, R1-F1): a recorded
+// acceptance the validator does not give is a failure, not a skip.
+func relationFixtureVerdictMismatch(fixture string, v relationFixtureVerdict, guardErr, validatorErr error) error {
+	var errs []error
+	if refuses := guardErr != nil; refuses != v.GuardRefuses {
+		errs = append(errs, fmt.Errorf("%s records guard refuses=%t, but LoadRelationIndex answered %v",
+			fixture, v.GuardRefuses, guardErr))
+	}
+	if rejects := validatorErr != nil; rejects != v.ValidatorRejects {
+		errs = append(errs, fmt.Errorf("%s records validator rejects=%t, but the validator answered %v",
+			fixture, v.ValidatorRejects, validatorErr))
+	}
+	if v.ValidatorRejects && validatorErr != nil {
+		names := strings.Contains(validatorErr.Error(), relationFixtureMessageRoot)
+		if names != v.MessageNamesRoot {
+			errs = append(errs, fmt.Errorf("%s records message names-root=%t, but the rejection reads %q",
+				fixture, v.MessageNamesRoot, validatorErr.Error()))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // splitVerdictFields reads the "key: value" lines of a verdict file.
@@ -150,6 +190,9 @@ func TestRelationFixtureVerdictParserFailsLoudly(t *testing.T) {
 		"repeated key":                {"guard: boots\nguard: refuses\nvalidator: accepts\n", `repeats key "guard"`},
 		"not a key-value line":        {"guard boots\n", `expected "key: value"`},
 		"unknown message expectation": {"guard: boots\nvalidator: rejects\nmessage: vague\n", `key "message" is "vague"`},
+		// R1-F1: the pair the soundness property forbids, with and without a message.
+		"refusing yet accepting":              {"guard: refuses\nvalidator: accepts\n", `is contradictory`},
+		"refusing yet accepting with message": {"guard: refuses\nvalidator: accepts\nmessage: omits-root\n", `is contradictory`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := parseRelationFixtureVerdict(tc.body)
@@ -160,4 +203,48 @@ func TestRelationFixtureVerdictParserFailsLoudly(t *testing.T) {
 	v, err := parseRelationFixtureVerdict("# c\nguard: refuses\nvalidator: rejects\nmessage: names-root\n")
 	require.NoError(t, err)
 	require.Equal(t, relationFixtureVerdict{GuardRefuses: true, ValidatorRejects: true, MessageNamesRoot: true}, v)
+}
+
+// TestRelationFixtureVerdictMismatchChecksEveryFact pins that a sidecar is held
+// to what the guard and the validator measurably do, fact by fact (R1-F1). The
+// contradictory sidecar the review reproduced — relation_required_allof recorded
+// as "guard: refuses, validator: accepts" with no message — must fail here even
+// were it to get past the parser, because the validator rejects that fixture.
+func TestRelationFixtureVerdictMismatchChecksEveryFact(t *testing.T) {
+	guardRefusal := errors.New("requires relation root")
+	namesRoot := errors.New(`missing properties ["contactSnapshot"]`)
+	omitsRoot := errors.New("validation failed under oneOf")
+
+	for name, tc := range map[string]struct {
+		verdict                relationFixtureVerdict
+		guardErr, validatorErr error
+		wantErr                string
+	}{
+		"recorded acceptance the validator does not give": {
+			relationFixtureVerdict{GuardRefuses: true}, guardRefusal, namesRoot, "validator rejects=false"},
+		"recorded rejection the validator does not give": {
+			relationFixtureVerdict{ValidatorRejects: true}, nil, nil, "validator rejects=true"},
+		"recorded refusal the guard does not give": {
+			relationFixtureVerdict{GuardRefuses: true, ValidatorRejects: true, MessageNamesRoot: true},
+			nil, namesRoot, "guard refuses=true"},
+		"recorded names-root on a message that omits it": {
+			relationFixtureVerdict{ValidatorRejects: true, MessageNamesRoot: true}, nil, omitsRoot, "names-root=true"},
+		"recorded omits-root on a message that names it": {
+			relationFixtureVerdict{ValidatorRejects: true}, nil, namesRoot, "names-root=false"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorContains(t, relationFixtureVerdictMismatch("f", tc.verdict, tc.guardErr, tc.validatorErr), tc.wantErr)
+		})
+	}
+
+	require.NoError(t, relationFixtureVerdictMismatch("f",
+		relationFixtureVerdict{GuardRefuses: true, ValidatorRejects: true, MessageNamesRoot: true}, guardRefusal, namesRoot))
+	require.NoError(t, relationFixtureVerdictMismatch("f", relationFixtureVerdict{}, nil, nil))
+
+	// The reviewer's reproduction, against the real fixture.
+	const fixture = "relation_required_allof"
+	_, guardErr := LoadRelationIndex(serveRelationFixture(t, fixture))
+	validatorErr := validateFixtureChild(t, fixture, buildStrippedPayload())
+	require.ErrorContains(t, relationFixtureVerdictMismatch(fixture,
+		relationFixtureVerdict{GuardRefuses: true}, guardErr, validatorErr), "validator rejects=false")
 }

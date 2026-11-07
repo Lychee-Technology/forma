@@ -63,9 +63,12 @@ func buildStrippedPayload() map[string]any {
 // to stay silent about a requirement the validator does enforce, and
 // TestGuardIsSilentOnADoubleNegatedRequirement pins one such case.
 //
-// It also holds the guard to the verdict the fixture's sidecar records, so a
-// fixture that starts or stops being judged is a failure here rather than a
-// silent move between the subsets the next two tests draw (#395).
+// It also holds every fact the fixture's sidecar records — the guard's verdict,
+// the validator's, and for a rejection whether the message names the root — to
+// what the guard and the validator measurably do, so a fixture that starts or
+// stops being judged or rejected, or a sidecar that records the wrong answer, is
+// a failure here rather than a silent move between the subsets the next two
+// tests draw (#395).
 func TestGuardNeverRefusesASchemaTheValidatorAccepts(t *testing.T) {
 	fixtures := listRelationFixtures(t)
 	require.NotEmpty(t, fixtures)
@@ -74,24 +77,24 @@ func TestGuardNeverRefusesASchemaTheValidatorAccepts(t *testing.T) {
 		t.Run(fixture, func(t *testing.T) {
 			verdict := loadRelationFixtureVerdict(t, fixture)
 			_, err := LoadRelationIndex(serveRelationFixture(t, fixture))
-			require.Equal(t, verdict.GuardRefuses, err != nil,
-				"%s records guard refuses=%t, but LoadRelationIndex answered %v",
-				fixture, verdict.GuardRefuses, err)
-			if err == nil {
-				return
+			validatorErr := validateFixtureChild(t, fixture, buildStrippedPayload())
+			if err != nil {
+				// Only a relation-root refusal is evidence for the implication. The
+				// guard's other abort causes — a registry that lists a name it cannot
+				// serve, a document that does not decode — say nothing about what the
+				// validator demands, so accepting one as a refusal would let a broken
+				// fixture stand in for the property under test and pass whatever the
+				// validator did.
+				require.ErrorContains(t, err, "requires relation root",
+					"%s failed the guard for a reason that is not a relation-root refusal, "+
+						"so this test can draw no conclusion from it", fixture)
+				require.Error(t, validatorErr,
+					"the guard refused %s, so the validator must reject the post-strip payload; "+
+						"a guard that refuses a schema the validator accepts is unfixable at startup", fixture)
 			}
-			// Only a relation-root refusal is evidence for the implication. The
-			// guard's other abort causes — a registry that lists a name it cannot
-			// serve, a document that does not decode — say nothing about what the
-			// validator demands, so accepting one as a refusal would let a broken
-			// fixture stand in for the property under test and pass whatever the
-			// validator did.
-			require.ErrorContains(t, err, "requires relation root",
-				"%s failed the guard for a reason that is not a relation-root refusal, "+
-					"so this test can draw no conclusion from it", fixture)
-			require.Error(t, validateFixtureChild(t, fixture, buildStrippedPayload()),
-				"the guard refused %s, so the validator must reject the post-strip payload; "+
-					"a guard that refuses a schema the validator accepts is unfixable at startup", fixture)
+			// After the property, so a broken soundness property is reported as
+			// itself rather than as a sidecar that cannot record it.
+			require.NoError(t, relationFixtureVerdictMismatch(fixture, verdict, err, validatorErr))
 		})
 	}
 }
