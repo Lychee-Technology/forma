@@ -107,6 +107,12 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 	if err := schemaRegistry.validate(true); err != nil {
 		return nil, err
 	}
+	if err := validateParquetPrefixFlag("s3-prefix", shared.s3.prefix); err != nil {
+		return nil, err
+	}
+	if err := validateParquetPrefixFlag("delta-prefix", *deltaPrefix); err != nil {
+		return nil, err
+	}
 	engine, err := shared.pg.cdcEngine("pg-engine")
 	if err != nil {
 		return nil, err

@@ -159,6 +159,9 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	if len(allowEmptyManifest) > 0 && !*gc {
 		return nil, fmt.Errorf("--allow-empty-manifest-schema only modifies --gc's empty-manifest guard; pass it together with --gc")
 	}
+	if err := validateParquetPrefixFlag("data-prefix", *dataPrefix); err != nil {
+		return nil, err
+	}
 	if err := validateManifestTemplateFlag(*manifestTemplate); err != nil {
 		return nil, err
 	}

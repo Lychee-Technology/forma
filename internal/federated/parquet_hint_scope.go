@@ -56,7 +56,7 @@ import (
 // rules below inspect only the key beneath it, so a prefix carrying a glob
 // metacharacter (`data/*`, `data/**`) would hand every hint a directory
 // wildcard the caller never wrote — `**` in the prefix reaches `_tmp/`
-// outright (#526 review). Config.ValidateCallerParquetPaths rejects such a
+// outright (#526 review). DuckDBConfig.ValidateManifestRead rejects such a
 // prefix at startup; the check here refuses every hint on a hand-built engine
 // that skipped it. The bucket is trimmed for the same reason: startup
 // validation rejects a whitespace-only bucket, and trimming keeps a

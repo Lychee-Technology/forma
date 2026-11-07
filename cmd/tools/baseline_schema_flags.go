@@ -48,6 +48,9 @@ func (f baselineParquetFlags) validate() error {
 		return errors.New("--s3-bucket and --manifest-template are required to audit the parquet objects; " +
 			"pass --no-parquet-tier when the deployment has no lakehouse tier")
 	}
+	if err := validateParquetPrefixFlag("data-prefix", f.dataPrefix); err != nil {
+		return err
+	}
 	return validateManifestTemplateFlag(f.manifestTemplate)
 }
 
