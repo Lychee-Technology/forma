@@ -1,0 +1,5 @@
+# What the #318 guard and the validator do with this fixture. The tests read it
+# through loadRelationFixtureVerdict (internal/relation_fixture_verdict_test.go).
+guard: refuses
+validator: rejects
+message: names-root
