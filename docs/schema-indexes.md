@@ -49,14 +49,15 @@ has a `column_binding` to an `entity_main` column. The rules for an attribute ar
   attribute the attributes file does not define, and for a retired one.
 - An attribute bound to `ltbase_schema_id` or `ltbase_row_id` is refused,
   because every declared index already carries both.
-- A `bool` attribute is refused under either encoding, because some of its
-  filters compare the column's truth value rather than the column, and no
-  index on the column serves them. `in` and `not_in` do this under both
-  encodings. Under `bool_text`, `equals` renders as `(<col> = '1') = $n`, which
-  PostgreSQL turns into an index condition only for a `true` it sees at
-  planning time: `false` becomes `<col> <> '1'`, and a cached generic plan
-  keeps the expression. Admitting `bool_smallint`, whose `equals` does seek, is
-  tracked in #671.
+- A `bool` attribute under `bool_text` is refused, because its filters compare
+  the column's truth value rather than the column, and no index on the column
+  reliably serves them. `equals` renders as `(<col> = '1') = $n`, which
+  PostgreSQL turns into an index condition only for a `true` it sees at planning
+  time: `false` becomes `<col> <> '1'`, and a cached generic plan keeps the
+  expression. `in` and `not_in` compare the truth value under every plan. The
+  `false` side is every text value except `'1'`, which is not one range, so
+  there is no form an index could seek. A `bool` under `bool_smallint` is
+  admitted.
 - Keys other than `name` and `attributes` are refused, so `unique`, `where` and
   expressions are rejected rather than silently ignored.
 
@@ -164,6 +165,15 @@ and `double` columns, and dates and date-times under `unix_ms` or `iso8601`. A
 test runs each operator against a one-attribute index of each kind and checks
 the plan.
 
+A `bool` under `bool_smallint` takes `equals`, `not_equals`, `in`, `not_in` and
+`is_null`. The first four all render as `<col> BETWEEN $lo AND $hi`, so each
+seeks: `true` is `[1, 32767]` and `false` is `[-32768, 0]`, which also places a
+stored image outside the write contract, such as `2`, where every reader reads
+it. A seek is only worth a plan's choosing on the rarer value: when most rows of
+the schema are `false`, PostgreSQL may still scan for `equals:false`. Put such an
+attribute before the one a query ranges over or sorts by, as in
+`(processed, enqueued_at)`.
+
 A query should constrain the leading attributes with equality, and the last
 attribute with a range or a sort. The tests behind #647 also check that the
 hot-tier SQL Forma generates reads through the declared index for these
@@ -180,7 +190,7 @@ A btree key does not serve `contains` and `starts_with`, which render as
 
 ## Not supported
 
-- Indexes on EAV attributes or on `bool` attributes.
+- Indexes on EAV attributes or on `bool` attributes under `bool_text`.
 - Unique, partial and expression indexes.
 - Automatic index selection, and automatic drops.
 

@@ -221,6 +221,11 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
   shape cache and the Postgres render cache) are therefore independent of
   the list's length, its contents, and the offset; `$now` and an absolute
   timestamp are different statements.
+- `in` and `not_in` on a `bool` bound to a `bool_smallint` column bind no array
+  on PostgreSQL. They render as `<col> BETWEEN $lo AND $hi`, the form `equals`
+  takes, with the bounds of the values the list accepts, so an index on the
+  column can seek them (#671). `BETWEEN` drops an absent value by itself. The
+  text is the same for every list, which the render cache relies on.
 - A numeric comparison against whole-number storage binds an int64 bound,
   and its operator depends on whether the operand is an integer in int64
   range, a fraction, or beyond int64: `equals:7.5` on an `integer` column

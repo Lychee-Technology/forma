@@ -7,6 +7,7 @@ import (
 
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/conditionexpr"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/stretchr/testify/require"
 )
@@ -238,6 +239,37 @@ func TestBoolMainPredicate_MatchesReadContract(t *testing.T) {
 					var gotPushdown, gotContract sql.NullBool
 					require.NoError(t, db.QueryRow(query, args...).Scan(&gotPushdown, &gotContract))
 					require.Equal(t, gotContract, gotPushdown, "pushdown verdict must equal the read contract's verdict")
+				})
+			}
+		}
+	}
+}
+
+// TestBoolSmallintSetRange_MatchesReadContract executes the range an in /
+// not_in leaf renders (#671) beside the truth-value comparison it replaced, for
+// every subset of {true, false} and the images the write funnel does not
+// produce. Only the rows matter: NULL and false both drop a row, and on an absent
+// value the range is NULL where the old not_in was false. The parser refuses an
+// empty list today, so that subset is the function's answer, not a reachable leaf.
+func TestBoolSmallintSetRange_MatchesReadContract(t *testing.T) {
+	db, err := sql.Open("duckdb", strictLambdaDSN)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	const enc = forma.MainColumnEncodingBoolInt
+	positional := func() string { return "?" }
+	for _, sqlOp := range []string{conditionexpr.SQLOpAny, conditionexpr.SQLOpAll} {
+		for _, list := range [][]bool{{}, {true}, {false}, {true, false}} {
+			r := boolSmallintSetRange(sqlOp, list)
+			for _, image := range []string{"-32768", "-1", "0", "1", "2", "32767", "NULL"} {
+				t.Run(fmt.Sprintf("%s/%v/image=%s", sqlOp, list, image), func(t *testing.T) {
+					query := "SELECT " + r.Render("m.v", positional) + ", " +
+						renderSetComparison(sqlOp, BoolMainTruth("m.v", enc), "CAST(? AS BOOLEAN[])") +
+						" FROM (SELECT CAST(" + image + " AS SMALLINT) AS v) m"
+					var gotRange, gotContract sql.NullBool
+					require.NoError(t, db.QueryRow(query, append(r.Args(), list)...).Scan(&gotRange, &gotContract))
+					require.Equal(t, gotContract.Valid && gotContract.Bool, gotRange.Valid && gotRange.Bool,
+						"the range must select the rows the read contract selects")
 				})
 			}
 		}

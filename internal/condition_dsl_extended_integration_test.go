@@ -233,6 +233,39 @@ func runDSLTruthTable(t *testing.T, f *dslFixture) {
 	})
 }
 
+// in and not_in on a bool_smallint column render as a range (#671) and must
+// select what the read contract (`> 0.5`) reads, for every list and for stored
+// images the write funnel does not produce. An absent value matches neither.
+func TestConditionDSLBoolSmallintSets(t *testing.T) {
+	f := newDSLFixture(t, true)
+	truthy := sortedIDs(
+		f.seed(t, map[string]any{"smallint_01": 1}),
+		f.seed(t, map[string]any{"smallint_01": 2}),
+		f.seed(t, map[string]any{"smallint_01": 32767}))
+	falsy := sortedIDs(
+		f.seed(t, map[string]any{"smallint_01": 0}),
+		f.seed(t, map[string]any{"smallint_01": -1}),
+		f.seed(t, map[string]any{"smallint_01": -32768}))
+	f.seed(t, map[string]any{})
+	both := sortedIDs(append(append([]uuid.UUID{}, truthy...), falsy...)...)
+
+	for value, want := range map[string][]uuid.UUID{
+		"in:[true]":            truthy,
+		"in:[false]":           falsy,
+		"in:[true, false]":     both,
+		"in:[0, 1, true]":      both,
+		"not_in:[true]":        falsy,
+		"not_in:[false]":       truthy,
+		"not_in:[true, false]": {},
+	} {
+		require.Equal(t, want, f.match(t, kv("flag", value)), value)
+	}
+	_, err := f.repo.QueryPersistentRecords(f.ctx, &model.PersistentRecordQuery{
+		Tables: f.tables, SchemaID: dslSchemaID, Condition: kv("flag", "not_in:[]"), Limit: 10,
+	})
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+}
+
 func TestConditionDSLExtendedRefusals(t *testing.T) {
 	f := newDSLFixture(t, true)
 	f.seed(t, map[string]any{"text_01": "a"})

@@ -125,7 +125,7 @@ type HybridLeafPayload struct {
 	// it over them and binds Args(). Nil for every other main-branch leaf.
 	MainBool *BoolMainPredicate
 	// The #646 leaf kinds replace MainValue; at most one is set. MainNullTest
-	// is SQLOpIsNull/SQLOpIsNotNull (no bind), MainSet the array bind of an
+	// is SQLOpIsNull/SQLOpIsNotNull (no bind), MainSet the binds of an
 	// in / not_in leaf, MainNow the offset bind of a $now leaf compared under
 	// MainSQLOp. RenderMain spells all of them.
 	MainNullTest string

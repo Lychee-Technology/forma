@@ -57,7 +57,7 @@ func (p HybridLeafPayload) RenderMain(column string, next func() string) (string
 	case p.MainNullTest != "":
 		return column + " " + p.MainNullTest, nil
 	case p.MainSet != nil:
-		return p.MainSet.RenderPg(p.MainSet.mainLHS(column), next()), []any{p.MainSet.Values}
+		return p.MainSet.renderMain(column, next)
 	case p.MainNow != nil:
 		return p.MainNow.RenderComparison(column, p.MainSQLOp, next()), p.MainNow.Args()
 	}
