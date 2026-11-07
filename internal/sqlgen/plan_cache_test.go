@@ -85,9 +85,7 @@ func TestProjectionCacheLeaderPanicFreesFollowers(t *testing.T) {
 	}
 	require.Equal(t, "boom", <-leaderPanic, "leader must still observe its own panic")
 
-	c.flightMu.Lock()
-	require.Empty(t, c.inflight, "panicking build must release its slot")
-	c.flightMu.Unlock()
+	require.Zero(t, c.store.InFlight(), "panicking build must release its slot")
 
 	sp, hit, err := c.GetOrBuild(context.Background(), 7, func() (*SchemaProjection, error) { return &SchemaProjection{}, nil })
 	require.NoError(t, err)
