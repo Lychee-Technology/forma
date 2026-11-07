@@ -32,6 +32,9 @@ type indexableKind struct {
 	literal      func(i int) string
 	numeric      bool // the in operand lists JSON numbers, not strings
 	time         bool // the attribute takes the $now operand
+	// byteOrderRange marks a text kind: its ranges compare under the C
+	// collation, which an index built under the column's collation cannot seek.
+	byteOrderRange bool
 	// operators replaces kindOperators for a kind with no ordered values.
 	operators []kindOperator
 }
@@ -46,6 +49,10 @@ type indexableKind struct {
 // not_in and is_null instead; two attributes, each rare on the opposite side,
 // let both sides of the contract be selective. bool_text attributes are refused
 // at load (TestIndexDeclarations_RefusedAtSchemaLoad), so they have no row here.
+//
+// The four ranges on a text kind are the exception since #728: they answer the
+// same rows, and the test pins that they no longer seek the declared index.
+// TestTextRangeSeeksOnlyAByteOrderIndex shows which key does seek them.
 func TestDeclaredIndexServesEveryIndexableKind(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -61,7 +68,7 @@ func TestDeclaredIndexServesEveryIndexableKind(t *testing.T) {
 		}
 	}
 	kinds := []indexableKind{
-		{attr: "title", column: "text_01", literal: func(i int) string { return fmt.Sprintf("t%05d", i) }},
+		{attr: "title", column: "text_01", literal: func(i int) string { return fmt.Sprintf("t%05d", i) }, byteOrderRange: true},
 		{attr: "rank", column: "smallint_01", literal: strconv.Itoa, numeric: true},
 		{attr: "count", column: "integer_01", literal: func(i int) string { return strconv.Itoa(i * 10) }, numeric: true},
 		{attr: "amount", column: "bigint_01", literal: func(i int) string { return strconv.FormatInt(int64(i)*1_000_000_000, 10) }, numeric: true},
@@ -93,12 +100,14 @@ func TestDeclaredIndexServesEveryIndexableKind(t *testing.T) {
 				assertShapeRows(t, page, wide.ID, op.want, false)
 
 				plan := explain(ctx, t, env.Pool, recorder.takeAnchorQuery(t))
+				seeks := false
 				for _, ix := range plannedDeclaredIndexes(t, env) {
-					if ix.Columns[1] == k.column && anyIndexCondMentions(indexScansOf(plan, ix.Name), k.column) {
-						return
-					}
+					seeks = seeks || (ix.Columns[1] == k.column && anyIndexCondMentions(indexScansOf(plan, ix.Name), k.column))
 				}
-				t.Fatalf("no declared index led by %s constrains it; plan:\n%s", k.column, describePlan(plan, 0))
+				_, isRange := rangeSQLOps[op.name]
+				if wantSeek := !(k.byteOrderRange && isRange); seeks != wantSeek {
+					t.Fatalf("a declared index led by %s constrains it: %v, want %v; plan:\n%s", k.column, seeks, wantSeek, describePlan(plan, 0))
+				}
 			})
 		}
 	}

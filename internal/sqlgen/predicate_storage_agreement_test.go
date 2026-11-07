@@ -87,7 +87,7 @@ func buildCharTextUuidOrderCases() []charCase {
 			cond: charKv("username", "gte:M"),
 			want: DualClauses{
 				PgMainClause: "m.text_01 >= ?", PgMainArgs: []any{"M"},
-				PgClause: charEavClause("$2", "value_text", ">=", "$3"), PgArgs: []any{int16(1), "M"},
+				PgClause: charEavClause("$2", `value_text COLLATE "C"`, ">=", "$3"), PgArgs: []any{int16(1), "M"},
 				DuckClause: "username >= ?", DuckArgs: []any{"M"},
 			},
 			span: 3,
@@ -97,7 +97,7 @@ func buildCharTextUuidOrderCases() []charCase {
 			cond: charKv("owner", "lt:6F1C3C3E-1111-4111-8111-111111111111"),
 			want: DualClauses{
 				PgMainClause: "m.uuid_01 < ?", PgMainArgs: []any{stored},
-				PgClause: charEavClause("$2", "value_text", "<", "$3"), PgArgs: []any{int16(14), stored},
+				PgClause: charEavClause("$2", `value_text COLLATE "C"`, "<", "$3"), PgArgs: []any{int16(14), stored},
 				DuckClause: "CAST(owner AS VARCHAR) < CAST(? AS VARCHAR)", DuckArgs: []any{stored},
 			},
 			span: 3,

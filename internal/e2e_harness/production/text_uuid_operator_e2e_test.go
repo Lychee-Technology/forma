@@ -19,10 +19,10 @@ import (
 // rows (where the entity_main pushdown filters pg_source first) and the
 // DuckDB route over warm delta parquet. Before #676 the bound forms were
 // refused on the DuckDB route with `unsupported operator`. Expected rows come
-// from Go's byte order over the seeded values. The text values are lowercase
-// ASCII, which PostgreSQL's linguistic collation orders by bytes too, so the
-// Postgres route can share the expectation; the uuids span the top bit,
-// which a signed comparison of the 128-bit image would misorder.
+// from Go's byte order over the seeded values. The uuids span the top bit,
+// which a signed comparison of the 128-bit image would misorder. The text
+// values are lowercase ASCII, which every collation here orders the same way;
+// TestTextRangeByteOrderAcrossRoutes covers values where collations disagree.
 func TestTextUUIDOperatorsAcrossRoutes(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
