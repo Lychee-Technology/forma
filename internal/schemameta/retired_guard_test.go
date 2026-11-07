@@ -274,6 +274,13 @@ func TestMetadataCacheRetiredAttributeIDs_LedgerVisibleToTooling(t *testing.T) {
 	assert.Equal(t, "old_col", mc.RetiredAttributeIDs(100)[3], "accessor must return a copy")
 
 	assert.Nil(t, mc.RetiredAttributeIDs(999), "unknown schema id has no ledger")
+
+	// A known schema without retired entries takes the same nil branch as an
+	// unknown one (#378).
+	require.NoError(t, mc.RegisterSchema("account", 101, forma.SchemaAttributeCache{
+		"name": {AttributeName: "name", AttributeID: 1, ValueType: forma.ValueTypeText},
+	}), "RegisterSchema")
+	assert.Nil(t, mc.RetiredAttributeIDs(101), "a known schema with no retired entries has no ledger")
 	assert.NotContains(t, mc.RetiredAttributeIDs(100), int16(1), "an active attribute id is not in the ledger")
 }
 

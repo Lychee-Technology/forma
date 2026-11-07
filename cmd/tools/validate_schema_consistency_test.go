@@ -112,8 +112,13 @@ func TestValidateSchemaConsistencyReportsSuccess(t *testing.T) {
 	if err := validator.run(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(out.String(), "schema consistency checks passed") {
-		t.Fatalf("expected success output, got %q", out.String())
+	// A clean run prints the bare success line: the ", N informational
+	// finding(s)" suffix appears only when there are notices (#378).
+	if !hasOutputLine(out.String(), "schema consistency checks passed for 1 schema(s)") {
+		t.Fatalf("expected the bare success line, got %q", out.String())
+	}
+	if strings.Contains(out.String(), "informational") {
+		t.Fatalf("a run without notices must print no informational suffix or block, got %q", out.String())
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet db expectations: %v", err)
@@ -245,6 +250,26 @@ func retiredLedgerSchemaDir(t *testing.T) string {
 	return dir
 }
 
+// informationalHeader and retiredDetailLine are the lines
+// docs/schema-consistency-migration.md quotes for the retired-ledger fixture
+// above: the operator matches them character for character (#378).
+const (
+	informationalHeader = "informational (not a failure):"
+	retiredDetailLine   = "- preserved EAV rows for retired attributes in eav_data_dev: " +
+		"schema=contact schema_id=100 attr_id=9 attribute=legacy rows=12"
+)
+
+// hasOutputLine reports whether out contains want as a whole line, so a
+// match cannot hide a prefix or suffix the contract does not allow.
+func hasOutputLine(out, want string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		if line == want {
+			return true
+		}
+	}
+	return false
+}
+
 func attrCensusRows() *pgxmock.Rows {
 	return pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"})
 }
@@ -272,15 +297,14 @@ func TestValidateSchemaConsistencyClassifiesRetiredAttrRows(t *testing.T) {
 	if strings.Contains(got, "unknown attribute IDs") {
 		t.Fatalf("preserved rows must not be reported as unknown attribute IDs, got %q", got)
 	}
-	for _, want := range []string{
-		"informational (not a failure):",
-		"preserved EAV rows for retired attributes in eav_data_dev",
-		"schema=contact", "attr_id=9", "attribute=legacy", "rows=12",
-		"schema consistency checks passed for 1 schema(s), 1 informational finding(s)",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("output missing %q, got %q", want, got)
-		}
+	// docs/schema-consistency-migration.md quotes this output verbatim, so the
+	// whole rendering is the contract: line order, field order and every
+	// component of the detail line, schema_id= included (#378).
+	want := "schema consistency checks passed for 1 schema(s), 1 informational finding(s)\n" +
+		"informational (not a failure):\n" +
+		retiredDetailLine + "\n"
+	if got != want {
+		t.Fatalf("informational output shape changed:\n got %q\nwant %q", got, want)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet db expectations: %v", err)
@@ -370,14 +394,19 @@ func TestValidateSchemaConsistencyReportsBothBlocks(t *testing.T) {
 	if strings.Contains(got, "schema consistency checks passed") {
 		t.Fatalf("a failing run must not print the success line, got %q", got)
 	}
-	for _, want := range []string{
-		"unknown attribute IDs in eav_data_dev: schema_id=100 attr_id=99 rows=2",
-		"informational (not a failure):",
-		"attribute=legacy",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("output missing %q, got %q", want, got)
+	const failureLine = "- unknown attribute IDs in eav_data_dev: schema_id=100 attr_id=99 rows=2"
+	for _, want := range []string{failureLine, informationalHeader, retiredDetailLine} {
+		if !hasOutputLine(got, want) {
+			t.Fatalf("output missing line %q, got %q", want, got)
 		}
+	}
+	// report prints failures before the informational block, the order the
+	// migration guide reproduces (#378).
+	if strings.Index(got, failureLine) > strings.Index(got, informationalHeader) {
+		t.Fatalf("failures must print before the %q header, got %q", informationalHeader, got)
+	}
+	if strings.Index(got, informationalHeader) > strings.Index(got, retiredDetailLine) {
+		t.Fatalf("the informational detail must follow its header, got %q", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet db expectations: %v", err)
