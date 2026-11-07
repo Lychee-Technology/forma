@@ -4,7 +4,6 @@ package production
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -41,7 +40,7 @@ func TestCompactionRewriteInFlightReaderRetention(t *testing.T) {
 	preSwapURIs := make([]string, 0, len(preSwap.Files))
 	for _, f := range preSwap.Files {
 		preSwapKeys = append(preSwapKeys, f.Path)
-		preSwapURIs = append(preSwapURIs, fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(f.Path, "/")))
+		preSwapURIs = append(preSwapURIs, env.ParquetURI(f.Path))
 	}
 	if len(preSwapURIs) < 2 {
 		t.Fatalf("pre-swap manifest lists %d files, want at least base+delta", len(preSwapURIs))

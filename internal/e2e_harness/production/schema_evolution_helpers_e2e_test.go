@@ -177,7 +177,7 @@ func requireSoleParquet(t *testing.T, step string, keys []string) string {
 // assertWideParquetSchema).
 func describeParquetCols(ctx context.Context, t *testing.T, env *Env, key string) map[string]string {
 	t.Helper()
-	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+	path := env.ParquetURI(key)
 	rows, err := env.Duck.DB.QueryContext(ctx,
 		fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s')", path))
 	if err != nil {

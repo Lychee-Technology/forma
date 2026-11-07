@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"strings"
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/manifest"
@@ -115,8 +114,8 @@ func TestManifestStamp_InPlaceRewriteInvalidatesValidatorCache(t *testing.T) {
 func rewriteBaseWithoutScore(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, baseKey string) {
 	t.Helper()
 	const staging = "base_without_score"
-	stage := fmt.Sprintf("CREATE OR REPLACE TABLE %s AS SELECT * EXCLUDE (score) FROM read_parquet('s3://%s/%s')",
-		staging, env.Cluster.Bucket, strings.TrimPrefix(baseKey, "/"))
+	stage := fmt.Sprintf("CREATE OR REPLACE TABLE %s AS SELECT * EXCLUDE (score) FROM read_parquet('%s')",
+		staging, env.ParquetURI(baseKey))
 	if _, err := env.Duck.DB.ExecContext(ctx, stage); err != nil {
 		t.Fatalf("stage score-less rewrite of %s: %v", baseKey, err)
 	}
@@ -124,7 +123,7 @@ func rewriteBaseWithoutScore(ctx context.Context, t *testing.T, env *Env, schema
 
 	entries := manifest.FilterByTier(mustLoadManifest(ctx, t, env, schema), "base")
 	for i := range entries {
-		if strings.TrimPrefix(entries[i].Path, "/") == strings.TrimPrefix(baseKey, "/") {
+		if entries[i].Path == baseKey {
 			entries[i].Columns = describeParquetCols(ctx, t, env, baseKey)
 		}
 	}

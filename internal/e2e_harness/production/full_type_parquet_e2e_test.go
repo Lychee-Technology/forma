@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -240,7 +239,7 @@ func extractDatetimeMSAttr(t *testing.T, a map[string]any, k string) *int64 {
 // hypothesis 1: the reader's changed_at expectation is met by the exporter).
 func assertWideParquetSchema(ctx context.Context, t *testing.T, env *Env, key, tier string) {
 	t.Helper()
-	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+	path := env.ParquetURI(key)
 	rows, err := env.Duck.DB.QueryContext(ctx,
 		fmt.Sprintf("DESCRIBE SELECT * FROM read_parquet('%s')", path))
 	if err != nil {
@@ -278,7 +277,7 @@ func assertWideParquetSchema(ctx context.Context, t *testing.T, env *Env, key, t
 // exporters emit them differently — see checkSystemColumns).
 func assertWideParquetValues(ctx context.Context, t *testing.T, env *Env, key, tier string, schemaID int16, truth map[uuid.UUID]*wideVals) int {
 	t.Helper()
-	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+	path := env.ParquetURI(key)
 	rows, err := env.Duck.DB.QueryContext(ctx, fmt.Sprintf(
 		`SELECT CAST(row_id AS VARCHAR), "title", "rank", "count", "amount", "score",
 		        CAST("ref" AS VARCHAR), "joined", "touched", "note", "active",

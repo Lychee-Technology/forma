@@ -438,7 +438,7 @@ func collectListAttrs(res *QueryResult, attrID int16) []listAttr {
 // rows (a QueryRow().Scan on an empty delta file would error, so we iterate).
 func dumpParquetTags(ctx context.Context, t *testing.T, env *Env, key string) (string, []string) {
 	t.Helper()
-	path := fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+	path := env.ParquetURI(key)
 
 	typ := "<absent>"
 	drows, err := env.Duck.DB.QueryContext(ctx,

@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -133,12 +132,6 @@ func seedMixedGenerationTiers(ctx context.Context, t *testing.T, env *Env, schem
 	return s
 }
 
-// buildParquetS3Path renders one parquet object key as the s3:// URI DuckDB
-// reads.
-func buildParquetS3Path(env *Env, key string) string {
-	return fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
-}
-
 // requireBaseOldCol asserts the base parquet physically stores the given
 // old_col value for a row — the positive control that makes the merged
 // winner's old_col-NULL assertion prove row-level replacement instead of
@@ -183,7 +176,7 @@ func assertMergedBaseUnion(ctx context.Context, t *testing.T, env *Env, key stri
 		"score":   "DOUBLE",  // both generations export DOUBLE since #384; was BIGINT widened to the delta's DOUBLE
 	})
 
-	path := buildParquetS3Path(env, key)
+	path := env.ParquetURI(key)
 	var total, tombstones, nullDeleted int
 	if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
 		`SELECT COUNT(*),
@@ -302,7 +295,7 @@ func TestCompactionMixedGenerationEquivalence(t *testing.T) {
 	// base copies physically carry old_col, so the merged winner showing NULL
 	// (assertMergedBaseUnion) proves whole-row replacement — a column merge
 	// would leak these values through.
-	basePath := buildParquetS3Path(env, seed.baseKey)
+	basePath := env.ParquetURI(seed.baseKey)
 	requireBaseOldCol(ctx, t, env, basePath, seed.creates[3].RowID, "old-0003")
 	requireBaseOldCol(ctx, t, env, basePath, seed.creates[4].RowID, "old-0004")
 
@@ -396,7 +389,7 @@ func verifyPostCompactionEvolution(ctx context.Context, t *testing.T, env *Env, 
 	// Monotonic healing: the second merge output keeps the union shape.
 	requireParquetCols(t, "second merged base", describeParquetCols(ctx, t, env, second.NewBaseKey),
 		map[string]string{"old_col": "VARCHAR", "new_col": "DOUBLE", "score": "DOUBLE"})
-	path := buildParquetS3Path(env, second.NewBaseKey)
+	path := env.ParquetURI(second.NewBaseKey)
 	var oldColSurvivors int
 	if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
 		"SELECT COUNT(*) FROM read_parquet('%s') WHERE old_col IS NOT NULL", path)).Scan(&oldColSurvivors); err != nil {

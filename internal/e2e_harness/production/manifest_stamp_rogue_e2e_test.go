@@ -192,7 +192,7 @@ func stampedEntryFor(ctx context.Context, t *testing.T, env *Env, schema SchemaR
 		t.Fatalf("schema %s has no manifest", schema.Name)
 	}
 	for _, entry := range m.Files {
-		if strings.TrimPrefix(entry.Path, "/") == strings.TrimPrefix(key, "/") {
+		if entry.Path == key {
 			return entry.Columns
 		}
 	}
@@ -207,8 +207,8 @@ func overwriteWithoutColumn(ctx context.Context, t *testing.T, env *Env, key, co
 	t.Helper()
 	staging := "rogue_missing_" + col
 	stage := fmt.Sprintf(
-		"CREATE OR REPLACE TABLE %s AS SELECT * EXCLUDE (%s) FROM read_parquet('s3://%s/%s')",
-		staging, col, env.Cluster.Bucket, strings.TrimPrefix(key, "/"))
+		"CREATE OR REPLACE TABLE %s AS SELECT * EXCLUDE (%s) FROM read_parquet('%s')",
+		staging, col, env.ParquetURI(key))
 	if _, err := env.Duck.DB.ExecContext(ctx, stage); err != nil {
 		t.Fatalf("stage rogue rewrite of %s dropping %s: %v", key, col, err)
 	}
