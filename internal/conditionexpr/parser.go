@@ -1,7 +1,6 @@
 package conditionexpr
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -142,17 +141,6 @@ func ToSQLOperator(op, value string) (SQLOperatorResult, error) {
 	default:
 		return SQLOperatorResult{}, forma.InvalidInputf("unsupported operator: %s", op)
 	}
-}
-
-// ParseNumeric parses a numeric literal into int64 or float64.
-func ParseNumeric(raw string) (any, error) {
-	if i, err := strconv.ParseInt(raw, 10, 64); err == nil {
-		return i, nil
-	}
-	if f, err := strconv.ParseFloat(raw, 64); err == nil {
-		return f, nil
-	}
-	return nil, fmt.Errorf("value '%s' is not numeric", raw)
 }
 
 // ParseRFC3339OrUnixMs parses ISO8601 datetime string or unix milliseconds.
