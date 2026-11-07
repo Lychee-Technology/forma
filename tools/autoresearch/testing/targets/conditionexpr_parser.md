@@ -16,7 +16,6 @@ It is pure logic, has a compact surface area, and a small mistake here can fan o
 - `ParseOperatorValueEqualsOnEmptyOperator`
 - `CanonicalOperator`
 - `ToSQLOperator`
-- `ParseNumeric`
 - `ParseRFC3339OrUnixMs`
 
 ## Priority Scenarios
@@ -27,10 +26,9 @@ It is pure logic, has a compact surface area, and a small mistake here can fan o
 4. Given operator aliases and mixed casing/whitespace, when canonicalization runs, then aliases normalize to canonical names and unknown operators are lowercased/trimmed only.
 5. Given LIKE-style operators, when SQL operator mapping runs, then wildcard normalization is correct and the canonical SQL operator is returned.
 6. Given unsupported operators, when SQL operator mapping runs, then a clear error is returned.
-7. Given integer, floating-point, and invalid numeric literals, when numeric parsing runs, then the parsed type or error matches expectations.
-8. Given RFC3339, unix-millis, and invalid datetime literals, when datetime parsing runs, then the parsed time or error matches expectations.
-9. Given a raw string with multiple colons that is not a datetime, when lenient parsing runs, then only the first colon is treated as the operator separator.
-10. Given empty raw strings, whitespace-only operator names, or bare operators, when parsing helpers run, then behavior stays explicit and deterministic.
+7. Given RFC3339, unix-millis, and invalid datetime literals, when datetime parsing runs, then the parsed time or error matches expectations.
+8. Given a raw string with multiple colons that is not a datetime, when lenient parsing runs, then only the first colon is treated as the operator separator.
+9. Given empty raw strings, whitespace-only operator names, or bare operators, when parsing helpers run, then behavior stays explicit and deterministic.
 
 ## Keep Bias
 

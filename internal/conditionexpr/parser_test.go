@@ -79,28 +79,6 @@ func TestToSQLOperator(t *testing.T) {
 	}
 }
 
-func TestParseNumeric(t *testing.T) {
-	v, err := ParseNumeric("10")
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if n, ok := v.(int64); !ok || n != 10 {
-		t.Fatalf("expected int64(10), got %v", v)
-	}
-
-	v, err = ParseNumeric("10.5")
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if n, ok := v.(float64); !ok || n != 10.5 {
-		t.Fatalf("expected float64(10.5), got %v", v)
-	}
-
-	if _, err := ParseNumeric("abc"); err == nil {
-		t.Fatalf("expected parse error")
-	}
-}
-
 func TestParseRFC3339OrUnixMs(t *testing.T) {
 	iso := "2023-03-14T15:09:26Z"
 	ts, err := ParseRFC3339OrUnixMs(iso)

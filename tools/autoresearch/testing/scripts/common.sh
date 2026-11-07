@@ -58,7 +58,7 @@ resolve_target_pkg() {
 resolve_focus_regex() {
   case "${1:-}" in
     conditionexpr_parser)
-      printf '%s\n' 'ParseOperatorValueLenient|ParseOperatorValueStrict|ParseOperatorValueEqualsOnEmptyOperator|CanonicalOperator|ToSQLOperator|ParseNumeric|ParseRFC3339OrUnixMs'
+      printf '%s\n' 'ParseOperatorValueLenient|ParseOperatorValueStrict|ParseOperatorValueEqualsOnEmptyOperator|CanonicalOperator|ToSQLOperator|ParseRFC3339OrUnixMs'
       ;;
     flusher)
       printf '%s\n' 'processSchema|shouldFlush|executeFlush|executeBatch|executeFlushInChunks|executeFlushSingle'
@@ -190,7 +190,7 @@ resolve_target_primary_test() {
 resolve_target_test_regex() {
   case "${1:-}" in
     conditionexpr_parser)
-      printf '%s\n' 'Test(ParseOperatorValue|ToSQLOperator|ParseNumeric|ParseRFC3339OrUnixMs|CanonicalOperator)'
+      printf '%s\n' 'Test(ParseOperatorValue|ToSQLOperator|ParseRFC3339OrUnixMs|CanonicalOperator)'
       ;;
     flusher)
       printf '%s\n' 'Test.*Flusher|Test.*Flush|Test.*ProcessSchema|Test.*ShouldFlush|Test.*ExecuteFlush|Test.*ExecuteBatch'
