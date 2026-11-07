@@ -13,9 +13,11 @@ import (
 //
 //   - MISSING (#255): the folded column is physically absent from EVERY
 //     parquet file in the resolved scan set (an attribute added before its
-//     first flush). It renders as NULL::<type> so both the explicit
-//     projection (S3SourceSelect) and the semijoin's logical clause bind,
-//     with exact SQL NULL semantics for filters, sorts, and keysets.
+//     first flush). The scan unions it in by name from a typed relation
+//     with no rows and re-pins it in the REPLACE list (#409), so it reads as
+//     NULL::<type> and both the explicit projection (S3SourceSelect) and the
+//     semijoin's logical clause bind, with exact SQL NULL semantics for
+//     filters, sorts, and keysets.
 //   - PINNED (#371): the column is present but its type is not the one the
 //     schema expects — the files disagree among themselves, or agree on a
 //     stale type. It renders as CAST(<col> AS <type>) inside the system
@@ -164,26 +166,59 @@ var parquetSystemColumnGuardItems = fmt.Sprintf(
 // read_parquet" idle state — the pre-#256 byte-identity of the zero-missing
 // output is deliberately retired. Every rendered-SQL contract that pinned it
 // (including the #214 design-doc guard and docs/federated-query/design.md §5)
-// moves in lockstep. With no pinned columns the REPLACE list is exactly the
-// system guard, so the #371 pin costs a healthy scan set nothing.
+// moves in lockstep. With no pinned and no missing columns the REPLACE list
+// is exactly the system guard and the read is the bare read_parquet, so the
+// #371 pin and the #409 union cost a healthy scan set nothing.
 //
 // A pinned CAST has the changed_at guard's semantics: a numeric string
 // coerces value-preservingly ('9' → 9, so ORDER BY is numeric again) and
 // garbage fails loudly with DuckDB's own conversion error, which the read
 // path already classifies as a loud read failure.
+//
+// A missing column is never projected beside the star (#409). The scan
+// rendered `* REPLACE (…), NULL::<type> AS <col>` until then, which projects
+// <col> twice the moment the column lands in a file the skeleton did not
+// know about: a compiled skeleton served stale, or a glob path set whose
+// listing moved between the validator's footer probe and the scan. The
+// answer then rested on DuckDB binding the first of two identically-named
+// columns, which is not a contract. Instead the read is unioned BY NAME with
+// a relation that carries the missing columns at their schema types and no
+// rows, and each missing column is re-pinned inside the same REPLACE list as
+// a pinned one. A column is therefore projected exactly once whether or not
+// some file carries it: absent everywhere, it reads as NULL::<type>; present
+// after all, it reads the real values at the schema type, exactly as a
+// #371 pin would.
 func BuildParquetScanSource(pathsSQL string, missing, pinned []ScanColumn) string {
-	base := fmt.Sprintf("read_parquet(%s, union_by_name=true)", pathsSQL)
-	replace := make([]string, 0, len(pinned)+1)
+	read := fmt.Sprintf("read_parquet(%s, union_by_name=true)", pathsSQL)
+	replace := make([]string, 0, len(pinned)+len(missing)+1)
 	replace = append(replace, parquetSystemColumnGuardItems)
 	for _, pc := range pinned {
-		replace = append(replace, fmt.Sprintf("CAST(%s AS %s) AS %s", pc.Name, pc.DuckDBType, pc.Name))
+		replace = append(replace, scanColumnPin(pc))
 	}
-	parts := make([]string, 0, len(missing)+1)
-	parts = append(parts, "* REPLACE ("+strings.Join(replace, ", ")+")")
 	for _, mc := range missing {
-		parts = append(parts, fmt.Sprintf("NULL::%s AS %s", mc.DuckDBType, mc.Name))
+		replace = append(replace, scanColumnPin(mc))
 	}
-	return fmt.Sprintf("(SELECT %s FROM %s) AS cold_scan", strings.Join(parts, ", "), base)
+	if len(missing) > 0 {
+		read = fmt.Sprintf("(SELECT * FROM %s UNION ALL BY NAME %s)", read, typedNullRelation(missing))
+	}
+	return fmt.Sprintf("(SELECT * REPLACE (%s) FROM %s) AS cold_scan", strings.Join(replace, ", "), read)
+}
+
+// scanColumnPin renders the REPLACE item that re-pins an attribute column to
+// its schema-expected type.
+func scanColumnPin(c ScanColumn) string {
+	return fmt.Sprintf("CAST(%s AS %s) AS %s", c.Name, c.DuckDBType, c.Name)
+}
+
+// typedNullRelation renders a relation with no rows whose columns are cols at
+// their schema-expected types, the right-hand side of the missing-column
+// union.
+func typedNullRelation(cols []ScanColumn) string {
+	parts := make([]string, 0, len(cols))
+	for _, c := range cols {
+		parts = append(parts, fmt.Sprintf("NULL::%s AS %s", c.DuckDBType, c.Name))
+	}
+	return fmt.Sprintf("SELECT %s WHERE false", strings.Join(parts, ", "))
 }
 
 // BuildEmptyParquetScanSource renders the scan source for a path set that

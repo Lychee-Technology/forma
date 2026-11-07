@@ -20,8 +20,8 @@ import (
 
 // The pin renders INSIDE the system REPLACE list, after the system items, as
 // CAST(col AS type) AS col — never as a projection alias, which would
-// duplicate the column instead of replacing it. Missing columns keep their
-// typed-NULL projection after the REPLACE.
+// duplicate the column instead of replacing it. Missing columns are re-pinned
+// after the pinned ones, over the typed-NULL union (#409).
 func TestBuildParquetScanSourcePinsAttributeColumnsInsideReplace(t *testing.T) {
 	got := BuildParquetScanSource("'s3://b/a.parquet'", nil, []ScanColumn{
 		{Name: "amount", DuckDBType: "DOUBLE"},
@@ -37,8 +37,10 @@ func TestBuildParquetScanSourcePinsAttributeColumnsInsideReplace(t *testing.T) {
 		[]ScanColumn{{Name: "tags", DuckDBType: "BIGINT[]"}},
 		[]ScanColumn{{Name: "score", DuckDBType: "INTEGER"}})
 	require.Equal(t,
-		"(SELECT "+wantGuardREPLACE[:len(wantGuardREPLACE)-1]+", CAST(score AS INTEGER) AS score), "+
-			"NULL::BIGINT[] AS tags FROM read_parquet('s3://b/a.parquet', union_by_name=true)) AS cold_scan",
+		"(SELECT "+wantGuardREPLACE[:len(wantGuardREPLACE)-1]+
+			", CAST(score AS INTEGER) AS score, CAST(tags AS BIGINT[]) AS tags) "+
+			"FROM (SELECT * FROM read_parquet('s3://b/a.parquet', union_by_name=true) "+
+			"UNION ALL BY NAME SELECT NULL::BIGINT[] AS tags WHERE false)) AS cold_scan",
 		both)
 }
 

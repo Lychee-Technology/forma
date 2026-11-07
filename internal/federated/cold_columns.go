@@ -12,7 +12,7 @@ import (
 //
 //   - missing (#255): attributes whose folded column is absent from the
 //     ENTIRE resolved scan set (added before their first flush), rendered
-//     as NULL::<type>.
+//     as NULL::<type> through a BY NAME union (sqlgen.BuildParquetScanSource).
 //   - pinned (#371): attributes present in the set whose type disagrees
 //     with the schema's expected scan type or differs between files,
 //     rendered as CAST(col AS <type>) in the scan's REPLACE list.
