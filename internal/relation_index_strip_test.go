@@ -34,7 +34,7 @@ func TestStripRemovesRelationSubtree(t *testing.T) {
 }
 
 // TestStripKeepsSamePrefixSibling is the boundary anchor for the "." in
-// root+"." (relation_index.go, coversRelationSubtree). A bare HasPrefix would
+// root+"." (relation_index.go, RelationDescriptor.coversSubtree). A bare HasPrefix would
 // delete these ordinary attributes along with the subtree.
 //
 // It cannot fail against the pre-#318 exact-key code either, so it is a mutation

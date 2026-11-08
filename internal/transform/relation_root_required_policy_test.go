@@ -150,7 +150,7 @@ func TestFromEAVRecordsEnforcesRequiredPolicyOnRelationRootItself(t *testing.T) 
 // The payload strip does not consult this set (relation_roots.go), so whether
 // the sibling still expands is the strip predicate's question, pinned by the
 // twin TestStripKeepsSamePrefixSibling (internal/relation_index_strip_test.go)
-// on RelationIndex.coversRelationSubtree. Between the two, the boundary is held
+// on RelationDescriptor.coversSubtree. Between the two, the boundary is held
 // on both halves.
 func TestFromEAVRecordsEnforcesRequiredPolicyOnSamePrefixSibling(t *testing.T) {
 	converter, rowID := relationRootPolicyConverter(t)

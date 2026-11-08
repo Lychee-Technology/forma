@@ -9,7 +9,7 @@ package transform
 // assign it without a conversion.
 //
 // The payload strip does not consult this set. RelationIndex.StripComputedFields
-// applies its own subtree predicate (RelationIndex.coversRelationSubtree) to drop
+// applies its own subtree predicate (RelationDescriptor.coversSubtree) to drop
 // the whole relation subtree before validation, because it is derived on read and
 // never persisted.
 //
@@ -32,10 +32,17 @@ type RelationRoots map[string]struct{}
 // A name that *is* a relation root is not covered: this reports names strictly
 // beneath one, so the root's own required policy stays enforced — pinned by
 // TestFromEAVRecordsEnforcesRequiredPolicyOnRelationRootItself and its input-side
-// twin TestToAttributesEnforcesRequiredAlwaysOnRelationRootItself. The write path's
-// strip predicate (RelationIndex.coversRelationSubtree) deliberately differs
-// there and matches the bare root as well, because the root is the nested
-// spelling the strip removes.
+// twin TestToAttributesEnforcesRequiredAlwaysOnRelationRootItself.
+//
+// This is the deliberate strict-descendant variant of the one at-or-beneath
+// predicate, RelationDescriptor.coversSubtree in package internal, not an
+// independent rule. That predicate matches the bare root as well, because the
+// root is the nested spelling the payload strip removes; for dotted descendants
+// the two agree (pinned by TestCoversSubtreeAgreesWithStrictCoversBeneathRoot).
+// It is kept separate only because package internal imports this one, and
+// because it is asked about absolute names against a set of roots rather than
+// per descriptor. A change to the rule belongs in both, with that test as the
+// guard.
 func (r RelationRoots) Covers(name string) bool {
 	if len(r) == 0 {
 		return false

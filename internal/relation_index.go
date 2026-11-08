@@ -337,7 +337,7 @@ func (idx *RelationIndex) StripComputedFields(schema string, data map[string]any
 //
 // It answers the roots alone, which is less than StripComputedFields removes:
 // the strip also takes every dotted descendant of each root, by the prefix rule
-// in coversRelationSubtree. Do not read this set as the strip's reach. A caller
+// in RelationDescriptor.coversSubtree. Do not read this set as the strip's reach. A caller
 // that needs the reach has to apply that prefix rule itself —
 // transform.RelationRoots.Covers applies it for names strictly beneath a root,
 // and deliberately excludes a name that is itself a root.
@@ -385,28 +385,42 @@ func (idx *RelationIndex) RelationRootNames(schema string) []string {
 	return names
 }
 
-// coversRelationSubtree reports whether key names a relation root or anything
-// beneath it.
-//
-// The "." in root+"." is load-bearing. A bare HasPrefix would also delete a
-// sibling attribute whose name merely starts with the root's — contactSnapshotX
-// alongside contactSnapshot — silently dropping an ordinary caller attribute.
-// Pinned by TestStripKeepsSamePrefixSibling.
-//
-// For dotted descendants this is the same prefix rule
-// transform.RelationRoots.Covers applies for #315's required-policy carve-out.
-// The two differ on the bare root, and deliberately:
-// Covers excludes a name that *is* a root, while this predicate must match it —
-// the root is the nested spelling the strip has always removed. #318 was this
-// predicate lagging behind that prefix rule by an exact-key match, which let the
-// dotted spelling persist what the nested spelling discarded.
+// coversRelationSubtree reports whether key names one of schema's relation roots
+// or anything beneath it, by RelationDescriptor.coversSubtree — the one
+// definition of that predicate; see it for the rule and its strict variant.
 func (idx *RelationIndex) coversRelationSubtree(schema, key string) bool {
 	for _, rel := range idx.bySchema[schema] {
-		if key == rel.ChildPath || strings.HasPrefix(key, rel.ChildPath+".") {
+		if rel.coversSubtree(key) {
 			return true
 		}
 	}
 	return false
+}
+
+// coversSubtree reports whether name is the descriptor's relation root
+// (ChildPath) or lies beneath it. It is the single definition of the
+// at-or-beneath rule in this package: the payload strip
+// (coversRelationSubtree) and the requested-attribute filter of
+// entityRelationService.enrichDataRecords both ask it, so the two cannot drift
+// apart. #318 was exactly such a drift — the strip matched the root by exact key
+// while the rule elsewhere was a subtree rule, which let the dotted spelling
+// persist what the nested spelling discarded.
+//
+// The "." in ChildPath+"." is load-bearing. A bare HasPrefix would also match a
+// sibling attribute whose name merely starts with the root's — contactSnapshotX
+// alongside contactSnapshot — silently dropping an ordinary caller attribute.
+// Pinned by TestStripKeepsSamePrefixSibling.
+//
+// transform.RelationRoots.Covers is the deliberate strict-descendant variant of
+// this predicate, not an independent rule: for dotted descendants the two agree,
+// but Covers excludes a name that *is* a root, so the root's own required policy
+// stays enforced (#315), while this predicate must match it — the root is the
+// nested spelling the strip removes. Covers lives in package transform, which
+// cannot import this one, and works from a set of root names rather than
+// descriptors; TestCoversSubtreeAgreesWithStrictCoversBeneathRoot pins the
+// agreement.
+func (rel RelationDescriptor) coversSubtree(name string) bool {
+	return name == rel.ChildPath || strings.HasPrefix(name, rel.ChildPath+".")
 }
 
 func stringValue(v any) string {
