@@ -255,8 +255,11 @@ func writeError(w http.ResponseWriter, statusCode int, message string) error {
 //   - internal/conditionexpr/parser.go — malformed "op:value", unknown operator,
 //     unparseable date
 //
-// The table in docs/error-handling.md ("Public HTTP error surface") is the
-// maintained list, with the caller mistake each one represents.
+// That list is the sweep as it stands, not the inventory of 4xx sites. The
+// table in docs/error-handling.md ("Public HTTP error surface") is the full
+// list of carrier sites that answer a caller mistake, each with the mistake it
+// represents; it is a superset of the sweep, holding sites added later that
+// never relied on the heuristic (internal/httpapi since #360, among others).
 //
 // IF YOU ADD A VALIDATOR that rejects caller input anywhere behind this
 // boundary, build the error with forma.InvalidInputf (or NotFoundf/Conflictf)
