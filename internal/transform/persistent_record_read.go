@@ -19,7 +19,7 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *model.Persisten
 	// Then, try reading with special encoding
 	attr, hasValue, err := t.readWithEncoding(record, meta, binding)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode %s encoding: %w", binding.Encoding, err)
 	}
 	if hasValue {
 		return attr, nil
@@ -28,7 +28,7 @@ func (t *persistentRecordTransformer) readFromMainColumn(record *model.Persisten
 	// Finally, try reading with default encoding
 	attr, hasValue, err = t.readWithDefaultEncoding(record, meta, binding)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read column %s with default encoding: %w", binding.ColumnName, err)
 	}
 	if hasValue {
 		return attr, nil
@@ -134,7 +134,7 @@ func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentR
 		if val, ok := record.TextItems[columnName]; ok {
 			parsedTime, err := iso8601.Parse(val)
 			if err != nil {
-				return nil, false, fmt.Errorf("failed to parse ISO 8601 date: %w", err)
+				return nil, false, fmt.Errorf("column %s: parse ISO 8601 date: %w", columnName, err)
 			}
 			// The image has a four-digit year, so its millis are inside
 			// the int64 range by construction; both slots carry them.

@@ -49,7 +49,7 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 
 	cache, _, err := schemameta.GetSchemaMetadata(t.registry, schemaID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load metadata of schema %d: %w", schemaID, err)
 	}
 
 	var data map[string]any
@@ -153,60 +153,6 @@ func (t *transformer) FromAttributes(ctx context.Context, attributes []model.Ent
 		})
 	}
 	return rebuildDocument(records)
-}
-
-func (t *transformer) BatchToAttributes(ctx context.Context, schemaID int16, jsonObjects []any) ([]model.EntityAttribute, error) {
-	attributes := make([]model.EntityAttribute, 0)
-
-	for _, obj := range jsonObjects {
-		var rowID uuid.UUID
-		if objMap, ok := obj.(map[string]any); ok {
-			if idVal, exists := objMap["id"]; exists {
-				if idStr, ok := idVal.(string); ok {
-					parsedID, err := uuid.Parse(idStr)
-					if err == nil {
-						rowID = parsedID
-					}
-				}
-			}
-		}
-
-		if rowID == (uuid.UUID{}) {
-			rowID = uuid.Must(uuid.NewV7())
-		}
-
-		attrs, err := t.ToAttributes(ctx, schemaID, rowID, obj)
-		if err != nil {
-			return nil, err
-		}
-		attributes = append(attributes, attrs...)
-	}
-
-	return attributes, nil
-}
-
-func (t *transformer) BatchFromAttributes(ctx context.Context, attributes []model.EntityAttribute) ([]map[string]any, error) {
-	if len(attributes) == 0 {
-		return []map[string]any{}, nil
-	}
-
-	// Group by RowID directly from model.EntityAttribute
-	groupedByRowID := make(map[uuid.UUID][]model.EntityAttribute)
-	for _, attr := range attributes {
-		groupedByRowID[attr.RowID] = append(groupedByRowID[attr.RowID], attr)
-	}
-
-	// Convert each group back to JSON
-	results := make([]map[string]any, 0, len(groupedByRowID))
-	for _, attrs := range groupedByRowID {
-		result, err := t.FromAttributes(ctx, attrs)
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, result)
-	}
-
-	return results, nil
 }
 
 func (t *transformer) ValidateAgainstSchema(ctx context.Context, jsonSchema any, jsonData any) error {

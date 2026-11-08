@@ -114,6 +114,10 @@ type schemaView struct {
 // container and nowhere else: the caller's nesting is the only thing that can
 // be cyclic, and the merge helpers below recurse only over output this walk
 // has already rebuilt, which is finite by construction.
+//
+// Errors pass up the recursion unwrapped. The only one is the depth cap's
+// carrier, which names the top-level key and is published as built; a
+// prefix per level would stack up to maxPayloadNestingDepth of them.
 func normalizeMap(
 	src map[string]any, prefix string, view schemaView, pos payloadPosition,
 ) (map[string]any, error) {

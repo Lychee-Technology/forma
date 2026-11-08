@@ -63,7 +63,7 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 	// Get schema metadata
 	cache, _, err := schemameta.GetSchemaMetadata(t.registry, schemaID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load metadata of schema %d: %w", schemaID, err)
 	}
 
 	// Initialize the persistent record
@@ -212,7 +212,7 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *model.Persistent
 	// something that was never written.
 	stored, err := t.storeWithEncoding(record, attr, vt, binding)
 	if err != nil {
-		return err
+		return fmt.Errorf("store into main column %s: %w", binding.ColumnName, err)
 	}
 	if !stored {
 		return fmt.Errorf("no value to store in main column %s: attr id %d of schema %d (row %s) has an empty %s slot",

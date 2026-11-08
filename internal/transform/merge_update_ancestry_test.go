@@ -369,7 +369,7 @@ func TestRowWithMarkerReadWithoutAncestryFails(t *testing.T) {
 				{"order": map[string]any{"items": []any{}}},
 			} {
 				_, err := tr.MergeUpdate(ctx, stored, setting(update))
-				require.EqualError(t, err, want, "update %v", update)
+				require.EqualError(t, err, "rebuild the merge base: "+want, "update %v", update)
 			}
 		})
 	}

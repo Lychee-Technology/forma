@@ -55,7 +55,7 @@ func extractValueFromEAVRecord(record model.EAVRecord, valueType forma.ValueType
 		// never the strict write funnel — a stored 0.3 is float noise, not
 		// caller input to reject. Non-finite still has no truth value (#322).
 		if err := finiteBoolInput(*record.ValueNumeric); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("stored bool image in value_numeric: %w", err)
 		}
 		return float64ToBool(*record.ValueNumeric), nil
 
@@ -87,6 +87,8 @@ func numericFromEAVRecord(record model.EAVRecord, valueType forma.ValueType) (an
 		return nil, nil
 	}
 	if err := checkIntegerImage(record, valueType); err != nil {
+		// Unwrapped: the refusal already names the image, the column and
+		// the declared type.
 		return nil, err
 	}
 	image := *record.ValueNumeric
