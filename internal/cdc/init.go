@@ -181,13 +181,13 @@ func RunInit(ctx context.Context, opts InitOptions) (InitSummary, error) {
 
 	runCtx, err := newInitRunContext(ctx, opts)
 	if err != nil {
-		return InitSummary{}, err
+		return InitSummary{}, fmt.Errorf("set up cdc init run: %w", err)
 	}
 	defer runCtx.close()
 
 	schemaIDs, err := getSchemaIDsToInit(ctx, runCtx.db, opts.SchemaRegistryTable, opts.SchemaIDFilter)
 	if err != nil {
-		return InitSummary{}, err
+		return InitSummary{}, fmt.Errorf("list schemas to initialize: %w", err)
 	}
 
 	if len(schemaIDs) == 0 {
@@ -203,7 +203,7 @@ func RunInit(ctx context.Context, opts InitOptions) (InitSummary, error) {
 		zap.Int("total_files_created", summary.TotalFilesCreated),
 		zap.Any("skipped_schemas", summary.Skipped))
 	if err := refuseNamedSkippedSchema(opts.SchemaIDFilter, summary.Skipped); err != nil {
-		return summary, err
+		return summary, fmt.Errorf("check the --schema-id filter: %w", err)
 	}
 	return summary, schemaErr
 }
@@ -278,28 +278,31 @@ func getSchemaIDsToInit(ctx context.Context, db *sql.DB, schemaRegistryTable str
 func initSchema(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error) {
 	inventory, err := preflightDeltaTier(ctx, runCtx, schemaID)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("delta tier pre-flight: %w", err)
 	}
 
 	state, err := prepareSchemaInit(ctx, runCtx, schemaID)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("prepare schema init: %w", err)
 	}
 	if state == nil {
 		state, err = finishEmptySchema(ctx, runCtx, schemaID, inventory)
-		if err != nil || state == nil {
-			return 0, 0, err
+		if err != nil {
+			return 0, 0, fmt.Errorf("init with no live rows: %w", err)
+		}
+		if state == nil {
+			return 0, 0, nil
 		}
 		return state.rowsExported, state.filesCreated, nil
 	}
 	state.deltaPurge = inventory.purgeKeys()
 
 	if err := processSchemaBatches(ctx, runCtx, state); err != nil {
-		return state.rowsExported, state.filesCreated, err
+		return state.rowsExported, state.filesCreated, fmt.Errorf("export schema batches: %w", err)
 	}
 
 	if err := publishAndPurge(ctx, runCtx, state); err != nil {
-		return state.rowsExported, state.filesCreated, err
+		return state.rowsExported, state.filesCreated, fmt.Errorf("publish base and purge delta: %w", err)
 	}
 
 	runCtx.logger.Info("schema init completed",
@@ -317,7 +320,7 @@ func initSchema(ctx context.Context, runCtx *initRunContext, schemaID int16) (in
 // write-once keys — while a failed delete leaves the swap published.
 func publishAndPurge(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
 	if err := updateSchemaManifest(ctx, runCtx, state); err != nil {
-		return err
+		return fmt.Errorf("swap the schema manifest: %w", err)
 	}
 	return purgeDeltaTier(ctx, runCtx, state)
 }
@@ -375,7 +378,7 @@ func iterateSchemaBatches(
 		}
 
 		if err := onBatch(rowIDs); err != nil {
-			return err
+			return fmt.Errorf("batch of %d rows from %s: %w", len(rowIDs), rowIDs[0], err)
 		}
 		last := rowIDs[len(rowIDs)-1]
 		after = &last

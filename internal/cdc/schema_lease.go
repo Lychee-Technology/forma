@@ -64,8 +64,11 @@ func (l *leaseSchemaLocker) TryLock(ctx context.Context, schemaID int16) (contex
 	holder := uuid.New()
 	sent := time.Now()
 	ok, err := l.acquire(ctx, schemaID, holder)
-	if err != nil || !ok {
-		return nil, nil, false, err
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("lease schema locker: %w", err)
+	}
+	if !ok {
+		return nil, nil, false, nil
 	}
 	validUntil := sent.Add(l.validFor())
 	if time.Until(validUntil) < l.renewEvery {

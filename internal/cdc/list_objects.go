@@ -50,12 +50,14 @@ func ForEachObject(ctx context.Context, client S3ListClient, bucket, prefix stri
 		if err != nil {
 			return fmt.Errorf("list objects under %s: %w", prefix, err)
 		}
-		next, err := nextListingToken(out, prefix, len(seen)+1, seen)
+		next, err := nextListingToken(out, len(seen)+1, seen)
 		if err != nil {
-			return err
+			return fmt.Errorf("list objects under %s: %w", prefix, err)
 		}
 		for _, obj := range out.Contents {
 			if err := fn(obj); err != nil {
+				// Unwrapped by contract: fn is the caller's own code, so its
+				// error already carries the caller's context.
 				return err
 			}
 		}
@@ -69,18 +71,18 @@ func ForEachObject(ctx context.Context, client S3ListClient, bucket, prefix stri
 // nextListingToken validates one page's pagination state and returns the
 // token to forward, or nil when the page is the last one. It records the
 // token in seen so a later page that hands it back again is refused.
-func nextListingToken(out *s3.ListObjectsV2Output, prefix string, page int, seen map[string]struct{}) (*string, error) {
+func nextListingToken(out *s3.ListObjectsV2Output, page int, seen map[string]struct{}) (*string, error) {
 	if !aws.ToBool(out.IsTruncated) {
 		return nil, nil
 	}
 	next := aws.ToString(out.NextContinuationToken)
 	if next == "" {
-		return nil, fmt.Errorf("list objects under %s: page %d is truncated but carries no continuation token: %w",
-			prefix, page, ErrIncompleteObjectListing)
+		return nil, fmt.Errorf("page %d is truncated but carries no continuation token: %w",
+			page, ErrIncompleteObjectListing)
 	}
 	if _, repeated := seen[next]; repeated {
-		return nil, fmt.Errorf("list objects under %s: page %d repeats continuation token %q: %w",
-			prefix, page, next, ErrIncompleteObjectListing)
+		return nil, fmt.Errorf("page %d repeats continuation token %q: %w",
+			page, next, ErrIncompleteObjectListing)
 	}
 	seen[next] = struct{}{}
 	return aws.String(next), nil
@@ -97,7 +99,7 @@ func ListObjectKeys(ctx context.Context, client S3ListClient, bucket, prefix str
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list object keys in bucket %s: %w", bucket, err)
 	}
 	return keys, nil
 }

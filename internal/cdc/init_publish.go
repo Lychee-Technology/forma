@@ -128,7 +128,7 @@ func updateSchemaManifest(ctx context.Context, runCtx *initRunContext, state *sc
 func publishInitTiers(ctx context.Context, runCtx *initRunContext, state *schemaInitState, manifestPath string) error {
 	m, etag, err := loadInitManifest(ctx, runCtx, state.schemaID, manifestPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("reload manifest for publish: %w", err)
 	}
 	if runCtx.replaceDelta {
 		// Delta entries that appeared since the pre-flight (a lost 412 race
@@ -137,7 +137,7 @@ func publishInitTiers(ctx context.Context, runCtx *initRunContext, state *schema
 		// surviving under the new base or deleting outside the namespace.
 		keys, unnormalizable, foreign := classifyDeltaEntries(runCtx, state.schemaID, manifest.FilterByTier(m, "delta"))
 		if err := refuseUnpurgeable(runCtx, state.schemaID, unnormalizable, foreign); err != nil {
-			return err
+			return fmt.Errorf("re-check delta entries on publish: %w", err)
 		}
 		state.deltaPurge = mergeKeys(state.deltaPurge, keys)
 		manifest.SpliceTierFiles(m, "delta", nil)

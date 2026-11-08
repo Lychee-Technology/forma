@@ -53,7 +53,7 @@ func resolveRequiredAttrCache(reg forma.SchemaRegistry, schemaID int16) (forma.S
 func resolveRunAttrCache(ctx context.Context, reg forma.SchemaRegistry, schemaID int16) (forma.SchemaAttributeCache, error) {
 	cache, err := resolveRequiredAttrCache(reg, schemaID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve run attribute cache: %w", err)
 	}
 	if err := schemaledger.RequireUnchanged(ctx, reg, schemaID); err != nil {
 		return nil, fmt.Errorf("schema %d: %w", schemaID, err)
@@ -84,7 +84,7 @@ func resolveRunAttrCaches(ctx context.Context, reg forma.SchemaRegistry, schemaI
 	for _, sid := range schemaIDs {
 		cache, err := resolveRunAttrCache(ctx, reg, int16(sid))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("resolve attribute caches of the run's %d schemas: %w", len(schemaIDs), err)
 		}
 		caches[int16(sid)] = cache
 	}

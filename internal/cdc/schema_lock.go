@@ -67,8 +67,11 @@ type advisorySchemaLocker struct {
 
 func (l advisorySchemaLocker) TryLock(ctx context.Context, schemaID int16) (context.Context, func(), bool, error) {
 	locked, unlock, err := TrySchemaLock(ctx, l.db, schemaID)
-	if err != nil || !locked {
-		return nil, nil, false, err
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("postgresql schema locker: %w", err)
+	}
+	if !locked {
+		return nil, nil, false, nil
 	}
 	held, cancel := context.WithCancel(ctx)
 	return held, func() {

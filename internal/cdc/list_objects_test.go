@@ -88,7 +88,7 @@ func TestForEachObject_CallbackErrorStopsListing(t *testing.T) {
 		seen = append(seen, aws.ToString(obj.Key))
 		return stop
 	})
-	require.ErrorIs(t, err, stop)
+	require.Same(t, stop, err, "the callback's error must reach the caller as it was returned")
 	require.Equal(t, []string{"data/7/a.parquet"}, seen)
 	require.Len(t, client.tokens, 1, "the listing must not fetch another page after the callback failed")
 }

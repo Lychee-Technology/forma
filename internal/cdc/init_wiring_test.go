@@ -288,7 +288,7 @@ func TestListObjectKeys_UnfollowableTruncationFailsClosed(t *testing.T) {
 			client := &malformedListClient{pages: c.pages}
 			keys, err := ListObjectKeys(context.Background(), client, "test-bucket", "delta/7/")
 			require.ErrorIs(t, err, ErrIncompleteObjectListing)
-			require.Contains(t, err.Error(), "list objects under delta/7/: "+c.want)
+			require.Contains(t, err.Error(), "list object keys in bucket test-bucket: list objects under delta/7/: "+c.want)
 			require.Nil(t, keys, "an incomplete listing must not hand back a partial key set")
 			require.Equal(t, c.calls, client.calls)
 		})
