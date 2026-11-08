@@ -27,7 +27,7 @@ func (t *persistentRecordTransformer) MergeUpdate(
 ) (map[string]any, error) {
 	base, err := t.fromPersistentRecord(ctx, record, holdRecordValue)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("rebuild the merge base: %w", err)
 	}
 	cache, _, err := schemameta.GetSchemaMetadata(t.registry, record.SchemaID)
 	if err != nil {
@@ -78,7 +78,7 @@ func (t *persistentRecordTransformer) MergeUpdate(
 func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, cache forma.SchemaAttributeCache) (map[string]any, error) {
 	entries, err := walkDocument(schemaID, rowID, doc, cache)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("walk the merged document of row %s: %w", rowID, err)
 	}
 	winners := updateWinners(entries)
 	stored := storedSpellingsOf(entries)
@@ -92,6 +92,8 @@ func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, ca
 		if claimed && winners.wins(entry.tagged) {
 			value, err := held.decode()
 			if err != nil {
+				// Unwrapped by contract: the read path's own error, which
+				// already names the attribute and the record (see above).
 				return nil, err
 			}
 			// A stored record decodes to nil only where the read decodes

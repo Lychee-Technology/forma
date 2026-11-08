@@ -88,6 +88,9 @@ type updateIntake struct {
 	refusal error
 }
 
+// copyValue dispatches one position of the copy. Errors pass up the copy
+// unwrapped: convertLeaf names the attribute, which is the whole path, so a
+// prefix per level would only repeat it.
 func (in *updateIntake) copyValue(path []string, value any, indices []int) (any, error) {
 	switch v := value.(type) {
 	case map[string]any:

@@ -264,6 +264,8 @@ func (c *AttributeConverter) convertEAVRecords(records []model.EAVRecord, relati
 		}
 		attr := attributeOf(record, vt)
 		if attr.Value, err = valueOf(record, attrName, vt); err != nil {
+			// Unwrapped by contract: valueOf is the caller's recordValuer,
+			// and decodeRecordValue already names the attribute and record.
 			return nil, err
 		}
 		attributes = append(attributes, attr)

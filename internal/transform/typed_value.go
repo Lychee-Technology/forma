@@ -80,6 +80,10 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 // conversionRefusal publishes a conversion failure of attrName's value. The
 // converter's own text is published: it describes the caller's value
 // ("cannot convert string to float64") and is the whole point of the 400.
+// That is why the converters beneath it (boolFromAny, toFloat64ForEAV,
+// checkStorageFit and their helpers) hand their callees' errors back
+// unwrapped: %v below formats the whole chain, so any prefix added there
+// becomes part of the 400 body (#625).
 func conversionRefusal(attrName string, meta forma.AttributeMetadata, err error) error {
 	return forma.InvalidInputf(
 		"invalid value for attribute '%s' (attrID=%d): %v",

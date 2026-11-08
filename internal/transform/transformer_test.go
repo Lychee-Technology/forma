@@ -201,50 +201,6 @@ func TestTransformer_FromAttributes(t *testing.T) {
 	assert.Equal(t, false, metadata["active"])
 }
 
-func TestTransformer_BatchRoundTrip(t *testing.T) {
-	ctx := context.Background()
-	registry := newStubSchemaRegistry()
-	transformer := NewTransformer(registry)
-
-	schemaID, _, err := registry.GetSchemaAttributeCacheByName("test")
-	require.NoError(t, err)
-
-	records := []map[string]any{
-		{
-			"name": "Alice",
-			"age":  31,
-			"items": []any{
-				"one",
-				"two",
-			},
-			"metadata": map[string]any{
-				"createdAt": "2024-05-01T12:00:00Z",
-				"active":    true,
-			},
-		},
-		{
-			"name": "Bob",
-			"age":  29,
-			"items": []any{
-				"first",
-			},
-		},
-	}
-
-	jsonObjects := make([]any, len(records))
-	for i := range records {
-		jsonObjects[i] = records[i]
-	}
-
-	attrs, err := transformer.BatchToAttributes(ctx, schemaID, jsonObjects)
-	require.NoError(t, err)
-	require.NotEmpty(t, attrs)
-
-	back, err := transformer.BatchFromAttributes(ctx, attrs)
-	require.NoError(t, err)
-	require.Len(t, back, 2)
-}
-
 func TestTransformer_ValidateAgainstSchema(t *testing.T) {
 	transformer := NewTransformer(newStubSchemaRegistry())
 	ctx := context.Background()

@@ -116,6 +116,7 @@ func TestFromPersistentRecordConsistencyErrorsNameRow(t *testing.T) {
 		require.Error(t, err)
 		msg := err.Error()
 		require.Contains(t, msg, "failed to convert EAVRecords to EntityAttributes: convert attribute 'jobs.active': record schema=201 row="+rowID.String()+" attrID=13 arrayIndices=1: ")
+		require.Contains(t, msg, "stored bool image in value_numeric: ")
 		require.Contains(t, msg, "has no truth value")
 	})
 
@@ -128,7 +129,7 @@ func TestFromPersistentRecordConsistencyErrorsNameRow(t *testing.T) {
 		require.Error(t, err)
 		msg := err.Error()
 		require.Contains(t, msg, "failed to read attribute isActiveText of row "+rowID.String()+" from main column: ")
-		require.Contains(t, msg, "column "+string(forma.MainColumnText02))
+		require.Contains(t, msg, "decode bool_text encoding: column "+string(forma.MainColumnText02)+": ")
 	})
 }
 
