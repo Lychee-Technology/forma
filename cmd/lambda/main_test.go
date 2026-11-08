@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,33 +118,33 @@ var knownManagerBuilders = []string{"lambda", "server", "sample"}
 // the #314 staged rollout (VALIDATE_UPDATES_STRICT) is available on all
 // deployment targets rather than only the ones someone remembered to wire.
 //
-// For each child directory of cmd/ it reads every non-test Go file in that
-// child's whole subtree and matches the "factory.NewEntityManager" prefix, so an
-// entry point added later is read without anyone updating this test, and the
-// WithConfig / WithConfigContext wrappers — and any future one — all count.
-// Before #321 the directories were a hardcoded pair and the match was the exact
-// WithConfigContext spelling, so the regression this comment names could not fail
-// it: a scratch cmd/apiworker went unread, and the already existing cmd/sample
-// used the unmatched WithConfig wrapper.
+// For each child directory of cmd/ it parses every non-test Go file in that
+// child's whole subtree, so an entry point added later is read without anyone
+// updating this test (#321). A tree builds a manager when its code refers to
+// any factory.NewEntityManager* function, so the WithConfig / WithConfigContext
+// wrappers, and any future one, all count.
 //
-// The unit of judgement is that whole subtree, not a single file. One cmd/<name>
-// tree is one binary, so an entry point that builds its manager outside main.go,
-// or applies the overlay from a sibling file or a helper subpackage, is wired and
-// must pass. The cost is the converse: a tree where the overlay call sits in a
-// file that is not on the path to the manager also passes. Attributing the
-// overlay to the file that builds the manager would trade that for false
-// failures on the ordinary split-across-files wiring, which is the more common
-// shape — and a substring scan cannot tell a reachable call from a dead one
-// either way.
+// The scan reads the AST, not the text (#429). Before that a comment naming
+// either symbol satisfied it: the first #321 mutation probe passed on its own
+// doc comment. Now only code counts, and the overlay counts only where it is
+// called from a declaration reachable from main or package initialisation.
+// Reachability is followed across files and into helper packages of the same
+// tree, so an entry point that builds its manager in one file and applies the
+// overlay from a sibling file or a helper subpackage still passes, while an
+// overlay call in a function nothing calls, or in a tree package main does not
+// import, no longer does. The fixture tests in entrypoint_scan_fixture_test.go
+// pin each of those cases.
+//
+// Reachability is syntactic, with no type checking, and over-approximates: it
+// does not prove the overlay runs before the manager is built, only that the
+// binary can reach it. A contrived evasion (a local variable shadowing the name
+// of a dead overlay function) can still pass, but a wired entry point split
+// across files or packages does not fail.
 //
 // This is a source-level guard rather than a wiring test on purpose.
 // bootstrapLambda takes no injection seams and connects to a real database before
 // reaching the config assignment, so exercising the wiring would need a live
-// Postgres/DSQL — a heavyweight harness for a one-line assignment. What a source
-// scan cannot see remains, for the call and the overlay alike: writing either
-// symbol in a comment satisfies the scan without wiring anything. Observed, not
-// assumed — the first #321 probe passed on its own doc comment. Closing that
-// needs an AST parse (#429).
+// Postgres/DSQL, a heavyweight harness for a one-line assignment.
 //
 // It lives in this package because cmd/ has no shared test package.
 func TestEntityConfigFromEnvWiredInEveryWriteEntryPoint(t *testing.T) {
@@ -163,18 +161,18 @@ func TestEntityConfigFromEnvWiredInEveryWriteEntryPoint(t *testing.T) {
 		if !entry.IsDir() {
 			continue
 		}
-		builds, overlays, err := scanEntryPointDir(filepath.Join(cmdDir, entry.Name()))
+		scan, err := scanEntryPointTree(filepath.Join(cmdDir, entry.Name()), formaModulePath+"/cmd/"+entry.Name())
 		if err != nil {
 			t.Fatalf("failed to scan cmd/%s: %v", entry.Name(), err)
 		}
-		if !builds {
+		if !scan.builds {
 			continue
 		}
 		buildsManager[entry.Name()] = true
-		if !overlays {
-			t.Errorf("cmd/%s builds an EntityManager but never calls "+
-				"bootstrap.EntityConfigFromEnv, so VALIDATE_UPDATES_STRICT is silently "+
-				"ignored on that deployment target (#314)", entry.Name())
+		if !scan.overlays {
+			t.Errorf("cmd/%s builds an EntityManager but never reaches a call to "+
+				"bootstrap.EntityConfigFromEnv from main, so VALIDATE_UPDATES_STRICT is "+
+				"silently ignored on that deployment target (#314)", entry.Name())
 		}
 	}
 
@@ -185,41 +183,4 @@ func TestEntityConfigFromEnvWiredInEveryWriteEntryPoint(t *testing.T) {
 				"meaningless (#321)", name)
 		}
 	}
-}
-
-// scanEntryPointDir reports whether any non-test Go file anywhere in dir's
-// subtree builds an EntityManager, and whether any of them applies the
-// environment overlay.
-//
-// The whole subtree, not just dir itself: a nested package under cmd/<name> is
-// part of that binary, and an entry point that grew a subdirectory would
-// otherwise go unread — the same "never looked" hole #321 is about.
-func scanEntryPointDir(dir string) (builds, overlays bool, err error) {
-	err = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			return nil
-		}
-		source, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("failed to read %s: %w", path, err)
-		}
-		text := string(source)
-		// The prefix, not one exact wrapper: WithConfig and WithConfigContext both
-		// build a manager, and so will the next wrapper.
-		if strings.Contains(text, "factory.NewEntityManager") {
-			builds = true
-		}
-		if strings.Contains(text, "bootstrap.EntityConfigFromEnv") {
-			overlays = true
-		}
-		return nil
-	})
-	if err != nil {
-		return false, false, fmt.Errorf("failed to walk %s: %w", dir, err)
-	}
-	return builds, overlays, nil
 }
