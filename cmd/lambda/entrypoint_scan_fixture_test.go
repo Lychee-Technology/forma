@@ -143,6 +143,73 @@ func main() { _, _ = factory.NewEntityManagerWithConfig(wiring.Config(), nil) }
 		want: entryPointScan{builds: true, overlays: true},
 	},
 	{
+		name: "overlay in a helper package whose name is not its directory's",
+		files: map[string]string{
+			"main.go": `package main
+
+import (
+	"example.com/fixture/cmd/app/wiring"
+	"github.com/lychee-technology/forma/factory"
+)
+
+func main() { _, _ = factory.NewEntityManagerWithConfig(config.Config(), nil) }
+`,
+			"wiring/config.go": "package config\n\n" + fixtureImports + "func Config() any { c, _ := bootstrap.EntityConfigFromEnv(nil); return c }\n",
+		},
+		want: entryPointScan{builds: true, overlays: true},
+	},
+	{
+		name: "overlay in a dot-imported helper package",
+		files: map[string]string{
+			"main.go": `package main
+
+import (
+	. "example.com/fixture/cmd/app/wiring"
+	"github.com/lychee-technology/forma/factory"
+)
+
+func main() { _, _ = factory.NewEntityManagerWithConfig(Config(), nil) }
+`,
+			"wiring/wiring.go": "package wiring\n\n" + fixtureImports + "func Config() any { c, _ := bootstrap.EntityConfigFromEnv(nil); return c }\n",
+		},
+		want: entryPointScan{builds: true, overlays: true},
+	},
+	{
+		name: "overlay in a dot-imported helper function main never calls",
+		files: map[string]string{
+			"main.go": `package main
+
+import (
+	. "example.com/fixture/cmd/app/wiring"
+	"github.com/lychee-technology/forma/factory"
+)
+
+func main() { _, _ = factory.NewEntityManagerWithConfig(Config(), nil) }
+`,
+			"wiring/wiring.go": "package wiring\n\n" + fixtureImports + "func Config() any { return nil }\nfunc Unused() { bootstrap.EntityConfigFromEnv(nil) }\n",
+		},
+		want: entryPointScan{builds: true},
+	},
+	{
+		name: "overlay in files Go ignores by name",
+		files: map[string]string{
+			"main.go":     fixtureBuildsInMain + "func loadConfig() any { return nil }\n",
+			"_scratch.go": "package main\n\n" + fixtureImports + "func init() { bootstrap.EntityConfigFromEnv(nil) }\n",
+			".scratch.go": "package main\n\n" + fixtureImports + "func init() { bootstrap.EntityConfigFromEnv(nil) }\n",
+		},
+		want: entryPointScan{builds: true},
+	},
+	{
+		name: "unparsable files Go ignores by name are not parsed",
+		files: map[string]string{
+			"main.go":      fixtureBuildsInMain + "func loadConfig() any { return nil }\n",
+			"_broken.go":   "package main\n\nfunc main( {\n",
+			".broken.go":   "package main\n\nfunc main( {\n",
+			"_dir/main.go": "package main\n\nfunc main( {\n",
+		},
+		want: entryPointScan{builds: true},
+	},
+	{
 		name: "overlay in a tree package main does not import",
 		files: map[string]string{
 			"main.go":          fixtureBuildsInMain + "func loadConfig() any { return nil }\n",

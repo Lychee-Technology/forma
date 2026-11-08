@@ -54,6 +54,15 @@ type scannedPackage struct {
 	roots   []string            // init functions and variable specs
 }
 
+// treeInfo describes the scanned tree: its import path, and the name each of
+// its packages declares, which an unaliased import of it binds. A helper's
+// directory need not match its package name: wiring/ may declare package
+// config.
+type treeInfo struct {
+	path  string
+	names map[string]string // import path -> declared package name
+}
+
 // fileImports maps a file's local package names to import paths; dot holds
 // the dot-imported paths.
 type fileImports struct {
@@ -77,9 +86,10 @@ func scanEntryPointTree(dir, importPath string) (entryPointScan, error) {
 }
 
 // parseEntryPointTree reads the packages of dir's subtree, keyed by import
-// path. It skips what the go tool skips, testdata and directories starting
-// with "." or "_", and it ignores build constraints: lambda builds only for
-// linux/arm64, and a guard that read only the host's files would skip it.
+// path. It skips what the go tool skips on every platform: testdata, and
+// directories and files whose names start with "." or "_", which are not even
+// parsed. It ignores build constraints: lambda builds only for linux/arm64,
+// and a guard that read only the host's files would skip it.
 func parseEntryPointTree(dir, importPath string) (map[string]*scannedPackage, bool, error) {
 	files := map[string][]*ast.File{}
 	fset := token.NewFileSet()
@@ -88,13 +98,14 @@ func parseEntryPointTree(dir, importPath string) (map[string]*scannedPackage, bo
 			return err
 		}
 		name := entry.Name()
+		ignored := strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
 		if entry.IsDir() {
-			if p != dir && (name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")) {
+			if p != dir && (name == "testdata" || ignored) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+		if ignored || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			return nil
 		}
 		file, err := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
@@ -113,10 +124,14 @@ func parseEntryPointTree(dir, importPath string) (map[string]*scannedPackage, bo
 		return nil, false, fmt.Errorf("failed to walk %s: %w", dir, err)
 	}
 
+	tree := treeInfo{path: importPath, names: map[string]string{}}
+	for pkgPath, pkgFiles := range files {
+		tree.names[pkgPath] = pkgFiles[0].Name.Name
+	}
 	pkgs := map[string]*scannedPackage{}
 	builds := false
 	for pkgPath, pkgFiles := range files {
-		pkg, pkgBuilds := scanPackage(pkgPath, pkgFiles, importPath)
+		pkg, pkgBuilds := scanPackage(pkgPath, pkgFiles, tree)
 		pkgs[pkgPath] = pkg
 		builds = builds || pkgBuilds
 	}
@@ -124,7 +139,7 @@ func parseEntryPointTree(dir, importPath string) (map[string]*scannedPackage, bo
 }
 
 // scanPackage indexes one package's declarations and what each refers to.
-func scanPackage(pkgPath string, files []*ast.File, treePath string) (*scannedPackage, bool) {
+func scanPackage(pkgPath string, files []*ast.File, tree treeInfo) (*scannedPackage, bool) {
 	pkg := &scannedPackage{
 		imports: map[string]bool{},
 		decls:   map[string]*scannedDecl{},
@@ -141,7 +156,7 @@ func scanPackage(pkgPath string, files []*ast.File, treePath string) (*scannedPa
 	synthetic := 0
 	for _, file := range files {
 		pkg.isMain = pkg.isMain || file.Name.Name == "main"
-		imports := readImports(file, treePath, pkg.imports)
+		imports := readImports(file, tree, pkg.imports)
 		for _, decl := range file.Decls {
 			for _, d := range topLevelDecls(decl, &synthetic) {
 				pkg.decls[d.key] = &scannedDecl{}
@@ -165,18 +180,23 @@ func scanPackage(pkgPath string, files []*ast.File, treePath string) (*scannedPa
 }
 
 // readImports records the file's imports, adding those inside the tree to
-// treeImports.
-func readImports(file *ast.File, treePath string, treeImports map[string]bool) fileImports {
+// treeImports. An unaliased import of a tree package binds the name that
+// package declares; any other binds the last path element, which holds for
+// the forma packages the guard resolves.
+func readImports(file *ast.File, tree treeInfo, treeImports map[string]bool) fileImports {
 	imports := fileImports{byName: map[string]string{}}
 	for _, spec := range file.Imports {
 		importPath, err := strconv.Unquote(spec.Path.Value)
 		if err != nil {
 			continue // the parser accepted it, so this cannot happen
 		}
-		if importPath == treePath || strings.HasPrefix(importPath, treePath+"/") {
+		if importPath == tree.path || strings.HasPrefix(importPath, tree.path+"/") {
 			treeImports[importPath] = true
 		}
 		name := path.Base(importPath)
+		if declared, ok := tree.names[importPath]; ok {
+			name = declared
+		}
 		if spec.Name != nil {
 			name = spec.Name.Name
 		}
@@ -261,7 +281,9 @@ func receiverTypeName(expr ast.Expr) string {
 // whether node refers to a manager builder.
 //
 // References over-approximate: any identifier spelling a top-level name of the
-// package counts, shadowed or not, including the selector of a method call.
+// package counts, shadowed or not, including the selector of a method call,
+// and so does any identifier against every dot-imported tree package, whose
+// exported names it may spell.
 // Too many edges can only make more code look reachable; too few would fail a
 // wired entry point, and the guard prefers the false pass on contrived code to
 // the false failure on ordinary code.
@@ -300,6 +322,11 @@ func scanDecl(pkgPath string, pkg *scannedPackage, decl *scannedDecl, node ast.N
 			}
 			if _, ok := pkg.decls[x.Name]; ok {
 				decl.refs = append(decl.refs, declKey{pkgPath, x.Name})
+			}
+			for _, dotPath := range imports.dot {
+				if pkg.imports[dotPath] {
+					decl.refs = append(decl.refs, declKey{dotPath, x.Name})
+				}
 			}
 		}
 		return true
