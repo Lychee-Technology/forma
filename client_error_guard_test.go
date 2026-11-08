@@ -21,7 +21,7 @@ import (
 // useless", which a feature author without a body assertion never notices.
 //
 // Idiom follows TestWriteErrorAlwaysCarriesALiteral4xxStatus
-// (internal/httpapi/error_leak_test.go): fail loudly on a vacuous pass,
+// (internal/httpapi/writeerror_guard_test.go): fail loudly on a vacuous pass,
 // report every offender rather than the first, and state the blind spots.
 //
 // Blind spots, deliberately accepted: the guard sees fmt.Errorf and

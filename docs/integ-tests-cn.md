@@ -370,4 +370,4 @@
 - Federated E2E：`internal/e2e_harness/federated/*_test.go`  
 - Bun E2E：`tests/e2e/scripts/*.ts`  
 - 负载测试：`tests/e2e/k6/scenarios.ts`  
-- 服务 API：`internal/httpapi/server.go`、`cmd/lambda/main.go`
+- 服务 API：`internal/httpapi/server.go`、`internal/httpapi/handlers.go`、`cmd/lambda/main.go`

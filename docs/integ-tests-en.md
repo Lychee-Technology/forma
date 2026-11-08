@@ -370,4 +370,4 @@ Note: These manual cases close automation gaps and cover pre-production must-che
 - Federated E2E: `internal/e2e_harness/federated/*_test.go`  
 - Bun E2E scripts: `tests/e2e/scripts/*.ts`  
 - Load testing: `tests/e2e/k6/scenarios.ts`  
-- Service APIs: `internal/httpapi/server.go`, `cmd/lambda/main.go`
+- Service APIs: `internal/httpapi/server.go`, `internal/httpapi/handlers.go`, `cmd/lambda/main.go`

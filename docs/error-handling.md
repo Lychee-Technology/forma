@@ -1646,10 +1646,11 @@ delete adds the offending element's position, `forma.InvalidInputf("index %d:
 runtime error at all, so none can carry the manager, the engine, S3, or
 `PG_CONN`.
 
-Two source-level guards in `internal/httpapi/error_leak_test.go` hold that line
-over the package's non-test sources, each with the same single sanctioned
-exception — `respondErrorWithStatus`, whose status and message are both
-constrained at runtime by the gate itself:
+Two source-level guards in `internal/httpapi/writeerror_guard_test.go` hold
+that line over the package's non-test sources, with no exception: since #361
+`respondErrorWithStatus`, whose status and message are both constrained at
+runtime by the gate itself, writes its disclosed body through `writeJSON`, which
+neither guard scans:
 
 - `TestWriteErrorAlwaysCarriesALiteral4xxStatus` fails the build unless every
   direct site passes a literal 4xx constant from an allowlist
@@ -1720,9 +1721,8 @@ carrier publishing the same human-authored text it always rendered. The table
 below is the maintained list of the carrier sites that answer a caller mistake,
 and it is no longer only that sweep: the `internal/httpapi` row was added by
 #360 and never depended on the heuristic (see below the table).
-`classifyManagerError`'s doc comment
-(`internal/httpapi/error_response.go:148-192`) enumerates the sweep, and counts
-only it.
+`classifyManagerError`'s doc comment (`internal/httpapi/error_response.go`)
+enumerates the sweep, and counts only it.
 
 | site | caller mistake |
 | --- | --- |
@@ -1904,8 +1904,9 @@ Several of these sites publish prose that was not written at the wrap site —
 `forma.QueryRequest.UnmarshalJSON`) `forma`'s own condition-decoding errors from
 `types.go`: `composite condition missing logic`, `unknown logic: <the caller's
 value>`, `invalid condition payload: expected 'logic' or 'attr'`. All of them
-are flattened into the published message by the same
-`forma.InvalidInputf("%v", err)` wrap, and all stand on the same footing as
+are flattened into the published message by a `forma.InvalidInputf("%v", err)`
+wrap (batch delete's `"index %d: %v"` variant, recorded above, only prefixes the
+element position), and all stand on the same footing as
 `schemavalidate`'s `jsonschema-go` prose below, for the same reason: what is
 rendered comes from the caller's own request and from compile-time identifiers,
 never from server state.
