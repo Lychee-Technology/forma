@@ -35,8 +35,8 @@ var writeErrorAllowed4xx = map[string]bool{
 }
 
 // TestWriteErrorAlwaysCarriesALiteral4xxStatus is a source-level guard. The
-// canary tests above only cover the handlers that exist today; this one fails
-// the build when a new handler reintroduces the #301 leak.
+// runtime canary tests in error_leak_test.go only cover the handlers that exist
+// today; this one fails the build when a new handler reintroduces the #301 leak.
 //
 // The invariant: every writeError call in a non-test file passes a literal 4xx
 // http.Status* constant from writeErrorAllowed4xx, with no exceptions. Until
