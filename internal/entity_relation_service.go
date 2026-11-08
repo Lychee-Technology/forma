@@ -3,7 +3,6 @@ package internal
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/lychee-technology/forma/internal/model"
 
@@ -54,7 +53,7 @@ func (s *entityRelationService) enrichDataRecords(ctx context.Context, schemaNam
 		if len(requestedSet) > 0 {
 			want := false
 			for _, attr := range requested {
-				if attr == rel.ChildPath || strings.HasPrefix(attr, rel.ChildPath+".") {
+				if rel.coversSubtree(attr) {
 					want = true
 					break
 				}
