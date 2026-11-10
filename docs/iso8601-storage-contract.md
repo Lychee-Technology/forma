@@ -10,20 +10,45 @@ any other string. The ruling was made on #763.
 The canonical image is RFC 3339 in UTC at whole seconds, with a four-digit
 year: `2024-01-02T03:04:05Z`. Every one is exactly 20 bytes,
 `YYYY-MM-DDThh:mm:ssZ`, between `0000-01-01T00:00:00Z` and
-`9999-12-31T23:59:59Z`. A `date` stores the image of its UTC midnight.
-`iso8601.Image` is the only function that renders one.
+`9999-12-31T23:59:59Z`. `iso8601.Image` is the only function that renders
+one.
 
-Every Forma write stores the canonical image. The write funnel
-(`internal/transform`) renders the value's epoch milliseconds through
-`iso8601.Image`, whatever spelling the caller sent: an offset such as
-`2024-01-02T11:04:06+08:00` is stored as `2024-01-02T03:04:06Z`. A value the
-image cannot hold is refused as invalid input, not truncated: a fraction of a
-second (`… which keeps whole seconds`) or an instant outside years 0000 to
-9999. A `$now` write is floored to its second first. Forma has written the
-UTC image at whole seconds since the encoding was introduced. Before #582 an
-instant outside the four-digit years was written with a wider year, which no
-read can parse. Any other non-canonical image in a database was written by
-something other than Forma, such as direct SQL or another application.
+The contract is about the image's shape, not about which instant a `date`
+holds. The write funnel treats `date` and `datetime` alike: it stores the
+instant the caller gave, and it does not floor a `date` to its day. A `date`
+written as a calendar day (`2024-01-02`) names that day's UTC midnight and is
+stored as `2024-01-02T00:00:00Z`. A `date` written as a full instant
+(`2024-01-02T10:00:00Z`) is stored at that instant. A `server_time` write
+(`$now`) on a `date` is the one write that floors to the UTC day, as a `$now`
+comparison on a `date` does.
+
+Every Forma write stores the canonical image, in two steps.
+
+1. **Normalization** turns whatever spelling the caller sent into epoch
+   milliseconds, the precision of both types (#589). An offset is resolved
+   to UTC, and a fraction finer than a millisecond is floored. Only a value
+   that is not a time, or an instant milliseconds cannot name, is refused
+   here.
+2. **Narrowing** to the column judges those milliseconds and never changes
+   them. When they are a whole second inside years 0000 to 9999, the write
+   funnel (`internal/transform`) renders them through `iso8601.Image`.
+   Otherwise the write is refused as invalid input, not truncated: either
+   the milliseconds are not a whole second (`… which keeps whole seconds`),
+   or the instant is outside those years.
+
+So `2024-01-02T11:04:06+08:00`, `2024-01-02T03:04:06.000Z` and
+`2024-01-02T03:04:06.0000009Z` are all stored as `2024-01-02T03:04:06Z`. The
+last one floors to `.000` at normalization. `2024-01-02T03:04:06.5Z` is
+refused, and so is `2024-01-02T03:04:06.9999999Z`, which floors to `.999`.
+A `server_time` write is floored before narrowing, to its second on a
+`datetime` (or to its day on a `date`), so it is never refused for a
+fraction.
+
+Forma has written the UTC image at whole seconds since the encoding was
+introduced. Before #582 an instant outside the four-digit years was written
+with a wider year, which no read can parse. Any other non-canonical image in
+a database was written by something other than Forma, such as direct SQL or
+another application.
 
 ## What depends on it
 
@@ -72,9 +97,12 @@ Direct SQL is not stopped. Between two validator runs a non-canonical row can
 answer differently on the two routes, with no signal. The contract makes
 these rows detectable and gives them a repair, but does not prevent them.
 
-**Detection.** The validator does not report them yet. #762 tracks adding
-the check, extended from offset images to every image that differs from
-`iso8601.Image` of the instant it parses to. Until then,
+**Detection.** The validator does not report them yet. #762 tracks
+detecting offset images only. Detecting every image that differs from
+`iso8601.Image` of the instant it parses to, with the schema, attribute and
+row of each, and the repair below are owned by a follow-up issue filed from
+the review of the pull request that recorded this contract. Until the check
+exists,
 [`schema-consistency-migration.md`](schema-consistency-migration.md#iso8601-images-with-a-utc-offset-756)
 lists offset images per bound column.
 
@@ -83,12 +111,18 @@ attribute and gives the instant the image names. The write funnel stores the
 canonical image and stamps `change_log`, so the next flush replaces the
 row's parquet copy. A direct SQL `UPDATE` corrects PostgreSQL only: it
 leaves the old copy on the warm and cold tiers until the row's next write.
-The API cannot store two kinds of image at the instant they name: a fraction,
-and an offset that carries the instant outside years 0000 to 9999. For those
-the stored value has to change, by rounding or clamping, and that is a
-per-row decision Forma does not make for you. Since the repair writes a
-canonical image, re-exporting a row without changing its PostgreSQL value
-does not repair it.
+Most non-canonical images repair without changing the instant they name:
+when the image's instant, normalized to epoch milliseconds as above, is a
+whole second inside years 0000 to 9999, the rewrite only changes its
+spelling. That covers an in-range offset image and a fraction that is zero
+after normalization (`2024-01-02T03:04:06.000Z`, or `.0000009`, below the
+types' millisecond precision). Two kinds of image cannot be stored at the
+instant they name: one whose normalized milliseconds are not a whole second
+(`2024-01-02T03:04:05.250+08:00`), and an offset that carries the instant
+outside years 0000 to 9999. For those the stored value has to change, by
+rounding or clamping, and that is a per-row decision Forma does not make for
+you. Since the repair writes a canonical image, re-exporting a row without
+changing its PostgreSQL value does not repair it.
 
 ## The federated hot leg over pgx
 

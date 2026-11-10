@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/iso8601"
+	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // This file is the #763 regression for the canonical iso8601 storage
@@ -245,19 +247,17 @@ func assertCanonicalImages(ctx context.Context, t *testing.T, env *Env, rows []*
 }
 
 // runCanonicalContractAllTiers seeds the rows and checks every probe and
-// sort on both routes before the flush, after it (delta) and after
-// compaction (base).
+// sort on both routes before the flush (hot), after it (delta) and after a
+// compaction rewrite has merged them into a new base file (base).
 func runCanonicalContractAllTiers(ctx context.Context, t *testing.T, env *Env, withNote bool) {
 	t.Helper()
 	simple := DefaultSchemaFixtures()[0]
 
-	// A flushed anchor row gives the schema its first parquet object and
-	// manifest, so the DuckDB route has an S3 leg before the first flush of
-	// the rows under test. It sets neither date.
-	mustApplyEvents(ctx, t, env, "anchor create", CreateEvent(simple, map[string]any{"name": "c-anchor"}))
-	if _, err := env.RunFlush(ctx); err != nil {
-		t.Fatalf("anchor flush: %v", err)
-	}
+	// A flushed anchor row, promoted to base, gives the schema a base file
+	// before the rows under test are written: the DuckDB route has an S3 leg
+	// from the start, and the flushed rows later make the schema dirty enough
+	// for a real rewrite. The anchor sets neither date.
+	seedCanonicalAnchorBase(ctx, t, env, simple)
 
 	rows := seedCanonicalRows(ctx, t, env, withNote)
 	assertCanonicalImages(ctx, t, env, rows)
@@ -272,14 +272,58 @@ func runCanonicalContractAllTiers(ctx context.Context, t *testing.T, env *Env, w
 	}
 
 	check("hot")
-	if _, err := env.RunFlush(ctx); err != nil {
-		t.Fatalf("flush: %v", err)
+	mustFlush(ctx, t, env)
+	if got := countTier(loadSchemaManifest(ctx, t, env, simple), "delta"); got == 0 {
+		t.Fatal("flush listed no delta entry; the warm stage would not read delta")
 	}
 	check("warm")
-	if _, err := env.RunCompaction(ctx, simple); err != nil {
+	rewriteCanonicalRowsToBase(ctx, t, env, simple, len(rows)+1)
+	check("cold")
+}
+
+// seedCanonicalAnchorBase writes and flushes the anchor row and promotes its
+// delta file to base with a one-byte threshold (the default 256 MB would
+// leave this KB-scale tier alone).
+func seedCanonicalAnchorBase(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
+	t.Helper()
+	mustApplyEvents(ctx, t, env, "anchor create", CreateEvent(schema, map[string]any{"name": "c-anchor"}))
+	mustFlush(ctx, t, env)
+	result, err := env.RunCompactionWith(ctx, schema, CompactionOverrides{TargetBaseSizeBytes: 1})
+	if err != nil {
+		t.Fatalf("anchor promotion: %v", err)
+	}
+	if result.Outcome != compaction.PromotionApplied {
+		t.Fatalf("anchor promotion outcome = %s, want %s", result.Outcome, compaction.PromotionApplied)
+	}
+	m := loadSchemaManifest(ctx, t, env, schema)
+	if base, delta := countTier(m, "base"), countTier(m, "delta"); base != 1 || delta != 0 {
+		t.Fatalf("after anchor promotion: base = %d, delta = %d, want 1 and 0", base, delta)
+	}
+}
+
+// rewriteCanonicalRowsToBase runs a default compaction pass, which must
+// rewrite the anchor base and the rows' delta into one new base file
+// (wantRows rows: the anchor and every seeded row), so the cold stage reads
+// images the merge engine wrote, from the base tier only.
+func rewriteCanonicalRowsToBase(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, wantRows int) {
+	t.Helper()
+	result, err := env.RunCompaction(ctx, schema)
+	if err != nil {
 		t.Fatalf("compaction: %v", err)
 	}
-	check("cold")
+	if result.Outcome != compaction.RewriteApplied {
+		t.Fatalf("compaction outcome = %s (dirty ratio %.2f), want %s", result.Outcome, result.DirtyRatio, compaction.RewriteApplied)
+	}
+	if result.RowsOut != int64(wantRows) {
+		t.Errorf("rewrite RowsOut = %d, want %d", result.RowsOut, wantRows)
+	}
+	m := loadSchemaManifest(ctx, t, env, schema)
+	if base, delta := countTier(m, "base"), countTier(m, "delta"); base != 1 || delta != 0 {
+		t.Fatalf("after rewrite: base = %d, delta = %d, want 1 and 0", base, delta)
+	}
+	if got := manifest.FilterByTier(m, "base")[0].Path; result.NewBaseKey == "" || got != result.NewBaseKey {
+		t.Errorf("base entry %q is not the rewrite's new base %q", got, result.NewBaseKey)
+	}
 }
 
 // TestCanonicalISO8601ContractNoEAVAllTiers: every attribute is
