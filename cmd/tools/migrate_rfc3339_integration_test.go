@@ -107,6 +107,15 @@ func (lt *ledgerTarget) mainText(t *testing.T) map[uuid.UUID][3]*string {
 	return out
 }
 
+// setMainText sets one text column of a row, as a repair does.
+func (lt *ledgerTarget) setMainText(t *testing.T, id uuid.UUID, col, value string) {
+	t.Helper()
+	query := fmt.Sprintf("UPDATE %s SET %s = $1 WHERE ltbase_row_id = $2", quoteIdentifier(lt.opts.entityMain), quoteIdentifier(col))
+	if _, err := lt.pool.Exec(context.Background(), query, value, id); err != nil {
+		t.Fatalf("set %s of row %s: %v", col, id, err)
+	}
+}
+
 // rendered spells a row's columns by value, for comparing snapshots.
 func rendered(v [3]*string) string {
 	parts := make([]string, len(v))
@@ -136,13 +145,15 @@ func (lt *ledgerTarget) migrate(t *testing.T, dryRun bool, batch int) (string, e
 }
 
 // TestMigrateRFC3339RewritesOnlyWholeSecondImages pins the tool's contract
-// (#842): it rewrites exactly the whole-second images of the columns the
-// active generation records as iso8601, each to its first 19 characters
-// plus .000Z, in batches; it lists every image the rewrite does not make
-// canonical, those of the canonical shape the read refuses included, and
-// leaves it alone; it leaves change_log and every other schema untouched;
-// its dry run changes nothing and exits non-zero; a re-run finds nothing to
-// do.
+// (#842): it rewrites exactly the whole-second images naming an instant in
+// the columns the active generation records as iso8601, each to its first
+// 19 characters plus .000Z, in batches; it lists every image the rewrite
+// does not make canonical, those of the canonical shape the read refuses
+// and those of the whole-second shape naming no instant included, and
+// leaves it alone; it exits non-zero while a whole-second-shaped image
+// remains, until that one is repaired; it leaves change_log and every other
+// schema untouched; its dry run changes nothing and exits non-zero; a
+// re-run finds nothing to rewrite.
 func TestMigrateRFC3339RewritesOnlyWholeSecondImages(t *testing.T) {
 	lt := newLegacyISO8601Target(t)
 	legacy := map[uuid.UUID]string{}
@@ -166,13 +177,13 @@ func TestMigrateRFC3339RewritesOnlyWholeSecondImages(t *testing.T) {
 	before := lt.mainText(t)
 
 	out, err := lt.migrate(t, true, 2)
-	if err == nil || !strings.Contains(err.Error(), "dry run: 7 whole-second image(s) in 2 column(s)") {
+	if err == nil || !strings.Contains(err.Error(), "dry run: 7 whole-second image(s) remain in 2 column(s); 1 of them name no instant") {
 		t.Fatalf("dry run = %v, want a non-zero exit naming what is left\n%s", err, out)
 	}
 	wants := []string{
 		"schema events (id 100) attribute due (id 1) column text_02: 5 whole-second image(s) to rewrite, 6 other image(s) left for repair",
-		"schema events (id 100) attribute day (id 2) column text_03: 2 whole-second image(s) to rewrite, 1 other image(s) left for repair",
-		fmt.Sprintf("left for repair: row %s holds %q, not an RFC 3339 image the read parses", noDay, "2023-02-29T00:00:00Z"),
+		"schema events (id 100) attribute day (id 2) column text_03: 1 whole-second image(s) to rewrite, 1 other image(s) left for repair",
+		fmt.Sprintf("left for repair: row %s holds %q, not an RFC 3339 image the read parses; it has the whole-second shape", noDay, "2023-02-29T00:00:00Z"),
 	}
 	for id, image := range left {
 		wants = append(wants, fmt.Sprintf("left for repair: row %s holds %q, ", id, image))
@@ -198,10 +209,14 @@ func TestMigrateRFC3339RewritesOnlyWholeSecondImages(t *testing.T) {
 		}
 	}
 
+	// The image naming no day keeps its shape and the tool's exit non-zero,
+	// without blaming a running writer.
 	out, err = lt.migrate(t, false, 2)
-	if err != nil || !strings.Contains(out, "rewrote 5 whole-second image(s), 0 remain, 6 other image(s) left for repair") ||
-		!strings.Contains(out, "rewrote 2 whole-second image(s), 0 remain, 1 other image(s) left for repair") ||
-		!strings.Contains(out, fmt.Sprintf("left for repair: row %s holds %q, not an RFC 3339 image the read parses", noDay, "2023-02-29T00:00:00.000Z")) {
+	if err == nil || !strings.Contains(err.Error(), "1 whole-second image(s) remain in 1 column(s); 1 of them name no instant") ||
+		strings.Contains(err.Error(), "a writer may still be running") ||
+		!strings.Contains(out, "rewrote 5 whole-second image(s), 0 remain, 6 other image(s) left for repair") ||
+		!strings.Contains(out, "rewrote 1 whole-second image(s), 1 remain, 1 other image(s) left for repair") ||
+		!strings.Contains(out, fmt.Sprintf("left for repair: row %s holds %q, not an RFC 3339 image the read parses; it has the whole-second shape", noDay, "2023-02-29T00:00:00Z")) {
 		t.Fatalf("migrate = %v\n%s", err, out)
 	}
 	after := lt.mainText(t)
@@ -216,7 +231,7 @@ func TestMigrateRFC3339RewritesOnlyWholeSecondImages(t *testing.T) {
 	if got := after[dayRow][2]; got == nil || *got != "2024-01-02T00:00:00.000Z" {
 		t.Fatalf("day row holds %v", got)
 	}
-	unchanged := []uuid.UUID{migrated, note}
+	unchanged := []uuid.UUID{migrated, note, noDay}
 	for id := range left {
 		unchanged = append(unchanged, id)
 	}
@@ -230,17 +245,35 @@ func TestMigrateRFC3339RewritesOnlyWholeSecondImages(t *testing.T) {
 		t.Fatalf("change_log rows = %d (%v), want none: the rewrite keeps the instant", stamped, err)
 	}
 
-	out, err = lt.migrate(t, false, 2)
-	if err != nil || !strings.Contains(out, "rewrote 0 whole-second image(s), 0 remain, 6 other image(s) left for repair") {
-		t.Fatalf("a re-run = %v, want nothing to rewrite\n%s", err, out)
-	}
-	if _, err = lt.migrate(t, true, 2); err != nil {
-		t.Fatalf("a dry run after the migration = %v, want a zero exit", err)
-	}
+	lt.assertRerunAndRepair(t, noDay, before[noDay])
 
 	// After the migration the census of due finds exactly the rows the
 	// migration listed.
 	lt.assertDueCensusFindsOnly(t, left)
+}
+
+// assertRerunAndRepair: a re-run rewrites nothing and still exits non-zero
+// on the whole-second-shaped image naming no day, leaving it as it was;
+// once that row is repaired the tool exits zero, a dry run included.
+func (lt *ledgerTarget) assertRerunAndRepair(t *testing.T, noDay uuid.UUID, noDayBefore [3]*string) {
+	t.Helper()
+	out, err := lt.migrate(t, false, 2)
+	if err == nil || !strings.Contains(out, "rewrote 0 whole-second image(s), 0 remain, 6 other image(s) left for repair") ||
+		!strings.Contains(out, "rewrote 0 whole-second image(s), 1 remain, 1 other image(s) left for repair") {
+		t.Fatalf("a re-run = %v, want nothing to rewrite and the image naming no day still left\n%s", err, out)
+	}
+	if after := lt.mainText(t); rendered(after[noDay]) != rendered(noDayBefore) {
+		t.Fatalf("a re-run changed the image naming no day to %s", rendered(after[noDay]))
+	}
+
+	// Once that row is repaired, nothing whole-second-shaped is left.
+	lt.setMainText(t, noDay, "text_03", "2023-02-28T00:00:00.000Z")
+	if out, err = lt.migrate(t, false, 2); err != nil || !strings.Contains(out, "rewrote 0 whole-second image(s), 0 remain, 0 other image(s) left for repair") {
+		t.Fatalf("migrate after the repair = %v\n%s", err, out)
+	}
+	if _, err = lt.migrate(t, true, 2); err != nil {
+		t.Fatalf("a dry run after the migration = %v, want a zero exit", err)
+	}
 }
 
 // assertDueCensusFindsOnly requires the census of events.due to find
@@ -309,20 +342,22 @@ func TestMigrateRFC3339RefusesABatchOverTheDSQLLimit(t *testing.T) {
 // TestApplySchemaRefusesTheRenameUntilMigrated (#842): apply-schema judges
 // iso8601 → rfc3339 a binding-only change, and refuses it while a target
 // column holds a whole-second image, naming the schema, attribute, column
-// and count and pointing at the migration tool. Once the tool has run it
-// records the change.
+// and count and pointing at the migration tool. A whole-second-shaped image
+// naming no instant, which the tool leaves, keeps it refused until the row
+// is repaired; then it records the change.
 func TestApplySchemaRefusesTheRenameUntilMigrated(t *testing.T) {
 	lt := newLegacyISO8601Target(t)
 	lt.seedMain(t, 100, map[string]any{"text_02": "2024-01-02T03:04:05Z"})
 	lt.seedMain(t, 100, map[string]any{"text_02": "2024-01-02T03:04:06Z"})
 	lt.seedMain(t, 100, map[string]any{"text_02": "2024-01-02T03:04:07.000Z"})
+	noDay := lt.seedMain(t, 100, map[string]any{"text_02": "2023-02-29T00:00:00Z"})
 
 	out, err := lt.apply(t, false)
 	if err == nil {
 		t.Fatalf("apply over unmigrated images must be refused\n%s", out)
 	}
 	for _, want := range []string{
-		"schema events (id 100) attribute due (id 1) column text_02: iso8601 to rfc3339 is refused while 2 row(s) of " + lt.opts.entityMain,
+		"schema events (id 100) attribute due (id 1) column text_02: iso8601 to rfc3339 is refused while 3 row(s) of " + lt.opts.entityMain,
 		"forma-tools migrate-rfc3339",
 		"attribute due (id 1): datetime bound to text_02 (iso8601) to datetime bound to text_02 (rfc3339) [allowed]",
 	} {
@@ -337,8 +372,16 @@ func TestApplySchemaRefusesTheRenameUntilMigrated(t *testing.T) {
 		t.Fatalf("a refused apply recorded generation %d", gen.Number)
 	}
 
+	if out, err := lt.migrate(t, false, rfc3339migrate.BatchSize); err == nil || !strings.Contains(err.Error(), "1 of them name no instant") {
+		t.Fatalf("migrate = %v, want a non-zero exit for the image naming no day\n%s", err, out)
+	}
+	out, err = lt.apply(t, false)
+	if err == nil || !strings.Contains(out, "column text_02: iso8601 to rfc3339 is refused while 1 row(s) of "+lt.opts.entityMain) {
+		t.Fatalf("apply with an image naming no day left = %v, want a refusal\n%s", err, out)
+	}
+	lt.setMainText(t, noDay, "text_02", "2023-02-28T00:00:00.000Z")
 	if out, err := lt.migrate(t, false, rfc3339migrate.BatchSize); err != nil {
-		t.Fatalf("migrate = %v\n%s", err, out)
+		t.Fatalf("migrate after the repair = %v\n%s", err, out)
 	}
 	out, err = lt.apply(t, false)
 	if err != nil || !strings.Contains(out, "Recorded generation 3 of schema events") {

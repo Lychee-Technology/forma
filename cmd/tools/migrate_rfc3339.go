@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,8 +30,9 @@ func runMigrateRFC3339(ctx context.Context, args []string) error {
 		fmt.Println("Rewrites every whole-second image (YYYY-MM-DDThh:mm:ssZ) of each attribute an active generation")
 		fmt.Println("records with the iso8601 encoding to the rfc3339 image of the same instant (YYYY-MM-DDThh:mm:ss.000Z).")
 		fmt.Println("Every other image those columns hold that is not canonical is listed for repair, with its row; the tool leaves")
-		fmt.Println("it unchanged. --dry-run counts, lists and changes nothing.")
-		fmt.Println("It exits non-zero while a whole-second image remains, so a scripted cutover stops before apply-schema.")
+		fmt.Println("it unchanged. That includes a whole-second-shaped image naming no instant (2023-02-29T00:00:00Z).")
+		fmt.Println("--dry-run counts, lists and changes nothing.")
+		fmt.Println("It exits non-zero while a whole-second-shaped image remains, so a scripted cutover stops before apply-schema.")
 		fmt.Println("")
 		fmt.Println("Stop every writer of the schema first, and start only the new release afterwards: the tool cannot")
 		fmt.Println("detect a running writer, and an old-release write after the rewrite stores a whole-second image again.")
@@ -66,8 +68,9 @@ func runMigrateRFC3339(ctx context.Context, args []string) error {
 }
 
 // migrateRFC3339 migrates every target of the selected schemas and reports
-// per column. It answers an error while any whole-second image remains: on a
-// dry run whenever there is one to rewrite.
+// per column. It answers an error while any whole-second-shaped image
+// remains: on a dry run whenever there is one, and on a run while a writer
+// put one back or one names no instant, which the rewrite leaves for repair.
 func migrateRFC3339(ctx context.Context, pool *pgxpool.Pool, opts ledgerToolOptions, batch int, out io.Writer) error {
 	targets, err := rfc3339MigrationTargets(ctx, pool, opts, out)
 	if err != nil {
@@ -77,61 +80,95 @@ func migrateRFC3339(ctx context.Context, pool *pgxpool.Pool, opts ledgerToolOpti
 		fmt.Fprintln(out, "No active generation records the iso8601 encoding; nothing to migrate.")
 		return nil
 	}
-	var remaining int64
-	var columns int
+	var left rfc3339Remaining
 	for _, t := range targets {
-		left, err := migrateRFC3339Target(ctx, pool, opts, t, batch, out)
+		r, err := migrateRFC3339Target(ctx, pool, opts, t, batch, out)
 		if err != nil {
 			return err
 		}
-		if left > 0 {
-			remaining += left
-			columns++
+		if r.wholeSecond > 0 {
+			left.wholeSecond += r.wholeSecond
+			left.noInstant += r.noInstant
+			left.columns++
 		}
 	}
-	if remaining > 0 {
-		if opts.dryRun {
-			return fmt.Errorf("dry run: %d whole-second image(s) in %d column(s) are left to rewrite; nothing was changed", remaining, columns)
-		}
-		return fmt.Errorf("%d whole-second image(s) remain in %d column(s); a writer may still be running: stop it and run migrate-rfc3339 again",
-			remaining, columns)
+	if left.wholeSecond > 0 {
+		return left.err(opts.dryRun)
 	}
 	fmt.Fprintln(out, "No whole-second image remains: declare encoding rfc3339 for these attributes and run apply-schema.")
 	return nil
 }
 
-// migrateRFC3339Target rewrites the whole-second images unless this is a
-// dry run, lists every image the rewrite does not make canonical
-// (rfc3339migrate.Others) with what it is, and answers how many
-// whole-second images remain. A run lists after its rewrite, so it names
-// what the column holds when the tool exits; a dry run lists the same rows.
-func migrateRFC3339Target(ctx context.Context, pool *pgxpool.Pool, opts ledgerToolOptions, t rfc3339migrate.Target, batch int, out io.Writer) (int64, error) {
-	count, err := rfc3339migrate.CountLegacy(ctx, pool, opts.entityMain, t)
-	if err != nil {
-		return 0, err
+// rfc3339Remaining counts the whole-second-shaped images left in target
+// columns: all of them (CountLegacy), those naming no instant, which the
+// rewrite leaves for repair, and the columns holding any.
+type rfc3339Remaining struct {
+	wholeSecond, noInstant int64
+	columns                int
+}
+
+// err phrases the non-zero exit: what is left, and what the operator does
+// about each kind.
+func (r rfc3339Remaining) err(dryRun bool) error {
+	var b strings.Builder
+	if dryRun {
+		b.WriteString("dry run: ")
 	}
+	fmt.Fprintf(&b, "%d whole-second image(s) remain in %d column(s)", r.wholeSecond, r.columns)
+	if r.noInstant > 0 {
+		fmt.Fprintf(&b, "; %d of them name no instant, so the rewrite leaves them unchanged: repair each row listed above "+
+			"(docs/rfc3339-storage-contract.md) and run migrate-rfc3339 again", r.noInstant)
+	}
+	switch {
+	case dryRun:
+		b.WriteString("; nothing was changed")
+	case r.wholeSecond > r.noInstant:
+		b.WriteString("; a writer may still be running: stop it and run migrate-rfc3339 again")
+	}
+	return errors.New(b.String())
+}
+
+// migrateRFC3339Target rewrites the rewritable whole-second images unless
+// this is a dry run, lists every image the rewrite does not make canonical
+// (rfc3339migrate.Others) with what it is, and answers the whole-second-
+// shaped images that remain. A run lists after its rewrite, so it names
+// what the column holds when the tool exits; a dry run lists the same rows.
+func migrateRFC3339Target(ctx context.Context, pool *pgxpool.Pool, opts ledgerToolOptions, t rfc3339migrate.Target, batch int, out io.Writer) (rfc3339Remaining, error) {
+	var r rfc3339Remaining
 	var rewritten int64
 	if !opts.dryRun {
+		var err error
 		if rewritten, err = rfc3339migrate.Rewrite(ctx, pool, opts.entityMain, t, batch); err != nil {
-			return 0, err
+			return r, err
 		}
-		if count, err = rfc3339migrate.CountLegacy(ctx, pool, opts.entityMain, t); err != nil {
-			return 0, err
-		}
+	}
+	count, err := rfc3339migrate.CountLegacy(ctx, pool, opts.entityMain, t)
+	if err != nil {
+		return r, err
 	}
 	others, err := rfc3339migrate.Others(ctx, pool, opts.entityMain, t)
 	if err != nil {
-		return 0, err
+		return r, err
+	}
+	r.wholeSecond = count
+	for _, o := range others {
+		if o.WholeSecondShaped() {
+			r.noInstant++
+		}
 	}
 	if opts.dryRun {
-		fmt.Fprintf(out, "%s: %d whole-second image(s) to rewrite, %d other image(s) left for repair\n", t, count, len(others))
+		fmt.Fprintf(out, "%s: %d whole-second image(s) to rewrite, %d other image(s) left for repair\n", t, count-r.noInstant, len(others))
 	} else {
 		fmt.Fprintf(out, "%s: rewrote %d whole-second image(s), %d remain, %d other image(s) left for repair\n", t, rewritten, count, len(others))
 	}
 	for _, o := range others {
-		fmt.Fprintf(out, "  left for repair: row %s holds %q, %s\n", o.RowID, o.Image, o.Defect.Explain(o.Canonical))
+		fmt.Fprintf(out, "  left for repair: row %s holds %q, %s", o.RowID, o.Image, o.Defect.Explain(o.Canonical))
+		if o.WholeSecondShaped() {
+			fmt.Fprint(out, "; it has the whole-second shape, so apply-schema refuses rfc3339 until it is repaired")
+		}
+		fmt.Fprintln(out)
 	}
-	return count, nil
+	return r, nil
 }
 
 // rfc3339MigrationTargets reads the targets from each selected schema's
@@ -189,7 +226,7 @@ func unmigratedRFC3339Changes(ctx context.Context, q rfc3339migrate.Querier, ent
 		}
 		if n > 0 {
 			refusals = append(refusals, fmt.Sprintf("%s: iso8601 to rfc3339 is refused while %d row(s) of %s still hold a whole-second iso8601 image; "+
-				"stop every writer of the schema, run forma-tools migrate-rfc3339, then apply again", t, n, entityMain))
+				"stop every writer of the schema, run forma-tools migrate-rfc3339 and repair the images it lists as naming no instant, then apply again", t, n, entityMain))
 		}
 	}
 	return refusals, nil

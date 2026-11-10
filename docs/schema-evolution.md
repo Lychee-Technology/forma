@@ -376,7 +376,8 @@ against the storage it actually runs on.
 
 One binding change also reads stored data (#842): `iso8601` to `rfc3339` on
 the same column is allowed as a binding change, but `apply-schema` refuses it
-while the column still holds a whole-second `iso8601` image, and names the
+while the column still holds a whole-second `iso8601` image (one naming no
+instant, which the tool lists and leaves for repair, included), and names the
 schema, attribute, column and remaining count. It counts with the
 `migrate-rfc3339` tool's own query, so the two agree on what is left
 ([rfc3339-storage-contract.md](rfc3339-storage-contract.md#migrating-from-iso8601-842)).

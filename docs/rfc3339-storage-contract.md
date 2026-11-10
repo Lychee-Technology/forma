@@ -176,23 +176,31 @@ new release starts. The procedure:
    targets from each schema's active generation in the ledger
    (`<registry>_generation_attr`, encoding `iso8601`, retired attributes
    included), not from the attributes files. It rewrites each whole-second
-   image (`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$`) to its
-   first 19 characters plus `.000Z`, in statements of at most 1,000 rows
-   (`--batch-size`, under Aurora DSQL's 3,000-row transaction limit), each
-   its own transaction. It judges every other image in those columns with
-   `rfc3339.Judge`, and lists each one that is not canonical with its
-   schema, attribute, row and repair kind, leaving it unchanged: it belongs
-   to the repair above.
+   image (`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$`) that
+   the read parses to its first 19 characters plus `.000Z`, which is the
+   canonical image of the same instant. It reads the whole-second-shaped
+   images in pages of at most 1,000 rows (`--batch-size`, under Aurora
+   DSQL's 3,000-row transaction limit), judges each one with
+   `rfc3339.Judge`, and rewrites the page's valid ones in one statement, its
+   own transaction, matching each row on the image it read. It judges every
+   other image in those columns the same way, and lists each one that is
+   not canonical with its schema, attribute, row and repair kind, leaving it
+   unchanged: it belongs to the repair above.
    That includes an image of the canonical shape the read refuses
-   (`2024-01-02T25:04:05.000Z`). The rewrite is textual, so a whole-second
-   image naming no day (`2023-02-29T00:00:00Z`) gets its `.000` like the
-   rest and is listed, still unreadable. A run lists after its rewrite, so
-   the listing names what the column holds when the tool exits; `--dry-run`
-   lists the same rows. A re-run finds nothing to rewrite. `--dry-run` reports the
-   per-column counts and changes nothing. The tool exits non-zero while any
-   whole-second image remains in a target column, a dry run included, so a
-   scripted cutover stops before step 2. Like `build-unique-keys`, it cannot
-   detect a running writer.
+   (`2024-01-02T25:04:05.000Z`), and an image of the whole-second shape that
+   names no instant (`2023-02-29T00:00:00Z`). The tool leaves the second
+   kind unchanged and lists it, but it still counts as a whole-second
+   image: under the text comparison it misorders against the rfc3339 images
+   like any other. So the tool keeps exiting non-zero, and `apply-schema`
+   keeps refusing the rename, until that row is repaired. A run lists after
+   its rewrite, so the listing names what the column holds when the tool
+   exits; `--dry-run` lists the same rows. A re-run finds nothing to
+   rewrite. `--dry-run` reports the per-column counts and changes nothing.
+   The tool exits non-zero while any whole-second-shaped image remains in a
+   target column, a dry run included, so a scripted cutover stops before
+   step 2. Its error says how many of those images name no instant and need
+   the repair, apart from those a writer may have stored again. Like
+   `build-unique-keys`, it cannot detect a running writer.
 
    The rewrite does not stamp `change_log`. The instant does not change, and
    a parquet copy holds the instant as epoch milliseconds, not the image:
@@ -203,7 +211,8 @@ new release starts. The procedure:
 2. **Change `iso8601` to `rfc3339`** in the attributes files and run
    `apply-schema`. It judges `iso8601 → rfc3339` on the same column as a
    binding-only change, which the type rules allow (#733). It refuses the
-   change while the column still holds a whole-second image, naming the
+   change while the column still holds a whole-second-shaped image, valid
+   or not, naming the
    schema, attribute, column and remaining row count and pointing at the
    tool, which it counts with (`--entity-main-table` names the table). This
    is the one apply-schema judgement that reads stored data.
