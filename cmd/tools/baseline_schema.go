@@ -152,6 +152,10 @@ func auditForBaseline(ctx context.Context, q widthaudit.Querier, opts baselineOp
 	}
 	var problems []string
 	for _, f := range findings {
+		if f.NonCanonical != "" {
+			fmt.Fprintf(out, "Schema %s (id %d): %s\n", target.name, target.id, censusNonCanonical(f))
+			continue
+		}
 		problems = append(problems, censusRefusal(f))
 	}
 	parquetProblems, err := auditParquetForBaseline(ctx, opts, target, state.objects, cache)
@@ -169,7 +173,8 @@ func auditForBaseline(ctx context.Context, q widthaudit.Querier, opts baselineOp
 // domain: an integer outside its width (widthaudit.Census), a numeric that
 // is not a finite float64 (widthaudit.NumericCensus), and any other value
 // the read refuses, a value in the wrong eav_data column included
-// (widthaudit.DomainCensus). Each also holds the eav_data rows a bound
+// (widthaudit.DomainCensus), which also finds each rfc3339 image that is not
+// canonical (Finding.NonCanonical). Each also holds the eav_data rows a bound
 // attribute kept from before its promotion, which the read still decodes.
 func censusPostgres(ctx context.Context, q widthaudit.Querier, tables widthaudit.Tables, cache *schemameta.MetadataCache) ([]widthaudit.Finding, error) {
 	findings, err := widthaudit.Census(ctx, q, tables, widthaudit.TargetsWithRetainedEAV(cache))
@@ -206,6 +211,17 @@ func auditParquetForBaseline(ctx context.Context, opts baselineOptions, target r
 			target.name, target.id, f.Attribute, f.Declared, f.Path, f.FileType, f.Evidence))
 	}
 	return problems, nil
+}
+
+// censusNonCanonical names one rfc3339 image the read parses that is not the
+// canonical image of its instant (#842). It is reported, not refused: the
+// read serves the row, and refusing the baseline would keep the data plane
+// from serving the schema at all. The PostgreSQL route and the DuckDB tiers
+// can answer differently on the row until it is repaired
+// (docs/rfc3339-storage-contract.md, "Rows outside the contract").
+func censusNonCanonical(f widthaudit.Finding) string {
+	return fmt.Sprintf("attribute %s (id %d) declared %s: row %s holds %s in column %s, %s (repair: %s)",
+		f.AttrName, f.AttrID, f.Declared, f.RowID, f.StoredValue, f.Column, f.NonCanonical.Explain(f.Canonical), f.NonCanonical)
 }
 
 // censusRefusal names one stored value outside the declared type: a number,

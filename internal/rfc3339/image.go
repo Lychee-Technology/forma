@@ -4,7 +4,9 @@
 // the query-filter binders (internal/sqlgen) render a filter literal through
 // it, so the two cannot drift (#582, #588). The OLTP read and the
 // baseline-schema census (internal/widthaudit) both judge a stored image by
-// Parse, so the census refuses exactly what the read refuses (#733). It is a
+// Parse, so the census refuses exactly what the read refuses (#733); the
+// census and the migrate-rfc3339 listing also report an image the read
+// parses that is not canonical (Judge). It is a
 // leaf package: sqlgen cannot import transform (transform → schemameta →
 // sqlgen), so the rule lives below both.
 //

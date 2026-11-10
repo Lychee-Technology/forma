@@ -90,7 +90,8 @@ func TestBaselineSchemaRefusesAStoredValueTheReadRefuses(t *testing.T) {
 
 // TestBaselineSchemaAdmitsWhatTheReadAdmits: the edges of each domain are
 // inside it, including images the read admits and the write never renders,
-// and eav_data rows a bound attribute kept from before its promotion.
+// and eav_data rows a bound attribute kept from before its promotion. A
+// non-canonical rfc3339 image is reported, not refused.
 func TestBaselineSchemaAdmitsWhatTheReadAdmits(t *testing.T) {
 	const canonical = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 	lt := newLedgerTarget(t, map[string]string{"orders": `{` +
@@ -127,6 +128,17 @@ func TestBaselineSchemaAdmitsWhatTheReadAdmits(t *testing.T) {
 	out, err := lt.baseline(t, nil)
 	if err != nil || !strings.Contains(out, "Recorded generation 1 of schema orders") {
 		t.Fatalf("baseline = %v\n%s", err, out)
+	}
+	// The offset image reads, so it does not refuse the baseline, but it is
+	// not canonical, so the census reports it with its repair (#842).
+	want := `Schema orders (id 100): attribute due (id 7) declared datetime: row %s holds "2024-02-29T12:00:00.5+05:30" in column text_02, ` +
+		"not the canonical rfc3339 image of its instant, 2024-02-29T06:30:00.500Z; a rewrite through the API changes only the spelling (repair: spelling only)"
+	var rowID string
+	if err := lt.pool.QueryRow(context.Background(), "SELECT ltbase_row_id::text FROM "+quoteIdentifier(lt.opts.entityMain)).Scan(&rowID); err != nil {
+		t.Fatalf("read the seeded row: %v", err)
+	}
+	if !strings.Contains(out, fmt.Sprintf(want, rowID)) {
+		t.Fatalf("baseline output lacks the non-canonical image:\n%s", out)
 	}
 }
 

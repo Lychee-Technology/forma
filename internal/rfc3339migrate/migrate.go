@@ -21,6 +21,7 @@ package rfc3339migrate
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -38,9 +39,9 @@ import (
 // transaction limit (#692).
 const BatchSize = 1000
 
-// canonicalShapePattern matches the rfc3339 shape, YYYY-MM-DDThh:mm:ss.sssZ:
-// an image already migrated, or written by the new release.
-const canonicalShapePattern = `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$`
+// legacyImage matches the whole-second image the rewrite targets
+// (rfc3339.LegacyImagePattern), for judging a listed image in Go.
+var legacyImage = regexp.MustCompile(rfc3339.LegacyImagePattern)
 
 // Querier reads entity_main.
 type Querier interface {
@@ -122,19 +123,19 @@ WHERE ltbase_schema_id = $1 AND %[2]s ~ $2 AND ltbase_row_id IN (
 	return query, []any{t.SchemaID, rfc3339.LegacyImagePattern, limit}, nil
 }
 
-// BuildOthersQuery renders the listing of every other image in a target
-// column: one of neither the whole-second shape nor the rfc3339 shape, such
-// as an offset, a fraction of another length or an unparsable string. The
-// migration leaves them unchanged; they are the #763 repair's.
+// BuildOthersQuery renders the scan of every image in a target column,
+// which Others judges. No SQL predicate can tell a canonical image from one
+// of the same shape that names no instant (2024-02-30T03:04:05.250Z,
+// 2024-01-02T25:04:05.000Z), so every non-NULL image is read.
 func BuildOthersQuery(entityMain string, t Target) (string, []any, error) {
 	col, err := t.column()
 	if err != nil {
 		return "", nil, err
 	}
 	query := fmt.Sprintf(`SELECT ltbase_row_id, %[2]s FROM %[1]s
-WHERE ltbase_schema_id = $1 AND %[2]s IS NOT NULL AND %[2]s !~ $2 AND %[2]s !~ $3
+WHERE ltbase_schema_id = $1 AND %[2]s IS NOT NULL
 ORDER BY ltbase_row_id`, sqlutil.SanitizeIdentifier(entityMain), col)
-	return query, []any{t.SchemaID, rfc3339.LegacyImagePattern, canonicalShapePattern}, nil
+	return query, []any{t.SchemaID}, nil
 }
 
 // CountLegacy answers how many of a target's rows still hold a whole-second
@@ -179,13 +180,23 @@ func Rewrite(ctx context.Context, e Execer, entityMain string, t Target, batch i
 	}
 }
 
-// Other is an image the migration leaves unchanged.
+// Other is an image the rewrite does not make canonical: it is the #763
+// repair's (docs/rfc3339-storage-contract.md, "Rows outside the contract").
+// Defect and Canonical are rfc3339.Judge's answers for it.
 type Other struct {
-	RowID uuid.UUID
-	Image string
+	RowID     uuid.UUID
+	Image     string
+	Defect    rfc3339.Defect
+	Canonical string
 }
 
-// Others lists a target's images of neither shape (BuildOthersQuery).
+// Others lists a target's images the rewrite does not make canonical:
+// every image rfc3339.Judge does not find canonical, except a whole-second
+// image that names an instant, which the rewrite turns into its canonical
+// image. That includes an image of the canonical shape the read refuses,
+// and a whole-second-shaped one naming no instant (2023-02-29T00:00:00Z):
+// the rewrite is textual, so it gives that one three zero digits and it
+// stays unreadable.
 func Others(ctx context.Context, q Querier, entityMain string, t Target) ([]Other, error) {
 	query, args, err := BuildOthersQuery(entityMain, t)
 	if err != nil {
@@ -195,12 +206,20 @@ func Others(ctx context.Context, q Querier, entityMain string, t Target) ([]Othe
 	if err != nil {
 		return nil, fmt.Errorf("list the other images of %s in %s: %w", t, entityMain, err)
 	}
-	others, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Other, error) {
+	defer rows.Close()
+	var others []Other
+	for rows.Next() {
 		var o Other
-		err := row.Scan(&o.RowID, &o.Image)
-		return o, err
-	})
-	if err != nil {
+		if err := rows.Scan(&o.RowID, &o.Image); err != nil {
+			return nil, fmt.Errorf("list the other images of %s in %s: %w", t, entityMain, err)
+		}
+		o.Canonical, o.Defect = rfc3339.Judge(o.Image)
+		if o.Defect == "" || (o.Defect != rfc3339.Unreadable && legacyImage.MatchString(o.Image)) {
+			continue
+		}
+		others = append(others, o)
+	}
+	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list the other images of %s in %s: %w", t, entityMain, err)
 	}
 	return others, nil

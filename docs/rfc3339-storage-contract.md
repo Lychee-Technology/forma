@@ -107,15 +107,21 @@ Direct SQL is not stopped. Between two validator runs a non-canonical row can
 answer differently on the two routes, with no signal. The contract makes
 these rows detectable and gives them a repair, but does not prevent them.
 
-**Detection.** The validator does not report them yet. #762 tracks
-detecting offset images only. #844 owns detecting every image that differs
-from `rfc3339.Image` of the instant it parses to, with the schema, attribute
-and row of each, and the repair below, in coordination with #762 so that
-detection lands once. Until the check exists,
-[`schema-consistency-migration.md`](schema-consistency-migration.md#rfc3339-images-with-a-utc-offset-756)
-lists offset images per bound column, and `migrate-rfc3339` lists every
-image of neither the whole-second nor the canonical shape in the columns it
-migrates.
+**Detection.** `rfc3339.Judge` decides whether a stored image is canonical:
+it parses the image as the read does and compares it with `rfc3339.Image`
+of the millisecond it names. The storage-domain census
+(`widthaudit.DomainCensus`) judges every image of every rfc3339 column
+through it and reports each one that is not canonical, with its schema,
+attribute, row, stored image and repair kind below, apart from images the
+read refuses. `validate-schema-consistency` fails on both kinds;
+`baseline-schema` refuses the images the read refuses and reports the
+others without refusing, since the read serves their rows. Shape alone is
+never proof: `2024-02-30T03:04:05.250Z` has the canonical shape and names
+no day, so it is reported as an image the read refuses.
+`migrate-rfc3339` lists, through the same rule, every image in the columns
+it migrates that its rewrite does not make canonical. After the migration
+and the repair of the rows it lists, the census finds nothing
+(`TestRFC3339MigrationKeepsEveryTierConsistent`).
 
 **Repair.** Rewrite the row through the API, with an update that names the
 attribute and gives the instant the image names. The write funnel stores the
@@ -148,7 +154,9 @@ A repair is one of three kinds.
 
 Only the first kind repairs without a decision. For the other two the stored
 instant changes, so repairing them is a per-row decision Forma does not make
-for you. A detector should report them apart from the first kind.
+for you. The census reports the kind of each image (`spelling only`,
+`sub-millisecond`, `no canonical image`), so the first kind can be told
+apart from the other two.
 
 ## Migrating from iso8601 (#842)
 
@@ -171,9 +179,16 @@ new release starts. The procedure:
    image (`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$`) to its
    first 19 characters plus `.000Z`, in statements of at most 1,000 rows
    (`--batch-size`, under Aurora DSQL's 3,000-row transaction limit), each
-   its own transaction. Every other image in those columns is listed with
-   its schema, attribute and row and left unchanged: it belongs to the
-   repair above. A re-run finds nothing to rewrite. `--dry-run` reports the
+   its own transaction. It judges every other image in those columns with
+   `rfc3339.Judge`, and lists each one that is not canonical with its
+   schema, attribute, row and repair kind, leaving it unchanged: it belongs
+   to the repair above.
+   That includes an image of the canonical shape the read refuses
+   (`2024-01-02T25:04:05.000Z`). The rewrite is textual, so a whole-second
+   image naming no day (`2023-02-29T00:00:00Z`) gets its `.000` like the
+   rest and is listed, still unreadable. A run lists after its rewrite, so
+   the listing names what the column holds when the tool exits; `--dry-run`
+   lists the same rows. A re-run finds nothing to rewrite. `--dry-run` reports the
    per-column counts and changes nothing. The tool exits non-zero while any
    whole-second image remains in a target column, a dry run included, so a
    scripted cutover stops before step 2. Like `build-unique-keys`, it cannot

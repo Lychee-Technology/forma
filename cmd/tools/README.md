@@ -41,6 +41,10 @@ Forma Tools CLI
     `-width-export-cutover`（RFC3339）为 #384 导出开始生效的时间，早于它导出的行会额外标注其 parquet 副本已过期，
     不改变判定；`-requeue-stale-width-exports` 已于 #729 停用：重新刷新无法修复任何一条报告，
     该标志仍被接受但不再重新排队任何行，只打印原因。
+  - 以 `rfc3339` 编码绑定的 `date`/`datetime` 列中不是其时刻规范图像（`rfc3339.Image`）的每个图像（#842，读取 `-entity-main-table`）：
+    OLTP 读取拒绝的图像（含形状规范但日期不存在的 `2024-02-30T03:04:05.250Z`），以及能读取但不规范的图像（带偏移、
+    非三位小数、整秒图像、亚毫秒小数、偏移后超出 0000–9999 年的时刻）。后者在 PostgreSQL 路由（比较文本）与 DuckDB 层（比较时刻）上的结果可能不同。
+    每一条都报为失败，附行、存储的图像与修复类别（仅改拼写 / 亚毫秒被向下取整 / 无规范图像），修复方法见 `docs/rfc3339-storage-contract.md`。
   详见 `docs/schema-consistency-migration.md`。
 
 generate-attributes
@@ -130,7 +134,7 @@ apply-schema
 
 baseline-schema
 ---------------
-已有部署升级到带 generation 账本的版本前运行一次（#733）：按 OLTP 读取自身的规则审计 PostgreSQL（含 list 元素）：宽度普查（width census）；`numeric` 与 EAV 中的 `bool` 须为有限 float64（拒绝 NaN、无穷大或超出 float64 的值）；EAV 中的 `date`/`datetime` 须为 ±2^53 内的整数毫秒；EAV 中的 `uuid` 须能被 `uuid.Parse` 解析；值不得存放在另一个 `eav_data` 值列中；`bool_text` 列只能是 `"1"`/`"0"`，`rfc3339` 列须能按 RFC 3339 解析。绑定主表列的属性在 EAV 提升为列绑定之前写入的 `eav_data` 行仍会被读取，同样按上述 EAV 规则审计。完整解码每个存活的 parquet 对象并按声明的值域扫描（含 list 元素），
+已有部署升级到带 generation 账本的版本前运行一次（#733）：按 OLTP 读取自身的规则审计 PostgreSQL（含 list 元素）：宽度普查（width census）；`numeric` 与 EAV 中的 `bool` 须为有限 float64（拒绝 NaN、无穷大或超出 float64 的值）；EAV 中的 `date`/`datetime` 须为 ±2^53 内的整数毫秒；EAV 中的 `uuid` 须能被 `uuid.Parse` 解析；值不得存放在另一个 `eav_data` 值列中；`bool_text` 列只能是 `"1"`/`"0"`，`rfc3339` 列须能按 RFC 3339 解析；能解析但不是其时刻规范图像的 `rfc3339` 图像逐行报告（附修复类别），但不拒绝基线（#842）。绑定主表列的属性在 EAV 提升为列绑定之前写入的 `eav_data` 行仍会被读取，同样按上述 EAV 规则审计。完整解码每个存活的 parquet 对象并按声明的值域扫描（含 list 元素），
 数据与当前声明不符或无法读取时拒绝且不记录任何内容；通过后为尚无 generation 的 schema 记录 generation 1。已有 generation 的 schema 被跳过。
 运行前须已有账本表（PostgreSQL 上运行 `init-db`；DSQL 上按 `docs/schema-evolution.md` 手工建表）。
 基线是离线的：运行前须停止旧版本中所有写入的服务端、Lambda 与嵌入方，以及所有 `cdc-flush`、`cdc-init` 运行，并暂停 compactor、不运行
@@ -156,8 +160,10 @@ migrate-rfc3339
 
 目标取自账本：每个 schema 的 active generation 中编码为 `iso8601` 的属性（`<schema-table>_generation_attr`，含已退役属性），而非 attributes 文件。
 工具把每个整秒图像改写为前 19 个字符加 `.000Z`，每条语句至多 `-batch-size`（默认 1000，上限 2999，低于 Aurora DSQL 每事务 3000 行的限制）行、
-各自一个事务；列出这些列中其他形状的图像（带偏移、其他长度的小数、无法解析的字符串）及其 schema、属性与行，并保持不变，
-修复方法见 `docs/rfc3339-storage-contract.md`。改写不标记 `change_log`：时刻不变，parquet 保存的是时刻（epoch 毫秒）而不是图像。
+各自一个事务；逐个判断这些列中的每个其他图像（`rfc3339.Judge`，与普查规则相同），列出改写后仍不规范的图像（带偏移、其他长度的小数、
+亚毫秒小数、无法解析的字符串，包括形状规范但日期或时间不存在的 `2024-02-30T03:04:05.250Z`）及其 schema、属性、行与修复类别，并保持不变，
+修复方法见 `docs/rfc3339-storage-contract.md`。改写只看形状：整秒形状但日期不存在的图像（`2023-02-29T00:00:00Z`）也被补上 `.000`，
+之后仍无法解析，因此照样列出。非 dry-run 运行在改写之后列出，所列即工具退出时列中的值；`-dry-run` 列出同样的行。改写不标记 `change_log`：时刻不变，parquet 保存的是时刻（epoch 毫秒）而不是图像。
 重复运行不会再改写任何内容。只要目标列仍有整秒图像就以非零状态退出（`-dry-run` 也是），脚本化的切换会在 `apply-schema` 之前停下。
 
 工具无法检测仍在运行的写入方：从改写开始到新版本启动，须停止该 schema 的所有写入方。完整步骤：
@@ -171,7 +177,7 @@ migrate-rfc3339
 - `-schema-table`（`SCHEMA_TABLE`，默认 `schema_registry`）。
 - `-entity-main-table`（`ENTITY_MAIN_TABLE`，默认 `entity_main_dev`）。
 - `-batch-size`：每条改写语句的行数。
-- `-dry-run`：只报告每列的计数，不改写。
+- `-dry-run`：只报告每列的计数并列出待修复的图像，不改写。
 
 示例：
 - `go run ./cmd/tools migrate-rfc3339 -dry-run`

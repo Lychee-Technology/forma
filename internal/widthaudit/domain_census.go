@@ -35,6 +35,13 @@ import (
 //     (rfc3339.Parse). No SQL predicate states that rule (the day must exist
 //     in its month), so every image is read and judged here.
 //
+// An rfc3339 image the read parses is inside the declared type, but unless
+// it is the canonical image of its instant the PostgreSQL route (which
+// compares the text) and the DuckDB tiers (which compare the instant) can
+// answer differently on its row (#763, #842). DomainCensus reports it too,
+// marked Finding.NonCanonical, so a caller can tell it from a value the
+// read refuses.
+//
 // The other bindings hold only what their column type can: a bool_smallint
 // reads any smallint as the nearest of 0/1, and a bigint_* date any int64.
 // A list's elements are eav_data rows held to the items type.
@@ -110,7 +117,7 @@ ORDER BY e.schema_id, e.attr_id, e.row_id, e.array_indices`,
 
 // BuildDomainColumnCensusQuery renders the entity_main census over the
 // given column-bound targets: every bool_text image other than "1" and
-// "0", and every rfc3339 image, which DomainCensus parses.
+// "0", and every rfc3339 image, which DomainCensus judges (rfc3339.Judge).
 func BuildDomainColumnCensusQuery(tables Tables, targets []Target) (string, []any) {
 	values := make([]string, 0, len(targets))
 	args := make([]any, 0, len(targets)*4)
@@ -135,8 +142,10 @@ ORDER BY m.ltbase_schema_id, w.attr_id, m.ltbase_row_id`,
 }
 
 // DomainCensus returns every stored value under the targets that the read
-// refuses: the eav_data findings first, then the entity_main ones. A value
-// read from value_text, or from a text column, is quoted in StoredValue.
+// refuses, and every rfc3339 image that is not the canonical image of its
+// instant (Finding.NonCanonical): the eav_data findings first, then the
+// entity_main ones. A value read from value_text, or from a text column, is
+// quoted in StoredValue.
 func DomainCensus(ctx context.Context, q Querier, tables Tables, targets []Target) ([]Finding, error) {
 	var eavTargets, columnTargets []Target
 	for _, t := range targets {
@@ -233,7 +242,9 @@ func refusedEAVValue(declared forma.ValueType, text, numeric *string) (string, e
 }
 
 // queryDomainColumnFindings resolves each entity_main row the query keeps,
-// dropping an rfc3339 image the read parses.
+// judging each rfc3339 image (rfc3339.Judge): a canonical image is dropped,
+// one the read refuses is outside the declared type, and any other one is
+// kept with its Finding.NonCanonical defect.
 func queryDomainColumnFindings(ctx context.Context, q Querier, table, query string, args []any, targets []Target) ([]Finding, error) {
 	byKey := targetIndex(targets)
 	rows, err := q.Query(ctx, query, args...)
@@ -255,8 +266,12 @@ func queryDomainColumnFindings(ctx context.Context, q Querier, table, query stri
 			return nil, fmt.Errorf("%s over %s returned schema_id=%d attr_id=%d, which is not a census target", domainCensus, table, schemaID, attrID)
 		}
 		if isDate(target.Declared) {
-			if _, err := rfc3339.Parse(image); err == nil {
+			canonical, defect := rfc3339.Judge(image)
+			if defect == "" {
 				continue
+			}
+			if defect != rfc3339.Unreadable {
+				f.NonCanonical, f.Canonical = defect, canonical
 			}
 		}
 		f.Target = target

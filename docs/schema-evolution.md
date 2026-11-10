@@ -665,6 +665,13 @@ Fail-closed enforcement needs two things the code does not have:
    promotion leaves the rows written before it in `eav_data`, and the
    whole-row read still decodes them under the declared type.
 
+   An `rfc3339` column value that parses but is not the canonical image of
+   its instant (an offset, a fraction of other than three digits, a
+   whole-second image) does not refuse the baseline, since the read serves
+   its row. The baseline lists each one with its row and repair kind,
+   because the PostgreSQL route and the DuckDB tiers can answer differently
+   on it ([rfc3339-storage-contract.md](rfc3339-storage-contract.md), #842).
+
    Every parquet
    object's footer is read, so a missing or unreadable object refuses the
    baseline even when its manifest entry lists column types, and every object

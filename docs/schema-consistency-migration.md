@@ -164,6 +164,16 @@ It validates:
   that is not a whole number (`#618`). The census reads these columns from
   `--entity-main-table`, and fails when a schema declares such a binding and
   the table name is empty
+- every image of a `date`/`datetime` bound with the `rfc3339` encoding is the
+  canonical image of its instant (`#842`, `rfc3339.Judge`), read from
+  `--entity-main-table`. An image the read refuses fails as
+  `rfc3339 images the OLTP read refuses`, the canonical shape naming no day
+  (`2024-02-30T03:04:05.250Z`) included. An image the read parses that is
+  not canonical (an offset, a fraction of other than three digits, a
+  whole-second image `migrate-rfc3339` has not rewritten, a sub-millisecond
+  fraction) fails as `rfc3339 images that are not canonical`, with its repair
+  kind, because the PostgreSQL route and the DuckDB tiers can answer
+  differently on its row (`docs/rfc3339-storage-contract.md`)
 
 Use both checks before upgrading. The SQL script gives quick database facts; the Go validator gives the final runtime-compatible answer.
 
@@ -988,9 +998,10 @@ hot leg and the CDC export now apply the offset.
 **Parquet copies exported before the upgrade keep the old instant.**
 Compaction carries a copy's value over unchanged, so a flushed row reads
 its wall clock as UTC on the warm/cold tiers until its next write
-re-exports it. The validator does not report these rows, because the OLTP
-read parses their images (`#762` tracks detection); list them per bound
-column:
+re-exports it. Since `#842` the validator reports each of these rows as
+an rfc3339 image that is not canonical, with its repair kind (see the
+Go validator above). The query below lists them per bound column without
+the validator:
 
 ```sql
 -- one query per rfc3339-bound column; text_02 stands for the bound column

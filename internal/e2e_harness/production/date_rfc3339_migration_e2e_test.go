@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/compaction"
+	"github.com/lychee-technology/forma/internal/rfc3339"
 	"github.com/lychee-technology/forma/internal/rfc3339migrate"
 	"github.com/lychee-technology/forma/internal/widthaudit"
 )
@@ -89,6 +90,7 @@ func seedMigrationGroup(ctx context.Context, t *testing.T, env *Env, specs []can
 // TestRFC3339MigrationKeepsEveryTierConsistent: legacy rows on every tier,
 // the migration, then new millisecond rows; both routes answer by instant,
 // and the storage-domain census and the migration's own count find nothing.
+// Before the migration the census reports each whole-second image.
 func TestRFC3339MigrationKeepsEveryTierConsistent(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339Props, rfc3339Attrs)))
@@ -108,6 +110,17 @@ func TestRFC3339MigrationKeepsEveryTierConsistent(t *testing.T) {
 	targets := []rfc3339migrate.Target{
 		{SchemaName: simple.Name, SchemaID: simple.ID, AttrID: 2, AttrName: "seenAt", Column: forma.MainColumnText02},
 		{SchemaName: simple.Name, SchemaID: simple.ID, AttrID: 3, AttrName: "bornOn", Column: forma.MainColumnText03},
+	}
+	// Before the migration the census reports every whole-second image as a
+	// respelling of its canonical image (#842).
+	before := rfc3339Census(ctx, t, env, simple.ID)
+	for _, f := range before {
+		if f.NonCanonical != rfc3339.Respelled || f.Canonical == "" {
+			t.Fatalf("census before the migration reports %+v, want a whole-second respelling", f)
+		}
+	}
+	if len(before) != 10 {
+		t.Fatalf("census before the migration = %d finding(s), want the 10 planted whole-second images", len(before))
 	}
 	var planted int64
 	for _, target := range targets {
@@ -137,9 +150,18 @@ func TestRFC3339MigrationKeepsEveryTierConsistent(t *testing.T) {
 	runWidthProbes(ctx, t, env, "migrated-duck", duck, true, probes)
 	assertCanonicalSorts(ctx, t, env, "migrated-duck", duck, true, rows)
 
+	if findings := rfc3339Census(ctx, t, env, simple.ID); len(findings) != 0 {
+		t.Fatalf("census after the migration = %+v; want nothing", findings)
+	}
+}
+
+// rfc3339Census runs the storage-domain census over the schema's two
+// rfc3339 columns, seenAt and bornOn.
+func rfc3339Census(ctx context.Context, t *testing.T, env *Env, schemaID int16) []widthaudit.Finding {
+	t.Helper()
 	var columnTargets []widthaudit.Target
 	for _, target := range widthaudit.DomainTargets(env.Metadata) {
-		if target.SchemaID == simple.ID && target.Column != "" {
+		if target.SchemaID == schemaID && target.Column != "" {
 			columnTargets = append(columnTargets, target)
 		}
 	}
@@ -148,7 +170,8 @@ func TestRFC3339MigrationKeepsEveryTierConsistent(t *testing.T) {
 	}
 	findings, err := widthaudit.DomainCensus(ctx, env.Pool,
 		widthaudit.Tables{EntityMain: env.Tables.EntityMain, ChangeLog: env.Tables.ChangeLog}, columnTargets)
-	if err != nil || len(findings) != 0 {
-		t.Fatalf("census after the migration = %+v, %v; want nothing", findings, err)
+	if err != nil {
+		t.Fatalf("census: %v", err)
 	}
+	return findings
 }

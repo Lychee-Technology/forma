@@ -28,7 +28,8 @@ func runMigrateRFC3339(ctx context.Context, args []string) error {
 		fmt.Println("")
 		fmt.Println("Rewrites every whole-second image (YYYY-MM-DDThh:mm:ssZ) of each attribute an active generation")
 		fmt.Println("records with the iso8601 encoding to the rfc3339 image of the same instant (YYYY-MM-DDThh:mm:ss.000Z).")
-		fmt.Println("Any other image in those columns is listed and left unchanged. --dry-run counts and changes nothing.")
+		fmt.Println("Every other image those columns hold that is not canonical is listed for repair, with its row; the tool leaves")
+		fmt.Println("it unchanged. --dry-run counts, lists and changes nothing.")
 		fmt.Println("It exits non-zero while a whole-second image remains, so a scripted cutover stops before apply-schema.")
 		fmt.Println("")
 		fmt.Println("Stop every writer of the schema first, and start only the new release afterwards: the tool cannot")
@@ -99,31 +100,36 @@ func migrateRFC3339(ctx context.Context, pool *pgxpool.Pool, opts ledgerToolOpti
 	return nil
 }
 
-// migrateRFC3339Target lists the images the migration leaves, rewrites the
-// whole-second ones unless this is a dry run, and answers how many remain.
+// migrateRFC3339Target rewrites the whole-second images unless this is a
+// dry run, lists every image the rewrite does not make canonical
+// (rfc3339migrate.Others) with what it is, and answers how many
+// whole-second images remain. A run lists after its rewrite, so it names
+// what the column holds when the tool exits; a dry run lists the same rows.
 func migrateRFC3339Target(ctx context.Context, pool *pgxpool.Pool, opts ledgerToolOptions, t rfc3339migrate.Target, batch int, out io.Writer) (int64, error) {
-	others, err := rfc3339migrate.Others(ctx, pool, opts.entityMain, t)
-	if err != nil {
-		return 0, err
-	}
 	count, err := rfc3339migrate.CountLegacy(ctx, pool, opts.entityMain, t)
 	if err != nil {
 		return 0, err
 	}
-	if opts.dryRun {
-		fmt.Fprintf(out, "%s: %d whole-second image(s) to rewrite, %d other image(s) left unchanged\n", t, count, len(others))
-	} else {
-		rewritten, err := rfc3339migrate.Rewrite(ctx, pool, opts.entityMain, t, batch)
-		if err != nil {
+	var rewritten int64
+	if !opts.dryRun {
+		if rewritten, err = rfc3339migrate.Rewrite(ctx, pool, opts.entityMain, t, batch); err != nil {
 			return 0, err
 		}
 		if count, err = rfc3339migrate.CountLegacy(ctx, pool, opts.entityMain, t); err != nil {
 			return 0, err
 		}
-		fmt.Fprintf(out, "%s: rewrote %d whole-second image(s), %d remain, %d other image(s) left unchanged\n", t, rewritten, count, len(others))
+	}
+	others, err := rfc3339migrate.Others(ctx, pool, opts.entityMain, t)
+	if err != nil {
+		return 0, err
+	}
+	if opts.dryRun {
+		fmt.Fprintf(out, "%s: %d whole-second image(s) to rewrite, %d other image(s) left for repair\n", t, count, len(others))
+	} else {
+		fmt.Fprintf(out, "%s: rewrote %d whole-second image(s), %d remain, %d other image(s) left for repair\n", t, rewritten, count, len(others))
 	}
 	for _, o := range others {
-		fmt.Fprintf(out, "  left unchanged: row %s holds %q\n", o.RowID, o.Image)
+		fmt.Fprintf(out, "  left for repair: row %s holds %q, %s\n", o.RowID, o.Image, o.Defect.Explain(o.Canonical))
 	}
 	return count, nil
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/rfc3339"
 	"github.com/lychee-technology/forma/internal/rfc3339migrate"
 	"github.com/lychee-technology/forma/internal/schemaledger"
 	"github.com/lychee-technology/forma/internal/schemameta"
@@ -137,9 +138,11 @@ func (lt *ledgerTarget) migrate(t *testing.T, dryRun bool, batch int) (string, e
 // TestMigrateRFC3339RewritesOnlyWholeSecondImages pins the tool's contract
 // (#842): it rewrites exactly the whole-second images of the columns the
 // active generation records as iso8601, each to its first 19 characters
-// plus .000Z, in batches; it lists every other image and leaves it alone;
-// it leaves change_log and every other schema untouched; its dry run
-// changes nothing and exits non-zero; a re-run finds nothing to do.
+// plus .000Z, in batches; it lists every image the rewrite does not make
+// canonical, those of the canonical shape the read refuses included, and
+// leaves it alone; it leaves change_log and every other schema untouched;
+// its dry run changes nothing and exits non-zero; a re-run finds nothing to
+// do.
 func TestMigrateRFC3339RewritesOnlyWholeSecondImages(t *testing.T) {
 	lt := newLegacyISO8601Target(t)
 	legacy := map[uuid.UUID]string{}
@@ -148,36 +151,57 @@ func TestMigrateRFC3339RewritesOnlyWholeSecondImages(t *testing.T) {
 		legacy[lt.seedMain(t, 100, map[string]any{"text_02": image, "text_01": "2024-01-02T03:04:05Z"})] = image
 	}
 	dayRow := lt.seedMain(t, 100, map[string]any{"text_03": "2024-01-02T00:00:00Z"})
-	offset := lt.seedMain(t, 100, map[string]any{"text_02": "2024-01-02T11:04:05+08:00"})
-	fraction := lt.seedMain(t, 100, map[string]any{"text_02": "2024-01-02T03:04:05.5Z"})
-	garbage := lt.seedMain(t, 100, map[string]any{"text_02": "not a time"})
+	noDay := lt.seedMain(t, 100, map[string]any{"text_03": "2023-02-29T00:00:00Z"})
+	left := map[uuid.UUID]string{
+		lt.seedMain(t, 100, map[string]any{"text_02": "2024-01-02T11:04:05+08:00"}): "2024-01-02T11:04:05+08:00",
+		lt.seedMain(t, 100, map[string]any{"text_02": "2024-01-02T03:04:05.5Z"}):    "2024-01-02T03:04:05.5Z",
+		lt.seedMain(t, 100, map[string]any{"text_02": "2024-01-02T03:04:05.2509Z"}): "2024-01-02T03:04:05.2509Z",
+		lt.seedMain(t, 100, map[string]any{"text_02": "2024-02-30T03:04:05.250Z"}):  "2024-02-30T03:04:05.250Z",
+		lt.seedMain(t, 100, map[string]any{"text_02": "2024-01-02T25:04:05.000Z"}):  "2024-01-02T25:04:05.000Z",
+		lt.seedMain(t, 100, map[string]any{"text_02": "not a time"}):                "not a time",
+	}
 	migrated := lt.seedMain(t, 100, map[string]any{"text_02": "2024-01-02T03:04:05.250Z"})
 	lt.seedMain(t, 100, map[string]any{})
 	note := lt.seedMain(t, 101, map[string]any{"text_02": "2024-01-02T03:04:05Z"})
 	before := lt.mainText(t)
 
 	out, err := lt.migrate(t, true, 2)
-	if err == nil || !strings.Contains(err.Error(), "dry run: 6 whole-second image(s) in 2 column(s)") {
+	if err == nil || !strings.Contains(err.Error(), "dry run: 7 whole-second image(s) in 2 column(s)") {
 		t.Fatalf("dry run = %v, want a non-zero exit naming what is left\n%s", err, out)
 	}
-	for _, want := range []string{
-		"schema events (id 100) attribute due (id 1) column text_02: 5 whole-second image(s) to rewrite, 3 other image(s) left unchanged",
-		"schema events (id 100) attribute day (id 2) column text_03: 1 whole-second image(s) to rewrite, 0 other image(s) left unchanged",
-		fmt.Sprintf("left unchanged: row %s holds %q", offset, "2024-01-02T11:04:05+08:00"),
-		fmt.Sprintf("left unchanged: row %s holds %q", fraction, "2024-01-02T03:04:05.5Z"),
-		fmt.Sprintf("left unchanged: row %s holds %q", garbage, "not a time"),
-	} {
+	wants := []string{
+		"schema events (id 100) attribute due (id 1) column text_02: 5 whole-second image(s) to rewrite, 6 other image(s) left for repair",
+		"schema events (id 100) attribute day (id 2) column text_03: 2 whole-second image(s) to rewrite, 1 other image(s) left for repair",
+		fmt.Sprintf("left for repair: row %s holds %q, not an RFC 3339 image the read parses", noDay, "2023-02-29T00:00:00Z"),
+	}
+	for id, image := range left {
+		wants = append(wants, fmt.Sprintf("left for repair: row %s holds %q, ", id, image))
+	}
+	for _, want := range wants {
 		if !strings.Contains(out, want) {
 			t.Fatalf("dry-run report lacks %q:\n%s", want, out)
+		}
+	}
+	for _, id := range []uuid.UUID{migrated, dayRow} {
+		if strings.Contains(out, id.String()) {
+			t.Fatalf("dry run listed row %s, whose image is canonical or rewritable:\n%s", id, out)
 		}
 	}
 	if after := renderedAll(lt.mainText(t)); fmt.Sprint(after) != fmt.Sprint(renderedAll(before)) {
 		t.Fatalf("a dry run changed entity_main")
 	}
+	// Before the migration the census reports each whole-second image as a
+	// respelling of its canonical image.
+	for _, f := range lt.dueCensus(t) {
+		if image, ok := legacy[f.RowID]; ok && (f.NonCanonical != rfc3339.Respelled || f.Canonical != image[:19]+".000Z") {
+			t.Fatalf("census reports whole-second row %s as %+v", f.RowID, f)
+		}
+	}
 
 	out, err = lt.migrate(t, false, 2)
-	if err != nil || !strings.Contains(out, "rewrote 5 whole-second image(s), 0 remain, 3 other image(s) left unchanged") ||
-		!strings.Contains(out, "rewrote 1 whole-second image(s), 0 remain") {
+	if err != nil || !strings.Contains(out, "rewrote 5 whole-second image(s), 0 remain, 6 other image(s) left for repair") ||
+		!strings.Contains(out, "rewrote 2 whole-second image(s), 0 remain, 1 other image(s) left for repair") ||
+		!strings.Contains(out, fmt.Sprintf("left for repair: row %s holds %q, not an RFC 3339 image the read parses", noDay, "2023-02-29T00:00:00.000Z")) {
 		t.Fatalf("migrate = %v\n%s", err, out)
 	}
 	after := lt.mainText(t)
@@ -192,7 +216,11 @@ func TestMigrateRFC3339RewritesOnlyWholeSecondImages(t *testing.T) {
 	if got := after[dayRow][2]; got == nil || *got != "2024-01-02T00:00:00.000Z" {
 		t.Fatalf("day row holds %v", got)
 	}
-	for _, id := range []uuid.UUID{offset, fraction, garbage, migrated, note} {
+	unchanged := []uuid.UUID{migrated, note}
+	for id := range left {
+		unchanged = append(unchanged, id)
+	}
+	for _, id := range unchanged {
 		if rendered(after[id]) != rendered(before[id]) {
 			t.Fatalf("row %s changed although it holds no whole-second image of a target", id)
 		}
@@ -203,15 +231,45 @@ func TestMigrateRFC3339RewritesOnlyWholeSecondImages(t *testing.T) {
 	}
 
 	out, err = lt.migrate(t, false, 2)
-	if err != nil || !strings.Contains(out, "rewrote 0 whole-second image(s), 0 remain") {
+	if err != nil || !strings.Contains(out, "rewrote 0 whole-second image(s), 0 remain, 6 other image(s) left for repair") {
 		t.Fatalf("a re-run = %v, want nothing to rewrite\n%s", err, out)
 	}
 	if _, err = lt.migrate(t, true, 2); err != nil {
 		t.Fatalf("a dry run after the migration = %v, want a zero exit", err)
 	}
 
-	// After the migration the storage-domain census finds only the image
-	// no read parses, which the migration lists and leaves.
+	// After the migration the census of due finds exactly the rows the
+	// migration listed.
+	lt.assertDueCensusFindsOnly(t, left)
+}
+
+// assertDueCensusFindsOnly requires the census of events.due to find
+// exactly the given rows, each judged as rfc3339.Judge judges its image:
+// one the read refuses is outside the declared type, any other carries its
+// defect and canonical image.
+func (lt *ledgerTarget) assertDueCensusFindsOnly(t *testing.T, images map[uuid.UUID]string) {
+	t.Helper()
+	want := map[uuid.UUID]string{}
+	for id, image := range images {
+		canonical, defect := rfc3339.Judge(image)
+		if defect == rfc3339.Unreadable {
+			canonical, defect = "", ""
+		}
+		want[id] = fmt.Sprintf("%q %s %s", image, defect, canonical)
+	}
+	got := map[uuid.UUID]string{}
+	for _, f := range lt.dueCensus(t) {
+		got[f.RowID] = fmt.Sprintf("%s %s %s", f.StoredValue, f.NonCanonical, f.Canonical)
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("census of due = %v, want %v", got, want)
+	}
+}
+
+// dueCensus runs the storage-domain census over events.due declared
+// rfc3339 on text_02, as the files say once the migration has run.
+func (lt *ledgerTarget) dueCensus(t *testing.T) []widthaudit.Finding {
+	t.Helper()
 	cache := schemameta.NewMetadataCache()
 	meta := forma.AttributeMetadata{AttributeName: "due", AttributeID: 1, ValueType: forma.ValueTypeDateTime,
 		ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingRFC3339}}
@@ -226,9 +284,10 @@ func TestMigrateRFC3339RewritesOnlyWholeSecondImages(t *testing.T) {
 	}
 	findings, err := widthaudit.DomainCensus(context.Background(), lt.pool,
 		widthaudit.Tables{EntityMain: lt.opts.entityMain, ChangeLog: lt.opts.changeLog}, columnTargets)
-	if err != nil || len(findings) != 1 || findings[0].RowID != garbage {
-		t.Fatalf("census = %+v, %v; want only row %s", findings, err, garbage)
+	if err != nil {
+		t.Fatalf("census: %v", err)
 	}
+	return findings
 }
 
 // TestMigrateRFC3339RefusesABatchOverTheDSQLLimit: a batch is one
