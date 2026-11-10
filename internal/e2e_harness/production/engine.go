@@ -70,6 +70,18 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 	return e.engine
 }
 
+// Breaker returns the circuit breaker the Env's engine admits queries
+// through, or nil when the Env was built without WithBreaker. It assembles
+// the engine first, because the breaker is created with it. The breaker is
+// cached on the Env across ReopenDuckDB/RestartPostgres rebuilds, so the
+// returned value stays the live one. Tests use it to observe breaker state
+// directly (IsOpen), e.g. to pin that a read left the breaker untouched
+// (#499).
+func (e *Env) Breaker() *fedengine.CircuitBreaker {
+	e.Engine()
+	return e.breaker
+}
+
 // clusterS3Client forwards every S3 call to the Cluster's *current* client at
 // call time, so a client rebuilt by RestartS3 (the host-mapped port can change)
 // is picked up without re-wiring. This is what lets parquetSource dedup onto
