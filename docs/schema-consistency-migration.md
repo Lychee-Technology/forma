@@ -1031,12 +1031,15 @@ the write funnel keeps whole seconds within years 0000 to 9999:
 `check_by_hand` flags both kinds, and every image whose spelling differs
 from that shape at all. It is a superset: a `.000` fraction, a one-digit hour
 (`T3:04:05`) or a boundary-day image whose instant stays in range can be
-stored, so check each flagged row's instant (a `GET` returns it). No
+stored, so check each flagged row's instant (a `GET` returns it). A fraction
+finer than a millisecond (`.0000009`) can be stored too, but normalization
+floors it away, so the rewrite moves the instant to the whole second. No
 mechanical repair keeps the values the API cannot store. Writing a rounded or
 clamped instant changes the stored value, so it is a per-row decision that
 Forma does not make for you. Until such a row is written again, its warm and
-cold copy keeps the old instant. `#762` tracks a re-export that needs no
-rewrite.
+cold copy keeps the old instant. A non-canonical image is outside the query
+contract (`docs/iso8601-storage-contract.md`, `#763`), so a re-export that
+keeps it in PostgreSQL does not repair the row.
 
 ### Registered schema with no `<schema>.json` (`#314`)
 
