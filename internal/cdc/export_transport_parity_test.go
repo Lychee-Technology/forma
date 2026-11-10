@@ -168,5 +168,5 @@ func requireParityCoverage(t *testing.T, db *sql.DB, path string, ids []uuid.UUI
 	var boolInt, boolText, boolDefault, isoDates int
 	require.NoError(t, db.QueryRow(`SELECT count(active_i), count(active_t), count(active_d), count(born) FROM `+src).
 		Scan(&boolInt, &boolText, &boolDefault, &isoDates))
-	require.Equal(t, []int{3, 3, 3, 2}, []int{boolInt, boolText, boolDefault, isoDates}, "non-NULL bool encodings and parsed iso8601 dates")
+	require.Equal(t, []int{3, 3, 3, 2}, []int{boolInt, boolText, boolDefault, isoDates}, "non-NULL bool encodings and parsed rfc3339 dates")
 }

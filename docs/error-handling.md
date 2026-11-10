@@ -697,12 +697,17 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   system column is dropped, not stored, and is not judged.
 - A value whose typed slot does not match the column family is refused, never
   dropped.
-- `date`/`datetime` bound with `iso8601` (#582): the RFC3339 image keeps
-  whole seconds within the layout's four-digit year, so
-  `2024-01-01T00:00:00.123Z` and `10000-01-01T00:00:00Z` are refused. Before
-  #582 the first was silently truncated to `2024-01-01T00:00:00Z` and the
-  second stored as an image the reader cannot parse. The unbound
-  `eav_data.value_numeric` image has its own rule (#592, next).
+- `date`/`datetime` bound with `rfc3339` (#582, #842): the RFC 3339 image
+  keeps the millisecond within the layout's four-digit year, so
+  `2024-01-01T00:00:00.123Z` is stored as itself and `10000-01-01T00:00:00Z`
+  is refused with `… which keeps years 0000 to 9999 (the RFC 3339
+  four-digit year)`. Before #582 the second was stored as an image the
+  reader cannot parse. Until #842 the encoding was named `iso8601`, kept
+  whole seconds and refused the first as well (`… which keeps whole
+  seconds`); that refusal is gone, and registration now refuses an
+  `iso8601` declaration instead, naming `forma-tools migrate-rfc3339`
+  (`docs/rfc3339-storage-contract.md`). The unbound `eav_data.value_numeric`
+  image has its own rule (#592, next).
 - Unbound `date`/`datetime` (#592): `eav_data.value_numeric` keeps only the
   float64 image of the epoch milliseconds, which is exact within ±2^53, so an
   unbound date (list items included) admits exactly
@@ -718,19 +723,20 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   is what is written. A `bigint_*` column with `unix_ms` keeps the full int64
   range. A `double_*` column, a binding registration refuses (#459), is held
   to the same rule. The read side is in "Read-path consistency errors".
-- The query-filter literal on an `iso8601`-bound attribute follows the same
+- The query-filter literal on an `rfc3339`-bound attribute follows the same
   rule (#588): the Postgres binders render it as the canonical stored image
-  (UTC, whole seconds), so `gte:2024-01-02T05:04:05+02:00` and
-  `gte:1704164645000` both bind `2024-01-02T03:04:05Z` whatever the server's
-  zone, and a literal the image cannot hold is refused on the Postgres and
-  DuckDB routes alike with `datetime filter value 2024-01-02T03:04:05.123Z
-  for 'joined' cannot be compared against main column text_03 with encoding
-  iso8601, which keeps whole seconds` (the year rule reads `keeps years 0000
-  to 9999 (the RFC3339 four-digit year)`). Before #588 the Postgres route
-  kept the literal's offset, rendered a unix-ms literal in the process zone
-  and dropped the fraction, while DuckDB compared the exact instant, so the
-  two engines answered the same filter differently. The write image and the
-  filter image come from one function, `internal/iso8601.Image`.
+  (UTC, three fractional digits), so `gte:2024-01-02T05:04:05.5+02:00` and
+  `gte:1704164645500` both bind `2024-01-02T03:04:05.500Z` whatever the
+  server's zone, and a literal the image cannot hold is refused on the
+  Postgres and DuckDB routes alike with `datetime filter value
+  253402300800000 for 'joined' cannot be compared against main column
+  text_03 with encoding rfc3339, which keeps years 0000 to 9999 (the RFC 3339
+  four-digit year)`. A literal off a whole second is no longer refused
+  (#842). Before #588 the Postgres route kept the literal's offset, rendered
+  a unix-ms literal in the process zone and dropped the fraction, while
+  DuckDB compared the exact instant, so the two engines answered the same
+  filter differently. The write image and the filter image come from one
+  function, `internal/rfc3339.Image`.
 - `date`/`datetime` precision (#589): the logical value is epoch
   milliseconds, in every tier and on the read path. A write accepts an
   RFC3339 string with any number of fractional digits (`format: date-time`
@@ -741,9 +747,9 @@ One rule, one funnel (`transform.populateTypedValue` → `checkStorageFit`):
   `2024-01-01T00:00:00Z`, unbound or bound. This is the type's precision,
   not a narrowing by one destination, so it is documented rather than
   refused (refusing would answer 400 to `time.Now()` and to every Go client
-  whose `time.Time` field marshals as RFC3339Nano). The `iso8601` rule above
+  whose `time.Time` field marshals as RFC3339Nano). The `rfc3339` rule above
   judges the floored millis: `…00:00:00.9999999Z` floors to `.999` and is
-  refused as off a whole second. The accepted date input shapes are an
+  stored as `…00:00:00.999Z`. The accepted date input shapes are an
   RFC3339 string with or without a fraction, `YYYY-MM-DD`, `YYYY-MM`, an
   epoch-millisecond integer string, or a Go `time.Time`.
 - `date`/`datetime` in API responses (#591): a value is rendered as
@@ -1081,7 +1087,7 @@ kept.
 
 **Known limits.**
 
-- A bound column's own encoding (`readFromMainColumn`, e.g. an `iso8601` text
+- A bound column's own encoding (`readFromMainColumn`, e.g. an `rfc3339` text
   image) is parsed while the stored row is rebuilt, before the merge. A
   main-column value that does not parse therefore blocks even the update that
   replaces it.

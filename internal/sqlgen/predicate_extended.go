@@ -190,7 +190,7 @@ func extendedHybridPayload(attr string, meta forma.AttributeMetadata, hasMeta bo
 		p.MainNow = &ServerTimeOperand{
 			OffsetMs: ext.now.OffsetMs,
 			Date:     leafMeta.ValueType == forma.ValueTypeDate,
-			ISO8601:  leafMeta.ColumnBinding != nil && leafMeta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601,
+			RFC3339:  leafMeta.ColumnBinding != nil && leafMeta.ColumnBinding.Encoding == forma.MainColumnEncodingRFC3339,
 		}
 	case extSet:
 		elems := ext.elems

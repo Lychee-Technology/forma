@@ -26,9 +26,9 @@ import (
 //   - eav_data.value_numeric and double_* columns keep a float64 image, exact
 //     for |ms| <= 2^53 (checkFloat64ImageFit);
 //   - bigint_* columns (default, unix_ms) keep the int64 itself;
-//   - text_* columns with iso8601 keep an RFC3339 image at whole seconds
-//     within the layout's four-digit year (iso8601.Image, shared with the
-//     query-filter binders, #588).
+//   - text_* columns with rfc3339 keep an RFC 3339 image at millisecond
+//     precision within the layout's four-digit year (rfc3339.Image, shared
+//     with the query-filter binders, #588, #842).
 //
 // The read side of a float64 destination judges the image the read query
 // emitted, never a narrowed one (#592): the exact token where the route

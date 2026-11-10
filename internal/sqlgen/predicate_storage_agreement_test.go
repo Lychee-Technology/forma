@@ -42,7 +42,7 @@ func TestToDualClauses_ScalarOperatorsAgreeAcrossStorage(t *testing.T) {
 		{"bool int", "active", "flag", "true", dslScalarOps[:2]},
 		{"bool text", "verified", "flag", "true", dslScalarOps[:2]},
 		{"unix-ms date", "born", "day", "1704164645000", dslScalarOps[:6]},
-		{"iso8601 datetime", "joined", "seen", "2024-01-02T03:04:05Z", dslScalarOps[:6]},
+		{"rfc3339 datetime", "joined", "seen", "2024-01-02T03:04:05Z", dslScalarOps[:6]},
 	}
 	for _, p := range pairs {
 		for _, op := range dslScalarOps {

@@ -38,7 +38,7 @@ func newPersistentTransformerRegistry() *stubSchemaRegistry {
 			"createdAt":          boundPersistentAttr(4, forma.ValueTypeDate, forma.MainColumnBigint01, forma.MainColumnEncodingUnixMs),
 			"isActiveInt":        boundPersistentAttr(5, forma.ValueTypeBool, forma.MainColumnSmallint01, forma.MainColumnEncodingBoolInt),
 			"isActiveText":       boundPersistentAttr(6, forma.ValueTypeBool, forma.MainColumnText02, forma.MainColumnEncodingBoolText),
-			"expiresAt":          boundPersistentAttr(7, forma.ValueTypeDate, forma.MainColumnText03, forma.MainColumnEncodingISO8601),
+			"expiresAt":          boundPersistentAttr(7, forma.ValueTypeDate, forma.MainColumnText03, forma.MainColumnEncodingRFC3339),
 			"notes":              unboundPersistentAttr(8, forma.ValueTypeText),
 			"profile.name":       boundPersistentAttr(9, forma.ValueTypeText, forma.MainColumnText04, forma.MainColumnEncodingDefault),
 			"profile.rank":       boundPersistentAttr(10, forma.ValueTypeNumeric, forma.MainColumnSmallint02, forma.MainColumnEncodingDefault),
@@ -132,7 +132,7 @@ func assertPersistentMainColumns(t *testing.T, record *model.PersistentRecord, t
 	assert.Equal(t, map[string]string{
 		"text_01": "Tester",
 		"text_02": "0",
-		"text_03": ts.expiresAt.Format(time.RFC3339),
+		"text_03": ts.expiresAt.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 		"text_04": "Nested Name",
 	}, record.TextItems)
 	assert.Equal(t, map[string]int16{

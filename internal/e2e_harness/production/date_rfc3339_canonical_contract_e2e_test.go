@@ -12,13 +12,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/compaction"
-	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/rfc3339"
 )
 
-// This file is the #763 regression for the canonical iso8601 storage
-// contract (docs/iso8601-storage-contract.md). The PostgreSQL route compares
-// an iso8601-bound column as text against the literal's canonical image and
+// This file is the #763 regression for the canonical rfc3339 storage
+// contract (docs/rfc3339-storage-contract.md). The PostgreSQL route compares
+// an rfc3339-bound column as text against the literal's canonical image and
 // sorts it as text; the DuckDB tiers compare and sort the instant. The
 // contract is that for every image Forma's writers store the two agree,
 // because the canonical image's text order is its instant order. Here every
@@ -27,7 +27,7 @@ import (
 // reads PostgreSQL whatever has been flushed) and the DuckDB route over the
 // unflushed hot leg, delta parquet and base parquet. A non-canonical image
 // is outside the contract and is not exercised here; see
-// date_iso8601_offset_e2e_test.go for what DuckDB does with one.
+// date_rfc3339_offset_e2e_test.go for what DuckDB does with one.
 
 // canonicalRow is one seeded row: the value written for each date attribute
 // (empty leaves it unset) and the instant it names.
@@ -41,13 +41,20 @@ type canonicalRow struct {
 // decides an order somewhere: the year's first digit and a 0999 → 1000
 // carry, month and day carries (09 → 10), and hour, minute and second steps
 // within one day. The offset row is #763's example, written through the API:
-// it names 03:04:06Z and must be stored as that canonical image. bornOn runs
-// in a different order from seenAt, so a sort on the wrong column shows.
+// it names 03:04:06Z and must be stored as that canonical image. The c-ms
+// rows differ from c-sec5 and from each other only in milliseconds (#842),
+// including a fraction written short (.5) and one written with an offset.
+// bornOn runs in a different order from seenAt, so a sort on the wrong
+// column shows.
 var canonicalRowSpecs = []canonicalRow{
 	{name: "c-floor", seenAt: "0000-01-01T00:00:00Z", bornOn: "2024-01-10"},
 	{name: "c-0999", seenAt: "0999-12-31T23:59:59Z", bornOn: "9999-12-31"},
 	{name: "c-1000", seenAt: "1000-01-01T00:00:00Z", bornOn: "0000-01-01"},
 	{name: "c-sec5", seenAt: "2024-01-02T03:04:05Z", bornOn: "2024-09-30"},
+	{name: "c-ms001", seenAt: "2024-01-02T03:04:05.001Z", bornOn: "2024-01-10T00:00:00.001Z"},
+	{name: "c-ms250", seenAt: "2024-01-02T11:04:05.25+08:00"},
+	{name: "c-ms500", seenAt: "2024-01-02T03:04:05.5Z", bornOn: "2024-01-10T00:00:00.999Z"},
+	{name: "c-ms999", seenAt: "2024-01-02T03:04:05.999Z"},
 	{name: "c-offset", seenAt: "2024-01-02T11:04:06+08:00", bornOn: "0999-12-31"},
 	{name: "c-min5", seenAt: "2024-01-02T03:05:00Z", bornOn: "2024-10-01"},
 	{name: "c-h09", seenAt: "2024-01-02T09:59:59Z", bornOn: "1000-01-01"},
@@ -66,11 +73,14 @@ var canonicalProbeLiterals = map[string][]string{
 	"seenAt": {
 		"1000-01-01T00:00:00Z",
 		"2024-01-02T03:04:06Z",
+		"2024-01-02T03:04:05.250Z",
+		"2024-01-02T03:04:05.5Z",
+		"2024-01-02T03:04:05.001Z",
 		"2024-01-02T05:00:00+02:00",
 		"2024-01-02T19:59:59+10:00",
 		strconv.FormatInt(time.Date(2024, 10, 1, 0, 0, 0, 0, time.UTC).UnixMilli(), 10),
 	},
-	"bornOn": {"0999-12-31T00:00:00Z", "2024-01-10T00:00:00Z", "2024-09-30T00:00:00Z"},
+	"bornOn": {"0999-12-31T00:00:00Z", "2024-01-10T00:00:00Z", "2024-01-10T00:00:00.001Z", "2024-09-30T00:00:00Z"},
 }
 
 var canonicalProbeOps = []string{"equals", "not_equals", "gt", "gte", "lt", "lte"}
@@ -113,7 +123,7 @@ func seedCanonicalRows(ctx context.Context, t *testing.T, env *Env, withNote boo
 		rows = append(rows, &row)
 		events = append(events, row.ev)
 	}
-	mustApplyEvents(ctx, t, env, "canonical iso8601 creates", events...)
+	mustApplyEvents(ctx, t, env, "canonical rfc3339 creates", events...)
 	return rows
 }
 
@@ -212,7 +222,7 @@ func assertCanonicalSorts(ctx context.Context, t *testing.T, env *Env, label str
 }
 
 // assertCanonicalImages pins the storage half of the contract on the
-// PostgreSQL route: each stored image is iso8601.Image of the instant
+// PostgreSQL route: each stored image is rfc3339.Image of the instant
 // written, whatever spelling the write used.
 func assertCanonicalImages(ctx context.Context, t *testing.T, env *Env, rows []*canonicalRow) {
 	t.Helper()
@@ -235,7 +245,7 @@ func assertCanonicalImages(ctx context.Context, t *testing.T, env *Env, rows []*
 				}
 				continue
 			}
-			want, rule := iso8601.Image(ms)
+			want, rule := rfc3339.Image(ms)
 			if rule != "" {
 				t.Fatalf("stored images: %s.%s: %s", row.name, attr, rule)
 			}
@@ -326,19 +336,19 @@ func rewriteCanonicalRowsToBase(ctx context.Context, t *testing.T, env *Env, sch
 	}
 }
 
-// TestCanonicalISO8601ContractNoEAVAllTiers: every attribute is
+// TestCanonicalRFC3339ContractNoEAVAllTiers: every attribute is
 // column-bound, so the DuckDB hot leg takes BuildPGSelectNoEAV.
-func TestCanonicalISO8601ContractNoEAVAllTiers(t *testing.T) {
+func TestCanonicalRFC3339ContractNoEAVAllTiers(t *testing.T) {
 	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, iso8601Props, iso8601Attrs)))
+	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339Props, rfc3339Attrs)))
 	runCanonicalContractAllTiers(ctx, t, env, false)
 }
 
-// TestCanonicalISO8601ContractEAVJoinedAllTiers: the EAV-only note forces
+// TestCanonicalRFC3339ContractEAVJoinedAllTiers: the EAV-only note forces
 // the EAV-joined hot projection, where the bound dates sit in a COALESCE
 // with the EAV pivot.
-func TestCanonicalISO8601ContractEAVJoinedAllTiers(t *testing.T) {
+func TestCanonicalRFC3339ContractEAVJoinedAllTiers(t *testing.T) {
 	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, iso8601MixedProps, iso8601MixedAttrs)))
+	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339MixedProps, rfc3339MixedAttrs)))
 	runCanonicalContractAllTiers(ctx, t, env, true)
 }

@@ -10,26 +10,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// #709: a date/datetime bound to a text column with the iso8601 encoding is
-// read on the hot leg through the export's TRY_CAST (mainColISO8601Expr), so
+// #709: a date/datetime bound to a text column with the rfc3339 encoding is
+// read on the hot leg through the export's TRY_CAST (mainColRFC3339Expr), so
 // a string that is not a timestamp reads NULL on every tier (#555). The
 // pg-main null test compared the raw column instead, which is not NULL, so
 // is_null dropped such an unflushed row from pg_source before `visible`
 // could match it, and matched it once its parquet copy served it.
 
-func iso8601DateMeta(vt forma.ValueType, col forma.MainColumn) forma.AttributeMetadata {
+func rfc3339DateMeta(vt forma.ValueType, col forma.MainColumn) forma.AttributeMetadata {
 	return forma.AttributeMetadata{AttributeID: 1, ValueType: vt,
-		ColumnBinding: &forma.MainColumnBinding{ColumnName: col, Encoding: forma.MainColumnEncodingISO8601}}
+		ColumnBinding: &forma.MainColumnBinding{ColumnName: col, Encoding: forma.MainColumnEncodingRFC3339}}
 }
 
-// TestBuildPgMainClause_ISO8601LeavesFilterTheHotRead: is_null and a
-// comparison on an iso8601-bound date test the hot read, the comparison
+// TestBuildPgMainClause_RFC3339LeavesFilterTheHotRead: is_null and a
+// comparison on an rfc3339-bound date test the hot read, the comparison
 // against the literal's epoch millis (#755); is_not_null keeps the raw
 // column, and a unix_ms date keeps the raw null test.
-func TestBuildPgMainClause_ISO8601LeavesFilterTheHotRead(t *testing.T) {
+func TestBuildPgMainClause_RFC3339LeavesFilterTheHotRead(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
-		"seenAt": iso8601DateMeta(forma.ValueTypeDateTime, forma.MainColumnText02),
-		"bornOn": iso8601DateMeta(forma.ValueTypeDate, forma.MainColumnText03),
+		"seenAt": rfc3339DateMeta(forma.ValueTypeDateTime, forma.MainColumnText02),
+		"bornOn": rfc3339DateMeta(forma.ValueTypeDate, forma.MainColumnText03),
 		"stamp": {AttributeID: 3, ValueType: forma.ValueTypeDateTime,
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint01, Encoding: forma.MainColumnEncodingUnixMs}},
 	}
@@ -39,11 +39,11 @@ func TestBuildPgMainClause_ISO8601LeavesFilterTheHotRead(t *testing.T) {
 		want string
 		args []any
 	}{
-		{"seenAt", "is_null:true", ISO8601EpochMs("m.text_02") + " IS NULL", nil},
+		{"seenAt", "is_null:true", RFC3339EpochMs("m.text_02") + " IS NULL", nil},
 		{"seenAt", "is_not_null:true", "m.text_02 IS NOT NULL", nil},
-		{"bornOn", "is_null:true", ISO8601EpochMs("m.text_03") + " IS NULL", nil},
-		{"seenAt", "gt:2024-01-02T03:04:05Z", ISO8601EpochMs("m.text_02") + " > ?", []any{int64(1704164645000)}},
-		{"seenAt", "lte:2024-01-02T11:04:05+08:00", ISO8601EpochMs("m.text_02") + " <= ?", []any{int64(1704164645000)}},
+		{"bornOn", "is_null:true", RFC3339EpochMs("m.text_03") + " IS NULL", nil},
+		{"seenAt", "gt:2024-01-02T03:04:05Z", RFC3339EpochMs("m.text_02") + " > ?", []any{int64(1704164645000)}},
+		{"seenAt", "lte:2024-01-02T11:04:05+08:00", RFC3339EpochMs("m.text_02") + " <= ?", []any{int64(1704164645000)}},
 		{"stamp", "is_null:true", "m.bigint_01 IS NULL", nil},
 	} {
 		t.Run(tc.attr+"_"+tc.cond, func(t *testing.T) {
@@ -56,8 +56,8 @@ func TestBuildPgMainClause_ISO8601LeavesFilterTheHotRead(t *testing.T) {
 	}
 }
 
-// TestISO8601NullPushdownIsNoStricterThanTheHotRead runs the pushdown leaf
-// and the hot projection on DuckDB over the strings an iso8601 column can
+// TestRFC3339NullPushdownIsNoStricterThanTheHotRead runs the pushdown leaf
+// and the hot projection on DuckDB over the strings an rfc3339 column can
 // hold, with and without a retained eav_data value (an EAV-to-bound
 // promotion keeps the rows written before it). The EAV-joined projection
 // reads COALESCE(<eav pivot>, <main read>), so for every combination the
@@ -66,13 +66,13 @@ func TestBuildPgMainClause_ISO8601LeavesFilterTheHotRead(t *testing.T) {
 // with a retained value is left out: the raw column test drops it whatever
 // the leaf renders, for every bound attribute, which is #742's open question
 // of what a retained value means.
-func TestISO8601NullPushdownIsNoStricterThanTheHotRead(t *testing.T) {
+func TestRFC3339NullPushdownIsNoStricterThanTheHotRead(t *testing.T) {
 	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
-	cache := forma.SchemaAttributeCache{"seenAt": iso8601DateMeta(forma.ValueTypeDateTime, forma.MainColumnText02)}
-	projection := "COALESCE(eav, " + mainColISO8601Expr(string(forma.MainColumnText02)) + ")"
+	cache := forma.SchemaAttributeCache{"seenAt": rfc3339DateMeta(forma.ValueTypeDateTime, forma.MainColumnText02)}
+	projection := "COALESCE(eav, " + mainColRFC3339Expr(string(forma.MainColumnText02)) + ")"
 	images := []sql.NullString{
 		{String: "2024-01-02T03:04:05Z", Valid: true},
 		{String: "not a date", Valid: true},
@@ -105,8 +105,8 @@ func TestISO8601NullPushdownIsNoStricterThanTheHotRead(t *testing.T) {
 	}
 }
 
-// TestISO8601ComparisonPushdownIsNoStricterThanTheHotRead is #755 on
-// DuckDB: over the strings an iso8601 column can hold, the pg-main
+// TestRFC3339ComparisonPushdownIsNoStricterThanTheHotRead is #755 on
+// DuckDB: over the strings an rfc3339 column can hold, the pg-main
 // comparison keeps a row whenever the logical fragment's comparison of the
 // hot read (BuildPGSelectNoEAV's projection, against the epoch-ms operand
 // the DuckDB leaf binds) does. The raw text against the canonical image
@@ -114,13 +114,13 @@ func TestISO8601NullPushdownIsNoStricterThanTheHotRead(t *testing.T) {
 // clock (#756) and an offset-less string with a space. A retained eav_data
 // value is left out: the EAV-joined projection takes it over the column,
 // which no main-column leaf can see (#742).
-func TestISO8601ComparisonPushdownIsNoStricterThanTheHotRead(t *testing.T) {
+func TestRFC3339ComparisonPushdownIsNoStricterThanTheHotRead(t *testing.T) {
 	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 
-	cache := forma.SchemaAttributeCache{"seenAt": iso8601DateMeta(forma.ValueTypeDateTime, forma.MainColumnText02)}
-	read := mainColISO8601Expr(string(forma.MainColumnText02))
+	cache := forma.SchemaAttributeCache{"seenAt": rfc3339DateMeta(forma.ValueTypeDateTime, forma.MainColumnText02)}
+	read := mainColRFC3339Expr(string(forma.MainColumnText02))
 	images := []sql.NullString{
 		{String: "2024-01-02T03:04:05Z", Valid: true},
 		{String: "2024-01-02T03:04:05.5Z", Valid: true},

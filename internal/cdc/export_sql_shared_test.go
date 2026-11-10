@@ -322,12 +322,12 @@ func TestBuildSchemaDrivenProjection_BoundUnixMsDateAndDatetimeExportEpochMsBigi
 // TestCastMainValue_DateAndDatetimeEncodings pins the #219 normalization: every
 // date/datetime encoding must export epoch-ms BIGINT so the federated reader's
 // CAST(attr AS BIGINT) projection and epoch-ms predicate binds line up on every
-// tier. iso8601 (RFC3339 text) exports through the hot leg's own read
-// (sqlgen.ISO8601EpochMs, #756); unix_ms and default (epoch millis already
+// tier. rfc3339 (RFC3339 text) exports through the hot leg's own read
+// (sqlgen.RFC3339EpochMs, #756); unix_ms and default (epoch millis already
 // in a bigint column) pass through.
 func TestCastMainValue_DateAndDatetimeEncodings(t *testing.T) {
 	unixMs := &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint02, Encoding: forma.MainColumnEncodingUnixMs}
-	iso := &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingISO8601}
+	iso := &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingRFC3339}
 	defaultBigint := &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint02}
 
 	tests := []struct {
@@ -349,16 +349,16 @@ func TestCastMainValue_DateAndDatetimeEncodings(t *testing.T) {
 			expected: "TRY_CAST(m.bigint_02 AS BIGINT)",
 		},
 		{
-			name:     "date iso8601 parses text to epoch-ms bigint",
+			name:     "date rfc3339 parses text to epoch-ms bigint",
 			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDate, ColumnBinding: iso},
 			col:      "m.text_02",
-			expected: sqlgen.ISO8601EpochMs("m.text_02"),
+			expected: sqlgen.RFC3339EpochMs("m.text_02"),
 		},
 		{
-			name:     "datetime iso8601 parses text to epoch-ms bigint",
+			name:     "datetime rfc3339 parses text to epoch-ms bigint",
 			meta:     forma.AttributeMetadata{ValueType: forma.ValueTypeDateTime, ColumnBinding: iso},
 			col:      "m.text_02",
-			expected: sqlgen.ISO8601EpochMs("m.text_02"),
+			expected: sqlgen.RFC3339EpochMs("m.text_02"),
 		},
 		{
 			name:     "date default encoding (epoch-ms bigint) passes through",

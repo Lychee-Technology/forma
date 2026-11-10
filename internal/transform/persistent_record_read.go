@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/rfc3339"
 )
 
 // readFromMainColumn reads an attribute value from the main table columns.
@@ -86,7 +86,7 @@ func (t *persistentRecordTransformer) readFromSystemColumn(record *model.Persist
 	return nil
 }
 
-// readWithEncoding handles reading values with special encodings (UnixMs, BoolInt, BoolText, ISO8601).
+// readWithEncoding handles reading values with special encodings (UnixMs, BoolInt, BoolText, RFC3339).
 // Returns (attr, hasValue, error).
 func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*model.EAVRecord, bool, error) {
 	columnName := string(binding.ColumnName)
@@ -129,10 +129,10 @@ func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentR
 			return attr, true, nil
 		}
 
-	case forma.MainColumnEncodingISO8601:
+	case forma.MainColumnEncodingRFC3339:
 		// Read ISO 8601 string from text column and convert to time
 		if val, ok := record.TextItems[columnName]; ok {
-			parsedTime, err := iso8601.Parse(val)
+			parsedTime, err := rfc3339.Parse(val)
 			if err != nil {
 				return nil, false, fmt.Errorf("column %s: parse ISO 8601 date: %w", columnName, err)
 			}

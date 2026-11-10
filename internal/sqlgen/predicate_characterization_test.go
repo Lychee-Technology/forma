@@ -9,7 +9,7 @@ import (
 
 // characterizationCache covers every storage/encoding combination the three
 // emitters treat differently: bound/unbound text, integer, numeric, bool
-// (int/text encodings), date (unix-ms/ISO8601 encodings), datetime, uuid.
+// (int/text encodings), date (unix-ms/RFC3339 encodings), datetime, uuid.
 func characterizationCache() forma.SchemaAttributeCache {
 	return forma.SchemaAttributeCache{
 		"username": {AttributeID: 1, ValueType: forma.ValueTypeText,
@@ -26,7 +26,7 @@ func characterizationCache() forma.SchemaAttributeCache {
 		"born": {AttributeID: 8, ValueType: forma.ValueTypeDate,
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("bigint_01"), Encoding: forma.MainColumnEncodingUnixMs}},
 		"joined": {AttributeID: 9, ValueType: forma.ValueTypeDateTime,
-			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_03"), Encoding: forma.MainColumnEncodingISO8601}},
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_03"), Encoding: forma.MainColumnEncodingRFC3339}},
 		"seen": {AttributeID: 10, ValueType: forma.ValueTypeDateTime},
 		"ref":  {AttributeID: 11, ValueType: forma.ValueTypeUUID},
 		"amount": {AttributeID: 12, ValueType: forma.ValueTypeBigInt,
@@ -357,13 +357,14 @@ func buildCharErrCases() []charErrCase {
 			clientError: true,
 		},
 		{
-			// #588: a sub-second literal on an iso8601 binding is refused,
-			// not truncated to the whole-second row it does not name. The PG
-			// main leg reports first here; the DuckDB leg's identical refusal
-			// is pinned by TestISO8601FilterLiteral_RefusedUniformly.
-			name:        "sub-second literal on iso8601 binding refused in pg-main",
-			cond:        charKv("joined", "gte:2024-01-02T03:04:05.123Z"),
-			wantErr:     "pg main generation: invalid date value for 'joined': datetime filter value 2024-01-02T03:04:05.123Z for 'joined' cannot be compared against main column text_03 with encoding iso8601, which keeps whole seconds",
+			// #588: a literal the rfc3339 image cannot hold (since #842, one
+			// outside the four-digit year) is refused, not bound as an image
+			// no row stores. The PG main leg reports first here; the DuckDB
+			// leg's identical refusal is pinned by
+			// TestRFC3339FilterLiteral_RefusedUniformly.
+			name:        "out-of-year literal on rfc3339 binding refused in pg-main",
+			cond:        charKv("joined", "gte:253402300800000"),
+			wantErr:     "pg main generation: invalid date value for 'joined': datetime filter value 253402300800000 for 'joined' cannot be compared against main column text_03 with encoding rfc3339, which keeps years 0000 to 9999",
 			clientError: true,
 		},
 		{

@@ -4,13 +4,11 @@ import (
 	"fmt"
 	"math"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -278,17 +276,17 @@ func TestCheckStorageFit_NonNumericFamilyColumnWidth(t *testing.T) {
 			boundMeta(forma.ValueTypeDate, forma.MainColumnBigint01, forma.MainColumnEncodingDefault), "2024-01-01", nil},
 		{"bool to smallint bool_smallint accepted",
 			boundMeta(forma.ValueTypeBool, forma.MainColumnSmallint01, forma.MainColumnEncodingBoolInt), true, nil},
-		{"datetime to text iso8601 accepted",
-			boundMeta(forma.ValueTypeDateTime, forma.MainColumnText01, forma.MainColumnEncodingISO8601), "2024-01-01T00:00:00Z", nil},
+		{"datetime to text rfc3339 accepted",
+			boundMeta(forma.ValueTypeDateTime, forma.MainColumnText01, forma.MainColumnEncodingRFC3339), "2024-01-01T00:00:00Z", nil},
 		{"bool to text bool_text accepted",
 			boundMeta(forma.ValueTypeBool, forma.MainColumnText01, forma.MainColumnEncodingBoolText), false, nil},
 		// #559: an explicit encoding renders the numeric slot as text
-		// (bool_text, iso8601) or as a number (unix_ms, bool_smallint), and
+		// (bool_text, rfc3339) or as a number (unix_ms, bool_smallint), and
 		// the column must be able to hold that rendering; the store places
 		// the value by the column's type, so the check keys on it too.
-		{"datetime to bigint iso8601 rejected",
-			boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingISO8601), "2024-01-01T00:00:00Z",
-			[]string{"datetime value cannot be stored in main column bigint_01 (bigint) with encoding iso8601, which renders a text value"}},
+		{"datetime to bigint rfc3339 rejected",
+			boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingRFC3339), "2024-01-01T00:00:00Z",
+			[]string{"datetime value cannot be stored in main column bigint_01 (bigint) with encoding rfc3339, which renders a text value"}},
 		{"bool to smallint bool_text rejected",
 			boundMeta(forma.ValueTypeBool, forma.MainColumnSmallint01, forma.MainColumnEncodingBoolText), true,
 			[]string{"bool value cannot be stored in main column smallint_01 (smallint) with encoding bool_text, which renders a text value"}},
@@ -319,182 +317,6 @@ func TestCheckStorageFit_NonNumericFamilyColumnWidth(t *testing.T) {
 				require.Contains(t, msg, want)
 			}
 			require.Contains(t, msg, "attribute 'when'")
-		})
-	}
-}
-
-// #582: the iso8601 rendering is an RFC3339 string, which keeps whole
-// seconds. An instant whose millis are off a whole second used to be
-// silently truncated on the way into the text column (1704067200123 stored
-// as 2024-01-01T00:00:00Z, read back as 1704067200000) — the one admitted
-// binding where the funnel narrowed the caller's value. It is now refused as
-// published invalid input; the same instant unbound, or bound to a bigint
-// column, still keeps its millis.
-//
-// The rule judges the normalised epoch millis, not the spelling the caller
-// sent: epoch millis are the type's precision (#589), so a finer fraction is
-// floored to millis before this check runs. An input that floors to a whole
-// second (.000001Z) is admitted; one that floors to .999 is refused.
-func TestCheckStorageFit_ISO8601WholeSeconds(t *testing.T) {
-	iso := boundMeta(forma.ValueTypeDateTime, forma.MainColumnText02, forma.MainColumnEncodingISO8601)
-	isoDate := boundMeta(forma.ValueTypeDate, forma.MainColumnText03, forma.MainColumnEncodingISO8601)
-	cases := []struct {
-		name    string
-		meta    forma.AttributeMetadata
-		value   any
-		wantErr string // substring of the published message; "" means accepted
-	}{
-		{"datetime with millis rejected", iso, "2024-01-01T00:00:00.123Z",
-			"datetime value 1704067200123 (2024-01-01T00:00:00.123Z) cannot be stored in main column text_02 with encoding iso8601, which keeps whole seconds"},
-		{"datetime whole second accepted", iso, "2024-01-01T00:00:00Z", ""},
-		{"datetime zero fraction accepted", iso, "2024-01-01T00:00:00.000Z", ""},
-		{"datetime epoch-ms string with millis rejected", iso, "1704067200123", "keeps whole seconds"},
-		{"datetime epoch-ms string whole second accepted", iso, "1704067200000", ""},
-		{"datetime time.Time with millis rejected", iso, time.UnixMilli(1704067200999).UTC(), "value 1704067200999"},
-		{"datetime pre-epoch sub-second rejected", iso, "-500",
-			"datetime value -500 (1969-12-31T23:59:59.5Z) cannot be stored"},
-		{"date with millis rejected", isoDate, "2024-01-01T00:00:00.001Z",
-			"date value 1704067200001 (2024-01-01T00:00:00.001Z) cannot be stored in main column text_03 with encoding iso8601, which keeps whole seconds"},
-		{"date day accepted", isoDate, "2024-01-01", ""},
-		// The RFC3339 layout has a four-digit year: the reader
-		// (time.Parse(time.RFC3339)) refuses the "10000-…" and "-0001-…"
-		// images time.Format writes past either end, so the check refuses
-		// the value instead of letting the store write a row the read path
-		// cannot parse (#587 review).
-		{"datetime year 0000 floor accepted", iso, "0000-01-01T00:00:00Z", ""},
-		{"datetime year 9999 ceiling accepted", iso, "9999-12-31T23:59:59Z", ""},
-		{"datetime epoch-ms string at the ceiling accepted", iso, "253402300799000", ""},
-		{"datetime year 10000 rejected", iso, "253402300800000",
-			"datetime value 253402300800000 (10000-01-01T00:00:00Z) cannot be stored in main column text_02 with encoding iso8601, which keeps years 0000 to 9999 (the RFC3339 four-digit year)"},
-		{"datetime year -0001 rejected", iso, "-62167219201000",
-			"datetime value -62167219201000 (-0001-12-31T23:59:59Z) cannot be stored in main column text_02 with encoding iso8601, which keeps years 0000 to 9999"},
-		{"date year 10000 rejected", isoDate, "253402300800000", "keeps years 0000 to 9999"},
-		// Epoch millis are the type's precision (#589 ruling): the funnel
-		// floors a finer fraction at normalisation, for every destination
-		// alike, and this rule judges the floored millis. A fraction that
-		// floors to a whole second is admitted and stored at that second;
-		// one that floors to .999 is refused for the millis it floored to,
-		// not for the instant the caller spelled.
-		{"datetime sub-millisecond fraction is floored to millis before the check", iso, "2024-01-01T00:00:00.000001Z", ""},
-		{"datetime sub-millisecond fraction is refused on its floored millis", iso, "2024-01-01T00:00:00.9999999Z",
-			"datetime value 1704067200999 (2024-01-01T00:00:00.999Z) cannot be stored in main column text_02 with encoding iso8601, which keeps whole seconds"},
-		{"unbound datetime keeps millis",
-			forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeDateTime}, "2024-01-01T00:00:00.123Z", ""},
-		{"unix_ms bigint keeps millis",
-			boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingUnixMs), "2024-01-01T00:00:00.123Z", ""},
-		{"default bigint keeps millis",
-			boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingDefault), "2024-01-01T00:00:00.123Z", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var rec model.EAVRecord
-			set, err := populateTypedValue(&rec, "seenAt", tc.value, tc.meta)
-			if tc.wantErr == "" {
-				require.NoError(t, err)
-				require.True(t, set)
-				return
-			}
-			require.ErrorIs(t, err, forma.ErrInvalidInput, "fit rejection must be user-facing invalid input")
-			msg, ok := forma.ResolvePublicMessage(err)
-			require.True(t, ok, "fit rejection must publish its message")
-			require.Contains(t, msg, tc.wantErr)
-			require.Contains(t, msg, "attribute 'seenAt'")
-		})
-	}
-}
-
-// #582: whatever the funnel admits into an iso8601 column reads back with
-// exactly the millis it was written with; the store refuses, rather than
-// truncates, a sub-second value that bypasses the check.
-func TestISO8601_StoreReadRoundTripIsExact(t *testing.T) {
-	tr := &persistentRecordTransformer{}
-	meta := boundMeta(forma.ValueTypeDateTime, forma.MainColumnText02, forma.MainColumnEncodingISO8601)
-	for _, value := range []any{
-		"2024-01-01T00:00:00Z", "1970-01-01T00:00:00Z", "-1000", "2099-12-31T23:59:59+02:00", "2024-01-01",
-		// Both ends of the RFC3339 four-digit year: the reader must parse
-		// the image of every admitted value (#587 review).
-		"0000-01-01T00:00:00Z", "9999-12-31T23:59:59Z", "-62167219200000", "253402300799000",
-	} {
-		t.Run(fmt.Sprint(value), func(t *testing.T) {
-			var rec model.EAVRecord
-			_, err := populateTypedValue(&rec, "seenAt", value, meta)
-			require.NoError(t, err)
-			record := &model.PersistentRecord{TextItems: map[string]string{}}
-			require.NoError(t, tr.storeInMainColumn(record, rec, meta.ValueType, meta.ColumnBinding))
-			got, err := tr.readFromMainColumn(record, meta, meta.ColumnBinding)
-			require.NoError(t, err)
-			require.NotNil(t, got)
-			require.Equal(t, *rec.ValueNumeric, *got.ValueNumeric)
-		})
-	}
-
-	// A sub-second value that reaches the store is a funnel bypass: refused
-	// with the reason, not narrowed.
-	var rec model.EAVRecord
-	_, err := populateTypedValue(&rec, "seenAt", "2024-01-01T00:00:00.123Z", forma.AttributeMetadata{AttributeID: 9, ValueType: forma.ValueTypeDateTime})
-	require.NoError(t, err)
-	record := &model.PersistentRecord{TextItems: map[string]string{}}
-	err = tr.storeInMainColumn(record, rec, meta.ValueType, meta.ColumnBinding)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "keeps whole seconds")
-	require.Contains(t, err.Error(), "1704067200123")
-	require.Contains(t, err.Error(), "text_02")
-	require.Empty(t, record.TextItems)
-}
-
-// #587 review / #582 redesign: the check and the store judge the exact
-// millis (exactEpochMillis), never a rounded or wrapped int64() of the float
-// slot. A hand-built record with only a float slot is a funnel bypass: a
-// whole number inside the int64 range is still exact and is judged by the
-// iso8601 rule (year 10000 and year -0001 refused with the year rule); a
-// fraction, NaN, an infinity or a magnitude past int64 names no instant and
-// is refused as such by both. Nothing is written in either case, so 1000.5
-// is never truncated to 1970-01-01T00:00:01Z and 10000-01-01T00:00:00Z is
-// never stored.
-func TestISO8601_BypassSlotIsRefused(t *testing.T) {
-	tr := &persistentRecordTransformer{}
-	binding := &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingISO8601}
-	noInstant := func(describe string) (string, string) {
-		return "datetime value %s " + describe + " names no epoch millisecond instant and cannot be stored in main column text_02 with encoding iso8601",
-			"encoding iso8601 cannot hold a slot in main column text_02: value %s " + describe + " names no epoch millisecond instant"
-	}
-	yearRule := func(instant string) (string, string) {
-		return "datetime value %s (" + instant + ") cannot be stored in main column text_02 with encoding iso8601, which " + string(iso8601.KeepsFourDigitYear),
-			"encoding iso8601 " + string(iso8601.KeepsFourDigitYear) + " and cannot hold value %s in main column text_02"
-	}
-	notWhole, beyond := "(not a whole number of epoch milliseconds)", "(beyond any epoch millisecond instant)"
-	cases := []struct {
-		numVal float64
-		check  string // the instant a whole in-range slot names; "" for a slot that names none
-	}{
-		{1000.5, ""}, {1704067200000.25, ""}, {-0.5, ""}, {math.NaN(), ""}, {math.Inf(1), ""}, {math.Inf(-1), ""},
-		{math.MaxInt64, ""}, {1e300, ""}, {-1e300, ""},
-		{253402300800000, "10000-01-01T00:00:00Z"}, {-62167219201000, "-0001-12-31T23:59:59Z"},
-	}
-	for _, tc := range cases {
-		t.Run(formatFitValue(tc.numVal), func(t *testing.T) {
-			var check, store string
-			switch {
-			case tc.check != "":
-				check, store = yearRule(tc.check)
-			case !isWholeMillis(tc.numVal):
-				check, store = noInstant(notWhole)
-			default:
-				check, store = noInstant(beyond)
-			}
-			v := tc.numVal
-			rec := model.EAVRecord{ValueNumeric: &v}
-
-			err := checkBoundColumnFit(&rec, forma.ValueTypeDateTime, binding)
-			require.Error(t, err)
-			require.Equal(t, fmt.Sprintf(check, formatFitValue(tc.numVal)), err.Error())
-
-			record := newEmptyPersistentRecord()
-			stored, err := tr.storeWithEncoding(record, rec, forma.ValueTypeDateTime, binding)
-			require.Error(t, err)
-			require.False(t, stored)
-			require.Equal(t, fmt.Sprintf(store, formatFitValue(tc.numVal)), err.Error())
-			require.Empty(t, record.TextItems)
 		})
 	}
 }

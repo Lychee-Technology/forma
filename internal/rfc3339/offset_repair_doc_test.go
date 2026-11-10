@@ -1,4 +1,4 @@
-package iso8601
+package rfc3339
 
 import (
 	"context"
@@ -16,17 +16,17 @@ import (
 const migrationDocPath = "../../docs/schema-consistency-migration.md"
 
 // offsetRepairListingSQL returns the listing query of the migration doc's
-// "iso8601 images with a UTC offset" section: the first ```sql fence after
+// "rfc3339 images with a UTC offset" section: the first ```sql fence after
 // that heading, anchored on the heading rather than on line numbers.
 func offsetRepairListingSQL(t *testing.T) string {
 	t.Helper()
 	raw, err := os.ReadFile(migrationDocPath)
 	require.NoError(t, err)
 	doc := string(raw)
-	start := strings.Index(doc, "### iso8601 images with a UTC offset")
-	require.GreaterOrEqual(t, start, 0, "the migration doc must keep the iso8601 offset section")
+	start := strings.Index(doc, "### rfc3339 images with a UTC offset")
+	require.GreaterOrEqual(t, start, 0, "the migration doc must keep the rfc3339 offset section")
 	m := regexp.MustCompile("(?s)```sql\\s*\n(.*?)```").FindStringSubmatch(doc[start:])
-	require.NotNil(t, m, "the iso8601 offset section must hold a fenced SQL block")
+	require.NotNil(t, m, "the rfc3339 offset section must hold a fenced SQL block")
 	return strings.ReplaceAll(m[1], "<schema id>", "7")
 }
 
@@ -58,7 +58,8 @@ func offsetRepairSweep() []string {
 // what is tested. The named images are the spellings the #761 reviews found
 // (a fraction in either spelling, an offset crossing a year boundary from the
 // last or the next-to-last day), plus in-range images the repair must still
-// cover, so a classifier that flags everything fails too.
+// cover, so a classifier that flags everything fails too. Since #842 a
+// fraction of up to three digits is storable, so it is no longer flagged.
 func TestOffsetRepairListingFlagsEveryImageTheAPICannotStore(t *testing.T) {
 	ctx := context.Background()
 	pool := testdb.Connect(t, ctx)
@@ -71,17 +72,19 @@ func TestOffsetRepairListingFlagsEveryImageTheAPICannotStore(t *testing.T) {
 	require.NoError(t, err)
 
 	named := map[string]bool{
-		"2024-01-02T11:04:06+08:00":     false,
-		"2024-01-02T03:04:05-05:00":     false,
-		"0000-01-03T00:30:00+24:60":     false,
-		"9999-12-29T23:30:00-24:60":     false,
-		"2024-01-02T03:04:05.250+08:00": true,
-		"2024-01-02T03:04:05,250+08:00": true,
-		"9999-12-31T23:30:00-01:00":     true,
-		"0000-01-01T00:30:00+01:00":     true,
-		"9999-12-30T23:30:00-24:60":     true,
-		"0000-01-02T00:30:00+24:60":     true,
-		"2024-01-02T3:04:05+08:00":      true,
+		"2024-01-02T11:04:06+08:00":      false,
+		"2024-01-02T03:04:05-05:00":      false,
+		"0000-01-03T00:30:00+24:60":      false,
+		"9999-12-29T23:30:00-24:60":      false,
+		"2024-01-02T03:04:05.250+08:00":  false,
+		"2024-01-02T03:04:05.5+08:00":    false,
+		"2024-01-02T03:04:05.2500+08:00": true,
+		"2024-01-02T03:04:05,250+08:00":  true,
+		"9999-12-31T23:30:00-01:00":      true,
+		"0000-01-01T00:30:00+01:00":      true,
+		"9999-12-30T23:30:00-24:60":      true,
+		"0000-01-02T00:30:00+24:60":      true,
+		"2024-01-02T3:04:05+08:00":       true,
 	}
 	images := map[string]bool{}
 	for _, image := range offsetRepairSweep() {

@@ -10,7 +10,7 @@ import (
 
 // TestDomainTargetsSelectsStorageTheReadJudges: every EAV-only attribute is
 // held to its value column (a list by its items type), and of the bound
-// ones only bool_text and iso8601 can hold an image their column type
+// ones only bool_text and rfc3339 can hold an image their column type
 // admits and the read refuses. Every bound attribute's eav_data rows from
 // before its promotion are held to the EAV rules.
 func TestDomainTargetsSelectsStorageTheReadJudges(t *testing.T) {
@@ -24,7 +24,7 @@ func TestDomainTargetsSelectsStorageTheReadJudges(t *testing.T) {
 		"seen":   {AttributeName: "seen", AttributeID: 2, ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeDateTime},
 		"on":     bound("on", 3, forma.ValueTypeBool, "text_01", forma.MainColumnEncodingBoolText),
 		"set":    bound("set", 4, forma.ValueTypeBool, "smallint_01", forma.MainColumnEncodingBoolInt),
-		"due":    bound("due", 5, forma.ValueTypeDate, "text_02", forma.MainColumnEncodingISO8601),
+		"due":    bound("due", 5, forma.ValueTypeDate, "text_02", forma.MainColumnEncodingRFC3339),
 		"at":     bound("at", 6, forma.ValueTypeDateTime, "bigint_01", forma.MainColumnEncodingUnixMs),
 		"title":  bound("title", 7, forma.ValueTypeText, "text_03", forma.MainColumnEncodingDefault),
 		"amount": bound("amount", 8, forma.ValueTypeNumeric, "double_01", forma.MainColumnEncodingDefault),

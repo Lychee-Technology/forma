@@ -398,7 +398,7 @@ func TestCorpusPackagesOfThisRepository(t *testing.T) {
 	if err != nil {
 		t.Fatalf("corpusPackages: %v", err)
 	}
-	want := []string{"./cmd/tools", "./internal", "./internal/cdc", "./internal/declaredindex", "./internal/federated", "./internal/widthaudit"}
+	want := []string{"./cmd/tools", "./internal", "./internal/cdc", "./internal/declaredindex", "./internal/federated", "./internal/rfc3339migrate", "./internal/widthaudit"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("corpusPackages = %v, want %v", got, want)
 	}

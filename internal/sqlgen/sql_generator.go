@@ -5,21 +5,21 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/conditionexpr"
-	"github.com/lychee-technology/forma/internal/iso8601"
+	"github.com/lychee-technology/forma/internal/rfc3339"
 )
 
 // parseDateValue parses a date filter literal (RFC3339 or unix millis) and
 // converts it to the Go value bound against the attribute's storage. attr
-// names the attribute in the refusal an iso8601 binding can raise.
+// names the attribute in the refusal an rfc3339 binding can raise.
 func parseDateValue(attr, valStr string, meta forma.AttributeMetadata) (any, error) {
 	ms, err := parseDateMillis(attr, valStr, meta)
 	if err != nil {
 		return nil, err
 	}
-	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601 {
+	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingRFC3339 {
 		// The text column holds the canonical image; the literal must be
 		// that image or it compares against nothing the store ever wrote.
-		return iso8601FilterImage(attr, valStr, ms, meta)
+		return rfc3339FilterImage(attr, valStr, ms, meta)
 	}
 	// unix_ms, the bigint default and the EAV value_numeric slot are all
 	// exact epoch millis.
@@ -27,8 +27,8 @@ func parseDateValue(attr, valStr string, meta forma.AttributeMetadata) (any, err
 }
 
 // parseDateMillis parses a date filter literal (RFC3339 or unix millis) to
-// its epoch millis. On an iso8601 binding it refuses what the canonical
-// image cannot hold (iso8601FilterImage), so a leaf that compares the
+// its epoch millis. On an rfc3339 binding it refuses what the canonical
+// image cannot hold (rfc3339FilterImage), so a leaf that compares the
 // column's epoch-ms read refuses the literals a text comparison refuses.
 func parseDateMillis(attr, valStr string, meta forma.AttributeMetadata) (int64, error) {
 	parsedTime, err := conditionexpr.ParseRFC3339OrUnixMs(valStr)
@@ -36,30 +36,31 @@ func parseDateMillis(attr, valStr string, meta forma.AttributeMetadata) (int64, 
 		return 0, err
 	}
 	ms := parsedTime.UnixMilli()
-	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601 {
-		if _, err := iso8601FilterImage(attr, valStr, ms, meta); err != nil {
+	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingRFC3339 {
+		if _, err := rfc3339FilterImage(attr, valStr, ms, meta); err != nil {
 			return 0, err
 		}
 	}
 	return ms, nil
 }
 
-// iso8601FilterImage renders a filter literal on an iso8601-bound column as
-// the canonical stored image, through iso8601.Image, the same function the
+// rfc3339FilterImage renders a filter literal on an rfc3339-bound column as
+// the canonical stored image, through rfc3339.Image, the same function the
 // write funnel renders through, so an offset literal, a unix-ms literal and
 // a Z literal naming one instant all bind one string, independent of the
 // process zone (#588). Before this the literal was the RFC3339 rendering of
 // the parsed time: the offset was kept, a unix-ms literal rendered in the
 // server's zone, and a fraction was dropped, so the Postgres route compared
-// a string the store never wrote while DuckDB compared the exact instant. A
-// literal the image cannot hold (off a whole second, or outside the
-// four-digit year) is refused as invalid input on both routes:
-// normalizeDuckPayload applies the same function to its epoch-ms operand.
-func iso8601FilterImage(attr, literal string, ms int64, meta forma.AttributeMetadata) (string, error) {
-	image, rule := iso8601.Image(ms)
+// a string the store never wrote while DuckDB compared the exact instant.
+// The image keeps the millisecond (#842), so a literal off a whole second
+// binds as its own image; one outside the four-digit year is refused as
+// invalid input on both routes: normalizeDuckPayload applies the same
+// function to its epoch-ms operand.
+func rfc3339FilterImage(attr, literal string, ms int64, meta forma.AttributeMetadata) (string, error) {
+	image, rule := rfc3339.Image(ms)
 	if rule != "" {
 		return "", forma.InvalidInputf("%s filter value %s for '%s' cannot be compared against main column %s with encoding %s, which %s",
-			meta.ValueType, literal, attr, meta.ColumnBinding.ColumnName, forma.MainColumnEncodingISO8601, rule)
+			meta.ValueType, literal, attr, meta.ColumnBinding.ColumnName, forma.MainColumnEncodingRFC3339, rule)
 	}
 	return image, nil
 }

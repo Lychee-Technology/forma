@@ -8,7 +8,7 @@ import (
 )
 
 // This file is the #709 acceptance. A date/datetime bound to a text column
-// with the iso8601 encoding holds only canonical RFC3339 images when written
+// with the rfc3339 encoding holds only canonical RFC3339 images when written
 // through the API, so a string that is not a timestamp is planted here by
 // direct SQL, standing in for legacy or hand-written data. Every DuckDB tier
 // reads such a string as NULL: the hot leg and the CDC export both read the
@@ -19,14 +19,14 @@ import (
 // too: the raw-column pre-filter may keep such a row, and `visible`, which
 // reads NULL, drops it. The OLTP route is not exercised here.
 
-// iso8601NonDateRows is the seeded row set: an anchor flushed before the
+// rfc3339NonDateRows is the seeded row set: an anchor flushed before the
 // others, a row holding canonical images, two rows whose images are replaced
 // by strings that are not timestamps, and a row with both dates unset.
-type iso8601NonDateRows struct {
+type rfc3339NonDateRows struct {
 	anchor, canonical, garbled, empty, unset *Event
 }
 
-func seedISO8601NonDateRows(ctx context.Context, t *testing.T, env *Env, withNote bool) iso8601NonDateRows {
+func seedRFC3339NonDateRows(ctx context.Context, t *testing.T, env *Env, withNote bool) rfc3339NonDateRows {
 	t.Helper()
 	simple := DefaultSchemaFixtures()[0]
 	create := func(name string, extra map[string]any) *Event {
@@ -41,11 +41,11 @@ func seedISO8601NonDateRows(ctx context.Context, t *testing.T, env *Env, withNot
 		mustApplyEvents(ctx, t, env, "create "+name, ev)
 		return ev
 	}
-	dated := map[string]any{"seenAt": iso8601Early, "bornOn": iso8601Day}
+	dated := map[string]any{"seenAt": rfc3339Early, "bornOn": rfc3339Day}
 
 	// The anchor gives the schema its first parquet object and manifest, so
 	// the federated read has an S3 leg to glob. It sets neither date.
-	rows := iso8601NonDateRows{anchor: create("nd-anchor", nil)}
+	rows := rfc3339NonDateRows{anchor: create("nd-anchor", nil)}
 	if _, err := env.RunFlush(ctx); err != nil {
 		t.Fatalf("anchor flush: %v", err)
 	}
@@ -63,10 +63,10 @@ func seedISO8601NonDateRows(ctx context.Context, t *testing.T, env *Env, withNot
 	return rows
 }
 
-// iso8601NonDateProbes is the truth table every DuckDB tier must reach: a
+// rfc3339NonDateProbes is the truth table every DuckDB tier must reach: a
 // non-timestamp string is absent, so it matches a null test and no
 // comparison.
-func iso8601NonDateProbes(rows iso8601NonDateRows) []widthProbe {
+func rfc3339NonDateProbes(rows rfc3339NonDateRows) []widthProbe {
 	absent := []*Event{rows.anchor, rows.garbled, rows.empty, rows.unset}
 	present := []*Event{rows.canonical}
 	return []widthProbe{
@@ -76,48 +76,48 @@ func iso8601NonDateProbes(rows iso8601NonDateRows) []widthProbe {
 		{"bornOn_is_not_null", Filter{Attr: "bornOn", Op: "is_not_null", Value: "true"}, present},
 		// "not a date" sorts after every canonical image and "" before it,
 		// so each passes one of these raw-column pre-filters.
-		{"seenAt_gte_floor", Filter{Attr: "seenAt", Op: "gte", Value: iso8601Floor}, present},
-		{"seenAt_lte_ceiling", Filter{Attr: "seenAt", Op: "lte", Value: iso8601Ceiling}, present},
-		{"seenAt_not_equals", Filter{Attr: "seenAt", Op: "not_equals", Value: iso8601Late}, present},
-		{"bornOn_gte_floor", Filter{Attr: "bornOn", Op: "gte", Value: iso8601Floor}, present},
+		{"seenAt_gte_floor", Filter{Attr: "seenAt", Op: "gte", Value: rfc3339Floor}, present},
+		{"seenAt_lte_ceiling", Filter{Attr: "seenAt", Op: "lte", Value: rfc3339Ceiling}, present},
+		{"seenAt_not_equals", Filter{Attr: "seenAt", Op: "not_equals", Value: rfc3339Late}, present},
+		{"bornOn_gte_floor", Filter{Attr: "bornOn", Op: "gte", Value: rfc3339Floor}, present},
 	}
 }
 
-// runISO8601NonDateAllTiers walks the planted rows through the unflushed
+// runRFC3339NonDateAllTiers walks the planted rows through the unflushed
 // DuckDB hot leg, delta parquet and base parquet, with the same expected
 // answers on each.
-func runISO8601NonDateAllTiers(ctx context.Context, t *testing.T, env *Env, withNote bool) {
+func runRFC3339NonDateAllTiers(ctx context.Context, t *testing.T, env *Env, withNote bool) {
 	t.Helper()
 	simple := DefaultSchemaFixtures()[0]
-	rows := seedISO8601NonDateRows(ctx, t, env, withNote)
+	rows := seedRFC3339NonDateRows(ctx, t, env, withNote)
 	duck := Query{Schema: simple, Limit: 100}
 
-	runWidthProbes(ctx, t, env, "hot-duck", duck, true, iso8601NonDateProbes(rows))
+	runWidthProbes(ctx, t, env, "hot-duck", duck, true, rfc3339NonDateProbes(rows))
 
 	if _, err := env.RunFlush(ctx); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
-	runWidthProbes(ctx, t, env, "warm-duck", duck, true, iso8601NonDateProbes(rows))
+	runWidthProbes(ctx, t, env, "warm-duck", duck, true, rfc3339NonDateProbes(rows))
 
 	if _, err := env.RunCompaction(ctx, simple); err != nil {
 		t.Fatalf("compaction: %v", err)
 	}
-	runWidthProbes(ctx, t, env, "cold-duck", duck, true, iso8601NonDateProbes(rows))
+	runWidthProbes(ctx, t, env, "cold-duck", duck, true, rfc3339NonDateProbes(rows))
 }
 
-// TestBoundISO8601NonDateStringNoEAVAllTiers: every attribute is
+// TestBoundRFC3339NonDateStringNoEAVAllTiers: every attribute is
 // column-bound, so the DuckDB hot leg takes BuildPGSelectNoEAV.
-func TestBoundISO8601NonDateStringNoEAVAllTiers(t *testing.T) {
+func TestBoundRFC3339NonDateStringNoEAVAllTiers(t *testing.T) {
 	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, iso8601Props, iso8601Attrs)))
-	runISO8601NonDateAllTiers(ctx, t, env, false)
+	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339Props, rfc3339Attrs)))
+	runRFC3339NonDateAllTiers(ctx, t, env, false)
 }
 
-// TestBoundISO8601NonDateStringEAVJoinedAllTiers: the EAV-only note forces
+// TestBoundRFC3339NonDateStringEAVJoinedAllTiers: the EAV-only note forces
 // the EAV-joined hot projection, where the bound dates sit in a COALESCE
 // with the EAV pivot.
-func TestBoundISO8601NonDateStringEAVJoinedAllTiers(t *testing.T) {
+func TestBoundRFC3339NonDateStringEAVJoinedAllTiers(t *testing.T) {
 	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, iso8601MixedProps, iso8601MixedAttrs)))
-	runISO8601NonDateAllTiers(ctx, t, env, true)
+	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339MixedProps, rfc3339MixedAttrs)))
+	runRFC3339NonDateAllTiers(ctx, t, env, true)
 }

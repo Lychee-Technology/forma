@@ -161,8 +161,7 @@ Judged against the locked row, after the write has sent SQL, also
 
 | Attribute | Value written |
 | --- | --- |
-| `datetime` (EAV, or bound to a `unix_ms` column) | the instant, in milliseconds |
-| `datetime` bound to an `iso8601` text column | the instant floored to the second, the precision the column stores |
+| `datetime` (EAV, or bound to a `unix_ms` or `rfc3339` column) | the instant, in milliseconds |
 | `date` | the UTC calendar day of the instant, the day `$now` names on a `date` |
 
 The offset applies before the floor: `ServerTime("day", -9*time.Hour)` at

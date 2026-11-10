@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/rfc3339"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/lychee-technology/forma/internal/transform"
@@ -31,8 +31,8 @@ import (
 //     millis within ±2^53 (transform.StoredDateImageRefusedSQL).
 //   - A bool bound with bool_text holds "1" or "0"
 //     (transform.boolFromBoolText).
-//   - A date or datetime bound with iso8601 must parse as RFC3339
-//     (iso8601.Parse). No SQL predicate states that rule (the day must exist
+//   - A date or datetime bound with rfc3339 must parse as RFC3339
+//     (rfc3339.Parse). No SQL predicate states that rule (the day must exist
 //     in its month), so every image is read and judged here.
 //
 // The other bindings hold only what their column type can: a bool_smallint
@@ -41,7 +41,7 @@ import (
 
 // DomainTargets lists, in (schema_id, attr_id) order, every EAV-only
 // attribute (a list held to its items type), every bool bound with
-// bool_text or date/datetime bound with iso8601, and the eav_data rows every
+// bool_text or date/datetime bound with rfc3339, and the eav_data rows every
 // bound attribute kept from before its promotion (collectTargets).
 func DomainTargets(cache *schemameta.MetadataCache) []Target {
 	return collectTargets(cache, domainStorage, true)
@@ -51,7 +51,7 @@ func domainStorage(meta forma.AttributeMetadata) (declared forma.ValueType, colu
 	if binding := meta.ColumnBinding; binding != nil {
 		switch {
 		case meta.ValueType == forma.ValueTypeBool && binding.Encoding == forma.MainColumnEncodingBoolText,
-			isDate(meta.ValueType) && binding.Encoding == forma.MainColumnEncodingISO8601:
+			isDate(meta.ValueType) && binding.Encoding == forma.MainColumnEncodingRFC3339:
 			return meta.ValueType, string(binding.ColumnName), true
 		}
 		return "", "", false
@@ -110,7 +110,7 @@ ORDER BY e.schema_id, e.attr_id, e.row_id, e.array_indices`,
 
 // BuildDomainColumnCensusQuery renders the entity_main census over the
 // given column-bound targets: every bool_text image other than "1" and
-// "0", and every iso8601 image, which DomainCensus parses.
+// "0", and every rfc3339 image, which DomainCensus parses.
 func BuildDomainColumnCensusQuery(tables Tables, targets []Target) (string, []any) {
 	values := make([]string, 0, len(targets))
 	args := make([]any, 0, len(targets)*4)
@@ -160,13 +160,13 @@ func DomainCensus(ctx context.Context, q Querier, tables Tables, targets []Targe
 	}
 	if tables.EntityMain == "" {
 		t := columnTargets[0]
-		return nil, fmt.Errorf("no entity main table is configured to scan %d bool_text or iso8601 attribute(s) (first: schema=%s attribute=%s column=%s)",
+		return nil, fmt.Errorf("no entity main table is configured to scan %d bool_text or rfc3339 attribute(s) (first: schema=%s attribute=%s column=%s)",
 			len(columnTargets), t.SchemaName, t.AttrName, t.Column)
 	}
 	query, args := BuildDomainColumnCensusQuery(tables, columnTargets)
 	columnFindings, err := queryDomainColumnFindings(ctx, q, tables.EntityMain, query, args, columnTargets)
 	if err != nil {
-		return nil, fmt.Errorf("bool_text and iso8601 attributes: %w", err)
+		return nil, fmt.Errorf("bool_text and rfc3339 attributes: %w", err)
 	}
 	return append(findings, columnFindings...), nil
 }
@@ -233,7 +233,7 @@ func refusedEAVValue(declared forma.ValueType, text, numeric *string) (string, e
 }
 
 // queryDomainColumnFindings resolves each entity_main row the query keeps,
-// dropping an iso8601 image the read parses.
+// dropping an rfc3339 image the read parses.
 func queryDomainColumnFindings(ctx context.Context, q Querier, table, query string, args []any, targets []Target) ([]Finding, error) {
 	byKey := targetIndex(targets)
 	rows, err := q.Query(ctx, query, args...)
@@ -255,7 +255,7 @@ func queryDomainColumnFindings(ctx context.Context, q Querier, table, query stri
 			return nil, fmt.Errorf("%s over %s returned schema_id=%d attr_id=%d, which is not a census target", domainCensus, table, schemaID, attrID)
 		}
 		if isDate(target.Declared) {
-			if _, err := iso8601.Parse(image); err == nil {
+			if _, err := rfc3339.Parse(image); err == nil {
 				continue
 			}
 		}

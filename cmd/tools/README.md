@@ -19,6 +19,7 @@ Forma Tools CLI
 - `build-unique-keys`：从 schema 的存活行构建 `x-forma-unique-keys` 声明的唯一键（#651）。须先停止所有写入方。
 - `apply-schema`：按 D2 类型规则把修改后的 schema 声明记录为下一个 generation（#733）。
 - `baseline-schema`：审计已存储的 PostgreSQL 与 parquet 数据，为尚无 generation 的 schema 记录第一个 generation（升级步骤，#733）。
+- `migrate-rfc3339`：把已退役的 `iso8601` 编码存储的整秒图像改写为 `rfc3339` 图像（#842）。须先停止所有写入方。
 - `manifest-reconcile`：比对 S3 parquet 对象与 manifest 条目，报告孤儿/dangling，
   `--repair` 补录 #197 flush 孤儿，`--gc` 清理 #188 compaction 遗留。
   详见 `docs/manifest-reconcile.md`。退出码：0 一致 / 2 有差异 / 1 失败。
@@ -113,10 +114,14 @@ apply-schema
 打印警告并记录在 generation 上。内容未变的 schema 不记录。先运行 `apply-schema`，再滚动发布服务端、Lambda 与 CDC 进程：
 仍加载旧声明的进程在新 generation 记录后拒绝启动。
 
+`iso8601` 改为 `rfc3339`（同一列，#842）按仅改绑定的变更允许；但只要该列仍有整秒图像（`YYYY-MM-DDThh:mm:ssZ`），`apply-schema`
+就拒绝，并列出 schema、属性、列与剩余行数，提示先运行 `migrate-rfc3339`。计数使用该工具自己的目标查询，读取 `-entity-main-table`。
+
 选项（数据库选项及其环境变量默认值与 `init-db` 相同）：
 - `-schema-dir`（`SCHEMA_DIR`，必填）：JSON Schema 目录。
 - `-schema`：只处理这个已注册的 schema；省略时处理全部。
 - `-schema-table`（`SCHEMA_TABLE`，默认 `schema_registry`）。
+- `-entity-main-table`（`ENTITY_MAIN_TABLE`，默认 `entity_main_dev`）：仅在声明把 `iso8601` 改为 `rfc3339` 时读取。
 - `-dry-run`：只报告将要记录的变更，不写入。
 
 示例：
@@ -125,7 +130,7 @@ apply-schema
 
 baseline-schema
 ---------------
-已有部署升级到带 generation 账本的版本前运行一次（#733）：按 OLTP 读取自身的规则审计 PostgreSQL（含 list 元素）：宽度普查（width census）；`numeric` 与 EAV 中的 `bool` 须为有限 float64（拒绝 NaN、无穷大或超出 float64 的值）；EAV 中的 `date`/`datetime` 须为 ±2^53 内的整数毫秒；EAV 中的 `uuid` 须能被 `uuid.Parse` 解析；值不得存放在另一个 `eav_data` 值列中；`bool_text` 列只能是 `"1"`/`"0"`，`iso8601` 列须能按 RFC3339 解析。绑定主表列的属性在 EAV 提升为列绑定之前写入的 `eav_data` 行仍会被读取，同样按上述 EAV 规则审计。完整解码每个存活的 parquet 对象并按声明的值域扫描（含 list 元素），
+已有部署升级到带 generation 账本的版本前运行一次（#733）：按 OLTP 读取自身的规则审计 PostgreSQL（含 list 元素）：宽度普查（width census）；`numeric` 与 EAV 中的 `bool` 须为有限 float64（拒绝 NaN、无穷大或超出 float64 的值）；EAV 中的 `date`/`datetime` 须为 ±2^53 内的整数毫秒；EAV 中的 `uuid` 须能被 `uuid.Parse` 解析；值不得存放在另一个 `eav_data` 值列中；`bool_text` 列只能是 `"1"`/`"0"`，`rfc3339` 列须能按 RFC 3339 解析。绑定主表列的属性在 EAV 提升为列绑定之前写入的 `eav_data` 行仍会被读取，同样按上述 EAV 规则审计。完整解码每个存活的 parquet 对象并按声明的值域扫描（含 list 元素），
 数据与当前声明不符或无法读取时拒绝且不记录任何内容；通过后为尚无 generation 的 schema 记录 generation 1。已有 generation 的 schema 被跳过。
 运行前须已有账本表（PostgreSQL 上运行 `init-db`；DSQL 上按 `docs/schema-evolution.md` 手工建表）。
 基线是离线的：运行前须停止旧版本中所有写入的服务端、Lambda 与嵌入方，以及所有 `cdc-flush`、`cdc-init` 运行，并暂停 compactor、不运行
@@ -143,6 +148,34 @@ schema 的 `entity_main` 行数与版本号之和以及存活的 parquet 对象�
 示例：
 - `go run ./cmd/tools baseline-schema -schema-dir schemas --no-parquet-tier`
 - `go run ./cmd/tools baseline-schema -schema-dir schemas --s3-bucket my-bucket --manifest-template 'manifest/{{.SchemaID}}.json'`
+
+migrate-rfc3339
+---------------
+`rfc3339` 编码取代了只保存整秒的 `iso8601` 编码（#842）：图像固定为 24 个字符 `YYYY-MM-DDThh:mm:ss.sssZ`，文本顺序即时间顺序。
+两种图像不能共存于一列，所以升级前须改写旧图像；注册时拒绝声明 `iso8601`，并指向本工具。
+
+目标取自账本：每个 schema 的 active generation 中编码为 `iso8601` 的属性（`<schema-table>_generation_attr`，含已退役属性），而非 attributes 文件。
+工具把每个整秒图像改写为前 19 个字符加 `.000Z`，每条语句至多 `-batch-size`（默认 1000，上限 2999，低于 Aurora DSQL 每事务 3000 行的限制）行、
+各自一个事务；列出这些列中其他形状的图像（带偏移、其他长度的小数、无法解析的字符串）及其 schema、属性与行，并保持不变，
+修复方法见 `docs/rfc3339-storage-contract.md`。改写不标记 `change_log`：时刻不变，parquet 保存的是时刻（epoch 毫秒）而不是图像。
+重复运行不会再改写任何内容。只要目标列仍有整秒图像就以非零状态退出（`-dry-run` 也是），脚本化的切换会在 `apply-schema` 之前停下。
+
+工具无法检测仍在运行的写入方：从改写开始到新版本启动，须停止该 schema 的所有写入方。完整步骤：
+1. 停止写入方，运行 `migrate-rfc3339`；
+2. 把 attributes 文件中的 `iso8601` 改为 `rfc3339`，运行 `apply-schema`；
+3. 对每个唯一键包含此类属性的 schema 运行 `build-unique-keys --schema <name>`（`uniquekey.AttributesHash` 含编码，存储位置变化的键会被重新构建）；
+4. 启动新版本。
+
+选项（数据库选项及其环境变量默认值与 `apply-schema` 相同）：
+- `-schema`：只处理这个已注册的 schema；省略时处理全部。
+- `-schema-table`（`SCHEMA_TABLE`，默认 `schema_registry`）。
+- `-entity-main-table`（`ENTITY_MAIN_TABLE`，默认 `entity_main_dev`）。
+- `-batch-size`：每条改写语句的行数。
+- `-dry-run`：只报告每列的计数，不改写。
+
+示例：
+- `go run ./cmd/tools migrate-rfc3339 -dry-run`
+- `go run ./cmd/tools migrate-rfc3339 -entity-main-table entity_main`
 
 build-unique-keys
 -----------------

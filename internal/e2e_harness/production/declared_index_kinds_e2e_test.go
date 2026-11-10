@@ -58,13 +58,15 @@ func TestDeclaredIndexServesEveryIndexableKind(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t))
 
-	sec := time.Now().Truncate(time.Second).UnixMilli()
+	// The seed instant is off a whole second and in the past, so the rfc3339
+	// kind seeks on millisecond images (#842) and lte:$now still selects it.
+	sec := time.Now().Add(-time.Second).Truncate(time.Second).UnixMilli() + 250
 	day := time.Now().UTC().Truncate(24 * time.Hour).UnixMilli()
 	// Time values sit two steps apart around the seed instant: row 6 holds it,
 	// so lte:$now selects rows 1-6 even if the test crosses a day boundary.
 	at := func(base, step int64) func(int) string {
 		return func(i int) string {
-			return time.UnixMilli(base + int64(i-6)*2*step).UTC().Format(time.RFC3339)
+			return time.UnixMilli(base + int64(i-6)*2*step).UTC().Format(time.RFC3339Nano)
 		}
 	}
 	kinds := []indexableKind{
@@ -76,7 +78,7 @@ func TestDeclaredIndexServesEveryIndexableKind(t *testing.T) {
 		{attr: "ref", column: "uuid_01", literal: func(i int) string { return fmt.Sprintf("00000000-0000-0000-0000-%012x", i) }},
 		{attr: "joined", column: "bigint_02", literal: at(day, dayMillis), time: true},   // date, unix_ms
 		{attr: "touched", column: "bigint_03", literal: at(sec, hourMillis), time: true}, // datetime, unix_ms
-		{attr: "stamp", column: "text_02", literal: at(sec, hourMillis), time: true},     // datetime, iso8601
+		{attr: "stamp", column: "text_02", literal: at(sec, hourMillis), time: true},     // datetime, rfc3339
 		{attr: "flagged", column: "smallint_02", operators: boolKindOperators("flagged", true)},
 		{attr: "cleared", column: "smallint_03", operators: boolKindOperators("cleared", false)},
 	}
@@ -166,7 +168,7 @@ func boolKindOperators(attr string, rare bool) []kindOperator {
 }
 
 // declareEveryKindDir writes a generation of the fixtures in which e2e_wide
-// also binds stamp, a datetime, to text_02 under iso8601 and two bools to
+// also binds stamp, a datetime, to text_02 under rfc3339 and two bools to
 // smallint columns under bool_smallint, and declares a one-attribute index on
 // each kind.
 func declareEveryKindDir(t *testing.T, kinds []indexableKind) string {
@@ -185,7 +187,7 @@ func declareEveryKindDir(t *testing.T, kinds []indexableKind) string {
 	})
 	editFixtureJSON(t, filepath.Join(dir, "e2e_wide_attributes.json"), func(doc map[string]any) {
 		doc["stamp"] = map[string]any{"attributeID": 19, "valueType": "datetime",
-			"column_binding": map[string]any{"col_name": "text_02", "encoding": "iso8601"}}
+			"column_binding": map[string]any{"col_name": "text_02", "encoding": "rfc3339"}}
 		doc["flagged"] = map[string]any{"attributeID": 20, "valueType": "bool",
 			"column_binding": map[string]any{"col_name": "smallint_02", "encoding": "bool_smallint"}}
 		doc["cleared"] = map[string]any{"attributeID": 21, "valueType": "bool",
@@ -215,7 +217,8 @@ func editFixtureJSON(t *testing.T, path string, edit func(map[string]any)) {
 
 // seedEveryKind writes the e2e_wide rows each kind's literal describes, plus
 // kindNullRows rows with no indexed value, straight into the hot tier, and
-// analyzes the table. stamp holds the iso8601 image of touched's instant. The
+// analyzes the table. stamp holds the rfc3339 image of touched's instant,
+// three fractional digits included (every instant is positive). The
 // rare side of each bool includes an image the write funnel does not produce (2,
 // -1), which the rows it selects must count.
 func seedEveryKind(ctx context.Context, env *Env, sec, day int64) {
@@ -226,7 +229,9 @@ func seedEveryKind(ctx context.Context, env *Env, sec, day int64) {
 		       ('00000000-0000-0000-0000-' || lpad(to_hex(i), 12, '0'))::uuid,
 		       $2::bigint + (i - 6)::bigint * 2 * $3::bigint,
 		       $4::bigint + (i - 6)::bigint * 2 * $5::bigint,
-		       to_char(to_timestamp(($4::bigint + (i - 6)::bigint * 2 * $5::bigint) / 1000) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+		       to_char((to_timestamp(floor(($4::bigint + (i - 6)::bigint * 2 * $5::bigint) / 1000.0))
+		                + (($4::bigint + (i - 6)::bigint * 2 * $5::bigint) % 1000) * interval '1 millisecond') AT TIME ZONE 'UTC',
+		               'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
 		       CASE WHEN i <= 3 THEN 1 WHEN i <= $7::int THEN 2 ELSE 0 END,
 		       CASE WHEN i <= 3 THEN 0 WHEN i <= $7::int THEN -1 ELSE 1 END,
 		       $4::bigint, $4::bigint

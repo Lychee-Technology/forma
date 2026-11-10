@@ -397,7 +397,7 @@ func normalizeDuckPayload(
 	if err != nil {
 		return DuckLeafPayload{Err: err}
 	}
-	if err := checkDuckISO8601Operand(kv.Attr, lenientSQL.Value, rawParam, valueType, meta, hasMeta); err != nil {
+	if err := checkDuckRFC3339Operand(kv.Attr, lenientSQL.Value, rawParam, valueType, meta, hasMeta); err != nil {
 		return DuckLeafPayload{Err: err}
 	}
 	sqlOp, rawParam, err := duckWholeNumberComparison(kv.Attr, valueType, lenientSQL.SQLOperator, rawParam)
@@ -411,24 +411,24 @@ func normalizeDuckPayload(
 	return DuckLeafPayload{Column: column, SQLOp: sqlOp, ValueType: valueType, Param: param}
 }
 
-// checkDuckISO8601Operand applies the iso8601 whole-second / four-digit-year
-// rule to the DuckDB leaf's epoch-ms operand when the attribute is bound with
-// that encoding. The DuckDB compare is exact, so without this the refusal the
-// Postgres binders raise (parseDateValue → iso8601FilterImage) would be "400
+// checkDuckRFC3339Operand applies the rfc3339 four-digit-year rule to the
+// DuckDB leaf's epoch-ms operand when the attribute is bound with that
+// encoding. The DuckDB compare is exact, so without this the refusal the
+// Postgres binders raise (parseDateValue → rfc3339FilterImage) would be "400
 // on Postgres, exact compare on DuckDB" for the same literal (#588). Only a
 // date/datetime operand is judged: parseDuckDBRawParam binds it as int64
-// epoch millis, the shape iso8601.Image takes.
-func checkDuckISO8601Operand(attr, literal string, rawParam any, valueType forma.ValueType, meta forma.AttributeMetadata, hasMeta bool) error {
+// epoch millis, the shape rfc3339.Image takes.
+func checkDuckRFC3339Operand(attr, literal string, rawParam any, valueType forma.ValueType, meta forma.AttributeMetadata, hasMeta bool) error {
 	if valueType != forma.ValueTypeDate && valueType != forma.ValueTypeDateTime {
 		return nil
 	}
-	if !hasMeta || meta.ColumnBinding == nil || meta.ColumnBinding.Encoding != forma.MainColumnEncodingISO8601 {
+	if !hasMeta || meta.ColumnBinding == nil || meta.ColumnBinding.Encoding != forma.MainColumnEncodingRFC3339 {
 		return nil
 	}
 	ms, ok := rawParam.(int64)
 	if !ok {
 		return fmt.Errorf("date operand for '%s' bound as %T, expected int64 epoch millis", attr, rawParam)
 	}
-	_, err := iso8601FilterImage(attr, literal, ms, meta)
+	_, err := rfc3339FilterImage(attr, literal, ms, meta)
 	return err
 }

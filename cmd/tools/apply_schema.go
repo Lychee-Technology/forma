@@ -24,12 +24,25 @@ type ledgerToolOptions struct {
 	// schema limits the run to one registered schema; empty means all.
 	schema string
 	dryRun bool
+	// entityMain is the entity main table apply-schema counts the
+	// whole-second images of an iso8601 → rfc3339 change in (#842), and the
+	// table migrate-rfc3339 rewrites.
+	entityMain string
 }
 
 // registerLedgerFlags registers the flags apply-schema and baseline-schema
 // share: init-db's database flags and environment defaults, so one
 // environment serves all three, and the schema directory.
 func registerLedgerFlags(flags *flag.FlagSet, opts *ledgerToolOptions) (*postgresFlags, error) {
+	pg, portErr := registerLedgerDBFlags(flags, opts)
+	flags.StringVar(&opts.schemaDir, "schema-dir", bootstrap.Env("SCHEMA_DIR", ""), "Directory containing the JSON schema files (required)")
+	return pg, portErr
+}
+
+// registerLedgerDBFlags registers the flags every ledger tool shares, the
+// ones migrate-rfc3339 needs too: the database, the schema registry table,
+// the schema to act on and --dry-run.
+func registerLedgerDBFlags(flags *flag.FlagSet, opts *ledgerToolOptions) (*postgresFlags, error) {
 	portDefault, portErr := bootstrap.EnvInt("DB_PORT", 5432)
 	var pg postgresFlags
 	pg.register(flags, postgresFlagOptions{
@@ -45,7 +58,6 @@ func registerLedgerFlags(flags *flag.FlagSet, opts *ledgerToolOptions) (*postgre
 		passwordUsage: "database password", databaseUsage: "database name", sslModeUsage: "database sslmode",
 	})
 	flags.StringVar(&opts.schemaTable, "schema-table", bootstrap.Env("SCHEMA_TABLE", "schema_registry"), "schema registry table name")
-	flags.StringVar(&opts.schemaDir, "schema-dir", bootstrap.Env("SCHEMA_DIR", ""), "Directory containing the JSON schema files (required)")
 	flags.StringVar(&opts.schema, "schema", "", "Registered schema to act on (default: every registered schema)")
 	flags.BoolVar(&opts.dryRun, "dry-run", false, "Report what would be recorded, and record nothing")
 	return &pg, portErr
@@ -68,6 +80,7 @@ func runApplySchema(ctx context.Context, args []string) error {
 	}
 	var opts ledgerToolOptions
 	pg, portErr := registerLedgerFlags(flags, &opts)
+	registerEntityMainFlag(flags, &opts, "Entity main table apply-schema counts the whole-second images of an iso8601 to rfc3339 change in")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -153,8 +166,19 @@ func planSchemas(ctx context.Context, tx pgx.Tx, opts ledgerToolOptions) ([]sche
 		plan := schemaledger.PlanApply(active, decl)
 		plans = append(plans, plan)
 		refusals = append(refusals, plan.Refusals()...)
+		unmigrated, err := unmigratedRFC3339Changes(ctx, tx, opts.entityMain, target.name, active, plan)
+		if err != nil {
+			return nil, nil, err
+		}
+		refusals = append(refusals, unmigrated...)
 	}
 	return plans, refusals, nil
+}
+
+// registerEntityMainFlag registers --entity-main-table with the default
+// baseline-schema and the server use.
+func registerEntityMainFlag(flags *flag.FlagSet, opts *ledgerToolOptions, usage string) {
+	flags.StringVar(&opts.entityMain, "entity-main-table", bootstrap.Env("ENTITY_MAIN_TABLE", "entity_main_dev"), usage)
 }
 
 type registeredSchema struct {

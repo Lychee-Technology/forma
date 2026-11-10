@@ -38,7 +38,7 @@ func dslSchemaCache() forma.SchemaAttributeCache {
 		"flag_text": {AttributeID: 7, ValueType: forma.ValueTypeBool, ColumnBinding: bind("text_02", forma.MainColumnEncodingBoolText)},
 		"soft":      {AttributeID: 8, ValueType: forma.ValueTypeBool},
 		"due":       {AttributeID: 9, ValueType: forma.ValueTypeDateTime, ColumnBinding: bind("bigint_01", forma.MainColumnEncodingUnixMs)},
-		"due_iso":   {AttributeID: 10, ValueType: forma.ValueTypeDateTime, ColumnBinding: bind("text_03", forma.MainColumnEncodingISO8601)},
+		"due_iso":   {AttributeID: 10, ValueType: forma.ValueTypeDateTime, ColumnBinding: bind("text_03", forma.MainColumnEncodingRFC3339)},
 		"seen":      {AttributeID: 11, ValueType: forma.ValueTypeDateTime},
 		"day":       {AttributeID: 12, ValueType: forma.ValueTypeDate},
 		"ref":       {AttributeID: 13, ValueType: forma.ValueTypeUUID},
@@ -46,7 +46,7 @@ func dslSchemaCache() forma.SchemaAttributeCache {
 		"labels":    {AttributeID: 15, ValueType: forma.ValueTypeList},
 		"other":     {AttributeID: 16, ValueType: forma.ValueTypeText},
 		"day_main":  {AttributeID: 17, ValueType: forma.ValueTypeDate, ColumnBinding: bind("bigint_02", forma.MainColumnEncodingUnixMs)},
-		"day_iso":   {AttributeID: 18, ValueType: forma.ValueTypeDate, ColumnBinding: bind("text_04", forma.MainColumnEncodingISO8601)},
+		"day_iso":   {AttributeID: 18, ValueType: forma.ValueTypeDate, ColumnBinding: bind("text_04", forma.MainColumnEncodingRFC3339)},
 		"qty":       {AttributeID: 19, ValueType: forma.ValueTypeInteger},
 	}
 }
@@ -158,7 +158,7 @@ func runDSLTruthTable(t *testing.T, f *dslFixture) {
 	u1, u2 := "6f1c3c3e-1111-4111-8111-111111111111", "6f1c3c3e-2222-4222-8222-222222222222"
 	r1 := f.seed(t, map[string]any{
 		"text_01": "a", "integer_01": 1, "smallint_01": 1, "text_02": "1",
-		"bigint_01": int64(1704164645000), "text_03": "2024-01-02T03:04:05Z", "uuid_01": u1,
+		"bigint_01": int64(1704164645000), "text_03": "2024-01-02T03:04:05.000Z", "uuid_01": u1,
 	}, eavText("note", "x"), eavNum("weight", 1.5), eavInt("big", 9007199254740993), eavNum("soft", 1),
 		eavNum("seen", 1704164645000), eavNum("day", 1704153600000), eavText("ref", u1),
 		// qty 1.5 stands in for EAV integer history written before the write
@@ -167,7 +167,7 @@ func runDSLTruthTable(t *testing.T, f *dslFixture) {
 		dslEAVRow{attr: "labels", index: "0", text: "p"}, dslEAVRow{attr: "labels", index: "1", text: "q"})
 	r2 := f.seed(t, map[string]any{
 		"text_01": "b", "integer_01": 2, "smallint_01": 0, "text_02": "0",
-		"bigint_01": int64(1704164646000), "text_03": "2024-01-02T03:04:06Z", "uuid_01": u2,
+		"bigint_01": int64(1704164646000), "text_03": "2024-01-02T03:04:06.000Z", "uuid_01": u2,
 	}, eavText("note", "y"), eavNum("weight", 2.5), eavInt("big", 2), eavNum("soft", 0),
 		eavNum("seen", 1704164646000), eavNum("day", 1704240000000), eavText("ref", u2), eavNum("qty", 2),
 		dslEAVRow{attr: "labels", index: ""}) // the empty-list marker row

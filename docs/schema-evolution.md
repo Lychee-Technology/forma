@@ -374,6 +374,13 @@ list is refused; and a binding change alone is allowed, while a type change
 and a binding change in one apply are refused, so that each is judged
 against the storage it actually runs on.
 
+One binding change also reads stored data (#842): `iso8601` to `rfc3339` on
+the same column is allowed as a binding change, but `apply-schema` refuses it
+while the column still holds a whole-second `iso8601` image, and names the
+schema, attribute, column and remaining count. It counts with the
+`migrate-rfc3339` tool's own query, so the two agree on what is left
+([rfc3339-storage-contract.md](rfc3339-storage-contract.md#migrating-from-iso8601-842)).
+
 ### Generations
 
 **Implemented (#733).**
@@ -651,8 +658,8 @@ Fail-closed enforcement needs two things the code does not have:
    - a `uuid` in `eav_data` that `uuid.Parse` refuses;
    - a value in the other `eav_data` value column (`value_text` holds `text`
      and `uuid`, `value_numeric` every other type);
-   - a `bool_text` column value other than `"1"` and `"0"`, and an `iso8601`
-     column value that does not parse as RFC3339.
+   - a `bool_text` column value other than `"1"` and `"0"`, and an `rfc3339`
+     column value that does not parse as RFC 3339.
 
    The `eav_data` rules cover a column-bound attribute too. An EAV-to-bound
    promotion leaves the rows written before it in `eav_data`, and the

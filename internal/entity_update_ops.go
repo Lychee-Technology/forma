@@ -156,15 +156,12 @@ const millisPerDay = 24 * 60 * 60 * 1000
 // serverTimeValue is server_time's value: the transaction instant nowMs
 // shifted by offset, at the precision the attribute stores. A date stores
 // the instant's UTC calendar day, the day $now names on a date (#646); a
-// datetime bound to an iso8601 text column stores whole seconds and refuses
-// anything finer, so the instant is floored to its second.
+// datetime stores the millisecond, on every destination (an rfc3339 text
+// column too, since #842).
 func serverTimeValue(nowMs int64, offset time.Duration, meta forma.AttributeMetadata) time.Time {
 	ms := nowMs + offset.Milliseconds()
-	switch {
-	case meta.ValueType == forma.ValueTypeDate:
+	if meta.ValueType == forma.ValueTypeDate {
 		ms = floorMillis(ms, millisPerDay)
-	case meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601:
-		ms = floorMillis(ms, 1000)
 	}
 	return time.UnixMilli(ms).UTC()
 }

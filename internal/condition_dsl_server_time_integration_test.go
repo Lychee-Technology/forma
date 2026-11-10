@@ -2,9 +2,9 @@ package internal
 
 import (
 	"testing"
-	"time"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/rfc3339"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,24 +19,28 @@ func (f *dslFixture) pgNowMs(t *testing.T) int64 {
 	return ms
 }
 
-func isoImage(ms int64) string {
-	return time.UnixMilli(ms - ms%1000).UTC().Format(time.RFC3339)
+// isoImage is the canonical image the write funnel stores for ms (#842).
+func isoImage(t *testing.T, ms int64) string {
+	t.Helper()
+	image, rule := rfc3339.Image(ms)
+	require.Empty(t, rule)
+	return image
 }
 
 // TestConditionDSLServerTime seeds rows an hour either side of the server's
 // now() and a day either side of its UTC date, then compares through $now on
 // every storage form: epoch millis in entity_main and eav_data, and the
-// iso8601 text image.
+// rfc3339 text image.
 func TestConditionDSLServerTime(t *testing.T) {
 	f := newDSLFixture(t, true)
 	now := f.pgNowMs(t)
 	today := now - now%dayMs
 	at := func(ms, day int64) map[string]any {
-		return map[string]any{"bigint_01": ms, "text_03": isoImage(ms), "bigint_02": day, "text_04": isoImage(day)}
+		return map[string]any{"bigint_01": ms, "text_03": isoImage(t, ms), "bigint_02": day, "text_04": isoImage(t, day)}
 	}
 	past := f.seed(t, at(now-3600000, today-dayMs), eavInt("seen", now-3600000), eavInt("day", today-dayMs))
 	future := f.seed(t, at(now+3600000, today+dayMs), eavInt("seen", now+3600000), eavInt("day", today+dayMs))
-	current := f.seed(t, map[string]any{"bigint_02": today, "text_04": isoImage(today)}, eavInt("day", today))
+	current := f.seed(t, map[string]any{"bigint_02": today, "text_04": isoImage(t, today)}, eavInt("day", today))
 	literal := f.seed(t, map[string]any{"text_01": "$now"})
 	f.seed(t, map[string]any{}) // every attribute absent
 

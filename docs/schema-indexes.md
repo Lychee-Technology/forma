@@ -161,7 +161,7 @@ PostgreSQL can seek a declared index on these operators:
 - `is_null`.
 
 These hold for every attribute a declaration admits: text, uuid, the integer
-and `double` columns, and dates and date-times under `unix_ms` or `iso8601`. The
+and `double` columns, and dates and date-times under `unix_ms` or `rfc3339`. The
 exception is an ordered comparison on a text attribute, which a declared index
 does not seek (see [Text ranges](#text-ranges)). A test runs each operator against
 a one-attribute index of each kind and checks the plan.
@@ -195,7 +195,7 @@ A btree key does not serve `contains` and `starts_with`, which render as
 route (#728, see [Condition DSL](condition-dsl.md)), which PostgreSQL renders as
 `<col> COLLATE "C" <op> $n`. `init-db` builds a declared index under the column's
 collation, so that compare cannot seek it. Equality can, and so can the
-`iso8601` date-times stored in text columns, which keep the column's collation.
+`rfc3339` date-times stored in text columns, which keep the column's collation.
 A database whose default collation is `C` does not help: the planner matches
 collations by OID, and the index holds the default collation's. The range reads
 the rows some other way and applies the compare as a filter.

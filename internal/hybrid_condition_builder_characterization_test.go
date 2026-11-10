@@ -48,7 +48,7 @@ func newHybridTestHelper(useMainAnchor bool) hybridTestHelper {
 		"created_iso": {
 			AttributeID:   11,
 			ValueType:     forma.ValueTypeDateTime,
-			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_02"), Encoding: forma.MainColumnEncodingISO8601},
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_02"), Encoding: forma.MainColumnEncodingRFC3339},
 		},
 		"active_int": {
 			AttributeID:   12,
@@ -268,13 +268,13 @@ func TestHybrid_DateTimeUnixMsEncoding(t *testing.T) {
 	require.Equal(t, []any{date.UnixMilli()}, args)
 }
 
-func TestHybrid_DateTimeISO8601Encoding(t *testing.T) {
+func TestHybrid_DateTimeRFC3339Encoding(t *testing.T) {
 	h := newHybridTestHelper(true)
 	cond := &forma.KvCondition{Attr: "created_iso", Value: "equals:2024-01-02T03:04:05Z"}
 	clause, args, err := h.build(cond)
 	require.NoError(t, err)
 	require.Equal(t, "m.\"text_02\" = $2", clause)
-	require.Equal(t, []any{"2024-01-02T03:04:05Z"}, args)
+	require.Equal(t, []any{"2024-01-02T03:04:05.000Z"}, args)
 }
 
 // TestHybrid_BoolIntEncoding pins the hybrid main branch to the #565

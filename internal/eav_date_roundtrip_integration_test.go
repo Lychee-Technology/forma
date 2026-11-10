@@ -23,14 +23,14 @@ const dateDestSchema = 301
 // dateDestinationRegistry binds one date attribute to each physical
 // destination the write funnel can choose (#582): eav_data value_numeric
 // (unbound scalar, list item and nested scalar), a bigint column under
-// unix_ms and under the default encoding, and a text column under iso8601.
+// unix_ms and under the default encoding, and a text column under rfc3339.
 func dateDestinationRegistry() forma.SchemaRegistry {
 	return &stubSchemaRegistry{schemaID: dateDestSchema, schemaName: "date_dest", cache: forma.SchemaAttributeCache{
 		"seenAt":    {AttributeID: 20, ValueType: forma.ValueTypeDateTime},
 		"bornOn":    {AttributeID: 21, ValueType: forma.ValueTypeDate},
 		"flushedAt": {AttributeID: 22, ValueType: forma.ValueTypeDateTime, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint01, Encoding: forma.MainColumnEncodingUnixMs}},
 		"openedAt":  {AttributeID: 23, ValueType: forma.ValueTypeDateTime, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint02}},
-		"expiresAt": {AttributeID: 24, ValueType: forma.ValueTypeDateTime, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01, Encoding: forma.MainColumnEncodingISO8601}},
+		"expiresAt": {AttributeID: 24, ValueType: forma.ValueTypeDateTime, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01, Encoding: forma.MainColumnEncodingRFC3339}},
 		"seenOn":    {AttributeID: 25, ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeDate},
 		// A nested eav_data date beside a sibling, for the update tests.
 		"visit.endAt": {AttributeID: 26, ValueType: forma.ValueTypeDateTime},
@@ -117,8 +117,9 @@ func TestEAVDateRoundTripIntegration(t *testing.T) {
 
 // Physical fidelity of the bound destinations (#582): a bigint column under
 // unix_ms or the default encoding keeps the full int64 range exactly, and an
-// iso8601 text column keeps whole-second instants from year 0000 to 9999 as
-// a canonical UTC image, whatever offset the caller wrote.
+// rfc3339 text column keeps millisecond instants from year 0000 to 9999 as
+// a canonical UTC image with three fractional digits (#842), whatever offset
+// the caller wrote.
 func TestBoundDateRoundTripIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -140,13 +141,16 @@ func TestBoundDateRoundTripIntegration(t *testing.T) {
 	}
 
 	for _, tc := range []struct{ in, image string }{
-		{"0000-01-01T00:00:00Z", "0000-01-01T00:00:00Z"},
-		{"9999-12-31T23:59:59Z", "9999-12-31T23:59:59Z"},
-		{"2024-01-01T02:00:00+02:00", "2024-01-01T00:00:00Z"},
-		{"1969-12-31T23:59:59-05:00", "1970-01-01T04:59:59Z"},
-		{"0001-01-01T00:00:00+14:00", "0000-12-31T10:00:00Z"},
+		{"0000-01-01T00:00:00Z", "0000-01-01T00:00:00.000Z"},
+		{"9999-12-31T23:59:59.999Z", "9999-12-31T23:59:59.999Z"},
+		{"2024-01-01T02:00:00+02:00", "2024-01-01T00:00:00.000Z"},
+		{"2024-01-01T00:00:00.001Z", "2024-01-01T00:00:00.001Z"},
+		{"1704067200123", "2024-01-01T00:00:00.123Z"},
+		{"2024-01-01T02:00:00.25+02:00", "2024-01-01T00:00:00.250Z"},
+		{"1969-12-31T23:59:59.999-05:00", "1970-01-01T04:59:59.999Z"},
+		{"0001-01-01T00:00:00+14:00", "0000-12-31T10:00:00.000Z"},
 	} {
-		t.Run("iso8601 "+tc.in, func(t *testing.T) {
+		t.Run("rfc3339 "+tc.in, func(t *testing.T) {
 			want, err := time.Parse(time.RFC3339, tc.image)
 			require.NoError(t, err)
 			rowID, got := f.writeAndRead(t, map[string]any{"expiresAt": tc.in})
@@ -157,8 +161,8 @@ func TestBoundDateRoundTripIntegration(t *testing.T) {
 		})
 	}
 
-	for _, in := range []string{"2024-01-01T00:00:00.001Z", "10000-01-01T00:00:00Z", "-0001-12-31T23:59:59Z", "1704067200123"} {
-		t.Run("iso8601 refused "+in, func(t *testing.T) {
+	for _, in := range []string{"10000-01-01T00:00:00Z", "-0001-12-31T23:59:59.999Z", "253402300800000"} {
+		t.Run("rfc3339 refused "+in, func(t *testing.T) {
 			_, err := f.tr.ToPersistentRecord(ctx, 301, uuid.New(), map[string]any{"expiresAt": in})
 			require.ErrorIs(t, err, forma.ErrInvalidInput)
 		})

@@ -65,7 +65,7 @@ func TestServerTimeTakesTheAttributesPrecision(t *testing.T) {
 	// condClockMs is 2026-10-12T08:15:30.250Z.
 	assert.Equal(t, at("2026-10-12T08:15:30.250Z"), serverTimeValue(condClockMs, 0, cache["due"]), "datetime keeps the millisecond")
 	assert.Equal(t, at("2026-10-12T09:15:30.250Z"), serverTimeValue(condClockMs, time.Hour, cache["due_main"]), "unix_ms binding keeps the millisecond")
-	assert.Equal(t, at("2026-10-12T08:15:30Z"), serverTimeValue(condClockMs, 0, cache["due_iso"]), "iso8601 binding floors to the second")
+	assert.Equal(t, at("2026-10-12T08:15:30.250Z"), serverTimeValue(condClockMs, 0, cache["due_iso"]), "rfc3339 binding keeps the millisecond (#842)")
 	assert.Equal(t, at("2026-10-12T00:00:00Z"), serverTimeValue(condClockMs, 0, cache["day"]), "date floors to the UTC day")
 	assert.Equal(t, at("2026-10-11T00:00:00Z"), serverTimeValue(condClockMs, -9*time.Hour, cache["day"]), "the offset applies before the floor")
 	assert.Equal(t, at("1969-12-31T00:00:00Z"), serverTimeValue(-1, 0, cache["day"]), "a pre-epoch instant floors down, not toward zero")
@@ -113,7 +113,7 @@ func TestUpdateAppliesOperatorsToTheLockedBase(t *testing.T) {
 
 	assert.Equal(t, time.UnixMilli(condClockMs).UTC(), got["due"])
 	assert.Equal(t, time.UnixMilli(condClockMs).Add(2*time.Hour).UTC(), got["due_main"])
-	assert.Equal(t, time.UnixMilli(condClockMs).Truncate(time.Second).UTC(), got["due_iso"])
+	assert.Equal(t, time.UnixMilli(condClockMs).UTC(), got["due_iso"], "an rfc3339 column keeps the millisecond (#842)")
 	assert.Equal(t, time.UnixMilli(condClockMs).Truncate(24*time.Hour).UTC(), got["day"])
 	assert.Equal(t, 1, f.clockReads, "every server_time in one update shares one clock reading")
 	assert.Equal(t, 1, f.repo.mergeCalls)

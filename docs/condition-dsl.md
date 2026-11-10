@@ -180,11 +180,10 @@ every row in one query sees the same instant.
 - On a `datetime`, the comparison is against the shifted instant.
 - On a `date`, `$now` is the **UTC calendar date** of the shifted instant:
   `equals:$now` matches today's UTC date and `equals:$now-24h` yesterday's.
-- On an attribute bound to a text column with `iso8601` encoding (whole-second
-  RFC 3339 images), `$now` compares at second precision without losing
-  rows: `lt`/`gte` compare against the instant rounded up to the second,
-  `lte`/`gt` rounded down, and `equals` matches only when the shifted
-  instant falls on a whole second.
+- On an attribute bound to a text column with `rfc3339` encoding (RFC 3339
+  images with three fractional digits), `$now` compares the stored text
+  against the canonical image of the shifted instant, to the millisecond,
+  with the same operator (#842).
 - **Federated queries refuse `$now`.** A request with
   `Federated.Enabled` is `ErrInvalidInput` whenever its condition names
   `$now` on a date or datetime attribute, whichever tier the router would

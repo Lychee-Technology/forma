@@ -27,7 +27,7 @@ func TestToDualClauses_OperatorAliasesRenderAsCanonical(t *testing.T) {
 		{"bound bool int eq", charKv("active", "equals:true"), charKv("active", "eq:true")},
 		{"bound bool text neq", charKv("verified", "not_equals:true"), charKv("verified", "neq:true")},
 		{"bound unix-ms date neq", charKv("born", "not_equals:1704164645000"), charKv("born", "neq:1704164645000")},
-		{"bound iso8601 datetime eq", charKv("joined", "equals:2024-01-02T03:04:05Z"), charKv("joined", "eq:2024-01-02T03:04:05Z")},
+		{"bound rfc3339 datetime eq", charKv("joined", "equals:2024-01-02T03:04:05Z"), charKv("joined", "eq:2024-01-02T03:04:05Z")},
 		{"bound uuid eq", charKv("owner", "equals:0b210f52-1f4d-4f47-9799-1e2f2c0efc07"), charKv("owner", "eq:0b210f52-1f4d-4f47-9799-1e2f2c0efc07")},
 		{"eav text eq", charKv("tag", "equals:x"), charKv("tag", "eq:x")},
 		{"eav text neq", charKv("tag", "not_equals:x"), charKv("tag", "neq:x")},

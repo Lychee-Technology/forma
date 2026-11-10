@@ -143,7 +143,7 @@ func ToSQLOperator(op, value string) (SQLOperatorResult, error) {
 	}
 }
 
-// ParseRFC3339OrUnixMs parses ISO8601 datetime string or unix milliseconds.
+// ParseRFC3339OrUnixMs parses RFC3339 datetime string or unix milliseconds.
 func ParseRFC3339OrUnixMs(raw string) (time.Time, error) {
 	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
 		return parsed, nil

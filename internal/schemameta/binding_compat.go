@@ -33,7 +33,7 @@ var ErrUnknownMainColumn = errors.New("unknown main column")
 //	uuid                             uuid                                default
 //	smallint/integer/bigint/numeric  smallint, integer, bigint, double   default (width enforced at write)
 //	date/datetime                    bigint                              default or unix_ms (full int64 epoch-ms range)
-//	date/datetime                    text                                iso8601 (whole seconds, years 0000–9999 enforced at write)
+//	date/datetime                    text                                rfc3339 (milliseconds, years 0000–9999 enforced at write)
 //	bool                             smallint                            bool_smallint
 //	bool                             text                                bool_text
 //	list                             —                                   never bindable
@@ -65,6 +65,9 @@ func ValidateColumnBinding(attrName string, meta forma.AttributeMetadata) error 
 	if encoding == "" {
 		encoding = forma.MainColumnEncodingDefault
 	}
+	if encoding == forma.MainColumnEncodingLegacyISO8601 {
+		return legacyISO8601Error(attrName, meta)
+	}
 	colType := binding.ColumnType()
 	if bindingRoundTrips(meta.ValueType, colType, encoding) {
 		return nil
@@ -95,7 +98,7 @@ func bindingRoundTrips(vt forma.ValueType, colType forma.MainColumnType, enc for
 		return false
 	case forma.MainColumnEncodingUnixMs:
 		return isTime && colType == forma.MainColumnTypeBigint
-	case forma.MainColumnEncodingISO8601:
+	case forma.MainColumnEncodingRFC3339:
 		return isTime && colType == forma.MainColumnTypeText
 	case forma.MainColumnEncodingBoolInt:
 		return vt == forma.ValueTypeBool && colType == forma.MainColumnTypeSmallint
@@ -105,14 +108,31 @@ func bindingRoundTrips(vt forma.ValueType, colType forma.MainColumnType, enc for
 	return false
 }
 
+// legacyISO8601Remedy is how a deployment leaves the retired iso8601
+// encoding (#842): migrate its images, then declare rfc3339.
+const legacyISO8601Remedy = "stop every writer of the schema, run forma-tools migrate-rfc3339 to rewrite its whole-second images, " +
+	"then declare encoding rfc3339 and run apply-schema (docs/rfc3339-storage-contract.md)"
+
+// legacyISO8601Error refuses a declaration of the retired iso8601 encoding
+// (#842). It has no alias: the rfc3339 image differs from the iso8601 one,
+// so a process reading iso8601 as rfc3339 over unmigrated rows would
+// misorder them without any error. A generation the ledger recorded with
+// iso8601 still loads; only a declaration is refused.
+func legacyISO8601Error(attrName string, meta forma.AttributeMetadata) error {
+	return fmt.Errorf("attribute %s (valueType %s) binds main column %s with encoding %s, which was renamed to %s and stores "+
+		"milliseconds since #842; %s",
+		attrName, meta.ValueType, meta.ColumnBinding.ColumnName, forma.MainColumnEncodingLegacyISO8601,
+		forma.MainColumnEncodingRFC3339, legacyISO8601Remedy)
+}
+
 // bindableColumnsFor names the expected state for the error: what this
 // valueType may bind to, or why it binds to nothing.
 func bindableColumnsFor(vt forma.ValueType, enc forma.MainColumnEncoding) string {
 	switch enc {
-	case forma.MainColumnEncodingDefault, forma.MainColumnEncodingUnixMs, forma.MainColumnEncodingISO8601,
+	case forma.MainColumnEncodingDefault, forma.MainColumnEncodingUnixMs, forma.MainColumnEncodingRFC3339,
 		forma.MainColumnEncodingBoolInt, forma.MainColumnEncodingBoolText:
 	default:
-		return fmt.Sprintf("unknown encoding %q; use default, unix_ms, iso8601, bool_smallint or bool_text", enc)
+		return fmt.Sprintf("unknown encoding %q; use default, unix_ms, rfc3339, bool_smallint or bool_text", enc)
 	}
 	switch vt {
 	case forma.ValueTypeText:
@@ -122,7 +142,7 @@ func bindableColumnsFor(vt forma.ValueType, enc forma.MainColumnEncoding) string
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeNumeric:
 		return string(vt) + " binds only to smallint, integer, bigint or double columns (default encoding; values must fit the column width)"
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		return string(vt) + " binds only to bigint columns (default or unix_ms encoding) or text columns (iso8601 encoding)"
+		return string(vt) + " binds only to bigint columns (default or unix_ms encoding) or text columns (rfc3339 encoding)"
 	case forma.ValueTypeBool:
 		return "bool binds only to smallint columns (bool_smallint encoding) or text columns (bool_text encoding)"
 	case forma.ValueTypeList:

@@ -53,13 +53,13 @@ func TestBaselineSchemaRefusesAStoredValueTheReadRefuses(t *testing.T) {
 			eavInsert("", "value_numeric", "42"), "declared text: row %s holds 42 in eav_data,"},
 		{"bool_text other than 1/0", "{" + encodedAttr("a", 1, "bool", "text_01", "bool_text") + "}",
 			mainTextInsert("'true'"), `declared bool: row %s holds "true" in column text_01,`},
-		{"iso8601 day outside its month", "{" + encodedAttr("a", 1, "date", "text_01", "iso8601") + "}",
+		{"rfc3339 day outside its month", "{" + encodedAttr("a", 1, "date", "text_01", "rfc3339") + "}",
 			mainTextInsert("'2023-02-29T00:00:00Z'"), `declared date: row %s holds "2023-02-29T00:00:00Z" in column text_01,`},
 		// A bound attribute keeps the eav_data rows written before its
 		// promotion, and the read decodes them under the declared type.
 		{"promoted bool_text bool with an EAV NaN", "{" + encodedAttr("a", 1, "bool", "text_01", "bool_text") + "}",
 			eavInsert("", "value_numeric", "'NaN'"), "declared bool: row %s holds NaN in eav_data,"},
-		{"promoted iso8601 date with an EAV fraction", "{" + encodedAttr("a", 1, "date", "text_01", "iso8601") + "}",
+		{"promoted rfc3339 date with an EAV fraction", "{" + encodedAttr("a", 1, "date", "text_01", "rfc3339") + "}",
 			eavInsert("", "value_numeric", "1.5"), "declared date: row %s holds 1.5 in eav_data,"},
 		{"promoted integer with an EAV fraction", "{" + encodedAttr("a", 1, "integer", "integer_01", "default") + "}",
 			eavInsert("", "value_numeric", "1001.5"), "declared integer: row %s holds 1001.5 in eav_data,"},
@@ -100,7 +100,7 @@ func TestBaselineSchemaAdmitsWhatTheReadAdmits(t *testing.T) {
 		`"refs":{"attributeID":4,"valueType":"list","items_type":"uuid"},` +
 		`"note":{"attributeID":5,"valueType":"text"},` +
 		encodedAttr("on", 6, "bool", "text_01", "bool_text") + "," +
-		encodedAttr("due", 7, "datetime", "text_02", "iso8601") + "," +
+		encodedAttr("due", 7, "datetime", "text_02", "rfc3339") + "," +
 		encodedAttr("set", 8, "bool", "smallint_01", "bool_smallint") + "}"})
 	lt.forgetLedger(t)
 	eav := quoteIdentifier(lt.opts.eavTable)
