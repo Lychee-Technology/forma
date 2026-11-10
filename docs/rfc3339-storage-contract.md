@@ -123,23 +123,32 @@ it migrates that its rewrite does not make canonical. After the migration
 and the repair of the rows it lists, the census finds nothing
 (`TestRFC3339MigrationKeepsEveryTierConsistent`).
 
-**Repair.** Rewrite the row through the API, with an update that names the
-attribute and gives the instant the image names. The write funnel stores the
-canonical image and stamps `change_log`, so the next flush replaces the
-row's parquet copy. A direct SQL `UPDATE` corrects PostgreSQL only: it
-leaves the old copy on the warm and cold tiers until the row's next write.
-Since the repair writes a canonical image, re-exporting a row without
-changing its PostgreSQL value does not repair it.
+**Repair.** How a row is repaired depends on whether the read parses its
+image. An image the read parses names an instant, and the API can rewrite
+it. An image the read refuses names none, so there is no instant to keep,
+and the one of them that blocks the migration from iso8601 has to be
+repaired before any release can write it; it is repaired offline
+([below](#repairing-an-image-the-read-refuses)).
+
+Rewrite a row whose image the read parses through the API, with an update
+that names the attribute and gives the instant the image names. The write
+funnel stores the canonical image and stamps `change_log`, so the next
+flush replaces the row's parquet copy. A direct SQL `UPDATE` alone corrects
+PostgreSQL only: it leaves the old copy on the warm and cold tiers until
+the row's next write. Since the repair writes a canonical image,
+re-exporting a row without changing its PostgreSQL value does not repair
+it.
 
 That the API accepts the rewrite does not mean the row keeps the instant its
 image names: normalization can move the instant before narrowing judges it.
-A repair is one of three kinds.
+A repair of an image the read parses is one of three kinds.
 
 - **Spelling only.** The instant the image names is a whole millisecond
   inside years 0000 to 9999: an in-range offset image
-  (`2024-01-02T11:04:06.250+08:00`), a space-separated image, or a fraction
-  of one to three digits (`2024-01-02T03:04:06.5Z`). The rewrite stores that
-  same instant and changes only its spelling.
+  (`2024-01-02T11:04:06.250+08:00`), a fraction of one to three digits
+  (`2024-01-02T03:04:06.5Z`), or the whole-second image of the iso8601
+  encoding, which `migrate-rfc3339` rewrites. The rewrite stores that same
+  instant and changes only its spelling.
 - **Accepted, but the instant moves.** A fraction finer than a millisecond
   that is not zero beyond the third digit: `2024-01-02T03:04:06.0000009Z`
   names an instant 900 nanoseconds after the second. Normalization floors it
@@ -157,6 +166,78 @@ instant changes, so repairing them is a per-row decision Forma does not make
 for you. The census reports the kind of each image (`spelling only`,
 `sub-millisecond`, `no canonical image`), so the first kind can be told
 apart from the other two.
+
+### Repairing an image the read refuses
+
+`rfc3339.Parse` refuses an image with no `T` or no zone, such as the
+space-separated `2024-01-02 03:04:06`, and one whose fields name no time,
+such as `2024-02-30T03:04:05.250Z`, `2024-01-02T25:04:05.000Z` or the
+whole-second `2023-02-29T00:00:00Z`. None of them is a respelling: every
+`GET` of the row fails, and so does every update that leaves the attribute
+out. The census reports them apart from the three kinds above, and
+`migrate-rfc3339` lists each as `not an RFC 3339 image the read parses`.
+
+The DuckDB tiers read the same image through `TRY_CAST`
+(`sqlgen.RFC3339EpochMs`), on the hot leg and in the CDC export. An image
+naming no day, such as `2023-02-29T00:00:00Z`, reads there as an absent
+attribute, and the space-separated image as its wall clock in UTC. So the
+row's parquet copy holds a value PostgreSQL does not, and the repair has to
+re-export the row whatever value it chooses.
+
+What the attribute should hold is a per-row decision Forma does not make
+for you: the instant the writer meant, when the source of the data can tell
+(for `2023-02-29T00:00:00Z` that may be `2023-02-28` or `2023-03-01`), or no
+value. Write an instant as its canonical image (`YYYY-MM-DDThh:mm:ss.sssZ`),
+never in the iso8601 shape, or write `NULL`.
+
+With the schema's writers stopped, rewrite each row in one transaction that
+also queues it for the CDC flush, as an API write does:
+
+```sql
+-- one transaction per row; text_02 stands for the bound column, and
+-- entity_main and change_log for the deployment's tables
+BEGIN;
+UPDATE entity_main
+   SET text_02 = '2023-03-01T00:00:00.000Z',
+       ltbase_updated_at = GREATEST(floor(extract(epoch from now()) * 1000)::bigint,
+                                    ltbase_updated_at + 1)
+ WHERE ltbase_schema_id = <schema id> AND ltbase_row_id = '<row id>'
+   AND text_02 = '2023-02-29T00:00:00Z';
+INSERT INTO change_log (schema_id, row_id, flushed_at, changed_at, deleted_at)
+SELECT ltbase_schema_id, ltbase_row_id, 0, ltbase_updated_at, ltbase_deleted_at
+  FROM entity_main
+ WHERE ltbase_schema_id = <schema id> AND ltbase_row_id = '<row id>'
+ON CONFLICT (schema_id, row_id, flushed_at)
+DO UPDATE SET changed_at = EXCLUDED.changed_at, deleted_at = EXCLUDED.deleted_at;
+COMMIT;
+```
+
+The `UPDATE` must report one row. If it reports none, the row no longer
+holds the image the listing named: `ROLLBACK` and list again. The match on
+the image is what keeps the repair from overwriting a value someone else
+already corrected.
+
+The `change_log` half is what keeps the tiers consistent. The row's
+version, `ltbase_updated_at`, advances by the rule every Forma write applies
+(#274), and the slot-0 entry carries it as `changed_at`, which becomes the
+new parquet copy's `ver_ts`. That is strictly above the `ver_ts` of every
+copy already exported, so the new copy wins the merge on the warm and cold
+tiers; an export at the old version could tie with the stale copy, and a
+tie has no defined winner. From the commit on, the entry puts the row in
+the dirty set, so the DuckDB route discards its parquet copy and reads it
+from PostgreSQL. The next `cdc-flush` exports it, and compaction carries
+that copy into base. `deleted_at` copies the row's delete state, so a
+deleted row stays deleted. The row's `updatedAt` advances, as on any write.
+Without the `INSERT`, the DuckDB route keeps serving the old copy (an
+absent attribute for `2023-02-29T00:00:00Z`) until the row's next write.
+
+The repair does not touch the unique-key table. If the attribute is part of
+a unique key, build the key again with writers still stopped:
+`build-unique-keys --schema <name> --key <key> --rebuild`, or, in the
+migration below, step 3, which rebuilds every such key. A value the repair
+made a duplicate fails that build. After the repair the census no longer
+reports the row (`TestRFC3339UnreadableImageOfflineRepair` runs this block
+over a row already exported, then checks both routes on every tier).
 
 ## Migrating from iso8601 (#842)
 
@@ -185,22 +266,30 @@ new release starts. The procedure:
    own transaction, matching each row on the image it read. It judges every
    other image in those columns the same way, and lists each one that is
    not canonical with its schema, attribute, row and repair kind, leaving it
-   unchanged: it belongs to the repair above.
-   That includes an image of the canonical shape the read refuses
-   (`2024-01-02T25:04:05.000Z`), and an image of the whole-second shape that
-   names no instant (`2023-02-29T00:00:00Z`). The tool leaves the second
-   kind unchanged and lists it, but it still counts as a whole-second
+   unchanged. An image the read parses (an offset, a short fraction) does
+   not block the cutover: repair it through the new release's API once it
+   runs. An image the read refuses, such as the canonical shape naming no
+   time (`2024-01-02T25:04:05.000Z`), does not block it either; repair it
+   offline as below, with the schema's writers stopped. One of the
+   whole-second shape that names no instant (`2023-02-29T00:00:00Z`) is
+   listed and left unchanged too, but it still counts as a whole-second
    image: under the text comparison it misorders against the rfc3339 images
    like any other. So the tool keeps exiting non-zero, and `apply-schema`
-   keeps refusing the rename, until that row is repaired. A run lists after
-   its rewrite, so the listing names what the column holds when the tool
-   exits; `--dry-run` lists the same rows. A re-run finds nothing to
-   rewrite. `--dry-run` reports the per-column counts and changes nothing.
-   The tool exits non-zero while any whole-second-shaped image remains in a
-   target column, a dry run included, so a scripted cutover stops before
-   step 2. Its error says how many of those images name no instant and need
-   the repair, apart from those a writer may have stored again. Like
-   `build-unique-keys`, it cannot detect a running writer.
+   keeps refusing the rename, until that row is repaired. No release can
+   repair it through the API in that window: the old release must not write
+   once the rewrite has begun, and the new one does not start before step 4.
+   Repair it offline with writers still stopped
+   ([Repairing an image the read refuses](#repairing-an-image-the-read-refuses)),
+   then run the tool again. A run lists after its rewrite, so the listing
+   names what the column holds when the tool exits; `--dry-run` lists the
+   same rows, so a dry run before writers stop gives time to decide each
+   row's value. A re-run finds nothing to rewrite. `--dry-run` reports the
+   per-column counts and changes nothing. The tool exits non-zero while any
+   whole-second-shaped image remains in a target column, a dry run
+   included, so a scripted cutover stops before step 2. Its error says how
+   many of those images name no instant and need the offline repair, apart
+   from those a writer may have stored again. Like `build-unique-keys`, it
+   cannot detect a running writer.
 
    The rewrite does not stamp `change_log`. The instant does not change, and
    a parquet copy holds the instant as epoch milliseconds, not the image:

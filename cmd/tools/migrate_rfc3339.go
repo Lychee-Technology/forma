@@ -116,8 +116,8 @@ func (r rfc3339Remaining) err(dryRun bool) error {
 	}
 	fmt.Fprintf(&b, "%d whole-second image(s) remain in %d column(s)", r.wholeSecond, r.columns)
 	if r.noInstant > 0 {
-		fmt.Fprintf(&b, "; %d of them name no instant, so the rewrite leaves them unchanged: repair each row listed above "+
-			"(docs/rfc3339-storage-contract.md) and run migrate-rfc3339 again", r.noInstant)
+		fmt.Fprintf(&b, "; %d of them name no instant, so the rewrite leaves them unchanged: repair each row listed above offline, with writers stopped "+
+			"(docs/rfc3339-storage-contract.md, \"Repairing an image the read refuses\"), and run migrate-rfc3339 again", r.noInstant)
 	}
 	switch {
 	case dryRun:
@@ -164,7 +164,7 @@ func migrateRFC3339Target(ctx context.Context, pool *pgxpool.Pool, opts ledgerTo
 	for _, o := range others {
 		fmt.Fprintf(out, "  left for repair: row %s holds %q, %s", o.RowID, o.Image, o.Defect.Explain(o.Canonical))
 		if o.WholeSecondShaped() {
-			fmt.Fprint(out, "; it has the whole-second shape, so apply-schema refuses rfc3339 until it is repaired")
+			fmt.Fprint(out, "; it has the whole-second shape, so apply-schema refuses rfc3339 until it is repaired offline")
 		}
 		fmt.Fprintln(out)
 	}
