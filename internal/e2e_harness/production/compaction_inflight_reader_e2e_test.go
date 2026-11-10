@@ -6,6 +6,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lychee-technology/forma/internal/compaction"
 )
@@ -19,11 +20,18 @@ import (
 // correctly. Before the fix the inline post-commit delete made this exact
 // read fail with the non-degradable, breaker-worthy
 // ParquetSetInconsistentError.
+//
+// #461's impact had two halves: the failed read, and the breaker-open event
+// it fed, which disables the DuckDB route for every query. The Env therefore
+// runs a threshold-1 breaker, so a single RecordFailure anywhere in the
+// scenario opens it, and the test asserts breaker neutrality explicitly
+// (#499) rather than inferring it from the held query's routing.
 func TestCompactionRewriteInFlightReaderRetention(t *testing.T) {
 	cluster := SharedCluster(t)
 	ctx := context.Background()
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
-	env := NewEnv(t, cluster)
+	transitions := &breakerTransitions{}
+	env := NewEnv(t, cluster, WithBreaker(1, time.Minute), WithMetricEmitter(transitions))
 
 	creates := seedCompactionBase(ctx, t, env, wide, 5)
 	update := UpdateEvent(wide, creates[0].RowID, map[string]any{"title": "inflight-v2"})
@@ -80,4 +88,25 @@ func TestCompactionRewriteInFlightReaderRetention(t *testing.T) {
 	if held == nil || held.Plan == nil || !held.Plan.Routing.UseDuckDB {
 		t.Fatalf("pre-swap path-set query did not route to duckdb")
 	}
+
+	// Breaker neutrality (#499): the held-path read recorded no failure.
+	// With threshold 1 a single RecordFailure would have opened the breaker
+	// and emitted an "open" transition; a success on a closed breaker emits
+	// nothing, so the expected transition list is empty.
+	breaker := env.Breaker()
+	if breaker == nil {
+		t.Fatal("env has no circuit breaker; breaker neutrality would pass vacuously")
+	}
+	if breaker.IsOpen() {
+		t.Fatal("circuit breaker is open after the pre-swap path-set query; the in-flight read fed it a failure")
+	}
+	transitions.expect(t, "pre-swap path-set query")
+
+	// The DuckDB route stays available: a follow-up manifest-driven read of
+	// the post-swap set is admitted and routes to DuckDB.
+	post := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})
+	if post == nil || post.Plan == nil || !post.Plan.Routing.UseDuckDB {
+		t.Fatalf("post-swap manifest query did not route to duckdb")
+	}
+	transitions.expect(t, "post-swap manifest query")
 }
