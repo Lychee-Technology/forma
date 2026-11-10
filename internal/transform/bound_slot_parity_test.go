@@ -19,16 +19,15 @@ var parityColumns = []forma.MainColumn{
 }
 
 var parityEncodings = []forma.MainColumnEncoding{
-	forma.MainColumnEncodingDefault, forma.MainColumnEncodingUnixMs, forma.MainColumnEncodingISO8601,
+	forma.MainColumnEncodingDefault, forma.MainColumnEncodingUnixMs, forma.MainColumnEncodingRFC3339,
 	forma.MainColumnEncodingBoolInt, forma.MainColumnEncodingBoolText,
 }
 
 // paritySamples is one typed value per EAVRecord slot family. Every numeric
 // image fits a smallint so the width rule (covered by the other tests in
 // this package) never decides a pair here; only slot placement does. The
-// sub-second datetime is the one rendering rule beyond placement (#582): the
-// check refuses it on iso8601 and the store must refuse it too, never
-// truncate.
+// sub-second datetime pins that rfc3339 keeps its millisecond (#842), where
+// the iso8601 encoding refused it (#582).
 var paritySamples = []struct {
 	vt    forma.ValueType
 	value any
@@ -75,8 +74,8 @@ func slotsHolding(record *model.PersistentRecord, col string) []forma.MainColumn
 
 // renderedNumeric is what an encoding's rendering keeps of the numeric slot
 // when it is read back: the bool renderings collapse it to 0/1; the rest are
-// exact. The RFC3339 rendering keeps whole seconds, and the check admits
-// only those (#582), so it is exact for every admitted value.
+// exact. The RFC 3339 rendering keeps every millisecond (#842), so it is
+// exact for every admitted value.
 func renderedNumeric(enc forma.MainColumnEncoding, v float64) float64 {
 	switch enc {
 	case forma.MainColumnEncodingBoolInt, forma.MainColumnEncodingBoolText:
@@ -142,8 +141,8 @@ func TestStoreWithEncoding_ColumnMismatchIsAnError(t *testing.T) {
 		vt      forma.ValueType
 		want    string
 	}{
-		{forma.MainColumnBinding{ColumnName: forma.MainColumnBigint01, Encoding: forma.MainColumnEncodingISO8601},
-			"2024-01-01T00:00:00Z", forma.ValueTypeDate, "encoding iso8601 renders a text value"},
+		{forma.MainColumnBinding{ColumnName: forma.MainColumnBigint01, Encoding: forma.MainColumnEncodingRFC3339},
+			"2024-01-01T00:00:00Z", forma.ValueTypeDate, "encoding rfc3339 renders a text value"},
 		{forma.MainColumnBinding{ColumnName: forma.MainColumnSmallint01, Encoding: forma.MainColumnEncodingBoolText},
 			true, forma.ValueTypeBool, "encoding bool_text renders a text value"},
 		{forma.MainColumnBinding{ColumnName: forma.MainColumnText01, Encoding: forma.MainColumnEncodingUnixMs},
@@ -172,7 +171,7 @@ func TestStoreWithEncoding_ColumnMismatchIsAnError(t *testing.T) {
 // double column the registration matrix refuses but the funnel must still
 // judge (#459). Each has its own exact range (#582, #592).
 var boundDateDestinations = []forma.MainColumnBinding{
-	{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingISO8601},
+	{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingRFC3339},
 	{ColumnName: forma.MainColumnBigint01, Encoding: forma.MainColumnEncodingUnixMs},
 	{ColumnName: forma.MainColumnBigint01, Encoding: forma.MainColumnEncodingDefault},
 	{ColumnName: forma.MainColumnDouble01, Encoding: forma.MainColumnEncodingDefault},
@@ -185,7 +184,7 @@ var boundDateDestinations = []forma.MainColumnBinding{
 // funnel's both-slot record — which, past 2^53, carries a sidecar the float
 // image has rounded away from — and the bypass shapes with one slot only.
 // Two cases the check and the store used to answer differently: a
-// sidecar-only iso8601 record (the check refused it, the store rendered it)
+// sidecar-only rfc3339 record (the check refused it, the store rendered it)
 // and a both-slot date on a double column past 2^53 (the check refused the
 // sidecar, the store wrote the rounded image).
 func TestBoundDateCheckStoreParity(t *testing.T) {
@@ -238,7 +237,7 @@ func TestBoundDateCheckStoreParity(t *testing.T) {
 	stored, err := tr.storeWithEncoding(record, rec, forma.ValueTypeDateTime, iso)
 	require.NoError(t, err)
 	require.True(t, stored)
-	require.Equal(t, "1970-01-01T00:00:00Z", record.TextItems["text_02"])
+	require.Equal(t, "1970-01-01T00:00:00.000Z", record.TextItems["text_02"])
 
 	for _, double := range boundDateDestinations[3:] {
 		binding := double

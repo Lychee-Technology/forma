@@ -28,7 +28,7 @@ func hybridLeafClause(t *testing.T, attr, value string, cache forma.SchemaAttrib
 // TestPostgresTextRangeRendersInByteOrder pins #728's rendering on the Postgres
 // route: a range over a text column or over eav_data.value_text names the C
 // collation on the column, and nothing else does. A column-bound uuid keeps its
-// native comparison, since uuid takes no collation; an iso8601 date stays on
+// native comparison, since uuid takes no collation; an rfc3339 date stays on
 // the column's own collation, so a declared index keeps seeking it.
 func TestPostgresTextRangeRendersInByteOrder(t *testing.T) {
 	const operandUUID = "6f1c3c3e-1111-4111-8111-111111111111"
@@ -48,7 +48,7 @@ func TestPostgresTextRangeRendersInByteOrder(t *testing.T) {
 
 		{"bound uuid range is native", "owner", "gt:" + operandUUID, `m.uuid_01 > $n`},
 		{"raw uuid column is native", "uuid_02", "gt:" + operandUUID, `m.uuid_02 > $n`},
-		{"iso8601 date range", "joined", "gt:2024-01-02T03:04:05Z", `m.text_03 > $n`},
+		{"rfc3339 date range", "joined", "gt:2024-01-02T03:04:05Z", `m.text_03 > $n`},
 		{"bound numeric range", "age", "gt:7", `m.integer_01 > $n::bigint`},
 		{"bound text equals", "username", "equals:M", `m.text_01 = $n`},
 		{"bound text not_equals", "username", "not_equals:M", `m.text_01 != $n`},

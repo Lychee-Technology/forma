@@ -24,7 +24,7 @@ func TestDateTime_ExtremeTimeIsRefusedBeforeNormalisation(t *testing.T) {
 	metas := map[string]forma.AttributeMetadata{
 		"unbound":      {AttributeID: 9, ValueType: forma.ValueTypeDateTime},
 		"unbound date": {AttributeID: 9, ValueType: forma.ValueTypeDate},
-		"iso8601":      boundMeta(forma.ValueTypeDateTime, forma.MainColumnText02, forma.MainColumnEncodingISO8601),
+		"rfc3339":      boundMeta(forma.ValueTypeDateTime, forma.MainColumnText02, forma.MainColumnEncodingRFC3339),
 		"unix_ms":      boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingUnixMs),
 		"default":      boundMeta(forma.ValueTypeDateTime, forma.MainColumnBigint01, forma.MainColumnEncodingDefault),
 	}
@@ -57,10 +57,10 @@ func TestDateTime_ExtremeTimeIsRefusedBeforeNormalisation(t *testing.T) {
 	// The reviewer's probe end to end: no text image is written.
 	tr := &persistentRecordTransformer{}
 	var rec model.EAVRecord
-	_, err := populateTypedValue(&rec, "seenAt", extreme, metas["iso8601"])
+	_, err := populateTypedValue(&rec, "seenAt", extreme, metas["rfc3339"])
 	require.Error(t, err)
 	record := &model.PersistentRecord{TextItems: map[string]string{}}
-	require.Error(t, tr.storeInMainColumn(record, rec, metas["iso8601"].ValueType, metas["iso8601"].ColumnBinding))
+	require.Error(t, tr.storeInMainColumn(record, rec, metas["rfc3339"].ValueType, metas["rfc3339"].ColumnBinding))
 	require.Empty(t, record.TextItems)
 }
 

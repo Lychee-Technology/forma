@@ -20,9 +20,9 @@ type ServerTimeOperand struct {
 	// Date truncates the instant to its UTC calendar day, the image a date
 	// attribute stores.
 	Date bool
-	// ISO8601 compares against the whole-second RFC3339 text image an
-	// iso8601-bound entity_main column stores instead of epoch millis.
-	ISO8601 bool
+	// RFC3339 compares against the millisecond RFC 3339 text image an
+	// rfc3339-bound entity_main column stores instead of epoch millis.
+	RFC3339 bool
 }
 
 // Args returns the operand's single bind.
@@ -33,47 +33,34 @@ func (s ServerTimeOperand) Args() []any {
 // RenderComparison spells `lhs <sqlOp> $now` over the offset placeholder ph.
 // It is PostgreSQL-only: no DuckDB tier can read the transaction clock, so
 // the federated payloads refuse the operand (serverTimeFederatedError).
+//
+// On an rfc3339 column the operand is the canonical image of the same
+// millisecond instant. Canonical images order as their instants (#842), so
+// every operator compares text against text, which a declared index on the
+// column seeks; no operator needs the whole-second mapping the iso8601
+// encoding did.
 func (s ServerTimeOperand) RenderComparison(lhs, sqlOp, ph string) string {
 	ms := "(" + ServerTimeMillisSQL + " + " + ph + "::bigint)"
 	if s.Date {
 		ms = "(floor(" + ms + " / 86400000.0) * 86400000)::bigint"
 	}
-	if !s.ISO8601 {
+	if !s.RFC3339 {
 		return lhs + " " + sqlOp + " " + ms
 	}
-	return iso8601ServerTimeComparison(lhs, sqlOp, ms)
+	return lhs + " " + sqlOp + " " + rfc3339MillisImage(ms)
 }
 
-// iso8601ServerTimeComparison compares a whole-second text image t against
-// the millisecond instant ms. The image is ordered like its instant, so
-// each operator maps onto the image of a whole second:
-//
-//	t*1000 <= ms  ⇔  t <= floor(ms/1000)     t*1000 > ms   ⇔  t > floor(ms/1000)
-//	t*1000 < ms   ⇔  t < ceil(ms/1000)       t*1000 >= ms  ⇔  t >= ceil(ms/1000)
-//
-// Equality holds only when ms is itself a whole second; not_equals keeps
-// the IS NOT NULL its plain spelling implies, since the OR would otherwise
-// admit an absent value.
-func iso8601ServerTimeComparison(lhs, sqlOp, ms string) string {
-	floorImage := iso8601SecondsImage("floor(" + ms + " / 1000.0)")
-	ceilImage := iso8601SecondsImage("ceil(" + ms + " / 1000.0)")
-	wholeSecond := "mod(" + ms + ", 1000) = 0"
-	switch sqlOp {
-	case "<=", ">":
-		return lhs + " " + sqlOp + " " + floorImage
-	case "<", ">=":
-		return lhs + " " + sqlOp + " " + ceilImage
-	case "=":
-		return lhs + " = CASE WHEN " + wholeSecond + " THEN " + floorImage + " END"
-	default:
-		return "(" + lhs + " IS NOT NULL AND (" + lhs + " <> " + floorImage + " OR mod(" + ms + ", 1000) <> 0))"
-	}
-}
-
-// iso8601SecondsImage renders epoch seconds as the image iso8601.Image
-// writes: RFC3339 in UTC at second precision.
-func iso8601SecondsImage(seconds string) string {
-	return `to_char(to_timestamp(` + seconds + `) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`
+// rfc3339MillisImage renders the epoch millis ms (a bigint expression) as
+// the image rfc3339.Image writes: UTC, three fractional digits. The whole
+// seconds and the milliseconds are split in exact arithmetic (bigint over a
+// numeric divisor, then a bigint remainder) and the milliseconds are added
+// as an interval, since to_timestamp of a fractional double can land a
+// microsecond short of the millisecond and render the one below.
+func rfc3339MillisImage(ms string) string {
+	seconds := "floor(" + ms + " / 1000.0)"
+	millis := "((" + ms + " % 1000 + 1000) % 1000)"
+	return "to_char((to_timestamp(" + seconds + ") + " + millis + " * interval '1 millisecond') AT TIME ZONE 'UTC', " +
+		`'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
 }
 
 // serverTimeFederatedError is the refusal of a $now leaf on a federated

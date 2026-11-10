@@ -3,16 +3,15 @@ package sqlgen
 import (
 	"database/sql"
 	"testing"
-	"time"
 
-	"github.com/lychee-technology/forma/internal/iso8601"
+	"github.com/lychee-technology/forma/internal/rfc3339"
 	"github.com/stretchr/testify/require"
 )
 
-// iso8601ReadZones are session TimeZones the read must not depend on. The
+// rfc3339ReadZones are session TimeZones the read must not depend on. The
 // federated reader and the CDC exporter set none, so DuckDB's bundled ICU
 // takes the host's zone; Pacific/Chatham has a quarter-hour offset.
-var iso8601ReadZones = []string{"UTC", "Asia/Tokyo", "America/New_York", "Pacific/Chatham"}
+var rfc3339ReadZones = []string{"UTC", "Asia/Tokyo", "America/New_York", "Pacific/Chatham"}
 
 // openDuckDBInZone opens one in-memory DuckDB connection whose session
 // TimeZone is zone.
@@ -27,18 +26,18 @@ func openDuckDBInZone(t *testing.T, zone string) *sql.DB {
 	return db
 }
 
-func readISO8601(t *testing.T, db *sql.DB, image sql.NullString) sql.NullInt64 {
+func readRFC3339(t *testing.T, db *sql.DB, image sql.NullString) sql.NullInt64 {
 	t.Helper()
 	var got sql.NullInt64
-	require.NoError(t, db.QueryRow("SELECT "+ISO8601EpochMs("v")+" FROM (SELECT CAST(? AS VARCHAR) AS v)", image).Scan(&got))
+	require.NoError(t, db.QueryRow("SELECT "+RFC3339EpochMs("v")+" FROM (SELECT CAST(? AS VARCHAR) AS v)", image).Scan(&got))
 	return got
 }
 
-// TestISO8601EpochMsReadsTheOLTPInstantInEveryZone is the #756 acceptance on
-// DuckDB: every image the OLTP read parses (iso8601.Parse) reads as the
+// TestRFC3339EpochMsReadsTheOLTPInstantInEveryZone is the #756 acceptance on
+// DuckDB: every image the OLTP read parses (rfc3339.Parse) reads as the
 // instant that read names, offset applied, whatever the session TimeZone.
 // The TIMESTAMP cast read 2024-01-02T11:04:06+08:00 as 11:04:06Z.
-func TestISO8601EpochMsReadsTheOLTPInstantInEveryZone(t *testing.T) {
+func TestRFC3339EpochMsReadsTheOLTPInstantInEveryZone(t *testing.T) {
 	images := []string{
 		"2024-01-02T03:04:05Z",
 		"2024-01-02T11:04:06+08:00",
@@ -51,24 +50,24 @@ func TestISO8601EpochMsReadsTheOLTPInstantInEveryZone(t *testing.T) {
 		"1970-01-01T00:00:00+01:00",
 		"9999-12-31T23:59:59Z",
 	}
-	for _, zone := range iso8601ReadZones {
+	for _, zone := range rfc3339ReadZones {
 		db := openDuckDBInZone(t, zone)
 		for _, image := range images {
-			parsed, err := iso8601.Parse(image)
+			parsed, err := rfc3339.Parse(image)
 			require.NoError(t, err, "fixture %q must be an image the OLTP read parses", image)
-			got := readISO8601(t, db, sql.NullString{String: image, Valid: true})
+			got := readRFC3339(t, db, sql.NullString{String: image, Valid: true})
 			require.Equal(t, sql.NullInt64{Int64: parsed.UnixMilli(), Valid: true}, got, "zone %s, image %q", zone, image)
 		}
 	}
 }
 
-// TestISO8601EpochMsKeepsOffsetLessStringsInUTC: a string with no zone,
+// TestRFC3339EpochMsKeepsOffsetLessStringsInUTC: a string with no zone,
 // which the OLTP read refuses, still reads as UTC wall clock on every
 // session TimeZone, as the TIMESTAMP cast read it, and a string that is not
 // a timestamp reads NULL (#555). The control proves each zone is live: the
 // TIMESTAMPTZ cast alone reads the same string in that zone.
-func TestISO8601EpochMsKeepsOffsetLessStringsInUTC(t *testing.T) {
-	for _, zone := range iso8601ReadZones {
+func TestRFC3339EpochMsKeepsOffsetLessStringsInUTC(t *testing.T) {
+	for _, zone := range rfc3339ReadZones {
 		db := openDuckDBInZone(t, zone)
 		for _, tc := range []struct {
 			image sql.NullString
@@ -82,7 +81,7 @@ func TestISO8601EpochMsKeepsOffsetLessStringsInUTC(t *testing.T) {
 			{sql.NullString{String: "2024-13-45T00:00:00+08:00", Valid: true}, sql.NullInt64{}},
 			{sql.NullString{}, sql.NullInt64{}},
 		} {
-			require.Equal(t, tc.want, readISO8601(t, db, tc.image), "zone %s, image %q", zone, tc.image.String)
+			require.Equal(t, tc.want, readRFC3339(t, db, tc.image), "zone %s, image %q", zone, tc.image.String)
 		}
 		if zone == "UTC" {
 			continue
@@ -93,18 +92,21 @@ func TestISO8601EpochMsKeepsOffsetLessStringsInUTC(t *testing.T) {
 	}
 }
 
-// TestISO8601ReadRoundTripsThroughTheOuterSelect: every image the OLTP read
-// parses, the read and the outer select's image (iso8601ImageFromEpochMs)
-// hand the reader a string iso8601.Parse decodes to the same instant, at
-// whole seconds. An offset can carry a four-digit-year image past year 9999
+// TestRFC3339ReadRoundTripsThroughTheOuterSelect: every image the OLTP read
+// parses, the read and the outer select's image (rfc3339ImageFromEpochMs)
+// hand the reader a string rfc3339.Parse decodes to the same instant, to
+// the millisecond (#842). An offset can carry a four-digit-year image past year 9999
 // or before year 0000 in UTC; strftime spelled that with a five- or
-// one-digit year, which iso8601.Parse refuses, failing the whole page while
-// a Get of the row read it. ±24:60 is the widest offset iso8601.Parse
+// one-digit year, which rfc3339.Parse refuses, failing the whole page while
+// a Get of the row read it. ±24:60 is the widest offset rfc3339.Parse
 // applies, so the last two images name its extreme instants.
-func TestISO8601ReadRoundTripsThroughTheOuterSelect(t *testing.T) {
+func TestRFC3339ReadRoundTripsThroughTheOuterSelect(t *testing.T) {
 	images := []string{
 		"2024-01-02T11:04:06+08:00",
 		"2024-01-02T03:04:05.250+08:00",
+		"2024-01-02T03:04:05.250Z",
+		"2024-01-02T03:04:05.001Z",
+		"1969-12-31T23:59:59.999Z",
 		"9999-12-31T23:59:59Z",
 		"0000-01-01T00:00:00Z",
 		"9999-12-31T23:30:00-01:00",
@@ -114,17 +116,17 @@ func TestISO8601ReadRoundTripsThroughTheOuterSelect(t *testing.T) {
 		"9999-12-31T23:59:59.999-24:60",
 		"0000-01-01T00:00:00+24:60",
 	}
-	for _, zone := range iso8601ReadZones {
+	for _, zone := range rfc3339ReadZones {
 		db := openDuckDBInZone(t, zone)
 		for _, image := range images {
-			want, err := iso8601.Parse(image)
+			want, err := rfc3339.Parse(image)
 			require.NoError(t, err, "fixture %q must be an image the OLTP read parses", image)
 			var out string
-			require.NoError(t, db.QueryRow("SELECT "+iso8601ImageFromEpochMs(ISO8601EpochMs("v"))+
+			require.NoError(t, db.QueryRow("SELECT "+rfc3339ImageFromEpochMs(RFC3339EpochMs("v"))+
 				" FROM (SELECT CAST(? AS VARCHAR) AS v)", image).Scan(&out))
-			got, err := iso8601.Parse(out)
+			got, err := rfc3339.Parse(out)
 			require.NoError(t, err, "zone %s: image %q reaches the reader as %q", zone, image, out)
-			require.Equal(t, want.Truncate(time.Second).UnixMilli(), got.UnixMilli(),
+			require.Equal(t, want.UnixMilli(), got.UnixMilli(),
 				"zone %s: image %q reaches the reader as %q", zone, image, out)
 		}
 	}

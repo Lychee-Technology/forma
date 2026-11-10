@@ -100,7 +100,7 @@ func newParityFixture(t *testing.T, ctx context.Context) parityFixture {
 // seedParityRows writes ten rows of schema 7:
 //
 //	ids[0..5] live rows: every bound column set (0), all NULL (1), and
-//	          edge values: integer widths, bool spellings, iso8601 dates,
+//	          edge values: integer widths, bool spellings, rfc3339 dates,
 //	          LIST shapes (elements out of index order, the empty-list
 //	          marker, a legacy scalar row) and NUMERIC NaN, ±Infinity,
 //	          past the double range and below it
@@ -167,7 +167,7 @@ func parityAttrCache() forma.SchemaAttributeCache {
 	}
 	cache := forma.SchemaAttributeCache{
 		"title":    bound(1, forma.ValueTypeText, forma.MainColumnText01, ""),
-		"born":     bound(2, forma.ValueTypeDate, forma.MainColumnText02, forma.MainColumnEncodingISO8601),
+		"born":     bound(2, forma.ValueTypeDate, forma.MainColumnText02, forma.MainColumnEncodingRFC3339),
 		"active_t": bound(3, forma.ValueTypeBool, forma.MainColumnText03, forma.MainColumnEncodingBoolText),
 		"active_i": bound(4, forma.ValueTypeBool, forma.MainColumnSmallint01, forma.MainColumnEncodingBoolInt),
 		"active_d": bound(5, forma.ValueTypeBool, forma.MainColumnSmallint02, ""),

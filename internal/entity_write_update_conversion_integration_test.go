@@ -38,7 +38,7 @@ func unconvertibleUpdateCases() []unconvertibleUpdate {
 		{"uuid, malformed", map[string]any{"ref": "not-a-uuid"}, refused("ref", 19)},
 		{"bound uuid, malformed", map[string]any{"token": "not-a-uuid"}, refused("token", 18)},
 		{"date past the EAV image range", map[string]any{"day": "9007199254740993"}, refused("day", 8)},
-		{"datetime past the iso8601 column", map[string]any{"due_iso": time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}, refused("due_iso", 9)},
+		{"datetime past the rfc3339 column", map[string]any{"due_iso": time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}, refused("due_iso", 9)},
 		{"scalar for a list", map[string]any{"tags": "ordinary"}, refused("tags", 30)},
 	}
 }

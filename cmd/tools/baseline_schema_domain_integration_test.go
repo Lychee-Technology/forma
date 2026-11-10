@@ -53,13 +53,13 @@ func TestBaselineSchemaRefusesAStoredValueTheReadRefuses(t *testing.T) {
 			eavInsert("", "value_numeric", "42"), "declared text: row %s holds 42 in eav_data,"},
 		{"bool_text other than 1/0", "{" + encodedAttr("a", 1, "bool", "text_01", "bool_text") + "}",
 			mainTextInsert("'true'"), `declared bool: row %s holds "true" in column text_01,`},
-		{"iso8601 day outside its month", "{" + encodedAttr("a", 1, "date", "text_01", "iso8601") + "}",
+		{"rfc3339 day outside its month", "{" + encodedAttr("a", 1, "date", "text_01", "rfc3339") + "}",
 			mainTextInsert("'2023-02-29T00:00:00Z'"), `declared date: row %s holds "2023-02-29T00:00:00Z" in column text_01,`},
 		// A bound attribute keeps the eav_data rows written before its
 		// promotion, and the read decodes them under the declared type.
 		{"promoted bool_text bool with an EAV NaN", "{" + encodedAttr("a", 1, "bool", "text_01", "bool_text") + "}",
 			eavInsert("", "value_numeric", "'NaN'"), "declared bool: row %s holds NaN in eav_data,"},
-		{"promoted iso8601 date with an EAV fraction", "{" + encodedAttr("a", 1, "date", "text_01", "iso8601") + "}",
+		{"promoted rfc3339 date with an EAV fraction", "{" + encodedAttr("a", 1, "date", "text_01", "rfc3339") + "}",
 			eavInsert("", "value_numeric", "1.5"), "declared date: row %s holds 1.5 in eav_data,"},
 		{"promoted integer with an EAV fraction", "{" + encodedAttr("a", 1, "integer", "integer_01", "default") + "}",
 			eavInsert("", "value_numeric", "1001.5"), "declared integer: row %s holds 1001.5 in eav_data,"},
@@ -90,7 +90,8 @@ func TestBaselineSchemaRefusesAStoredValueTheReadRefuses(t *testing.T) {
 
 // TestBaselineSchemaAdmitsWhatTheReadAdmits: the edges of each domain are
 // inside it, including images the read admits and the write never renders,
-// and eav_data rows a bound attribute kept from before its promotion.
+// and eav_data rows a bound attribute kept from before its promotion. A
+// non-canonical rfc3339 image is reported, not refused.
 func TestBaselineSchemaAdmitsWhatTheReadAdmits(t *testing.T) {
 	const canonical = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
 	lt := newLedgerTarget(t, map[string]string{"orders": `{` +
@@ -100,7 +101,7 @@ func TestBaselineSchemaAdmitsWhatTheReadAdmits(t *testing.T) {
 		`"refs":{"attributeID":4,"valueType":"list","items_type":"uuid"},` +
 		`"note":{"attributeID":5,"valueType":"text"},` +
 		encodedAttr("on", 6, "bool", "text_01", "bool_text") + "," +
-		encodedAttr("due", 7, "datetime", "text_02", "iso8601") + "," +
+		encodedAttr("due", 7, "datetime", "text_02", "rfc3339") + "," +
 		encodedAttr("set", 8, "bool", "smallint_01", "bool_smallint") + "}"})
 	lt.forgetLedger(t)
 	eav := quoteIdentifier(lt.opts.eavTable)
@@ -127,6 +128,17 @@ func TestBaselineSchemaAdmitsWhatTheReadAdmits(t *testing.T) {
 	out, err := lt.baseline(t, nil)
 	if err != nil || !strings.Contains(out, "Recorded generation 1 of schema orders") {
 		t.Fatalf("baseline = %v\n%s", err, out)
+	}
+	// The offset image reads, so it does not refuse the baseline, but it is
+	// not canonical, so the census reports it with its repair (#842).
+	want := `Schema orders (id 100): attribute due (id 7) declared datetime: row %s holds "2024-02-29T12:00:00.5+05:30" in column text_02, ` +
+		"not the canonical rfc3339 image of its instant, 2024-02-29T06:30:00.500Z; a rewrite through the API changes only the spelling (repair: spelling only)"
+	var rowID string
+	if err := lt.pool.QueryRow(context.Background(), "SELECT ltbase_row_id::text FROM "+quoteIdentifier(lt.opts.entityMain)).Scan(&rowID); err != nil {
+		t.Fatalf("read the seeded row: %v", err)
+	}
+	if !strings.Contains(out, fmt.Sprintf(want, rowID)) {
+		t.Fatalf("baseline output lacks the non-canonical image:\n%s", out)
 	}
 }
 

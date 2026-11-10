@@ -41,7 +41,7 @@ func condSchemaCache() forma.SchemaAttributeCache {
 		"rank":           {AttributeID: 6, ValueType: forma.ValueTypeInteger, ColumnBinding: bind("integer_01", "")},
 		"due":            {AttributeID: 7, ValueType: forma.ValueTypeDateTime},
 		"day":            {AttributeID: 8, ValueType: forma.ValueTypeDate},
-		"due_iso":        {AttributeID: 9, ValueType: forma.ValueTypeDateTime, ColumnBinding: bind("text_01", forma.MainColumnEncodingISO8601)},
+		"due_iso":        {AttributeID: 9, ValueType: forma.ValueTypeDateTime, ColumnBinding: bind("text_01", forma.MainColumnEncodingRFC3339)},
 		"due_main":       {AttributeID: 10, ValueType: forma.ValueTypeDateTime, ColumnBinding: bind("bigint_02", forma.MainColumnEncodingUnixMs)},
 		"stats.attempts": {AttributeID: 11, ValueType: forma.ValueTypeInteger},
 		"stats.note":     {AttributeID: 12, ValueType: forma.ValueTypeText},

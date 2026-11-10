@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/rfc3339"
 	"github.com/lychee-technology/forma/internal/schemameta"
 )
 
@@ -226,7 +226,7 @@ func (t *persistentRecordTransformer) storeInMainColumn(record *model.Persistent
 // check judged by, so the one destination rule that depends on it (a
 // date/datetime in a double column) is applied on both sides. An explicit
 // encoding names a rendering of the numeric slot — unix_ms and bool_smallint
-// render a number, bool_text and iso8601 render text — and the column type
+// render a number, bool_text and rfc3339 render text — and the column type
 // names the map the rendering lands in; the default encoding writes the slot
 // the column consumes. It reports whether a value was written so the caller
 // can refuse an empty slot instead of dropping it (#459).
@@ -254,9 +254,9 @@ func (t *persistentRecordTransformer) storeWithEncoding(record *model.Persistent
 			text = "1"
 		}
 		return storeTextRendering(record, binding, text)
-	case forma.MainColumnEncodingISO8601:
-		// Date as an RFC3339 string at whole seconds within a four-digit
-		// year. checkBoundColumnFit refuses a value the image cannot hold,
+	case forma.MainColumnEncodingRFC3339:
+		// Date as an RFC 3339 string at millisecond precision within a
+		// four-digit year (#842). checkBoundColumnFit refuses a value the image cannot hold,
 		// so reaching one here is a funnel bypass: refuse it rather than
 		// truncate the caller's value or write an image the read path
 		// cannot parse (#582).
@@ -267,7 +267,7 @@ func (t *persistentRecordTransformer) storeWithEncoding(record *model.Persistent
 		if err != nil {
 			return false, fmt.Errorf("encoding %s cannot hold a slot in main column %s: %w", binding.Encoding, binding.ColumnName, err)
 		}
-		text, rule := iso8601.Image(ms)
+		text, rule := rfc3339.Image(ms)
 		if rule != "" {
 			return false, fmt.Errorf("encoding %s %s and cannot hold value %d in main column %s",
 				binding.Encoding, rule, ms, binding.ColumnName)

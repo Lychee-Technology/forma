@@ -36,7 +36,7 @@ func registerWidthAuditFlags(flags *flag.FlagSet) widthAuditFlags {
 		changeLogTable: flags.String("change-log-table", bootstrap.EnvAllowEmpty("CHANGE_LOG_TABLE", "change_log_dev"),
 			"change_log table the integer-width census reads flush state from; empty (or CHANGE_LOG_TABLE= set empty) skips it (no CDC)"),
 		entityMainTable: flags.String("entity-main-table", bootstrap.Env("ENTITY_MAIN_TABLE", "entity_main_dev"),
-			"entity main table the integer-width census reads the columns of integers bound to a wider column from (#618, #708)"),
+			"entity main table the integer-width census reads the columns of integers bound to a wider column from (#618, #708), and the rfc3339 image census the columns of dates bound with rfc3339 (#842)"),
 		cutover: flags.String("width-export-cutover", "",
 			"RFC3339 time from which cdc-flush ran the #384 storage-width export; EAV rows last flushed before it are reported as also holding a stale parquet copy"),
 		requeue: flags.Bool("requeue-stale-width-exports", false,

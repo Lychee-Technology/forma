@@ -10,7 +10,7 @@ import (
 
 // Golden output of the #646 leaves on the OLTP route (hybrid builder). The
 // helper's cache: name/tag text EAV, age integer_01, created bigint_01
-// unix_ms, created_iso text_02 iso8601, active_int smallint_01 bool,
+// unix_ms, created_iso text_02 rfc3339, active_int smallint_01 bool,
 // active_text text_03 bool, score double_01.
 
 const hybridNowMs = "(floor(extract(epoch from now()) * 1000)::bigint + $2::bigint)"
@@ -27,8 +27,8 @@ func TestHybrid_SetOperandsOnMainColumns(t *testing.T) {
 			`(m."double_01" IS NOT NULL AND m."double_01" <> ALL($2::float8[]))`, []any{[]float64{1.5, 2}}},
 		{"unix_ms datetime binds epoch millis", "created", `in:["2024-01-02T03:04:05Z"]`,
 			`m."bigint_01" = ANY($2::bigint[])`, []any{[]int64{1704164645000}}},
-		{"iso8601 datetime binds the stored image", "created_iso", "in:[1704164645000]",
-			`m."text_02" = ANY($2::text[])`, []any{[]string{"2024-01-02T03:04:05Z"}}},
+		{"rfc3339 datetime binds the stored image", "created_iso", "in:[1704164645000]",
+			`m."text_02" = ANY($2::text[])`, []any{[]string{"2024-01-02T03:04:05.000Z"}}},
 		{"bool_smallint in true is the truthy range", "active_int", "in:[true]",
 			`m."smallint_01" BETWEEN $2 AND $3`, []any{int64(1), int64(32767)}},
 		{"bool_smallint in false is the falsy range", "active_int", "in:[false, 0]",
@@ -89,8 +89,8 @@ func TestHybrid_NullTests(t *testing.T) {
 
 func TestHybrid_ServerTime(t *testing.T) {
 	h := newHybridTestHelper(true)
-	image := func(seconds string) string {
-		return `to_char(to_timestamp(` + seconds + `) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`
+	image := func(ms string) string {
+		return `to_char((to_timestamp(floor(` + ms + ` / 1000.0)) + ((` + ms + ` % 1000 + 1000) % 1000) * interval '1 millisecond') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
 	}
 	cases := []struct {
 		name, attr, value, want string
@@ -100,8 +100,8 @@ func TestHybrid_ServerTime(t *testing.T) {
 			`m."bigint_01" <= ` + hybridNowMs, []any{int64(0)}},
 		{"offset is a bind", "created", "gt:$now-90s",
 			`m."bigint_01" > ` + hybridNowMs, []any{int64(-90000)}},
-		{"iso8601 datetime compares the floor image", "created_iso", "gt:$now+1h",
-			`m."text_02" > ` + image("floor("+hybridNowMs+" / 1000.0)"), []any{int64(3600000)}},
+		{"rfc3339 datetime compares the millisecond image", "created_iso", "gt:$now+1h",
+			`m."text_02" > ` + image(hybridNowMs), []any{int64(3600000)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

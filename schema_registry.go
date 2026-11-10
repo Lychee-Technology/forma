@@ -99,7 +99,14 @@ const (
 	MainColumnEncodingBoolText MainColumnEncoding = "bool_text" // "1"/"0" string in a text column
 	MainColumnEncodingUnixMs   MainColumnEncoding = "unix_ms"
 	MainColumnEncodingBoolInt  MainColumnEncoding = "bool_smallint"
-	MainColumnEncodingISO8601  MainColumnEncoding = "iso8601"
+	// MainColumnEncodingRFC3339 stores a date/datetime in a text column as
+	// its RFC 3339 image in UTC with three fractional digits (#842).
+	MainColumnEncodingRFC3339 MainColumnEncoding = "rfc3339"
+	// MainColumnEncodingLegacyISO8601 is the encoding rfc3339 replaced
+	// (#842), which stored whole seconds. Registration refuses it; a
+	// generation the ledger recorded before the rename may still name it,
+	// and the migrate-rfc3339 tool rewrites its images.
+	MainColumnEncodingLegacyISO8601 MainColumnEncoding = "iso8601"
 )
 
 // MainColumnBinding describes how a schema attribute maps into a hot attribute column.

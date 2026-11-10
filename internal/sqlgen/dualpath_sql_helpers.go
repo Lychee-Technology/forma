@@ -265,8 +265,8 @@ func checkBigIntOperandRange(attr, valStr string, valueType forma.ValueType, v f
 // resolveMainTableColumn returns what a pg-main pushdown leaf compares: the
 // column prefixed with "m.", or the read the hot leg projects where it reads
 // the column through an expression: the declared-type read of an integer in
-// a wider column (mainColIntegerExpr) and the epoch-ms read of an iso8601
-// date (mainColISO8601Read), each compared against the operand
+// a wider column (mainColIntegerExpr) and the epoch-ms read of an rfc3339
+// date (mainColRFC3339Read), each compared against the operand
 // pgMainOperand binds for it. The pushdown only pre-filters pg_source, and
 // `visible` filters the projected value again, so a leaf on the raw column
 // was stricter wherever that read changes the value: `is_null` missed an
@@ -281,14 +281,14 @@ func resolveMainTableColumn(attr string, meta forma.AttributeMetadata) string {
 	if expr, ok := mainColIntegerExpr(meta); ok {
 		return expr
 	}
-	if expr, ok := mainColISO8601Read(meta); ok {
+	if expr, ok := mainColRFC3339Read(meta); ok {
 		return expr
 	}
 	return "m." + string(meta.ColumnBinding.ColumnName)
 }
 
 // resolveMainNullTestColumn returns what a pg-main is_null / is_not_null
-// leaf tests: resolveMainTableColumn, so is_null on an iso8601 date tests
+// leaf tests: resolveMainTableColumn, so is_null on an rfc3339 date tests
 // the read, which is NULL for a string that is not a timestamp while the
 // column is not (#709). is_not_null on such a date keeps the raw column: the
 // read is non-NULL only where the column is, so the raw test already keeps
@@ -296,7 +296,7 @@ func resolveMainTableColumn(attr string, meta forma.AttributeMetadata) string {
 // projection takes a retained eav_data value over a NULL read.
 func resolveMainNullTestColumn(attr string, meta forma.AttributeMetadata, nullTest string) string {
 	if nullTest == conditionexpr.SQLOpIsNotNull {
-		if _, ok := mainColISO8601Read(meta); ok {
+		if _, ok := mainColRFC3339Read(meta); ok {
 			return "m." + string(meta.ColumnBinding.ColumnName)
 		}
 	}
@@ -305,10 +305,10 @@ func resolveMainNullTestColumn(attr string, meta forma.AttributeMetadata, nullTe
 
 // pgMainOperand binds a pg-main comparison leaf's operand against what
 // resolveMainTableColumn compares: the literal's epoch millis for an
-// iso8601 date's read, refused on the same whole-second and four-digit-year
-// rule the stored image keeps, and ConvertPgMainValue's bind otherwise.
+// rfc3339 date's read, refused on the same four-digit-year rule the stored
+// image keeps, and ConvertPgMainValue's bind otherwise.
 func pgMainOperand(valStr, attr string, meta forma.AttributeMetadata) (any, error) {
-	if _, ok := mainColISO8601Read(meta); !ok {
+	if _, ok := mainColRFC3339Read(meta); !ok {
 		return ConvertPgMainValue(valStr, attr, meta)
 	}
 	ms, err := parseDateMillis(attr, valStr, meta)

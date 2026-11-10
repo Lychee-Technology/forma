@@ -199,7 +199,7 @@ func judgeDomainScalar(col, fileType string, meta forma.AttributeMetadata) typeJ
 		if fileType == "BIGINT" && meta.ColumnBinding == nil {
 			// eav_data keeps a date as a float64 image, exact to ±2^53
 			// (transform.fitsFloat64Image); the export carries it as BIGINT.
-			// A bound date is a bigint_* value or an iso8601 image with a
+			// A bound date is a bigint_* value or an rfc3339 image with a
 			// four-digit year, both of which every int64 names.
 			return judgeWhole(col, fileType, exactDoubleRange)
 		}

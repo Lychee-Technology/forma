@@ -60,7 +60,7 @@ type SchemaProjection struct {
 	// boundMainExprs maps a column-bound attribute's name to the DuckDB
 	// expression that reads its main column normalised to the unified column
 	// type, for the bindings whose stored image is not that type: bool
-	// (mainColBoolExpr), iso8601 date/datetime (mainColISO8601Expr) and a
+	// (mainColBoolExpr), rfc3339 date/datetime (mainColRFC3339Expr) and a
 	// smallint/integer/bigint in a wider column (mainColIntegerExpr).
 	// Both schema-driven hot-leg projections — the EAV-joined one and
 	// BuildPGSelectNoEAV — read such a column through this map; absent means
@@ -301,7 +301,7 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 // BuildPGSelectNoEAV returns a PG source SELECT that uses only entity_main columns
 // (no EAV pivot expressions), for use when all filter/sort attributes are column-bound.
 //
-// Bool, iso8601 date/datetime and wider-column integer (#627) bindings go
+// Bool, rfc3339 date/datetime and wider-column integer (#627) bindings go
 // through boundMainExprs exactly as buildPGProjection's COALESCE leg does:
 // projecting the raw bool column
 // left the outer CAST(attr AS BOOLEAN) to read it, which is a different
@@ -370,19 +370,19 @@ func (sp *SchemaProjection) attrIDForName(name string) int {
 // in an entity_main column. The alias is the physical column and the reader
 // scans it by the column's kind (federated.duckDBScanBuffers), so the cast
 // must produce that kind, not the logical value type. The two diverge for
-// bool and for an iso8601 date/datetime, and the stored image is re-derived
+// bool and for an rfc3339 date/datetime, and the stored image is re-derived
 // from the unified verdict in both cases:
 //   - bool: every leg derives a BOOLEAN (mainColBoolExpr, the parquet
 //     column), and CAST(attr AS BOOLEAN) then failed the SMALLINT scan
 //     ("converting driver.Value type bool") and put "true" into the text
 //     slot a bool_text reader expects "1"/"0" in. 1/0 for bool_smallint,
 //     '1'/'0' for bool_text, NULL kept.
-//   - date/datetime in a text column (iso8601): every leg carries epoch-ms
+//   - date/datetime in a text column (rfc3339): every leg carries epoch-ms
 //     BIGINT, and CAST(attr AS BIGINT) then landed "1704164645000" in the
 //     text slot transform.readWithEncoding parses as RFC3339 (#555). The
-//     write path's image — RFC3339, UTC, second precision — is re-derived
-//     (iso8601ImageFromEpochMs), with an offset only for an instant past
-//     the four-digit UTC years.
+//     write path's image — RFC 3339, UTC, three fractional digits (#842) —
+//     is re-derived (rfc3339ImageFromEpochMs), with an offset only for an
+//     instant past the four-digit UTC years.
 func duckDBMainColCast(attr string, vt forma.ValueType, kind model.ColumnKind) string {
 	switch vt {
 	case forma.ValueTypeBool:
@@ -394,7 +394,7 @@ func duckDBMainColCast(attr string, vt forma.ValueType, kind model.ColumnKind) s
 		}
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
 		if kind == model.ColumnKindText {
-			return iso8601ImageFromEpochMs(attr)
+			return rfc3339ImageFromEpochMs(attr)
 		}
 	}
 	return duckDBAttrCast(attr, vt)

@@ -164,6 +164,16 @@ It validates:
   that is not a whole number (`#618`). The census reads these columns from
   `--entity-main-table`, and fails when a schema declares such a binding and
   the table name is empty
+- every image of a `date`/`datetime` bound with the `rfc3339` encoding is the
+  canonical image of its instant (`#842`, `rfc3339.Judge`), read from
+  `--entity-main-table`. An image the read refuses fails as
+  `rfc3339 images the OLTP read refuses`, the canonical shape naming no day
+  (`2024-02-30T03:04:05.250Z`) included. An image the read parses that is
+  not canonical (an offset, a fraction of other than three digits, a
+  whole-second image `migrate-rfc3339` has not rewritten, a sub-millisecond
+  fraction) fails as `rfc3339 images that are not canonical`, with its repair
+  kind, because the PostgreSQL route and the DuckDB tiers can answer
+  differently on its row (`docs/rfc3339-storage-contract.md`)
 
 Use both checks before upgrading. The SQL script gives quick database facts; the Go validator gives the final runtime-compatible answer.
 
@@ -566,12 +576,12 @@ width is refused at write time as invalid input); `date`/`datetime` (whose
 logical value is epoch milliseconds: input finer than a millisecond is
 floored to the millisecond before any destination rule judges it, #589)
 →bigint (`unix_ms` or default, the full int64 epoch-ms range, which the HTTP API
-renders as an epoch-ms string outside years 0000-9999, #591) or text (`iso8601`, an
-RFC3339 string at whole seconds within the layout's four-digit year: a value
-whose epoch millis are off a whole second is refused at write time as invalid
-input rather than truncated, and a value outside 0000-01-01T00:00:00Z to
-9999-12-31T23:59:59Z is refused rather than stored as an image the RFC3339
-reader cannot parse, #582); `bool`→smallint (`bool_smallint`) or text
+renders as an epoch-ms string outside years 0000-9999, #591) or text (`rfc3339`, an
+RFC 3339 string in UTC with three fractional digits within the layout's
+four-digit year: a value outside 0000-01-01T00:00:00.000Z to
+9999-12-31T23:59:59.999Z is refused rather than stored as an image the RFC 3339
+reader cannot parse, #582, #842; the encoding was named `iso8601` and kept whole
+seconds before #842, see `docs/rfc3339-storage-contract.md`); `bool`→smallint (`bool_smallint`) or text
 (`bool_text`); `list` never binds. An unbound `date`/`datetime` keeps the
 float64 image in `eav_data.value_numeric` and admits |millis| ≤ 2^53, refusing
 anything past it as invalid input; the read judges a stored image by the same
@@ -973,10 +983,11 @@ After the repair, re-run the validator. As with the other SQL repairs, a
 direct rewrite does not stamp `change_log`: a flushed row keeps its last
 exported image on the warm/cold tiers until its next write re-flushes it.
 
-### iso8601 images with a UTC offset (`#756`)
+### rfc3339 images with a UTC offset (`#756`)
 
-A `date`/`datetime` bound to a text column with the `iso8601` encoding is
-written through the API only as a UTC image (`2024-01-02T03:04:06Z`). A row
+A `date`/`datetime` bound to a text column with the `rfc3339` encoding (named
+`iso8601` before `#842`) is written through the API only as a UTC image
+(`2024-01-02T03:04:06.000Z`). A row
 written another way can hold an RFC3339 image with a numeric offset, such
 as `2024-01-02T11:04:06+08:00`. The OLTP read always applied the offset.
 Before `#756` the DuckDB tiers dropped it and read that image as
@@ -987,14 +998,15 @@ hot leg and the CDC export now apply the offset.
 **Parquet copies exported before the upgrade keep the old instant.**
 Compaction carries a copy's value over unchanged, so a flushed row reads
 its wall clock as UTC on the warm/cold tiers until its next write
-re-exports it. The validator does not report these rows, because the OLTP
-read parses their images (`#762` tracks detection); list them per bound
-column:
+re-exports it. Since `#842` the validator reports each of these rows as
+an rfc3339 image that is not canonical, with its repair kind (see the
+Go validator above). The query below lists them per bound column without
+the validator:
 
 ```sql
--- one query per iso8601-bound column; text_02 stands for the bound column
+-- one query per rfc3339-bound column; text_02 stands for the bound column
 SELECT ltbase_row_id, text_02,
-       NOT (text_02 ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$'
+       NOT (text_02 ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,3})?[+-][0-9]{2}:[0-9]{2}$'
             AND left(text_02, 10) NOT IN ('0000-01-01', '0000-01-02',
                                           '9999-12-30', '9999-12-31')) AS check_by_hand
   FROM entity_main
@@ -1002,9 +1014,10 @@ SELECT ltbase_row_id, text_02,
 ```
 
 `check_by_hand` is false only for an image of exactly the shape
-`YYYY-MM-DDThh:mm:ss±hh:mm`, dated on none of the first two or last two days
-of years 0000 to 9999. If the read parses such an image, it names a whole
-second, and its offset (at most 25 hours, see below) cannot carry it out of
+`YYYY-MM-DDThh:mm:ss±hh:mm` or `YYYY-MM-DDThh:mm:ss.s±hh:mm` with one to three
+fractional digits, dated on none of the first two or last two days of years
+0000 to 9999. If the read parses such an image, it names a millisecond, and
+its offset (at most 25 hours, see below) cannot carry it out of
 those years, so the API can store that instant. Rewrite each of these rows
 with an update that names the attribute, giving that instant. The write
 funnel stores its UTC image and stamps `change_log`, so the next flush
@@ -1014,13 +1027,10 @@ such as an offset of `+25:00` or a day that does not exist. Every `GET` of
 such a row fails, and they are the baseline-schema census's findings
 (`docs/schema-evolution.md`), not this repair's.
 
-The API cannot store two kinds of image at the instant they name, because
-the write funnel keeps whole seconds within years 0000 to 9999:
+Since `#842` the API stores a fraction of up to three digits, such as
+`2024-01-02T03:04:05.250+08:00`, at the instant it names. It cannot store an
+image whose instant lies outside years 0000 to 9999:
 
-- a fraction, such as `2024-01-02T03:04:05.250+08:00` or, in the comma
-  spelling the read also accepts, `2024-01-02T03:04:05,250+08:00`: the write
-  funnel refuses the instant with `… with encoding iso8601, which keeps whole
-  seconds`;
 - an offset that carries the instant out of those years, such as
   `9999-12-31T23:30:00-01:00` (`10000-01-01T00:30:00Z`): the write funnel
   refuses the instant with `… which keeps years 0000 to 9999`. The read
@@ -1028,17 +1038,18 @@ the write funnel keeps whole seconds within years 0000 to 9999:
   further inside the years can cross too: `9999-12-30T23:30:00-24:60` is also
   `10000-01-01T00:30:00Z`, and `0000-01-02T00:30:00+24:60` falls in year -1.
 
-`check_by_hand` flags both kinds, and every image whose spelling differs
-from that shape at all. It is a superset: a `.000` fraction, a one-digit hour
-(`T3:04:05`) or a boundary-day image whose instant stays in range can be
-stored, so check each flagged row's instant (a `GET` returns it). A fraction
-finer than a millisecond (`.0000009`) can be stored too, but normalization
-floors it away, so the rewrite moves the instant to the whole second. No
+`check_by_hand` flags these, and every image whose spelling differs from
+that shape at all. It is a superset: a fraction in the comma spelling the read
+also accepts (`2024-01-02T03:04:05,250+08:00`), a one-digit hour (`T3:04:05`)
+or a boundary-day image whose instant stays in range can be stored, so check
+each flagged row's instant (a `GET` returns it). A fraction finer than a
+millisecond (`.0000009`) can be stored too, but normalization floors it away,
+so the rewrite moves the instant to the millisecond below. No
 mechanical repair keeps the values the API cannot store. Writing a rounded or
 clamped instant changes the stored value, so it is a per-row decision that
 Forma does not make for you. Until such a row is written again, its warm and
 cold copy keeps the old instant. A non-canonical image is outside the query
-contract (`docs/iso8601-storage-contract.md`, `#763`), so a re-export that
+contract (`docs/rfc3339-storage-contract.md`, `#763`), so a re-export that
 keeps it in PostgreSQL does not repair the row.
 
 ### Registered schema with no `<schema>.json` (`#314`)

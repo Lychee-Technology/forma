@@ -121,3 +121,23 @@ func TestContentHashSeparatesTheTwoFiles(t *testing.T) {
 		t.Fatalf("ContentHash = %q, want %q", got, want)
 	}
 }
+
+// TestJudgeAllowsTheRFC3339Rename (#842, per the #733 ruling): iso8601 →
+// rfc3339 on the same column is a binding-only change, so the type rules
+// allow it; apply-schema refuses it separately while whole-second images
+// remain. A type change in the same generation is still refused.
+func TestJudgeAllowsTheRFC3339Rename(t *testing.T) {
+	encoded := func(vt forma.ValueType, enc forma.MainColumnEncoding) Entry {
+		return Entry{AttrID: 1, Name: "due", ValueType: vt, Column: forma.MainColumnText02, Encoding: enc}
+	}
+	for _, vt := range []forma.ValueType{forma.ValueTypeDate, forma.ValueTypeDateTime} {
+		c := Judge(encoded(vt, forma.MainColumnEncodingLegacyISO8601), encoded(vt, forma.MainColumnEncodingRFC3339))
+		if c.Verdict != Allowed {
+			t.Fatalf("%s iso8601 to rfc3339 = %s (%s), want allowed", vt, c.Verdict, c.Reason)
+		}
+	}
+	c := Judge(encoded(forma.ValueTypeDate, forma.MainColumnEncodingLegacyISO8601), encoded(forma.ValueTypeDateTime, forma.MainColumnEncodingRFC3339))
+	if c.Verdict != Refused {
+		t.Fatalf("a type change with the rename = %s, want refused", c.Verdict)
+	}
+}

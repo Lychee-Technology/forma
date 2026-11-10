@@ -35,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/numutil"
+	"github.com/lychee-technology/forma/internal/rfc3339"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
@@ -88,6 +89,15 @@ type Finding struct {
 	// LastFlushedAt is the newest non-zero flushed_at of the row, or 0 when
 	// the row was never exported.
 	LastFlushedAt int64
+	// NonCanonical is set only by DomainCensus, on an rfc3339 image the read
+	// parses that is not the canonical image of its instant (#842): it is
+	// inside the declared type, but the PostgreSQL route compares its text
+	// and the DuckDB tiers its instant, so the two can answer differently on
+	// its row. Canonical is the image a rewrite of that instant stores,
+	// empty when it has none (rfc3339.Judge). Both are empty on a value
+	// outside the declared type.
+	NonCanonical rfc3339.Defect
+	Canonical    string
 }
 
 // Targets lists every EAV-only smallint/integer/bigint attribute, including

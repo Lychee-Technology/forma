@@ -6,7 +6,7 @@ This plan builds the design in [design.md §6.1.1](design.md). The federated pas
 
 Three inputs gate the work. The first two gate the switch of the default path, not the code.
 
-- **The #728 ruling.** Under this design PostgreSQL filters the hot rows and DuckDB filters the parquet rows of one answer. Until each difference has a ruling and the ruling ships on both dialects, a row's inclusion depends on whether it has been flushed. The tier parity suite (step 6) fails on such a difference until then. #763 is ruled and needs no change on either dialect: a non-canonical iso8601 image is outside the query contract, so the suite's fixtures hold canonical images only (`docs/iso8601-storage-contract.md`).
+- **The #728 ruling.** Under this design PostgreSQL filters the hot rows and DuckDB filters the parquet rows of one answer. Until each difference has a ruling and the ruling ships on both dialects, a row's inclusion depends on whether it has been flushed. The tier parity suite (step 6) fails on such a difference until then. #763 is ruled and needs no change on either dialect: a non-canonical rfc3339 image is outside the query contract, so the suite's fixtures hold canonical images only (`docs/rfc3339-storage-contract.md`).
 - **The latency baseline** that #719 asked for. It measures how federated latency splits between the PostgreSQL copy and the parquet scan on today's path, with the benchmark harness, at several `entity_main` sizes for a fixed hot set. Steps 3 and 5 compare against it. Without it, "cheaper" in the design is a claim nobody has checked.
 
 ## Steps

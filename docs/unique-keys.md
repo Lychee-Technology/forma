@@ -484,7 +484,7 @@ migration ([Schema Consistency Migration Guide](schema-consistency-migration.md)
 the attributes file changes, and the stored values must move with it. The
 built entries are only as good as that migration. If it skips rows, or
 changes values on the way (a fraction rounded into a `bigint` column, an
-instant cut to whole seconds by `iso8601`), rows can come to share a value no
+instant cut to whole seconds by a hand-written migration), rows can come to share a value no
 entry records, and a new row can take it too.
 
 So the state table records where each attribute was stored when the key was

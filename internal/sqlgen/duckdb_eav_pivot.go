@@ -119,27 +119,27 @@ func mainColBoolExpr(colName string, enc forma.MainColumnEncoding) string {
 	return BoolTruthiness("m." + colName)
 }
 
-// mainColISO8601Expr returns a DuckDB expression that normalises a
-// column-bound date/datetime main-table column stored with the iso8601
+// mainColRFC3339Expr returns a DuckDB expression that normalises a
+// column-bound date/datetime main-table column stored with the rfc3339
 // encoding (an RFC3339 string in a text column) to epoch-ms BIGINT, the
-// convention every other tier projects (#200). It is ISO8601EpochMs, the
+// convention every other tier projects (#200). It is RFC3339EpochMs, the
 // CDC export's read (cdc.castDateMainValue, #219), so the hot leg and the
 // parquet legs agree on the value.
-func mainColISO8601Expr(colName string) string {
-	return ISO8601EpochMs("m." + colName)
+func mainColRFC3339Expr(colName string) string {
+	return RFC3339EpochMs("m." + colName)
 }
 
-// mainColISO8601Read returns the hot-leg read of a column-bound
-// date/datetime stored with the iso8601 encoding (mainColISO8601Expr), or
+// mainColRFC3339Read returns the hot-leg read of a column-bound
+// date/datetime stored with the rfc3339 encoding (mainColRFC3339Expr), or
 // false for any other binding.
-func mainColISO8601Read(meta forma.AttributeMetadata) (string, bool) {
+func mainColRFC3339Read(meta forma.AttributeMetadata) (string, bool) {
 	if meta.ValueType != forma.ValueTypeDate && meta.ValueType != forma.ValueTypeDateTime {
 		return "", false
 	}
-	if meta.ColumnBinding == nil || meta.ColumnBinding.Encoding != forma.MainColumnEncodingISO8601 {
+	if meta.ColumnBinding == nil || meta.ColumnBinding.Encoding != forma.MainColumnEncodingRFC3339 {
 		return "", false
 	}
-	return mainColISO8601Expr(string(meta.ColumnBinding.ColumnName)), true
+	return mainColRFC3339Expr(string(meta.ColumnBinding.ColumnName)), true
 }
 
 // integerWidths and columnWidths rank the integer valueTypes and the numeric
@@ -193,7 +193,7 @@ func boundMainExpr(meta forma.AttributeMetadata) (string, bool) {
 	case forma.ValueTypeBool:
 		return mainColBoolExpr(colName, meta.ColumnBinding.Encoding), true
 	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		return mainColISO8601Read(meta)
+		return mainColRFC3339Read(meta)
 	case forma.ValueTypeSmallInt, forma.ValueTypeInteger, forma.ValueTypeBigInt:
 		return mainColIntegerExpr(meta)
 	}

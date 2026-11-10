@@ -43,7 +43,7 @@ func writeLedgerSchema(t *testing.T, dir, name, attrs string) {
 func (lt *ledgerTarget) apply(t *testing.T, dryRun bool) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	opts := ledgerToolOptions{schemaTable: lt.opts.schemaTable, schemaDir: lt.opts.schemaDir, dryRun: dryRun}
+	opts := ledgerToolOptions{schemaTable: lt.opts.schemaTable, schemaDir: lt.opts.schemaDir, dryRun: dryRun, entityMain: lt.opts.entityMain}
 	err := applySchemas(context.Background(), lt.pool, opts, &out)
 	return out.String(), err
 }

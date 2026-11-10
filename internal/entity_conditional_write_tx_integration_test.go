@@ -60,7 +60,7 @@ func TestServerTimeIsTheTransactionInstant(t *testing.T) {
 	assert.Equal(t, now, got["due"], "datetime (EAV)")
 	assert.Equal(t, now.Add(-90*time.Minute), got["due_main"], "datetime (unix_ms column)")
 	assert.Equal(t, now.Truncate(24*time.Hour), got["day"], "date: the UTC day")
-	assert.Equal(t, now.Add(1500*time.Millisecond).Truncate(time.Second), got["due_iso"], "datetime (iso8601 column): whole seconds")
+	assert.Equal(t, now.Add(1500*time.Millisecond), got["due_iso"], "datetime (rfc3339 column): the millisecond (#842)")
 }
 
 // TestServerTimeOutsideATxReadsItsOwnTransaction brackets a plain Update's

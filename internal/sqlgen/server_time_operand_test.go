@@ -10,11 +10,9 @@ import (
 const nowMs = "(floor(extract(epoch from now()) * 1000)::bigint + $2::bigint)"
 
 func TestServerTimeOperand_RenderComparison(t *testing.T) {
-	image := func(seconds string) string {
-		return `to_char(to_timestamp(` + seconds + `) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`
+	image := func(ms string) string {
+		return `to_char((to_timestamp(floor(` + ms + ` / 1000.0)) + ((` + ms + ` % 1000 + 1000) % 1000) * interval '1 millisecond') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
 	}
-	floorImage := image("floor(" + nowMs + " / 1000.0)")
-	ceilImage := image("ceil(" + nowMs + " / 1000.0)")
 	day := "(floor(" + nowMs + " / 86400000.0) * 86400000)::bigint"
 	cases := []struct {
 		name    string
@@ -24,16 +22,16 @@ func TestServerTimeOperand_RenderComparison(t *testing.T) {
 	}{
 		{"datetime millis", ServerTimeOperand{}, "<=", "m.c <= " + nowMs},
 		{"date truncates to the UTC day", ServerTimeOperand{Date: true}, "=", "m.c = " + day},
-		{"iso8601 lte floors", ServerTimeOperand{ISO8601: true}, "<=", "m.c <= " + floorImage},
-		{"iso8601 gt floors", ServerTimeOperand{ISO8601: true}, ">", "m.c > " + floorImage},
-		{"iso8601 lt ceils", ServerTimeOperand{ISO8601: true}, "<", "m.c < " + ceilImage},
-		{"iso8601 gte ceils", ServerTimeOperand{ISO8601: true}, ">=", "m.c >= " + ceilImage},
-		{"iso8601 equals only on a whole second", ServerTimeOperand{ISO8601: true}, "=",
-			"m.c = CASE WHEN mod(" + nowMs + ", 1000) = 0 THEN " + floorImage + " END"},
-		{"iso8601 not_equals keeps NULL out", ServerTimeOperand{ISO8601: true}, "!=",
-			"(m.c IS NOT NULL AND (m.c <> " + floorImage + " OR mod(" + nowMs + ", 1000) <> 0))"},
-		{"iso8601 date uses the midnight image", ServerTimeOperand{ISO8601: true, Date: true}, "<",
-			"m.c < " + image("ceil("+day+" / 1000.0)")},
+		// #842: the image holds the millisecond, so every operator compares
+		// the column's text against the image of the same instant.
+		{"rfc3339 lte", ServerTimeOperand{RFC3339: true}, "<=", "m.c <= " + image(nowMs)},
+		{"rfc3339 gt", ServerTimeOperand{RFC3339: true}, ">", "m.c > " + image(nowMs)},
+		{"rfc3339 lt", ServerTimeOperand{RFC3339: true}, "<", "m.c < " + image(nowMs)},
+		{"rfc3339 gte", ServerTimeOperand{RFC3339: true}, ">=", "m.c >= " + image(nowMs)},
+		{"rfc3339 equals", ServerTimeOperand{RFC3339: true}, "=", "m.c = " + image(nowMs)},
+		{"rfc3339 not_equals", ServerTimeOperand{RFC3339: true}, "!=", "m.c != " + image(nowMs)},
+		{"rfc3339 date uses the midnight image", ServerTimeOperand{RFC3339: true, Date: true}, "<",
+			"m.c < " + image(day)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

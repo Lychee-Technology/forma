@@ -61,6 +61,10 @@ internal/postgres_persistent_repository_unique_keys.go:DBPersistentRecordReposit
 internal/postgres_persistent_repository_unique_keys.go:DBPersistentRecordRepository.releaseRowUniqueKeys 3
 internal/postgres_persistent_repository_unique_keys.go:heldUniqueKeys 1
 internal/postgres_persistent_repository_unique_keys.go:uniqueKeyOwner 1
+internal/rfc3339migrate/migrate.go:BuildCandidatesQuery 2
+internal/rfc3339migrate/migrate.go:BuildCountQuery 1
+internal/rfc3339migrate/migrate.go:BuildOthersQuery 1
+internal/rfc3339migrate/migrate.go:BuildRewriteStatement 1
 internal/rowguard/ddl.go:tableDDL 1
 internal/schemalease/ddl.go:tableDDL 1
 internal/schemaledger/ddl.go:attributeDDL 1

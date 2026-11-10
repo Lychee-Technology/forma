@@ -367,9 +367,9 @@ func castMainValue(col string, meta forma.AttributeMetadata) string {
 // regardless of its declared storage encoding, so the federated reader's
 // CAST(attr AS BIGINT) projection and epoch-ms BIGINT predicate binds (#200)
 // receive a consistent value on every tier (#219). The two storable shapes:
-//   - iso8601: an RFC3339 string in a text column -> the instant it names
+//   - rfc3339: an RFC3339 string in a text column -> the instant it names
 //     as BIGINT milliseconds, through the hot leg's own read
-//     (sqlgen.ISO8601EpochMs), so a row reads the same before and after
+//     (sqlgen.RFC3339EpochMs), so a row reads the same before and after
 //     its flush.
 //   - unix_ms / default: epoch millis already in a bigint column -> pass
 //     through as BIGINT.
@@ -379,8 +379,8 @@ func castMainValue(col string, meta forma.AttributeMetadata) string {
 // microseconds-since-epoch — silently off from the epoch-ms convention by a
 // factor of 10^3-10^8 on the warm/cold tiers.
 func castDateMainValue(col string, meta forma.AttributeMetadata) string {
-	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601 {
-		return sqlgen.ISO8601EpochMs(col)
+	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingRFC3339 {
+		return sqlgen.RFC3339EpochMs(col)
 	}
 	return fmt.Sprintf("TRY_CAST(%s AS BIGINT)", col)
 }

@@ -39,7 +39,7 @@ func TestStorageHashIdentifiesWhereTheAttributesAreStored(t *testing.T) {
 		"a bound attribute is read from its column, whatever its attribute id")
 	for name, other := range map[string][]Storage{
 		"column":   {{Column: forma.MainColumnText02}, eav2},
-		"encoding": {{Column: forma.MainColumnText01, Encoding: forma.MainColumnEncodingISO8601}, eav2},
+		"encoding": {{Column: forma.MainColumnText01, Encoding: forma.MainColumnEncodingRFC3339}, eav2},
 		"eav id":   {text01, {AttributeID: 3}},
 		"to eav":   {{AttributeID: 1}, eav2},
 		"order":    {eav2, text01},

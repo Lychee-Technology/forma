@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/rfc3339"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
@@ -61,7 +61,7 @@ func boundToSystemColumn(meta forma.AttributeMetadata) bool {
 // with 22021 and aborted the transaction (#679). The rule is the one the
 // condition renderer applies to text operands (sqlutil.CheckText), so a
 // write refuses exactly what a query refuses. Only a caller's text can
-// fail it: a uuid slot holds the canonical spelling and the iso8601 and
+// fail it: a uuid slot holds the canonical spelling and the rfc3339 and
 // bool_text renderings are ASCII.
 func checkTextFit(attr *model.EAVRecord) error {
 	if attr.ValueText == nil {
@@ -98,7 +98,7 @@ func isDateType(vt forma.ValueType) bool {
 // which PersistentRecord map it lands in (#559), so the slot must be
 // populated and the column must hold the encoding's rendering — a number for
 // unix_ms and bool_smallint (any numeric column), text for bool_text and
-// iso8601 (a text column only). Every value serialized from the numeric slot
+// rfc3339 (a text column only). Every value serialized from the numeric slot
 // into a smallint, integer or bigint column — a numeric-family value, epoch
 // millis (date/datetime, default or unix_ms) or 0/1 (bool_smallint) — is
 // then width-checked against the COLUMN's width, whatever the declared type
@@ -110,10 +110,10 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 	col := binding.ColumnName
 	colType := binding.ColumnType()
 	switch binding.Encoding {
-	case forma.MainColumnEncodingISO8601:
+	case forma.MainColumnEncodingRFC3339:
 		// A text rendering of the exact millis: nothing to width-check, but
-		// the RFC3339 image keeps whole seconds within a four-digit year
-		// and must neither narrow nor outrun the read path's parser (#582).
+		// the RFC 3339 image keeps a four-digit year and must not outrun
+		// the read path's parser (#582); it holds every millisecond (#842).
 		// The store renders from either slot, so either slot is a value.
 		if colType != forma.MainColumnTypeText {
 			return errEncodingMismatch(vt, binding, "a text value")
@@ -121,7 +121,7 @@ func checkBoundColumnFit(attr *model.EAVRecord, vt forma.ValueType, binding *for
 		if !hasEpochMillis(attr) {
 			return errSlotMismatch(vt, col, "a date or datetime value")
 		}
-		return checkISO8601Fit(attr, vt, col)
+		return checkRFC3339Fit(attr, vt, col)
 	case forma.MainColumnEncodingBoolText:
 		// A text rendering of the numeric slot: nothing to width-check.
 		if colType != forma.MainColumnTypeText {
@@ -199,24 +199,24 @@ func checkDefaultEncodingSlot(attr *model.EAVRecord, vt forma.ValueType, col for
 	return nil
 }
 
-// checkISO8601Fit refuses a date/datetime the iso8601 rendering cannot hold,
-// naming the rule it breaks (whole seconds, or the RFC3339 four-digit year).
+// checkRFC3339Fit refuses a date/datetime the rfc3339 rendering cannot hold,
+// naming the rule it breaks (the RFC 3339 four-digit year).
 // It judges the exact millis storeWithEncoding renders; a slot that names no
 // instant (a funnel bypass) is refused with that reason. The message carries
 // the millis (the wire form a read returns) and the instant they name, so a
 // caller who sent an RFC3339 string recognises the value.
-func checkISO8601Fit(attr *model.EAVRecord, vt forma.ValueType, col forma.MainColumn) error {
+func checkRFC3339Fit(attr *model.EAVRecord, vt forma.ValueType, col forma.MainColumn) error {
 	ms, err := exactEpochMillis(attr)
 	if err != nil {
 		return fmt.Errorf("%s %w and cannot be stored in main column %s with encoding %s",
-			vt, err, col, forma.MainColumnEncodingISO8601)
+			vt, err, col, forma.MainColumnEncodingRFC3339)
 	}
-	_, rule := iso8601.Image(ms)
+	_, rule := rfc3339.Image(ms)
 	if rule == "" {
 		return nil
 	}
 	return fmt.Errorf("%s value %d (%s) cannot be stored in main column %s with encoding %s, which %s",
-		vt, ms, unixMillisToTimeUTC(ms).Format(time.RFC3339Nano), col, forma.MainColumnEncodingISO8601, rule)
+		vt, ms, unixMillisToTimeUTC(ms).Format(time.RFC3339Nano), col, forma.MainColumnEncodingRFC3339, rule)
 }
 
 func errSlotMismatch(vt forma.ValueType, col forma.MainColumn, expects string) error {

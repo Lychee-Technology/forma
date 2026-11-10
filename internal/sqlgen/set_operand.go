@@ -5,9 +5,9 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/conditionexpr"
-	"github.com/lychee-technology/forma/internal/iso8601"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/numutil"
+	"github.com/lychee-technology/forma/internal/rfc3339"
 )
 
 // SetOperand is the PostgreSQL right-hand side of an in / not_in leaf
@@ -149,8 +149,8 @@ func coerceDateListElement(attr string, meta forma.AttributeMetadata, literal st
 		return nil, err
 	}
 	ms := t.UnixMilli()
-	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingISO8601 {
-		if _, err := iso8601FilterImage(attr, literal, ms, meta); err != nil {
+	if meta.ColumnBinding != nil && meta.ColumnBinding.Encoding == forma.MainColumnEncodingRFC3339 {
+		if _, err := rfc3339FilterImage(attr, literal, ms, meta); err != nil {
 			return nil, err
 		}
 	}
@@ -197,7 +197,7 @@ func pgMainSetOperand(sqlOp, colName string, meta forma.AttributeMetadata, elems
 		}
 	case desc.Kind == model.ColumnKindText && (meta.ValueType == forma.ValueTypeDate || meta.ValueType == forma.ValueTypeDateTime):
 		set.ArrayCast = "text[]"
-		set.Values, err = iso8601Elems(attr, elems)
+		set.Values, err = rfc3339Elems(attr, elems)
 	case desc.Kind == model.ColumnKindText:
 		set.ArrayCast = "text[]"
 		set.Values, err = exactElems[string](attr, elems)
@@ -308,19 +308,19 @@ func float64Elems(attr string, elems []any) ([]float64, error) {
 	return out, nil
 }
 
-// iso8601Elems renders epoch-millisecond elements as the canonical text
-// image an iso8601-bound column stores. coerceDateListElement already
+// rfc3339Elems renders epoch-millisecond elements as the canonical text
+// image an rfc3339-bound column stores. coerceDateListElement already
 // refused every element the image cannot hold.
-func iso8601Elems(attr string, elems []any) ([]string, error) {
+func rfc3339Elems(attr string, elems []any) ([]string, error) {
 	ms, err := exactElems[int64](attr, elems)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]string, 0, len(ms))
 	for i, v := range ms {
-		image, rule := iso8601.Image(v)
+		image, rule := rfc3339.Image(v)
 		if rule != "" {
-			return nil, fmt.Errorf("list element %d for attribute '%s' has no iso8601 image: %s", i, attr, rule)
+			return nil, fmt.Errorf("list element %d for attribute '%s' has no rfc3339 image: %s", i, attr, rule)
 		}
 		out = append(out, image)
 	}

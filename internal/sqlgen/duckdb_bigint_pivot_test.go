@@ -89,8 +89,8 @@ func TestDuckDBBigintTypeUnification(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT typeof(x) FROM (SELECT 9223372036854775807::BIGINT AS x UNION ALL SELECT 0::BIGINT) LIMIT 1`).Scan(&typ))
 	require.Equal(t, "BIGINT", typ)
 
-	// (4) iso8601 护栏:date 属性 pivot 从 DOUBLE 改 BIGINT 后,与 VARCHAR 主列
-	// (iso8601 编码绑定 text 列)的 COALESCE 行为必须不变——两种 NULL 类型下
+	// (4) rfc3339 护栏:date 属性 pivot 从 DOUBLE 改 BIGINT 后,与 VARCHAR 主列
+	// (rfc3339 编码绑定 text 列)的 COALESCE 行为必须不变——两种 NULL 类型下
 	// 行为逐位一致(同成功同值,或同失败)。
 	q := func(sql string) (string, error) {
 		var s string
@@ -99,7 +99,7 @@ func TestDuckDBBigintTypeUnification(t *testing.T) {
 	}
 	s1, e1 := q(`SELECT COALESCE(CAST(NULL AS DOUBLE), '2024-01-02T03:04:05Z'::VARCHAR)`)
 	s2, e2 := q(`SELECT COALESCE(TRY_CAST(NULL AS BIGINT), '2024-01-02T03:04:05Z'::VARCHAR)`)
-	require.Equal(t, e1 == nil, e2 == nil, "iso8601 热腿 COALESCE 行为不得因 pivot 类型改变")
+	require.Equal(t, e1 == nil, e2 == nil, "rfc3339 热腿 COALESCE 行为不得因 pivot 类型改变")
 	if e1 == nil {
 		require.Equal(t, s1, s2)
 	}
