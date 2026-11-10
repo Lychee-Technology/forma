@@ -1035,8 +1035,9 @@ stored, so check each flagged row's instant (a `GET` returns it). No
 mechanical repair keeps the values the API cannot store. Writing a rounded or
 clamped instant changes the stored value, so it is a per-row decision that
 Forma does not make for you. Until such a row is written again, its warm and
-cold copy keeps the old instant. `#762` tracks a re-export that needs no
-rewrite.
+cold copy keeps the old instant. A non-canonical image is outside the query
+contract (`docs/iso8601-storage-contract.md`, `#763`), so a re-export that
+keeps it in PostgreSQL does not repair the row.
 
 ### Registered schema with no `<schema>.json` (`#314`)
 
