@@ -98,11 +98,10 @@ answer differently on the two routes, with no signal. The contract makes
 these rows detectable and gives them a repair, but does not prevent them.
 
 **Detection.** The validator does not report them yet. #762 tracks
-detecting offset images only. Detecting every image that differs from
-`iso8601.Image` of the instant it parses to, with the schema, attribute and
-row of each, and the repair below are owned by a follow-up issue filed from
-the review of the pull request that recorded this contract. Until the check
-exists,
+detecting offset images only. #844 owns detecting every image that differs
+from `iso8601.Image` of the instant it parses to, with the schema, attribute
+and row of each, and the repair below, in coordination with #762 so that
+detection lands once. Until the check exists,
 [`schema-consistency-migration.md`](schema-consistency-migration.md#iso8601-images-with-a-utc-offset-756)
 lists offset images per bound column.
 
@@ -111,18 +110,38 @@ attribute and gives the instant the image names. The write funnel stores the
 canonical image and stamps `change_log`, so the next flush replaces the
 row's parquet copy. A direct SQL `UPDATE` corrects PostgreSQL only: it
 leaves the old copy on the warm and cold tiers until the row's next write.
-Most non-canonical images repair without changing the instant they name:
-when the image's instant, normalized to epoch milliseconds as above, is a
-whole second inside years 0000 to 9999, the rewrite only changes its
-spelling. That covers an in-range offset image and a fraction that is zero
-after normalization (`2024-01-02T03:04:06.000Z`, or `.0000009`, below the
-types' millisecond precision). Two kinds of image cannot be stored at the
-instant they name: one whose normalized milliseconds are not a whole second
-(`2024-01-02T03:04:05.250+08:00`), and an offset that carries the instant
-outside years 0000 to 9999. For those the stored value has to change, by
-rounding or clamping, and that is a per-row decision Forma does not make for
-you. Since the repair writes a canonical image, re-exporting a row without
+Since the repair writes a canonical image, re-exporting a row without
 changing its PostgreSQL value does not repair it.
+
+That the API accepts the rewrite does not mean the row keeps the instant its
+image names: normalization can move the instant before narrowing judges it.
+A repair is one of three kinds.
+
+- **Spelling only.** The instant the image names is itself a whole second
+  inside years 0000 to 9999: an in-range offset image
+  (`2024-01-02T11:04:06+08:00`), a space-separated image, or a fraction
+  whose digits are all zero (`2024-01-02T03:04:06.000Z`). The rewrite stores
+  that same instant and changes only its spelling.
+- **Accepted, but the instant moves.** A fraction that is not zero but that
+  normalization floors away, because it is finer than a millisecond:
+  `2024-01-02T03:04:06.0000009Z` names an instant 900 nanoseconds after the
+  second. Its normalized milliseconds are a whole second, so the API accepts
+  the rewrite, but it stores `2024-01-02T03:04:06Z`, 900 nanoseconds earlier
+  than the instant the image named. The change is below the types'
+  millisecond precision, and it is the value a write of the same image
+  through the API would have stored, but it is not only a change of
+  spelling: the rewrite discards the fraction.
+- **Refused.** The normalized milliseconds are not a whole second
+  (`2024-01-02T03:04:05.250+08:00`, or `.9999999Z`, which floors to
+  `.999`), or an offset carries the instant outside years 0000 to 9999
+  (`9999-12-31T23:30:00-01:00`). The API refuses the instant the image
+  names, so the value has to change, by rounding or clamping, before any
+  rewrite can store it.
+
+Only the first kind repairs without a decision. For the other two the stored
+instant changes, so repairing them is a per-row decision Forma does not make
+for you: accept the floored instant, or choose the rounded or clamped one.
+A detector should report them apart from the first kind.
 
 ## The federated hot leg over pgx
 
