@@ -16,6 +16,7 @@ import (
 	"github.com/lychee-technology/forma/internal/bootstrap"
 	"github.com/lychee-technology/forma/internal/schemaledger"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 type initDBOptions struct {
@@ -272,9 +273,17 @@ func eavIndexDDL(opts initDBOptions) []tableDDL {
 func changeLogFlushIndexDDL(opts initDBOptions) tableDDL {
 	return tableDDL{
 		statement: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (schema_id, flushed_at) INCLUDE (row_id, changed_at)`,
-			quoteIdentifier(makeIndexName(opts.changeLog, "flushed")), quoteIdentifier(opts.changeLog)),
+			quoteIdentifier(changeLogFlushIndex(opts.changeLog)), quoteIdentifier(opts.changeLog)),
 		failure: "create change log flush index",
 	}
+}
+
+// changeLogFlushIndex names changeLogFlushIndexDDL's index, bounded to an
+// identifier: makeIndexName's plain join would let PostgreSQL truncate the
+// name of a 63-byte change_log table onto the table's own name, and
+// CREATE INDEX IF NOT EXISTS would then skip the index without an error.
+func changeLogFlushIndex(changeLog string) string {
+	return sqlutil.SuffixedName(changeLog, "_flushed_idx")
 }
 
 func mainColumnIndexDDL(opts initDBOptions) []tableDDL {

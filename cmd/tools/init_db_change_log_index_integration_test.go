@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/lychee-technology/forma/internal/testdb"
 )
 
@@ -175,7 +176,7 @@ func TestInitDBChangeLogIndexServesSnapshotDirtySetReads(t *testing.T) {
 	pool := tracedPool(t, trace)
 	fetcher := federated.NewPostgresDirtyIDFetcher(pool)
 	tables := model.StorageTables{ChangeLog: tg.opts.changeLog, EntityMain: tg.opts.entityMain}
-	index := makeIndexName(tg.opts.changeLog, "flushed")
+	index := changeLogFlushIndex(tg.opts.changeLog)
 
 	today, err := fetcher.FetchDirtyRowIDs(ctx, tg.opts.changeLog, 100)
 	if err != nil {
@@ -237,5 +238,33 @@ func assertSnapshotHistoryMatches(t *testing.T, fetcher *federated.PostgresDirty
 		if snap.HasParquetHistory != want {
 			t.Errorf("schema %d: snapshot parquet history = %v, HasParquetHistory = %v", schemaID, snap.HasParquetHistory, want)
 		}
+	}
+}
+
+// A change_log name at PostgreSQL's 63-byte identifier limit still gets the
+// flush index, on that table. A plain "<name>_flushed_idx" truncates to the
+// table's own name, so CREATE INDEX IF NOT EXISTS found that relation and
+// skipped the index without an error, leaving only the primary key.
+func TestInitDBBuildsTheFlushIndexOfAMaxLengthChangeLogName(t *testing.T) {
+	tg := newInitDBTarget(t)
+	tg.opts.changeLog += strings.Repeat("x", sqlutil.MaxIdentifierLen-len(tg.opts.changeLog))
+	index := changeLogFlushIndex(tg.opts.changeLog)
+	if index == tg.opts.changeLog || len(index) > sqlutil.MaxIdentifierLen {
+		t.Fatalf("flush index name %q does not fit beside table %q", index, tg.opts.changeLog)
+	}
+	for run := 1; run <= 2; run++ {
+		if out, err := tg.run(t); err != nil {
+			t.Fatalf("init-db run %d: %v\n%s", run, err, out)
+		}
+	}
+	var def string
+	err := tg.pool.QueryRow(context.Background(), `SELECT pg_get_indexdef(indexrelid) FROM pg_index
+		WHERE indexrelid = to_regclass($1) AND indrelid = to_regclass($2)`,
+		quoteIdentifier(index), quoteIdentifier(tg.opts.changeLog)).Scan(&def)
+	if err != nil {
+		t.Fatalf("flush index %s on %s: %v", index, tg.opts.changeLog, err)
+	}
+	if want := "(schema_id, flushed_at) INCLUDE (row_id, changed_at)"; !strings.Contains(def, want) {
+		t.Errorf("flush index definition = %q, want columns %s", def, want)
 	}
 }
