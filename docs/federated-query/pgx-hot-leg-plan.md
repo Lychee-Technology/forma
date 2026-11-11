@@ -9,6 +9,30 @@ Three inputs gate the work. The first two gate the switch of the default path, n
 - **The #728 ruling.** Under this design PostgreSQL filters the hot rows and DuckDB filters the parquet rows of one answer. Until each difference has a ruling and the ruling ships on both dialects, a row's inclusion depends on whether it has been flushed. The tier parity suite (step 6) fails on such a difference until then. #763 is ruled and needs no change on either dialect: a non-canonical rfc3339 image is outside the query contract, so the suite's fixtures hold canonical images only (`docs/rfc3339-storage-contract.md`).
 - **The latency baseline** that #719 asked for. It measures how federated latency splits between the PostgreSQL copy and the parquet scan on today's path, with the benchmark harness, at several `entity_main` sizes for a fixed hot set. Steps 3 and 5 compare against it. Without it, "cheaper" in the design is a claim nobody has checked.
 
+  *Measured (#851).* `TestHotLegLatencyBaseline` in the production harness loads `e2e_wide` rows (nine `eav_data` rows each), flushes them and consolidates the parquet into base files. It then writes a hot set of 1,000 rows through the EntityManager, 500 updates of flushed rows and 500 creates, and runs two query shapes through the engine on the `attach` path: a `title` equality that selects one row, and an unfiltered first page sorted by `count`. It replays the engine's statement against three hot-leg catalogs: the attached PostgreSQL, an in-memory DuckDB copy of the three tables, and the same tables empty. The copy is the attached replay minus the local one. The empty replay is the parquet scan and its merge. The remainder is DuckDB's own work on the copied tables: the `eav_data` pivot and the joins.
+
+  ```
+  FORMA_HOT_LEG_BASELINE_SIZES=10000,100000,300000,1000000 \
+    go test ./internal/e2e_harness/production -tags=e2e -run TestHotLegLatencyBaseline -v -timeout 3h
+  ```
+
+  i7-8700K, 8 threads, 15 GB; PostgreSQL 16 and RustFS in local Docker containers; DuckDB 2.0 at the factory defaults (4 threads, 4,096 MB). Median of five runs, in ms, after one warm-up:
+
+  | `entity_main` rows | Shape | Engine pass | PostgreSQL copy | DuckDB work on the copies | Parquet scan and merge | Copy's share |
+  | ---: | :---- | ---: | ---: | ---: | ---: | ---: |
+  | 10,000 | one row by `title` | 147 | 108 | 15 | 31 | 70% |
+  | 10,000 | first page by `count` | 174 | 85 | 29 | 61 | 49% |
+  | 100,000 | one row by `title` | 748 | 725 | 55 | 46 | 88% |
+  | 100,000 | first page by `count` | 1,056 | 690 | 63 | 251 | 69% |
+  | 300,000 | one row by `title` | 2,579 | 2,738 | 145 | 53 | 93% |
+  | 300,000 | first page by `count` | 3,434 | 2,760 | 189 | 622 | 77% |
+  | 1,000,000 | one row by `title` | 9,298 | 9,066 | 454 | 81 | 94% |
+  | 1,000,000 | first page by `count` | 11,647 | 10,116 | 721 | 2,045 | 79% |
+
+  The copy grows linearly with the tables, 7 to 9 ms per 1,000 `entity_main` rows, even though the hot set does not grow. At 1,000,000 rows it is 9 to 10 seconds of every pass. The parquet scan stays under 100 ms for the selective query and reaches 2 seconds only where the page ranks every row. The pgx hot leg removes the copy and also the DuckDB work on the copies, which is 0.45 to 0.72 s at 1,000,000 rows. It adds its own snapshot reads, which this baseline does not measure.
+
+  Three things limit the numbers. First, the rows are clones of 500 templates written through the EntityManager, which writes about 34 rows a second on the harness. Only `title` and `count` vary per clone, so the parquet compresses better than real data would. That bias affects every row of the table equally. Second, the replays run 3 to 10% slower than the engine's own pass at 300,000 rows and above. The replay connection holds the in-memory copies, which is a likely cause, but it has not been checked. So the shares come from the replays and the latency to compare against is the engine pass. Third, the copy the query pays costs half again as much as copying every column of the three tables into DuckDB outright (6.0 s at 1,000,000 rows). The statement reads `change_log` twice, which explains part of the gap. The rest has not been investigated.
+
 ## Steps
 
 Each step is one PR and leaves `main` releasable. Steps 1 to 5 change no answer, with two exceptions, both in step 2 and both on today's path too. The cursor normalization refuses a hand-built cursor whose boundary does not match its column's type. A cursor that names `deleted_ts` reads the column's NULL as `0`: on the rows that tie the cursor before that column, it admits the hot rows and live pre-#274 rows it drops today wherever it admits the rows holding `0` (ascending below or at `0`, descending at or above `0`), and it orders them by the later cursor columns instead of last (design.md §6.1.1 tabulates the boundaries). The new path stays off until step 6.

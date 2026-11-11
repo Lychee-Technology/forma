@@ -85,6 +85,7 @@ type envOptions struct {
 	minRecords      int
 	maxAgeMs        int64
 	duckMemoryMB    int
+	duckThreads     int
 	duckMaxConns    int
 	breakerFailures int
 	breakerCooldown time.Duration
@@ -118,6 +119,13 @@ func WithFlushThresholds(minRecords int, maxAgeMs int64) EnvOption {
 // lowered so parallel CI runs survive).
 func WithDuckMemoryMB(mb int) EnvOption {
 	return func(o *envOptions) { o.duckMemoryMB = mb }
+}
+
+// WithDuckThreads overrides the per-test DuckDB thread count (default 2,
+// lowered so parallel CI runs survive). A measurement that must reflect a
+// deployment sets the factory default, 4 (forma.DefaultConfig).
+func WithDuckThreads(n int) EnvOption {
+	return func(o *envOptions) { o.duckThreads = n }
 }
 
 // WithDuckMaxConnections overrides the per-test DuckDB connection pool size
@@ -162,7 +170,7 @@ func NewEnv(t *testing.T, c *Cluster, opts ...EnvOption) *Env {
 	t.Helper()
 	ctx := context.Background()
 
-	options := envOptions{minRecords: 1, maxAgeMs: 3600000, duckMemoryMB: 1024, duckMaxConns: 2}
+	options := envOptions{minRecords: 1, maxAgeMs: 3600000, duckMemoryMB: 1024, duckThreads: 2, duckMaxConns: 2}
 	for _, opt := range opts {
 		opt(&options)
 	}
@@ -271,7 +279,7 @@ func (e *Env) startDuckDB() error {
 		S3SecretKey:    secret,
 		S3Region:       c.S3Region,
 		MaxConnections: e.opts.duckMaxConns,
-		MaxParallelism: 2,
+		MaxParallelism: e.opts.duckThreads,
 		QueryTimeout:   60 * time.Second,
 		// #456: the production harness drives federated reads through the
 		// caller-supplied S3ParquetPathTemplate hint, so it opts into the
