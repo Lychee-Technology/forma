@@ -1205,9 +1205,9 @@ applied on both sides:
   image is the nearest of 0/1, so float noise around either end does not flip
   the answer. The write side is strict (`transform.boolFromAny`): a bool
   input is a Go bool, a `ParseBool` string, or a number that is exactly 0 or
-  1 — any width the numeric funnel accepts (`numutil.Float64`: int, int16,
-  int32, int64, float32, float64, pointers to each; int8 and the unsigned
-  widths are rejected on every funnel until #566), and a `json.Number` is
+  1 — any width the numeric funnel accepts (`numutil.Float64`: every signed
+  and unsigned integer width, float32, float64, pointers to each, one set on
+  every funnel since #566; `uintptr` is not a number), and a `json.Number` is
   decided on its decimal text, so a literal that merely rounds to 0 or 1
   (`1.0000000000000001`) is rejected too. Anything else is rejected rather
   than coerced. A `bool_text` main column is read by its `"1"`/`"0"` contract

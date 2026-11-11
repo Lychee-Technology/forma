@@ -9,20 +9,11 @@ import (
 	"github.com/lychee-technology/forma/internal/numutil"
 )
 
+// toFloat64ForEAV converts a numeric attribute's Go value for ToEAVRecord: a
+// string (or *string) is trimmed and parsed, every numeric pointer shape is
+// dereferenced (derefNumericPointer), and the scalar goes to numutil.Float64.
 func toFloat64ForEAV(value any) (float64, error) {
 	switch v := value.(type) {
-	case *float64:
-		return requiredFloat64FromPointer(v, "float64")
-	case *float32:
-		return requiredFloat64FromPointer(v, "float32")
-	case *int:
-		return requiredFloat64FromPointer(v, "int")
-	case *int16:
-		return requiredFloat64FromPointer(v, "int16")
-	case *int32:
-		return requiredFloat64FromPointer(v, "int32")
-	case *int64:
-		return requiredFloat64FromPointer(v, "int64")
 	case string:
 		return parseTrimmedFloat64(v)
 	case *string:
@@ -31,9 +22,12 @@ func toFloat64ForEAV(value any) (float64, error) {
 			return 0, err
 		}
 		return parseTrimmedFloat64(str)
-	default:
-		return numutil.Float64(value)
 	}
+	scalar, err := derefNumericPointer(value)
+	if err != nil {
+		return 0, err
+	}
+	return numutil.Float64(scalar)
 }
 
 func parseTrimmedFloat64(value string) (float64, error) {
@@ -46,14 +40,6 @@ func parseTrimmedFloat64(value string) (float64, error) {
 		return 0, fmt.Errorf("parse float: %w", err)
 	}
 	return parsed, nil
-}
-
-func requiredFloat64FromPointer[T numutil.NumericScalar](value *T, typeName string) (float64, error) {
-	scalar, err := derefPointer(value, typeName)
-	if err != nil {
-		return 0, err
-	}
-	return numutil.Float64(scalar)
 }
 
 // finiteForEAV rejects NaN and ±Inf after any numeric coercion. ValueNumeric

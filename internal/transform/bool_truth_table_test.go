@@ -3,6 +3,7 @@ package transform
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/google/uuid"
@@ -25,15 +26,15 @@ type boolTruthRow struct {
 // rule, so fractional and out-of-range images are rejected rather than
 // guessed. Strings go through strconv.ParseBool; anything else is rejected.
 //
-// The numeric type set is the write path's (numutil.Float64): int8 and the
-// unsigned widths are rejected on both funnels, as the numeric funnel rejects
-// them, until #566 widens every funnel together. json.Number is decided on
-// its decimal text, so the rows around 0 and 1 pin that a literal which only
-// rounds to an image is still rejected.
+// The numeric type set is the write path's (numutil.Float64): every signed
+// and unsigned width and pointers to each, under the same strict 0/1 rule
+// (#566); uintptr stays outside it, as on the numeric funnel. json.Number is
+// decided on its decimal text, so the rows around 0 and 1 pin that a literal
+// which only rounds to an image is still rejected.
 func boolWriteTruthTable() map[string]boolTruthRow {
 	one, zero, third := 1.0, 0.0, 0.3
 	trueStr, negOne := "TRUE", -1
-	int8One, uint8One, uint64One := int8(1), uint8(1), uint64(1)
+	int8One, uint8One, uint16Zero, uint64One := int8(1), uint8(1), uint16(0), uint64(1)
 	return map[string]boolTruthRow{
 		"bool true":         {input: true, want: true},
 		"bool false":        {input: false, want: false},
@@ -66,15 +67,23 @@ func boolWriteTruthTable() map[string]boolTruthRow {
 		"*float64 1":        {input: &one, want: true},
 		"*float64 0":        {input: &zero, want: false},
 		"*float64 0.3":      {input: &third, reject: true},
-		"int8 1":            {input: int8(1), reject: true},
-		"*int8 1":           {input: &int8One, reject: true},
-		"uint 1":            {input: uint(1), reject: true},
-		"uint8 1":           {input: uint8(1), reject: true},
-		"*uint8 1":          {input: &uint8One, reject: true},
-		"uint16 0":          {input: uint16(0), reject: true},
-		"uint32 1":          {input: uint32(1), reject: true},
-		"uint64 1":          {input: uint64(1), reject: true},
-		"*uint64 1":         {input: &uint64One, reject: true},
+		"int8 1":            {input: int8(1), want: true},
+		"*int8 1":           {input: &int8One, want: true},
+		"int8 -1":           {input: int8(-1), reject: true},
+		"uint 1":            {input: uint(1), want: true},
+		"uint 0":            {input: uint(0), want: false},
+		"uint8 1":           {input: uint8(1), want: true},
+		"*uint8 1":          {input: &uint8One, want: true},
+		"uint8 2":           {input: uint8(2), reject: true},
+		"uint16 0":          {input: uint16(0), want: false},
+		"*uint16 0":         {input: &uint16Zero, want: false},
+		"uint32 1":          {input: uint32(1), want: true},
+		"uint64 1":          {input: uint64(1), want: true},
+		"*uint64 1":         {input: &uint64One, want: true},
+		"uint64 max":        {input: uint64(math.MaxUint64), reject: true},
+		"nil *uint64":       {input: (*uint64)(nil), reject: true},
+		"uintptr 1":         {input: uintptr(1), reject: true},
+		"[]byte 1":          {input: []byte{1}, reject: true},
 		"json.Number 1":     {input: json.Number("1"), want: true},
 		"json.Number 0":     {input: json.Number("0"), want: false},
 		"json.Number -0":    {input: json.Number("-0"), want: false},
@@ -171,8 +180,11 @@ func TestBoolRejectionNamesTheImageRule(t *testing.T) {
 	t.Run("json.Number out of range", func(t *testing.T) {
 		reject(t, json.Number("1e400"), `"1e400"`, "out of range")
 	})
-	t.Run("unsupported width", func(t *testing.T) {
-		reject(t, uint8(1), "uint8", "value 1", "cannot convert uint8 to float64")
+	t.Run("unsigned width", func(t *testing.T) {
+		reject(t, uint8(2), "value 2", "must be 0 or 1")
+	})
+	t.Run("unsupported type", func(t *testing.T) {
+		reject(t, uintptr(1), "uintptr", "value 1", "cannot convert uintptr to float64")
 	})
 }
 

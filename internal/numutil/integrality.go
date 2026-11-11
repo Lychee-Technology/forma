@@ -41,6 +41,11 @@ const MaxExactFloat64Integer = 1 << 53
 // (decimal, exponent, hex-float, underscores) gets a verdict at a cost
 // linear in its length; a spelling it rejects gets none, and the caller's
 // float64 conversion is what refuses it.
+//
+// The integer types are Float64's width set (#566): every signed width and
+// uint8/16/32 always fit int64; a uint or uint64 above MaxInt64 is an integer
+// outside int64 and gets IntegralityOutOfRange, the verdict its decimal
+// spelling would get.
 func ClassifyInt64(value any) (int64, Integrality) {
 	switch v := value.(type) {
 	case int64:
@@ -51,6 +56,18 @@ func ClassifyInt64(value any) (int64, Integrality) {
 		return int64(v), IntegralityExact
 	case int16:
 		return int64(v), IntegralityExact
+	case int8:
+		return int64(v), IntegralityExact
+	case uint8:
+		return int64(v), IntegralityExact
+	case uint16:
+		return int64(v), IntegralityExact
+	case uint32:
+		return int64(v), IntegralityExact
+	case uint:
+		return classifyUint64(uint64(v))
+	case uint64:
+		return classifyUint64(v)
 	case json.Number:
 		return classifyLiteral(string(v))
 	case string:
@@ -70,6 +87,15 @@ func ClassifyInt64(value any) (int64, Integrality) {
 func Int64Exact(value any) (int64, bool) {
 	v, verdict := ClassifyInt64(value)
 	return v, verdict == IntegralityExact
+}
+
+// classifyUint64 judges an unsigned integer: exact up to MaxInt64, out of
+// range past it.
+func classifyUint64(v uint64) (int64, Integrality) {
+	if v > math.MaxInt64 {
+		return 0, IntegralityOutOfRange
+	}
+	return int64(v), IntegralityExact
 }
 
 // classifyLiteral judges a textual spelling. ParseFloat is the acceptance

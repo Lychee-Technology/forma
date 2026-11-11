@@ -310,7 +310,8 @@ func TestClassifyInt64(t *testing.T) {
 		{"float64 -2^63", math.Ldexp(-1, 63), math.MinInt64, IntegralityExact},
 		{"float64 nan", math.NaN(), 0, IntegralityUnknown},
 		{"float32 fraction", float32(0.5), 0, IntegralityFractional},
-		{"unsupported type", uint64(1), 0, IntegralityUnknown},
+		{"uint64 above int64", uint64(math.MaxInt64) + 1, 0, IntegralityOutOfRange},
+		{"unsupported type", uintptr(1), 0, IntegralityUnknown},
 		{"nil", nil, 0, IntegralityUnknown},
 	}
 	for _, tc := range cases {
