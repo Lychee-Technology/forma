@@ -27,10 +27,6 @@ import (
 // dictionary encoding; the measurement compares transports at equal data,
 // so that bias is shared by every number it reports.
 
-// baselineTemplates is the number of template rows written through the
-// EntityManager.
-const baselineTemplates = 500
-
 // baselineCloneChunk bounds one clone transaction.
 const baselineCloneChunk = 50_000
 

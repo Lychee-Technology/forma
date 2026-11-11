@@ -9,29 +9,33 @@ Three inputs gate the work. The first two gate the switch of the default path, n
 - **The #728 ruling.** Under this design PostgreSQL filters the hot rows and DuckDB filters the parquet rows of one answer. Until each difference has a ruling and the ruling ships on both dialects, a row's inclusion depends on whether it has been flushed. The tier parity suite (step 6) fails on such a difference until then. #763 is ruled and needs no change on either dialect: a non-canonical rfc3339 image is outside the query contract, so the suite's fixtures hold canonical images only (`docs/rfc3339-storage-contract.md`).
 - **The latency baseline** that #719 asked for. It measures how federated latency splits between the PostgreSQL copy and the parquet scan on today's path, with the benchmark harness, at several `entity_main` sizes for a fixed hot set. Steps 3 and 5 compare against it. Without it, "cheaper" in the design is a claim nobody has checked.
 
-  *Measured (#851).* `TestHotLegLatencyBaseline` in the production harness loads `e2e_wide` rows (nine `eav_data` rows each), flushes them and consolidates the parquet into base files. It then writes a hot set of 1,000 rows through the EntityManager, 500 updates of flushed rows and 500 creates, and runs two query shapes through the engine on the `attach` path: a `title` equality that selects one row, and an unfiltered first page sorted by `count`. It replays the engine's statement against three hot-leg catalogs: the attached PostgreSQL, an in-memory DuckDB copy of the three tables, and the same tables empty. The copy is the attached replay minus the local one. The empty replay is the parquet scan and its merge. The remainder is DuckDB's own work on the copied tables: the `eav_data` pivot and the joins.
+  *Measured (#851).* `TestHotLegLatencyBaseline` in the production harness loads `e2e_wide` rows (nine `eav_data` rows each), flushes them, consolidates the parquet into base files, and vacuums and analyzes the three tables. It then writes a hot set of 1,000 rows through the EntityManager, 500 updates of flushed rows and 500 creates, so the dirty set holds 1,000 row IDs and 500 parquet versions it must discard. Two query shapes run on the `attach` path: a `title` equality that selects one row, and an unfiltered first page sorted by `count`.
 
   ```
   FORMA_HOT_LEG_BASELINE_SIZES=10000,100000,300000,1000000 \
     go test ./internal/e2e_harness/production -tags=e2e -run TestHotLegLatencyBaseline -v -timeout 3h
   ```
 
+  Each shape is measured in two phases. The engine pass comes first: the engine's own query, timed while the DuckDB instance holds nothing but the catalog the engine attaches. That is the latency steps 3 and 5 compare against. Then the engine's rendered statement is replayed on the same instance and the same attached catalog, alternately as rendered (full) and retargeted at a hot-only control: a schema in the same PostgreSQL database holding only the `change_log` rows the statement's hot-leg predicate keeps, and the `entity_main` and `eav_data` rows of those row IDs, with the full tables' `pg_class` statistics. The control keeps the dirty set, the hot rows, the answer, the parquet objects, the catalog and its settings, including filter pushdown off. All it drops is the flushed rows that the statement copies from PostgreSQL and then discards. A profiled run of each confirms that DuckDB plans the two identically, operator for operator (45 operators, the same join order and the same projections at every size). The two replays then differ only in how many rows the PostgreSQL scans return: 12,000 for the control against 12 million for the full tables at 1,000,000 rows.
+
+  Full minus hot-only is therefore a differential estimate, not a timed stage. It is what copying the flushed rows and discarding them costs the pass: their transfer from PostgreSQL, plus DuckDB's pivot, joins and filter over them. The pgx hot leg removes exactly this. The two parts cannot be told apart this way, and DuckDB's profiler cannot split them either: the postgres extension's scans report no operator time, whatever they return. The hot-only replay is the parquet scan and merge plus the copy of the 12,000 hot rows, so it is an upper bound on the parquet side.
+
   i7-8700K, 8 threads, 15 GB; PostgreSQL 16 and RustFS in local Docker containers; DuckDB 2.0 at the factory defaults (4 threads, 4,096 MB). Median of five runs, in ms, after one warm-up:
 
-  | `entity_main` rows | Shape | Engine pass | PostgreSQL copy | DuckDB work on the copies | Parquet scan and merge | Copy's share |
+  | `entity_main` rows | Shape | Engine pass | Full replay | Hot-only replay | Flushed rows' cost (full − hot-only) | Share of the full replay |
   | ---: | :---- | ---: | ---: | ---: | ---: | ---: |
-  | 10,000 | one row by `title` | 147 | 108 | 15 | 31 | 70% |
-  | 10,000 | first page by `count` | 174 | 85 | 29 | 61 | 49% |
-  | 100,000 | one row by `title` | 748 | 725 | 55 | 46 | 88% |
-  | 100,000 | first page by `count` | 1,056 | 690 | 63 | 251 | 69% |
-  | 300,000 | one row by `title` | 2,579 | 2,738 | 145 | 53 | 93% |
-  | 300,000 | first page by `count` | 3,434 | 2,760 | 189 | 622 | 77% |
-  | 1,000,000 | one row by `title` | 9,298 | 9,066 | 454 | 81 | 94% |
-  | 1,000,000 | first page by `count` | 11,647 | 10,116 | 721 | 2,045 | 79% |
+  | 10,000 | one row by `title` | 123 | 99 | 38 | 61 | 62% |
+  | 10,000 | first page by `count` | 149 | 134 | 68 | 66 | 49% |
+  | 100,000 | one row by `title` | 400 | 384 | 50 | 333 | 87% |
+  | 100,000 | first page by `count` | 650 | 659 | 254 | 405 | 61% |
+  | 300,000 | one row by `title` | 977 | 976 | 61 | 915 | 94% |
+  | 300,000 | first page by `count` | 1,763 | 1,869 | 723 | 1,146 | 61% |
+  | 1,000,000 | one row by `title` | 3,111 | 3,328 | 94 | 3,234 | 97% |
+  | 1,000,000 | first page by `count` | 5,937 | 5,926 | 2,399 | 3,527 | 60% |
 
-  The copy grows linearly with the tables, 7 to 9 ms per 1,000 `entity_main` rows, even though the hot set does not grow. At 1,000,000 rows it is 9 to 10 seconds of every pass. The parquet scan stays under 100 ms for the selective query and reaches 2 seconds only where the page ranks every row. The pgx hot leg removes the copy and also the DuckDB work on the copies, which is 0.45 to 0.72 s at 1,000,000 rows. It adds its own snapshot reads, which this baseline does not measure.
+  The flushed rows' cost grows linearly with the tables, 3.0 to 3.3 ms per 1,000 `entity_main` rows for the selective shape, while the hot set stays fixed. At 1,000,000 rows it is 3.2 to 3.5 seconds of every pass. The rest of the pass stays under 100 ms for the selective shape and reaches 2.4 seconds only where the page ranks every parquet row. The design's premise holds on this data: copying the flushed rows dominates the selective pass at every size from 100,000 rows up, and it scales with the table, not with the hot set. Where the page ranks every row, it is still 60% of the pass. The pgx hot leg replaces it with its own snapshot reads, which this baseline does not measure.
 
-  Three things limit the numbers. First, the rows are clones of 500 templates written through the EntityManager, which writes about 34 rows a second on the harness. Only `title` and `count` vary per clone, so the parquet compresses better than real data would. That bias affects every row of the table equally. Second, the replays run 3 to 10% slower than the engine's own pass at 300,000 rows and above. The replay connection holds the in-memory copies, which is a likely cause, but it has not been checked. So the shares come from the replays and the latency to compare against is the engine pass. Third, the copy the query pays costs half again as much as copying every column of the three tables into DuckDB outright (6.0 s at 1,000,000 rows). The statement reads `change_log` twice, which explains part of the gap. The rest has not been investigated.
+  Three things limit the numbers. First, the rows are clones of 500 templates written through the EntityManager, which writes about 34 rows a second on the harness. Only `title` and `count` vary per clone, so the parquet compresses better than real data would. Second, at 10,000 rows the engine pass runs 15 to 25 ms above the full replay. From 100,000 rows up the two agree within 7%. The fixed gap at the smallest size has not been investigated. Third, the tables are vacuumed before the timings. In an earlier run without that step, the selective shape's engine pass came out 24 to 49% above its replay at 100,000 and 300,000 rows. That run timed the engine first after the bulk load, likely while autovacuum was still working through it.
 
 ## Steps
 
