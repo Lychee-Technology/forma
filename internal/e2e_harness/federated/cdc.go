@@ -45,9 +45,13 @@ func (h *FederatedTestHarness) RunCDCFlush(ctx context.Context) (*FlushResult, e
 		return &FlushResult{Flushed: false, Duration: time.Since(start)}, nil
 	}
 
-	// Create test records from the row IDs. ChangedAt is a fresh version
-	// stamp (this flush writes a new version); CreatedAt is carried over from
-	// entity_main, because a flush must not move a row's creation time (#460).
+	// Create test records from the row IDs. A flush is a STORAGE transition,
+	// not a logical update: ChangedAt is the change_log version stamp carried
+	// through unchanged, exactly as the production exporter selects
+	// cl.changed_at (#508), and CreatedAt is carried over from entity_main,
+	// because a flush must not move a row's creation time (#460). Minting a
+	// fresh stamp here would make every LWW comparison across a flush measure
+	// the harness's clock instead of the row's version (#274).
 	rowIDs := make([]uuid.UUID, len(unflushed))
 	records := make([]TestRecord, len(unflushed))
 	for i, row := range unflushed {
@@ -59,7 +63,7 @@ func (h *FederatedTestHarness) RunCDCFlush(ctx context.Context) (*FlushResult, e
 			// other row carries the one it already had (#460).
 			CreatedAt:       row.createdAt.Int64,
 			NoCreationStamp: !row.createdAt.Valid,
-			ChangedAt:       time.Now().UnixMilli(),
+			ChangedAt:       row.changedAt,
 			// deleted_at must survive the flush or a tombstone would be
 			// exported as a live row and resurrect on the next read.
 			DeletedAt: row.deletedAt,
@@ -90,16 +94,17 @@ func (h *FederatedTestHarness) tryAcquireSchemaLock(ctx context.Context) (bool, 
 	return cdc.TrySchemaLock(ctx, h.PGDB, h.SchemaID)
 }
 
-// getUnflushedRowIDs fetches unflushed row IDs from change_log up to batch size.
 // unflushedRow is one row selected for a simulated flush, carrying the
-// creation stamp the export must preserve and the tombstone marker that
-// decides whether it has one. A flush writes a NEW version of an EXISTING
-// row, so it must copy entity_main.ltbase_created_at into the delta rather
-// than stamp the flush instant — otherwise the row's created_at would move
-// every time it is flushed (#460).
+// stamps the export must preserve and the tombstone marker that decides
+// whether it has a creation stamp. A flush moves an EXISTING version of a
+// row to another tier, so it must copy entity_main.ltbase_created_at and
+// change_log.changed_at into the delta rather than stamp the flush instant —
+// otherwise the row's created_at (#460) and its LWW version (#508) would
+// move every time it is flushed.
 type unflushedRow struct {
 	id        uuid.UUID
 	createdAt sql.NullInt64
+	changedAt int64
 	deletedAt int64
 }
 
@@ -117,6 +122,7 @@ func (h *FederatedTestHarness) getUnflushedRowIDs(ctx context.Context) ([]unflus
 		       CASE WHEN em.ltbase_created_at IS NULL AND COALESCE(cl.deleted_at, 0) > 0
 		            THEN NULL
 		            ELSE COALESCE(em.ltbase_created_at, cl.changed_at) END,
+		       cl.changed_at,
 		       COALESCE(cl.deleted_at, 0)
 		FROM change_log cl
 		LEFT JOIN entity_main em
@@ -132,7 +138,7 @@ func (h *FederatedTestHarness) getUnflushedRowIDs(ctx context.Context) ([]unflus
 	var unflushed []unflushedRow
 	for rows.Next() {
 		var r unflushedRow
-		if err := rows.Scan(&r.id, &r.createdAt, &r.deletedAt); err != nil {
+		if err := rows.Scan(&r.id, &r.createdAt, &r.changedAt, &r.deletedAt); err != nil {
 			return nil, fmt.Errorf("scan row id: %w", err)
 		}
 		unflushed = append(unflushed, r)
