@@ -9,7 +9,8 @@
 // with CreatedAt == ChangedAt, and the simulated flush and compaction each
 // reinvented the stamp instead of preserving it.
 //
-// These tests pin the whole loop: direct query, flush, and compaction.
+// These tests pin the whole loop: direct query, flush, and compaction. The
+// live-to-hard-delete transition is hard_delete_lifecycle_test.go (#508).
 //
 //go:build e2e
 
@@ -107,10 +108,13 @@ func TestCreationStamp_SurvivesHotTier(t *testing.T) {
 }
 
 // TestCreationStamp_SurvivesFlushAndCompaction is the lifecycle case: a flush
-// writes a NEW version of an EXISTING row and compaction rewrites it, so
-// neither may invent a creation stamp. Before #460 RunCDCFlush stamped the
-// flush instant and readDeltaFiles dropped the column, so a row's reported
-// created_at moved on every tier transition.
+// moves an EXISTING version of a row to the delta tier and compaction rewrites
+// it, so neither may invent a stamp. Before #460 RunCDCFlush stamped the flush
+// instant as the creation time and readDeltaFiles dropped the column, so a
+// row's reported created_at moved on every tier transition. Before #508 the
+// flush also minted a fresh version stamp, so updated_at moved too; the
+// production exporter carries cl.changed_at through unchanged, and so must
+// the harness.
 func TestCreationStamp_SurvivesFlushAndCompaction(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping E2E test in short mode")
@@ -128,17 +132,16 @@ func TestCreationStamp_SurvivesFlushAndCompaction(t *testing.T) {
 	require.NoError(t, err, "federated query failed")
 	requireStamps(t, hot, want, "hot tier")
 
-	// The flush mints its own version stamp, so only the creation stamp is
-	// expected to survive verbatim.
+	// A flush is a storage transition: both stamps survive verbatim. The
+	// fixture's version stamp lies years after the flush instant, so a flush
+	// that minted its own stamp would be caught by value (#508).
 	flush, err := h.RunCDCFlush(ctx)
 	require.NoError(t, err, "flush failed")
 	require.True(t, flush.Flushed, "flush should have written a delta file")
 
 	flushed, err := h.ExecuteFederatedQuery(ctx, &QueryOptions{Limit: 10})
 	require.NoError(t, err, "federated query failed")
-	require.Len(t, flushed.Records, 1)
-	require.Equal(t, want.createdAt, flushed.Records[0].CreatedAt,
-		"a flush writes a new version of an existing row; it must not move the row's creation time (#460)")
+	requireStamps(t, flushed, want, "after flush")
 
 	compaction, err := h.RunCompaction(ctx)
 	require.NoError(t, err, "compaction failed")
@@ -146,9 +149,7 @@ func TestCreationStamp_SurvivesFlushAndCompaction(t *testing.T) {
 
 	compacted, err := h.ExecuteFederatedQuery(ctx, &QueryOptions{Limit: 10})
 	require.NoError(t, err, "federated query failed")
-	require.Len(t, compacted.Records, 1)
-	require.Equal(t, want.createdAt, compacted.Records[0].CreatedAt,
-		"compaction rewrites a row in place; it must not move the row's creation time (#460)")
+	requireStamps(t, compacted, want, "after compaction")
 }
 
 // TestCreationStamp_HardDeleteTombstoneSurvivesFlushAndCompaction is the
@@ -178,7 +179,9 @@ func TestCreationStamp_HardDeleteTombstoneSurvivesFlushAndCompaction(t *testing.
 	live, liveRecord := newCreationStampFixture(h.SchemaID, 10)
 	require.NoError(t, h.SeedHotRecordsWithData(ctx, []TestRecord{liveRecord}))
 
-	// The hard-delete tombstone: change_log only, no entity_main row.
+	// The hard-delete tombstone: change_log only, no entity_main row. This
+	// seeds the final SHAPE directly; the live-to-tombstone TRANSITION is
+	// TestCreationStamp_LiveRowHardDeleteSurvivesFlushAndCompaction (#508).
 	tombstoneID := uuid.Must(uuid.NewV7())
 	deletedAt := int64(1_900_000_000_500)
 	require.NoError(t, h.SeedHotRecordsWithData(ctx, []TestRecord{{
@@ -210,16 +213,13 @@ func TestCreationStamp_HardDeleteTombstoneSurvivesFlushAndCompaction(t *testing.
 	require.Equal(t, []bool{true}, h.tombstoneCreationStampIsNull(ctx, t, tombstoneID),
 		"compaction must rewrite the tombstone's creation stamp as NULL, not back-fill it")
 
-	// The live row survives with its creation stamp intact and the tombstone
-	// stays invisible to queries. Only the creation stamp is asserted: the
-	// simulated flush mints a fresh version stamp by design, exactly as in
-	// TestCreationStamp_SurvivesFlushAndCompaction.
+	// The live row survives with both stamps intact and the tombstone stays
+	// invisible to queries. The flush carries change_log.changed_at through,
+	// so the version stamp is asserted too (#508).
 	got, err := h.ExecuteFederatedQuery(ctx, &QueryOptions{Limit: 10})
 	require.NoError(t, err, "federated query failed")
 	require.Len(t, got.Records, 1, "the hard-deleted row must not surface")
-	require.Equal(t, live.rowID, got.Records[0].RowID)
-	require.Equal(t, live.createdAt, got.Records[0].CreatedAt,
-		"the live row's creation stamp must be untouched by a sibling tombstone's flush and compaction (#460)")
+	requireStamps(t, got, live, "live sibling of a tombstone after flush and compaction")
 }
 
 // tombstoneCreationStampIsNull reports, per parquet object holding the row,
