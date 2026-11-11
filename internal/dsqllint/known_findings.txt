@@ -11,10 +11,11 @@
 
 # init-db runs every table, ledger and index statement in one transaction
 # (ensureTables via withTx); DSQL allows one DDL statement per transaction.
-cmd/tools/init_db.go:withTx multi_ddl_transaction 1 #690 -- init-db's table transaction holds 24 DDL statements
+cmd/tools/init_db.go:withTx multi_ddl_transaction 1 #690 -- init-db's table transaction holds 25 DDL statements
 
 # init-db builds its secondary indexes synchronously; DSQL only has CREATE INDEX ASYNC.
 cmd/tools/init_db.go:eavIndexDDL index_async 2 #690 -- the two partial EAV value indexes
+cmd/tools/init_db.go:changeLogFlushIndexDDL index_async 1 #690 -- the change_log (schema_id, flushed_at) index of the dirty-set reads (#849)
 cmd/tools/init_db.go:mainColumnIndexDDL index_async 10 #690 -- the ten entity_main column indexes
 internal/uniquekey/ddl.go:keyRowIndexDDL index_async 1 #690 -- the unique-key table's row index, created by init-db and both e2e harnesses
 
