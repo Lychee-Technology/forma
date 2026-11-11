@@ -164,13 +164,17 @@ func judgeDeclaredInteger(attr *model.EAVRecord, value any, vt forma.ValueType) 
 }
 
 // inputSpelling renders a refused value the way the caller sent it: a
-// textual literal verbatim, anything else as its float64 image.
+// textual literal verbatim, a uint or uint64 in its own digits (the only Go
+// integers that can be refused, and past 2^53 their image is not them:
+// MaxUint64's is 2^64), anything else as its float64 image.
 func inputSpelling(value any, image float64) string {
 	switch v := value.(type) {
 	case json.Number:
 		return string(v)
 	case string:
 		return v
+	case uint, uint64:
+		return fmt.Sprint(v)
 	default:
 		return formatFitValue(image)
 	}
@@ -179,34 +183,20 @@ func inputSpelling(value any, image float64) string {
 // toInt64ExactForEAV mirrors numutil.Int64Exact but also accepts the pointer
 // shapes ToEAVRecord tolerates for numeric values (#282): every pointer type
 // toFloat64ForEAV dereferences must also reach the exact path, or the value
-// silently rides the float64 fallback and rounds above 2^53. *float32 is
-// deliberately absent: a float32 cannot hold an integer wide enough to need
-// the exact sidecar.
+// silently rides the float64 fallback and rounds above 2^53. Both read the
+// numeric shapes from derefNumericPointer, so the two lists are one (#566).
+// A nil pointer reports not-exact, so the caller keeps the float64 path's
+// nil handling.
 func toInt64ExactForEAV(value any) (int64, bool) {
-	switch p := value.(type) {
-	case *int64:
-		return derefInt64Exact(p)
-	case *int:
-		return derefInt64Exact(p)
-	case *int16:
-		return derefInt64Exact(p)
-	case *int32:
-		return derefInt64Exact(p)
-	case *float64:
-		return derefInt64Exact(p)
-	case *string:
-		return derefInt64Exact(p)
-	default:
-		return numutil.Int64Exact(value)
+	if p, ok := value.(*string); ok {
+		if p == nil {
+			return 0, false
+		}
+		return numutil.Int64Exact(*p)
 	}
-}
-
-// derefInt64Exact dereferences a pointer shape and delegates to
-// numutil.Int64Exact; a nil pointer reports not-exact so the caller keeps the
-// existing nil handling of the float64 path.
-func derefInt64Exact[T any](p *T) (int64, bool) {
-	if p == nil {
+	scalar, err := derefNumericPointer(value)
+	if err != nil {
 		return 0, false
 	}
-	return numutil.Int64Exact(*p)
+	return numutil.Int64Exact(scalar)
 }

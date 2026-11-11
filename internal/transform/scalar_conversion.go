@@ -39,14 +39,14 @@ func toTimeForEAV(value any) (time.Time, error) {
 //   - bool: the value.
 //   - string: strconv.ParseBool; anything else is rejected. "banana" → false
 //     is silent corruption, and rejecting is the write-validation posture.
-//   - every numeric width the write path knows — int, int16, int32, int64,
-//     float32, float64, pointers to each (numutil.Float64's set, the same one
-//     toFloat64ForEAV accepts for numeric attributes) — finite (#322), then
-//     exactly 0 or 1. The read side's float64ToBool threshold is a tolerance
-//     for persisted images, not an acceptance rule — for 0.3 either answer is
-//     a guess, so the funnel does not guess. int8 and the unsigned widths are
-//     rejected here exactly as the numeric funnel rejects them; widening is a
-//     package-wide change (#566), not a bool-only one.
+//   - every numeric width the write path knows — the signed and unsigned
+//     integers of each width, float32, float64, pointers to each
+//     (numutil.Float64's set and derefNumericPointer's shapes, the same ones
+//     toFloat64ForEAV accepts for numeric attributes, #566) — finite (#322),
+//     then exactly 0 or 1. The read side's float64ToBool threshold is a
+//     tolerance for persisted images, not an acceptance rule — for 0.3 either
+//     answer is a guess, so the funnel does not guess. uintptr is not a
+//     number here and stays rejected, as on the numeric funnel.
 //   - json.Number: decided on its decimal text (boolFromNumberLiteral), so a
 //     literal that merely rounds to 0 or 1 in float64 is still rejected.
 //   - anything else: rejected.
@@ -131,25 +131,51 @@ func boolFromNumberLiteral(literal json.Number) (bool, error) {
 	return false, fmt.Errorf("value %s is not a boolean image; must be 0 or 1", literal)
 }
 
-// derefNumericPointer unwraps the numeric pointer shapes ToEAVRecord accepts
-// so numutil.Float64 sees the scalar; non-pointers pass through unchanged.
+// derefNumericPointer unwraps every numeric pointer shape the write path
+// knows (numutil.NumericScalar's widths) so the scalar converters see the
+// value; non-pointers pass through unchanged and a nil pointer is refused.
+// It is the one list of pointer shapes behind every Go-typed funnel — numeric
+// (toFloat64ForEAV), the exact bigint sidecar (toInt64ExactForEAV) and bool
+// (boolFromNumeric) — so their type sets cannot drift apart again (#566).
 func derefNumericPointer(value any) (any, error) {
 	switch v := value.(type) {
 	case *int:
-		return derefPointer(v, "int")
+		return derefNumeric(v)
+	case *int8:
+		return derefNumeric(v)
 	case *int16:
-		return derefPointer(v, "int16")
+		return derefNumeric(v)
 	case *int32:
-		return derefPointer(v, "int32")
+		return derefNumeric(v)
 	case *int64:
-		return derefPointer(v, "int64")
+		return derefNumeric(v)
+	case *uint:
+		return derefNumeric(v)
+	case *uint8:
+		return derefNumeric(v)
+	case *uint16:
+		return derefNumeric(v)
+	case *uint32:
+		return derefNumeric(v)
+	case *uint64:
+		return derefNumeric(v)
 	case *float32:
-		return derefPointer(v, "float32")
+		return derefNumeric(v)
 	case *float64:
-		return derefPointer(v, "float64")
+		return derefNumeric(v)
 	default:
 		return value, nil
 	}
+}
+
+// derefNumeric dereferences one numeric pointer shape, naming the pointee
+// type ("nil uint16 pointer") when it is nil.
+func derefNumeric[T numutil.NumericScalar](p *T) (any, error) {
+	if p == nil {
+		var zero T
+		return nil, fmt.Errorf("nil %T pointer", zero)
+	}
+	return *p, nil
 }
 
 func derefPointer[T any](value *T, typeName string) (T, error) {

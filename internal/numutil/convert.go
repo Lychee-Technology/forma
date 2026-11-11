@@ -14,6 +14,12 @@ func ToFloat64(value any) (float64, bool) {
 	return val, err == nil
 }
 
+// Float64 converts every numeric width the write path knows — the signed and
+// unsigned integers of each width, float32, float64 — plus json.Number and a
+// textual spelling to float64. An integer of magnitude at most 2^53 converts
+// exactly; past that int64, uint and uint64 keep only their nearest image, the
+// same narrowing for each (#566). uintptr is not a number in any caller's
+// vocabulary and stays rejected, as does every slice ([]byte included).
 func Float64(value any) (float64, error) {
 	switch v := value.(type) {
 	case float64:
@@ -22,11 +28,23 @@ func Float64(value any) (float64, error) {
 		return float64(v), nil
 	case int:
 		return float64(v), nil
+	case int8:
+		return float64(v), nil
 	case int16:
+		return float64(v), nil
+	case int32:
 		return float64(v), nil
 	case int64:
 		return float64(v), nil
-	case int32:
+	case uint:
+		return float64(v), nil
+	case uint8:
+		return float64(v), nil
+	case uint16:
+		return float64(v), nil
+	case uint32:
+		return float64(v), nil
+	case uint64:
 		return float64(v), nil
 	case json.Number:
 		return v.Float64()
@@ -37,9 +55,12 @@ func Float64(value any) (float64, error) {
 	}
 }
 
-// NumericScalar constrains the numeric scalar types shared by the pointer helpers.
+// NumericScalar constrains the numeric scalar types shared by the pointer
+// helpers: the same width set Float64 and ClassifyInt64 read (#566).
 type NumericScalar interface {
-	~float64 | ~float32 | ~int | ~int16 | ~int32 | ~int64
+	~float64 | ~float32 |
+		~int | ~int8 | ~int16 | ~int32 | ~int64 |
+		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64
 }
 
 // OptionalFloat64FromPointer converts an optional numeric pointer to float64;
