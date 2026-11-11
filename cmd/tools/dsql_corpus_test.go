@@ -30,6 +30,7 @@ var initDBLabels = map[string]string{
 	"ensure schema generation attribute table": "internal/schemaledger/ddl.go:attributeDDL",
 	"create numeric index":                     "cmd/tools/init_db.go:eavIndexDDL",
 	"create text index":                        "cmd/tools/init_db.go:eavIndexDDL",
+	"create change log flush index":            "cmd/tools/init_db.go:changeLogFlushIndexDDL",
 	"create unique key row index":              "internal/uniquekey/ddl.go:keyRowIndexDDL",
 }
 

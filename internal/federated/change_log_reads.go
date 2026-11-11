@@ -22,8 +22,17 @@ type DirtyIDFetcher interface {
 	HasParquetHistory(ctx context.Context, tables model.StorageTables, schemaID int16) (bool, error)
 }
 
-type dirtyIDPool interface {
+// changeLogQuerier sends one change_log read: the pool, or the snapshot
+// transaction ReadChangeLogSnapshot holds.
+type changeLogQuerier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// dirtyIDPool is the pool the fetcher reads through. BeginTx opens the
+// snapshot ReadChangeLogSnapshot reads in; *pgxpool.Pool satisfies it.
+type dirtyIDPool interface {
+	changeLogQuerier
+	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
 }
 
 type DirtyIDPool = dirtyIDPool
@@ -48,8 +57,19 @@ func (f *PostgresDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLog
 	if f == nil || f.pool == nil {
 		return nil, fmt.Errorf("postgres dirty id fetcher is not available")
 	}
-	query := fmt.Sprintf(`SELECT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0`, sqlutil.SanitizeIdentifier(changeLogTable))
-	rows, err := f.pool.Query(ctx, query, schemaID)
+	return queryRowIDs(ctx, f.pool, strictDirtySetQuery(changeLogTable), schemaID)
+}
+
+// strictDirtySetQuery reads the row IDs of schema $1 with an unflushed
+// change_log entry. The primary key (schema_id, row_id, flushed_at) holds at
+// most one such entry per row, so the IDs come back distinct.
+func strictDirtySetQuery(changeLogTable string) string {
+	return fmt.Sprintf(`SELECT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0`, sqlutil.SanitizeIdentifier(changeLogTable))
+}
+
+// queryRowIDs runs a query whose one column is a row ID and collects it.
+func queryRowIDs(ctx context.Context, q changeLogQuerier, query string, args ...any) ([]uuid.UUID, error) {
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query dirty row ids: %w", err)
 	}
@@ -96,12 +116,21 @@ func (f *PostgresDirtyIDFetcher) HasParquetHistory(ctx context.Context, tables m
 	if f == nil || f.pool == nil {
 		return false, fmt.Errorf("postgres dirty id fetcher is not available")
 	}
-	changeLog := sqlutil.SanitizeIdentifier(tables.ChangeLog)
-	query := fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %[1]s WHERE schema_id = $1 AND flushed_at <> 0)
+	return queryParquetHistory(ctx, f.pool, tables, schemaID)
+}
+
+// parquetHistoryQuery answers one boolean for schema $1: whether it has a
+// flushed change_log entry or a live entity_main row without an entry.
+func parquetHistoryQuery(tables model.StorageTables) string {
+	return fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %[1]s WHERE schema_id = $1 AND flushed_at <> 0)
 	OR EXISTS (SELECT 1 FROM %[2]s m WHERE m.ltbase_schema_id = $1 AND NOT EXISTS (
 		SELECT 1 FROM %[1]s c WHERE c.schema_id = $1 AND c.row_id = m.ltbase_row_id))`,
-		changeLog, sqlutil.SanitizeIdentifier(tables.EntityMain))
-	rows, err := f.pool.Query(ctx, query, schemaID)
+		sqlutil.SanitizeIdentifier(tables.ChangeLog), sqlutil.SanitizeIdentifier(tables.EntityMain))
+}
+
+// queryParquetHistory runs parquetHistoryQuery for schemaID on q.
+func queryParquetHistory(ctx context.Context, q changeLogQuerier, tables model.StorageTables, schemaID int16) (bool, error) {
+	rows, err := q.Query(ctx, parquetHistoryQuery(tables), schemaID)
 	if err != nil {
 		return false, fmt.Errorf("query parquet history of schema %d: %w", schemaID, err)
 	}

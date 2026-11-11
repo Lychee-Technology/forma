@@ -105,6 +105,8 @@ func wantDDLStatements() []string {
 		"CREATE INDEX IF NOT EXISTS \"eav_data_numeric_idx\" ON \"eav_data\" (schema_id, attr_id, value_numeric, row_id) WHERE value_numeric IS NOT NULL",
 		// eav text index
 		"CREATE INDEX IF NOT EXISTS \"eav_data_text_idx\" ON \"eav_data\" (schema_id, attr_id, value_text, row_id) WHERE value_text IS NOT NULL",
+		// change log flush index (#849)
+		"CREATE INDEX IF NOT EXISTS \"change_log_flushed_idx\" ON \"change_log\" (schema_id, flushed_at) INCLUDE (row_id, changed_at)",
 		// main index on text_01
 		"CREATE INDEX IF NOT EXISTS \"entity_main_text_01_idx\" ON \"entity_main\" (ltbase_schema_id, ltbase_row_id, \"text_01\")",
 		// main index on text_02
@@ -247,7 +249,7 @@ func TestCoreTableAnnouncementsGolden(t *testing.T) {
 		}
 	}
 	_, uniqueKeyIndex := uniqueKeyDDL(opts)
-	for i, ddl := range append(append(eavIndexDDL(opts), mainColumnIndexDDL(opts)...), uniqueKeyIndex) {
+	for i, ddl := range append(append(append(eavIndexDDL(opts), changeLogFlushIndexDDL(opts)), mainColumnIndexDDL(opts)...), uniqueKeyIndex) {
 		if ddl.announce != "" {
 			t.Errorf("index statement %d announces %q, want silence", i, ddl.announce)
 		}

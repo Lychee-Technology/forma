@@ -16,6 +16,7 @@ import (
 	"github.com/lychee-technology/forma/internal/bootstrap"
 	"github.com/lychee-technology/forma/internal/schemaledger"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 type initDBOptions struct {
@@ -262,6 +263,29 @@ func eavIndexDDL(opts initDBOptions) []tableDDL {
 	}
 }
 
+// changeLogFlushIndexDDL indexes change_log by (schema_id, flushed_at), the
+// key of every dirty-set read: the strict set is the range flushed_at = 0 and
+// the hot form's widening the range flushed_at >= cutoff (design.md §6.1.1).
+// The primary key leads with row_id after schema_id, so without this index
+// each read walks every entry the schema ever logged, flushed ones included,
+// and flushed entries are never deleted. row_id and changed_at ride along so
+// the dirty set and the hot keys' ver_ts read from the index alone.
+func changeLogFlushIndexDDL(opts initDBOptions) tableDDL {
+	return tableDDL{
+		statement: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s (schema_id, flushed_at) INCLUDE (row_id, changed_at)`,
+			quoteIdentifier(changeLogFlushIndex(opts.changeLog)), quoteIdentifier(opts.changeLog)),
+		failure: "create change log flush index",
+	}
+}
+
+// changeLogFlushIndex names changeLogFlushIndexDDL's index, bounded to an
+// identifier: makeIndexName's plain join would let PostgreSQL truncate the
+// name of a 63-byte change_log table onto the table's own name, and
+// CREATE INDEX IF NOT EXISTS would then skip the index without an error.
+func changeLogFlushIndex(changeLog string) string {
+	return sqlutil.SuffixedName(changeLog, "_flushed_idx")
+}
+
 func mainColumnIndexDDL(opts initDBOptions) []tableDDL {
 	entityMain := quoteIdentifier(opts.entityMain)
 	indexedMainColumns := []string{
@@ -285,9 +309,10 @@ func mainColumnIndexDDL(opts initDBOptions) []tableDDL {
 }
 
 // tableTransactionDDL is every statement ensureTables runs in init-db's one
-// table transaction, in order: the core tables, the ledger, the EAV and
-// main-column indexes, and the unique key row index. The DSQL lint corpus
-// (#740) renders this same list, so what it checks is what init-db sends.
+// table transaction, in order: the core tables, the ledger, the EAV,
+// change-log and main-column indexes, and the unique key row index. The DSQL
+// lint corpus (#740) renders this same list, so what it checks is what
+// init-db sends.
 func tableTransactionDDL(opts initDBOptions) []tableDDL {
 	_, uniqueKeyIndex := uniqueKeyDDL(opts)
 	var all []tableDDL
@@ -295,6 +320,7 @@ func tableTransactionDDL(opts initDBOptions) []tableDDL {
 		coreTableDDL(opts),
 		ledgerDDL(opts),
 		eavIndexDDL(opts),
+		{changeLogFlushIndexDDL(opts)},
 		mainColumnIndexDDL(opts),
 		{uniqueKeyIndex},
 	} {

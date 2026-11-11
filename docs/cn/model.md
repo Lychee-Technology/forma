@@ -139,4 +139,6 @@ CREATE TABLE change_log_<base32_client_id>_<project_id> (
     deleted_at BIGINT,
     primary key (schema_id, row_id, flushed_at)
 );
+
+create index ..._flushed_idx on ... (schema_id, flushed_at) include (row_id, changed_at);
 ```
