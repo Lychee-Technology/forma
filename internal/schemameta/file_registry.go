@@ -183,12 +183,25 @@ func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) ([]schemaled
 	}
 	var mappings []schemaMapping
 
+	// Duplicates are checked over the whole table before any schema loads: a
+	// schema that fails to load is never registered, so checking against the
+	// registered set would let it hide a duplicate behind its own failure.
+	idToName := make(map[int16]string)
+	nameToID := make(map[string]int16)
 	for rows.Next() {
 		var name string
 		var id int16
 		if err := rows.Scan(&name, &id); err != nil {
 			return nil, fmt.Errorf("failed to scan schema row: %w", err)
 		}
+		if existingName, exists := idToName[id]; exists {
+			return nil, fmt.Errorf("duplicate schema id %d for %s and %s", id, existingName, name)
+		}
+		if existingID, exists := nameToID[name]; exists {
+			return nil, fmt.Errorf("duplicate schema name %s for ids %d and %d", name, existingID, id)
+		}
+		idToName[id] = name
+		nameToID[name] = id
 		mappings = append(mappings, schemaMapping{name: name, id: id})
 	}
 
@@ -200,29 +213,34 @@ func (r *fileSchemaRegistry) loadSchemasFromDB(ctx context.Context) ([]schemaled
 		return nil, fmt.Errorf("no schemas found in table: %s", r.schemaTable)
 	}
 
-	// Step 2: For each schema, load attribute metadata from the corresponding _attributes.json file
+	// Step 2: For each schema, load attribute metadata from the corresponding
+	// _attributes.json file, collecting every failure before refusing (#604).
 	decls := make([]schemaledger.Declaration, 0, len(mappings))
+	var failures schemaFailures
 	for _, mapping := range mappings {
-		schemaName := mapping.name
-		schemaID := mapping.id
-		if existingName, exists := r.idToName[schemaID]; exists {
-			return nil, fmt.Errorf("duplicate schema id %d for %s and %s", schemaID, existingName, schemaName)
-		}
-		if existingID, exists := r.nameToID[schemaName]; exists {
-			return nil, fmt.Errorf("duplicate schema name %s for ids %d and %d", schemaName, existingID, schemaID)
-		}
-
-		artifacts, err := r.loadSchemaArtifacts(schemaName, schemaID)
+		decl, err := r.loadListedSchema(mapping.name, mapping.id)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
+			failures.add(mapping.name, err)
+			continue
 		}
-		if err := r.admitSchema(schemaName, schemaID, artifacts.cache, artifacts.schema); err != nil {
-			return nil, fmt.Errorf("schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
-		}
-		decls = append(decls, artifacts.declaration(schemaName, schemaID))
+		decls = append(decls, decl)
 	}
-
+	if err := failures.err(); err != nil {
+		return nil, err
+	}
 	return decls, nil
+}
+
+// loadListedSchema loads and admits one schema the registry table lists.
+func (r *fileSchemaRegistry) loadListedSchema(schemaName string, schemaID int16) (schemaledger.Declaration, error) {
+	artifacts, err := r.loadSchemaArtifacts(schemaName, schemaID)
+	if err != nil {
+		return schemaledger.Declaration{}, fmt.Errorf("failed to load schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
+	}
+	if err := r.admitSchema(schemaName, schemaID, artifacts.cache, artifacts.schema); err != nil {
+		return schemaledger.Declaration{}, fmt.Errorf("schema %s listed in registry table %s: %w", schemaName, r.schemaTable, err)
+	}
+	return artifacts.declaration(schemaName, schemaID), nil
 }
 
 // admitSchema validates one loaded schema and registers it; both load paths
@@ -409,26 +427,37 @@ func (r *fileSchemaRegistry) loadSchemasFromDirectory() error {
 	// Sort by name for deterministic schema ID assignment
 	sort.Strings(schemaNames)
 
-	// Assign IDs starting from 100
+	// Load and register each schema, collecting every failure before refusing
+	// (#604). IDs are assigned from 100 by sorted position, a failing schema
+	// included, so each id a diagnosis names is the one its schema gets once
+	// every schema loads.
+	var failures schemaFailures
 	nextSchemaID := int16(100)
-
-	// Load and register each schema
 	for _, schemaName := range schemaNames {
-		schemaID := nextSchemaID
-
-		artifacts, err := r.loadSchemaArtifacts(schemaName, schemaID)
-		if err != nil {
-			return fmt.Errorf("failed to load schema %s discovered in schema directory: %w", schemaName, err)
-		}
-		if err := r.admitSchema(schemaName, schemaID, artifacts.cache, artifacts.schema); err != nil {
-			return fmt.Errorf("schema %s discovered in schema directory: %w", schemaName, err)
+		if err := r.loadDiscoveredSchema(schemaName, nextSchemaID); err != nil {
+			failures.add(schemaName, err)
 		}
 		nextSchemaID++
+	}
+	if err := failures.err(); err != nil {
+		return err
 	}
 
 	if len(r.nameToID) == 0 {
 		return fmt.Errorf("no schema files found in directory: %s", r.schemaDir)
 	}
 
+	return nil
+}
+
+// loadDiscoveredSchema loads and admits one schema found in the directory.
+func (r *fileSchemaRegistry) loadDiscoveredSchema(schemaName string, schemaID int16) error {
+	artifacts, err := r.loadSchemaArtifacts(schemaName, schemaID)
+	if err != nil {
+		return fmt.Errorf("failed to load schema %s discovered in schema directory: %w", schemaName, err)
+	}
+	if err := r.admitSchema(schemaName, schemaID, artifacts.cache, artifacts.schema); err != nil {
+		return fmt.Errorf("schema %s discovered in schema directory: %w", schemaName, err)
+	}
 	return nil
 }

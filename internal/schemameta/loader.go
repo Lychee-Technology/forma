@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -359,56 +360,25 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) (
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
-	decls := make([]schemaledger.Declaration, 0, len(cache.schemaNameToID))
-	// Load attribute metadata for each schema that exists in the registry
-	for schemaName, schemaID := range cache.schemaNameToID {
-		zap.S().Infow("Loading attributes for schema", "schema_name", schemaName, "schema_id", schemaID)
+	// Load attribute metadata for each schema that exists in the registry, in
+	// name order, collecting every failure before refusing (#604).
+	names := slices.Sorted(maps.Keys(cache.schemaNameToID))
+	decls := make([]schemaledger.Declaration, 0, len(names))
+	var failures schemaFailures
+	for _, schemaName := range names {
+		schemaID := cache.schemaNameToID[schemaName]
 		if cache.attributeMetadata[schemaID] != nil && cache.schemaCaches[schemaID] != nil {
 			continue // already loaded
 		}
-		attributesFile := filepath.Join(ml.schemaDirectory, schemaName+"_attributes.json")
-
-		// Registry entries without attribute files are a bootstrap error. If we
-		// continue, requests will fail later with missing cache lookups.
-		if _, err := os.Stat(attributesFile); os.IsNotExist(err) {
-			return nil, fmt.Errorf("attributes file not found for schema %s: %s", schemaName, attributesFile)
-		}
-
-		// Read and parse attribute metadata
-		data, err := os.ReadFile(attributesFile)
+		decl, err := ml.loadSchemaAttributes(cache, schemaName, schemaID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
+			failures.add(schemaName, err)
+			continue
 		}
-
-		var rawAttributes map[string]map[string]any
-		if err := json.Unmarshal(data, &rawAttributes); err != nil {
-			return nil, fmt.Errorf("failed to parse attributes file %s: %w", attributesFile, err)
-		}
-
-		// Convert to AttributeMeta map
-		schemaCache := make(forma.SchemaAttributeCache)
-
-		for attrName, attrData := range rawAttributes {
-			meta, err := parseAttributeMetadata(attrName, attrData, attributesFile)
-			if err != nil {
-				return nil, err
-			}
-			schemaCache[attrName] = meta
-		}
-		// Validate the FULL cache before stripping — see activeAttributeCache (#342).
-		if err := validateSchemaAttributeCacheOpts(schemaName, schemaCache, !ml.deferBindingCheck); err != nil {
-			return nil, fmt.Errorf("attributes file %s: %w", attributesFile, err)
-		}
-		active := activeAttributeCache(schemaCache)
-
-		// Copy so the two fields stay independent — see the invariant on
-		// MetadataCache's field declarations.
-		cache.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(copySchemaAttributeCache(active))
-		cache.schemaCaches[schemaID] = active
-		cache.retiredAttrIDs[schemaID] = retiredAttributeIDs(schemaCache)
-		decls = append(decls, schemaledger.Declaration{SchemaName: schemaName, SchemaID: schemaID, Entries: schemaledger.EntriesOf(schemaCache)})
-
-		zap.S().Infow("Loaded attributes for schema", "count", len(active), "schema", schemaName)
+		decls = append(decls, decl)
+	}
+	if err := failures.err(); err != nil {
+		return nil, err
 	}
 
 	// Also check for any schema files without database entries
@@ -427,4 +397,50 @@ func (ml *MetadataLoader) loadAttributeMetadataFromFiles(cache *MetadataCache) (
 	}
 
 	return decls, nil
+}
+
+// loadSchemaAttributes reads, validates and stores one schema's attributes
+// file into cache, whose lock the caller holds.
+func (ml *MetadataLoader) loadSchemaAttributes(cache *MetadataCache, schemaName string, schemaID int16) (schemaledger.Declaration, error) {
+	zap.S().Infow("Loading attributes for schema", "schema_name", schemaName, "schema_id", schemaID)
+	attributesFile := filepath.Join(ml.schemaDirectory, schemaName+"_attributes.json")
+
+	// Registry entries without attribute files are a bootstrap error. If we
+	// continue, requests will fail later with missing cache lookups.
+	if _, err := os.Stat(attributesFile); os.IsNotExist(err) {
+		return schemaledger.Declaration{}, fmt.Errorf("attributes file not found for schema %s: %s", schemaName, attributesFile)
+	}
+
+	data, err := os.ReadFile(attributesFile)
+	if err != nil {
+		return schemaledger.Declaration{}, fmt.Errorf("failed to read attributes file %s: %w", attributesFile, err)
+	}
+
+	var rawAttributes map[string]map[string]any
+	if err := json.Unmarshal(data, &rawAttributes); err != nil {
+		return schemaledger.Declaration{}, fmt.Errorf("failed to parse attributes file %s: %w", attributesFile, err)
+	}
+
+	schemaCache := make(forma.SchemaAttributeCache)
+	for attrName, attrData := range rawAttributes {
+		meta, err := parseAttributeMetadata(attrName, attrData, attributesFile)
+		if err != nil {
+			return schemaledger.Declaration{}, err
+		}
+		schemaCache[attrName] = meta
+	}
+	// Validate the FULL cache before stripping — see activeAttributeCache (#342).
+	if err := validateSchemaAttributeCacheOpts(schemaName, schemaCache, !ml.deferBindingCheck); err != nil {
+		return schemaledger.Declaration{}, fmt.Errorf("attributes file %s: %w", attributesFile, err)
+	}
+	active := activeAttributeCache(schemaCache)
+
+	// Copy so the two fields stay independent — see the invariant on
+	// MetadataCache's field declarations.
+	cache.attributeMetadata[schemaID] = map[string]forma.AttributeMetadata(copySchemaAttributeCache(active))
+	cache.schemaCaches[schemaID] = active
+	cache.retiredAttrIDs[schemaID] = retiredAttributeIDs(schemaCache)
+
+	zap.S().Infow("Loaded attributes for schema", "count", len(active), "schema", schemaName)
+	return schemaledger.Declaration{SchemaName: schemaName, SchemaID: schemaID, Entries: schemaledger.EntriesOf(schemaCache)}, nil
 }
