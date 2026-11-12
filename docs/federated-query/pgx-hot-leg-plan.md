@@ -9,6 +9,34 @@ Three inputs gate the work. The first two gate the switch of the default path, n
 - **The #728 ruling.** Under this design PostgreSQL filters the hot rows and DuckDB filters the parquet rows of one answer. Until each difference has a ruling and the ruling ships on both dialects, a row's inclusion depends on whether it has been flushed. The tier parity suite (step 6) fails on such a difference until then. #763 is ruled and needs no change on either dialect: a non-canonical rfc3339 image is outside the query contract, so the suite's fixtures hold canonical images only (`docs/rfc3339-storage-contract.md`).
 - **The latency baseline** that #719 asked for. It measures how federated latency splits between the PostgreSQL copy and the parquet scan on today's path, with the benchmark harness, at several `entity_main` sizes for a fixed hot set. Steps 3 and 5 compare against it. Without it, "cheaper" in the design is a claim nobody has checked.
 
+  *Measured (#851).* `TestHotLegLatencyBaseline` in the production harness loads `e2e_wide` rows (nine `eav_data` rows each), flushes them, consolidates the parquet into base files, and vacuums and analyzes the three tables. It then writes a hot set of 1,000 rows through the EntityManager, 500 updates of flushed rows and 500 creates, so the dirty set holds 1,000 row IDs and 500 parquet versions it must discard. Two query shapes run on the `attach` path: a `title` equality that selects one row, and an unfiltered first page sorted by `count`.
+
+  ```
+  FORMA_HOT_LEG_BASELINE_SIZES=10000,100000,300000,1000000 \
+    go test ./internal/e2e_harness/production -tags=e2e -run TestHotLegLatencyBaseline -v -timeout 3h
+  ```
+
+  Each shape is measured in two phases. The engine pass comes first: the engine's own query, timed while the DuckDB instance holds nothing but the catalog the engine attaches. That is the latency steps 3 and 5 compare against. Then the engine's rendered statement is replayed on the same instance and the same attached catalog, alternately as rendered (full) and retargeted at a hot-only control: a schema in the same PostgreSQL database holding only the `change_log` rows the statement's hot-leg predicate keeps, and the `entity_main` and `eav_data` rows of those row IDs, with the full tables' `pg_class` statistics. The control keeps the dirty set, the hot rows, the answer, the parquet objects, the catalog and its settings, including filter pushdown off. All it drops is the flushed rows that the statement copies from PostgreSQL and then discards. A profiled run of each confirms that DuckDB plans the two identically, operator for operator (45 operators, the same join order and the same projections at every size). The two replays then differ only in how many rows the PostgreSQL scans return: 12,000 for the control against 12 million for the full tables at 1,000,000 rows.
+
+  Full minus hot-only is therefore a differential estimate, not a timed stage. It is what copying the flushed rows and discarding them costs the pass: their transfer from PostgreSQL, plus DuckDB's pivot, joins and filter over them. The pgx hot leg removes exactly this. The two parts cannot be told apart this way, and DuckDB's profiler cannot split them either: the postgres extension's scans report no operator time, whatever they return. The hot-only replay is the parquet scan and merge plus the copy of the 12,000 hot rows, so it is an upper bound on the parquet side.
+
+  i7-8700K, 8 threads, 15 GB; PostgreSQL 16 and RustFS in local Docker containers; DuckDB 2.0 at the factory defaults (4 threads, 4,096 MB). Median of five runs, in ms, after one warm-up:
+
+  | `entity_main` rows | Shape | Engine pass | Full replay | Hot-only replay | Flushed rows' cost (full − hot-only) | Share of the full replay |
+  | ---: | :---- | ---: | ---: | ---: | ---: | ---: |
+  | 10,000 | one row by `title` | 123 | 99 | 38 | 61 | 62% |
+  | 10,000 | first page by `count` | 149 | 134 | 68 | 66 | 49% |
+  | 100,000 | one row by `title` | 400 | 384 | 50 | 333 | 87% |
+  | 100,000 | first page by `count` | 650 | 659 | 254 | 405 | 61% |
+  | 300,000 | one row by `title` | 977 | 976 | 61 | 915 | 94% |
+  | 300,000 | first page by `count` | 1,763 | 1,869 | 723 | 1,146 | 61% |
+  | 1,000,000 | one row by `title` | 3,111 | 3,328 | 94 | 3,234 | 97% |
+  | 1,000,000 | first page by `count` | 5,937 | 5,926 | 2,399 | 3,527 | 60% |
+
+  The flushed rows' cost grows linearly with the tables, 3.0 to 3.3 ms per 1,000 `entity_main` rows for the selective shape, while the hot set stays fixed. At 1,000,000 rows it is 3.2 to 3.5 seconds of every pass. The rest of the pass stays under 100 ms for the selective shape and reaches 2.4 seconds only where the page ranks every parquet row. The design's premise holds on this data: copying the flushed rows dominates the selective pass at every size from 100,000 rows up, and it scales with the table, not with the hot set. Where the page ranks every row, it is still 60% of the pass. The pgx hot leg replaces it with its own snapshot reads, which this baseline does not measure.
+
+  Three things limit the numbers. First, the rows are clones of 500 templates written through the EntityManager, which writes about 34 rows a second on the harness. Only `title` and `count` vary per clone, so the parquet compresses better than real data would. Second, at 10,000 rows the engine pass runs 15 to 25 ms above the full replay. From 100,000 rows up the two agree within 7%. The fixed gap at the smallest size has not been investigated. Third, the tables are vacuumed before the timings. In an earlier run without that step, the selective shape's engine pass came out 24 to 49% above its replay at 100,000 and 300,000 rows. That run timed the engine first after the bulk load, likely while autovacuum was still working through it.
+
 ## Steps
 
 Each step is one PR and leaves `main` releasable. Steps 1 to 5 change no answer, with two exceptions, both in step 2 and both on today's path too. The cursor normalization refuses a hand-built cursor whose boundary does not match its column's type. A cursor that names `deleted_ts` reads the column's NULL as `0`: on the rows that tie the cursor before that column, it admits the hot rows and live pre-#274 rows it drops today wherever it admits the rows holding `0` (ascending below or at `0`, descending at or above `0`), and it orders them by the later cursor columns instead of last (design.md §6.1.1 tabulates the boundaries). The new path stays off until step 6.
