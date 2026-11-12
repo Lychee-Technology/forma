@@ -21,8 +21,8 @@ func continuationQuery(cursorAttr string, cursorDir forma.SortOrder) *model.Fede
 		},
 		KeysetCursor: &model.KeysetCursor{
 			Columns: []model.KeysetColumn{
-				{Attribute: cursorAttr, Direction: cursorDir},
-				{Attribute: "row_id", Direction: forma.SortOrderAsc},
+				{Attribute: cursorAttr, Direction: cursorDir, ExportType: "DOUBLE"},
+				{Attribute: "row_id", Direction: forma.SortOrderAsc, ExportType: "UUID"},
 			},
 			Values: []interface{}{int64(5), "r1"},
 			Mode:   model.KeysetCursorModeAfter,

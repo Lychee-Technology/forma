@@ -61,10 +61,13 @@ func HashFederatedQueryShape(q *model.FederatedAttributeQuery) (string, error) {
 	// OFFSET form (sqlgen keys the clause off the same predicate), so hashing
 	// it apart from a nil cursor split the cache on two spellings of one
 	// skeleton (#381 item 9). Columns and Mode participate; Values do not.
+	// Each column's export type does too: the skeleton casts every boundary
+	// to it (#853), and without a schema fingerprint in the scope nothing
+	// else would keep two types of one column name apart.
 	if q.KeysetCursor.IsActive() {
 		write("pagination", "keyset", string(q.KeysetCursor.Mode))
 		for _, col := range q.KeysetCursor.Columns {
-			write(col.Attribute, string(col.Direction))
+			write(col.Attribute, string(col.Direction), col.ExportType)
 		}
 	} else {
 		write("pagination", "offset")

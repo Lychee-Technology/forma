@@ -20,8 +20,8 @@ func TestAdvancedTemplate_KeysetAppliedAfterDedup(t *testing.T) {
 		// ending on the non-unique "count" key (#381 item 7).
 		KeysetCursor: &model.KeysetCursor{
 			Columns: []model.KeysetColumn{
-				{Attribute: "count", Direction: forma.SortOrderAsc},
-				{Attribute: "row_id", Direction: forma.SortOrderAsc},
+				{Attribute: "count", Direction: forma.SortOrderAsc, ExportType: "DOUBLE"},
+				{Attribute: "row_id", Direction: forma.SortOrderAsc, ExportType: "UUID"},
 			},
 			Values: []any{float64(500), "11111111-1111-1111-1111-111111111111"},
 			Mode:   model.KeysetCursorModeAfter,

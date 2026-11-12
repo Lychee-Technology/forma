@@ -65,8 +65,8 @@ func TestAppendDirtyExclusion(t *testing.T) {
 func TestInjectDuckDBTemplateParams_KeysetPositionalPlaceholders(t *testing.T) {
 	cursor := &model.KeysetCursor{
 		Columns: []model.KeysetColumn{
-			{Attribute: "created_at", Direction: forma.SortOrderDesc},
-			{Attribute: "row_id", Direction: forma.SortOrderDesc},
+			{Attribute: "created_at", Direction: forma.SortOrderDesc, ExportType: "BIGINT"},
+			{Attribute: "row_id", Direction: forma.SortOrderDesc, ExportType: "UUID"},
 		},
 		Values: []interface{}{int64(999), "11111111-1111-1111-1111-111111111111"},
 		Mode:   model.KeysetCursorModeAfter,
@@ -80,7 +80,7 @@ func TestInjectDuckDBTemplateParams_KeysetPositionalPlaceholders(t *testing.T) {
 
 	clause, ok := params["KEYSET_WHERE_CLAUSE"].(string)
 	require.True(t, ok, "KEYSET_WHERE_CLAUSE should be a string")
-	require.Equal(t, "(created_at < ?) OR (created_at = ? AND row_id < ?)", clause)
+	require.Equal(t, "(created_at < CAST(? AS BIGINT)) OR (created_at = CAST(? AS BIGINT) AND row_id < CAST(? AS UUID))", clause)
 	require.NotContains(t, clause, "$")
 
 	args, ok := params["KEYSET_ARGS"].([]interface{})
@@ -99,8 +99,8 @@ func TestBuildDuckDBQuery_KeysetArgsBindLast(t *testing.T) {
 	// generateKeysetWhereClause now enforces (#381 item 7).
 	cursor := &model.KeysetCursor{
 		Columns: []model.KeysetColumn{
-			{Attribute: "created_at", Direction: forma.SortOrderDesc},
-			{Attribute: "row_id", Direction: forma.SortOrderDesc},
+			{Attribute: "created_at", Direction: forma.SortOrderDesc, ExportType: "BIGINT"},
+			{Attribute: "row_id", Direction: forma.SortOrderDesc, ExportType: "UUID"},
 		},
 		Values: []interface{}{int64(1000), "11111111-1111-1111-1111-111111111111"},
 		Mode:   model.KeysetCursorModeAfter,

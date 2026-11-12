@@ -91,7 +91,7 @@ func testKeysetAttributeCursorResurrection(ctx context.Context, t *testing.T, en
 				{Attribute: "count", Direction: forma.SortOrderAsc},
 				{Attribute: "row_id", Direction: forma.SortOrderAsc}, // required trailing tiebreak (#183)
 			},
-			Values: []any{float64(500), keysetZeroRowID}, // 500 matches no row ⇒ row_id arm inert
+			Values: []any{int64(500), keysetZeroRowID}, // 500 matches no row ⇒ row_id arm inert
 			Mode:   model.KeysetCursorModeAfter,
 		},
 		Limit: 10,
@@ -225,7 +225,7 @@ func testKeysetCursorWithMixedFilters(ctx context.Context, t *testing.T, env *En
 				{Attribute: "count", Direction: forma.SortOrderAsc},
 				{Attribute: "row_id", Direction: forma.SortOrderAsc}, // required trailing tiebreak (#183)
 			},
-			Values: []any{float64(250), keysetZeroRowID}, // 250 matches no row ⇒ row_id arm inert
+			Values: []any{int64(250), keysetZeroRowID}, // 250 matches no row ⇒ row_id arm inert
 			Mode:   model.KeysetCursorModeAfter,
 		},
 		Limit: 10,

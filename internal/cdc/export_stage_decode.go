@@ -2,13 +2,12 @@ package cdc
 
 import (
 	"database/sql/driver"
-	"errors"
 	"fmt"
-	"math"
-	"strconv"
 
 	duckdb "github.com/duckdb/duckdb-go/v2"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/lychee-technology/forma/internal/numutil"
 )
 
 // stageRowDecoder holds one reusable pgx scan target per staged column and
@@ -98,27 +97,12 @@ func (d *stagedDouble) ScanNumeric(n pgtype.Numeric) error {
 	return nil
 }
 
+// numericToDouble is numutil.NumericToDouble, which the hot leg's sort keys
+// share (sortkey): a hot key must compare as this export will write it.
 func numericToDouble(n pgtype.Numeric) (float64, error) {
-	switch {
-	case !n.Valid:
-		return 0, nil
-	case n.NaN:
-		return math.NaN(), nil
-	case n.InfinityModifier == pgtype.Infinity:
-		return math.Inf(1), nil
-	case n.InfinityModifier == pgtype.NegativeInfinity:
-		return math.Inf(-1), nil
+	f, err := numutil.NumericToDouble(n)
+	if err != nil {
+		return 0, fmt.Errorf("stage numeric: %w", err)
 	}
-	digits := "0"
-	if n.Int != nil {
-		digits = n.Int.String()
-	}
-	text := digits + "e" + strconv.FormatInt(int64(n.Exp), 10)
-	f, err := strconv.ParseFloat(text, 64)
-	if err != nil && !errors.Is(err, strconv.ErrRange) {
-		return 0, fmt.Errorf("decode numeric %s as double: %w", text, err)
-	}
-	// On ErrRange ParseFloat returns the correctly signed infinity (or zero
-	// for an underflow), which is the scanner's answer too.
 	return f, nil
 }
