@@ -40,3 +40,17 @@ func TestEntityMainDDLDrift_ReportsEachKindOfDrift(t *testing.T) {
 	retyped := strings.Replace(ddl, "\t\tsmallint_03 SMALLINT,", "\t\tsmallint_03 INTEGER,", 1)
 	require.Equal(t, []string{"column smallint_03 is declared INTEGER, runtime kind expects SMALLINT"}, EntityMainDDLDrift(retyped))
 }
+
+// A text column left to the database's default collation, or declared under
+// another one, is drift (#816): an index on it cannot seek the COLLATE "C"
+// ranges the Postgres route renders.
+func TestEntityMainDDLDrift_ReportsATextColumnOutsideTheCCollation(t *testing.T) {
+	ddl := runtimeSetDDL(t)
+	require.Contains(t, ddl, "\t\ttext_04 TEXT COLLATE \"C\",", "the runtime set declares text under C")
+
+	inherited := strings.Replace(ddl, "\t\ttext_04 TEXT COLLATE \"C\",", "\t\ttext_04 TEXT,", 1)
+	require.Equal(t, []string{`column text_04 is declared TEXT, runtime kind expects TEXT COLLATE "C"`}, EntityMainDDLDrift(inherited))
+
+	posix := strings.Replace(ddl, "\t\tltbase_created_by TEXT COLLATE \"C\",", "\t\tltbase_created_by TEXT COLLATE \"POSIX\",", 1)
+	require.Equal(t, []string{`column ltbase_created_by is declared TEXT COLLATE "POSIX", runtime kind expects TEXT COLLATE "C"`}, EntityMainDDLDrift(posix))
+}

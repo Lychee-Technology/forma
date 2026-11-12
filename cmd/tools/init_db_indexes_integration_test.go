@@ -370,7 +370,9 @@ func TestInitDBRefusesLookAlikeDeclaredIndex(t *testing.T) {
 		{"brin", "USING brin (ltbase_schema_id, text_01, bigint_01, ltbase_row_id)", "brin access method"},
 		{"include", "(ltbase_schema_id, text_01) INCLUDE (bigint_01, ltbase_row_id)", "INCLUDE columns"},
 		{"opclass", "(ltbase_schema_id, text_01 text_pattern_ops, bigint_01, ltbase_row_id)", "non-default operator class"},
-		{"collation", `(ltbase_schema_id, text_01 COLLATE "C", bigint_01, ltbase_row_id)`, "non-default collation"},
+		// text_01 is under C (#816), so a key spelled COLLATE "C" is the planned
+		// index; POSIX orders as C does but is another collation.
+		{"collation", `(ltbase_schema_id, text_01 COLLATE "POSIX", bigint_01, ltbase_row_id)`, "non-default collation"},
 		{"ordering", "(ltbase_schema_id, text_01, bigint_01 DESC, ltbase_row_id)", "DESC or NULLS FIRST ordering"},
 	}
 	for _, tc := range cases {

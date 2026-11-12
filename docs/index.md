@@ -87,6 +87,7 @@ make test
 - [Conditional Writes](./conditional-writes.md) - Preconditions, `increment` and `server_time` on Update and Delete
 - [Condition DSL](./condition-dsl.md) - Filter operators, `in`/`not_in`, null tests and `$now`
 - [Declared Indexes](./schema-indexes.md) - Composite indexes on column-bound attributes via `x-forma-indexes`
+- [Text collation](./text-collation.md) - Why Forma's text columns are `COLLATE "C"`, what that changes for queries, and how to migrate tables created before it
 - [Row IDs and Unique Keys](./unique-keys.md) - Caller-supplied row IDs on create, unique keys via `x-forma-unique-keys`, `Tx.Upsert`, and `build-unique-keys`
 - [Claims](./claims.md) - `Tx.Claim`: take up to a limit of matching rows without waiting for rows others hold, with caller-defined leases and generation fencing, and per-group FIFO through group heads
 - [GitHub](https://github.com/ruoshui/forma) - Source code and issues

@@ -45,7 +45,7 @@ func RowIndex(entityMain string) string { return sqlutil.SuffixedName(entityMain
 const keyTableDDL = `CREATE TABLE IF NOT EXISTS %s (
 		ltbase_schema_id SMALLINT NOT NULL,
 		key_id           SMALLINT NOT NULL,
-		key_value        TEXT     NOT NULL,
+		key_value        TEXT COLLATE "C" NOT NULL,
 		ltbase_row_id    UUID     NOT NULL,
 		PRIMARY KEY (ltbase_schema_id, key_id, key_value)
 	)`
@@ -58,8 +58,8 @@ const keyRowIndexDDL = `CREATE INDEX IF NOT EXISTS %s ON %s (ltbase_schema_id, l
 const stateTableDDL = `CREATE TABLE IF NOT EXISTS %s (
 		ltbase_schema_id SMALLINT NOT NULL,
 		key_id           SMALLINT NOT NULL,
-		attributes_hash  TEXT     NOT NULL,
-		storage_hash     TEXT     NOT NULL,
+		attributes_hash  TEXT COLLATE "C" NOT NULL,
+		storage_hash     TEXT COLLATE "C" NOT NULL,
 		built_at         BIGINT   NOT NULL,
 		PRIMARY KEY (ltbase_schema_id, key_id)
 	)`
