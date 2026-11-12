@@ -197,6 +197,18 @@ func (e *DBFederatedQueryEngine) buildDuckDBTemplateBaseParams(
 	if connStr := e.pgConnString; connStr != "" {
 		sqlParams["DuckDBPGConnString"] = connStr
 	}
+	applyParquetScanParams(sqlParams, parquetPaths, cold)
+	// Per-request dirty-barrier cutoff (#252), anchored at the query's
+	// path-resolution instant. The direct builder renders it as a literal;
+	// the compiled path overwrites it with the splice sentinel so the cached
+	// skeleton stays cutoff-independent.
+	sqlParams["FlushGraceCutoffMs"] = graceCutoffMs
+	return sqlParams
+}
+
+// applyParquetScanParams sets the params the renderer derives the parquet
+// scan source from. Both templates read the parquet tiers through it.
+func applyParquetScanParams(sqlParams map[string]any, parquetPaths []string, cold coldScanSet) {
 	if len(parquetPaths) > 0 {
 		sqlParams["DuckDBS3Paths"] = parquetPaths
 	}
@@ -215,12 +227,6 @@ func (e *DBFederatedQueryEngine) buildDuckDBTemplateBaseParams(
 		// with a relation holding no rows.
 		sqlParams["EmptyParquetScan"] = true
 	}
-	// Per-request dirty-barrier cutoff (#252), anchored at the query's
-	// path-resolution instant. The direct builder renders it as a literal;
-	// the compiled path overwrites it with the splice sentinel so the cached
-	// skeleton stays cutoff-independent.
-	sqlParams["FlushGraceCutoffMs"] = graceCutoffMs
-	return sqlParams
 }
 
 // duckPlanScopeParts assembles the plan-cache scope components: everything
@@ -248,6 +254,13 @@ func duckPlanScopeParts(
 		strconv.Itoa(limit), strconv.Itoa(offset),
 		strconv.FormatBool(hasDirty),
 	}
+	return append(parts, parquetScanScopeParts(parquetPaths, attributeOrders, cold)...)
+}
+
+// parquetScanScopeParts are the scope components both templates share: the
+// parquet scan source and the sort keys render into either skeleton.
+func parquetScanScopeParts(parquetPaths []string, attributeOrders []model.AttributeOrder, cold coldScanSet) []string {
+	var parts []string
 	// The resolved path set (hint or manifest) renders into the skeleton as a
 	// SQL literal, so it must scope the cache key: a changed file set (new
 	// delta flushed, base replaced) recompiles instead of reusing stale paths.

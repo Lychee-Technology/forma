@@ -116,10 +116,17 @@ func keysetComparisonOp(direction forma.SortOrder, mode model.KeysetCursorMode) 
 // names (#260/#381). It must stay consistent with the WHERE clause — an
 // ORDER BY disagreeing with the cursor predicate paginates incoherently.
 func buildKeysetOrderBy(cursor *model.KeysetCursor) string {
+	return strings.Join(keysetOrderTerms(cursor), ", ")
+}
+
+// keysetOrderTerms returns buildKeysetOrderBy's terms, "<column> <dir>" each,
+// so the parquet-only template can render the same order with an explicit
+// NULLS LAST on every term.
+func keysetOrderTerms(cursor *model.KeysetCursor) []string {
 	if !cursor.IsActive() {
-		return "created_at DESC"
+		return []string{"created_at DESC"}
 	}
-	var parts []string
+	parts := make([]string, 0, len(cursor.Columns))
 	for _, col := range cursor.Columns {
 		dir := "ASC"
 		if col.Direction == forma.SortOrderDesc {
@@ -127,5 +134,5 @@ func buildKeysetOrderBy(cursor *model.KeysetCursor) string {
 		}
 		parts = append(parts, fmt.Sprintf("%s %s", ParquetAttrColumn(col.Attribute), dir))
 	}
-	return strings.Join(parts, ", ")
+	return parts
 }

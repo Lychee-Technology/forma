@@ -995,6 +995,60 @@ A federated pass in the hot form (`HasHot`, §5) runs in six steps:
 
 The hot-excluded form (`preferred_tiers` without `hot`) has no hot leg. It reads the strict `flushed_at = 0` set, without the widening, as today, and stages it. A schema whose path set resolves empty (#720) needs no DuckDB pass: the hot leg is the whole answer. The publication-race recheck stays as it is, and `HasParquetHistory` moves into the same snapshot.
 
+**The parquet leg's statement (plan step 3, #854).** Step 4 runs `sqlgen.ParquetOnlyQueryTemplateDuckDB`. It is the §5 template without PostgreSQL: no `pg_source`, no catalog reference, so no `ATTACH` and no connection string. The sketch below is executable in the same way as §5's: `internal/federated/design_doc_sql_test.go` runs it over §5's seed data, with the dirty set staged instead of read from `change_log`. It differs from §5 in four places:
+
+* `dirty_ids` is the temp table the pass stages through the Appender (`sqlgen.StagedDirtyIDsTable`), on the DuckDB connection it pins. The Go side stages whichever set the tier form needs, so the statement has no `HasHot` branch and no flush-grace cutoff. Its text does not depend on the set's size.
+* Every `ORDER BY` key renders `NULLS LAST` (*Ordering parity*, below).
+* The window is bound: `LIMIT ? OFFSET ?` on an offset page, with the window `[max(0, offset-h), offset+limit)` (*Pagination and totals*, below), and `LIMIT ?` on a keyset page. A rendered window would compile one plan per hot match count.
+* `total_pages` and `current_page` are typed NULLs, kept so the result has today's column layout. Only the merge knows the page. `total_records` is the parquet count the merge adds h to.
+
+So the compiled plan's scope loses the connection string, the dirty-set flag, the limit and the offset: one plan serves every pass of a shape, whatever the dirty set and the hot match count.
+
+```sql
+-- $S3_PATHS:      List (the frozen object list, step 1)
+-- $WINDOW_LIMIT:  BIGINT, bound (offset+limit - max(0, offset-h))
+-- $WINDOW_OFFSET: BIGINT, bound (max(0, offset-h))
+WITH
+s3_source AS (
+    SELECT
+        row_id,
+        ltbase_created_at AS created_at,
+        changed_at AS ver_ts,
+        deleted_at AS deleted_ts,
+        name,
+        age,
+        tag,
+        1 AS source_tier_priority
+    FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at, CASE WHEN ltbase_created_at IS NULL AND COALESCE(CAST(deleted_at AS BIGINT), 0) = 0 THEN error('parquet scan produced NULL ltbase_created_at on a live row: a scanned object violates the export schema invariant (#189/#256/#460)') ELSE CAST(ltbase_created_at AS BIGINT) END AS ltbase_created_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
+    WHERE
+        -- The anti-join reads the dirty set the pass staged (step 4).
+        CAST(row_id AS UUID) NOT IN (SELECT row_id FROM temp.main.forma_dirty_ids)
+        AND row_id IN (
+            SELECT row_id FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at, CASE WHEN ltbase_created_at IS NULL AND COALESCE(CAST(deleted_at AS BIGINT), 0) = 0 THEN error('parquet scan produced NULL ltbase_created_at on a live row: a scanned object violates the export schema invariant (#189/#256/#460)') ELSE CAST(ltbase_created_at AS BIGINT) END AS ltbase_created_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
+            WHERE (age > 18 AND name LIKE 'John%' AND tag = 'developer')
+        )
+),
+
+ranked AS (
+    SELECT *,
+        ROW_NUMBER() OVER (
+            PARTITION BY row_id
+            ORDER BY ver_ts DESC, source_tier_priority DESC, deleted_ts DESC, row_id ASC
+        ) AS rn
+    FROM s3_source
+)
+
+SELECT
+    row_id, name, age, tag, created_at,
+    COUNT(*) OVER() AS total_records
+FROM ranked
+WHERE rn = 1
+    AND (deleted_ts IS NULL OR deleted_ts = 0)
+    AND (age > 18 AND name LIKE 'John%' AND tag = 'developer')
+ORDER BY created_at DESC NULLS LAST, row_id ASC NULLS LAST
+LIMIT $WINDOW_LIMIT OFFSET $WINDOW_OFFSET;
+```
+
 **Consistency (#252, re-derived).** The reads come in this order: the path set at instant P, then the snapshot S, then the DuckDB scan of the objects resolved at P. The argument holds only if the scan reads exactly those objects (*Frozen inventory*, below). A flush runs copy, then manifest append, then mark, and stamps the mark F after the append (§3.2). Take a row and its newest version v committed in S:
 
 * v's entry is unflushed in S. The row is dirty. The hot leg serves v from S, and the anti-join drops every parquet copy.
