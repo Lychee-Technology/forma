@@ -13,8 +13,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/schemaledger"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/textcollation"
 )
 
 // Seed adds the ledger to registry, an existing schema registry table, and
@@ -22,8 +24,14 @@ import (
 // declaration in schemaDir. A schema without an attributes file there is
 // left without one, as init-db leaves it.
 func Seed(ctx context.Context, pool *pgxpool.Pool, registry, schemaDir string) error {
+	return SeedFor(ctx, pool, forma.EnginePostgreSQL, registry, schemaDir)
+}
+
+// SeedFor is Seed with the ledger's DDL rendered for engine: on Aurora DSQL
+// without the COLLATE "C" clauses DSQL refuses (#816).
+func SeedFor(ctx context.Context, pool *pgxpool.Pool, engine forma.DatabaseEngine, registry, schemaDir string) error {
 	for _, stmt := range schemaledger.Statements(registry) {
-		if _, err := pool.Exec(ctx, stmt); err != nil {
+		if _, err := pool.Exec(ctx, textcollation.ForEngine(engine, stmt)); err != nil {
 			return fmt.Errorf("create the generation ledger of %s: %w", registry, err)
 		}
 	}

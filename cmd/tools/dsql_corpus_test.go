@@ -40,13 +40,16 @@ const mainIndexFailurePrefix = "create main index for "
 // TestDSQLCorpus exports init-db's SQL for the DSQL lint gate (#740): the
 // table transaction's statements in the order ensureTables sends them, around
 // a BEGIN and COMMIT the test spells for withTx, and the schema registration
-// statements as sent.
+// statements as sent. The tables are rendered for DSQL, without the
+// COLLATE "C" clauses of the PostgreSQL form (#816), and so without the
+// catalog check of those clauses, which runs on PostgreSQL only.
 func TestDSQLCorpus(t *testing.T) {
 	opts := initDBOptions{
 		schemaTable: "schema_registry",
 		eavTable:    "eav_data",
 		entityMain:  "entity_main",
 		changeLog:   "change_log",
+		engine:      forma.EngineAuroraDSQL,
 	}
 	var body []corpus.Statement
 	for _, ddl := range tableTransactionDDL(opts) {

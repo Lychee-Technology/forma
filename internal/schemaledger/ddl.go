@@ -44,10 +44,10 @@ const (
 	generationDDL = `CREATE TABLE IF NOT EXISTS %s (
 		schema_id    SMALLINT NOT NULL,
 		generation   BIGINT   NOT NULL,
-		content_hash TEXT     NOT NULL,
-		recorded_by  TEXT     NOT NULL,
+		content_hash TEXT COLLATE "C" NOT NULL,
+		recorded_by  TEXT COLLATE "C" NOT NULL,
 		recorded_at  BIGINT   NOT NULL,
-		warnings     TEXT     NOT NULL DEFAULT '',
+		warnings     TEXT COLLATE "C" NOT NULL DEFAULT '',
 		PRIMARY KEY (schema_id, generation)
 	)`
 
@@ -55,11 +55,11 @@ const (
 		schema_id   SMALLINT NOT NULL,
 		generation  BIGINT   NOT NULL,
 		attr_id     SMALLINT NOT NULL,
-		attr_name   TEXT     NOT NULL,
-		value_type  TEXT     NOT NULL,
-		items_type  TEXT     NOT NULL DEFAULT '',
-		column_name TEXT     NOT NULL DEFAULT '',
-		encoding    TEXT     NOT NULL DEFAULT '',
+		attr_name   TEXT COLLATE "C" NOT NULL,
+		value_type  TEXT COLLATE "C" NOT NULL,
+		items_type  TEXT COLLATE "C" NOT NULL DEFAULT '',
+		column_name TEXT COLLATE "C" NOT NULL DEFAULT '',
+		encoding    TEXT COLLATE "C" NOT NULL DEFAULT '',
 		retired     BOOLEAN  NOT NULL DEFAULT FALSE,
 		PRIMARY KEY (schema_id, generation, attr_id)
 	)`

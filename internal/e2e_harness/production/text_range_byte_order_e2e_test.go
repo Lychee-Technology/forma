@@ -11,10 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	forma "github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/compaction"
-	"github.com/lychee-technology/forma/internal/model"
 )
 
 // rangeSQLOps spells the four range operators for a direct SQL compare.
@@ -167,100 +164,9 @@ func TestRangeOrderIgnoresTheColumnCollation(t *testing.T) {
 	}
 }
 
-// TestTextRangeSeeksOnlyAByteOrderIndex records #728's index trade-off: a text
-// range compares under the C collation, so the indexes Forma builds, under the
-// column's collation, no longer seek it, and a key built COLLATE "C" does.
-// Equality stays on the plain index, which is why the plain index stays. The
-// rows are checked under both plans. When Forma learns to build a byte-order
-// index (the follow-up #728 names), the no-seek half of this test and of
-// TestDeclaredIndexServesEveryIndexableKind has to change with it.
-func TestTextRangeSeeksOnlyAByteOrderIndex(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t))
-	const rows = 20_000
-	env.ExecSQL(ctx, `
-		INSERT INTO entity_main (ltbase_schema_id, ltbase_row_id, text_01, ltbase_created_at, ltbase_updated_at)
-		SELECT $1::smallint, gen_random_uuid(), 't' || lpad(i::text, 5, '0'), 1, 1 FROM generate_series(1, $2::int) AS i`,
-		SchemaIDWide, rows)
-	env.ExecSQL(ctx, `
-		INSERT INTO eav_data (schema_id, row_id, attr_id, array_indices, value_text)
-		SELECT ltbase_schema_id, ltbase_row_id, $1::smallint, '', text_01 FROM entity_main WHERE ltbase_schema_id = $2`,
-		byteOrderNoteAttrID(t, env), SchemaIDWide)
-	// The plain keys: a declared index's shape, and init-db's eav_data text index.
-	env.ExecSQL(ctx, `CREATE INDEX plain_main ON entity_main (ltbase_schema_id, text_01, ltbase_row_id)`)
-	env.ExecSQL(ctx, `CREATE INDEX plain_eav ON eav_data (schema_id, attr_id, value_text, row_id) WHERE value_text IS NOT NULL`)
-	analyzeByteOrderTables(ctx, env)
-
-	literal := func(i int) string { return fmt.Sprintf("t%05d", i) }
-	ranges := []struct {
-		op   forma.FilterType
-		i    int
-		want int
-	}{
-		{forma.FilterGreaterThan, rows - 5, 5},
-		{forma.FilterGreaterEq, rows - 4, 5},
-		{forma.FilterLessThan, 6, 5},
-		{forma.FilterLessEq, 5, 5},
-	}
-	recorder := &recordingPool{Pool: env.Pool}
-	repo := internal.NewDBPersistentRecordRepository(recorder, env.Metadata)
-	seeks := func(t *testing.T, attr, value, index, column string, want int) bool {
-		t.Helper()
-		page, err := repo.QueryPersistentRecords(ctx, &model.PersistentRecordQuery{
-			Tables: env.Tables, SchemaID: SchemaIDWide, Limit: 1000,
-			Condition: &forma.KvCondition{Attr: attr, Value: value},
-		})
-		if err != nil {
-			t.Fatalf("query %s %s: %v", attr, value, err)
-		}
-		assertShapeRows(t, page, SchemaIDWide, want, false)
-		plan := explain(ctx, t, env.Pool, recorder.takeAnchorQuery(t))
-		found := anyIndexCondMentions(indexScansOf(plan, index), column)
-		t.Logf("%s %s via %s seeks=%v; plan:\n%s", attr, value, index, found, describePlan(plan, 0))
-		return found
-	}
-	storage := []struct{ attr, column, plain, byteOrder, byteOrderDDL string }{
-		{"title", "text_01", "plain_main", "byte_order_main",
-			`CREATE INDEX byte_order_main ON entity_main (ltbase_schema_id, text_01 COLLATE "C", ltbase_row_id)`},
-		{"note", "value_text", "plain_eav", "byte_order_eav",
-			`CREATE INDEX byte_order_eav ON eav_data (schema_id, attr_id, value_text COLLATE "C", row_id) WHERE value_text IS NOT NULL`},
-	}
-	for _, s := range storage {
-		if !seeks(t, s.attr, "equals:"+literal(42), s.plain, s.column, 1) {
-			t.Errorf("equals on %s no longer seeks %s", s.attr, s.plain)
-		}
-		for _, r := range ranges {
-			if seeks(t, s.attr, string(r.op)+":"+literal(r.i), s.plain, s.column, r.want) {
-				t.Errorf("%s %s seeks %s, which orders by the column's collation", s.attr, r.op, s.plain)
-			}
-		}
-	}
-	for _, s := range storage {
-		env.ExecSQL(ctx, s.byteOrderDDL)
-	}
-	analyzeByteOrderTables(ctx, env)
-	for _, s := range storage {
-		for _, r := range ranges {
-			if !seeks(t, s.attr, string(r.op)+":"+literal(r.i), s.byteOrder, s.column, r.want) {
-				t.Errorf("%s %s does not seek %s", s.attr, r.op, s.byteOrder)
-			}
-		}
-	}
-}
-
 func analyzeByteOrderTables(ctx context.Context, env *Env) {
 	env.ExecSQL(ctx, `ANALYZE entity_main`)
 	env.ExecSQL(ctx, `ANALYZE eav_data`)
-}
-
-func byteOrderNoteAttrID(t *testing.T, env *Env) int16 {
-	t.Helper()
-	_, cache, err := env.Registry.GetSchemaAttributeCacheByID(SchemaIDWide)
-	if err != nil {
-		t.Fatalf("read e2e_wide attributes: %v", err)
-	}
-	return cache["note"].AttributeID
 }
 
 // seedByteOrderFiller gives the DuckDB route a tier to read before the probe

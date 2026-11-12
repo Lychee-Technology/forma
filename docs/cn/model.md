@@ -107,8 +107,8 @@ CREATE TABLE eav_data_<base32_client_id>_<project_id>
     schema_id     smallint                   NOT NULL,
     row_id        uuid                       NOT NULL,
     attr_id       smallint                   NOT NULL,
-    array_indices text      default ''::text NOT NULL,
-    value_text    text,
+    array_indices text COLLATE "C" default ''::text NOT NULL,
+    value_text    text COLLATE "C",
     value_numeric numeric,
     primary key (schema_id, row_id, attr_id, array_indices)
 );
@@ -125,6 +125,8 @@ create index ..._text_idx    on ... (schema_id, attr_id, value_text, row_id)    
 | array_indices | text             | 数组索引           |
 | value_text    | text             | 文本类型值         |
 | value_numeric | numeric          | 数字类型值         |
+
+PostgreSQL 上 Forma 的文本列都声明为 `COLLATE "C"`（#816），见 [Text collation](../text-collation.md)。
 
 ## Change Log Table
 

@@ -8,6 +8,7 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/schemalease"
+	"github.com/lychee-technology/forma/internal/textcollation"
 	"github.com/lychee-technology/forma/internal/uniquekey"
 )
 
@@ -51,5 +52,16 @@ func TestFederatedDDLCreatesRowGuardTableFromSharedSource(t *testing.T) {
 func TestFederatedDDLCreatesSchemaLeaseTableFromSharedSource(t *testing.T) {
 	if want := schemalease.StatementFor("entity_main"); !slices.Contains(federatedDDL, want) {
 		t.Errorf("federatedDDL lacks the shared schema lease statement:\n%s", want)
+	}
+}
+
+// #816: every text column this harness creates is under the C collation, as
+// init-db's are, so what its tests observe about ordering and index plans is
+// what a fresh deployment does.
+func TestFederatedDDLDeclaresEveryTextColumnUnderC(t *testing.T) {
+	for _, stmt := range federatedDDL {
+		if drift := textcollation.DDLDrift(stmt); drift != nil {
+			t.Errorf("federatedDDL declares text outside the C collation:\n  %s\nin:\n%s", strings.Join(drift, "\n  "), stmt)
+		}
 	}
 }

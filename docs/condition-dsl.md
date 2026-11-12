@@ -77,7 +77,9 @@ Operand rules shared by every operator:
   order, on every route and tier, and whatever collation the PostgreSQL database
   or column uses. `"B"` sorts before `"a"`, and `"é"` after `"z"`. This is not
   linguistic order. It does not extend to `equals`, `starts_with`, `contains` or
-  to sort order (#728).
+  to sort order (#728). Sort order follows the column's collation on the
+  Postgres route and bytes on the DuckDB route; `init-db` creates text columns
+  under `C` (#816), where the two agree ([Text collation](./text-collation.md)).
 - A `uuid` range orders by the UUID's bytes on every route and tier: a native
   comparison on a `uuid` column of `entity_main`, and its canonical lowercase
   text in byte order everywhere else.
@@ -245,10 +247,11 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
   result.
 - A text range on PostgreSQL renders `<col> COLLATE "C" <op> $n`, on a text
   column of `entity_main` and on `eav_data.value_text`, so a `uuid` in `eav_data`
-  takes it too. This holds for a query and for a write's condition. No btree
-  index built under another collation can seek that compare, including an index
-  with the default collation in a database whose default is `C`, because the
-  planner matches collations by OID. See
+  takes it too. This holds for a query and for a write's condition. A btree
+  index seeks that compare only under the `C` collation itself, because the
+  planner matches collations by OID: an index on a column `init-db` created
+  under `C` (#816) does, one under another collation does not, including the
+  default collation of a database whose default is `C`. See
   [Declared Indexes](./schema-indexes.md#text-ranges). The DuckDB renders name no
   collation, since DuckDB compares `VARCHAR` by bytes.
 - An ordered comparison on a `uuid` attribute casts the column to `VARCHAR`
@@ -298,6 +301,13 @@ order too, so such a query, or a write condition with such a range, answers
 differently on a database whose collation is not `C`. The cost is the index seek
 described under [Declared Indexes](./schema-indexes.md#text-ranges). There is no
 setting that restores the old order.
+
+Since #816 `init-db` creates text columns under `C`. On such a table the
+Postgres route also sorts text by bytes, as the DuckDB route always did, where it
+sorted under the database's collation before: under `en_US.utf8`, `title`
+ascending was `a, B, é, Z, zebra` and is now `B, Z, a, zebra, é`. A table an
+earlier `init-db` created keeps the old sort until its columns are migrated
+([Text collation](./text-collation.md)).
 
 A text operand with a NUL character or invalid UTF-8 used to fail the query
 after it started (PostgreSQL `22021`); it is now refused before. The one
