@@ -64,6 +64,21 @@ Each step is one PR and leaves `main` releasable. Steps 1 to 5 change no answer,
 
 3. **The parquet-only template.** Add a template without `pg_source` and without the `ATTACH`. It reads `dirty_ids` from the staged set, renders explicit `NULLS LAST`, and takes its parquet window (`OFFSET max(0, offset-h)`) as a parameter. The plan-cache scope of this template drops the connection string and the dirty-set flag. Today's template stays. Validation: the §5 sketch test gains a parquet-only twin. The compiled-plan cache keeps one entry per shape, whatever the dirty set's size.
 
+   *Built and measured (#854).* `sqlgen.ParquetOnlyQueryTemplateDuckDB` and `federated.StageDirtySet`. The window binds as `LIMIT ? OFFSET ?`, so the plan scope also drops the limit and the offset. `TestHotLegLatencyBaseline` now also times, for each shape after the replays, the parquet half of a pgx pass on the same DuckDB instance and parquet objects. It reads the dirty set the attach statement reads (`ReadChangeLogSnapshot`, the hot form at the statement's cutoff), stages it, and runs the parquet-only statement. Same host and settings as #851, one run of all four sizes, median of five, in ms:
+
+   | `entity_main` rows | Shape | Engine pass (attach) | Hot-only replay | Dirty-set read (pgx) | Staging | Parquet-only statement |
+   | ---: | :---- | ---: | ---: | ---: | ---: | ---: |
+   | 10,000 | one row by `title` | 203 | 75 | 2.2 | 1.9 | 38 |
+   | 10,000 | first page by `count` | 272 | 127 | 1.9 | 1.8 | 86 |
+   | 100,000 | one row by `title` | 819 | 77 | 1.7 | 1.7 | 46 |
+   | 100,000 | first page by `count` | 1,087 | 400 | 1.8 | 1.8 | 424 |
+   | 300,000 | one row by `title` | 1,049 | 57 | 1.7 | 1.4 | 54 |
+   | 300,000 | first page by `count` | 1,736 | 724 | 1.5 | 1.4 | 631 |
+   | 1,000,000 | one row by `title` | 3,160 | 93 | 1.2 | 1.4 | 73 |
+   | 1,000,000 | first page by `count` | 5,884 | 2,177 | 1.5 | 1.2 | 2,124 |
+
+   The dirty set holds 1,000 IDs at every size, and reading and staging it costs about 3 ms. The parquet-only statement takes about what the hot-only replay takes, which is the bound #851 gave for the parquet side: 73 ms against 93 for the selective shape at 1,000,000 rows, 2.1 s against 2.2 s where the page ranks every parquet row. Against the attach pass, the DuckDB side of a pass falls from 3.2 s to 73 ms and from 5.9 s to 2.1 s at that size. That is not yet a pass's latency: the hot-keys query, the page read (step 4) and the merge (step 5) are not built, and they add their own PostgreSQL reads. Each run also checks that the parquet count differs from the engine's total by no more than the dirty set. At 300,000 and 1,000,000 rows the engine pass agrees with #851's within 6%. At 10,000 and 100,000 rows this run measured it 1.7 to 2.0 times #851's figures (819 against 400 ms for the selective shape at 100,000 rows), and a run of the 10,000-row size alone measured 102 and 145 ms for the engine pass and 20 and 49 ms for the statement. The cause has not been investigated. The comparison above holds within each run, since both paths ran over the same state and the same rows, but the absolute figures at the two smaller sizes should not be quoted as the baseline.
+
 4. **The hot leg's PostgreSQL queries.** Add the hot-keys query: the PostgreSQL route's condition (`ToDualClauses`' PostgreSQL payload), restricted to `entity_main` rows with an entry in the dirty window, `ver_ts` from the newest entry. Add the page read by `row_id`, reusing the PostgreSQL route's reader. Validation: the condition-DSL parity cases run against the hot-keys query and the PostgreSQL route, and must select the same rows.
 
 5. **Engine wiring, behind a switch.** Add `DuckDBConfig.HotLegTransport` (`attach`, the default, or `pgx`). The `pgx` pass runs the six steps of design.md §6.1.1: snapshot, sort, stage, DuckDB, merge, page read. The same step also changes the following:
