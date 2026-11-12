@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"strconv"
 
@@ -27,7 +28,9 @@ import (
 //
 //   - BIGINT, INTEGER, SMALLINT: a Go integer within the type's range, or an
 //     integral json.Number literal. Every float is refused, a whole one too.
-//   - DOUBLE: a float, or an integer the nearest double holds exactly.
+//   - DOUBLE: a float, or an integer the nearest double holds exactly,
+//     judged by its value whatever its representation (a uint64 past int64
+//     or an integral json.Number past either included).
 //   - VARCHAR: a string. A uuid attribute's boundary must parse as a uuid,
 //     and takes its canonical lower-case text.
 //   - BOOLEAN: a bool.
@@ -35,7 +38,8 @@ import (
 //
 // A column's export type comes from the system column it names, else from
 // the request's sort key of that name (orders), else from the schema's
-// metadata (cache). A boundary taken from a returned row always passes:
+// metadata (cache), where the name resolves as DuckDB binds it: the
+// attribute whose parquet column it reaches, ASCII case aside. A boundary taken from a returned row always passes:
 // both legs return keys of the export type. The cursor must have passed
 // model.KeysetCursor.ValidateShape. An inactive cursor is returned as is.
 // Normalizing a normalized cursor returns an equal one.
@@ -113,7 +117,7 @@ func deref(v any) any {
 
 // goInteger returns v as an int64 when v is a Go integer type or an
 // integral json.Number literal. known is false for every other value;
-// inRange is false for an unsigned value past int64.
+// inRange is false for an unsigned value or an integral literal past int64.
 func goInteger(v any) (n int64, known, inRange bool) {
 	switch x := v.(type) {
 	case int:
@@ -137,11 +141,14 @@ func goInteger(v any) (n int64, known, inRange bool) {
 	case uint64:
 		return uintInteger(x)
 	case json.Number:
-		i, err := strconv.ParseInt(string(x), 10, 64)
-		if err == nil {
-			return i, true, true
+		if _, ok := integerLiteral(x); !ok {
+			return 0, false, false
 		}
-		return 0, false, false
+		i, err := strconv.ParseInt(string(x), 10, 64)
+		if err != nil {
+			return 0, true, false // an integral literal past int64
+		}
+		return i, true, true
 	default:
 		return 0, false, false
 	}
@@ -170,38 +177,58 @@ func integerBoundary(v any, lo, hi int64) (any, error) {
 	return n, nil
 }
 
+// doubleBoundary admits a float as it is, and an integer only when the
+// nearest double is that integer. An integer is judged by its value, never
+// by its representation: an int64, a uint64 past int64 and an integral
+// json.Number literal past either are held to the same exactness rule, so
+// 2^63 passes however it is spelled and 2^63 + 1 is refused however it is
+// spelled. A json.Number with a fraction or an exponent is a float literal.
 func doubleBoundary(v any) (any, error) {
+	var n *big.Int
 	switch x := v.(type) {
 	case float64:
 		return x, nil
 	case float32:
 		return float64(x), nil
 	case json.Number:
-		if _, err := strconv.ParseInt(string(x), 10, 64); err != nil {
-			f, ferr := strconv.ParseFloat(string(x), 64)
-			if ferr != nil {
-				return nil, fmt.Errorf("the json.Number %q is not a double: %w", x, ferr)
+		i, ok := integerLiteral(x)
+		if !ok {
+			f, err := strconv.ParseFloat(string(x), 64)
+			if err != nil {
+				return nil, fmt.Errorf("the json.Number %q is not a double: %w", x, err)
 			}
 			return f, nil
 		}
+		n = i
+	case uint:
+		n = new(big.Int).SetUint64(uint64(x))
+	case uint64:
+		n = new(big.Int).SetUint64(x)
+	default:
+		i, known, _ := goInteger(v)
+		if !known {
+			return nil, fmt.Errorf("a %T boundary is not a number", v)
+		}
+		n = big.NewInt(i)
 	}
-	n, known, inRange := goInteger(v)
-	if !known {
-		return nil, fmt.Errorf("a %T boundary is not a number", v)
-	}
-	if !inRange || !exactDouble(n) {
+	f, exact := exactDouble(n)
+	if !exact {
 		return nil, fmt.Errorf("the integer boundary %v has no exact double image: the nearest double would stand for a neighbouring integer (#281); pass the float the column holds", v)
 	}
-	return float64(n), nil
+	return f, nil
 }
 
-// exactDouble reports whether n's nearest double is n itself.
-func exactDouble(n int64) bool {
-	f := float64(n)
-	if f >= 9223372036854775808.0 { // 2^63, which MaxInt64 rounds to
-		return false
-	}
-	return int64(f) == n
+// integerLiteral reads a json.Number written as a decimal integer, of any
+// size. ok is false for a literal with a fraction or an exponent.
+func integerLiteral(x json.Number) (*big.Int, bool) {
+	return new(big.Int).SetString(string(x), 10)
+}
+
+// exactDouble returns n's nearest double, and whether that double is n
+// itself.
+func exactDouble(n *big.Int) (float64, bool) {
+	f, acc := new(big.Float).SetInt(n).Float64()
+	return f, acc == big.Exact
 }
 
 func varcharBoundary(v any, uuidText bool) (any, error) {

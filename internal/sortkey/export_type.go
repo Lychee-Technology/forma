@@ -13,6 +13,7 @@ package sortkey
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
@@ -111,7 +112,7 @@ func orderSpec(ao model.AttributeOrder) (columnSpec, error) {
 
 // cursorColumnSpec resolves a keyset cursor column: a system column by its
 // own name, else the request's sort key of that name, else the schema's
-// attribute. A column none of them knows has no export type, so its boundary
+// attribute DuckDB binds it to (cacheAttribute). A column none of them knows has no export type, so its boundary
 // cannot be normalized and the cursor is refused.
 func cursorColumnSpec(name string, orders []model.AttributeOrder, cache forma.SchemaAttributeCache) (columnSpec, error) {
 	if spec, _, ok := systemColumn(name); ok {
@@ -122,12 +123,48 @@ func cursorColumnSpec(name string, orders []model.AttributeOrder, cache forma.Sc
 			return orderSpec(ao)
 		}
 	}
-	meta, ok := cache[name]
-	if !ok {
-		return columnSpec{}, fmt.Errorf("keyset cursor column %q is neither a system column (row_id, created_at, ver_ts, deleted_ts) nor an attribute of the schema's metadata, so its boundary has no export type to be normalized to", name)
-	}
-	if meta.AttributeName == "" {
-		meta.AttributeName = name
+	meta, err := cacheAttribute(name, cache)
+	if err != nil {
+		return columnSpec{}, err
 	}
 	return attributeSpec(meta)
+}
+
+// cacheAttribute finds the attribute a cursor column names as DuckDB binds
+// it. The renderer emits the column's ParquetAttrColumn fold, which DuckDB
+// resolves as an unquoted identifier, ASCII case aside, so "COUNT" reaches
+// the column of the attribute "count". An exact name wins; otherwise the
+// attribute whose fold reaches the same column is the one. Registration
+// refuses two attributes folding onto one column
+// (sqlgen.ValidateParquetAttrColumns), so at most one does; should a cache
+// that skipped that guard hold two, the cursor is refused rather than typed
+// by a guess. The name rules (system columns, placeholder, dedup machinery,
+// safe identifier) are checkKeysetCursor's and run before this.
+func cacheAttribute(name string, cache forma.SchemaAttributeCache) (forma.AttributeMetadata, error) {
+	if meta, ok := cache[name]; ok {
+		if meta.AttributeName == "" {
+			meta.AttributeName = name
+		}
+		return meta, nil
+	}
+	key := sqlgen.DuckDBFoldIdentifier(sqlgen.ParquetAttrColumn(name))
+	var found []string
+	for attr := range cache {
+		if sqlgen.DuckDBFoldIdentifier(sqlgen.ParquetAttrColumn(attr)) == key {
+			found = append(found, attr)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return forma.AttributeMetadata{}, fmt.Errorf("keyset cursor column %q is neither a system column (row_id, created_at, ver_ts, deleted_ts) nor an attribute of the schema's metadata, so its boundary has no export type to be normalized to", name)
+	case 1:
+		meta := cache[found[0]]
+		if meta.AttributeName == "" {
+			meta.AttributeName = found[0]
+		}
+		return meta, nil
+	default:
+		sort.Strings(found)
+		return forma.AttributeMetadata{}, fmt.Errorf("keyset cursor column %q reaches the parquet column %q, onto which the schema's attributes %q all fold, so its boundary has no single export type to be normalized to", name, key, found)
+	}
 }

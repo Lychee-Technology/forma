@@ -74,6 +74,7 @@ func parityColumns() []parityColumn {
 			int64(math.MinInt16), int64(0), int64(10), int64(math.MaxInt16), nil}},
 		{"k_num", forma.AttributeMetadata{ValueType: forma.ValueTypeNumeric}, "DOUBLE", []any{
 			math.Inf(-1), -1.5, math.Copysign(0, -1), 0.0, 9.6, 10.0, float64(1 << 53), float64(1<<53 + 2),
+			math.Ldexp(1, 63), math.Nextafter(math.Ldexp(1, 63), math.Inf(1)), math.Ldexp(1, 64),
 			math.Inf(1), math.NaN(), nil}},
 		{"k_text", forma.AttributeMetadata{ValueType: forma.ValueTypeText}, "VARCHAR", []any{
 			"", "10", "B", "a", "abc", "é", nil}},
@@ -87,13 +88,17 @@ func parityColumns() []parityColumn {
 // parityBoundaries is a boundary of every Go type a caller can put in a
 // cursor, at the edges the plan names: a float 9.6 and whole floats,
 // integers at 2^53 - 1, 2^53 and 2^53 + 1 and at the BIGINT limits, a NaN,
-// and upper-case uuid text.
+// and upper-case uuid text. Integers past int64, as a uint64 and as an
+// integral json.Number, are held to the same exactness rule: 2^63 and 2^64
+// have a double image, 2^63 + 1 and 2^64 - 1 do not.
 func parityBoundaries() []any {
 	return []any{
 		int(10), int8(-1), int16(math.MaxInt16), int32(math.MinInt32), int64(1<<53 - 1), int64(1 << 53),
 		int64(1<<53 + 1), int64(math.MinInt64), int64(math.MaxInt64), uint(10), uint8(1), uint16(math.MaxUint16),
 		uint32(math.MaxUint32), uint64(math.MaxUint64), float32(9.5), 9.6, 10.0, -1.0, float64(1 << 53),
 		math.NaN(), math.Inf(1), math.Copysign(0, -1), json.Number("10"), json.Number("9.6"),
+		uint64(1) << 63, uint64(1<<63 + 1), json.Number("9223372036854775808"), json.Number("9223372036854775809"),
+		json.Number("18446744073709551615"), json.Number("18446744073709551616"), json.Number("-9223372036854775809"),
 		"10", "B", "abc", strings.ToUpper(parityRowID(40).String()), parityRowID(40).String(), true, false,
 		parityRowID(40), [16]byte(parityRowID(40)), time.UnixMilli(10), []byte("10"),
 	}

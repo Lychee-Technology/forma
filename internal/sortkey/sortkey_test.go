@@ -183,6 +183,18 @@ func TestNormalizeCursorBoundaries(t *testing.T) {
 		{"num", int64(math.MaxInt64), nil},
 		{"num", int64(math.MinInt64), float64(math.MinInt64)},
 		{"num", json.Number("9.6"), 9.6},
+		{"num", json.Number("1e3"), 1000.0},
+		{"num", json.Number("9007199254740993"), nil},
+		{"num", json.Number("9223372036854775808"), math.Ldexp(1, 63)},
+		{"num", json.Number("9223372036854775809"), nil},
+		{"num", json.Number("-9223372036854775809"), nil},
+		{"num", json.Number("18446744073709551615"), nil},
+		{"num", json.Number("18446744073709551616"), math.Ldexp(1, 64)},
+		{"num", uint64(1) << 63, math.Ldexp(1, 63)},
+		{"num", uint64(1<<63 + 1), nil},
+		{"num", uint64(math.MaxUint64), nil},
+		{"big", json.Number("9223372036854775808"), nil},
+		{"big", json.Number("-9223372036854775808"), int64(math.MinInt64)},
 		{"num", "9.6", nil},
 		{"text", "abc", "abc"},
 		{"text", &text, "x"},
@@ -247,6 +259,41 @@ func TestNormalizeCursorTypes(t *testing.T) {
 	same, err := NormalizeCursor(inactive, nil, nil)
 	require.NoError(t, err)
 	require.Same(t, inactive, same)
+}
+
+// A cursor-only attribute column resolves as DuckDB binds it: the attribute
+// whose parquet column it reaches, ASCII case aside. The caller's spelling
+// is kept on the cursor, which the renderer emits.
+func TestNormalizeCursorFoldsAttributeCase(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"count":        {AttributeName: "count", ValueType: forma.ValueTypeInteger, ColumnBinding: &forma.MainColumnBinding{ColumnName: "integer_01"}},
+		"contact.name": {AttributeName: "contact.name", ValueType: forma.ValueTypeText},
+		"Count":        {AttributeName: "Count", ValueType: forma.ValueTypeNumeric},
+	}
+	got, err := NormalizeCursor(cursorOn("Count", 1.5), nil, cache)
+	require.NoError(t, err, "an exact name wins over a case variant")
+	require.Equal(t, "DOUBLE", got.Columns[0].ExportType)
+
+	delete(cache, "Count")
+	got, err = NormalizeCursor(cursorOn("COUNT", int64(3)), nil, cache)
+	require.NoError(t, err)
+	require.Equal(t, "COUNT", got.Columns[0].Attribute)
+	require.Equal(t, "INTEGER", got.Columns[0].ExportType)
+	require.Equal(t, int64(3), got.Values[0])
+	_, err = NormalizeCursor(cursorOn("COUNT", 9.6), nil, cache)
+	require.ErrorContains(t, err, "exported as INTEGER", "the case variant is held to the attribute's type")
+
+	got, err = NormalizeCursor(cursorOn("Contact.NAME", "x"), nil, cache)
+	require.NoError(t, err)
+	require.Equal(t, "VARCHAR", got.Columns[0].ExportType)
+
+	_, err = NormalizeCursor(cursorOn("coünt", int64(3)), nil, cache)
+	require.ErrorContains(t, err, "neither a system column", "the fold is ASCII only")
+
+	cache["A_B"] = forma.AttributeMetadata{ValueType: forma.ValueTypeText}
+	cache["a.b"] = forma.AttributeMetadata{ValueType: forma.ValueTypeBigInt}
+	_, err = NormalizeCursor(cursorOn("a_b", int64(3)), nil, cache)
+	require.ErrorContains(t, err, "no single export type")
 }
 
 // System keys derive from their stored values; deleted_ts is always 0.

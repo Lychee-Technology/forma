@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -74,4 +75,45 @@ func TestKeysetQueryNormalizesACopy(t *testing.T) {
 	same, err := engine.keysetQuery(open, nil)
 	require.NoError(t, err)
 	require.Same(t, open, same)
+}
+
+// A cursor-only walk names an attribute in any ASCII case DuckDB binds to
+// it: validateKeysetCursor types "COUNT" by the attribute count, as the
+// engine resolves it, while its name guards still refuse what they refused.
+func TestValidateKeysetCursorResolvesAttributeCase(t *testing.T) {
+	cache := forma.SchemaAttributeCache{
+		"count":        {AttributeName: "count", ValueType: forma.ValueTypeInteger, ColumnBinding: &forma.MainColumnBinding{ColumnName: "integer_01"}},
+		"contact.name": {AttributeName: "contact.name", ValueType: forma.ValueTypeText},
+	}
+	cursorOn := func(attr string, v any) *model.KeysetCursor {
+		return &model.KeysetCursor{
+			Columns: []model.KeysetColumn{{Attribute: attr}, {Attribute: "row_id"}},
+			Values:  []any{v, "11111111-1111-1111-1111-111111111111"},
+			Mode:    model.KeysetCursorModeAfter,
+		}
+	}
+
+	for attr, want := range map[string]string{"COUNT": "INTEGER", "Count": "INTEGER", "CONTACT.Name": "VARCHAR"} {
+		v := any(int64(7))
+		if want == "VARCHAR" {
+			v = "x"
+		}
+		got, err := validateKeysetCursor(cursorOn(attr, v), nil, cache)
+		require.NoError(t, err, attr)
+		require.Equal(t, attr, got.Columns[0].Attribute, "the caller's spelling is what renders")
+		require.Equal(t, want, got.Columns[0].ExportType, attr)
+	}
+
+	_, err := validateKeysetCursor(cursorOn("COUNT", 9.6), nil, cache)
+	require.ErrorContains(t, err, `for column "COUNT", exported as INTEGER`)
+	_, err = validateKeysetCursor(cursorOn("RN", int64(1)), nil, cache)
+	require.ErrorContains(t, err, "dedup machinery")
+	_, err = validateKeysetCursor(cursorOn("Row.Id", "x"), nil, cache)
+	require.ErrorContains(t, err, "a system column of the visible CTE")
+	_, err = validateKeysetCursor(cursorOn("COUNTS", int64(1)), nil, cache)
+	require.ErrorContains(t, err, "neither a system column")
+
+	orders := []model.AttributeOrder{{AttrName: "count", ValueType: forma.ValueTypeInteger, StorageLocation: forma.AttributeStorageLocationMain, ColumnName: "integer_01"}}
+	_, err = validateKeysetCursor(cursorOn("COUNT", int64(1)), orders, cache)
+	require.ErrorContains(t, err, `is "COUNT" but the request sorts on "count"`, "continuation stays byte-exact")
 }
