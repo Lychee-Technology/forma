@@ -8,7 +8,7 @@ import (
 
 	duckdb "github.com/duckdb/duckdb-go/v2"
 	"github.com/google/uuid"
-	"github.com/lychee-technology/forma/internal/duckdbinit"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
@@ -66,30 +66,14 @@ func (f *stagingFixture) dirtySet(tb testing.TB, n int) []uuid.UUID {
 	return ids
 }
 
-// antiJoinAppender stages ids into a temp table through the Appender and
-// counts the scan rows the anti-join keeps.
+// antiJoinAppender stages ids through StageDirtySet, the parquet-only
+// template's transport, and counts the scan rows the anti-join keeps.
 func (f *stagingFixture) antiJoinAppender(ctx context.Context, ids []uuid.UUID) (int64, error) {
-	if _, err := f.conn.ExecContext(ctx, `CREATE OR REPLACE TEMP TABLE dirty_ids (row_id UUID)`); err != nil {
-		return 0, fmt.Errorf("create dirty_ids: %w", err)
-	}
-	err := f.conn.Raw(func(driverConn any) error {
-		app, err := duckdbinit.NewAppender(driverConn, "temp", "main", "dirty_ids")
-		if err != nil {
-			return err
-		}
-		for _, id := range ids {
-			if err := app.AppendRow(duckdb.UUID(id)); err != nil {
-				_ = app.Close()
-				return fmt.Errorf("append dirty id: %w", err)
-			}
-		}
-		return app.Close()
-	})
-	if err != nil {
-		return 0, fmt.Errorf("stage dirty ids: %w", err)
+	if err := StageDirtySet(ctx, f.conn, ids); err != nil {
+		return 0, err
 	}
 	var kept int64
-	err = f.conn.QueryRowContext(ctx, `SELECT count(*) FROM scan_rows WHERE row_id NOT IN (SELECT row_id FROM dirty_ids)`).Scan(&kept)
+	err := f.conn.QueryRowContext(ctx, `SELECT count(*) FROM scan_rows WHERE row_id NOT IN (SELECT row_id FROM temp.main.`+sqlgen.StagedDirtyIDsTable+`)`).Scan(&kept)
 	if err != nil {
 		return 0, fmt.Errorf("anti-join staged dirty ids: %w", err)
 	}

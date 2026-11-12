@@ -138,6 +138,7 @@ type baselineRow struct {
 	engine, engineFetch            time.Duration
 	full, hotOnly                  time.Duration
 	fullProfile, hotProfile        baselineProfile
+	parquetOnly                    parquetOnlyTiming
 }
 
 // measureBaselineSize measures every shape at the Env's current size: every
@@ -176,6 +177,7 @@ func measureBaselineSize(ctx context.Context, t *testing.T, env *Env, schema Sch
 		stmt, params := renderedStatement(t, firsts[i].Plan)
 		r.ensureHotOnly(ctx, t, env, stmt)
 		replayBaselineShape(ctx, t, r, stmt, params, firsts[i].Total, &rows[i])
+		rows[i].parquetOnly = r.measureParquetOnly(ctx, t, env, firsts[i], stmt)
 	}
 	return rows
 }
@@ -420,20 +422,24 @@ func drainReplay(rows *sql.Rows) (int64, error) {
 
 // formatBaseline renders the medians as the Markdown table the plan records.
 // Times are ms. The flushed rows' cost is the full replay minus the hot-only
-// one, and its share is of the full replay.
+// one, and its share is of the full replay. The last four columns are the
+// parquet leg of the pgx pass (#854): the dirty set's snapshot read and
+// staging, and the parquet-only statement.
 func formatBaseline(rows []baselineRow) string {
 	var b strings.Builder
-	b.WriteString("| entity_main | eav_data | change_log | parquet | shape | engine pass | engine DuckDB fetch | full replay | hot-only replay | flushed rows' cost | share | rows from PostgreSQL, full | rows from PostgreSQL, hot-only | rows from parquet |\n")
-	b.WriteString("| ---: | ---: | ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+	b.WriteString("| entity_main | eav_data | change_log | parquet | shape | engine pass | engine DuckDB fetch | full replay | hot-only replay | flushed rows' cost | share | rows from PostgreSQL, full | rows from PostgreSQL, hot-only | rows from parquet | dirty IDs | dirty-set read (pgx) | staging | parquet-only statement |\n")
+	b.WriteString("| ---: | ---: | ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 	for _, r := range rows {
 		share := 0.0
 		if r.full > 0 {
 			share = 100 * float64(r.full-r.hotOnly) / float64(r.full)
 		}
-		fmt.Fprintf(&b, "| %d | %d | %d | %d (%.1f MB) | %s | %s | %s | %s | %s | %s | %.0f%% | %d | %d | %d |\n",
+		po := r.parquetOnly
+		fmt.Fprintf(&b, "| %d | %d | %d | %d (%.1f MB) | %s | %s | %s | %s | %s | %s | %.0f%% | %d | %d | %d | %d | %s | %s | %s |\n",
 			r.entityMain, r.eavData, r.changeLog, r.parquetObjects, r.parquetMB, r.shape,
 			ms(r.engine), ms(r.engineFetch), ms(r.full), ms(r.hotOnly), ms(r.full-r.hotOnly), share,
-			r.fullProfile.postgresRows, r.hotProfile.postgresRows, r.fullProfile.parquetRows)
+			r.fullProfile.postgresRows, r.hotProfile.postgresRows, r.fullProfile.parquetRows,
+			po.dirtyIDs, ms(po.snapshotRead), ms(po.stage), ms(po.query))
 	}
 	return b.String()
 }

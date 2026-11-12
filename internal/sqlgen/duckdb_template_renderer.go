@@ -346,9 +346,17 @@ func formatDuckDBPathList(paths []string) string {
 // a total order — mirroring the PG optimized template's trailing m.ltbase_row_id —
 // keeping LIMIT/OFFSET windows stable across requests (#183).
 func buildNonKeysetOrderBy(q *model.FederatedAttributeQuery) string {
+	return strings.Join(nonKeysetOrderTerms(q), ", ")
+}
+
+// nonKeysetOrderTerms returns buildNonKeysetOrderBy's terms, "<column> <dir>"
+// each, so the parquet-only template can render the same order with an
+// explicit NULLS LAST on every term.
+func nonKeysetOrderTerms(q *model.FederatedAttributeQuery) []string {
 	const stableTiebreak = "row_id ASC"
+	defaultTerms := []string{"created_at DESC", stableTiebreak}
 	if q == nil || len(q.AttributeOrders) == 0 {
-		return "created_at DESC, " + stableTiebreak
+		return defaultTerms
 	}
 	var parts []string
 	for _, ao := range q.AttributeOrders {
@@ -367,9 +375,9 @@ func buildNonKeysetOrderBy(q *model.FederatedAttributeQuery) string {
 		// If neither ColumnName nor AttrName is set the attribute is unresolvable; skip it.
 	}
 	if len(parts) == 0 {
-		return "created_at DESC, " + stableTiebreak
+		return defaultTerms
 	}
-	return strings.Join(parts, ", ") + ", " + stableTiebreak
+	return append(parts, stableTiebreak)
 }
 
 // appendKeysetArgs extracts KEYSET_ARGS from the params map and appends them

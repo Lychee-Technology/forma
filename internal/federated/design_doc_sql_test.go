@@ -209,37 +209,42 @@ func rewriteDocSQLForLocalExecution(t *testing.T, sqlText, parquetPath string) s
 // so a leg that aliased the version stamp into the created_at slot (#460)
 // would report the wrong value and fail the assertion below.
 //   - d2: unflushed hot version that fails the filter — dropped post-LWW.
-func seedDesignDocScenario(t *testing.T, db *sql.DB, parquetPath string) {
+//
+// rowID maps each scenario name to the row_id the seed writes: §5 runs on the
+// names themselves, the parquet-only twin on UUIDs, since its anti-join
+// compares row_id as a UUID against the staged set.
+func seedDesignDocScenario(t *testing.T, db *sql.DB, parquetPath string, rowID func(string) string) {
 	t.Helper()
+	id := rowID
 
 	stmts := []string{
 		`CREATE TABLE change_log (
 			row_id VARCHAR, schema_id INTEGER, flushed_at BIGINT,
 			changed_at BIGINT, deleted_at BIGINT)`,
 		`INSERT INTO change_log VALUES
-			('d1', 1, 0, 300, 0),
-			('d2', 1, 0, 300, 0),
-			('s3', 1, 500, 100, 0)`,
+			('` + id("d1") + `', 1, 0, 300, 0),
+			('` + id("d2") + `', 1, 0, 300, 0),
+			('` + id("s3") + `', 1, 500, 100, 0)`,
 		`CREATE TABLE entity_main_dev (
 			ltbase_row_id VARCHAR, ltbase_schema_id INTEGER, ltbase_created_at BIGINT,
 			text_01 VARCHAR, integer_01 INTEGER)`,
 		`INSERT INTO entity_main_dev VALUES
-			('d1', 1, 90, 'John Dirty', 30),
-			('d2', 1, 95, 'Bob', 40)`,
+			('` + id("d1") + `', 1, 90, 'John Dirty', 30),
+			('` + id("d2") + `', 1, 95, 'Bob', 40)`,
 		`CREATE TABLE eav_data_dev (
 			row_id VARCHAR, schema_id INTEGER, attr_id INTEGER, value_text VARCHAR)`,
 		`INSERT INTO eav_data_dev VALUES
-			('d1', 1, 205, 'developer'),
-			('d2', 1, 205, 'developer')`,
+			('` + id("d1") + `', 1, 205, 'developer'),
+			('` + id("d2") + `', 1, 205, 'developer')`,
 		`COPY (
 			SELECT * FROM (VALUES
-				('s1', CAST(50 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Stale', 25, 'developer'),
-				('s1', CAST(50 AS BIGINT), CAST(200 AS BIGINT), CAST(0 AS BIGINT), 'John Newer', 15, 'developer'),
-				('s2', CAST(50 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Alive', 30, 'developer'),
-				('s2', CAST(50 AS BIGINT), CAST(200 AS BIGINT), CAST(200 AS BIGINT), 'John Gone', 30, 'developer'),
-				('s3', CAST(80 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Base', 40, 'developer'),
-				('s4', CAST(50 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'Alice', 50, 'developer'),
-				('d1', CAST(90 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Flushed', 25, 'developer')
+				('` + id("s1") + `', CAST(50 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Stale', 25, 'developer'),
+				('` + id("s1") + `', CAST(50 AS BIGINT), CAST(200 AS BIGINT), CAST(0 AS BIGINT), 'John Newer', 15, 'developer'),
+				('` + id("s2") + `', CAST(50 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Alive', 30, 'developer'),
+				('` + id("s2") + `', CAST(50 AS BIGINT), CAST(200 AS BIGINT), CAST(200 AS BIGINT), 'John Gone', 30, 'developer'),
+				('` + id("s3") + `', CAST(80 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Base', 40, 'developer'),
+				('` + id("s4") + `', CAST(50 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'Alice', 50, 'developer'),
+				('` + id("d1") + `', CAST(90 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Flushed', 25, 'developer')
 			) AS t(row_id, ltbase_created_at, changed_at, deleted_at, name, age, tag)
 		) TO '` + parquetPath + `' (FORMAT PARQUET)`,
 	}
@@ -262,7 +267,7 @@ func TestDesignDocSQL_ExecutesWithLWWFilterSemantics(t *testing.T) {
 		require.NoError(t, db.Close(), "failed to close in-memory DuckDB")
 	})
 
-	seedDesignDocScenario(t, db, parquetPath)
+	seedDesignDocScenario(t, db, parquetPath, func(name string) string { return name })
 
 	query := rewriteDocSQLForLocalExecution(t, docSQL, parquetPath)
 	rows, err := db.Query(query)
