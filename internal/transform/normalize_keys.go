@@ -57,11 +57,17 @@ import (
 // TestStripLeavesNothingCoveredForTheValidator.
 //
 // That is a statement about those callers, not a guarantee this package can
-// make. Each strip site is guarded on the caller holding a relation index
-// (entity_crud_service.go, entity_batch_create_atomic.go), and a caller that skips the
-// strip reaches this function with contactSnapshot.name still present, where the
-// ordinary rule expands it like any other known dotted name. That expansion is
-// what #314 carved out against, and the carve-out is gone (#318).
+// make. The strips that precede this function are the two create paths
+// (entityCRUDService.prepareCreate, batchCreateAtomic) and mergeUpdateDocument,
+// which Update and the atomic BatchUpdate both merge through. The one other
+// call, in checkUpdatesValues, strips the raw updates for the value check, and
+// its result never reaches this function. Every site calls the strip
+// unconditionally: a nil or empty RelationIndex is handled inside
+// StripComputedFields, which hands back the map it was given, so it strips
+// nothing rather than skipping the call. A caller that skips the strip reaches
+// this function with contactSnapshot.name still present, where the ordinary
+// rule expands it like any other known dotted name. That expansion is what
+// #314 carved out against, and the carve-out is gone (#318).
 //
 // arrays comes from schemavalidate, the only place that knows which paths are
 // arrays; the metadata cache records requirement.areas.city and contact.email
