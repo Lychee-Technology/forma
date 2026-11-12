@@ -1,12 +1,15 @@
 package main
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/schemalease"
+	"github.com/lychee-technology/forma/internal/textcollation"
 	"github.com/lychee-technology/forma/internal/uniquekey"
 )
 
@@ -39,23 +42,23 @@ func wantDDLStatements() []string {
 	statements := []string{
 		// schema_registry table
 		`CREATE TABLE IF NOT EXISTS "schema_registry" (
-		schema_name TEXT PRIMARY KEY,
+		schema_name TEXT COLLATE "C" PRIMARY KEY,
 		schema_id SMALLINT UNIQUE NOT NULL
 	)`,
 		// entity_main table
 		`CREATE TABLE IF NOT EXISTS "entity_main" (
 		ltbase_schema_id   SMALLINT NOT NULL,
 		ltbase_row_id      UUID NOT NULL,
-		text_01            TEXT,
-		text_02            TEXT,
-		text_03            TEXT,
-		text_04            TEXT,
-		text_05            TEXT,
-		text_06            TEXT,
-		text_07            TEXT,
-		text_08            TEXT,
-		text_09            TEXT,
-		text_10            TEXT,
+		text_01            TEXT COLLATE "C",
+		text_02            TEXT COLLATE "C",
+		text_03            TEXT COLLATE "C",
+		text_04            TEXT COLLATE "C",
+		text_05            TEXT COLLATE "C",
+		text_06            TEXT COLLATE "C",
+		text_07            TEXT COLLATE "C",
+		text_08            TEXT COLLATE "C",
+		text_09            TEXT COLLATE "C",
+		text_10            TEXT COLLATE "C",
 		smallint_01        SMALLINT,
 		smallint_02        SMALLINT,
 		smallint_03        SMALLINT,
@@ -73,9 +76,9 @@ func wantDDLStatements() []string {
 		ltbase_created_at  BIGINT NOT NULL,
 		ltbase_updated_at  BIGINT NOT NULL,
 		ltbase_deleted_at  BIGINT,
-		ltbase_created_by  TEXT,
-		ltbase_updated_by  TEXT,
-		ltbase_deleted_by  TEXT,
+		ltbase_created_by  TEXT COLLATE "C",
+		ltbase_updated_by  TEXT COLLATE "C",
+		ltbase_deleted_by  TEXT COLLATE "C",
 		PRIMARY KEY (ltbase_schema_id, ltbase_row_id)
 	)`,
 		// eav_data table
@@ -83,8 +86,8 @@ func wantDDLStatements() []string {
 		schema_id      SMALLINT NOT NULL,
 		row_id         UUID NOT NULL,
 		attr_id        SMALLINT NOT NULL,
-		array_indices  TEXT NOT NULL DEFAULT '',
-		value_text     TEXT,
+		array_indices  TEXT COLLATE "C" NOT NULL DEFAULT '',
+		value_text     TEXT COLLATE "C",
 		value_numeric  NUMERIC,
 		PRIMARY KEY (schema_id, row_id, attr_id, array_indices)
 	)`,
@@ -141,7 +144,7 @@ func wantUniqueKeyTableDDL() []string {
 		`CREATE TABLE IF NOT EXISTS "entity_main_unique_key" (
 		ltbase_schema_id SMALLINT NOT NULL,
 		key_id           SMALLINT NOT NULL,
-		key_value        TEXT     NOT NULL,
+		key_value        TEXT COLLATE "C" NOT NULL,
 		ltbase_row_id    UUID     NOT NULL,
 		PRIMARY KEY (ltbase_schema_id, key_id, key_value)
 	)`,
@@ -149,8 +152,8 @@ func wantUniqueKeyTableDDL() []string {
 		`CREATE TABLE IF NOT EXISTS "entity_main_unique_key_state" (
 		ltbase_schema_id SMALLINT NOT NULL,
 		key_id           SMALLINT NOT NULL,
-		attributes_hash  TEXT     NOT NULL,
-		storage_hash     TEXT     NOT NULL,
+		attributes_hash  TEXT COLLATE "C" NOT NULL,
+		storage_hash     TEXT COLLATE "C" NOT NULL,
 		built_at         BIGINT   NOT NULL,
 		PRIMARY KEY (ltbase_schema_id, key_id)
 	)`,
@@ -179,21 +182,21 @@ func wantLedgerDDL() []string {
 		`CREATE TABLE IF NOT EXISTS "schema_registry_generation" (
 		schema_id    SMALLINT NOT NULL,
 		generation   BIGINT   NOT NULL,
-		content_hash TEXT     NOT NULL,
-		recorded_by  TEXT     NOT NULL,
+		content_hash TEXT COLLATE "C" NOT NULL,
+		recorded_by  TEXT COLLATE "C" NOT NULL,
 		recorded_at  BIGINT   NOT NULL,
-		warnings     TEXT     NOT NULL DEFAULT '',
+		warnings     TEXT COLLATE "C" NOT NULL DEFAULT '',
 		PRIMARY KEY (schema_id, generation)
 	)`,
 		`CREATE TABLE IF NOT EXISTS "schema_registry_generation_attr" (
 		schema_id   SMALLINT NOT NULL,
 		generation  BIGINT   NOT NULL,
 		attr_id     SMALLINT NOT NULL,
-		attr_name   TEXT     NOT NULL,
-		value_type  TEXT     NOT NULL,
-		items_type  TEXT     NOT NULL DEFAULT '',
-		column_name TEXT     NOT NULL DEFAULT '',
-		encoding    TEXT     NOT NULL DEFAULT '',
+		attr_name   TEXT COLLATE "C" NOT NULL,
+		value_type  TEXT COLLATE "C" NOT NULL,
+		items_type  TEXT COLLATE "C" NOT NULL DEFAULT '',
+		column_name TEXT COLLATE "C" NOT NULL DEFAULT '',
+		encoding    TEXT COLLATE "C" NOT NULL DEFAULT '',
 		retired     BOOLEAN  NOT NULL DEFAULT FALSE,
 		PRIMARY KEY (schema_id, generation, attr_id)
 	)`,
@@ -366,9 +369,65 @@ func TestUniqueKeyDDLUsesSharedSource(t *testing.T) {
 	}
 	unquoted := uniquekey.StatementsFor("entity_main")
 	for i := range unquoted {
-		if strings.ReplaceAll(got[i], `"`, "") != unquoted[i] {
+		if strings.ReplaceAll(unquotedIdentifiers(got[i]), `COLLATE C`, `COLLATE "C"`) != unquoted[i] {
 			t.Errorf("statement %d names other tables than the harnesses' copy:\n got: %q\nwant: %q", i, got[i], unquoted[i])
 		}
+	}
+}
+
+// unquotedIdentifiers drops the quotes init-db puts around table names, and
+// with them the quotes of the C collation's name, which the caller restores.
+func unquotedIdentifiers(stmt string) string { return strings.ReplaceAll(stmt, `"`, "") }
+
+// TestInitDBDeclaresEveryTextColumnUnderC pins #816's contract on everything
+// init-db creates: no statement of the table transaction declares a
+// collatable column without COLLATE "C".
+func TestInitDBDeclaresEveryTextColumnUnderC(t *testing.T) {
+	for _, ddl := range tableTransactionDDL(testInitDBOptions()) {
+		if drift := textcollation.DDLDrift(ddl.statement); drift != nil {
+			t.Errorf("%s declares text outside the C collation: %v", ddl.failure, drift)
+		}
+	}
+}
+
+// TestInitDBRendersTextForDSQLWithoutACollation pins the DSQL form of the
+// table transaction (#816): DSQL's collation is fixed at C and it refuses a
+// COLLATE clause, so the form is the PostgreSQL one without the clauses, and
+// nothing else differs.
+func TestInitDBRendersTextForDSQLWithoutACollation(t *testing.T) {
+	opts := testInitDBOptions()
+	postgres := tableTransactionDDL(opts)
+	opts.engine = forma.EngineAuroraDSQL
+	dsql := tableTransactionDDL(opts)
+	if len(dsql) != len(postgres) {
+		t.Fatalf("the DSQL form has %d statements, the PostgreSQL form %d", len(dsql), len(postgres))
+	}
+	for i := range postgres {
+		if want := strings.ReplaceAll(postgres[i].statement, ` COLLATE "C"`, ""); dsql[i].statement != want {
+			t.Errorf("%s for DSQL:\n got %q\nwant %q", dsql[i].failure, dsql[i].statement, want)
+		}
+		if strings.Contains(dsql[i].statement, "COLLATE") {
+			t.Errorf("%s for DSQL names a collation: %s", dsql[i].failure, dsql[i].statement)
+		}
+	}
+}
+
+// TestOwnedTablesNameEveryTableInitDBCreates keeps the catalog check (#816)
+// over the same tables init-db creates: a table added to the transaction
+// without a place in ownedTables would escape it.
+func TestOwnedTablesNameEveryTableInitDBCreates(t *testing.T) {
+	created := regexp.MustCompile(`^CREATE TABLE IF NOT EXISTS (\S+) \(`)
+	var want []string
+	for _, ddl := range tableTransactionDDL(testInitDBOptions()) {
+		if m := created.FindStringSubmatch(ddl.statement); m != nil {
+			want = append(want, m[1])
+		}
+	}
+	if len(want) != 10 {
+		t.Fatalf("init-db creates %d tables, want 10: %q", len(want), want)
+	}
+	if got := ownedTables(testInitDBOptions()); !slices.Equal(got, want) {
+		t.Fatalf("ownedTables = %q, want the tables init-db creates, in order: %q", got, want)
 	}
 }
 

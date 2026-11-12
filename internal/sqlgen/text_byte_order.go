@@ -1,6 +1,9 @@
 package sqlgen
 
-import "github.com/lychee-technology/forma/internal/model"
+import (
+	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/textcollation"
+)
 
 // pgByteOrderCollation is the PostgreSQL collation whose order is the bytes of
 // the UTF-8 text. It is the order of Forma's text range operators on every
@@ -11,8 +14,10 @@ import "github.com/lychee-technology/forma/internal/model"
 //
 // A btree index built under another collation cannot seek such a compare, and
 // that includes the default collation of a database whose default is C,
-// because the planner matches collations by OID (docs/schema-indexes.md).
-const pgByteOrderCollation = `"C"`
+// because the planner matches collations by OID (docs/schema-indexes.md). It
+// is the collation Forma declares its text columns with (#816), so an ordinary
+// index on a table init-db created does seek it.
+const pgByteOrderCollation = textcollation.Name
 
 // inByteOrder spells a text column for a range compare. The clause sits on the
 // column, not the placeholder, so the bind still takes its type from the column.

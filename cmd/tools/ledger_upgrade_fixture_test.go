@@ -11,10 +11,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/schemaledger"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/lychee-technology/forma/internal/testdb"
+	"github.com/lychee-technology/forma/internal/textcollation"
 	"github.com/lychee-technology/forma/internal/widthaudit"
 )
 
@@ -112,22 +114,27 @@ func (u *upgradeTarget) openPool(t *testing.T, tracer *pointerBarrier) *pgxpool.
 // preLedgerDDL is the core of an init-db run from before #733, from
 // init-db's own table sources: the registry without its active_generation
 // column, entity_main, the EAV table and the change log. Each runs alone, as
-// DSQL runs DDL, and none is an index.
+// DSQL runs DDL, and none is an index. Each is rendered for DSQL, without the
+// COLLATE "C" clauses DSQL refuses (#816).
 func (u *upgradeTarget) preLedgerDDL() []string {
-	return []string{
+	statements := []string{
 		schemaRegistryDDL(quoteIdentifier(u.registry)),
 		entityMainDDL(quoteIdentifier(u.tables.EntityMain)),
 		eavTableDDL(quoteIdentifier(u.tables.EAV)),
 		changeLogDDL(quoteIdentifier(u.tables.ChangeLog)),
 	}
+	for i, stmt := range statements {
+		statements[i] = textcollation.ForEngine(forma.EngineAuroraDSQL, stmt)
+	}
+	return statements
 }
 
 // addLedger runs the upgrade's first step as the runbook gives it for DSQL:
-// the exact schemaledger.Statements, each in its own transaction.
+// schemaledger.Statements rendered for DSQL, each in its own transaction.
 func (u *upgradeTarget) addLedger(t *testing.T) {
 	t.Helper()
 	for _, stmt := range schemaledger.Statements(u.registry) {
-		u.exec(t, stmt)
+		u.exec(t, textcollation.ForEngine(forma.EngineAuroraDSQL, stmt))
 	}
 }
 

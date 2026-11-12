@@ -34,17 +34,17 @@ func SeedPostgres(ctx context.Context, db *sql.DB) error {
   ltbase_created_at BIGINT,
   ltbase_updated_at BIGINT,
   ltbase_deleted_at BIGINT,
-  ltbase_created_by TEXT,
-  ltbase_updated_by TEXT,
-  ltbase_deleted_by TEXT,
-  text_01 TEXT,
+  ltbase_created_by TEXT COLLATE "C",
+  ltbase_updated_by TEXT COLLATE "C",
+  ltbase_deleted_by TEXT COLLATE "C",
+  text_01 TEXT COLLATE "C",
   integer_01 INTEGER
 );`,
 		`CREATE TABLE IF NOT EXISTS eav_data (
   schema_id INTEGER,
   row_id INTEGER,
   attr_id INTEGER,
-  value_text TEXT
+  value_text TEXT COLLATE "C"
 );`,
 	}
 

@@ -18,7 +18,7 @@ func ensureBenchmarkSchemaRegistry(ctx context.Context, pool *pgxpool.Pool) (str
 	if _, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS benchmark_schema_registry (
 			schema_id SMALLINT PRIMARY KEY,
-			schema_name TEXT NOT NULL UNIQUE,
+			schema_name TEXT COLLATE "C" NOT NULL UNIQUE,
 			created_at BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW()) * 1000
 		)`); err != nil {
 		return "", err

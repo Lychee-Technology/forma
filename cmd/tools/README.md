@@ -91,6 +91,12 @@ init-db
 建表与建索引均为 `IF NOT EXISTS`，所以 `init-db` 可以对已初始化的数据库重复运行，
 新增 schema 文件之后也可以（#643）。
 
+`init-db` 创建的每个文本列都声明为 `TEXT COLLATE "C"`（#816），与数据库默认排序规则无关。
+`IF NOT EXISTS` 不会修改已存在的表，所以 `init-db` 在同一建表事务中读取 `pg_attribute`，
+发现不在 `C` 排序规则下的文本列（早于 #816 创建的表）时回滚并以非零退出，列出表、列、实际与期望的排序规则，
+并打印迁移所需的 `ALTER TABLE` 语句，每条之后跟一条 `ANALYZE`；`init-db` 从不自行执行这些语句。迁移会持有 `ACCESS EXCLUSIVE` 锁并重建相关索引，
+还会删除被修改列的规划器统计信息，因此恢复服务之前必须先运行 `ANALYZE`，详见 `docs/text-collation.md`。
+
 指定 `-schema-dir` 时，`init-db` 在建表事务提交之后，为 schema 通过 `x-forma-indexes` 声明的组合索引
 逐个执行 `CREATE INDEX CONCURRENTLY IF NOT EXISTS`（#647），不阻塞并发写入；索引已全部存在时不再发出任何索引 DDL。
 声明索引无效（`indisvalid = false`，通常是被中断的并发建索引留下的）、键或形态与计划不符（如非 btree、带 INCLUDE 列）或名字被占用时，

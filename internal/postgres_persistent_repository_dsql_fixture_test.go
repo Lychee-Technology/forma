@@ -11,6 +11,7 @@ import (
 	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/testdb"
+	"github.com/lychee-technology/forma/internal/textcollation"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -64,7 +65,7 @@ func openDSQLTarget(t *testing.T, ctx context.Context) dsqlTarget {
 
 // createDSQLTables creates the tables the aurora-dsql engine writes, with
 // DDL DSQL runs: one CREATE TABLE a transaction, keyed by its primary key
-// alone. The unique-key tables are left out, since their row index needs
+// alone, and text without the COLLATE clause DSQL refuses (#816). The unique-key tables are left out, since their row index needs
 // CREATE INDEX ASYNC there and these tests declare no key.
 func (d dsqlTarget) createDSQLTables(t *testing.T, ctx context.Context) model.StorageTables {
 	t.Helper()
@@ -80,7 +81,7 @@ func (d dsqlTarget) createDSQLTables(t *testing.T, ctx context.Context) model.St
 	statements := []string{
 		main,
 		fmt.Sprintf(`CREATE TABLE %s (schema_id SMALLINT NOT NULL, row_id UUID NOT NULL, attr_id SMALLINT NOT NULL,
-			array_indices TEXT NOT NULL DEFAULT '', value_text TEXT, value_numeric DOUBLE PRECISION,
+			array_indices TEXT COLLATE "C" NOT NULL DEFAULT '', value_text TEXT COLLATE "C", value_numeric DOUBLE PRECISION,
 			PRIMARY KEY (schema_id, row_id, attr_id, array_indices))`, sanitizeIdentifier(tables.EAVData)),
 		fmt.Sprintf(`CREATE TABLE %s (schema_id SMALLINT NOT NULL, row_id UUID NOT NULL, flushed_at BIGINT NOT NULL DEFAULT 0,
 			changed_at BIGINT NOT NULL, deleted_at BIGINT, PRIMARY KEY (schema_id, row_id, flushed_at))`, sanitizeIdentifier(tables.ChangeLog)),
@@ -94,7 +95,7 @@ func (d dsqlTarget) createDSQLTables(t *testing.T, ctx context.Context) model.St
 		}
 	})
 	for _, stmt := range statements {
-		_, err := d.pool.Exec(ctx, stmt)
+		_, err := d.pool.Exec(ctx, textcollation.ForEngine(forma.EngineAuroraDSQL, stmt))
 		require.NoError(t, err, "create the aurora-dsql engine's tables")
 	}
 	return tables
@@ -104,13 +105,9 @@ func (d dsqlTarget) createDSQLTables(t *testing.T, ctx context.Context) model.St
 // line, NOT NULL where init-db's is.
 func dsqlEntityMainDDL(table string) string {
 	notNull := map[string]bool{"ltbase_schema_id": true, "ltbase_row_id": true, "ltbase_created_at": true, "ltbase_updated_at": true}
-	sqlType := map[model.ColumnKind]string{
-		model.ColumnKindText: "TEXT", model.ColumnKindSmallint: "SMALLINT", model.ColumnKindInteger: "INTEGER",
-		model.ColumnKindBigint: "BIGINT", model.ColumnKindDouble: "DOUBLE PRECISION", model.ColumnKindUUID: "UUID",
-	}
 	columns := make([]string, 0, len(model.EntityMainColumnDescriptors)+1)
 	for _, c := range model.EntityMainColumnDescriptors {
-		column := "\t" + c.Name + " " + sqlType[c.Kind]
+		column := "\t" + c.Name + " " + model.ColumnKindSQLType(c.Kind)
 		if notNull[c.Name] {
 			column += " NOT NULL"
 		}

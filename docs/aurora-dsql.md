@@ -241,6 +241,14 @@ gets `ErrRetryableConflict`.
   doing any work, so the schema is free. Re-run it once the cluster answers
   promptly.
 
+## Text collation
+
+DSQL's collation is fixed at `C`, the byte order Forma's text ranges use (#728).
+On PostgreSQL Forma declares every text column `COLLATE "C"` (#816); DSQL refuses
+that clause, so Forma's DSQL DDL declares plain `TEXT`. Whether an ordinary index
+on such a column seeks the `COLLATE "C"` range the query renders is unverified
+on a cluster (#825). See [Text collation](text-collation.md#aurora-dsql).
+
 ## Limits
 
 DSQL limits a transaction to 3,000 modified rows, 10 MiB and five minutes,

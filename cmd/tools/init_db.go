@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,6 +16,7 @@ import (
 	"github.com/lychee-technology/forma/internal/schemaledger"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/sqlutil"
+	"github.com/lychee-technology/forma/internal/textcollation"
 )
 
 type initDBOptions struct {
@@ -34,6 +34,10 @@ type initDBOptions struct {
 	// skipDeclaredIndexes leaves the x-forma-indexes step out, for operators
 	// who build indexes out of band (#647).
 	skipDeclaredIndexes bool
+	// engine is the database the DDL is rendered for. init-db has no flag for
+	// it and runs on PostgreSQL only (#690); the DSQL lint corpus renders the
+	// DSQL form, which leaves out the COLLATE clauses DSQL refuses (#816).
+	engine forma.DatabaseEngine
 }
 
 func runInitDB(ctx context.Context, args []string) error {
@@ -145,7 +149,7 @@ type tableDDL struct {
 // schemaRegistryDDL constructs the schema registry table.
 func schemaRegistryDDL(schemaTable string) string {
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-		schema_name TEXT PRIMARY KEY,
+		schema_name TEXT COLLATE "C" PRIMARY KEY,
 		schema_id SMALLINT UNIQUE NOT NULL
 	)`, schemaTable)
 }
@@ -156,8 +160,8 @@ func eavTableDDL(eavTable string) string {
 		schema_id      SMALLINT NOT NULL,
 		row_id         UUID NOT NULL,
 		attr_id        SMALLINT NOT NULL,
-		array_indices  TEXT NOT NULL DEFAULT '',
-		value_text     TEXT,
+		array_indices  TEXT COLLATE "C" NOT NULL DEFAULT '',
+		value_text     TEXT COLLATE "C",
 		value_numeric  NUMERIC,
 		PRIMARY KEY (schema_id, row_id, attr_id, array_indices)
 	)`, eavTable)
@@ -181,16 +185,16 @@ func entityMainDDL(entityMain string) string {
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		ltbase_schema_id   SMALLINT NOT NULL,
 		ltbase_row_id      UUID NOT NULL,
-		text_01            TEXT,
-		text_02            TEXT,
-		text_03            TEXT,
-		text_04            TEXT,
-		text_05            TEXT,
-		text_06            TEXT,
-		text_07            TEXT,
-		text_08            TEXT,
-		text_09            TEXT,
-		text_10            TEXT,
+		text_01            TEXT COLLATE "C",
+		text_02            TEXT COLLATE "C",
+		text_03            TEXT COLLATE "C",
+		text_04            TEXT COLLATE "C",
+		text_05            TEXT COLLATE "C",
+		text_06            TEXT COLLATE "C",
+		text_07            TEXT COLLATE "C",
+		text_08            TEXT COLLATE "C",
+		text_09            TEXT COLLATE "C",
+		text_10            TEXT COLLATE "C",
 		smallint_01        SMALLINT,
 		smallint_02        SMALLINT,
 		smallint_03        SMALLINT,
@@ -208,9 +212,9 @@ func entityMainDDL(entityMain string) string {
 		ltbase_created_at  BIGINT NOT NULL,
 		ltbase_updated_at  BIGINT NOT NULL,
 		ltbase_deleted_at  BIGINT,
-		ltbase_created_by  TEXT,
-		ltbase_updated_by  TEXT,
-		ltbase_deleted_by  TEXT,
+		ltbase_created_by  TEXT COLLATE "C",
+		ltbase_updated_by  TEXT COLLATE "C",
+		ltbase_deleted_by  TEXT COLLATE "C",
 		PRIMARY KEY (ltbase_schema_id, ltbase_row_id)
 	)`, entityMain)
 }
@@ -326,6 +330,9 @@ func tableTransactionDDL(opts initDBOptions) []tableDDL {
 	} {
 		all = append(all, group...)
 	}
+	for i := range all {
+		all[i].statement = textcollation.ForEngine(opts.engine, all[i].statement)
+	}
 	return all
 }
 
@@ -337,6 +344,9 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 		if ddl.announce != "" {
 			fmt.Print(ddl.announce)
 		}
+	}
+	if err := requireTextCollation(ctx, tx, opts); err != nil {
+		return err
 	}
 
 	// Register schemas from schema directory if provided
@@ -471,29 +481,4 @@ func withTx(ctx context.Context, conn *pgxpool.Conn, fn func(pgx.Tx) error) erro
 	}
 
 	return nil
-}
-
-func quoteIdentifier(name string) string {
-	return pgx.Identifier(splitIdentifier(name)).Sanitize()
-}
-
-func splitIdentifier(name string) []string {
-	parts := strings.Split(name, ".")
-	result := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			result = append(result, part)
-		}
-	}
-	if len(result) == 0 {
-		return []string{name}
-	}
-	return result
-}
-
-func makeIndexName(table string, suffix string) string {
-	base := strings.ReplaceAll(table, ".", "_")
-	base = strings.ReplaceAll(base, `"`, "")
-	return fmt.Sprintf("%s_%s_idx", base, suffix)
 }

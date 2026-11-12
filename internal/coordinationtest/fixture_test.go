@@ -20,6 +20,7 @@ import (
 	"github.com/lychee-technology/forma/internal/schemaledger"
 	"github.com/lychee-technology/forma/internal/schemaledger/ledgertest"
 	"github.com/lychee-technology/forma/internal/testdb"
+	"github.com/lychee-technology/forma/internal/textcollation"
 	"github.com/lychee-technology/forma/internal/uniquekey"
 	"github.com/stretchr/testify/require"
 )
@@ -237,10 +238,10 @@ func (e *env) createTables(t *testing.T) {
 		main = refusingInserts(main, schemaIDs[e.refusedSchema])
 	}
 	statements := append([]string{
-		fmt.Sprintf("CREATE TABLE %s (schema_name TEXT PRIMARY KEY, schema_id SMALLINT UNIQUE NOT NULL)", e.tables.schemaRegistry),
+		fmt.Sprintf(`CREATE TABLE %s (schema_name TEXT COLLATE "C" PRIMARY KEY, schema_id SMALLINT UNIQUE NOT NULL)`, e.tables.schemaRegistry),
 		main,
 		fmt.Sprintf(`CREATE TABLE %s (schema_id SMALLINT NOT NULL, row_id UUID NOT NULL, attr_id SMALLINT NOT NULL,
-			array_indices TEXT NOT NULL DEFAULT '', value_text TEXT, value_numeric NUMERIC,
+			array_indices TEXT COLLATE "C" NOT NULL DEFAULT '', value_text TEXT COLLATE "C", value_numeric NUMERIC,
 			PRIMARY KEY (schema_id, row_id, attr_id, array_indices))`, e.tables.eavData),
 		fmt.Sprintf(`CREATE TABLE %s (schema_id SMALLINT NOT NULL, row_id UUID NOT NULL, flushed_at BIGINT NOT NULL DEFAULT 0,
 			changed_at BIGINT NOT NULL, deleted_at BIGINT, PRIMARY KEY (schema_id, row_id, flushed_at))`, e.tables.changeLog),
@@ -256,7 +257,7 @@ func (e *env) createTables(t *testing.T) {
 		require.NoError(t, err)
 	}
 	// Generation 1 of each schema, as init-db records it (#733).
-	require.NoError(t, ledgertest.Seed(e.ctx, e.pool, e.tables.schemaRegistry, schemaDir))
+	require.NoError(t, ledgertest.SeedFor(e.ctx, e.pool, activeBackend().engine(), e.tables.schemaRegistry, schemaDir))
 }
 
 // refusingInserts adds the constraint newEnvRefusingInserts names to
@@ -269,12 +270,15 @@ func refusingInserts(main string, schemaID int16) string {
 // neither of which DSQL runs.
 var plainIndex = regexp.MustCompile(`^CREATE INDEX (CONCURRENTLY )?`)
 
-// execDDL runs one statement of the suite's DDL. On the dsql backend an index
-// is built as DSQL builds one: CREATE INDEX ASYNC, then a wait for its job.
-// The rewrite is the fixture's alone, so production's own DDL stays what the
-// suite exercises on PostgreSQL; #690 makes init-db do this itself.
+// execDDL runs one statement of the suite's DDL, rendered for the backend's
+// engine: on aurora-dsql without the COLLATE "C" clauses DSQL refuses (#816).
+// On the dsql backend an index is built as DSQL builds one: CREATE INDEX
+// ASYNC, then a wait for its job. The rewrite is the fixture's alone, so
+// production's own DDL stays what the suite exercises on PostgreSQL; #690
+// makes init-db do this itself.
 func (e *env) execDDL(t *testing.T, stmt string) {
 	t.Helper()
+	stmt = textcollation.ForEngine(activeBackend().engine(), stmt)
 	if activeBackend().name != dsqlBackend || !plainIndex.MatchString(stmt) {
 		_, err := e.pool.Exec(e.ctx, stmt)
 		require.NoError(t, err, "create the suite's tables: %s", stmt)
@@ -353,13 +357,9 @@ func initDBIndexes(tables tableSet) []string {
 // NOT NULL where init-db's is.
 func entityMainDDL(table string) string {
 	notNull := map[string]bool{"ltbase_schema_id": true, "ltbase_row_id": true, "ltbase_created_at": true, "ltbase_updated_at": true}
-	sqlType := map[model.ColumnKind]string{
-		model.ColumnKindText: "TEXT", model.ColumnKindSmallint: "SMALLINT", model.ColumnKindInteger: "INTEGER",
-		model.ColumnKindBigint: "BIGINT", model.ColumnKindDouble: "DOUBLE PRECISION", model.ColumnKindUUID: "UUID",
-	}
 	lines := make([]string, 0, len(model.EntityMainColumnDescriptors)+1)
 	for _, c := range model.EntityMainColumnDescriptors {
-		line := "\t" + c.Name + " " + sqlType[c.Kind]
+		line := "\t" + c.Name + " " + model.ColumnKindSQLType(c.Kind)
 		if notNull[c.Name] {
 			line += " NOT NULL"
 		}

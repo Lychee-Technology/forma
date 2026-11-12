@@ -118,19 +118,36 @@ func (p *recordingPool) takeAnchorQuery(t *testing.T) recordedQuery {
 	return anchors[0]
 }
 
-// planNode is the part of an EXPLAIN (FORMAT JSON) node the tests read.
+// planNode is the part of an EXPLAIN (FORMAT JSON) node the tests read. The
+// buffer and WAL counts are present only under EXPLAIN (ANALYZE, BUFFERS,
+// WAL), and are the statement's own, whatever else the cluster runs.
 type planNode struct {
-	NodeType  string     `json:"Node Type"`
-	IndexName string     `json:"Index Name"`
-	IndexCond string     `json:"Index Cond"`
-	Plans     []planNode `json:"Plans"`
+	NodeType   string     `json:"Node Type"`
+	IndexName  string     `json:"Index Name"`
+	IndexCond  string     `json:"Index Cond"`
+	SharedHit  int64      `json:"Shared Hit Blocks"`
+	SharedRead int64      `json:"Shared Read Blocks"`
+	WALBytes   int64      `json:"WAL Bytes"`
+	Plans      []planNode `json:"Plans"`
 }
 
 // explain returns the plan PostgreSQL chooses for q, run with q's arguments.
 func explain(ctx context.Context, t *testing.T, pool *pgxpool.Pool, q recordedQuery) planNode {
 	t.Helper()
+	return explainWith(ctx, t, pool, "FORMAT JSON", q)
+}
+
+// explainAnalyze runs q under EXPLAIN (ANALYZE, BUFFERS, WAL) and returns the
+// plan it ran with what it read and wrote.
+func explainAnalyze(ctx context.Context, t *testing.T, pool *pgxpool.Pool, q recordedQuery) planNode {
+	t.Helper()
+	return explainWith(ctx, t, pool, "ANALYZE, BUFFERS, WAL, FORMAT JSON", q)
+}
+
+func explainWith(ctx context.Context, t *testing.T, pool *pgxpool.Pool, options string, q recordedQuery) planNode {
+	t.Helper()
 	var raw []byte
-	if err := pool.QueryRow(ctx, "EXPLAIN (FORMAT JSON) "+q.sql, q.args...).Scan(&raw); err != nil {
+	if err := pool.QueryRow(ctx, "EXPLAIN ("+options+") "+q.sql, q.args...).Scan(&raw); err != nil {
 		t.Fatalf("explain the generated query: %v", err)
 	}
 	var plans []struct {

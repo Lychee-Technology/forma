@@ -161,10 +161,11 @@ PostgreSQL can seek a declared index on these operators:
 - `is_null`.
 
 These hold for every attribute a declaration admits: text, uuid, the integer
-and `double` columns, and dates and date-times under `unix_ms` or `rfc3339`. The
-exception is an ordered comparison on a text attribute, which a declared index
-does not seek (see [Text ranges](#text-ranges)). A test runs each operator against
-a one-attribute index of each kind and checks the plan.
+and `double` columns, and dates and date-times under `unix_ms` or `rfc3339`. An
+ordered comparison on a text attribute seeks only because `init-db` creates text
+columns under the `C` collation; on an older table it does not (see
+[Text ranges](#text-ranges)). A test runs each operator against a one-attribute
+index of each kind and checks the plan.
 
 A `bool` under `bool_smallint` takes `equals`, `not_equals`, `in`, `not_in` and
 `is_null`. The first four all render as `<col> BETWEEN $lo AND $hi`, so each
@@ -193,20 +194,53 @@ A btree key does not serve `contains` and `starts_with`, which render as
 
 `gt`, `gte`, `lt` and `lte` on a text attribute compare in byte order on every
 route (#728, see [Condition DSL](condition-dsl.md)), which PostgreSQL renders as
-`<col> COLLATE "C" <op> $n`. `init-db` builds a declared index under the column's
-collation, so that compare cannot seek it. Equality can, and so can the
-`rfc3339` date-times stored in text columns, which keep the column's collation.
-A database whose default collation is `C` does not help: the planner matches
-collations by OID, and the index holds the default collation's. The range reads
-the rows some other way and applies the compare as a filter.
+`<col> COLLATE "C" <op> $n`. The planner seeks a btree key with that compare only
+when the key's collation is `C` itself: it matches collations by OID, so a key
+under the database default does not qualify, even in a database whose default
+is `C`.
 
-The same goes for `init-db`'s `eav_data` index on `value_text`, for text and uuid
-attributes stored there.
+`init-db` declares every text column it creates `COLLATE "C"` (#816, see
+[Text collation](text-collation.md)), and an index takes the collation of the
+column it keys. On those tables one ordinary index serves both kinds of
+compare: a declared index seeks `equals`, `in` and the four ranges, and so does
+`init-db`'s `eav_data` index on `value_text`, for text and uuid attributes stored
+there. The same holds for the `rfc3339` date-times stored in text columns.
+
+`TestOneIndexOnCTextSeeksRangesAndEquality` checks this on the production
+harness, in an `en_US.utf8` database, with 20,000 `e2e_wide` rows and no other
+key on these columns. Under `EXPLAIN (ANALYZE, BUFFERS)` every probe seeks its
+index with the column in the Index Cond. One run read these buffers, all hits:
+
+| Index | `equals` | `in` (2) | `gt`/`gte` (5 rows) | `lt`/`lte` (5 rows) |
+| --- | --- | --- | --- | --- |
+| declared `(title)` | 8 | 13 | 212 | 20 |
+| declared `(rank, title)`, `rank` equal, `title` ranged (10 rows) | | | 84 | 84 |
+| `eav_data` text index, text attribute | 14 | 25 | 508 | 50 |
+| `eav_data` text index, uuid attribute | 17 | 31 | 61 | 61 |
+
+The `(rank, title)` index is probed with ranges only: with `title` equal, the
+planner rightly takes the one-attribute index.
+
+The `eav_data` index keys every attribute's `value_text`, and PostgreSQL keeps
+one set of statistics for the column. A range whose bound lies beyond another
+attribute's values looks unselective to the planner, which then scans. For
+example, every uuid sorts below a `t`-prefixed note, so with both stored,
+`token gt:…` and `note lt:t…` were planned as scans in the same run. That is not
+a collation effect; the test loads one attribute at a time, and #815's EAV plan
+verification is where it belongs.
+
+#### Tables created before #816
+
+A table an earlier `init-db` created keeps its text columns under the database
+default, and its indexes with them. On such a table a range cannot seek the
+ordinary index; it reads the rows some other way and applies the compare as a
+filter. A rerun of `init-db` refuses such a table until its columns are
+migrated, which is the fix ([Text collation](text-collation.md#migrating-a-table-created-before-the-rule)).
 
 A selective range pays for this. One run on the production harness, with 200,000
 `e2e_wide` rows and a range selecting 10 of them:
 
-| Attribute | Before #728 | With `COLLATE "C"` |
+| Attribute | Before #728 | With `COLLATE "C"` on a default-collation column |
 | --- | --- | --- |
 | Column-bound, declared index | Index Only Scan, 86 buffers, about 0.3 ms | Seq Scan, 2,144 buffers, about 14 ms |
 | `eav_data`, `init-db`'s text index | Index Only Scan, 126 buffers, about 0.2 ms | Seq Scan, 3,086 buffers, about 22 ms |
@@ -214,8 +248,8 @@ A selective range pays for this. One run on the production harness, with 200,000
 A column-bound range selecting nearly every row scanned the table either way and
 took about the same time.
 
-If a query needs the seek, build the key under `C` yourself, on the attribute's
-bound column:
+Until the migration, a query that needs the seek can have a second key built
+under `C`, beside the ordinary one, on the attribute's bound column:
 
 ```sql
 CREATE INDEX CONCURRENTLY entity_main_title_bytes
@@ -225,12 +259,19 @@ CREATE INDEX CONCURRENTLY eav_data_text_bytes
     WHERE value_text IS NOT NULL;
 ```
 
-In the same run, the first of these brought the column-bound range back to 86
-buffers. `TestTextRangeSeeksOnlyAByteOrderIndex` checks that both keys seek all
-four ranges. Keep the plain index alongside: `equals` and `in` compare under the
-column's collation and cannot seek a `C` key. Don't give the extra index a name
+In the 200,000-row run, the first of these brought the column-bound range back to
+86 buffers. Keep the ordinary index alongside: on a default-collation column
+`equals` and `in` cannot seek a `C` key. Don't give the extra index a name
 starting with `<table>_cx_`, the prefix `init-db` reserves for declared indexes.
-Declaring a byte-order key in `x-forma-indexes` is not supported yet.
+
+That second key is what a column under `C` saves.
+`TestLegacyTextColumnsNeedADuplicateCIndex` moves the 20,000-row tables above to
+the database default, checks that the ranges stop seeking the ordinary indexes
+and seek a `C` twin of each, and measures both. In one run each twin was as
+large as its ordinary index (1,253,376 bytes for each `entity_main` index,
+2,736,128 bytes for the `eav_data` one), and inserting 5,000 rows with their
+`eav_data` values wrote 6,582,367 bytes of WAL with the three twins against
+5,156,554 without them, 28% more. After the migration, drop the twins.
 
 ## Not supported
 

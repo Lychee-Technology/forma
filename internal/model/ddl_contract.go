@@ -4,17 +4,22 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+
+	"github.com/lychee-technology/forma/internal/textcollation"
 )
 
 // entityMainDDLColumn matches one column definition of a CREATE TABLE
-// statement: the column name and its SQL type. Constraint lines (PRIMARY
-// KEY) start with an upper-case keyword and do not match.
-var entityMainDDLColumn = regexp.MustCompile(`(?m)^\s*([a-z][a-z0-9_]*)\s+(DOUBLE PRECISION|TEXT|SMALLINT|INTEGER|BIGINT|UUID)\b`)
+// statement: the column name and its SQL type, a text type with the collation
+// it names. Constraint lines (PRIMARY KEY) start with an upper-case keyword
+// and do not match.
+var entityMainDDLColumn = regexp.MustCompile(`(?m)^\s*([a-z][a-z0-9_]*)\s+(TEXT COLLATE "[^"]+"|(?:DOUBLE PRECISION|TEXT|SMALLINT|INTEGER|BIGINT|UUID)\b)`)
 
 // columnKindSQLType is the Postgres type a column of each kind is declared
-// with in entity_main.
+// with in entity_main. A text column is declared under the C collation
+// (#816), so the drift check below refuses a copy of the DDL that leaves it
+// to the database default.
 var columnKindSQLType = map[ColumnKind]string{
-	ColumnKindText:     "TEXT",
+	ColumnKindText:     textcollation.TextType,
 	ColumnKindSmallint: "SMALLINT",
 	ColumnKindInteger:  "INTEGER",
 	ColumnKindBigint:   "BIGINT",
@@ -22,11 +27,16 @@ var columnKindSQLType = map[ColumnKind]string{
 	ColumnKindUUID:     "UUID",
 }
 
+// ColumnKindSQLType answers the Postgres type a column of kind is declared
+// with in entity_main, for a test fixture that builds the table from
+// EntityMainColumnDescriptors.
+func ColumnKindSQLType(kind ColumnKind) string { return columnKindSQLType[kind] }
+
 // EntityMainDDLDrift compares the column definitions of a CREATE TABLE
 // statement for entity_main with EntityMainColumnDescriptors and returns one
 // line per discrepancy: a runtime column the DDL lacks, a DDL column the
 // runtime cannot write, project or flush, or a type that differs from the
-// descriptor's kind. nil means the DDL declares exactly the runtime set.
+// descriptor's kind, a text column's collation included. nil means the DDL declares exactly the runtime set.
 //
 // The DDL is hand-maintained in three places (#440): cmd/tools/init_db.go,
 // internal/e2e_harness/production/ddl.go and
