@@ -77,27 +77,35 @@ func (e *DriftError) Error() string {
 	}
 	return fmt.Sprintf("%d Forma-owned text column(s) are not under the C collation Forma's tables are created with (#816): %s. "+
 		"These tables were created before the contract; CREATE TABLE IF NOT EXISTS does not change an existing column, "+
-		"and init-db never rewrites one. Each statement below changes no stored value but holds an ACCESS EXCLUSIVE lock "+
-		"on its table while it rebuilds every index on those columns; read %s before running them, then rerun: %s",
+		"and init-db never rewrites one. Each ALTER TABLE below changes no stored value but holds an ACCESS EXCLUSIVE lock "+
+		"on its table while it rebuilds every index on those columns, and drops those columns' planner statistics, "+
+		"which the ANALYZE after it restores; read %s before running them, then rerun: %s",
 		len(e.Violations), strings.Join(lines, "; "), MigrationDoc, strings.Join(e.MigrationStatements(), " "))
 }
 
-// MigrationStatements answers one ALTER TABLE per table that brings its
-// violating columns under C, keeping each column's type. PostgreSQL does not
-// rewrite the table for it, since the type stays binary-compatible, but it
-// rebuilds every index on a changed column, primary keys included.
+// MigrationStatements answers, per table, one ALTER TABLE that brings its
+// violating columns under C, keeping each column's type, followed by an
+// ANALYZE of that table. PostgreSQL does not rewrite the table for the ALTER,
+// since the type stays binary-compatible, but it rebuilds every index on a
+// changed column, primary keys included, and deletes the changed columns'
+// planner statistics even though only their collation changes. Until the
+// table is analyzed again the planner estimates their predicates blind, and
+// can pass over the very range seek the migration makes possible.
 func (e *DriftError) MigrationStatements() []string {
-	var statements []string
+	var tables []string
 	byTable := map[string][]string{}
 	for _, v := range e.Violations {
 		if _, seen := byTable[v.Table]; !seen {
-			statements = append(statements, v.Table)
+			tables = append(tables, v.Table)
 		}
 		byTable[v.Table] = append(byTable[v.Table],
 			fmt.Sprintf("ALTER COLUMN %s TYPE %s COLLATE %s", pgx.Identifier{v.Column}.Sanitize(), v.Type, Name))
 	}
-	for i, table := range statements {
-		statements[i] = fmt.Sprintf("ALTER TABLE %s %s;", table, strings.Join(byTable[table], ", "))
+	statements := make([]string, 0, 2*len(tables))
+	for _, table := range tables {
+		statements = append(statements,
+			fmt.Sprintf("ALTER TABLE %s %s;", table, strings.Join(byTable[table], ", ")),
+			fmt.Sprintf("ANALYZE %s;", table))
 	}
 	return statements
 }

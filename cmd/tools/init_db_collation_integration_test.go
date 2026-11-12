@@ -163,36 +163,54 @@ func (tg *initDBTarget) relfilenodes(t *testing.T, tables ...string) map[string]
 	return files
 }
 
-// #816's drift criterion: tables created before the contract (modeled by
-// moving every text column of a fresh deployment back to the database
-// default, which rebuilds their indexes under it) make a rerun of init-db
-// fail, naming each column, without changing anything. Running the
-// statements its error prints migrates the columns without rewriting a
-// table, rebuilds their indexes, declared ones included, and the next rerun
-// passes and still finds the declared index present.
-func TestInitDBRefusesTextOutsideCAndItsMigrationRestoresTheContract(t *testing.T) {
-	ctx := context.Background()
+// legacyTarget is a deployment whose tables predate the text collation
+// contract, holding one entity_main row and one eav_data row.
+type legacyTarget struct {
+	*initDBTarget
+	main, eav string
+	// columns is every collatable column, as it was under C before it was
+	// moved back to the database default.
+	columns []catalogColumn
+}
+
+// newLegacyTarget models tables created before the contract by moving every
+// text column of a fresh deployment back to the database default, which
+// rebuilds their indexes under it.
+func newLegacyTarget(t *testing.T) *legacyTarget {
+	t.Helper()
 	tg := newInitDBTarget(t)
 	tg.writeOutboxAndTimer(t, "due")
 	if out, err := tg.run(t); err != nil {
 		t.Fatalf("init-db: %v\n%s", err, out)
 	}
-	main, eav := quoteIdentifier(tg.opts.entityMain), quoteIdentifier(tg.opts.eavTable)
-	execSQL := func(sql string, args ...any) {
-		t.Helper()
-		if _, err := tg.pool.Exec(ctx, sql, args...); err != nil {
-			t.Fatalf("%s: %v", sql, err)
-		}
+	lt := &legacyTarget{initDBTarget: tg, main: quoteIdentifier(tg.opts.entityMain), eav: quoteIdentifier(tg.opts.eavTable)}
+	lt.exec(t, fmt.Sprintf(`INSERT INTO %s (ltbase_schema_id, ltbase_row_id, text_01, bigint_01, ltbase_created_at, ltbase_updated_at)
+		VALUES (100, '00000000-0000-4000-8000-000000000001', 'Zebra é', 1, 1, 1)`, lt.main))
+	lt.exec(t, fmt.Sprintf(`INSERT INTO %s (schema_id, row_id, attr_id, array_indices, value_text)
+		VALUES (100, '00000000-0000-4000-8000-000000000001', 7, '0', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')`, lt.eav))
+	lt.columns = tg.collatableColumns(t)
+	for _, c := range lt.columns {
+		lt.exec(t, fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN %s TYPE text COLLATE "default"`, c.table, pgx.Identifier{c.column}.Sanitize()))
 	}
-	execSQL(fmt.Sprintf(`INSERT INTO %s (ltbase_schema_id, ltbase_row_id, text_01, bigint_01, ltbase_created_at, ltbase_updated_at)
-		VALUES (100, '00000000-0000-4000-8000-000000000001', 'Zebra é', 1, 1, 1)`, main))
-	execSQL(fmt.Sprintf(`INSERT INTO %s (schema_id, row_id, attr_id, array_indices, value_text)
-		VALUES (100, '00000000-0000-4000-8000-000000000001', 7, '0', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')`, eav))
+	return lt
+}
 
-	legacy := tg.collatableColumns(t)
-	for _, c := range legacy {
-		execSQL(fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN %s TYPE text COLLATE "default"`, c.table, pgx.Identifier{c.column}.Sanitize()))
+func (lt *legacyTarget) exec(t *testing.T, sql string) {
+	t.Helper()
+	if _, err := lt.pool.Exec(context.Background(), sql); err != nil {
+		t.Fatalf("%s: %v", sql, err)
 	}
+}
+
+// #816's drift criterion: tables created before the contract make a rerun of
+// init-db fail, naming each column, without changing anything. Running the
+// statements its error prints migrates the columns without rewriting a
+// table, rebuilds their indexes, declared ones included, and the next rerun
+// passes and still finds the declared index present.
+func TestInitDBRefusesTextOutsideCAndItsMigrationRestoresTheContract(t *testing.T) {
+	ctx := context.Background()
+	lt := newLegacyTarget(t)
+	tg, main, eav, legacy := lt.initDBTarget, lt.main, lt.eav, lt.columns
 	before := tg.relfilenodes(t, main, eav)
 	tg.log.reset()
 
@@ -228,7 +246,7 @@ func TestInitDBRefusesTextOutsideCAndItsMigrationRestoresTheContract(t *testing.
 	}
 
 	for _, stmt := range drift.MigrationStatements() {
-		execSQL(stmt)
+		lt.exec(t, stmt)
 	}
 	migrated := tg.relfilenodes(t, main, eav)
 	rebuilt := 0

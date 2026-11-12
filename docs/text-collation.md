@@ -86,17 +86,19 @@ run creates and changes nothing. The error names each column and prints the
 statements that migrate them:
 
 ```
-create the tables: check the text collation of Forma's tables: 15 Forma-owned text column(s) are not under the C collation Forma's tables are created with (#816): table "entity_main" column text_01 (text) has collation pg_catalog."default", expected pg_catalog."C"; ... These tables were created before the contract; ... read docs/text-collation.md before running them, then rerun: ALTER TABLE "entity_main" ALTER COLUMN "text_01" TYPE text COLLATE "C", ...; ALTER TABLE "eav_data" ALTER COLUMN "array_indices" TYPE text COLLATE "C", ALTER COLUMN "value_text" TYPE text COLLATE "C";
+create the tables: check the text collation of Forma's tables: 15 Forma-owned text column(s) are not under the C collation Forma's tables are created with (#816): table "entity_main" column text_01 (text) has collation pg_catalog."default", expected pg_catalog."C"; ... These tables were created before the contract; ... read docs/text-collation.md before running them, then rerun: ALTER TABLE "entity_main" ALTER COLUMN "text_01" TYPE text COLLATE "C", ...; ANALYZE "entity_main"; ALTER TABLE "eav_data" ALTER COLUMN "array_indices" TYPE text COLLATE "C", ALTER COLUMN "value_text" TYPE text COLLATE "C"; ANALYZE "eav_data";
 ```
 
 `init-db` never runs those statements itself.
 
 ## Migrating a table created before the rule
 
-The migration changes no stored value. Each statement is one
-`ALTER TABLE ... ALTER COLUMN ... TYPE <type> COLLATE "C"` per table, covering
-that table's columns. `TestInitDBRefusesTextOutsideCAndItsMigrationRestoresTheContract`
-runs the printed statements on PostgreSQL 16 and checks what they do:
+The migration changes no stored value. For each table it is one
+`ALTER TABLE ... ALTER COLUMN ... TYPE <type> COLLATE "C"`, covering that
+table's columns, followed by `ANALYZE` of the table.
+`TestInitDBRefusesTextOutsideCAndItsMigrationRestoresTheContract` and
+`TestInitDBMigrationAndRollbackRestorePlannerStatistics` run the printed
+statements on PostgreSQL 16 and check what they do:
 
 - **The table is not rewritten.** The type stays binary-compatible, and the
   table keeps its storage file.
@@ -109,6 +111,17 @@ runs the printed statements on PostgreSQL 16 and checks what they do:
   to commit, so every read and write of that table waits, for about as long as
   building the rebuilt indexes from scratch takes. PostgreSQL has no online
   form of this change.
+- **Planner statistics of the changed columns are deleted.** PostgreSQL drops
+  a column's statistics on any `ALTER COLUMN ... TYPE`, even one that changes
+  only the collation, and does not gather them again. Until the table is
+  analyzed, the planner guesses: on PostgreSQL 16, a selective range over a
+  20,000-row table was estimated at a third of the table and planned as a
+  bitmap heap scan instead of the index-only scan it got after `ANALYZE`.
+  Autovacuum's next analyze, triggered by row changes rather than by the
+  `ALTER`, may be far off. That is why the printed statements follow each
+  `ALTER TABLE` with `ANALYZE` of its table. `ANALYZE` reads a sample, not
+  the whole table, and takes only a `SHARE UPDATE EXCLUSIVE` lock, so reads
+  and writes continue while it runs.
 - **Cached plans break.** A connection that prepared a statement on the table
   before the change fails it afterwards with `cached plan must not change
   result type` (SQLSTATE `0A000`), until it reconnects. Forma's pools prepare
@@ -144,31 +157,56 @@ The procedure:
    functions, embedders, `cdc-flush`, `cdc-init` and `manifest-reconcile`. Their
    requests would queue behind the lock, and their pooled connections would
    fail afterwards with `0A000`. If they cannot stop, restart them after step
-   4.
-4. **Run the statements** `init-db` printed, in a maintenance window. Set a
+   5.
+4. **Run the statements** `init-db` printed, all of them and in order, in a
+   maintenance window: each table's `ALTER TABLE`, then its `ANALYZE`. Set a
    lock timeout so a long transaction you missed fails the statement instead
    of stalling everything queued behind it:
 
    ```sql
    SET lock_timeout = '10s';
    ALTER TABLE "entity_main" ALTER COLUMN "text_01" TYPE text COLLATE "C", ...;
+   ANALYZE "entity_main";
    ```
 
    Each statement commits on its own, so a table already migrated stays
-   migrated if a later one fails. Rerunning `init-db` lists only what is left.
-5. **Rerun `init-db`.** It passes, and finds the declared indexes present:
+   migrated if a later one fails. Rerunning `init-db` lists only what is left,
+   so if an `ALTER TABLE` committed but its `ANALYZE` did not run, the rerun
+   does not print that `ANALYZE` again: run `ANALYZE <table>` yourself.
+5. **Check the statistics are back.** Each migrated table that holds rows has
+   a `pg_stats` row for every column it changed (table names replaced by your
+   deployment's):
+
+   ```sql
+   SELECT tablename, attname FROM pg_stats WHERE tablename IN ('entity_main', 'eav_data');
+   ```
+
+   A column missing there has no statistics: `ANALYZE` its table before going
+   on. (An empty table has nothing to sample, and gets statistics from
+   autovacuum once rows arrive.)
+6. **Rerun `init-db`.** It passes, and finds the declared indexes present:
    the rebuilt ones key the column under `C`, which is the column's collation.
-6. **Drop the byte-order indexes** you built for ranges while the columns
+7. **Drop the byte-order indexes** you built for ranges while the columns
    followed the default ([Declared Indexes](schema-indexes.md#text-ranges)).
    The ordinary index now serves those ranges, so the extra key only costs
    writes and storage: `DROP INDEX CONCURRENTLY <name>`.
-7. **Start Forma's processes.**
+8. **Start Forma's processes.**
 
 **Rollback.** Before a statement commits, cancel it or `ROLLBACK`: nothing
-changes. After it commits, the same statement with `COLLATE "default"` (or the
-collation the inspection listed) restores the old collation, at the same cost
-and under the same lock. `init-db` then refuses again, and the PostgreSQL
-route sorts in the old order again.
+changes. After it commits, the same `ALTER TABLE` with `COLLATE "default"` (or
+the collation the inspection listed) restores the old collation, at the same
+cost and under the same lock, and deletes the columns' statistics again. Run
+`ANALYZE` of the table after it, and check `pg_stats` as in step 5, before
+resuming traffic:
+
+```sql
+SET lock_timeout = '10s';
+ALTER TABLE "entity_main" ALTER COLUMN "text_01" TYPE text COLLATE "default", ...;
+ANALYZE "entity_main";
+```
+
+`init-db` then refuses again, and the PostgreSQL route sorts in the old order
+again.
 
 If the lock is not acceptable yet, leave the columns as they are and do not
 rerun `init-db` until you migrate. The deployment keeps working as before:

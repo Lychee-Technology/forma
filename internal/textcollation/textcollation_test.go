@@ -53,15 +53,18 @@ func TestDriftError_NamesEachColumnAndTheMigration(t *testing.T) {
 	}}
 	assert.Equal(t, []string{
 		`ALTER TABLE "entity_main" ALTER COLUMN "text_01" TYPE text COLLATE "C", ALTER COLUMN "Label" TYPE character varying(20) COLLATE "C";`,
+		`ANALYZE "entity_main";`,
 		`ALTER TABLE "eav_data" ALTER COLUMN "value_text" TYPE text COLLATE "C";`,
+		`ANALYZE "eav_data";`,
 	}, err.MigrationStatements())
 	assert.Equal(t, `3 Forma-owned text column(s) are not under the C collation Forma's tables are created with (#816): `+
 		`table "entity_main" column text_01 (text) has collation pg_catalog."default", expected pg_catalog."C"; `+
 		`table "eav_data" column value_text (text) has collation public.letters_first, expected pg_catalog."C"; `+
 		`table "entity_main" column Label (character varying(20)) has collation pg_catalog."POSIX", expected pg_catalog."C". `+
 		`These tables were created before the contract; CREATE TABLE IF NOT EXISTS does not change an existing column, `+
-		`and init-db never rewrites one. Each statement below changes no stored value but holds an ACCESS EXCLUSIVE lock `+
-		`on its table while it rebuilds every index on those columns; read docs/text-collation.md before running them, then rerun: `+
+		`and init-db never rewrites one. Each ALTER TABLE below changes no stored value but holds an ACCESS EXCLUSIVE lock `+
+		`on its table while it rebuilds every index on those columns, and drops those columns' planner statistics, `+
+		`which the ANALYZE after it restores; read docs/text-collation.md before running them, then rerun: `+
 		strings.Join(err.MigrationStatements(), " "), err.Error())
 }
 
