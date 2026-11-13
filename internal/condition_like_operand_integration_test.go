@@ -11,7 +11,10 @@ import (
 // TestConditionOperandConformance_Like: a starts_with / contains operand is
 // literal text on both storage forms; starts_with:a_c used to match "abc".
 func TestConditionOperandConformance_Like(t *testing.T) {
-	f := newDSLFixtureWith(t, true, "operand_conformance", operandSchemaCache())
+	runLikeOperandConformance(t, newDSLFixtureWith(t, true, "operand_conformance", operandSchemaCache()))
+}
+
+func runLikeOperandConformance(t *testing.T, f *dslFixture) {
 	values := []string{"abc", "a_c", "a%c", `a\c`, "xa_cx", "A_C", "a__c"}
 	for _, attr := range []string{"t_main", "t_eav"} {
 		stored := map[uuid.UUID]string{}

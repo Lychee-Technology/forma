@@ -260,16 +260,10 @@ func scanRowPage(ctx context.Context, db UniqueKeyStore, query string, schemaID 
 	defer rows.Close()
 	var records []*model.PersistentRecord
 	for rows.Next() {
-		buffers := newColumnScanBuffers()
-		var attrsJSON []byte
-		if err := rows.Scan(append(buildScanArgs(buffers), &attrsJSON)...); err != nil {
-			return nil, fmt.Errorf("scan a row after %s: %w", after, err)
+		record, err := scanRowWithAttributes(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read a row after %s: %w", after, err)
 		}
-		record := buildRecordFromScanBuffers(buffers)
-		if err := model.ParseAttributesJSON(attrsJSON, record); err != nil {
-			return nil, fmt.Errorf("parse eav attributes for %s: %w", record.RowID, err)
-		}
-		model.CleanupEmptyMaps(record)
 		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {

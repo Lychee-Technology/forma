@@ -43,6 +43,8 @@ internal/federated/change_log_reads.go:PostgresDirtyIDFetcher.HasParquetHistory 
 internal/federated/change_log_reads.go:parquetHistoryQuery 1
 internal/federated/change_log_snapshot.go:PostgresDirtyIDFetcher.ReadChangeLogSnapshot 4
 internal/federated/change_log_snapshot.go:dirtySetQuery 2
+internal/postgres_hot_leg.go:DBPersistentRecordRepository.QueryHotKeys 1
+internal/postgres_hot_leg.go:DBPersistentRecordRepository.ReadHotRows 1
 internal/postgres_persistent_repository.go:DBPersistentRecordRepository.deleteRecordInTx 2
 internal/postgres_persistent_repository.go:DBPersistentRecordRepository.upsertChangeLog 5
 internal/postgres_persistent_repository.go:nextRowVersion 1

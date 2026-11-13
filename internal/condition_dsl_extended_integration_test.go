@@ -57,6 +57,10 @@ type dslFixture struct {
 	repo   *DBPersistentRecordRepository
 	tables model.StorageTables
 	cache  forma.SchemaAttributeCache
+	// hotKeys logs every seeded row as unflushed and makes match require the
+	// pgx hot leg's hot-keys query to select the PostgreSQL route's rows
+	// (pgx-hot-leg-plan.md step 4, postgres_hot_leg_integration_test.go).
+	hotKeys bool
 }
 
 func newDSLFixture(t *testing.T, numericEAV bool) *dslFixture {
@@ -106,6 +110,9 @@ func (f *dslFixture) seed(t *testing.T, main map[string]any, eav ...dslEAVRow) u
 			dslSchemaID, rowID, f.cache[r.attr].AttributeID, r.index, r.text, r.numeric)
 		require.NoError(t, err)
 	}
+	if f.hotKeys {
+		f.logChange(t, rowID, 0, 1)
+	}
 	return rowID
 }
 
@@ -135,7 +142,11 @@ func (f *dslFixture) match(t *testing.T, cond forma.Condition) []uuid.UUID {
 	for _, r := range page.Records {
 		ids = append(ids, r.RowID)
 	}
-	return sortedIDs(ids...)
+	ids = sortedIDs(ids...)
+	if f.hotKeys {
+		require.Equal(t, ids, f.hotKeyIDs(t, cond, 0), "the hot-keys query selects the PostgreSQL route's rows: %+v", cond)
+	}
+	return ids
 }
 
 func sortedIDs(ids ...uuid.UUID) []uuid.UUID {
