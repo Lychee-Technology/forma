@@ -107,8 +107,11 @@ func deletedTSCursor(dir forma.SortOrder, boundary int64, rowID uuid.UUID) *mode
 // TestDeletedTSKeysetWalk walks the fixture with cursors on deleted_ts,
 // row_id at the boundary 0, one row per page, and flushes the hot rows
 // between the second and third pages. The walk returns every row exactly
-// once, in row_id order. Before #853 both walks dropped every hot and every
-// pre-#274 row, whose NULL deleted_ts made the cursor's equality arm unknown.
+// once, in row_id order. Before #853 a NULL deleted_ts made the cursor's
+// equality arm unknown: the descending walk dropped every hot and every
+// pre-#274 row, returning only the exported ones. The ascending walk dropped
+// the pre-#274 rows but returned the hot ones, because the mid-walk flush had
+// rewritten them as 0 before the cursor reached them.
 func TestDeletedTSKeysetWalk(t *testing.T) {
 	for _, dir := range []forma.SortOrder{forma.SortOrderAsc, forma.SortOrderDesc} {
 		t.Run(string(dir), func(t *testing.T) {
