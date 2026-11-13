@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/lychee-technology/forma"
@@ -18,12 +20,24 @@ import (
 // each value is appended once per occurrence: an n-column cursor yields
 // n(n+1)/2 args.
 //
-// Values bind verbatim — no type coercion, no metadata lookup. The caller
-// owns exactness: BIGINT cursor columns require int64 values (a float64
-// above 2^53 makes `BIGINT col > DOUBLE param` skip or duplicate one page
-// row — #281 / #205 M-2). No continuation-token codec exists today; a
-// future decoder must produce int64 for integer values (UseNumber /
-// numutil.Int64Exact), pinned by TestKeysetArgsPreserveInt64Above2p53.
+// Every parameter renders as CAST(? AS <export type>), the type cursor
+// normalization (sortkey.NormalizeCursor) recorded on the column beside a
+// boundary of that type (design.md §6.1.1, One boundary type per cursor
+// column). On a normalized value the cast is the identity, and it stops
+// DuckDB from picking the comparison type from the bound value: with a
+// float64 9.6, `10::BIGINT > ?` promotes the column to DOUBLE and holds,
+// while `10::BIGINT > CAST(? AS BIGINT)` does not. The hot leg's Go
+// predicate compares the same normalized value, so both legs answer alike.
+// A column without an export type has not been normalized and is refused.
+// A uuid boundary binds as its canonical text, which the cast reads back.
+//
+// deleted_ts renders as COALESCE(deleted_ts, 0), here and in the keyset
+// ORDER BY: every row a page returns is live, and a live row holds 0 or
+// NULL by its encoding (a hot row, a pre-#274 delta row), so the column
+// reads 0 on every row and on both sides of a flush (design.md §6.1.1,
+// deleted_ts reads 0). The dedup window and the outer select keep the raw
+// column.
+//
 // The cursor must satisfy model.KeysetCursor.ValidateShape: values align
 // one-for-one with Columns and none of them is nil, the last column is the
 // row_id tiebreak, and the mode and directions are the enum values this file
@@ -54,7 +68,14 @@ func generateKeysetWhereClause(cursor *model.KeysetCursor) (string, []interface{
 	// ("visible" + "row_id" = "visiblerow_id"), so the first caller to pass a
 	// real alias would have emitted a broken identifier. Removed rather than
 	// fixed — the qualification it promised has no use here (#381).
-	colRef := ParquetAttrColumn
+	params := make([]string, len(cursor.Columns))
+	for i, col := range cursor.Columns {
+		param, err := keysetParam(col)
+		if err != nil {
+			return "", nil, fmt.Errorf("render keyset where clause: %w", err)
+		}
+		params[i] = param
+	}
 
 	var clauses []string
 	var args []interface{}
@@ -65,11 +86,11 @@ func generateKeysetWhereClause(cursor *model.KeysetCursor) (string, []interface{
 
 		var parts []string
 		for j := 0; j < i; j++ {
-			parts = append(parts, fmt.Sprintf("%s = ?", colRef(cursor.Columns[j].Attribute)))
-			args = append(args, cursor.Values[j])
+			parts = append(parts, fmt.Sprintf("%s = %s", keysetColumnRef(cursor.Columns[j].Attribute), params[j]))
+			args = append(args, keysetBindValue(cursor.Values[j]))
 		}
-		parts = append(parts, fmt.Sprintf("%s %s ?", colRef(col.Attribute), op))
-		args = append(args, cursor.Values[i])
+		parts = append(parts, fmt.Sprintf("%s %s %s", keysetColumnRef(col.Attribute), op, params[i]))
+		args = append(args, keysetBindValue(cursor.Values[i]))
 
 		clauses = append(clauses, "("+strings.Join(parts, " AND ")+")")
 	}
@@ -132,7 +153,48 @@ func keysetOrderTerms(cursor *model.KeysetCursor) []string {
 		if col.Direction == forma.SortOrderDesc {
 			dir = "DESC"
 		}
-		parts = append(parts, fmt.Sprintf("%s %s", ParquetAttrColumn(col.Attribute), dir))
+		parts = append(parts, fmt.Sprintf("%s %s", keysetColumnRef(col.Attribute), dir))
 	}
 	return parts
+}
+
+// keysetDeletedTS is the system column a cursor may name whose NULL reads
+// as 0 (design.md §6.1.1, deleted_ts reads 0).
+const keysetDeletedTS = "deleted_ts"
+
+// keysetColumnRef is how the keyset predicate and the keyset ORDER BY read a
+// cursor column: its ParquetAttrColumn fold, and COALESCE(deleted_ts, 0) for
+// deleted_ts, matched case-insensitively as DuckDB resolves the identifier.
+func keysetColumnRef(attribute string) string {
+	ref := ParquetAttrColumn(attribute)
+	if DuckDBEqualFold(attribute, keysetDeletedTS) {
+		return fmt.Sprintf("COALESCE(%s, 0)", ref)
+	}
+	return ref
+}
+
+// keysetExportTypes are the export types a normalized cursor column carries.
+// The renderer interpolates the type into SQL, so this set is also the
+// barrier that keeps anything else out of the statement.
+var keysetExportTypes = map[string]struct{}{
+	"BIGINT": {}, "INTEGER": {}, "SMALLINT": {}, "DOUBLE": {},
+	"VARCHAR": {}, "BOOLEAN": {}, "UUID": {},
+}
+
+// keysetParam renders one boundary parameter, cast to its column's export
+// type.
+func keysetParam(col model.KeysetColumn) (string, error) {
+	if _, ok := keysetExportTypes[col.ExportType]; !ok {
+		return "", fmt.Errorf("keyset cursor column %q carries export type %q, which is not one of BIGINT, INTEGER, SMALLINT, DOUBLE, VARCHAR, BOOLEAN or UUID: the cursor was not normalized (sortkey.NormalizeCursor), so its boundary could compare at a type the hot leg does not", col.Attribute, col.ExportType)
+	}
+	return fmt.Sprintf("CAST(? AS %s)", col.ExportType), nil
+}
+
+// keysetBindValue binds a uuid boundary as its canonical text, which
+// CAST(? AS UUID) reads back; every other normalized value binds as is.
+func keysetBindValue(v interface{}) interface{} {
+	if u, ok := v.(uuid.UUID); ok {
+		return u.String()
+	}
+	return v
 }

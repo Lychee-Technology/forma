@@ -37,7 +37,8 @@ func (e *DBFederatedQueryEngine) RenderParquetOnlyStatement(
 	if q == nil {
 		return "", nil, fmt.Errorf("render parquet-only statement: the query is nil")
 	}
-	if err := validateKeysetCursor(q.KeysetCursor, q.AttributeOrders); err != nil {
+	q, err := e.keysetQuery(q, q.AttributeOrders)
+	if err != nil {
 		return "", nil, fmt.Errorf("render parquet-only statement: validate keyset cursor: %w", err)
 	}
 	src, err := e.resolveScanSources(ctx, tables, q)

@@ -44,18 +44,18 @@ func runKeysetCursorCases(t *testing.T, cases []keysetCursorCase) {
 	t.Helper()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateKeysetCursor(tc.cursor, nil)
+			err := checkKeysetCursor(tc.cursor, nil)
 			if tc.wantErr == "" {
 				if err != nil {
-					t.Fatalf("validateKeysetCursor() = %v, want nil", err)
+					t.Fatalf("checkKeysetCursor() = %v, want nil", err)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("validateKeysetCursor() = nil, want error containing %q", tc.wantErr)
+				t.Fatalf("checkKeysetCursor() = nil, want error containing %q", tc.wantErr)
 			}
 			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("validateKeysetCursor() = %q, want it to contain %q", err.Error(), tc.wantErr)
+				t.Errorf("checkKeysetCursor() = %q, want it to contain %q", err.Error(), tc.wantErr)
 			}
 			if errors.Is(err, forma.ErrInvalidInput) {
 				t.Error("keyset validation is a read-path error, never a write-path ErrInvalidInput carrier")
@@ -299,7 +299,7 @@ func TestKeysetCursorRejectsEverySqlgenDedupColumn(t *testing.T) {
 			spellings = append(spellings, col[:i]+"."+col[i+1:], col[:i]+" "+col[i+1:])
 		}
 		for _, spelling := range spellings {
-			err := validateKeysetCursor(keysetCursorOn(spelling, "row_id"), nil)
+			err := checkKeysetCursor(keysetCursorOn(spelling, "row_id"), nil)
 			require.Error(t, err, "cursor column %q folds onto dedup column %q and must be refused", spelling, col)
 			require.Contains(t, err.Error(), "dedup machinery",
 				"cursor column %q must be refused as dedup machinery, not by some other rule", spelling)
@@ -319,13 +319,13 @@ func TestKeysetCursorPlaceholderTracksSqlgen(t *testing.T) {
 
 	// A name the fold TRANSFORMS onto the placeholder is refused; the
 	// placeholder under its own name is a legitimate attribute and is not.
-	err := validateKeysetCursor(keysetCursorOn("["+placeholder+"]", "row_id"), nil)
+	err := checkKeysetCursor(keysetCursorOn("["+placeholder+"]", "row_id"), nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "folds onto the placeholder")
 	require.Contains(t, err.Error(), placeholder)
 
-	require.NoError(t, validateKeysetCursor(keysetCursorOn(placeholder, "row_id"), nil))
-	require.NoError(t, validateKeysetCursor(keysetCursorOn(strings.ToUpper(placeholder), "row_id"), nil))
+	require.NoError(t, checkKeysetCursor(keysetCursorOn(placeholder, "row_id"), nil))
+	require.NoError(t, checkKeysetCursor(keysetCursorOn(strings.ToUpper(placeholder), "row_id"), nil))
 }
 
 // TestKeysetCursorFoldsIdentifiersLikeDuckDB pins the cursor guard against
@@ -372,7 +372,7 @@ func TestKeysetCursorFoldsIdentifiersLikeDuckDB(t *testing.T) {
 			require.Equal(t, tc.same, duckDBMerges,
 				"DuckDB identifier folding changed for %q / row_id; the guard's premise must be rechecked", folded)
 
-			err = validateKeysetCursor(keysetCursorOn(tc.attr, "row_id"), nil)
+			err = checkKeysetCursor(keysetCursorOn(tc.attr, "row_id"), nil)
 			if tc.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -391,7 +391,7 @@ func TestKeysetCursorFoldsIdentifiersLikeDuckDB(t *testing.T) {
 	// ASCII fold for this literal — no non-ASCII rune sits in Go's simple
 	// case-fold orbit of r, o, w, i or d — so "row_İd" is not the tiebreak
 	// there either, and model, which cannot import sqlgen, needs no change.
-	err = validateKeysetCursor(keysetCursorOn("created_at", "row_İd"), nil)
+	err = checkKeysetCursor(keysetCursorOn("created_at", "row_İd"), nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), `expected "row_id"`)
 }

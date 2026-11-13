@@ -20,7 +20,7 @@ func keysetTestQuery() *model.FederatedAttributeQuery {
 				{Attribute: "created_at", Direction: forma.SortOrderDesc},
 				{Attribute: "row_id", Direction: forma.SortOrderAsc},
 			},
-			Values: []interface{}{int64(5), "r1"},
+			Values: []interface{}{int64(5), "11111111-1111-1111-1111-111111111111"},
 			Mode:   model.KeysetCursorModeAfter,
 		},
 	}

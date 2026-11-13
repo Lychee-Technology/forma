@@ -80,7 +80,7 @@ func TestCompiledQueryParity(t *testing.T) {
 	keysetQ := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7, Condition: mixed}}
 	keysetQ.KeysetCursor = &model.KeysetCursor{
 		Mode:    model.KeysetCursorModeAfter,
-		Columns: []model.KeysetColumn{{Attribute: "created_at", Direction: forma.SortOrderDesc}, {Attribute: "row_id", Direction: forma.SortOrderDesc}},
+		Columns: []model.KeysetColumn{{Attribute: "created_at", Direction: forma.SortOrderDesc, ExportType: "BIGINT"}, {Attribute: "row_id", Direction: forma.SortOrderDesc, ExportType: "UUID"}},
 		Values:  []any{int64(1700000000000), "11111111-1111-1111-1111-111111111111"},
 	}
 
@@ -221,8 +221,8 @@ func TestCompileDuckDBQueryRejectsNonCacheablePaths(t *testing.T) {
 func TestCompiledQueryBindRejectsMisalignedCursor(t *testing.T) {
 	cache := dualPlanTestCache()
 	cols := []model.KeysetColumn{
-		{Attribute: "created_at", Direction: forma.SortOrderDesc},
-		{Attribute: "row_id", Direction: forma.SortOrderDesc},
+		{Attribute: "created_at", Direction: forma.SortOrderDesc, ExportType: "BIGINT"},
+		{Attribute: "row_id", Direction: forma.SortOrderDesc, ExportType: "UUID"},
 	}
 	newQuery := func(values []any) *model.FederatedAttributeQuery {
 		q := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{

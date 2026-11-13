@@ -19,7 +19,7 @@ func TestRendererKeysetGateMatchesIsActive(t *testing.T) {
 		{"nil cursor", nil},
 		{"empty columns", &model.KeysetCursor{Mode: model.KeysetCursorModeAfter}},
 		{"active cursor", &model.KeysetCursor{
-			Columns: []model.KeysetColumn{{Attribute: "row_id", Direction: forma.SortOrderAsc}},
+			Columns: []model.KeysetColumn{{Attribute: "row_id", Direction: forma.SortOrderAsc, ExportType: "UUID"}},
 			Values:  []interface{}{"r1"},
 			Mode:    model.KeysetCursorModeAfter,
 		}},
@@ -50,8 +50,8 @@ func TestRendererKeysetGateMatchesIsActive(t *testing.T) {
 func TestKeysetColumnsAreFolded(t *testing.T) {
 	cursor := &model.KeysetCursor{
 		Columns: []model.KeysetColumn{
-			{Attribute: "contact.annualIncome", Direction: forma.SortOrderDesc},
-			{Attribute: "row_id", Direction: forma.SortOrderAsc},
+			{Attribute: "contact.annualIncome", Direction: forma.SortOrderDesc, ExportType: "BIGINT"},
+			{Attribute: "row_id", Direction: forma.SortOrderAsc, ExportType: "UUID"},
 		},
 		Values: []interface{}{int64(90000), "r1"},
 		Mode:   model.KeysetCursorModeAfter,
@@ -91,8 +91,8 @@ func TestKeysetSystemColumnsSurviveTheFold(t *testing.T) {
 	}
 	cursor := &model.KeysetCursor{
 		Columns: []model.KeysetColumn{
-			{Attribute: "created_at", Direction: forma.SortOrderDesc},
-			{Attribute: "row_id", Direction: forma.SortOrderAsc},
+			{Attribute: "created_at", Direction: forma.SortOrderDesc, ExportType: "BIGINT"},
+			{Attribute: "row_id", Direction: forma.SortOrderAsc, ExportType: "UUID"},
 		},
 		Values: []interface{}{int64(5), "r1"},
 		Mode:   model.KeysetCursorModeAfter,
@@ -110,8 +110,8 @@ func TestKeysetSystemColumnsSurviveTheFold(t *testing.T) {
 func TestKeysetWhereClauseRejectsMisalignedValues(t *testing.T) {
 	cursor := &model.KeysetCursor{
 		Columns: []model.KeysetColumn{
-			{Attribute: "created_at", Direction: forma.SortOrderDesc},
-			{Attribute: "row_id", Direction: forma.SortOrderAsc},
+			{Attribute: "created_at", Direction: forma.SortOrderDesc, ExportType: "BIGINT"},
+			{Attribute: "row_id", Direction: forma.SortOrderAsc, ExportType: "UUID"},
 		},
 		Values: []interface{}{int64(5)}, // one short
 		Mode:   model.KeysetCursorModeAfter,

@@ -42,7 +42,8 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedKeysetQuery(
 	// The DuckDB template below consumes the cursor unvalidated, so refuse a
 	// malformed one here. Same call as the engine gate (engine.go): one
 	// contract, both seams (#381).
-	if err := validateKeysetCursor(fq.KeysetCursor, attributeOrders); err != nil {
+	fq, err := e.keysetQuery(fq, attributeOrders)
+	if err != nil {
 		return nil, 0, fmt.Errorf("validate keyset cursor: %w", err)
 	}
 

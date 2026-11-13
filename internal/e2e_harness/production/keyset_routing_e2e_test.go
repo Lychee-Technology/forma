@@ -44,7 +44,7 @@ func TestKeysetUnderProductionRoutingDefaults(t *testing.T) {
 					{Attribute: "count", Direction: forma.SortOrderAsc},
 					{Attribute: "row_id", Direction: forma.SortOrderAsc}, // required tiebreak (#183)
 				},
-				Values: []any{float64(500), keysetZeroRowID},
+				Values: []any{int64(500), keysetZeroRowID},
 				Mode:   model.KeysetCursorModeAfter,
 			},
 			Limit: 10, // < 1000: the hybrid rule that routes postgres-only
@@ -93,7 +93,7 @@ func TestKeysetUnderProductionRoutingDefaults(t *testing.T) {
 					{Attribute: "count", Direction: forma.SortOrderAsc},
 					{Attribute: "row_id", Direction: forma.SortOrderAsc},
 				},
-				Values: []any{float64(50), keysetZeroRowID},
+				Values: []any{int64(50), keysetZeroRowID},
 				Mode:   model.KeysetCursorModeAfter,
 			},
 			Limit: 10,

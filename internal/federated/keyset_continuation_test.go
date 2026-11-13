@@ -72,9 +72,9 @@ func TestValidateKeysetCursorContinuesTheDispatchedOrder(t *testing.T) {
 	countAsc := []model.AttributeOrder{{AttrID: 3, AttrName: "count", SortOrder: forma.SortOrderAsc}}
 	amountDesc := []model.AttributeOrder{{AttrID: 4, AttrName: "amount", SortOrder: forma.SortOrderDesc}}
 
-	require.NoError(t, validateKeysetCursor(cursor, countAsc), "the cursor continues count ASC")
-	require.NoError(t, validateKeysetCursor(cursor, nil), "with no request order the cursor is the order")
-	require.ErrorContains(t, validateKeysetCursor(cursor, amountDesc),
+	require.NoError(t, checkKeysetCursor(cursor, countAsc), "the cursor continues count ASC")
+	require.NoError(t, checkKeysetCursor(cursor, nil), "with no request order the cursor is the order")
+	require.ErrorContains(t, checkKeysetCursor(cursor, amountDesc),
 		`keyset cursor column 1 is "count" but the request sorts on "amount"`)
 }
 

@@ -32,8 +32,8 @@ func TestKeysetArgsPreserveInt64Above2p53(t *testing.T) {
 
 	cursor := &model.KeysetCursor{
 		Columns: []model.KeysetColumn{
-			{Attribute: "amount", Direction: forma.SortOrderAsc},
-			{Attribute: "row_id", Direction: forma.SortOrderAsc},
+			{Attribute: "amount", Direction: forma.SortOrderAsc, ExportType: "BIGINT"},
+			{Attribute: "row_id", Direction: forma.SortOrderAsc, ExportType: "UUID"},
 		},
 		Values: []interface{}{wantAmount, "0f000000-0000-0000-0000-000000000000"},
 		Mode:   model.KeysetCursorModeAfter,

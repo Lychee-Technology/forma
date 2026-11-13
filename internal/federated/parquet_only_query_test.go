@@ -234,10 +234,10 @@ func TestParquetOnlyPlanCacheKeepsOneEntryPerShape(t *testing.T) {
 		cursor := &model.KeysetCursor{
 			Mode: model.KeysetCursorModeAfter,
 			Columns: []model.KeysetColumn{
-				{Attribute: "created_at", Direction: forma.SortOrderDesc},
-				{Attribute: "row_id", Direction: forma.SortOrderDesc},
+				{Attribute: "created_at", Direction: forma.SortOrderDesc, ExportType: "BIGINT"},
+				{Attribute: "row_id", Direction: forma.SortOrderDesc, ExportType: "UUID"},
 			},
-			Values: []any{boundary, expected[2].String()},
+			Values: []any{boundary, expected[2]},
 		}
 		window, err := sqlgen.KeysetPageParquetWindow(3)
 		require.NoError(t, err)

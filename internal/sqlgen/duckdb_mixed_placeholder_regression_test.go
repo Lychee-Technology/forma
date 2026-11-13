@@ -65,8 +65,8 @@ func TestDuckDBMixedComposite_KeysetNoPlaceholderStyleMixing(t *testing.T) {
 	q.KeysetCursor = &model.KeysetCursor{
 		Mode: model.KeysetCursorModeAfter,
 		Columns: []model.KeysetColumn{
-			{Attribute: "created_at", Direction: forma.SortOrderDesc},
-			{Attribute: "row_id", Direction: forma.SortOrderDesc},
+			{Attribute: "created_at", Direction: forma.SortOrderDesc, ExportType: "BIGINT"},
+			{Attribute: "row_id", Direction: forma.SortOrderDesc, ExportType: "UUID"},
 		},
 		Values: []any{int64(1700000000000), "11111111-1111-1111-1111-111111111111"},
 	}

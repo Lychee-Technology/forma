@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"regexp"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sortkey"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
@@ -23,8 +25,9 @@ import (
 // deleted_ts. The retired allowlist also admitted updated_at, deleted_at and
 // schema_id, which are NOT columns of visible — a cursor on one could only
 // ever reach DuckDB's binder. They are no longer blessed here; being
-// well-formed identifiers they now pass as ordinary attribute names and fail
-// at the binder, which is honest rather than falsely supported (#381).
+// well-formed identifiers they pass the name rules as ordinary attribute
+// names, and the normalization then refuses them as attributes the schema
+// does not have (#381, #853).
 //
 // Looked up on the FOLDED name, ASCII-LOWER-CASED, like every other map rule
 // below. DuckDB resolves an unquoted identifier case-insensitively, so a
@@ -42,9 +45,9 @@ import (
 // exists to refuse. Schema registration cannot stand in for the check: it
 // rejects a registered ATTRIBUTE whose fold collides with a reserved parquet
 // column (sqlgen.ValidateParquetAttrColumns), but a cursor column is an
-// arbitrary string that was never registered. The refusal is also what keeps
-// validateKeysetCursor's "an unregistered name fails loudly at DuckDB's
-// binder" promise true without exception.
+// arbitrary string that was never registered. The refusal also keeps such a
+// name from reaching the normalization as a system column, whose export type
+// would then stand for a column the caller never named.
 var keysetSystemColumns = map[string]struct{}{
 	"row_id":     {},
 	"created_at": {},
@@ -124,15 +127,50 @@ var safeSQLIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 //     system column row_id and, the fold being the identity, admitted it
 //     past the identifier barrier, while DuckDB keeps the two distinct.
 //
-// It deliberately does NOT check that an attribute is registered in the
-// schema: that needs the metadata cache, and an unregistered but well-formed
-// name fails loudly at DuckDB's binder, never silently. The check belongs with
-// the caller-facing cursor surface the Postgres-side keyset feature
-// introduces.
+// Last, it normalizes the cursor (sortkey.NormalizeCursor): each boundary
+// becomes a value of its column's export type, read from cache and orders,
+// and each column records that type, which the renderer casts the boundary
+// to. A boundary of another type is refused, not converted, so both legs of
+// a pass compare one boundary against keys of one type (design.md §6.1.1,
+// One boundary type per cursor column). Every seam renders the cursor this
+// returns, never the caller's. A column whose export type cannot be read
+// (an attribute the metadata lacks, a list) is refused here, where before
+// #853 an unregistered name failed at DuckDB's binder.
 //
 // A plain read-path error mirroring the rest of this file: the route or the
 // cursor is wrong for an operator to see, not a caller-facing 4xx.
-func validateKeysetCursor(cursor *model.KeysetCursor, orders []model.AttributeOrder) error {
+func validateKeysetCursor(cursor *model.KeysetCursor, orders []model.AttributeOrder, cache forma.SchemaAttributeCache) (*model.KeysetCursor, error) {
+	if err := checkKeysetCursor(cursor, orders); err != nil {
+		return nil, err
+	}
+	normalized, err := sortkey.NormalizeCursor(cursor, orders, cache)
+	if err != nil {
+		return nil, fmt.Errorf("normalize keyset cursor: %w", err)
+	}
+	return normalized, nil
+}
+
+// keysetQuery validates and normalizes q's cursor against orders, the order
+// the seam will render, and returns q carrying the normalized cursor. q
+// itself is left as the caller built it; a q without an active cursor is
+// returned as is.
+func (e *DBFederatedQueryEngine) keysetQuery(q *model.FederatedAttributeQuery, orders []model.AttributeOrder) (*model.FederatedAttributeQuery, error) {
+	cache, _ := e.schemaCacheByID(q.SchemaID)
+	cursor, err := validateKeysetCursor(q.KeysetCursor, orders, cache)
+	if err != nil {
+		return nil, err
+	}
+	if cursor == q.KeysetCursor {
+		return q, nil
+	}
+	out := *q
+	out.KeysetCursor = cursor
+	return &out, nil
+}
+
+// checkKeysetCursor applies validateKeysetCursor's rules up to the
+// normalization: shape, continuation, and the per-column name rules.
+func checkKeysetCursor(cursor *model.KeysetCursor, orders []model.AttributeOrder) error {
 	if err := cursor.ValidateShape(); err != nil {
 		// Deliberately unwrapped: every call site already wraps this
 		// function's result with "validate keyset cursor", so adding context

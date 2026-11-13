@@ -78,6 +78,9 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 	if err := validateFederatedCondition(req, schemaCache); err != nil {
 		return nil, err
 	}
+	if err := validateFederatedSort(req, attributeOrders); err != nil {
+		return nil, err
+	}
 
 	offset, err := pageOffset(req.Page, req.ItemsPerPage, s.config.Query.MaxRows)
 	if err != nil {
