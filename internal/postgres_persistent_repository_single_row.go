@@ -91,3 +91,20 @@ func (r *DBPersistentRecordRepository) loadRecordWithAttributes(
 
 	return record, nil
 }
+
+// scanRowWithAttributes decodes one row of a rowSelectWithAttributes
+// statement, exactly as a single-row read decodes it: the entity_main
+// projection through the column buffers, then the aggregated EAV attributes.
+func scanRowWithAttributes(rows pgx.Rows) (*model.PersistentRecord, error) {
+	buffers := newColumnScanBuffers()
+	var attrsJSON []byte
+	if err := rows.Scan(append(buildScanArgs(buffers), &attrsJSON)...); err != nil {
+		return nil, fmt.Errorf("scan entity row: %w", err)
+	}
+	record := buildRecordFromScanBuffers(buffers)
+	if err := model.ParseAttributesJSON(attrsJSON, record); err != nil {
+		return nil, fmt.Errorf("parse eav attributes for %s: %w", record.RowID, err)
+	}
+	model.CleanupEmptyMaps(record)
+	return record, nil
+}
