@@ -182,8 +182,10 @@ func (h sortKeyHolders) key(order sortkey.Order) ([]any, error) {
 // parquetKeyValue reads one scanned sort-key value as its export type's Go
 // type (sortkey: int64, float64, string, bool, uuid.UUID; nil for NULL).
 // The statement orders by the column as the visible CTE types it, which is
-// the export type, so a value of another kind means the two orders disagree
-// and is refused rather than converted.
+// the export type (a column-bound attribute included: the order reads its
+// visible column, not the bound column's storage image), so a value of
+// another kind means the two orders disagree and is refused rather than
+// converted.
 func parquetKeyValue(t sortkey.ExportType, raw any) (any, error) {
 	if raw == nil {
 		return nil, nil
@@ -192,12 +194,6 @@ func parquetKeyValue(t sortkey.ExportType, raw any) (any, error) {
 	case sortkey.BigInt, sortkey.Integer, sortkey.SmallInt:
 		if n, ok := scannedInteger(raw); ok {
 			return n, nil
-		}
-		if image, ok := raw.(string); ok && t == sortkey.BigInt {
-			// An rfc3339-bound date orders by its bound text column, whose
-			// canonical image orders as its instant (#763). Its key is the
-			// instant, read as the hot key's derivation reads it (#756).
-			return sortkey.RFC3339EpochMs(image), nil
 		}
 	case sortkey.Double:
 		switch v := raw.(type) {

@@ -200,6 +200,11 @@ type unverifiedParquetError struct {
 	// probes, as for a failed scan.
 	scanned    []string
 	fromSource bool
+	// globListed marks a pgx pass's frozen inventory (pgxScanSources): the
+	// objects a glob listed, which no manifest vouches for, so the failed
+	// read is classified as the pass's scan would be, without probing the
+	// manifest for missing entries.
+	globListed bool
 }
 
 func (e *unverifiedParquetError) Error() string {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -156,40 +157,110 @@ func BuildParquetOnlyQuery(params map[string]any, q *model.FederatedAttributeQue
 // the parquet leg's NULLs without changing the statement.
 func parquetOnlyOrderBy(q *model.FederatedAttributeQuery) string {
 	terms := parquetOnlyOrderTerms(q)
+	out := make([]string, len(terms))
 	for i, term := range terms {
-		terms[i] = term + " NULLS LAST"
+		out[i] = term.expr + " " + term.dir + " NULLS LAST"
 	}
-	return strings.Join(terms, ", ")
+	return strings.Join(out, ", ")
 }
 
 // SortKeyColumn names the column that carries the i-th key of the page's
 // order in the parquet-only result, after current_page. The keys come in the
 // order of the ORDER BY terms, so the i-th is the i-th column of the Go order
-// (sortkey.PageOrder) built from the same request.
+// (sortkey.PageOrder) built from the same request. Go reads the column by
+// position, and the statement never references it by name (see
+// parquetOnlyOrderTerms), so an attribute of the same name cannot take its
+// place.
 func SortKeyColumn(i int) string { return fmt.Sprintf("forma_sort_key_%d", i) }
 
 // parquetOnlySortKeySelect projects each ORDER BY term's expression, without
 // its direction, as SortKeyColumn(i). The merge compares these values with
 // the hot keys, so they are the exact expressions the statement orders by:
-// COALESCE(deleted_ts, 0) included.
+// COALESCE(visible.deleted_ts, 0) included.
 func parquetOnlySortKeySelect(q *model.FederatedAttributeQuery) string {
 	terms := parquetOnlyOrderTerms(q)
 	cols := make([]string, len(terms))
 	for i, term := range terms {
-		expr := strings.TrimSuffix(strings.TrimSuffix(term, " ASC"), " DESC")
-		cols[i] = fmt.Sprintf("%s AS %s", expr, SortKeyColumn(i))
+		cols[i] = fmt.Sprintf("%s AS %s", term.expr, SortKeyColumn(i))
 	}
 	return strings.Join(cols, ",\n  ")
 }
 
-// parquetOnlyOrderTerms is the page's order, "<expression> <dir>" per term:
-// buildKeysetOrderBy's under an active cursor, buildNonKeysetOrderBy's
-// otherwise.
-func parquetOnlyOrderTerms(q *model.FederatedAttributeQuery) []string {
+// parquetOnlyVisible is the relation the parquet-only statement's final
+// SELECT reads, which qualifies every column its order reads.
+const parquetOnlyVisible = "visible"
+
+// parquetOrderTerm is one ORDER BY term of the parquet-only statement: the
+// expression the rows order by, which is also the sort key the row carries,
+// and its direction.
+type parquetOrderTerm struct {
+	expr string
+	dir  string
+}
+
+// parquetOnlyOrderTerms is the page's order: the cursor's columns under an
+// active cursor (keysetOrderTerms' order), the request's sort keys otherwise
+// (nonKeysetOrderTerms' order).
+//
+// Two things differ from the order the other templates render, both for the
+// merge. Every term reads a column of visible, qualified as visible.<column>,
+// never an unqualified name: in ORDER BY, and in a select list after it is
+// defined, DuckDB binds an unqualified name to an output alias before an
+// input column, so an attribute named like an alias of the result (a
+// SortKeyColumn, ltbase_row_id, total_records) would order by that alias
+// instead. And an attribute bound to an entity_main column reads its visible
+// column, the parquet column at the attribute's export type
+// (sqlgen.DuckDBNullScanType), not the outer select's storage alias of the
+// bound column: the alias holds the column's storage image (SMALLINT 1/0 for
+// a bool_smallint bool, VARCHAR '1'/'0' for bool_text, RFC 3339 text for an
+// rfc3339 date), while the key the hot leg derives, and the Go comparator
+// reads, has the export type (sortkey.AttributeType).
+func parquetOnlyOrderTerms(q *model.FederatedAttributeQuery) []parquetOrderTerm {
 	if q.KeysetCursor.IsActive() {
-		return keysetOrderTerms(q.KeysetCursor)
+		terms := make([]parquetOrderTerm, 0, len(q.KeysetCursor.Columns))
+		for _, col := range q.KeysetCursor.Columns {
+			expr := visibleColumnRef(ParquetAttrColumn(col.Attribute))
+			if DuckDBEqualFold(col.Attribute, keysetDeletedTS) {
+				expr = fmt.Sprintf("COALESCE(%s, 0)", expr)
+			}
+			terms = append(terms, parquetOrderTerm{expr: expr, dir: orderDirection(col.Direction)})
+		}
+		return terms
 	}
-	return nonKeysetOrderTerms(q)
+	var terms []parquetOrderTerm
+	for _, ao := range q.AttributeOrders {
+		var expr string
+		switch {
+		case ao.AttrName != "":
+			expr = visibleColumnRef(ParquetAttrColumn(ao.AttrName))
+		case ao.IsMainColumn():
+			// No attribute name to read the visible column by: the bound
+			// column's output alias, as nonKeysetOrderTerms renders it.
+			expr = ao.ColumnName
+		default:
+			// Unresolvable; nonKeysetOrderTerms skips it too.
+			continue
+		}
+		terms = append(terms, parquetOrderTerm{expr: expr, dir: orderDirection(ao.SortOrder)})
+	}
+	if len(terms) == 0 {
+		terms = []parquetOrderTerm{{expr: visibleColumnRef("created_at"), dir: "DESC"}}
+	}
+	return append(terms, parquetOrderTerm{expr: visibleColumnRef("row_id"), dir: "ASC"})
+}
+
+// visibleColumnRef qualifies a column of the visible CTE.
+func visibleColumnRef(column string) string {
+	return parquetOnlyVisible + "." + column
+}
+
+// orderDirection renders a sort direction as the other order builders do:
+// DESC for forma.SortOrderDesc, ASC otherwise.
+func orderDirection(dir forma.SortOrder) string {
+	if dir == forma.SortOrderDesc {
+		return "DESC"
+	}
+	return "ASC"
 }
 
 // requireParquetOnlyProjection fails a render missing a projection param the

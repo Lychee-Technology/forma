@@ -52,7 +52,10 @@ const DropStagedDirtyIDsSQL = "DROP TABLE IF EXISTS " + stagedDirtyIDsTableRef
 //     count the merge adds h to.
 //   - The page order's keys follow the layout, one column per ORDER BY
 //     term (SortKeyColumn), so Go can place each parquet row among the hot
-//     keys without re-deriving a key from the record.
+//     keys without re-deriving a key from the record. The order reads
+//     qualified columns of visible at their export type, never an output
+//     alias (parquetOnlyOrderTerms), so the keys have the types the Go
+//     comparator reads and no attribute name can rebind a term.
 //
 // The dedup, the filter on the dedup winner (#173), the keyset predicate
 // after dedup (#212) and the scan source (#189/#255/#256/#371) are today's,

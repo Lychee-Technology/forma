@@ -11,7 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/sortkey"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,6 +35,11 @@ type pgxRow struct {
 	// deleted marks a row deleted after its flush: dirty, in parquet, and
 	// in neither entity_main nor the answer.
 	deleted bool
+	// active, flag and key0 are the attributes only pgxSortMetadata
+	// declares (pgx_pass_sort_keys_test.go): a bool_smallint bool, a
+	// bool_text bool, and the EAV integer named forma_sort_key_0.
+	active, flag *bool
+	key0         *float64
 }
 
 func (r pgxRow) id() uuid.UUID { return parquetOnlyRowID(r.i) }
@@ -45,6 +52,8 @@ type pgxFixture struct {
 	dir  string
 	rows []pgxRow
 	leg  *fakeHotLeg
+	// meta is the schema the engine reads; parquetOnlyMetadata when nil.
+	meta *schemameta.MetadataCache
 }
 
 func newPgxFixture(t *testing.T, rows []pgxRow) *pgxFixture {
@@ -78,18 +87,15 @@ func (f *pgxFixture) writeParquet(t *testing.T, name string, rows []pgxRow) stri
 	path := filepath.Join(f.dir, name)
 	values := make([]string, 0, len(rows))
 	for _, r := range rows {
-		age := "NULL"
-		if r.age != nil {
-			age = fmt.Sprint(*r.age)
-		}
+		age, active, flag, key0 := sqlValue(r.age), sqlValue(r.active), sqlValue(r.flag), sqlValue(r.key0)
 		if r.hot {
-			age = "-1"
+			age, active, flag, key0 = "-1", sqlValue(negated(r.active)), sqlValue(negated(r.flag)), "-1"
 		}
-		values = append(values, fmt.Sprintf("('%s'::UUID, %d::BIGINT, 100::BIGINT, 0::BIGINT, 'row %d', %s::INTEGER, 'developer')",
-			r.id(), r.createdAt, r.i, age))
+		values = append(values, fmt.Sprintf("('%s'::UUID, %d::BIGINT, 100::BIGINT, 0::BIGINT, 'row %d', %s::INTEGER, 'developer', %s::BOOLEAN, %s::BOOLEAN, %s::DOUBLE)",
+			r.id(), r.createdAt, r.i, age, active, flag, key0))
 	}
 	_, err := f.db.Exec(`COPY (SELECT * FROM (VALUES ` + strings.Join(values, ", ") +
-		`) AS t(row_id, ltbase_created_at, changed_at, deleted_at, name, age, tag)) TO '` + path + `' (FORMAT PARQUET)`)
+		`) AS t(row_id, ltbase_created_at, changed_at, deleted_at, name, age, tag, active, flag, forma_sort_key_0)) TO '` + path + `' (FORMAT PARQUET)`)
 	require.NoError(t, err)
 	return path
 }
@@ -98,12 +104,38 @@ func (f *pgxFixture) writeParquet(t *testing.T, name string, rows []pgxRow) stri
 // paths.
 func (f *pgxFixture) engine(t *testing.T, paths []string, opts ...EngineOption) *DBFederatedQueryEngine {
 	t.Helper()
+	return f.engineOver(t, NewDuckDBClientQueryExecutor(&DuckDBClient{DB: f.db}), paths, opts...)
+}
+
+// engineOver is engine with the DuckDB executor the caller hands it.
+func (f *pgxFixture) engineOver(t *testing.T, duck DuckDBQueryExecutor, paths []string, opts ...EngineOption) *DBFederatedQueryEngine {
+	t.Helper()
 	cfg := pgxDuckConfig()
+	meta := f.meta
+	if meta == nil {
+		meta = parquetOnlyMetadata(t)
+	}
 	all := append([]EngineOption{WithParquetSource(&fakeParquetSource{paths: paths})}, opts...)
-	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{},
-		NewDuckDBClientQueryExecutor(&DuckDBClient{DB: f.db}), nil, cfg, parquetOnlyMetadata(t), "", all...)
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil, cfg, meta, "", all...)
 	e.hotLeg = f.leg
 	return e
+}
+
+// sqlValue renders a fixture value as a SQL literal, NULL for nil.
+func sqlValue[T any](v *T) string {
+	if v == nil {
+		return "NULL"
+	}
+	return fmt.Sprint(*v)
+}
+
+// negated is a stale parquet copy's bool: the opposite of the snapshot's.
+func negated(v *bool) *bool {
+	if v == nil {
+		return nil
+	}
+	n := !*v
+	return &n
 }
 
 // visibleOrder is the fixture's answer in order: every row that is hot, or
@@ -158,6 +190,12 @@ func pgxRowValue(t *testing.T, r pgxRow, name string) any {
 			return nil
 		}
 		return *r.age
+	case "active":
+		return derefOrNil(r.active)
+	case "flag":
+		return derefOrNil(r.flag)
+	case sqlgen.SortKeyColumn(0):
+		return derefOrNil(r.key0)
 	}
 	t.Fatalf("the fixture has no sort column %q", name)
 	return nil
@@ -236,6 +274,14 @@ func (f *fakeHotLeg) readHotRows(_ context.Context, _ model.StorageTables, schem
 
 func (f *fakeHotLeg) commit(context.Context) error { f.commits++; return nil }
 func (f *fakeHotLeg) rollback(context.Context)     { f.rollbacks++ }
+
+// derefOrNil is a fixture value as a sort key: nil for an absent one.
+func derefOrNil[T any](v *T) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
 
 func recordIDs(records []*model.PersistentRecord) []uuid.UUID {
 	ids := make([]uuid.UUID, len(records))

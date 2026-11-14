@@ -71,11 +71,13 @@ func (p *pgxPass) scan() scan {
 	}
 }
 
-// pgxPage is what a pass answered: the page's records in order, and the
-// matches the merge counted (Query's total).
+// pgxPage is what a pass answered: the page's records in order, the
+// matches the merge counted (Query's total), and what the pass measured,
+// reported once the page's rows are handled.
 type pgxPage struct {
 	records []*model.PersistentRecord
 	total   int64
+	outcome pgxOutcome
 }
 
 // streamPgxPass runs one pgx pass for an admitted request and hands the
@@ -133,6 +135,10 @@ func (e *DBFederatedQueryEngine) streamPgxPass(
 			return 0, fmt.Errorf("handle row %s of the merged page: %w", record.RowID, err)
 		}
 	}
+	// Reported only now, as the attach path reports once its rows are
+	// streamed: a pass whose handler failed is a failed pass, and leaves no
+	// fed_query_* sample behind (docs/telemetry.md).
+	p.report(ctx, page.outcome)
 	return page.total, nil
 }
 
@@ -180,8 +186,11 @@ func (p *pgxPass) run(ctx context.Context) (pgxPage, error) {
 			return pgxPage{}, err
 		}
 	}
-	p.report(ctx, pgxOutcome{leg: leg, dirtyRows: len(dirty), hotMatches: len(hot), hotOnPage: hotOnPage})
-	return pgxPage{records: records, total: int64(len(hot)) + leg.count}, nil
+	return pgxPage{
+		records: records,
+		total:   int64(len(hot)) + leg.count,
+		outcome: pgxOutcome{leg: leg, dirtyRows: len(dirty), hotMatches: len(hot), hotOnPage: hotOnPage},
+	}, nil
 }
 
 // readSnapshot reads the dirty set, settles a set without objects (#720),

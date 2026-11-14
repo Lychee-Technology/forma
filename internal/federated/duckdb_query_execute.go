@@ -288,6 +288,7 @@ func (e *DBFederatedQueryEngine) failScanSources(ctx context.Context, q *model.F
 		return e.failDuckDBScan(ctx, q, scan{
 			parquetPaths:    unverified.scanned,
 			pathsFromSource: unverified.fromSource,
+			globListed:      unverified.globListed,
 			probe:           probe,
 		}, err, "pre-read parquet type verification")
 	}

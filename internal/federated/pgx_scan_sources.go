@@ -2,6 +2,7 @@ package federated
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -68,6 +69,13 @@ func (e *DBFederatedQueryEngine) resolvePgxScanSources(ctx context.Context, tabl
 	}
 	cold, err := e.validateScanSet(ctx, q.SchemaID, paths, fromSource, stamps)
 	if err != nil {
+		var unverified *unverifiedParquetError
+		if out.globListed && errors.As(err, &unverified) {
+			// failScanSources classifies the pre-read failure as the scan
+			// would be (pgxPass.scan): an object a glob listed and that is
+			// gone since claims no manifest inconsistency.
+			unverified.globListed = true
+		}
 		return pgxScanSources{}, err
 	}
 	out.cold = cold
