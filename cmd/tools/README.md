@@ -45,6 +45,9 @@ Forma Tools CLI
     OLTP 读取拒绝的图像（含形状规范但日期不存在的 `2024-02-30T03:04:05.250Z`），以及能读取但不规范的图像（带偏移、
     非三位小数、整秒图像、亚毫秒小数、偏移后超出 0000–9999 年的时刻）。后者在 PostgreSQL 路由（比较文本）与 DuckDB 层（比较时刻）上的结果可能不同。
     每一条都报为失败，附行、存储的图像与修复类别（仅改拼写 / 亚毫秒被向下取整 / 无规范图像），修复方法见 `docs/rfc3339-storage-contract.md`。
+  - 以 `bool_text` 编码绑定的 `bool` 列中除 `"1"`、`"0"` 与 NULL 之外的每个图像（#404、#857，读取 `-entity-main-table`）：
+    OLTP 读取与该行的每次更新都会拒绝它，`pgx` 热腿（#857 起的默认）下含该未刷新行的联邦查询页也会失败。
+    每一条都报为失败，附行与存储的图像；API 无法修复，需用 SQL 改写该列，见 `docs/schema-consistency-migration.md`。
   详见 `docs/schema-consistency-migration.md`。
 
 generate-attributes

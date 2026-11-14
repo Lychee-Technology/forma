@@ -174,6 +174,10 @@ It validates:
   fraction) fails as `rfc3339 images that are not canonical`, with its repair
   kind, because the PostgreSQL route and the DuckDB tiers can answer
   differently on its row (`docs/rfc3339-storage-contract.md`)
+- every `bool` bound with the `bool_text` encoding holds `"1"`, `"0"` or
+  NULL in `--entity-main-table` (`#404`, `#857`). Any other image fails as
+  `bool_text images the OLTP read refuses`; see
+  [bool_text images the read refuses](#bool_text-images-the-read-refuses-404-857)
 
 Use both checks before upgrading. The SQL script gives quick database facts; the Go validator gives the final runtime-compatible answer.
 
@@ -1061,6 +1065,65 @@ cold copy keeps the old instant. A non-canonical image is outside the query
 contract (`docs/rfc3339-storage-contract.md`, `#763`), so a re-export that
 keeps it in PostgreSQL does not repair the row.
 
+### bool_text images the read refuses (`#404`, `#857`)
+
+A `bool` bound to a text column with the `bool_text` encoding stores `"1"`
+or `"0"`, and NULL when the bool is unset. The write funnel writes nothing
+else, so any other image (`"true"`, `"t"`, `""`, `" 1"`, `"01"`) was written
+around it, by direct SQL for example. Since `#404` the OLTP read refuses such an image as
+a storage consistency error that names the column, so every `GET` of its row
+fails. Every update of the row fails too, including one that names the
+attribute: an update parses each bound column of the row it merges into
+before it replaces any value. The CDC export and the `attach` hot leg read
+the image as `false` (`<column> = '1'`), so federated queries answered the
+row with `false` and never failed on it.
+
+The `pgx` hot leg, the default since `#857`, reads an unflushed row through
+the OLTP reader. A federated page that holds such a row while it is
+unflushed therefore fails, where the `attach` transport served `false`.
+After its flush the row reads `false` again on the warm and cold tiers, so
+the same query fails or answers depending on whether the row has been
+flushed since its last write.
+
+**Detect.** The validator reads the bound column of `--entity-main-table`
+for every `bool_text` attribute and reports each row whose image is not
+NULL, `"1"` or `"0"`. Only the schemas that bind the column as `bool_text`
+are read, so the same column under another schema's text attribute is never
+reported. Each line is a failure and names the schema, the attribute, the
+row, the column and the stored image, with `last_flushed_at` when the row
+has been exported:
+
+```text
+- bool_text images the OLTP read refuses in entity_main_dev: schema=visit schema_id=100 attr_id=1 attribute=active declared=bool row_id=5d2e… column=text_01 value="true" last_flushed_at=1731556800000 (bool_text holds "1", "0" or NULL)
+```
+
+The query below lists the same rows for one attribute without the validator:
+
+```sql
+-- text_01 stands for the bound column, 100 for the schema id
+SELECT ltbase_row_id, text_01
+  FROM entity_main_dev
+ WHERE ltbase_schema_id = 100 AND text_01 IS NOT NULL AND text_01 NOT IN ('1', '0');
+```
+
+**Repair.** The API cannot repair such a row, because every update of it
+fails, so rewrite the column with SQL. Choose the value per row: the image
+says what was meant (`"true"` most likely meant true), but the federated
+route has been answering `false` for it, and NULL unsets the bool.
+
+```sql
+UPDATE entity_main_dev
+   SET text_01 = '1'   -- or '0', or NULL
+ WHERE ltbase_schema_id = 100 AND ltbase_row_id = '<row id>';
+```
+
+A direct rewrite does not stamp `change_log`. A row reported with
+`last_flushed_at` keeps its exported `false` on the warm and cold tiers
+until its next write re-flushes it. Once the column is repaired the row
+reads again, so an API update naming the attribute with the value you chose
+stamps `change_log`, and the next `cdc-flush` re-exports the row. Re-run
+the validator afterwards; it reports nothing for a repaired row.
+
 ### Registered schema with no `<schema>.json` (`#314`)
 
 Symptom: the server refuses to start with `failed to build the schema guards
@@ -1177,15 +1240,18 @@ LIMIT 50;
   The upgraded server refuses to read such rows on the OLTP route, and the
   federated tiers read them narrowed until `#621`; see
   [Date images the read path refuses](#date-images-the-read-path-refuses-592)
+- no `bool_text` image other than `"1"`, `"0"` or NULL is reported
+  (`#404`, `#857`): every read and every update of such a row fails, so
+  rewrite the column with SQL, as described in
+  [bool_text images the read refuses](#bool_text-images-the-read-refuses-404-857)
 - before deploying the release that makes the `pgx` hot leg the default
   (`#857`), the four classes above (`#501`/`#729`, `#590`/`#618`, `#708`,
-  `#592`) and the rfc3339 images of `#842` are clear. That transport reads an
-  unflushed row through the OLTP reader, so a row the OLTP read refuses now
-  fails every federated page that holds it while it is hot, where the
-  `attach` transport read it the export's way. The census does not report one
-  such image: a `bool_text` column holding anything other than `"1"`/`"0"`,
-  which the OLTP read refuses (`#404`) where the `attach` hot leg read a
-  value. To roll back, set `duckdb.hotLegTransport` to `attach`
+  `#592`), the rfc3339 images of `#842` and the `bool_text` images are clear,
+  with the validator built from that release (an older build does not read
+  `bool_text` columns). That transport reads an unflushed row through the
+  OLTP reader, so a row the OLTP read refuses now fails every federated page
+  that holds it while it is hot, where the `attach` transport read it the
+  export's way. To roll back, set `duckdb.hotLegTransport` to `attach`
   (`DUCKDB_HOT_LEG_TRANSPORT=attach` for `cmd/server`)
 - hardened release deployed
 - validator re-run after deploy
