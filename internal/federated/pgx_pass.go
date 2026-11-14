@@ -294,10 +294,15 @@ func (p *pgxPass) parquetLeg(ctx context.Context, dirty []uuid.UUID, window sqlg
 		return parquetLeg{}, err
 	}
 	if !leg.countKnown {
-		count, err := p.recountParquetLeg(ctx, dirty)
+		count, recount, err := p.recountParquetLeg(ctx, dirty)
 		if err != nil {
 			return parquetLeg{}, err
 		}
+		// The recount is DuckDB work of this pass: its stages show in the
+		// pass's translation, execution and streaming, and so in the plan's
+		// duckdb_fetch. Its statement and rows stay out of the plan, which
+		// reports the page's.
+		leg.addStages(recount)
 		leg.count, leg.countKnown = count, true
 	}
 	return leg, nil

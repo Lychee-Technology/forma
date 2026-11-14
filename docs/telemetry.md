@@ -93,7 +93,10 @@ emits two more samples:
   the snapshot is open, between the hot keys and the page read; its time is
   in `execution` and `streaming`, not here. `streaming` is the parquet leg's
   row iteration plus the loop that hands the merged page to the row handler,
-  so a slow handler shows there, as on the attach transport.
+  so a slow handler shows there, as on the attach transport. When a deep
+  page's window carries no count, the pass recounts the parquet leg with a
+  second DuckDB statement (#181); its translation, execution and streaming
+  add to the page statement's, and so to the plan's `duckdb_fetch`.
 - `fed_query_row_count{source="hot"}` is the number of hot keys the page drew
   from: the rows of the dirty window that match the request's condition (and,
   on a keyset page, lie after its cursor). Beside `pg`, the size of the dirty

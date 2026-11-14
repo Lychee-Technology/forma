@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/model"
@@ -28,10 +27,20 @@ type parquetLeg struct {
 	sqlStr string
 	args   []any
 	// translateMs, executeMs and streamMs are the leg's stages, reported as
-	// the attach pass reports its own (emitDuckDBScanMetrics). streamMs is
-	// the leg's row iteration until the pass hands the page to its row
-	// handler, which adds the handler loop's time (streamPgxPass).
+	// the attach pass reports its own (emitDuckDBScanMetrics). Each sums the
+	// leg's statements: the page's, and the #181 recount's when the page
+	// carried no count (addStages). streamMs is the leg's row iteration
+	// until the pass hands the page to its row handler, which adds the
+	// handler loop's time (streamPgxPass).
 	translateMs, executeMs, streamMs int64
+}
+
+// addStages adds the stages of another statement of the leg, the #181
+// recount, to the leg's own, so the pass reports all the DuckDB work it did.
+func (l *parquetLeg) addStages(o parquetLeg) {
+	l.translateMs += o.translateMs
+	l.executeMs += o.executeMs
+	l.streamMs += o.streamMs
 }
 
 // runParquetLeg renders the parquet-only statement for window, stages dirty
@@ -40,7 +49,7 @@ type parquetLeg struct {
 // as a failed attach scan is (failDuckDBScan).
 func (p *pgxPass) runParquetLeg(ctx context.Context, dirty []uuid.UUID, window sqlgen.ParquetWindow) (parquetLeg, error) {
 	e := p.e
-	translateStart := time.Now()
+	translateStart := p.planCtx.now()
 	sqlStr, args, hit, err := e.buildParquetOnlyQueryCached(ctx, p.tables, p.q, p.q.AttributeOrders, p.q.Limit, p.q.Offset, window, p.src.paths, p.src.cold)
 	if err != nil {
 		p.releaseProbe()
@@ -51,7 +60,7 @@ func (p *pgxPass) runParquetLeg(ctx context.Context, dirty []uuid.UUID, window s
 		p.planCacheRecorded = true
 		p.planCtx.recordPlanCache(*hit)
 	}
-	leg := parquetLeg{sqlStr: sqlStr, args: args, translateMs: time.Since(translateStart).Milliseconds()}
+	leg := parquetLeg{sqlStr: sqlStr, args: args, translateMs: p.planCtx.millisSince(translateStart)}
 
 	querier, ok := e.duck.(stagedQuerier)
 	if !ok {
@@ -95,16 +104,17 @@ func (p *pgxPass) runParquetLeg(ctx context.Context, dirty []uuid.UUID, window s
 // recountParquetLeg reads the parquet leg's count when the page's window
 // carried none (#181): the same statement over the window [0, 1), on the same
 // staged dirty set and frozen path set, so it counts what the window was cut
-// from.
-func (p *pgxPass) recountParquetLeg(ctx context.Context, dirty []uuid.UUID) (int64, error) {
+// from. It returns the count and the recount statement's leg, whose stages
+// the pass adds to the page statement's.
+func (p *pgxPass) recountParquetLeg(ctx context.Context, dirty []uuid.UUID) (int64, parquetLeg, error) {
 	leg, err := p.runParquetLeg(ctx, dirty, sqlgen.ParquetWindow{Offset: 0, Limit: 1})
 	if err != nil {
-		return 0, fmt.Errorf("recount the parquet leg: %w", err)
+		return 0, parquetLeg{}, fmt.Errorf("recount the parquet leg: %w", err)
 	}
 	if leg.countKnown && len(leg.rows) > 0 {
-		return leg.count, nil
+		return leg.count, leg, nil
 	}
-	return 0, nil
+	return 0, leg, nil
 }
 
 // streamParquetLegRows reads the parquet-only result: the record layout
