@@ -204,6 +204,8 @@ func discardDuckClient(duckClient *federated.DuckDBClient) {
 
 // validateBeforeIO rejects configuration errors before any I/O, and answers
 // the repository option of the configured database engine:
+//   - a retired or unknown hot-leg transport must fail rather than silently
+//     selecting pgx, even when an embedder did not call Config.Validate (#858);
 //   - an incoherent manifest read surface must not be discovered halfway
 //     through startup, after the database has already been queried;
 //   - the caller-path opt-in without a bucket fails fast instead of surfacing
@@ -211,6 +213,9 @@ func discardDuckClient(duckClient *federated.DuckDBClient) {
 //   - the engine decides how writes exclude each other, so an unknown name
 //     fails here rather than falling back to PostgreSQL's locks (#633).
 func validateBeforeIO(cfg *forma.Config) (internal.RepoOption, error) {
+	if err := cfg.DuckDB.ValidateHotLeg(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb hot-leg configuration: %w", err)
+	}
 	if err := cfg.DuckDB.ValidateManifestRead(); err != nil {
 		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
 	}
