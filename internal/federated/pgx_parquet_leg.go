@@ -222,7 +222,7 @@ func parquetKeyValue(t sortkey.ExportType, raw any) (any, error) {
 		case string:
 			return v, nil
 		case []byte:
-			return string(v), nil
+			return uuidTextKey(v)
 		}
 	case sortkey.Boolean:
 		if v, ok := raw.(bool); ok {
@@ -234,6 +234,22 @@ func parquetKeyValue(t sortkey.ExportType, raw any) (any, error) {
 		}
 	}
 	return nil, fmt.Errorf("the parquet leg returned %T for a %s sort key", raw, t)
+}
+
+// uuidTextKey reads a VARCHAR sort key that DuckDB returned as bytes. A
+// column-bound uuid attribute exports through TRY_CAST(col AS UUID), so its
+// parquet column is a DuckDB UUID, which the driver scans as its 16 bytes.
+// Its key is the canonical text the hot leg derives (sortkey.DeriveAttribute),
+// and DuckDB orders a UUID as that text orders (TestParquetUUIDSortKey). Read
+// as text, the 16 bytes compared against the hot keys by their raw values and
+// misplaced every hot row (#857). Any other bytes are refused.
+func uuidTextKey(raw []byte) (any, error) {
+	if len(raw) == 16 {
+		if u, err := uuid.FromBytes(raw); err == nil {
+			return u.String(), nil
+		}
+	}
+	return nil, fmt.Errorf("the parquet leg returned %d bytes for a VARCHAR sort key, which only a uuid attribute's 16 bytes may stand for", len(raw))
 }
 
 // scannedInteger widens a scanned integer of any width to int64.

@@ -93,6 +93,8 @@ func main() {
 // S3_BUCKET has no such condition: a bucket alone never makes the config inert.
 // DUCKDB_MANIFEST_TEMPLATE is the switch for manifest-driven reads; if set
 // without a bucket, the server fails at startup (factory fail-fast).
+// DUCKDB_HOT_LEG_TRANSPORT selects the federated hot leg, pgx by default or
+// attach (design.md §6.1.1).
 func duckDBConfigFromEnv(base forma.DuckDBConfig) (forma.DuckDBConfig, error) {
 	enabled, enabledErr := bootstrap.EnvBool("DUCKDB_ENABLED", false)
 	if enabledErr == nil && !enabled {
@@ -116,6 +118,9 @@ func duckDBConfigFromEnv(base forma.DuckDBConfig) (forma.DuckDBConfig, error) {
 	base.S3DataPrefix = prefixFromEnv("DUCKDB_S3_PREFIX", "S3_PREFIX", base.S3DataPrefix, manifestOn)
 	base.ManifestPrefix = prefixFromEnv("DUCKDB_MANIFEST_PREFIX", "MANIFEST_PREFIX", base.ManifestPrefix, manifestOn)
 	base.AllowCallerParquetPaths = allowCallerPaths
+	// pgx, the default since #857, or attach, the rollback. Config.Validate
+	// refuses any other value at startup.
+	base.HotLegTransport = forma.HotLegTransport(bootstrap.Env("DUCKDB_HOT_LEG_TRANSPORT", string(base.HotLegTransport)))
 	return base, nil
 }
 

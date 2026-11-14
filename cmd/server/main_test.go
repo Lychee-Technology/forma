@@ -291,6 +291,38 @@ func TestBootstrapServer_RejectsCallerParquetPathsWithoutBucket(t *testing.T) {
 	}
 }
 
+// TestDuckDBConfigFromEnv_HotLegTransport pins the rollback switch of #857:
+// the server keeps the default's pgx transport unless
+// DUCKDB_HOT_LEG_TRANSPORT names another, and reads the variable only when
+// DuckDB is on.
+func TestDuckDBConfigFromEnv_HotLegTransport(t *testing.T) {
+	base := forma.DefaultConfig(nil).DuckDB
+	t.Setenv("DUCKDB_ENABLED", "true")
+	if got := readDuckDBConfig(t, base).HotLegTransport; got != forma.HotLegTransportPgx {
+		t.Fatalf("unset DUCKDB_HOT_LEG_TRANSPORT: transport %q, want %q", got, forma.HotLegTransportPgx)
+	}
+	t.Setenv("DUCKDB_HOT_LEG_TRANSPORT", "attach")
+	if got := readDuckDBConfig(t, base).HotLegTransport; got != forma.HotLegTransportAttach {
+		t.Fatalf("DUCKDB_HOT_LEG_TRANSPORT=attach: transport %q, want %q", got, forma.HotLegTransportAttach)
+	}
+	t.Setenv("DUCKDB_ENABLED", "false")
+	if got := readDuckDBConfig(t, base).HotLegTransport; got != forma.HotLegTransportPgx {
+		t.Fatalf("DuckDB off: transport %q, want the base's %q", got, forma.HotLegTransportPgx)
+	}
+}
+
+// TestBootstrapServer_RejectsUnknownHotLegTransport: a transport other than
+// pgx or attach fails startup with a ConfigError naming the field.
+func TestBootstrapServer_RejectsUnknownHotLegTransport(t *testing.T) {
+	t.Setenv("DUCKDB_ENABLED", "true")
+	t.Setenv("DUCKDB_HOT_LEG_TRANSPORT", "duckdb")
+	_, err := bootstrapServer(context.Background(), zap.NewNop().Sugar())
+	var configErr *forma.ConfigError
+	if !errors.As(err, &configErr) || configErr.Field != "duckdb.hotLegTransport" {
+		t.Fatalf("expected a ConfigError on duckdb.hotLegTransport, got %v", err)
+	}
+}
+
 // TestBootstrapServer_RejectsUnparsableIntegerEnv pins #600: a set but
 // unparsable integer variable fails startup with an *EnvError naming it,
 // where it used to keep the default silently. One variable per overlay the

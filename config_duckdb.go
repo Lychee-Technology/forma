@@ -52,11 +52,17 @@ type DuckDBConfig struct {
 	FlushVisibilityGraceMs int64 `json:"flushVisibilityGraceMs"`
 
 	// HotLegTransport selects how a federated pass reads the hot tier
-	// (design.md §6.1.1): HotLegTransportAttach, the default, reads
-	// PostgreSQL from inside DuckDB through the attached catalog;
-	// HotLegTransportPgx reads it over the engine's pgx pool in one
-	// REPEATABLE READ snapshot, has DuckDB read only the parquet tiers, and
-	// merges the two in Go. Empty means attach.
+	// (design.md §6.1.1): HotLegTransportPgx, DefaultConfig's value since
+	// #857, reads it over the engine's pgx pool in one REPEATABLE READ
+	// snapshot, has DuckDB read only the parquet tiers, and merges the two in
+	// Go; HotLegTransportAttach reads PostgreSQL from inside DuckDB through
+	// the attached catalog, and is the rollback. Empty, the field's zero
+	// value, still means attach: a DuckDBConfig built field by field rather
+	// than from DefaultConfig (WithDuckDB(DuckDBConfig{...}), say) keeps the
+	// attach transport until it sets this field. A pgx pass holds one pooled
+	// PostgreSQL connection for its whole duration, and the engine admits at
+	// most MaxConnections of them at once, so size the pool above
+	// MaxConnections.
 	HotLegTransport HotLegTransport `json:"hotLegTransport"`
 	// HotLegMaxDirtyRows caps the dirty set a pgx pass stages. Past it the
 	// pass fails as a degradable federated read failure before DuckDB scans
@@ -355,6 +361,10 @@ func defaultDuckDBConfig() DuckDBConfig {
 		CircuitBreakerFailureThreshold: 5,
 		CircuitBreakerWindow:           time.Minute,
 		CircuitBreakerOpenDuration:     time.Minute,
+		// The pgx hot leg since #857, once the tier parity suite and the
+		// dual-run test passed (pgx-hot-leg-plan.md step 6). Rolling back is
+		// setting HotLegTransportAttach.
+		HotLegTransport: HotLegTransportPgx,
 		// The manifest read surface (S3Bucket / S3DataPrefix / ManifestPrefix /
 		// ManifestTemplate) deliberately defaults to all-zero. The cdc CLI
 		// tools default ManifestTemplate to "manifest/{{.SchemaID}}.json", but

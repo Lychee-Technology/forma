@@ -90,6 +90,10 @@ type DBFederatedQueryEngine struct {
 	// hotLeg opens the snapshot of a pgx pass (WithPgxHotLeg); nil when the
 	// engine was built without one, which fails a pgx pass as misconfigured.
 	hotLeg hotLegSnapshots
+	// pgxPassSlots bounds the pgx passes in flight to the DuckDB
+	// connections that serve them, so they hold at most that many pooled
+	// PostgreSQL connections (pgx_pass_slots.go).
+	pgxPassSlots chan struct{}
 	// now is the clock behind every stage timing the DuckDB path reports
 	// (execution-plan Timings and the fed_query_latency_histogram stages).
 	// time.Now in production; tests substitute a fake to assert exact stage
@@ -140,6 +144,7 @@ func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher 
 		schemaValidator:        newParquetSchemaValidator(),
 		flushVisibilityGraceMs: cfg.FlushVisibilityGraceMs,
 		corruptPaths:           newCorruptParquetCache(defaultCorruptPathRetention),
+		pgxPassSlots:           newPgxPassSlots(cfg.MaxConnections),
 	}
 	for _, opt := range opts {
 		opt(e)
