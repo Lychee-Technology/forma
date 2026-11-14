@@ -91,14 +91,14 @@ var metricCatalogue = []MetricDescriptor{
 		Kind:   MetricKindHistogram,
 		Unit:   MetricUnitMilliseconds,
 		Labels: []string{"stage"},
-		Help:   "Federated query latency per stage, in milliseconds: translation is SQL rendering, execution is the DuckDB query call, streaming is the row iteration and handler loop.",
+		Help:   "Federated query latency per stage, in milliseconds: translation is SQL rendering, execution is the DuckDB query call, streaming is the row iteration and handler loop, snapshot is a pgx hot-leg pass's PostgreSQL reads in its snapshot.",
 	},
 	{
 		Name:   "fed_query_row_count",
 		Kind:   MetricKindCounter,
 		Unit:   MetricUnitCount,
 		Labels: []string{"source"},
-		Help:   "Rows handled by one successful federated query pass, per source: pg is the size of the dirty set fetched from the Postgres change_log for the anti-join (the hot rows that override their S3 copies), duckdb is the row count returned by the merged DuckDB scan.",
+		Help:   "Rows handled by one successful federated query pass, per source: pg is the size of the dirty set fetched from the Postgres change_log for the anti-join (the hot rows that override their S3 copies), duckdb is the row count returned by the merged DuckDB scan (the parquet leg's window on a pgx hot-leg pass), hot is the number of hot keys a pgx hot-leg pass matched.",
 	},
 	{
 		Name:   "duckdb_circuit_breaker_transition_total",

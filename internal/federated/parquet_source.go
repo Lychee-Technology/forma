@@ -122,7 +122,7 @@ func (e *DBFederatedQueryEngine) resolveParquetPaths(ctx context.Context, q *mod
 // before the probe keeps that true when the guard is what spent the budget.
 func (e *DBFederatedQueryEngine) refuseCachedCorrupt(
 	ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery,
-	listed, corrupt []string, stamps map[string]map[string]string,
+	listed, corrupt []string, stamps map[string]map[string]string, manifestListed bool,
 ) error {
 	if err := e.typeGuardReadableRemainder(ctx, q.SchemaID, listed, corrupt, stamps); err != nil {
 		return fmt.Errorf("type-check the objects listed beside ones cached as corrupt: %w", err)
@@ -131,7 +131,7 @@ func (e *DBFederatedQueryEngine) refuseCachedCorrupt(
 	if _, _, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, map[string]any{}); err != nil {
 		return fmt.Errorf("build the query over a set listing objects cached as corrupt: %w", err)
 	}
-	classified := e.classifyDuckDBReadError(ctx, q, listed, true)
+	classified := e.classifyDuckDBReadError(ctx, q, listed, manifestListed)
 	var inconsistent *ParquetSetInconsistentError
 	if errors.As(classified, &inconsistent) {
 		return fmt.Errorf("probe set listing objects cached as corrupt: %w", classified)

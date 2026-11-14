@@ -38,6 +38,10 @@ type scan struct {
 	// emptyParquetScan marks a pass whose parquet leg scans nothing (#720);
 	// its page stands only once confirmNoParquetPublished has run.
 	emptyParquetScan bool
+	// globListed marks a pgx pass's frozen inventory: objects a glob listed,
+	// which no manifest vouches for, so a missing one is not a manifest
+	// inconsistency.
+	globListed bool
 }
 
 // retryablePassFailure reports whether a failed pass earns the one retry,
@@ -238,7 +242,7 @@ func (c *duckDBExecutionPlanContext) recordScanOutcome(o duckDBScanOutcome) {
 // and the error names the object(s). Identification decorates — it never
 // caches, never retries, and never changes the classification chain.
 func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.FederatedAttributeQuery, sc scan, cause error, op string) error {
-	classified := e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource)
+	classified := e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource && !sc.globListed)
 	var inconsistent *ParquetSetInconsistentError
 	wrapped := fmt.Errorf("%s: %w: %w", op, classified, cause)
 	if errors.As(classified, &inconsistent) {
@@ -284,6 +288,7 @@ func (e *DBFederatedQueryEngine) failScanSources(ctx context.Context, q *model.F
 		return e.failDuckDBScan(ctx, q, scan{
 			parquetPaths:    unverified.scanned,
 			pathsFromSource: unverified.fromSource,
+			globListed:      unverified.globListed,
 			probe:           probe,
 		}, err, "pre-read parquet type verification")
 	}

@@ -195,6 +195,7 @@ func TestBoundBoolParityNoEAVAllTiers(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster, WithSchemaDir(writeSimpleSchemaDir(t, boundBoolProps, boundBoolAttrs)))
+	pinAttachHotLeg(env) // the hot phase pins the attach hot leg's truthiness projection of off-contract images; the pgx hot leg reads hot rows through the OLTP reader (design.md §6.1.1, What a hot row reads as)
 	simple := DefaultSchemaFixtures()[0]
 
 	// A flushed anchor row gives the schema its first parquet object and

@@ -60,8 +60,8 @@ a fixed enumeration.
 
 | Name | Kind | Unit | Labels | Emitted by |
 |------|------|------|--------|------------|
-| `fed_query_latency_histogram` | histogram | milliseconds | `stage` (`translation`, `execution`, `streaming`) | federated query engine |
-| `fed_query_row_count` | counter | count | `source` (`pg`, `duckdb`) | federated query engine |
+| `fed_query_latency_histogram` | histogram | milliseconds | `stage` (`translation`, `execution`, `streaming`, `snapshot`) | federated query engine |
+| `fed_query_row_count` | counter | count | `source` (`pg`, `duckdb`, `hot`) | federated query engine |
 | `duckdb_circuit_breaker_transition_total` | counter | count | `state` (`open`, `half_open`, `closed`) | federated query engine (#634) |
 | `compaction_manifest_contract_violation_total` | counter | count | `schema_id` | compactor |
 | `compaction_dirty_ratio` | gauge | ratio | `schema_id` | compactor |
@@ -83,14 +83,40 @@ gated on the caller asking for an execution plan):
   scans inside DuckDB read: Forma does not observe them (see
   [Retired metrics](#retired-metrics)).
 
-All five samples are emitted together, after the pass has succeeded. A pass
-that fails, whether at SQL rendering, at the DuckDB `Query` call or while
-streaming rows, emits nothing, so no counter or histogram ever carries a
-failed attempt. A query answered by the publication-race retry (#720) is
-therefore counted once, from the pass that produced the returned page, the
+A pass under the pgx hot leg (`DuckDBConfig.HotLegTransport = pgx`,
+design.md §6.1.1) reads PostgreSQL itself, over pgx in one snapshot, and
+emits two more samples:
+
+- `fed_query_latency_histogram{stage="snapshot"}` is the time the pass spent
+  on its PostgreSQL reads: opening the snapshot, the dirty set, the hot keys,
+  and after the merge the page's hot rows. The DuckDB statement runs while
+  the snapshot is open, between the hot keys and the page read; its time is
+  in `execution` and `streaming`, not here. `streaming` is the parquet leg's
+  row iteration plus the loop that hands the merged page to the row handler,
+  so a slow handler shows there, as on the attach transport. When a deep
+  page's window carries no count, the pass recounts the parquet leg with a
+  second DuckDB statement (#181); its translation, execution and streaming
+  add to the page statement's, and so to the plan's `duckdb_fetch`.
+- `fed_query_row_count{source="hot"}` is the number of hot keys the page drew
+  from: the rows of the dirty window that match the request's condition (and,
+  on a keyset page, lie after its cursor). Beside `pg`, the size of the dirty
+  set the pass staged, it says how much of the hot tier the predicate kept.
+  `duckdb` counts the rows of the parquet leg's window, which on an offset
+  page holds up to `hot` + limit rows.
+
+A pgx pass over a schema with no parquet to read (#720) runs no DuckDB
+statement and emits only `snapshot`, `pg` and `hot`. The attach transport
+emits neither new sample.
+
+All of a pass's samples are emitted together, after the pass has succeeded.
+A pass that fails, whether at SQL rendering, at the DuckDB `Query` call,
+while streaming rows (the row handler included) or, under pgx, at a snapshot
+read, emits nothing, so no
+counter or histogram ever carries a failed attempt. A query answered by the
+publication-race retry (#720) is therefore counted once, from the pass that produced the returned page, the
 same pass the execution plan describes.
 
-`duckdb_circuit_breaker_transition_total` is not one of those five. It
+`duckdb_circuit_breaker_transition_total` is not one of a pass's samples. It
 counts the DuckDB circuit breaker's state changes, labelled by the state
 entered: `open` when failures reach the threshold or a half-open probe fails,
 `half_open` when a request is admitted as the probe after the open period,

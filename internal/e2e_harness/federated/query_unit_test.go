@@ -280,7 +280,7 @@ func TestBuildHotTierQueryTargetedSecurity(t *testing.T) {
 	query := buildHotTierQueryTargeted("pg-conn", benchmarkSchemaIDSecurity, "",
 		"AND COALESCE(hot_vals.symbol, em.text_01) = 'SYM00001'", "", true)
 	for _, expected := range []string{
-		"COALESCE(hot_vals.name, hot_vals.symbol, '') as name",
+		"COALESCE(hot_vals.name, hot_vals.symbol, em.text_01, '') as name",
 		"COALESCE(hot_vals.symbol, em.text_01) as symbol",
 		"'' as exchange",
 		"'' as region",

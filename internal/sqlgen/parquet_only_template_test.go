@@ -70,7 +70,9 @@ func TestParquetOnlyTemplateRendersNoPostgres(t *testing.T) {
 }
 
 // Every ORDER BY term renders NULLS LAST, in the order today's template
-// renders, for both page forms.
+// renders, for both page forms, and reads a qualified column of visible: a
+// bound attribute its visible column, not the bound column's output alias
+// (#856 review R1-F1, R1-F2).
 func TestParquetOnlyOrderByIsExplicitNullsLast(t *testing.T) {
 	sortQ := parquetOnlyTestQuery(nil)
 	sortQ.AttributeOrders = []model.AttributeOrder{
@@ -81,11 +83,11 @@ func TestParquetOnlyOrderByIsExplicitNullsLast(t *testing.T) {
 		q    *model.FederatedAttributeQuery
 		want string
 	}{
-		"default order": {parquetOnlyTestQuery(nil), "ORDER BY created_at DESC NULLS LAST, row_id ASC NULLS LAST\nLIMIT ? OFFSET ?;"},
+		"default order": {parquetOnlyTestQuery(nil), "ORDER BY visible.created_at DESC NULLS LAST, visible.row_id ASC NULLS LAST\nLIMIT ? OFFSET ?;"},
 		"attribute order": {sortQ,
-			"ORDER BY integer_01 DESC NULLS LAST, tag ASC NULLS LAST, row_id ASC NULLS LAST\nLIMIT ? OFFSET ?;"},
+			"ORDER BY visible.age DESC NULLS LAST, visible.tag ASC NULLS LAST, visible.row_id ASC NULLS LAST\nLIMIT ? OFFSET ?;"},
 		"keyset": {parquetOnlyTestQuery(parquetOnlyTestCursor()),
-			"ORDER BY created_at DESC NULLS LAST, row_id DESC NULLS LAST\nLIMIT ?;"},
+			"ORDER BY visible.created_at DESC NULLS LAST, visible.row_id DESC NULLS LAST\nLIMIT ?;"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

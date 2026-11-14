@@ -185,6 +185,7 @@ func runRFC3339OffsetAllTiers(ctx context.Context, t *testing.T, env *Env, withN
 func TestBoundRFC3339OffsetImageNoEAVAllTiers(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339Props, rfc3339Attrs)))
+	pinAttachHotLeg(env) // a non-canonical image is outside the query contract (#763); the hot phase pins the attach hot leg's read of it, while the pgx hot leg reads it through the OLTP reader, which refuses it
 	runRFC3339OffsetAllTiers(ctx, t, env, false)
 }
 
@@ -194,5 +195,6 @@ func TestBoundRFC3339OffsetImageNoEAVAllTiers(t *testing.T) {
 func TestBoundRFC3339OffsetImageEAVJoinedAllTiers(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339MixedProps, rfc3339MixedAttrs)))
+	pinAttachHotLeg(env) // a non-canonical image is outside the query contract (#763); the hot phase pins the attach hot leg's read of it, while the pgx hot leg reads it through the OLTP reader, which refuses it
 	runRFC3339OffsetAllTiers(ctx, t, env, true)
 }

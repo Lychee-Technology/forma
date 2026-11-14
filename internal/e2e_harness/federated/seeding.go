@@ -229,6 +229,13 @@ func (h *FederatedTestHarness) attributeIDForRecord(schemaID int16, name string)
 		}
 		return 0, false, fmt.Errorf("attribute %s not found in schema cache for schema %d", name, schemaID)
 	}
+	if metadata.ColumnBinding != nil {
+		// The write funnel stores a column-bound attribute in its entity_main
+		// column only (insertEntityMain). An eav_data row beside it is a state
+		// production never holds, and the OLTP reader the pgx hot leg reads
+		// hot rows through refuses it (#856).
+		return 0, false, nil
+	}
 	return metadata.AttributeID, true, nil
 }
 

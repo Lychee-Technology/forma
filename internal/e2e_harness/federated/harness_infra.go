@@ -152,6 +152,11 @@ func startDuckDB(base *e2e_harness.TestHarness, s3Endpoint, s3AccessKey, s3Secre
 	if opts.duckMaxConnections > 0 {
 		duckCfg.MaxConnections = opts.duckMaxConnections
 	}
+	transport, err := e2e_harness.HotLegTransportFromEnv()
+	if err != nil {
+		return forma.DuckDBConfig{}, err
+	}
+	duckCfg.HotLegTransport = transport
 	return duckCfg, base.StartDuckDB(duckCfg)
 }
 

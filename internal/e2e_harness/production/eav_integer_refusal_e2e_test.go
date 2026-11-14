@@ -108,6 +108,7 @@ func readEAVIntegerState(ctx context.Context, t *testing.T, env *Env, schemaID i
 // that value back.
 func TestEAVIntegerImageReadRefusalAndRepair(t *testing.T) {
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, eavIntegerProps, eavIntegerAttrs)))
+	pinAttachHotLeg(env) // the federated read it pins narrows the hot image as the attach hot leg projects it; the pgx hot leg refuses it, as the OLTP read does (design.md §6.1.1, What a hot row reads as)
 	ctx := context.Background()
 	schema := DefaultSchemaFixtures()[0]
 	srv := httptest.NewServer(httpapi.NewServer(env.EntityManager(), httpapi.Options{}).Handler())

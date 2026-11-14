@@ -44,7 +44,25 @@ type DuckDBConfig struct {
 	// default) is the exact anchor — the steady state is never widened; a
 	// positive value hot-serves rows flushed up to that long before the
 	// query; a negative value disables the widening (the pre-#252 barrier).
+	// The negative value applies to the attach transport only: the pgx hot
+	// leg reads it as 0, the exact anchor, because its snapshot guarantee
+	// needs a cutoff no later than path resolution (design.md §6.1.1, *The
+	// widening is never disabled on this path*). The hot-excluded form reads
+	// the strict set under either transport, whatever this value.
 	FlushVisibilityGraceMs int64 `json:"flushVisibilityGraceMs"`
+
+	// HotLegTransport selects how a federated pass reads the hot tier
+	// (design.md §6.1.1): HotLegTransportAttach, the default, reads
+	// PostgreSQL from inside DuckDB through the attached catalog;
+	// HotLegTransportPgx reads it over the engine's pgx pool in one
+	// REPEATABLE READ snapshot, has DuckDB read only the parquet tiers, and
+	// merges the two in Go. Empty means attach.
+	HotLegTransport HotLegTransport `json:"hotLegTransport"`
+	// HotLegMaxDirtyRows caps the dirty set a pgx pass stages. Past it the
+	// pass fails as a degradable federated read failure before DuckDB scans
+	// anything, so AllowPartialDegradedMode answers it from PostgreSQL
+	// alone. Zero, the default, sets no cap. The attach transport ignores it.
+	HotLegMaxDirtyRows int `json:"hotLegMaxDirtyRows"`
 
 	// S3Bucket is the bucket holding the lakehouse parquet files and the
 	// manifests that index them. Required whenever ManifestTemplate is set.
@@ -389,6 +407,9 @@ func (c *Config) validateDuckDBConfig() error {
 	}
 	if c.DuckDB.Routing.MaxDuckDBScanRows < 0 {
 		return &ConfigError{Field: "duckdb.routing.maxDuckDBScanRows", Message: "must be greater than or equal to 0"}
+	}
+	if err := c.DuckDB.ValidateHotLeg(); err != nil {
+		return err
 	}
 	if err := c.DuckDB.ValidateManifestRead(); err != nil {
 		return fmt.Errorf("invalid duckdb manifest read configuration: %w", err)

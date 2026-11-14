@@ -73,7 +73,7 @@ func TestBuildHotKeysStatement(t *testing.T) {
 func TestBuildHotKeysStatementWithoutCondition(t *testing.T) {
 	stmt, err := hotLegTestRepo(t).buildHotKeysStatement(model.HotKeysQuery{Tables: hotLegTestTables, SchemaID: 7})
 	require.NoError(t, err)
-	require.True(t, strings.HasSuffix(stmt.sql, "WHERE (1=1)"), stmt.sql)
+	require.True(t, strings.HasSuffix(stmt.sql, "\nAND (1=1)"), stmt.sql)
 	require.Equal(t, []any{int16(7), int64(0)}, stmt.args)
 	require.Empty(t, stmt.columns)
 }

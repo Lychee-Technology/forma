@@ -202,6 +202,7 @@ func runWideIntegerAllTiers(ctx context.Context, t *testing.T, env *Env, withNot
 func TestBoundIntegerWideColumnImagesNoEAVAllTiers(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, wideIntegerProps, wideIntegerAttrs)))
+	pinAttachHotLeg(env) // the hot phase pins the attach hot leg's export-way read of off-contract images; the pgx hot leg reads them through the OLTP reader, which refuses them (design.md §6.1.1, What a hot row reads as)
 	runWideIntegerAllTiers(ctx, t, env, false)
 }
 
@@ -211,5 +212,6 @@ func TestBoundIntegerWideColumnImagesNoEAVAllTiers(t *testing.T) {
 func TestBoundIntegerWideColumnImagesEAVJoinedAllTiers(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, wideIntegerMixedProps, wideIntegerMixedAttrs)))
+	pinAttachHotLeg(env) // the hot phase pins the attach hot leg's export-way read of off-contract images; the pgx hot leg reads them through the OLTP reader, which refuses them (design.md §6.1.1, What a hot row reads as)
 	runWideIntegerAllTiers(ctx, t, env, true)
 }

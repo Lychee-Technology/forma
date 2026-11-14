@@ -63,8 +63,24 @@ func (e *DBFederatedQueryEngine) buildParquetOnlyQuery(
 	parquetPaths []string,
 	cold coldScanSet,
 ) (string, []any, error) {
+	sqlStr, args, _, err := e.buildParquetOnlyQueryCached(ctx, tables, q, attributeOrders, limit, offset, window, parquetPaths, cold)
+	return sqlStr, args, err
+}
+
+// buildParquetOnlyQueryCached is buildParquetOnlyQuery that also reports
+// whether the compiled plan came from the plan cache, for the execution plan.
+func (e *DBFederatedQueryEngine) buildParquetOnlyQueryCached(
+	ctx context.Context,
+	tables model.StorageTables,
+	q *model.FederatedAttributeQuery,
+	attributeOrders []model.AttributeOrder,
+	limit, offset int,
+	window sqlgen.ParquetWindow,
+	parquetPaths []string,
+	cold coldScanSet,
+) (string, []any, *bool, error) {
 	if q == nil {
-		return "", nil, fmt.Errorf("build parquet-only query: the query is nil")
+		return "", nil, nil, fmt.Errorf("build parquet-only query: the query is nil")
 	}
 	q = dispatchedQuery(q, limit, offset, attributeOrders)
 	sqlParams := map[string]any{"SchemaID": q.SchemaID}
@@ -73,34 +89,37 @@ func (e *DBFederatedQueryEngine) buildParquetOnlyQuery(
 	cache, _ := e.schemaCacheByID(q.SchemaID)
 	dc, _, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, sqlParams)
 	if err != nil {
-		return "", nil, fmt.Errorf("build parquet-only query for schema %d: %w", q.SchemaID, err)
+		return "", nil, nil, fmt.Errorf("build parquet-only query for schema %d: %w", q.SchemaID, err)
 	}
 	compile := func() (any, error) {
 		return sqlgen.CompileParquetOnlyQuery(sqlParams, q, &dc)
 	}
 
 	var artifact any
+	var hit *bool
 	if e.planCache == nil {
 		artifact, err = compile()
 	} else {
 		key, keyErr := e.parquetOnlyPlanCacheKey(tables, q, parquetPaths, attributeOrders, cold)
 		if keyErr != nil {
-			return "", nil, fmt.Errorf("build parquet-only query: %w", keyErr)
+			return "", nil, nil, fmt.Errorf("build parquet-only query: %w", keyErr)
 		}
-		artifact, _, err = e.planCache.GetOrBuild(ctx, key, compile)
+		var cached bool
+		artifact, cached, err = e.planCache.GetOrBuild(ctx, key, compile)
+		hit = &cached
 	}
 	if err != nil {
-		return "", nil, fmt.Errorf("compile parquet-only query for schema %d: %w", q.SchemaID, err)
+		return "", nil, nil, fmt.Errorf("compile parquet-only query for schema %d: %w", q.SchemaID, err)
 	}
 	compiled, ok := artifact.(*sqlgen.ParquetOnlyCompiledQuery)
 	if !ok || compiled == nil {
-		return "", nil, fmt.Errorf("compile parquet-only query for schema %d: the plan cache holds %T under its key", q.SchemaID, artifact)
+		return "", nil, nil, fmt.Errorf("compile parquet-only query for schema %d: the plan cache holds %T under its key", q.SchemaID, artifact)
 	}
 	sqlStr, args, err := compiled.Bind(q, dc, window)
 	if err != nil {
-		return "", nil, fmt.Errorf("build parquet-only query for schema %d: %w", q.SchemaID, err)
+		return "", nil, nil, fmt.Errorf("build parquet-only query for schema %d: %w", q.SchemaID, err)
 	}
-	return sqlStr, args, nil
+	return sqlStr, args, hit, nil
 }
 
 // parquetOnlyPlanCacheKey derives the plan-cache key of a parquet-only

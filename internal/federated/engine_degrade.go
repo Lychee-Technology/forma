@@ -125,7 +125,10 @@ func (e *DBFederatedQueryEngine) logDegradedFallback(fq *model.FederatedAttribut
 // that keeps timing out opens the breaker, and *that* rejection degrades. An
 // eighth, a cancelled request, has no caller left to answer: the fallback
 // would run on the same cancelled context, and if it failed its error would
-// replace the cause it was absorbing.
+// replace the cause it was absorbing. Two more belong to the pgx hot leg: a
+// pass whose legs overlap (ErrHotLegNotDisjoint) is an internal
+// inconsistency an operator must see, and a pgx transport the engine was not
+// built for is a configuration error.
 func degradableFederatedError(err error) bool {
 	return !errors.Is(err, ErrSchemaMetadataCacheRequired) &&
 		!errors.Is(err, ErrParquetSetInconsistent) &&
@@ -133,6 +136,8 @@ func degradableFederatedError(err error) bool {
 		!errors.Is(err, ErrNoParquetPaths) &&
 		!errors.Is(err, ErrManifestSchemaMismatch) &&
 		!errors.Is(err, forma.ErrInvalidInput) &&
+		!errors.Is(err, ErrHotLegNotDisjoint) &&
+		!errors.Is(err, errPgxHotLegNotConfigured) &&
 		!errors.Is(err, context.DeadlineExceeded) &&
 		!errors.Is(err, context.Canceled)
 }

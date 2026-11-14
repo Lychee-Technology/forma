@@ -24,7 +24,7 @@ func (h *FederatedTestHarness) buildPostgresOnlySelectQuery(opts *QueryOptions) 
 			COALESCE(em.ltbase_created_at, cl.changed_at),
 			cl.changed_at,
 			COALESCE(cl.deleted_at, 0),
-			COALESCE(hot_vals.name, hot_vals.symbol, '') as name,
+			COALESCE(hot_vals.name, hot_vals.symbol, em.text_01, '') as name,
 			0 as version`)
 	if usesBenchmarkProjectionForSelect(opts) {
 		query.WriteString(`,
