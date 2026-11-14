@@ -17,7 +17,7 @@ import (
 //
 // The CDC export stages eav_data.value_numeric through it (#785), so the
 // parquet tiers hold its answer, and the hot leg's sort keys derive from it
-// (sortkey, design.md §6.1.1) so that a hot key compares as its next export
+// (sortkey, design.md §6.1) so that a hot key compares as its next export
 // will.
 func NumericToDouble(n pgtype.Numeric) (float64, error) {
 	switch {

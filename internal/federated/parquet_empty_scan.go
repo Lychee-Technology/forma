@@ -9,73 +9,29 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-// hasNoParquetToRead reports whether a source-authored path set can be
-// answered without scanning parquet (#720): every path is a glob, every glob
-// matches no object, and PostgreSQL records no parquet publication for the
-// schema (HasParquetHistory).
+// confirmNoParquetPublished runs after a pass that settled on no parquet
+// objects (#720) has read its page and ended its snapshot S, and before the
+// page is used. If the source no longer resolves an empty glob set, a
+// publication landed since path resolution, and the page is discarded.
 //
-// A source authors a glob only as its level-3 fallback (design.md §4.3.1),
-// for a schema whose manifest is confirmed absent or empty. That is the
-// state of a schema that has never been flushed, and DuckDB's read_parquet
-// refuses a glob that matches nothing, so such a query used to fail and
-// count against the breaker. An empty glob is not proof by itself, though:
-// a lost manifest over objects written under another prefix, or over
-// objects since deleted, looks the same. PostgreSQL tells the two apart. A
-// flushed change_log entry of any age, or a live row a cdc-init export left
-// without an entry, means parquet should hold data, and the read keeps
-// failing as before. No timestamp is compared: flushed_at is stamped on the
-// CDC host, so its order against this reader's clock proves nothing.
+// The check is conservative: the page it guards is already complete as of
+// S. The parquet-history record, the hot keys and the page's hot rows all
+// come from S, and every writer publishes before it touches change_log (the
+// flush appends to the manifest before it marks rows, and the onboarding
+// handoff clears the log after cdc-init has published). A publication's
+// change_log write that landed before S is history in S, and
+// settleEmptyCandidate retried or failed the pass. One that lands after S
+// cannot remove a row from what the pass reads from S: there every live row
+// has an unflushed entry, and the hot leg serves it. So a publication whose
+// manifest and objects are lost before this check does not shorten the
+// page; its change_log write fails later reads as history instead. The
+// check was kept from the attach pass, which read the hot leg outside any
+// snapshot and could lose rows a racing flush marked.
 //
-// A writer can publish between path resolution and this check. A flushed
-// entry found here may then belong to a publication the resolution missed,
-// not to a lost one, so the source is resolved again: a set that is no
-// longer an empty glob set asks the pass to retry. Publications after the
-// check are confirmNoParquetPublished's to catch.
-//
-// Path sets from a caller hint are left alone: they name objects no manifest
-// vouches for (#456), and #715 removes them. A failed glob listing is
-// inconclusive and leaves the scan to report it.
-func (e *DBFederatedQueryEngine) hasNoParquetToRead(
-	ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery,
-	paths []string, fromSource bool,
-) (bool, error) {
-	if !fromSource || tables.ChangeLog == "" || tables.EntityMain == "" || e.duck == nil || e.dirtyIDFetcher == nil {
-		return false, nil
-	}
-	if !globsMatchNothing(ctx, e.duck, paths) {
-		return false, nil
-	}
-	found, err := e.dirtyIDFetcher.HasParquetHistory(ctx, tables, q.SchemaID)
-	if err != nil {
-		return false, fmt.Errorf("check whether schema %d has parquet history: %w: %w", q.SchemaID, ErrPostgresReadFailed, err)
-	}
-	if !found {
-		return true, nil
-	}
-	if !e.sourceResolvesNoObjects(ctx, q) {
-		return false, &parquetPublishedDuringReadError{SchemaID: q.SchemaID}
-	}
-	return false, nil
-}
-
-// confirmNoParquetPublished runs after an empty-scan pass has read pg_source
-// and before its page is used. The empty scan source was fixed before
-// DuckDB ran, so it cannot see a publication that landed in between, while
-// the change_log writes that follow such a publication can move rows out of
-// the hot leg: a flush marks them flushed, and the onboarding handoff clears
-// the log once cdc-init has published. Either way the page may be short.
-//
-// Every writer publishes before it touches change_log. The flush copies its
-// objects and appends the manifest before it marks rows, and the handoff
-// runs after cdc-init has published. So any change_log write the hot leg saw
-// follows a publication this check sees: the source now resolves a manifest,
-// or the glob now matches an object. The argument rests on that causal
-// order, not on any clock. It covers every publication the reader can see
-// at all. A writer that keeps no manifest and writes outside the reader's
-// glob is invisible to every read, as design.md §4.3.1 level 3 documents.
-// A publication whose manifest and objects are lost before this check runs
-// is not seen either; the page is short, and the next read fails on the
-// change_log history it left. #760 tracks closing that window.
+// What stays open is the durable history itself: a cdc-init export whose
+// rows have all been written again since the handoff leaves no record in
+// PostgreSQL. Its rows are shadowed, so losing it changes no answer. #760
+// tracks a durable initialization record (design.md §4.3.1 level 3).
 func (e *DBFederatedQueryEngine) confirmNoParquetPublished(ctx context.Context, q *model.FederatedAttributeQuery) error {
 	if e.sourceResolvesNoObjects(ctx, q) {
 		return nil
@@ -128,8 +84,8 @@ func (e *parquetPublishedDuringReadError) Error() string {
 
 func (e *parquetPublishedDuringReadError) Unwrap() error { return ErrFederatedReadFailed }
 
-// emptyParquetScanSet is the scan treatment of a read that hasNoParquetToRead
-// cleared: the scan source holds no object, and every attribute column is
+// emptyParquetScanSet is the scan treatment of a frozen set that lists no
+// object (#720): the scan source holds no object, and every attribute column is
 // missing from it, as from a footer union of no files.
 func emptyParquetScanSet(cache forma.SchemaAttributeCache) coldScanSet {
 	set := coldScanColumns(cache, newColumnUnion())

@@ -12,7 +12,6 @@ import (
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/sortkey"
-	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
@@ -209,26 +208,32 @@ func TestPgxPassHotExcludedFormReadsTheStrictSet(t *testing.T) {
 	require.Equal(t, int64(len(want)), total)
 }
 
-// The cutoff (#252, design.md §6.1.1): under a negative grace the pgx hot
-// form's cutoff is the path-resolution instant, while the hot-excluded form
-// and the attach transport keep sqlgen.FlushGraceCutoffDisabled.
+// The cutoff (#252, design.md §6.1): a negative grace, from the config or
+// from WithFlushVisibilityGrace, reads as 0, so the cutoff is the
+// path-resolution instant and the widening is never disabled.
 func TestPgxPassCutoffNeverDisablesTheWidening(t *testing.T) {
 	const resolvedAt = int64(1_700_000_000_000)
-	build := func(transport forma.HotLegTransport, grace int64) *DBFederatedQueryEngine {
+	build := func(grace int64) *DBFederatedQueryEngine {
 		cfg := hybridDuckConfig()
-		cfg.HotLegTransport, cfg.FlushVisibilityGraceMs = transport, grace
-		return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, nil, nil, cfg, nil, "")
+		cfg.FlushVisibilityGraceMs = grace
+		return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil, cfg, nil)
 	}
-	pgx, attach := build(forma.HotLegTransportPgx, -1), build(forma.HotLegTransportAttach, -1)
-	require.Equal(t, resolvedAt, pgx.passCutoffMs(resolvedAt, true))
-	require.Equal(t, int64(sqlgen.FlushGraceCutoffDisabled), pgx.passCutoffMs(resolvedAt, false))
-	require.Equal(t, int64(sqlgen.FlushGraceCutoffDisabled), attach.passCutoffMs(resolvedAt, true))
-	require.Equal(t, int64(sqlgen.FlushGraceCutoffDisabled), attach.passCutoffMs(resolvedAt, false))
+	require.Equal(t, resolvedAt, build(-1).passCutoffMs(resolvedAt))
+	require.Equal(t, resolvedAt-250, build(250).passCutoffMs(resolvedAt), "a positive margin applies")
+	withOption := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil,
+		forma.DuckDBConfig{}, nil, WithFlushVisibilityGrace(-time.Second))
+	require.Equal(t, resolvedAt, withOption.passCutoffMs(resolvedAt))
 
-	require.Equal(t, resolvedAt-250, build(forma.HotLegTransportPgx, 250).passCutoffMs(resolvedAt, true), "a positive margin applies as today")
-	withOption := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, nil, nil,
-		forma.DuckDBConfig{HotLegTransport: forma.HotLegTransportPgx}, nil, "", WithFlushVisibilityGrace(-time.Second))
-	require.Equal(t, resolvedAt, withOption.passCutoffMs(resolvedAt, true))
+	// The pass's snapshot reads the widened set at that cutoff.
+	f := newPgxFixture(t, tieRunRows())
+	e := f.engine(t, []string{f.dir + "/base.parquet"})
+	e.flushVisibilityGraceMs = -1
+	clock := &fakeClock{t: time.UnixMilli(resolvedAt)}
+	e.now = clock.now
+	_, _, err := e.ExecuteDuckDBFederatedQuery(context.Background(), tieRunTables, pgxQuery(), 5, 0, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, DirtySetHot, f.leg.lastChangeLog.Form)
+	require.Equal(t, resolvedAt, f.leg.lastChangeLog.GraceCutoffMs)
 }
 
 // Past HotLegMaxDirtyRows the pass fails as a degradable read failure before

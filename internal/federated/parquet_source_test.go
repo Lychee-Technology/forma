@@ -48,8 +48,8 @@ func (f *fakeParquetSource) MissingIn(ctx context.Context, scanned []string) ([]
 
 func newParquetSourceTestEngine(t *testing.T, duck DuckDBQueryExecutor, src ParquetSource) *DBFederatedQueryEngine {
 	t.Helper()
-	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 }
 
 // TestParquetSource_PathsRenderIntoScan pins #187: with no render hint, the
@@ -109,8 +109,8 @@ func TestParquetSource_MissingKeysClassifyInconsistent(t *testing.T) {
 	}
 	duck := &fakeDuckDBExecutor{err: fmt.Errorf("IO Error: no files found")}
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+	engine := NewDBFederatedQueryEngine(pg, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 
 	_, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
@@ -137,8 +137,8 @@ func TestParquetSource_InvalidHintTemplateErrs(t *testing.T) {
 	src := &fakeParquetSource{paths: []string{"s3://b/1/from-manifest.parquet"}}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+	engine := NewDBFederatedQueryEngine(pg, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 
 	q := coldTierQuery()
 	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://b/{{.Broken"}
@@ -165,8 +165,8 @@ func TestParquetSource_EmptyHintErrs(t *testing.T) {
 	src := &fakeParquetSource{paths: []string{"s3://b/1/from-manifest.parquet"}}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+	engine := NewDBFederatedQueryEngine(pg, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 
 	q := coldTierQuery()
 	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: " , "}
@@ -216,8 +216,8 @@ func TestParquetSource_SourceResolvesZeroPathsIsNoParquetPaths(t *testing.T) {
 	src := &fakeParquetSource{paths: nil}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+	engine := NewDBFederatedQueryEngine(pg, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 
 	_, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
@@ -247,8 +247,8 @@ func TestParquetSource_NoSourceNoHintIsNoParquetPaths(t *testing.T) {
 
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x")
+	engine := NewDBFederatedQueryEngine(pg, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), withFakeHotLeg(nil))
 
 	_, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
@@ -282,8 +282,8 @@ func TestParquetSource_ManifestSchemaMismatchIsNotDegradable(t *testing.T) {
 	}}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+	engine := NewDBFederatedQueryEngine(pg, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 
 	_, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
@@ -316,18 +316,18 @@ func TestParquetSource_ZeroPathsNeverRendersNoValue(t *testing.T) {
 }
 
 // TestSentinel_DirtyFetchFailureIsPostgresReadFailed pins the #249 review P1
-// for scenario 9: the Postgres side of a federated read (here the dirty-ID
-// consistency fetch) classifies as ErrPostgresReadFailed.
+// for scenario 9: the Postgres side of a federated read (here the dirty-set
+// read in the pass's snapshot) classifies as ErrPostgresReadFailed.
 func TestSentinel_DirtyFetchFailureIsPostgresReadFailed(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
-	dirty := &fakeDirtyIDFetcher{err: fmt.Errorf("connection refused")}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
-	// A resolvable path set is required to reach the dirty fetch: path
+	// A resolvable path set is required to reach the dirty-set read: path
 	// resolution runs first and, since #299, fails an empty set outright.
-	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, dirty, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", withTestParquetPath())
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), withTestParquetPath(),
+		withFakeHotLeg(&fakeHotLeg{changeLogErr: fmt.Errorf("connection refused")}))
 
 	_, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
@@ -335,7 +335,7 @@ func TestSentinel_DirtyFetchFailureIsPostgresReadFailed(t *testing.T) {
 
 	require.ErrorIs(t, err, ErrPostgresReadFailed)
 	require.NotErrorIs(t, err, ErrFederatedReadFailed)
-	require.Equal(t, 0, duck.calls, "dirty fetch fails before DuckDB executes")
+	require.Equal(t, 0, duck.calls, "the dirty-set read fails before DuckDB executes")
 }
 
 // TestParquetSource_NoMissingKeysStaysDegradableReadFailure pins the other
@@ -348,8 +348,8 @@ func TestParquetSource_NoMissingKeysStaysDegradableReadFailure(t *testing.T) {
 	src := &fakeParquetSource{paths: []string{"s3://b/1/corrupt.parquet"}}
 	duck := &fakeDuckDBExecutor{err: fmt.Errorf("Invalid Input: corrupt page")}
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 2}}
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+	engine := NewDBFederatedQueryEngine(pg, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 
 	// Degraded OFF: classified read failure.
 	_, err := engine.Query(context.Background(),
@@ -412,8 +412,8 @@ func TestParquetSource_PathsErrorClassifiedReadFailed(t *testing.T) {
 // tests need: only the parquet source and the corrupt-path cache participate,
 // so every other seam stays nil.
 func newExclusionTestEngine(src ParquetSource) *DBFederatedQueryEngine {
-	return NewDBFederatedQueryEngine(nil, nil, nil, nil,
-		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}, nil, "", WithParquetSource(src))
+	return NewDBFederatedQueryEngine(nil, nil, nil,
+		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}, nil, WithParquetSource(src))
 }
 
 // newCachedRefusalTestEngine is newExclusionTestEngine with schema 7's
@@ -422,19 +422,19 @@ func newExclusionTestEngine(src ParquetSource) *DBFederatedQueryEngine {
 // ErrSchemaMetadataCacheRequired.
 func newCachedRefusalTestEngine(t *testing.T, src ParquetSource) *DBFederatedQueryEngine {
 	t.Helper()
-	return NewDBFederatedQueryEngine(nil, nil, nil, nil,
-		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}, testMetadataCacheSchema7(t), "", WithParquetSource(src))
+	return NewDBFederatedQueryEngine(nil, nil, nil,
+		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}, testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 }
 
 func exclusionTestQuery() *model.FederatedAttributeQuery {
 	return &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7}}
 }
 
-// TestResolveScanSourcesRefusesCachedCorrupt pins the #722 pre-flight
+// TestResolvePgxScanSourcesRefusesCachedCorrupt pins the #722 pre-flight
 // refusal: a source-authored set that lists a verification-confirmed corrupt
 // object fails, degradably, instead of scanning without it. The refusal names
 // only the cached objects, and it holds when every object is cached too.
-func TestResolveScanSourcesRefusesCachedCorrupt(t *testing.T) {
+func TestResolvePgxScanSourcesRefusesCachedCorrupt(t *testing.T) {
 	for name, listed := range map[string][]string{
 		"one of two cached": {"s3://b/a.parquet", "s3://b/bad.parquet"},
 		"all cached":        {"s3://b/bad.parquet"},
@@ -443,7 +443,7 @@ func TestResolveScanSourcesRefusesCachedCorrupt(t *testing.T) {
 			e := newCachedRefusalTestEngine(t, &fakeParquetSource{paths: listed})
 			e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
 
-			sc, err := e.resolveScanSources(context.Background(), corruptTables, exclusionTestQuery())
+			sc, err := e.resolvePgxScanSources(context.Background(), corruptTables, exclusionTestQuery())
 			var corrupt *CorruptParquetError
 			require.ErrorAs(t, err, &corrupt)
 			require.Equal(t, []string{"s3://b/bad.parquet"}, corrupt.Paths)

@@ -14,8 +14,8 @@ import (
 )
 
 // TestPostgresHalt_ParquetTiersError covers #187 scenario 9: with Postgres
-// really stopped mid-outage (docker stop — the pool and DuckDB's postgres
-// attachment point at a dead server, failing with genuine network errors),
+// really stopped mid-outage (docker stop — the pool the pgx hot leg reads
+// through points at a dead server, failing with genuine network errors),
 // a federated query over fully seeded parquet tiers must fail bounded, and
 // AllowPartialDegradedMode must NOT rescue it: the dirty-ID anti-join needs
 // Postgres for consistency, and the degraded fallback is itself

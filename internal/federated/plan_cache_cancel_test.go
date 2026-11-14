@@ -8,28 +8,30 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/queryplan"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
-// TestBuildDuckDBQueryCancelledPlanWaiterDoesNotRenderDirectly pins the
+// TestBuildParquetOnlyQueryCancelledPlanWaiterDoesNotRenderDirectly pins the
 // federated half of #467: the plan cache hands a waiter its context error
-// promptly, and buildDuckDBQueryWithPlan must surface that error rather than
-// treat it as a miss and render the query through the direct builder, which
-// takes no context. The compile is held in flight by occupying the request's
-// own cache key, since sqlgen.CompileDuckDBQuery offers nothing to block on.
-func TestBuildDuckDBQueryCancelledPlanWaiterDoesNotRenderDirectly(t *testing.T) {
+// promptly, and buildParquetOnlyQueryCached must surface that error rather
+// than treat it as a miss and render the query through the direct builder,
+// which takes no context. The compile is held in flight by occupying the
+// request's own cache key, since sqlgen.CompileParquetOnlyQuery offers
+// nothing to block on.
+func TestBuildParquetOnlyQueryCancelledPlanWaiterDoesNotRenderDirectly(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
-	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, &fakeDuckDBExecutor{}, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x",
-		WithPlanCache(queryplan.NewCache(16)), withTestParquetPath())
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDuckDBExecutor{}, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithPlanCache(queryplan.NewCache(16)), withTestParquetPath())
 
 	tables := model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
 	q := coldTierQuery()
 	paths := []string{testParquetPath}
 	const limit, offset = 25, 0
-	key, err := e.duckPlanCacheKey(tables, dispatchedQuery(q, limit, offset, nil), nil, nil, limit, offset, paths, coldScanSet{})
+	window := sqlgen.ParquetWindow{Offset: offset, Limit: limit}
+	key, err := e.parquetOnlyPlanCacheKey(tables, dispatchedQuery(q, limit, offset, nil), paths, nil, coldScanSet{})
 	require.NoError(t, err)
 
 	// Leader: holds the slot until released, then caches nothing so the
@@ -49,8 +51,7 @@ func TestBuildDuckDBQueryCancelledPlanWaiterDoesNotRenderDirectly(t *testing.T) 
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	sqlStr, args, _, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, nil, nil, limit, offset, paths, 0, coldScanSet{},
-		newDuckDBExecutionPlanContext(nil, time.Now))
+	sqlStr, args, _, err := e.buildParquetOnlyQueryCached(ctx, tables, q, nil, limit, offset, window, paths, coldScanSet{})
 	require.ErrorIs(t, err, context.Canceled,
 		"a waiter whose context ended must get that error back, not a directly rendered query")
 	require.Empty(t, sqlStr)
@@ -66,8 +67,7 @@ func TestBuildDuckDBQueryCancelledPlanWaiterDoesNotRenderDirectly(t *testing.T) 
 	// The same inputs render with a live context: the direct builder would
 	// have produced SQL for the cancelled caller, which is what the
 	// assertion above rules out.
-	sqlStr, _, _, err = e.buildDuckDBQueryWithPlan(context.Background(), tables, q, nil, nil, limit, offset, paths, 0, coldScanSet{},
-		newDuckDBExecutionPlanContext(nil, time.Now))
+	sqlStr, _, _, err = e.buildParquetOnlyQueryCached(context.Background(), tables, q, nil, limit, offset, window, paths, coldScanSet{})
 	require.NoError(t, err)
 	require.NotEmpty(t, sqlStr)
 }

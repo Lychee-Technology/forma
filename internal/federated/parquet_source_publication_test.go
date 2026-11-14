@@ -22,8 +22,8 @@ func TestParquetSource_InvalidHintPublishesTemplateWithoutRenderInternals(t *tes
 	src := &fakeParquetSource{paths: []string{"s3://b/1/from-manifest.parquet"}}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+	engine := NewDBFederatedQueryEngine(pg, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 
 	q := coldTierQuery()
 	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://b/{{.Broken"}
@@ -54,8 +54,8 @@ func TestParquetSource_NULHintIsRefusedBeforeDuckDB(t *testing.T) {
 	src := &fakeParquetSource{paths: []string{"s3://b/1/from-manifest.parquet"}}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+	engine := NewDBFederatedQueryEngine(pg, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 
 	q := coldTierQuery()
 	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://b/x\x00.parquet"}

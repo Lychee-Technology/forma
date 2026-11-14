@@ -85,8 +85,8 @@ func parquetOnlyMetadata(t *testing.T) *schemameta.MetadataCache {
 
 func newParquetOnlyEngine(t *testing.T, cache *queryplan.Cache, connString string) *DBFederatedQueryEngine {
 	t.Helper()
-	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, &fakeDuckDBExecutor{}, nil,
-		hybridDuckConfig(), parquetOnlyMetadata(t), connString, WithPlanCache(cache))
+	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDuckDBExecutor{}, nil,
+		hybridDuckConfig(), parquetOnlyMetadata(t), WithPlanCache(cache))
 }
 
 func parquetOnlyQuery(cond forma.Condition, cursor *model.KeysetCursor) *model.FederatedAttributeQuery {

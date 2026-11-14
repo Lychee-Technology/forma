@@ -9,7 +9,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma/internal/model"
-	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -79,20 +78,13 @@ func TestReadChangeLogSnapshotHotReadsWidenedSetAndHistory(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// The disabled-widening sentinel passes through as the cutoff, which reads
-// no marked entry: the reader does not resolve the cutoff itself.
+// The cutoff passes through as given, even one past every marked entry: the
+// reader does not resolve the cutoff itself.
 func TestReadChangeLogSnapshotPassesCutoffThrough(t *testing.T) {
-	query, args := dirtySetQuery(ChangeLogSnapshotRequest{Tables: snapshotTables, SchemaID: 7, Form: DirtySetHot, GraceCutoffMs: sqlgen.FlushGraceCutoffDisabled})
+	const cutoff = int64(1<<63 - 1)
+	query, args := dirtySetQuery(ChangeLogSnapshotRequest{Tables: snapshotTables, SchemaID: 7, Form: DirtySetHot, GraceCutoffMs: cutoff})
 	require.Regexp(t, hotDirtySetSQL, query)
-	require.Equal(t, []any{int16(7), sqlgen.FlushGraceCutoffDisabled}, args)
-}
-
-// The strict form is the query FetchDirtyRowIDs sends, so the attach path and
-// the pgx path cannot drift apart on it.
-func TestDirtySetQueryStrictFormIsFetchDirtyRowIDsQuery(t *testing.T) {
-	query, args := dirtySetQuery(ChangeLogSnapshotRequest{Tables: snapshotTables, SchemaID: 7, Form: DirtySetHotExcluded})
-	require.Equal(t, strictDirtySetQuery(snapshotTables.ChangeLog), query)
-	require.Equal(t, []any{int16(7)}, args)
+	require.Equal(t, []any{int16(7), cutoff}, args)
 }
 
 // A failed read releases the snapshot and commits nothing; its error names

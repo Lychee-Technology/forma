@@ -5,14 +5,17 @@
 // unrelated places, and the matcher is subtle enough that multiple copies would drift:
 //
 //   - internal/cdc logs DuckDB ATTACH statements and DSNs (#290).
-//   - internal/httpapi logs error chains, and DuckDB quotes the whole PostgreSQL
+//   - internal/httpapi logs error chains, and DuckDB quoted the whole PostgreSQL
 //     connection string back inside its own attach-failure prose, so the password
-//     arrives as driver-authored text no Forma wrap site can intercept (#301).
+//     arrived as driver-authored text no Forma wrap site could intercept (#301).
 //   - internal/federated scrubs driver errors at the source (#306): the engine
-//     scrubs DuckDB read failures at both emergence points (execute and
-//     mid-stream), the plan failure note built from them, and the plan's
-//     rendered SQL — so embedders that log the engine's errors or dump the
-//     internal plan never capture the credential.
+//     scrubs DuckDB read failures, the plan failure note built from them, and
+//     the plan's rendered SQL — so embedders that log the engine's errors or
+//     dump the internal plan never capture the credential.
+//
+// Since #858 the federated engine attaches no PostgreSQL catalog, so its
+// DuckDB statements and errors no longer carry a connection string. The
+// scrubs stay as guards.
 //
 // A weaker matcher is not a smaller version of this one, it is a leak: a naive
 // `'[^']*'` branch mistakes libpq's escaped `\'` for the closing quote and emits
@@ -61,15 +64,15 @@ const Placeholder = "***REDACTED***"
 //
 // Known limitation, deliberate: whitespace around the = is not matched, so
 // "password = secret" passes through. No producer in this repo emits that form —
-// pgdsn.Build and DuckDBPostgresConnStringFromPool both write password= with no
-// spaces, and DuckDB echoes back what it was given.
+// pgdsn.Build writes password= with no spaces (as the federated attach DSN did
+// before #858), and DuckDB echoes back what it was given.
 //
 // Residual: an *unquoted* value containing a space cannot be fully matched by any
 // pattern, because nothing marks where such a value ends. The fix for that belongs
-// at the producer, and #301 applied it — DuckDBPostgresConnStringFromPool now
-// quotes its values, as internal/cdc's builder already did. Both DSN builders in
-// this repo therefore land on branch 1 or 2; branch 3 remains for third-party or
-// legacy text.
+// at the producer, and #301 applied it: the federated DSN builder (retired with
+// the attach hot leg, #858) quoted its values, as internal/cdc's builder already
+// did. The DSN builder in this repo therefore lands on branch 1 or 2; branch 3
+// remains for third-party or legacy text.
 var connPassword = regexp.MustCompile(`(?i)(password=)(''(?:\\''|\\[^']|[^'\\])*''|'(?:\\.|[^'\\])*'|[^'\s]*)`)
 
 // ConnStringPassword replaces any password value in a connection string, or in an

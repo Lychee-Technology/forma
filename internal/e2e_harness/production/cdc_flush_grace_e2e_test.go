@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	forma "github.com/lychee-technology/forma"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
 )
 
@@ -167,38 +166,19 @@ func (p *pausingParquetSource) MissingIn(ctx context.Context, scanned []string) 
 // race end to end (review P2): a query stamps its cutoff and resolves its
 // parquet path set, THEN a full flush appends and marks a generation the
 // resolved set does not list, then the query's dirty scan executes. The
-// default exact anchor must keep the raced generation hot-readable; the
-// disabled-widening probe proves the anchor is the serving mechanism. This
+// default exact anchor must keep the raced generation hot-readable. This
 // also exercises the review-P1 fix — the mark stamp is sampled after the
-// append, so it lands at-or-after the paused query's cutoff.
+// append, so it lands at-or-after the paused query's cutoff. The widening
+// is never disabled on the pgx hot leg (design.md §6.1), so a negative
+// FlushVisibilityGraceMs serves the raced rows too
+// (TestPgxHotLegRacedFlushWithWideningOff).
 func TestFlushGraceExactAnchorCoversInFlightFlush(t *testing.T) {
 	t.Parallel()
 
-	runRacedQuery := func(t *testing.T, env *Env) int {
-		t.Helper()
-		return len(runRacedFlushQuery(t, env, racedCreates).Records)
+	env := NewEnv(t, SharedCluster(t))
+	if got := len(runRacedFlushQuery(t, env, racedCreates).Records); got != 8 {
+		t.Errorf("raced query saw %d rows, want 8 — rows marked after the query's path snapshot must stay hot-readable (#252)", got)
 	}
-
-	t.Run("ExactAnchorServesRacedRows", func(t *testing.T) {
-		t.Parallel()
-		env := NewEnv(t, SharedCluster(t))
-		if got := runRacedQuery(t, env); got != 8 {
-			t.Errorf("raced query saw %d rows, want 8 — rows marked after the query's path snapshot must stay hot-readable (#252)", got)
-		}
-	})
-
-	t.Run("DisabledWideningExposesRace", func(t *testing.T) {
-		t.Parallel()
-		env := NewEnv(t, SharedCluster(t))
-		// Pinned to attach: the pgx hot leg never disables the widening
-		// (design.md §6.1.1), so the race this probe exposes is the attach
-		// transport's (TestPgxHotLegRacedFlushWithWideningOff).
-		env.DuckCfg.HotLegTransport = forma.HotLegTransportAttach
-		env.DuckCfg.FlushVisibilityGraceMs = -1
-		if got := runRacedQuery(t, env); got != 4 {
-			t.Errorf("disabled-widening raced query saw %d rows, want 4 (the uncovered race)", got)
-		}
-	})
 }
 
 // racedCreates is the raced generation of TestFlushGraceExactAnchorCovers-

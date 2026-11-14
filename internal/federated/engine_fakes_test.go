@@ -31,34 +31,33 @@ func (f *fakePostgresFederatedSource) QueryPersistentRecords(ctx context.Context
 	return &model.PersistentRecordPage{}, nil
 }
 
-type fakeDirtyIDFetcher struct {
-	calls int
-	ids   []uuid.UUID
-	err   error
+// stagedFake lends a Query-only DuckDB fake the staged seam a federated
+// pass runs its parquet leg through (stagedQuerier): the dirty set is not
+// staged, and the statement goes to Query like any other.
+type stagedFake struct{ DuckDBQueryExecutor }
 
-	// history and historyErr answer HasParquetHistory (#720), which
-	// historyCalls counts. afterHistory, when set, runs after each answer:
-	// the seam for a writer publishing between the check and the scan.
-	history      bool
-	historyErr   error
-	historyCalls int
-	afterHistory func()
+func (s stagedFake) queryStaged(ctx context.Context, _ []uuid.UUID, sqlStr string, args ...any) (duckDBRowsIterator, error) {
+	return s.Query(ctx, sqlStr, args...)
 }
 
-func (f *fakeDirtyIDFetcher) HasParquetHistory(ctx context.Context, tables model.StorageTables, schemaID int16) (bool, error) {
-	f.historyCalls++
-	if f.afterHistory != nil {
-		defer f.afterHistory()
+// withFakeHotLeg runs the engine's passes over leg, an in-memory snapshot,
+// and lends the DuckDB fake the engine was built with the staged seam, so
+// an engine-seam test built on a Query-only fake runs the federated pass.
+// A nil leg is an empty snapshot: no dirty row and no hot row. A leg with
+// hot records needs its t set.
+func withFakeHotLeg(leg *fakeHotLeg) EngineOption {
+	if leg == nil {
+		leg = &fakeHotLeg{}
 	}
-	return f.history, f.historyErr
-}
-
-func (f *fakeDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error) {
-	f.calls++
-	if f.err != nil {
-		return nil, f.err
+	if leg.records == nil {
+		leg.records = map[uuid.UUID]pgxRow{}
 	}
-	return f.ids, nil
+	return func(e *DBFederatedQueryEngine) {
+		e.hotLeg = leg
+		if _, ok := e.duck.(stagedQuerier); !ok && e.duck != nil {
+			e.duck = stagedFake{e.duck}
+		}
+	}
 }
 
 type fakeDuckDBExecutor struct {
@@ -84,8 +83,8 @@ type fakeDuckDBExecutor struct {
 // (#251) drains `SELECT * FROM read_parquet('p')`, while identifyGuardViolations
 // (#351) drains through sqlgen.BuildParquetScanSource, which wraps the read in
 // the guarded `(SELECT * REPLACE (...) FROM ...) AS cold_scan` sub-select. A
-// rendered main scan is the advanced template (`WITH dirty_ids AS (...`) and
-// matches neither.
+// rendered main scan is the parquet-only template (`WITH s3_source AS (...`)
+// and matches neither.
 func isBareParquetDrainSQL(sqlStr string) bool {
 	return strings.HasPrefix(sqlStr, "SELECT * FROM read_parquet(")
 }

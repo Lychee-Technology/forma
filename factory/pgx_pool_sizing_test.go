@@ -19,7 +19,7 @@ func TestPgxPoolSizingWarning(t *testing.T) {
 		{name: "a pool the passes can fill", poolMax: 4, cfg: pgx, wantWarn: true},
 		{name: "an unset DuckDB pool admits one pass", poolMax: 1, cfg: forma.DuckDBConfig{Enabled: true, HotLegTransport: forma.HotLegTransportPgx}, wantWarn: true},
 		{name: "the default transport", poolMax: 1, cfg: forma.DuckDBConfig{Enabled: true, HotLegTransport: forma.DefaultConfig(nil).DuckDB.HotLegTransport}, wantWarn: true},
-		{name: "attach holds no pooled connection per pass", poolMax: 1, cfg: forma.DuckDBConfig{Enabled: true, HotLegTransport: forma.HotLegTransportAttach}},
+		{name: "an empty transport is pgx", poolMax: 1, cfg: forma.DuckDBConfig{Enabled: true}, wantWarn: true},
 		{name: "DuckDB off", poolMax: 1, cfg: forma.DuckDBConfig{HotLegTransport: forma.HotLegTransportPgx}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

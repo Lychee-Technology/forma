@@ -9,6 +9,16 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sqlgen"
+)
+
+// The reasons a pgx pass records on its PostgreSQL sources
+// (internal/federated/pgx_report.go): the hot leg, the dirty set of the hot
+// form, and the dirty set of the hot-excluded form.
+const (
+	hotLegPgxReason   = "hot-leg predicate (evaluated in PostgreSQL)"
+	pgxDirtySetReason = "dirty set read in the pass's snapshot and staged for the anti-join"
+	pgxBarrierReason  = "consistency barrier (dirty set read in the pass's snapshot, staged for the anti-join)"
 )
 
 // Shared fixtures and plan/row assertion helpers for the tier-hint contract
@@ -128,6 +138,29 @@ func planHasEngine(plan *model.ExecutionPlan, engine string) bool {
 		}
 	}
 	return false
+}
+
+// planSource returns the plan's first source recorded with reason.
+func planSource(plan *model.ExecutionPlan, reason string) (model.DataSourcePlan, bool) {
+	if plan == nil {
+		return model.DataSourcePlan{}, false
+	}
+	for _, src := range plan.Sources {
+		if src.Reason == reason {
+			return src, true
+		}
+	}
+	return model.DataSourcePlan{}, false
+}
+
+// assertParquetStatementAntiJoinsStagedSet requires the DuckDB statement to
+// anti-join the dirty set the pass staged in DuckDB, which every form of the
+// parquet-only statement reads in place of a change_log scan.
+func assertParquetStatementAntiJoinsStagedSet(t *testing.T, name, sqlText string) {
+	t.Helper()
+	if !strings.Contains(sqlText, sqlgen.StagedDirtyIDsTable) {
+		t.Errorf("%s: the DuckDB statement does not read the staged dirty set %s:\n%s", name, sqlgen.StagedDirtyIDsTable, sqlText)
+	}
 }
 
 func planHasReason(plan *model.ExecutionPlan, reason string) bool {

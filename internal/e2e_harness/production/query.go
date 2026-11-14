@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	forma "github.com/lychee-technology/forma"
-	fedengine "github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
@@ -81,11 +80,6 @@ func (e *Env) ParquetGlob() string {
 // with execution-plan capture always on, and records the result for
 // artifact dumps.
 func (e *Env) Query(ctx context.Context, q Query) (*QueryResult, error) {
-	return e.QueryOn(ctx, e.Engine(), q)
-}
-
-// QueryOn is Query through engine, such as one EngineWithTransport built.
-func (e *Env) QueryOn(ctx context.Context, engine *fedengine.DBFederatedQueryEngine, q Query) (*QueryResult, error) {
 	fq, err := e.buildFederatedQuery(q)
 	if err != nil {
 		return nil, fmt.Errorf("build federated query (schema=%s): %w", q.Schema.Name, err)
@@ -97,7 +91,7 @@ func (e *Env) QueryOn(ctx context.Context, engine *fedengine.DBFederatedQueryEng
 		ExecutionPlan:            &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
 	}
 
-	page, err := engine.Query(ctx, e.Tables, fq, opts)
+	page, err := e.Engine().Query(ctx, e.Tables, fq, opts)
 	if err != nil {
 		return nil, fmt.Errorf("federated query (schema=%s): %w", q.Schema.Name, err)
 	}

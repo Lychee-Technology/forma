@@ -150,8 +150,11 @@ depends on the index.
 ## What a declared index serves
 
 Declared indexes serve queries that run on PostgreSQL, which is the hot-tier
-OLTP query path. The S3 Parquet tiers never read them. The federated hot leg
-currently pushes no predicate into PostgreSQL (#631).
+OLTP query path. The S3 Parquet tiers never read them. Since #858 the
+federated hot leg also filters in PostgreSQL: its hot-keys query renders the
+Postgres route's condition over the rows in the dirty window
+([design.md §6.1](federated-query/design.md)). Until then it pushed no
+predicate into PostgreSQL (#631).
 
 PostgreSQL can seek a declared index on these operators:
 

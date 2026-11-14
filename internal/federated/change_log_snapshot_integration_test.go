@@ -33,7 +33,7 @@ func snapshotTablesFor(t *testing.T, ctx context.Context, pool *pgxpool.Pool) mo
 	return tables
 }
 
-// The pgx hot leg's reads see one snapshot (design.md §6.1.1): an entry
+// The pgx hot leg's reads see one snapshot (design.md §6.1): an entry
 // committed, or marked flushed, after the snapshot opened reaches neither
 // the dirty set nor the parquet-history answer read in it, while a new
 // snapshot sees both. The transaction refuses writes.

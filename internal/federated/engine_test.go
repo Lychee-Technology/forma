@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"text/template"
-	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/queryplan"
@@ -64,7 +62,7 @@ func withTestParquetPath() EngineOption {
 
 func TestDBFederatedQueryEngine_QueryHotOnlyDelegatesToPostgres(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
-	engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+	engine := NewDBFederatedQueryEngine(pg, nil, nil, forma.DuckDBConfig{Enabled: true}, nil)
 
 	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10, Offset: 20},
@@ -83,7 +81,7 @@ func TestDBFederatedQueryEngine_QueryHotOnlyDelegatesToPostgres(t *testing.T) {
 // the page could not tell a hot-routed federated read from a DuckDB one.
 func TestDBFederatedQueryEngine_HotOnlyGateAttachesPlanToPage(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
-	engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+	engine := NewDBFederatedQueryEngine(pg, nil, nil, forma.DuckDBConfig{Enabled: true}, nil)
 
 	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
@@ -103,7 +101,7 @@ func TestDBFederatedQueryEngine_HotOnlyGateAttachesPlanToPage(t *testing.T) {
 // plan must ride on the returned page and name the postgres source served.
 func TestDBFederatedQueryEngine_RoutedPostgresOnlyAttachesPlanToPage(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 5}}
-	engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: false}, nil, "")
+	engine := NewDBFederatedQueryEngine(pg, nil, nil, forma.DuckDBConfig{Enabled: false}, nil)
 
 	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
@@ -120,9 +118,9 @@ func TestDBFederatedQueryEngine_RoutedPostgresOnlyAttachesPlanToPage(t *testing.
 func TestDBFederatedQueryEngine_DuckDBFailureWithDegradedModeFallsBackToPostgres(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
 	duck := &fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}
-	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), "", withTestParquetPath())
+	engine := NewDBFederatedQueryEngine(pg, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 
-	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, &model.FederatedAttributeQuery{
+	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
 		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierCold},
 	}, &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
@@ -133,20 +131,30 @@ func TestDBFederatedQueryEngine_DuckDBFailureWithDegradedModeFallsBackToPostgres
 	require.Equal(t, 1, pg.queryCalls)
 }
 
-func TestDBFederatedQueryEngine_DuckDBRouteUsesInjectedExecutorAndDirtyFetcher(t *testing.T) {
+// stagingRecorder is a DuckDB fake that records the dirty sets the engine
+// stages for its statements.
+type stagingRecorder struct {
+	*fakeDuckDBExecutor
+	staged [][]uuid.UUID
+}
+
+func (r *stagingRecorder) queryStaged(ctx context.Context, dirty []uuid.UUID, sqlStr string, args ...any) (duckDBRowsIterator, error) {
+	r.staged = append(r.staged, dirty)
+	return r.Query(ctx, sqlStr, args...)
+}
+
+// The federated pass runs its statement on the injected executor, with the
+// dirty set its snapshot read staged for the anti-join.
+func TestDBFederatedQueryEngine_DuckDBRouteUsesInjectedExecutorAndSnapshot(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
 	rowID := uuid.New()
 	dirtyID := uuid.New()
 	pg := &fakePostgresFederatedSource{}
-	dirty := &fakeDirtyIDFetcher{ids: []uuid.UUID{dirtyID}}
-	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: rowID}}
-	engine := NewDBFederatedQueryEngine(pg, dirty, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), "", withTestParquetPath())
-	engine.buildDuckSQL = func(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *sqlgen.DualClauses) (string, []any, error) {
-		require.Equal(t, []uuid.UUID{dirtyID}, dirtyIDs)
-		return "SELECT fake", nil, nil
-	}
+	leg := &fakeHotLeg{dirty: []uuid.UUID{dirtyID}}
+	duck := &stagingRecorder{fakeDuckDBExecutor: &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: rowID}}}
+	engine := NewDBFederatedQueryEngine(pg, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(leg))
 
 	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
@@ -154,9 +162,10 @@ func TestDBFederatedQueryEngine_DuckDBRouteUsesInjectedExecutorAndDirtyFetcher(t
 	}, &model.FederatedQueryOptions{IncludeExecutionPlan: true})
 
 	require.NoError(t, err)
-	require.Equal(t, 1, dirty.calls)
+	require.Equal(t, 1, leg.begins)
 	require.Equal(t, 1, duck.calls)
-	require.Equal(t, "SELECT fake", duck.lastSQL)
+	require.Equal(t, [][]uuid.UUID{{dirtyID}}, duck.staged)
+	require.Contains(t, duck.lastSQL, sqlgen.StagedDirtyIDsTable)
 	require.Len(t, page.Records, 1)
 	require.Equal(t, rowID, page.Records[0].RowID)
 }
@@ -171,12 +180,8 @@ func TestDBFederatedQueryEngine_EmptyTiersUseAllThree(t *testing.T) {
 	defer restore()
 
 	pg := &fakePostgresFederatedSource{}
-	dirty := &fakeDirtyIDFetcher{}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
-	engine := NewDBFederatedQueryEngine(pg, dirty, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), "", withTestParquetPath())
-	engine.buildDuckSQL = func(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *sqlgen.DualClauses) (string, []any, error) {
-		return "SELECT fake", nil, nil
-	}
+	engine := NewDBFederatedQueryEngine(pg, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
 	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, &model.FederatedAttributeQuery{
@@ -193,7 +198,7 @@ func TestDBFederatedQueryEngine_EmptyTiersUseAllThree(t *testing.T) {
 func TestDBFederatedQueryEngine_DisabledRoutingDelegatesToPostgres(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 2}}
 	duck := &fakeDuckDBExecutor{}
-	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, forma.DuckDBConfig{Enabled: false}, nil, "")
+	engine := NewDBFederatedQueryEngine(pg, duck, nil, forma.DuckDBConfig{Enabled: false}, nil)
 
 	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
@@ -207,7 +212,7 @@ func TestDBFederatedQueryEngine_DisabledRoutingDelegatesToPostgres(t *testing.T)
 }
 
 func TestDBFederatedQueryEngine_NilQueryReturnsError(t *testing.T) {
-	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil, forma.DuckDBConfig{Enabled: true}, nil)
 
 	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, nil, nil)
 
@@ -220,12 +225,8 @@ func TestDBFederatedQueryEngine_ExecutionPlanPopulated(t *testing.T) {
 	defer restore()
 
 	pg := &fakePostgresFederatedSource{}
-	dirty := &fakeDirtyIDFetcher{}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
-	engine := NewDBFederatedQueryEngine(pg, dirty, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), "", withTestParquetPath())
-	engine.buildDuckSQL = func(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *sqlgen.DualClauses) (string, []any, error) {
-		return "SELECT fake", nil, nil
-	}
+	engine := NewDBFederatedQueryEngine(pg, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 
 	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
@@ -244,9 +245,9 @@ func TestNewDuckDBClientQueryExecutorNilClientReturnsNil(t *testing.T) {
 	require.Nil(t, NewDuckDBClientQueryExecutor(&DuckDBClient{}))
 }
 
-func TestDBFederatedQueryEngine_DuckDBUnavailableFailsBeforeDirtyFetch(t *testing.T) {
-	dirty := &fakeDirtyIDFetcher{}
-	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, dirty, nil, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, nil, "")
+func TestDBFederatedQueryEngine_DuckDBUnavailableFailsBeforeTheSnapshot(t *testing.T) {
+	leg := &fakeHotLeg{}
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, nil, withFakeHotLeg(leg))
 
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
 	_, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, &model.FederatedAttributeQuery{
@@ -255,15 +256,14 @@ func TestDBFederatedQueryEngine_DuckDBUnavailableFailsBeforeDirtyFetch(t *testin
 	}, opts)
 
 	require.ErrorContains(t, err, "duckdb client not available")
-	require.Equal(t, 0, dirty.calls)
+	require.Zero(t, leg.begins)
 	require.Contains(t, opts.ExecutionPlan.Notes, "duckdb client unavailable")
 }
 
 // TestSchemaProjectionCache pins #142: the second projection build for the
-// same schema is served from the engine cache, the execution plan records
-// hit/miss, and Reset invalidates.
+// same schema is served from the engine cache, and Reset invalidates.
 func TestSchemaProjectionCache(t *testing.T) {
-	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil, forma.DuckDBConfig{Enabled: true}, nil)
 	cache := forma.SchemaAttributeCache{
 		"name": {AttributeID: 5, ValueType: forma.ValueTypeText},
 	}
@@ -287,14 +287,10 @@ func TestSchemaProjectionCache(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, hit, "Reset must invalidate cached projections")
 
-	// Plan note observability via injectSchemaProjections.
-	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true, ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
-	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
-	params := map[string]any{}
-	hitFlag, err := engine.injectSchemaProjections(context.Background(), params, 7, cache)
+	// injectSchemaProjections reports the hit.
+	hitFlag, err := engine.injectSchemaProjections(context.Background(), map[string]any{}, 7, cache)
 	require.NoError(t, err)
-	planCtx.recordProjectionCache(hitFlag)
-	require.Contains(t, opts.ExecutionPlan.Notes, "schema_projection_cache_hit")
+	require.True(t, hitFlag)
 }
 
 // TestInjectSchemaProjectionsNoCacheFailsFast pins #151: a non-benchmark schema
@@ -305,9 +301,9 @@ func TestInjectSchemaProjectionsNoCacheFailsFast(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
-	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, &fakeDuckDBExecutor{}, nil,
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDuckDBExecutor{}, nil,
 		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-		schemameta.NewMetadataCache(), "host=x", withTestParquetPath())
+		schemameta.NewMetadataCache(), withTestParquetPath(), withFakeHotLeg(nil))
 
 	params := map[string]any{}
 	hit, err := engine.injectSchemaProjections(context.Background(), params, 7, nil)
@@ -337,8 +333,8 @@ func TestDBFederatedQueryEngine_MissingSchemaCacheNotDegradable(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
 	// nil metadata cache → the DuckDB render path cannot build a projection.
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, nil, "host=x", withTestParquetPath())
+	engine := NewDBFederatedQueryEngine(pg, duck, nil,
+		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, nil, withTestParquetPath(), withFakeHotLeg(nil))
 
 	_, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
@@ -368,9 +364,9 @@ func TestEngineCompiledPlanCache(t *testing.T) {
 	require.NoError(t, mc.RegisterSchema("test", 7, cache))
 
 	newEngine := func(duck *fakeDuckDBExecutor) *DBFederatedQueryEngine {
-		return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
+		return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil,
 			forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-			mc, "host=x", WithPlanCache(shared), withTestParquetPath())
+			mc, WithPlanCache(shared), withTestParquetPath(), withFakeHotLeg(nil))
 	}
 	query := func(val string) (*model.FederatedAttributeQuery, *model.FederatedQueryOptions) {
 		q := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{
@@ -401,9 +397,9 @@ func TestEngineCompiledPlanCache(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, optsB.ExecutionPlan.Notes, "plan_cache=hit")
 	require.Equal(t, int64(1), optsB.ExecutionPlan.Timings["plan_cache_hit"])
-	// The per-request #252 cutoff is the only legitimate difference between
-	// the two bound SQLs; normalize it so the skeleton-reuse pin is exact.
-	require.Equal(t, normalizeFlushGraceCutoff(duckA.lastSQL), normalizeFlushGraceCutoff(duckB.lastSQL),
+	// The skeleton carries no per-request value (the #252 cutoff is read in
+	// the snapshot, not rendered), so the reuse pin is exact.
+	require.Equal(t, duckA.lastSQL, duckB.lastSQL,
 		"same shape must reuse the rendered skeleton")
 	require.Contains(t, duckB.lastArgs, int64(77), "hit must bind the second request's operand")
 	require.NotContains(t, duckB.lastArgs, int64(10))
@@ -453,13 +449,13 @@ func requirePlanHasPostgresSource(t *testing.T, plan *model.ExecutionPlan, reaso
 func TestDBFederatedQueryEngine_DegradedFallbackRecordsExecutionPlan(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
 	duck := &fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}
-	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), "", withTestParquetPath())
+	engine := NewDBFederatedQueryEngine(pg, duck, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 
 	opts := &model.FederatedQueryOptions{
 		AllowPartialDegradedMode: true,
 		IncludeExecutionPlan:     true,
 	}
-	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav"}, &model.FederatedAttributeQuery{
+	page, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
 		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierCold},
 	}, opts)

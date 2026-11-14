@@ -12,8 +12,8 @@ import (
 // TestDuckDBWindowOverEmptyUnionBranchSurvivesRepetition guards #702. DuckDB
 // before 1.5.6 let a parallel window operator finalize before every sink task
 // ran when one input block was empty, as when a UNION ALL branch filters to
-// nothing. The federated template feeds its windows exactly such a union (the
-// parquet tiers and pg_source), and the race surfaced as "INTERNAL Error:
+// nothing. The retired attach template fed its windows exactly such a union
+// (the parquet tiers and pg_source), and the race surfaced as "INTERNAL Error:
 // Attempted to access index 0 within vector of size 0", which invalidates the
 // whole database. On 1.4.5 this loop failed within a few hundred iterations
 // at threads=2 (upstream duckdb#22846, fixed by duckdb#25844 in 1.5.6).

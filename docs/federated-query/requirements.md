@@ -84,7 +84,7 @@ The design leverages bounded data volume constraints (Hot ≤ 10K rows, Warm ≤
 
 **Critical Constraint:** The bounded volumes of Hot and Warm tiers (≤ 250K total) enable full-scan strategies that simplify query execution without sacrificing performance.
 
-The Hot bound limits the rows the hot leg returns, not what it reads: the shipped PostgreSQL scan copies whole tables, and that volume grows with the whole database (§7.1).
+The Hot bound limits the rows the hot leg returns, not what it reads. The PostgreSQL scan that shipped until #858 copied whole tables, a volume that grew with the whole database (§7.1); the hot leg now reads only the dirty window over pgx.
 
 ---
 
@@ -319,7 +319,7 @@ The two-phase merge strategy avoids expensive global sorting across all data tie
 | Two-Phase Merge | O((H+W) log(H+W)) + O((M+B') log(M+B')) | Bounded working sets |
 
 Where:
-- H = Hot rows entering the merge (≤ 10K; the PostgreSQL scan that produces them reads whole tables, §7.1)
+- H = Hot rows entering the merge (≤ 10K; until #858 the PostgreSQL scan that produced them read whole tables, §7.1)
 - W = Warm rows (≤ 240K)
 - M = Phase-1 intermediate result (bounded)
 - B' = Relevant Base subset (pruned by cursor/boundary)
@@ -476,8 +476,8 @@ dirty_ids AS (
 -- ============================================================================
 -- CTE 2: Hot Source (PostgreSQL)
 -- Full scan is acceptable due to bounded volume (≤ 10K rows).
--- (The shipped template filters in DuckDB, not in these SQL strings, and
--- copies whole tables; see §7.1.)
+-- (The template that shipped until #858 filtered in DuckDB, not in these
+-- SQL strings, and copied whole tables; see §7.1.)
 -- ============================================================================
 pg_raw AS (
     SELECT 
@@ -782,7 +782,7 @@ ORDER BY created_at DESC, row_id DESC;
 
 **Decision:** Accept 10ms latency increase for significantly reduced complexity and security risk.
 
-**What ships (#631).** No predicate reaches PostgreSQL, as decided, but the rationale's bound does not hold. The hot leg's scans (`postgres_scan` before #752, scans of an attached PostgreSQL catalog with filter pushdown turned off since) copy whole tables, not the Hot tier: `change_log` twice, `entity_main`, and `eav_data` when the EAV pivot renders, across every schema and including flushed rows. The storage invariant (design.md §3.3) keeps every live entity in `entity_main` and `eav_data`, and nothing prunes `change_log`, so the copied volume grows with the whole database. The ≤ 10K-row bound limits the rows the hot leg returns, not the rows it reads. The latency figures above are from the original decision and were not re-measured. design.md §6.1 states the shipped behavior. The pushdown question is superseded: the hot leg is to read PostgreSQL over pgx, with the merge in Go (#719, design.md §6.1.1, not yet built).
+**What ships (#631).** No predicate reaches PostgreSQL, as decided, but the rationale's bound does not hold. The hot leg's scans (`postgres_scan` before #752, scans of an attached PostgreSQL catalog with filter pushdown turned off since) copy whole tables, not the Hot tier: `change_log` twice, `entity_main`, and `eav_data` when the EAV pivot renders, across every schema and including flushed rows. The storage invariant (design.md §3.3) keeps every live entity in `entity_main` and `eav_data`, and nothing prunes `change_log`, so the copied volume grows with the whole database. The ≤ 10K-row bound limits the rows the hot leg returns, not the rows it reads. The latency figures above are from the original decision and were not re-measured. #851 measured the copy instead: 3.2 to 3.5 s of every pass at 1,000,000 `entity_main` rows. The pushdown question is superseded. Since #858 the hot leg reads PostgreSQL over pgx, filtered by PostgreSQL with the PostgreSQL route's predicate, and Go merges it with DuckDB's parquet rows; DuckDB no longer reads PostgreSQL (#719, design.md §6.1).
 
 ### 7.2 Base File Pruning
 
@@ -905,7 +905,7 @@ reads. Where the two documents differ, design.md wins.
 
 | Failure | Response |
 |---------|----------|
-| PostgreSQL unavailable | Every read fails: `Get`, PostgreSQL-only queries and federated queries. No query is answered from S3 alone, whatever the request sets. The error sentinel depends on where the outage is met: `ErrPostgresReadFailed` from the federated engine's own PostgreSQL reads, `ErrFederatedReadFailed` from a failure inside DuckDB's `postgres_scan` (design.md §7.2). |
+| PostgreSQL unavailable | Every read fails: `Get`, PostgreSQL-only queries and federated queries. No query is answered from S3 alone, whatever the request sets. A federated query fails with `ErrPostgresReadFailed`, which every PostgreSQL read of the federated engine wraps (design.md §7.2). |
 | S3 or DuckDB unavailable | `Get` and PostgreSQL-only queries are unaffected. A federated query that reaches DuckDB fails, or, with `allow_partial_degraded_mode`, is answered from PostgreSQL alone and marked `partial: {reason: "hot_tier_only"}` (design.md §7.2). |
 | DuckDB out of memory | No dedicated handling and no 507: it is a DuckDB read error like any other (design.md §7.1-§7.3). |
 | Query timeout | The request fails, answered 504 over HTTP (`QueryConfig.DefaultTimeout`, `DuckDBConfig.QueryTimeout`, #465). No partial result is returned, and an expired deadline is never degraded to PostgreSQL. |
@@ -1034,8 +1034,8 @@ succeeds, so:
   logged the failure that tripped it, once. While DuckDB keeps failing, the
   breaker therefore bounds the Warn lines: after the trip, only a failed
   probe adds one per open period. A failure before DuckDB is consulted, such
-  as a manifest read or the dirty-ID fetch, does not count toward the
-  breaker, so it logs at Warn on every request it degrades.
+  as a manifest read or a read in the pass's PostgreSQL snapshot, does not
+  count toward the breaker, so it logs at Warn on every request it degrades.
 - Two other engine lines can come first for the same request: the scan-guard
   line above, when the absorbed failure is a guard violation, and the
   breaker's "opened" line, when the absorbed failure is the one that opens
@@ -1072,8 +1072,8 @@ else its `federated` block says.
   It reports the routing decision (`routing`: whether DuckDB was used, the
   tiers read, the reason) and the sources the engine recorded (`sources`).
   Every source names its tier, engine and reason. A source's other fields
-  (estimated rows, actual rows, whether a predicate was pushed down, which no
-  source currently sets, duration)
+  (estimated rows, actual rows, whether a predicate was pushed down,
+  duration)
   are omitted when zero, and `timings` is omitted when empty. Which of them
   appear depends on the path that answered:
   - A page answered by PostgreSQL alone, through the hot-only gate or because
@@ -1081,18 +1081,21 @@ else its `federated` block says.
     and no `timings`. This is the usual shape under the default `hybrid`
     strategy, which answers a small page with implicit tiers from PostgreSQL
     (`docs/federated-query/design.md` §4.3).
-  - A page answered by DuckDB has a `postgres` source for the dirty-ID set,
-    with the set's size as `row_estimate`. When the hot tier is read, a second
-    `postgres` source has the reason `hot-leg predicate (evaluated in DuckDB)`
-    and never sets `predicate_pushdown`, because DuckDB evaluates that
-    predicate after copying the table (design.md §6.1). The predicate itself
-    stays in the engine's internal plan, like all generated SQL. One `duckdb`
-    source carries `actual_rows` (the rows returned for the page) and
-    `duration_ms`; its `tier` names one requested Parquet tier, but the scan
-    reads warm and cold together. `timings` holds
-    `translate`, `duckdb_fetch` and `total` in milliseconds, plus
-    `plan_cache_hit` or `plan_cache_miss` (value 1) when the compiled-plan
-    cache rendered the query.
+  - A page answered by a federated pass has a `postgres` source for the
+    dirty set the pass read in its snapshot, with the set's size as
+    `row_estimate`. One `duckdb` source carries `actual_rows` (the rows of the
+    parquet leg's window) and `duration_ms`; its `tier` names one requested
+    Parquet tier, but the scan reads warm and cold together. When the hot
+    tier is read, a second `postgres` source has the reason `hot-leg
+    predicate (evaluated in PostgreSQL)` and sets `predicate_pushdown`, with
+    the hot matches as `row_estimate` and the page's hot rows as
+    `actual_rows` (design.md §6.1). Until #858 that source read `hot-leg
+    predicate (evaluated in DuckDB)` and never set `predicate_pushdown`. The
+    generated SQL stays in the engine's internal plan. `timings` holds
+    `pg_snapshot`, `translate`, `duckdb_fetch` and `total` in milliseconds,
+    plus `plan_cache_hit` or `plan_cache_miss` (value 1) when the
+    compiled-plan cache rendered the query. A schema with no parquet to read
+    (#720) has no `duckdb` source and no DuckDB timings.
   - A degraded answer (§10.2) has the same shape as a page answered by
     PostgreSQL alone: `routing` names the degraded fallback, and its one
     `postgres` source is the fallback's, with no other fields and no
@@ -1336,3 +1339,4 @@ class ColumnStats:
 | 2.6 | - | §10.1 and §10.2: the DuckDB circuit breaker's transition metric and log lines (#634) |
 | 2.7 | - | §10.2: the degraded fallback's log line (#638) |
 | 2.8 | - | §2.3, §5.1, §5.2 and §7.1: the full scan copies whole tables, not the Hot tier; §10.3: the plan never reports a pushed predicate (#631) |
+| 2.9 | - | §2.3, §5.1, §6.1, §7.1, §9.1, §10.2 and §10.3: the hot leg reads PostgreSQL over pgx, and DuckDB reads only the parquet tiers (#858) |

@@ -57,8 +57,7 @@ func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tabl
 		opts.PartialScan = nil
 	}
 	// The same holds for the plan (#639): whatever the abandoned attempt
-	// recorded — a failed pass's sources and timings, or a whole page pass
-	// whose page the failed recount discarded — would sit next to
+	// recorded — a failed pass's sources and timings — would sit next to
 	// UseDuckDB=false with only internal Notes to say it describes the
 	// attempt, not the answer. Rewind first so the cause note below survives.
 	mark.rewind(opts)
@@ -92,8 +91,8 @@ const degradedFallbackMsg = "federated query degraded to postgres-only"
 // Error line; that line names the objects, and this one says the request was
 // answered without them. The cause passes redact.Error once more: DuckDB's
 // errors are scrubbed at their source (#306), but a degradable cause can also
-// come from path resolution or the dirty-ID fetch, which that scrub does not
-// cover.
+// come from path resolution or the pass's snapshot reads, which that scrub
+// does not cover.
 func (e *DBFederatedQueryEngine) logDegradedFallback(fq *model.FederatedAttributeQuery, cause error) {
 	level := zapcore.WarnLevel
 	if errors.Is(cause, errBreakerRejected) {
@@ -127,8 +126,8 @@ func (e *DBFederatedQueryEngine) logDegradedFallback(fq *model.FederatedAttribut
 // would run on the same cancelled context, and if it failed its error would
 // replace the cause it was absorbing. Two more belong to the pgx hot leg: a
 // pass whose legs overlap (ErrHotLegNotDisjoint) is an internal
-// inconsistency an operator must see, and a pgx transport the engine was not
-// built for is a configuration error.
+// inconsistency an operator must see, and an engine built without the hot
+// leg's snapshot pool (WithPgxHotLeg) is a configuration error.
 func degradableFederatedError(err error) bool {
 	return !errors.Is(err, ErrSchemaMetadataCacheRequired) &&
 		!errors.Is(err, ErrParquetSetInconsistent) &&

@@ -23,7 +23,7 @@ func TestQueryParquetUnrepresentableIsServedPostgresOnly(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
 			duck := &fakeDuckDBExecutor{}
-			engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, hybridEnabledCfg(), nil, "")
+			engine := NewDBFederatedQueryEngine(pg, duck, nil, hybridEnabledCfg(), nil, withFakeHotLeg(nil))
 			opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true, AllowPartialDegradedMode: true}
 
 			page, err := engine.Query(context.Background(), testTables, &model.FederatedAttributeQuery{
@@ -51,7 +51,7 @@ func TestQueryParquetUnrepresentableIsServedPostgresOnly(t *testing.T) {
 // served by the gate as before, unmarked, since it asked for hot alone.
 func TestQueryParquetUnrepresentableKeepsTheHotOnlyGate(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
-	engine := NewDBFederatedQueryEngine(pg, nil, &fakeDuckDBExecutor{}, nil, hybridEnabledCfg(), nil, "")
+	engine := NewDBFederatedQueryEngine(pg, &fakeDuckDBExecutor{}, nil, hybridEnabledCfg(), nil, withFakeHotLeg(nil))
 
 	page, err := engine.Query(context.Background(), testTables, &model.FederatedAttributeQuery{
 		AttributeQuery:         model.AttributeQuery{SchemaID: 7, Limit: 10},
@@ -70,7 +70,7 @@ func TestQueryParquetUnrepresentableKeepsTheHotOnlyGate(t *testing.T) {
 func TestQueryParquetUnrepresentableRefusesAKeysetCursor(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{}}
 	duck := &fakeDuckDBExecutor{}
-	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, hybridEnabledCfg(), nil, "")
+	engine := NewDBFederatedQueryEngine(pg, duck, nil, hybridEnabledCfg(), nil, withFakeHotLeg(nil))
 	fq := keysetTestQuery()
 	fq.ParquetUnrepresentable = unrepresentableReason
 
@@ -114,7 +114,7 @@ func TestDuckDBEntryPointsRefuseAParquetUnrepresentableSchema(t *testing.T) {
 			t.Run(callName+"/"+queryName, func(t *testing.T) {
 				pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{}}
 				duck := &fakeDuckDBExecutor{}
-				engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, hybridEnabledCfg(), nil, "")
+				engine := NewDBFederatedQueryEngine(pg, duck, nil, hybridEnabledCfg(), nil, withFakeHotLeg(nil))
 				fq := query()
 				fq.ParquetUnrepresentable = unrepresentableReason
 
@@ -147,7 +147,7 @@ func TestQueryParquetUnrepresentableRefusesAPinnedParquetPath(t *testing.T) {
 			t.Run(cfgName+"/"+tiersName, func(t *testing.T) {
 				pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{}}
 				duck := &fakeDuckDBExecutor{}
-				engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, cfg, nil, "")
+				engine := NewDBFederatedQueryEngine(pg, duck, nil, cfg, nil, withFakeHotLeg(nil))
 
 				_, err := engine.Query(context.Background(), testTables, &model.FederatedAttributeQuery{
 					AttributeQuery:         model.AttributeQuery{SchemaID: 7, Limit: 10},

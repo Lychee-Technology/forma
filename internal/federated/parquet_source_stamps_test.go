@@ -37,12 +37,12 @@ func stampsTestMetadataCache(t *testing.T) *schemameta.MetadataCache {
 	return mc
 }
 
-// TestResolveScanSourcesUsesStampsWithoutProbing is the cold-start win #256
-// exists for: resolveScanSources feeds the source-authored stamps to the
+// TestResolvePgxScanSourcesUsesStampsWithoutProbing is the cold-start win #256
+// exists for: resolvePgxScanSources feeds the source-authored stamps to the
 // validator, so a fully stamped path set validates and computes the #255
 // cold-missing column set with ZERO DuckDB footer probes. Without the
 // plumbing every listed object costs one DESCRIBE on the first query.
-func TestResolveScanSourcesUsesStampsWithoutProbing(t *testing.T) {
+func TestResolvePgxScanSourcesUsesStampsWithoutProbing(t *testing.T) {
 	paths := []string{"s3://b/7/a.parquet", "s3://b/7/b.parquet"}
 	// Only the second object's generation carries the "city" column; both
 	// stamps satisfy the system-column invariant.
@@ -56,10 +56,10 @@ func TestResolveScanSourcesUsesStampsWithoutProbing(t *testing.T) {
 		},
 	}
 	duck := &fakeDuckDBExecutor{}
-	e := NewDBFederatedQueryEngine(nil, nil, duck, nil, forma.DuckDBConfig{},
-		stampsTestMetadataCache(t), "", WithParquetSource(src))
+	e := NewDBFederatedQueryEngine(nil, duck, nil, forma.DuckDBConfig{},
+		stampsTestMetadataCache(t), WithParquetSource(src))
 
-	sc, err := e.resolveScanSources(context.Background(), model.StorageTables{}, exclusionTestQuery())
+	sc, err := e.resolvePgxScanSources(context.Background(), model.StorageTables{}, exclusionTestQuery())
 
 	require.NoError(t, err)
 	require.Equal(t, paths, sc.paths)
@@ -76,25 +76,25 @@ func TestResolveScanSourcesUsesStampsWithoutProbing(t *testing.T) {
 	require.Empty(t, sc.cold.pinned, "a healthy stamped set pins nothing (#371)")
 }
 
-// TestResolveScanSourcesHintPathsHaveNoStamps: hint-authored paths never pass
+// TestResolvePgxScanSourcesHintPathsHaveNoStamps: hint-authored paths never pass
 // through the manifest source, so they carry no stamps and probe exactly as
 // today. The source here holds a stamp for the very path the hint names —
 // leaking it into the validator would skip a probe the operator-pinned set
 // has no manifest evidence for.
-func TestResolveScanSourcesHintPathsHaveNoStamps(t *testing.T) {
+func TestResolvePgxScanSourcesHintPathsHaveNoStamps(t *testing.T) {
 	const hinted = "s3://b/hinted.parquet"
 	src := &fakeParquetSource{
 		paths:  []string{"s3://b/7/a.parquet"},
 		stamps: map[string]map[string]string{hinted: buildStampedSystemCols()},
 	}
 	duck := &fakeDuckDBExecutor{}
-	e := NewDBFederatedQueryEngine(nil, nil, duck, nil,
+	e := NewDBFederatedQueryEngine(nil, duck, nil,
 		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"},
-		testMetadataCacheSchema7(t), "", WithParquetSource(src))
+		testMetadataCacheSchema7(t), WithParquetSource(src))
 
 	q := exclusionTestQuery()
 	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: hinted}
-	sc, err := e.resolveScanSources(context.Background(), model.StorageTables{}, q)
+	sc, err := e.resolvePgxScanSources(context.Background(), model.StorageTables{}, q)
 
 	require.NoError(t, err)
 	require.Equal(t, []string{hinted}, sc.paths)

@@ -10,8 +10,8 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
-// The pgx pass (design.md §6.1.1; pgx-hot-leg-plan.md step 5), run under
-// DuckDBConfig.HotLegTransport = pgx:
+// The federated pass (design.md §6.1; pgx-hot-leg-plan.md step 5), the
+// only one since the attach transport was retired (#858):
 //
 //  1. resolve and freeze the parquet path set, and stamp the cutoff;
 //  2. open a REPEATABLE READ READ ONLY snapshot and read the dirty set and,
@@ -94,7 +94,7 @@ func (e *DBFederatedQueryEngine) streamPgxPass(
 	p := &pgxPass{e: e, tables: tables, q: q, planCtx: planCtx, probe: probe, hasHot: sqlgen.FederatedQueryHasHot(q)}
 	defer p.releaseProbe()
 	if e.hotLeg == nil {
-		return 0, fmt.Errorf("duckdb.hotLegTransport is pgx, but the engine has no snapshot pool (WithPgxHotLeg): %w", errPgxHotLegNotConfigured)
+		return 0, fmt.Errorf("the engine has no snapshot pool for the hot leg (WithPgxHotLeg): %w", errPgxHotLegNotConfigured)
 	}
 	if tables.ChangeLog == "" {
 		return 0, fmt.Errorf("the pgx hot leg reads the dirty set from the change log, and no change log table is configured: %w", errPgxHotLegNotConfigured)
@@ -104,15 +104,14 @@ func (e *DBFederatedQueryEngine) streamPgxPass(
 		return 0, fmt.Errorf("build the page's order: %w", err)
 	}
 	p.order = order
-	// The build's own refusals come before any read, as on the attach path:
-	// a filter literal the attribute cannot take is invalid input, and a
+	// The build's own refusals come before any read: a filter literal the attribute cannot take is invalid input, and a
 	// schema without metadata fails with ErrSchemaMetadataCacheRequired.
 	// Neither may reach the snapshot, whose failures are degradable.
 	cache, _ := e.schemaCacheByID(q.SchemaID)
-	if _, _, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, map[string]any{}); err != nil {
+	if _, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, map[string]any{}); err != nil {
 		return 0, fmt.Errorf("build the pgx pass over schema %d: %w", q.SchemaID, err)
 	}
-	src, err := e.resolvePgxScanSources(ctx, tables, q, p.hasHot)
+	src, err := e.resolvePgxScanSources(ctx, tables, q)
 	if err != nil {
 		p.resolved = true
 		return 0, e.failScanSources(ctx, q, probe, err)
@@ -132,10 +131,9 @@ func (e *DBFederatedQueryEngine) streamPgxPass(
 	if err != nil {
 		return 0, fmt.Errorf("pgx pass over schema %d: %w", q.SchemaID, err)
 	}
-	// The handler loop is streaming, as on the attach path, where the row
-	// iteration and the handler run in one loop (docs/telemetry.md). Here the
-	// parquet leg's rows were read before the merge, so the loop's time is
-	// added to the leg's own streaming time.
+	// The handler loop counts as streaming (docs/telemetry.md). The parquet
+	// leg's rows were read before the merge, so the loop's time is added to
+	// the leg's own streaming time.
 	handleStart := planCtx.now()
 	for _, record := range page.records {
 		if rowHandler == nil {
@@ -146,9 +144,9 @@ func (e *DBFederatedQueryEngine) streamPgxPass(
 		}
 	}
 	page.outcome.leg.streamMs += planCtx.millisSince(handleStart)
-	// Reported only now, as the attach path reports once its rows are
-	// streamed: a pass whose handler failed is a failed pass, and leaves no
-	// fed_query_* sample behind (docs/telemetry.md).
+	// Reported only now, once the rows are handled: a pass whose handler
+	// failed is a failed pass, and leaves no fed_query_* sample behind
+	// (docs/telemetry.md).
 	p.report(ctx, page.outcome)
 	return page.total, nil
 }
@@ -192,7 +190,7 @@ func (p *pgxPass) run(ctx context.Context) (pgxPage, error) {
 		return pgxPage{}, fmt.Errorf("%w: %w", ErrPostgresReadFailed, err)
 	}
 	if p.noObjects {
-		// The recheck stays as it is on the attach path (#720).
+		// A publication between resolution and the snapshot (#720).
 		if err := p.e.confirmNoParquetPublished(ctx, p.q); err != nil {
 			return pgxPage{}, err
 		}
@@ -277,7 +275,7 @@ func (p *pgxPass) pageOffset() int {
 	return max(0, p.q.Offset)
 }
 
-// window is the parquet window the page can draw from (design.md §6.1.1,
+// window is the parquet window the page can draw from (design.md §6.1,
 // Pagination and totals).
 func (p *pgxPass) window(hotMatches int) (sqlgen.ParquetWindow, error) {
 	limit := max(0, p.q.Limit)

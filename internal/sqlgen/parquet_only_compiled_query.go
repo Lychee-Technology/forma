@@ -9,7 +9,7 @@ import (
 )
 
 // ParquetWindow is the run of the parquet leg's ordered matches one pgx pass
-// reads (design.md §6.1.1, *Pagination and totals*). The parquet-only
+// reads (design.md §6.1, *Pagination and totals*). The parquet-only
 // template binds it, so the statement text, and with it the compiled plan,
 // does not depend on the hot match count.
 type ParquetWindow struct {
@@ -61,14 +61,13 @@ type ParquetOnlyCompiledQuery struct {
 }
 
 // parquetOnlyProjectionKeys are the projection params the parquet-only
-// template reads. The hot leg's (PGSourceSelect, PGGroupBy, the EAV pivot)
-// have no consumer here.
+// template reads.
 var parquetOnlyProjectionKeys = []string{"OuterSelect", "S3SourceSelect"}
 
 // CompileParquetOnlyQuery renders the parquet-only skeleton for q's shape.
 // params carries the schema projection and the parquet scan inputs
-// (DuckDBS3Paths or S3_PATHS, the cold column sets, EmptyParquetScan) as for
-// AdvancedQueryTemplateDuckDB; no PostgreSQL param is read. dual supplies the
+// (DuckDBS3Paths or S3_PATHS, the cold column sets, EmptyParquetScan); no
+// PostgreSQL param is read. dual supplies the
 // DuckDB logical clause; its PostgreSQL clauses are not rendered, because Go
 // serves the hot rows.
 func CompileParquetOnlyQuery(params map[string]any, q *model.FederatedAttributeQuery, dual *DualClauses) (*ParquetOnlyCompiledQuery, error) {
@@ -150,8 +149,8 @@ func BuildParquetOnlyQuery(params map[string]any, q *model.FederatedAttributeQue
 	return compiled.Bind(q, dual, window)
 }
 
-// parquetOnlyOrderBy renders the page's order, the one today's template
-// renders (buildKeysetOrderBy or buildNonKeysetOrderBy), with NULLS LAST
+// parquetOnlyOrderBy renders the page's order, the one the retired attach
+// template rendered (buildKeysetOrderBy or buildNonKeysetOrderBy), with NULLS LAST
 // spelled out on every term: the Go comparator puts NULL last in both
 // directions, and DuckDB's default_null_order setting could otherwise move
 // the parquet leg's NULLs without changing the statement.

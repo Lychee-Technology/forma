@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/model"
 )
 
 // scanSources is the resolved storage context of one federated read.
@@ -27,85 +25,6 @@ func (e *DBFederatedQueryEngine) schemaCacheByID(schemaID int16) (forma.SchemaAt
 		return nil, false
 	}
 	return e.metadataCache.GetSchemaCacheByID(schemaID)
-}
-
-// resolveScanSources is the storage-facing pre-flight of a DuckDB federated
-// query: it stamps the #252 flush-grace cutoff, resolves the parquet path
-// set, refuses one listing a cached corrupt object (#722), validates the
-// parquet system-column invariant and the #732 attribute types, and computes
-// the #255 cold-missing and #371 cold-pinned column sets from the footer
-// union the validation produced. A schema with no parquet to
-// read yet skips the validation and scans nothing (#720).
-func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery) (scanSources, error) {
-	// The flush-grace cutoff is stamped BEFORE resolution (#252): any row
-	// marked flushed at or after this instant may belong to a delta this
-	// path set does not list yet, so the dirty barrier keeps it hot-readable
-	// for this query.
-	graceCutoffMs := e.flushGraceCutoffMs(time.Now().UnixMilli())
-
-	// Resolve the parquet path set once (#187): explicit render hints win,
-	// otherwise the manifest-driven source authors the list. Provenance
-	// gates the read-error classification. A source also hands back its
-	// recorded footer stamps (#256) so the validation below can skip probing
-	// the objects the manifest already vouches for.
-	paths, fromSource, stamps, err := e.resolveParquetPaths(ctx, q)
-	if err != nil {
-		return scanSources{}, fmt.Errorf("resolve parquet paths: %w", err)
-	}
-
-	// An empty path set cannot answer this query (#299). Only warm/cold-wanting
-	// queries reach here — hot-only and PreferHot short-circuit to Postgres in
-	// Query — so there is nothing to scan and no honest partial answer. Failing
-	// here keeps the misconfiguration distinguishable from a transient S3
-	// outage, which the previous read_parquet(<no value>) parser error was not.
-	// It must precede the validator: that walks the path set and so reports
-	// nothing at all on an empty one.
-	if len(paths) == 0 {
-		return scanSources{}, &NoParquetPathsError{
-			SchemaID:         q.SchemaID,
-			SourceConfigured: e.parquetSource != nil,
-		}
-	}
-
-	// A source-authored set listing an object a recent verification
-	// confirmed corrupt is refused without scanning (#722); hint-authored
-	// sets are operator-pinned and never verified (#184).
-	if fromSource {
-		if corrupt := e.corruptPaths.Cached(paths); len(corrupt) > 0 {
-			return scanSources{}, e.refuseCachedCorrupt(ctx, tables, q, paths, corrupt, stamps, true)
-		}
-	}
-
-	// Benchmark schemas (100-102) are exempt from the pre-read checks: their
-	// parquet is the legacy CSV-sniffed harness shape (row_id VARCHAR, cast by
-	// the hardcoded benchmark projections) — the parquetcheck invariant
-	// codifies the PRODUCTION exporters, which never write those IDs
-	// (ValidateFixtureSchemaID reserves the range).
-	var cold coldScanSet
-	if !isBenchmarkSchemaID(q.SchemaID) {
-		noParquet, err := e.hasNoParquetToRead(ctx, tables, q, paths, fromSource)
-		if err != nil {
-			return scanSources{}, fmt.Errorf("resolve parquet paths: %w", err)
-		}
-		if noParquet {
-			cache, _ := e.schemaCacheByID(q.SchemaID)
-			return scanSources{
-				fromSource:    true,
-				graceCutoffMs: graceCutoffMs,
-				cold:          emptyParquetScanSet(cache),
-			}, nil
-		}
-		cold, err = e.validateScanSet(ctx, q.SchemaID, paths, fromSource, stamps)
-		if err != nil {
-			return scanSources{}, err
-		}
-	}
-	return scanSources{
-		paths:         paths,
-		fromSource:    fromSource,
-		graceCutoffMs: graceCutoffMs,
-		cold:          cold,
-	}, nil
 }
 
 // validateScanSet runs the pre-read checks over the resolved path set and

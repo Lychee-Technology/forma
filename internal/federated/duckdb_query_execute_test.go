@@ -33,8 +33,7 @@ func execFailQuery(schemaID int16) *model.FederatedAttributeQuery {
 func TestFailDuckDBScanConfirmedCorruptionSkipsBreakerAndFails(t *testing.T) {
 	duck := &verifyFakeDuck{failOpen: map[string]bool{"s3://b/bad.parquet": true}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute) // threshold 1: any RecordFailure opens it
-	e := NewDBFederatedQueryEngine(nil, nil, duck, breaker, forma.DuckDBConfig{}, nil, "",
-		WithParquetSource(&execFakeSource{}))
+	e := NewDBFederatedQueryEngine(nil, duck, breaker, forma.DuckDBConfig{}, nil, WithParquetSource(&execFakeSource{}))
 
 	sc := scan{parquetPaths: []string{"s3://b/good.parquet", "s3://b/bad.parquet"}, pathsFromSource: true}
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
@@ -72,8 +71,7 @@ func TestFailDuckDBScanConfirmedCorruptionSkipsBreakerAndFails(t *testing.T) {
 func TestFailDuckDBScanMissingObjectStaysInconsistentAndBreakerWorthy(t *testing.T) {
 	duck := &verifyFakeDuck{failOpen: map[string]bool{"s3://b/7/x.parquet": true}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
-	e := NewDBFederatedQueryEngine(nil, nil, duck, breaker, forma.DuckDBConfig{}, nil, "",
-		WithParquetSource(&execFakeSource{missing: []string{"7/x.parquet"}}))
+	e := NewDBFederatedQueryEngine(nil, duck, breaker, forma.DuckDBConfig{}, nil, WithParquetSource(&execFakeSource{missing: []string{"7/x.parquet"}}))
 
 	sc := scan{parquetPaths: []string{"s3://b/7/x.parquet", "s3://b/7/y.parquet"}, pathsFromSource: true}
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
@@ -99,8 +97,7 @@ func TestFailDuckDBScanMissingObjectStaysInconsistentAndBreakerWorthy(t *testing
 func TestFailDuckDBScanTransientDrainErrorStaysOnFailurePath(t *testing.T) {
 	duck := &verifyFakeDuck{failOpenOnce: map[string]int{"s3://b/flaky.parquet": 1}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
-	e := NewDBFederatedQueryEngine(nil, nil, duck, breaker, forma.DuckDBConfig{}, nil, "",
-		WithParquetSource(&execFakeSource{}))
+	e := NewDBFederatedQueryEngine(nil, duck, breaker, forma.DuckDBConfig{}, nil, WithParquetSource(&execFakeSource{}))
 
 	sc := scan{parquetPaths: []string{"s3://b/good.parquet", "s3://b/flaky.parquet"}, pathsFromSource: true}
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
@@ -123,8 +120,7 @@ func TestFailDuckDBScanAllPathsUnreadableIsEngineSickness(t *testing.T) {
 		"s3://b/a.parquet": true, "s3://b/b.parquet": true,
 	}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
-	e := NewDBFederatedQueryEngine(nil, nil, duck, breaker, forma.DuckDBConfig{}, nil, "",
-		WithParquetSource(&execFakeSource{}))
+	e := NewDBFederatedQueryEngine(nil, duck, breaker, forma.DuckDBConfig{}, nil, WithParquetSource(&execFakeSource{}))
 
 	sc := scan{parquetPaths: []string{"s3://b/a.parquet", "s3://b/b.parquet"}, pathsFromSource: true}
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
@@ -149,8 +145,7 @@ func TestFailDuckDBScanAllPathsUnreadableIsEngineSickness(t *testing.T) {
 
 func TestFailDuckDBScanHintPathsNeverVerified(t *testing.T) {
 	duck := &verifyFakeDuck{failOpen: map[string]bool{"s3://b/bad.parquet": true}}
-	e := NewDBFederatedQueryEngine(nil, nil, duck, nil, forma.DuckDBConfig{}, nil, "",
-		WithParquetSource(&execFakeSource{}))
+	e := NewDBFederatedQueryEngine(nil, duck, nil, forma.DuckDBConfig{}, nil, WithParquetSource(&execFakeSource{}))
 
 	sc := scan{parquetPaths: []string{"s3://b/good.parquet", "s3://b/bad.parquet"}, pathsFromSource: false}
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,

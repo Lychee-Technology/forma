@@ -85,7 +85,7 @@ func TestEvaluateRoutingPolicyDisagreesWithEngineOnHotOnlyCursor(t *testing.T) {
 		"the exported policy says the federated path serves this cursor")
 
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{}}
-	engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, cfg, nil, "")
+	engine := NewDBFederatedQueryEngine(pg, nil, nil, cfg, nil)
 	page, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav"},
 		newQuery(), opts)

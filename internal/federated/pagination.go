@@ -9,10 +9,11 @@ import (
 
 // ExecuteFederatedKeysetQuery returns one keyset page across all three tiers
 // plus the FULL match count, not the count remaining after the cursor. The
-// page comes from DuckDB's federated template (hot via the attached PostgreSQL catalog, warm and
-// cold from S3), which applies the keyset WHERE in the visible CTE after the
-// LWW dedup (rn = 1), so the cursor filters LWW winners rather than row
-// versions (#212). A nil or empty cursor is the open first page
+// page comes from one federated pass: the hot rows over pgx in the pass's
+// snapshot, merged in Go with the parquet rows of DuckDB's parquet-only
+// statement, which applies the keyset WHERE in the visible CTE after the LWW
+// dedup (rn = 1), so the cursor filters LWW winners rather than row versions
+// (#212). A nil or empty cursor is the open first page
 // (model.KeysetCursor.IsActive).
 //
 // The total is what separates this from Query, whose keyset pages report the
@@ -56,8 +57,8 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedKeysetQuery(
 		limit = maxRows
 	}
 
-	// Fetch from DuckDB (cold and warm via S3, hot via the attached PostgreSQL catalog).
-	// The template applies the keyset WHERE in the visible CTE AFTER the
+	// Fetch one pass (cold and warm from S3 through DuckDB, hot over pgx).
+	// The parquet-only statement applies the keyset WHERE in the visible CTE AFTER the
 	// ROW_NUMBER dedup picks rn = 1, so the cursor filters LWW winners, not
 	// row versions. Applying it pre-dedup resurrected superseded versions for
 	// cursors over any version-varying column (#212).
@@ -111,9 +112,7 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedKeysetQuery(
 // caller's partial marker needs (#413): a DuckDB pass never sets PartialScan,
 // because it reads every listed object or fails (#722). Corruption first
 // confirmed by this pass therefore fails the count with CorruptParquetError,
-// which the keyset coordinator returns and Query's empty-page recount either
-// returns or answers through the degraded fallback, which marks its page
-// itself. The total never shrinks quietly.
+// which the keyset coordinator returns. The total never shrinks quietly.
 func (e *DBFederatedQueryEngine) computeFederatedCount(
 	ctx context.Context,
 	tables model.StorageTables,

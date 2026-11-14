@@ -4,21 +4,23 @@ package production
 
 import (
 	"context"
+	"database/sql"
+	"strconv"
 	"testing"
 	"time"
 
 	fedengine "github.com/lychee-technology/forma/internal/federated"
+	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 // The parquet leg of the pgx pass (plan step 3, #854), timed beside the
-// attach-path baseline (#851). For each shape the engine just ran, it reads
-// the dirty set the attach statement's dirty_ids reads, over pgx in one
-// snapshot, stages it through the Appender on the replayer's connection, and
-// runs the parquet-only statement over the same parquet objects. The hot
-// leg's own PostgreSQL reads (the hot keys and the page's hot rows, plan
-// step 4) are not built yet, so this times the DuckDB side of a pgx pass and
-// the dirty set's transport, not a whole pass.
+// engine pass. For each shape the engine just ran, it reads the dirty set
+// the pass read, at the pass's cutoff, over pgx in one snapshot, stages it
+// through the Appender on a pinned connection of the Env's DuckDB instance,
+// and runs the parquet-only statement over the same parquet objects. The
+// hot leg's own PostgreSQL reads (the hot keys and the page's hot rows) are
+// not timed here: the engine pass includes them.
 
 // parquetOnlyTiming is one shape's medians.
 type parquetOnlyTiming struct {
@@ -28,15 +30,12 @@ type parquetOnlyTiming struct {
 }
 
 // measureParquetOnly times baselineReps rounds of read, stage and statement
-// after one warm-up round, and checks the statement's count against the
-// engine's: the parquet leg answers the engine's rows less the hot ones, and
-// the hot ones are dirty.
-func (r *baselineReplayer) measureParquetOnly(ctx context.Context, t *testing.T, env *Env, first *QueryResult, stmt string) parquetOnlyTiming {
+// on conn after one warm-up round, and checks the statement's count against
+// the engine's: the parquet leg answers the engine's rows less the hot ones,
+// and the hot ones are dirty.
+func measureParquetOnly(ctx context.Context, t *testing.T, env *Env, conn *sql.Conn, first *QueryResult) parquetOnlyTiming {
 	t.Helper()
-	cutoff, err := hotLegCutoff(stmt)
-	if err != nil {
-		t.Fatalf("read the statement's flush cutoff: %v", err)
-	}
+	cutoff := passCutoff(t, first.Plan)
 	fq := first.FQ
 	// Every measured shape is a first page, whose window is [0, limit)
 	// whatever the hot match count.
@@ -60,15 +59,15 @@ func (r *baselineReplayer) measureParquetOnly(ctx context.Context, t *testing.T,
 			t.Fatalf("read the dirty set: %v", err)
 		}
 		read := time.Now()
-		if err := fedengine.StageDirtySet(ctx, r.conn, snap.DirtyIDs); err != nil {
+		if err := fedengine.StageDirtySet(ctx, conn, snap.DirtyIDs); err != nil {
 			t.Fatalf("stage the dirty set: %v", err)
 		}
 		staged := time.Now()
-		rows, err := r.conn.QueryContext(ctx, pstmt, pargs...)
+		rows, err := conn.QueryContext(ctx, pstmt, pargs...)
 		if err != nil {
 			t.Fatalf("parquet-only statement: %v", err)
 		}
-		total, err := drainReplay(rows)
+		total, err := drainTotal(rows)
 		if err != nil {
 			t.Fatalf("parquet-only statement: %v", err)
 		}
@@ -80,7 +79,7 @@ func (r *baselineReplayer) measureParquetOnly(ctx context.Context, t *testing.T,
 		}
 		out.dirtyIDs, out.parquetTotal = len(snap.DirtyIDs), total
 	}
-	if err := fedengine.DropStagedDirtySet(ctx, r.conn); err != nil {
+	if err := fedengine.DropStagedDirtySet(ctx, conn); err != nil {
 		t.Fatalf("drop the staged dirty set: %v", err)
 	}
 	if hot := first.Total - out.parquetTotal; hot < 0 || hot > int64(out.dirtyIDs) {
@@ -89,4 +88,20 @@ func (r *baselineReplayer) measureParquetOnly(ctx context.Context, t *testing.T,
 	}
 	out.snapshotRead, out.stage, out.query = median(reads), median(stages), median(queries)
 	return out
+}
+
+// passCutoff returns the flush cutoff the pass read its dirty set at: the
+// second parameter of the hot form's dirty-set query, which its execution
+// plan records.
+func passCutoff(t *testing.T, plan *model.ExecutionPlan) int64 {
+	t.Helper()
+	src, ok := planSource(plan, pgxDirtySetReason)
+	if !ok || len(src.Params) != 2 {
+		t.Fatalf("the plan records no hot-form dirty-set read with its cutoff: %+v", plan.Sources)
+	}
+	cutoff, err := strconv.ParseInt(src.Params[1], 10, 64)
+	if err != nil {
+		t.Fatalf("parse the dirty set's cutoff %q: %v", src.Params[1], err)
+	}
+	return cutoff
 }

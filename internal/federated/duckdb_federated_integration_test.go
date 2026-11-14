@@ -7,9 +7,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 
-	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
@@ -101,75 +99,15 @@ func TestExecuteDuckDBFederatedQuery_NilQuery(t *testing.T) {
 }
 
 // TestRecordScanOutcome_CaptureDisabled: with no plan requested the plan
-// recorder is a no-op and the metric emission on a bare engine (nil sink)
-// is safe — the two halves of the retired finalizeDuckDBExecutionPlan.
+// recorder is a no-op.
 func TestRecordScanOutcome_CaptureDisabled(t *testing.T) {
-	engine := &DBFederatedQueryEngine{}
 	opts := &model.FederatedQueryOptions{}
 	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
 	outcome := duckDBScanOutcome{executeMs: 1, streamMs: 2, rowCount: 3, dirtyRows: 5}
 	require.NotPanics(t, func() {
-		engine.emitDuckDBScanMetrics(context.Background(), outcome)
 		planCtx.recordScanOutcome(outcome)
 	})
 	require.Nil(t, opts.ExecutionPlan)
-}
-
-func TestBuildDuckDBQuery_AdvancedTemplate(t *testing.T) {
-	tmpl := sqlgen.AdvancedQueryTemplateDuckDB
-	q := &model.FederatedAttributeQuery{
-		AttributeQuery: model.AttributeQuery{
-			SchemaID: 1,
-			Limit:    20,
-			Offset:   0,
-		},
-	}
-	params := map[string]any{
-		"EAVTable":             "eav_data",
-		"MainTable":            "entity_main",
-		"ChangeLogTable":       "change_log",
-		"MainProjection":       "ltbase_schema_id, ltbase_row_id",
-		"SchemaID":             1,
-		"UseMainTableAsAnchor": false,
-		"Anchor":               map[string]any{"Condition": "1=1"},
-		"SortKeys":             []model.AttributeOrder{},
-		"Limit":                20,
-		"Offset":               0,
-		"PageSize":             20,
-	}
-	// The advanced template refuses to render without schema projection params
-	// (#222 retired the toy defaults); derive them like injectSchemaProjections
-	// does, from the same fixture shape design_doc_sql_test.go pins.
-	sp, err := sqlgen.BuildSchemaProjection(1, forma.SchemaAttributeCache{
-		"name": {AttributeID: 1, ValueType: forma.ValueTypeText,
-			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_01")}},
-		"age": {AttributeID: 2, ValueType: forma.ValueTypeInteger,
-			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("integer_01")}},
-		"tag": {AttributeID: 205, ValueType: forma.ValueTypeText},
-	})
-	require.NoError(t, err)
-	params["S3SourceSelect"] = sp.S3SourceSelect
-	params["PGSourceSelect"] = sp.PGSourceSelect
-	params["PGGroupBy"] = sp.PGGroupBy
-	params["EAVPivotSelect"] = sp.EAVPivotSelect
-	params["EAVPivotAttrs"] = sp.EAVPivotAttrs
-	params["HasEAVPivot"] = sp.EAVPivotAttrs != ""
-	params["OuterSelect"] = sp.OuterSelect
-	// And a resolved parquet path set (#299): an unbound S3_PATHS is rejected
-	// instead of rendering read_parquet(<no value>).
-	params["DuckDBS3Paths"] = []string{"s3://bucket/1/a.parquet"}
-	sql, args, err := sqlgen.BuildDuckDBQuery(tmpl, params, q, []uuid.UUID{}, nil)
-	require.NoError(t, err)
-	require.NotEmpty(t, sql)
-	require.NotNil(t, args)
-}
-
-func TestAppendDirtyExclusion(t *testing.T) {
-	baseClause := "1=1"
-	aliceID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
-	clause, args := sqlgen.AppendDirtyExclusion(baseClause, []uuid.UUID{aliceID})
-	require.Contains(t, clause, "NOT IN")
-	require.Len(t, args, 1)
 }
 
 func skipIfNoDuckDB(t *testing.T) {

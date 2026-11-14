@@ -128,39 +128,6 @@ func TestToDualClauses_BoundBoolOperandSpellingParity(t *testing.T) {
 	}
 }
 
-// TestBuildPGSelectNoEAV_BoolColumnsUseMainColBoolExpr: the no-EAV hot
-// projection (live for any production schema whose attributes are all
-// column-bound) must derive a bound bool through the same mainColBoolExpr the
-// EAV-joined projection uses. It used to project the raw column and leave the
-// outer CAST(attr AS BOOLEAN) to read it — SMALLINT -1 → true and VARCHAR
-// 'true' → true on that one route, while `> 0.5` / `= '1'` read them as
-// false everywhere else, including the CDC export the same row lands in at
-// flush (#404, PR #564 review, finding 2).
-func TestBuildPGSelectNoEAV_BoolColumnsUseMainColBoolExpr(t *testing.T) {
-	cache := forma.SchemaAttributeCache{
-		"name": {AttributeID: 1, ValueType: forma.ValueTypeText,
-			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01}},
-		"flagInt": {AttributeID: 2, ValueType: forma.ValueTypeBool,
-			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnSmallint01, Encoding: forma.MainColumnEncodingBoolInt}},
-		"flagText": {AttributeID: 3, ValueType: forma.ValueTypeBool,
-			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText02, Encoding: forma.MainColumnEncodingBoolText}},
-	}
-	sp, err := BuildSchemaProjection(7, cache)
-	require.NoError(t, err)
-	require.False(t, sp.HasEAVAttrs, "fixture must qualify for the no-EAV shortcut")
-
-	noEAV := sp.BuildPGSelectNoEAV()
-	require.Contains(t, noEAV, "(m.smallint_01 > 0.5) AS flagInt")
-	require.Contains(t, noEAV, "m.text_02 = '1' AS flagText")
-	require.Contains(t, noEAV, "m.text_01 AS name", "non-bool columns still project raw")
-	require.NotContains(t, noEAV, "m.smallint_01 AS", "the raw bool column must not reach the outer CAST")
-	require.NotContains(t, noEAV, "m.text_02 AS")
-
-	// Same spelling as the EAV-joined projection's COALESCE fallback.
-	require.Contains(t, sp.PGSourceSelect, "(m.smallint_01 > 0.5)) AS flagInt")
-	require.Contains(t, sp.PGSourceSelect, "m.text_02 = '1') AS flagText")
-}
-
 // TestBuildOuterSelect_BoundBoolCastsToPhysicalColumn: the outer select
 // aliases a bound bool to its entity_main column, and the federated reader
 // scans that column by kind (SMALLINT → sql.NullInt64, text →
@@ -327,4 +294,15 @@ func TestPgMainAndHybridMain_BoolPredicateSpelling(t *testing.T) {
 	}
 	_, _, err := buildPgMainClause(&forma.KvCondition{Attr: "flagInt", Value: "equals:banana"}, cache, new(int))
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
+}
+
+// mainColBoolExpr is the read contract of a column-bound bool main-table
+// column, as the retired attach hot leg projected it (#858) and the CDC
+// export still reads it: bool_text is true only for "1", bool_smallint by the
+// shared #404 truthiness. The test above uses it as the reference.
+func mainColBoolExpr(colName string, enc forma.MainColumnEncoding) string {
+	if enc == forma.MainColumnEncodingBoolText {
+		return fmt.Sprintf("m.%s = '1'", colName)
+	}
+	return BoolTruthiness("m." + colName)
 }

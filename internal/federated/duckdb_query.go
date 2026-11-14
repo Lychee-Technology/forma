@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 
-	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
@@ -31,18 +29,15 @@ type duckDBRowsIterator interface {
 	Close() error
 }
 
-// ExecuteDuckDBFederatedQuery runs the DuckDB optimized query template using the provided
-// model.FederatedAttributeQuery. It fetches dirty IDs from the Postgres change_log (if available),
-// injects exclusions into the DuckDB WHERE clause, executes the query against the global
-// DuckDB client, and returns matched PersistentRecords along with the total record count.
-//
-// Note: This implementation performs a best-effort scan of columns produced by the
-// optimized query template. It mirrors the column ordering used by the Postgres template:
-//   - main table projection (entity_main columns, order defined by model.EntityMainColumnDescriptors)
-//   - attributes_json (TEXT)
-//   - total_records (bigint)
-//   - total_pages (bigint)
-//   - current_page (int)
+// ExecuteDuckDBFederatedQuery answers q's page and its exact total through
+// one federated pass (design.md §6.1). The pass requires the engine's
+// snapshot pool (WithPgxHotLeg) and a configured change_log table. It opens a
+// REPEATABLE READ snapshot and reads the dirty set and, unless the request
+// excludes the hot tier, the hot keys from it; stages the dirty set in
+// DuckDB, whose parquet-only statement drops every row_id of it from the
+// frozen parquet objects; merges the hot keys and the parquet window in Go
+// and cuts the page; and reads the page's hot rows in the same snapshot.
+// DuckDB reads no PostgreSQL.
 //
 // An empty parquet scan a publication raced (#720) is retried exactly once,
 // so one call can issue two scans. A read failure attributed to corrupt
@@ -223,14 +218,14 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// DuckDBConfig.QueryTimeout bounds one DuckDB pass end to end (#465):
-	// path resolution and schema probes, the dirty-ID fetch, the scan, and
+	// path resolution and schema probes, the snapshot reads, the scan, and
 	// the row streaming below all run under this deadline. duckdb-go v2
 	// interrupts a running query when its context expires, so a slow scan is
 	// genuinely cancelled rather than left running on the single connection.
 	// A zero timeout leaves the caller's context as it is. Query arms the
 	// same budget once for the whole DuckDB-routed request
 	// (queryDuckDBRouted), so under it this deadline is never later than the
-	// request's and a publication-race retry or a deep-page recount shares
+	// request's and a publication-race retry or the degraded fallback shares
 	// the remainder; the arming here is what bounds callers that reach a
 	// pass directly (ExecuteFederatedKeysetQuery, the benchmark harness).
 	// The caller's own deadline (QueryConfig.DefaultTimeout) is the ceiling
@@ -255,53 +250,9 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		}
 	}()
 
-	if e.cfg.HotLegTransport.IsPgx() {
-		// The pgx pass resolves the probe itself (pgx_pass.go).
-		probeResolved = true
-		return e.streamPgxPass(ctx, tables, dispatchedQuery(q, limit, offset, attributeOrders), opts, planCtx, probe, rowHandler)
-	}
-
-	src, err := e.resolveScanSources(ctx, tables, q)
-	if err != nil {
-		probeResolved = true
-		return 0, e.failScanSources(ctx, q, probe, err)
-	}
-	planCtx.recordEmptyParquetScan(src.cold.noObjects)
-
-	// #348: the partial-scan marker is an out-parameter on opts that
-	// describes the answer actually returned. A DuckDB pass reads every
-	// listed object or fails (#722), so its answer is never partial, and it
-	// clears a marker a reused options value still carries.
-	if opts != nil {
-		opts.PartialScan = nil
-	}
-
-	// Fetch dirty IDs and record in execution plan
-	dirtyIDs, err := e.fetchAndRecordDirtyIDs(ctx, tables, q, planCtx)
-	if err != nil {
-		return 0, fmt.Errorf("fetch dirty row ids: %w", err)
-	}
-
-	// Build and execute the query
-	sqlStr, args, translateMs, err := e.buildDuckDBQueryWithPlan(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, src.paths, src.graceCutoffMs, src.cold, planCtx)
-	if err != nil {
-		return 0, fmt.Errorf("build duckdb federated query: %w", err)
-	}
-
-	// Record translation in plan
-	planCtx.recordTranslation(sqlStr, args, translateMs, q)
-
-	// From here the dependency is consulted, so the breaker gets real evidence
-	// on every path and the helper below owns resolving the probe.
+	// The pgx pass resolves the probe itself (pgx_pass.go).
 	probeResolved = true
-	return e.executeAndStreamDuckDB(ctx, q, sqlStr, args, scan{
-		parquetPaths:     src.paths,
-		pathsFromSource:  src.fromSource,
-		dirtyIDs:         dirtyIDs,
-		translateMs:      translateMs,
-		probe:            probe,
-		emptyParquetScan: src.cold.noObjects,
-	}, rowHandler, planCtx)
+	return e.streamPgxPass(ctx, tables, dispatchedQuery(q, limit, offset, attributeOrders), opts, planCtx, probe, rowHandler)
 }
 
 // withQueryTimeout bounds ctx by timeout; a non-positive timeout means no
@@ -311,35 +262,6 @@ func withQueryTimeout(ctx context.Context, timeout time.Duration) (context.Conte
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, timeout)
-}
-
-// fetchAndRecordDirtyIDs fetches dirty row IDs from Postgres and records in execution plan.
-func (e *DBFederatedQueryEngine) fetchAndRecordDirtyIDs(
-	ctx context.Context,
-	tables model.StorageTables,
-	q *model.FederatedAttributeQuery,
-	planCtx *duckDBExecutionPlanContext,
-) ([]uuid.UUID, error) {
-	if tables.ChangeLog == "" {
-		return nil, nil
-	}
-	if e == nil || e.dirtyIDFetcher == nil {
-		return nil, fmt.Errorf("dirty id fetcher not available")
-	}
-
-	dirtyIDs, err := e.dirtyIDFetcher.FetchDirtyRowIDs(ctx, tables.ChangeLog, q.SchemaID)
-	if err != nil {
-		return nil, fmt.Errorf("fetch dirty ids: %w: %w", ErrPostgresReadFailed, err)
-	}
-
-	// The dirty-set size feeds fed_query_row_count{source="pg"}, but it is
-	// emitted with the rest of the pass's series once DuckDB has succeeded
-	// (emitDuckDBScanMetrics), not here: a pass that fails after this point
-	// must leave no sample, and the #720 retry must not count twice.
-	// Record in execution plan
-	planCtx.recordDirtyIDSource(tables.ChangeLog, q.SchemaID, len(dirtyIDs), sqlgen.FederatedQueryHasHot(q))
-
-	return dirtyIDs, nil
 }
 
 // injectSchemaProjections computes schema-driven SQL fragments from the attribute
@@ -365,11 +287,6 @@ func (e *DBFederatedQueryEngine) injectSchemaProjections(ctx context.Context, sq
 		// attributes, JSON extraction for EAV-only attributes).
 		proj := sqlgen.BuildBenchmarkProjections(schemaID)
 		sqlParams["S3SourceSelect"] = proj.S3SourceSelect
-		sqlParams["PGSourceSelect"] = proj.PGSourceSelect
-		sqlParams["PGGroupBy"] = proj.PGGroupBy
-		sqlParams["EAVPivotSelect"] = proj.EAVPivotSelect
-		sqlParams["EAVPivotAttrs"] = proj.EAVPivotAttrs
-		sqlParams["HasEAVPivot"] = len(proj.EAVPivotAttrs) > 0
 		sqlParams["OuterSelect"] = sqlgen.BuildBenchmarkOuterSelect(schemaID)
 		return false, nil
 	}
@@ -389,8 +306,9 @@ func (e *DBFederatedQueryEngine) injectSchemaProjections(ctx context.Context, sq
 	return hit, applySchemaProjection(sqlParams, schemaID, sp, projErr)
 }
 
-// applySchemaProjection writes the seven schema-projection params into sqlParams
-// from a computed projection, or refuses. Both a non-nil projErr and a nil
+// applySchemaProjection writes the schema-projection params the parquet-only
+// statement reads, S3SourceSelect and OuterSelect, into sqlParams from a
+// computed projection, or refuses. Both a non-nil projErr and a nil
 // projection are hard failures: with the toy-schema defaults retired (#222)
 // there is nothing to fall through to, so an advanced-template render must fail
 // fast rather than emit unset projection params. Extracted so the nil-guard is
@@ -406,70 +324,6 @@ func applySchemaProjection(sqlParams map[string]any, schemaID int16, sp *sqlgen.
 		return fmt.Errorf("schema projection for schema %d is nil with no error; refusing to render with an undefined projection", schemaID)
 	}
 	sqlParams["S3SourceSelect"] = sp.S3SourceSelect
-	sqlParams["PGSourceSelect"] = sp.PGSourceSelect
-	sqlParams["PGGroupBy"] = sp.PGGroupBy
-	sqlParams["EAVPivotSelect"] = sp.EAVPivotSelect
-	sqlParams["EAVPivotAttrs"] = sp.EAVPivotAttrs
-	sqlParams["HasEAVPivot"] = len(sp.EAVPivotAttrs) > 0
 	sqlParams["OuterSelect"] = sp.OuterSelect
 	return nil
-}
-
-func duckDBPostgresScanLocation(name string) (string, string) {
-	parts := strings.Split(name, ".")
-	clean := make([]string, 0, len(parts))
-	for _, part := range parts {
-		trimmed := strings.Trim(part, " \"")
-		if trimmed != "" {
-			clean = append(clean, trimmed)
-		}
-	}
-	if len(clean) >= 2 {
-		return clean[0], clean[1]
-	}
-	if len(clean) == 1 {
-		return "public", clean[0]
-	}
-	return "public", ""
-}
-
-// needsEAVJoin checks whether the federated query requires an EAV data JOIN.
-// It returns false when all filter conditions and sort keys reference only
-// column-bound attributes, meaning the eav_data scan can be safely skipped.
-func needsEAVJoin(q *model.FederatedAttributeQuery, cache forma.SchemaAttributeCache) bool {
-	if q == nil || len(cache) == 0 {
-		return true
-	}
-	if needsEAVForCondition(q.Condition, cache) {
-		return true
-	}
-	for _, order := range q.AttributeOrders {
-		if order.StorageLocation != forma.AttributeStorageLocationMain {
-			return true
-		}
-	}
-	return false
-}
-
-// needsEAVForCondition recursively checks if any condition references an
-// EAV-only (non-column-bound) attribute.
-func needsEAVForCondition(cond forma.Condition, cache forma.SchemaAttributeCache) bool {
-	if cond == nil {
-		return false
-	}
-	switch c := cond.(type) {
-	case *forma.CompositeCondition:
-		for _, child := range c.Conditions {
-			if needsEAVForCondition(child, cache) {
-				return true
-			}
-		}
-	case *forma.KvCondition:
-		if meta, ok := cache[c.Attr]; ok {
-			if meta.ColumnBinding == nil {
-				return true
-			}
-		}
-	}
-	return false
 }

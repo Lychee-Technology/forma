@@ -19,7 +19,7 @@ const (
 )
 
 // TestDSQLCorpusHotLegReads exports the pgx hot leg's two reads in the pass's
-// snapshot (design.md §6.1.1, pgx-hot-leg-plan.md step 4): the hot-keys query,
+// snapshot (design.md §6.1, pgx-hot-leg-plan.md step 4): the hot-keys query,
 // with a condition over a bound column and an eav_data attribute and a sort
 // key of each storage form, and the page read. The snapshot's BEGIN and
 // COMMIT are internal/federated's TestDSQLCorpusChangeLogSnapshot's.

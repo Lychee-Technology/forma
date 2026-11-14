@@ -915,9 +915,9 @@ A create runs step 4 only.
     `{"items":[{"sku":"a"}],"items.tags":[]}` writes it, and an update
     writes it back. A marker written before #623 carries no indices wherever
     its list was, so it reads there too rather than in an element it does
-    not name. The DuckDB pivot and the CDC export tell a marker from an
-    element by its NULL values rather than its empty `array_indices`, so an
-    indexed marker exports as `[]`. A binary older than #623 skips an
+    not name. The CDC export tells a marker from an element by its NULL
+    values rather than its empty `array_indices`, so an indexed marker
+    exports as `[]`. A binary older than #623 skips an
     indexed marker on read and deletes it on its next update of the row, so
     a rolling deploy or a rollback across #623 needs care for a schema with
     a list inside an array of objects
@@ -1398,11 +1398,12 @@ Examples:
   rows before the upgrade, with the read's own predicate
   (`transform.StoredDateImageRefusedSQL`)
   ([migration](./schema-consistency-migration.md#date-images-the-read-path-refuses-592)).
-  The DuckDB hot leg, and the Parquet copies the CDC export derives from the
-  row, read such an image narrowed instead (2^53+1 as 2^53, `1000.5` as
-  `1000`, `NaN` as 1970-01-01, a number past int64 as absent): the DuckDB
-  Postgres scanner types `NUMERIC` as `DOUBLE` before any expression Forma
-  renders. The census is their guard until #621.
+  The federated hot leg reads the row through the same OLTP reader, so a
+  federated page that holds it fails too while it is unflushed. The Parquet
+  copies the CDC export derives from the row read such an image narrowed
+  instead (2^53+1 as 2^53, `1000.5` as `1000`, `NaN` as 1970-01-01, a number
+  past int64 as absent): the export stages `NUMERIC` as `DOUBLE` before any
+  expression Forma renders. The census is their guard until #621.
 - an empty-list marker with array indices in a row whose registry does not
   declare its schema's array ancestry (#623; see "The update merge and the
   written row"): `failed to convert attributes of row 0198… to JSON:
@@ -2121,21 +2122,26 @@ this boundary emits — response body *and* log line — replacing the value of 
 
 The log half is the point. Before #301 this package logged no errors at all, so
 routing the full chain to `Errorw` newly put the Postgres password — which DuckDB
-quotes back inside its own attach-failure prose — into whatever log collector and
-retention the deployment runs. Scrubbing at the source of those wraps is tracked
-by #306; this boundary scrub is what protects deployments in the meantime.
+quoted back inside its own attach-failure prose while the federated engine
+attached PostgreSQL — into whatever log collector and retention the deployment
+runs. #306 added a scrub at the source of those wraps, in the federated engine.
+Since #858 the engine no longer hands DuckDB a connection string at all
+(`docs/federated-query/design.md` §6.1), so neither scrub has that producer
+left. Both stay as defence in depth: either still removes a password that
+some other driver error quotes.
 
 **The matcher is not local to `httpapi`.** It lives in `internal/redact`
-(`ConnStringPassword`), shared with the CDC logger, which needed the same
-scrub from #290 until #785 took the connection string out of the CDC export. Sharing is a correctness requirement, not tidying: a naive
+(`ConnStringPassword`), shared with the federated engine's own scrub (#306)
+and with the CDC logger, which needed it from #290 until #785 took the
+connection string out of the CDC export. Sharing is a correctness requirement, not tidying: a naive
 `'[^']*'` branch mistakes libpq's escaped `\'` for the closing quote and emits
 the password tail past the placeholder. That was a real bug fixed in #290, and
 its regression tests (`internal/cdc/redact_test.go`) exercise the shared matcher
 directly, and `internal/redact/connstring_test.go` gates the
 pattern in the package that owns it. Three forms are covered — the
-`sqlutil.EscapeLiteral`-doubled `password=''…''` used inside DuckDB `ATTACH` literals,
-the libpq-quoted `password='…'`, and the bare `password=value` of legacy or
-third-party text.
+`sqlutil.EscapeLiteral`-doubled `password=''…''` that DuckDB `ATTACH` literals
+carried, the libpq-quoted `password='…'`, and the bare `password=value` of
+legacy or third-party text.
 
 **A scrubber alone was not enough, because it cannot see where an unquoted value
 ends.** The bare branch has to stop somewhere, and whatever it stops on truncates
@@ -2146,21 +2152,23 @@ exposure this whole section exists to prevent. Two changes closed it:
   also stop on `;`, `,` and `)`, none of which is a separator in a libpq
   keyword/value DSN, so any password containing one leaked its tail. Pinned by
   `TestConnStringPassword_UnquotedSeparators`.
-- `federated.DuckDBPostgresConnStringFromPool` now **quotes its values**, via the
-  shared `internal/pgdsn`, as `internal/cdc`'s builder already did since #290. It
-  previously emitted `host=%s … password=%s dbname=%s` raw. That was two bugs in
-  one: a password containing a space produced a DSN libpq cannot parse (so
-  the hot leg could not attach PostgreSQL at all), and it was unredactable. Quoting is
-  what makes the value's extent unambiguous.
+- Every DSN Forma builds **quotes its values**, via the shared
+  `internal/pgdsn`. The federated engine's builder,
+  `federated.DuckDBPostgresConnStringFromPool`, adopted it in #301; it used to
+  emit `host=%s … password=%s dbname=%s` raw. That was two bugs in one: a
+  password containing a space produced a DSN libpq cannot parse (so the hot
+  leg could not attach PostgreSQL at all), and it was unredactable. Quoting is
+  what makes the value's extent unambiguous. That builder left with the
+  attach hot leg in #858. The remaining builder, `cdc.BuildPGDSN`, quoted
+  since #290; `cdc-flush`, `cdc-init` and `manifest-reconcile` hand its DSN to
+  pgx.
 
-Because the DSN is interpolated into a single-quoted SQL literal
-(`ATTACH '<conn>' AS …` since #752, `postgres_scan('{{.PG_CONN}}', …)` before),
-sqlgen escapes it — `sqlutil.EscapeLiteral`, called from
-`internal/sqlgen/duckdb_pg_attach.go` — the same shared helper
-`internal/cdc` uses, consolidated in #310. Without that, the newly-added
-quotes would terminate the literal early. It also closes a hole that
-predates the quoting: a Postgres password containing a single quote used to
-be interpolated raw into query structure.
+While the federated engine interpolated the DSN into a single-quoted SQL
+literal (`ATTACH '<conn>' AS …` from #752 to #858, `postgres_scan('{{.PG_CONN}}', …)`
+before), it escaped it with `sqlutil.EscapeLiteral`, the same shared helper
+`internal/cdc` uses, consolidated in #310. Without that, the quotes would have
+terminated the literal early, and a Postgres password containing a single
+quote would have been interpolated raw into query structure.
 
 One shape is deliberately **not** matched, recorded in
 `TestRedactCredentialsKnownGaps` and `TestConnStringPassword_KnownGaps`:
@@ -2264,26 +2272,26 @@ for everything else. They resolve via `errors.Is`, never message text.
 ### Why an allowlist
 
 Redaction cannot be a blocklist of known-sensitive error types, because the
-sharpest leak does not come from one. The federated engine attaches
-PostgreSQL with `ATTACH '<conn>' …` ahead of every query (#752), and the
-connection string is built by `federated.DuckDBPostgresConnStringFromPool` as
-`host=… user=… password=… dbname=…`. When DuckDB cannot attach, its own message
-is:
+sharpest leaks do not come from one. Until #858 the federated engine attached
+PostgreSQL with `ATTACH '<conn>' …` ahead of every query (#752), from a
+connection string `host=… user=… password=… dbname=…`. When DuckDB could not
+attach, its own message was:
 
 ```
 IO Error: Unable to connect to Postgres at "host=… user=… password=… dbname=…": …
 ```
 
-That text is driver-authored, so only a deny-by-default rule contains it. A
-missing parquet object likewise yields the full `s3://bucket/prefix/key` and the
-resolved endpoint URL.
+That text is driver-authored, so only a deny-by-default rule contains it. The
+engine no longer attaches, but the rule does not depend on that: a missing
+parquet object still yields the full `s3://bucket/prefix/key` and the
+resolved endpoint URL, also driver-authored.
 
 The success path has the matching rule: `toExecutionPlan`
 (`internal/entity_query_service.go:138`) allowlists plan fields and drops
 `src.SQL`, `src.Params`, `plan.Notes`, and `merge.Notes` for the same reason —
-the source SQL embedded the `postgres_scan` connection string before #752 (it
-now names the attached catalog by an alias that reveals nothing), and notes can
-echo raw engine errors. Pinned by `TestToExecutionPlan_DoesNotLeakCredentials`.
+the source SQL embedded the `postgres_scan` connection string before #752, and
+named the attached catalog by an alias until #858, when DuckDB stopped reading
+PostgreSQL; notes can echo raw engine errors. Pinned by `TestToExecutionPlan_DoesNotLeakCredentials`.
 
 ### Formerly accepted disclosures — both closed by #313
 
@@ -2697,7 +2705,9 @@ Credentials still reach error strings *inside* the process. `redactCredentials`
 scrubs them at the HTTP boundary, so nothing served or logged by
 `internal/httpapi` carries one — but a Go embedder using
 `factory.NewEntityManager*` receives the raw `error` and can capture the password
-in its own logs. Scrubbing at the engine's error wraps is tracked by #306.
+in its own logs. The federated engine scrubs its DuckDB failures at the source
+(#306), and since #858 it gives DuckDB no connection string to quote; errors
+from other paths reach the embedder as the driver wrote them.
 
 The same applies to publications: `PublicMessage()` is scrubbed at the HTTP
 boundary as defence in depth, but an embedder reading it directly gets the

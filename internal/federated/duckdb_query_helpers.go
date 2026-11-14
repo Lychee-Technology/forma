@@ -10,7 +10,6 @@ import (
 	"github.com/lychee-technology/forma/internal/redact"
 
 	"github.com/google/uuid"
-	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // nullDuckDBUUID scans a nullable UUID column from DuckDB. The duckdb-go
@@ -277,53 +276,6 @@ func newDuckDBExecutionPlanContext(opts *model.FederatedQueryOptions, now func()
 	return ctx
 }
 
-// recordDirtyIDSource records the dirty ID source in the execution plan. The
-// change_log scan runs in every DuckDB tier form; when hot is excluded from
-// PreferredTiers its role shifts from hot data source to pure consistency
-// barrier (#184), and the reason says so — the plan reflects the actual
-// access, not the requested tiers.
-func (c *duckDBExecutionPlanContext) recordDirtyIDSource(changeLogTable string, schemaID int16, dirtyCount int, hasHot bool) {
-	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
-		return
-	}
-
-	reason := "dirty id set fetched"
-	if !hasHot {
-		reason = "consistency barrier (dirty-id anti-join)"
-	}
-	dpDirty := model.DataSourcePlan{
-		Tier:        model.DataTierHot,
-		Engine:      "postgres",
-		SQL:         fmt.Sprintf("SELECT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0", sqlutil.SanitizeIdentifier(changeLogTable)),
-		Params:      formatPlanParams([]any{schemaID}),
-		RowEstimate: int64(dirtyCount),
-		Reason:      reason,
-	}
-	c.opts.ExecutionPlan.Sources = append(c.opts.ExecutionPlan.Sources, dpDirty)
-}
-
-// hotLegPredicateReason names the plan source that carries the hot leg's
-// main-table predicate.
-const hotLegPredicateReason = "hot-leg predicate (evaluated in DuckDB)"
-
-// recordHotLegPredicate records the hot leg's main-table predicate in the
-// execution plan. It never sets PredicatePushdown: the hot leg's scans send
-// PostgreSQL no predicate (filter pushdown is off on the attached catalog), so DuckDB evaluates the clause on whole copied
-// tables (#631, design.md §6.1).
-func (c *duckDBExecutionPlanContext) recordHotLegPredicate(pgMainClause string) {
-	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
-		return
-	}
-
-	pgDP := model.DataSourcePlan{
-		Tier:   model.DataTierHot,
-		Engine: "postgres",
-		SQL:    pgMainClause,
-		Reason: hotLegPredicateReason,
-	}
-	c.opts.ExecutionPlan.Sources = append(c.opts.ExecutionPlan.Sources, pgDP)
-}
-
 // recordTranslation records the query translation in the execution plan,
 // including the bind parameters of the rendered DuckDB SQL. DataSourcePlan
 // carries a single Tier, but the one read_parquet scan physically serves the
@@ -341,15 +293,15 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any
 		Tier:   served[0],
 		Engine: "duckdb",
 		// #306: before #752 the rendered SQL embedded postgres_scan('…password=…'),
-		// and it now names the attached catalog by alias only; the
-		// internal plan reaches Go embedders via attachExecutionPlan, so the
-		// credential is scrubbed here while the rest of the query shape stays
-		// diagnosable. The engine still executes the unscrubbed sqlStr.
+		// and since #858 DuckDB reads no PostgreSQL at all, so the statement
+		// carries no connection string. The scrub stays as a guard: the
+		// internal plan reaches Go embedders via attachExecutionPlan, and a
+		// credential must never ride along in it. The engine executes the
+		// unscrubbed sqlStr.
 		SQL:    redact.ConnStringPassword(sqlStr),
 		Params: formatPlanParams(args),
-		// The anchor hint is a no-op in the advanced template, so it must not
-		// masquerade as actual pushdown here (#184). No source claims a
-		// pushdown: the hot leg pushes none (#631). The hint itself is
+		// The anchor hint is a no-op in the parquet-only statement, so it must
+		// not masquerade as actual pushdown here (#184). The hint itself is
 		// recorded as a request in the Notes below.
 		PredicatePushdown: false,
 		Reason:            "duckdb template rendered",
@@ -362,7 +314,7 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any
 		fmt.Sprintf("parquet(read_parquet) physically serves warm+cold (single flat glob); requested parquet tiers: %s", joinTiers(served)))
 	if useMainAsAnchor {
 		c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes,
-			"UseMainAsAnchor hint requested (advanced template does not apply it)")
+			"UseMainAsAnchor hint requested (the parquet-only statement does not apply it)")
 	}
 	c.opts.ExecutionPlan.Timings["translate"] = translateMs
 }
@@ -444,19 +396,6 @@ func (c *duckDBExecutionPlanContext) recordPlanCache(hit bool) {
 	} else {
 		c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes, "plan_cache=miss")
 		c.opts.ExecutionPlan.Timings["plan_cache_miss"] = 1
-	}
-}
-
-// recordProjectionCache notes whether the schema projection came from the
-// per-engine cache (#142).
-func (c *duckDBExecutionPlanContext) recordProjectionCache(hit bool) {
-	if c == nil || c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
-		return
-	}
-	if hit {
-		c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes, "schema_projection_cache_hit")
-	} else {
-		c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes, "schema_projection_cache_miss")
 	}
 }
 

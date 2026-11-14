@@ -26,7 +26,7 @@ Paths are relative to `internal/`. The production harness tests live in `e2e_har
 | Parquet column types and value images | production `full_type_parquet_e2e_test.go` (pins the physical schema), `full_type_roundtrip_e2e_test.go`, `numeric_width_parity_e2e_test.go`, `width_audit*_e2e_test.go`, `bool_bound_parity_e2e_test.go`, `date_parity_e2e_test.go`, `date_image_tiers_e2e_test.go`, `text_uuid_operator_e2e_test.go` |
 | Arrays of objects (#704) | production `object_array_e2e_test.go`, `cdc_object_array_skip_e2e_test.go` |
 | Mixed Parquet schemas, manifest-driven reads | production `schema_evolution_e2e_test.go`, `compaction_evolution_e2e_test.go`, `parquet_manifest_consistency_e2e_test.go`, `factory_manifest_e2e_test.go` |
-| PostgreSQL through DuckDB (the attached catalog) | `federated/hot_leg_attach_integration_test.go`, production `hot_leg_scan_e2e_test.go` |
+| The hot leg over pgx beside DuckDB's parquet leg: no PostgreSQL catalog attached, no `postgres_scanner` loaded (#858) | production `tier_parity_e2e_test.go`, `flushed_oracle_e2e_test.go`, `pgx_hot_leg_e2e_test.go`, `federated_client_extensions_e2e_test.go` |
 | The CDC export's pgx staging (Appender, temp tables) against the `postgres_query` transport it replaced (#785) | `cdc/export_transport_parity_test.go`, `cdc/duckdb_export_pg_integration_test.go` |
 | Compaction | production `compaction*_e2e_test.go` |
 | Credentials kept out of errors | `federated/credential_scrub_test.go` |

@@ -12,16 +12,6 @@ import (
 
 // The engine's Postgres change_log reads.
 
-// DirtyIDFetcher retrieves row IDs from the change log that are newer than
-// the flushed Parquet tiers and must be excluded from DuckDB results.
-type DirtyIDFetcher interface {
-	FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error)
-	// HasParquetHistory reports whether PostgreSQL records that parquet was
-	// published for schemaID (#720). See
-	// PostgresDirtyIDFetcher.HasParquetHistory.
-	HasParquetHistory(ctx context.Context, tables model.StorageTables, schemaID int16) (bool, error)
-}
-
 // changeLogQuerier sends one change_log read: the pool, or the snapshot
 // transaction ReadChangeLogSnapshot holds.
 type changeLogQuerier interface {
@@ -37,27 +27,17 @@ type dirtyIDPool interface {
 
 type DirtyIDPool = dirtyIDPool
 
-// PostgresDirtyIDFetcher reads unflushed row IDs from the change_log table,
-// satisfying the DirtyIDFetcher seam with a live Postgres pool.
+// PostgresDirtyIDFetcher reads a federated pass's change_log answers in a
+// snapshot of its own (ReadChangeLogSnapshot), outside any pass: the init-db
+// index test and the production harness use it. A pass reads the same
+// statements in its own snapshot (readChangeLogSnapshot).
 type PostgresDirtyIDFetcher struct {
 	pool dirtyIDPool
 }
 
-// NewPostgresDirtyIDFetcher wraps pool as a DirtyIDFetcher.
+// NewPostgresDirtyIDFetcher wraps pool.
 func NewPostgresDirtyIDFetcher(pool dirtyIDPool) *PostgresDirtyIDFetcher {
 	return &PostgresDirtyIDFetcher{pool: pool}
-}
-
-// FetchDirtyRowIDs returns the row IDs in changeLogTable for schemaID that
-// have not been flushed to Parquet yet.
-func (f *PostgresDirtyIDFetcher) FetchDirtyRowIDs(ctx context.Context, changeLogTable string, schemaID int16) ([]uuid.UUID, error) {
-	if changeLogTable == "" {
-		return nil, fmt.Errorf("change log table name cannot be empty")
-	}
-	if f == nil || f.pool == nil {
-		return nil, fmt.Errorf("postgres dirty id fetcher is not available")
-	}
-	return queryRowIDs(ctx, f.pool, strictDirtySetQuery(changeLogTable), schemaID)
 }
 
 // strictDirtySetQuery reads the row IDs of schema $1 with an unflushed
@@ -89,7 +69,16 @@ func queryRowIDs(ctx context.Context, q changeLogQuerier, query string, args ...
 	return ids, nil
 }
 
-// HasParquetHistory reports whether PostgreSQL records that parquet was
+// parquetHistoryQuery answers one boolean for schema $1: whether it has a
+// flushed change_log entry or a live entity_main row without an entry.
+func parquetHistoryQuery(tables model.StorageTables) string {
+	return fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %[1]s WHERE schema_id = $1 AND flushed_at <> 0)
+	OR EXISTS (SELECT 1 FROM %[2]s m WHERE m.ltbase_schema_id = $1 AND NOT EXISTS (
+		SELECT 1 FROM %[1]s c WHERE c.schema_id = $1 AND c.row_id = m.ltbase_row_id))`,
+		sqlutil.SanitizeIdentifier(tables.ChangeLog), sqlutil.SanitizeIdentifier(tables.EntityMain))
+}
+
+// queryParquetHistory reports whether PostgreSQL records that parquet was
 // published for schemaID. Two records qualify, and neither depends on a
 // clock:
 //
@@ -109,26 +98,8 @@ func queryRowIDs(ctx context.Context, q changeLogQuerier, query string, args ...
 // cdc-init export whose rows have all been written again since the handoff
 // leaves no record here. Each of those rows has an entry, so the barrier
 // shadows the export row for row, and losing it changes no answer.
-func (f *PostgresDirtyIDFetcher) HasParquetHistory(ctx context.Context, tables model.StorageTables, schemaID int16) (bool, error) {
-	if tables.ChangeLog == "" || tables.EntityMain == "" {
-		return false, fmt.Errorf("change log and entity main table names cannot be empty")
-	}
-	if f == nil || f.pool == nil {
-		return false, fmt.Errorf("postgres dirty id fetcher is not available")
-	}
-	return queryParquetHistory(ctx, f.pool, tables, schemaID)
-}
-
-// parquetHistoryQuery answers one boolean for schema $1: whether it has a
-// flushed change_log entry or a live entity_main row without an entry.
-func parquetHistoryQuery(tables model.StorageTables) string {
-	return fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %[1]s WHERE schema_id = $1 AND flushed_at <> 0)
-	OR EXISTS (SELECT 1 FROM %[2]s m WHERE m.ltbase_schema_id = $1 AND NOT EXISTS (
-		SELECT 1 FROM %[1]s c WHERE c.schema_id = $1 AND c.row_id = m.ltbase_row_id))`,
-		sqlutil.SanitizeIdentifier(tables.ChangeLog), sqlutil.SanitizeIdentifier(tables.EntityMain))
-}
-
-// queryParquetHistory runs parquetHistoryQuery for schemaID on q.
+//
+// It runs parquetHistoryQuery for schemaID on q.
 func queryParquetHistory(ctx context.Context, q changeLogQuerier, tables model.StorageTables, schemaID int16) (bool, error) {
 	rows, err := q.Query(ctx, parquetHistoryQuery(tables), schemaID)
 	if err != nil {

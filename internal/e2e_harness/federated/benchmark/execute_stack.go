@@ -60,12 +60,10 @@ func newBenchmarkQueryStack(ctx context.Context, pool *pgxpool.Pool, h *federate
 	repo := internal.NewDBPersistentRecordRepository(pool, metadata, internal.WithPlanCache(planCache))
 	engine := fedengine.NewDBFederatedQueryEngine(
 		repo,
-		fedengine.NewPostgresDirtyIDFetcher(pool),
 		fedengine.NewDuckDBClientQueryExecutor(h.Duck),
 		nil,
 		duckCfg,
 		metadata,
-		fedengine.DuckDBPostgresConnStringFromPool(pool),
 		fedengine.WithPlanCache(planCache),
 		fedengine.WithPgxHotLeg(pool, repo),
 	)

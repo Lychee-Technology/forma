@@ -5,13 +5,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"text/template"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
-	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,13 +35,10 @@ func (b *budgetBlockedDuckDBExecutor) Query(ctx context.Context, sql string, arg
 
 func newTimeoutTestEngine(t *testing.T, duck DuckDBQueryExecutor, timeout time.Duration) *DBFederatedQueryEngine {
 	t.Helper()
-	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck,
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck,
 		NewCircuitBreaker(100, time.Minute, time.Minute),
 		forma.DuckDBConfig{Enabled: true, QueryTimeout: timeout, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-		testMetadataCacheSchema7(t), "", withTestParquetPath())
-	engine.buildDuckSQL = func(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *sqlgen.DualClauses) (string, []any, error) {
-		return "SELECT fake", nil, nil
-	}
+		testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 	return engine
 }
 

@@ -70,51 +70,41 @@ a fixed enumeration.
 | `compaction_rewrite_applied_total` | counter | count | `schema_id` | compactor (#188) |
 | `entity_report_only_validation_violation_total` | counter | count | `schema_id`, `schema_name`, `kind` (`required`, `constraint`) | entity writes (#317) |
 
-What the federated series measure, per successful DuckDB pass (they are not
-gated on the caller asking for an execution plan):
+What the federated series measure, per successful federated pass (they are
+not gated on the caller asking for an execution plan). A pass reads
+PostgreSQL over pgx in one snapshot, runs one DuckDB statement over the
+parquet tiers, and merges the two in Go (design.md §6.1). A pass that waits
+for one of the engine's `duckdb.maxConnections` pass slots (design.md §6.1,
+*Connection use*) waits before its snapshot, and no stage reports that wait.
 
 - `fed_query_latency_histogram`: `translation` is SQL rendering, `execution`
-  is the `duck.Query` call, `streaming` is the row iteration and handler loop.
-  The three are disjoint intervals; the execution plan's `duckdb_fetch` is
-  `execution + streaming`.
-- `fed_query_row_count`: `pg` is the size of the dirty set fetched from
-  Postgres for the anti-join; `duckdb` is the row count of the merged DuckDB
-  scan. There is no `s3` series, and no series reports what the Postgres
-  scans inside DuckDB read: Forma does not observe them (see
-  [Retired metrics](#retired-metrics)).
-
-A pass under the pgx hot leg (`DuckDBConfig.HotLegTransport = pgx`, the
-default since #857, design.md §6.1.1) reads PostgreSQL itself, over pgx in
-one snapshot, and emits two more samples. A pass that waits for one of the
-engine's `duckdb.maxConnections` pass slots (design.md §6.1.1, *Connection
-use*) waits before its snapshot, and no stage reports that wait:
-
-- `fed_query_latency_histogram{stage="snapshot"}` is the time the pass spent
-  on its PostgreSQL reads: opening the snapshot, the dirty set, the hot keys,
-  and after the merge the page's hot rows. The DuckDB statement runs while
-  the snapshot is open, between the hot keys and the page read; its time is
-  in `execution` and `streaming`, not here. `streaming` is the parquet leg's
-  row iteration plus the loop that hands the merged page to the row handler,
-  so a slow handler shows there, as on the attach transport. When a deep
+  is the DuckDB query call, `streaming` is the parquet leg's row iteration
+  plus the loop that hands the merged page to the row handler, so a slow
+  handler shows there. The three are disjoint intervals; the execution plan's
+  `duckdb_fetch` is `execution + streaming`. `snapshot` is the time the pass
+  spent on its PostgreSQL reads: opening the snapshot, the dirty set, the hot
+  keys, and after the merge the page's hot rows. The DuckDB statement runs
+  while the snapshot is open, between the hot keys and the page read; its
+  time is in `execution` and `streaming`, not in `snapshot`. When a deep
   page's window carries no count, the pass recounts the parquet leg with a
   second DuckDB statement (#181); its translation, execution and streaming
   add to the page statement's, and so to the plan's `duckdb_fetch`.
-- `fed_query_row_count{source="hot"}` is the number of hot keys the page drew
-  from: the rows of the dirty window that match the request's condition (and,
-  on a keyset page, lie after its cursor). Beside `pg`, the size of the dirty
-  set the pass staged, it says how much of the hot tier the predicate kept.
-  `duckdb` counts the rows of the parquet leg's window, which on an offset
-  page holds up to `hot` + limit rows.
+- `fed_query_row_count`: `pg` is the size of the dirty set the pass read
+  from Postgres and staged for the anti-join. `hot` is the number of hot
+  keys the page drew from: the rows of the dirty window that match the
+  request's condition (and, on a keyset page, lie after its cursor). Beside
+  `pg` it says how much of the hot tier the predicate kept. `duckdb` counts
+  the rows of the parquet leg's window, which on an offset page holds up to
+  `hot` + limit rows. There is no `s3` series.
 
-A pgx pass over a schema with no parquet to read (#720) runs no DuckDB
-statement and emits only `snapshot`, `pg` and `hot`. The attach transport
-emits neither new sample.
+A pass over a schema with no parquet to read (#720) runs no DuckDB statement
+and emits only `snapshot`, `pg` and `hot`. A pass whose request leaves out the
+hot tier reads no hot keys, and its `hot` is 0.
 
 All of a pass's samples are emitted together, after the pass has succeeded.
-A pass that fails, whether at SQL rendering, at the DuckDB `Query` call,
-while streaming rows (the row handler included) or, under pgx, at a snapshot
-read, emits nothing, so no
-counter or histogram ever carries a failed attempt. A query answered by the
+A pass that fails, whether at a snapshot read, at SQL rendering, at the
+DuckDB query call, or while streaming rows (the row handler included), emits
+nothing, so no counter or histogram ever carries a failed attempt. A query answered by the
 publication-race retry (#720) is therefore counted once, from the pass that produced the returned page, the
 same pass the execution plan describes.
 
@@ -156,7 +146,7 @@ stops receiving samples.
 
 | Name | Retired by | Why |
 |------|------------|-----|
-| `fed_query_pushdown_efficiency` (gauge, ratio, `schema_id`) | #596 | It was the dirty-set size over the final matching row count, a stand-in for a Postgres-rows-scanned ratio Forma does not observe: the hot leg runs inside DuckDB, which exposes the scans' row counts only through per-query profiling. Its numerator is still emitted as `fed_query_row_count{source="pg"}`. |
+| `fed_query_pushdown_efficiency` (gauge, ratio, `schema_id`) | #596 | It was the dirty-set size over the final matching row count, a stand-in for a Postgres-rows-scanned ratio Forma did not observe: the hot leg then ran inside DuckDB, which exposes the scans' row counts only through per-query profiling. Its numerator is still emitted as `fed_query_row_count{source="pg"}`. |
 
 ## The demo binaries
 

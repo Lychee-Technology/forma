@@ -1,12 +1,12 @@
 package federated
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sortkey"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -43,65 +43,37 @@ func (s *stubDuckDBRows) Close() error {
 	return nil
 }
 
-func TestStreamDuckDBRows_WhenRowHandlerFails_ItStopsAndReturnsTheError(t *testing.T) {
+// A row the parquet leg cannot scan fails the leg as a read failure.
+func TestStreamParquetLegRows_WhenScanFails_ItStopsAndReturnsScanError(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
-	rowID := uuid.New()
-	engine := &DBFederatedQueryEngine{}
 	rows := &stubDuckDBRows{
-		nextResults: []bool{true, false},
-		scanFn: func(dest ...any) error {
-			return populateDuckDBRow(dest, 1, rowID, 11, 22, nil, "[]", 1)
-		},
-	}
-
-	handlerCalls := 0
-	total, rowCount, err := engine.streamDuckDBRows(context.Background(), rows, func(context.Context, *model.PersistentRecord) error {
-		handlerCalls++
-		return fmt.Errorf("forced row handler failure")
-	})
-
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "forced row handler failure")
-	require.Zero(t, total)
-	require.Zero(t, rowCount)
-	require.Equal(t, 1, handlerCalls)
-}
-
-func TestStreamDuckDBRows_WhenScanFails_ItStopsAndReturnsScanError(t *testing.T) {
-	restore := initTestDescriptors()
-	defer restore()
-
-	engine := &DBFederatedQueryEngine{}
-	rows := &stubDuckDBRows{
-		nextResults: []bool{true, false},
+		nextResults: []bool{true, true, false},
 		scanFn: func(dest ...any) error {
 			return fmt.Errorf("forced scan failure")
 		},
 	}
 
-	handlerCalls := 0
-	total, rowCount, err := engine.streamDuckDBRows(context.Background(), rows, func(context.Context, *model.PersistentRecord) error {
-		handlerCalls++
-		return nil
-	})
+	out, total, totalSet, err := streamParquetLegRows(rows, sortkey.Order{})
 
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
-	require.Contains(t, err.Error(), "scan duckdb row")
+	require.Contains(t, err.Error(), "scan parquet leg row")
 	require.Contains(t, err.Error(), "forced scan failure")
+	require.Empty(t, out)
 	require.Zero(t, total)
-	require.Zero(t, rowCount)
-	require.Equal(t, 0, handlerCalls, "handler must not be called when scan fails")
+	require.False(t, totalSet)
+	require.Equal(t, 1, rows.nextIndex, "the leg stops at the row it cannot scan")
 }
 
-func TestStreamDuckDBRows_WhenIteratorEndsWithError_ItReturnsIterationError(t *testing.T) {
+// An iterator that ends with an error fails the leg, whatever rows it
+// yielded before.
+func TestStreamParquetLegRows_WhenIteratorEndsWithError_ItReturnsIterationError(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
 	rowID := uuid.New()
-	engine := &DBFederatedQueryEngine{}
 	rows := &stubDuckDBRows{
 		nextResults: []bool{true, false},
 		err:         fmt.Errorf("forced rows iteration failure"),
@@ -110,19 +82,15 @@ func TestStreamDuckDBRows_WhenIteratorEndsWithError_ItReturnsIterationError(t *t
 		},
 	}
 
-	handlerCalls := 0
-	total, rowCount, err := engine.streamDuckDBRows(context.Background(), rows, func(context.Context, *model.PersistentRecord) error {
-		handlerCalls++
-		return nil
-	})
+	out, total, totalSet, err := streamParquetLegRows(rows, sortkey.Order{})
 
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
-	require.Contains(t, err.Error(), "iterate duckdb rows")
+	require.Contains(t, err.Error(), "iterate parquet leg rows")
 	require.Contains(t, err.Error(), "forced rows iteration failure")
+	require.Empty(t, out)
 	require.Zero(t, total)
-	require.Zero(t, rowCount)
-	require.Equal(t, 1, handlerCalls)
+	require.False(t, totalSet)
 }
 
 func populateDuckDBRow(dest []any, schemaID int16, rowID uuid.UUID, createdAt int64, updatedAt int64, deletedAt *int64, attrsJSON string, totalRecords int64) error {

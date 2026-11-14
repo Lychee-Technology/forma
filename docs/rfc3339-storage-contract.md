@@ -60,11 +60,13 @@ application.
 The PostgreSQL route compares and sorts the column as text. A filter literal
 is bound as its canonical image (`rfc3339FilterImage`, #588), and `ORDER BY`
 orders the stored text. The DuckDB tiers compare and sort the instant: the
-hot leg and the CDC export read the image as epoch milliseconds
+CDC export reads the image as epoch milliseconds
 (`sqlgen.RFC3339EpochMs`, #756, #755), and the DuckDB outer select renders
 the instant back as the canonical image, three digits included
 (`rfc3339ImageFromEpochMs`). Parquet holds epoch milliseconds, never the
-image.
+image. The federated hot leg filters its unflushed rows in PostgreSQL, as
+text, and sorts them by the instant the export will write
+(`federated-query/design.md` §6.1, *Ordering parity*).
 
 For canonical images the two agree. All of them have the same length and put
 their separators at the same positions, so two images first differ at a
@@ -177,12 +179,14 @@ whole-second `2023-02-29T00:00:00Z`. None of them is a respelling: every
 out. The census reports them apart from the three kinds above, and
 `migrate-rfc3339` lists each as `not an RFC 3339 image the read parses`.
 
-The DuckDB tiers read the same image through `TRY_CAST`
-(`sqlgen.RFC3339EpochMs`), on the hot leg and in the CDC export. An image
-naming no day, such as `2023-02-29T00:00:00Z`, reads there as an absent
-attribute, and the space-separated image as its wall clock in UTC. So the
-row's parquet copy holds a value PostgreSQL does not, and the repair has to
-re-export the row whatever value it chooses.
+The CDC export reads the same image through `TRY_CAST`
+(`sqlgen.RFC3339EpochMs`). An image naming no day, such as
+`2023-02-29T00:00:00Z`, reads there as an absent attribute, and the
+space-separated image as its wall clock in UTC. So the row's parquet copy
+holds a value PostgreSQL does not, and the repair has to re-export the row
+whatever value it chooses. While the row is unflushed, the federated hot leg
+reads it through the OLTP reader, so a federated page that holds it fails as
+a `GET` does.
 
 What the attribute should hold is a per-row decision Forma does not make
 for you: the instant the writer meant, when the source of the data can tell
@@ -316,13 +320,13 @@ new release starts. The procedure:
 
 ## The federated hot leg over pgx
 
-Under the planned hot leg over pgx (`federated-query/design.md` §6.1.1),
+Under the hot leg over pgx (`federated-query/design.md` §6.1, #858),
 PostgreSQL filters a schema's unflushed rows and DuckDB filters its flushed
-ones, within one answer. A non-canonical row could then change membership at
-its flush. That is a consequence of the row being outside the contract, not a
-parity defect. The tier parity suite uses canonical images only, and the
-switch of the default transport does not wait on #763. DuckDB keeps comparing
-the instant (#761).
+ones, within one answer. A non-canonical row can therefore change membership
+at its flush. That is a consequence of the row being outside the contract,
+not a parity defect. The tier parity suite uses canonical images only, and
+making pgx the default transport (#857) did not wait on #763. DuckDB keeps
+comparing the instant (#761).
 
 The alternative was to have DuckDB compare rfc3339 columns as text as well.
 It was not chosen: it reverts part of #761, and a DuckDB filter would again

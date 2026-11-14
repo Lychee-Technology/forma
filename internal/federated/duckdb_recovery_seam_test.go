@@ -4,7 +4,11 @@ import (
 	"context"
 	"database/sql/driver"
 	"io"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 
 	duckdb "github.com/duckdb/duckdb-go/v2"
 )
@@ -75,4 +79,45 @@ func openFatalInjecting(dsn string, init func(driver.ExecerContext) error) (driv
 		return nil, err
 	}
 	return fatalInjectingConnector{Connector: c}, nil
+}
+
+// Every fresh physical connection of the engine's client runs the init
+// steps, and so does a connection of a database the recovering connector
+// reopened after a FATAL error (#702, #752). No connection, fresh or
+// reopened, loads the postgres_scanner extension (#858).
+func TestNewDuckDBClient_InitOnFreshAndReopenedConnections(t *testing.T) {
+	useTestGlobalLogger(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	var opens atomic.Int32
+	swapOpenDuckDBConnector(t, func(dsn string, init func(driver.ExecerContext) error) (driver.Connector, error) {
+		opens.Add(1)
+		return openFatalInjecting(dsn, init)
+	})
+
+	cfg := newS3ConfiguredDuckDBConfig()
+	cfg.MaxConnections = 2
+	duck, err := NewDuckDBClientContext(ctx, cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = duck.Close() })
+	duck.DB.SetMaxIdleConns(0) // every query opens a new physical connection
+
+	requireInitialized := func(what string) {
+		t.Helper()
+		var region string
+		require.NoError(t, duck.DB.QueryRowContext(ctx, "SELECT current_setting('s3_region')").Scan(&region), what)
+		require.Equal(t, "us-test-1", region, what)
+		var scanner int
+		require.NoError(t, duck.DB.QueryRowContext(ctx,
+			"SELECT count(*) FROM duckdb_extensions() WHERE extension_name = 'postgres_scanner' AND loaded").Scan(&scanner), what)
+		require.Zero(t, scanner, "%s: postgres_scanner must not be loaded", what)
+	}
+	for i := 0; i < 3; i++ {
+		requireInitialized("fresh connection")
+	}
+
+	_, err = duck.DB.ExecContext(ctx, injectFatalSQL)
+	require.Error(t, err)
+	requireInitialized("connection of the reopened database")
+	require.Equal(t, int32(2), opens.Load(), "the query reached a reopened database")
 }

@@ -291,10 +291,9 @@ func TestBootstrapServer_RejectsCallerParquetPathsWithoutBucket(t *testing.T) {
 	}
 }
 
-// TestDuckDBConfigFromEnv_HotLegTransport pins the rollback switch of #857:
-// the server keeps the default's pgx transport unless
-// DUCKDB_HOT_LEG_TRANSPORT names another, and reads the variable only when
-// DuckDB is on.
+// TestDuckDBConfigFromEnv_HotLegTransport: the server keeps the default's
+// pgx transport unless DUCKDB_HOT_LEG_TRANSPORT names another, and reads the
+// variable only when DuckDB is on.
 func TestDuckDBConfigFromEnv_HotLegTransport(t *testing.T) {
 	base := forma.DefaultConfig(nil).DuckDB
 	t.Setenv("DUCKDB_ENABLED", "true")
@@ -302,8 +301,8 @@ func TestDuckDBConfigFromEnv_HotLegTransport(t *testing.T) {
 		t.Fatalf("unset DUCKDB_HOT_LEG_TRANSPORT: transport %q, want %q", got, forma.HotLegTransportPgx)
 	}
 	t.Setenv("DUCKDB_HOT_LEG_TRANSPORT", "attach")
-	if got := readDuckDBConfig(t, base).HotLegTransport; got != forma.HotLegTransportAttach {
-		t.Fatalf("DUCKDB_HOT_LEG_TRANSPORT=attach: transport %q, want %q", got, forma.HotLegTransportAttach)
+	if got := readDuckDBConfig(t, base).HotLegTransport; got != "attach" {
+		t.Fatalf("DUCKDB_HOT_LEG_TRANSPORT=attach: transport %q, want it read so validation refuses it", got)
 	}
 	t.Setenv("DUCKDB_ENABLED", "false")
 	if got := readDuckDBConfig(t, base).HotLegTransport; got != forma.HotLegTransportPgx {
@@ -311,15 +310,21 @@ func TestDuckDBConfigFromEnv_HotLegTransport(t *testing.T) {
 	}
 }
 
-// TestBootstrapServer_RejectsUnknownHotLegTransport: a transport other than
-// pgx or attach fails startup with a ConfigError naming the field.
-func TestBootstrapServer_RejectsUnknownHotLegTransport(t *testing.T) {
-	t.Setenv("DUCKDB_ENABLED", "true")
-	t.Setenv("DUCKDB_HOT_LEG_TRANSPORT", "duckdb")
-	_, err := bootstrapServer(context.Background(), zap.NewNop().Sugar())
-	var configErr *forma.ConfigError
-	if !errors.As(err, &configErr) || configErr.Field != "duckdb.hotLegTransport" {
-		t.Fatalf("expected a ConfigError on duckdb.hotLegTransport, got %v", err)
+// TestBootstrapServer_RejectsAHotLegTransportOtherThanPgx: the retired
+// attach rollback (#858) and any unknown value fail startup with a
+// ConfigError naming the field, so a deployment left on attach does not move
+// to pgx silently.
+func TestBootstrapServer_RejectsAHotLegTransportOtherThanPgx(t *testing.T) {
+	for _, value := range []string{"attach", "duckdb"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("DUCKDB_ENABLED", "true")
+			t.Setenv("DUCKDB_HOT_LEG_TRANSPORT", value)
+			_, err := bootstrapServer(context.Background(), zap.NewNop().Sugar())
+			var configErr *forma.ConfigError
+			if !errors.As(err, &configErr) || configErr.Field != "duckdb.hotLegTransport" {
+				t.Fatalf("expected a ConfigError on duckdb.hotLegTransport, got %v", err)
+			}
+		})
 	}
 }
 

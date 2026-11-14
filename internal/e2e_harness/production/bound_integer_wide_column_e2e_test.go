@@ -17,13 +17,12 @@ import (
 // before the funnel or by hand. The CDC export reads the column through
 // TRY_CAST to the declared type, so the parquet copy holds NULL for an image
 // past the type's range, NaN or ±Infinity, and a fraction rounded half to
-// even. The DuckDB hot leg read the raw column instead: the outer select's
-// strict cast failed every federated query that reached the unflushed row,
-// and the pg_source pushdown and the `visible` filter compared the raw
-// image, so a filter matched the row differently before and after its
-// flush. Both hot projections read it the export's way now. The OLTP route
-// is not exercised here: it refuses both images with a consistency error
-// (#590 for the bigint, #708 for the integer;
+// even, and both parquet tiers answer that copy. While the row is hot, the
+// federated route reads it through the OLTP reader and filters it on
+// PostgreSQL (design.md §6.1, What a hot row reads as), so the hot phase
+// requires the federated route to answer the PostgreSQL route's rows with
+// the same stored images. Decoding those images refuses both with a
+// consistency error (#590 for the bigint, #708 for the integer;
 // width_audit_bound_integer_e2e_test.go).
 
 const wideIntegerProps = `{
@@ -39,8 +38,8 @@ const wideIntegerAttrs = `{
 }
 `
 
-// The mixed generation adds an EAV-only attribute so the hot leg takes the
-// EAV-joined projection instead of the no-EAV shortcut.
+// The mixed generation adds an EAV-only attribute so the parquet tiers take
+// the EAV-joined projection instead of the no-EAV shortcut.
 const wideIntegerMixedProps = `{
     "name": {"type": "string"},
     "ratio": {"type": "integer"},
@@ -57,7 +56,7 @@ const wideIntegerMixedAttrs = `{
 `
 
 // wideIntegerRow is one seeded row: the image planted in its column, and
-// what every DuckDB tier answers for ratio and qty (nil: absent).
+// what every parquet tier answers for ratio and qty (nil: absent).
 type wideIntegerRow struct {
 	ev          *Event
 	column      string // the column the image is planted in; "" plants nothing
@@ -82,7 +81,7 @@ func wideIntegerRows() []*wideIntegerRow {
 	}
 }
 
-// wideIntegerProbes is the truth table every DuckDB tier must reach. Each
+// wideIntegerProbes is the truth table every parquet tier must reach. Each
 // probe sits where the raw image and the declared-type read disagree.
 func wideIntegerProbes(rows []*wideIntegerRow) []widthProbe {
 	pick := func(keep func(r *wideIntegerRow) bool) []*Event {
@@ -172,17 +171,16 @@ func assertWideIntegerReads(ctx context.Context, t *testing.T, env *Env, label s
 	}
 }
 
-// runWideIntegerAllTiers walks the planted rows through the unflushed
-// DuckDB hot leg, delta parquet and base parquet, with the same expected
-// answers on each.
+// runWideIntegerAllTiers holds the unflushed rows' federated answers to the
+// PostgreSQL route's, then walks them through delta parquet and base
+// parquet, with the same expected answers on each.
 func runWideIntegerAllTiers(ctx context.Context, t *testing.T, env *Env, withNote bool) {
 	t.Helper()
 	simple := DefaultSchemaFixtures()[0]
 	rows := seedWideIntegerRows(ctx, t, env, withNote)
 	duck := Query{Schema: simple, Limit: 100}
 
-	runWidthProbes(ctx, t, env, "hot-duck", duck, true, wideIntegerProbes(rows))
-	assertWideIntegerReads(ctx, t, env, "hot-duck", rows)
+	requireProbesAgree(ctx, t, env, "hot", duck, wideIntegerProbes(rows))
 
 	if _, err := env.RunFlush(ctx); err != nil {
 		t.Fatalf("flush: %v", err)
@@ -198,20 +196,18 @@ func runWideIntegerAllTiers(ctx context.Context, t *testing.T, env *Env, withNot
 }
 
 // TestBoundIntegerWideColumnImagesNoEAVAllTiers: every attribute is
-// column-bound, so the DuckDB hot leg takes BuildPGSelectNoEAV.
+// column-bound, so the parquet tiers take the no-EAV projection.
 func TestBoundIntegerWideColumnImagesNoEAVAllTiers(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, wideIntegerProps, wideIntegerAttrs)))
-	pinAttachHotLeg(env) // the hot phase pins the attach hot leg's export-way read of off-contract images; the pgx hot leg reads them through the OLTP reader, which refuses them (design.md §6.1.1, What a hot row reads as)
 	runWideIntegerAllTiers(ctx, t, env, false)
 }
 
 // TestBoundIntegerWideColumnImagesEAVJoinedAllTiers: the EAV-only note
-// forces the EAV-joined hot projection, where the bound columns sit in a
+// forces the EAV-joined projection, where the bound columns sit in a
 // COALESCE with the EAV pivot.
 func TestBoundIntegerWideColumnImagesEAVJoinedAllTiers(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, wideIntegerMixedProps, wideIntegerMixedAttrs)))
-	pinAttachHotLeg(env) // the hot phase pins the attach hot leg's export-way read of off-contract images; the pgx hot leg reads them through the OLTP reader, which refuses them (design.md §6.1.1, What a hot row reads as)
 	runWideIntegerAllTiers(ctx, t, env, true)
 }

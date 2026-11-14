@@ -264,7 +264,7 @@ func TestBothSeamsShareOneCursorValidator(t *testing.T) {
 
 	engine := NewDBFederatedQueryEngine(
 		&fakePostgresFederatedSource{page: &model.PersistentRecordPage{}},
-		nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+		nil, nil, forma.DuckDBConfig{Enabled: true}, nil)
 
 	_, queryErr := engine.Query(context.Background(), tables, newQuery(), &model.FederatedQueryOptions{})
 	require.Error(t, queryErr, "engine seam must refuse a misaligned cursor")

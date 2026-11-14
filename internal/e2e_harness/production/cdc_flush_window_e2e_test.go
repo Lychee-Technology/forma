@@ -12,7 +12,7 @@ import (
 // between a flush's mark-flushed and its manifest-append must still see the
 // batch's rows. Under the pre-#252 ordering (copy -> mark -> append) the batch
 // was transiently invisible in every tier: the rows had left the hot tier
-// (flushed_at != 0 excludes them from dirty_ids and pg_source) while the delta
+// (flushed_at != 0 excludes them from the dirty set and the hot leg) while the delta
 // was not yet listed in the manifest the reader resolves paths from.
 //
 // The probe needs a NON-EMPTY manifest: a never-flushed schema falls back to

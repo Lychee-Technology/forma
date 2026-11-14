@@ -18,15 +18,7 @@ import (
 )
 
 // The pgx hot leg's end-to-end regressions (pgx-hot-leg-plan.md step 5,
-// #856). Each pins its Env to HotLegTransportPgx, whatever
-// FORMA_E2E_HOT_LEG_TRANSPORT selects for the rest of the suite.
-
-func newPgxEnv(t *testing.T) *Env {
-	t.Helper()
-	env := NewEnv(t, SharedCluster(t))
-	env.DuckCfg.HotLegTransport = forma.HotLegTransportPgx
-	return env
-}
+// #856).
 
 // recordTitle reads a record's title as the oracle normalizes it.
 func recordTitle(t *testing.T, env *Env, schema SchemaRef, rec *model.PersistentRecord) string {
@@ -46,14 +38,14 @@ func recordTitle(t *testing.T, env *Env, schema SchemaRef, rec *model.Persistent
 // A flush that races the query with the widening configured off
 // (FlushVisibilityGraceMs = -1): it appends and marks between path
 // resolution and the snapshot. The pgx hot leg reads -1 as the exact anchor,
-// so the raced rows stay in the hot leg, where the attach transport loses
-// them (DisabledWideningExposesRace).
+// so the raced rows stay in the hot leg. Before it, -1 disabled the widening
+// and the attach hot leg lost them.
 func TestPgxHotLegRacedFlushWithWideningOff(t *testing.T) {
 	t.Parallel()
 
 	t.Run("NewRows", func(t *testing.T) {
 		t.Parallel()
-		env := newPgxEnv(t)
+		env := NewEnv(t, SharedCluster(t))
 		env.DuckCfg.FlushVisibilityGraceMs = -1
 		res := runRacedFlushQuery(t, env, racedCreates)
 		if got := len(res.Records); got != 8 {
@@ -63,7 +55,7 @@ func TestPgxHotLegRacedFlushWithWideningOff(t *testing.T) {
 
 	t.Run("UpdatedRows", func(t *testing.T) {
 		t.Parallel()
-		env := newPgxEnv(t)
+		env := NewEnv(t, SharedCluster(t))
 		env.DuckCfg.FlushVisibilityGraceMs = -1
 		res := runRacedFlushQuery(t, env, buildClosedUpdates)
 		wide := DefaultSchemaFixtures()[1]
@@ -93,7 +85,7 @@ func (r *hookedHotLegReader) QueryHotKeys(ctx context.Context, tx pgx.Tx, req mo
 }
 
 // A publication after the snapshot, over a non-empty level-3 glob
-// (design.md §6.1.1, Frozen inventory): between the snapshot and the DuckDB
+// (design.md §6.1, Frozen inventory): between the snapshot and the DuckDB
 // scan a writer updates one clean row and flushes it, and deletes and flushes
 // another. The glob was listed at path resolution, so the scan reads neither
 // new object: the page holds the first row at its snapshot version and still
@@ -101,7 +93,7 @@ func (r *hookedHotLegReader) QueryHotKeys(ctx context.Context, tx pgx.Tx, req mo
 func TestPgxHotLegPublicationAfterTheSnapshot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	env := newPgxEnv(t)
+	env := NewEnv(t, SharedCluster(t))
 	wide := DefaultSchemaFixtures()[1]
 	var updated, deleted *Event
 	reader := &hookedHotLegReader{hook: func(hctx context.Context) {
@@ -246,7 +238,7 @@ func tieCursor(cols []model.KeysetColumn, rec *model.PersistentRecord) *model.Ke
 func TestPgxHotLegMixedTierTiebreakWalk(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	env := newPgxEnv(t)
+	env := NewEnv(t, SharedCluster(t))
 	wide := DefaultSchemaFixtures()[1]
 	const rows = 7
 	tieRun(ctx, t, env, wide, rows)
@@ -272,13 +264,4 @@ func TestPgxHotLegMixedTierTiebreakWalk(t *testing.T) {
 			}
 		}
 	}
-}
-
-// pinAttachHotLeg pins env to the attach transport, whatever
-// FORMA_E2E_HOT_LEG_TRANSPORT selects, for a test of the attach hot leg's
-// own behaviour: its rendered SQL and PostgreSQL scans, or how it projects a
-// hot image off the write funnel's contract. It must run before the Env's
-// engine is assembled.
-func pinAttachHotLeg(env *Env) {
-	env.DuckCfg.HotLegTransport = forma.HotLegTransportAttach
 }
