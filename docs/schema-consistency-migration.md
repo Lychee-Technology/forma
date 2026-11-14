@@ -35,6 +35,26 @@ A later release (`#342`) adds one more startup check:
 
 All three are covered below.
 
+## Retired attach hot leg (`#858`)
+
+Federated queries now read the hot tier only over pgx. Before upgrading:
+
+- Remove `hotLegTransport: "attach"` from configuration, or set it to `"pgx"`.
+  For `cmd/server`, unset `DUCKDB_HOT_LEG_TRANSPORT=attach` or set it to `pgx`.
+  An empty transport also means pgx. Both config-based factory constructors
+  reject the retired value before any I/O, even without a preceding
+  `Config.Validate` call.
+- Go embedders must remove references to the deleted public
+  `forma.HotLegTransportAttach` constant and `forma.HotLegTransport.IsPgx()`
+  method. Set `forma.HotLegTransportPgx` (or leave the field empty), and remove
+  transport-selection branches: there is no alternate transport. If validating
+  settings separately from factory construction, use `DuckDBConfig.ValidateHotLeg`
+  rather than testing whether the field equals `"pgx"`; empty is valid too.
+- Size the PostgreSQL pool above `duckdb.maxConnections`: a federated pass holds
+  one pooled connection through the parquet read. Clear the stored-image census
+  in the [deployment checklist](#deployment-checklist) before upgrading; the hot
+  leg uses the OLTP reader, and there is no attach rollback for rows it refuses.
+
 ## Recommended Migration Flow
 
 1. Stop writes to the target environment.
