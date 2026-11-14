@@ -255,6 +255,12 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 		}
 	}()
 
+	if e.cfg.HotLegTransport.IsPgx() {
+		// The pgx pass resolves the probe itself (pgx_pass.go).
+		probeResolved = true
+		return e.streamPgxPass(ctx, tables, dispatchedQuery(q, limit, offset, attributeOrders), opts, planCtx, probe, rowHandler)
+	}
+
 	src, err := e.resolveScanSources(ctx, tables, q)
 	if err != nil {
 		probeResolved = true

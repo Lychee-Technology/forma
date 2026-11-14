@@ -72,7 +72,7 @@ func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables 
 	// sets are operator-pinned and never verified (#184).
 	if fromSource {
 		if corrupt := e.corruptPaths.Cached(paths); len(corrupt) > 0 {
-			return scanSources{}, e.refuseCachedCorrupt(ctx, tables, q, paths, corrupt, stamps)
+			return scanSources{}, e.refuseCachedCorrupt(ctx, tables, q, paths, corrupt, stamps, true)
 		}
 	}
 

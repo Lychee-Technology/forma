@@ -87,7 +87,10 @@ func WithCorruptPathRetention(d time.Duration) EngineOption {
 // cutoff. d == 0 is the exact anchor (the default); d > 0 hardens against
 // cross-host clock skew (flushed_at is stamped on the CDC host, the cutoff on
 // the query host) at the cost of hot-serving rows flushed up to d before the
-// query; d < 0 disables the widening entirely (the pre-#252 barrier).
+// query; d < 0 disables the widening entirely (the pre-#252 barrier) on the
+// attach transport only. The pgx hot leg reads d < 0 as the exact anchor,
+// because its snapshot needs the widening (design.md §6.1.1), and the
+// hot-excluded form reads the strict set whatever d is.
 func WithFlushVisibilityGrace(d time.Duration) EngineOption {
 	return func(e *DBFederatedQueryEngine) {
 		if d < 0 {

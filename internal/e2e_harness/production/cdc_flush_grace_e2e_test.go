@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	forma "github.com/lychee-technology/forma"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
 )
 
@@ -172,73 +173,10 @@ func (p *pausingParquetSource) MissingIn(ctx context.Context, scanned []string) 
 // append, so it lands at-or-after the paused query's cutoff.
 func TestFlushGraceExactAnchorCoversInFlightFlush(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
 
 	runRacedQuery := func(t *testing.T, env *Env) int {
 		t.Helper()
-		// Installed before ANY event: seeding goes through the EntityManager,
-		// which assembles the engine on first use — a wrapper set later would
-		// be ignored. The wrapper only pauses the first Paths call, and
-		// neither writes nor flushes resolve paths, so that first call is
-		// exactly the raced query below.
-		pauser := newPausingParquetSource()
-		env.ParquetSourceWrap = func(src fedengine.ParquetSource) fedengine.ParquetSource {
-			pauser.inner = src
-			return pauser
-		}
-
-		wide := DefaultSchemaFixtures()[1] // e2e_wide
-		gen1 := buildOpenCreates(wide, 4)
-		mustApplyEvents(ctx, t, env, "seed generation 1", gen1...)
-		if _, err := env.RunFlushWith(ctx, FlushOverrides{}); err != nil {
-			t.Fatalf("first flush: %v", err)
-		}
-		gen2 := make([]*Event, 0, 4)
-		for i := 0; i < 4; i++ {
-			gen2 = append(gen2, CreateEvent(wide, map[string]any{
-				"title": fmt.Sprintf("raced-%02d", i),
-				"count": float64(500000 + i),
-			}))
-		}
-		mustApplyEvents(ctx, t, env, "seed generation 2", gen2...)
-
-		type outcome struct {
-			res *QueryResult
-			err error
-		}
-		qctx, cancel := context.WithTimeout(ctx, pausedFlushTimeout)
-		done := make(chan outcome, 1)
-		finished := make(chan struct{})
-		go func() {
-			defer close(finished)
-			res, err := env.Query(qctx, Query{Schema: wide, Limit: 10})
-			done <- outcome{res: res, err: err}
-		}()
-		t.Cleanup(func() {
-			pauser.Release()
-			cancel()
-			<-finished
-		})
-
-		select {
-		case <-pauser.Reached():
-		case out := <-done:
-			t.Fatalf("query finished before pausing at path resolution: err=%v", out.err)
-		}
-		// The query holds a path set WITHOUT generation 2's delta and a cutoff
-		// stamped before this flush: append + mark race the suspended query.
-		if _, err := env.RunFlushWith(ctx, FlushOverrides{}); err != nil {
-			t.Fatalf("racing flush: %v", err)
-		}
-		pauser.Release()
-		out := <-done
-		if out.err != nil {
-			t.Fatalf("query racing the flush: %v", out.err)
-		}
-		if !out.res.Plan.Routing.UseDuckDB {
-			t.Errorf("raced query did not route to duckdb: %+v", out.res.Plan.Routing)
-		}
-		return len(out.res.Records)
+		return len(runRacedFlushQuery(t, env, racedCreates).Records)
 	}
 
 	t.Run("ExactAnchorServesRacedRows", func(t *testing.T) {
@@ -252,9 +190,93 @@ func TestFlushGraceExactAnchorCoversInFlightFlush(t *testing.T) {
 	t.Run("DisabledWideningExposesRace", func(t *testing.T) {
 		t.Parallel()
 		env := NewEnv(t, SharedCluster(t))
+		// Pinned to attach: the pgx hot leg never disables the widening
+		// (design.md §6.1.1), so the race this probe exposes is the attach
+		// transport's (TestPgxHotLegRacedFlushWithWideningOff).
+		env.DuckCfg.HotLegTransport = forma.HotLegTransportAttach
 		env.DuckCfg.FlushVisibilityGraceMs = -1
 		if got := runRacedQuery(t, env); got != 4 {
 			t.Errorf("disabled-widening raced query saw %d rows, want 4 (the uncovered race)", got)
 		}
 	})
+}
+
+// racedCreates is the raced generation of TestFlushGraceExactAnchorCovers-
+// InFlightFlush: four new rows, created after the first flush.
+func racedCreates(wide SchemaRef, _ []*Event) []*Event {
+	gen2 := make([]*Event, 0, 4)
+	for i := 0; i < 4; i++ {
+		gen2 = append(gen2, CreateEvent(wide, map[string]any{
+			"title": fmt.Sprintf("raced-%02d", i),
+			"count": float64(500000 + i),
+		}))
+	}
+	return gen2
+}
+
+// runRacedFlushQuery seeds four rows and flushes them, applies the second
+// generation raced(gen1), then queries with a flush racing the query: the
+// query stamps its cutoff and resolves its parquet path set, THEN a full
+// flush appends and marks the second generation, which the resolved set does
+// not list, then the query reads the dirty set and scans. It returns the
+// query's first page of ten rows.
+func runRacedFlushQuery(t *testing.T, env *Env, raced func(SchemaRef, []*Event) []*Event) *QueryResult {
+	t.Helper()
+	ctx := context.Background()
+	// Installed before ANY event: seeding goes through the EntityManager,
+	// which assembles the engine on first use — a wrapper set later would
+	// be ignored. The wrapper only pauses the first Paths call, and
+	// neither writes nor flushes resolve paths, so that first call is
+	// exactly the raced query below.
+	pauser := newPausingParquetSource()
+	env.ParquetSourceWrap = func(src fedengine.ParquetSource) fedengine.ParquetSource {
+		pauser.inner = src
+		return pauser
+	}
+
+	wide := DefaultSchemaFixtures()[1] // e2e_wide
+	gen1 := buildOpenCreates(wide, 4)
+	mustApplyEvents(ctx, t, env, "seed generation 1", gen1...)
+	if _, err := env.RunFlushWith(ctx, FlushOverrides{}); err != nil {
+		t.Fatalf("first flush: %v", err)
+	}
+	mustApplyEvents(ctx, t, env, "seed generation 2", raced(wide, gen1)...)
+
+	type outcome struct {
+		res *QueryResult
+		err error
+	}
+	qctx, cancel := context.WithTimeout(ctx, pausedFlushTimeout)
+	done := make(chan outcome, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		res, err := env.Query(qctx, Query{Schema: wide, Limit: 10})
+		done <- outcome{res: res, err: err}
+	}()
+	t.Cleanup(func() {
+		pauser.Release()
+		cancel()
+		<-finished
+	})
+
+	select {
+	case <-pauser.Reached():
+	case out := <-done:
+		t.Fatalf("query finished before pausing at path resolution: err=%v", out.err)
+	}
+	// The query holds a path set WITHOUT generation 2's delta and a cutoff
+	// stamped before this flush: append + mark race the suspended query.
+	if _, err := env.RunFlushWith(ctx, FlushOverrides{}); err != nil {
+		t.Fatalf("racing flush: %v", err)
+	}
+	pauser.Release()
+	out := <-done
+	if out.err != nil {
+		t.Fatalf("query racing the flush: %v", out.err)
+	}
+	if !out.res.Plan.Routing.UseDuckDB {
+		t.Errorf("raced query did not route to duckdb: %+v", out.res.Plan.Routing)
+	}
+	return out.res
 }

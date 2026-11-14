@@ -87,6 +87,9 @@ type DBFederatedQueryEngine struct {
 	// from the embedder's Config.Metrics.Emitter. Nil emits nothing; per
 	// engine instance, never process-global.
 	metrics *telemetry.Sink
+	// hotLeg opens the snapshot of a pgx pass (WithPgxHotLeg); nil when the
+	// engine was built without one, which fails a pgx pass as misconfigured.
+	hotLeg hotLegSnapshots
 	// now is the clock behind every stage timing the DuckDB path reports
 	// (execution-plan Timings and the fed_query_latency_histogram stages).
 	// time.Now in production; tests substitute a fake to assert exact stage
@@ -141,6 +144,7 @@ func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher 
 	for _, opt := range opts {
 		opt(e)
 	}
+	e.logNegativeGraceOnPgx()
 	return e
 }
 
@@ -269,7 +273,10 @@ func (e *DBFederatedQueryEngine) queryDuckDBRouted(ctx context.Context, tables m
 	// beyond the last match returns zero rows and the count is unreadable —
 	// totalRecords would misreport 0 while matches exist (#181). Recount with
 	// offset 0 (cannot recurse); at offset 0 an empty result is a genuine 0.
-	if len(records) == 0 && fq.Offset > 0 {
+	// A pgx pass counts its matches exactly whatever the page holds: it
+	// recounts the parquet leg itself when the page's window carried no
+	// count, in the pass's own snapshot (pgxPass.parquetLeg).
+	if len(records) == 0 && fq.Offset > 0 && !e.cfg.HotLegTransport.IsPgx() {
 		countTotal, cerr := e.computeFederatedCount(ctx, tables, fq)
 		if cerr != nil {
 			// The recount is a DuckDB query like the page fetch above, so it

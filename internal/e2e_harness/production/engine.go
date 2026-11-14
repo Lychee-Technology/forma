@@ -24,7 +24,22 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 	if e.engine != nil {
 		return e.engine
 	}
+	e.engine = e.assembleEngine(e.DuckCfg)
+	return e.engine
+}
 
+// EngineWithTransport assembles a fresh engine like Engine's, over the same
+// pool, DuckDB client, parquet source and breaker, whose hot leg uses
+// transport (#856). It is not memoized: a test comparing the two transports
+// on one Env's state builds it once and queries it with QueryOn.
+func (e *Env) EngineWithTransport(transport forma.HotLegTransport) *fedengine.DBFederatedQueryEngine {
+	cfg := e.DuckCfg
+	cfg.HotLegTransport = transport
+	return e.assembleEngine(cfg)
+}
+
+// assembleEngine builds the Env's engine over cfg.
+func (e *Env) assembleEngine(cfg forma.DuckDBConfig) *fedengine.DBFederatedQueryEngine {
 	// One plan cache per engine assembly, shared between the repository and
 	// the engine exactly as factory.newRepositoryAndEngine pairs them
 	// (#142/#345). Building it here rather than on the Env ties its lifetime
@@ -47,6 +62,11 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 		fedengine.WithPlanCache(planCache),
 		fedengine.WithMetricEmitter(e.opts.metricEmitter),
 	}
+	var hotLeg fedengine.HotLegReader = repo
+	if e.HotLegReaderWrap != nil {
+		hotLeg = e.HotLegReaderWrap(hotLeg)
+	}
+	opts = append(opts, fedengine.WithPgxHotLeg(e.Pool, hotLeg))
 	if src := e.parquetSource(); src != nil {
 		if e.ParquetSourceWrap != nil {
 			src = e.ParquetSourceWrap(src)
@@ -57,17 +77,16 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 	if e.DirtyIDFetcherWrap != nil {
 		dirty = e.DirtyIDFetcherWrap(dirty)
 	}
-	e.engine = fedengine.NewDBFederatedQueryEngine(
+	return fedengine.NewDBFederatedQueryEngine(
 		repo,
 		dirty,
 		fedengine.NewDuckDBClientQueryExecutor(e.Duck),
 		e.breaker,
-		e.DuckCfg,
+		cfg,
 		e.Metadata,
 		fedengine.DuckDBPostgresConnStringFromPool(e.Pool),
 		opts...,
 	)
-	return e.engine
 }
 
 // Breaker returns the circuit breaker the Env's engine admits queries

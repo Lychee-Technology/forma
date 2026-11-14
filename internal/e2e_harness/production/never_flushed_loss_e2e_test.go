@@ -178,6 +178,12 @@ func runFirstFlushRace(ctx context.Context, t *testing.T, env *Env, publish func
 		racer.DirtyIDFetcher = f
 		return racer
 	}
+	// The pgx hot leg reads the parquet history in its snapshot, not through
+	// the fetcher (#856): there the writer runs once the snapshot has cleared
+	// the schema and read its hot keys, before the recheck after the pass.
+	env.HotLegReaderWrap = func(inner fedengine.HotLegReader) fedengine.HotLegReader {
+		return &hookedHotLegReader{HotLegReader: inner, hook: racer.race}
+	}
 	if err := env.ApplyEvents(ctx, env.GenerateScript(ScriptSpec{Schema: wide, Creates: 3})...); err != nil {
 		t.Fatalf("apply events: %v", err)
 	}
@@ -213,10 +219,18 @@ type publishAfterEmptyScanCheck struct {
 
 func (r *publishAfterEmptyScanCheck) HasParquetHistory(ctx context.Context, tables model.StorageTables, schemaID int16) (bool, error) {
 	found, err := r.DirtyIDFetcher.HasParquetHistory(ctx, tables, schemaID)
-	if err != nil || found || r.ran {
+	if err != nil || found {
 		return found, err
+	}
+	r.race(ctx)
+	return found, nil
+}
+
+// race runs publish the first time it is called.
+func (r *publishAfterEmptyScanCheck) race(ctx context.Context) {
+	if r.ran {
+		return
 	}
 	r.ran = true
 	r.err = r.publish(ctx)
-	return found, nil
 }

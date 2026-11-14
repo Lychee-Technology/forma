@@ -110,6 +110,7 @@ func runRFC3339NonDateAllTiers(ctx context.Context, t *testing.T, env *Env, with
 func TestBoundRFC3339NonDateStringNoEAVAllTiers(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339Props, rfc3339Attrs)))
+	pinAttachHotLeg(env) // a non-date image is outside the query contract (#763); the hot phase pins the attach hot leg's NULL read, while the pgx hot leg filters it as the PostgreSQL route does
 	runRFC3339NonDateAllTiers(ctx, t, env, false)
 }
 
@@ -119,5 +120,6 @@ func TestBoundRFC3339NonDateStringNoEAVAllTiers(t *testing.T) {
 func TestBoundRFC3339NonDateStringEAVJoinedAllTiers(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339MixedProps, rfc3339MixedAttrs)))
+	pinAttachHotLeg(env) // a non-date image is outside the query contract (#763); the hot phase pins the attach hot leg's NULL read, while the pgx hot leg filters it as the PostgreSQL route does
 	runRFC3339NonDateAllTiers(ctx, t, env, true)
 }

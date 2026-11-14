@@ -269,6 +269,9 @@ func newRepositoryAndEngine(
 		federated.WithPlanCache(planCache),
 		federated.WithLogger(zap.L()),
 		federated.WithMetricEmitter(cfg.Metrics.Emitter),
+		// The pgx hot leg's snapshot and reads (#856); inert unless
+		// cfg.DuckDB.HotLegTransport selects pgx.
+		federated.WithPgxHotLeg(pool, repository),
 	}
 	// Append only a real source, so the manifest-off path stays byte-identical
 	// to the pre-#250 engine construction.

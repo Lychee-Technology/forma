@@ -166,6 +166,38 @@ func TestHotKeysQueryReadsTheDirtyWindow(t *testing.T) {
 	})
 }
 
+// A row whose newest entry in the window is a tombstone is not a hot key,
+// even where entity_main still holds it, as the attach path's dedup and
+// visibility filter drop it (#856). A tie on changed_at goes to the delete.
+// A tombstone older than the row's newest entry, or outside the window,
+// leaves the row hot.
+func TestHotKeysQueryDropsARowWhoseNewestEntryIsATombstone(t *testing.T) {
+	f := newDSLFixture(t, true)
+	logTombstone := func(rowID uuid.UUID, flushedAt, changedAt int64) {
+		t.Helper()
+		_, err := f.pool.Exec(f.ctx, fmt.Sprintf(
+			"INSERT INTO %s (schema_id, row_id, flushed_at, changed_at, deleted_at) VALUES ($1, $2, $3, $4, $4)",
+			sanitizeIdentifier(f.tables.ChangeLog)), dslSchemaID, rowID, flushedAt, changedAt)
+		require.NoError(t, err)
+	}
+	deletedLast := f.seed(t, map[string]any{"text_01": "x"})
+	f.logChange(t, deletedLast, 5, 3)
+	logTombstone(deletedLast, 0, 10)
+	tied := f.seed(t, map[string]any{"text_01": "x"})
+	f.logChange(t, tied, 0, 10)
+	logTombstone(tied, 50, 10)
+	recreated := f.seed(t, map[string]any{"text_01": "x"})
+	logTombstone(recreated, 40, 5)
+	f.logChange(t, recreated, 0, 9)
+	flushedTombstone := f.seed(t, map[string]any{"text_01": "x"})
+	f.logChange(t, flushedTombstone, 0, 7)
+	logTombstone(flushedTombstone, 20, 8)
+
+	require.Equal(t, sortedIDs(recreated, flushedTombstone), f.hotKeyIDs(t, nil, 30),
+		"the tombstone marked below the cutoff is outside the window")
+	require.Equal(t, sortedIDs(recreated), f.hotKeyIDs(t, nil, 0))
+}
+
 // Each sort key derives from the stored value as the export will hold it:
 // system columns, bound columns through their encodings, EAV-only attributes
 // through the #785 double decode and the export's MAX over their rows.

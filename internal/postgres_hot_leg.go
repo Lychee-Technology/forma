@@ -42,8 +42,12 @@ const (
 // range of the (schema_id, flushed_at) index init-db builds; a row's ver_ts
 // is the changed_at of its newest entry there, as the attach path's
 // pg_source ranks it. The join keeps only live rows, since a delete removes
-// the entity_main row. There is no ORDER BY and no LIMIT: Go sorts the keys,
-// and the dirty set bounds them (design.md §6.1.1, Ordering parity).
+// the entity_main row. A row whose newest entry in the window is a tombstone
+// is not served either, even where entity_main still holds it (a state only
+// direct SQL can plant): the attach path's dedup ranks that tombstone first,
+// ties on changed_at going to the delete, and its visibility filter drops
+// it. There is no ORDER BY and no LIMIT: Go sorts the keys, and the dirty
+// set bounds them (design.md §6.1.1, Ordering parity).
 //
 // %[1]s change_log, %[2]s entity_main, %[3]s the sort columns' projections,
 // %[4]s the condition over the alias m.
@@ -59,7 +63,13 @@ const hotKeysSQL = `WITH hot_window AS (
 SELECT m.ltbase_row_id, w.ver_ts%[3]s
 FROM hot_window w
 JOIN %[2]s m ON m.ltbase_schema_id = $1 AND m.ltbase_row_id = w.row_id
-WHERE (%[4]s)`
+WHERE NOT EXISTS (
+    SELECT 1 FROM %[1]s t
+    WHERE t.schema_id = $1 AND t.row_id = w.row_id AND t.changed_at = w.ver_ts
+      AND COALESCE(t.deleted_at, 0) <> 0
+      AND (t.flushed_at = 0 OR t.flushed_at >= $2)
+)
+AND (%[4]s)`
 
 // hotKeyColumn says where one sort column's stored value is read and how its
 // key derives from it.

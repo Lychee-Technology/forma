@@ -176,6 +176,7 @@ func seenOf(t *testing.T, res *forma.QueryResult, rowID uuid.UUID) time.Time {
 // accident.
 func TestUnboundDateHotImagePast2p53Residual(t *testing.T) {
 	env := NewEnv(t, SharedCluster(t))
+	pinAttachHotLeg(env) // the federated half pins the attach hot leg's narrowed read; the pgx hot leg reads the row through the OLTP reader, which refuses it (design.md §6.1.1, What a hot row reads as)
 	ctx := context.Background()
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
 

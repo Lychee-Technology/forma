@@ -67,6 +67,7 @@ func newBenchmarkQueryStack(ctx context.Context, pool *pgxpool.Pool, h *federate
 		metadata,
 		fedengine.DuckDBPostgresConnStringFromPool(pool),
 		fedengine.WithPlanCache(planCache),
+		fedengine.WithPgxHotLeg(pool, repo),
 	)
 	return &benchmarkQueryStack{
 		schemaTable: schemaTable,

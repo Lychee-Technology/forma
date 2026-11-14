@@ -97,6 +97,7 @@ func CompileParquetOnlyQuery(params map[string]any, q *model.FederatedAttributeQ
 	delete(m, "KEYSET_ARGS")
 	hasKeyset := q.KeysetCursor.IsActive()
 	m["ORDER_BY"] = parquetOnlyOrderBy(q)
+	m["SORT_KEY_SELECT"] = parquetOnlySortKeySelect(q)
 
 	sql, tplArgs, err := RenderSQLTemplate(ParquetOnlyQueryTemplateDuckDB, m)
 	if err != nil {
@@ -154,16 +155,41 @@ func BuildParquetOnlyQuery(params map[string]any, q *model.FederatedAttributeQue
 // directions, and DuckDB's default_null_order setting could otherwise move
 // the parquet leg's NULLs without changing the statement.
 func parquetOnlyOrderBy(q *model.FederatedAttributeQuery) string {
-	var terms []string
-	if q.KeysetCursor.IsActive() {
-		terms = keysetOrderTerms(q.KeysetCursor)
-	} else {
-		terms = nonKeysetOrderTerms(q)
-	}
+	terms := parquetOnlyOrderTerms(q)
 	for i, term := range terms {
 		terms[i] = term + " NULLS LAST"
 	}
 	return strings.Join(terms, ", ")
+}
+
+// SortKeyColumn names the column that carries the i-th key of the page's
+// order in the parquet-only result, after current_page. The keys come in the
+// order of the ORDER BY terms, so the i-th is the i-th column of the Go order
+// (sortkey.PageOrder) built from the same request.
+func SortKeyColumn(i int) string { return fmt.Sprintf("forma_sort_key_%d", i) }
+
+// parquetOnlySortKeySelect projects each ORDER BY term's expression, without
+// its direction, as SortKeyColumn(i). The merge compares these values with
+// the hot keys, so they are the exact expressions the statement orders by:
+// COALESCE(deleted_ts, 0) included.
+func parquetOnlySortKeySelect(q *model.FederatedAttributeQuery) string {
+	terms := parquetOnlyOrderTerms(q)
+	cols := make([]string, len(terms))
+	for i, term := range terms {
+		expr := strings.TrimSuffix(strings.TrimSuffix(term, " ASC"), " DESC")
+		cols[i] = fmt.Sprintf("%s AS %s", expr, SortKeyColumn(i))
+	}
+	return strings.Join(cols, ",\n  ")
+}
+
+// parquetOnlyOrderTerms is the page's order, "<expression> <dir>" per term:
+// buildKeysetOrderBy's under an active cursor, buildNonKeysetOrderBy's
+// otherwise.
+func parquetOnlyOrderTerms(q *model.FederatedAttributeQuery) []string {
+	if q.KeysetCursor.IsActive() {
+		return keysetOrderTerms(q.KeysetCursor)
+	}
+	return nonKeysetOrderTerms(q)
 }
 
 // requireParquetOnlyProjection fails a render missing a projection param the

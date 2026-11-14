@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	forma "github.com/lychee-technology/forma"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/sqlgen"
@@ -58,6 +59,10 @@ func TestHotLegLatencyBaseline(t *testing.T) {
 	ctx := context.Background()
 	// The factory's DuckDB defaults, not the harness's CI-sized ones.
 	env := NewEnv(t, SharedCluster(t), WithDuckMemoryMB(4096), WithDuckThreads(4))
+	// The engine pass and the replays measure the attach path, whatever
+	// FORMA_E2E_HOT_LEG_TRANSPORT selects; the pgx pass is timed beside it on
+	// an engine of its own (timePgxEngine).
+	env.DuckCfg.HotLegTransport = forma.HotLegTransportAttach
 	wide := DefaultSchemaFixtures()[1]
 	// init-db's change_log index (#850), which the engine's dirty-set read uses.
 	env.ExecSQL(ctx, `CREATE INDEX IF NOT EXISTS change_log_flushed_idx ON change_log (schema_id, flushed_at) INCLUDE (row_id, changed_at)`)
@@ -136,9 +141,12 @@ type baselineRow struct {
 	parquetObjects                 int
 	parquetMB                      float64
 	engine, engineFetch            time.Duration
-	full, hotOnly                  time.Duration
-	fullProfile, hotProfile        baselineProfile
-	parquetOnly                    parquetOnlyTiming
+	// pgxEngine is the engine pass under the pgx hot leg (#856), on the
+	// same Env, DuckDB instance and state.
+	pgxEngine               time.Duration
+	full, hotOnly           time.Duration
+	fullProfile, hotProfile baselineProfile
+	parquetOnly             parquetOnlyTiming
 }
 
 // measureBaselineSize measures every shape at the Env's current size: every
@@ -171,6 +179,10 @@ func measureBaselineSize(ctx context.Context, t *testing.T, env *Env, schema Sch
 		rows[i].shape = shape.name
 		firsts[i] = timeBaselineEngine(ctx, t, env, shape.query(title), &rows[i])
 	}
+	pgx := env.EngineWithTransport(forma.HotLegTransportPgx)
+	for i, shape := range shapes {
+		timePgxEngine(ctx, t, env, pgx, shape.query(title), firsts[i], &rows[i])
+	}
 	r := newBaselineReplayer(ctx, t, env)
 	defer r.close(ctx, t, env)
 	for i := range shapes {
@@ -196,6 +208,31 @@ func timeBaselineEngine(ctx context.Context, t *testing.T, env *Env, q Query, ro
 	}
 	row.engine, row.engineFetch = median(engine), median(fetch)
 	return first
+}
+
+// timePgxEngine runs the same query on the pgx engine once as a warm-up,
+// requires the attach pass's page and total, then times baselineReps passes.
+func timePgxEngine(ctx context.Context, t *testing.T, env *Env, engine *fedengine.DBFederatedQueryEngine, q Query, attach *QueryResult, row *baselineRow) {
+	t.Helper()
+	run := func() *QueryResult {
+		res, err := env.QueryOn(ctx, engine, q)
+		if err != nil {
+			t.Fatalf("pgx engine query: %v", err)
+		}
+		return res
+	}
+	first := run()
+	if first.Total != attach.Total || !slices.Equal(pageRowIDs(first), pageRowIDs(attach)) {
+		t.Fatalf("%s: the pgx pass answers %d rows of %d, the attach pass %d of %d, or another page", row.shape,
+			len(first.Records), first.Total, len(attach.Records), attach.Total)
+	}
+	var passes []time.Duration
+	for range baselineReps(t) {
+		start := time.Now()
+		run()
+		passes = append(passes, time.Since(start))
+	}
+	row.pgxEngine = median(passes)
 }
 
 // replayBaselineShape warms up and times baselineReps alternating rounds of
@@ -427,17 +464,17 @@ func drainReplay(rows *sql.Rows) (int64, error) {
 // staging, and the parquet-only statement.
 func formatBaseline(rows []baselineRow) string {
 	var b strings.Builder
-	b.WriteString("| entity_main | eav_data | change_log | parquet | shape | engine pass | engine DuckDB fetch | full replay | hot-only replay | flushed rows' cost | share | rows from PostgreSQL, full | rows from PostgreSQL, hot-only | rows from parquet | dirty IDs | dirty-set read (pgx) | staging | parquet-only statement |\n")
-	b.WriteString("| ---: | ---: | ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+	b.WriteString("| entity_main | eav_data | change_log | parquet | shape | engine pass | engine pass (pgx) | engine DuckDB fetch | full replay | hot-only replay | flushed rows' cost | share | rows from PostgreSQL, full | rows from PostgreSQL, hot-only | rows from parquet | dirty IDs | dirty-set read (pgx) | staging | parquet-only statement |\n")
+	b.WriteString("| ---: | ---: | ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 	for _, r := range rows {
 		share := 0.0
 		if r.full > 0 {
 			share = 100 * float64(r.full-r.hotOnly) / float64(r.full)
 		}
 		po := r.parquetOnly
-		fmt.Fprintf(&b, "| %d | %d | %d | %d (%.1f MB) | %s | %s | %s | %s | %s | %s | %.0f%% | %d | %d | %d | %d | %s | %s | %s |\n",
+		fmt.Fprintf(&b, "| %d | %d | %d | %d (%.1f MB) | %s | %s | %s | %s | %s | %s | %s | %.0f%% | %d | %d | %d | %d | %s | %s | %s |\n",
 			r.entityMain, r.eavData, r.changeLog, r.parquetObjects, r.parquetMB, r.shape,
-			ms(r.engine), ms(r.engineFetch), ms(r.full), ms(r.hotOnly), ms(r.full-r.hotOnly), share,
+			ms(r.engine), ms(r.pgxEngine), ms(r.engineFetch), ms(r.full), ms(r.hotOnly), ms(r.full-r.hotOnly), share,
 			r.fullProfile.postgresRows, r.hotProfile.postgresRows, r.fullProfile.parquetRows,
 			po.dirtyIDs, ms(po.snapshotRead), ms(po.stage), ms(po.query))
 	}

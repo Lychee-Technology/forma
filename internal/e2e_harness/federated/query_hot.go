@@ -172,7 +172,7 @@ func (h *FederatedTestHarness) hotTierEAVMappingForSchema(schemaID int16) hotTie
 				"'' as region,\n\t\t\t" +
 				"0 as tradeType,\n\t\t\t" +
 				"0 as tradeTime",
-			nameExpr: "COALESCE(hot_vals.name, hot_vals.symbol, '')",
+			nameExpr: "COALESCE(hot_vals.name, hot_vals.symbol, em.text_01, '')",
 		}
 	default:
 		return hotTierEAVMapping{}

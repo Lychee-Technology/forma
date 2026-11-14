@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/e2e_harness"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemaledger/ledgertest"
@@ -53,6 +54,11 @@ type Env struct {
 	// between the #720 empty-scan check and the DuckDB read. Same
 	// mutate-before-first-use pattern; nil leaves the reader untouched.
 	DirtyIDFetcherWrap func(fedengine.DirtyIDFetcher) fedengine.DirtyIDFetcher
+	// HotLegReaderWrap, when set before the Env's first query, decorates the
+	// pgx hot leg's reader of the hot keys and the page's hot rows — the seam
+	// for running a writer inside a pgx pass, after its snapshot is taken and
+	// before DuckDB scans (#856). Same mutate-before-first-use pattern.
+	HotLegReaderWrap func(fedengine.HotLegReader) fedengine.HotLegReader
 
 	logger *zap.Logger
 	opts   envOptions
@@ -290,6 +296,11 @@ func (e *Env) startDuckDB() error {
 		AllowCallerParquetPaths: true,
 	}
 	e.DuckCfg.Routing.Strategy = e.opts.routing
+	transport, err := e2e_harness.HotLegTransportFromEnv()
+	if err != nil {
+		return err
+	}
+	e.DuckCfg.HotLegTransport = transport
 
 	// The harness's engine attaches PostgreSQL, like the factory's (#752).
 	duck, err := fedengine.NewFederatedDuckDBClientContext(context.Background(), e.DuckCfg)

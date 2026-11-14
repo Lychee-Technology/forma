@@ -46,6 +46,7 @@ func TestHotLegCopiesWholeTables(t *testing.T) {
 		t.Skip("needs the harness's PostgreSQL container to read its statement log")
 	}
 	env := NewEnv(t, cluster)
+	pinAttachHotLeg(env) // the copy this pins is the attach transport's; the pgx hot leg copies nothing
 	simple := DefaultSchemaFixtures()[0]
 	manager := env.EntityManager()
 

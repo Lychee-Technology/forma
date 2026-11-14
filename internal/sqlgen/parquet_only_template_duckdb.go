@@ -31,7 +31,7 @@ const DropStagedDirtyIDsSQL = "DROP TABLE IF EXISTS " + stagedDirtyIDsTableRef
 // connection string. Go serves the hot rows and merges, so this statement
 // answers only the parquet rows of the page.
 //
-// It differs from today's template in four ways, each with a reason:
+// It differs from today's template in five ways, each with a reason:
 //
 //   - dirty_ids is the staged temp table (StagedDirtyIDsTable), not a
 //     change_log scan. The Go side stages whichever set the tier form needs
@@ -50,6 +50,9 @@ const DropStagedDirtyIDsSQL = "DROP TABLE IF EXISTS " + stagedDirtyIDsTableRef
 //     the columns stay so the result keeps the positional layout
 //     duckDBScanBuffers scans. total_records stays: it is the parquet
 //     count the merge adds h to.
+//   - The page order's keys follow the layout, one column per ORDER BY
+//     term (SortKeyColumn), so Go can place each parquet row among the hot
+//     keys without re-deriving a key from the record.
 //
 // The dedup, the filter on the dedup winner (#173), the keyset predicate
 // after dedup (#212) and the scan source (#189/#255/#256/#371) are today's,
@@ -91,7 +94,8 @@ SELECT
   {{.OuterSelect}},
   COUNT(*) OVER() AS total_records,
   NULL::BIGINT AS total_pages,
-  NULL::BIGINT AS current_page
+  NULL::BIGINT AS current_page,
+  {{.SORT_KEY_SELECT}}
 FROM visible
 ORDER BY {{.ORDER_BY}}
 {{if .HAS_KEYSET}}LIMIT ?{{else}}LIMIT ? OFFSET ?{{end}};

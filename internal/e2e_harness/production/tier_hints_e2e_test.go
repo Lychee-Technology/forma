@@ -30,6 +30,7 @@ func TestTierHintPruningMatrix(t *testing.T) {
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
 	ctx := context.Background()
 	env := NewEnv(t, cluster)
+	pinAttachHotLeg(env) // the rendered SQL and scans it inspects are the attach transport's (pg_source, the attached catalog)
 
 	seed := seedTierMatrix(ctx, t, env, wide)
 
@@ -264,6 +265,7 @@ func TestTierHintRoutingAndAnchor(t *testing.T) {
 	wide := DefaultSchemaFixtures()[1]
 	ctx := context.Background()
 	env := NewEnv(t, cluster)
+	pinAttachHotLeg(env) // the rendered SQL and scans it inspects are the attach transport's (pg_source, the attached catalog)
 
 	creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 3})
 	if err := env.ApplyEvents(ctx, creates...); err != nil {
