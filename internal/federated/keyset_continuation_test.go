@@ -39,7 +39,7 @@ func TestEverySeamRefusesACursorThatReplacesTheRequestOrder(t *testing.T) {
 
 	engine := NewDBFederatedQueryEngine(
 		&fakePostgresFederatedSource{page: &model.PersistentRecordPage{}},
-		nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+		nil, nil, forma.DuckDBConfig{Enabled: true}, nil)
 	ctx := context.Background()
 
 	_, err := engine.Query(ctx, tables, newQuery(), &model.FederatedQueryOptions{})
@@ -101,7 +101,7 @@ func TestEverySeamRefusesABoundaryNoRowCanHold(t *testing.T) {
 			}
 			want := `keyset cursor value 1 (for column "row_id") is not a value a row can hold: ` + tc.want
 			source := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{}}
-			engine := NewDBFederatedQueryEngine(source, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+			engine := NewDBFederatedQueryEngine(source, nil, nil, forma.DuckDBConfig{Enabled: true}, nil)
 			ctx := context.Background()
 
 			_, err := engine.Query(ctx, tables, newQuery(), &model.FederatedQueryOptions{})

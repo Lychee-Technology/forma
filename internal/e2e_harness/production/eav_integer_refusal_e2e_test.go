@@ -108,7 +108,6 @@ func readEAVIntegerState(ctx context.Context, t *testing.T, env *Env, schemaID i
 // that value back.
 func TestEAVIntegerImageReadRefusalAndRepair(t *testing.T) {
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, eavIntegerProps, eavIntegerAttrs)))
-	pinAttachHotLeg(env) // the federated read it pins narrows the hot image as the attach hot leg projects it; the pgx hot leg refuses it, as the OLTP read does (design.md §6.1.1, What a hot row reads as)
 	ctx := context.Background()
 	schema := DefaultSchemaFixtures()[0]
 	srv := httptest.NewServer(httpapi.NewServer(env.EntityManager(), httpapi.Options{}).Handler())
@@ -157,11 +156,10 @@ func TestEAVIntegerImageReadRefusalAndRepair(t *testing.T) {
 
 // assertEAVIntegerReadRefused requires the OLTP read and the HTTP GET to
 // refuse the row naming the row, the attribute, value_numeric and the
-// image. The federated read refuses it too, reading the same value at
-// storage width DOUBLE (#384), with two #621 gaps: the DuckDB hot leg
-// narrows the NUMERIC to DOUBLE before Go sees it, so a fraction float64
-// cannot keep reads as the whole 1001, and a non-finite DOUBLE breaks the
-// attributes JSON, failing the query without naming the row.
+// image. The row is hot, so the federated read reads it through the OLTP
+// reader (design.md §6.1, What a hot row reads as) and must refuse the
+// page as the PostgreSQL route refuses the same request, with the same
+// refusal.
 func assertEAVIntegerReadRefused(t *testing.T, ctx context.Context, env *Env, baseURL string, tc eavIntegerCase, rowID uuid.UUID, label string) {
 	t.Helper()
 	schema := DefaultSchemaFixtures()[0]
@@ -175,34 +173,9 @@ func assertEAVIntegerReadRefused(t *testing.T, ctx context.Context, env *Env, ba
 		t.Fatalf("%s: GET status %d body %s, want a server error that does not publish the image", label, status, body)
 	}
 
-	page, err := federatedWideQuery(ctx, env, schema)
-	if tc.stored == "1001.0000000000000001" {
-		if err != nil || !federatedRowHolds(page, rowID, tc.attr, int32(1001)) {
-			t.Fatalf("%s: federated read = %v, %v; want the narrowed 1001", label, page, err)
-		}
-		return
-	}
-	if strings.Contains(tc.stored, "N") || strings.Contains(tc.stored, "Inf") {
-		if err == nil {
-			t.Fatalf("%s: federated read answered %v, want an error", label, page)
-		}
-		return
-	}
-	if err == nil || !strings.Contains(err.Error(), "does not fit declared type "+string(tc.declared)) || !strings.Contains(err.Error(), rowID.String()) {
-		t.Fatalf("%s: federated read error = %v, want the refusal", label, err)
-	}
-}
-
-func federatedRowHolds(page *forma.QueryResult, rowID uuid.UUID, attr string, want any) bool {
-	if page == nil {
-		return false
-	}
-	for _, rec := range page.Data {
-		if rec.RowID == rowID {
-			return reflect.DeepEqual(rec.Attributes[attr], want)
-		}
-	}
-	return false
+	_, fedErr := federatedWideQuery(ctx, env, schema)
+	_, pgErr := postgresRouteQuery(ctx, env, schema)
+	requireSameRefusal(t, label+": the page", fedErr, pgErr, refusal, rowID.String())
 }
 
 func assertEAVIntegerRepaired(t *testing.T, ctx context.Context, env *Env, tc eavIntegerCase, rowID uuid.UUID, label string) {

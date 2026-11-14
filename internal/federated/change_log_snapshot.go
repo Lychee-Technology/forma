@@ -11,13 +11,11 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
-// The change_log reads of the pgx hot leg (design.md §6.1.1, plan step 1).
-// A pgx pass reads its dirty set, and when it needs one its parquet-history
-// answer, in one REPEATABLE READ READ ONLY snapshot. Later steps read the hot
-// keys and the page's hot rows in the same snapshot, so the reads below take
-// the transaction rather than opening their own. Nothing in the engine reads
-// through them yet: the attach transport keeps FetchDirtyRowIDs until the
-// pgx transport is wired behind DuckDBConfig.HotLegTransport (plan step 5).
+// The change_log reads of a federated pass (design.md §6.1). A pass reads
+// its dirty set, and when it needs one its parquet-history answer, in one
+// REPEATABLE READ READ ONLY snapshot, and reads the hot keys and the page's
+// hot rows in the same snapshot, so the reads below take the transaction
+// rather than opening their own.
 
 // DirtySetForm names the dirty set a federated pass reads, by its tier form
 // (design.md §5, HasHot).
@@ -26,12 +24,10 @@ type DirtySetForm int
 const (
 	// DirtySetHotExcluded is the strict set, flushed_at = 0. A pass whose
 	// preferred tiers leave out hot has no hot leg to serve a row the
-	// widening would discard, so it shadows only the unflushed rows, as
-	// today.
+	// widening would discard, so it shadows only the unflushed rows.
 	DirtySetHotExcluded DirtySetForm = iota + 1
 	// DirtySetHot is the widened set, flushed_at = 0 OR flushed_at >= the
-	// flush-grace cutoff (#252): the barrier of a pass with a hot leg, the
-	// set the template's dirty_ids reads in DuckDB today.
+	// flush-grace cutoff (#252): the barrier of a pass with a hot leg.
 	DirtySetHot
 )
 
@@ -52,10 +48,9 @@ type ChangeLogSnapshotRequest struct {
 	Form     DirtySetForm
 	// GraceCutoffMs is the flush-grace cutoff of the hot form: an entry
 	// marked at or after it counts as dirty. The hot-excluded form ignores
-	// it. sqlgen.FlushGraceCutoffDisabled reads no marked entry, the strict
-	// set; the pgx transport never passes it (design.md §6.1.1, *The
-	// widening is never disabled on this path*), but the reader does not
-	// police the engine's cutoff resolution.
+	// it. The engine never passes a cutoff later than the instant it
+	// resolved its parquet path set (design.md §6.1, *The widening is never
+	// disabled*), but the reader does not police the engine's resolution.
 	GraceCutoffMs int64
 	// ParquetHistory asks for HasParquetHistory from the same snapshot. Only
 	// the #720 empty-scan check needs it, and its entity_main anti-join is
@@ -81,8 +76,7 @@ func (r ChangeLogSnapshotRequest) validate() error {
 type ChangeLogSnapshot struct {
 	// DirtyIDs holds each dirty row ID once, in no particular order.
 	DirtyIDs []uuid.UUID
-	// HasParquetHistory is PostgresDirtyIDFetcher.HasParquetHistory's answer
-	// in the snapshot. It is false when the request did not ask for it.
+	// HasParquetHistory is queryParquetHistory's answer in the snapshot. It is false when the request did not ask for it.
 	HasParquetHistory bool
 }
 
@@ -158,7 +152,7 @@ func readChangeLogSnapshot(ctx context.Context, tx pgx.Tx, req ChangeLogSnapshot
 }
 
 // dirtySetQuery renders req's dirty set and its arguments. The hot-excluded
-// form is FetchDirtyRowIDs' query. The hot form reads the same set and the
+// form is strictDirtySetQuery. The hot form reads the same set and the
 // entries marked at or after the cutoff as two arms of a UNION, so that each
 // arm is one range of the (schema_id, flushed_at) index init-db builds, and
 // the UNION answers a row with entries in both arms once.

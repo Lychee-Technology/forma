@@ -79,8 +79,8 @@ func queryGuardEngineWith(t *testing.T, cfg forma.DuckDBConfig, duck *guardEngin
 	t.Helper()
 	restore := initTestDescriptors()
 	t.Cleanup(restore)
-	e := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-		cfg, testMetadataCacheSchema7(t), "host=x", WithParquetSource(&fakeParquetSource{paths: paths}))
+	e := NewDBFederatedQueryEngine(pg, duck, nil,
+		cfg, testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: paths}), withFakeHotLeg(nil))
 	return e.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, coldTierQuery(), opts)
 }
@@ -121,9 +121,8 @@ func TestCachedCorruptRefusalKeepsAnotherObjectsTypeRefusal(t *testing.T) {
 			duck := newGuardEngineDuck()
 			duck.offending = "1000.5"
 			pg := &fakePostgresFederatedSource{}
-			e := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-				hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x",
-				WithParquetSource(&fakeParquetSource{paths: []string{typeGuardHealthyPath, typeGuardOldPath, corruptPath}}))
+			e := NewDBFederatedQueryEngine(pg, duck, nil,
+				hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: []string{typeGuardHealthyPath, typeGuardOldPath, corruptPath}}), withFakeHotLeg(nil))
 			e.corruptPaths.Add([]string{corruptPath})
 
 			opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded}

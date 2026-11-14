@@ -101,7 +101,7 @@ func (h *TestHarness) RestartPostgres(ctx context.Context) error {
 // HaltPostgres stops the Postgres container in place (docker stop — the
 // container and its data survive) and closes the harness DB handle, leaving
 // the server really unreachable: queries through per-test pools and DuckDB's
-// postgres attachment fail with genuine network errors, the only fault
+// pgx hot leg fail with genuine network errors, the only fault
 // vector that exercises production connection-failure handling (#187).
 // Resume with ResumePostgres.
 func (h *TestHarness) HaltPostgres(ctx context.Context) error {

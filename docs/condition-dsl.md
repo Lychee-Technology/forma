@@ -240,11 +240,13 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
   `ESCAPE '\'`, since DuckDB has no default.
 - `not_in` renders as `(lhs IS NOT NULL AND lhs <> ALL(list))`. The explicit
   `IS NOT NULL` is load-bearing: `NULL <> ALL(empty)` is true.
-- On the federated route, `is_null` / `is_not_null` on a column-bound
-  attribute render into the hot leg's main-table clause, which DuckDB
-  evaluates (the hot leg pushes nothing into PostgreSQL, #631); `in` /
-  `not_in` are evaluated by DuckDB at the S3 semijoin and on the merged
-  result.
+- On the federated route, the hot leg evaluates every operator in
+  PostgreSQL, rendered as the Postgres route renders it
+  ([design.md §6.1](federated-query/design.md)). DuckDB evaluates the parquet
+  rows' condition, `in` / `not_in` included, at the S3 semijoin and on the
+  dedup winner. Until #858 DuckDB evaluated the hot rows too, `is_null` /
+  `is_not_null` on a column-bound attribute through the hot leg's main-table
+  clause.
 - A text range on PostgreSQL renders `<col> COLLATE "C" <op> $n`, on a text
   column of `entity_main` and on `eav_data.value_text`, so a `uuid` in `eav_data`
   takes it too. This holds for a query and for a write's condition. A btree
@@ -256,15 +258,15 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
   collation, since DuckDB compares `VARCHAR` by bytes.
 - An ordered comparison on a `uuid` attribute casts the column to `VARCHAR`
   on DuckDB. DuckDB compares `UUID` with `VARCHAR` only for equality, and the
-  attribute is `UUID` in a bound column's parquet but `VARCHAR` in the hot
-  leg and in `eav_data`.
+  attribute is `UUID` in a bound column's parquet but `VARCHAR` in an EAV-only
+  attribute's.
 
 ## Backends
 
 | Backend | Status |
 | --- | --- |
 | PostgreSQL | Verified: a real-PostgreSQL truth table over every storage form, with `NUMERIC` and `DOUBLE PRECISION` EAV values, and a `$now` test seeded from `SELECT now()`. Numeric and `starts_with`/`contains` operands are checked against exact arithmetic and Go string matching rather than against another route (`TestConditionOperandConformance_*`), over `smallint`, `integer`, `bigint` and `double` columns and both EAV value types. |
-| DuckDB (federated) | Verified: `in`, `not_in`, `is_null` and `is_not_null` return the same rows on the DuckDB route and the Postgres route across cold, warm and hot tiers (`TestConditionDSLOperatorParityAcrossTiers`). The DuckDB renders of numeric and `starts_with`/`contains` leaves run against an in-memory DuckDB with exact expected rows (`TestNumericOperand_DuckDBConformance`, `TestLikeOperand_DuckDBConformance`); the hot-tier pushdown runs there over native tables. `TestConditionOperandSemanticsAcrossRoutes` runs the same operands through the production harness on the Postgres route and on the DuckDB route over hot rows (the attached PostgreSQL catalog) and warm parquet, and `TestTextUUIDOperatorsAcrossRoutes` does the same for every comparison operator on column-bound and `eav_data` text and uuid attributes. `TestPgMainTextUUIDOrderMatchesTheLogicalClause` checks in DuckDB that the hot-tier pushdown of a text or uuid range selects exactly what the logical clause selects. `TestTextRangeByteOrderAcrossRoutes` runs mixed-case and non-ASCII text ranges, and uuid ranges, on both routes over hot, warm and cold rows under `en_US.utf8`, and `TestRangeOrderIgnoresTheColumnCollation` runs them on columns under an ICU collation that sorts letters before digits. `$now` is refused. |
+| DuckDB (federated) | Verified: `in`, `not_in`, `is_null` and `is_not_null` return the same rows on the DuckDB route and the Postgres route across cold, warm and hot tiers (`TestConditionDSLOperatorParityAcrossTiers`). The DuckDB renders of numeric and `starts_with`/`contains` leaves run against an in-memory DuckDB with exact expected rows (`TestNumericOperand_DuckDBConformance`, `TestLikeOperand_DuckDBConformance`); so do the renders of the main-table fragment, which has had no production consumer since #858. `TestConditionOperandSemanticsAcrossRoutes` runs the same operands through the production harness on the Postgres route and on the federated route over hot rows (read over pgx and filtered by PostgreSQL since #858) and warm parquet, and `TestTextUUIDOperatorsAcrossRoutes` does the same for every comparison operator on column-bound and `eav_data` text and uuid attributes. `TestPgMainTextUUIDOrderMatchesTheLogicalClause` checks in DuckDB that the main-table fragment of a text or uuid range selects exactly what the logical clause selects. `TestTierParitySuite` requires the federated route to match the Postgres route's rows for each condition-DSL case with every row hot, flushed and compacted. `TestTextRangeByteOrderAcrossRoutes` runs mixed-case and non-ASCII text ranges, and uuid ranges, on both routes over hot, warm and cold rows under `en_US.utf8`, and `TestRangeOrderIgnoresTheColumnCollation` runs them on columns under an ICU collation that sorts letters before digits. `$now` is refused. |
 | Aurora DSQL | DSQL: specified, not verified (#633). The PostgreSQL rendering uses array binds with `= ANY` / `<> ALL`, `now()`, `extract(epoch ...)`, `floor`, `mod`, `to_timestamp`, `to_char` and `COLLATE "C"`; none of it has run against a DSQL cluster. |
 
 ## Compatibility

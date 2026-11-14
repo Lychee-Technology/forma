@@ -17,26 +17,12 @@ type SchemaProjection struct {
 	//   row_id, created_at, ver_ts, deleted_ts, attr_col_1, attr_col_2, ...
 	S3SourceSelect string
 
-	// PGSourceSelect is the SELECT projection for the pg_source CTE, including
-	// COALESCE expressions for entity_main columns and EAV pivot expressions.
-	PGSourceSelect string
-
-	// PGGroupBy is the GROUP BY clause for the pg_source CTE.
-	PGGroupBy string
-
-	// EAVPivotSelect is the EAV subquery SELECT for the pg_source LEFT JOIN,
-	// containing MAX(CASE WHEN attr_id = X THEN value_Y END) AS attr_name lines.
-	EAVPivotSelect string
-
-	// EAVPivotAttrs is the comma-separated list of attr_ids for the EAV pivot WHERE.
-	EAVPivotAttrs string
-
 	// OuterSelect is the final outer SELECT that maps unified columns back to
 	// entity_main column descriptors.
 	OuterSelect string
 
-	// UnifiedColumnNames lists the canonical column names produced by both
-	// s3_source and pg_source (in order).
+	// UnifiedColumnNames lists the canonical column names s3_source produces
+	// (in order).
 	UnifiedColumnNames []string
 
 	// UnifiedColumnTypes maps column name to DuckDB type for CAST expressions.
@@ -56,18 +42,6 @@ type SchemaProjection struct {
 
 	// itemsTypes maps a list attribute's name to its effective element type.
 	itemsTypes map[string]forma.ValueType
-
-	// boundMainExprs maps a column-bound attribute's name to the DuckDB
-	// expression that reads its main column normalised to the unified column
-	// type, for the bindings whose stored image is not that type: bool
-	// (mainColBoolExpr), rfc3339 date/datetime (mainColRFC3339Expr) and a
-	// smallint/integer/bigint in a wider column (mainColIntegerExpr).
-	// Both schema-driven hot-leg projections — the EAV-joined one and
-	// BuildPGSelectNoEAV — read such a column through this map; absent means
-	// the raw column is the image. The benchmark projections (schema IDs
-	// 100-102) are hardcoded and read raw columns, which holds only while no
-	// benchmark binding needs one of these reads (BuildBenchmarkProjections).
-	boundMainExprs map[string]string
 }
 
 // attrProjectionInfo holds the projection-relevant metadata for one schema attribute.
@@ -94,7 +68,6 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 		AttrToMainColumn: make(map[string]string),
 		attrIDs:          make(map[string]int),
 		itemsTypes:       make(map[string]forma.ValueType),
-		boundMainExprs:   make(map[string]string),
 	}
 
 	attrs := make([]attrProjectionInfo, 0, len(cache))
@@ -105,9 +78,6 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 		if meta.ColumnBinding != nil {
 			ai.isColumn = true
 			sp.AttrToMainColumn[name] = string(meta.ColumnBinding.ColumnName)
-			if expr, ok := boundMainExpr(meta); ok {
-				sp.boundMainExprs[name] = expr
-			}
 		} else {
 			sp.EAVAttrs = append(sp.EAVAttrs, name)
 		}
@@ -139,12 +109,6 @@ func BuildSchemaProjection(schemaID int16, cache forma.SchemaAttributeCache) (*S
 	// Build S3 source projection
 	sp.buildS3Projection(sortedAttrNames)
 
-	// Build PG source projection
-	sp.buildPGProjection(attrs)
-
-	// Build EAV pivot
-	sp.buildEAVPivot(attrs)
-
 	// Build outer SELECT
 	sp.buildOuterSelect(schemaID, sortedAttrNames)
 
@@ -175,83 +139,6 @@ func (sp *SchemaProjection) buildS3Projection(sortedAttrs []string) {
 		parts = append(parts, ParquetAttrColumn(attr))
 	}
 	sp.S3SourceSelect = strings.Join(parts, ", ")
-}
-
-func (sp *SchemaProjection) buildPGProjection(attrs []attrProjectionInfo) {
-	// Build PG source projection and group-by columns
-	selectParts := make([]string, 0, 4+len(attrs))
-	groupParts := make([]string, 0, 4+len(attrs))
-
-	// System columns from PG
-	selectParts = append(selectParts,
-		"cl.row_id::VARCHAR AS row_id",
-		"m.ltbase_created_at AS created_at",
-		"cl.changed_at AS ver_ts",
-		"cl.deleted_at AS deleted_ts",
-	)
-	groupParts = append(groupParts,
-		"cl.row_id",
-		"m.ltbase_created_at",
-		"cl.changed_at",
-		"cl.deleted_at",
-	)
-
-	// hot_vals references are wrapped in ANY_VALUE(): pg_source groups by
-	// (row_id, timestamps, bound columns) and the hot_vals pivot joins 1:1
-	// per row, but DuckDB does not infer that functional dependency, so a
-	// bare hot_vals.<attr> is rejected as ungrouped. This mirrors the
-	// benchmark projection, which already aggregates the same way (#173).
-	sort.Slice(attrs, func(i, j int) bool { return attrs[i].name < attrs[j].name })
-	for _, a := range attrs {
-		unified := ParquetAttrColumn(a.name)
-		if a.isColumn {
-			colName := string(a.meta.ColumnBinding.ColumnName)
-			var expr string
-			if mainExpr, ok := sp.boundMainExprs[a.name]; ok {
-				// Normalise the main column so both sides of COALESCE are the
-				// same type: hot_vals.<attr> is already BOOLEAN / epoch-ms
-				// BIGINT / the declared integer type (the EAV pivot), and
-				// m.<col> is read at that type.
-				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), %s) AS %s",
-					unified, mainExpr, unified)
-			} else if a.meta.ValueType == forma.ValueTypeUUID {
-				// hot_vals pivots uuid attributes out of value_text (VARCHAR);
-				// the UUID main column must be cast explicitly because DuckDB
-				// refuses to mix VARCHAR and UUID inside COALESCE.
-				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), CAST(m.%s AS VARCHAR)) AS %s",
-					unified, colName, unified)
-			} else {
-				expr = fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), m.%s) AS %s",
-					unified, colName, unified)
-			}
-			selectParts = append(selectParts, expr)
-			groupParts = append(groupParts, "m."+colName)
-		} else {
-			expr := fmt.Sprintf("ANY_VALUE(hot_vals.%s) AS %s", unified, unified)
-			selectParts = append(selectParts, expr)
-		}
-	}
-	sp.PGSourceSelect = strings.Join(selectParts, ",\n\t\t\t")
-	sp.PGGroupBy = strings.Join(groupParts, ", ")
-}
-
-func (sp *SchemaProjection) buildEAVPivot(attrs []attrProjectionInfo) {
-	var pivotParts []string
-	var attrIDParts []string
-
-	sort.Slice(attrs, func(i, j int) bool { return attrs[i].name < attrs[j].name })
-	for _, a := range attrs {
-		attrIDParts = append(attrIDParts, fmt.Sprintf("%d", a.attrID))
-		pivotParts = append(pivotParts, fmt.Sprintf("\t\t\t\t%s AS %s",
-			buildEAVPivotExpr(a), ParquetAttrColumn(a.name)))
-	}
-
-	if len(pivotParts) > 0 {
-		sp.EAVPivotSelect = strings.Join(pivotParts, ",\n")
-	}
-	if len(attrIDParts) > 0 {
-		sp.EAVPivotAttrs = strings.Join(attrIDParts, ", ")
-	}
 }
 
 func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []string) {
@@ -296,67 +183,6 @@ func (sp *SchemaProjection) buildOuterSelect(schemaID int16, sortedAttrs []strin
 	parts = append(parts, sp.buildAttributesJSONExpr(schemaID, sortedAttrs, eavOnlySelects))
 
 	sp.OuterSelect = strings.Join(parts, ",\n\t\t\t")
-}
-
-// BuildPGSelectNoEAV returns a PG source SELECT that uses only entity_main columns
-// (no EAV pivot expressions), for use when all filter/sort attributes are column-bound.
-//
-// Bool, rfc3339 date/datetime and wider-column integer (#627) bindings go
-// through boundMainExprs exactly as buildPGProjection's COALESCE leg does:
-// projecting the raw bool column
-// left the outer CAST(attr AS BOOLEAN) to read it, which is a different
-// truth table (SMALLINT -1 → true, VARCHAR 'true' → true) from the `> 0.5`
-// / `= '1'` every other reader and the CDC export spell (#404, PR #564
-// review), and projecting the raw ISO string put a VARCHAR in the epoch-ms
-// BIGINT column the parquet legs carry (#555).
-func (sp *SchemaProjection) BuildPGSelectNoEAV() string {
-	selectParts := []string{
-		"cl.row_id::VARCHAR AS row_id",
-		"m.ltbase_created_at AS created_at",
-		"cl.changed_at AS ver_ts",
-		"cl.deleted_at AS deleted_ts",
-	}
-
-	// Collect attribute names sorted for stability
-	attrs := make([]string, 0, len(sp.AttrToMainColumn)+len(sp.EAVAttrs))
-	for attr := range sp.AttrToMainColumn {
-		attrs = append(attrs, attr)
-	}
-	sort.Strings(attrs)
-
-	for _, attr := range attrs {
-		col := sp.AttrToMainColumn[attr]
-		expr := "m." + col
-		if mainExpr, ok := sp.boundMainExprs[attr]; ok {
-			expr = mainExpr
-		}
-		selectParts = append(selectParts, fmt.Sprintf("%s AS %s", expr, ParquetAttrColumn(attr)))
-	}
-
-	return strings.Join(selectParts, ",\n\t\t\t")
-}
-
-// BuildPGGroupByNoEAV returns the GROUP BY clause for PG source without EAV pivot.
-func (sp *SchemaProjection) BuildPGGroupByNoEAV() string {
-	parts := []string{
-		"cl.row_id",
-		"m.ltbase_created_at",
-		"cl.changed_at",
-		"cl.deleted_at",
-	}
-
-	attrs := make([]string, 0, len(sp.AttrToMainColumn))
-	for attr := range sp.AttrToMainColumn {
-		attrs = append(attrs, attr)
-	}
-	sort.Strings(attrs)
-
-	for _, attr := range attrs {
-		col := sp.AttrToMainColumn[attr]
-		parts = append(parts, "m."+col)
-	}
-
-	return strings.Join(parts, ", ")
 }
 
 func (sp *SchemaProjection) attrIDForName(name string) int {
@@ -448,12 +274,7 @@ func duckDBColumnType(k model.ColumnKind) string {
 func BuildSchemaDrivenTemplateParams(sp *SchemaProjection, schemaID int16) map[string]any {
 	return map[string]any{
 		"S3SourceSelect": sp.S3SourceSelect,
-		"PGSourceSelect": sp.PGSourceSelect,
-		"PGGroupBy":      sp.PGGroupBy,
-		"EAVPivotSelect": sp.EAVPivotSelect,
-		"EAVPivotAttrs":  sp.EAVPivotAttrs,
 		"OuterSelect":    sp.OuterSelect,
 		"HasEAVAttrs":    sp.HasEAVAttrs,
-		"HasEAVPivot":    len(sp.EAVPivotAttrs) > 0,
 	}
 }

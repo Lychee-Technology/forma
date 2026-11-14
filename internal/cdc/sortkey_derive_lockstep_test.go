@@ -76,7 +76,7 @@ func columnCases(meta forma.AttributeMetadata, staged string, values ...any) []d
 	return cases
 }
 
-// deriveCases reaches every row of design.md §6.1.1's derivation table:
+// deriveCases reaches every row of design.md §6.1's derivation table:
 // each export type, through each storage the write funnel can give it.
 func deriveCases(t *testing.T) [][]deriveCase {
 	eav := func(vt forma.ValueType) forma.AttributeMetadata {

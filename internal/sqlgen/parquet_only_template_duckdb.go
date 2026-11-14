@@ -25,20 +25,21 @@ const stagedDirtyIDsTableRef = "temp.main." + StagedDirtyIDsTable
 // DropStagedDirtyIDsSQL drops the staged dirty-set table at the end of a pass.
 const DropStagedDirtyIDsSQL = "DROP TABLE IF EXISTS " + stagedDirtyIDsTableRef
 
-// ParquetOnlyQueryTemplateDuckDB is the parquet leg of the pgx hot-leg pass
-// (design.md §6.1.1, plan step 3). It is AdvancedQueryTemplateDuckDB without
-// PostgreSQL: no pg_source, no catalog reference, so no ATTACH and no
+// ParquetOnlyQueryTemplateDuckDB is the parquet leg of a federated pass
+// (design.md §5, plan step 3), and since #858 the only federated DuckDB
+// statement. It reads no PostgreSQL: no catalog reference, no ATTACH, no
 // connection string. Go serves the hot rows and merges, so this statement
 // answers only the parquet rows of the page.
 //
-// It differs from today's template in five ways, each with a reason:
+// It differs from the retired attach template (#858) in five ways, each with
+// a reason:
 //
 //   - dirty_ids is the staged temp table (StagedDirtyIDsTable), not a
 //     change_log scan. The Go side stages whichever set the tier form needs
 //     (the widened set for the hot form, the strict one for the hot-excluded
 //     form), so the template has no HasHot branch and no flush-grace cutoff.
 //   - Every ORDER BY key renders NULLS LAST. Go's comparator places NULL
-//     last in both directions; DuckDB's default does the same today, but the
+//     last in both directions; DuckDB's default does the same, but the
 //     default_null_order setting can change a default, and the two orders
 //     must agree for the merge to be correct.
 //   - The window is bound, not rendered: LIMIT ? OFFSET ? for offset pages
@@ -58,8 +59,8 @@ const DropStagedDirtyIDsSQL = "DROP TABLE IF EXISTS " + stagedDirtyIDsTableRef
 //     comparator reads and no attribute name can rebind a term.
 //
 // The dedup, the filter on the dedup winner (#173), the keyset predicate
-// after dedup (#212) and the scan source (#189/#255/#256/#371) are today's,
-// rendered by the same builders.
+// after dedup (#212) and the scan source (#189/#255/#256/#371) are the
+// retired template's, rendered by the same builders.
 var ParquetOnlyQueryTemplateDuckDB = template.Must(template.New("parquetOnlyQueryDuckDB").Parse(`
 WITH
 s3_source AS (

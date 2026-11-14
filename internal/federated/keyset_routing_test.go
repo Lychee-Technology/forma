@@ -32,7 +32,7 @@ func keysetCursorAfterCreatedAt() *model.KeysetCursor {
 // pagination never advanced.
 func TestQueryPreferHotRejectsKeysetCursor(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 5}}
-	engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+	engine := NewDBFederatedQueryEngine(pg, nil, nil, forma.DuckDBConfig{Enabled: true}, nil)
 
 	page, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav"},
@@ -55,7 +55,7 @@ func TestQueryPreferHotRejectsKeysetCursor(t *testing.T) {
 // fires on PreferredTiers == [hot] as well as on PreferHot (engine.go:150).
 func TestQueryHotOnlyTiersRejectsKeysetCursor(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 5}}
-	engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+	engine := NewDBFederatedQueryEngine(pg, nil, nil, forma.DuckDBConfig{Enabled: true}, nil)
 
 	page, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav"},
@@ -76,7 +76,7 @@ func TestQueryHotOnlyTiersRejectsKeysetCursor(t *testing.T) {
 // override onto, so a cursor must fail rather than be dropped.
 func TestQueryRejectsKeysetCursorWhenDuckDBDisabled(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 5}}
-	engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: false}, nil, "")
+	engine := NewDBFederatedQueryEngine(pg, nil, nil, forma.DuckDBConfig{Enabled: false}, nil)
 
 	page, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav"},
@@ -106,7 +106,7 @@ func TestQueryWithoutCursorStillServesPostgresOnly(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
-			engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: true}, nil, "")
+			engine := NewDBFederatedQueryEngine(pg, nil, nil, forma.DuckDBConfig{Enabled: true}, nil)
 
 			page, err := engine.Query(context.Background(),
 				model.StorageTables{EntityMain: "main", EAVData: "eav"},
@@ -231,7 +231,7 @@ func TestEvaluateRoutingPolicyKeysetCursorLeavesAlreadyFederatedReasonIntact(t *
 }
 
 // TestQueryRoutesKeysetCursorToDuckDBUnderHybridSmallLimit is the same door at
-// the engine seam: the cursor must reach the DuckDB builder, postgres must not
+// the engine seam: the cursor must reach the DuckDB statement, postgres must not
 // be touched, and the page's plan must explain the reroute.
 func TestQueryRoutesKeysetCursorToDuckDBUnderHybridSmallLimit(t *testing.T) {
 	restore := initTestDescriptors()
@@ -239,8 +239,7 @@ func TestQueryRoutesKeysetCursorToDuckDBUnderHybridSmallLimit(t *testing.T) {
 
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 5}}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
-	var built []model.FederatedAttributeQuery
-	engine := newEmptyPageTestEngine(t, pg, duck, &built)
+	engine := newEmptyPageTestEngine(t, pg, duck)
 
 	page, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
@@ -255,8 +254,7 @@ func TestQueryRoutesKeysetCursorToDuckDBUnderHybridSmallLimit(t *testing.T) {
 	require.Equal(t, 1, duck.calls)
 	require.True(t, page.ExecutionPlan.Routing.UseDuckDB)
 	require.Contains(t, page.ExecutionPlan.Routing.Reason, "keyset cursor")
-	require.Len(t, built, 1)
-	require.NotNil(t, built[0].KeysetCursor, "the cursor must survive into the DuckDB builder")
+	require.NotContains(t, duck.lastSQL, "OFFSET ?", "the cursor must survive into the DuckDB statement: a keyset page binds no offset")
 }
 
 // TestQueryWithKeysetCursorDoesNotDegradeToPostgres pins door 3 of #354. The
@@ -268,12 +266,12 @@ func TestQueryRoutesKeysetCursorToDuckDBUnderHybridSmallLimit(t *testing.T) {
 func TestQueryWithKeysetCursorDoesNotDegradeToPostgres(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
 	duck := &fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}
-	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil,
+	engine := NewDBFederatedQueryEngine(pg, duck, nil,
 		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-		testMetadataCacheSchema7(t), "", withTestParquetPath())
+		testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 
 	page, err := engine.Query(context.Background(),
-		model.StorageTables{EntityMain: "main", EAVData: "eav"},
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
 		&model.FederatedAttributeQuery{
 			// Limit 2000 keeps the hybrid cost rule on the DuckDB side, so this
 			// test isolates the degrade decision from Task 2's override.
@@ -306,52 +304,6 @@ func TestQueryWithKeysetCursorDoesNotDegradeToPostgres(t *testing.T) {
 	require.Zero(t, pg.queryCalls, "postgres must not be queried on this route")
 }
 
-// TestQueryWithKeysetCursorDoesNotDegradeOnRecountFailure pins door 3 at its
-// SECOND site: the empty-page recount (#181) is a DuckDB query with its own
-// degrade branch, so a cursor query deep enough to trigger a recount reaches
-// the same fallback by a different route. Without this test the recount site
-// can be reverted alone and the whole package stays green — reinstating the
-// exact defect, with the fallback running, the misdirecting "enable DuckDB"
-// remediation back, and the recount failure dropped from the chain.
-func TestQueryWithKeysetCursorDoesNotDegradeOnRecountFailure(t *testing.T) {
-	restore := initTestDescriptors()
-	defer restore()
-
-	duck := &sequencedDuckDBExecutor{
-		rows: []duckDBRowsIterator{&emptyDuckDBRows{}},
-		errs: []error{nil, fmt.Errorf("forced recount failure")},
-	}
-	var built []model.FederatedAttributeQuery
-	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 7}}
-	engine := newEmptyPageTestEngine(t, pg, duck, &built)
-
-	// An empty first page at offset 50 is what reaches the recount; warm+cold
-	// tiers keep the hybrid strategy on DuckDB regardless of page size.
-	page, err := engine.Query(context.Background(),
-		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
-		&model.FederatedAttributeQuery{
-			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10, Offset: 50},
-			PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
-			KeysetCursor:   keysetCursorAfterCreatedAt(),
-		},
-		&model.FederatedQueryOptions{AllowPartialDegradedMode: true})
-
-	require.Nil(t, page)
-	require.ErrorContains(t, err, "forced recount failure",
-		"the real cause must surface rather than be replaced by the refusal")
-	require.ErrorContains(t, err, "declined")
-	// Prose alone cannot be the contract here any more than at the page-fetch
-	// site above: a %w -> %v mutation in the recount site's own wrap
-	// (engine.go, "compute empty-page federated count") still reads correctly
-	// while flattening the chain, so ErrFederatedReadFailed, forma.ErrInvalidInput
-	// (and its 400), ErrParquetSetInconsistent and ErrNoParquetPaths all stop
-	// matching for every failure arriving through this door.
-	require.ErrorIs(t, err, ErrFederatedReadFailed)
-	require.NotErrorIs(t, err, ErrKeysetUnsupportedOnPostgres,
-		"the fallback must not have been entered at the recount site either")
-	require.Zero(t, pg.queryCalls, "postgres must not be queried on this route")
-}
-
 // TestQueryWithKeysetCursorLeavesNonDegradableFailureUnannotated pins the
 // complement: when the error CLASS already disqualifies degradation, the
 // cursor is not the reason and must not be blamed. Annotating it would tell an
@@ -361,12 +313,12 @@ func TestQueryWithKeysetCursorDoesNotDegradeOnRecountFailure(t *testing.T) {
 func TestQueryWithKeysetCursorLeavesNonDegradableFailureUnannotated(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
 	duck := &fakeDuckDBExecutor{err: fmt.Errorf("unrenderable path template: %w", forma.ErrInvalidInput)}
-	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil,
+	engine := NewDBFederatedQueryEngine(pg, duck, nil,
 		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-		testMetadataCacheSchema7(t), "", withTestParquetPath())
+		testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 
 	page, err := engine.Query(context.Background(),
-		model.StorageTables{EntityMain: "main", EAVData: "eav"},
+		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
 		&model.FederatedAttributeQuery{
 			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
 			PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierCold},

@@ -10,10 +10,9 @@ import (
 )
 
 // This file is the #404 acceptance for column-bound bools (PR #564 review,
-// findings 1 and 2): a schema whose attributes are ALL column-bound takes the
-// no-EAV projection on the DuckDB hot leg, and the same rows are then read
-// from delta parquet after a real CDC flush and from base parquet after a
-// real compaction. Every route must reach the same verdict from the same
+// findings 1 and 2): a schema whose attributes are ALL column-bound is read
+// while its rows are hot, then from delta parquet after a real CDC flush and
+// from base parquet after a real compaction. Every route must reach the same verdict from the same
 // storage image under the one read-side rule — `> 0.5` for bool_smallint,
 // `= '1'` for bool_text — and an unset optional bool must stay NULL on every
 // tier, never collapse to false at flush.
@@ -22,13 +21,15 @@ import (
 // direct entity_main UPDATEs: the write funnel rejects them, so they stand in
 // for history written before the rejection existed. They are probed on every
 // tier, the unflushed hot routes included: a filter on the bool itself is
-// pushed down into entity_main on both the Postgres route and the DuckDB hot
-// leg's PostgreSQL scan, and since #565 that pushdown carries the read
-// contract's verdict — `smallint_01 BETWEEN 1 AND 32767` for the truthy
-// side of bool_smallint, `(text_02 = '1') = false` for the falsy side of
-// bool_text — so the planted 2 answers `equals:true` and the planted 'true'
-// answers `equals:false` the way the projection reads them, instead of the
-// raw `= 1` / `= '0'` compare matching neither operand.
+// pushed down into entity_main on the Postgres route, and since #565 that
+// pushdown carries the read contract's verdict — `smallint_01 BETWEEN 1 AND
+// 32767` for the truthy side of bool_smallint, `(text_02 = '1') = false` for
+// the falsy side of bool_text — so the planted 2 answers `equals:true` and
+// the planted 'true' answers `equals:false` the way the projection reads
+// them, instead of the raw `= 1` / `= '0'` compare matching neither operand.
+// The federated hot leg filters and reads hot rows on PostgreSQL through the
+// OLTP reader (design.md §6.1, What a hot row reads as), so while the
+// planted rows are hot it must answer as the Postgres route does.
 
 const boundBoolProps = `{
     "name": { "type": "string" },
@@ -138,8 +139,8 @@ type boundBoolImage struct {
 // assertBoundBoolImages reads the whole row set through DuckDB and pins the
 // image each record carries. The DuckDB outer select re-derives the physical
 // column from the verdict, so an off-contract row reads as the verdict's
-// image: 2 → 1, -1 → 0, 'true' → "0" — the same answer the hot-leg
-// truthiness, the export and the Go read funnel reach, where the raw
+// image: 2 → 1, -1 → 0, 'true' → "0" — the same answer the export's
+// truthiness and the Go read funnel reach, where the raw
 // projection plus CAST(attr AS BOOLEAN) used to say true for -1 and 'true'
 // (finding 2). The unset row carries NO value in either column: the
 // nullable export must not have persisted false (finding 1). Bound bools
@@ -182,20 +183,19 @@ func assertBoundBoolImages(ctx context.Context, t *testing.T, env *Env, label st
 }
 
 // TestBoundBoolParityNoEAVAllTiers: name, flagInt (bool_smallint) and
-// flagText (bool_text) are all column-bound, so the DuckDB hot leg takes
-// BuildPGSelectNoEAV. Before PR #564 that projection emitted the raw column
-// and left the outer CAST(attr AS BOOLEAN) to read it (SMALLINT -1 → true,
-// VARCHAR 'true' → true), the export wrapped the truthiness in
-// CASE ... ELSE FALSE so an unset bool became false once flushed, and the
-// outer CAST(attr AS BOOLEAN) could not be scanned into the SMALLINT slot at
-// all. All three are pinned here across the unflushed DuckDB hot leg, delta
-// parquet and base parquet, and the planted images are additionally probed
-// through both hot routes' pushdown (#565).
+// flagText (bool_text) are all column-bound. Before PR #564 the DuckDB
+// projection emitted the raw column and left the outer CAST(attr AS BOOLEAN)
+// to read it (SMALLINT -1 → true, VARCHAR 'true' → true), the export wrapped
+// the truthiness in CASE ... ELSE FALSE so an unset bool became false once
+// flushed, and the outer CAST(attr AS BOOLEAN) could not be scanned into the
+// SMALLINT slot at all. All three are pinned here on delta parquet and base
+// parquet. While the rows are hot, the planted images are probed through the
+// Postgres route's pushdown (#565), and the federated route must agree with
+// it.
 func TestBoundBoolParityNoEAVAllTiers(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster, WithSchemaDir(writeSimpleSchemaDir(t, boundBoolProps, boundBoolAttrs)))
-	pinAttachHotLeg(env) // the hot phase pins the attach hot leg's truthiness projection of off-contract images; the pgx hot leg reads hot rows through the OLTP reader (design.md §6.1.1, What a hot row reads as)
 	simple := DefaultSchemaFixtures()[0]
 
 	// A flushed anchor row gives the schema its first parquet object and
@@ -211,21 +211,20 @@ func TestBoundBoolParityNoEAVAllTiers(t *testing.T) {
 	hotPG := Query{Schema: simple, PreferHot: true, Limit: 100}
 	duck := Query{Schema: simple, Limit: 100}
 
-	// On-contract images: the Postgres route and the unflushed DuckDB hot leg
-	// (no-EAV projection, bool pushdown into the Postgres scan) agree.
+	// On-contract images: the Postgres route and the unflushed federated
+	// route agree.
 	runWidthProbes(ctx, t, env, "hot-pg", hotPG, false, onContractProbes(rows))
 	runWidthProbes(ctx, t, env, "hot-duck", duck, true, onContractProbes(rows))
 	runRejectionProbes(ctx, t, env, "hot-pg", hotPG, boolRejectionProbes())
 	runRejectionProbes(ctx, t, env, "hot-duck", duck, boolRejectionProbes())
 
-	// Off-contract images: the unfiltered read derives the truthiness image
-	// through mainColBoolExpr, and a filter on the bool pushes the #565
-	// BETWEEN range into entity_main on both hot routes, so the planted 2 is
-	// returned by equals:true here exactly as it is once flushed.
+	// Off-contract images: a filter on the bool pushes the #565 BETWEEN
+	// range into entity_main on the Postgres route, so the planted 2 is
+	// returned by equals:true here exactly as it is once flushed. The
+	// federated route reads the hot rows as the Postgres route does.
 	plantOffContract(ctx, t, env, simple, rows)
 	runWidthProbes(ctx, t, env, "hot-pg-planted", hotPG, false, parquetProbes(rows))
-	runWidthProbes(ctx, t, env, "hot-duck-planted", duck, true, parquetProbes(rows))
-	assertBoundBoolImages(ctx, t, env, "hot-duck", simple, rows)
+	requireProbesAgree(ctx, t, env, "hot-planted", duck, parquetProbes(rows))
 
 	if _, err := env.RunFlush(ctx); err != nil {
 		t.Fatalf("flush: %v", err)

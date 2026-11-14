@@ -62,7 +62,7 @@ func TestPgxPassGlobListedObjectDeletedBeforeValidationIsNotAnInconsistency(t *t
 }
 
 // A manifest-listed object missing at validation is still a manifest
-// inconsistency: non-degradable, as on the attach path.
+// inconsistency: non-degradable.
 func TestPgxPassManifestListedObjectMissingAtValidationIsAnInconsistency(t *testing.T) {
 	f := newPgxFixture(t, tieRunRows())
 	path := filepath.Join(f.dir, "base.parquet")
@@ -76,8 +76,7 @@ func TestPgxPassManifestListedObjectMissingAtValidationIsAnInconsistency(t *test
 }
 
 // A pass whose row handler fails is a failed pass: it emits no fed_query_*
-// sample, as the attach path emits none for a failed stream. The same pass
-// with a handler that succeeds emits its seven.
+// sample. The same pass with a handler that succeeds emits its seven.
 func TestPgxPassHandlerFailureEmitsNoMetrics(t *testing.T) {
 	f := newPgxFixture(t, tieRunRows())
 	rec := &metricRecorder{}

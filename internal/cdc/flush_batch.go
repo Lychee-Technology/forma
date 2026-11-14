@@ -97,9 +97,8 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 	// Order (#252): manifest-append precedes mark-flushed, so no query ever
 	// lands in a state where the batch's rows are in neither tier. The middle
 	// state — delta listed but rows still flushed_at = 0 — is safe by
-	// construction: the dirty anti-join (advanced_query_template_duckdb.go)
-	// discards the S3 copies of unflushed rows and the hot pg_source serves
-	// them. Failure contract (supersedes #197):
+	// construction: the federated pass's dirty anti-join discards the S3
+	// copies of unflushed rows and its hot leg serves them (design.md §6.1). Failure contract (supersedes #197):
 	//   - Append fails -> rows stay dirty (mark never ran); the retry
 	//     re-exports to a fresh UUIDv7 key and self-heals. The old copied
 	//     final is an unlisted orphan reclaimed by manifest-reconcile --gc

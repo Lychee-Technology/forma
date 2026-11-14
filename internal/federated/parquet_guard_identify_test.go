@@ -135,7 +135,7 @@ func TestParquetGuardViolationErrorChain(t *testing.T) {
 func TestWithLoggerFeedsEngineAndValidator(t *testing.T) {
 	core, _ := observer.New(zap.WarnLevel)
 	l := zap.New(core)
-	e := NewDBFederatedQueryEngine(nil, nil, nil, nil, forma.DuckDBConfig{}, nil, "", WithLogger(l))
+	e := NewDBFederatedQueryEngine(nil, nil, nil, forma.DuckDBConfig{}, nil, WithLogger(l))
 	require.Same(t, l, e.logger, "WithLogger must feed the engine's own outlet (#351)")
 	require.Same(t, l, e.schemaValidator.logger, "…without dropping the validator outlet (#256)")
 

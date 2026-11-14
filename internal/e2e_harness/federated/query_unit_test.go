@@ -106,7 +106,7 @@ func TestBuildFederatedCombinedQuerySupportsTradeTimeWindow(t *testing.T) {
 func TestBuildFederatedQueryCountSQLDynamic_UsesProjectedHotPathForTradeTimeWindow(t *testing.T) {
 	h := &FederatedTestHarness{SchemaID: benchmarkSchemaIDTrade, PGHost: "localhost", PGPort: "5432"}
 	query := h.buildFederatedQueryCountSQLDynamic("base-path", "delta-path", true, true, nil, &QueryOptions{Limit: 20, Offset: 40, SortBy: "tradeTime", SortDesc: true, TradeTimeStart: 1000, TradeTimeEnd: 2000})
-	for _, expected := range []string{"COALESCE(hot_vals.tradeTime, em.bigint_02) >= 1000", "COALESCE(hot_vals.tradeTime, em.bigint_02) <= 2000", "LEFT JOIN forma_pg_"} {
+	for _, expected := range []string{"COALESCE(hot_vals.tradeTime, em.bigint_02) >= 1000", "COALESCE(hot_vals.tradeTime, em.bigint_02) <= 2000", "LEFT JOIN harness_pg_"} {
 		if !strings.Contains(query, expected) {
 			t.Fatalf("expected projected count query to include %q: %s", expected, query)
 		}

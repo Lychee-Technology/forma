@@ -41,9 +41,8 @@ func degradedPlanCases() []degradedPlanCase {
 		},
 		{
 			// The shape of the #636 review's reproduction ([hot, cold],
-			// Limit 2000): the dirty-ID, hot-leg predicate and duckdb sources
-			// and translate/duckdb_fetch/total are recorded before duck.Query
-			// fails.
+			// Limit 2000): the dirty-set source is recorded before the parquet
+			// leg's statement fails.
 			name: "duck.Query failure",
 			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
 				duck := &fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}
@@ -52,16 +51,15 @@ func degradedPlanCases() []degradedPlanCase {
 			cause: "forced duck failure",
 		},
 		{
-			// The page pass succeeds and records a whole DuckDB pass; its page
-			// is discarded when the recount fails.
+			// The page's statement succeeds; its page is discarded when the
+			// pass's parquet recount (#181) fails.
 			name: "recount failure after a successful page pass",
 			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
 				duck := &sequencedDuckDBExecutor{
 					rows: []duckDBRowsIterator{&emptyDuckDBRows{}},
 					errs: []error{nil, fmt.Errorf("forced recount failure")},
 				}
-				var built []model.FederatedAttributeQuery
-				engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, duck, &built)
+				engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, duck)
 				return engine, &model.FederatedAttributeQuery{
 					AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10, Offset: 50},
 					PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
@@ -70,8 +68,8 @@ func degradedPlanCases() []degradedPlanCase {
 			cause: "forced recount failure",
 		},
 		{
-			// Confirmed corruption fails its pass after the dirty-ID, hot-leg
-			// and duckdb sources are recorded (#722).
+			// Confirmed corruption fails its pass after the dirty-set source
+			// is recorded (#722).
 			name: "confirmed corrupt object",
 			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
 				duck := &retryFakeDuck{passes: []retryPass{

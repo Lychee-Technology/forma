@@ -24,8 +24,8 @@ import (
 // in e2e_wide_attributes.json): titles stay unique, so an equality filter
 // on one selects one row, and count stays a unique sort key. Every other
 // value repeats with the template period, which flatters parquet's
-// dictionary encoding; the measurement compares transports at equal data,
-// so that bias is shared by every number it reports.
+// dictionary encoding; the measurement compares passes at equal data, so
+// that bias is shared by every number it reports.
 
 // baselineCloneChunk bounds one clone transaction.
 const baselineCloneChunk = 50_000

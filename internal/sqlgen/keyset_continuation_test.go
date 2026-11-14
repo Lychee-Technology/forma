@@ -30,24 +30,26 @@ func continuationQuery(cursorAttr string, cursorDir forma.SortOrder) *model.Fede
 	}
 }
 
-// TestBuildDuckDBQuery_KeysetMustContinueAttributeOrders pins the renderer's
-// copy of the continuation rule (#381 review): the keyset ORDER BY renders
-// from the cursor alone, so a cursor that does not continue q.AttributeOrders
-// is refused here as well as at the federated seams, and a continuing cursor
-// renders the very order page one was sorted by.
-func TestBuildDuckDBQuery_KeysetMustContinueAttributeOrders(t *testing.T) {
-	dual := &DualClauses{DuckClause: "1=1"}
+// TestBuildParquetOnlyQuery_KeysetMustContinueAttributeOrders pins the
+// renderer's copy of the continuation rule (#381 review): the keyset ORDER BY
+// renders from the cursor alone, so a cursor that does not continue
+// q.AttributeOrders is refused here as well as at the federated seams, and a
+// continuing cursor renders the very order page one was sorted by.
+func TestBuildParquetOnlyQuery_KeysetMustContinueAttributeOrders(t *testing.T) {
+	dual := DualClauses{DuckClause: "1=1"}
+	window := ParquetWindow{Limit: 10}
 
-	_, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, injectTestRenderParams(t, map[string]any{}, 1),
-		continuationQuery("created_at", forma.SortOrderDesc), nil, dual)
+	_, _, err := BuildParquetOnlyQuery(injectTestRenderParams(t, map[string]any{}, 1),
+		continuationQuery("created_at", forma.SortOrderDesc), dual, window)
 	require.ErrorContains(t, err, `keyset cursor column 1 is "created_at" but the request sorts on "count"`)
 
-	_, _, err = BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, injectTestRenderParams(t, map[string]any{}, 1),
-		continuationQuery("count", forma.SortOrderDesc), nil, dual)
+	_, _, err = BuildParquetOnlyQuery(injectTestRenderParams(t, map[string]any{}, 1),
+		continuationQuery("count", forma.SortOrderDesc), dual, window)
 	require.ErrorContains(t, err, `keyset cursor column 1 ("count") is descending but the request sorts "count" ascending`)
 
-	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, injectTestRenderParams(t, map[string]any{}, 1),
-		continuationQuery("count", forma.SortOrderAsc), nil, dual)
+	sql, _, err := BuildParquetOnlyQuery(injectTestRenderParams(t, map[string]any{}, 1),
+		continuationQuery("count", forma.SortOrderAsc), dual, window)
 	require.NoError(t, err)
-	require.Contains(t, sql, "ORDER BY count ASC, row_id ASC", "a continuing cursor renders the request's order")
+	require.Contains(t, sql, "ORDER BY visible.count ASC NULLS LAST, visible.row_id ASC NULLS LAST",
+		"a continuing cursor renders the request's order")
 }

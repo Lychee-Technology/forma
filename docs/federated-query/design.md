@@ -8,7 +8,7 @@ The system utilizes **DuckDB** as a stateless, read-only compute engine to execu
 
 ## **2. System Architecture**
 
-The architecture implements a **Real-Time Lakehouse** pattern. DuckDB acts as the virtualization layer, exposing a unified wide-table view of the underlying disparate storage engines.
+The architecture implements a **Real-Time Lakehouse** pattern. DuckDB reads the parquet tiers as one wide table, and the engine merges them with the hot rows it reads from PostgreSQL into a unified view of the underlying storage engines (§6.1).
 
 ### **2.1 Core Components**
 
@@ -21,7 +21,7 @@ The architecture implements a **Real-Time Lakehouse** pattern. DuckDB acts as th
    * Manages Schema Mapping (Logical JSON Path $\leftrightarrow$ Physical EAV Columns).
 3. **Compute Engine (DuckDB):**
    * Embedded, stateless SQL engine.
-   * Extensions: postgres_scanner, httpfs (S3). `postgres_scanner` leaves with the decided hot-leg redesign (§6.1.1, #719): DuckDB then reads only the parquet tiers, and the orchestrator reads the hot rows over pgx and merges them with DuckDB's result.
+   * Extensions: httpfs (S3) and parquet. DuckDB reads only the parquet tiers; the orchestrator reads the hot rows over pgx and merges them with DuckDB's result (§6.1). Until #858 DuckDB also read PostgreSQL, through `postgres_scanner`.
    * Configuration: Read-Only, Memory-Limited.
 4. **Storage Layer:**
    * **S3 (Parquet):** Flattened, columnar data (Base + Delta files).
@@ -47,10 +47,10 @@ Formula:
 
 $$Result = (S3_{Data} \notin DirtySet) \cup PG_{HotData}$$
 
-* **DirtySet:** The set of row_ids currently present in the PostgreSQL change_log with flushed_at = 0, widened by the **flush-visibility grace** (#252): rows marked flushed at or after the instant this query resolved its parquet path set (minus the `FlushVisibilityGraceMs` clock-skew margin, default 0) also count as dirty — inclusive, because millisecond stamps cannot order a mark and a path resolution landing in the same tick. Because the flush appends the manifest before marking, a row flushed before path resolution already has its delta listed — the widening therefore catches exactly the rows racing this query (their delta may be missing from the resolved set) and keeps them hot-readable, while the steady state is never widened. The widening renders only in the HasHot tier form: it is safe solely because pg_source serves the discarded rows, so hot-excluded queries keep the strict flushed_at = 0 barrier.
+* **DirtySet:** The set of row_ids currently present in the PostgreSQL change_log with flushed_at = 0, widened by the **flush-visibility grace** (#252): rows marked flushed at or after the instant this query resolved its parquet path set (minus the `FlushVisibilityGraceMs` clock-skew margin, default 0; a negative margin reads as 0) also count as dirty — inclusive, because millisecond stamps cannot order a mark and a path resolution landing in the same tick. Because the flush appends the manifest before marking, a row flushed before path resolution already has its delta listed — the widening therefore catches exactly the rows racing this query (their delta may be missing from the resolved set) and keeps them hot-readable, while the steady state is never widened. Only a pass in the hot form reads the widened set: the widening is safe solely because the hot leg serves the rows it discards, so hot-excluded queries (`preferred_tiers` without `hot`) keep the strict flushed_at = 0 barrier.
 * Any record found in S3 that also exists in the DirtySet is **discarded** immediately during the read phase, regardless of its timestamp.
 * **Flush ordering (#252):** the CDC flush publishes `copy tmp→final → manifest-append → mark-flushed`, so a batch is never simultaneously absent from the hot tier and from the manifest-listed delta set. The listed-but-unmarked middle state is resolved by this anti-join: the S3 copies of still-dirty rows are discarded and the hot versions serve.
-* **Under the pgx hot leg (§6.1.1, `DuckDBConfig.HotLegTransport = pgx`, the default since #857):** the dirty set and the hot rows are read over pgx in one `REPEATABLE READ` snapshot taken after path resolution, and the anti-join reads the dirty set from that snapshot. With no cross-tier deduplication left, the formula above holds only because both sides of the union come from that one snapshot. §6.1.1 re-derives the flush-grace argument for this order of reads. On that path the widening is always on: a negative `FlushVisibilityGraceMs` reads as the exact anchor there, because the snapshot argument depends on the widening.
+* **One snapshot (§6.1):** the dirty set and the hot rows are read over pgx in one `REPEATABLE READ` snapshot taken after path resolution, and the anti-join reads the dirty set the pass staged from that snapshot. With no cross-tier deduplication, the formula above holds only because both sides of the union come from that one snapshot. §6.1 re-derives the flush-grace argument for this order of reads. The widening is therefore always on: a negative `FlushVisibilityGraceMs` reads as the exact anchor, because the snapshot argument depends on the widening.
 
 ### **3.3 Read Consistency by API (#635)**
 
@@ -118,15 +118,15 @@ When the federated block is absent or `enabled` is false, the query executes on 
 
 ### **4.2 Translation Output**
 
-The translator must traverse the filter tree and generate two distinct SQL fragments:
+The translator (`sqlgen.ToDualClauses`) normalizes the filter tree once and renders a fragment per dialect. A federated pass consumes one of them, the DuckDB logical fragment (B), which filters the parquet rows. The hot leg's condition does not come from this translator: the hot-keys query renders it through the PostgreSQL route's own builder, anchored on `entity_main`, so the hot rows match exactly as a PostgreSQL-only answer's do (§6.1). The translator still renders the PostgreSQL EAV clause first, so an unregistered attribute is refused before any DuckDB clause exists (§4.4).
 
 **A. Main-Table Fragment ($PG_WHERE_CLAUSE)**
 
-* **Target:** pg_source `WHERE` clause. DuckDB evaluates it after the hot leg's scan has copied `entity_main` out of PostgreSQL; PostgreSQL never sees it (§6.1). Under the decided hot-leg redesign (§6.1.1, #719) this fragment loses its consumer: PostgreSQL filters the hot rows with the PostgreSQL route's full predicate, and DuckDB filters only parquet rows.
+`ToDualClauses` still renders this fragment (`PgMainClause`), but nothing in production consumes it since #858. It was the `WHERE` clause of the template's `pg_source` CTE, which DuckDB evaluated over the copy of `entity_main` the hot leg's scan took; PostgreSQL never saw it (§6.1, *Why*).
+
 * **Scope:** Only attributes mapping to entity_main.
-* **Syntax:** Physical Column Names.
-* **Never stricter than the hot read:** `$LOGICAL_WHERE_CLAUSE` filters the projected value again, so this fragment may keep a row the logical fragment drops, but must not drop one it keeps, or a filter answers differently before and after the row's flush. Where the hot leg reads a column through an expression, the fragment tests that expression: an integer in a wider column (#627, §6.4), and a date bound with the `rfc3339` encoding (named `iso8601` before #842), whose read (`sqlgen.RFC3339EpochMs`) is the epoch milliseconds of the instant the image names, UTC offset applied (#756), and NULL for a string that is not a timestamp. `is_null` tests that read (#709), and a comparison tests it against the literal's epoch milliseconds, the operand the logical fragment binds (#755): the raw text against the canonical image dropped a fraction, an offset and a space-separated image, whose text order is not their instant order. `is_not_null` on such a date keeps the raw column: the read is non-NULL only where the column is, and the EAV-joined projection can also take a retained `eav_data` value over a NULL read.
-* **Sanitization:** Strict literal escaping to prevent SQL injection.
+* **Syntax:** Physical Column Names, with DuckDB's positional `?` placeholders.
+* **Never stricter than the hot read:** while it had a consumer, `$LOGICAL_WHERE_CLAUSE` filtered the projected value again, so this fragment could keep a row the logical fragment dropped, but must not drop one it kept, or a filter answered differently before and after the row's flush. Where the hot leg read a column through an expression, the fragment tested that expression: an integer in a wider column (#627, §6.4), and an `rfc3339`-bound date's epoch milliseconds (`sqlgen.RFC3339EpochMs`, #756), which `is_null` (#709) and comparisons (#755) tested. Across the tiers the tier parity suite now guards a stronger property: PostgreSQL and DuckDB must select the same rows (§6.1, *Filtering splits by tier*).
 * *Example:* (integer_01 > 18 AND text_01 LIKE 'John%')
 
 **B. DuckDB Logical Fragment ($LOGICAL_WHERE_CLAUSE)**
@@ -151,7 +151,7 @@ The `"federated"` object carries optional controls that affect execution routing
 | `consistency_mode` | string | — | **No effect; #715 deletes it.** Accepted and not validated: any string, `"strict"` and `"eventual"` included, behaves like an omitted field. It never permits S3-only execution, and `Get` ignores it. |
 | `include_execution_plan` | bool | false | Attach the diagnostic execution plan to the response (§8). |
 
-**Schemas the parquet tiers cannot hold (#704).** The parquet tiers keep one value per attribute and row. The CDC export and the DuckDB hot-tier pivot both reduce an attribute's `eav_data` rows to one value, so a member of an array of objects, which has one row per element, would read back as a single object holding the largest value of each member. A filter on a smaller element would miss the row. The shipped `lead` declares two such arrays, `propertyInterests[]` and `requirement.areas[]`. For a schema with any attribute inside an array of objects:
+**Schemas the parquet tiers cannot hold (#704).** The parquet tiers keep one value per attribute and row. The CDC export reduces an attribute's `eav_data` rows to one value, so a member of an array of objects, which has one row per element, would read back as a single object holding the largest value of each member. A filter on a smaller element would miss the row. The shipped `lead` declares two such arrays, `propertyInterests[]` and `requirement.areas[]`. For a schema with any attribute inside an array of objects:
 
 * A query with `enabled` is answered from PostgreSQL alone, whatever `preferred_tiers` says, an explicit `["warm","cold"]` included. The answer holds every element of every live row, because PostgreSQL holds every live row (§3.3). It carries the `hot_tier_only` marker for the tiers it did not read (§7.3), and `routing.reason` names the attribute. The hot-only gate (`prefer_hot`, `["hot"]`) answers as before, unmarked. Two requests are refused, since only the DuckDB template could honor them: a keyset cursor, and an `s3_parquet_path_template`. The template names a parquet population that a PostgreSQL answer would silently replace, so it is refused as invalid input (4xx) even where `duckdb.allowCallerParquetPaths` would honor it for another schema. In-module callers that start a DuckDB pass directly (`ExecuteFederatedKeysetQuery`, `ExecuteDuckDBFederatedQuery`, `StreamDuckDBFederatedQuery`) are refused with `ErrParquetUnrepresentable` before any DuckDB or S3 work, cursor or not. They must set `FederatedAttributeQuery.ParquetUnrepresentable` themselves: the engine's metadata cache carries no array ancestry, so only the service, which holds the registry's cache, can derive it.
 * `cdc-flush` and `cdc-init` skip the schema with a warning naming the attribute, so its rows stay unflushed and nothing is exported for it. A skip is a successful partial run, not a failure: the run's other schemas proceed, and `cdc-flush` exits 0. The skip is reported independently of the logger: the `cdc` package's `RunOnce` (on `FlushRunner` and at package level) returns a `FlushReport` whose `Skipped` lists each such schema and the reason, also alongside another schema's flush error, and cdc-init's `InitSummary.Skipped` does the same. Both commands name the skipped schemas in their completion log line. A `cdc-init --schema-id` that names such a schema fails with `ErrSchemaNotExportable` and a non-zero exit, since the one export it asked for cannot happen. Parquet a flush wrote before this change stays in place and is no longer read.
@@ -169,7 +169,7 @@ These controls are part of the request payload; they are not conveyed via HTTP h
 
 1. **Per-request hint** — `federated.s3_parquet_path_template`, rendered for the query's schema (comma-separated templates become a path list). An explicit hint directs `read_parquet` at exactly the requested location and, when honored, always wins. **This level is disabled by default (#456):** the hint is a caller-controlled scan target, so it is honored only when the server opts in with `duckdb.allowCallerParquetPaths` (`DUCKDB_ALLOW_CALLER_PARQUET_PATHS`), and then only for rendered paths that fall inside the configured `duckdb.s3Bucket` (exact `s3://<bucket>/…` prefix; local, `http(s)://`, and cross-bucket targets are rejected). **In-bucket scope is further narrowed (#477):** when `duckdb.s3DataPrefix` is set, the path must sit under `s3://<bucket>/<s3DataPrefix>/…` (the prefix is canonicalized with the same single trailing-`/` strip the writers and the level-3 glob apply; an empty prefix keeps bucket granularity), and every honored path must obey the shape rules the level-3 glob is held to — `**` is refused, wildcards (`*`, `?`, `[`) may appear only in the final (object-name) segment so a pattern can never match a directory, a literal `_tmp` segment is refused, and a path ending in `/` is refused. Together these keep in-flight `_tmp/` staging objects unreachable from a hint. A rendered path must also be valid UTF-8 without a NUL character (#771): it is interpolated into the DuckDB statement as a literal, and DuckDB reads statement text as a C string, so a NUL cut the statement off inside the literal and invalid UTF-8 failed it, a degradable DuckDB failure instead of invalid input. The configured `s3DataPrefix` is spliced verbatim into that scope and the shape rules inspect only the key beneath it, so the prefix itself must not contain a glob metacharacter (`*`, `?`, `[`) — `data/*` would hand every hint a directory wildcard the caller never wrote, and `data/**` would reach `_tmp/` outright; `ValidateManifestRead` rejects such a prefix at startup whatever the opt-in says (#527, level 3), and the engine refuses every hint on a config that skipped validation. With the opt-in off, or for an out-of-scope or ill-shaped path, the hint is rejected as invalid input (`forma.ErrInvalidInput` → 4xx) rather than ignored — the request never silently falls through to the manifest source. **A hint that fails to render — or that renders to no usable path at all (`","`, whitespace-only) — is likewise invalid input** and never falls through: silently serving a different path set than the caller asked for would misreport the answer. **An honored hint forgoes the read-consistency guarantee of §3.3:** nothing checks that it names every object the manifest lists, so a hint that omits the newest flushed version of a row returns an older one, a deleted row included, with no `partial` marker. Enabling the opt-in requires a non-empty `duckdb.s3Bucket`; the combination is rejected at startup by `DuckDBConfig.ValidateCallerParquetPaths`, called from both the `cmd/server` bootstrap and the factory preflight beside `ValidateManifestRead` (and also from `Config.Validate`), consistent with the manifest-read bucket requirement.
 2. **Manifest source** — when the server is configured for manifest reads, the schema's manifest is loaded and its file entries become the scan set as full `s3://` URIs. Reads then scan exactly the listed objects rather than expanding a storage glob, which is what makes cold-tier loss detectable (§4.3.1 *Inconsistency detection*). The loaded manifest must carry the requested schema's `schema_id` stamp (`manifest.VerifySchemaStamp`, shared with every writer): a stamp naming another schema fails the read with `ErrManifestSchemaMismatch`, and a zero stamp over any entries fails it with `ErrManifestUnstamped` (#522) — a zero stamp is not a legacy format, since every Forma writer has always stamped the field, so it proves nothing about which schema owns the entries, and the two-probe template check cannot see a template that collides only at schema IDs it never renders. An empty zero-stamped manifest loads as empty (stamped in memory) and takes level 3 like any empty manifest. **Manifest path contract (#516).** A relative `path` on a manifest entry *is* the bucket-relative object key, **verbatim**: every consumer renders or compares it byte for byte — the read path prefixes it as `s3://<bucket>/<path>` (`manifest.QuerySource.Paths`), the missing-object probe cuts exactly that prefix back off (`QuerySource.MissingIn`), `manifest-reconcile` matches it against the listing unchanged (`cdc.NormalizeObjectKey`), and compaction hashes, merges and deletes the same key (`Compactor.objectURI` / `bucketRelativeKey`). The producers hold to the same rule: the tmp→final promotion every writer goes through (`cdc.CopyTmpToFinal`, used by `cdc-flush`, `cdc-init` and the compactor) names the tmp key the exporter wrote in its `CopySource` (`<bucket>//1/_tmp/<uuid>.parquet` under an empty prefix), so the object the exporter wrote is the one that gets promoted. No consumer or producer trims, joins or canonicalizes the key. The one transformation that is not a change of key is transport encoding: S3 URL-decodes the `x-amz-copy-source` header and the SDK sets it verbatim, so `CopyTmpToFinal` percent-encodes the key for the header (`encodeCopySourceKey`) — `/` and RFC 3986 unreserved characters pass through, so every key the `Build*Path` helpers mint under an ordinary prefix is byte-identical on the wire and a leading slash survives, while a prefix carrying `?`, `#`, `%`, `+`, whitespace or non-ASCII is escaped rather than misread as a `versionId` delimiter or a space. The decoded source key S3 acts on is always the logical key; the destination `Key` is a plain SDK field and is never encoded. That matters because the writers' `cdc.Build*Path` helpers strip only a trailing `/` from the data prefix before formatting `<prefix>/<schema>/...`, so an **empty data prefix yields keys with a leading slash** (`/1/<uuid>.parquet`) — the flush stores that literal key in S3 and lists it as-is, and it is a valid key everywhere (the read scans `s3://<bucket>//1/<uuid>.parquet`). Before #516 compaction alone trimmed the slash and so hashed and merged a sibling key that was never written, failing every rewrite of such a schema with a probe error naming the wrong object. Absolute `s3://` entries pass through unchanged (#249 review); those naming a foreign bucket are refused by compaction (#417) and reported as unverifiable by reconcile. The only relative shapes that name no object — `""` and a bare `/` — are refused by compaction's `bucketRelativeKey` rather than passed on; the refusal is relative-only, so the own-bucket URI `s3://<bucket>//` resolves to the key `/` in compaction exactly as it does in `MissingIn` and reconcile, while `s3://<bucket>/` (an empty key) is refused.
-3. **Fallback glob** — a schema whose manifest is missing or empty resolves to `s3://{s3Bucket}/{s3DataPrefix}/{schemaID}/*.parquet`, preserving pre-manifest read behavior for never-flushed schemas. "Missing" means the store confirmed the key is absent (`manifest.ErrObjectNotFound`, which `S3Store` derives only from the SDK's typed `NoSuchKey`, never from a message substring or a bare 404 status); any other manifest-load failure — `NoSuchBucket`, access denied, a transport error — fails the read instead of taking the glob, because the glob can never classify inconsistency and would turn a store outage into a silently partial answer (#464). A trailing `/` on `s3DataPrefix` is stripped exactly as the writers strip it (`internal/cdc.BuildDeltaPath`), so `"delta/"` and `"delta"` address the same objects; a prefix of `/` alone disables the level like an empty one. The single `*` does not cross `/`, so in-flight `_tmp/` staging objects stay excluded; it must never be widened to `**`. For the same reason `s3DataPrefix` must not contain a glob metacharacter (`*`, `?`, `[`), and the writers' prefix flags (`cdc-flush`/`cdc-init --s3-prefix`, `cdc-init --delta-prefix`, `compactor`/`manifest-reconcile`/`baseline-schema --data-prefix`) refuse one too (#527): the writers store the prefix as a literal S3 key while `read_parquet` would expand it here and in every manifest URI, so `data/*` would scan sibling directories and `data/**` would reach `_tmp/`. Both sides apply the one rule `forma.ValidateParquetPrefix`; DuckDB's S3 glob has no escape syntax, so such a prefix is refused, not escaped. An empty `s3DataPrefix` disables this level. **A glob that matches no object (#720).** DuckDB's `read_parquet` refuses a glob that matches no file, so every DuckDB-routed query on a schema with live rows and nothing flushed yet used to fail, and count against the engine-wide breaker. The engine now lists a source-authored glob set before the pre-read validator. When nothing matches, it asks PostgreSQL whether it records a parquet publication for the schema (`HasParquetHistory`): a `change_log` entry with `flushed_at <> 0`, or a live `entity_main` row with no `change_log` entry at all, which is what a `cdc-init` export leaves once the onboarding handoff clears the log. Either keeps the scan, which fails as before: an empty glob alone proves nothing, since a lost manifest over objects under another prefix, or over objects since deleted, looks the same. No timestamp is compared, because `flushed_at` comes from the CDC host's clock. When neither exists, the parquet leg renders as a relation with no rows (`sqlgen.BuildEmptyParquetScanSource`) and `pg_source` answers alone: PostgreSQL keeps every live row (storage invariant), every entry is unflushed, and every live row has one, so the barrier serves every row hot and shadows every row_id that has an entry. One loss stays unreported: a `cdc-init` export whose rows have all been written again since the handoff leaves no record in PostgreSQL. Every row of that export is shadowed, so losing it changes no answer. The empty scan source is fixed before DuckDB reads `pg_source`, and a writer can publish in between and then mark rows or clear the log. So after the pass the engine resolves the source again. If it no longer resolves an empty glob set, the page is discarded and the pass retried once. A second race fails the read as a degradable `ErrFederatedReadFailed`, and neither reaches the breaker. This relies on causal order, not clocks: every writer publishes before it touches `change_log`, so any change the hot leg saw follows a publication the recheck sees. A flushed entry found by the check is resolved the same way, since it may belong to a flush that landed after path resolution. A writer the reader cannot see at all, one with no manifest writing outside the reader's glob, is outside this argument, as it is outside every read (below). A second loss can also go unreported, in a single query. The recheck reads only the path set, not `HasParquetHistory`. If a publication and its `change_log` write land while a query sits between the check and the recheck, and the publication's manifest and objects are also lost before the recheck, that query answers short. A `cdc-init` export's base objects sit outside the reader's glob by default, so only its manifest would have shown it. Every later query fails, because the `change_log` write is then history. Both unreported forms come from the fact that an export leaves no record of its own in PostgreSQL; #760 tracks a durable initialization record that would close them. A failed listing, and a level-1 hint glob, keep the scan. **The fallback is not a general recovery path for schemas that already have data:** a schema whose parquet exists but whose manifest is empty or absent (writers previously ran with manifests disabled, or the manifest was lost) takes this same glob, and the glob spans exactly one prefix — the configured `s3DataPrefix`. The CLI tools do not share one root by default (`cdc-init --s3-prefix base`, `cdc-flush --s3-prefix delta`, `compactor --data-prefix data`), so objects written under any root other than the reader's `s3DataPrefix` are simply not scanned and their rows go missing without an error. Repair the manifest (`forma-tools manifest-reconcile`, or re-run `cdc-init`) rather than relying on the glob to find the data. The write/GC side of the same misconfiguration is guarded since #463: `manifest-reconcile --gc` refuses to treat live base objects as orphans for a schema whose manifest resolves to zero entries (see `docs/manifest-reconcile.md`).
+3. **Fallback glob** — a schema whose manifest is missing or empty resolves to `s3://{s3Bucket}/{s3DataPrefix}/{schemaID}/*.parquet`, preserving pre-manifest read behavior for never-flushed schemas. "Missing" means the store confirmed the key is absent (`manifest.ErrObjectNotFound`, which `S3Store` derives only from the SDK's typed `NoSuchKey`, never from a message substring or a bare 404 status); any other manifest-load failure — `NoSuchBucket`, access denied, a transport error — fails the read instead of taking the glob, because the glob can never classify inconsistency and would turn a store outage into a silently partial answer (#464). A trailing `/` on `s3DataPrefix` is stripped exactly as the writers strip it (`internal/cdc.BuildDeltaPath`), so `"delta/"` and `"delta"` address the same objects; a prefix of `/` alone disables the level like an empty one. The single `*` does not cross `/`, so in-flight `_tmp/` staging objects stay excluded; it must never be widened to `**`. For the same reason `s3DataPrefix` must not contain a glob metacharacter (`*`, `?`, `[`), and the writers' prefix flags (`cdc-flush`/`cdc-init --s3-prefix`, `cdc-init --delta-prefix`, `compactor`/`manifest-reconcile`/`baseline-schema --data-prefix`) refuse one too (#527): the writers store the prefix as a literal S3 key while `read_parquet` would expand it here and in every manifest URI, so `data/*` would scan sibling directories and `data/**` would reach `_tmp/`. Both sides apply the one rule `forma.ValidateParquetPrefix`; DuckDB's S3 glob has no escape syntax, so such a prefix is refused, not escaped. An empty `s3DataPrefix` disables this level. **A glob that matches no object (#720).** DuckDB's `read_parquet` refuses a glob that matches no file, so every DuckDB-routed query on a schema with live rows and nothing flushed yet used to fail, and count against the engine-wide breaker. A pass now lists each glob of a source-authored set when it resolves the set, and scans the listed objects, never the glob (§6.1, *Frozen inventory*). When nothing matches, it asks PostgreSQL, in the pass's snapshot, whether it records a parquet publication for the schema: a `change_log` entry with `flushed_at <> 0`, or a live `entity_main` row with no `change_log` entry at all, which is what a `cdc-init` export leaves once the onboarding handoff clears the log. An empty glob alone proves nothing, since a lost manifest over objects under another prefix, or over objects since deleted, looks the same. No timestamp is compared, because `flushed_at` comes from the CDC host's clock. When neither record exists, DuckDB runs no statement and the hot leg answers alone: PostgreSQL keeps every live row (storage invariant), every entry is unflushed, and every live row has one, so the barrier serves every row hot. When one exists, the source is resolved again, since a flushed entry may belong to a flush that landed after path resolution. A source that now lists objects raced a publication, and the pass is retried once. One that still lists none fails the read as a degradable `ErrFederatedReadFailed`, which reaches no breaker, because no DuckDB statement ran. One loss stays unreported: a `cdc-init` export whose rows have all been written again since the handoff leaves no record in PostgreSQL. Every row of that export is shadowed, so losing it changes no answer. The empty set is fixed at resolution, before the snapshot that reads the hot leg, and a writer can publish in between and then mark rows or clear the log. So after the pass the engine resolves the source again. If it no longer resolves an empty glob set, the page is discarded and the pass retried once. A second race fails the read as a degradable `ErrFederatedReadFailed`, and neither reaches the breaker. This relies on causal order, not clocks: every writer publishes before it touches `change_log`, so any change the hot leg saw follows a publication the recheck sees. A writer the reader cannot see at all, one with no manifest writing outside the reader's glob, is outside this argument, as it is outside every read (below). A second loss can also go unreported, in a single query. The recheck reads only the path set, not the parquet-history record. If a publication and its `change_log` write land while a query sits between the check and the recheck, and the publication's manifest and objects are also lost before the recheck, that query answers short. A `cdc-init` export's base objects sit outside the reader's glob by default, so only its manifest would have shown it. Every later query fails, because the `change_log` write is then history. Both unreported forms come from the fact that an export leaves no record of its own in PostgreSQL; #760 tracks a durable initialization record that would close them. A failed listing fails the pass as a degradable `ErrFederatedReadFailed`. A level-1 hint glob is not listed: it keeps its scan, and an empty one fails as `read_parquet` fails it. **The fallback is not a general recovery path for schemas that already have data:** a schema whose parquet exists but whose manifest is empty or absent (writers previously ran with manifests disabled, or the manifest was lost) takes this same glob, and the glob spans exactly one prefix — the configured `s3DataPrefix`. The CLI tools do not share one root by default (`cdc-init --s3-prefix base`, `cdc-flush --s3-prefix delta`, `compactor --data-prefix data`), so objects written under any root other than the reader's `s3DataPrefix` are simply not scanned and their rows go missing without an error. Repair the manifest (`forma-tools manifest-reconcile`, or re-run `cdc-init`) rather than relying on the glob to find the data. The write/GC side of the same misconfiguration is guarded since #463: `manifest-reconcile --gc` refuses to treat live base objects as orphans for a schema whose manifest resolves to zero entries (see `docs/manifest-reconcile.md`).
 4. **No paths — the read fails fast, with its own classification.** With no hint, no configured source, and no fallback, the path set resolves empty and the engine rejects the query at resolution with `ErrNoParquetPaths` (`NoParquetPathsError{SchemaID, SourceConfigured}` — see `docs/error-handling.md`), before rendering, before the pre-read schema validator, and before DuckDB is touched. It is **not degradable**: `allow_partial_degraded_mode` does not absorb it, because every query reaching the DuckDB engine wants warm and/or cold data (hot-only and `prefer_hot` short-circuit to Postgres earlier), so a Postgres-only answer would be silently short exactly where the cold tier was requested. The message names the schema and distinguishes "no source configured" from "source consulted, manifest empty, fallback disabled", which have different remedies.
 
    Note that an empty path set is not a normal state: a never-flushed schema takes the level-3 fallback glob, so reaching level 4 means the fallback is disabled too. Before #299 this case rendered `read_parquet(<no value>)` and died as a DuckDB parser error classified `ErrFederatedReadFailed` — loud, but indistinguishable from a transient S3 outage to any programmatic discriminator, so degraded mode converted a configuration mistake into a quietly incomplete answer. The renderer now also refuses to render an unbound `$S3_PATHS` at all (`sqlgen.requireS3Paths`), so no caller can reconstruct that statement.
@@ -182,7 +182,7 @@ These controls are part of the request payload; they are not conveyed via HTTP h
 | `duckdb.s3DataPrefix` | `DUCKDB_S3_PREFIX` (`S3_PREFIX`) | Mirrors the CDC write side's parquet prefix: the reader's parquet root. Builds the level-3 fallback glob and, when `allowCallerParquetPaths` is on, narrows level-1 hints to `s3://<bucket>/<prefix>/…` (#477). Must not contain `*`, `?` or `[`: rejected at startup, as on the writers' prefix flags (#527). |
 | `duckdb.manifestPrefix` | `DUCKDB_MANIFEST_PREFIX` (`MANIFEST_PREFIX`) | Root prefix for manifest objects. Must match the CDC/compaction write side. |
 | `duckdb.manifestTemplate` | `DUCKDB_MANIFEST_TEMPLATE` (`MANIFEST_TEMPLATE`) | Per-schema manifest path template, e.g. `manifest/{{.SchemaID}}.json`. **Non-empty is the single enable gate** for manifest reads. |
-| `duckdb.hotLegTransport` | `DUCKDB_HOT_LEG_TRANSPORT` | How a federated pass reads the hot tier (§6.1.1): `pgx`, the default since #857, or `attach`, the rollback until plan step 7 removes it. Any other value fails startup. |
+| `duckdb.hotLegTransport` | `DUCKDB_HOT_LEG_TRANSPORT` | How a federated pass reads the hot tier (§6.1). `pgx`, or empty, is the only transport. `attach`, the rollback until #858, fails startup with a message that it was retired, so a deployment left on it does not change transport silently. Any other value fails startup too. |
 | `duckdb.allowCallerParquetPaths` | `DUCKDB_ALLOW_CALLER_PARQUET_PATHS` | Opt in to honoring the per-request `federated.s3_parquet_path_template` hint (§4.3.1 level 1). Default `false`: the hint is rejected. When `true`, rendered hint paths must fall inside `duckdb.s3Bucket` (under `duckdb.s3DataPrefix` when set) and obey the level-3 glob's shape rules — no `**`, wildcards only in the object-name segment, no `_tmp/` (#477); enabling it without a bucket fails at startup (#456); an `s3DataPrefix` containing `*`, `?`, or `[` fails at startup whether or not it is enabled (#526 review, #527). |
 
 * **Env vars are read only when `DUCKDB_ENABLED` is true** (`true`, `1` or `t`, in any case; since #642 a set value that is not a boolean, such as `yes`, fails startup instead of reading as off): with DuckDB off, `cmd/server` returns the base config untouched, so setting `DUCKDB_MANIFEST_TEMPLATE` alone is a silent no-op — not a startup failure and not a behavior change. The one exception is a refused `DUCKDB_ENABLED`: `DUCKDB_ALLOW_CALLER_PARQUET_PATHS` is checked alongside it, so the failed boot names both bad values.
@@ -269,7 +269,7 @@ writer emits `ltbase_created_at`, never `created_at`, and DuckDB
 deduplicates a case-variant of a physical export column (`Row_Id` beside
 `row_id`) to `Row_Id_1` at COPY time. The ambiguity arises only when the
 attribute column is projected beside the system column — in the exporter's
-SELECT list and in `s3_source`, `pg_source` and the outer select — and every
+SELECT list and in `s3_source` and the outer select — and every
 one of those projections is built from the active cache, so an active
 `Created_At` is refused and a retired one is exempt: it sits unreferenced in
 the raw `SELECT *` scans of the cold-scan source and the compaction merge,
@@ -381,18 +381,18 @@ benchmark page. Requiring an order-less request to match the default would
 make every `created_at` / `ver_ts` / `deleted_ts` cursor unreachable.
 
 **The explicit `limit`, `offset` and `attributeOrders` arguments are the
-pagination contract of every DuckDB seam.** The advanced template reads
-`LIMIT`, `OFFSET` and the non-keyset `ORDER BY` from the *query object*
+pagination contract of every DuckDB seam.** The DuckDB template reads the
+page's limit, offset and non-keyset `ORDER BY` from the *query object*
 (`q.Limit`, `q.Offset`, `q.AttributeOrders`), so a caller that normalised or
 clamped its limit but passed the query unchanged used to have the clamp
 silently ignored: the keyset coordinator (`ExecuteFederatedKeysetQuery`, then
 the keyset branch of `ExecuteFederatedPaginatedQuery`) rendered `LIMIT 0` for a
 zero `fq.Limit` and an over-`MaxRows` `fq.Limit` verbatim, with only its
 in-memory slice honouring the clamp.
-`buildDuckDBQueryWithPlan` — the one point the direct render and the compiled
-plan cache both flow through — now renders a copy of the query carrying the
-dispatched arguments (`federated.dispatchedQuery`), so the rendered skeleton,
-the shape hash and the plan scope all see the query that was dispatched.
+The pass therefore runs on a copy of the query carrying the dispatched
+arguments (`federated.dispatchedQuery`), made before the render and the
+compiled plan cache, so the rendered skeleton, the shape hash, the plan scope,
+the parquet window and the merge all see the query that was dispatched.
 `engine.Query` passes the query's own fields and is unaffected.
 
 The validator does not check that an attribute is registered in the schema:
@@ -417,43 +417,27 @@ already rejected any whose fold collides with a reserved column.
 
 ## **5. SQL Execution Template**
 
-This SQL template represents the core logic of the Federated Query Engine.
+DuckDB runs one statement per federated pass, `sqlgen.ParquetOnlyQueryTemplateDuckDB` (`internal/sqlgen/parquet_only_template_duckdb.go`), and it reads only the parquet tiers. The pass reads the dirty set and the hot rows from PostgreSQL over pgx, in one snapshot, stages the dirty set in DuckDB, runs this statement, and merges its rows with the hot rows in Go (§6.1). So the statement does everything that concerns parquet rows alone: the anti-join against the staged dirty set, the last-write-wins dedup between base and delta, the visibility filter, the logical filter on the dedup winner, the keyset predicate, the page order and `COUNT(*) OVER()`. It returns only the window of parquet rows the merge can need.
 
-It is a simplified sketch of the runtime template (`internal/sqlgen/advanced_query_template_duckdb.go`) and is kept executable: `internal/federated/design_doc_sql_test.go` extracts this block, runs it on DuckDB, and pins its scan shapes, source aliases, and LWW/filter semantics — update that test when editing this section.
+**The parquet leg's statement.** The sketch below is a simplified form of the runtime template and is kept executable: the tests in `internal/federated/design_doc_*_test.go` extract this block, check that it reads no PostgreSQL and that its scan source, projection and staged-table name are the runtime's, and run it on DuckDB over seed data for the #173 scenarios, with the dirty set staged by the runtime's own `StageDirtySet`. Update them when editing this section. Five properties of the statement follow from the merge in Go (#854):
 
-```SQL
+* The dirty set is a temp table (`sqlgen.StagedDirtyIDsTable`) the pass stages through the Appender on the DuckDB connection it pins, and drops when it ends. The pass stages whichever set the tier form needs (the widened set for the hot form, the strict one for the hot-excluded form, §3.2), so the statement has no tier-form branch and no flush-grace cutoff, and its text does not depend on the set's size (§6.1, *Dirty-set size*).
+* Every `ORDER BY` key renders `NULLS LAST`, the placement Go's comparator uses (§6.1, *Ordering parity*).
+* The window is bound: `LIMIT ? OFFSET ?` on an offset page, with the window `[max(0, offset-h), offset+limit)` for h hot matches, and `LIMIT ?` on a keyset page (§6.1, *Pagination and totals*). A rendered window would compile one plan per hot match count.
+* `total_pages` and `current_page` are typed NULLs, kept so the result has the column layout the row scanner reads. Only the merge knows the page. `total_records` is the parquet count the merge adds h to.
+* The page order's keys follow that layout, one column per `ORDER BY` term (`sqlgen.SortKeyColumn`). The merge places each parquet row among the hot keys by the values DuckDB ordered it by, so Go never re-derives a parquet row's key from the returned record, whose types are the record's, not the export's. Each term reads a column of `visible`, qualified (`visible.<column>`), because DuckDB binds an unqualified `ORDER BY` name to an output alias first, and an attribute named like an output column would otherwise order by that column. A column-bound attribute orders by its parquet column at the export type, not by the outer select's image of its storage column. The sketch leaves the key columns out.
 
--- 1. Configuration
-PRAGMA memory_limit='4GB';
-PRAGMA threads=4;
+The compiled plan's scope therefore holds no dirty set, limit or offset: one plan serves every pass of a shape, whatever the dirty set and the hot match count.
 
--- 2. Define Query Parameters (To be interpolated by the Host Application)
--- $SCHEMA_ID:       Integer (e.g., 1)
--- $PG_CONN:         String (Postgres Connection String)
--- $PG:              The PostgreSQL catalog the engine attaches ahead of
---                    every query (#752): ATTACH IF NOT EXISTS $PG_CONN AS $PG
---                    (TYPE postgres, READ_ONLY), filter pushdown off (§6.1)
--- $PG_WHERE_CLAUSE: String (Generated Physical SQL; DuckDB evaluates it, §6.1)
--- $S3_PATHS:        List (e.g., ['s3://bucket/base/*.parquet'])
--- $FLUSH_GRACE_CUTOFF_MS: BIGINT (the instant this query resolved $S3_PATHS,
---                    minus the clock-skew margin, #252; MaxInt64 disables
---                    the widening — hot-excluded renders omit it entirely)
+```sql
+-- $S3_PATHS:      List (the frozen object list, §6.1 step 1)
+-- $WINDOW_LIMIT:  BIGINT, bound (offset+limit - max(0, offset-h) on an offset page)
+-- $WINDOW_OFFSET: BIGINT, bound (max(0, offset-h); a keyset page binds LIMIT only)
 
 WITH
 -- =========================================================================
--- CTE 1: The Dirty Set
--- Identifies records currently in the transaction buffer.
--- =========================================================================
-dirty_ids AS (
-    SELECT row_id
-    FROM $PG."public"."change_log"
-    WHERE schema_id = $SCHEMA_ID
-        AND (flushed_at = 0 OR flushed_at >= $FLUSH_GRACE_CUTOFF_MS)
-),
-
--- =========================================================================
--- CTE 2: S3 Source (Cold & Warm)
--- Reads historical data with the dirty-set anti-join and semijoin pushdown.
+-- CTE 1: S3 Source (Cold & Warm)
+-- Reads the parquet tiers with the dirty-set anti-join and semijoin pushdown.
 -- =========================================================================
 s3_source AS (
     SELECT
@@ -461,9 +445,9 @@ s3_source AS (
         -- created_at and ver_ts are DIFFERENT quantities (#460):
         -- ltbase_created_at is the row's creation time, which both exporters
         -- write into every parquet generation; changed_at is the LWW version
-        -- stamp. Aliasing changed_at into the created_at slot made this leg
-        -- report a different quantity from pg_source's m.ltbase_created_at
-        -- through the same UNION ALL column, so created_at was wrong for
+        -- stamp. Aliasing changed_at into the created_at slot made a parquet
+        -- row report a different quantity from the hot row's
+        -- entity_main.ltbase_created_at, so created_at was wrong for
         -- parquet-winning rows and the default sort key changed value the
         -- moment a row was flushed.
         ltbase_created_at AS created_at,
@@ -509,8 +493,9 @@ s3_source AS (
     -- NULLs for never-flushed columns.
     FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at, CASE WHEN ltbase_created_at IS NULL AND COALESCE(CAST(deleted_at AS BIGINT), 0) = 0 THEN error('parquet scan produced NULL ltbase_created_at on a live row: a scanned object violates the export schema invariant (#189/#256/#460)') ELSE CAST(ltbase_created_at AS BIGINT) END AS ltbase_created_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
     WHERE
-        -- 1. Anti-Join: Exclude if a newer version exists in PG
-        row_id NOT IN (SELECT row_id FROM dirty_ids)
+        -- 1. Anti-join: drop every parquet version of a row in the dirty set
+        --    the pass staged. The hot leg serves that row (§3.2).
+        CAST(row_id AS UUID) NOT IN (SELECT row_id FROM temp.main.forma_dirty_ids)
         -- 2. Predicate pushdown as a row_id SEMIJOIN: a row qualifies when
         --    ANY of its parquet versions matches; ALL of its versions then
         --    enter dedup so the latest wins BEFORE the real filter below.
@@ -523,56 +508,7 @@ s3_source AS (
 ),
 
 -- =========================================================================
--- CTE 3: PostgreSQL Source (Hot)
--- Performs Dynamic Pivoting and filters the hot rows in DuckDB.
--- =========================================================================
-pg_source AS (
-    SELECT
-        m.ltbase_row_id AS row_id,
-        m.ltbase_created_at AS created_at,
-        cl.changed_at AS ver_ts,
-        cl.deleted_at AS deleted_ts,
-
-        -- [Type Casting] MANDATORY: Cast PG types to match Parquet Schema
-        CAST(m.text_01 AS VARCHAR) AS name,
-        CAST(m.integer_01 AS INTEGER) AS age,
-
-        -- [EAV Pivot] Aggregation for dynamic attributes
-        -- Note: EAV filtering is done in the WHERE clause below, not pushed to EAV scan
-        MAX(CASE WHEN e.attr_id = 205 THEN e.value_text END) AS tag,
-        3 AS source_tier_priority
-
-    FROM $PG."public"."change_log" cl
-
-    -- [No pushdown] $PG_WHERE_CLAUSE is a plain predicate in the WHERE
-    -- clause below, and DuckDB evaluates it. The scans send PostgreSQL no
-    -- predicate at all, so each scan in this CTE copies its whole table,
-    -- every schema and every flushed row included, and the filters run on
-    -- the copy (§6.1, #631).
-    JOIN $PG."public"."entity_main_dev" m
-      ON cl.schema_id = m.ltbase_schema_id AND cl.row_id = m.ltbase_row_id
-
-    LEFT JOIN $PG."public"."eav_data_dev" e
-      ON cl.schema_id = e.schema_id AND cl.row_id = e.row_id
-
-    WHERE cl.schema_id = $SCHEMA_ID
-        AND (cl.flushed_at = 0 OR cl.flushed_at >= $FLUSH_GRACE_CUTOFF_MS)
-        AND m.ltbase_schema_id = $SCHEMA_ID
-        AND ($PG_WHERE_CLAUSE)
-    GROUP BY m.ltbase_row_id, m.ltbase_created_at, cl.changed_at, cl.deleted_at, m.text_01, m.integer_01
-),
-
--- =========================================================================
--- CTE 4: Unified View
--- =========================================================================
-unified AS (
-    SELECT * FROM s3_source
-    UNION ALL
-    SELECT * FROM pg_source
-),
-
--- =========================================================================
--- CTE 5: Ranked (Last-Write-Wins Deduplication)
+-- CTE 2: Ranked (Last-Write-Wins Deduplication between base and delta)
 -- =========================================================================
 ranked AS (
     SELECT *,
@@ -580,35 +516,47 @@ ranked AS (
             PARTITION BY row_id
             ORDER BY ver_ts DESC, source_tier_priority DESC, deleted_ts DESC, row_id ASC
         ) AS rn
-    FROM unified
+    FROM s3_source
+),
+
+-- =========================================================================
+-- CTE 3: Visible rows
+-- =========================================================================
+visible AS (
+    SELECT *
+    FROM ranked
+    WHERE rn = 1
+        -- Exclude Soft Deletes (the tombstone must WIN dedup first, then be dropped)
+        AND (deleted_ts IS NULL OR deleted_ts = 0)
+        -- Final logical filter, applied to the LWW WINNER only (#173/#178):
+        -- a newer non-matching version must never expose an older matching one.
+        AND (age > 18 AND name LIKE 'John%' AND tag = 'developer')
+        -- A keyset page adds its cursor predicate here, after the dedup
+        -- (#212), so it tests each row's winning version only.
 )
 
 SELECT
-    row_id, name, age, tag, created_at
-FROM ranked
-WHERE rn = 1
-    -- Exclude Soft Deletes (the tombstone must WIN dedup first, then be dropped)
-    AND (deleted_ts IS NULL OR deleted_ts = 0)
-    -- Final logical filter, applied to the LWW WINNER only (#173/#178):
-    -- a newer non-matching version must never expose an older matching one.
-    AND (age > 18 AND name LIKE 'John%' AND tag = 'developer')
+    row_id, name, age, tag, created_at,
+    COUNT(*) OVER() AS total_records
+FROM visible
 
 -- Sorting & Pagination
 -- A trailing row_id ASC tiebreak gives equal-key rows a total order, so
--- LIMIT/OFFSET page windows stay stable across requests (#183). This mirrors
--- buildNonKeysetOrderBy, the PG optimized template's trailing m.ltbase_row_id,
--- and the production-harness oracle.
-ORDER BY created_at DESC, row_id ASC
-LIMIT $PAGE_SIZE OFFSET $OFFSET;
+-- LIMIT/OFFSET page windows stay stable across requests (#183). Go's
+-- comparator orders the hot keys the same way, NULLs last in both
+-- directions, and merges them into this window.
+ORDER BY visible.created_at DESC NULLS LAST, visible.row_id ASC NULLS LAST
+LIMIT $WINDOW_LIMIT OFFSET $WINDOW_OFFSET;
 ```
 
 **The intra-partition tie-break contract (#274).** Inside the `ranked` window
 the terms do decreasing amounts of work: `ver_ts DESC` decides almost every
-partition; `source_tier_priority DESC` resolves hot-vs-cold at an equal
-`ver_ts` (hot is 3, every parquet row is 1 — base and delta are
-indistinguishable at rank time); `deleted_ts DESC` makes a tombstone
+partition; `source_tier_priority DESC` is inert, since every parquet row is 1
+and base and delta are indistinguishable at rank time (it resolved hot-vs-cold
+at an equal `ver_ts`, hot being 3, while the hot rows still entered this
+window, before #858); `deleted_ts DESC` makes a tombstone
 (`deleted_ts = T > 0`) beat a live copy (`0` from any cold export since #274,
-`NULL` from the hot leg, a pre-#274 legacy delta object, or the benchmark
+`NULL` from a pre-#274 legacy delta object or the benchmark
 harness shape — which deliberately keeps the raw legacy encoding and stays
 #365-tolerant) so the delete wins
 the fold and is then dropped by the visibility filter — this delete-wins arm
@@ -676,15 +624,16 @@ at the boundary, which silently skips every row tied there; the trailing
 resolvable (#183).
 
 The two entry points serve the same page but report different totals. The
-template's `COUNT(*) OVER()` runs after the post-dedup keyset filter, so on a
-continued page `Query` reports the rows remaining after the cursor (it recounts
-only an empty page at a non-zero offset, #181). `ExecuteFederatedKeysetQuery`
-strips the cursor and recounts, so it reports the full match count, which is
-what the keyset benchmark asserts. The coordinator was
+statement's `COUNT(*) OVER()` runs after the post-dedup keyset filter, and Go
+applies the cursor to the hot keys, so on a continued page `Query` reports the
+rows remaining after the cursor (§6.1, *Pagination and totals*).
+`ExecuteFederatedKeysetQuery` strips the cursor and recounts with a whole pass,
+so it reports the full match count, which is what the keyset benchmark
+asserts. The coordinator was
 `ExecuteFederatedPaginatedQuery` until #442. That function also held an
 in-memory Postgres/DuckDB merge for offset pages. Its only caller always passed
 a cursor, so the merge never ran, and it was retired rather than wired to a
-caller: it read the hot tier twice (the template already reaches it through
+caller: it read the hot tier twice (the template then reached it through
 its own PostgreSQL scans), arbitrated conflicts by `UpdatedAt` rather than by the dirty
 set, and capped its total at `MaxRows`. Offset pagination is `Query`'s job.
 
@@ -956,139 +905,72 @@ stamp existing.
 
 ## **6. Optimization Strategies**
 
-### **6.1 Hot-Leg Predicate Placement (No Pushdown)**
+### **6.1 Hot Leg over pgx, Merge in Go (#719)**
 
-The hot leg pushes no predicate into PostgreSQL. This section used to say the opposite; #631 found that it does not happen.
+DuckDB reads only the parquet tiers. PostgreSQL serves the hot rows over the engine's pgx pool, filtered in PostgreSQL through its indexes, and Go merges the two results. No cross-tier deduplication is needed, because the tiers are disjoint by `row_id`: every row the hot leg serves has a `change_log` entry in the dirty window, and the anti-join drops every parquet version of such a row. Deduplication between base and delta stays in DuckDB (§5). `docs/federated-query/pgx-hot-leg-plan.md` records how the design was built and measured, step by step.
 
-* **Mechanism:** the template reads PostgreSQL through a catalog the engine attaches ahead of every query, `ATTACH IF NOT EXISTS '<conn>' AS forma_pg_<hmac> (TYPE postgres, READ_ONLY)` (`sqlgen.PostgresAttachSQL`), and each scan is a table reference into it, `forma_pg_<hmac>."public"."change_log"`. DuckDB 2.0's `postgres` extension no longer has the `postgres_scan(conn, schema, table)` function the template used before #752. Scans of an attached catalog push filters into their `COPY` by default, so the engine sets `pg_enable_filter_pushdown = false` with the attach: on the pinned engine (DuckDB 2.0.0) each scan then reaches PostgreSQL as `COPY (SELECT <projected columns> FROM <table>) TO STDOUT` with no `WHERE` clause, as `postgres_scan` did on 1.5.6 (the DuckDB 1.4.5 probe in #631 also saw only the scanner's own `ctid` range there). Only the column projection reaches PostgreSQL. `$PG_WHERE_CLAUSE`, the `schema_id` and `flushed_at` filters and the EAV pivot's `attr_id IN (...)` all run in DuckDB on the copied rows, and no PostgreSQL index serves this path. `TestHotLegCopiesWholeTables` (production e2e) pins this, so a DuckDB upgrade that starts pushing filters fails it instead of leaving this section wrong again.
-* **What one query copies:** a query whose tier form renders `pg_source` copies `change_log` twice (`dirty_ids` and `pg_source`), all of `entity_main`, and all of `eav_data` when the EAV pivot renders. A hot-excluded query copies `change_log` once, for `dirty_ids`. The engine's separate dirty-set fetch over pgx (§3.2) is a filtered PostgreSQL query and is not part of this cost.
-* **Bound:** the copied volume is the total size of those tables, across every schema, and does not depend on the queried schema, the predicate or the size of the hot tier. Nothing keeps it small. Under the storage invariant (§3.3), `entity_main` and `eav_data` hold every live entity. `change_log` gains a row each time a flushed row changes again, and the flush marks rows rather than deleting them (#669). So the hot-leg cost of every query that reaches DuckDB grows with the whole database. A page that routing answers from PostgreSQL alone (§4.3) does not pay it. The ≤ 10K-row hot-tier bound that `requirements.md` §7.1 relies on limits the rows `pg_source` returns, not the rows it reads.
-* **Operational assumption:** this path is acceptable only while those three tables are small enough to copy on every query that reaches DuckDB. That is a deployment-size limit, not a property the engine enforces or measures. The engine does not observe the copied row counts (§8, `fed_query_row_count`).
-* **Diagnostics:** the execution plan records a `postgres` source whose reason is `hot-leg predicate (evaluated in DuckDB)`. It never sets `predicate_pushdown`. The source's SQL, the main-table fragment, stays in the engine's internal plan: the response projection drops all generated SQL (`requirements.md` §10.3), so a response shows only the source's tier, engine and reason. Under the pgx hot leg (§6.1.1) the hot leg's source reads `hot-leg predicate (evaluated in PostgreSQL)` and sets `predicate_pushdown`, because there PostgreSQL does evaluate it.
-* **Decided, built behind a switch:** the hot leg stops reading PostgreSQL through DuckDB. It reads PostgreSQL over pgx and Go merges it with the parquet tiers (#719, §6.1.1). That supersedes #631's pushdown question. The two other candidates are not pursued: the attached catalog's own filter pushdown (turning `pg_enable_filter_pushdown` back on), and `postgres_query` over the same attachment with Forma-rendered PostgreSQL SQL (the CDC exporter's shape until #785). Plan step 5 (#856) built it behind `DuckDBConfig.HotLegTransport = pgx`, and plan step 6 (#857) made `pgx` the default. This section and §5 describe the `attach` transport, the rollback until plan step 7 removes it.
-* **Attachment lifecycle:** the attachment belongs to the DuckDB database, so every connection of it shares one, and the `postgres` extension keeps its own pool of PostgreSQL connections for it (`pg_pool_max_connections`, 12 by default), which counts against PostgreSQL's connection limit next to the engine's pgx pool. Before each query the engine takes a pooled connection, attaches on it under a process-wide guard, and runs the query on that same connection without repeating the attach (`queryWithPostgres`). The guard exists because concurrent `ATTACH IF NOT EXISTS` of one name on DuckDB 2.0.0 fails all but one with `database with name ... already exists`. It is process-wide because engines can share a file-backed database, and it covers only the `ATTACH`: the connection is taken before the guard, so a request waiting for its own client's busy pool never delays another database's attach, and a waiter gives up at its own deadline. The attach runs before every query, a no-op once the database holds the catalog, because a database reopened after DuckDB invalidated it (§7.4) has lost the catalog. Pinning the query to the attach's connection keeps every first attach of a reopened database under the guard: a query whose database was invalidated after its attach fails like any statement on that database, and the next request's guarded attach is the first on the reopened one. An executor without a pinned connection (the engine-seam test fakes) gets the attach at the head of its query batch instead. The alias is an HMAC of the connection string under a per-process key: it differs per connection string, so engines that share a file-backed database never read each other's PostgreSQL, and it reveals nothing about the password the connection string holds. The rendered query, and so the execution plan and any log line quoting it, carries only the alias; before #752 every `postgres_scan` call in it carried the connection string. The extension caches the catalog's table list and column types for the attachment's lifetime; Forma creates no tables at runtime, but a table recreated with different columns behind a live process is read with the old shape until the database is reopened.
+**Why.** Until #858 DuckDB read PostgreSQL itself. The template's `dirty_ids` and `pg_source` CTEs scanned `change_log`, `entity_main` and `eav_data` through a catalog the engine attached with DuckDB's `postgres` extension (`postgres_scan` before #752), and one `ROW_NUMBER` dedup merged the hot rows with the parquet rows. That path had costs that kept coming back as separate issues:
 
-### **6.1.1 Decided: Hot Leg over pgx, Merge in Go (#719)**
+* No predicate reached PostgreSQL. The engine turned the attached catalog's filter pushdown off, so each scan copied its whole table, every schema and every flushed row included, and the main-table fragment (§4.2 A) ran in DuckDB on the copy (#631). The hot leg's cost grew with the whole database, not with the hot set. #851 measured copying and discarding the flushed rows at 3.2 to 3.5 s of every pass at 1,000,000 `entity_main` rows, linear in the table size while the hot set stayed fixed.
+* The connection string, password included, reached DuckDB in the `ATTACH`, so the federated error path had to scrub DuckDB's errors (#306).
+* PostgreSQL values reached the merge through the extension's type mapping, a second type system where hot-leg bugs such as #627 lived.
+* The extension opened its own PostgreSQL connections, outside the pgx pool's limits and authentication. Through MiniStack's DSQL proxy its scans failed (`COPY is not supported`), and it was never run against a DSQL cluster (#691).
+* The federated client needed `postgres_scanner`, which nothing else in Forma loaded after #785.
+* PostgreSQL was read twice: the engine fetched the dirty set over pgx, and the template had DuckDB read `change_log` again.
 
-**Status.** Decided on #719 (roadmap #657, step 0c). Built behind a switch: plan step 5 (#856) runs the pass below when `DuckDBConfig.HotLegTransport` is `pgx`. Plan step 6 (#857) added the tier parity suite and the dual-run test and made `pgx` `DefaultConfig`'s transport, so this section describes what runs by default and §5 and §6.1 the `attach` rollback (`DUCKDB_HOT_LEG_TRANSPORT=attach` for `cmd/server`). Plan step 2 (#853) landed the Go order (`internal/sortkey`), the cursor normalization and the `deleted_ts` rule, which change today's path as described below. Plan step 4 (#855) landed the hot-keys query and the page read (`QueryHotKeys`, `ReadHotRows`). `docs/federated-query/pgx-hot-leg-plan.md` sequences the work. Two rulings come first, because under this design PostgreSQL filters the hot rows and DuckDB filters the parquet rows of one answer (*Filtering splits by tier*, below): #728 (text range operators compare by collation on PostgreSQL and by bytes on DuckDB) and #763 (a non-canonical rfc3339 image compares as text on PostgreSQL and as an instant on DuckDB). #763 is ruled: such an image is outside the query contract (`docs/rfc3339-storage-contract.md`). #719 also asked to measure how federated latency splits between the PostgreSQL copy and the parquet scan before deciding. The decision was taken without that measurement. It is still needed, as the baseline the cost claims below are checked against.
+#719 chose to take PostgreSQL out of DuckDB. Turning the attached catalog's filter pushdown back on, or rendering Forma's PostgreSQL SQL into `postgres_query` over the same attachment (the CDC exporter's shape until #785), would have answered #631's pushdown question and nothing else: both keep the extension, its connections and its type mapping. Over the same data and DuckDB instance, #856 measured the pgx pass at 73 ms where the attach pass took 3,115 ms for a query selecting one row out of 1,000,000, and at 2.2 s against 5.8 s for a first page that ranks every parquet row, which is about what the parquet leg's statement alone costs. The plan gives the tables and their limits.
 
-**Why.** Reading PostgreSQL from inside DuckDB has costs that kept coming back as separate issues:
+A federated pass in the hot form (the request's tiers include `hot`, `sqlgen.FederatedQueryHasHot`) runs in six steps:
 
-* The hot leg's cost grows with the whole database, not with the hot set (§6.1, #631).
-* The connection string, password included, reaches DuckDB in the `ATTACH`, so the federated error path keeps a credential scrubber (#306).
-* PostgreSQL values reach the merge through the extension's type mapping, a second type system where hot-leg bugs such as #627 lived.
-* The extension opens its own PostgreSQL connections outside the pgx pool's limits and authentication (§6.1). On Aurora DSQL that path is unverified (#691).
-* The federated client needs `postgres_scanner` (§7.5). Since #785 nothing else in Forma does.
-* PostgreSQL is read twice. The engine already fetches the dirty set over pgx (§3.2), and the template then has DuckDB read `change_log` again.
-
-**The design.** DuckDB reads only the parquet tiers. PostgreSQL serves the hot rows over pgx, filtered in PostgreSQL through its indexes. Go merges the two results. No cross-tier deduplication is needed, because the tiers are disjoint by `row_id`: every row the hot leg serves has a `change_log` entry in the dirty window, and the anti-join drops every parquet version of such a row. Deduplication between base and delta stays in DuckDB.
-
-A federated pass in the hot form (`HasHot`, §5) runs in six steps:
-
-1. Resolve the parquet path set and the flush-grace cutoff, as today (§4.3.1, §3.2). Then freeze the set: expand each glob of a source-authored set (the level-3 fallback) into the objects it matches, and scan that list in step 4, never the glob (*Frozen inventory*, below).
-2. Open a `REPEATABLE READ READ ONLY` transaction on the engine's pgx pool. In its snapshot, read two sets:
-   * **The dirty set:** every `row_id` of the schema with a `change_log` entry where `flushed_at = 0 OR flushed_at >= cutoff`. Today's pgx fetch reads only `flushed_at = 0`, and DuckDB's `dirty_ids` reads the widened set. The anti-join needs the widened set.
-   * **The hot keys:** each `entity_main` row of the schema that has an entry in the same window and matches the request's condition. For each, read its `row_id`, `created_at`, `ver_ts` (the newest entry's `changed_at`) and the stored values its sort keys derive from. The condition renders through the PostgreSQL route's builder, so the hot leg filters exactly as a PostgreSQL-only answer does. The query has no `ORDER BY` and no `LIMIT`. The dirty set bounds the number of matches.
+1. Resolve the parquet path set and the flush-grace cutoff (§4.3.1, §3.2). Then freeze the set: expand each glob of a source-authored set (the level-3 fallback) into the objects it matches, and scan that list in step 4, never the glob (*Frozen inventory*, below).
+2. Take one of the engine's pass slots (*Connection use*, below), then open a `REPEATABLE READ READ ONLY` transaction on the engine's pgx pool. In its snapshot, read two sets:
+   * **The dirty set:** every `row_id` of the schema with a `change_log` entry where `flushed_at = 0 OR flushed_at >= cutoff`, the widened set the anti-join needs (§3.2).
+   * **The hot keys:** each `entity_main` row of the schema that has an entry in the same window and matches the request's condition. For each, read its `row_id`, `created_at`, `ver_ts` (the newest entry's `changed_at`) and the stored values its sort keys derive from. The condition renders through the PostgreSQL route's builder (`buildHybridConditions`, anchored on `entity_main`), so the hot leg filters exactly as a PostgreSQL-only answer does. The query has no `ORDER BY` and no `LIMIT`. The dirty set bounds the number of matches. A row whose newest entry in the window is a tombstone is not a hot key, even where direct SQL has left its `entity_main` row in place, so the tombstone hides the row as it does in the parquet dedup.
 3. Sort the hot keys in Go, and apply the keyset cursor to them (*Ordering parity*, below).
-4. Stage the dirty set in a DuckDB temp table and run the parquet half of today's template. It does the anti-join against the staged set, the `ROW_NUMBER` dedup, the logical filter on the winner, the keyset predicate, the order, and `COUNT(*) OVER()`. It returns only the window of parquet rows the merge can need (*Pagination and totals*, below).
+4. Stage the dirty set in a DuckDB temp table and run the parquet leg's statement (§5). It does the anti-join against the staged set, the `ROW_NUMBER` dedup, the logical filter on the winner, the keyset predicate, the order, and `COUNT(*) OVER()`. It returns only the window of parquet rows the merge can need (*Pagination and totals*, below).
 5. Merge in Go and cut the page.
 6. Read the page's hot rows in full, in the same snapshot, through the PostgreSQL route's reader: the `entity_main` projection and the EAV `JSON_AGG`. Then end the transaction.
 
-The hot-excluded form (`preferred_tiers` without `hot`) has no hot leg. It reads the strict `flushed_at = 0` set, without the widening, as today, and stages it. A schema whose path set resolves empty (#720) needs no DuckDB pass: the hot leg is the whole answer. The publication-race recheck stays as it is, and `HasParquetHistory` moves into the same snapshot.
-
-**The parquet leg's statement (plan step 3, #854).** Step 4 runs `sqlgen.ParquetOnlyQueryTemplateDuckDB`. It is the §5 template without PostgreSQL: no `pg_source`, no catalog reference, so no `ATTACH` and no connection string. The sketch below is executable in the same way as §5's: `internal/federated/design_doc_sql_test.go` runs it over §5's seed data, with the dirty set staged instead of read from `change_log`. It differs from §5 in five places:
-
-* `dirty_ids` is the temp table the pass stages through the Appender (`sqlgen.StagedDirtyIDsTable`), on the DuckDB connection it pins. The Go side stages whichever set the tier form needs, so the statement has no `HasHot` branch and no flush-grace cutoff. Its text does not depend on the set's size.
-* Every `ORDER BY` key renders `NULLS LAST` (*Ordering parity*, below).
-* The window is bound: `LIMIT ? OFFSET ?` on an offset page, with the window `[max(0, offset-h), offset+limit)` (*Pagination and totals*, below), and `LIMIT ?` on a keyset page. A rendered window would compile one plan per hot match count.
-* `total_pages` and `current_page` are typed NULLs, kept so the result has today's column layout. Only the merge knows the page. `total_records` is the parquet count the merge adds h to.
-* The page order's keys follow that layout, one column per `ORDER BY` term (`sqlgen.SortKeyColumn`). The merge places each parquet row among the hot keys by the values DuckDB ordered it by, so Go never re-derives a parquet row's key from the returned record, whose types are the record's, not the export's. The sketch leaves these columns out.
-
-So the compiled plan's scope loses the connection string, the dirty-set flag, the limit and the offset: one plan serves every pass of a shape, whatever the dirty set and the hot match count.
-
-```sql
--- $S3_PATHS:      List (the frozen object list, step 1)
--- $WINDOW_LIMIT:  BIGINT, bound (offset+limit - max(0, offset-h))
--- $WINDOW_OFFSET: BIGINT, bound (max(0, offset-h))
-WITH
-s3_source AS (
-    SELECT
-        row_id,
-        ltbase_created_at AS created_at,
-        changed_at AS ver_ts,
-        deleted_at AS deleted_ts,
-        name,
-        age,
-        tag,
-        1 AS source_tier_priority
-    FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at, CASE WHEN ltbase_created_at IS NULL AND COALESCE(CAST(deleted_at AS BIGINT), 0) = 0 THEN error('parquet scan produced NULL ltbase_created_at on a live row: a scanned object violates the export schema invariant (#189/#256/#460)') ELSE CAST(ltbase_created_at AS BIGINT) END AS ltbase_created_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
-    WHERE
-        -- The anti-join reads the dirty set the pass staged (step 4).
-        CAST(row_id AS UUID) NOT IN (SELECT row_id FROM temp.main.forma_dirty_ids)
-        AND row_id IN (
-            SELECT row_id FROM (SELECT * REPLACE (COALESCE(row_id, error('parquet scan produced NULL row_id: a scanned object violates the export schema invariant (#189/#256)')) AS row_id, CAST(COALESCE(changed_at, error('parquet scan produced NULL changed_at: a scanned object violates the export schema invariant (#189/#256)')) AS BIGINT) AS changed_at, CAST(deleted_at AS BIGINT) AS deleted_at, CASE WHEN ltbase_created_at IS NULL AND COALESCE(CAST(deleted_at AS BIGINT), 0) = 0 THEN error('parquet scan produced NULL ltbase_created_at on a live row: a scanned object violates the export schema invariant (#189/#256/#460)') ELSE CAST(ltbase_created_at AS BIGINT) END AS ltbase_created_at) FROM read_parquet($S3_PATHS, union_by_name=true)) AS cold_scan
-            WHERE (age > 18 AND name LIKE 'John%' AND tag = 'developer')
-        )
-),
-
-ranked AS (
-    SELECT *,
-        ROW_NUMBER() OVER (
-            PARTITION BY row_id
-            ORDER BY ver_ts DESC, source_tier_priority DESC, deleted_ts DESC, row_id ASC
-        ) AS rn
-    FROM s3_source
-)
-
-SELECT
-    row_id, name, age, tag, created_at,
-    COUNT(*) OVER() AS total_records
-FROM ranked
-WHERE rn = 1
-    AND (deleted_ts IS NULL OR deleted_ts = 0)
-    AND (age > 18 AND name LIKE 'John%' AND tag = 'developer')
-ORDER BY created_at DESC NULLS LAST, row_id ASC NULLS LAST
-LIMIT $WINDOW_LIMIT OFFSET $WINDOW_OFFSET;
-```
+The hot-excluded form (`preferred_tiers` without `hot`) has no hot leg. It reads the strict `flushed_at = 0` set, without the widening, stages it, and answers the parquet window as the page. A source-authored set whose globs list no object (#720) is decided in the snapshot (§4.3.1): without parquet history the hot leg is the whole answer, and DuckDB runs no statement.
 
 **Consistency (#252, re-derived).** The reads come in this order: the path set at instant P, then the snapshot S, then the DuckDB scan of the objects resolved at P. The argument holds only if the scan reads exactly those objects (*Frozen inventory*, below). A flush runs copy, then manifest append, then mark, and stamps the mark F after the append (§3.2). Take a row and its newest version v committed in S:
 
 * v's entry is unflushed in S. The row is dirty. The hot leg serves v from S, and the anti-join drops every parquet copy.
 * v's entry is marked in S with F ≥ cutoff. The row is dirty and is served the same way. `entity_main` still holds v under the storage invariant (§3.3).
-* v's entry is marked in S with F < cutoff. The append that preceded the mark happened before P, so the objects resolved at P hold v. The grace margin covers the skew between the CDC host's clock and the server's, as today. S holds no newer entry, by the choice of v, so the row is not dirty. The parquet leg serves v, deduplicated against the row's older copies.
+* v's entry is marked in S with F < cutoff. The append that preceded the mark happened before P, so the objects resolved at P hold v. The grace margin covers the skew between the CDC host's clock and the server's. S holds no newer entry, by the choice of v, so the row is not dirty. The parquet leg serves v, deduplicated against the row's older copies.
 
 A row deleted before S has a tombstone entry, and the same cases apply. If the row is dirty, `entity_main` no longer holds it, so neither leg serves it. If the tombstone was flushed before P, it wins the parquet dedup. So every row reads as committed in S, a snapshot taken after the query started.
 
-**The widening is never disabled on this path.** The third case needs a cutoff no later than P: only then does a mark below the cutoff prove the append came before P. A negative `FlushVisibilityGraceMs` disables the widening today (`sqlgen.FlushGraceCutoffDisabled`): the cutoff becomes the maximum integer, so no mark is at or after it. Under that cutoff the third case covers every marked entry, and its premise fails. Take a row whose newest version v is marked by a flush that runs between P and S. The flush appended v's object after P, so the set resolved at P lacks it, and S sees the entry marked, so the strict dirty set leaves the row out. The hot leg then omits the row. The parquet leg serves the row's previous flushed version, or nothing if v is its first. That answer is neither S nor any other snapshot. Today's path has the same hole under that setting: `DisabledWideningExposesRace` (`cdc_flush_grace_e2e_test.go`) pins it, and the setting exists to give back that pre-#252 barrier.
+**The widening is never disabled.** The third case needs a cutoff no later than P: only then does a mark below the cutoff prove the append came before P. Until #858 a negative `FlushVisibilityGraceMs` disabled the widening on the attach transport: the cutoff became the maximum integer, so no mark was at or after it. Under such a cutoff the third case covers every marked entry, and its premise fails. Take a row whose newest version v is marked by a flush that runs between P and S. The flush appended v's object after P, so the set resolved at P lacks it, and S sees the entry marked, so the strict dirty set leaves the row out. The hot leg then omits the row. The parquet leg serves the row's previous flushed version, or nothing if v is its first. That answer is neither S nor any other snapshot. `DisabledWideningExposesRace` pinned that hole on the attach transport, where the setting existed to give back the pre-#252 barrier.
 
-So the pgx hot form computes its cutoff as P minus the margin, with a negative margin read as `0`, the exact anchor. Turning the widening off buys nothing on this path. With the exact anchor the widened set holds only the rows whose marks race the query, so the steady state reads the same dirty set either way. Two other ways out are rejected:
+So the cutoff is P minus the margin, with a negative margin read as `0`, the exact anchor. Turning the widening off would buy nothing: with the exact anchor the widened set holds only the rows whose marks race the query, so the steady state reads the same dirty set either way. Two other ways out were rejected:
 
-* *Refuse the setting with `HotLegTransport = pgx`.* A deployment that carries `-1` would then fail to start when the default flips to `pgx` (plan step 6), over a value the path can safely ignore.
+* *Refuse a negative value.* A deployment that carried `-1` would have failed to start when the default flipped to `pgx` (#857), over a value the engine can safely ignore.
 * *Document a weaker guarantee under it.* The snapshot guarantee is what this design trades its parity work for. Under the weaker guarantee a flush racing the query would again drop a new row or serve an old version, the race #252 closed, and the setting would buy no cost back in exchange (above).
 
-The setting keeps its meaning where it still has one. The `attach` transport applies it as today until it is removed (plan step 7). The hot-excluded form reads the strict set whatever the setting, as today. Engine construction logs once that a negative value is read as `0` on the `pgx` hot leg. After step 7 the negative value has no effect, and the config still loads.
+A negative value still loads, and engine construction logs once that it reads as `0`. The hot-excluded form reads the strict set whatever the setting.
 
-**Frozen inventory.** A manifest-resolved set (level 2) is a list of objects, fixed at P. A glob is not. Today path resolution keeps the level-3 glob as a string, and `read_parquet` expands it again when the statement executes (`duckdb_query_resolve.go`), which under this design is after S. Then the third case breaks. Take a row whose newest version v is flushed with F < cutoff, so the row is clean in S. After S a writer updates it and flushes the new version v′ into an object the glob matches. The scan's expansion admits that object. S's dirty set does not hold the row, so the anti-join keeps v′, and the parquet dedup picks v′ over v. The answer holds v′, may now include or exclude the row under the filter by v′'s values, and drops the row if v′ is a tombstone. None of that is S.
+**Frozen inventory.** A manifest-resolved set (level 2) is a list of objects, fixed at P. A glob is not. Path resolution returns the level-3 glob as a string, and a statement that scanned it would expand it when it executes, after S. Then the third case breaks. Take a row whose newest version v is flushed with F < cutoff, so the row is clean in S. After S a writer updates it and flushes the new version v′ into an object the glob matches. The scan's expansion admits that object. S's dirty set does not hold the row, so the anti-join keeps v′, and the parquet dedup picks v′ over v. The answer holds v′, may now include or exclude the row under the filter by v′'s values, and drops the row if v′ is a tombstone. None of that is S.
 
-So step 1 lists every glob of a source-authored set (the engine already lists such globs for the #720 check) and renders the listed objects as the scan set. An object published after the listing is then outside the scan whatever its key. The case analysis needs the listing to see every object promoted before a mark with F < cutoff. The cutoff is stamped before resolution, and the mark follows the promotion, so the listing does. That assumes the store lists an object once its write has returned, which S3 does. A listing that fails fails the pass as a degradable `ErrFederatedReadFailed`. Today a failed listing keeps the glob scan (§4.3.1), which would answer outside S without saying so. An object listed at P and deleted before the scan, by a compaction or `manifest-reconcile --gc`, fails the read, as a manifest-listed object does today. It is never skipped. The frozen list also closes, for this path, the listing skew `validateScanSet` accepts today, in which the pre-read validator and `read_parquet` expand the glob at different instants.
+So step 1 lists every glob of a source-authored set and renders the listed objects as the scan set; the same listing decides the #720 case. An object published after the listing is then outside the scan whatever its key. The case analysis needs the listing to see every object promoted before a mark with F < cutoff. The cutoff is stamped before resolution, and the mark follows the promotion, so the listing does. That assumes the store lists an object once its write has returned, which S3 does. A listing that fails fails the pass as a degradable `ErrFederatedReadFailed`: scanning the glob instead would answer outside S without saying so. An object listed at P and deleted before the scan, by a compaction or `manifest-reconcile --gc`, fails the read, as a missing manifest-listed object does. It is never skipped, and since no manifest listed it, the failure does not claim a manifest inconsistency (`ErrParquetSetInconsistent`). The frozen list also closes, for level 3, the listing skew in which the pre-read validator and `read_parquet` expanded the glob at different instants.
 
 A caller hint (level 1) is outside the guarantee. A hint already forgoes the read consistency of §3.3, because nothing checks that it names every object (§4.3.1), and #715 removes hints. A hint glob stays a glob and expands at execution, so a publication after S can show through it as above.
 
-The argument needs one condition the current plan does not: the dirty set and the hot keys must come from one snapshot. Read separately, a row that gained its first unflushed entry between the two reads would come back from the hot leg while its parquet copies stayed, and with no cross-tier dedup left the answer would hold it twice. Today's two `change_log` scans inside DuckDB may or may not share a PostgreSQL snapshot. Nobody has checked. The cross-tier `ROW_NUMBER` absorbs the difference, and this design removes that dedup. As a guard on the staging itself, the merge fails the pass as an internal inconsistency when a parquet row carries a hot key's `row_id`, rather than answering it twice.
+The argument also needs the dirty set and the hot keys to come from one snapshot. Read separately, a row that gained its first unflushed entry between the two reads would come back from the hot leg while its parquet copies stayed, and with no cross-tier dedup the answer would hold it twice. As a guard on the staging itself, the merge fails the pass as an internal inconsistency (`ErrHotLegNotDisjoint`) when a parquet row carries a `row_id` of the staged dirty set, rather than answering it twice. The staged set is a superset of the hot keys, so the guard also catches a parquet row the anti-join should have dropped although no hot key names it.
 
-The transaction stays open from step 2 to step 6, across the DuckDB pass, so the page's hot rows come from the snapshot their keys came from. That holds one pooled PostgreSQL connection per pass, which the `attach` transport's extension connections hold outside the pool, and holds back vacuum's horizon for at most the query budget. If that matters, step 2 can end the transaction instead, and step 6 can re-read the page's hot rows in a new snapshot and retry the pass when any `ver_ts` moved.
+The transaction stays open from step 2 to step 6, across the DuckDB statement, so the page's hot rows come from the snapshot their keys came from. That holds one pooled PostgreSQL connection per pass, and holds back vacuum's horizon for at most the query budget. The alternative, unbuilt, is the re-read-and-retry variant: step 2 ends the transaction, and step 6 re-reads the page's hot rows in a new snapshot and retries the pass when any `ver_ts` moved.
 
-*Connection use (#857).* A pass opens its snapshot before it takes a DuckDB connection, so without a bound every request queued on the DuckDB pool would hold a PostgreSQL connection while it waits. The engine admits at most `duckdb.maxConnections` pgx passes at once, one per DuckDB connection, and a pass waits for its slot before it opens the snapshot. The passes in flight therefore hold at most `duckdb.maxConnections` pooled connections, and the wait costs nothing the DuckDB pool would not have cost: a pass needs a DuckDB connection for its statement anyway. The wait only widens the pass's flush-grace window, whose cutoff is stamped at path resolution, before it. A request whose context ends while it waits fails with its context's error and opens no snapshot. The factory logs a warning at construction when the PostgreSQL pool holds no more connections than `duckdb.maxConnections`, since federated reads could then take every connection the OLTP route needs. The re-read-and-retry variant above stays unbuilt. It remains the option for a deployment that cannot spare `duckdb.maxConnections` pooled connections to federated reads.
+*Connection use (#857).* A pass opens its snapshot before it takes a DuckDB connection, so without a bound every request queued on the DuckDB pool would hold a PostgreSQL connection while it waits. The engine admits at most `duckdb.maxConnections` passes at once, one per DuckDB connection, and a pass waits for its slot before it opens the snapshot. The passes in flight therefore hold at most `duckdb.maxConnections` pooled connections, and the wait costs nothing the DuckDB pool would not have cost: a pass needs a DuckDB connection for its statement anyway. The wait only widens the pass's flush-grace window, whose cutoff is stamped at path resolution, before it. A request whose context ends while it waits fails with its context's error and opens no snapshot. The factory logs a warning at construction when the PostgreSQL pool holds no more connections than `duckdb.maxConnections`, since federated reads could then take every connection the OLTP route needs. The re-read-and-retry variant above remains the option for a deployment that cannot spare `duckdb.maxConnections` pooled connections to federated reads.
 
 **Ordering parity.** The merged order must be the order DuckDB gives the parquet leg. Go holds the only other copy of that order: the comparator that sorts the hot keys and places them among the parquet rows, and the keyset predicate applied to the hot keys. PostgreSQL never orders. The proposal in #719 had PostgreSQL order and limit the hot leg too. That would put a third order in parity: PostgreSQL's collation, its NULL defaults, and its exact `NUMERIC` comparison. The only saving would be not sending hot keys that fall outside the page, and the dirty set bounds those.
 
-* **One NULL placement.** The parquet leg renders `NULLS LAST` on every key. That is DuckDB's default today, but the `default_null_order` setting can change a default. The comparator puts NULL last in both directions. The trailing `row_id` key makes the order total, and the two legs never share a `row_id`.
+* **One NULL placement.** The parquet leg renders `NULLS LAST` on every key. That is DuckDB's default, but the `default_null_order` setting can change a default. The comparator puts NULL last in both directions. The trailing `row_id` key makes the order total, and the two legs never share a `row_id`.
 * **The page's order, `row_id` direction included.** The comparator does not fix an order of its own. It is built for each pass from the `ORDER BY` the parquet leg renders for that page, key for key and direction for direction, and the two page forms render different tiebreaks:
 
   | Page form | Parquet `ORDER BY` | `row_id` direction |
   | :---- | :---- | :---- |
-  | Offset (no active cursor) | `buildNonKeysetOrderBy`: the request's `AttributeOrders`, or `created_at DESC` when it has none, then `row_id ASC` | Always ascending |
-  | Keyset (active cursor) | `buildKeysetOrderBy`: the cursor's columns, each in its own `Direction` | The cursor's last column. `ValidateContinuation` requires ascending when the request resolved `AttributeOrders`. A cursor-only walk may name `row_id DESC` (§4.4), and it is honoured |
+  | Offset (no active cursor) | The request's `AttributeOrders`, or `created_at DESC` when it has none, then `row_id ASC` (`buildNonKeysetOrderBy`'s order) | Always ascending |
+  | Keyset (active cursor) | The cursor's columns, each in its own `Direction` (`buildKeysetOrderBy`'s order) | The cursor's last column. `ValidateContinuation` requires ascending when the request resolved `AttributeOrders`. A cursor-only walk may name `row_id DESC` (§4.4), and it is honoured |
 
   So a keyset pass with a `row_id DESC` cursor sorts the hot keys, places them among the parquet rows, and applies the predicate with `row_id` descending. A comparator that always broke ties with `row_id ASC` would put the hot rows of a tied run in the opposite order to DuckDB's parquet rows. The merge would then interleave the run wrongly and could cut the page inside it at a point no cursor reaches. The next page's cursor, which DuckDB applies with `<` on `row_id`, would then skip the hot rows that sorted after the cut, or answer them twice. Comparing `row_id` descending reverses its 16-byte order.
 * **A hot key compares as its next export will.** A hot row must keep its place when it is flushed, so Go derives each sort key from the stored value by the rules the CDC export applies. The table goes by export type (`sqlgen.DuckDBNullScanType`):
@@ -1098,21 +980,21 @@ The transaction stays open from step 2 to step 6, across the DuckDB pass, so the
 | `BIGINT`: `created_at`, `ver_ts`, `bigint`, `date`, `datetime` | The stored integer. An unbound date reads `value_numeric` through the #785 double decode, then converts as the export's `TRY_CAST(… AS BIGINT)` does. An rfc3339-bound date reads as `sqlgen.RFC3339EpochMs` does (#756). | Integer order |
 | `INTEGER`, `SMALLINT` (column-bound) | The stored column. A value in a wider column reads through the export's `TRY_CAST` (#627). An image past the range, NaN or ±Infinity is NULL, and a fraction rounds half to even. | Integer order |
 | `DOUBLE`: `numeric`, and EAV-only `integer` and `smallint` | `value_numeric` decoded as #785 stages it: the nearest double, with NaN and ±Infinity kept. | DuckDB's `DOUBLE` order: NaN equals NaN and sorts above +Infinity, and -0 equals 0. `TestDuckDBDoubleOrder` pins this against the engine, as #550 pinned identifier folding. |
-| `VARCHAR`: `text`, and `uuid` attributes | The stored text. A uuid takes its canonical lower-case text. A column-bound uuid exports through `TRY_CAST(col AS UUID)`, so its parquet column is a DuckDB `UUID`, which the parquet leg scans as 16 bytes and reads as that canonical text (#857). | Byte order, DuckDB's default binary collation. If #728 rules that DuckDB compares text under a collation, the comparator follows that ruling. DuckDB orders a `UUID` as its canonical text orders. |
+| `VARCHAR`: `text`, and `uuid` attributes | The stored text. A uuid takes its canonical lower-case text. A column-bound uuid exports through `TRY_CAST(col AS UUID)`, so its parquet column is a DuckDB `UUID`, which the parquet leg scans as 16 bytes and reads as that canonical text (#857). | Byte order, DuckDB's default binary collation, the order #728 ruled for every route. DuckDB orders a `UUID` as its canonical text orders. |
 | `BOOLEAN` | The truthiness the export applies (`sqlgen.BoolTruthiness`, `mainColBoolExpr`) | `false` before `true` |
 | `UUID`: `row_id` | The stored value | Its 16 bytes, which is DuckDB's `UUID` order and the order of the canonical text |
 
   Two lockstep tests pin the table. `TestSortKeyDerivationLockstep` (production harness) writes rows that reach each derivation's edges, reads their hot keys, flushes them, and requires the parquet leg's values and order to match Go's. Some edges cannot be written that way: the write funnel refuses NaN, ±Infinity and integer images past their declared width, and the harness schema binds no rfc3339 or boolean column. So `TestDeriveLockstepWithExport` also runs the export's own casts (`castMainValue`, `castEAVValue`) over each staged value in DuckDB and compares the result with Go's derivation. It pins DuckDB's `TRY_CAST` from `DOUBLE` to an integer type as rounding half to even. A list attribute has no row: DuckDB orders a `LIST` element by element, and the comparator has no such order. A federated request that sorts on a list attribute is refused as invalid input, before routing so that the answer does not depend on the route (decided in #853). Reproducing the `LIST` order in Go would add element-wise comparison, with its own NULL-element rules, to the parity work. The refusal is the smaller commitment, and implementing that order later lifts it. The system column `deleted_ts` is not in the table. It takes one value on every row either leg returns, so it gets its own rule (next item).
-* **`deleted_ts` reads `0` on every row either leg returns.** `validateKeysetCursor` accepts it as a cursor column, and a cursor-only walk orders by its cursor columns (§4.4), so it can be a sort key. Offset pages cannot sort on it: `AttributeOrders` resolve against the schema, and schema load refuses an active attribute that folds onto a reserved column (`reservedParquetColumns`). Every row the `visible` CTE keeps is live, but today a live row carries two encodings. A parquet row exported since #274 holds `0`. A hot row holds `change_log.deleted_at`, which is NULL, and so does a live row of a pre-#274 delta object (#365). The keyset predicate is three-valued, so an ascending cursor at `(deleted_ts = 0, row_id = X)` admits the parquet rows after `X` and drops every NULL row, and an ascending order puts the NULL rows last. A flush rewrites a hot row's NULL as `0`, so the flush moves the row into the window and to a new place in the order. The parquet leg has the same split between its two delta generations. The rule makes the value the same on both tiers:
+* **`deleted_ts` reads `0` on every row either leg returns.** `validateKeysetCursor` accepts it as a cursor column, and a cursor-only walk orders by its cursor columns (§4.4), so it can be a sort key. Offset pages cannot sort on it: `AttributeOrders` resolve against the schema, and schema load refuses an active attribute that folds onto a reserved column (`reservedParquetColumns`). Every row the `visible` CTE keeps is live, but a live row is stored in two encodings. A parquet row exported since #274 holds `0`. A hot row holds `change_log.deleted_at`, which is NULL, and so does a live row of a pre-#274 delta object (#365). The keyset predicate is three-valued, so without a rule an ascending cursor at `(deleted_ts = 0, row_id = X)` would admit the parquet rows after `X` and drop every NULL row, and an ascending order would put the NULL rows last. A flush rewrites a hot row's NULL as `0`, so the flush would move the row into the window and to a new place in the order. The parquet leg has the same split between its two delta generations. The rule (#853) makes the value the same on both tiers:
   * The hot key's derivation is the constant `0`. The hot-keys query reads live rows only, as the PostgreSQL route does, and the export writes a live row's `deleted_at` as `COALESCE(cl.deleted_at, 0)`, which is `0`. So the key holds the value the row's next export will hold.
-  * The parquet leg reads the column as `COALESCE(deleted_ts, 0)` wherever the cursor names it: in the keyset predicate (`generateKeysetWhereClause`) and in the keyset `ORDER BY` (`buildKeysetOrderBy`). The rendering is in the shared renderer, so the `attach` path changes with it. Its `pg_source` rows then compare as `0` too. The dedup window keeps the raw column, because its `deleted_ts DESC` arm must still let a tombstone win (§5). The outer select keeps it too, so a returned record's `DeletedAt` reads as today: absent on a row the hot leg serves and `0` on a parquet row.
+  * The parquet leg reads the column as `COALESCE(deleted_ts, 0)` wherever the cursor names it: in the keyset predicate (`generateKeysetWhereClause`) and in the page order, whose sort-key column the merge reads. The dedup window keeps the raw column, because its `deleted_ts DESC` arm must still let a tombstone win (§5). The outer select keeps it too, so a returned record's `DeletedAt` is absent on a row the hot leg serves and `0` on a parquet row.
   * The cursor's boundary is normalized as any `BIGINT` boundary is (*One boundary type per cursor column*, below). A NULL boundary cannot reach the predicate, because `ValidateShape` refuses a nil value. A caller that builds a boundary from a returned row uses `0`, whatever the record's `DeletedAt` reads.
 
   So `deleted_ts` orders no rows, on either leg and on either side of a flush. Its arms of the predicate decide only among the rows that tie the cursor on every column before it, which is every row when it leads. Among those rows, at the boundary `0` its equality arm holds on every row and the cursor reduces to its later columns. Any other boundary admits all of them or none, on both legs alike: all when `0` lies after the boundary in the column's direction (ascending below `0`, descending above it), none otherwise. A boundary other than `0` only comes from a hand-built cursor, because a boundary taken from a returned row is `0` (*One boundary type per cursor column*, below).
 
-  The rule changes answers on today's path, for every request whose cursor names `deleted_ts`. Rows holding `0` keep their answer at every boundary. Rows holding NULL (hot rows and live pre-#274 rows) change wherever `0` would pass, because today the comparison is unknown at every boundary and drops them. Among the rows that tie the cursor on the columns before `deleted_ts`:
+  The rule changed answers when #853 shipped it, for every request whose cursor names `deleted_ts`. Rows holding `0` kept their answer at every boundary. Rows holding NULL (hot rows and live pre-#274 rows) changed wherever `0` passes: before the rule the comparison was unknown at every boundary and dropped them. Among the rows that tie the cursor on the columns before `deleted_ts`:
 
-  | Direction | Boundary | Rows holding `0`, today and under the rule | Rows holding NULL, today | Rows holding NULL, under the rule |
+  | Direction | Boundary | Rows holding `0`, before and under the rule | Rows holding NULL, before #853 | Rows holding NULL, under the rule |
   | :---- | :---- | :---- | :---- | :---- |
   | Ascending | Below `0`, e.g. -1 | All admitted | Dropped | All admitted |
   | Ascending | `0` | Decided by the later columns | Dropped | Decided by the later columns |
@@ -1121,7 +1003,7 @@ The transaction stays open from step 2 to step 6, across the DuckDB pass, so the
   | Descending | `0` | Decided by the later columns | Dropped | Decided by the later columns |
   | Descending | Below `0`, e.g. -1 | Dropped | Dropped | Dropped |
 
-  The order changes too. Today `NULLS LAST` puts the NULL rows after the `0` rows within each run of rows that tie on the columns before `deleted_ts`. Under the rule the later columns order that run. When `deleted_ts` is not the first cursor column, an earlier column's arm admits such runs whatever their `deleted_ts`, so a page can change its order, and under the `LIMIT` its rows, without any row reaching the `deleted_ts` boundary. A request whose cursor does not name `deleted_ts` keeps its answer, because no other request reaches the column outside the dedup window and the visibility filter.
+  The order changed too. Before the rule `NULLS LAST` put the NULL rows after the `0` rows within each run of rows that tie on the columns before `deleted_ts`. Under the rule the later columns order that run. When `deleted_ts` is not the first cursor column, an earlier column's arm admits such runs whatever their `deleted_ts`, so a page could change its order, and under the `LIMIT` its rows, without any row reaching the `deleted_ts` boundary. A request whose cursor does not name `deleted_ts` kept its answer, because no other request reaches the column outside the dedup window and the visibility filter.
 * **The keyset predicate is not the comparator.** The parquet leg evaluates the cursor as SQL (`generateKeysetWhereClause`): an `OR` of conjunctions in which a NULL key at the deciding column makes the comparison unknown and drops the row. Go applies the same three-valued predicate to the hot keys, with each column's operator chosen from its `Direction` as `keysetComparisonOp` chooses it, so a `row_id DESC` cursor admits the tied hot keys whose `row_id` is below the boundary. A test of "sorts after the cursor" would admit those rows under `NULLS LAST`, on one leg only. For two non-NULL operands the predicate compares with the comparator above, so a NaN boundary behaves as it does on DuckDB, not as IEEE `<` would.
 * **One boundary type per cursor column.** Both legs must compare the same boundary value against keys of the same type. Before #853 nothing ensured that. The renderer bound each boundary verbatim, `ValidateShape` checks no column-specific type, and DuckDB picks the comparison type from both the column and the bound value. It does not always cast the parameter to the column's type. With a `float64` boundary of 9.6, `10::BIGINT > ?` promotes the column to `DOUBLE` and is true, while `10::BIGINT > CAST(? AS BIGINT)` rounds the boundary to 10 and is false. Converting only the hot leg's boundary would take one of those answers while the parquet leg took the other. So the cursor is normalized once, before either leg, to each column's export type (the table above). Go does not reproduce DuckDB's coercions:
 
@@ -1133,53 +1015,43 @@ The transaction stays open from step 2 to step 6, across the DuckDB pass, so the
   | `BOOLEAN` | A bool | Anything else, including 0 and 1 |
   | `UUID` (`row_id`) | A UUID, or text that parses as one, held as its 16 bytes | Anything else |
 
-  A refused boundary fails the request as a cursor error, a plain read-path error like `validateKeysetCursor`'s today, since no caller-facing token codec exists yet. A boundary taken from a returned row always passes, because both legs return keys of the export type. For `deleted_ts` that boundary is `0` (the previous item). The parquet leg renders each parameter as `CAST(? AS <export type>)`, the type read from the schema metadata as `sqlgen.DuckDBNullScanType` reads it. An attribute cursor column names its attribute as DuckDB binds the rendered name: by its `ParquetAttrColumn` fold, ASCII case aside, so `COUNT` is typed as the attribute `count`. On a normalized value the cast is the identity, and it stops DuckDB from promoting the column. Go compares the same normalized value with the comparator. The normalization runs before both transports, so since #853 the `attach` path also refuses boundaries it used to bind verbatim. Only a Go caller that builds a cursor by hand can pass one. The repository's own e2e tests had built `float64` boundaries for the `INTEGER` column `count`, and now pass the integer.
+  A refused boundary fails the request as a cursor error, a plain read-path error like `validateKeysetCursor`'s other refusals, since no caller-facing token codec exists yet. A boundary taken from a returned row always passes, because both legs return keys of the export type. For `deleted_ts` that boundary is `0` (the previous item). The parquet leg renders each parameter as `CAST(? AS <export type>)`, the type read from the schema metadata as `sqlgen.DuckDBNullScanType` reads it. An attribute cursor column names its attribute as DuckDB binds the rendered name: by its `ParquetAttrColumn` fold, ASCII case aside, so `COUNT` is typed as the attribute `count`. On a normalized value the cast is the identity, and it stops DuckDB from promoting the column. Go compares the same normalized value with the comparator. The normalization runs in `validateKeysetCursor`, before either leg. Since #853 the engine refuses boundaries it used to bind verbatim. Only a Go caller that builds a cursor by hand can pass one. The repository's own e2e tests had built `float64` boundaries for the `INTEGER` column `count`, and now pass the integer.
 
-**Filtering splits by tier.** Today DuckDB filters every row. After the change PostgreSQL filters the hot rows with the PostgreSQL route's predicate, and DuckDB filters the parquet rows with the logical predicate, within one answer. Any difference between the two predicates then makes a row's inclusion depend on whether it has been flushed. Today such a difference only separates the two routes, which §4.2 A's "never stricter" rule and the dual-path parity tests guard. The known differences:
+**Filtering splits by tier.** PostgreSQL filters the hot rows with the PostgreSQL route's predicate, and DuckDB filters the parquet rows with the logical predicate, within one answer. Any difference between the two predicates makes a row's inclusion depend on whether it has been flushed. Until #858 DuckDB filtered every row, so such a difference only separated the two routes, which §4.2 A's "never stricter" rule and the dual-path parity tests guarded. The tier parity suite (`TestTierParitySuite`, #857) guards it now: each condition-DSL case, over the same rows all hot, then flushed, then compacted, must match the PostgreSQL route's rows. The known differences:
 
-* **#728:** text range operators. On `"a"` and `"B"`, `gt:B` matches 0 rows on PostgreSQL and 1 on DuckDB. Needs a ruling first.
-* **#763:** a non-canonical rfc3339 image compares as text on PostgreSQL and as an instant on DuckDB. Ruled: Forma writes only the canonical image, whose text order is its instant order, and a row holding any other image is outside the query contract (`docs/rfc3339-storage-contract.md`). The tier parity suite uses canonical images, and this difference does not gate the default.
+* **#728:** text range operators. On `"a"` and `"B"`, `gt:B` matched 0 rows on PostgreSQL and 1 on DuckDB, because PostgreSQL compared by the column's collation and DuckDB by bytes. Ruled and shipped: PostgreSQL renders a text range `COLLATE "C"`, so both compare by bytes (`docs/text-collation.md`), and the hot-keys query renders it as the route does.
+* **#763:** a non-canonical rfc3339 image compares as text on PostgreSQL and as an instant on DuckDB. Ruled: Forma writes only the canonical image, whose text order is its instant order, and a row holding any other image is outside the query contract (`docs/rfc3339-storage-contract.md`). The tier parity suite uses canonical images.
 * **#205, #621:** a value that only a full `NUMERIC` holds compares exactly on PostgreSQL and as its double image on DuckDB. The write funnel never stores one. Only direct SQL can plant it.
 * **#627, #708:** a smallint or integer image that its declared type cannot hold reads NULL on DuckDB, while PostgreSQL compares the stored value. `is_null` matches the row on one tier only. The census (`validate-schema-consistency`) reports such rows.
 
-The dual-path parity tests become a tier parity suite: the same condition over the same rows, before and after their flush, must match the same rows.
-
 **Pagination and totals.**
 
-* **Offset pages.** Let h be the number of hot matches. A parquet row at parquet rank p lands at merged position p plus the number of hot keys before it, a number between 0 and h. So the page `[offset, offset+limit)` can only hold parquet ranks in `[max(0, offset-h), offset+limit)`. The parquet leg renders exactly that window, at most h + limit rows. Go places each returned row by a binary search over the sorted hot keys, since the window start fixes p. A deep offset therefore costs DuckDB what `OFFSET` costs it today, plus at most h extra rows. Under #719's proposal each leg would have returned `offset+limit` rows.
-* **Totals.** The legs are disjoint, so the total is h plus the parquet leg's `COUNT(*) OVER()`. When the window starts past the last parquet match, it is empty and the count cannot be read, the #181 case. The recount stays for that case, on the parquet leg alone.
-* **Keyset pages.** The cursor applies to both legs: DuckDB applies it as today, with `LIMIT limit`, and Go applies it to the hot keys. The merge orders both by the cursor's columns and directions, its `row_id` direction included (*The page's order*, above), and takes `limit` rows. `Query` reports the matches after the cursor, as today: the hot keys after it plus the parquet count. The cursor-free recount in `ExecuteFederatedKeysetQuery` becomes h plus a parquet count.
+* **Offset pages.** Let h be the number of hot matches. A parquet row at parquet rank p lands at merged position p plus the number of hot keys before it, a number between 0 and h. So the page `[offset, offset+limit)` can only hold parquet ranks in `[max(0, offset-h), offset+limit)`. The parquet leg reads exactly that window, at most h + limit rows. Go places each returned row by a binary search over the sorted hot keys, since the window start fixes p. A deep offset therefore costs DuckDB what `OFFSET` costs it, plus at most h extra rows. #719 had proposed that each leg return `offset+limit` rows.
+* **Totals.** The legs are disjoint, so the total is h plus the parquet leg's `COUNT(*) OVER()`. When the window starts past the last parquet match, it is empty and carries no count, the #181 case. The pass then runs the statement again over the window `[0, 1)`, on the same staged set and frozen objects, so the total is exact on every page and `Query` never runs a second pass for it.
+* **Keyset pages.** The cursor applies to both legs: DuckDB applies it after the dedup (§5), with `LIMIT limit`, and Go applies it to the hot keys. The merge orders both by the cursor's columns and directions, its `row_id` direction included (*The page's order*, above), and takes `limit` rows. `Query` reports the matches after the cursor: the hot keys after it plus the parquet count. The cursor-free recount in `ExecuteFederatedKeysetQuery` is a whole pass without the cursor, which answers h plus the parquet count.
 * **Memory (§6.2).** The parquet leg still streams. Go holds one key tuple per hot match, which the dirty set bounds, and reads the page's hot records, at most `limit`, after the merge.
 
 **Dirty-set size.** The dirty set grows with the flush backlog, not with the database. In steady state the flush's count trigger keeps it near the hot-tier bound (`requirements.md` §2.3, 10,000 rows). A stalled CDC lets it grow without bound. Each pass reports its size (`fed_query_row_count{source="pg"}`, §8).
 
-* **Reading it.** `change_log` has only its primary key `(schema_id, row_id, flushed_at)`, so `flushed_at = 0` within a schema scans every entry of the schema, flushed history included. The hot keys' join and today's pgx fetch pay the same scan. The design adds an index on `(schema_id, flushed_at)` that includes `row_id` and `changed_at`. It serves both ranges of the widened barrier. `init-db` creates it. On DSQL it waits for #690, like `init-db`'s other DDL.
-* **Passing it to DuckDB.** The pass stages the set through the Appender into a temp table on the connection it pins, as #785's staging does: a fixed name, `CREATE OR REPLACE`, dropped when the pass ends. The SQL text does not depend on the set's size, so the compiled-plan cache is untouched, and no parameter-size limit applies. The alternative is a bound `UUID[]` parameter, in case per-pass DDL costs more than the usual small set's staging. Step 1 of the plan measures both. #785 measured its Appender at about 85 ms for 220,000 staged rows of several columns, on one host. A 10,000-row, one-column set has not been measured.
-* **No fallback for correctness.** Neither leg answers wrongly past some size, so no threshold switches plans. A deployment may set a cap (`DuckDBConfig.HotLegMaxDirtyRows`, unset by default). Past it, a pass fails as a degradable `ErrFederatedReadFailed` before DuckDB is touched and hands its breaker probe back (§7.1). `allow_partial_degraded_mode` then answers from PostgreSQL alone. That answer is complete (§3.3), and when most rows are hot it is also the cheaper plan. The default is open.
+* **Reading it.** `change_log`'s primary key `(schema_id, row_id, flushed_at)` cannot serve `flushed_at = 0` within a schema without scanning every entry of the schema, flushed history included. `init-db` therefore creates an index on `(schema_id, flushed_at)` that includes `row_id` and `changed_at`. The widened barrier reads it as two ranges, the two arms of a `UNION` in the dirty-set query, and the hot keys' window reads the same two ranges. On DSQL the index waits for #690, like `init-db`'s other DDL.
+* **Passing it to DuckDB.** The pass stages the set through the Appender into a temp table on the connection it pins, as #785's staging does: a fixed name, `CREATE OR REPLACE`, dropped when the pass ends. A temp table is private to its connection, so concurrent passes never see each other's sets. The SQL text does not depend on the set's size, so the compiled-plan cache is untouched, and no parameter-size limit applies. #849 compared it with a bound `UUID[]` parameter, over an in-memory stand-in for the parquet scan on one host: 2.6 against 3.1 ms at 1,000 IDs, 4.2 against 15.2 ms at 10,000, and 14.1 against 127.9 ms at 100,000. The parameter's cost grows close to linearly past 10,000 IDs, and duckdb-go binds only a `[]duckdb.UUID` as a `UUID[]`, so every ID would also be converted in Go.
+* **No fallback for correctness.** Neither leg answers wrongly past some size, so no threshold switches plans. A deployment may set a cap (`DuckDBConfig.HotLegMaxDirtyRows`, unset by default). Past it, a pass fails as a degradable `ErrFederatedReadFailed` before DuckDB is touched and hands its breaker probe back (§7.1). `allow_partial_degraded_mode` then answers from PostgreSQL alone. That answer is complete (§3.3), and when most rows are hot it is also the cheaper plan.
 
-**What a hot row reads as.** The page's hot rows come through the PostgreSQL route's reader and Go's transform, so a hot row reads exactly as `Get` and a PostgreSQL-only page read it. Today it reads as DuckDB's projection of the scanner's types. The two agree on every value the write funnel admits. They differ where the two routes already differ. An image that only a full `NUMERIC` holds reads exactly (#205, #621). An unbound date image that the funnel would refuse (#592) fails the read instead of reading narrowed. A smallint or integer image that its declared type cannot hold (#708) fails as a consistency error instead of reading NULL (#627). So a federated page that holds such a hot row now fails, as the PostgreSQL route already does for that row. Once the row is flushed, it reads as before. The census finds every such row.
+**What a hot row reads as.** The page's hot rows come through the PostgreSQL route's reader and Go's transform, so a hot row reads exactly as `Get` and a PostgreSQL-only page read it. Until #858 it read as DuckDB's projection of the `postgres` extension's types, the mapping the CDC export still applies (§7.5). The two agree on every value the write funnel admits. They differ where the two routes already differ. An image that only a full `NUMERIC` holds reads exactly (#205, #621). An unbound date image that the funnel would refuse (#592) fails the read instead of reading narrowed. A smallint or integer image that its declared type cannot hold (#708) fails as a consistency error instead of reading NULL (#627), and so does a `bool_text` image other than `"1"` or `"0"` (#404), which the export reads as `false`. So a federated page that holds such a hot row fails, as the PostgreSQL route already does for that row. Once the row is flushed, it reads the export's way. The census finds every such row, and `docs/schema-consistency-migration.md` asks for a clean census before upgrading.
 
 **Failures.**
 
-* A failed read in the snapshot is classified as a failed dirty-ID fetch is today, `ErrPostgresReadFailed`, and does not count toward the DuckDB breaker. Today a PostgreSQL failure after the dirty-ID fetch surfaces inside DuckDB as `ErrFederatedReadFailed` and counts (§7.2).
-* A failed DuckDB pass is classified, counted and degraded as today (§7.1–§7.3).
-* A schema with no parquet objects (#720) skips DuckDB, so its queries no longer reach the breaker.
+* Every failed PostgreSQL read of a pass, from opening the snapshot through the page read to the commit, is `ErrPostgresReadFailed`. It is degradable and does not count toward the DuckDB breaker: the pass hands its probe back (§7.1), as does a refusal past `HotLegMaxDirtyRows` and a pass that runs no DuckDB statement.
+* A failed DuckDB statement is classified, counted and degraded as §7.1–§7.3 describe. The breaker records the parquet leg's success as soon as its rows have streamed, so a PostgreSQL failure later in the pass does not undo it.
+* A parquet row whose `row_id` is in the staged dirty set fails the pass with `ErrHotLegNotDisjoint` (above). It is not degradable: the fallback would hide an internal inconsistency. Neither is a pass on an engine built without the hot leg's PostgreSQL seams (`WithPgxHotLeg`).
+* A schema with no parquet objects (#720) runs no DuckDB statement, so its queries do not reach the breaker.
 
-**What retires once it is built.** The `ATTACH`, its process-wide guard and the pinned-connection attach (`queryWithPostgres`, §7.5). The catalog alias. `pg_source` and the template's `HasHot` branch. The DuckDB consumer of the main-table fragment (§4.2 A), and its "never stricter" rule. `postgres_scanner` as a required extension of the federated client (§7.5), which with #785 means of every Forma engine. `TestHotLegCopiesWholeTables`. The connection string in the plan-cache scope. The #306 scrubber can go once no DuckDB statement can carry a connection string, and then none can. #631 is superseded. #691 and #754 have nothing left to assess.
-
-**Rollout.** The new path ships behind a configuration switch beside today's, which stays the default. Both then run the same suites: the federated e2e suite, the production harness and its oracle, and a dual-run test that answers the same requests both ways. The dual-run test requires equal pages and totals over fixtures that put rows in every tier and in the flush race. The default flips when the suites agree, and a later change deletes the old path. Until then, rolling back is a configuration change.
+**Diagnostics.** The execution plan records three sources. The dirty set is a `postgres` source holding the query the snapshot ran (the widened one in the hot form) with the set's size as its row estimate. The parquet leg's statement is a `duckdb` source. In the hot form, the hot leg is a `postgres` source whose reason is `hot-leg predicate (evaluated in PostgreSQL)`, with `predicate_pushdown` set, h as its row estimate and the page's hot rows as its actual rows. The `pg_snapshot` timing covers the snapshot reads. The response projection drops all generated SQL (`requirements.md` §10.3), so a response shows each source's tier, engine, reason and counts. Until #858 the hot leg's source read `hot-leg predicate (evaluated in DuckDB)` and never set `predicate_pushdown`, because DuckDB evaluated the predicate on the copied rows (#631).
 
 **Alternatives.**
 
-* **`ATTACH` with `postgres_query` rendering Forma's PostgreSQL SQL, or the attached catalog's own filter pushdown.** Not pursued (decision on #719). Both keep PostgreSQL inside DuckDB, together with the extension, its connections and its type mapping.
 * **PostgreSQL orders and limits the hot leg,** as #719 proposed. Not chosen, because it adds a third order to keep in parity (*Ordering parity*).
-* **Stage the dirty rows in DuckDB and keep the merge there.** In the snapshot, read the dirty rows' `change_log`, `entity_main` and referenced `eav_data` over pgx, append them to temp tables as the CDC export does since #785, and run today's template with `pg_source` reading those tables. DuckDB would still filter and order every row. No predicate or ordering difference could then split an answer by tier, and neither #728 nor #763 would gate the work. Hot values would keep the export's type mapping, the one the parquet tiers have. The cost is reading and staging every dirty row on every pass, whatever the predicate selects, where the pgx hot leg reads only the matching rows through PostgreSQL's indexes. At the 10,000-row bound with 20 EAV attributes, that is the 220,000-row volume #785 measured at about 280 ms of read and append on one host. The decision chose the PostgreSQL-filtered hot leg. This alternative stays the fallback if the parity rulings or the tier parity suite stall.
-
-**Open questions.**
-
-* The latency baseline #719 asked for, and how far the hot keys' read and the dirty set's staging move it.
-* The default for `HotLegMaxDirtyRows`, and whether the dirty set stages or binds as a parameter.
-* Whether to hold the snapshot across the DuckDB pass, or re-read the page's hot rows and retry.
+* **Stage the dirty rows in DuckDB and keep the merge there.** In the snapshot, read the dirty rows' `change_log`, `entity_main` and referenced `eav_data` over pgx, append them to temp tables as the CDC export does since #785, and run the old template with `pg_source` reading those tables. DuckDB would still filter and order every row, so no predicate or ordering difference could split an answer by tier, neither #728 nor #763 would have gated the work, and hot values would keep the export's type mapping, the one the parquet tiers have. The cost is reading and staging every dirty row on every pass, whatever the predicate selects, where the hot leg reads only the matching rows through PostgreSQL's indexes. At the 10,000-row bound with 20 EAV attributes, that is the 220,000-row volume #785 measured at about 280 ms of read and append on one host. It was kept as the fallback in case the parity rulings or the tier parity suite stalled. Neither did (#857).
 
 ### **6.2 Streaming Result Processing**
 
@@ -1215,11 +1087,13 @@ applied on both sides:
   column takes the same ±2^53 rule, a `bigint_*` column keeps the full int64.
 * **Projection**: EAV-only `integer`/`smallint` project by **storage width** —
   `TRY_CAST(value_numeric AS DOUBLE)`, exactly like the `numeric` class — on
-  every DuckDB surface (hot EAV pivot, list elements, CDC parquet export, cold
-  NULL augmentation). DOUBLE reproduces every float64 image faithfully, so
-  historical out-of-declared-range *and* non-integral rows answer identically
-  on all tiers (an integer-width cast NULLed the former and rounded the
-  latter, only on the DuckDB legs). Column-bound attributes keep declared
+  every DuckDB surface (list elements, CDC parquet export, cold NULL
+  augmentation, and the hot EAV pivot until #858). DOUBLE reproduces every
+  float64 image faithfully, so historical out-of-declared-range *and*
+  non-integral rows answer identically on the parquet tiers (an integer-width
+  cast NULLed the former and rounded the latter, only on the DuckDB legs). An
+  unflushed such row reads through the OLTP reader, which refuses it (#729,
+  §6.1 *What a hot row reads as*). Column-bound attributes keep declared
   width on every leg. A column of exactly that width stores it physically,
   and a wider column is read at the declared type (below, #627).
 * **Predicate operands**: DuckDB operand casts follow column storage width —
@@ -1268,28 +1142,27 @@ applied on both sides:
   decided on its decimal text, so a literal that merely rounds to 0 or 1
   (`1.0000000000000001`) is rejected too. Anything else is rejected rather
   than coerced. A `bool_text` main column is read by its `"1"`/`"0"` contract
-  on every leg (Go, DuckDB hot leg, CDC export); other text is a storage
-  consistency error on the Go read path. A column-bound bool keeps its
+  on every leg (Go, which the hot leg reads through, and the CDC export);
+  other text is a storage consistency error on the Go read path, and so fails
+  a federated page that holds such a row while it is unflushed (#857). A column-bound bool keeps its
   nullability end to end: the CDC export emits the bare truthiness (never
   `CASE … ELSE FALSE`), so an unset optional bool is NULL in parquet exactly
   as it is in `entity_main`, and `equals:false` does not start matching it
-  after a flush. The no-EAV hot projection (`BuildPGSelectNoEAV`, live for
-  any schema whose attributes are all column-bound) derives the bool through
-  the same `mainColBoolExpr` as the EAV-joined projection, and the outer
-  select casts the verdict back to the physical column's shape (`SMALLINT`
-  1/0, `VARCHAR` '1'/'0') so the federated reader scans it by column kind.
+  after a flush. The outer select casts a parquet row's verdict back to the
+  physical column's shape (`SMALLINT` 1/0, `VARCHAR` '1'/'0') so the
+  federated reader scans it by column kind.
   The entity_main pushdown is on the same contract (#565): a filter on a
-  column-bound bool reaches `entity_main` through the pg-main clause the
-  DuckDB hot leg evaluates over its PostgreSQL scan (§6.1) and through the hybrid
-  builder's main branch on the Postgres route, and both render
-  `sqlgen.BoolMainPredicate` rather than a raw `= 1` / `= '0'` compare —
+  column-bound bool reaches `entity_main` through the hybrid builder's main
+  branch, on the Postgres route and in the hot leg's hot-keys query (§6.1),
+  and renders `sqlgen.BoolMainPredicate` rather than a raw `= 1` / `= '0'` compare —
   `<col> BETWEEN $lo AND $hi` with bounds `(1, 32767)` for the truthy side
   and `(-32768, 0)` for the falsy side of a `bool_smallint` column (exactly
   `> 0.5` / `<= 0.5` on a SMALLINT), `(<col> = '1') = $b` with a bool bind
   for a `bool_text` column. `not_equals:X` is `equals:!X`. The clause text
-  is the same for every operand because the federated plan cache keys on
-  the query shape without operands and reuses the cached pg-main clause on
-  a hit; only the binds may differ. The smallint bounds are integer binds so
+  is the same for every operand; only the binds differ. The rule dates from
+  the pg-main clause the DuckDB hot leg evaluated until #858, whose plan
+  cache keyed on the query shape without operands and reused the cached
+  clause on a hit. The smallint bounds are integer binds so
   the predicate stays on the `integer_ops` btree family (a `0.5` literal
   would cast the column). So a stored image outside the write contract (a
   `2`, a `'true'`) answers `equals:true` / `equals:false` the way the
@@ -1313,18 +1186,19 @@ it, together with every stored bigint past ±2^53, for a rewrite. A bigint
 bound to a `double_*` column stores the same image under the same contract,
 and the census reports it in `entity_main` with the column (#618). An integer
 in a column wider than its declared type (a bigint in `double_*`, an integer
-in `bigint_*`/`double_*`, a smallint in any wider numeric column) is read on
-the DuckDB hot leg through the export's `TRY_CAST(<col> AS <declared>)`
-(`sqlgen.mainColIntegerExpr`, #627): an image past the type's range, NaN or
-±Infinity reads NULL, and a fraction rounds half to even, on the unflushed
-row exactly as on its parquet copy. The pg-main pushdown compares the same
-expression, so a filter matches the row the same way before and after its
-flush. That leaf is a DuckDB expression over the hot leg's scan, not a plain
-column compare. Before #627 the hot leg read the raw column, so the outer
-select's strict cast failed the whole query on such an image. The OLTP route
-refuses a smallint/integer image its declared type cannot hold, and the
-census reports it (#708), so for such a row the two routes answer
-differently until #621; valid images read the same on both
+in `bigint_*`/`double_*`, a smallint in any wider numeric column) is
+exported through `TRY_CAST(<col> AS <declared>)` (#627): an image past the
+type's range, NaN or ±Infinity reads NULL on the parquet tiers, and a
+fraction rounds half to even. Before #627 the DuckDB hot leg read the raw
+column, so the outer select's strict cast failed the whole query on such an
+image; from #627 to #858 it read the column through the export's cast, and
+the pg-main pushdown compared the same expression. The OLTP route refuses a
+smallint/integer image its declared type cannot hold, and the census reports
+it (#708). Since #858 the hot leg reads through the OLTP reader, so a
+federated page that holds such an unflushed row fails as the OLTP route
+does, and PostgreSQL filters it by its stored value (§6.1, *Filtering splits
+by tier*). For a flushed row the two routes answer differently until #621;
+valid images read the same on both
 ([Schema Evolution and Declared Types](../schema-evolution.md)).
 The remaining asymmetry class is #205's float64 ceiling: values only a full
 NUMERIC can hold (planted by direct SQL, never by the funnel) still read
@@ -1333,8 +1207,8 @@ exactly on Postgres and as their float64 image on DuckDB.
 **Unbound dates (#592).** A `date`/`datetime` in `eav_data.value_numeric` is
 the float64 image of its epoch milliseconds, and the write funnel admits
 |millis| ≤ 2^53, the range that image keeps exactly. The unified column is
-BIGINT on every tier (`TRY_CAST(value_numeric AS BIGINT)` on the hot pivot and
-the CDC export). The `attributes_json` projection
+BIGINT on the parquet tiers (`TRY_CAST(value_numeric AS BIGINT)` in the CDC
+export), and the hot leg reads the stored image through the OLTP reader. The `attributes_json` projection
 (`sqlgen.valueNumericJSONExpr`) emits a date's BIGINT through `to_json`,
 scalar and list element, instead of `CAST(… AS DOUBLE)`, so the Go reader
 (`model.ParseAttributesJSON` with `UseNumber`, then
@@ -1348,14 +1222,16 @@ element and DOUBLE in a numeric neighbour to DOUBLE. A `JSON` field unifies
 with DOUBLE to `JSON`, which keeps the date's digits and renders every DOUBLE
 element as before.
 
-The residual is upstream of that projection. The DuckDB Postgres scanner
-types unconstrained `NUMERIC` as `DOUBLE` on the attached catalog's scans (the
-hot `pg_source`), and the CDC EAV export, which reads over pgx since #785, stages it
-as the same `DOUBLE` (`cdc.stagedDouble`), so a date image the
-funnel would refuse, planted in Postgres before #592 or by hand, reaches the
-hot leg and every Parquet copy already narrowed: 2^53+1 as 2^53, `1000.5` as
+The residual is upstream of that projection. The CDC EAV export, which reads
+over pgx since #785, stages unconstrained `NUMERIC` as `DOUBLE`
+(`cdc.stagedDouble`), the type the DuckDB Postgres scanner gave it, so a date
+image the funnel would refuse, planted in Postgres before #592 or by hand,
+reaches every Parquet copy already narrowed: 2^53+1 as 2^53, `1000.5` as
 `1000`, `NaN`/`±Infinity` as 0, a number past int64 as NULL (absent). The
-OLTP read refuses the same row. #592 kept the DOUBLE transport and made the
+OLTP read refuses the same row, and since #858 so does the federated hot leg,
+which reads through it, so a federated page holding the unflushed row fails.
+Until #858 the hot leg read it narrowed too, through the scanner's `DOUBLE`
+on the attached catalog. #592 kept the DOUBLE transport and made the
 Postgres census (`validate-schema-consistency`, predicate
 `transform.StoredDateImageRefusedSQL`) the guard for those tiers: Postgres
 keeps every `eav_data` row after a flush, so the census covers the current
@@ -1394,9 +1270,9 @@ One degraded mode exists: a PostgreSQL-only answer when the DuckDB/S3 side fails
    * Log the fallback (#638): one Warn line per degraded request, "federated query degraded to postgres-only", with `schema_id` and the absorbed failure, password-scrubbed. A request the open breaker rejected logs it at Debug instead, because the §7.1 "opened" line already logged the failure behind the rejection. No metric counts degraded answers; #714 tracks one.
    * Answer with the PostgreSQL-only query, `entity_main` plus EAV, exactly as the routed PostgreSQL-only path does.
    * The response is an ordinary success with `partial: {"reason": "hot_tier_only", "unconsulted_tiers": [...]}` (§7.3). When the request also set `include_execution_plan`, the plan's `routing.reason` is `"degraded fallback (AllowPartialDegradedMode)"`, and the plan carries nothing from the abandoned DuckDB attempt (#639). The marker reports coverage, not missing rows: under the storage invariant (§3.3) the answer holds every live row. The same marker appears on PostgreSQL-only answers that involved no failure (§7.3), so on its own it does not mean an outage.
-   * Eight failure classes are never absorbed: missing schema metadata, manifest inconsistency, an empty parquet path set, a manifest stamped for another schema, invalid caller input, a parquet type the declaration cannot read (#732), an expired deadline, and a request its caller cancelled (`degradableFederatedError`). A cancelled request has nobody left to answer, and a fallback on its cancelled context would replace the cancellation with its own failure.
+   * Ten failure classes are never absorbed: missing schema metadata, manifest inconsistency, an empty parquet path set, a manifest stamped for another schema, invalid caller input, a parquet type the declaration cannot read (#732), a parquet row the dirty set should have excluded (`ErrHotLegNotDisjoint`, §6.1), an engine built without the hot leg's PostgreSQL seams, an expired deadline, and a request its caller cancelled (`degradableFederatedError`). A cancelled request has nobody left to answer, and a fallback on its cancelled context would replace the cancellation with its own failure.
    * Without the flag, the failure is returned to the caller. Over HTTP it is a redacted internal error unless `docs/error-handling.md` gives it a class of its own.
-2. **PostgreSQL Unavailable:** The query fails. Federated execution needs PostgreSQL for the hot rows and for the dirty-ID set (§3.2). Parquet alone cannot tell a current row from one that was updated or deleted since its flush, so the engine never serves an S3-only answer. Neither `allow_partial_degraded_mode` nor `consistency_mode` changes this; the degraded fallback is itself a PostgreSQL read. The error sentinel follows the code path that met the outage, not the dependency that failed. The engine's own PostgreSQL reads, the dirty-ID fetch and the PostgreSQL-only page read (routed or degraded), wrap `ErrPostgresReadFailed`. If PostgreSQL fails after the dirty-ID fetch succeeded, the failure surfaces inside DuckDB's attach or scan of PostgreSQL and classifies like any DuckDB scan failure, `ErrFederatedReadFailed`, which is what a request without `allow_partial_degraded_mode` receives. Reads outside the federated engine, `Get` and a query without `federated.enabled`, return the repository's error with neither sentinel. So an embedder cannot detect a PostgreSQL outage by matching `ErrPostgresReadFailed` alone. Over HTTP it answers as any internal failure does, with a redacted 500, or a 504 when a configured timeout expires first (`docs/error-handling.md`). `Get` fails the same way (§3.3).
+2. **PostgreSQL Unavailable:** The query fails. Federated execution needs PostgreSQL for the hot rows and for the dirty set (§3.2). Parquet alone cannot tell a current row from one that was updated or deleted since its flush, so the engine never serves an S3-only answer. Neither `allow_partial_degraded_mode` nor `consistency_mode` changes this; the degraded fallback is itself a PostgreSQL read. Every PostgreSQL read of the federated engine wraps `ErrPostgresReadFailed`: a pass's reads in its snapshot (§6.1: opening it, the dirty set, the hot keys, the page's hot rows, the commit) and the PostgreSQL-only page read, routed or degraded. A pass's PostgreSQL failure does not count toward the §7.1 breaker. It is degradable, but the fallback meets the same outage and fails with the same sentinel. Until #858 a PostgreSQL failure after the dirty-ID fetch surfaced inside DuckDB's scan of PostgreSQL and classified as `ErrFederatedReadFailed`. Reads outside the federated engine, `Get` and a query without `federated.enabled`, return the repository's error without the sentinel. So an embedder cannot detect a PostgreSQL outage by matching `ErrPostgresReadFailed` alone. Over HTTP it answers as any internal failure does, with a redacted 500, or a 504 when a configured timeout expires first (`docs/error-handling.md`). `Get` fails the same way (§3.3).
 
 A best-effort analytics mode that reads parquet during a PostgreSQL outage would need its own proposal: tombstone, CDC-watermark and coverage guarantees, an explicit opt-in, and response semantics. "Eventually consistent" does not mean that mode.
 
@@ -1405,7 +1281,7 @@ A best-effort analytics mode that reads parquet during a PostgreSQL outage would
 A federated read never answers from part of the parquet set. When a manifest-listed object cannot be read, the read fails, or, with `allow_partial_degraded_mode`, is answered from PostgreSQL alone. #251 first excluded a confirmed-corrupt object and answered from the readable remainder plus the hot tier. #722 removed that exclusion because it returned wrong rows, not just fewer rows. The hot leg reads only rows that are still dirty or inside the flush grace (§3.2), so it cannot stand in for anything the excluded object held. That left two kinds of damage:
 
 * **Missing rows.** A corrupt base object can hold rows that are live and unchanged since their flush. No other input holds them, so they were absent from the answer.
-* **Stale and resurrected rows.** Excluding an object removes its versions from the last-write-wins input (§5). Suppose the excluded object held a row's latest flushed version, an update or a tombstone, and an older version of that row sat in a readable object. The older version won, so the answer returned an outdated attribute value or a row that had been deleted. Example: a readable base object holds live row R, a later delta holds R's tombstone, and the deletion is past the flush grace, so R is in neither `dirty_ids` nor the hot leg. Excluding that delta returned R as live (`TestCorruptDeltaWithNewestVersionsIsNotAnsweredStale` reproduces it).
+* **Stale and resurrected rows.** Excluding an object removes its versions from the last-write-wins input (§5). Suppose the excluded object held a row's latest flushed version, an update or a tombstone, and an older version of that row sat in a readable object. The older version won, so the answer returned an outdated attribute value or a row that had been deleted. Example: a readable base object holds live row R, a later delta holds R's tombstone, and the deletion is past the flush grace, so R is in neither the dirty set nor the hot leg. Excluding that delta returned R as live (`TestCorruptDeltaWithNewestVersionsIsNotAnsweredStale` reproduces it).
 
 Excluding only base objects would not have been safe either. Compaction promotion relabels deltas as base without merging them (`applyPromotion`), so a base object can hold a row's newest version, and the tier label cannot tell a safe exclusion from an unsafe one. What #251 keeps is the failure-path machinery: classifying the object, remembering the verdict, and keeping the breaker out of it. A healthy query pays nothing.
 
@@ -1424,7 +1300,7 @@ Excluding only base objects would not have been safe either. Compaction promotio
 
 **Why not `ignore_errors`.** It does not exist. On the pinned engine (DuckDB **v1.4.5** via `github.com/duckdb/duckdb-go/v2`, again on **v1.5.6** after #702's upgrade, and on **v2.0.0** for #752), `read_parquet(..., ignore_errors := true)` fails at bind time with `Binder Error: Invalid named parameter "ignore_errors" for function read_parquet`. DuckDB lists every parameter it accepts, and none of them tolerates errors (`ignore_errors` is a `read_csv` parameter). A reader-level skip would be rejected even if a later version added one. It is **silent**: no classification and no per-object attribution, which is exactly the scenario-2 silent-loss class this subsystem exists to prevent. Like the #251 exclusion, it would also answer from a remainder. Depending on a flag that would silently change read semantics when an upgrade adds it is the wrong shape of dependency. The raw evidence is in `docs/superpowers/plans/2026-08-02-issue-251-spike-findings.md`.
 
-**Execution plan.** The plan attached to a response describes only the pass that produced the returned page. Before the first pass, `ExecuteDuckDBFederatedQuery` snapshots the length of the plan's `Sources` and `Notes` **and its `Timings` entries** (`markExecutionPlan`). It truncates and restores to that mark (`rewind`) before the #720 retry. `Notes` stay **embedder-only by design**, because `toExecutionPlan` projects `Sources` and drops `Notes` at the HTTP boundary (#301/#306). `Timings` do cross that boundary, so the restore is what keeps a retried request from publicly reporting both `plan_cache_hit` and `plan_cache_miss` (#348). Without the rewind, a successful retry would report both passes. That means two identically labelled DuckDB scans, with the failed one carrying `ActualRows=0` and so indistinguishable from a scan that matched nothing, plus a double-counted hot-tier row estimate. Everything recorded *before* the first pass survives the rewind: the routing decision and its note belong to the caller, not to the failed pass. The §7.2 degraded fallback applies the same rule one level up. `queryDuckDBRouted` takes its own mark before the page pass and rewinds to it before the fallback records itself. A degraded plan therefore names only the fallback's `postgres` source and carries no DuckDB timings, whichever pass failed: the page pass, its retry, or the deep-page recount, whose successful page pass is discarded with it (#639).
+**Execution plan.** The plan attached to a response describes only the pass that produced the returned page. Before the first pass, `ExecuteDuckDBFederatedQuery` snapshots the length of the plan's `Sources` and `Notes` **and its `Timings` entries** (`markExecutionPlan`). It truncates and restores to that mark (`rewind`) before the #720 retry. `Notes` stay **embedder-only by design**, because `toExecutionPlan` projects `Sources` and drops `Notes` at the HTTP boundary (#301/#306). `Timings` do cross that boundary, so the restore is what keeps a retried request from publicly reporting both `plan_cache_hit` and `plan_cache_miss` (#348). Without the rewind, a successful retry would report both passes. That means two identically labelled DuckDB scans, with the failed one carrying `ActualRows=0` and so indistinguishable from a scan that matched nothing, plus a double-counted hot-tier row estimate. Everything recorded *before* the first pass survives the rewind: the routing decision and its note belong to the caller, not to the failed pass. The §7.2 degraded fallback applies the same rule one level up. `queryDuckDBRouted` takes its own mark before the page pass and rewinds to it before the fallback records itself. A degraded plan therefore names only the fallback's `postgres` source and carries no DuckDB timings, whichever pass failed: the page pass or its retry (#639).
 
 **Coverage marker (#468).** The `partial` field has one reason. `{reason: "hot_tier_only", unconsulted_tiers: ["warm","cold"]}` marks a page answered from the Postgres hot tier alone when the request asked for more, either explicitly or by omitting `preferred_tiers`, which asks for all three. Four Postgres-only paths set it (`markHotTierOnly`, `engine_tier_coverage.go`):
 
@@ -1458,9 +1334,9 @@ The marker reports coverage, not completeness (§3.3). Under the storage invaria
 DuckDB invalidates a database after a FATAL error and after an INTERNAL error (a failed assertion inside DuckDB). Every later statement on any connection of that database fails with `FATAL Error: Failed: database has been invalidated because of a previous fatal error`, until the database is reopened. `DuckDBClient` opens its `*sql.DB` over a connector that reopens it (`duckdbinit.RecoveringConnector`, `internal/duckdbinit/recovery.go`). The CDC exporter opens its `*sql.DB` over the same connector (#717), see *The CDC exporter* below:
 
 * **Detection.** A connection that gets a FATAL error from `QueryContext` or `ExecContext` marks its database instance invalid. Statements prepared with `Prepare` are not watched; nothing in Forma prepares on this handle. After an INTERNAL error it first runs `SELECT 1` on the same connection, and marks the instance invalid only if that fails FATAL, so an INTERNAL error that left the database usable does not reopen it.
-* **Recovery.** database/sql stops reusing connections of the invalid instance (`ResetSession` and `IsValid` turn them away), and the next new connection closes the invalid instance and then opens a fresh one with the same DSN and per-connection init (extensions, S3 settings, pragmas), whose required steps are verified again (§7.5). The fresh database holds no PostgreSQL attachment; the next hot-leg query attaches it (§6.1). duckdb-go does not synchronize a connector's `Connect` with its `Close`, so a connection still being opened on the invalid instance holds off its close until that connection is open. One Error line records the invalidation and one Warn line the reopen.
+* **Recovery.** database/sql stops reusing connections of the invalid instance (`ResetSession` and `IsValid` turn them away), and the next new connection closes the invalid instance and then opens a fresh one with the same DSN and per-connection init (extensions, S3 settings, pragmas), whose required steps are verified again (§7.5). duckdb-go does not synchronize a connector's `Connect` with its `Close`, so a connection still being opened on the invalid instance holds off its close until that connection is open. One Error line records the invalidation and one Warn line the reopen.
 * **What the caller sees.** The statement that hit the error still fails, and so does any statement already running on another connection of that instance. Nothing is retried, so a deterministic INTERNAL error fails each time it runs, and each run reopens the database. The failure counts toward the §7.1 breaker like any other.
-* **Limits.** A `:memory:` database loses whatever was created in it. The engine creates nothing there, but direct users of `DuckDBClient.DB` do. A file-backed database reopens through duckdb-go's instance cache, which returns the invalidated instance while anything still holds it: a connection database/sql has not dropped yet, or one still being opened. The reopened database then fails and is reopened again until those are gone; with none left, the reopen reaches a new instance.
+* **Limits.** A `:memory:` database loses whatever was created in it. The engine keeps nothing there between passes (a pass's staged dirty set is a temp table of its own connection, dropped when the pass ends), but direct users of `DuckDBClient.DB` do. A file-backed database reopens through duckdb-go's instance cache, which returns the invalidated instance while anything still holds it: a connection database/sql has not dropped yet, or one still being opened. The reopened database then fails and is reopened again until those are gone; with none left, the reopen reaches a new instance.
 
 **The CDC exporter (#717).** `cdc.NewDuckExporter` opens its database through the same connector, with its own per-connection init (pragmas, extensions, S3 session settings). It matters for `cdc.Runner`, which caches one exporter per config group for as long as the process lives, a warm Lambda for example, and replaces it only on a credential rotation (#331). Before #717 a FATAL or INTERNAL error during an export left that cached exporter failing every later flush for its group until the process restarted. Now the export that hit the error fails, and the group's next `RunOnce` exports on a reopened database through the same cached exporter, so the runner's cache and its in-flight accounting are unchanged. An export keeps nothing in the database between exports: it reads PostgreSQL over pgx and stages the rows in temp tables it drops when it ends (#785, *The CDC export transport* below), so the reopened database needs nothing the failed one held. The one-shot tools (`cdc-flush`, `cdc-init`, `compactor`, `manifest-reconcile`) open a fresh exporter per run and get the same recovery within a run. An exporter given `--duckdb-path` is file-backed, so the file-backed limit above applies to it too.
 
@@ -1470,17 +1346,15 @@ The trigger behind #702 was a DuckDB race in parallel window finalization: a win
 
 Every pooled DuckDB connection runs its init steps when it opens (`duckdbinit.MakeConnInit`). Before #752 every failed step was logged and skipped, and both constructors took a successful ping as their open check, so a connection could serve `SELECT 1` while missing the extension every real query needed. Steps are now either required or optional:
 
-* **Required, verified loaded:** `httpfs` and `parquet` on a `DuckDBClient` that enables S3 and parquet, and `postgres_scanner` on the federated engine's client (`federated.NewFederatedDuckDBClientContext`, which the factory uses), since every hot-leg query attaches PostgreSQL; `httpfs` and `parquet` on every CDC exporter engine (`cdc.NewDuckExporter`: `cdc-flush`, `cdc-init`, `compactor`, `baseline-schema`, `manifest-reconcile`). Those engines do not load `postgres_scanner` at all since #785: none of them reads PostgreSQL through DuckDB. A required extension is judged by `duckdb_extensions()` reporting it loaded after its `INSTALL` and `LOAD`, not by those statements succeeding: DuckDB 2.0 links `parquet` statically yet `INSTALL parquet` still downloads it, so that download failing on a cold extension cache does not fail a connection where parquet works.
+* **Required, verified loaded:** `httpfs` and `parquet` on a `DuckDBClient` that enables S3 and parquet, the federated engine's client included (`federated.NewDuckDBClientContext`, which the factory uses), and on every CDC exporter engine (`cdc.NewDuckExporter`: `cdc-flush`, `cdc-init`, `compactor`, `baseline-schema`, `manifest-reconcile`). No Forma engine loads `postgres_scanner`, because none reads PostgreSQL through DuckDB: the CDC exporters since #785, and the federated engine since #858, which reads the hot tier over pgx (§6.1). From #752 to #858 the scanner was a required step of the federated client, since every hot-leg query attached PostgreSQL; a connection that could not load it failed to open instead of failing every query. A required extension is judged by `duckdb_extensions()` reporting it loaded after its `INSTALL` and `LOAD`, not by those statements succeeding: DuckDB 2.0 links `parquet` statically yet `INSTALL parquet` still downloads it, so that download failing on a cold extension cache does not fail a connection where parquet works.
 * **Required:** the S3 session settings (`SET s3_*`) next to a required `httpfs`. A connection that loaded `httpfs` but missed its endpoint or keys would sign requests for the wrong store.
-* **Optional, logged and skipped:** the resource pragmas, extensions an operator lists in `DuckDBConfig.Extensions` (unless one names a required extension, `postgres` included as the alias of `postgres_scanner`: listing it does not make it optional), `postgres_scanner` on a `DuckDBClient` opened by `federated.NewDuckDBClientContext` for S3/parquet reads only.
+* **Optional, logged and skipped:** the resource pragmas, and extensions an operator lists in `DuckDBConfig.Extensions`, unless one names a required extension: listing it does not make it optional. Listing `postgres` loads the extension optionally, and nothing in the engine uses it.
 
 A failed required step fails the connection, so database/sql returns the error (`duckdbinit.RequiredStepError`) to whoever needed the connection: the constructor's ping, a query that made the pool open a new connection, or the first query after a reopen (§7.4). Each step keeps its own 5 s deadline (#487), so a required extension that needs downloading on a cold cache and does not finish in time fails that connection, and the next connection tries again. An S3 credential never appears in the error or the log line, even where DuckDB's error quotes the statement.
 
 What a failure means is unchanged where it lands. A `DuckDBClient` that fails to open leaves the factory without DuckDB, and the engine degrades to PostgreSQL-only as it always did for a client that would not open (§7.2); a connection that fails later fails its query, which counts toward the §7.1 breaker. A CDC exporter that fails to open fails the run that needed it.
 
-**Attaching the hot leg's catalog.** The attachment belongs to the database, not to a connection, and DuckDB 2.0's `ATTACH IF NOT EXISTS` is not atomic: connections of one database that attach the same catalog at once fail all but one with `database with name ... already exists`. The engine therefore attaches under a process-wide guard, and runs each query on the connection its attach ran on (`queryWithPostgres`). A reopen (§7.4) between the attach and the query cannot move the query to the reopened database, which lacks the catalog: the query runs on the database the attach reached, and fails there if DuckDB invalidated it, so the first attach on a reopened database is always a guarded one. A waiter for the guard gives up at its own context's deadline.
-
-**`postgres_query` and column order.** On DuckDB 2.0.0, `postgres_query` decodes PostgreSQL's columns in its query's order even when the planner asks for another one, which a join above it does (join key first). Same-typed columns then swap values silently; the CDC export instead failed with `Postgres binary reader - expected 16 bytes for a value of type UUID, got 2`. Until #785 the exporter therefore read each `postgres_query` result through a `MATERIALIZED` CTE before joining it. The export no longer uses `postgres_query` (below); the transport parity test keeps that form as its reference. Scans of the attached catalog (§6.1) do not have the problem.
+**`postgres_query` and column order.** On DuckDB 2.0.0, `postgres_query` decodes PostgreSQL's columns in its query's order even when the planner asks for another one, which a join above it does (join key first). Same-typed columns then swap values silently; the CDC export instead failed with `Postgres binary reader - expected 16 bytes for a value of type UUID, got 2`. Until #785 the exporter therefore read each `postgres_query` result through a `MATERIALIZED` CTE before joining it. The export no longer uses `postgres_query` (below); the transport parity test keeps that form as its reference.
 
 **The CDC export transport (#785).** `cdc-flush` and `cdc-init` read `change_log`, `entity_main` and `eav_data` over the run's own pgx pool, in one `REPEATABLE READ READ ONLY` transaction per batch, with the batch's row ids bound as one `uuid[]` parameter. pgx streams each result into a DuckDB temp table through the duckdb-go Appender, on the one DuckDB connection the export pins; the projection, its casts and the `COPY` to Parquet are unchanged and read the temp tables. The transaction ends before the `COPY` starts. Before #785 DuckDB read the three tables itself, through three `postgres_query` calls over an `ATTACH` that carried the PostgreSQL connection string, password included, in the SQL text. That path needed `postgres_scanner` wherever the CDC tools ran, opened PostgreSQL connections outside the run's pool, and was never checked to read one snapshot.
 
@@ -1488,7 +1362,7 @@ What a failure means is unchanged where it lands. A `DuckDBClient` that fails to
 * **Parity.** `TestExportTransportParity_PgxStagingMatchesPostgresQuery` exports the same delta, base and zero-row base batches through both transports and requires equal `DESCRIBE` types and an empty `EXCEPT ALL` both ways. Its fixture covers LIST elements out of index order, the empty-list marker and a legacy scalar row, integer widths and values past them, the three bool encodings, rfc3339 dates, both kinds of tombstone, and `NUMERIC` `NaN`, `±Infinity`, overflow and underflow. It runs where `postgres_scanner` can load, and fails in CI if it cannot.
 * **Throughput.** A 10,000-row batch with 20 EAV attributes (220,000 staged rows) against a local PostgreSQL 16 took about 255 ms through `postgres_query` and about 320 ms through pgx, of which the pgx read about 195 ms, the Appender about 85 ms and the `COPY` to a local file about 35 ms. That is one development host, without S3, whose upload both transports pay alike. Each export logs its own `stage_ms` and `copy_ms`.
 
-**Database files.** A file-backed `DBPath` written by DuckDB 2.0 cannot be opened by 1.5.6, so a rollback to a 1.5.6 build needs a fresh file. Nothing Forma keeps in DuckDB outlives the process (the engine creates nothing there, and the attachment and extension state are rebuilt on open), so deleting the file loses nothing of Forma's.
+**Database files.** A file-backed `DBPath` written by DuckDB 2.0 cannot be opened by 1.5.6, so a rollback to a 1.5.6 build needs a fresh file. Nothing Forma keeps in DuckDB outlives the process (a pass's staged dirty set is a temp table dropped when the pass ends, and the extension state is rebuilt on open), so deleting the file loses nothing of Forma's.
 
 **Parquet files.** Unlike a database file, the Parquet a 2.0 build writes to S3 stays readable by 1.5.6, so a rollback keeps every delta and base object. `make duckdb-storage-compat` checks both directions, files merged by compaction included, with the production COPY options (`internal/parquetformat`), and runs in CI; on 2.0.0 and 1.5.6 both releases write every column with the same codec and page encodings (#753). See `docs/duckdb-upgrades.md`.
 
@@ -1498,10 +1372,10 @@ The following metrics MUST be emitted through the engine's metric sink, which
 delivers them to the `forma.MetricEmitter` the embedder set on
 `Config.Metrics.Emitter` (backend-neutral; see `docs/telemetry.md`):
 
-* `fed_query_latency_histogram`: Labeled by `{stage: "translation", "execution", "streaming", "snapshot"}`. The stages are disjoint wall-time intervals: `translation` is SQL rendering, `execution` is the DuckDB `Query` call, `streaming` is the row iteration and handler loop. The execution plan's `duckdb_fetch` timing is `execution + streaming`. `snapshot` is a pgx hot-leg pass's PostgreSQL reads in its snapshot (§6.1.1). Emitted for every successful DuckDB pass, whether or not the caller requested an execution plan.
-* `fed_query_row_count`: Labeled by `{source: "pg", "duckdb"}`. `pg` is the size of the dirty set fetched from Postgres for the anti-join (§3.2); `duckdb` is the row count returned by the merged DuckDB scan. A `pg` series that stays large relative to `duckdb` means the hot tier is carrying rows that a CDC flush or compaction should have moved out (helps tune flush and compaction frequency). A pgx hot-leg pass adds `hot`, the hot keys its page drew from, and its `duckdb` is the parquet leg's window (§6.1.1). There is no `s3` series, and no series reports the rows the Postgres scans inside DuckDB read: the engine does not observe them, which is why the `fed_query_pushdown_efficiency` gauge was retired (#596; see "Retired metrics" in `docs/telemetry.md`).
+* `fed_query_latency_histogram`: Labeled by `{stage: "translation", "execution", "streaming", "snapshot"}`. The stages are disjoint wall-time intervals: `translation` is SQL rendering, `execution` is the DuckDB `Query` call, `streaming` is the row iteration and handler loop. The execution plan's `duckdb_fetch` timing is `execution + streaming`. `snapshot` is the pass's PostgreSQL reads in its snapshot (§6.1). The DuckDB statement runs while the snapshot is open, and its time is in `execution` and `streaming`, not in `snapshot`. Emitted for every successful pass, whether or not the caller requested an execution plan.
+* `fed_query_row_count`: Labeled by `{source: "pg", "duckdb", "hot"}`. `pg` is the size of the dirty set the pass read in its snapshot and staged for the anti-join (§3.2); `hot` is the number of hot keys the page drew from, the rows of the dirty window that match the condition (after the cursor, on a keyset page); `duckdb` is the row count of the parquet leg's window, which on an offset page holds up to `hot` + limit rows (§6.1). A `pg` series that stays large relative to `duckdb` means the hot tier is carrying rows that a CDC flush or compaction should have moved out (helps tune flush and compaction frequency), and `hot` beside `pg` says how much of the hot tier the predicate kept. There is no `s3` series. The `fed_query_pushdown_efficiency` gauge was retired (#596; see "Retired metrics" in `docs/telemetry.md`).
 
-All of a pass's samples (five, seven under the pgx hot leg) are emitted together once the pass has succeeded. A pass that fails at rendering, at the DuckDB `Query` call, mid-stream or, under the pgx hot leg, at a snapshot read emits nothing, so a query answered by the publication-race retry (#720) is counted once, from the pass that produced the returned page — the same pass the rewound execution plan describes.
+All of a pass's samples (seven, or three for a pass that runs no DuckDB statement, #720: `snapshot`, `pg` and `hot`) are emitted together once the pass has succeeded. A pass that fails at a snapshot read, at rendering, at the DuckDB `Query` call, mid-stream or in the row handler emits nothing, so a query answered by the publication-race retry (#720) is counted once, from the pass that produced the returned page — the same pass the rewound execution plan describes.
 
 * `duckdb_circuit_breaker_transition_total`: Labeled by `{state: "open", "half_open", "closed"}`, the state the breaker entered. One sample per transition, never per request; §7.1 lists the transitions and the log line each writes (#634).
 

@@ -11,8 +11,9 @@ type PGDSNParams = pgdsn.Params
 // (single-quote wrapped, backslash and single-quote escaped) so passwords with
 // spaces or quotes survive parsing by pgx and DuckDB's postgres scanner.
 //
-// The implementation moved to internal/pgdsn so internal/federated can quote the
-// hot-leg DSN the same way (#301). Behaviour is unchanged; the tests in
+// The implementation moved to internal/pgdsn so internal/federated could quote
+// its hot-leg DSN the same way (#301); that DSN left with the attach hot leg
+// (#858). Behaviour is unchanged; the tests in
 // pgdsn_test.go and redact_test.go remain the contract.
 func BuildPGDSN(p PGDSNParams) string {
 	return pgdsn.Build(p)

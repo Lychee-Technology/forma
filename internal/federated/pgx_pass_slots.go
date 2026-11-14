@@ -6,7 +6,7 @@ import (
 )
 
 // A pgx pass holds one pooled PostgreSQL connection from its snapshot to
-// its page read, the DuckDB statement included (design.md §6.1.1). It opens
+// its page read, the DuckDB statement included (design.md §6.1). It opens
 // the snapshot before it takes a DuckDB connection, so without a bound every
 // request queued on the DuckDB pool would hold a PostgreSQL connection while
 // it waits, and a burst of federated reads could take every connection the

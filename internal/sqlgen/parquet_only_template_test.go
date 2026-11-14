@@ -9,6 +9,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// dualPlanTestCache is the schema the parquet-only render tests translate
+// their conditions against: column-bound text, integer and both bool
+// encodings, plus pure-EAV text and numeric attributes.
+func dualPlanTestCache() forma.SchemaAttributeCache {
+	return forma.SchemaAttributeCache{
+		"name": {AttributeID: 5, ValueType: forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_01")}},
+		"age": {AttributeID: 6, ValueType: forma.ValueTypeInteger,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("integer_01")}},
+		"tag":   {AttributeID: 7, ValueType: forma.ValueTypeText},
+		"score": {AttributeID: 8, ValueType: forma.ValueTypeNumeric},
+		"active": {AttributeID: 9, ValueType: forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("smallint_01"), Encoding: forma.MainColumnEncodingBoolInt}},
+		"verified": {AttributeID: 10, ValueType: forma.ValueTypeBool,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_02"), Encoding: forma.MainColumnEncodingBoolText}},
+	}
+}
+
+// parityDual translates cond into the dual clauses the engine hands the
+// parquet-only builder.
+func parityDual(t *testing.T, cond forma.Condition, cache forma.SchemaAttributeCache) DualClauses {
+	t.Helper()
+	idx := 0
+	dc, err := ToDualClauses(cond, "eav_t", 7, cache, &idx)
+	require.NoError(t, err)
+	return dc
+}
+
 func parquetOnlyTestParams(t *testing.T) map[string]any {
 	t.Helper()
 	return injectTestRenderParams(t, map[string]any{
@@ -79,6 +107,10 @@ func TestParquetOnlyOrderByIsExplicitNullsLast(t *testing.T) {
 		{AttrID: 6, AttrName: "age", ColumnName: "integer_01", StorageLocation: forma.AttributeStorageLocationMain, SortOrder: forma.SortOrderDesc},
 		{AttrID: 7, AttrName: "tag", StorageLocation: forma.AttributeStorageLocationEAV, SortOrder: forma.SortOrderAsc},
 	}
+	mainColQ := parquetOnlyTestQuery(nil)
+	mainColQ.AttributeOrders = []model.AttributeOrder{
+		{AttrID: 42, ValueType: forma.ValueTypeNumeric, ColumnName: "integer_01", StorageLocation: forma.AttributeStorageLocationMain, SortOrder: forma.SortOrderAsc},
+	}
 	cases := map[string]struct {
 		q    *model.FederatedAttributeQuery
 		want string
@@ -86,6 +118,11 @@ func TestParquetOnlyOrderByIsExplicitNullsLast(t *testing.T) {
 		"default order": {parquetOnlyTestQuery(nil), "ORDER BY visible.created_at DESC NULLS LAST, visible.row_id ASC NULLS LAST\nLIMIT ? OFFSET ?;"},
 		"attribute order": {sortQ,
 			"ORDER BY visible.age DESC NULLS LAST, visible.tag ASC NULLS LAST, visible.row_id ASC NULLS LAST\nLIMIT ? OFFSET ?;"},
+		// A main-column order without an attribute name has no visible
+		// column to read: it orders by the bound column's output alias, and
+		// the request's order replaces the created_at fallback.
+		"main column order": {mainColQ,
+			"ORDER BY integer_01 ASC NULLS LAST, visible.row_id ASC NULLS LAST\nLIMIT ? OFFSET ?;"},
 		"keyset": {parquetOnlyTestQuery(parquetOnlyTestCursor()),
 			"ORDER BY visible.created_at DESC NULLS LAST, visible.row_id DESC NULLS LAST\nLIMIT ?;"},
 	}
@@ -138,6 +175,32 @@ func TestParquetOnlyBindRefusesMismatchedRequests(t *testing.T) {
 	require.ErrorContains(t, err, "non-negative")
 }
 
+// TestParquetOnlyBindRejectsMisalignedCursor pins the error path #381 item 7
+// gave Bind. The plan cache's shape hash covers cursor COLUMNS but deliberately
+// not cursor VALUES (internal/queryplan/shape.go, pinned by
+// TestShapeHashKeysetValuesDoNotParticipate), so a cached skeleton really can be
+// handed a cursor whose values no longer align with its columns. Binding SQL
+// NULL for the unfilled arm would answer a silently empty page; Bind must fail
+// instead, and must return nothing an unchecked caller could execute.
+func TestParquetOnlyBindRejectsMisalignedCursor(t *testing.T) {
+	// Compile from a well-formed cursor: the skeleton is the one a cache hit
+	// would serve.
+	wellFormed := parquetOnlyTestQuery(parquetOnlyTestCursor())
+	dual := parityDual(t, wellFormed.Condition, dualPlanTestCache())
+	compiled, err := CompileParquetOnlyQuery(parquetOnlyTestParams(t), wellFormed, &dual)
+	require.NoError(t, err)
+
+	// Same columns, one value short: the shape the values-blind hash admits.
+	short := parquetOnlyTestQuery(parquetOnlyTestCursor())
+	short.KeysetCursor.Values = short.KeysetCursor.Values[:1]
+	sql, args, err := compiled.Bind(short, dual, ParquetWindow{Limit: 25})
+	require.Error(t, err, "a cursor whose values do not align with its columns must not bind")
+	require.Contains(t, err.Error(), "carries 2 column(s) but 1 value(s)",
+		"the failure must name the counts, as model.KeysetCursor.ValidateShape does")
+	require.Empty(t, sql, "a failed Bind must return no executable SQL")
+	require.Empty(t, args, "a failed Bind must return no args")
+}
+
 func TestParquetOnlyCompileRefusesMissingInputs(t *testing.T) {
 	_, err := CompileParquetOnlyQuery(parquetOnlyTestParams(t), nil, nil)
 	require.ErrorContains(t, err, "nil")
@@ -151,14 +214,6 @@ func TestParquetOnlyCompileRefusesMissingInputs(t *testing.T) {
 	delete(params, "DuckDBS3Paths")
 	_, err = CompileParquetOnlyQuery(params, parquetOnlyTestQuery(nil), nil)
 	require.ErrorContains(t, err, "S3_SCAN_SOURCE")
-
-	// The hot leg's projection params are not needed.
-	params = parquetOnlyTestParams(t)
-	for _, key := range []string{"PGSourceSelect", "PGGroupBy", "EAVPivotSelect", "EAVPivotAttrs", "HasEAVPivot"} {
-		delete(params, key)
-	}
-	_, err = CompileParquetOnlyQuery(params, parquetOnlyTestQuery(nil), nil)
-	require.NoError(t, err)
 }
 
 // The offset window holds every parquet rank that can land on the page: a

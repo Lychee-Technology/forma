@@ -15,7 +15,7 @@ import (
 // storage holds, by the rules the CDC export applies to it
 // (cdc.castMainValue for a column-bound attribute, cdc.castEAVValue for an
 // EAV-only one), so the key compares as the row's next export will
-// (design.md §6.1.1, the derivation table under Ordering parity).
+// (design.md §6.1, the derivation table under Ordering parity).
 //
 // stored is the value as pgx scans it: for a column-bound attribute the
 // entity_main column's value (int16, int32, int64, float64, string, or a
@@ -70,7 +70,7 @@ func deriveBySpec(meta forma.AttributeMetadata, spec columnSpec, stored any) (an
 // from ltbase_created_at, ver_ts from the newest change_log entry's
 // changed_at. deleted_ts derives the constant 0 whatever is stored: the
 // hot leg reads live rows only, and the export writes a live row's
-// deleted_at as COALESCE(cl.deleted_at, 0) (design.md §6.1.1, deleted_ts
+// deleted_at as COALESCE(cl.deleted_at, 0) (design.md §6.1, deleted_ts
 // reads 0).
 func DeriveSystem(column string, stored any) (any, error) {
 	_, key, ok := systemColumn(column)

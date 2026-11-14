@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
-	"text/template"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,8 +21,8 @@ import (
 // surface; a deterministic mid-stream infrastructure failure cannot be
 // staged from real containers.
 
-// failingScanRows yields rows whose Scan always fails, driving the
-// streamDuckDBRows error path.
+// failingScanRows yields rows whose Scan always fails, driving the parquet
+// leg's scan error path (streamParquetLegRows).
 type failingScanRows struct{}
 
 func (f *failingScanRows) Next() bool             { return true }
@@ -54,12 +52,9 @@ func (s *scriptedDuckDBExecutor) Query(ctx context.Context, sql string, args ...
 
 func newBreakerTestEngine(t *testing.T, duck DuckDBQueryExecutor, breaker *CircuitBreaker) *DBFederatedQueryEngine {
 	t.Helper()
-	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, breaker,
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, breaker,
 		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-		testMetadataCacheSchema7(t), "", withTestParquetPath())
-	engine.buildDuckSQL = func(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *sqlgen.DualClauses) (string, []any, error) {
-		return "SELECT fake", nil, nil
-	}
+		testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 	return engine
 }
 
@@ -82,7 +77,7 @@ func TestBreakerRecordsExecutionFailures(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		require.False(t, breaker.IsOpen(), "breaker open before threshold at failure %d", i+1)
 		_, err := engine.Query(context.Background(), tables, fq, nil)
-		require.ErrorContains(t, err, "execute duckdb query")
+		require.ErrorContains(t, err, "execute the parquet-only statement")
 	}
 	require.True(t, breaker.IsOpen(), "two execution failures must open a threshold-2 breaker")
 
@@ -105,7 +100,7 @@ func TestBreakerRecordsStreamFailures(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		require.False(t, breaker.IsOpen(), "breaker open before threshold at failure %d", i+1)
 		_, err := engine.Query(context.Background(), tables, fq, nil)
-		require.ErrorContains(t, err, "scan duckdb row")
+		require.ErrorContains(t, err, "scan parquet leg row")
 	}
 	require.True(t, breaker.IsOpen(), "two row-stream failures must open a threshold-2 breaker")
 }
@@ -233,10 +228,9 @@ func TestHalfOpenZeroPathStaysLoudForConsecutiveRequests(t *testing.T) {
 	breaker := NewCircuitBreaker(1, time.Minute, time.Hour)
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 5}}
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, breaker,
+	engine := NewDBFederatedQueryEngine(pg, duck, breaker,
 		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-		testMetadataCacheSchema7(t), "host=x",
-		WithParquetSource(&fakeParquetSource{paths: nil}))
+		testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: nil}), withFakeHotLeg(nil))
 	fq, tables := breakerTestQuery()
 	opts := func() *model.FederatedQueryOptions {
 		return &model.FederatedQueryOptions{AllowPartialDegradedMode: true}
@@ -283,9 +277,8 @@ func TestBreakerHalfOpenProbeReleasedOnConfirmedCorruption(t *testing.T) {
 		{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
 	}}
 	breaker := NewCircuitBreaker(1, time.Minute, 50*time.Millisecond)
-	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, breaker,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x",
-		WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}))
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, breaker,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}), withFakeHotLeg(nil))
 
 	breaker.RecordFailure() // threshold 1: opens
 	require.True(t, breaker.IsOpen())

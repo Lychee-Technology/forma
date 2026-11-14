@@ -46,7 +46,7 @@ func defaultEntityManagerDependencies() entityManagerDependencies {
 		newMetadataLoader: func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 			return schemameta.NewMetadataLoader(pool, schemaTable, schemaDir)
 		},
-		newDuckDBClient: federated.NewFederatedDuckDBClientContext,
+		newDuckDBClient: federated.NewDuckDBClientContext,
 		// A factory test that enables DuckDB + a manifest template and leaves
 		// this default in place hits the real AWS credential chain — call
 		// swapManifestS3Client (parquet_source_test.go) to stay hermetic.
@@ -270,9 +270,8 @@ func newRepositoryAndEngine(
 		federated.WithPlanCache(planCache),
 		federated.WithLogger(zap.L()),
 		federated.WithMetricEmitter(cfg.Metrics.Emitter),
-		// The pgx hot leg's snapshot and reads (#856), which the default
-		// transport uses since #857; inert when cfg.DuckDB.HotLegTransport
-		// selects attach.
+		// The hot leg's snapshot and reads (#856): every federated pass
+		// reads PostgreSQL through them (#858).
 		federated.WithPgxHotLeg(pool, repository),
 	}
 	// Append only a real source, so the manifest-off path stays byte-identical
@@ -282,12 +281,10 @@ func newRepositoryAndEngine(
 	}
 	return repository, federated.NewDBFederatedQueryEngine(
 		repository,
-		federated.NewPostgresDirtyIDFetcher(pool),
 		federated.NewDuckDBClientQueryExecutor(duckClient),
 		newDuckDBCircuitBreaker(cfg.DuckDB),
 		cfg.DuckDB,
 		metadataCache,
-		federated.DuckDBPostgresConnStringFromPool(pool),
 		engineOpts...,
 	)
 }

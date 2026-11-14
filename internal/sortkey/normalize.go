@@ -16,7 +16,7 @@ import (
 
 // NormalizeCursor returns a copy of cursor whose every boundary holds a
 // value of its column's export type, and whose every column carries that
-// type (design.md §6.1.1, One boundary type per cursor column). The parquet
+// type (design.md §6.1, One boundary type per cursor column). The parquet
 // leg binds each boundary as CAST(? AS <export type>), on which the
 // normalized value is the identity, and the Go predicate compares the same
 // value with the comparator. So both legs compare one boundary against keys

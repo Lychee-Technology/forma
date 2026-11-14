@@ -38,9 +38,9 @@ func coldTierQuery() *model.FederatedAttributeQuery {
 // ErrNoParquetPaths and never reaches the sites under test.
 func newSentinelTestEngine(t *testing.T, duck DuckDBQueryExecutor, breaker *CircuitBreaker) *DBFederatedQueryEngine {
 	t.Helper()
-	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, breaker,
+	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, breaker,
 		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-		testMetadataCacheSchema7(t), "host=x", withTestParquetPath())
+		testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 }
 
 // TestSentinel_ExecuteFailureIsFederatedReadFailed pins the #187 branch
@@ -78,7 +78,7 @@ func TestSentinel_StreamFailureIsFederatedReadFailed(t *testing.T) {
 		coldTierQuery(), nil)
 
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
-	require.ErrorContains(t, err, "iterate duckdb rows")
+	require.ErrorContains(t, err, "iterate parquet leg rows")
 }
 
 // TestSentinel_ClientUnavailable pins the nil-client branch to

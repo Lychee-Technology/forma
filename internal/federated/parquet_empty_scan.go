@@ -9,57 +9,8 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-// hasNoParquetToRead reports whether a source-authored path set can be
-// answered without scanning parquet (#720): every path is a glob, every glob
-// matches no object, and PostgreSQL records no parquet publication for the
-// schema (HasParquetHistory).
-//
-// A source authors a glob only as its level-3 fallback (design.md §4.3.1),
-// for a schema whose manifest is confirmed absent or empty. That is the
-// state of a schema that has never been flushed, and DuckDB's read_parquet
-// refuses a glob that matches nothing, so such a query used to fail and
-// count against the breaker. An empty glob is not proof by itself, though:
-// a lost manifest over objects written under another prefix, or over
-// objects since deleted, looks the same. PostgreSQL tells the two apart. A
-// flushed change_log entry of any age, or a live row a cdc-init export left
-// without an entry, means parquet should hold data, and the read keeps
-// failing as before. No timestamp is compared: flushed_at is stamped on the
-// CDC host, so its order against this reader's clock proves nothing.
-//
-// A writer can publish between path resolution and this check. A flushed
-// entry found here may then belong to a publication the resolution missed,
-// not to a lost one, so the source is resolved again: a set that is no
-// longer an empty glob set asks the pass to retry. Publications after the
-// check are confirmNoParquetPublished's to catch.
-//
-// Path sets from a caller hint are left alone: they name objects no manifest
-// vouches for (#456), and #715 removes them. A failed glob listing is
-// inconclusive and leaves the scan to report it.
-func (e *DBFederatedQueryEngine) hasNoParquetToRead(
-	ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery,
-	paths []string, fromSource bool,
-) (bool, error) {
-	if !fromSource || tables.ChangeLog == "" || tables.EntityMain == "" || e.duck == nil || e.dirtyIDFetcher == nil {
-		return false, nil
-	}
-	if !globsMatchNothing(ctx, e.duck, paths) {
-		return false, nil
-	}
-	found, err := e.dirtyIDFetcher.HasParquetHistory(ctx, tables, q.SchemaID)
-	if err != nil {
-		return false, fmt.Errorf("check whether schema %d has parquet history: %w: %w", q.SchemaID, ErrPostgresReadFailed, err)
-	}
-	if !found {
-		return true, nil
-	}
-	if !e.sourceResolvesNoObjects(ctx, q) {
-		return false, &parquetPublishedDuringReadError{SchemaID: q.SchemaID}
-	}
-	return false, nil
-}
-
-// confirmNoParquetPublished runs after an empty-scan pass has read pg_source
-// and before its page is used. The empty scan source was fixed before
+// confirmNoParquetPublished runs after a pass that settled on no parquet
+// objects (#720) has read its hot leg, and before its page is used. The empty scan source was fixed before
 // DuckDB ran, so it cannot see a publication that landed in between, while
 // the change_log writes that follow such a publication can move rows out of
 // the hot leg: a flush marks them flushed, and the onboarding handoff clears
@@ -128,8 +79,8 @@ func (e *parquetPublishedDuringReadError) Error() string {
 
 func (e *parquetPublishedDuringReadError) Unwrap() error { return ErrFederatedReadFailed }
 
-// emptyParquetScanSet is the scan treatment of a read that hasNoParquetToRead
-// cleared: the scan source holds no object, and every attribute column is
+// emptyParquetScanSet is the scan treatment of a frozen set that lists no
+// object (#720): the scan source holds no object, and every attribute column is
 // missing from it, as from a footer union of no files.
 func emptyParquetScanSet(cache forma.SchemaAttributeCache) coldScanSet {
 	set := coldScanColumns(cache, newColumnUnion())

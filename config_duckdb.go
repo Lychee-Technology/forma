@@ -43,31 +43,29 @@ type DuckDBConfig struct {
 	// this margin to absorb CDC-host vs query-host clock skew. Zero (the
 	// default) is the exact anchor — the steady state is never widened; a
 	// positive value hot-serves rows flushed up to that long before the
-	// query; a negative value disables the widening (the pre-#252 barrier).
-	// The negative value applies to the attach transport only: the pgx hot
-	// leg reads it as 0, the exact anchor, because its snapshot guarantee
-	// needs a cutoff no later than path resolution (design.md §6.1.1, *The
-	// widening is never disabled on this path*). The hot-excluded form reads
-	// the strict set under either transport, whatever this value.
+	// query. A negative value reads as 0, the exact anchor: the pgx hot
+	// leg's snapshot guarantee needs a cutoff no later than path resolution,
+	// so the widening cannot be disabled (design.md §6.1, *The widening is
+	// never disabled*). Before #858 a negative value disabled the widening on
+	// the attach transport. The hot-excluded form reads the strict set,
+	// whatever this value.
 	FlushVisibilityGraceMs int64 `json:"flushVisibilityGraceMs"`
 
-	// HotLegTransport selects how a federated pass reads the hot tier
-	// (design.md §6.1.1): HotLegTransportPgx, DefaultConfig's value since
-	// #857, reads it over the engine's pgx pool in one REPEATABLE READ
-	// snapshot, has DuckDB read only the parquet tiers, and merges the two in
-	// Go; HotLegTransportAttach reads PostgreSQL from inside DuckDB through
-	// the attached catalog, and is the rollback. Empty, the field's zero
-	// value, still means attach: a DuckDBConfig built field by field rather
-	// than from DefaultConfig (WithDuckDB(DuckDBConfig{...}), say) keeps the
-	// attach transport until it sets this field. A pgx pass holds one pooled
-	// PostgreSQL connection for its whole duration, and the engine admits at
-	// most MaxConnections of them at once, so size the pool above
+	// HotLegTransport names how a federated pass reads the hot tier
+	// (design.md §6.1). HotLegTransportPgx, or empty, which means the same, is
+	// the only value: the pass reads the hot tier over the engine's pgx pool
+	// in one REPEATABLE READ snapshot, has DuckDB read only the parquet tiers,
+	// and merges the two in Go. The field stays after the attach transport
+	// was retired (#858) so that a configuration still selecting "attach"
+	// fails validation instead of changing transport silently. A pass holds
+	// one pooled PostgreSQL connection for its whole duration, and the engine
+	// admits at most MaxConnections of them at once, so size the pool above
 	// MaxConnections.
 	HotLegTransport HotLegTransport `json:"hotLegTransport"`
 	// HotLegMaxDirtyRows caps the dirty set a pgx pass stages. Past it the
 	// pass fails as a degradable federated read failure before DuckDB scans
 	// anything, so AllowPartialDegradedMode answers it from PostgreSQL
-	// alone. Zero, the default, sets no cap. The attach transport ignores it.
+	// alone. Zero, the default, sets no cap.
 	HotLegMaxDirtyRows int `json:"hotLegMaxDirtyRows"`
 
 	// S3Bucket is the bucket holding the lakehouse parquet files and the
@@ -361,9 +359,7 @@ func defaultDuckDBConfig() DuckDBConfig {
 		CircuitBreakerFailureThreshold: 5,
 		CircuitBreakerWindow:           time.Minute,
 		CircuitBreakerOpenDuration:     time.Minute,
-		// The pgx hot leg since #857, once the tier parity suite and the
-		// dual-run test passed (pgx-hot-leg-plan.md step 6). Rolling back is
-		// setting HotLegTransportAttach.
+		// The pgx hot leg, the only transport since #858.
 		HotLegTransport: HotLegTransportPgx,
 		// The manifest read surface (S3Bucket / S3DataPrefix / ManifestPrefix /
 		// ManifestTemplate) deliberately defaults to all-zero. The cdc CLI

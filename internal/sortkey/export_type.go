@@ -2,7 +2,7 @@
 // type of every sort and cursor column, the hot sort keys derived from
 // stored values by the CDC export's rules, the comparator that sorts them,
 // the three-valued keyset predicate, and the cursor normalization both legs
-// share (design.md §6.1.1, Ordering parity; pgx-hot-leg-plan.md step 2).
+// share (design.md §6.1, Ordering parity; pgx-hot-leg-plan.md step 2).
 //
 // A key value has the Go type of its column's export type: int64 for
 // BIGINT, INTEGER and SMALLINT, float64 for DOUBLE, string for VARCHAR, bool

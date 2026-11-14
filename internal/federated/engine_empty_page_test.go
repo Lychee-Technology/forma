@@ -2,25 +2,26 @@ package federated
 
 import (
 	"context"
-	"fmt"
+	"strings"
 	"testing"
-	"text/template"
 
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/require"
 )
 
 // sequencedDuckDBExecutor returns one prepared iterator (or error) per Query
-// call, so a test can hand the paged query an empty result and the fallback
-// recount a row that carries the window total — or a failure.
+// call, so a test can hand the paged query an empty result and the recount a
+// row that carries the window total — or a failure. sqls and args record
+// each main statement, so a test can read the window it rendered (window).
 type sequencedDuckDBExecutor struct {
 	calls int
 	rows  []duckDBRowsIterator
 	errs  []error
+	sqls  []string
+	args  [][]any
 }
 
 func (f *sequencedDuckDBExecutor) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
@@ -32,6 +33,7 @@ func (f *sequencedDuckDBExecutor) Query(ctx context.Context, sql string, args ..
 	}
 	idx := f.calls
 	f.calls++
+	f.sqls, f.args = append(f.sqls, sql), append(f.args, args)
 	if idx < len(f.errs) && f.errs[idx] != nil {
 		return nil, f.errs[idx]
 	}
@@ -70,66 +72,46 @@ func (r *totalOnlyDuckDBRow) Scan(dest ...any) error {
 func (r *totalOnlyDuckDBRow) Err() error   { return nil }
 func (r *totalOnlyDuckDBRow) Close() error { return nil }
 
-func newEmptyPageTestEngine(t *testing.T, pg *fakePostgresFederatedSource, duck DuckDBQueryExecutor, builtQueries *[]model.FederatedAttributeQuery) *DBFederatedQueryEngine {
+// newEmptyPageTestEngine builds an engine over duck whose passes read an
+// empty snapshot.
+func newEmptyPageTestEngine(t *testing.T, pg *fakePostgresFederatedSource, duck DuckDBQueryExecutor) *DBFederatedQueryEngine {
 	t.Helper()
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
+	return NewDBFederatedQueryEngine(pg, duck, nil,
 		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-		testMetadataCacheSchema7(t), "", withTestParquetPath())
-	engine.buildDuckSQL = func(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *sqlgen.DualClauses) (string, []any, error) {
-		*builtQueries = append(*builtQueries, *q)
-		return "SELECT fake", nil, nil
-	}
-	return engine
+		testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 }
 
-// TestDBFederatedQueryEngine_EmptyPageRecountsTotal pins the #181 fallback:
-// the DuckDB template carries COUNT(*) OVER() on data rows, so a page beyond
-// the last match streams zero rows and the engine must recount via
-// computeFederatedCount instead of reporting totalRecords=0.
-func TestDBFederatedQueryEngine_EmptyPageRecountsTotal(t *testing.T) {
-	restore := initTestDescriptors()
-	defer restore()
+// renderedWindow is the page form and the window of one parquet-only
+// statement: a keyset page binds LIMIT ? last, an offset page LIMIT ?
+// OFFSET ?.
+type renderedWindow struct {
+	keyset        bool
+	limit, offset int64
+}
 
-	duck := &sequencedDuckDBExecutor{rows: []duckDBRowsIterator{
-		&emptyDuckDBRows{},
-		&totalOnlyDuckDBRow{total: 42},
-	}}
-	var built []model.FederatedAttributeQuery
-	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, duck, &built)
-
-	page, err := engine.Query(context.Background(),
-		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
-		&model.FederatedAttributeQuery{
-			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10, Offset: 50},
-			// Cold-only tiers force the DuckDB route under the hybrid
-			// strategy regardless of page size.
-			PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
-		}, nil)
-
-	require.NoError(t, err)
-	require.Empty(t, page.Records)
-	require.Equal(t, int64(42), page.TotalRecords)
-	require.Equal(t, model.ComputeTotalPages(42, 10), page.TotalPages)
-	require.Equal(t, 2, duck.calls, "empty deep page must trigger exactly one recount")
-	// The advanced template renders LIMIT/OFFSET from the query object, so the
-	// recount must reach the builder with the pagination zeroed — passing
-	// limit/offset only as call parameters re-renders the deep offset (#181).
-	require.Len(t, built, 2)
-	require.Equal(t, 50, built[0].Offset)
-	require.Equal(t, 1, built[1].Limit, "recount must render LIMIT 1")
-	require.Equal(t, 0, built[1].Offset, "recount must render OFFSET 0")
+// window reads the i-th main statement f recorded.
+func (f *sequencedDuckDBExecutor) window(t *testing.T, i int) renderedWindow {
+	t.Helper()
+	require.Greater(t, len(f.args), i, "statement %d did not run", i)
+	args := f.args[i]
+	if !strings.Contains(f.sqls[i], "OFFSET ?") {
+		require.NotEmpty(t, args)
+		return renderedWindow{keyset: true, limit: args[len(args)-1].(int64)}
+	}
+	require.GreaterOrEqual(t, len(args), 2)
+	return renderedWindow{limit: args[len(args)-2].(int64), offset: args[len(args)-1].(int64)}
 }
 
 // TestDBFederatedQueryEngine_EmptyResultAtOffsetZeroSkipsRecount guards the
-// other half of the #181 condition: at offset 0 an empty result is a genuine
-// total of 0 and no second query may fire.
+// #181 recount's condition: at offset 0 an empty result is a genuine total
+// of 0 and no second query may fire. (A page past the last match counts
+// itself: TestPgxQueryCountsAnEmptyDeepPageInOnePass.)
 func TestDBFederatedQueryEngine_EmptyResultAtOffsetZeroSkipsRecount(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
 	duck := &sequencedDuckDBExecutor{rows: []duckDBRowsIterator{&emptyDuckDBRows{}}}
-	var built []model.FederatedAttributeQuery
-	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, duck, &built)
+	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, duck)
 
 	page, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
@@ -142,95 +124,4 @@ func TestDBFederatedQueryEngine_EmptyResultAtOffsetZeroSkipsRecount(t *testing.T
 	require.Empty(t, page.Records)
 	require.Equal(t, int64(0), page.TotalRecords)
 	require.Equal(t, 1, duck.calls, "offset 0 empty result must not recount")
-}
-
-// TestDBFederatedQueryEngine_RecountFailureDegradesToPostgres pins that a
-// recount failure honors the same AllowPartialDegradedMode contract as the
-// page fetch: the request degrades to Postgres-only instead of erroring.
-func TestDBFederatedQueryEngine_RecountFailureDegradesToPostgres(t *testing.T) {
-	restore := initTestDescriptors()
-	defer restore()
-
-	duck := &sequencedDuckDBExecutor{
-		rows: []duckDBRowsIterator{&emptyDuckDBRows{}},
-		errs: []error{nil, fmt.Errorf("forced recount failure")},
-	}
-	var built []model.FederatedAttributeQuery
-	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 7}}
-	engine := newEmptyPageTestEngine(t, pg, duck, &built)
-
-	page, err := engine.Query(context.Background(),
-		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
-		&model.FederatedAttributeQuery{
-			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10, Offset: 50},
-			PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
-		}, &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
-
-	require.NoError(t, err)
-	require.Equal(t, int64(7), page.TotalRecords)
-	require.Equal(t, 2, duck.calls)
-	require.Equal(t, 1, pg.queryCalls, "recount failure under degraded mode must fall back to postgres")
-}
-
-// TestDBFederatedQueryEngine_RecountFailureErrorsWithoutDegradedMode pins the
-// counterpart: without AllowPartialDegradedMode the recount failure surfaces
-// as an error and never silently returns a partial result.
-func TestDBFederatedQueryEngine_RecountFailureErrorsWithoutDegradedMode(t *testing.T) {
-	restore := initTestDescriptors()
-	defer restore()
-
-	duck := &sequencedDuckDBExecutor{
-		rows: []duckDBRowsIterator{&emptyDuckDBRows{}},
-		errs: []error{nil, fmt.Errorf("forced recount failure")},
-	}
-	var built []model.FederatedAttributeQuery
-	pg := &fakePostgresFederatedSource{}
-	engine := newEmptyPageTestEngine(t, pg, duck, &built)
-
-	_, err := engine.Query(context.Background(),
-		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
-		&model.FederatedAttributeQuery{
-			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10, Offset: 50},
-			PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
-		}, nil)
-
-	require.ErrorContains(t, err, "compute empty-page federated count")
-	require.Equal(t, 0, pg.queryCalls)
-}
-
-// TestDBFederatedQueryEngine_RecountDegradedFallbackRecordsExecutionPlan pins
-// #185 scenario 6 on the second fallback site: when the empty-page recount
-// fails and degraded mode absorbs it, the plan must also reflect the
-// postgres-only fallback.
-func TestDBFederatedQueryEngine_RecountDegradedFallbackRecordsExecutionPlan(t *testing.T) {
-	restore := initTestDescriptors()
-	defer restore()
-
-	duck := &sequencedDuckDBExecutor{
-		rows: []duckDBRowsIterator{&emptyDuckDBRows{}},
-		errs: []error{nil, fmt.Errorf("forced recount failure")},
-	}
-	var built []model.FederatedAttributeQuery
-	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 7}}, duck, &built)
-
-	opts := &model.FederatedQueryOptions{
-		AllowPartialDegradedMode: true,
-		IncludeExecutionPlan:     true,
-	}
-	page, err := engine.Query(context.Background(),
-		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
-		&model.FederatedAttributeQuery{
-			AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10, Offset: 50},
-			PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
-		}, opts)
-
-	require.NoError(t, err)
-	require.Equal(t, int64(7), page.TotalRecords)
-	require.False(t, opts.ExecutionPlan.Routing.UseDuckDB,
-		"plan must not claim DuckDB after recount degraded fallback: %+v", opts.ExecutionPlan.Routing)
-	require.Contains(t, opts.ExecutionPlan.Routing.Reason, "degraded fallback")
-	requirePlanHasNoteContaining(t, opts.ExecutionPlan, "forced recount failure")
-	// The plan must ride on the returned page, not just opts (#185).
-	require.NotNil(t, page.ExecutionPlan)
-	require.False(t, page.ExecutionPlan.Routing.UseDuckDB)
 }

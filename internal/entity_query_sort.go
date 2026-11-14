@@ -126,7 +126,7 @@ func buildAttributeOrders(req *forma.QueryRequest, schemaCache forma.SchemaAttri
 // validateFederatedSort refuses a sort on a list attribute on a federated
 // request (#853). DuckDB orders a LIST element by element, and the hot
 // leg's Go comparator, which must reproduce the parquet leg's order key for
-// key (design.md §6.1.1, Ordering parity), has no LIST order: such a page
+// key (design.md §6.1, Ordering parity), has no LIST order: such a page
 // would merge its hot rows in an order no cursor can continue. The check
 // runs before routing, like validateFederatedCondition, so the answer does
 // not depend on whether the engine routed the request to PostgreSQL or to

@@ -17,7 +17,7 @@ engine. You configure it.
 | `cdc-flush`'s flush mark | Supported: one statement a batch | Supported: statements of at most 1,000 rows, each retried on `40001` (#633). Not yet run against a cluster |
 | `forma-tools init-db` | Supported | Not supported: its DDL is not valid on DSQL (#690) |
 | CDC export reads (`cdc-flush`, `cdc-init`) | Supported | Over the run's pgx pool, in one `REPEATABLE READ READ ONLY` transaction per batch with the row ids as a `uuid[]` parameter (#785). Not yet run against a cluster; whether a 10,000-row batch's read fits DSQL's five-minute transaction limit is unmeasured |
-| DuckDB `postgres` extension (hot-tier federated reads) | Supported | Not verified (#691). The CDC tools no longer use it (#785) |
+| Federated queries' hot-tier reads | Supported | Over the engine's pgx pool, in one `REPEATABLE READ READ ONLY` transaction per pass (#858). The statements are in the DSQL lint corpus; they have not run in the MiniStack lane (#691) or against a cluster |
 
 ## Choosing the engine
 

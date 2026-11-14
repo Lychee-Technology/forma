@@ -1,13 +1,13 @@
 package federated
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/sortkey"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/google/uuid"
@@ -35,10 +35,10 @@ func duckDBLiteralTypeForKind(kind model.ColumnKind) string {
 	}
 }
 
-// TestStreamDuckDBRows_RealDriver_UUIDColumnsScan pins issue #147: the
+// TestStreamParquetLegRows_RealDriver_UUIDColumnsScan pins issue #147: the
 // duckdb-go driver returns UUID columns as 16 raw bytes, and the scan buffers
 // must decode them instead of silently leaving uuid.Nil row ids.
-func TestStreamDuckDBRows_RealDriver_UUIDColumnsScan(t *testing.T) {
+func TestStreamParquetLegRows_RealDriver_UUIDColumnsScan(t *testing.T) {
 	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	defer db.Close()
@@ -74,17 +74,13 @@ func TestStreamDuckDBRows_RealDriver_UUIDColumnsScan(t *testing.T) {
 	require.NoError(t, err)
 	defer rows.Close()
 
-	engine := &DBFederatedQueryEngine{}
-	var records []*model.PersistentRecord
-	total, rowCount, err := engine.streamDuckDBRows(context.Background(), rows, func(_ context.Context, record *model.PersistentRecord) error {
-		records = append(records, record)
-		return nil
-	})
+	out, total, totalSet, err := streamParquetLegRows(rows, sortkey.Order{})
 
 	require.NoError(t, err)
+	require.True(t, totalSet)
 	require.Equal(t, int64(1), total)
-	require.Equal(t, int64(1), rowCount)
-	require.Len(t, records, 1)
+	require.Len(t, out, 1)
+	records := []*model.PersistentRecord{out[0].record}
 	require.Equal(t, rowID, records[0].RowID, "ltbase_row_id must survive the DuckDB UUID scan")
 	require.Equal(t, customerID, records[0].UUIDItems["uuid_01"], "uuid_01 must survive the DuckDB UUID scan")
 	require.Equal(t, int16(102), records[0].SchemaID)

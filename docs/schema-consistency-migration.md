@@ -620,9 +620,9 @@ one row per element with `array_indices` set to the element index (`'0'`,
 since `#314`, so such rows are always pre-existing data, never new writes.
 
 The row is not lost, but the tiers disagree on its shape until it is rewritten:
-the OLTP read returns the scalar (`"alpha"`), while the parquet export and the
-DuckDB hot-tier pivot return a one-element list (`["alpha"]`). Before `#372`
-the DuckDB tiers returned `[]` instead, silently dropping the value. The
+the OLTP read returns the scalar (`"alpha"`), and so does the federated hot
+leg, which reads through it, while the parquet export returns a one-element
+list (`["alpha"]`). Before `#372` the DuckDB tiers returned `[]` instead, silently dropping the value. The
 one-element list assumes the value sits in the storage column the list's items
 type uses; a legacy value in the other column (a text value under a numeric
 list, or the reverse) reads as `[null]` on the DuckDB tiers and is reported by
@@ -714,11 +714,12 @@ it. The census lists every such row, one line per stored element
 - **bigint out of contract.** A `bigint` value past ±2^53 or with
   a fraction. One past 2^53 was rounded on the write, so no route can recover
   the caller's value; every route reads the rounded image. One past int64 or
-  with a fraction is projected by every DuckDB leg, the unflushed hot leg
-  included, through `TRY_CAST(value_numeric AS BIGINT)` to NULL or a rounded
-  value, and the OLTP route refuses the read with an error naming the
-  attribute and row (before `#590` it converted through Go's `int64()`, whose
-  result past int64 depends on the platform). A re-flush reproduces the same
+  with a fraction is exported through `TRY_CAST(value_numeric AS BIGINT)` to
+  NULL or a rounded value, which the parquet tiers serve, and the OLTP route
+  refuses the read with an error naming the attribute and row (before `#590`
+  it converted through Go's `int64()`, whose result past int64 depends on the
+  platform). The federated hot leg reads an unflushed row through the OLTP
+  reader, so a federated page that holds one fails the same way. A re-flush reproduces the same
   image, so only rewriting the value repairs it.
 
 A `smallint`/`integer` row is reported whatever its flush state: pending,
@@ -811,13 +812,12 @@ and the row. The federated route reads a parquet copy the way the CDC
 export writes it, `TRY_CAST(<column> AS BIGINT)` (`#627`): a fraction rounds
 half to even (`1000.5` reads `1000`, `1001.5` reads `1002`), and an image
 past int64, `NaN`, or an infinity reads as an absent attribute. The
-unflushed row depends on the hot-leg transport. The `pgx` transport, the
-default since `#857`, reads it through the OLTP reader, so a federated page
-that holds it fails as the OLTP route does, until the row is flushed or
-repaired. The `attach` transport reads it the export's way, so its federated
-queries answer the same for the row before and after its flush. Before
-`#627`, such an image failed every federated query that reached the
-unflushed row.
+federated hot leg reads an unflushed row through the OLTP reader, so a
+federated page that holds it fails as the OLTP route does, until the row is
+flushed or repaired. Until `#857` made the `pgx` hot leg the default, the
+`attach` hot leg read such a row the export's way, so federated queries
+answered the same for it before and after its flush; before `#627`, such an
+image failed every federated query that reached the unflushed row.
 
 **A `smallint` or `integer` bound to a wider column** (`bigint_*` or
 `double_*`, or `integer_*` for a `smallint`) holds its declared type's
@@ -842,10 +842,9 @@ converted the image (`1001.5` read as `1001`, and `4294967296` as
 and an unrelated update wrote the converted value back. The federated route
 reads a parquet copy at the declared type through `TRY_CAST` (`#627`): a
 fraction rounds half to even, and a value out of range, `NaN`, or an infinity
-reads as absent. Under the `attach` hot-leg transport it reads the unflushed
-row that way too. Under `pgx`, the default since `#857`, the unflushed row
-reads through the OLTP reader, so a federated page that holds it fails until
-the row is flushed or repaired. The two routes answer differently for a
+reads as absent. The unflushed row reads through the OLTP reader on the
+federated hot leg too, so a federated page that holds it fails until the row
+is flushed or repaired. The two routes answer differently for a
 flushed row on purpose, until `#621` or a later decision unifies them. Repair the row by rewriting the
 attribute through the API, choosing the value yourself. See
 [Schema Evolution and Declared Types](./schema-evolution.md#d1-invalid-legacy-integer-images-on-oltp-reads-708).
@@ -869,10 +868,10 @@ because an update rebuilds the whole document and re-enters the write
 funnel: an image the read accepted and the write refused would fail an
 update that never mentioned the attribute, as the caller's invalid input.
 The federated read applies the same rule to the value its projection
-receives. A Parquet `BIGINT` reaches the projection with its digits intact.
-A value the DuckDB Postgres scanner reads does not: until `#621` the scanner
-narrows it to a float64 first, on the hot leg and in the CDC export that
-writes the Parquet copies (see below).
+receives. A Parquet `BIGINT` reaches the projection with its digits intact,
+and an unflushed row reads through the OLTP reader. The value the CDC export
+writes into the Parquet copies is narrowed first: until `#621` the export
+stages `NUMERIC` as a float64 (see below).
 
 Before `#592` no rule judged the unbound destination. A row written earlier,
 or edited by hand, can hold a whole number past 2^53, a fraction, `NaN`,
@@ -893,17 +892,18 @@ validator before upgrading. Its predicate is the read's own rule
 (`transform.StoredDateImageRefusedSQL`), so it lists every attribute whose
 rows the upgraded read refuses.
 
-**The federated tiers read these rows differently until `#621`.** The DuckDB
-Postgres scanner types `NUMERIC` as `DOUBLE` before any expression Forma
-renders, so the Parquet copy the CDC export writes from the row, and the
-`attach` transport's hot leg, read such an image narrowed: 2^53+1 as 2^53,
-`1000.5` as `1000`, `NaN` and the infinities as 1970-01-01T00:00:00Z, and a
-number past int64 as absent. One row can therefore fail on the OLTP route and
-answer a different instant on the federated one. The `pgx` hot leg, the
-default since `#857`, reads an unflushed row through the OLTP reader, so
-there a federated page that holds such a row fails until it is flushed or
-repaired. The census is the only guard for
-those tiers, so clear it before relying on either route.
+**The parquet tiers read these rows differently until `#621`.** The CDC
+export stages `NUMERIC` as `DOUBLE` before any expression Forma renders, the
+type the DuckDB Postgres scanner gave it before `#785`, so the Parquet copy it
+writes from the row holds such an image narrowed: 2^53+1 as 2^53, `1000.5` as
+`1000`, `NaN` and the infinities as 1970-01-01T00:00:00Z, and a number past
+int64 as absent. Once flushed, one row can therefore fail on the OLTP route
+and answer a different instant on the federated one. While the row is
+unflushed, the federated hot leg reads it through the OLTP reader, so a
+federated page that holds it fails until it is flushed or repaired. Before
+`#857` made that hot leg the default, the `attach` hot leg read the unflushed
+row narrowed too. The census is the only guard for those tiers, so clear it
+before relying on either route.
 
 Inspect the rows:
 
@@ -1006,7 +1006,8 @@ as `2024-01-02T11:04:06+08:00`. The OLTP read always applied the offset.
 Before `#756` the DuckDB tiers dropped it and read that image as
 `11:04:06Z`, so a `GET` and a federated read of the row named instants
 8 hours apart, and federated filters and sorts followed the wrong one. The
-hot leg and the CDC export now apply the offset.
+CDC export now applies the offset, and the federated hot leg reads through
+the OLTP reader, which always did.
 
 **Parquet copies exported before the upgrade keep the old instant.**
 Compaction carries a copy's value over unchanged, so a flushed row reads
@@ -1074,16 +1075,15 @@ around it, by direct SQL for example. Since `#404` the OLTP read refuses such an
 a storage consistency error that names the column, so every `GET` of its row
 fails. Every update of the row fails too, including one that names the
 attribute: an update parses each bound column of the row it merges into
-before it replaces any value. The CDC export and the `attach` hot leg read
-the image as `false` (`<column> = '1'`), so federated queries answered the
-row with `false` and never failed on it.
+before it replaces any value. The CDC export reads the image as `false`
+(`<column> = '1'`), and so did the `attach` hot leg, so before `#857`
+federated queries answered the row with `false` and never failed on it.
 
-The `pgx` hot leg, the default since `#857`, reads an unflushed row through
-the OLTP reader. A federated page that holds such a row while it is
-unflushed therefore fails, where the `attach` transport served `false`.
-After its flush the row reads `false` again on the warm and cold tiers, so
-the same query fails or answers depending on whether the row has been
-flushed since its last write.
+The `pgx` hot leg, the default since `#857` and the only one since `#858`,
+reads an unflushed row through the OLTP reader. A federated page that holds
+such a row while it is unflushed therefore fails. After its flush the row
+reads `false` on the warm and cold tiers, so the same query fails or answers
+depending on whether the row has been flushed since its last write.
 
 **Detect.** The validator reads the bound column of `--entity-main-table`
 for every `bool_text` attribute and reports each row whose image is not
@@ -1251,8 +1251,10 @@ LIMIT 50;
   `bool_text` columns). That transport reads an unflushed row through the
   OLTP reader, so a row the OLTP read refuses now fails every federated page
   that holds it while it is hot, where the `attach` transport read it the
-  export's way. To roll back, set `duckdb.hotLegTransport` to `attach`
-  (`DUCKDB_HOT_LEG_TRANSPORT=attach` for `cmd/server`)
+  export's way. Since `#858` there is no `attach` transport to roll back
+  to: a configuration that still selects it (`DUCKDB_HOT_LEG_TRANSPORT=attach`
+  for `cmd/server`) fails at startup, so repair what the census reports
+  before upgrading
 - hardened release deployed
 - validator re-run after deploy
 - smoke CRUD tests pass against existing schemas

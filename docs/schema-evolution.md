@@ -186,10 +186,12 @@ version and `change_log` after the failed update, and
 
 The federated route reads an EAV-only value at its storage width, DOUBLE
 (#384), and decodes it with the same check, so it refuses the row too, unlike
-a bound column's `TRY_CAST` legs in the table above. Two gaps remain, both
-#621's: the hot leg narrows the NUMERIC to DOUBLE inside DuckDB, so a fraction
-a float64 cannot keep reads as the whole number; and a NaN or an infinity
-breaks the attributes JSON, failing the query without naming the row.
+a bound column's `TRY_CAST` legs in the table above. An unflushed row reads
+through the OLTP reader itself, since the hot leg moved to pgx (#858). Two
+gaps remain on the parquet tiers, both #621's: the CDC export stages the
+NUMERIC as DOUBLE, so a fraction a float64 cannot keep reads as the whole
+number; and a NaN or an infinity breaks the attributes JSON, failing the query
+without naming the row.
 
 The census reports these rows as failures, never as stale exports a re-flush
 repairs; see

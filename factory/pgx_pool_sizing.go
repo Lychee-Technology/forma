@@ -27,7 +27,7 @@ func warnPgxPoolSizing(pool *pgxpool.Pool, cfg forma.DuckDBConfig) {
 // pgxPoolSizingWarning is the warning for a pool of poolMaxConns
 // connections under cfg, or "" when the pool has room beyond the passes.
 func pgxPoolSizingWarning(poolMaxConns int32, cfg forma.DuckDBConfig) string {
-	if !cfg.Enabled || !cfg.HotLegTransport.IsPgx() {
+	if !cfg.Enabled {
 		return ""
 	}
 	passes := max(1, cfg.MaxConnections)
@@ -35,6 +35,6 @@ func pgxPoolSizingWarning(poolMaxConns int32, cfg forma.DuckDBConfig) string {
 		return ""
 	}
 	return fmt.Sprintf("the PostgreSQL pool holds %d connections, and the pgx hot leg admits up to %d concurrent federated passes (duckdb.maxConnections), each holding one connection for its whole duration: "+
-		"size the pool above duckdb.maxConnections so the OLTP route keeps a connection, or set duckdb.hotLegTransport to %q",
-		poolMaxConns, passes, forma.HotLegTransportAttach)
+		"size the pool above duckdb.maxConnections so the OLTP route keeps a connection",
+		poolMaxConns, passes)
 }

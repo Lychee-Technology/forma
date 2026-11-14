@@ -201,7 +201,7 @@ The benchmark must emit:
 - `cold_hit_ratio`
 - `dedup_count`
 - `delete_filtered_count`
-- `pushdown_efficiency` (not measurable today: the hot leg pushes no predicate to PostgreSQL, see `design.md` §6.1 and #631)
+- `pushdown_efficiency` (not measured: until #858 the hot leg pushed no predicate to PostgreSQL (#631), and since then PostgreSQL evaluates the hot leg's whole predicate, see `design.md` §6.1)
 - `memory_peak_mb`
 
 Output formats:

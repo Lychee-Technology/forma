@@ -46,9 +46,9 @@ func TestKeysetCountPassConfirmedCorruptionFailsTheRequest(t *testing.T) {
 	require.Nil(t, opts.PartialScan, "a failed request carries no marker")
 }
 
-// TestEmptyPageRecountConfirmedCorruptionIsNeverQuiet pins Query's #181
-// empty-page recount: a deep page streams zero rows, and the recount that
-// would supply total_records confirms corruption. Without degraded mode the
+// TestEmptyPageRecountConfirmedCorruptionIsNeverQuiet pins the pass's #181
+// recount: a deep page's parquet window streams zero rows, and the recount
+// statement that would supply the parquet count confirms corruption. Without degraded mode the
 // request fails with the refusal. With it, the answer is the Postgres-only
 // page, and that page carries the #468 marker for the tier it skipped.
 func TestEmptyPageRecountConfirmedCorruptionIsNeverQuiet(t *testing.T) {
@@ -59,19 +59,18 @@ func TestEmptyPageRecountConfirmedCorruptionIsNeverQuiet(t *testing.T) {
 
 			duck := countPassCorruptDuck(retryPass{empty: true})
 			pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
-			e := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-				hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x",
-				WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}))
+			e := NewDBFederatedQueryEngine(pg, duck, nil,
+				hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}), withFakeHotLeg(nil))
 
 			fq := coldTierQuery()
 			fq.Offset = 50
 			opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded}
 			page, err := e.Query(context.Background(), corruptTables, fq, opts)
-			require.Len(t, duck.mainSQL, 2, "the page pass and the recount, and no retry over the remainder")
+			require.Len(t, duck.mainSQL, 2, "the page statement and the recount, and no retry over the remainder")
 
 			if !degraded {
 				requireCorruptRefusal(t, err, retryCorruptPath1)
-				require.ErrorContains(t, err, "compute empty-page federated count")
+				require.ErrorContains(t, err, "recount the parquet leg")
 				require.Nil(t, page, "an empty page must not be answered with a total counted without the corrupt object")
 				require.Zero(t, pg.queryCalls)
 				require.Nil(t, opts.PartialScan, "a failed request carries no marker")

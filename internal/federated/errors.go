@@ -54,16 +54,15 @@ var ErrKeysetUnsupportedOnPostgres = errors.New("keyset cursor unsupported on th
 var ErrParquetUnrepresentable = errors.New("schema cannot be read from the parquet tiers")
 
 // ErrHotLegNotDisjoint marks a pgx pass whose parquet leg answered a row the
-// pass's snapshot holds as dirty (design.md §6.1.1, the merge's guard on the
+// pass's snapshot holds as dirty (design.md §6.1, the merge's guard on the
 // staging). The two legs must be disjoint by row_id, since the merge does no
 // cross-tier deduplication, so answering would hold the row twice. It is an
 // internal inconsistency, not a transient failure: not degradable, so it
 // stays loud instead of being absorbed into a PostgreSQL-only answer.
 var ErrHotLegNotDisjoint = errors.New("hot leg and parquet leg of a pgx pass are not disjoint")
 
-// errPgxHotLegNotConfigured marks a pass under HotLegTransportPgx on an
-// engine built without WithPgxHotLeg, or over an executor that cannot stage
-// the dirty set. A configuration error, so not degradable.
+// errPgxHotLegNotConfigured marks a pass on an engine built without
+// WithPgxHotLeg, or over an executor that cannot stage the dirty set. A configuration error, so not degradable.
 var errPgxHotLegNotConfigured = errors.New("pgx hot leg is not configured")
 
 // ErrNoParquetPaths and ErrManifestSchemaMismatch are defined in the public

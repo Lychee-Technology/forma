@@ -10,7 +10,7 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
-// The Go merge of a pgx pass (design.md §6.1.1, steps 3 and 5): the hot keys
+// The Go merge of a pgx pass (design.md §6.1, steps 3 and 5): the hot keys
 // sorted by the page's order and filtered by its cursor, the parquet window
 // placed among them, and the page cut from the result. Everything here is
 // pure, so the placement arithmetic is tested without either store.
@@ -121,7 +121,7 @@ func parquetCountKnown(window sqlgen.ParquetWindow, rows int) bool {
 	return rows > 0 || (window.Offset == 0 && window.Limit > 0)
 }
 
-// checkTiersDisjoint is the merge's guard on the staging (design.md §6.1.1,
+// checkTiersDisjoint is the merge's guard on the staging (design.md §6.1,
 // Frozen inventory): the anti-join drops every parquet version of a dirty
 // row, so a parquet row whose row_id is dirty means the parquet leg read
 // another dirty set than the snapshot's. Answering would hold the row twice.

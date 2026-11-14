@@ -276,15 +276,6 @@ func TestToDualClauses_Characterization(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.want, dc)
 			require.Equal(t, tc.span, paramIndex, "paramIndex advancement")
-
-			// Plan+Bind must reproduce the direct path exactly for every case.
-			plan, err := PlanDualClauses(tc.cond, "eav_table", 7, cache, 0)
-			require.NoError(t, err)
-			bound := 0
-			got, err := plan.Bind(tc.cond, cache, &bound)
-			require.NoError(t, err)
-			require.Equal(t, dc, got)
-			require.Equal(t, paramIndex, bound)
 		})
 	}
 }

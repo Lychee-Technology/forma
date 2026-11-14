@@ -27,7 +27,7 @@ type Column struct {
 // Order is the order of one page's parquet leg, key for key and direction
 // for direction, row_id last. The comparator does not fix an order of its
 // own: it is built for each pass from the ORDER BY the parquet leg renders
-// (design.md §6.1.1, The page's order).
+// (design.md §6.1, The page's order).
 type Order struct {
 	Columns []Column
 }

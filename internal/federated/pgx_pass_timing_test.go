@@ -49,9 +49,9 @@ func newExecutionPlanOpts() *model.FederatedQueryOptions {
 		ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
 }
 
-// The row handler's time is streaming, as on the attach path: a handler that
-// takes 30ms a row over a 4-row page shows as 120ms of streaming, in the
-// histogram and in the plan's duckdb_fetch, and not as snapshot time.
+// The row handler's time is streaming: a handler that takes 30ms a row over
+// a 4-row page shows as 120ms of streaming, in the histogram and in the
+// plan's duckdb_fetch, and not as snapshot time.
 func TestPgxPassStreamingIncludesTheRowHandler(t *testing.T) {
 	f := newPgxFixture(t, tieRunRows())
 	clock := &fakeClock{t: time.Unix(1_700_000_000, 0)}

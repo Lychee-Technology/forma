@@ -16,7 +16,7 @@ import (
 // operators on a text or uuid attribute answer the same rows whether the
 // attribute is column-bound (title on text_01, ref on uuid_01) or stored in
 // eav_data (note, token), on the Postgres route, the DuckDB route over hot
-// rows (where the entity_main pushdown filters pg_source first) and the
+// rows (where PostgreSQL filters the hot leg) and the
 // DuckDB route over warm delta parquet. Before #676 the bound forms were
 // refused on the DuckDB route with `unsupported operator`. Expected rows come
 // from Go's byte order over the seeded values. The uuids span the top bit,

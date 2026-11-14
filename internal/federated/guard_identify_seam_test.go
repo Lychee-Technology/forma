@@ -69,8 +69,8 @@ func (d *guardSeamFakeDuck) guardedDrains() []string {
 func newGuardSeamEngine(t *testing.T, duck DuckDBQueryExecutor, src ParquetSource, opts ...EngineOption) *DBFederatedQueryEngine {
 	t.Helper()
 	all := append([]EngineOption{WithParquetSource(src)}, opts...)
-	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", all...)
+	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), append(all, withFakeHotLeg(nil))...)
 }
 
 func guardSeamTables() model.StorageTables {
@@ -180,8 +180,7 @@ func TestMissingObjectClassificationWinsOverIdentification(t *testing.T) {
 // manifest vouches for, so identification never probes them.
 func TestGuardIdentificationSkippedForHintAuthoredSet(t *testing.T) {
 	duck := &guardSeamFakeDuck{rogue: guardRoguePath}
-	e := NewDBFederatedQueryEngine(nil, nil, duck, nil, hybridDuckConfig(), nil, "",
-		WithParquetSource(&fakeParquetSource{}))
+	e := NewDBFederatedQueryEngine(nil, duck, nil, hybridDuckConfig(), nil, WithParquetSource(&fakeParquetSource{}), withFakeHotLeg(nil))
 
 	sc := scan{parquetPaths: []string{guardHealthyPath, guardRoguePath}, pathsFromSource: false}
 	err := e.failDuckDBScan(context.Background(),
@@ -207,8 +206,7 @@ func TestGuardIdentificationSkippedForHintAuthoredSet(t *testing.T) {
 func TestGuardViolationStillFeedsTheBreaker(t *testing.T) {
 	duck := &guardSeamFakeDuck{rogue: guardRoguePath}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute) // threshold 1: one RecordFailure opens it
-	e := NewDBFederatedQueryEngine(nil, nil, duck, breaker, hybridDuckConfig(), nil, "",
-		WithParquetSource(&fakeParquetSource{}))
+	e := NewDBFederatedQueryEngine(nil, duck, breaker, hybridDuckConfig(), nil, WithParquetSource(&fakeParquetSource{}), withFakeHotLeg(nil))
 
 	sc := scan{parquetPaths: []string{guardHealthyPath, guardRoguePath}, pathsFromSource: true}
 	err := e.failDuckDBScan(context.Background(),
@@ -229,8 +227,7 @@ func TestGuardViolationStillFeedsTheBreaker(t *testing.T) {
 // what an operator needs.
 func TestGuardIdentificationRunsForSinglePathSet(t *testing.T) {
 	duck := &guardSeamFakeDuck{rogue: guardRoguePath}
-	e := NewDBFederatedQueryEngine(nil, nil, duck, nil, hybridDuckConfig(), nil, "",
-		WithParquetSource(&fakeParquetSource{}))
+	e := NewDBFederatedQueryEngine(nil, duck, nil, hybridDuckConfig(), nil, WithParquetSource(&fakeParquetSource{}), withFakeHotLeg(nil))
 
 	sc := scan{parquetPaths: []string{guardRoguePath}, pathsFromSource: true}
 	err := e.failDuckDBScan(context.Background(),

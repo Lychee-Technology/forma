@@ -42,21 +42,21 @@ func TestKeysetArgsPreserveInt64Above2p53(t *testing.T) {
 		AttributeQuery: model.AttributeQuery{SchemaID: 1, Limit: 10, Offset: 0},
 		KeysetCursor:   cursor,
 	}
-	dual := &DualClauses{
+	dual := DualClauses{
 		DuckClause: "age > ?",
 		DuckArgs:   []any{int64(25)},
 	}
 
-	sql, args, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, injectTestRenderParams(t, map[string]any{}, 1), q, nil, dual)
+	sql, args, err := BuildParquetOnlyQuery(injectTestRenderParams(t, map[string]any{}, 1), q, dual, ParquetWindow{Limit: 10})
 	require.NoError(t, err)
 
-	// [DuckArgs(1), PgMainArgs(0), DuckArgs(1), keyset(3)] — a 2-column cursor
-	// repeats its prefix value once per disjunct, so the keyset tail is
+	// [DuckArgs(1), DuckArgs(1), keyset(3), window(1)] — a 2-column cursor
+	// repeats its prefix value once per disjunct, so the keyset args are
 	// n(n+1)/2 = 3 args: [amount, amount, row_id].
-	require.Len(t, args, 5)
-	keysetArgs := args[len(args)-3:]
+	require.Len(t, args, 6)
+	keysetArgs := args[2:5]
 	require.Equal(t, "0f000000-0000-0000-0000-000000000000", keysetArgs[2],
-		"row_id tiebreak binds last")
+		"row_id tiebreak binds last among the keyset args")
 
 	// Every occurrence of the amount value — not just the first — must be a
 	// verbatim int64: a coercion that reached only the repeated prefix arg

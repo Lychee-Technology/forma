@@ -147,12 +147,11 @@ func TestDeletedTSKeysetWalk(t *testing.T) {
 	}
 }
 
-// TestDeletedTSKeysetBoundaries pins design.md §6.1.1's table on the attach
-// path, one page per direction and boundary with deleted_ts leading: below 0
-// ascending and above 0 descending admit every row, 0 admits the rows past
-// the cursor's row_id, and the other side admits none, whatever the row's
-// encoding. Each case also holds the page to the Go predicate the hot leg
-// will apply. A cursor on created_at, deleted_ts, row_id then returns the
+// TestDeletedTSKeysetBoundaries pins design.md §6.1's table, one page per
+// direction and boundary with deleted_ts leading: below 0 ascending and
+// above 0 descending admit every row, 0 admits the rows past the cursor's
+// row_id, and the other side admits none, whatever the row's encoding. Each
+// case also holds the page to the Go predicate the hot leg applies. A cursor on created_at, deleted_ts, row_id then returns the
 // rows sharing a created_at in row_id order, where the raw column put the
 // NULL rows last. Last, the offset form: a sort on deleted_ts is refused
 // before either leg runs, and an offset walk with a flush between two pages

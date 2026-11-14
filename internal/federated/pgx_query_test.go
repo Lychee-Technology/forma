@@ -57,20 +57,20 @@ func TestPgxQueryDegradesADirtySetPastTheCap(t *testing.T) {
 	require.Equal(t, int64(12), page.TotalRecords)
 }
 
-// Engine construction says once that the pgx hot leg reads a negative grace
-// as 0; the attach transport keeps the setting and logs nothing.
+// Engine construction says once that a negative grace reads as 0; a
+// non-negative one logs nothing.
 func TestPgxEngineLogsANegativeGraceOnce(t *testing.T) {
-	build := func(transport forma.HotLegTransport, opts ...EngineOption) *observer.ObservedLogs {
+	build := func(grace int64, opts ...EngineOption) *observer.ObservedLogs {
 		core, logs := observer.New(zap.WarnLevel)
-		cfg := forma.DuckDBConfig{HotLegTransport: transport, FlushVisibilityGraceMs: -1}
+		cfg := forma.DuckDBConfig{FlushVisibilityGraceMs: grace}
 		all := append([]EngineOption{WithLogger(zap.New(core))}, opts...)
-		NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, nil, nil, cfg, nil, "", all...)
+		NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil, cfg, nil, all...)
 		return logs
 	}
-	logs := build(forma.HotLegTransportPgx)
+	logs := build(-1)
 	require.Equal(t, 1, logs.Len())
 	require.Contains(t, logs.All()[0].Message, "reads as 0")
-	require.Zero(t, build(forma.HotLegTransportAttach).Len())
-	require.Equal(t, 1, build(forma.HotLegTransportPgx, WithFlushVisibilityGrace(-time.Second)).Len(),
+	require.Zero(t, build(0).Len())
+	require.Equal(t, 1, build(0, WithFlushVisibilityGrace(-time.Second)).Len(),
 		"a negative WithFlushVisibilityGrace is read the same way")
 }

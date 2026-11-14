@@ -15,7 +15,7 @@ import (
 
 // Engine returns the Env's real federated query engine, assembling it on
 // first use: the production DBPersistentRecordRepository over the per-test
-// pool, the Postgres dirty-ID fetcher, the per-test DuckDB client, the
+// pool, the pgx hot leg's snapshot pool and reader, the per-test DuckDB client, the
 // factory-shape shared plan cache (#345), an optional circuit breaker
 // (WithBreaker), and the loaded metadata cache.
 // This mirrors the production assembly used by the benchmark runner
@@ -26,16 +26,6 @@ func (e *Env) Engine() *fedengine.DBFederatedQueryEngine {
 	}
 	e.engine = e.assembleEngine(e.DuckCfg)
 	return e.engine
-}
-
-// EngineWithTransport assembles a fresh engine like Engine's, over the same
-// pool, DuckDB client, parquet source and breaker, whose hot leg uses
-// transport (#856). It is not memoized: a test comparing the two transports
-// on one Env's state builds it once and queries it with QueryOn.
-func (e *Env) EngineWithTransport(transport forma.HotLegTransport) *fedengine.DBFederatedQueryEngine {
-	cfg := e.DuckCfg
-	cfg.HotLegTransport = transport
-	return e.assembleEngine(cfg)
 }
 
 // assembleEngine builds the Env's engine over cfg.
@@ -73,18 +63,12 @@ func (e *Env) assembleEngine(cfg forma.DuckDBConfig) *fedengine.DBFederatedQuery
 		}
 		opts = append(opts, fedengine.WithParquetSource(src))
 	}
-	var dirty fedengine.DirtyIDFetcher = fedengine.NewPostgresDirtyIDFetcher(e.Pool)
-	if e.DirtyIDFetcherWrap != nil {
-		dirty = e.DirtyIDFetcherWrap(dirty)
-	}
 	return fedengine.NewDBFederatedQueryEngine(
 		repo,
-		dirty,
 		fedengine.NewDuckDBClientQueryExecutor(e.Duck),
 		e.breaker,
 		cfg,
 		e.Metadata,
-		fedengine.DuckDBPostgresConnStringFromPool(e.Pool),
 		opts...,
 	)
 }

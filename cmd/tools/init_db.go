@@ -269,7 +269,7 @@ func eavIndexDDL(opts initDBOptions) []tableDDL {
 
 // changeLogFlushIndexDDL indexes change_log by (schema_id, flushed_at), the
 // key of every dirty-set read: the strict set is the range flushed_at = 0 and
-// the hot form's widening the range flushed_at >= cutoff (design.md §6.1.1).
+// the hot form's widening the range flushed_at >= cutoff (design.md §6.1).
 // The primary key leads with row_id after schema_id, so without this index
 // each read walks every entry the schema ever logged, flushed ones included,
 // and flushed entries are never deleted. row_id and changed_at ride along so

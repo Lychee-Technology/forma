@@ -15,7 +15,7 @@ import (
 // what the pass reports.
 
 // A publication after the snapshot through a source-authored glob (design.md
-// §6.1.1, Frozen inventory): the glob was listed at resolution, so an object
+// §6.1, Frozen inventory): the glob was listed at resolution, so an object
 // a writer publishes between the snapshot and the scan is outside the scan.
 // The clean row the writer updated reads at its snapshot version, and the row
 // it created is not in the answer.
@@ -55,8 +55,8 @@ func TestPgxPassListedObjectDeletedBeforeTheScanIsNotAnInconsistency(t *testing.
 // A failed listing fails the pass as a degradable read failure, rather than
 // scanning the glob outside the snapshot.
 func TestPgxPassFailedListingFailsThePass(t *testing.T) {
-	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, &fakeDuckDBExecutor{}, nil,
-		pgxDuckConfig(), parquetOnlyMetadata(t), "", WithParquetSource(&fakeParquetSource{paths: []string{"s3://b/7/delta/*.parquet"}}))
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDuckDBExecutor{}, nil,
+		pgxDuckConfig(), parquetOnlyMetadata(t), WithParquetSource(&fakeParquetSource{paths: []string{"s3://b/7/delta/*.parquet"}}))
 	e.hotLeg = &fakeHotLeg{t: t}
 	_, _, err := e.ExecuteDuckDBFederatedQuery(context.Background(), tieRunTables, pgxQuery(), 5, 0, nil, nil)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
@@ -156,9 +156,6 @@ func TestPgxPassReportsTheHotLegAsAPostgresSource(t *testing.T) {
 	require.Equal(t, int64(6), hot.RowEstimate)
 	require.Equal(t, int64(2), hot.ActualRows, "rows 9 and 12 of the first page are hot")
 	require.Contains(t, plan.Timings, "pg_snapshot")
-	for _, src := range plan.Sources {
-		require.NotEqual(t, hotLegPredicateReason, src.Reason, "nothing evaluates the hot leg in DuckDB")
-	}
 
 	require.Equal(t, map[string]int{
 		"fed_query_latency_histogram/stage=snapshot":    1,
