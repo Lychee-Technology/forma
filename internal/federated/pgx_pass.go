@@ -127,6 +127,11 @@ func (e *DBFederatedQueryEngine) streamPgxPass(
 	if err != nil {
 		return 0, fmt.Errorf("pgx pass over schema %d: %w", q.SchemaID, err)
 	}
+	// The handler loop is streaming, as on the attach path, where the row
+	// iteration and the handler run in one loop (docs/telemetry.md). Here the
+	// parquet leg's rows were read before the merge, so the loop's time is
+	// added to the leg's own streaming time.
+	handleStart := planCtx.now()
 	for _, record := range page.records {
 		if rowHandler == nil {
 			break
@@ -135,6 +140,7 @@ func (e *DBFederatedQueryEngine) streamPgxPass(
 			return 0, fmt.Errorf("handle row %s of the merged page: %w", record.RowID, err)
 		}
 	}
+	page.outcome.leg.streamMs += planCtx.millisSince(handleStart)
 	// Reported only now, as the attach path reports once its rows are
 	// streamed: a pass whose handler failed is a failed pass, and leaves no
 	// fed_query_* sample behind (docs/telemetry.md).

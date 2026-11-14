@@ -28,7 +28,9 @@ type parquetLeg struct {
 	sqlStr string
 	args   []any
 	// translateMs, executeMs and streamMs are the leg's stages, reported as
-	// the attach pass reports its own (emitDuckDBScanMetrics).
+	// the attach pass reports its own (emitDuckDBScanMetrics). streamMs is
+	// the leg's row iteration until the pass hands the page to its row
+	// handler, which adds the handler loop's time (streamPgxPass).
 	translateMs, executeMs, streamMs int64
 }
 
@@ -56,7 +58,10 @@ func (p *pgxPass) runParquetLeg(ctx context.Context, dirty []uuid.UUID, window s
 		p.releaseProbe()
 		return parquetLeg{}, fmt.Errorf("the duckdb executor %T cannot stage the dirty set on a pinned connection: %w", e.duck, errPgxHotLegNotConfigured)
 	}
-	executeStart := p.planCtx.now()
+	// Each statement of the pass, the #181 recount included, marks its own
+	// start, so a failure's duckdb_fetch measures the attempt that failed.
+	p.planCtx.recordQueryStart()
+	executeStart := p.planCtx.startQuery
 	rows, err := querier.queryStaged(ctx, dirty, sqlStr, args...)
 	if err != nil {
 		err = redact.Error(err)
