@@ -29,18 +29,15 @@ type duckDBRowsIterator interface {
 	Close() error
 }
 
-// ExecuteDuckDBFederatedQuery runs the DuckDB optimized query template using the provided
-// model.FederatedAttributeQuery. It fetches dirty IDs from the Postgres change_log (if available),
-// injects exclusions into the DuckDB WHERE clause, executes the query against the global
-// DuckDB client, and returns matched PersistentRecords along with the total record count.
-//
-// Note: This implementation performs a best-effort scan of columns produced by the
-// optimized query template. It mirrors the column ordering used by the Postgres template:
-//   - main table projection (entity_main columns, order defined by model.EntityMainColumnDescriptors)
-//   - attributes_json (TEXT)
-//   - total_records (bigint)
-//   - total_pages (bigint)
-//   - current_page (int)
+// ExecuteDuckDBFederatedQuery answers q's page and its exact total through
+// one federated pass (design.md §6.1). The pass requires the engine's
+// snapshot pool (WithPgxHotLeg) and a configured change_log table. It opens a
+// REPEATABLE READ snapshot and reads the dirty set and, unless the request
+// excludes the hot tier, the hot keys from it; stages the dirty set in
+// DuckDB, whose parquet-only statement drops every row_id of it from the
+// frozen parquet objects; merges the hot keys and the parquet window in Go
+// and cuts the page; and reads the page's hot rows in the same snapshot.
+// DuckDB reads no PostgreSQL.
 //
 // An empty parquet scan a publication raced (#720) is retried exactly once,
 // so one call can issue two scans. A read failure attributed to corrupt
@@ -221,14 +218,14 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	}
 
 	// DuckDBConfig.QueryTimeout bounds one DuckDB pass end to end (#465):
-	// path resolution and schema probes, the dirty-ID fetch, the scan, and
+	// path resolution and schema probes, the snapshot reads, the scan, and
 	// the row streaming below all run under this deadline. duckdb-go v2
 	// interrupts a running query when its context expires, so a slow scan is
 	// genuinely cancelled rather than left running on the single connection.
 	// A zero timeout leaves the caller's context as it is. Query arms the
 	// same budget once for the whole DuckDB-routed request
 	// (queryDuckDBRouted), so under it this deadline is never later than the
-	// request's and a publication-race retry or a deep-page recount shares
+	// request's and a publication-race retry or the degraded fallback shares
 	// the remainder; the arming here is what bounds callers that reach a
 	// pass directly (ExecuteFederatedKeysetQuery, the benchmark harness).
 	// The caller's own deadline (QueryConfig.DefaultTimeout) is the ceiling
@@ -309,8 +306,9 @@ func (e *DBFederatedQueryEngine) injectSchemaProjections(ctx context.Context, sq
 	return hit, applySchemaProjection(sqlParams, schemaID, sp, projErr)
 }
 
-// applySchemaProjection writes the seven schema-projection params into sqlParams
-// from a computed projection, or refuses. Both a non-nil projErr and a nil
+// applySchemaProjection writes the schema-projection params the parquet-only
+// statement reads, S3SourceSelect and OuterSelect, into sqlParams from a
+// computed projection, or refuses. Both a non-nil projErr and a nil
 // projection are hard failures: with the toy-schema defaults retired (#222)
 // there is nothing to fall through to, so an advanced-template render must fail
 // fast rather than emit unset projection params. Extracted so the nil-guard is

@@ -10,23 +10,28 @@ import (
 )
 
 // confirmNoParquetPublished runs after a pass that settled on no parquet
-// objects (#720) has read its hot leg, and before its page is used. The empty scan source was fixed before
-// DuckDB ran, so it cannot see a publication that landed in between, while
-// the change_log writes that follow such a publication can move rows out of
-// the hot leg: a flush marks them flushed, and the onboarding handoff clears
-// the log once cdc-init has published. Either way the page may be short.
+// objects (#720) has read its page and ended its snapshot S, and before the
+// page is used. If the source no longer resolves an empty glob set, a
+// publication landed since path resolution, and the page is discarded.
 //
-// Every writer publishes before it touches change_log. The flush copies its
-// objects and appends the manifest before it marks rows, and the handoff
-// runs after cdc-init has published. So any change_log write the hot leg saw
-// follows a publication this check sees: the source now resolves a manifest,
-// or the glob now matches an object. The argument rests on that causal
-// order, not on any clock. It covers every publication the reader can see
-// at all. A writer that keeps no manifest and writes outside the reader's
-// glob is invisible to every read, as design.md §4.3.1 level 3 documents.
-// A publication whose manifest and objects are lost before this check runs
-// is not seen either; the page is short, and the next read fails on the
-// change_log history it left. #760 tracks closing that window.
+// The check is conservative: the page it guards is already complete as of
+// S. The parquet-history record, the hot keys and the page's hot rows all
+// come from S, and every writer publishes before it touches change_log (the
+// flush appends to the manifest before it marks rows, and the onboarding
+// handoff clears the log after cdc-init has published). A publication's
+// change_log write that landed before S is history in S, and
+// settleEmptyCandidate retried or failed the pass. One that lands after S
+// cannot remove a row from what the pass reads from S: there every live row
+// has an unflushed entry, and the hot leg serves it. So a publication whose
+// manifest and objects are lost before this check does not shorten the
+// page; its change_log write fails later reads as history instead. The
+// check was kept from the attach pass, which read the hot leg outside any
+// snapshot and could lose rows a racing flush marked.
+//
+// What stays open is the durable history itself: a cdc-init export whose
+// rows have all been written again since the handoff leaves no record in
+// PostgreSQL. Its rows are shadowed, so losing it changes no answer. #760
+// tracks a durable initialization record (design.md §4.3.1 level 3).
 func (e *DBFederatedQueryEngine) confirmNoParquetPublished(ctx context.Context, q *model.FederatedAttributeQuery) error {
 	if e.sourceResolvesNoObjects(ctx, q) {
 		return nil

@@ -56,8 +56,11 @@ type DBFederatedQueryEngine struct {
 	parquetSource ParquetSource
 	// flushVisibilityGraceMs is the #252 clock-skew margin subtracted from
 	// the query's path-resolution timestamp to form the dirty-barrier
-	// cutoff; zero = exact anchor (default), negative = widening disabled.
-	// Copied from DuckDBConfig.FlushVisibilityGraceMs at construction.
+	// cutoff; zero = exact anchor (default). The field keeps the configured
+	// value, and passCutoffMs clamps a negative one to zero: the widening is
+	// never disabled (design.md §6.1), and construction warns once
+	// (logNegativeGrace). Copied from DuckDBConfig.FlushVisibilityGraceMs at
+	// construction.
 	flushVisibilityGraceMs int64
 	// schemaValidator enforces the parquet system-column invariant before
 	// each scan (#189): union_by_name tolerates attribute-column evolution,
@@ -219,12 +222,12 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 }
 
 // queryDuckDBRouted serves a request the routing policy sent to DuckDB: the
-// page pass, the deep-page recount (#181) and, when a failure is degradable,
-// the Postgres-only fallback.
+// pass, which counts its matches exactly (a parquet-leg recount, #181,
+// included), and, when a failure is degradable, the Postgres-only fallback.
 //
 // DuckDBConfig.QueryTimeout is armed here, once, for the whole of it (#465
-// review). A request can take several DuckDB passes — the page pass, its
-// publication-race retry (#720), the recount and its retry — and a budget
+// review). A request can take several passes — the page pass and its
+// publication-race retry (#720) — and the fallback, and a budget
 // armed per pass would have let a request spend several budgets in a row,
 // outliving the http.Server write deadline that
 // bootstrap.HTTPServerConfig.Validate sizes on exactly one. Under one shared
