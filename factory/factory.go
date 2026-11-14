@@ -248,6 +248,7 @@ func newRepositoryAndEngine(
 	duckClient *federated.DuckDBClient, parquetSource federated.ParquetSource, repoOpts ...internal.RepoOption,
 ) (*internal.DBPersistentRecordRepository, *federated.DBFederatedQueryEngine) {
 	planCache := queryplan.NewCache(4096)
+	warnPgxPoolSizing(pool, cfg.DuckDB)
 	repository := internal.NewDBPersistentRecordRepository(pool, metadataCache,
 		append([]internal.RepoOption{internal.WithPlanCache(planCache)}, repoOpts...)...)
 	// zap.L() is the same global the rest of this package logs through. It
@@ -269,8 +270,9 @@ func newRepositoryAndEngine(
 		federated.WithPlanCache(planCache),
 		federated.WithLogger(zap.L()),
 		federated.WithMetricEmitter(cfg.Metrics.Emitter),
-		// The pgx hot leg's snapshot and reads (#856); inert unless
-		// cfg.DuckDB.HotLegTransport selects pgx.
+		// The pgx hot leg's snapshot and reads (#856), which the default
+		// transport uses since #857; inert when cfg.DuckDB.HotLegTransport
+		// selects attach.
 		federated.WithPgxHotLeg(pool, repository),
 	}
 	// Append only a real source, so the manifest-off path stays byte-identical

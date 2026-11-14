@@ -803,12 +803,15 @@ through the API, naming the attribute. A re-flush does not change what the
 column holds, so it repairs nothing. What the routes serve until the repair depends on the image. A whole
 number past ±2^53 inside int64 reads as the stored value on every route. Any
 other image is refused by the OLTP route with an error naming the attribute
-and the row. The federated route reads the column the way the CDC export
-does, `TRY_CAST(<column> AS BIGINT)`, on the unflushed row as on its parquet
-copy (`#627`). A fraction rounds half to even (`1000.5` reads `1000`,
-`1001.5` reads `1002`), and an image past int64, `NaN`, or an infinity reads
-as an absent attribute. Filters compare that same value, so a federated
-query answers the same for the row before and after its flush. Before
+and the row. The federated route reads a parquet copy the way the CDC
+export writes it, `TRY_CAST(<column> AS BIGINT)` (`#627`): a fraction rounds
+half to even (`1000.5` reads `1000`, `1001.5` reads `1002`), and an image
+past int64, `NaN`, or an infinity reads as an absent attribute. The
+unflushed row depends on the hot-leg transport. The `pgx` transport, the
+default since `#857`, reads it through the OLTP reader, so a federated page
+that holds it fails as the OLTP route does, until the row is flushed or
+repaired. The `attach` transport reads it the export's way, so its federated
+queries answer the same for the row before and after its flush. Before
 `#627`, such an image failed every federated query that reached the
 unflushed row.
 
@@ -833,10 +836,13 @@ attribute out fails the same way and changes nothing. Before `#708` that read
 converted the image (`1001.5` read as `1001`, and `4294967296` as
 `-2147483648` on amd64),
 and an unrelated update wrote the converted value back. The federated route
-keeps reading the column at the declared type through `TRY_CAST` (`#627`): a
+reads a parquet copy at the declared type through `TRY_CAST` (`#627`): a
 fraction rounds half to even, and a value out of range, `NaN`, or an infinity
-reads as absent. The two routes answer differently for such a row on purpose,
-until `#621` or a later decision unifies them. Repair the row by rewriting the
+reads as absent. Under the `attach` hot-leg transport it reads the unflushed
+row that way too. Under `pgx`, the default since `#857`, the unflushed row
+reads through the OLTP reader, so a federated page that holds it fails until
+the row is flushed or repaired. The two routes answer differently for a
+flushed row on purpose, until `#621` or a later decision unifies them. Repair the row by rewriting the
 attribute through the API, choosing the value yourself. See
 [Schema Evolution and Declared Types](./schema-evolution.md#d1-invalid-legacy-integer-images-on-oltp-reads-708).
 
@@ -885,11 +891,14 @@ rows the upgraded read refuses.
 
 **The federated tiers read these rows differently until `#621`.** The DuckDB
 Postgres scanner types `NUMERIC` as `DOUBLE` before any expression Forma
-renders, so the federated hot leg, and the Parquet copy the CDC export writes
-from the row, read such an image narrowed: 2^53+1 as 2^53, `1000.5` as
-`1000`, `NaN` and the infinities as 1970-01-01T00:00:00Z, and a number past
-int64 as absent. One row can therefore fail on the OLTP route and answer a
-different instant on the federated one. The census is the only guard for
+renders, so the Parquet copy the CDC export writes from the row, and the
+`attach` transport's hot leg, read such an image narrowed: 2^53+1 as 2^53,
+`1000.5` as `1000`, `NaN` and the infinities as 1970-01-01T00:00:00Z, and a
+number past int64 as absent. One row can therefore fail on the OLTP route and
+answer a different instant on the federated one. The `pgx` hot leg, the
+default since `#857`, reads an unflushed row through the OLTP reader, so
+there a federated page that holds such a row fails until it is flushed or
+repaired. The census is the only guard for
 those tiers, so clear it before relying on either route.
 
 Inspect the rows:
@@ -1168,6 +1177,16 @@ LIMIT 50;
   The upgraded server refuses to read such rows on the OLTP route, and the
   federated tiers read them narrowed until `#621`; see
   [Date images the read path refuses](#date-images-the-read-path-refuses-592)
+- before deploying the release that makes the `pgx` hot leg the default
+  (`#857`), the four classes above (`#501`/`#729`, `#590`/`#618`, `#708`,
+  `#592`) and the rfc3339 images of `#842` are clear. That transport reads an
+  unflushed row through the OLTP reader, so a row the OLTP read refuses now
+  fails every federated page that holds it while it is hot, where the
+  `attach` transport read it the export's way. The census does not report one
+  such image: a `bool_text` column holding anything other than `"1"`/`"0"`,
+  which the OLTP read refuses (`#404`) where the `attach` hot leg read a
+  value. To roll back, set `duckdb.hotLegTransport` to `attach`
+  (`DUCKDB_HOT_LEG_TRANSPORT=attach` for `cmd/server`)
 - hardened release deployed
 - validator re-run after deploy
 - smoke CRUD tests pass against existing schemas

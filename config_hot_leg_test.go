@@ -45,12 +45,17 @@ func TestConfigValidateRejectsAnUnknownHotLegTransport(t *testing.T) {
 	}
 }
 
-// The default stays attach until the tier parity suite passes
-// (pgx-hot-leg-plan.md step 6).
-func TestHotLegTransportDefaultsToAttach(t *testing.T) {
-	cfg := DefaultConfig(nil)
-	if cfg.DuckDB.HotLegTransport.IsPgx() {
-		t.Fatalf("default transport %q selects pgx", cfg.DuckDB.HotLegTransport)
+// The default is pgx since the tier parity suite and the dual-run test
+// passed (pgx-hot-leg-plan.md step 6, #857); NewConfig starts from it too.
+// The field's zero value still selects attach.
+func TestHotLegTransportDefaultsToPgx(t *testing.T) {
+	for name, cfg := range map[string]*Config{"DefaultConfig": DefaultConfig(nil), "NewConfig": NewConfig()} {
+		if cfg.DuckDB.HotLegTransport != HotLegTransportPgx {
+			t.Fatalf("%s's transport is %q, want %q", name, cfg.DuckDB.HotLegTransport, HotLegTransportPgx)
+		}
+	}
+	if (DuckDBConfig{}).HotLegTransport.IsPgx() {
+		t.Fatalf("the zero value selects pgx, want attach")
 	}
 	var decoded DuckDBConfig
 	if err := json.Unmarshal([]byte(`{"hotLegTransport":"pgx","hotLegMaxDirtyRows":5}`), &decoded); err != nil {

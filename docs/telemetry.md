@@ -83,9 +83,11 @@ gated on the caller asking for an execution plan):
   scans inside DuckDB read: Forma does not observe them (see
   [Retired metrics](#retired-metrics)).
 
-A pass under the pgx hot leg (`DuckDBConfig.HotLegTransport = pgx`,
-design.md §6.1.1) reads PostgreSQL itself, over pgx in one snapshot, and
-emits two more samples:
+A pass under the pgx hot leg (`DuckDBConfig.HotLegTransport = pgx`, the
+default since #857, design.md §6.1.1) reads PostgreSQL itself, over pgx in
+one snapshot, and emits two more samples. A pass that waits for one of the
+engine's `duckdb.maxConnections` pass slots (design.md §6.1.1, *Connection
+use*) waits before its snapshot, and no stage reports that wait:
 
 - `fed_query_latency_histogram{stage="snapshot"}` is the time the pass spent
   on its PostgreSQL reads: opening the snapshot, the dirty set, the hot keys,
