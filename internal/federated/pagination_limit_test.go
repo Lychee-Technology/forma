@@ -12,11 +12,11 @@ import (
 
 // TestKeysetQueryDispatchesTheEffectiveLimit pins that the keyset coordinator
 // (ExecuteFederatedKeysetQuery) renders the limit it normalised and clamped,
-// not the caller's fq.Limit (#381 review). The advanced template reads
+// not the caller's fq.Limit (#381 review). The retired attach template read
 // LIMIT/OFFSET from the query object, so before dispatchedQuery a zero fq.Limit
 // rendered LIMIT 0 and an over-MaxRows one rendered verbatim, with only the
-// in-memory slice honouring the clamp. The captured query is the one the
-// builder received, i.e. what renders.
+// in-memory slice honouring the clamp. The captured window is the one the
+// parquet-only statement bound, i.e. what renders.
 func TestKeysetQueryDispatchesTheEffectiveLimit(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
@@ -34,8 +34,8 @@ func TestKeysetQueryDispatchesTheEffectiveLimit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var built []model.FederatedAttributeQuery
-			engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, &sequencedDuckDBExecutor{}, &built)
+			duck := &sequencedDuckDBExecutor{}
+			engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, duck)
 			fq := &model.FederatedAttributeQuery{
 				// A stale Offset proves the keyset dispatch zeroes it too.
 				AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: tc.fqLimit, Offset: 30},
@@ -55,13 +55,11 @@ func TestKeysetQueryDispatchesTheEffectiveLimit(t *testing.T) {
 				fq, tc.argLimit, nil, &model.FederatedQueryOptions{MaxRows: tc.maxRows})
 			require.NoError(t, err)
 
-			require.GreaterOrEqual(t, len(built), 2, "the keyset page and its count are both rendered")
-			page := built[0]
-			require.Equal(t, tc.wantLimit, page.Limit, "the page renders the effective limit")
-			require.Zero(t, page.Offset, "a keyset page has no offset")
-			require.True(t, page.KeysetCursor.IsActive(), "the page keeps its cursor")
-			require.Equal(t, 1, built[1].Limit, "the recount renders LIMIT 1")
-			require.Nil(t, built[1].KeysetCursor, "the recount strips the cursor")
+			require.GreaterOrEqual(t, duck.calls, 2, "the keyset page and its count are both rendered")
+			page := duck.window(t, 0)
+			require.Equal(t, int64(tc.wantLimit), page.limit, "the page renders the effective limit")
+			require.True(t, page.keyset, "the page keeps its cursor, and a keyset page has no offset")
+			require.Equal(t, renderedWindow{limit: 1}, duck.window(t, 1), "the recount strips the cursor and renders LIMIT 1 OFFSET 0")
 			require.Equal(t, tc.fqLimit, fq.Limit, "the caller's query is not mutated")
 			require.Equal(t, 30, fq.Offset, "the caller's query is not mutated")
 		})
@@ -77,8 +75,8 @@ func TestKeysetQueryWithoutCursorRendersTheOpenFirstPage(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
-	var built []model.FederatedAttributeQuery
-	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, &sequencedDuckDBExecutor{}, &built)
+	duck := &sequencedDuckDBExecutor{}
+	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, duck)
 	fq := &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10, Offset: 30},
 	}
@@ -88,12 +86,10 @@ func TestKeysetQueryWithoutCursorRendersTheOpenFirstPage(t *testing.T) {
 		fq, 10, nil, &model.FederatedQueryOptions{})
 	require.NoError(t, err)
 
-	require.Len(t, built, 2, "the first page and its count are both rendered")
-	require.Equal(t, 10, built[0].Limit)
-	require.Zero(t, built[0].Offset, "the coordinator never renders an offset")
-	require.False(t, built[0].KeysetCursor.IsActive(), "the first page renders without a cursor")
-	require.Equal(t, 1, built[1].Limit, "the recount renders LIMIT 1")
-	require.Zero(t, built[1].Offset, "the recount renders OFFSET 0")
+	require.Equal(t, 2, duck.calls, "the first page and its count are both rendered")
+	require.Equal(t, renderedWindow{limit: 10}, duck.window(t, 0),
+		"the first page renders without a cursor, and the coordinator never renders an offset")
+	require.Equal(t, renderedWindow{limit: 1}, duck.window(t, 1), "the recount renders LIMIT 1 OFFSET 0")
 }
 
 // TestDispatchedQueryCopiesThePaginationArguments pins the helper itself:

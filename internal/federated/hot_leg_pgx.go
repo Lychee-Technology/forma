@@ -14,10 +14,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// The seams of the pgx hot leg (design.md §6.1.1, pgx-hot-leg-plan.md step
+// The seams of the pgx hot leg (design.md §6.1, pgx-hot-leg-plan.md step
 // 5): the snapshot a pass reads PostgreSQL in, and the pinned DuckDB
-// connection its parquet leg runs on. DuckDBConfig.HotLegTransport selects
-// the pass; the attach transport uses neither.
+// connection its parquet leg runs on.
 
 // HotLegReader is the PostgreSQL route's half of a pgx pass beyond the
 // change_log: the hot keys, and after the merge the page's hot rows. Both
@@ -34,8 +33,8 @@ type SnapshotBeginner = snapshotBeginner
 
 // WithPgxHotLeg gives the engine what a pgx pass reads PostgreSQL through:
 // the pool it opens each pass's REPEATABLE READ READ ONLY snapshot on, and
-// the reader of the hot keys and the page's hot rows. Without it a pass under
-// HotLegTransportPgx fails as misconfigured. The attach transport ignores it.
+// the reader of the hot keys and the page's hot rows. Without it every pass
+// fails as misconfigured.
 func WithPgxHotLeg(pool SnapshotBeginner, reader HotLegReader) EngineOption {
 	return func(e *DBFederatedQueryEngine) {
 		if pool == nil || reader == nil {
@@ -52,7 +51,7 @@ type hotLegSnapshots interface {
 
 // hotLegSnapshot is one pass's open snapshot: every PostgreSQL read of the
 // pass goes through it, so the dirty set, the hot keys and the page's hot
-// rows agree (design.md §6.1.1, Consistency).
+// rows agree (design.md §6.1, Consistency).
 type hotLegSnapshot interface {
 	readChangeLog(ctx context.Context, req ChangeLogSnapshotRequest) (ChangeLogSnapshot, error)
 	queryHotKeys(ctx context.Context, req model.HotKeysQuery) ([]model.HotKey, error)
@@ -168,25 +167,22 @@ func (r *stagedRows) Close() error {
 	return r.closeErr
 }
 
-// passCutoffMs is the flush-grace cutoff of a pass (#252). The pgx hot form
-// reads a negative margin as 0, the exact anchor: its snapshot argument needs
-// a cutoff no later than path resolution, so the widening is never disabled
-// there (design.md §6.1.1). The attach transport and the hot-excluded form
-// keep today's resolution, sqlgen.FlushGraceCutoffDisabled included.
-func (e *DBFederatedQueryEngine) passCutoffMs(pathsResolvedAtMs int64, hasHot bool) int64 {
-	if e.cfg.HotLegTransport.IsPgx() && hasHot {
-		return pathsResolvedAtMs - max(0, e.flushVisibilityGraceMs)
-	}
-	return e.flushGraceCutoffMs(pathsResolvedAtMs)
+// passCutoffMs is the flush-grace cutoff of a pass (#252): the instant the
+// pass resolved its parquet path set, minus FlushVisibilityGraceMs. A
+// negative margin reads as 0, the exact anchor: the snapshot argument needs a
+// cutoff no later than path resolution, so the widening is never disabled
+// (design.md §6.1). The hot-excluded form reads the strict set and ignores
+// the cutoff.
+func (e *DBFederatedQueryEngine) passCutoffMs(pathsResolvedAtMs int64) int64 {
+	return pathsResolvedAtMs - max(0, e.flushVisibilityGraceMs)
 }
 
-// logNegativeGraceOnPgx says once, at construction, that the pgx hot leg
-// reads a negative FlushVisibilityGraceMs as 0.
-func (e *DBFederatedQueryEngine) logNegativeGraceOnPgx() {
-	if !e.cfg.HotLegTransport.IsPgx() || e.flushVisibilityGraceMs >= 0 {
+// logNegativeGrace says once, at construction, that the engine reads a
+// negative FlushVisibilityGraceMs as 0.
+func (e *DBFederatedQueryEngine) logNegativeGrace() {
+	if e.flushVisibilityGraceMs >= 0 {
 		return
 	}
-	e.log().Warn("duckdb.flushVisibilityGraceMs is negative, which the pgx hot leg reads as 0: its snapshot needs the flush-grace widening, so only the attach transport disables it",
-		zap.Int64("flush_visibility_grace_ms", e.flushVisibilityGraceMs),
-		zap.String("hot_leg_transport", string(e.cfg.HotLegTransport)))
+	e.log().Warn("duckdb.flushVisibilityGraceMs is negative, which the federated engine reads as 0: the pass's snapshot needs the flush-grace widening, so it cannot be disabled",
+		zap.Int64("flush_visibility_grace_ms", e.flushVisibilityGraceMs))
 }

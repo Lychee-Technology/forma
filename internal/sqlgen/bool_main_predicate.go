@@ -9,9 +9,9 @@ import (
 )
 
 // BoolMainPredicate is the entity_main pushdown form of a column-bound bool
-// equality leaf (#565). Both pushdown routes (the pg-main clause the DuckDB
-// hot leg embeds over its PostgreSQL scan, and the hybrid builder's main branch
-// on the Postgres route) render it, so a stored image outside the write
+// equality leaf (#565). The hybrid builder's main branch on the Postgres
+// route renders it, and so does the pg-main clause (which the retired DuckDB
+// attach hot leg embedded over its PostgreSQL scan, #858), so a stored image outside the write
 // contract answers a filter the way every reader already reads it:
 //
 //   - bool_smallint: `<col> BETWEEN lo AND hi` with the bounds — not the
@@ -28,10 +28,9 @@ import (
 //     side is that contract verbatim; there is no range equivalent on a
 //     text domain.
 //
-// Why the clause text never depends on the operand: the federated plan
-// cache keys on the query shape without operands
-// (queryplan.HashFederatedQueryShape) and reuses the cached PgMainClause
-// text on a hit, so `equals:true` and `equals:false` may differ only in
+// Why the clause text never depends on the operand: the plan caches key on
+// the query shape without operands (queryplan.HashFederatedQueryShape), and
+// the attach plan cache reused the cached PgMainClause text on a hit, so `equals:true` and `equals:false` may differ only in
 // their binds. This rules out the literal `> 0.5` / `<= 0.5` rewrite.
 // Integer bounds also keep the smallint predicate on the integer_ops btree
 // family; a `0.5` literal against an int2 column casts the column. NULL

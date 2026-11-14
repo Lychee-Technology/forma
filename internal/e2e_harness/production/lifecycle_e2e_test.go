@@ -105,7 +105,7 @@ func testUpdateLWW(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) 
 // flush. The deleted row's only surviving source is the cold base parquet
 // (its change_log entry is truncated after init, modeling the production
 // onboarding contract), so hiding it rests entirely on the dirty-set
-// anti-join: the hard delete leaves no entity_main row for pg_source and the
+// anti-join: the hard delete leaves no entity_main row for the hot leg and the
 // unflushed tombstone must evict the base version from s3_source.
 func testDeleteBeforeFlush(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 1})

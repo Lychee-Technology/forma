@@ -116,7 +116,7 @@ func (f *pgxFixture) engineOver(t *testing.T, duck DuckDBQueryExecutor, paths []
 		meta = parquetOnlyMetadata(t)
 	}
 	all := append([]EngineOption{WithParquetSource(&fakeParquetSource{paths: paths})}, opts...)
-	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil, cfg, meta, "", all...)
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil, cfg, meta, all...)
 	e.hotLeg = f.leg
 	return e
 }
@@ -215,9 +215,12 @@ type fakeHotLeg struct {
 	afterChangeLog func()
 
 	begins, commits, rollbacks int
-	lastChangeLog              ChangeLogSnapshotRequest
-	lastHotKeys                *model.HotKeysQuery
-	readRows                   [][]uuid.UUID
+	// historyChecks counts the change_log reads that asked for
+	// HasParquetHistory (#720).
+	historyChecks int
+	lastChangeLog ChangeLogSnapshotRequest
+	lastHotKeys   *model.HotKeysQuery
+	readRows      [][]uuid.UUID
 }
 
 func (f *fakeHotLeg) begin(context.Context) (hotLegSnapshot, error) {
@@ -230,6 +233,9 @@ func (f *fakeHotLeg) begin(context.Context) (hotLegSnapshot, error) {
 
 func (f *fakeHotLeg) readChangeLog(_ context.Context, req ChangeLogSnapshotRequest) (ChangeLogSnapshot, error) {
 	f.lastChangeLog = req
+	if req.ParquetHistory {
+		f.historyChecks++
+	}
 	if f.changeLogErr != nil {
 		return ChangeLogSnapshot{}, f.changeLogErr
 	}

@@ -7,7 +7,7 @@ import (
 )
 
 // HotKeysQuery says what the pgx hot leg's hot-keys query reads
-// (design.md §6.1.1, step 2 of a pass; pgx-hot-leg-plan.md step 4): the
+// (design.md §6.1, step 2 of a pass; pgx-hot-leg-plan.md step 4): the
 // entity_main rows of one schema that have a change_log entry in the dirty
 // window and match Condition, filtered as the PostgreSQL route filters.
 type HotKeysQuery struct {

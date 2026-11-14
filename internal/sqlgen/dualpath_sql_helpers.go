@@ -263,11 +263,11 @@ func checkBigIntOperandRange(attr, valStr string, valueType forma.ValueType, v f
 }
 
 // resolveMainTableColumn returns what a pg-main pushdown leaf compares: the
-// column prefixed with "m.", or the read the hot leg projects where it reads
-// the column through an expression: the declared-type read of an integer in
+// column prefixed with "m.", or the read the retired attach hot leg (#858)
+// projected where it read the column through an expression: the declared-type read of an integer in
 // a wider column (mainColIntegerExpr) and the epoch-ms read of an rfc3339
 // date (mainColRFC3339Read), each compared against the operand
-// pgMainOperand binds for it. The pushdown only pre-filters pg_source, and
+// pgMainOperand binds for it. The pushdown only pre-filtered pg_source, and
 // `visible` filters the projected value again, so a leaf on the raw column
 // was stricter wherever that read changes the value: `is_null` missed an
 // image it reads as NULL, `equals:1000` a `1000.5` it rounds (#627), and a

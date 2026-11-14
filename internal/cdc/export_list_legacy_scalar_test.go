@@ -13,7 +13,7 @@ import (
 
 // TestExportListAggregateShapes executes the CDC export's list aggregate
 // against the eav_data shapes a list attribute can carry and pins each
-// (#372), in lockstep with sqlgen.TestBuildEAVPivotExprListShapes: absent →
+// (#372), as the retired hot-tier list pivot read them (#858): absent →
 // NULL, empty-list marker → [], whether at the top level or in an element of
 // an array of objects (#623), per-element rows → the ordered list, and a
 // legacy scalar row (array_indices ” with a value, written before the schema

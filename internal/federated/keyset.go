@@ -131,7 +131,7 @@ var safeSQLIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // becomes a value of its column's export type, read from cache and orders,
 // and each column records that type, which the renderer casts the boundary
 // to. A boundary of another type is refused, not converted, so both legs of
-// a pass compare one boundary against keys of one type (design.md §6.1.1,
+// a pass compare one boundary against keys of one type (design.md §6.1,
 // One boundary type per cursor column). Every seam renders the cursor this
 // returns, never the caller's. A column whose export type cannot be read
 // (an attribute the metadata lacks, a list) is refused here, where before
@@ -267,9 +267,9 @@ func hasKeysetCursor(fq *model.FederatedAttributeQuery) bool {
 // degraded fallback — so a Postgres-only route added later cannot bypass this
 // check. Since #442 retired the in-memory merge path, which read Postgres
 // through RunOptimizedQuery with no cursor applied, queryPostgresOnly is also
-// the engine's only direct read of Postgres records: the DuckDB template
-// reaches the hot tier through its attached PostgreSQL catalog, and applies the cursor after the
-// tier merge.
+// the engine's only read of Postgres records that cannot apply the cursor: a
+// federated pass applies it to the hot keys it reads in its snapshot, in Go
+// (admitHotKeys), before the merge.
 //
 // Known consequence of guarding at the confluence rather than at each gate:
 // both recordHotOnlyGatePlan (the hot-only gate) and recordRoutedPostgresSource

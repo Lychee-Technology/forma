@@ -23,7 +23,7 @@ var warmCold = []model.DataTier{model.DataTierWarm, model.DataTierCold}
 func TestQueryImplicitTiersSmallPageIsMarkedHotTierOnly(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
 	duck := &fakeDuckDBExecutor{}
-	engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, hybridEnabledCfg(), nil, "")
+	engine := NewDBFederatedQueryEngine(pg, duck, nil, hybridEnabledCfg(), nil, withFakeHotLeg(nil))
 	opts := &model.FederatedQueryOptions{}
 
 	page, err := engine.Query(context.Background(), testTables, &model.FederatedAttributeQuery{
@@ -48,8 +48,7 @@ func TestQueryExplicitTiersSmallPageReachesDuckDBUnmarked(t *testing.T) {
 
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 5}}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
-	var built []model.FederatedAttributeQuery
-	engine := newEmptyPageTestEngine(t, pg, duck, &built)
+	engine := newEmptyPageTestEngine(t, pg, duck)
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
 
 	page, err := engine.Query(context.Background(), testTables, &model.FederatedAttributeQuery{
@@ -60,7 +59,6 @@ func TestQueryExplicitTiersSmallPageReachesDuckDBUnmarked(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, pg.queryCalls, "an explicit multi-tier request must not be served postgres-only")
 	require.Equal(t, 1, duck.calls)
-	require.Len(t, built, 1)
 	require.True(t, page.ExecutionPlan.Routing.UseDuckDB)
 	require.Contains(t, page.ExecutionPlan.Routing.Reason, "preferred_tiers")
 	require.Nil(t, page.Partial, "every declared tier was consulted")
@@ -80,7 +78,7 @@ func TestQueryHotOnlyGateIsNotMarked(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
-			engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, hybridEnabledCfg(), nil, "")
+			engine := NewDBFederatedQueryEngine(pg, nil, nil, hybridEnabledCfg(), nil)
 			opts := &model.FederatedQueryOptions{}
 
 			page, err := engine.Query(context.Background(), testTables, tc.fq, opts)
@@ -110,7 +108,7 @@ func TestQueryDisabledDuckDBIsMarkedForRequestedTiers(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 2}}
-			engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: false}, nil, "")
+			engine := NewDBFederatedQueryEngine(pg, nil, nil, forma.DuckDBConfig{Enabled: false}, nil)
 
 			page, err := engine.Query(context.Background(), testTables, &model.FederatedAttributeQuery{
 				AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
@@ -133,7 +131,7 @@ func TestQueryDisabledDuckDBIsMarkedForRequestedTiers(t *testing.T) {
 func TestQueryDegradedFallbackIsMarkedHotTierOnly(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
 	duck := &fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil, hybridEnabledCfg(), testMetadataCacheSchema7(t), "", withTestParquetPath())
+	engine := NewDBFederatedQueryEngine(pg, duck, nil, hybridEnabledCfg(), testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 	opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: true, PartialScan: &model.PartialScan{UnconsultedTiers: []model.DataTier{model.DataTierWarm}}}
 
 	page, err := engine.Query(context.Background(), testTables, &model.FederatedAttributeQuery{
@@ -157,7 +155,7 @@ func TestQueryDegradedFallbackIsMarkedHotTierOnly(t *testing.T) {
 // the rest. The two views of one answer must not disagree.
 func TestQueryDisabledDuckDBPlanTiersAgreeWithMarker(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 2}}
-	engine := NewDBFederatedQueryEngine(pg, nil, nil, nil, forma.DuckDBConfig{Enabled: false}, nil, "")
+	engine := NewDBFederatedQueryEngine(pg, nil, nil, forma.DuckDBConfig{Enabled: false}, nil)
 
 	page, err := engine.Query(context.Background(), testTables, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},

@@ -2,8 +2,6 @@ package federated
 
 import (
 	"fmt"
-
-	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 // Hot-tier SQL assembly for benchmark projections and targeted EAV filters.
@@ -14,7 +12,7 @@ import (
 // attaches for pgConnStr ahead of each query (withPostgresAttach). DuckDB
 // 2.0's postgres extension has no postgres_scan table function (#752).
 func hotScan(pgConnStr, table string) string {
-	return sqlgen.PostgresTableRef(sqlgen.PostgresCatalogAlias(pgConnStr), "public", table)
+	return pgTableRef(pgConnStr, "public", table)
 }
 
 // hotCreationStampItem renders the hot leg's creation-stamp SELECT item. The

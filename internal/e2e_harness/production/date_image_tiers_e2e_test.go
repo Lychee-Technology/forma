@@ -165,18 +165,17 @@ func seenOf(t *testing.T, res *forma.QueryResult, rowID uuid.UUID) time.Time {
 	return time.Time{}
 }
 
-// #592 residual, owned by #621: the DuckDB Postgres scanner types an
-// unconstrained NUMERIC as DOUBLE upstream of every expression Forma
-// renders, so a seen image of 2^53+1 planted in eav_data reads as the 2^53
-// instant through the federated hot leg, and through the delta image the
-// CDC export writes from it, while the Postgres direct read refuses it. The
-// validate-schema-consistency census is the guard for those tiers: it flags
-// the row before and after the flush. This pins both halves, so #621's
-// exact transport flips the federated assertions on purpose, not by
-// accident.
+// #592 residual, owned by #621: a seen image of 2^53+1 planted in eav_data
+// is refused by the Postgres direct read, and while the row is hot the
+// federated read refuses the page the same way, since it reads hot rows
+// through the OLTP reader (design.md §6.1, What a hot row reads as). The
+// CDC export still writes the image as the 2^53 instant, which the federated
+// read answers once the row is flushed. The validate-schema-consistency census is the guard
+// for that tier: it flags the row before and after the flush. This pins
+// both halves, so #621's exact export flips the flushed assertions on
+// purpose, not by accident.
 func TestUnboundDateHotImagePast2p53Residual(t *testing.T) {
 	env := NewEnv(t, SharedCluster(t))
-	pinAttachHotLeg(env) // the federated half pins the attach hot leg's narrowed read; the pgx hot leg reads the row through the OLTP reader, which refuses it (design.md §6.1.1, What a hot row reads as)
 	ctx := context.Background()
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
 
@@ -195,25 +194,22 @@ func TestUnboundDateHotImagePast2p53Residual(t *testing.T) {
 		t.Fatalf("Postgres direct read of a planted seen=2^53+1: want the read consistency error, got %v", err)
 	}
 
-	ceiling := time.UnixMilli(dateImageCeiling).UTC()
-	res, err := federatedWideQuery(ctx, env, wide)
-	if err != nil {
-		t.Fatalf("federated query over the hot planted row: %v", err)
-	}
-	assertFactoryUsedDuckDB(t, res)
-	if got := seenOf(t, res, target); !got.Equal(ceiling) {
-		t.Fatalf("federated hot leg read seen=%v; the #621 residual is %v (if #621 landed, flip this pin)", got, ceiling)
-	}
+	_, fedErr := federatedWideQuery(ctx, env, wide)
+	_, pgErr := postgresRouteQuery(ctx, env, wide)
+	requireSameRefusal(t, "the page holding the hot planted row", fedErr, pgErr, "'seen'", target.String(), pastDateImageRule)
 
+	ceiling := time.UnixMilli(dateImageCeiling).UTC()
 	mustFlush(ctx, t, env)
 	if got := parquetSeen(ctx, t, env, schemaParquetKeys(ctx, t, env, wide), target); got != dateImageCeiling {
 		t.Fatalf("the CDC export wrote seen=%d for the planted row; the #621 residual is %d", got, int64(dateImageCeiling))
 	}
 	assertCensusFlagsSeen(ctx, t, env, wide, target)
-	res, err = federatedWideQuery(ctx, env, wide)
+	waitWallClockTick(t) // past the flush's marks, so the row is read from parquet
+	res, err := federatedWideQuery(ctx, env, wide)
 	if err != nil {
 		t.Fatalf("federated query over the flushed planted row: %v", err)
 	}
+	assertFactoryUsedDuckDB(t, res)
 	if got := seenOf(t, res, target); !got.Equal(ceiling) {
 		t.Fatalf("federated delta read seen=%v; the #621 residual is %v (if #621 landed, flip this pin)", got, ceiling)
 	}

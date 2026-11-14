@@ -2,106 +2,20 @@ package federated
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
-	"github.com/lychee-technology/forma/internal/queryplan"
 
-	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
-// SQL construction for the DuckDB federated path: template-parameter
-// assembly, the compiled-plan cache fast path, and parquet path resolution.
-// Pure move from duckdb_query.go (#184 review round; split seam per #220).
-
-// buildDuckDBQueryWithPlan builds the DuckDB query with execution plan recording.
-//
-// The returned translation time is not emitted here: the fed_query_* series
-// are reported as one set per successful pass by emitDuckDBScanMetrics, so
-// a render that precedes a failed or retried DuckDB pass leaves no sample.
-func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
-	ctx context.Context,
-	tables model.StorageTables,
-	q *model.FederatedAttributeQuery,
-	dirtyIDs []uuid.UUID,
-	attributeOrders []model.AttributeOrder,
-	limit, offset int,
-	parquetPaths []string,
-	graceCutoffMs int64,
-	cold coldScanSet,
-	planCtx *duckDBExecutionPlanContext,
-) (string, []any, int64, error) {
-	q = dispatchedQuery(q, limit, offset, attributeOrders)
-	sqlParams := e.buildDuckDBTemplateBaseParams(tables, q, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, cold)
-
-	startTranslate := time.Now()
-
-	// Build dual clauses (PG pushdown + DuckDB logical) and the
-	// schema-driven projections for the template.
-	cache, _ := e.schemaCacheByID(q.SchemaID)
-	dc, projectionCacheHit, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, sqlParams)
-	if err != nil {
-		return "", nil, 0, err
-	}
-	planCtx.recordProjectionCache(projectionCacheHit)
-
-	// Determine if the EAV pivot can be skipped entirely (all filter/sort
-	// attributes are column-bound, no EAV-only attributes needed).
-	// Skip this optimization for benchmark schemas because their output schema
-	// includes ALL attributes (both column-bound and EAV-only) unlike production
-	// which outputs a fixed entity_main layout.
-	// The shortcut is additionally gated on the schema having no EAV-only
-	// attributes: BuildPGSelectNoEAV drops EAV attribute columns from
-	// pg_source while s3_source keeps the full projection, so for schemas
-	// with EAV-only attributes the shortcut rendered a UNION ALL with
-	// mismatched column counts (invalid SQL) and would silently drop hot
-	// rows' EAV values (#173).
-	if !isBenchmarkSchemaID(q.SchemaID) && !needsEAVJoin(q, cache) {
-		sp, _, _ := e.schemaProjection(ctx, q.SchemaID, cache)
-		if sp != nil && !sp.HasEAVAttrs {
-			sqlParams["HasEAVPivot"] = false
-			sqlParams["PGSourceSelect"] = sp.BuildPGSelectNoEAV()
-			sqlParams["PGGroupBy"] = sp.BuildPGGroupByNoEAV()
-		}
-	}
-
-	// Record the hot leg's main-table predicate — only when the tier form
-	// renders pg_source; a hot-excluded query has no hot data scan (#184).
-	if sqlgen.FederatedQueryHasHot(q) {
-		planCtx.recordHotLegPredicate(dc.PgMainClause)
-	}
-
-	// The DuckDB logical WHERE clause already references attribute names, which
-	// match the attribute-aliased columns projected by both the benchmark and
-	// production DuckDB CTEs (see resolveDuckDBColumn). No per-schema column-name
-	// translation is needed (#167).
-
-	// Compiled-plan cache (#142): skeleton + template args are reused per
-	// (fingerprint, shape, scope); condition/keyset/dirty operands bind per
-	// request. Test hooks and non-advanced templates bypass the cache.
-	sqlStr, args, ok, err := e.serveFromPlanCache(ctx, tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, graceCutoffMs, cold, sqlParams, &dc, planCtx)
-	if err != nil {
-		return "", nil, 0, fmt.Errorf("build duckdb query: %w", err)
-	}
-	if ok {
-		return sqlStr, args, time.Since(startTranslate).Milliseconds(), nil
-	}
-
-	sqlStr, args, err = e.getDuckDBQueryBuilder()(e.getDuckDBTemplate(), sqlParams, q, dirtyIDs, &dc)
-	translateMs := time.Since(startTranslate).Milliseconds()
-	if err != nil {
-		return "", nil, 0, fmt.Errorf("build duckdb query: %w", err)
-	}
-
-	return sqlStr, args, translateMs, nil
-}
+// SQL construction shared by the parquet leg: the dual clauses and schema
+// projections, the dispatched query, the parquet scan params and scope, and
+// the caller's parquet path hint.
 
 // translateDuckDBQuery renders q's condition into the dual clauses and writes
 // the schema projections into sqlParams. Its refusals depend only on the query
@@ -113,26 +27,26 @@ func (e *DBFederatedQueryEngine) buildDuckDBQueryWithPlan(
 func (e *DBFederatedQueryEngine) translateDuckDBQuery(
 	ctx context.Context, eavTable string, q *model.FederatedAttributeQuery,
 	cache forma.SchemaAttributeCache, sqlParams map[string]any,
-) (sqlgen.DualClauses, bool, error) {
+) (sqlgen.DualClauses, error) {
 	paramIndex := 0
 	dc, err := sqlgen.ToDualClauses(q.Condition, sqlutil.SanitizeIdentifier(eavTable), q.SchemaID, cache, &paramIndex)
 	if err != nil {
-		return sqlgen.DualClauses{}, false, fmt.Errorf("to dual clauses: %w", err)
+		return sqlgen.DualClauses{}, fmt.Errorf("to dual clauses: %w", err)
 	}
-	projectionCacheHit, err := e.injectSchemaProjections(ctx, sqlParams, q.SchemaID, cache)
-	if err != nil {
-		return sqlgen.DualClauses{}, false, err
+	if _, err := e.injectSchemaProjections(ctx, sqlParams, q.SchemaID, cache); err != nil {
+		return sqlgen.DualClauses{}, err
 	}
-	return dc, projectionCacheHit, nil
+	return dc, nil
 }
 
 // dispatchedQuery returns a copy of q whose Limit, Offset and AttributeOrders
 // are the arguments the DuckDB seam was called with.
 //
-// The advanced template renders LIMIT, OFFSET and the non-keyset ORDER BY from
-// the QUERY OBJECT (sqlgen.injectDuckDBTemplateParams reads q.Limit, q.Offset,
-// q.AttributeOrders); the call arguments only reach the template map under
-// "Limit"/"Offset"/"PageSize"/"SortKeys", which it never reads. So a caller
+// The retired attach template rendered LIMIT, OFFSET and the non-keyset ORDER
+// BY from the QUERY OBJECT (sqlgen.injectDuckDBTemplateParams read q.Limit,
+// q.Offset, q.AttributeOrders), and the parquet-only statement still derives
+// its order and window from it; the call arguments only reached the template
+// map under "Limit"/"Offset"/"PageSize"/"SortKeys", which it never read. So a caller
 // that normalised or clamped its limit but passed q unchanged had its clamp
 // silently ignored: the keyset coordinator (ExecuteFederatedKeysetQuery, then
 // the keyset branch of ExecuteFederatedPaginatedQuery) rendered LIMIT 0 for a
@@ -140,9 +54,9 @@ func (e *DBFederatedQueryEngine) translateDuckDBQuery(
 // slice honouring the clamp (#381 review), and
 // computeFederatedCount hand-rolled the very copy made here (#181).
 //
-// Made at this function, the single point the direct render and the compiled
-// plan cache both flow through, so the rendered skeleton, the shape hash and
-// the plan scope all see the query that was dispatched. The explicit arguments
+// Made at this function, the single point every pass and render flows
+// through, so the rendered skeleton, the shape hash and the plan scope all
+// see the query that was dispatched. The explicit arguments
 // are the pagination contract of every seam; engine.Query passes q's own
 // fields and is unaffected. q itself is never mutated — the caller may still
 // be reading it (recordTranslation, the keyset page slice).
@@ -155,55 +69,6 @@ func dispatchedQuery(q *model.FederatedAttributeQuery, limit, offset int, attrib
 	page.Offset = offset
 	page.AttributeOrders = attributeOrders
 	return &page
-}
-
-// buildDuckDBTemplateBaseParams assembles the static template parameter map:
-// scan locations, projections defaults, pagination, and the resolved parquet
-// path list (render hints or manifest source, resolved once by the caller).
-func (e *DBFederatedQueryEngine) buildDuckDBTemplateBaseParams(
-	tables model.StorageTables,
-	q *model.FederatedAttributeQuery,
-	attributeOrders []model.AttributeOrder,
-	limit, offset int,
-	parquetPaths []string,
-	graceCutoffMs int64,
-	cold coldScanSet,
-) map[string]any {
-	changeLogSchema, changeLogScanTable := duckDBPostgresScanLocation(tables.ChangeLog)
-	mainSchema, mainScanTable := duckDBPostgresScanLocation(tables.EntityMain)
-	eavSchema, eavScanTable := duckDBPostgresScanLocation(tables.EAVData)
-	sqlParams := map[string]any{
-		"EAVTable":             sqlutil.SanitizeIdentifier(tables.EAVData),
-		"MainTable":            sqlutil.SanitizeIdentifier(tables.EntityMain),
-		"ChangeLogTable":       sqlutil.SanitizeIdentifier(tables.ChangeLog),
-		"ChangeLogSchema":      changeLogSchema,
-		"ChangeLogScanTable":   changeLogScanTable,
-		"MainSchema":           mainSchema,
-		"MainScanTable":        mainScanTable,
-		"EAVSchema":            eavSchema,
-		"EAVScanTable":         eavScanTable,
-		"MainProjection":       model.EntityMainProjection,
-		"SchemaID":             q.SchemaID,
-		"UseMainTableAsAnchor": q.UseMainAsAnchor,
-		"Anchor": map[string]any{
-			"Condition": "1=1", // BuildDuckDBQuery will overwrite with actual where clause
-		},
-		"SortKeys": attributeOrders,
-		"Limit":    limit,
-		"Offset":   offset,
-		"PageSize": limit,
-	}
-
-	if connStr := e.pgConnString; connStr != "" {
-		sqlParams["DuckDBPGConnString"] = connStr
-	}
-	applyParquetScanParams(sqlParams, parquetPaths, cold)
-	// Per-request dirty-barrier cutoff (#252), anchored at the query's
-	// path-resolution instant. The direct builder renders it as a literal;
-	// the compiled path overwrites it with the splice sentinel so the cached
-	// skeleton stays cutoff-independent.
-	sqlParams["FlushGraceCutoffMs"] = graceCutoffMs
-	return sqlParams
 }
 
 // applyParquetScanParams sets the params the renderer derives the parquet
@@ -229,36 +94,8 @@ func applyParquetScanParams(sqlParams map[string]any, parquetPaths []string, col
 	}
 }
 
-// duckPlanScopeParts assembles the plan-cache scope components: everything
-// outside the shape hash that renders into the skeleton. The cold scan set
-// participates: the rendered scan source depends on it, and a glob-hint
-// path string does not change when the first flush lands a column (#255) or
-// when a re-init retires a stale-typed generation (#371) — without these
-// components a skeleton compiled cold-absent would keep projecting NULL and
-// make the newly flushed data invisible until cache invalidation (the
-// poisoning hazard), and one compiled pinned would keep a CAST the scan set
-// no longer needs.
-func duckPlanScopeParts(
-	tables model.StorageTables,
-	pgConn string,
-	limit, offset int,
-	hasDirty bool,
-	parquetPaths []string,
-	attributeOrders []model.AttributeOrder,
-	cold coldScanSet,
-) []string {
-	parts := []string{
-		"scope-v2",
-		tables.EAVData, tables.EntityMain, tables.ChangeLog,
-		pgConn,
-		strconv.Itoa(limit), strconv.Itoa(offset),
-		strconv.FormatBool(hasDirty),
-	}
-	return append(parts, parquetScanScopeParts(parquetPaths, attributeOrders, cold)...)
-}
-
-// parquetScanScopeParts are the scope components both templates share: the
-// parquet scan source and the sort keys render into either skeleton.
+// parquetScanScopeParts are the scope components of the parquet scan: the
+// parquet scan source and the sort keys render into the skeleton.
 func parquetScanScopeParts(parquetPaths []string, attributeOrders []model.AttributeOrder, cold coldScanSet) []string {
 	var parts []string
 	// The resolved path set (hint or manifest) renders into the skeleton as a
@@ -284,129 +121,6 @@ func parquetScanScopeParts(parquetPaths []string, attributeOrders []model.Attrib
 		parts = append(parts, "no-parquet-objects")
 	}
 	return parts
-}
-
-// duckCompiledEntry is the artifact stored in the shared plan cache: the
-// rendered skeleton plus the dual-clause plan used to bind condition args.
-type duckCompiledEntry struct {
-	compiled *sqlgen.DuckDBCompiledQuery
-	dualPlan *sqlgen.DualClausePlan
-}
-
-// serveFromPlanCache attempts the compiled-plan path. It returns ok=false
-// when the request is not cacheable (no cache injected, test hook installed,
-// non-advanced template, shape hashing failed, or binding the compiled
-// skeleton failed) — the caller then uses the direct builder. On a miss the
-// compile result serves the request too, so rendering happens at most once
-// per shape.
-//
-// The error return is reserved for the request being over: a caller whose
-// own context ended while it waited on another request's compile (#467) gets
-// that context error back and must not fall through to the direct builder,
-// which takes no context and would render for nobody.
-func (e *DBFederatedQueryEngine) serveFromPlanCache(
-	ctx context.Context,
-	tables model.StorageTables,
-	q *model.FederatedAttributeQuery,
-	dirtyIDs []uuid.UUID,
-	attributeOrders []model.AttributeOrder,
-	limit, offset int,
-	parquetPaths []string,
-	graceCutoffMs int64,
-	cold coldScanSet,
-	sqlParams map[string]any,
-	dc *sqlgen.DualClauses,
-	planCtx *duckDBExecutionPlanContext,
-) (string, []any, bool, error) {
-	if e.planCache == nil || e.buildDuckSQL != nil || e.getDuckDBTemplate() != sqlgen.AdvancedQueryTemplateDuckDB {
-		return "", nil, false, nil
-	}
-
-	key, err := e.duckPlanCacheKey(tables, q, dirtyIDs, attributeOrders, limit, offset, parquetPaths, cold)
-	if err != nil {
-		return "", nil, false, nil
-	}
-
-	entryAny, hit, err := e.planCache.GetOrBuild(ctx, key, func() (any, error) {
-		compiled, err := sqlgen.CompileDuckDBQuery(sqlgen.AdvancedQueryTemplateDuckDB, sqlParams, q, dc, len(dirtyIDs) > 0)
-		if err != nil || compiled == nil {
-			return nil, err
-		}
-		dualPlan := &sqlgen.DualClausePlan{
-			PgClause:     dc.PgClause,
-			PgMainClause: dc.PgMainClause,
-			DuckClause:   dc.DuckClause,
-		}
-		return &duckCompiledEntry{compiled: compiled, dualPlan: dualPlan}, nil
-	})
-	if err != nil {
-		// A waiter that stopped on its own context is done with this request;
-		// every other failure (compile error, leader panic) falls through to
-		// the direct builder, which reports its own error to the caller.
-		if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
-			return "", nil, false, err
-		}
-		return "", nil, false, nil
-	}
-	if entryAny == nil {
-		return "", nil, false, nil
-	}
-	entry, ok := entryAny.(*duckCompiledEntry)
-	if !ok {
-		// A foreign artifact under this key is a keying bug, not a request
-		// error: fall through to the direct builder like every other miss.
-		return "", nil, false, nil
-	}
-	planCtx.recordPlanCache(hit)
-
-	bound := *dc
-	if hit {
-		// The request's own dual clauses were already built this call; args
-		// come from them, clauses from the cached plan (identical by key).
-		bound.PgMainClause = entry.dualPlan.PgMainClause
-		bound.DuckClause = entry.dualPlan.DuckClause
-	}
-	sqlStr, args, err := entry.compiled.Bind(q, bound, dirtyIDs, graceCutoffMs)
-	if err != nil {
-		// Same contract as every other failure here: ok=false hands the
-		// request to the direct builder, which carries the identical keyset
-		// validation (#381 item 7) and reports the error to the caller.
-		return "", nil, false, nil
-	}
-	return sqlStr, args, true, nil
-}
-
-// duckPlanCacheKey derives the compiled-plan cache key for one dispatched
-// request: the schema fingerprint, the query shape and the render scope
-// (duckPlanScopeParts). q must already be the dispatched query so the shape
-// hash sees the pagination that renders.
-func (e *DBFederatedQueryEngine) duckPlanCacheKey(
-	tables model.StorageTables,
-	q *model.FederatedAttributeQuery,
-	dirtyIDs []uuid.UUID,
-	attributeOrders []model.AttributeOrder,
-	limit, offset int,
-	parquetPaths []string,
-	cold coldScanSet,
-) (queryplan.Key, error) {
-	shapeHash, err := queryplan.HashFederatedQueryShape(q)
-	if err != nil {
-		return queryplan.Key{}, fmt.Errorf("hash federated query shape for schema %d: %w", q.SchemaID, err)
-	}
-	fingerprint := "no-fingerprint"
-	if e.metadataCache != nil {
-		if fp, ok := e.metadataCache.SchemaFingerprint(q.SchemaID); ok {
-			fingerprint = fp
-		}
-	}
-	scopeParts := duckPlanScopeParts(tables, e.pgConnString, limit, offset, len(dirtyIDs) > 0, parquetPaths, attributeOrders, cold)
-	return queryplan.Key{
-		Kind:          "duckdb_federated",
-		SchemaVersion: fingerprint,
-		SchemaID:      q.SchemaID,
-		ShapeHash:     shapeHash,
-		ScopeHash:     queryplan.HashScopeParts(scopeParts...),
-	}, nil
 }
 
 func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery, cfg forma.DuckDBConfig) ([]string, error) {

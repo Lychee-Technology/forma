@@ -11,7 +11,7 @@ import (
 )
 
 // The PostgreSQL-outage half of the Query contract (#635). A federated query
-// needs PostgreSQL for the hot rows and for the dirty-ID set that keeps a
+// needs PostgreSQL for the hot rows and for the dirty set that keeps a
 // stale or deleted parquet version out of the answer, so with PostgreSQL
 // down every route fails, and no parquet scan answers in its place.
 // AllowPartialDegradedMode does not change that: its fallback is itself a
@@ -43,10 +43,10 @@ func TestPostgresOutageFailsEveryFederatedRoute(t *testing.T) {
 
 					down := fmt.Errorf("dial tcp 127.0.0.1:5432: connect: connection refused")
 					pg := &fakePostgresFederatedSource{err: down}
-					dirty := &fakeDirtyIDFetcher{err: down}
 					duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
-					engine := NewDBFederatedQueryEngine(pg, dirty, duck, nil,
-						hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", withTestParquetPath())
+					engine := NewDBFederatedQueryEngine(pg, duck, nil,
+						hybridDuckConfig(), testMetadataCacheSchema7(t), withTestParquetPath(),
+						withFakeHotLeg(&fakeHotLeg{changeLogErr: down}))
 					opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded, ConsistencyMode: mode}
 
 					page, err := engine.Query(context.Background(), testTables, route.fq(), opts)

@@ -108,7 +108,7 @@ func TestRFC3339NullPushdownIsNoStricterThanTheHotRead(t *testing.T) {
 // TestRFC3339ComparisonPushdownIsNoStricterThanTheHotRead is #755 on
 // DuckDB: over the strings an rfc3339 column can hold, the pg-main
 // comparison keeps a row whenever the logical fragment's comparison of the
-// hot read (BuildPGSelectNoEAV's projection, against the epoch-ms operand
+// hot read (mainColRFC3339Expr, against the epoch-ms operand
 // the DuckDB leaf binds) does. The raw text against the canonical image
 // dropped a fraction (".5Z" sorts before "Z"), an offset ordered by its wall
 // clock (#756) and an offset-less string with a space. A retained eav_data

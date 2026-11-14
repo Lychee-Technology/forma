@@ -13,9 +13,8 @@ import (
 
 // RestartPostgres restarts the cluster's Postgres container and rebinds
 // every per-test handle that referenced the old server: the pgx pool, the
-// CDC config (the host-mapped port can change), the DuckDB client (so no
-// cached postgres attachment survives), and the lazily built EntityManager
-// and federated engine. Metadata is a load-once snapshot and needs no
+// CDC config (the host-mapped port can change), the DuckDB client, and the
+// lazily built EntityManager and federated engine. Metadata is a load-once snapshot and needs no
 // rebuild. The Registry is rebuilt because it re-reads the active generation
 // through its pool at each CDC run (#733); a real process keeps one pool
 // across the restart instead. Only for tests owning a DedicatedCluster.
@@ -115,9 +114,9 @@ func (e *Env) RestartS3(ctx context.Context) error {
 }
 
 // HaltPostgres stops the Postgres container in place, deliberately leaving
-// the Env's pool and DuckDB postgres attachment pointing at the dead server:
-// queries must fail with genuine network errors (#187 scenario 9), not with
-// a harness closed-pool artifact. Resume with ResumePostgres. Only for tests
+// the Env's pool, which the pgx hot leg reads through, pointing at the dead
+// server: queries must fail with genuine network errors (#187 scenario 9),
+// not with a harness closed-pool artifact. Resume with ResumePostgres. Only for tests
 // owning a DedicatedCluster.
 func (e *Env) HaltPostgres(ctx context.Context) error {
 	if err := e.Cluster.HaltPostgres(ctx); err != nil {

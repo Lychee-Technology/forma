@@ -134,22 +134,22 @@ func TestDegradedFallbackLogFollowsTheGuardAttribution(t *testing.T) {
 }
 
 // TestDegradedFallbackLogRedactsTheCause covers a cause that no source scrub
-// reaches. #306 scrubs DuckDB's errors where they arise, but the dirty-ID
-// fetch is a degradable Postgres failure outside that scrub, so a
+// reaches. #306 scrubs DuckDB's errors where they arise, but the pass's
+// snapshot read is a degradable Postgres failure outside that scrub, so a
 // connection-string password in it must be removed from the line.
 func TestDegradedFallbackLogRedactsTheCause(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
-	dirty := &fakeDirtyIDFetcher{err: fmt.Errorf("connect host=pg password=s3cr3t: refused")}
-	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, dirty, &fakeDuckDBExecutor{}, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", withTestParquetPath())
+	leg := &fakeHotLeg{changeLogErr: fmt.Errorf("connect host=pg password=s3cr3t: refused")}
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDuckDBExecutor{}, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(leg))
 	logs := withObservedLogs(engine)
 
 	opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: true}
 	_, err := engine.Query(context.Background(), degradedLogTables(), coldTierQuery(), opts)
 	require.NoError(t, err)
-	require.Equal(t, 1, dirty.calls, "the absorbed failure must be the dirty-ID fetch's")
+	require.Equal(t, 1, leg.begins, "the absorbed failure must be the snapshot read's")
 
 	entries := logs.FilterMessage(degradedFallbackMsg).All()
 	require.Len(t, entries, 1)
@@ -168,9 +168,8 @@ func TestDegradedFallbackLogSurvivesAFailedFallback(t *testing.T) {
 	defer restore()
 
 	pg := &fakePostgresFederatedSource{err: fmt.Errorf("forced postgres failure")}
-	engine := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{},
-		&fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", withTestParquetPath())
+	engine := NewDBFederatedQueryEngine(pg, &fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 	logs := withObservedLogs(engine)
 
 	opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: true}

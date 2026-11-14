@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/model"
-	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 const (
@@ -331,10 +330,9 @@ func isFederatedTierFileError(err error) bool {
 }
 
 // withPostgresAttach prefixes a hot-tier query with the attach of the
-// catalog its hotScan references name (#752): the batch form the engine
-// falls back to for executors without its pinned-connection seam.
+// catalog its hotScan references name (#752).
 func (h *FederatedTestHarness) withPostgresAttach(query string) string {
-	return sqlgen.PostgresAttachSQL(h.buildPGConnString()) + "\n" + query
+	return pgAttachSQL(h.buildPGConnString()) + "\n" + query
 }
 
 // buildPGConnString builds the Postgres connection string for DuckDB.

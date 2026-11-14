@@ -214,8 +214,8 @@ func TestDegradedMode_DirtyFetchFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected dirty-fetch error with change_log renamed, got success")
 	}
-	// Either transport reads the dirty set over pgx and classifies its
-	// failure the same way; the wording differs (#856).
+	// The pass reads the dirty set over pgx in its snapshot and classifies
+	// its failure as a PostgreSQL read failure (#856).
 	if !errors.Is(err, fedengine.ErrPostgresReadFailed) || !strings.Contains(err.Error(), "change_log") {
 		t.Errorf("error should wrap the dirty-set read of change_log, got: %v", err)
 	}

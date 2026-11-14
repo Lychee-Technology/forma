@@ -13,14 +13,14 @@ import (
 // that keep a non-text type in a text column, through the storage-domain
 // census baseline-schema runs (widthaudit.DomainCensus). An image the read
 // refuses fails every OLTP read of its row, every update of it (an update
-// parses each bound column of the row it merges into), and under the pgx
-// hot leg, the default since #857, every federated page that holds the row
-// while it is unflushed.
+// parses each bound column of the row it merges into), and, since the pgx
+// hot leg became the default (#857), every federated page that holds the
+// row while it is unflushed.
 //
 //   - A bool bound with bool_text must hold "1" or "0" (#404). NULL is an
-//     unset bool and is not reported. The attach hot leg and the CDC export
-//     read any other image as false, so no federated query failed on one
-//     before #857.
+//     unset bool and is not reported. The CDC export, and before #857 the
+//     retired attach hot leg, read any other image as false, so no federated
+//     query failed on one before #857.
 //   - A date/datetime bound with rfc3339 must be the canonical image of its
 //     instant (#842). Any other image the read parses (an offset, a fraction
 //     of other than three digits, a whole-second image the migration has not

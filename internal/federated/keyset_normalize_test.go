@@ -43,7 +43,7 @@ func TestKeysetSeamsRefuseAMistypedBoundary(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{}}
 			duck := &fakeDuckDBExecutor{}
-			engine := NewDBFederatedQueryEngine(pg, nil, duck, nil, hybridEnabledCfg(), nil, "")
+			engine := NewDBFederatedQueryEngine(pg, duck, nil, hybridEnabledCfg(), nil)
 
 			err := call(engine)
 
@@ -57,7 +57,7 @@ func TestKeysetSeamsRefuseAMistypedBoundary(t *testing.T) {
 // keysetQuery hands the seam a normalized copy of the cursor and leaves the
 // caller's query as it was built.
 func TestKeysetQueryNormalizesACopy(t *testing.T) {
-	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, &fakeDuckDBExecutor{}, nil, hybridEnabledCfg(), nil, "")
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDuckDBExecutor{}, nil, hybridEnabledCfg(), nil)
 	fq := keysetTestQuery()
 	fq.KeysetCursor.Values[0] = int32(5)
 

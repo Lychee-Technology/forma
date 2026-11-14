@@ -446,7 +446,7 @@ func TestSchemaEvolutionMixedGenerations(t *testing.T) {
 //
 // Tier asymmetry, documented not pinned: hot-tier EAV storage is
 // attr_id-keyed, so a v1-written row still HOT at evolution time would
-// surface its old value under the new name from pg_source. This recipe keeps
+// surface its old value under the new name from the hot leg. This recipe keeps
 // every v1 row parquet-resident, the generation boundary the issue is about.
 //
 // apply-schema refuses a rename under the same id (#733): a rename is a

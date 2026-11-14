@@ -11,9 +11,8 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-// Path resolution of a pgx pass (design.md §6.1.1, step 1): today's
-// resolution, with the flush-grace cutoff the pgx hot form needs, and the
-// frozen inventory. A source-authored glob (the level-3 fallback) is listed
+// Path resolution of a pass (design.md §6.1, step 1): the parquet path set
+// (#187), the flush-grace cutoff (#252), and the frozen inventory. A source-authored glob (the level-3 fallback) is listed
 // once, at resolution, and the pass scans the listed objects, never the
 // glob: an object published after the listing is then outside the scan
 // whatever its key, so the parquet leg reads exactly what the path set held
@@ -34,9 +33,10 @@ type pgxScanSources struct {
 
 // resolvePgxScanSources stamps the pass's cutoff, resolves and freezes the
 // parquet path set, and runs the pre-read checks over the frozen objects.
-func (e *DBFederatedQueryEngine) resolvePgxScanSources(ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery, hasHot bool) (pgxScanSources, error) {
-	// Stamped before resolution, as on the attach path (#252).
-	graceCutoffMs := e.passCutoffMs(e.clock()().UnixMilli(), hasHot)
+func (e *DBFederatedQueryEngine) resolvePgxScanSources(ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery) (pgxScanSources, error) {
+	// Stamped before resolution (#252): any row marked flushed at or after
+	// this instant may belong to a delta this path set does not list yet.
+	graceCutoffMs := e.passCutoffMs(e.clock()().UnixMilli())
 	paths, fromSource, stamps, err := e.resolveParquetPaths(ctx, q)
 	if err != nil {
 		return pgxScanSources{}, fmt.Errorf("resolve parquet paths: %w", err)
@@ -47,7 +47,7 @@ func (e *DBFederatedQueryEngine) resolvePgxScanSources(ctx context.Context, tabl
 	out := pgxScanSources{scanSources: scanSources{fromSource: fromSource, graceCutoffMs: graceCutoffMs}}
 	if fromSource {
 		// A caller hint stays a glob and expands at execution: hints are
-		// outside the snapshot guarantee (design.md §6.1.1).
+		// outside the snapshot guarantee (design.md §6.1).
 		frozen, listed, err := freezeParquetPaths(ctx, e.duck, paths)
 		if err != nil {
 			return pgxScanSources{}, err
@@ -115,7 +115,7 @@ func freezeParquetPaths(ctx context.Context, duck DuckDBQueryExecutor, paths []s
 // lists no object (#720). Without parquet history the hot leg is the whole
 // answer and DuckDB is not run. With it, a source that now resolves objects
 // raced a publication and the pass is retried; one that still resolves
-// nothing cannot be read, as a glob scan matching nothing fails today.
+// nothing cannot be read: DuckDB refuses a glob that matches nothing.
 func (p *pgxPass) settleEmptyCandidate(ctx context.Context, hasParquetHistory bool) error {
 	if !hasParquetHistory {
 		p.noObjects = true

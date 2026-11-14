@@ -9,11 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAdvancedTemplate_KeysetAppliedAfterDedup pins the #212 fix: the keyset
+// TestParquetOnlyTemplate_KeysetAppliedAfterDedup pins the #212 fix: the keyset
 // cursor predicate must render in the visible CTE after rn = 1, never in the
 // ranked CTE, where it would filter row versions before LWW dedup and let a
 // superseded version resurrect (the keyset twin of #173).
-func TestAdvancedTemplate_KeysetAppliedAfterDedup(t *testing.T) {
+func TestParquetOnlyTemplate_KeysetAppliedAfterDedup(t *testing.T) {
 	q := &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 1, Limit: 10},
 		// row_id closes the cursor (#183); ValidateShape refuses a cursor
@@ -27,9 +27,9 @@ func TestAdvancedTemplate_KeysetAppliedAfterDedup(t *testing.T) {
 			Mode:   model.KeysetCursorModeAfter,
 		},
 	}
-	dual := &DualClauses{DuckClause: "1=1"}
+	dual := DualClauses{DuckClause: "1=1"}
 
-	sql, _, err := BuildDuckDBQuery(AdvancedQueryTemplateDuckDB, injectTestRenderParams(t, map[string]any{}, 1), q, nil, dual)
+	sql, _, err := BuildParquetOnlyQuery(injectTestRenderParams(t, map[string]any{}, 1), q, dual, ParquetWindow{Limit: 10})
 	require.NoError(t, err)
 
 	rankedStart := strings.Index(sql, "ranked AS")

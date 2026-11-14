@@ -10,14 +10,14 @@ import (
 // This file is the #709 acceptance. A date/datetime bound to a text column
 // with the rfc3339 encoding holds only canonical RFC3339 images when written
 // through the API, so a string that is not a timestamp is planted here by
-// direct SQL, standing in for legacy or hand-written data. Every DuckDB tier
-// reads such a string as NULL: the hot leg and the CDC export both read the
-// column through TRY_CAST (#555). The pg-main pushdown's null test compared
-// the raw column, which is not NULL, so is_null dropped the unflushed row
-// from pg_source and matched it once its parquet copy served it. The
-// comparison probes pin that a comparison answers the same on every tier
-// too: the raw-column pre-filter may keep such a row, and `visible`, which
-// reads NULL, drops it. The OLTP route is not exercised here.
+// direct SQL, standing in for legacy or hand-written data. Every parquet
+// tier reads such a string as NULL: the CDC export reads the column through
+// TRY_CAST (#555). The comparison probes pin that a comparison answers the
+// same on both parquet tiers. While the rows are hot, the federated route
+// filters and reads them on PostgreSQL through the OLTP reader (design.md
+// §6.1, What a hot row reads as), so it must answer as the PostgreSQL
+// route does, refusals included; a non-date image is outside the query
+// contract (#763), so that answer need not be the parquet tiers'.
 
 // rfc3339NonDateRows is the seeded row set: an anchor flushed before the
 // others, a row holding canonical images, two rows whose images are replaced
@@ -63,7 +63,7 @@ func seedRFC3339NonDateRows(ctx context.Context, t *testing.T, env *Env, withNot
 	return rows
 }
 
-// rfc3339NonDateProbes is the truth table every DuckDB tier must reach: a
+// rfc3339NonDateProbes is the truth table every parquet tier must reach: a
 // non-timestamp string is absent, so it matches a null test and no
 // comparison.
 func rfc3339NonDateProbes(rows rfc3339NonDateRows) []widthProbe {
@@ -83,16 +83,16 @@ func rfc3339NonDateProbes(rows rfc3339NonDateRows) []widthProbe {
 	}
 }
 
-// runRFC3339NonDateAllTiers walks the planted rows through the unflushed
-// DuckDB hot leg, delta parquet and base parquet, with the same expected
-// answers on each.
+// runRFC3339NonDateAllTiers holds the unflushed rows' federated answers to
+// the PostgreSQL route's, then walks them through delta parquet and base
+// parquet, with the same expected answers on each.
 func runRFC3339NonDateAllTiers(ctx context.Context, t *testing.T, env *Env, withNote bool) {
 	t.Helper()
 	simple := DefaultSchemaFixtures()[0]
 	rows := seedRFC3339NonDateRows(ctx, t, env, withNote)
 	duck := Query{Schema: simple, Limit: 100}
 
-	runWidthProbes(ctx, t, env, "hot-duck", duck, true, rfc3339NonDateProbes(rows))
+	requireProbesAgree(ctx, t, env, "hot", duck, rfc3339NonDateProbes(rows))
 
 	if _, err := env.RunFlush(ctx); err != nil {
 		t.Fatalf("flush: %v", err)
@@ -106,20 +106,18 @@ func runRFC3339NonDateAllTiers(ctx context.Context, t *testing.T, env *Env, with
 }
 
 // TestBoundRFC3339NonDateStringNoEAVAllTiers: every attribute is
-// column-bound, so the DuckDB hot leg takes BuildPGSelectNoEAV.
+// column-bound, so the parquet tiers take the no-EAV projection.
 func TestBoundRFC3339NonDateStringNoEAVAllTiers(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339Props, rfc3339Attrs)))
-	pinAttachHotLeg(env) // a non-date image is outside the query contract (#763); the hot phase pins the attach hot leg's NULL read, while the pgx hot leg filters it as the PostgreSQL route does
 	runRFC3339NonDateAllTiers(ctx, t, env, false)
 }
 
 // TestBoundRFC3339NonDateStringEAVJoinedAllTiers: the EAV-only note forces
-// the EAV-joined hot projection, where the bound dates sit in a COALESCE
-// with the EAV pivot.
+// the EAV-joined projection, where the bound dates sit in a COALESCE with
+// the EAV pivot.
 func TestBoundRFC3339NonDateStringEAVJoinedAllTiers(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339MixedProps, rfc3339MixedAttrs)))
-	pinAttachHotLeg(env) // a non-date image is outside the query contract (#763); the hot phase pins the attach hot leg's NULL read, while the pgx hot leg filters it as the PostgreSQL route does
 	runRFC3339NonDateAllTiers(ctx, t, env, true)
 }

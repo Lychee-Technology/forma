@@ -9,14 +9,12 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
-// The parquet leg of the pgx hot-leg pass (design.md §6.1.1, plan step 3,
-// #854): sqlgen.ParquetOnlyQueryTemplateDuckDB, rendered through the compiled
-// plan cache. No query pass runs it until the engine wiring (plan step 5);
-// today's template and buildDuckDBQueryWithPlan stay the only production path.
+// The parquet leg of a federated pass (design.md §5, plan step 3, #854):
+// sqlgen.ParquetOnlyQueryTemplateDuckDB, rendered through the compiled plan
+// cache. Since #858 it is the only DuckDB statement a pass runs.
 
-// parquetOnlyPlanKind separates the parquet-only skeletons from today's in
-// the shared plan cache: the two templates render different statements for
-// the same shape and scope.
+// parquetOnlyPlanKind keys the parquet-only skeletons in the plan cache the
+// engine shares with the PostgreSQL route.
 const parquetOnlyPlanKind = "duckdb_federated_parquet_only"
 
 // RenderParquetOnlyStatement resolves q's parquet scan set as a pass does
@@ -25,9 +23,8 @@ const parquetOnlyPlanKind = "duckdb_federated_parquet_only"
 // dirty set with StageDirtySet on the DuckDB connection it runs the statement
 // on; the statement reads nothing else of PostgreSQL's.
 //
-// Plan step 5 runs this inside the pgx pass. Until then the production
-// harness uses it to time the parquet leg against the attach-path baseline
-// (#851, TestHotLegLatencyBaseline).
+// A pass renders it internally; the production harness calls this to time
+// the parquet leg on its own (#851, TestHotLegLatencyBaseline).
 func (e *DBFederatedQueryEngine) RenderParquetOnlyStatement(
 	ctx context.Context,
 	tables model.StorageTables,
@@ -41,7 +38,7 @@ func (e *DBFederatedQueryEngine) RenderParquetOnlyStatement(
 	if err != nil {
 		return "", nil, fmt.Errorf("render parquet-only statement: validate keyset cursor: %w", err)
 	}
-	src, err := e.resolveScanSources(ctx, tables, q)
+	src, err := e.resolvePgxScanSources(ctx, tables, q)
 	if err != nil {
 		return "", nil, fmt.Errorf("render parquet-only statement for schema %d: %w", q.SchemaID, err)
 	}
@@ -87,7 +84,7 @@ func (e *DBFederatedQueryEngine) buildParquetOnlyQueryCached(
 	applyParquetScanParams(sqlParams, parquetPaths, cold)
 
 	cache, _ := e.schemaCacheByID(q.SchemaID)
-	dc, _, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, sqlParams)
+	dc, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, sqlParams)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("build parquet-only query for schema %d: %w", q.SchemaID, err)
 	}
@@ -150,10 +147,10 @@ func (e *DBFederatedQueryEngine) parquetOnlyPlanCacheKey(
 	}, nil
 }
 
-// parquetOnlyScopeParts is duckPlanScopeParts without what the parquet-only
-// skeleton no longer renders: the connection string (no catalog reference),
-// the dirty-set flag (the set is a staged table whatever its size), and the
-// limit and offset (the window is bound). The EAV table stays, because the
+// parquetOnlyScopeParts is the retired attach template's scope without what
+// the parquet-only skeleton does not render: the connection string (no
+// catalog reference), the dirty-set flag (the set is a staged table whatever
+// its size), and the limit and offset (the window is bound). The EAV table stays, because the
 // DuckDB clause is built against it.
 func parquetOnlyScopeParts(
 	tables model.StorageTables,

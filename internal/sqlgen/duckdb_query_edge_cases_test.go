@@ -7,7 +7,6 @@ import (
 
 	"github.com/lychee-technology/forma/internal/model"
 
-	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/stretchr/testify/require"
 )
@@ -259,177 +258,8 @@ func TestGenerateDuckDBWhereClause_NewlinesAndWhitespace(t *testing.T) {
 }
 
 // ============================================================================
-// Edge Case Tests: Large Dirty ID Sets
-// ============================================================================
-
-func TestGenerateDuckDBWhereClauseWithExclusions_LargeDirtyIDSet100(t *testing.T) {
-	// Test with 100 dirty IDs
-	dirtyIDs := make([]uuid.UUID, 0, 100)
-	for range 100 {
-		dirtyIDs = append(dirtyIDs, uuid.New())
-	}
-
-	query := &model.FederatedAttributeQuery{
-		AttributeQuery: model.AttributeQuery{
-			Condition: &forma.KvCondition{
-				Attr:  "name",
-				Value: "test",
-			},
-		},
-	}
-
-	clause, args, err := BuildDuckClause(query.Condition, nil)
-	require.NoError(t, err)
-	var exclArgs []any
-	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
-	args = append(args, exclArgs...)
-	require.NoError(t, err)
-	require.NotEmpty(t, clause)
-	// Should have at least 101 args: 1 for the condition + 100 for dirty IDs
-	require.GreaterOrEqual(t, len(args), 101)
-	// Verify NOT IN clause is present
-	require.Contains(t, strings.ToUpper(clause), "NOT IN")
-}
-
-func TestGenerateDuckDBWhereClauseWithExclusions_LargeDirtyIDSet1000(t *testing.T) {
-	// Test with 1000 dirty IDs
-	dirtyIDs := make([]uuid.UUID, 0, 1000)
-	for range 1000 {
-		dirtyIDs = append(dirtyIDs, uuid.New())
-	}
-
-	query := &model.FederatedAttributeQuery{
-		AttributeQuery: model.AttributeQuery{
-			Condition: &forma.KvCondition{
-				Attr:  "status",
-				Value: "active",
-			},
-		},
-	}
-
-	clause, args, err := BuildDuckClause(query.Condition, nil)
-	require.NoError(t, err)
-	var exclArgs []any
-	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
-	args = append(args, exclArgs...)
-	require.NoError(t, err)
-	require.NotEmpty(t, clause)
-	// Should have at least 1001 args
-	require.GreaterOrEqual(t, len(args), 1001)
-	// Verify it's a valid NOT IN clause
-	require.Contains(t, strings.ToUpper(clause), "NOT IN")
-}
-
-func TestGenerateDuckDBWhereClauseWithExclusions_MaxInt16DirtyIDs(t *testing.T) {
-	// Test with max practical number of dirty IDs
-	// In real scenarios, this could be 5000+ but we test with 500 for practical limits
-	dirtyIDs := make([]uuid.UUID, 0, 500)
-	for range 500 {
-		dirtyIDs = append(dirtyIDs, uuid.New())
-	}
-
-	query := &model.FederatedAttributeQuery{
-		AttributeQuery: model.AttributeQuery{
-			Condition: &forma.KvCondition{
-				Attr:  "id",
-				Value: "target",
-			},
-		},
-	}
-
-	clause, args, err := BuildDuckClause(query.Condition, nil)
-	require.NoError(t, err)
-	var exclArgs []any
-	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
-	args = append(args, exclArgs...)
-	require.NoError(t, err)
-	require.GreaterOrEqual(t, len(args), 501)
-	// Verify clause structure is valid
-	require.True(t, strings.Contains(strings.ToUpper(clause), "NOT IN") ||
-		strings.Contains(strings.ToUpper(clause), "WHERE"))
-}
-
-func TestGenerateDuckDBWhereClauseWithExclusions_DuplicateDirtyIDs(t *testing.T) {
-	// Test that duplicate dirty IDs are handled correctly
-	baseID := uuid.New()
-	dirtyIDs := make([]uuid.UUID, 0, 10)
-	// Add the same ID 5 times
-	for range 5 {
-		dirtyIDs = append(dirtyIDs, baseID)
-	}
-	// Add different IDs
-	for i := 5; i < 10; i++ {
-		dirtyIDs = append(dirtyIDs, uuid.New())
-	}
-
-	query := &model.FederatedAttributeQuery{
-		AttributeQuery: model.AttributeQuery{
-			Condition: &forma.KvCondition{
-				Attr:  "field",
-				Value: "value",
-			},
-		},
-	}
-
-	clause, args, err := BuildDuckClause(query.Condition, nil)
-	require.NoError(t, err)
-	var exclArgs []any
-	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
-	args = append(args, exclArgs...)
-	require.NoError(t, err)
-	require.NotEmpty(t, clause)
-	// Implementation should handle duplicates gracefully
-	require.GreaterOrEqual(t, len(args), 6) // At least 1 + 10 dirty IDs
-}
-
-// ============================================================================
 // Combined Edge Cases
 // ============================================================================
-
-func TestGenerateDuckDBWhereClause_ComplexNestedWithUnicodeAndLargeDirtySet(t *testing.T) {
-	// Combine: deeply nested conditions + Unicode + large dirty ID set
-	dirtyIDs := make([]uuid.UUID, 0, 100)
-	for range 100 {
-		dirtyIDs = append(dirtyIDs, uuid.New())
-	}
-
-	query := &model.FederatedAttributeQuery{
-		AttributeQuery: model.AttributeQuery{
-			Condition: &forma.CompositeCondition{
-				Logic: forma.LogicAnd,
-				Conditions: []forma.Condition{
-					&forma.CompositeCondition{
-						Logic: forma.LogicOr,
-						Conditions: []forma.Condition{
-							&forma.KvCondition{
-								Attr:  "name",
-								Value: "François",
-							},
-							&forma.KvCondition{
-								Attr:  "city",
-								Value: "北京",
-							},
-						},
-					},
-					&forma.KvCondition{
-						Attr:  "status",
-						Value: "中文_测试",
-					},
-				},
-			},
-		},
-	}
-
-	clause, args, err := BuildDuckClause(query.Condition, nil)
-	require.NoError(t, err)
-	var exclArgs []any
-	clause, exclArgs = AppendDirtyExclusion(clause, dirtyIDs)
-	args = append(args, exclArgs...)
-	require.NoError(t, err)
-	require.NotEmpty(t, clause)
-	// Should contain condition values and dirty IDs
-	require.Greater(t, len(args), 100)
-}
 
 func TestGenerateDuckDBWhereClause_EdgeCaseWithNilCondition(t *testing.T) {
 	query := &model.FederatedAttributeQuery{
@@ -459,8 +289,3 @@ func TestGenerateDuckDBWhereClause_EmptyCompositeCondition(t *testing.T) {
 	// Implementation-dependent
 	require.True(t, err != nil || clause != "")
 }
-
-// TestBuildDuckDBQuery_NonKeysetSort_RespectsAttributeOrders verifies that when
-// AttributeOrders contains a main-column sort key and no keyset cursor is provided,
-// the rendered DuckDB SQL's ORDER BY clause uses the specified column rather than the
-// hardcoded "created_at DESC" fallback.

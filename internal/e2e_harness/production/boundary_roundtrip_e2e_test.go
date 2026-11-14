@@ -104,7 +104,7 @@ func TestFederatedReadReturnsStoredMaxInt64(t *testing.T) {
 		t.Fatalf("apply create: %v", err)
 	}
 	// Base file so the federated query routes to DuckDB; the row stays
-	// unflushed in change_log, so it is served from the hot pg_source leg.
+	// unflushed in change_log, so it is served from the hot leg.
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}

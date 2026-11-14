@@ -226,44 +226,9 @@ func BuildBenchmarkProjections(schemaID int16) *SchemaProjection {
 	}
 	sp.S3SourceSelect = strings.Join(s3Parts, ", ")
 
-	// Build PG source projection and GROUP BY
-	pgSelectParts := []string{
-		"cl.row_id::VARCHAR AS row_id",
-		"m.ltbase_created_at AS created_at",
-		"cl.changed_at AS ver_ts",
-		"cl.deleted_at AS deleted_ts",
-	}
-	pgGroupParts := []string{"cl.row_id", "m.ltbase_created_at", "cl.changed_at", "cl.deleted_at"}
-
-	// Build EAV pivot
-	var eavPivotParts []string
-	var eavAttrIDParts []string
-
 	for _, a := range allAttrs {
-		if a.colName != "" {
-			pgSelectParts = append(pgSelectParts,
-				fmt.Sprintf("COALESCE(ANY_VALUE(hot_vals.%s), CAST(m.%s AS VARCHAR)) AS %s", a.name, a.colName, a.name))
-			pgGroupParts = append(pgGroupParts, "m."+a.colName)
-		} else {
-			pgSelectParts = append(pgSelectParts, fmt.Sprintf("ANY_VALUE(hot_vals.%s) AS %s", a.name, a.name))
-		}
 		sp.attrIDs[a.name] = a.attrID
 		sp.UnifiedColumnNames = append(sp.UnifiedColumnNames, a.name)
-
-		if a.attrID > 0 {
-			eavPivotParts = append(eavPivotParts,
-				fmt.Sprintf("\t\t\t\tMAX(CASE WHEN attr_id = %d THEN value_text END) AS %s", a.attrID, a.name))
-			eavAttrIDParts = append(eavAttrIDParts, fmt.Sprintf("%d", a.attrID))
-		}
-	}
-
-	sp.PGSourceSelect = strings.Join(pgSelectParts, ",\n\t\t\t")
-	sp.PGGroupBy = strings.Join(pgGroupParts, ", ")
-	if len(eavPivotParts) > 0 {
-		sp.EAVPivotSelect = strings.Join(eavPivotParts, ",\n")
-	}
-	if len(eavAttrIDParts) > 0 {
-		sp.EAVPivotAttrs = strings.Join(eavAttrIDParts, ", ")
 	}
 
 	return sp

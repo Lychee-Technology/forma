@@ -9,18 +9,18 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/model"
-	"github.com/lychee-technology/forma/internal/sqlgen/sqlgentest"
 )
 
 // TestTierHintPruningMatrix (#184): every PreferredTiers subset must restrict
 // the physical data sources, not just routing metadata. Physical sources come
 // in two equivalence classes (#177 acceptance note: base and delta parquet
 // share one flat glob and the reader is manifest-blind, so warm and cold are
-// one physical source): hot ⇔ the pg_source scan of entity_main,
-// warm∪cold ⇔ read_parquet of the schema glob. The dirty_ids change_log scan
-// is a consistency barrier and survives every DuckDB form: excluding hot
-// makes unflushed rows consistently invisible — their stale parquet versions
-// are discarded, never replaced (adjudicated on the issue).
+// one physical source): hot ⇔ the pgx pass's hot-keys query of entity_main
+// in its snapshot, warm∪cold ⇔ read_parquet of the schema glob. The dirty
+// set the snapshot reads from change_log is a consistency barrier and
+// survives every DuckDB form: excluding hot makes unflushed rows
+// consistently invisible — their stale parquet versions are discarded, never
+// replaced (adjudicated on the issue).
 //
 // The seed relies on the harness default routing strategy ("") routing every
 // non-gate combination to DuckDB; do NOT set WithRoutingStrategy(Hybrid) here
@@ -30,7 +30,6 @@ func TestTierHintPruningMatrix(t *testing.T) {
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
 	ctx := context.Background()
 	env := NewEnv(t, cluster)
-	pinAttachHotLeg(env) // the rendered SQL and scans it inspects are the attach transport's (pg_source, the attached catalog)
 
 	seed := seedTierMatrix(ctx, t, env, wide)
 
@@ -145,29 +144,28 @@ func assertTierMatrixHasHot(ctx context.Context, t *testing.T, env *Env, wide Sc
 		t.Errorf("%s: no duckdb source with rendered SQL in plan", name)
 		return
 	}
-	if !strings.Contains(sqlText, "pg_source") {
-		t.Errorf("%s: hot requested but pg_source CTE missing from SQL", name)
-	}
 	if !strings.Contains(sqlText, "read_parquet") {
 		t.Errorf("%s: warm/cold requested but read_parquet missing from SQL", name)
 	}
-	if refs := sqlgentest.FindPostgresTableRefs(sqlText); len(refs) < 3 {
-		t.Errorf("%s: hot requested: want >=3 PostgreSQL table scans (dirty_ids + pg_source), got %d", name, len(refs))
+	assertParquetStatementAntiJoinsStagedSet(t, name, sqlText)
+	hot, ok := planSource(result.Plan, hotLegPgxReason)
+	if !ok {
+		t.Errorf("%s: hot requested but no hot-leg source recorded", name)
+	} else if hot.Engine != "postgres" || !hot.PredicatePushdown {
+		t.Errorf("%s: the hot leg must be a PostgreSQL source that evaluates its predicate, got %+v", name, hot)
 	}
-	if !planHasReason(result.Plan, "hot-leg predicate (evaluated in DuckDB)") {
-		t.Errorf("%s: hot requested but no hot-leg predicate source recorded", name)
-	}
-	if !planHasReason(result.Plan, "dirty id set fetched") {
-		t.Errorf("%s: hot requested: dirty source must keep the data-source reason", name)
+	if dirty, ok := planSource(result.Plan, pgxDirtySetReason); !ok || dirty.Engine != "postgres" {
+		t.Errorf("%s: hot requested: the plan must record the dirty set read in the snapshot, got %+v", name, dirty)
 	}
 	if !planNotesContain(result.Plan, "physically serves warm+cold") {
 		t.Errorf("%s: plan must state the physical parquet coverage, notes: %v", name, result.Plan.Notes)
 	}
 }
 
-// assertTierMatrixS3Only: combinations excluding hot must prune pg_source
-// (SQL and plan), serve only parquet-resident rows, and keep the dirty
-// barrier: hot rows and the adversary R are consistently invisible.
+// assertTierMatrixS3Only: combinations excluding hot must prune the hot leg
+// (no hot-keys query in the plan), serve only parquet-resident rows, and
+// keep the dirty barrier: hot rows and the adversary R are consistently
+// invisible.
 func assertTierMatrixS3Only(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, tiers []model.DataTier, seed tierMatrixSeed) {
 	t.Helper()
 	name := tierComboName(tiers)
@@ -185,21 +183,15 @@ func assertTierMatrixS3Only(ctx context.Context, t *testing.T, env *Env, wide Sc
 	if sqlText == "" {
 		t.Fatalf("%s: no duckdb source with rendered SQL in plan", name)
 	}
-	if strings.Contains(sqlText, "pg_source") {
-		t.Errorf("%s: hot excluded but pg_source CTE still renders", name)
-	}
 	if !strings.Contains(sqlText, "read_parquet") {
 		t.Errorf("%s: read_parquet missing from SQL", name)
 	}
-	refs := sqlgentest.FindPostgresTableRefs(sqlText)
-	if len(refs) != 1 || refs[0].Table != "change_log" {
-		t.Errorf("%s: want exactly the dirty_ids change_log scan, got %d scans: %v", name, len(refs), refs)
+	assertParquetStatementAntiJoinsStagedSet(t, name, sqlText)
+	if planHasReason(result.Plan, hotLegPgxReason) {
+		t.Errorf("%s: hot excluded but a hot-leg source was recorded", name)
 	}
-	if planHasReason(result.Plan, "hot-leg predicate (evaluated in DuckDB)") {
-		t.Errorf("%s: hot excluded but a hot-leg predicate source was recorded", name)
-	}
-	if !planHasReason(result.Plan, "consistency barrier (dirty-id anti-join)") {
-		t.Errorf("%s: hot excluded: dirty source must be labeled a consistency barrier", name)
+	if dirty, ok := planSource(result.Plan, pgxBarrierReason); !ok || dirty.Engine != "postgres" {
+		t.Errorf("%s: hot excluded: the dirty set must be recorded as a consistency barrier, got %+v", name, dirty)
 	}
 	requested := make([]string, 0, len(tiers))
 	representative := "cold"
@@ -265,7 +257,6 @@ func TestTierHintRoutingAndAnchor(t *testing.T) {
 	wide := DefaultSchemaFixtures()[1]
 	ctx := context.Background()
 	env := NewEnv(t, cluster)
-	pinAttachHotLeg(env) // the rendered SQL and scans it inspects are the attach transport's (pg_source, the attached catalog)
 
 	creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 3})
 	if err := env.ApplyEvents(ctx, creates...); err != nil {
@@ -286,9 +277,8 @@ func TestTierHintRoutingAndAnchor(t *testing.T) {
 		if !result.Plan.Routing.UseDuckDB {
 			t.Errorf("default tiers: expected DuckDB routing, got %+v", result.Plan.Routing)
 		}
-		sqlText := duckdbPlanSQL(result.Plan)
-		if !strings.Contains(sqlText, "pg_source") || !strings.Contains(sqlText, "read_parquet") {
-			t.Errorf("default tiers must render both physical sources, SQL:\n%s", sqlText)
+		if !strings.Contains(duckdbPlanSQL(result.Plan), "read_parquet") || !planHasReason(result.Plan, hotLegPgxReason) {
+			t.Errorf("default tiers must read both physical sources, plan sources: %+v", result.Plan.Sources)
 		}
 	}
 

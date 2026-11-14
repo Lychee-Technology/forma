@@ -27,10 +27,9 @@ import (
 type ScanColumn struct {
 	// Name is the folded parquet column name (ParquetAttrColumn output).
 	Name string
-	// DuckDBType is the schema-expected DuckDB type. It must type-unify with
-	// the pg_source leg of the UNION ALL, so it mirrors the hot-tier EAV
-	// pivot (buildEAVPivotExpr) and the CDC export (cdc.castEAVValue) — the
-	// #205 no-widening parity.
+	// DuckDBType is the schema-expected DuckDB type. It mirrors the CDC
+	// export (cdc.castEAVValue), so a cold-absent column reads at the type a
+	// flushed one carries — the #205 no-widening parity.
 	DuckDBType string
 }
 
@@ -229,7 +228,7 @@ func typedNullRelation(cols []ScanColumn) string {
 // their invariant types, plus every attribute column as `missing`, which the
 // caller computes against an empty footer union. Both scan sites, the
 // s3_source projection and the semijoin's logical clause, then bind as they
-// would over real parquet, and the UNION ALL with pg_source keeps its types.
+// would over real parquet.
 func BuildEmptyParquetScanSource(missing []ScanColumn) string {
 	system := parquetcheck.SystemColumns()
 	parts := make([]string, 0, len(system)+len(missing))

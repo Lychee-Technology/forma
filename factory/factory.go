@@ -46,7 +46,7 @@ func defaultEntityManagerDependencies() entityManagerDependencies {
 		newMetadataLoader: func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 			return schemameta.NewMetadataLoader(pool, schemaTable, schemaDir)
 		},
-		newDuckDBClient: federated.NewFederatedDuckDBClientContext,
+		newDuckDBClient: federated.NewDuckDBClientContext,
 		// A factory test that enables DuckDB + a manifest template and leaves
 		// this default in place hits the real AWS credential chain — call
 		// swapManifestS3Client (parquet_source_test.go) to stay hermetic.
@@ -204,6 +204,8 @@ func discardDuckClient(duckClient *federated.DuckDBClient) {
 
 // validateBeforeIO rejects configuration errors before any I/O, and answers
 // the repository option of the configured database engine:
+//   - a retired or unknown hot-leg transport must fail rather than silently
+//     selecting pgx, even when an embedder did not call Config.Validate (#858);
 //   - an incoherent manifest read surface must not be discovered halfway
 //     through startup, after the database has already been queried;
 //   - the caller-path opt-in without a bucket fails fast instead of surfacing
@@ -211,6 +213,9 @@ func discardDuckClient(duckClient *federated.DuckDBClient) {
 //   - the engine decides how writes exclude each other, so an unknown name
 //     fails here rather than falling back to PostgreSQL's locks (#633).
 func validateBeforeIO(cfg *forma.Config) (internal.RepoOption, error) {
+	if err := cfg.DuckDB.ValidateHotLeg(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb hot-leg configuration: %w", err)
+	}
 	if err := cfg.DuckDB.ValidateManifestRead(); err != nil {
 		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
 	}
@@ -270,9 +275,8 @@ func newRepositoryAndEngine(
 		federated.WithPlanCache(planCache),
 		federated.WithLogger(zap.L()),
 		federated.WithMetricEmitter(cfg.Metrics.Emitter),
-		// The pgx hot leg's snapshot and reads (#856), which the default
-		// transport uses since #857; inert when cfg.DuckDB.HotLegTransport
-		// selects attach.
+		// The hot leg's snapshot and reads (#856): every federated pass
+		// reads PostgreSQL through them (#858).
 		federated.WithPgxHotLeg(pool, repository),
 	}
 	// Append only a real source, so the manifest-off path stays byte-identical
@@ -282,12 +286,10 @@ func newRepositoryAndEngine(
 	}
 	return repository, federated.NewDBFederatedQueryEngine(
 		repository,
-		federated.NewPostgresDirtyIDFetcher(pool),
 		federated.NewDuckDBClientQueryExecutor(duckClient),
 		newDuckDBCircuitBreaker(cfg.DuckDB),
 		cfg.DuckDB,
 		metadataCache,
-		federated.DuckDBPostgresConnStringFromPool(pool),
 		engineOpts...,
 	)
 }

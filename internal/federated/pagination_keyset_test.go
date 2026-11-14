@@ -40,8 +40,7 @@ func TestKeysetQueryReportsTheFullMatchCount(t *testing.T) {
 		&totalOnlyDuckDBRow{total: 2},  // the page: 2 rows remain after the cursor
 		&totalOnlyDuckDBRow{total: 42}, // the recount: 42 rows match in all
 	}}
-	var built []model.FederatedAttributeQuery
-	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, duck, &built)
+	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, duck)
 
 	records, total, err := engine.ExecuteFederatedKeysetQuery(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
@@ -51,9 +50,8 @@ func TestKeysetQueryReportsTheFullMatchCount(t *testing.T) {
 	require.Len(t, records, 1)
 	require.Equal(t, int64(42), total, "the full match count, not the rows remaining after the cursor")
 	require.Equal(t, 2, duck.calls, "one page scan and one recount")
-	require.Len(t, built, 2)
-	require.True(t, built[0].KeysetCursor.IsActive(), "the page applies the cursor")
-	require.Nil(t, built[1].KeysetCursor, "the recount strips it")
+	require.True(t, duck.window(t, 0).keyset, "the page applies the cursor")
+	require.False(t, duck.window(t, 1).keyset, "the recount strips it")
 }
 
 // TestKeysetQueryRecordsRoutingPlan pins the one plan entry the coordinator
@@ -64,8 +62,7 @@ func TestKeysetQueryRecordsRoutingPlan(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
-	var built []model.FederatedAttributeQuery
-	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, &sequencedDuckDBExecutor{}, &built)
+	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, &sequencedDuckDBExecutor{})
 	opts := &model.FederatedQueryOptions{
 		IncludeExecutionPlan: true,
 		ExecutionPlan:        &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
@@ -91,8 +88,7 @@ func TestKeysetQuerySkipsPlanWhenNotRequested(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
-	var built []model.FederatedAttributeQuery
-	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, &sequencedDuckDBExecutor{}, &built)
+	engine := newEmptyPageTestEngine(t, &fakePostgresFederatedSource{}, &sequencedDuckDBExecutor{})
 	opts := &model.FederatedQueryOptions{
 		ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}},
 	}

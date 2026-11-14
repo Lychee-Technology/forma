@@ -23,7 +23,7 @@ type KeysetColumn struct {
 	// INTEGER, SMALLINT, DOUBLE, VARCHAR, BOOLEAN or UUID). Cursor
 	// normalization (sortkey.NormalizeCursor) sets it, together with a
 	// boundary of that type, and the renderer casts each boundary to it:
-	// `CAST(? AS <ExportType>)` (design.md §6.1.1, One boundary type per
+	// `CAST(? AS <ExportType>)` (design.md §6.1, One boundary type per
 	// cursor column). A cursor that has not been normalized leaves it empty,
 	// and the renderer refuses it.
 	ExportType string

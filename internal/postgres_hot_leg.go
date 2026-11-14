@@ -14,12 +14,11 @@ import (
 	"github.com/lychee-technology/forma/internal/sortkey"
 )
 
-// The pgx hot leg's PostgreSQL reads (design.md §6.1.1; pgx-hot-leg-plan.md
+// The pgx hot leg's PostgreSQL reads (design.md §6.1; pgx-hot-leg-plan.md
 // step 4). A pgx pass reads, in one REPEATABLE READ READ ONLY snapshot, the
 // dirty set (federated.readChangeLogSnapshot), the hot keys, and after the
 // merge the page's hot rows. Both reads below therefore take the pass's
-// transaction rather than the pool. Nothing in the engine calls them until
-// the transport switch (plan step 5).
+// transaction rather than the pool.
 //
 // The hot keys filter exactly as a PostgreSQL-only answer does: the
 // condition renders through the PostgreSQL route's own builder
@@ -40,14 +39,14 @@ const (
 // hotKeysSQL is the hot-keys query. hot_window is the dirty window in the
 // same two index ranges as the dirty set's read (dirtySetQuery), each a
 // range of the (schema_id, flushed_at) index init-db builds; a row's ver_ts
-// is the changed_at of its newest entry there, as the attach path's
-// pg_source ranks it. The join keeps only live rows, since a delete removes
-// the entity_main row. A row whose newest entry in the window is a tombstone
-// is not served either, even where entity_main still holds it (a state only
-// direct SQL can plant): the attach path's dedup ranks that tombstone first,
-// ties on changed_at going to the delete, and its visibility filter drops
-// it. There is no ORDER BY and no LIMIT: Go sorts the keys, and the dirty
-// set bounds them (design.md §6.1.1, Ordering parity).
+// is the changed_at of its newest entry there, as the parquet leg's dedup
+// ranks versions by changed_at. The join keeps only live rows, since a delete
+// removes the entity_main row. A row whose newest entry in the window is a
+// tombstone is not served either, even where entity_main still holds it (a
+// state only direct SQL can plant): the retired attach path's dedup ranked
+// that tombstone first, ties on changed_at going to the delete, and its
+// visibility filter dropped it, and the hot leg keeps that answer (#856). There is no ORDER BY and no LIMIT: Go sorts the keys, and the dirty
+// set bounds them (design.md §6.1, Ordering parity).
 //
 // %[1]s change_log, %[2]s entity_main, %[3]s the sort columns' projections,
 // %[4]s the condition over the alias m.

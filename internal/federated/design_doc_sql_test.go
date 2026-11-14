@@ -11,29 +11,26 @@ import (
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlgen"
-	"github.com/lychee-technology/forma/internal/sqlgen/sqlgentest"
 	"github.com/stretchr/testify/require"
 )
 
 // These tests are the #214 executable-documentation guard for the §5 "SQL
-// Execution Template" sketch in docs/federated-query/design.md. The sketch
-// calls itself the core logic of the Federated Query Engine, so it must stay
-// executable against the runtime source contract:
+// Execution Template" sketch in docs/federated-query/design.md. Since #858 §5
+// documents the one statement DuckDB runs per federated pass, the parquet
+// leg's (sqlgen.ParquetOnlyQueryTemplateDuckDB), and it must stay executable
+// against the runtime source contract:
 //
-//   - every hot-leg scan is a $PG."schema"."table" reference into the attached
-//     PostgreSQL catalog, the form AdvancedQueryTemplateDuckDB renders (#752);
 //   - the S3 projection uses the runtime parquet columns from
 //     buildS3Projection (ltbase_created_at AS created_at, changed_at AS
 //     ver_ts, deleted_at AS deleted_ts) — created_at and ver_ts come from
 //     different parquet columns because they are different quantities (#460);
+//   - both scan sites render the runtime's guarded scan source (#256);
 //   - the documented query preserves the #173/#178 filter-after-LWW
 //     semantics that PR #211 encoded.
 //
-// TestDesignDocSQL_ExecutesWithLWWFilterSemantics enforces the above
-// behaviorally: catalog scans are mapped to same-named local relations
-// (a malformed reference maps to nothing and fails the parse assertion), the
-// $S3_PATHS placeholder points at a real parquet file, and the whole block
-// runs on an in-memory DuckDB against seed data built for the #173 scenarios.
+// design_doc_parquet_only_sql_test.go checks that it reads no PostgreSQL and
+// runs it on an in-memory DuckDB over seedDesignDocScenario, with the dirty
+// set staged by the runtime's own StageDirtySet.
 
 const designDocRelPath = "../../docs/federated-query/design.md"
 
@@ -55,23 +52,6 @@ func extractDesignDocSection5SQL(t *testing.T) string {
 	m := fence.FindStringSubmatch(doc[loc[1]:])
 	require.NotNil(t, m, "design.md §5 must contain a fenced SQL block")
 	return m[1]
-}
-
-// TestDesignDocSQL_PostgresScansReadTheAttachedCatalog pins the runtime scan
-// shape: every documented hot-leg scan is a plain table reference into the
-// attached PostgreSQL catalog, $PG."schema"."table", as AdvancedQueryTemplateDuckDB
-// renders it (#752), and nothing still uses postgres_scan, which DuckDB 2.0's
-// postgres extension no longer has.
-func TestDesignDocSQL_PostgresScansReadTheAttachedCatalog(t *testing.T) {
-	sqlText := extractDesignDocSection5SQL(t)
-
-	refs := sqlgentest.FindPostgresTableRefs(sqlText)
-	require.NotEmpty(t, refs, "§5 must document the hot leg's PostgreSQL scans")
-	for _, ref := range refs {
-		require.Equal(t, "$PG", ref.Catalog, "§5 scans must name the attached catalog placeholder: %s", ref.Raw)
-	}
-	require.NotContains(t, sqlText, "postgres_scan(",
-		"§5 must not document the postgres_scan table function DuckDB 2.0 removed")
 }
 
 // extractDocS3ProjectionItems returns the individual SELECT items of the §5
@@ -156,86 +136,31 @@ func TestDesignDocSQL_ScanSourceMatchesRuntimeGuard(t *testing.T) {
 		"§5 must render sqlgen.BuildParquetScanSource at both scan sites (s3_source FROM and the pushdown semijoin); got:\n%s", want)
 }
 
-// rewriteDocSQLForLocalExecution turns the §5 sketch into a self-contained
-// DuckDB statement: each $PG."schema"."table" scan collapses to its table
-// name (bound to a local seed relation), and the remaining $ placeholders get
-// concrete values. The table-name mapping is derived from the reference
-// itself, so renames in the doc adapt automatically, while a malformed scan
-// stays unmapped and fails to execute.
-func rewriteDocSQLForLocalExecution(t *testing.T, sqlText, parquetPath string) string {
-	t.Helper()
-
-	sqlText = sqlgentest.CollapsePostgresTableRefs(sqlText)
-
-	replacements := [][2]string{
-		{"$S3_PATHS", "['" + parquetPath + "']"},
-		{"$SCHEMA_ID", "1"},
-		{"$PG_WHERE_CLAUSE", "1 = 1"},
-		{"$PAGE_SIZE", "100"},
-		{"$OFFSET", "0"},
-		// Grace disabled (MaxInt64) so the seed's flushed s3 row keeps its
-		// #173 out-of-dirty-set semantics (#252).
-		{"$FLUSH_GRACE_CUTOFF_MS", "9223372036854775807"},
-		// Scans collapse to local relations above; these only clear the
-		// parameter-legend comment lines. $PG_CONN goes before its prefix $PG.
-		{"$PG_CONN", "(local)"},
-		{"$PG", "(local)"},
-	}
-	for _, r := range replacements {
-		sqlText = strings.ReplaceAll(sqlText, r[0], r[1])
-	}
-	require.NotContains(t, sqlText, "$",
-		"all §5 placeholders must be substituted before execution")
-	return sqlText
-}
-
-// seedDesignDocScenario builds the local relations the rewritten §5 SQL scans
-// and a real parquet file for read_parquet. The data encodes the #173/#178
-// scenarios; the documented logical filter is
+// seedDesignDocScenario writes the parquet file §5's read_parquet scans. The
+// data encodes the #173/#178 scenarios; the documented logical filter is
 // (age > 18 AND name LIKE 'John%' AND tag = 'developer'):
 //
 //   - s1: old parquet version matches, newer one fails the filter — the newer
 //     version must win LWW and the row must NOT surface (#173).
 //   - s2: old live version matches, newer version is a tombstone — the
 //     tombstone must win dedup and then be dropped.
-//   - s3: single matching parquet version, plus an already-flushed change_log
-//     row — it must surface from S3 (flushed_at = 0 keeps it out of the
-//     dirty set).
+//   - s3: single matching parquet version, flushed and out of the dirty set —
+//     it must surface.
 //   - s4: single non-matching parquet version — the semijoin excludes it.
-//   - d1: stale matching parquet version AND an unflushed hot version — the
-//     dirty-set anti-join must serve the hot values (age 30, created_at 90).
+//   - d1: stale matching parquet version of a row in the dirty set — the
+//     anti-join must drop it, and the hot leg serves the row.
 //
 // Every parquet row carries an ltbase_created_at distinct from its changed_at,
 // so a leg that aliased the version stamp into the created_at slot (#460)
-// would report the wrong value and fail the assertion below.
-//   - d2: unflushed hot version that fails the filter — dropped post-LWW.
+// would report the wrong value.
 //
-// rowID maps each scenario name to the row_id the seed writes: §5 runs on the
-// names themselves, the parquet-only twin on UUIDs, since its anti-join
+// rowID maps each scenario name to the row_id the seed writes: the anti-join
 // compares row_id as a UUID against the staged set.
 func seedDesignDocScenario(t *testing.T, db *sql.DB, parquetPath string, rowID func(string) string) {
 	t.Helper()
 	id := rowID
 
 	stmts := []string{
-		`CREATE TABLE change_log (
-			row_id VARCHAR, schema_id INTEGER, flushed_at BIGINT,
-			changed_at BIGINT, deleted_at BIGINT)`,
-		`INSERT INTO change_log VALUES
-			('` + id("d1") + `', 1, 0, 300, 0),
-			('` + id("d2") + `', 1, 0, 300, 0),
-			('` + id("s3") + `', 1, 500, 100, 0)`,
-		`CREATE TABLE entity_main_dev (
-			ltbase_row_id VARCHAR, ltbase_schema_id INTEGER, ltbase_created_at BIGINT,
-			text_01 VARCHAR, integer_01 INTEGER)`,
-		`INSERT INTO entity_main_dev VALUES
-			('` + id("d1") + `', 1, 90, 'John Dirty', 30),
-			('` + id("d2") + `', 1, 95, 'Bob', 40)`,
-		`CREATE TABLE eav_data_dev (
-			row_id VARCHAR, schema_id INTEGER, attr_id INTEGER, value_text VARCHAR)`,
-		`INSERT INTO eav_data_dev VALUES
-			('` + id("d1") + `', 1, 205, 'developer'),
-			('` + id("d2") + `', 1, 205, 'developer')`,
 		`COPY (
 			SELECT * FROM (VALUES
 				('` + id("s1") + `', CAST(50 AS BIGINT), CAST(100 AS BIGINT), CAST(0 AS BIGINT), 'John Stale', 25, 'developer'),
@@ -252,52 +177,4 @@ func seedDesignDocScenario(t *testing.T, db *sql.DB, parquetPath string, rowID f
 		_, err := db.Exec(stmt)
 		require.NoError(t, err, "seed statement failed: %s", stmt)
 	}
-}
-
-// TestDesignDocSQL_ExecutesWithLWWFilterSemantics executes the §5 sketch on a
-// real DuckDB engine and asserts the #173/#178 filter-after-LWW semantics it
-// documents. See seedDesignDocScenario for the per-row expectations.
-func TestDesignDocSQL_ExecutesWithLWWFilterSemantics(t *testing.T) {
-	docSQL := extractDesignDocSection5SQL(t)
-	parquetPath := filepath.Join(t.TempDir(), "base.parquet")
-
-	db, err := sql.Open("duckdb", strictLambdaDSN)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, db.Close(), "failed to close in-memory DuckDB")
-	})
-
-	seedDesignDocScenario(t, db, parquetPath, func(name string) string { return name })
-
-	query := rewriteDocSQLForLocalExecution(t, docSQL, parquetPath)
-	rows, err := db.Query(query)
-	require.NoError(t, err, "the documented §5 SQL must execute as written (query=%s)", query)
-	defer func() {
-		require.NoError(t, rows.Close(), "failed to close §5 query result rows")
-	}()
-
-	type resultRow struct {
-		rowID, name, tag string
-		age              int
-		createdAt        int64
-	}
-	var got []resultRow
-	for rows.Next() {
-		var r resultRow
-		require.NoError(t, rows.Scan(&r.rowID, &r.name, &r.age, &r.tag, &r.createdAt))
-		got = append(got, r)
-	}
-	require.NoError(t, rows.Err())
-
-	// ORDER BY created_at DESC: s3 reports 80, its parquet ltbase_created_at
-	// — NOT the 100 its changed_at carries (#460) — and d1 reports 90 from
-	// entity_main.ltbase_created_at, so the hot row now leads the page. The
-	// parquet copy of d1 carries the same 90, which is the point: a row's
-	// sort key does not move when it crosses the flush boundary.
-	require.Equal(t, []resultRow{
-		{rowID: "d1", name: "John Dirty", age: 30, tag: "developer", createdAt: 90},
-		{rowID: "s3", name: "John Base", age: 40, tag: "developer", createdAt: 80},
-	}, got,
-		"§5 must keep filter-after-LWW: s1 (newer non-matching version) and s2 "+
-			"(tombstone winner) must not resurface; d1 must carry hot-tier values")
 }

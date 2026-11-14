@@ -2,6 +2,7 @@ package sqlgen_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -12,8 +13,8 @@ import (
 )
 
 // hotLegIntegerRulings gives, for every numeric-family binding
-// schemameta.ValidateColumnBinding admits, the type the DuckDB hot leg reads
-// the main column at. "" means the raw column. Otherwise the leg reads the
+// schemameta.ValidateColumnBinding admits, the type a pg-main pushdown leaf
+// reads the main column at (resolveMainTableColumn). "" means the raw column. Otherwise the leg reads the
 // declared type through TRY_CAST, which only a column wider than the
 // declared integer type gets (#627). numeric is DOUBLE on every leg, so it
 // always reads raw.
@@ -44,14 +45,14 @@ var hotLegIntegerRulings = map[forma.ValueType]map[forma.MainColumnType]string{
 	},
 }
 
-// TestHotLegProjections_WideIntegerColumnsReadAtDeclaredType checks each
-// ruling on both hot projections. The pairs it walks are not listed here.
+// TestPgMainClause_WideIntegerColumnsReadAtDeclaredType checks each ruling on
+// the pg-main pushdown clause ToDualClauses renders. The pairs it walks are not listed here.
 // They are every binding of a numeric-family type that registration admits,
 // to one column of each type entity_main has. A column type or binding
 // admitted later fails this test until it is ruled. Without that check it
 // would silently read raw, because sqlgen's width ranks do not know it. This
 // is an external test because schemameta imports sqlgen.
-func TestHotLegProjections_WideIntegerColumnsReadAtDeclaredType(t *testing.T) {
+func TestPgMainClause_WideIntegerColumnsReadAtDeclaredType(t *testing.T) {
 	walked, ruled := 0, 0
 	for vt, rulings := range hotLegIntegerRulings {
 		ruled += len(rulings)
@@ -71,10 +72,12 @@ func TestHotLegProjections_WideIntegerColumnsReadAtDeclaredType(t *testing.T) {
 				if declared != "" {
 					read = fmt.Sprintf("TRY_CAST(m.%s AS %s)", col, declared)
 				}
-				sp, err := sqlgen.BuildSchemaProjection(7, forma.SchemaAttributeCache{"x": meta})
+				idx := 0
+				dc, err := sqlgen.ToDualClauses(&forma.KvCondition{Attr: "x", Value: "equals:1"},
+					"eav_data", 7, forma.SchemaAttributeCache{"x": meta}, &idx)
 				require.NoError(t, err)
-				require.Contains(t, sp.PGSourceSelect, "COALESCE(ANY_VALUE(hot_vals.x), "+read+") AS x")
-				require.Contains(t, sp.BuildPGSelectNoEAV(), read+" AS x")
+				require.True(t, strings.HasPrefix(dc.PgMainClause, read+" "),
+					"pg-main clause %q must compare %s", dc.PgMainClause, read)
 			})
 		}
 	}

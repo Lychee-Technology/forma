@@ -128,7 +128,7 @@ func testOffsetInsertCharacterization(ctx context.Context, t *testing.T, env *En
 	assertOffsetPage(t, p1, creates[0:10], 30)
 
 	// The shifter sorts before every original and stays hot (no flush): the
-	// federated pg_source picks it up, re-basing every later OFFSET window by
+	// federated hot leg picks it up, re-basing every later OFFSET window by
 	// one position over the order [shifter, r0..r29].
 	shifter := CreateEvent(wide, map[string]any{"title": "shifter", "count": float64(50)})
 	mustApplyEvents(ctx, t, env, "front-insert shifter", shifter)

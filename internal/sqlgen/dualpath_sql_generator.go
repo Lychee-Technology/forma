@@ -24,8 +24,11 @@ type DualClauses struct {
 // - DuckClause maps attributes to column names when available and emits a simple DuckDB-style clause.
 // Placeholder styles: PgClause (the EAV EXISTS clause, genuinely Postgres-bound)
 // uses "$n"; DuckClause and PgMainClause both use DuckDB positional "?", because
-// PgMainClause is only ever embedded in the DuckDB federated template (see
-// pgMainTypedEmitter and #161). Args are returned in order for all three.
+// PgMainClause was only ever embedded in the DuckDB federated template's
+// pg_source CTE (see pgMainTypedEmitter and #161). That template was retired
+// with the attach hot leg (#858), so the federated pass consumes only
+// DuckClause; the hot keys render their condition through the PostgreSQL
+// route's own builder. Args are returned in order for all three.
 //
 // The condition tree is normalized into the typed predicate IR exactly once
 // (#143); the three emitters below consume that shared tree.
@@ -103,15 +106,16 @@ func (e *pgMainTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, 
 		return p.Column + " " + p.NullTest, nil, nil
 	}
 
-	// PgMainClause is only ever embedded in the DuckDB federated query template
-	// (as PG_WHERE_CLAUSE for the pg_source CTE) — it is never sent to Postgres.
+	// PgMainClause was only ever embedded in the DuckDB federated query template
+	// (as PG_WHERE_CLAUSE for the pg_source CTE, retired in #858) — it is never
+	// sent to Postgres.
 	// It therefore must use DuckDB's positional "?" placeholder, not "$n":
 	// DuckDB cannot mix "?" (auto-numbered) with "$1" (numbered) in one statement,
 	// and the DuckClause (also embedded here) uses "?". Mixing the two mis-binds
 	// arguments — the "$1" aliases DuckDB positional param 1 and shifts every "?"
 	// after it — so a main-column AND EAV composite silently returned zero rows
-	// (#161). The advanced-template arg interleave (DuckArgs, PgMainArgs, DuckArgs)
-	// already matches the left-to-right "?" order once every placeholder is "?".
+	// (#161). The retired template's arg interleave (DuckArgs, PgMainArgs, DuckArgs)
+	// matched the left-to-right "?" order once every placeholder is "?".
 	//
 	// paramIndex is still advanced so the sibling EAV EXISTS clause (PgClause),
 	// which shares this counter and does use "$n", keeps its numbering stable.
@@ -180,9 +184,9 @@ func (duckTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, error
 	column := p.Column
 	if p.ValueType == forma.ValueTypeUUID && p.SQLOp != "=" && p.SQLOp != "!=" {
 		// DuckDB compares UUID with VARCHAR for (in)equality only, and a uuid
-		// attribute is UUID on one tier (a bound column's parquet) and VARCHAR
-		// on others (pg_source, the EAV pivot). An ordered compare casts the
-		// column too; canonical lowercase text orders as the UUID bytes (#676).
+		// attribute is UUID where its parquet column is a bound column's export
+		// and VARCHAR where it is EAV-only. An ordered compare casts the column
+		// too; canonical lowercase text orders as the UUID bytes (#676).
 		column = CastExpression(column, p.ValueType)
 	}
 	castExpr := CastExpression("?", p.ValueType)

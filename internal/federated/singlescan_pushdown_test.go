@@ -14,7 +14,7 @@ import (
 
 // #195 evidence harness: compares s3_source predicate-pushdown formulations
 // on identical parquet data. Each form is wrapped in the same
-// ranked/visible pipeline as AdvancedQueryTemplateDuckDB, with the hot tier
+// ranked/visible pipeline as the retired attach template, with the hot tier
 // and dirty set elided — the #195 rewrite only touches how s3_source
 // narrows the dedup input, and dirty exclusion removes whole row_id
 // partitions identically under every form. The post-lww-only form applies

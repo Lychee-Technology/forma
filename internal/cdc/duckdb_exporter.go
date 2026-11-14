@@ -336,7 +336,8 @@ func duckTypeForValue(v forma.ValueType) string {
 func castMainValue(col string, meta forma.AttributeMetadata) string {
 	switch meta.ValueType {
 	case forma.ValueTypeBool:
-		// Both spellings are the hot leg's (sqlgen.mainColBoolExpr, #404) and
+		// Both spellings are the read contract (#404; the retired attach hot
+		// leg read the column the same way, #858) and
 		// both yield a nullable BOOLEAN: an unset optional bool is NULL in
 		// the column, NULL on the hot leg, and must stay NULL in parquet. A
 		// CASE ... ELSE FALSE wrapper here used to turn that NULL into a

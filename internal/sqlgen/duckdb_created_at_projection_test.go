@@ -40,22 +40,6 @@ func TestSchemaProjection_S3CreatedAtIsTheCreationStamp(t *testing.T) {
 		"the #460 alias must not survive anywhere in the parquet projection")
 }
 
-// TestSchemaProjection_HotAndS3CreatedAtAgree pins the cross-leg contract the
-// UNION ALL depends on: both legs must name the same quantity in the
-// created_at slot, so a row's default sort key does not change value when it
-// crosses the flush boundary.
-func TestSchemaProjection_HotAndS3CreatedAtAgree(t *testing.T) {
-	sp, err := BuildSchemaProjection(1, buildTestProjectionCache())
-	require.NoError(t, err)
-
-	require.Contains(t, sp.PGSourceSelect, "m.ltbase_created_at AS created_at",
-		"the hot leg reports the true creation time")
-	require.Contains(t, sp.BuildPGSelectNoEAV(), "m.ltbase_created_at AS created_at",
-		"the no-EAV hot leg reports the true creation time")
-	require.Equal(t, "ltbase_created_at AS created_at", s3ProjectionItem(t, sp.S3SourceSelect, 1),
-		"the parquet leg must report the same quantity as the hot leg (#460)")
-}
-
 // TestBenchmarkProjection_S3CreatedAtIsTheCreationStamp keeps the benchmark
 // mirror in lockstep with the reader: leaving the alias behind would make
 // benchmark numbers measure a contract nothing production-shaped uses.
@@ -64,8 +48,6 @@ func TestBenchmarkProjection_S3CreatedAtIsTheCreationStamp(t *testing.T) {
 		proj := BuildBenchmarkProjections(schemaID)
 		require.Equal(t, "ltbase_created_at AS created_at", s3ProjectionItem(t, proj.S3SourceSelect, 1),
 			"benchmark schema %d parquet leg must project the creation stamp (#460)", schemaID)
-		require.Contains(t, proj.PGSourceSelect, "m.ltbase_created_at AS created_at",
-			"benchmark schema %d hot leg must report the same quantity", schemaID)
 
 		require.Equal(t, "ltbase_created_at AS created_at",
 			s3ProjectionItem(t, BuildBenchmarkS3Projection(schemaID), 1),

@@ -22,7 +22,7 @@ import (
 //
 // Every parameter renders as CAST(? AS <export type>), the type cursor
 // normalization (sortkey.NormalizeCursor) recorded on the column beside a
-// boundary of that type (design.md §6.1.1, One boundary type per cursor
+// boundary of that type (design.md §6.1, One boundary type per cursor
 // column). On a normalized value the cast is the identity, and it stops
 // DuckDB from picking the comparison type from the bound value: with a
 // float64 9.6, `10::BIGINT > ?` promotes the column to DOUBLE and holds,
@@ -34,7 +34,7 @@ import (
 // deleted_ts renders as COALESCE(deleted_ts, 0), here and in the keyset
 // ORDER BY: every row a page returns is live, and a live row holds 0 or
 // NULL by its encoding (a hot row, a pre-#274 delta row), so the column
-// reads 0 on every row and on both sides of a flush (design.md §6.1.1,
+// reads 0 on every row and on both sides of a flush (design.md §6.1,
 // deleted_ts reads 0). The dedup window and the outer select keep the raw
 // column.
 //
@@ -159,7 +159,7 @@ func keysetOrderTerms(cursor *model.KeysetCursor) []string {
 }
 
 // keysetDeletedTS is the system column a cursor may name whose NULL reads
-// as 0 (design.md §6.1.1, deleted_ts reads 0).
+// as 0 (design.md §6.1, deleted_ts reads 0).
 const keysetDeletedTS = "deleted_ts"
 
 // keysetColumnRef is how the keyset predicate and the keyset ORDER BY read a

@@ -1,6 +1,7 @@
 package cdc
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -8,14 +9,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCastMainValue_WideIntegerColumnMatchesHotLeg is the #627 lockstep: an
-// integer bound to a column wider than its declared type is exported through
-// TRY_CAST to that type, and the DuckDB hot leg must read the unflushed row
-// through the same expression. Otherwise the row answers differently before
-// and after its flush. Before #627 the hot leg read the raw column, and the
-// outer select's strict cast failed every query that reached an image the
-// type cannot hold.
-func TestCastMainValue_WideIntegerColumnMatchesHotLeg(t *testing.T) {
+// TestCastMainValue_WideIntegerColumnMatchesPgMainPushdown is the #627
+// lockstep: an integer bound to a column wider than its declared type is
+// exported through TRY_CAST to that type, and the pg-main pushdown leaf
+// sqlgen.ToDualClauses renders must compare the unflushed row through the
+// same expression. Otherwise the row answers differently before and after
+// its flush.
+func TestCastMainValue_WideIntegerColumnMatchesPgMainPushdown(t *testing.T) {
 	for _, tc := range []struct {
 		vt  forma.ValueType
 		col forma.MainColumn
@@ -30,12 +30,14 @@ func TestCastMainValue_WideIntegerColumnMatchesHotLeg(t *testing.T) {
 		t.Run(string(tc.vt)+"_in_"+string(tc.col), func(t *testing.T) {
 			meta := forma.AttributeMetadata{AttributeID: 1, ValueType: tc.vt,
 				ColumnBinding: &forma.MainColumnBinding{ColumnName: tc.col}}
-			sp, err := sqlgen.BuildSchemaProjection(7, forma.SchemaAttributeCache{"x": meta})
+			idx := 0
+			dc, err := sqlgen.ToDualClauses(&forma.KvCondition{Attr: "x", Value: "equals:1"},
+				"eav_data", 7, forma.SchemaAttributeCache{"x": meta}, &idx)
 			require.NoError(t, err)
 
 			export := castMainValue("m."+string(tc.col), meta)
-			require.Contains(t, sp.BuildPGSelectNoEAV(), export+" AS x")
-			require.Contains(t, sp.PGSourceSelect, "COALESCE(ANY_VALUE(hot_vals.x), "+export+") AS x")
+			require.True(t, strings.HasPrefix(dc.PgMainClause, export+" "),
+				"pg-main clause %q must compare the export image %s", dc.PgMainClause, export)
 		})
 	}
 }

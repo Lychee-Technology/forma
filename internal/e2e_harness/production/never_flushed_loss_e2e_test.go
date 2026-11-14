@@ -113,15 +113,16 @@ func assertLostParquetFailsBothShapes(ctx context.Context, t *testing.T, env *En
 	}
 }
 
-// The tests below run a writer between the #720 empty-scan check and the
-// DuckDB read, the window where the empty scan source is already fixed. The
-// writer publishes and then changes change_log, moving the rows out of the
-// hot leg. The recheck after the pass sees the publication and retries, so
-// the answer stays complete whatever the CDC host's clock says.
+// The tests below run a writer inside a pass over a never-flushed schema,
+// after its snapshot has found no parquet object to read (#720) and read the
+// hot keys, before the pass answers. The writer publishes and then changes
+// change_log, moving the rows out of the hot set. The pass answers from its
+// snapshot, which still holds them, so the answer stays complete whatever
+// the CDC host's clock says.
 
-// TestFirstFlushAfterTheEmptyScanCheckStaysComplete: with the #252 widening
-// disabled, the strict barrier drops the rows the flush marked from the hot
-// leg of the raced pass.
+// TestFirstFlushAfterTheEmptyScanCheckStaysComplete: FlushVisibilityGraceMs
+// -1, which disabled the #252 widening before the pgx hot leg and now reads
+// as 0 (design.md §6.1, The widening is never disabled).
 func TestFirstFlushAfterTheEmptyScanCheckStaysComplete(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t))
@@ -168,19 +169,13 @@ func TestInitHandoffAfterTheEmptyScanCheckStaysComplete(t *testing.T) {
 }
 
 // runFirstFlushRace creates three rows on a never-flushed schema, runs
-// publish once right after the first empty-scan check clears the schema,
-// and requires the query that raced it to match the oracle.
+// publish once inside the first pass that reads hot keys, after its snapshot
+// has cleared the schema, and requires the query that raced it to match the
+// oracle.
 func runFirstFlushRace(ctx context.Context, t *testing.T, env *Env, publish func(context.Context, SchemaRef) error) {
 	t.Helper()
 	wide := DefaultSchemaFixtures()[1]
-	racer := &publishAfterEmptyScanCheck{publish: func(ctx context.Context) error { return publish(ctx, wide) }}
-	env.DirtyIDFetcherWrap = func(f fedengine.DirtyIDFetcher) fedengine.DirtyIDFetcher {
-		racer.DirtyIDFetcher = f
-		return racer
-	}
-	// The pgx hot leg reads the parquet history in its snapshot, not through
-	// the fetcher (#856): there the writer runs once the snapshot has cleared
-	// the schema and read its hot keys, before the recheck after the pass.
+	racer := &publishInsideThePass{publish: func(ctx context.Context) error { return publish(ctx, wide) }}
 	env.HotLegReaderWrap = func(inner fedengine.HotLegReader) fedengine.HotLegReader {
 		return &hookedHotLegReader{HotLegReader: inner, hook: racer.race}
 	}
@@ -190,7 +185,7 @@ func runFirstFlushRace(ctx context.Context, t *testing.T, env *Env, publish func
 
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20, PreferredTiers: allTiers})
 	if !racer.ran {
-		t.Fatal("the query never cleared the empty-scan check, so nothing raced it")
+		t.Fatal("the query never read hot keys, so nothing raced it")
 	}
 	if racer.err != nil {
 		t.Fatalf("the racing writer failed: %v", racer.err)
@@ -208,26 +203,15 @@ func expectFlushedEverything(report *FlushReport, err error) error {
 	return nil
 }
 
-// publishAfterEmptyScanCheck runs publish once, right after the engine's
-// first empty-scan check finds no parquet history, before DuckDB reads.
-type publishAfterEmptyScanCheck struct {
-	fedengine.DirtyIDFetcher
+// publishInsideThePass runs publish once, the first time race is called.
+type publishInsideThePass struct {
 	publish func(context.Context) error
 	ran     bool
 	err     error
 }
 
-func (r *publishAfterEmptyScanCheck) HasParquetHistory(ctx context.Context, tables model.StorageTables, schemaID int16) (bool, error) {
-	found, err := r.DirtyIDFetcher.HasParquetHistory(ctx, tables, schemaID)
-	if err != nil || found {
-		return found, err
-	}
-	r.race(ctx)
-	return found, nil
-}
-
 // race runs publish the first time it is called.
-func (r *publishAfterEmptyScanCheck) race(ctx context.Context) {
+func (r *publishInsideThePass) race(ctx context.Context) {
 	if r.ran {
 		return
 	}

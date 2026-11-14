@@ -13,18 +13,16 @@ import (
 	"github.com/google/uuid"
 
 	forma "github.com/lychee-technology/forma"
-	fedengine "github.com/lychee-technology/forma/internal/federated"
 )
 
 // TestTierParitySuite is pgx-hot-leg-plan.md step 6's tier parity suite
-// (design.md §6.1.1, Filtering splits by tier): each condition-DSL case over
+// (design.md §6.1, Filtering splits by tier): each condition-DSL case over
 // the same rows must match the same rows while they are hot, once they are
-// flushed to delta parquet, and once compacted into base parquet. Under the
-// pgx transport PostgreSQL filters the hot rows and DuckDB the parquet rows,
-// so a predicate difference between the two would make a row's inclusion
-// depend on its tier; under attach DuckDB filters both. The suite runs both
-// transports at every stage, and holds each answer to the PostgreSQL
-// route's, which no flush changes.
+// flushed to delta parquet, and once compacted into base parquet.
+// PostgreSQL filters the hot rows and DuckDB the parquet rows, so a
+// predicate difference between the two would make a row's inclusion depend
+// on its tier. The suite holds each federated answer, at every stage, to
+// the PostgreSQL route's, which no flush changes.
 //
 // The rows cover every storage form of e2e_wide at three values each, rows
 // holding one attribute only, the sort-key edges of step 2
@@ -46,24 +44,18 @@ func TestTierParitySuite(t *testing.T) {
 	mustFlush(ctx, t, env)
 	seedTierParityRows(ctx, t, env, wide)
 
-	engines := map[forma.HotLegTransport]*fedengine.DBFederatedQueryEngine{
-		forma.HotLegTransportAttach: env.EngineWithTransport(forma.HotLegTransportAttach),
-		forma.HotLegTransportPgx:    env.EngineWithTransport(forma.HotLegTransportPgx),
-	}
 	cases := tierParityCases()
 	want := make([]tierParityAnswer, len(cases))
 	for i, c := range cases {
-		want[i] = tierParityRoute(ctx, t, env, nil, c)
+		want[i] = tierParityRoute(ctx, t, env, false, c)
 	}
 	requireTierParityNotVacuous(t, cases, want)
 
 	check := func(stage string) {
-		for transport, engine := range engines {
-			for i, c := range cases {
-				got := tierParityRoute(ctx, t, env, engine, c)
-				if got.String() != want[i].String() {
-					t.Errorf("%s, %s transport: %s = %v, want the PostgreSQL route's %v", stage, transport, c, got, want[i])
-				}
+		for i, c := range cases {
+			got := tierParityRoute(ctx, t, env, true, c)
+			if got.String() != want[i].String() {
+				t.Errorf("%s: %s = %v, want the PostgreSQL route's %v", stage, c, got, want[i])
 			}
 		}
 	}
@@ -121,26 +113,20 @@ func (a tierParityAnswer) String() string {
 	return fmt.Sprint(a.ids)
 }
 
-// tierParityRoute answers c on the PostgreSQL route when engine is nil, and
-// otherwise on engine's federated route over every tier.
-func tierParityRoute(ctx context.Context, t *testing.T, env *Env, engine *fedengine.DBFederatedQueryEngine, c tierParityCase) tierParityAnswer {
+// tierParityRoute answers c on the federated route over every tier when
+// federated is set, and otherwise on the PostgreSQL route.
+func tierParityRoute(ctx context.Context, t *testing.T, env *Env, federated bool, c tierParityCase) tierParityAnswer {
 	t.Helper()
-	q := Query{Schema: DefaultSchemaFixtures()[1], Filters: c, Limit: 100, PreferredTiers: allTiers, PreferHot: engine == nil}
-	var res *QueryResult
-	var err error
-	if engine == nil {
-		res, err = env.Query(ctx, q)
-	} else {
-		res, err = env.QueryOn(ctx, engine, q)
-	}
+	q := Query{Schema: DefaultSchemaFixtures()[1], Filters: c, Limit: 100, PreferredTiers: allTiers, PreferHot: !federated}
+	res, err := env.Query(ctx, q)
 	if errors.Is(err, forma.ErrInvalidInput) {
 		return tierParityAnswer{refused: true}
 	}
 	if err != nil {
-		t.Fatalf("%s (federated %v): %v", c, engine != nil, err)
+		t.Fatalf("%s (federated %v): %v", c, federated, err)
 	}
-	if res.Plan.Routing.UseDuckDB != (engine != nil) {
-		t.Fatalf("%s routed use_duckdb=%v, want %v: %+v", c, res.Plan.Routing.UseDuckDB, engine != nil, res.Plan.Routing)
+	if res.Plan.Routing.UseDuckDB != federated {
+		t.Fatalf("%s routed use_duckdb=%v, want %v: %+v", c, res.Plan.Routing.UseDuckDB, federated, res.Plan.Routing)
 	}
 	ids := make([]uuid.UUID, 0, len(res.Records))
 	for _, r := range res.Records {

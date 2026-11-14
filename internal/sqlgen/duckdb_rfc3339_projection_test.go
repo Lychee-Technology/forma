@@ -15,11 +15,9 @@ import (
 // #555: a date/datetime attribute bound to a text column with the rfc3339
 // encoding is admitted by schemameta.ValidateColumnBinding (#459), and the
 // write path, the Postgres read path and the CDC export all round-trip it.
-// The DuckDB reader did not: the hot leg projected the raw VARCHAR against
-// the pivot's epoch-ms BIGINT, and the outer select cast the unified
-// epoch-ms back to BIGINT under the text column's alias, which the reader
-// scans as a string and transform.readWithEncoding then fails to parse as
-// RFC3339. These tests pin both ends.
+// The DuckDB reader did not: the outer select cast the unified epoch-ms
+// back to BIGINT under the text column's alias, which the reader scans as a
+// string and transform.readWithEncoding then fails to parse as RFC3339.
 
 func rfc3339Cache() forma.SchemaAttributeCache {
 	return forma.SchemaAttributeCache{
@@ -32,36 +30,12 @@ func rfc3339Cache() forma.SchemaAttributeCache {
 	}
 }
 
-// TestHotLegProjections_RFC3339ColumnsNormaliseToEpochMs: both hot-leg
-// projections read an rfc3339-bound date/datetime column through the same
-// epoch-ms spelling the CDC export uses (cdc.castDateMainValue, #219), so
-// the COALESCE arms agree in type and the UNION ALL with the parquet legs
-// carries one BIGINT convention (#200).
-func TestHotLegProjections_RFC3339ColumnsNormaliseToEpochMs(t *testing.T) {
-	sp, err := BuildSchemaProjection(7, rfc3339Cache())
-	require.NoError(t, err)
-	require.False(t, sp.HasEAVAttrs, "fixture must qualify for the no-EAV shortcut")
-
-	require.Contains(t, sp.PGSourceSelect,
-		"COALESCE(ANY_VALUE(hot_vals.seenAt), "+RFC3339EpochMs("m.text_02")+") AS seenAt")
-	require.Contains(t, sp.PGSourceSelect,
-		"COALESCE(ANY_VALUE(hot_vals.bornOn), "+RFC3339EpochMs("m.text_03")+") AS bornOn")
-	require.Contains(t, sp.PGSourceSelect, "COALESCE(ANY_VALUE(hot_vals.name), m.text_01) AS name",
-		"a plain text column still projects raw")
-
-	noEAV := sp.BuildPGSelectNoEAV()
-	require.Contains(t, noEAV, RFC3339EpochMs("m.text_02")+" AS seenAt")
-	require.Contains(t, noEAV, RFC3339EpochMs("m.text_03")+" AS bornOn")
-	require.Contains(t, noEAV, "m.text_01 AS name")
-	require.NotContains(t, noEAV, "m.text_02 AS seenAt", "the raw ISO string must not reach the UNION ALL")
-	require.NotContains(t, noEAV, "m.text_03 AS bornOn")
-}
-
-// TestMainColRFC3339Expr_ExecutesToEpochMs runs the hot-leg spelling on
-// DuckDB over the images a text column can carry: the write path's UTC
-// RFC3339 string (transform.storeWithEncoding), one carrying fractional
-// seconds, a non-date string (NULL through TRY_CAST rather than a read-path
-// crash, matching the export) and NULL. Offsets and session TimeZones are
+// TestMainColRFC3339Expr_ExecutesToEpochMs runs the epoch-ms read a pg-main
+// leaf compares an rfc3339 date through (mainColRFC3339Read) on DuckDB over
+// the images a text column can carry: the write path's UTC RFC3339 string
+// (transform.storeWithEncoding), one carrying fractional seconds, a non-date
+// string (NULL through TRY_CAST rather than a read-path crash, matching the
+// export) and NULL. Offsets and session TimeZones are
 // rfc3339_read_duckdb_test.go's (#756).
 func TestMainColRFC3339Expr_ExecutesToEpochMs(t *testing.T) {
 	db, err := sql.Open("duckdb", strictLambdaDSN)

@@ -51,32 +51,34 @@ func labelString(labels map[string]string) string {
 	return ""
 }
 
-// everyFedQuerySeries is the label set one successful DuckDB pass must
-// produce: nothing less, and nothing more.
+// everyFedQuerySeries is the label set one successful federated pass with a
+// hot leg must produce: nothing less, and nothing more.
 var everyFedQuerySeries = map[string]int{
+	"fed_query_latency_histogram/stage=snapshot":    1,
 	"fed_query_latency_histogram/stage=translation": 1,
 	"fed_query_latency_histogram/stage=execution":   1,
 	"fed_query_latency_histogram/stage=streaming":   1,
 	"fed_query_row_count/source=pg":                 1,
 	"fed_query_row_count/source=duckdb":             1,
+	"fed_query_row_count/source=hot":                1,
 }
 
 func newMetricsTestEngine(t *testing.T, opts ...EngineOption) (*DBFederatedQueryEngine, *fakeDuckDBExecutor) {
 	t.Helper()
 	duck := &fakeDuckDBExecutor{}
-	return buildMetricsTestEngine(t, &fakeDirtyIDFetcher{}, duck, opts...), duck
+	return buildMetricsTestEngine(t, &fakeHotLeg{}, duck, opts...), duck
 }
 
 // buildMetricsTestEngine assembles the metric-test engine over caller-owned
-// dirty-id and DuckDB fakes; duck may be wrapped (see clockedExecutor) as
+// snapshot and DuckDB fakes; duck may be wrapped (see clockedExecutor) as
 // long as the wrapped fake is the one handed here for row scripting.
-func buildMetricsTestEngine(t *testing.T, dirty *fakeDirtyIDFetcher, duck DuckDBQueryExecutor, opts ...EngineOption) *DBFederatedQueryEngine {
+func buildMetricsTestEngine(t *testing.T, leg *fakeHotLeg, duck DuckDBQueryExecutor, opts ...EngineOption) *DBFederatedQueryEngine {
 	t.Helper()
-	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, dirty, duck, nil,
-		hybridDuckConfig(), coldPlanCacheMetadata(t), "host=x",
-		append([]EngineOption{
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil,
+		hybridDuckConfig(), coldPlanCacheMetadata(t), append([]EngineOption{
 			WithPlanCache(queryplan.NewCache(64)),
 			WithParquetSource(&fakeParquetSource{paths: []string{coldPlanCachePath}}),
+			withFakeHotLeg(leg),
 		}, opts...)...)
 	e.schemaValidator.markValidated(coldPlanCachePath, coldPlanCacheFooter(false), nil)
 	return e
@@ -222,7 +224,7 @@ func TestEngineLatencyStagesAreDisjoint(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1_700_000_000, 0)}
 	rec := &metricRecorder{}
 	duck := &fakeDuckDBExecutor{}
-	e := buildMetricsTestEngine(t, &fakeDirtyIDFetcher{},
+	e := buildMetricsTestEngine(t, &fakeHotLeg{},
 		&clockedExecutor{inner: duck, clock: clock, queryCost: 40 * time.Millisecond, rowCost: 25 * time.Millisecond},
 		WithMetricEmitter(rec), clock.engineOption())
 
@@ -234,15 +236,18 @@ func TestEngineLatencyStagesAreDisjoint(t *testing.T) {
 	require.Equal(t, 25.0, rec.value(t, "fed_query_latency_histogram", "stage=streaming"))
 	require.Equal(t, int64(65), opts.ExecutionPlan.Timings["duckdb_fetch"])
 	require.Equal(t, int64(65), opts.ExecutionPlan.Timings["total"])
-	last := opts.ExecutionPlan.Sources[len(opts.ExecutionPlan.Sources)-1]
-	require.Equal(t, "duckdb", last.Engine)
-	require.Equal(t, int64(65), last.DurationMs)
-	require.Equal(t, int64(1), last.ActualRows)
+	require.Equal(t, 1, countPlanSources(opts.ExecutionPlan, "duckdb"))
+	for _, src := range opts.ExecutionPlan.Sources {
+		if src.Engine == "duckdb" {
+			require.Equal(t, int64(65), src.DurationMs)
+			require.Equal(t, int64(1), src.ActualRows)
+		}
+	}
 }
 
 // TestEnginePgRowCountIsTheDirtySetSize pins what the pg series measures at
-// the engine seam: the anti-join dirty-set size (3 here), next to the one
-// row the DuckDB scan streamed. It is also the #596 regression guard. The
+// the engine seam: the anti-join dirty-set size the snapshot read (3 here),
+// next to the one row the DuckDB scan streamed. It is also the #596 regression guard. The
 // retired fed_query_pushdown_efficiency gauge divided this count by the
 // result size and called the quotient pushdown efficiency, a quantity Forma
 // does not observe, so neither the metric stream nor the execution plan may
@@ -253,8 +258,8 @@ func TestEnginePgRowCountIsTheDirtySetSize(t *testing.T) {
 
 	rec := &metricRecorder{}
 	duck := &fakeDuckDBExecutor{}
-	dirty := &fakeDirtyIDFetcher{ids: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}}
-	e := buildMetricsTestEngine(t, dirty, duck, WithMetricEmitter(rec))
+	leg := &fakeHotLeg{dirty: []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}}
+	e := buildMetricsTestEngine(t, leg, duck, WithMetricEmitter(rec))
 
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true,
 		ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
@@ -276,9 +281,9 @@ func TestEnginePgRowCountIsTheDirtySetSize(t *testing.T) {
 func newRetryMetricsEngine(t *testing.T, duck DuckDBQueryExecutor, paths []string, rec *metricRecorder) *DBFederatedQueryEngine {
 	t.Helper()
 	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{},
-		&fakeDirtyIDFetcher{ids: []uuid.UUID{uuid.New(), uuid.New()}}, duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x",
-		WithParquetSource(&fakeParquetSource{paths: paths}), WithMetricEmitter(rec))
+		duck, nil,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: paths}), WithMetricEmitter(rec),
+		withFakeHotLeg(nil))
 }
 
 func retryTables() model.StorageTables {
@@ -289,23 +294,25 @@ func retryTables() model.StorageTables {
 // medium finding: the fed_query_* series describe successful passes, so a
 // query whose first pass is discarded and answered by the retry produces
 // exactly one sample per series, all from the retry. The retry is the #720
-// one: its first pass scans nothing while a publication races it. Before the
-// fix the dirty-set count and the translation latency were emitted where they
-// were measured, ahead of DuckDB, so the failed pass contributed a second pg
-// and translation sample while the post-scan series were emitted once.
+// one: its first pass finds no parquet and answers from the hot leg while a
+// publication races it. Before the fix the dirty-set count and the
+// translation latency were emitted where they were measured, ahead of
+// DuckDB, so the failed pass contributed a second pg and translation sample
+// while the post-scan series were emitted once.
 func TestEngineRetriedQueryEmitsOneCompleteMetricSet(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
 	rec := &metricRecorder{}
 	duck := &fakeDuckDBExecutor{globFiles: []string{}, rows: &rowPerScan{singleDuckDBRow{rowID: uuid.New()}}}
-	dirty := &fakeDirtyIDFetcher{ids: []uuid.UUID{uuid.New(), uuid.New()}}
-	dirty.afterHistory = func() { duck.globFiles = []string{"s3://b/7/delta.parquet"} }
-	e := newEmptyScanTestEngine(t, duck, dirty, []string{fallbackGlob}, WithMetricEmitter(rec))
+	leg := &fakeHotLeg{dirty: []uuid.UUID{uuid.New(), uuid.New()}}
+	leg.afterChangeLog = func() { duck.globFiles = []string{"s3://b/7/delta.parquet"} }
+	e := newEmptyScanTestEngine(t, duck, leg, []string{fallbackGlob}, WithMetricEmitter(rec))
 
 	_, err := e.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
 	require.NoError(t, err)
-	require.Equal(t, 2, duck.calls, "the seam must have run the discarded pass and the retry")
+	require.Equal(t, 2, leg.begins, "the seam must have run the discarded pass and the retry")
+	require.Equal(t, 1, duck.calls, "the discarded pass found no parquet and ran no statement")
 
 	require.Equal(t, everyFedQuerySeries, rec.names(),
 		"one logical query answered by the retry is one sample per series")
@@ -313,7 +320,7 @@ func TestEngineRetriedQueryEmitsOneCompleteMetricSet(t *testing.T) {
 }
 
 // TestEngineFailedPassEmitsNoMetrics: a pass that never succeeds leaves no
-// partial telemetry, whichever stage it failed at. The dirty set is fetched
+// partial telemetry, whichever stage it failed at. The dirty set is read
 // and the SQL rendered before DuckDB runs, so without the deferred emission a
 // render or execute failure still published pg and translation samples that
 // no execution, streaming or duckdb sample ever followed.

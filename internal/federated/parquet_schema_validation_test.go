@@ -283,8 +283,8 @@ func TestBreakerOpenRejectsBeforeSchemaProbes(t *testing.T) {
 
 	src := &fakeParquetSource{paths: []string{"s3://b/1/a.parquet"}}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{}}
-	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, breaker,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, breaker,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 
 	_, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},

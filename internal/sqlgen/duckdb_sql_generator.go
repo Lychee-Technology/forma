@@ -3,12 +3,10 @@ package sqlgen
 import (
 	"bytes"
 	"fmt"
-	"strings"
 	"text/template"
 
 	"github.com/lychee-technology/forma/internal/model"
 
-	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 )
 
@@ -128,20 +126,4 @@ func RenderS3ParquetPath(tmpl string, schemaID int16) (string, error) {
 		return "", fmt.Errorf("execute template: %w", err)
 	}
 	return buf.String(), nil
-}
-
-// AppendDirtyExclusion adds a NOT IN clause excluding dirty row ids.
-// dirtyIDs are converted to strings for DuckDB parameterization using ? placeholders.
-func AppendDirtyExclusion(baseClause string, dirtyIDs []uuid.UUID) (string, []any) {
-	if len(dirtyIDs) == 0 {
-		return baseClause, nil
-	}
-	placeholders := make([]string, len(dirtyIDs))
-	args := make([]any, len(dirtyIDs))
-	for i, id := range dirtyIDs {
-		placeholders[i] = "?"
-		args[i] = id.String()
-	}
-	excl := fmt.Sprintf("%s AND row_id NOT IN (%s)", baseClause, strings.Join(placeholders, ","))
-	return excl, args
 }

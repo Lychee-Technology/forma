@@ -59,11 +59,11 @@ Results on MiniStack 1.5.38. "Pass" means on this lane, with the meaning above.
 | Schema and index DDL: what the fixtures build | Pass | One DDL a transaction, `CREATE INDEX ASYNC` and `sys.wait_for_job`. The ASYNC rewrite is the coordination fixture's own |
 | Generation ledger upgrade (#738) | Pass, one skip | `TestLedgerUpgrade*` in `cmd/tools/`: see [below](#the-ledger-upgrade-suite). The PostgreSQL lock-wait mechanism of a concurrent apply skips |
 | Schema and index DDL: `init-db` (#690) | Fail, not in the lane | Observed by hand: `only one DDL statement can be run in a transaction` (`25006`) at `ensure entity main table`. Declared indexes use `CREATE INDEX CONCURRENTLY`, which the proxy also refuses |
-| DuckDB `postgres` extension: reads and exports (#691) | Fail, not in the lane | Observed by hand: `ATTACH` succeeds, then every scan fails with `COPY is not supported`, because the extension reads through `COPY ... TO STDOUT (FORMAT binary)` |
+| Federated queries' pgx reads (#691) | Not in the lane | The snapshot's dirty-set and parquet-history reads, the hot-keys query and the page read. Before #858 the federated hot leg, and before #785 the CDC export, read PostgreSQL through DuckDB's `postgres` extension instead. Observed by hand on this pin: `ATTACH` succeeds, then every scan fails with `COPY is not supported`, because the extension reads through `COPY ... TO STDOUT (FORMAT binary)`. No Forma engine loads the extension any more |
 
-The two "not in the lane" rows were run once by hand against this pin. They would
-only ever fail until #690 and #691 land, and each of those issues should add its
-surface to the lane.
+The `init-db` row was run once by hand against this pin, and would only ever fail
+until #690 lands. #691 is narrowed to the federated pgx reads, which have not run
+through the proxy. Each of those issues should add its surface to the lane.
 
 The mechanism assertions skip because they describe the PostgreSQL *engine*: a
 wait followed by `ErrPreconditionFailed`, `SKIP LOCKED`, no `ErrRetryableConflict`.

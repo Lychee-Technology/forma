@@ -126,21 +126,3 @@ func TestFederatedServerTimeError(t *testing.T) {
 	msg, _ := forma.ResolvePublicMessage(err)
 	require.Contains(t, msg, "the $now operand on datetime attribute 'joined'")
 }
-
-// The federated plan cache keys on (attr, operator) only, so a plan built
-// from an absolute timestamp can be handed a $now leaf of the same shape;
-// Bind re-normalizes the leaf and must refuse it there too.
-func TestPlanDualClauses_BindRefusesServerTimeOnCachedPlan(t *testing.T) {
-	cache := extendedCache()
-	for _, attr := range []string{"seen", "joined", "due"} {
-		plan, err := PlanDualClauses(charKv(attr, "lte:1704164645000"), "eav_table", 7, cache, 0)
-		require.NoError(t, err, attr)
-		idx := 0
-		_, err = plan.Bind(charKv(attr, "lte:$now-1h"), cache, &idx)
-		require.ErrorIs(t, err, forma.ErrInvalidInput, attr)
-		msg, ok := forma.ResolvePublicMessage(err)
-		require.True(t, ok, attr)
-		require.Contains(t, msg, "attribute '"+attr+"' is not supported on a federated query")
-		require.Zero(t, idx, "a refused bind must not advance the parameter index")
-	}
-}

@@ -128,7 +128,7 @@ func (e *DBFederatedQueryEngine) refuseCachedCorrupt(
 		return fmt.Errorf("type-check the objects listed beside ones cached as corrupt: %w", err)
 	}
 	cache, _ := e.schemaCacheByID(q.SchemaID)
-	if _, _, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, map[string]any{}); err != nil {
+	if _, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, map[string]any{}); err != nil {
 		return fmt.Errorf("build the query over a set listing objects cached as corrupt: %w", err)
 	}
 	classified := e.classifyDuckDBReadError(ctx, q, listed, manifestListed)
@@ -146,7 +146,7 @@ func (e *DBFederatedQueryEngine) refuseCachedCorrupt(
 // typeGuardReadableRemainder runs the pre-read checks over the listed objects
 // not cached as corrupt and returns only a #732 type refusal. The corrupt
 // objects stay out: their footers may not read, and they are refused anyway.
-// Benchmark schemas skip the checks, as resolveScanSources does.
+// Benchmark schemas skip the checks, as resolvePgxScanSources does.
 func (e *DBFederatedQueryEngine) typeGuardReadableRemainder(ctx context.Context, schemaID int16, listed, corrupt []string, stamps map[string]map[string]string) error {
 	if isBenchmarkSchemaID(schemaID) {
 		return nil

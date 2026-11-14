@@ -114,11 +114,10 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 	defer restore()
 
 	duck := &fakeDuckDBExecutor{}
-	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil,
 		hybridDuckConfig(),
-		coldPlanCacheMetadata(t), "host=x",
-		WithPlanCache(queryplan.NewCache(64)),
-		WithParquetSource(&fakeParquetSource{paths: []string{coldPlanCachePath}}))
+		coldPlanCacheMetadata(t), WithPlanCache(queryplan.NewCache(64)),
+		WithParquetSource(&fakeParquetSource{paths: []string{coldPlanCachePath}}), withFakeHotLeg(nil))
 
 	// Pre-flush: the validator's write-once cache holds the v1 footer, so the
 	// probe never reaches the fake executor and the union is complete.
@@ -199,10 +198,9 @@ func TestEngineColdMissingSetRekeysPlanCacheViaGlobExpansion(t *testing.T) {
 			"base.parquet": coldPlanCacheDescribeRows(false),
 		},
 	}
-	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil,
 		hybridDuckConfig(),
-		coldPlanCacheMetadata(t), "host=x",
-		WithPlanCache(queryplan.NewCache(64)))
+		coldPlanCacheMetadata(t), WithPlanCache(queryplan.NewCache(64)), withFakeHotLeg(nil))
 
 	// Run 1 — pre-flush: the glob expands to the single v1 base object, whose
 	// footer has no `score`.

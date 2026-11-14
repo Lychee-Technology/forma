@@ -11,9 +11,8 @@ import (
 // What a successful pgx pass reports: the fed_query_* series and the
 // execution plan's sources.
 
-// hotLegPgxReason names the plan source of the pgx hot leg: PostgreSQL
-// evaluates its predicate, where the attach transport records
-// hotLegPredicateReason (evaluated in DuckDB).
+// hotLegPgxReason names the plan source of the hot leg: PostgreSQL evaluates
+// its predicate.
 const hotLegPgxReason = "hot-leg predicate (evaluated in PostgreSQL)"
 
 // pgxOutcome is what one successful pgx pass measured.

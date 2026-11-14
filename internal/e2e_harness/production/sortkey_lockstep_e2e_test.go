@@ -36,7 +36,7 @@ func lockstepEdgeRows(wide SchemaRef) []*Event {
 	}
 }
 
-// TestSortKeyDerivationLockstep pins design.md §6.1.1's derivation table end
+// TestSortKeyDerivationLockstep pins design.md §6.1's derivation table end
 // to end: rows written through the EntityManager, their hot keys derived in
 // Go from the stored values pgx reads (sortkey.DeriveAttribute), then
 // flushed. Every parquet value must equal its row's hot key, and a page

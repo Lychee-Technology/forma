@@ -51,9 +51,10 @@ func HashFederatedQueryShape(q *model.FederatedAttributeQuery) (string, error) {
 	}
 
 	write("anchor", strconv.FormatBool(q.UseMainAsAnchor))
-	// Only hasHot membership shapes the skeleton (#184): hot-excluded tiers
-	// prune the pg_source CTE, while warm-vs-cold share the single flat
-	// parquet glob (glob differences live in the scope hash). Mirrors
+	// Only hasHot membership shapes the key (#184): it selects the dirty-set
+	// form the pass stages (and, before #858, pruned the pg_source CTE),
+	// while warm-vs-cold share the single flat parquet glob (glob
+	// differences live in the scope hash). Mirrors
 	// sqlgen.FederatedQueryHasHot — keep the two in lockstep.
 	write("tiers", strconv.FormatBool(queryHasHot(q)))
 
@@ -78,7 +79,7 @@ func HashFederatedQueryShape(q *model.FederatedAttributeQuery) (string, error) {
 
 // queryHasHot mirrors sqlgen.FederatedQueryHasHot (queryplan must not import
 // sqlgen): empty PreferredTiers defaults to all tiers; otherwise hot must be
-// named for the pg_source form to render.
+// named for the hot form.
 func queryHasHot(q *model.FederatedAttributeQuery) bool {
 	if len(q.PreferredTiers) == 0 {
 		return true

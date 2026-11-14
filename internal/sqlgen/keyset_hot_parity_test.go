@@ -22,7 +22,7 @@ import (
 
 // The hot leg's Go copy of the keyset predicate and the order (sortkey) must
 // admit and order rows as the SQL the shared keyset renderer emits does on
-// DuckDB (design.md §6.1.1, pgx-hot-leg-plan.md step 2, #853). These tests
+// DuckDB (design.md §6.1, pgx-hot-leg-plan.md step 2, #853). These tests
 // run the rendered SQL over an in-memory table standing in for the visible
 // CTE, whose columns carry the export types.
 

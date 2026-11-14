@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The merge's placement arithmetic (design.md §6.1.1, Pagination and totals),
+// The merge's placement arithmetic (design.md §6.1, Pagination and totals),
 // checked against a full sort of both legs: for every offset and limit, the
 // page mergeWindow cuts from the window OffsetPageParquetWindow chooses is
 // the same slice of the full merged order, and the count h + parquet total

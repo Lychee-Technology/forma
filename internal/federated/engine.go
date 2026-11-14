@@ -3,13 +3,11 @@ package federated
 import (
 	"context"
 	"fmt"
-	"text/template"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/queryplan"
 
-	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/schemameta"
 	"github.com/lychee-technology/forma/internal/sqlgen"
@@ -19,9 +17,8 @@ import (
 
 // PostgresFederatedSource is the Postgres-side seam the federated engine
 // queries for hot-tier records: the hot-only gate and the degraded fallback.
-// The DuckDB path reads the hot tier itself, through the PostgreSQL catalog it
-// attaches (#752). The seam
-// once also carried RunOptimizedQuery and BuildHybridConditions for the
+// A federated pass reads the hot tier through its own seam, the snapshot
+// WithPgxHotLeg supplies (#858). The seam once also carried RunOptimizedQuery and BuildHybridConditions for the
 // in-memory merge path of ExecuteFederatedPaginatedQuery; both left with that
 // path (#442).
 type PostgresFederatedSource interface {
@@ -39,15 +36,11 @@ type DuckDBQueryExecutor interface {
 // exclusion, DuckDB execution, merge, and pagination. It is the sole
 // implementation of the FederatedQueryEngine interface.
 type DBFederatedQueryEngine struct {
-	pgSource       PostgresFederatedSource
-	dirtyIDFetcher DirtyIDFetcher
-	duck           DuckDBQueryExecutor
-	breaker        *CircuitBreaker
-	cfg            forma.DuckDBConfig
-	metadataCache  *schemameta.MetadataCache
-	pgConnString   string
-	buildDuckSQL   func(*template.Template, any, *model.FederatedAttributeQuery, []uuid.UUID, *sqlgen.DualClauses) (string, []any, error)
-	duckTemplate   *template.Template
+	pgSource      PostgresFederatedSource
+	duck          DuckDBQueryExecutor
+	breaker       *CircuitBreaker
+	cfg           forma.DuckDBConfig
+	metadataCache *schemameta.MetadataCache
 	// projections caches per-schema DuckDB projection negotiation (#142);
 	// valid for the engine's lifetime because metadata is immutable after
 	// construction. Reset exists for future reload scenarios.
@@ -63,8 +56,11 @@ type DBFederatedQueryEngine struct {
 	parquetSource ParquetSource
 	// flushVisibilityGraceMs is the #252 clock-skew margin subtracted from
 	// the query's path-resolution timestamp to form the dirty-barrier
-	// cutoff; zero = exact anchor (default), negative = widening disabled.
-	// Copied from DuckDBConfig.FlushVisibilityGraceMs at construction.
+	// cutoff; zero = exact anchor (default). The field keeps the configured
+	// value, and passCutoffMs clamps a negative one to zero: the widening is
+	// never disabled (design.md §6.1), and construction warns once
+	// (logNegativeGrace). Copied from DuckDBConfig.FlushVisibilityGraceMs at
+	// construction.
 	flushVisibilityGraceMs int64
 	// schemaValidator enforces the parquet system-column invariant before
 	// each scan (#189): union_by_name tolerates attribute-column evolution,
@@ -111,35 +107,16 @@ func (e *DBFederatedQueryEngine) clock() func() time.Time {
 	return e.now
 }
 
-// flushGraceCutoffMs computes the per-request dirty-barrier cutoff from the
-// instant the query resolved its parquet path set (#252): rows with
-// flushed_at at or after the cutoff count as dirty (inclusive, because
-// millisecond stamps cannot order a mark and a path resolution landing in
-// the same tick). Because the flush appends the manifest BEFORE marking and
-// samples the mark stamp after the append, any row flushed before path
-// resolution already has its delta listed in the resolved set — so the
-// steady state is never widened; only rows racing this query stay
-// hot-readable. The configured grace is a clock-skew margin, not a window.
-func (e *DBFederatedQueryEngine) flushGraceCutoffMs(pathsResolvedAtMs int64) int64 {
-	if e.flushVisibilityGraceMs < 0 {
-		return sqlgen.FlushGraceCutoffDisabled
-	}
-	return pathsResolvedAtMs - e.flushVisibilityGraceMs
-}
-
 // NewDBFederatedQueryEngine assembles the engine from its injected seams.
 // duck and breaker may be nil: a nil duck marks DuckDB as unavailable and a
 // nil breaker disables circuit breaking.
-func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher DirtyIDFetcher, duck DuckDBQueryExecutor, breaker *CircuitBreaker, cfg forma.DuckDBConfig, metadataCache *schemameta.MetadataCache, pgConnString string, opts ...EngineOption) *DBFederatedQueryEngine {
+func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, duck DuckDBQueryExecutor, breaker *CircuitBreaker, cfg forma.DuckDBConfig, metadataCache *schemameta.MetadataCache, opts ...EngineOption) *DBFederatedQueryEngine {
 	e := &DBFederatedQueryEngine{
 		pgSource:               pgSource,
-		dirtyIDFetcher:         dirtyIDFetcher,
 		duck:                   duck,
 		breaker:                breaker,
 		cfg:                    cfg,
 		metadataCache:          metadataCache,
-		pgConnString:           pgConnString,
-		duckTemplate:           sqlgen.AdvancedQueryTemplateDuckDB,
 		projections:            sqlgen.NewProjectionCache(),
 		schemaValidator:        newParquetSchemaValidator(),
 		flushVisibilityGraceMs: cfg.FlushVisibilityGraceMs,
@@ -149,7 +126,7 @@ func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, dirtyIDFetcher 
 	for _, opt := range opts {
 		opt(e)
 	}
-	e.logNegativeGraceOnPgx()
+	e.logNegativeGrace()
 	return e
 }
 
@@ -245,12 +222,12 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 }
 
 // queryDuckDBRouted serves a request the routing policy sent to DuckDB: the
-// page pass, the deep-page recount (#181) and, when a failure is degradable,
-// the Postgres-only fallback.
+// pass, which counts its matches exactly (a parquet-leg recount, #181,
+// included), and, when a failure is degradable, the Postgres-only fallback.
 //
 // DuckDBConfig.QueryTimeout is armed here, once, for the whole of it (#465
-// review). A request can take several DuckDB passes — the page pass, its
-// publication-race retry (#720), the recount and its retry — and a budget
+// review). A request can take several passes — the page pass and its
+// publication-race retry (#720) — and the fallback, and a budget
 // armed per pass would have let a request spend several budgets in a row,
 // outliving the http.Server write deadline that
 // bootstrap.HTTPServerConfig.Validate sizes on exactly one. Under one shared
@@ -272,28 +249,6 @@ func (e *DBFederatedQueryEngine) queryDuckDBRouted(ctx context.Context, tables m
 			return e.degradeToPostgresOnly(ctx, tables, fq, opts, mark, err)
 		}
 		return nil, fmt.Errorf("duckdb federated query: %w", explainDeclinedDegradation(fq, opts, err))
-	}
-
-	// The template carries COUNT(*) OVER() on the data rows, so a page at or
-	// beyond the last match returns zero rows and the count is unreadable —
-	// totalRecords would misreport 0 while matches exist (#181). Recount with
-	// offset 0 (cannot recurse); at offset 0 an empty result is a genuine 0.
-	// A pgx pass counts its matches exactly whatever the page holds: it
-	// recounts the parquet leg itself when the page's window carried no
-	// count, in the pass's own snapshot (pgxPass.parquetLeg).
-	if len(records) == 0 && fq.Offset > 0 && !e.cfg.HotLegTransport.IsPgx() {
-		countTotal, cerr := e.computeFederatedCount(ctx, tables, fq)
-		if cerr != nil {
-			// The recount is a DuckDB query like the page fetch above, so it
-			// degrades under the same policy and the same exceptions: a
-			// transient failure here must not fail a request the degraded
-			// mode contract promises to serve Postgres-only.
-			if mayDegradeToPostgres(fq, opts, cerr) {
-				return e.degradeToPostgresOnly(ctx, tables, fq, opts, mark, cerr)
-			}
-			return nil, fmt.Errorf("compute empty-page federated count: %w", explainDeclinedDegradation(fq, opts, cerr))
-		}
-		totalRecords = countTotal
 	}
 
 	limit := fq.Limit
@@ -402,20 +357,6 @@ func (e *DBFederatedQueryEngine) queryPostgresOnly(ctx context.Context, tables m
 		return nil, fmt.Errorf("query postgres source: %w: %w", ErrPostgresReadFailed, err)
 	}
 	return page, nil
-}
-
-func (e *DBFederatedQueryEngine) getDuckDBQueryBuilder() func(*template.Template, any, *model.FederatedAttributeQuery, []uuid.UUID, *sqlgen.DualClauses) (string, []any, error) {
-	if e != nil && e.buildDuckSQL != nil {
-		return e.buildDuckSQL
-	}
-	return sqlgen.BuildDuckDBQuery
-}
-
-func (e *DBFederatedQueryEngine) getDuckDBTemplate() *template.Template {
-	if e != nil && e.duckTemplate != nil {
-		return e.duckTemplate
-	}
-	return sqlgen.AdvancedQueryTemplateDuckDB
 }
 
 // DuckDBClientQueryExecutor adapts a live *DuckDBClient to the

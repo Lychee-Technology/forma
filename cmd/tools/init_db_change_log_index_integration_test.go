@@ -128,21 +128,45 @@ func sortedIDs(ids []uuid.UUID) []string {
 	return out
 }
 
-// templateDirtySet reads the set the federated template's dirty_ids CTE reads
-// in DuckDB today, with the same predicate, here in PostgreSQL.
-func templateDirtySet(t *testing.T, pool *pgxpool.Pool, changeLog string, schemaID int16, cutoff int64) []uuid.UUID {
+// referenceDirtySet reads a dirty set with a predicate written out here,
+// independently of the engine's dirtySetQuery: the strict set (flushed_at = 0)
+// when cutoff is nil, otherwise the set widened to the entries marked at or
+// after *cutoff. The retired attach template read the widened set this way
+// in DuckDB (#858).
+func referenceDirtySet(t *testing.T, pool *pgxpool.Pool, changeLog string, schemaID int16, cutoff *int64) []uuid.UUID {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), fmt.Sprintf(
-		`SELECT DISTINCT row_id FROM %s WHERE schema_id = $1 AND (flushed_at = 0 OR flushed_at >= $2)`, quoteIdentifier(changeLog)),
-		schemaID, cutoff)
+	query := fmt.Sprintf(`SELECT DISTINCT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0`, quoteIdentifier(changeLog))
+	args := []any{schemaID}
+	if cutoff != nil {
+		query = fmt.Sprintf(`SELECT DISTINCT row_id FROM %s WHERE schema_id = $1 AND (flushed_at = 0 OR flushed_at >= $2)`, quoteIdentifier(changeLog))
+		args = append(args, *cutoff)
+	}
+	rows, err := pool.Query(context.Background(), query, args...)
 	if err != nil {
-		t.Fatalf("read the template's dirty set: %v", err)
+		t.Fatalf("read the reference dirty set: %v", err)
 	}
 	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 	if err != nil {
-		t.Fatalf("collect the template's dirty set: %v", err)
+		t.Fatalf("collect the reference dirty set: %v", err)
 	}
 	return ids
+}
+
+// referenceParquetHistory answers, with a query written out here, whether
+// schemaID has a flushed change_log entry or a live entity_main row without
+// any entry: the two records the snapshot's parquet-history answer reads.
+func referenceParquetHistory(t *testing.T, pool *pgxpool.Pool, tables model.StorageTables, schemaID int16) bool {
+	t.Helper()
+	var found bool
+	err := pool.QueryRow(context.Background(), fmt.Sprintf(`SELECT
+		EXISTS (SELECT 1 FROM %[1]s WHERE schema_id = $1 AND flushed_at <> 0)
+		OR EXISTS (SELECT 1 FROM %[2]s m WHERE m.ltbase_schema_id = $1
+			AND NOT EXISTS (SELECT 1 FROM %[1]s c WHERE c.schema_id = $1 AND c.row_id = m.ltbase_row_id))`,
+		quoteIdentifier(tables.ChangeLog), quoteIdentifier(tables.EntityMain)), schemaID).Scan(&found)
+	if err != nil {
+		t.Fatalf("read the reference parquet history of schema %d: %v", schemaID, err)
+	}
+	return found
 }
 
 // explain answers the plan PostgreSQL chooses for tq.
@@ -160,11 +184,10 @@ func explain(t *testing.T, pool *pgxpool.Pool, tq tracedQuery) string {
 }
 
 // The (schema_id, flushed_at) index init-db builds serves both dirty-set
-// forms of the pgx hot leg's snapshot read, and the sets it reads are today's
-// (#849, plan step 1): the hot-excluded form is FetchDirtyRowIDs' strict set,
-// and the hot form is the widened set the template's dirty_ids reads in
-// DuckDB. The parquet-history answer read in the snapshot is
-// HasParquetHistory's.
+// forms of the federated pass's snapshot read (#849, plan step 1), and each
+// form reads the set its reference predicate selects: the strict set for the
+// hot-excluded form, the widened one for the hot form. The parquet-history
+// answer read in the snapshot is the reference's.
 func TestInitDBChangeLogIndexServesSnapshotDirtySetReads(t *testing.T) {
 	tg := newInitDBTarget(t)
 	if out, err := tg.run(t); err != nil {
@@ -178,17 +201,13 @@ func TestInitDBChangeLogIndexServesSnapshotDirtySetReads(t *testing.T) {
 	tables := model.StorageTables{ChangeLog: tg.opts.changeLog, EntityMain: tg.opts.entityMain}
 	index := changeLogFlushIndex(tg.opts.changeLog)
 
-	today, err := fetcher.FetchDirtyRowIDs(ctx, tg.opts.changeLog, 100)
-	if err != nil {
-		t.Fatalf("FetchDirtyRowIDs: %v", err)
-	}
 	cases := []struct {
-		form  federated.DirtySetForm
-		want  []uuid.UUID
-		today []uuid.UUID
+		form      federated.DirtySetForm
+		want      []uuid.UUID
+		reference []uuid.UUID
 	}{
-		{federated.DirtySetHotExcluded, fx.strict, today},
-		{federated.DirtySetHot, fx.hot, templateDirtySet(t, tg.pool, tg.opts.changeLog, 100, fx.cutoff)},
+		{federated.DirtySetHotExcluded, fx.strict, referenceDirtySet(t, tg.pool, tg.opts.changeLog, 100, nil)},
+		{federated.DirtySetHot, fx.hot, referenceDirtySet(t, tg.pool, tg.opts.changeLog, 100, &fx.cutoff)},
 	}
 	for _, tc := range cases {
 		trace.take("")
@@ -201,8 +220,8 @@ func TestInitDBChangeLogIndexServesSnapshotDirtySetReads(t *testing.T) {
 		if got, want := sortedIDs(snap.DirtyIDs), sortedIDs(tc.want); !slices.Equal(got, want) {
 			t.Errorf("%s dirty set = %v, want %v", tc.form, got, want)
 		}
-		if got, want := sortedIDs(snap.DirtyIDs), sortedIDs(tc.today); !slices.Equal(got, want) {
-			t.Errorf("%s dirty set = %v, today's read answers %v", tc.form, got, want)
+		if got, want := sortedIDs(snap.DirtyIDs), sortedIDs(tc.reference); !slices.Equal(got, want) {
+			t.Errorf("%s dirty set = %v, the reference predicate selects %v", tc.form, got, want)
 		}
 		if !snap.HasParquetHistory {
 			t.Errorf("%s: schema 100 has flushed entries, but the snapshot reads no parquet history", tc.form)
@@ -216,19 +235,16 @@ func TestInitDBChangeLogIndexServesSnapshotDirtySetReads(t *testing.T) {
 			t.Errorf("%s dirty-set read does not use %s:\n%s", tc.form, index, plan)
 		}
 	}
-	assertSnapshotHistoryMatches(t, fetcher, tables)
+	assertSnapshotHistoryMatches(t, tg.pool, fetcher, tables)
 }
 
 // assertSnapshotHistoryMatches compares the snapshot's parquet-history answer
-// with HasParquetHistory's for a schema with history and one without.
-func assertSnapshotHistoryMatches(t *testing.T, fetcher *federated.PostgresDirtyIDFetcher, tables model.StorageTables) {
+// with the reference's for a schema with history and one without.
+func assertSnapshotHistoryMatches(t *testing.T, pool *pgxpool.Pool, fetcher *federated.PostgresDirtyIDFetcher, tables model.StorageTables) {
 	t.Helper()
 	ctx := context.Background()
 	for _, schemaID := range []int16{100, 101, 102} {
-		want, err := fetcher.HasParquetHistory(ctx, tables, schemaID)
-		if err != nil {
-			t.Fatalf("HasParquetHistory(%d): %v", schemaID, err)
-		}
+		want := referenceParquetHistory(t, pool, tables, schemaID)
 		snap, err := fetcher.ReadChangeLogSnapshot(ctx, federated.ChangeLogSnapshotRequest{
 			Tables: tables, SchemaID: schemaID, Form: federated.DirtySetHotExcluded, ParquetHistory: true,
 		})
@@ -236,7 +252,7 @@ func assertSnapshotHistoryMatches(t *testing.T, fetcher *federated.PostgresDirty
 			t.Fatalf("ReadChangeLogSnapshot(%d): %v", schemaID, err)
 		}
 		if snap.HasParquetHistory != want {
-			t.Errorf("schema %d: snapshot parquet history = %v, HasParquetHistory = %v", schemaID, snap.HasParquetHistory, want)
+			t.Errorf("schema %d: snapshot parquet history = %v, the reference answers %v", schemaID, snap.HasParquetHistory, want)
 		}
 	}
 }

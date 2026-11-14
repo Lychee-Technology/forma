@@ -38,8 +38,6 @@ internal/cdc/schema_lease.go:leaseSchemaLocker.renew 1
 internal/declaredindex/ensure.go:catalogQuery 1
 internal/declaredindex/ensure.go:tableSchemaQuery 1
 internal/declaredindex/plan.go:Index.CreateSQL 1
-internal/federated/change_log_reads.go:PostgresDirtyIDFetcher.FetchDirtyRowIDs 1
-internal/federated/change_log_reads.go:PostgresDirtyIDFetcher.HasParquetHistory 1
 internal/federated/change_log_reads.go:parquetHistoryQuery 1
 internal/federated/change_log_snapshot.go:PostgresDirtyIDFetcher.ReadChangeLogSnapshot 4
 internal/federated/change_log_snapshot.go:dirtySetQuery 2

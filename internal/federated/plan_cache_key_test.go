@@ -33,8 +33,8 @@ func newPlanKeyEngine(mc *schemameta.MetadataCache, withCache bool) *planKeyEngi
 		pe.cache = queryplan.NewCache(16)
 		opts = append(opts, WithPlanCache(pe.cache))
 	}
-	pe.e = NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, pe.duck, nil,
-		hybridDuckConfig(), mc, "host=pg dbname=x", opts...)
+	pe.e = NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, pe.duck, nil,
+		hybridDuckConfig(), mc, append(opts, withFakeHotLeg(nil))...)
 	return pe
 }
 
@@ -50,7 +50,7 @@ func (pe *planKeyEngine) run(t *testing.T, cond forma.Condition) planKeyRender {
 	if err != nil {
 		return planKeyRender{err: err}
 	}
-	return planKeyRender{sql: normalizeFlushGraceCutoff(pe.duck.lastSQL), args: pe.duck.lastArgs}
+	return planKeyRender{sql: pe.duck.lastSQL, args: pe.duck.lastArgs}
 }
 
 func planKeyMetadataCache(t *testing.T) *schemameta.MetadataCache {

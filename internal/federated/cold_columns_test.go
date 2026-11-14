@@ -91,12 +91,12 @@ func TestColdScanColumnsPinsDriftedAndMixedTypes(t *testing.T) {
 // scope hash, so the same query shape over the same path STRING (a glob
 // hint does not change on flush) re-keys when the first flush lands the
 // column.
-func TestDuckPlanScopePartsIncludeColdMissingSet(t *testing.T) {
+func TestParquetOnlyScopePartsIncludeColdMissingSet(t *testing.T) {
 	tables := model.StorageTables{EAVData: "eav_data", EntityMain: "entity_main", ChangeLog: "change_log"}
 	paths := []string{"s3://b/schema/1/**/*.parquet"}
-	absent := duckPlanScopeParts(tables, "conn", 10, 0, false, paths, nil,
+	absent := parquetOnlyScopeParts(tables, paths, nil,
 		coldScanSet{missing: []sqlgen.ScanColumn{{Name: "score", DuckDBType: "INTEGER"}}})
-	present := duckPlanScopeParts(tables, "conn", 10, 0, false, paths, nil, coldScanSet{})
+	present := parquetOnlyScopeParts(tables, paths, nil, coldScanSet{})
 	require.NotEqual(t,
 		queryplan.HashScopeParts(absent...),
 		queryplan.HashScopeParts(present...),
@@ -108,13 +108,13 @@ func TestDuckPlanScopePartsIncludeColdMissingSet(t *testing.T) {
 // projects NULL, the other CASTs a real column), and a pinned shape must
 // not be served from the skeleton compiled before the stale generation was
 // purged, nor the other way round.
-func TestDuckPlanScopePartsIncludeColdPinnedSet(t *testing.T) {
+func TestParquetOnlyScopePartsIncludeColdPinnedSet(t *testing.T) {
 	tables := model.StorageTables{EAVData: "eav_data", EntityMain: "entity_main", ChangeLog: "change_log"}
 	paths := []string{"s3://b/schema/1/**/*.parquet"}
 	col := []sqlgen.ScanColumn{{Name: "score", DuckDBType: "INTEGER"}}
-	pinned := queryplan.HashScopeParts(duckPlanScopeParts(tables, "conn", 10, 0, false, paths, nil, coldScanSet{pinned: col})...)
-	missing := queryplan.HashScopeParts(duckPlanScopeParts(tables, "conn", 10, 0, false, paths, nil, coldScanSet{missing: col})...)
-	healthy := queryplan.HashScopeParts(duckPlanScopeParts(tables, "conn", 10, 0, false, paths, nil, coldScanSet{})...)
+	pinned := queryplan.HashScopeParts(parquetOnlyScopeParts(tables, paths, nil, coldScanSet{pinned: col})...)
+	missing := queryplan.HashScopeParts(parquetOnlyScopeParts(tables, paths, nil, coldScanSet{missing: col})...)
+	healthy := queryplan.HashScopeParts(parquetOnlyScopeParts(tables, paths, nil, coldScanSet{})...)
 	require.NotEqual(t, pinned, healthy, "pinned and healthy shapes must occupy different plan-cache entries")
 	require.NotEqual(t, pinned, missing, "the missing and pinned roles of one column must not alias")
 }

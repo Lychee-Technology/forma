@@ -11,7 +11,7 @@ import (
 )
 
 // TestDuckDBDoubleOrder pins the DOUBLE order the comparator assumes against
-// the engine, before anything relies on it (design.md §6.1.1): NaN equals
+// the engine, before anything relies on it (design.md §6.1): NaN equals
 // NaN and sorts above +Infinity in both directions, -0 equals 0 (so the
 // next key decides between them), and NULL sorts last either way.
 func TestDuckDBDoubleOrder(t *testing.T) {

@@ -7,23 +7,17 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	forma "github.com/lychee-technology/forma"
-	fedengine "github.com/lychee-technology/forma/internal/federated"
-	"github.com/lychee-technology/forma/internal/model"
-	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
-// TestHotLegLatencyBaseline measures how a federated pass on today's attach
-// path splits between the PostgreSQL copy and the parquet scan (#851, the
-// baseline the pgx hot-leg plan's steps 3 and 5 compare against). It is a
-// measurement, not a check, and takes minutes per size, so it runs only when
+// TestHotLegLatencyBaseline measures a federated pass on the pgx hot leg
+// and the parquet-only statement that bounds its parquet side (#851, #854,
+// #856; pgx-hot-leg-plan.md steps 3 and 5). It is a measurement, not a
+// check, and takes minutes per size, so it runs only when
 // FORMA_HOT_LEG_BASELINE_SIZES lists the entity_main sizes to measure:
 //
 //	FORMA_HOT_LEG_BASELINE_SIZES=10000,100000,1000000 \
@@ -36,33 +30,20 @@ import (
 // half of them updates of flushed rows. Each query shape is measured in two
 // phases, on the Env's one DuckDB instance:
 //
-//   - the engine pass: wall time of the engine's own query, taken first, while
-//     the instance holds nothing but what the engine attaches. This is the
-//     latency later steps compare against.
-//   - the replays: the engine's rendered statement, rerun on one connection
-//     of the same instance against the same attached PostgreSQL catalog,
-//     alternately as rendered (full) and retargeted at a hot-only control
-//     schema in the same database. The control holds only the change_log
-//     rows the statement's hot-leg predicate keeps, and the entity_main and
-//     eav_data rows of those row IDs. So the dirty set, the hot rows, the
-//     answer, the catalog, its settings and the parquet objects are all the
-//     statement's own; only the flushed rows the statement copies from
-//     PostgreSQL and then discards are gone. A profiled run of each checks
-//     that DuckDB plans both identically, operator for operator. Full minus
-//     hot-only is then what copying and discarding those rows costs the pass,
-//     which is what the pgx hot leg removes.
+//   - the engine pass: wall time of the engine's own query, taken first.
+//     This is the latency the plan's tables record.
+//   - the parquet-only statement (measureParquetOnly): the dirty set read at
+//     the pass's cutoff, staged on one connection of the same instance, and
+//     the parquet-only statement over the same parquet objects.
 //
-// DuckDB's profiler does not split the pass itself: the postgres extension's
-// scans report no operator time, whatever they copy. Hence the control.
+// Until step 7 the test also timed the attach pass and replayed its
+// statement on the attached PostgreSQL catalog against a hot-only control;
+// those need the ATTACH the federated client no longer makes.
 func TestHotLegLatencyBaseline(t *testing.T) {
 	sizes := baselineSizes(t)
 	ctx := context.Background()
 	// The factory's DuckDB defaults, not the harness's CI-sized ones.
 	env := NewEnv(t, SharedCluster(t), WithDuckMemoryMB(4096), WithDuckThreads(4))
-	// The engine pass and the replays measure the attach path, whatever
-	// FORMA_E2E_HOT_LEG_TRANSPORT selects; the pgx pass is timed beside it on
-	// an engine of its own (timePgxEngine).
-	env.DuckCfg.HotLegTransport = forma.HotLegTransportAttach
 	wide := DefaultSchemaFixtures()[1]
 	// init-db's change_log index (#850), which the engine's dirty-set read uses.
 	env.ExecSQL(ctx, `CREATE INDEX IF NOT EXISTS change_log_flushed_idx ON change_log (schema_id, flushed_at) INCLUDE (row_id, changed_at)`)
@@ -120,9 +101,8 @@ type baselineShape struct {
 	query func(title string) Query
 }
 
-// baselineShapes are a selective lookup, where the parquet side reads little
-// and the copy should dominate, and an unfiltered first page, where the
-// parquet side ranks every row.
+// baselineShapes are a selective lookup, where the parquet side reads little,
+// and an unfiltered first page, where the parquet side ranks every row.
 func baselineShapes(schema SchemaRef) []baselineShape {
 	return []baselineShape{
 		{name: "title equals (1 row)", query: func(title string) Query {
@@ -140,17 +120,14 @@ type baselineRow struct {
 	entityMain, eavData, changeLog int64
 	parquetObjects                 int
 	parquetMB                      float64
-	engine, engineFetch            time.Duration
-	// pgxEngine is the engine pass under the pgx hot leg (#856), on the
-	// same Env, DuckDB instance and state.
-	pgxEngine               time.Duration
-	full, hotOnly           time.Duration
-	fullProfile, hotProfile baselineProfile
-	parquetOnly             parquetOnlyTiming
+	// engine is the pass's wall time; engineFetch and engineSnapshot are its
+	// plan's duckdb_fetch and pg_snapshot timings.
+	engine, engineFetch, engineSnapshot time.Duration
+	parquetOnly                         parquetOnlyTiming
 }
 
 // measureBaselineSize measures every shape at the Env's current size: every
-// engine pass first, then the replays.
+// engine pass first, then the parquet-only statements.
 func measureBaselineSize(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) []baselineRow {
 	t.Helper()
 	sizes := baselineRow{
@@ -179,87 +156,33 @@ func measureBaselineSize(ctx context.Context, t *testing.T, env *Env, schema Sch
 		rows[i].shape = shape.name
 		firsts[i] = timeBaselineEngine(ctx, t, env, shape.query(title), &rows[i])
 	}
-	pgx := env.EngineWithTransport(forma.HotLegTransportPgx)
-	for i, shape := range shapes {
-		timePgxEngine(ctx, t, env, pgx, shape.query(title), firsts[i], &rows[i])
+	conn, err := env.Duck.DB.Conn(ctx)
+	if err != nil {
+		t.Fatalf("take a duckdb connection: %v", err)
 	}
-	r := newBaselineReplayer(ctx, t, env)
-	defer r.close(ctx, t, env)
+	defer func() { _ = conn.Close() }()
 	for i := range shapes {
-		stmt, params := renderedStatement(t, firsts[i].Plan)
-		r.ensureHotOnly(ctx, t, env, stmt)
-		replayBaselineShape(ctx, t, r, stmt, params, firsts[i].Total, &rows[i])
-		rows[i].parquetOnly = r.measureParquetOnly(ctx, t, env, firsts[i], stmt)
+		rows[i].parquetOnly = measureParquetOnly(ctx, t, env, conn, firsts[i])
 	}
 	return rows
 }
 
-// timeBaselineEngine runs the engine once as a warm-up, which also renders
-// the statement to replay, then times baselineReps passes.
+// timeBaselineEngine runs the engine once as a warm-up, whose answer the
+// parquet-only statement is checked against, then times baselineReps
+// passes.
 func timeBaselineEngine(ctx context.Context, t *testing.T, env *Env, q Query, row *baselineRow) *QueryResult {
 	t.Helper()
 	first := runBaselineEngine(ctx, t, env, q)
-	var engine, fetch []time.Duration
+	var engine, fetch, snapshot []time.Duration
 	for range baselineReps(t) {
 		start := time.Now()
 		res := runBaselineEngine(ctx, t, env, q)
 		engine = append(engine, time.Since(start))
 		fetch = append(fetch, time.Duration(res.Plan.Timings["duckdb_fetch"])*time.Millisecond)
+		snapshot = append(snapshot, time.Duration(res.Plan.Timings["pg_snapshot"])*time.Millisecond)
 	}
-	row.engine, row.engineFetch = median(engine), median(fetch)
+	row.engine, row.engineFetch, row.engineSnapshot = median(engine), median(fetch), median(snapshot)
 	return first
-}
-
-// timePgxEngine runs the same query on the pgx engine once as a warm-up,
-// requires the attach pass's page and total, then times baselineReps passes.
-func timePgxEngine(ctx context.Context, t *testing.T, env *Env, engine *fedengine.DBFederatedQueryEngine, q Query, attach *QueryResult, row *baselineRow) {
-	t.Helper()
-	run := func() *QueryResult {
-		res, err := env.QueryOn(ctx, engine, q)
-		if err != nil {
-			t.Fatalf("pgx engine query: %v", err)
-		}
-		return res
-	}
-	first := run()
-	if first.Total != attach.Total || !slices.Equal(pageRowIDs(first), pageRowIDs(attach)) {
-		t.Fatalf("%s: the pgx pass answers %d rows of %d, the attach pass %d of %d, or another page", row.shape,
-			len(first.Records), first.Total, len(attach.Records), attach.Total)
-	}
-	var passes []time.Duration
-	for range baselineReps(t) {
-		start := time.Now()
-		run()
-		passes = append(passes, time.Since(start))
-	}
-	row.pgxEngine = median(passes)
-}
-
-// replayBaselineShape warms up and times baselineReps alternating rounds of
-// the full and the hot-only statement, then profiles one run of each and
-// requires the two plans to match.
-func replayBaselineShape(ctx context.Context, t *testing.T, r *baselineReplayer, stmt string, params []any, wantTotal int64, row *baselineRow) {
-	t.Helper()
-	hot, err := retargetHotLeg(stmt, r.alias, baselineHotSchema)
-	if err != nil {
-		t.Fatalf("retarget the statement at the hot-only control: %v", err)
-	}
-	var full, hotOnly []time.Duration
-	for rep := 0; rep <= baselineReps(t); rep++ {
-		f := r.replay(ctx, t, stmt, params, wantTotal)
-		h := r.replay(ctx, t, hot, params, wantTotal)
-		if rep > 0 { // the first round is the warm-up
-			full, hotOnly = append(full, f), append(hotOnly, h)
-		}
-	}
-	row.full, row.hotOnly = median(full), median(hotOnly)
-	row.fullProfile = r.profile(ctx, t, stmt, params, wantTotal)
-	row.hotProfile = r.profile(ctx, t, hot, params, wantTotal)
-	if row.fullProfile.plan != row.hotProfile.plan {
-		t.Fatalf("DuckDB plans the hot-only control differently from the statement, so their difference is not the flushed rows' cost.\nstatement:\n%s\ncontrol:\n%s",
-			row.fullProfile.plan, row.hotProfile.plan)
-	}
-	t.Logf("%s: the full and hot-only plans match, %d operators", row.shape, strings.Count(row.fullProfile.plan, "\n"))
 }
 
 func runBaselineEngine(ctx context.Context, t *testing.T, env *Env, q Query) *QueryResult {
@@ -272,23 +195,6 @@ func runBaselineEngine(ctx context.Context, t *testing.T, env *Env, q Query) *Qu
 		t.Fatalf("engine query did not route through DuckDB: %+v", res.Plan.Routing)
 	}
 	return res
-}
-
-// renderedStatement returns the DuckDB statement and bind parameters the
-// engine ran, from its execution plan.
-func renderedStatement(t *testing.T, plan *model.ExecutionPlan) (string, []any) {
-	t.Helper()
-	for i := len(plan.Sources) - 1; i >= 0; i-- {
-		if src := plan.Sources[i]; src.Engine == "duckdb" {
-			params := make([]any, len(src.Params))
-			for j, p := range src.Params {
-				params[j] = p
-			}
-			return src.SQL, params
-		}
-	}
-	t.Fatalf("execution plan has no DuckDB source: %+v", plan.Sources)
-	return "", nil
 }
 
 func countRows(ctx context.Context, t *testing.T, env *Env, table string) int64 {
@@ -306,129 +212,9 @@ func median(ds []time.Duration) time.Duration {
 	return s[len(s)/2]
 }
 
-// baselineHotSchema is the hot-only control schema, in the test's private
-// database.
-const baselineHotSchema = "hot_leg_hot_only"
-
-// baselineReplayer reruns a rendered statement on one pinned DuckDB
-// connection of the Env's client, which carries the engine's S3 settings and
-// attaches the same PostgreSQL catalog the engine reads, with the same
-// settings.
-type baselineReplayer struct {
-	conn       *sql.Conn
-	alias, out string
-	cutoff     int64
-}
-
-func newBaselineReplayer(ctx context.Context, t *testing.T, env *Env) *baselineReplayer {
-	t.Helper()
-	connStr := fedengine.DuckDBPostgresConnStringFromPool(env.Pool)
-	conn, err := env.Duck.DB.Conn(ctx)
-	if err != nil {
-		t.Fatalf("take a duckdb connection: %v", err)
-	}
-	r := &baselineReplayer{conn: conn, alias: sqlgen.PostgresCatalogAlias(connStr), out: filepath.Join(t.TempDir(), "profile.json")}
-	r.exec(ctx, t, sqlgen.PostgresAttachSQL(connStr))
-	return r
-}
-
-// close drops the hot-only control and releases the connection.
-func (r *baselineReplayer) close(ctx context.Context, t *testing.T, env *Env) {
-	t.Helper()
-	if r.cutoff != 0 {
-		env.ExecSQL(ctx, "DROP SCHEMA "+baselineHotSchema+" CASCADE")
-		r.exec(ctx, t, "CALL postgres_clear_cache()")
-	}
-	_ = r.conn.Close()
-}
-
-func (r *baselineReplayer) exec(ctx context.Context, t *testing.T, stmt string) {
-	t.Helper()
-	if _, err := r.conn.ExecContext(ctx, stmt); err != nil {
-		t.Fatalf("duckdb %q: %v", stmt, err)
-	}
-}
-
-// ensureHotOnly builds the hot-only control for the statement's flush
-// cutoff, unless it holds that cutoff's rows already. The engine renders the
-// cutoff from the time of the query, so each statement can carry its own.
-func (r *baselineReplayer) ensureHotOnly(ctx context.Context, t *testing.T, env *Env, stmt string) {
-	t.Helper()
-	cutoff, err := hotLegCutoff(stmt)
-	if err != nil {
-		t.Fatalf("read the statement's hot-leg predicate: %v", err)
-	}
-	if cutoff == r.cutoff {
-		return
-	}
-	r.cutoff = cutoff
-	h := baselineHotSchema
-	env.ExecSQL(ctx, "DROP SCHEMA IF EXISTS "+h+" CASCADE")
-	env.ExecSQL(ctx, "CREATE SCHEMA "+h)
-	// Autovacuum stays off, so the statistics copied below stay put.
-	off := " WITH (autovacuum_enabled = false) AS "
-	env.ExecSQL(ctx, `CREATE TABLE `+h+`.change_log`+off+`SELECT * FROM public.change_log WHERE flushed_at = 0 OR flushed_at >= $1`, cutoff)
-	env.ExecSQL(ctx, `CREATE TABLE `+h+`.entity_main`+off+`SELECT m.* FROM public.entity_main m
-		WHERE EXISTS (SELECT 1 FROM `+h+`.change_log c WHERE c.schema_id = m.ltbase_schema_id AND c.row_id = m.ltbase_row_id)`)
-	env.ExecSQL(ctx, `CREATE TABLE `+h+`.eav_data`+off+`SELECT e.* FROM public.eav_data e
-		WHERE EXISTS (SELECT 1 FROM `+h+`.change_log c WHERE c.schema_id = e.schema_id AND c.row_id = e.row_id)`)
-	// DuckDB's cardinality estimates for a PostgreSQL table, and so its join
-	// order, come from pg_class. The control takes the full tables' figures,
-	// so DuckDB plans it as it plans the statement (replayBaselineShape
-	// checks that it does) and splits its scans into as many tasks.
-	for _, table := range []string{"change_log", "entity_main", "eav_data"} {
-		env.ExecSQL(ctx, `UPDATE pg_class c SET relpages = s.relpages, reltuples = s.reltuples FROM pg_class s
-			WHERE s.oid = $1::regclass AND c.oid = $2::regclass`, "public."+table, h+"."+table)
-	}
-	// The attached catalog lists schemas once; make it see the new one.
-	r.exec(ctx, t, "CALL postgres_clear_cache()")
-}
-
-// replay runs stmt, drains every row, checks the statement's total_records
-// against the engine's, and returns the wall time.
-func (r *baselineReplayer) replay(ctx context.Context, t *testing.T, stmt string, params []any, wantTotal int64) time.Duration {
-	t.Helper()
-	start := time.Now()
-	rows, err := r.conn.QueryContext(ctx, stmt, params...)
-	if err != nil {
-		t.Fatalf("replay: %v", err)
-	}
-	total, err := drainReplay(rows)
-	elapsed := time.Since(start)
-	if err != nil {
-		t.Fatalf("replay: %v", err)
-	}
-	if total != wantTotal {
-		t.Fatalf("replay counted %d rows, the engine %d", total, wantTotal)
-	}
-	return elapsed
-}
-
-// profile runs stmt once with DuckDB's profiler on and returns what the
-// profile shows. Profiling stays off for the timed replays.
-func (r *baselineReplayer) profile(ctx context.Context, t *testing.T, stmt string, params []any, wantTotal int64) baselineProfile {
-	t.Helper()
-	if err := os.Remove(r.out); err != nil && !os.IsNotExist(err) {
-		t.Fatalf("remove the previous profile: %v", err)
-	}
-	r.exec(ctx, t, "PRAGMA enable_profiling = 'json'")
-	r.exec(ctx, t, "PRAGMA profiling_output = '"+r.out+"'")
-	r.replay(ctx, t, stmt, params, wantTotal)
-	r.exec(ctx, t, "PRAGMA disable_profiling")
-	raw, err := os.ReadFile(r.out)
-	if err != nil {
-		t.Fatalf("read the profile: %v", err)
-	}
-	prof, err := summarizeProfile(raw, stmt, r.alias)
-	if err != nil {
-		t.Fatalf("profiled replay: %v", err)
-	}
-	return prof
-}
-
-// drainReplay reads every row and returns the statement's total_records, or
+// drainTotal reads every row and returns the statement's total_records, or
 // 0 when the page is empty.
-func drainReplay(rows *sql.Rows) (int64, error) {
+func drainTotal(rows *sql.Rows) (int64, error) {
 	defer func() { _ = rows.Close() }()
 	cols, err := rows.Columns()
 	if err != nil {
@@ -458,24 +244,18 @@ func drainReplay(rows *sql.Rows) (int64, error) {
 }
 
 // formatBaseline renders the medians as the Markdown table the plan records.
-// Times are ms. The flushed rows' cost is the full replay minus the hot-only
-// one, and its share is of the full replay. The last four columns are the
-// parquet leg of the pgx pass (#854): the dirty set's snapshot read and
-// staging, and the parquet-only statement.
+// Times are ms. The last four columns are the parquet leg of the pass
+// (#854): the dirty set's snapshot read and staging, and the parquet-only
+// statement.
 func formatBaseline(rows []baselineRow) string {
 	var b strings.Builder
-	b.WriteString("| entity_main | eav_data | change_log | parquet | shape | engine pass | engine pass (pgx) | engine DuckDB fetch | full replay | hot-only replay | flushed rows' cost | share | rows from PostgreSQL, full | rows from PostgreSQL, hot-only | rows from parquet | dirty IDs | dirty-set read (pgx) | staging | parquet-only statement |\n")
-	b.WriteString("| ---: | ---: | ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+	b.WriteString("| entity_main | eav_data | change_log | parquet | shape | engine pass | engine pg_snapshot | engine DuckDB fetch | dirty IDs | dirty-set read | staging | parquet-only statement |\n")
+	b.WriteString("| ---: | ---: | ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 	for _, r := range rows {
-		share := 0.0
-		if r.full > 0 {
-			share = 100 * float64(r.full-r.hotOnly) / float64(r.full)
-		}
 		po := r.parquetOnly
-		fmt.Fprintf(&b, "| %d | %d | %d | %d (%.1f MB) | %s | %s | %s | %s | %s | %s | %s | %.0f%% | %d | %d | %d | %d | %s | %s | %s |\n",
+		fmt.Fprintf(&b, "| %d | %d | %d | %d (%.1f MB) | %s | %s | %s | %s | %d | %s | %s | %s |\n",
 			r.entityMain, r.eavData, r.changeLog, r.parquetObjects, r.parquetMB, r.shape,
-			ms(r.engine), ms(r.pgxEngine), ms(r.engineFetch), ms(r.full), ms(r.hotOnly), ms(r.full-r.hotOnly), share,
-			r.fullProfile.postgresRows, r.hotProfile.postgresRows, r.fullProfile.parquetRows,
+			ms(r.engine), ms(r.engineSnapshot), ms(r.engineFetch),
 			po.dirtyIDs, ms(po.snapshotRead), ms(po.stage), ms(po.query))
 	}
 	return b.String()

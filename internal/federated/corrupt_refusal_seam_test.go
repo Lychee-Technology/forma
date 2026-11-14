@@ -33,7 +33,7 @@ type retryPass struct {
 	// fails during THIS pass.
 	drainFails []string
 	// empty answers the scan with zero rows: a page past the last match,
-	// which sends Query to its empty-page recount (#181).
+	// which sends the pass to its parquet recount (#181).
 	empty bool
 }
 
@@ -193,9 +193,8 @@ func TestCachedCorruptRefusalIsBreakerNeutral(t *testing.T) {
 
 	duck := &retryFakeDuck{passes: []retryPass{{}}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
-	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, breaker,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x",
-		WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}))
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, breaker,
+		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}), withFakeHotLeg(nil))
 	e.corruptPaths.Add([]string{retryCorruptPath1})
 
 	for i := 0; i < 3; i++ {
@@ -205,12 +204,12 @@ func TestCachedCorruptRefusalIsBreakerNeutral(t *testing.T) {
 	require.False(t, breaker.IsOpen(), "threshold 1: a single recorded failure would have opened it")
 }
 
-// TestResolveScanSourcesCachedCorruptClassifiesMissingFirst pins
+// TestResolvePgxScanSourcesCachedCorruptClassifiesMissingFirst pins
 // missing-before-corrupt on the cached refusal (#722 review): a listed object
 // absent from storage, the cached one or any other, is manifest inconsistency
 // and must not be absorbed by the degradable corruption refusal. The probe
 // covers the whole listed set, and a probe that cannot run proves no loss.
-func TestResolveScanSourcesCachedCorruptClassifiesMissingFirst(t *testing.T) {
+func TestResolvePgxScanSourcesCachedCorruptClassifiesMissingFirst(t *testing.T) {
 	listed := []string{"s3://b/a.parquet", "s3://b/bad.parquet"}
 	for name, missing := range map[string][]string{
 		"another listed object deleted": {"a.parquet"},
@@ -221,7 +220,7 @@ func TestResolveScanSourcesCachedCorruptClassifiesMissingFirst(t *testing.T) {
 			e := newCachedRefusalTestEngine(t, src)
 			e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
 
-			_, err := e.resolveScanSources(context.Background(), corruptTables, exclusionTestQuery())
+			_, err := e.resolvePgxScanSources(context.Background(), corruptTables, exclusionTestQuery())
 			var inconsistent *ParquetSetInconsistentError
 			require.ErrorAs(t, err, &inconsistent)
 			require.Equal(t, missing, inconsistent.MissingKeys)
@@ -235,7 +234,7 @@ func TestResolveScanSourcesCachedCorruptClassifiesMissingFirst(t *testing.T) {
 		e := newCachedRefusalTestEngine(t, &fakeParquetSource{paths: listed, missingErr: fmt.Errorf("connection refused")})
 		e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
 
-		_, err := e.resolveScanSources(context.Background(), corruptTables, exclusionTestQuery())
+		_, err := e.resolvePgxScanSources(context.Background(), corruptTables, exclusionTestQuery())
 		var corrupt *CorruptParquetError
 		require.ErrorAs(t, err, &corrupt)
 		require.True(t, degradableFederatedError(err))
@@ -260,8 +259,8 @@ func TestCachedCorruptRefusalSurfacesAnotherMissingObject(t *testing.T) {
 				paths:   []string{retryKeptPathA, retryCorruptPath1},
 				missing: []string{"7/keep-a.parquet"},
 			}
-			e := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, breaker,
-				hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+			e := NewDBFederatedQueryEngine(pg, duck, breaker,
+				hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 			e.corruptPaths.Add([]string{retryCorruptPath1})
 
 			opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded}
@@ -311,8 +310,8 @@ func TestMissingObjectProbePreservesTheExpiredBudget(t *testing.T) {
 				src := &budgetBlockedParquetSource{fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}}
 				cfg := hybridDuckConfig()
 				cfg.QueryTimeout = 50 * time.Millisecond
-				e := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-					cfg, testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+				e := NewDBFederatedQueryEngine(pg, duck, nil,
+					cfg, testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 				if cached {
 					e.corruptPaths.Add([]string{retryCorruptPath1})
 				}
@@ -364,8 +363,8 @@ func TestMissingObjectProbeCancelledByTheCallerDoesNotDegrade(t *testing.T) {
 					fakeParquetSource: fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}},
 					cancel:            cancel,
 				}
-				e := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-					hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x", WithParquetSource(src))
+				e := NewDBFederatedQueryEngine(pg, duck, nil,
+					hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 				if cached {
 					e.corruptPaths.Add([]string{retryCorruptPath1})
 				}
@@ -409,9 +408,8 @@ func TestCorruptRefusalDegradesToPostgresOnly(t *testing.T) {
 				{midStreamFail: true, drainFails: []string{retryCorruptPath1}},
 			}}
 			pg := &fakePostgresFederatedSource{}
-			e := NewDBFederatedQueryEngine(pg, &fakeDirtyIDFetcher{}, duck, nil,
-				hybridDuckConfig(), testMetadataCacheSchema7(t), "host=x",
-				WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}))
+			e := NewDBFederatedQueryEngine(pg, duck, nil,
+				hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}), withFakeHotLeg(nil))
 			if cached {
 				e.corruptPaths.Add([]string{retryCorruptPath1})
 			}

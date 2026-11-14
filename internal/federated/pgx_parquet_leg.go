@@ -13,7 +13,7 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
-// The parquet leg of a pgx pass (design.md §6.1.1, step 4): the dirty set
+// The parquet leg of a pgx pass (design.md §6.1, step 4): the dirty set
 // staged on a pinned DuckDB connection, the parquet-only statement run there
 // over the frozen path set, and its window streamed with each row's sort key.
 
@@ -27,7 +27,7 @@ type parquetLeg struct {
 	sqlStr string
 	args   []any
 	// translateMs, executeMs and streamMs are the leg's stages, reported as
-	// the attach pass reports its own (emitDuckDBScanMetrics). Each sums the
+	// the fed_query_* translation, execution and streaming stages. Each sums the
 	// leg's statements: the page's, and the #181 recount's when the page
 	// carried no count (addStages). streamMs is the leg's row iteration
 	// until the pass hands the page to its row handler, which adds the
@@ -46,7 +46,7 @@ func (l *parquetLeg) addStages(o parquetLeg) {
 // runParquetLeg renders the parquet-only statement for window, stages dirty
 // and runs the statement on one connection, and collects the window's rows.
 // A failure that reached DuckDB is classified and reported to the breaker
-// as a failed attach scan is (failDuckDBScan).
+// (failDuckDBScan).
 func (p *pgxPass) runParquetLeg(ctx context.Context, dirty []uuid.UUID, window sqlgen.ParquetWindow) (parquetLeg, error) {
 	e := p.e
 	translateStart := p.planCtx.now()

@@ -3,196 +3,20 @@ package sqlgen
 import (
 	"fmt"
 	"strings"
-	"text/template"
 
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/sqlutil"
-
-	"github.com/google/uuid"
-	"github.com/lychee-technology/forma"
 )
 
-// RenderDuckDBQuery renders a DuckDB SQL template (which uses "?" placeholders)
-// and combines the provided whereArgs (typically from buildDuckClause)
-// with the template-collected args. The order is: whereArgs first, then template args.
-func RenderDuckDBQuery(tpl *template.Template, params any, whereArgs []any) (string, []any, error) {
-	sql, tplArgs, err := RenderSQLTemplate(tpl, params)
-	if err != nil {
-		return "", nil, err
-	}
-	combined := make([]any, 0, len(whereArgs)+len(tplArgs))
-	combined = append(combined, whereArgs...)
-	combined = append(combined, tplArgs...)
-	return sql, combined, nil
-}
-
-// BuildDuckDBQuery prepares a DuckDB SQL string and its arguments for a federated query.
-// It accepts optional DualClauses produced by ToDualClauses; when provided it will use
-// the DuckClause and DuckArgs as the base where clause and inject PgMainClause into template
-// params so the template (or tests) can observe the pushdown fragment. Dirty-ID exclusions
-// are appended to the DuckDB clause regardless of source.
-func BuildDuckDBQuery(tpl *template.Template, params any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, dual *DualClauses) (string, []any, error) {
-	isAdvancedTemplate := tpl == AdvancedQueryTemplateDuckDB
-
-	// Prepare where variables
-	var whereClause string
-	var whereArgs []any
-
-	// Ensure params is a map so we can inject Anchor.Condition, PgMainClause, and dirty helpers
-	m, ok := params.(map[string]any)
-	if !ok {
-		m = map[string]any{}
-	}
-
-	// Ensure Anchor map exists
-	anchor, ok := m["Anchor"].(map[string]any)
-	if !ok || anchor == nil {
-		anchor = map[string]any{}
-		m["Anchor"] = anchor
-	}
-
-	// If dual clauses provided, prefer them; otherwise fall back to legacy generator.
-	if dual != nil && dual.DuckClause != "" {
-		whereClause = dual.DuckClause
-		whereArgs = make([]any, 0, len(dual.DuckArgs)+len(dual.PgMainArgs)+len(dual.DuckArgs))
-		if len(dual.DuckArgs) > 0 {
-			whereArgs = append(whereArgs, dual.DuckArgs...)
-		}
-		// Generic templates need the dirty-id exclusion physically appended into the clause.
-		// The production DuckDB federated template manages dirty IDs via its own CTE/anti-join.
-		if !isAdvancedTemplate && len(dirtyIDs) > 0 {
-			var exclArgs []any
-			whereClause, exclArgs = AppendDirtyExclusion(whereClause, dirtyIDs)
-			whereArgs = append(whereArgs, exclArgs...)
-		}
-		anchor["Condition"] = whereClause
-
-		// Inject PgMainClause for inspection / hot-leg integration
-		m["PgMainClause"] = dual.PgMainClause
-		m["PgMainArgs"] = dual.PgMainArgs
-		m["HasPgMainClause"] = dual.PgMainClause != ""
-		if isAdvancedTemplate {
-			m["LOGICAL_WHERE_CLAUSE"] = dual.DuckClause
-			m["PG_WHERE_CLAUSE"] = defaultIfEmpty(dual.PgMainClause, "1=1")
-			m["HasHot"] = FederatedQueryHasHot(q)
-			// The advanced-template bind interleave is [DuckArgs, PgMainArgs,
-			// DuckArgs] (s3 semijoin, pg_source WHERE, visible). When the tier
-			// form prunes pg_source, its args must be dropped with it or every
-			// later placeholder mis-binds.
-			if FederatedQueryHasHot(q) && len(dual.PgMainArgs) > 0 {
-				whereArgs = append(whereArgs, dual.PgMainArgs...)
-			}
-			if len(dual.DuckArgs) > 0 {
-				whereArgs = append(whereArgs, dual.DuckArgs...)
-			}
-		}
-		if err := injectDuckDBTemplateParams(m, q, dual); err != nil {
-			return "", nil, fmt.Errorf("build DuckDB query: %w", err)
-		}
-		if isAdvancedTemplate {
-			if err := requireProjectionParams(m); err != nil {
-				return "", nil, fmt.Errorf("build DuckDB query: %w", err)
-			}
-			if err := requireS3Paths(m); err != nil {
-				return "", nil, fmt.Errorf("build DuckDB query: %w", err)
-			}
-		}
-		if !isAdvancedTemplate && len(dual.PgMainArgs) > 0 {
-			whereArgs = append(whereArgs, dual.PgMainArgs...)
-		}
-		whereArgs = appendKeysetArgs(m, whereArgs)
-
-		merged := MergeTemplateParamsWithDirtyIDs(m, dirtyIDs)
-		return RenderDuckDBQuery(tpl, merged, whereArgs)
-	}
-
-	return buildDuckDBQueryLegacy(tpl, m, anchor, q, dirtyIDs, isAdvancedTemplate)
-}
-
-// buildDuckDBQueryLegacy renders the dual==nil fallback path (preserved for
-// tests; production always takes the dual path). A nil query keeps the old
-// GenerateDuckDBWhereClause(nil) contract: "1=1".
-func buildDuckDBQueryLegacy(tpl *template.Template, m map[string]any, anchor map[string]any, q *model.FederatedAttributeQuery, dirtyIDs []uuid.UUID, isAdvancedTemplate bool) (string, []any, error) {
-	var fallbackCond forma.Condition
-	if q != nil {
-		fallbackCond = q.Condition
-	}
-	whereClause, whereArgs, err := buildDuckClause(fallbackCond, nil)
-	if err != nil {
-		return "", nil, err
-	}
-	if !isAdvancedTemplate && len(dirtyIDs) > 0 {
-		var exclArgs []any
-		whereClause, exclArgs = AppendDirtyExclusion(whereClause, dirtyIDs)
-		whereArgs = append(whereArgs, exclArgs...)
-	}
-	anchor["Condition"] = whereClause
-	if isAdvancedTemplate {
-		m["LOGICAL_WHERE_CLAUSE"] = whereClause
-		m["HasHot"] = FederatedQueryHasHot(q)
-		if len(whereArgs) > 0 {
-			whereArgs = append(whereArgs, whereArgs...)
-		}
-	}
-	if err := injectDuckDBTemplateParams(m, q, nil); err != nil {
-		return "", nil, fmt.Errorf("build DuckDB query: %w", err)
-	}
-	if isAdvancedTemplate {
-		if err := requireProjectionParams(m); err != nil {
-			return "", nil, fmt.Errorf("build DuckDB query: %w", err)
-		}
-		if err := requireS3Paths(m); err != nil {
-			return "", nil, fmt.Errorf("build DuckDB query: %w", err)
-		}
-	}
-	whereArgs = appendKeysetArgs(m, whereArgs)
-
-	merged := MergeTemplateParamsWithDirtyIDs(m, dirtyIDs)
-	return RenderDuckDBQuery(tpl, merged, whereArgs)
-}
-
-// projectionParamKeys are the schema-derived projection params the advanced
-// template renders (sorted; keep sorted so the missing-param error is
-// deterministic). Production always sets all seven via the engine's
-// injectSchemaProjections — from BuildSchemaProjection (schema cache) or
-// BuildBenchmarkProjections (benchmark schemas). The renderer used to
-// substitute a retired toy-schema projection (name/age/tag, phantom ltbase_*
-// parquet aliases) for any missing key; that projection cannot be scanned by
-// duckDBScanBuffers under the #147 positional-scan contract, so a missing key
-// is now a hard error instead (#222).
-var projectionParamKeys = []string{
-	"EAVPivotAttrs",
-	"EAVPivotSelect",
-	"HasEAVPivot",
-	"OuterSelect",
-	"PGGroupBy",
-	"PGSourceSelect",
-	"S3SourceSelect",
-}
-
-// requireProjectionParams fails an advanced-template render whose params are
-// missing any schema-projection key, naming every absent key.
-func requireProjectionParams(params map[string]any) error {
-	var missing []string
-	for _, key := range projectionParamKeys {
-		if _, ok := params[key]; !ok {
-			missing = append(missing, key)
-		}
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	return fmt.Errorf("advanced DuckDB template render is missing schema projection params [%s]; derive them via BuildSchemaProjection or BuildBenchmarkProjections — the toy-schema defaults were retired (#222)", strings.Join(missing, ", "))
-}
-
-// requireS3Paths fails an advanced-template render whose parquet scan source
+// requireS3Paths fails a parquet-only render whose parquet scan source
 // is unbound. The template renders FROM {{.S3_SCAN_SOURCE}} with no guard of
 // its own, so an absent binding used to reach DuckDB as the literal
 // "<no value>" — a parser error that classified as a degradable read failure,
 // indistinguishable from a transient S3 outage (#299). The engine now rejects
 // an empty resolved path set before it gets here (ErrNoParquetPaths); this
 // keeps the bad render unreachable from every other caller too, the same way
-// requireProjectionParams closed the retired toy-projection hole (#222).
+// requireParquetOnlyProjection keeps the retired toy-projection hole (#222)
+// closed.
 // It checks S3_SCAN_SOURCE rather than S3_PATHS because that is what the
 // template actually consumes since #255 — the scan source is derived from the
 // path set in injectDuckDBTemplateParams, so an unresolved path set still
@@ -214,8 +38,9 @@ func defaultIfEmpty(s, fallback string) string {
 	return s
 }
 
-// FederatedQueryHasHot reports whether the hot tier participates in the
-// advanced-template render (#184). Empty PreferredTiers means the default
+// FederatedQueryHasHot reports whether the hot tier participates in a
+// federated pass (#184): the hot form stages the widened dirty set and reads
+// the hot keys, the hot-excluded form the strict set alone. Empty PreferredTiers means the default
 // all-tier form (the HTTP layer and harness both normalize to all three, and
 // legacy nil-query renders must keep the historical full shape); a non-empty
 // list participates only when it names hot. Routing has already intercepted
@@ -236,27 +61,18 @@ func FederatedQueryHasHot(q *model.FederatedAttributeQuery) bool {
 }
 
 func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttributeQuery, dual *DualClauses) error {
-	// Defensive default for the #252 flush-grace cutoff, set before the nil-q
-	// return so every render path (dual, legacy, nil query) produces valid
-	// SQL with the pre-#252 barrier when the engine did not supply a cutoff.
-	if _, ok := params["FlushGraceCutoffMs"]; !ok {
-		params["FlushGraceCutoffMs"] = FlushGraceCutoffDisabled
-	}
-
 	// The parquet path set and the scan source derived from it are set before
-	// the nil-q return too: the advanced template consumes S3_SCAN_SOURCE
-	// unconditionally, so every render path (dual, legacy, nil query) must be
-	// able to bind it.
+	// the nil-q return too: the template consumes S3_SCAN_SOURCE
+	// unconditionally, so every render must be able to bind it.
 	if _, ok := params["S3_PATHS"]; !ok {
 		if paths, ok := params["DuckDBS3Paths"].([]string); ok && len(paths) > 0 {
 			params["S3_PATHS"] = formatDuckDBPathList(paths)
 		}
 	}
 	// The scan source folds the resolved path list with the cold-missing
-	// column set (#255) and the cold-pinned set (#371). Derived here — the
-	// single point both the direct builder and CompileDuckDBQuery flow
-	// through — so the compiled skeleton and the direct render can never
-	// disagree.
+	// column set (#255) and the cold-pinned set (#371). Derived here, the
+	// single point every render flows through, so no two renders of one
+	// path set can disagree.
 	// EmptyParquetScan (#720) replaces the read with a relation holding no
 	// rows, for a schema the engine has shown has no parquet to read.
 	if _, ok := params["S3_SCAN_SOURCE"]; !ok {
@@ -277,14 +93,6 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 	params["PAGE_SIZE"] = q.Limit
 	params["OFFSET"] = q.Offset
 
-	if _, ok := params["PG_WHERE_CLAUSE"]; !ok {
-		pgWhere := "1=1"
-		if dual != nil && dual.PgMainClause != "" {
-			pgWhere = dual.PgMainClause
-		}
-		params["PG_WHERE_CLAUSE"] = pgWhere
-	}
-
 	if _, ok := params["LOGICAL_WHERE_CLAUSE"]; !ok {
 		if anchor, ok := params["Anchor"].(map[string]any); ok {
 			if cond, ok := anchor["Condition"].(string); ok && cond != "" {
@@ -292,8 +100,6 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 			}
 		}
 	}
-
-	injectPostgresTableRefs(params)
 
 	// Keyset pagination: inject cursor-derived WHERE clause and ORDER BY.
 	// The clause uses positional "?" placeholders; its args are appended after
@@ -378,47 +184,4 @@ func nonKeysetOrderTerms(q *model.FederatedAttributeQuery) []string {
 		return defaultTerms
 	}
 	return append(parts, stableTiebreak)
-}
-
-// appendKeysetArgs extracts KEYSET_ARGS from the params map and appends them
-// to the provided args slice. The keyset args are removed from params so the
-// template renderer does not see them.
-func appendKeysetArgs(params map[string]any, args []any) []any {
-	raw, ok := params["KEYSET_ARGS"]
-	if !ok {
-		return args
-	}
-	keysetArgs, ok := raw.([]interface{})
-	if !ok || len(keysetArgs) == 0 {
-		return args
-	}
-	delete(params, "KEYSET_ARGS")
-	return append(args, keysetArgs...)
-}
-
-// injectPostgresTableRefs sets the hot leg's catalog-qualified table
-// references (PG_CHANGE_LOG, PG_MAIN, PG_EAV) in the catalog
-// PostgresCatalogAlias names for DuckDBPGConnString, unless the caller set
-// them. Only the alias reaches the rendered SQL: the connection string, and
-// the password in it, travel in PostgresAttachSQL, which the engine runs
-// ahead of the query (#752). Before #752 the template interpolated the
-// escaped connection string into every postgres_scan call, so each rendered
-// query, and every log line or plan that quoted one, carried the password
-// (#301, #306).
-func injectPostgresTableRefs(params map[string]any) {
-	connStr, _ := params["DuckDBPGConnString"].(string)
-	alias := PostgresCatalogAlias(connStr)
-	refs := []struct{ key, schemaKey, tableKey string }{
-		{"PG_CHANGE_LOG", "ChangeLogSchema", "ChangeLogScanTable"},
-		{"PG_MAIN", "MainSchema", "MainScanTable"},
-		{"PG_EAV", "EAVSchema", "EAVScanTable"},
-	}
-	for _, r := range refs {
-		if _, ok := params[r.key]; ok {
-			continue
-		}
-		schema, _ := params[r.schemaKey].(string)
-		table, _ := params[r.tableKey].(string)
-		params[r.key] = PostgresTableRef(alias, schema, table)
-	}
 }

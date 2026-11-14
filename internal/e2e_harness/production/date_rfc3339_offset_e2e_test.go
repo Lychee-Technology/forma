@@ -21,8 +21,11 @@ import (
 // (#756). The pg-main pushdown compared the raw text against the canonical
 // image, so an unflushed fraction, offset or space-separated image could be
 // dropped by a comparison its parquet copy matched (#755). Both are pinned
-// on the unflushed DuckDB hot leg, delta parquet and base parquet, through
-// the production DuckDB reader and CDC exporter and their session settings.
+// on delta parquet and base parquet, through the production DuckDB reader
+// and CDC exporter and their session settings. While the rows are hot, the
+// federated route reads them through the OLTP reader and filters them on
+// PostgreSQL (design.md §6.1, What a hot row reads as), so it must answer
+// as the PostgreSQL route does, refusals included.
 
 // The planted images and the instant each names. offset, negOffset, upper
 // and lower are RFC3339, so the OLTP read parses them; spaced is not, so a
@@ -156,9 +159,9 @@ func assertRFC3339OffsetReads(ctx context.Context, t *testing.T, env *Env, label
 	}
 }
 
-// runRFC3339OffsetAllTiers walks the planted rows through the unflushed
-// DuckDB hot leg, delta parquet and base parquet, with the same reads and
-// probe answers on each.
+// runRFC3339OffsetAllTiers holds the unflushed rows' federated answers to
+// the PostgreSQL route's, then walks them through delta parquet and base
+// parquet, with the same reads and probe answers on each.
 func runRFC3339OffsetAllTiers(ctx context.Context, t *testing.T, env *Env, withNote bool) {
 	t.Helper()
 	simple := DefaultSchemaFixtures()[0]
@@ -169,7 +172,7 @@ func runRFC3339OffsetAllTiers(ctx context.Context, t *testing.T, env *Env, withN
 		runWidthProbes(ctx, t, env, label, duck, true, rfc3339OffsetProbes(rows))
 	}
 
-	check("hot-duck")
+	requireProbesAgree(ctx, t, env, "hot", duck, rfc3339OffsetProbes(rows))
 	if _, err := env.RunFlush(ctx); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
@@ -181,20 +184,18 @@ func runRFC3339OffsetAllTiers(ctx context.Context, t *testing.T, env *Env, withN
 }
 
 // TestBoundRFC3339OffsetImageNoEAVAllTiers: every attribute is
-// column-bound, so the DuckDB hot leg takes BuildPGSelectNoEAV.
+// column-bound, so the parquet tiers take the no-EAV projection.
 func TestBoundRFC3339OffsetImageNoEAVAllTiers(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339Props, rfc3339Attrs)))
-	pinAttachHotLeg(env) // a non-canonical image is outside the query contract (#763); the hot phase pins the attach hot leg's read of it, while the pgx hot leg reads it through the OLTP reader, which refuses it
 	runRFC3339OffsetAllTiers(ctx, t, env, false)
 }
 
 // TestBoundRFC3339OffsetImageEAVJoinedAllTiers: the EAV-only note forces
-// the EAV-joined hot projection, where the bound datetime sits in a
-// COALESCE with the EAV pivot.
+// the EAV-joined projection, where the bound datetime sits in a COALESCE
+// with the EAV pivot.
 func TestBoundRFC3339OffsetImageEAVJoinedAllTiers(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, rfc3339MixedProps, rfc3339MixedAttrs)))
-	pinAttachHotLeg(env) // a non-canonical image is outside the query contract (#763); the hot phase pins the attach hot leg's read of it, while the pgx hot leg reads it through the OLTP reader, which refuses it
 	runRFC3339OffsetAllTiers(ctx, t, env, true)
 }

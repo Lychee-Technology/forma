@@ -195,14 +195,6 @@ func TestToDualClauses_ExtendedOperators(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.want, dc)
 			require.Equal(t, tc.span, paramIndex, "paramIndex advancement")
-
-			plan, err := PlanDualClauses(tc.cond, "eav_table", 7, cache, 0)
-			require.NoError(t, err)
-			bound := 0
-			got, err := plan.Bind(tc.cond, cache, &bound)
-			require.NoError(t, err)
-			require.Equal(t, dc, got)
-			require.Equal(t, paramIndex, bound)
 		})
 	}
 }
@@ -262,25 +254,27 @@ func TestToDualClauses_ExtendedOperatorErrors(t *testing.T) {
 	}
 }
 
-// The federated plan cache keys on (attribute, operator) alone and reuses the
-// cached clause text, so a plan compiled for one list must bind any other
-// list of any length.
-func TestPlanDualClauses_SetOperandIsOneBindAtAnyLength(t *testing.T) {
+// The federated plan cache keys the parquet-only skeleton on (attribute,
+// operator) alone and reuses the DuckDB clause text the first request
+// rendered, binding each later request's own args (federated
+// buildParquetOnlyQueryCached), so a set leaf must render the same clauses
+// for a list of any length, with the whole list as one bind.
+func TestToDualClauses_SetOperandIsOneBindAtAnyLength(t *testing.T) {
 	cache := extendedCache()
 	short := charKv("username", `in:["a","b"]`)
 	long := charKv("username", `in:["a","b","c","d","e","f","g"]`)
 
-	shortPlan, err := PlanDualClauses(short, "eav_table", 7, cache, 0)
+	shortIdx, longIdx := 0, 0
+	shortDC, err := ToDualClauses(short, "eav_table", 7, cache, &shortIdx)
 	require.NoError(t, err)
-	longPlan, err := PlanDualClauses(long, "eav_table", 7, cache, 0)
+	longDC, err := ToDualClauses(long, "eav_table", 7, cache, &longIdx)
 	require.NoError(t, err)
-	require.Equal(t, shortPlan, longPlan)
+	require.Equal(t, shortDC.DuckClause, longDC.DuckClause)
+	require.Equal(t, shortDC.PgClause, longDC.PgClause)
+	require.Equal(t, shortDC.PgMainClause, longDC.PgMainClause)
+	require.Equal(t, shortIdx, longIdx)
 
-	idx := 0
-	bound, err := shortPlan.Bind(long, cache, &idx)
-	require.NoError(t, err)
 	want := []string{"a", "b", "c", "d", "e", "f", "g"}
-	require.Equal(t, []any{int16(1), want}, bound.PgArgs)
-	require.Equal(t, []any{want}, bound.DuckArgs)
-	require.Equal(t, shortPlan.ParamSpan, idx)
+	require.Equal(t, []any{int16(1), want}, longDC.PgArgs)
+	require.Equal(t, []any{want}, longDC.DuckArgs)
 }

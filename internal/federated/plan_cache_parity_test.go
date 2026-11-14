@@ -19,9 +19,9 @@ func capturePlanPathSQL(t *testing.T, withCache bool, schemaID int16, mc *schema
 	if withCache {
 		opts = append(opts, WithPlanCache(queryplan.NewCache(16)))
 	}
-	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDirtyIDFetcher{}, duck, nil,
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil,
 		hybridDuckConfig(),
-		mc, "host=pg dbname=x", opts...)
+		mc, append(opts, withFakeHotLeg(nil))...)
 	q := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: schemaID, Limit: 25}}
 	q.PreferredTiers = []model.DataTier{model.DataTierHot, model.DataTierCold}
 	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://b/bench/{schema_id}/base.parquet"}
@@ -44,9 +44,9 @@ func TestEnginePlanCachePathParity(t *testing.T) {
 	directSQL, directArgs := capturePlanPathSQL(t, false, 100, mc)
 	cachedSQL, cachedArgs := capturePlanPathSQL(t, true, 100, mc)
 
-	// Each request stamps its own #252 cutoff, the sole legitimate byte
-	// difference between the two paths; normalize it before comparing.
-	require.Equal(t, normalizeFlushGraceCutoff(directSQL), normalizeFlushGraceCutoff(cachedSQL),
+	// The statement carries no per-request value (the #252 cutoff is read in
+	// the snapshot, not rendered), so the two paths compare byte for byte.
+	require.Equal(t, directSQL, cachedSQL,
 		"engine cache path must produce byte-identical SQL to the direct builder")
 	require.Equal(t, directArgs, cachedArgs)
 }

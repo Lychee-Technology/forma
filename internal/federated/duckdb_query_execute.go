@@ -5,10 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/model"
-	"github.com/lychee-technology/forma/internal/redact"
-	"github.com/lychee-technology/forma/internal/sqlgen"
 	"go.uber.org/zap"
 )
 
@@ -25,19 +22,10 @@ import (
 type scan struct {
 	parquetPaths    []string
 	pathsFromSource bool
-	dirtyIDs        []uuid.UUID
-	// translateMs is the wall time SQL rendering took for this pass. It
-	// rides along rather than being emitted at the render site so the pass's
-	// telemetry is reported as one set once the pass has succeeded (see
-	// emitDuckDBScanMetrics).
-	translateMs int64
 	// probe is this call's half-open reservation (zero when the breaker was
 	// closed at admission), so the corrupt-confirmed release below can only
 	// free a slot this caller actually holds (#349 review R2-2).
 	probe ProbeToken
-	// emptyParquetScan marks a pass whose parquet leg scans nothing (#720);
-	// its page stands only once confirmNoParquetPublished has run.
-	emptyParquetScan bool
 	// globListed marks a pgx pass's frozen inventory: objects a glob listed,
 	// which no manifest vouches for, so a missing one is not a manifest
 	// inconsistency.
@@ -57,150 +45,25 @@ func retryablePassFailure(err error) (string, bool) {
 	return "", false
 }
 
-// queryDuckDB runs the rendered query. The query references the hot leg's
-// PostgreSQL catalog by alias (#752), so an executor that can attaches it on
-// the query's own connection first (queryWithPostgres). Any other executor
-// gets withPostgresAttach's batch. An engine without a PostgreSQL connection
-// string attaches nothing, and its query fails to bind the catalog instead.
-func (e *DBFederatedQueryEngine) queryDuckDB(ctx context.Context, sqlStr string, args []any) (duckDBRowsIterator, error) {
-	if querier, ok := e.duck.(postgresQuerier); ok && e.pgConnString != "" {
-		return querier.queryWithPostgres(ctx, e.pgConnString, sqlStr, args...)
-	}
-	return e.duck.Query(ctx, e.withPostgresAttach(sqlStr), args...)
-}
-
-// withPostgresAttach prefixes sqlStr with the ATTACH of the hot leg's
-// PostgreSQL catalog. The batch carries the password, so it stays local to
-// the call; sqlStr itself, which execution plans and logs may quote, does
-// not.
-func (e *DBFederatedQueryEngine) withPostgresAttach(sqlStr string) string {
-	if e.pgConnString == "" {
-		return sqlStr
-	}
-	return sqlgen.PostgresAttachSQL(e.pgConnString) + "\n" + sqlStr
-}
-
-// executeAndStreamDuckDB runs the compiled query, streams its rows through
-// rowHandler, and reports the outcome to the circuit breaker. Split from
-// StreamDuckDBFederatedQuery to keep both halves under the function-length cap
-// (#299 review): this half is the part that has actually touched DuckDB, so it
-// owns every RecordFailure/RecordSuccess.
-func (e *DBFederatedQueryEngine) executeAndStreamDuckDB(
-	ctx context.Context,
-	q *model.FederatedAttributeQuery,
-	sqlStr string,
-	args []any,
-	sc scan,
-	rowHandler func(context.Context, *model.PersistentRecord) error,
-	planCtx *duckDBExecutionPlanContext,
-) (int64, error) {
-	planCtx.recordQueryStart()
-	rows, err := e.queryDuckDB(ctx, sqlStr, args)
-	if err != nil {
-		// #306: a PostgreSQL attach failure echoes the whole conn string,
-		// password included, in DuckDB's own prose. Scrub before the text
-		// enters any chain or the execution-plan failure note — this is the
-		// source, so every consumer (embedder logs, future transports) is
-		// covered without repeating #301's boundary redaction.
-		err = redact.Error(err)
-		planCtx.recordQueryFailure(err)
-		return 0, e.failDuckDBScan(ctx, q, sc, err, "execute duckdb query")
-	}
-	defer rows.Close()
-	executeMs := planCtx.millisSince(planCtx.startQuery)
-
-	streamStart := planCtx.now()
-	totalRecords, rowCount, err := e.streamDuckDBRows(ctx, rows, rowHandler)
-	if err != nil {
-		// #306: lazy object opens mean the attach failure can surface here
-		// instead of at Query; same scrub, same reason as above.
-		err = redact.Error(err)
-		if !errors.Is(err, ErrFederatedReadFailed) {
-			// Handler errors are not read failures: they report to the
-			// breaker as before and pass through unclassified.
-			e.breakerRecordFailure(ctx, err)
-			return 0, fmt.Errorf("stream duckdb federated rows: %w", err)
-		}
-		// A mid-stream read failure classifies like an execute failure:
-		// DuckDB opens listed objects lazily, so a missing object can
-		// surface here instead of at Query.
-		//
-		// Free the single pooled connection (#285 SetMaxOpenConns(1)) BEFORE
-		// verification issues its own DuckDB queries — the deferred Close
-		// runs too late and would deadlock the pool. sql.Rows.Close is
-		// idempotent, so the defer stays harmless.
-		_ = rows.Close()
-		return 0, e.failDuckDBScan(ctx, q, sc, err, "stream duckdb federated rows")
-	}
-
-	e.breakerRecordSuccess(ctx)
-	if sc.emptyParquetScan {
-		// The recheck queries DuckDB, and the pool holds one connection.
-		_ = rows.Close()
-		if err := e.confirmNoParquetPublished(ctx, q); err != nil {
-			return 0, err
-		}
-	}
-	outcome := duckDBScanOutcome{
-		translateMs: sc.translateMs,
-		executeMs:   executeMs,
-		streamMs:    planCtx.millisSince(streamStart),
-		rowCount:    rowCount,
-		dirtyRows:   int64(len(sc.dirtyIDs)),
-	}
-	// Metrics first and unconditionally: the execution plan is an optional
-	// diagnostic payload (IncludeExecutionPlan defaults to false on the API),
-	// and the fed_query_* series must describe every successful pass, not
-	// only the ones a caller asked to see a plan for (PR #595 review).
-	// This is also the ONLY place the fed_query_* series are emitted, and it
-	// is reached only after the pass succeeded: a failed pass leaves no
-	// partial sample behind, and the #720 retry counts a logical query once
-	// (the failed first pass is silent), which is what docs/telemetry.md
-	// means by "per successful DuckDB pass".
-	e.emitDuckDBScanMetrics(ctx, outcome)
-	planCtx.recordScanOutcome(outcome)
-
-	return totalRecords, nil
-}
-
 // duckDBScanOutcome is what one successful DuckDB pass measured. Both
 // consumers below read from it so the metric stream and the execution plan
 // can never disagree about the same pass.
 type duckDBScanOutcome struct {
-	// translateMs is the wall time of SQL rendering (buildDuckDBQueryWithPlan);
-	// executeMs is the wall time of duck.Query alone; streamMs is the wall
-	// time of the rows.Next/Scan/handler loop. They are disjoint stages: an
+	// translateMs is the wall time of SQL rendering; executeMs is the wall
+	// time of the statement's execution alone; streamMs is the wall time of
+	// the rows.Next/Scan/handler loop. They are disjoint stages: an
 	// operator uses the split to tell a slow scan from slow result
 	// consumption, which the previous "elapsed since query start" measure
 	// (streaming folded into execution, streaming itself ~0) could not.
 	translateMs, executeMs, streamMs int64
 	// rowCount is the number of rows the pass streamed (the page).
 	rowCount int64
-	// dirtyRows is the size of the anti-join dirty set fetched for the pass.
-	// It is the pg row count and nothing more: Forma does not observe what
-	// the hot leg's PostgreSQL scans inside DuckDB read, so no series claims to
-	// (#596 retired the gauge that used this as a stand-in for it).
+	// dirtyRows is the size of the anti-join dirty set the pass staged.
 	dirtyRows int64
 }
 
-// emitDuckDBScanMetrics reports one successful pass to the engine's telemetry
-// sink as a complete set: the three latency stages and both row-count
-// sources. Everything the pass measured before DuckDB ran (the dirty-set
-// size, the render time) is carried here in the outcome instead of being
-// emitted where it was measured, so a consumer never sees a translation or
-// pg sample without the execution that followed it, and a failed-then-retried
-// query is not counted twice (PR #595 review). Nil-sink safe (Sink methods
-// no-op).
-func (e *DBFederatedQueryEngine) emitDuckDBScanMetrics(ctx context.Context, o duckDBScanOutcome) {
-	e.metrics.EmitLatency(ctx, "translation", o.translateMs)
-	e.metrics.EmitRowCount(ctx, "pg", o.dirtyRows)
-	e.metrics.EmitLatency(ctx, "execution", o.executeMs)
-	e.metrics.EmitLatency(ctx, "streaming", o.streamMs)
-	e.metrics.EmitRowCount(ctx, "duckdb", o.rowCount)
-}
-
 // recordScanOutcome completes the requested execution plan with the pass's
-// timings and row counts. Unlike emitDuckDBScanMetrics it IS gated on
+// timings and row counts. Unlike the fed_query_* metrics it IS gated on
 // IncludeExecutionPlan: the plan is the caller's opt-in diagnostic payload.
 // duckdb_fetch and the DuckDB source's DurationMs keep their meaning as the
 // whole fetch (execute plus stream), so existing plan readers are unaffected
@@ -273,7 +136,7 @@ func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.Fe
 	return &ParquetGuardViolationError{SchemaID: q.SchemaID, Paths: violating, cause: wrapped}
 }
 
-// failScanSources resolves the probe for a pre-flight (resolveScanSources)
+// failScanSources resolves the probe for a pre-flight (resolvePgxScanSources)
 // failure. Objects the #732 type guard could not read fail the read closed,
 // classified exactly like a failed scan over the same path set, so
 // corrupt-object confirmation (#251) and missing-object inconsistency (#187)
@@ -329,58 +192,4 @@ func (e *DBFederatedQueryEngine) confirmCorruptPaths(ctx context.Context, sc sca
 		return nil
 	}
 	return corrupt
-}
-
-// streamDuckDBRows iterates through DuckDB rows and invokes the handler.
-func (e *DBFederatedQueryEngine) streamDuckDBRows(
-	ctx context.Context,
-	rows duckDBRowsIterator,
-	rowHandler func(context.Context, *model.PersistentRecord) error,
-) (int64, int64, error) {
-	buffers := newDuckDBScanBuffers()
-
-	var totalRecords int64
-	totalSet := false
-	rowCount := int64(0)
-
-	for rows.Next() {
-		scanArgs, attrsJSON, totalRec, _, _ := buffers.buildScanArgs()
-
-		if err := rows.Scan(scanArgs...); err != nil {
-			return 0, 0, fmt.Errorf("scan duckdb row: %w: %w", ErrFederatedReadFailed, err)
-		}
-
-		// Build record from buffers
-		record := buffers.buildRecordFromBuffers()
-
-		// Parse attributes JSON
-		if attrsJSON.Valid {
-			if err := parseDuckDBAttributesJSON(attrsJSON.String, record); err != nil {
-				return 0, 0, err
-			}
-		}
-
-		// Clean up empty maps
-		model.CleanupEmptyMaps(record)
-
-		if !totalSet && totalRec.Valid {
-			totalRecords = totalRec.Int64
-			totalSet = true
-		}
-
-		// Invoke handler
-		if rowHandler != nil {
-			if err := rowHandler(ctx, record); err != nil {
-				return 0, 0, err
-			}
-		}
-
-		rowCount++
-	}
-
-	if err := rows.Err(); err != nil {
-		return 0, 0, fmt.Errorf("iterate duckdb rows: %w: %w", ErrFederatedReadFailed, err)
-	}
-
-	return totalRecords, rowCount, nil
 }
