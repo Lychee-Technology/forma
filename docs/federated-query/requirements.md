@@ -5,7 +5,7 @@
 This document defines the architecture for a **Federated Query System** designed to bridge the gap between transactional flexibility (PostgreSQL EAV) and analytical performance (S3 Parquet). The system implements a **dual-track query strategy**:
 
 - **Simple Queries**: Execute directly on PostgreSQL with full pagination support
-- **Advanced Queries**: Utilize DuckDB as a stateless compute engine to perform **Merge-on-Read** operations across three data tiers
+- **Advanced Queries**: Perform **Merge-on-Read** across three data tiers, with DuckDB as a stateless compute engine over the parquet tiers and the Hot tier read from PostgreSQL over pgx
 
 The design leverages bounded data volume constraints (Hot ≤ 10K rows, Warm ≤ 240K rows) to simplify federated query execution while maintaining sub-second data freshness.
 
@@ -43,18 +43,23 @@ The design leverages bounded data volume constraints (Hot ≤ 10K rows, Warm ≤
 │     Simple Query Path          │       │      Advanced Query Path           │
 │                                │       │                                    │
 │  ┌──────────────────────────┐  │       │  ┌──────────────────────────────┐  │
-│  │      PostgreSQL          │  │       │  │         DuckDB               │  │
-│  │   (Direct Execution)     │  │       │  │   (Federated Compute)        │  │
+│  │      PostgreSQL          │  │       │  │   Federated Query Engine     │  │
+│  │   (Direct Execution)     │  │       │  │   (one snapshot, Go merge)   │  │
 │  │                          │  │       │  │                              │  │
 │  │  • entity_main           │  │       │  │  ┌────────────────────────┐  │  │
-│  │  • eav_data              │  │       │  │  │ postgres_scanner       │  │  │
-│  │  • B-tree indexes        │  │       │  │  │ (Hot: PG change_log)   │  │  │
-│  │                          │  │       │  │  └────────────────────────┘  │  │
-│  │  Features:               │  │       │  │  ┌────────────────────────┐  │  │
-│  │  • OFFSET pagination     │  │       │  │  │ httpfs / S3            │  │  │
-│  │  • Exact COUNT           │  │       │  │  │ (Warm: Delta Parquet)  │  │  │
-│  │  • Random page jump      │  │       │  │  │ (Cold: Base Parquet)   │  │  │
-│  └──────────────────────────┘  │       │  │  └────────────────────────┘  │  │
+│  │  • eav_data              │  │       │  │  │ PostgreSQL over pgx    │  │  │
+│  │  • B-tree indexes        │  │       │  │  │ (Hot: change_log dirty │  │  │
+│  │                          │  │       │  │  │  window, entity_main,  │  │  │
+│  │  Features:               │  │       │  │  │  eav_data, PG filter)  │  │  │
+│  │  • OFFSET pagination     │  │       │  │  └────────────────────────┘  │  │
+│  │  • Exact COUNT           │  │       │  │  ┌────────────────────────┐  │  │
+│  │  • Random page jump      │  │       │  │  │ DuckDB (parquet only)  │  │  │
+│  └──────────────────────────┘  │       │  │  │ httpfs / S3            │  │  │
+│                                │       │  │  │ (Warm: Delta Parquet)  │  │  │
+│                                │       │  │  │ (Cold: Base Parquet)   │  │  │
+│                                │       │  │  └────────────────────────┘  │  │
+│                                │       │  │  Go merges hot rows with     │  │
+│                                │       │  │  DuckDB's parquet window     │  │
 │                                │       │  └──────────────────────────────┘  │
 │                                │       │                                    │
 │                                │       │  Features:                         │
@@ -64,6 +69,8 @@ The design leverages bounded data volume constraints (Hot ≤ 10K rows, Warm ≤
 └────────────────────────────────┘       └────────────────────────────────────┘
 ```
 
+On the advanced path the engine reads the dirty set and the matching hot rows from PostgreSQL over its pgx pool, in one snapshot, stages the dirty set in DuckDB for the anti-join, has DuckDB read only the parquet tiers, and merges the two results in Go (design.md §6.1). Until #858 DuckDB read the Hot tier itself, through `postgres_scanner`; no Forma engine loads that extension any more.
+
 ### 2.2 Core Components
 
 | Component | Responsibility |
@@ -71,7 +78,7 @@ The design leverages bounded data volume constraints (Hot ≤ 10K rows, Warm ≤
 | **Query Router** | Parses incoming requests, classifies queries, determines execution path |
 | **Query Translator** | Converts JSON DSL to SQL (PostgreSQL or DuckDB dialect) |
 | **Simple Query Executor** | Executes queries directly on PostgreSQL |
-| **Federated Query Engine** | Orchestrates two-phase merge across data tiers using DuckDB |
+| **Federated Query Engine** | Orchestrates two-phase merge across data tiers: reads the Hot tier from PostgreSQL over pgx, the Warm and Cold tiers through DuckDB, and merges them in Go |
 | **Result Processor** | Formats responses, handles streaming, computes pagination metadata |
 
 ### 2.3 Data Tier Definitions
@@ -1340,3 +1347,4 @@ class ColumnStats:
 | 2.7 | - | §10.2: the degraded fallback's log line (#638) |
 | 2.8 | - | §2.3, §5.1, §5.2 and §7.1: the full scan copies whole tables, not the Hot tier; §10.3: the plan never reports a pushed predicate (#631) |
 | 2.9 | - | §2.3, §5.1, §6.1, §7.1, §9.1, §10.2 and §10.3: the hot leg reads PostgreSQL over pgx, and DuckDB reads only the parquet tiers (#858) |
+| 2.10 | - | §1, §2.1 and §2.2: the architecture diagram and component table show the hot leg over pgx and the Go merge, not `postgres_scanner` (#870) |
