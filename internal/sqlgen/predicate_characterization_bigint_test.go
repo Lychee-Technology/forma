@@ -9,11 +9,11 @@ import "math"
 func buildCharBigIntCases() []charCase {
 	return []charCase{
 		{
-			// #281: bound bigint above 2^53 — all three emitters bind exactly.
+			// #281: bound bigint above 2^53 — both emitters bind exactly.
 			// Duck param is the exact decimal string (toDuckDBDecimalParam renders
 			// int64 via %d); pre-#281 it was "9.00719925474099e+15" (%.15g of the
 			// rounded float64) and PgArgs carried float64(9007199254740992).
-			name: "bigint bound above 2^53: main/eav int64, duck exact string",
+			name: "bigint bound above 2^53: eav int64, duck exact string",
 			cond: charKv("amount", "equals:9007199254740993"),
 			want: DualClauses{
 				PgClause: charEavClause("$1", "value_numeric", "=", "$2"), PgArgs: []any{int16(12), int64(9007199254740993)},
@@ -50,7 +50,7 @@ func buildCharBigIntCases() []charCase {
 			// integer above. The condition DSL has always accepted "…993.0";
 			// pre-#357 it rode ParseFloat's rounded float64, so the same value
 			// bound exactly in one spelling and inexactly in the other.
-			name: "bigint decimal spelling above 2^53: all three exact",
+			name: "bigint decimal spelling above 2^53: eav and duck exact",
 			cond: charKv("amount", "equals:9007199254740993.0"),
 			want: DualClauses{
 				PgClause: charEavClause("$1", "value_numeric", "=", "$2"), PgArgs: []any{int16(12), int64(9007199254740993)},
@@ -62,7 +62,7 @@ func buildCharBigIntCases() []charCase {
 			// #357: exponent spelling — 9.007199254740993e15 is exactly 2^53+1,
 			// a value float64 cannot hold, so only reading the spelling exactly
 			// — never the parsed float64 — can recover it.
-			name: "bigint exponent spelling above 2^53: all three exact",
+			name: "bigint exponent spelling above 2^53: eav and duck exact",
 			cond: charKv("amount", "gte:9.007199254740993e15"),
 			want: DualClauses{
 				PgClause: charEavClause("$1", "value_numeric", ">=", "$2"), PgArgs: []any{int16(12), int64(9007199254740993)},

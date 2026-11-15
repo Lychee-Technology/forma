@@ -8,7 +8,7 @@ import (
 )
 
 // TestBigIntOperandRangeAllBinders pins the #502 contract on the three
-// predicate binders — ConvertPgMainValue (PG main + hybrid), parsePgEavValue
+// predicate binders — ConvertPgMainValue (hybrid entity_main), parsePgEavValue
 // (PG EAV EXISTS) and parseDuckDBRawParam (DuckDB): an integral bigint operand
 // outside int64 range is invalid input on every binder, so both routes answer
 // the same 400 instead of Postgres comparing NUMERIC while DuckDB raises a

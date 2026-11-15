@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// characterizationCache covers every storage/encoding combination the three
-// emitters treat differently: bound/unbound text, integer, numeric, bool
+// characterizationCache covers every storage/encoding combination the two
+// ToDualClauses emitters (PostgreSQL EAV and DuckDB) treat differently: bound/unbound text, integer, numeric, bool
 // (int/text encodings), date (unix-ms/RFC3339 encodings), datetime, uuid.
 func characterizationCache() forma.SchemaAttributeCache {
 	return forma.SchemaAttributeCache{
@@ -55,7 +55,8 @@ func charEavClause(attrPh, valueColumn, sqlOp, valuePh string) string {
 
 // charCase is one row of the characterization matrix: a condition and the exact
 // clause bytes, argument values (with Go types), and paramIndex advancement the
-// three emitters must reproduce.
+// EAV and DuckDB emitters must reproduce. (Before #871 a third, pg-main
+// emitter was pinned here as well.)
 type charCase struct {
 	name string
 	cond forma.Condition
@@ -239,8 +240,8 @@ func buildCharCompositeCases() []charCase {
 }
 
 // TestToDualClauses_Characterization locks the exact clause bytes, argument
-// values (including Go types), and paramIndex advancement of the three
-// emitters for the full storage/encoding matrix. Any parse-once refactor
+// values (including Go types), and paramIndex advancement of the EAV and
+// DuckDB emitters for the full storage/encoding matrix. Any parse-once refactor
 // must keep every case byte- and type-identical. The matrix is assembled from
 // per-storage-class case builders to keep each function within size limits.
 func TestToDualClauses_Characterization(t *testing.T) {

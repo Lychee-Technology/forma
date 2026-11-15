@@ -59,13 +59,14 @@ func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata
 // (#384 P2b); this route used to run strconv.Atoi alone, so `equals:true`
 // was a 400 here and a match on the EAV and DuckDB routes (#404).
 //
-// A bool-encoded leaf under = / != never reaches this bind: both pushdown
-// normalizers take the BoolMainPredicate first (#565), because `= 1` read a
-// stored 2 as neither true nor false and `= '0'` read a stored 'true' as
-// neither, while every reader derives the bool through the truthiness
-// contract. A bool leaf under any other operator is rejected there as
-// well, so the 1/0 binds below only serve a bool attribute bound with a
-// non-bool column encoding.
+// A bool-encoded leaf under = / != never reaches this bind: the hybrid
+// normalizer (normalizeHybridPayload), the only caller of this converter,
+// takes the BoolMainPredicate first (#565), because `= 1` read a stored 2 as
+// neither true nor false and `= '0'` read a stored 'true' as neither, while
+// every reader derives the bool through the truthiness contract. A bool leaf
+// under any other operator is rejected there as well, so the 1/0 binds below
+// only serve a bool attribute bound with a non-bool column encoding. (Until
+// #871 the retired pg-main pushdown normalizer applied the same rule.)
 func convertPgBoolValue(valStr string, attr string, meta forma.AttributeMetadata) (any, error) {
 	parsed, ok := parseBoolOperand(valStr)
 	if !ok {
