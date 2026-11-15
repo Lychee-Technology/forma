@@ -1,6 +1,7 @@
 # Forma
 
 [![CI](https://github.com/Lychee-Technology/forma/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Lychee-Technology/forma/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/Lychee-Technology/forma/branch/main/graph/badge.svg)](https://codecov.io/gh/Lychee-Technology/forma)
 [![Go version](https://img.shields.io/github/go-mod/go-version/Lychee-Technology/forma)](go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
