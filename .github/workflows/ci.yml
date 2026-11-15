@@ -54,6 +54,10 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-24.04-arm
+    # id-token lets the Codecov upload authenticate via OIDC (see below).
+    permissions:
+      contents: read
+      id-token: write
     services:
       postgres:
         image: postgres:16
@@ -131,10 +135,16 @@ jobs:
           FORMA_COORDINATION_BACKEND: dsql-emulated
         run: go test -count=1 ./internal/coordinationtest/
 
+      # Codecov rejects tokenless uploads from this repo's own branches
+      # ("Token required - not valid tokenless upload"), so without auth no
+      # report ever landed and the README badge read "unknown". OIDC needs no
+      # stored secret; on fork PRs the action skips OIDC and falls back to the
+      # tokenless upload Codecov does accept for forks.
       - name: Upload coverage
         uses: codecov/codecov-action@v6
         with:
           files: ./coverage.out
+          use_oidc: true
           fail_ci_if_error: false
 
   # The aurora-dsql suites through MiniStack's strict SQL proxy (#739), beside
