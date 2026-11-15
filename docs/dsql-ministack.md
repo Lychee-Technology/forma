@@ -33,7 +33,9 @@ Only a real cluster can establish these:
   `sslmode=disable`. DSQL requires TLS.
 - **Connection lifetime.** Nothing closes a connection after an hour.
 - **Transaction limits.** The proxy counts rows from `VALUES` tuples only, so
-  `UPDATE`, `DELETE` and `INSERT ... SELECT` are not counted.
+  `UPDATE`, `DELETE` and `INSERT ... SELECT` are not counted. Nothing ends a
+  transaction after five minutes either, so whether a 10,000-row export batch's
+  read fits DSQL's limit stays #823's question.
 - **Catalogs and protocol.** `pg_locks`, `pg_stat_activity` and `pg_index` answer
   as PostgreSQL's do, and `EXPLAIN` shows PostgreSQL's planner.
 
@@ -55,15 +57,26 @@ Results on MiniStack 1.5.38. "Pass" means on this lane, with the meaning above.
 | Claims | Pass, some skip | Contract assertions of `TestClaimExclusivity`, `TestEngineShapedSoak`. The same skip |
 | Unique keys | Pass, some skip | Contract assertions of `TestUniqueKeyScenario`, `TestUniqueness`. The same skip |
 | CDC schema lease | Pass, one skip | `TestLeaseSchemaLock*`, including the two lock-wait tests a cluster skips. The READ COMMITTED race skips, since the lane runs only DSQL's level |
-| CDC flush mark | Pass | `TestMarkInChunksRetriesARealConflict`. The `cdc-flush` tool itself and its export reads are not in the lane |
+| CDC flush mark | Pass | `TestMarkInChunksRetriesARealConflict`. The `cdc-flush` tool itself is not run: see the next row |
+| CDC export reads, pgx (#785, #691) | Pass | `TestDSQLExport*` in `internal/cdc`: `cdc-flush`'s schema list, backlog and batch selection, then its delta export; `cdc-init`'s row count, keyset batches and base export. Each export reads in one `REPEATABLE READ READ ONLY` transaction, with the row ids bound as one `= ANY($1::uuid[])` parameter. The parquet goes to a local file, and the tools' S3 writes and manifests are not in the lane |
 | Schema and index DDL: what the fixtures build | Pass | One DDL a transaction, `CREATE INDEX ASYNC` and `sys.wait_for_job`. The ASYNC rewrite is the coordination fixture's own |
 | Generation ledger upgrade (#738) | Pass, one skip | `TestLedgerUpgrade*` in `cmd/tools/`: see [below](#the-ledger-upgrade-suite). The PostgreSQL lock-wait mechanism of a concurrent apply skips |
 | Schema and index DDL: `init-db` (#690) | Fail, not in the lane | Observed by hand: `only one DDL statement can be run in a transaction` (`25006`) at `ensure entity main table`. Declared indexes use `CREATE INDEX CONCURRENTLY`, which the proxy also refuses |
-| Federated queries' pgx reads (#691) | Not in the lane | The snapshot's dirty-set and parquet-history reads, the hot-keys query and the page read. Before #858 the federated hot leg, and before #785 the CDC export, read PostgreSQL through DuckDB's `postgres` extension instead. Observed by hand on this pin: `ATTACH` succeeds, then every scan fails with `COPY is not supported`, because the extension reads through `COPY ... TO STDOUT (FORMAT binary)`. No Forma engine loads the extension any more |
+| Federated hot leg, pgx (#858, #691) | Pass | `TestDSQLHotLeg*` in `internal/federated`: the snapshot's dirty set in both forms and its parquet-history answer, then passes of the engine under `HotLegTransport = pgx` through the `aurora-dsql` repository's reads, as the factory wires them. The hot-keys query sorts on a main column and filters on an EAV one, the page read returns the hot rows, and the pass merges them with a parquet leg on a local file |
 
 The `init-db` row was run once by hand against this pin, and would only ever fail
-until #690 lands. #691 is narrowed to the federated pgx reads, which have not run
-through the proxy. Each of those issues should add its surface to the lane.
+until #690 lands, which should add its surface to the lane.
+
+Before #785 the CDC export, and before #858 the federated hot leg, read PostgreSQL
+through DuckDB's `postgres` extension. Run by hand on this pin, `ATTACH` succeeded
+and every scan then failed with `COPY is not supported`, since the extension reads
+through `COPY ... TO STDOUT (FORMAT binary)`. No Forma engine loads the extension
+any more, so the lane runs the pgx reads that replaced it.
+
+The export and hot-leg suites build their tables with DSQL's DDL, without
+init-db's secondary indexes, and read a handful of rows. They show that the
+statements pass the proxy and answer correctly on PostgreSQL behind it, not
+how DSQL plans them or how long a full batch takes.
 
 The mechanism assertions skip because they describe the PostgreSQL *engine*: a
 wait followed by `ErrPreconditionFailed`, `SKIP LOCKED`, no `ErrRetryableConflict`.

@@ -16,8 +16,8 @@ engine. You configure it.
 | CDC schema lock (`cdc-flush`, `cdc-init`, `manifest-reconcile`) | Supported: a session advisory lock | Supported with `--pg-engine aurora-dsql`: a lease row (#633). CI runs it on PostgreSQL. It has not yet run against a cluster |
 | `cdc-flush`'s flush mark | Supported: one statement a batch | Supported: statements of at most 1,000 rows, each retried on `40001` (#633). Not yet run against a cluster |
 | `forma-tools init-db` | Supported | Not supported: its DDL is not valid on DSQL (#690) |
-| CDC export reads (`cdc-flush`, `cdc-init`) | Supported | Over the run's pgx pool, in one `REPEATABLE READ READ ONLY` transaction per batch with the row ids as a `uuid[]` parameter (#785). Not yet run against a cluster; whether a 10,000-row batch's read fits DSQL's five-minute transaction limit is unmeasured |
-| Federated queries' hot-tier reads | Supported | Over the engine's pgx pool, in one `REPEATABLE READ READ ONLY` transaction per pass (#858). The statements are in the DSQL lint corpus; they have not run in the MiniStack lane (#691) or against a cluster |
+| CDC export reads (`cdc-flush`, `cdc-init`) | Supported | Over the run's pgx pool, in one `REPEATABLE READ READ ONLY` transaction per batch with the row ids as a `uuid[]` parameter (#785). They pass in the MiniStack lane (#691). Not yet run against a cluster; whether a 10,000-row batch's read fits DSQL's five-minute transaction limit is unmeasured |
+| Federated queries' hot-tier reads | Supported | Over the engine's pgx pool, in one `REPEATABLE READ READ ONLY` transaction per pass (#858). The statements are in the DSQL lint corpus and pass in the MiniStack lane (#691). Not yet run against a cluster |
 
 ## Choosing the engine
 
@@ -297,10 +297,18 @@ without the wait. What runs:
   at 1,000 rows or fewer; on a REPEATABLE READ session, a writer's commit
   fails the mark with `40001`, and the retry marks the rows at their listed
   version and leaves dirty the row the writer advanced.
+- `internal/cdc/dsql_export_integration_test.go`, the CDC tools' reads on
+  tables built with DSQL's DDL: `cdc-flush`'s batch selection and delta
+  export, and `cdc-init`'s batches and base export.
+- `internal/federated/pgx_hot_leg_dsql_integration_test.go`, the federated
+  hot leg on the same tables: the snapshot's dirty set and parquet-history
+  answer, and passes under `HotLegTransport = pgx` that read the hot keys and
+  the page's hot rows through the `aurora-dsql` repository.
 
 **On MiniStack's strict SQL proxy.** `make test-dsql-ministack` runs the
-repository tests, the schema lease and the coordination suite through a
-SQL-validating proxy over PostgreSQL. It needs Docker and no AWS credentials.
+repository tests, the schema lease, the CDC export's and the federated hot
+leg's reads, and the coordination suite through a SQL-validating proxy over
+PostgreSQL. It needs Docker and no AWS credentials.
 It shows that the SQL passes the proxy's DSQL rules, and nothing about optimistic
 concurrency, IAM or TLS. See [MiniStack lane](dsql-ministack.md) for its coverage
 matrix and what a pass does not establish.
@@ -330,7 +338,12 @@ acquire that a live lease blocks returns no row, so `TryLock` answers "not
 acquired" rather than an error. The blocked-renewal and slow-acquire tests
 skip on a cluster, since DSQL has no lock wait to block on.
 
-`FORMA_DSQL_DSN` alone means a genuine cluster, and these tests skip for it. On
+`FORMA_DSQL_DSN` also points the CDC export's and the hot leg's read tests
+at the cluster (`go test ./internal/cdc -run TestDSQLExport -v` and
+`go test ./internal/federated -run TestDSQLHotLeg -v`). Neither has run there
+yet; #823 owns that.
+
+`FORMA_DSQL_DSN` alone means a genuine cluster, and the lock-wait tests skip for it. On
 MiniStack `FORMA_DSQL_TARGET=ministack` says otherwise, and they run, because
 PostgreSQL behind its proxy has the lock waits they need.
 
