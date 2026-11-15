@@ -125,7 +125,8 @@ func insertEAVRows(ctx context.Context, t *testing.T, env *Env, schemaID int16, 
 // it already is, and answers it. One attribute at a time keeps the column's
 // statistics about that attribute: every uuid sorts below every t-prefixed
 // note, so with both present the planner judges a token gt or a note lt to
-// select half of value_text and scans, whatever the collation (#815).
+// select half of value_text, whatever the collation, and plans the query
+// around that. TestMixedEAVTextRangePlans measures the mixed case (#815).
 func loadEAVAttribute(ctx context.Context, t *testing.T, env *Env, loaded, attr string) string {
 	t.Helper()
 	if attr == "" || attr == loaded {
