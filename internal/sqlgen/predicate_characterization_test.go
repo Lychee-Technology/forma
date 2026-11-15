@@ -134,7 +134,7 @@ func buildCharTextCases() []charCase {
 func buildCharNumericBoolCases() []charCase {
 	return []charCase{
 		{
-			name: "integer gt: main int64, eav narrowed float64, duck int64",
+			name: "integer gt: eav narrowed float64, duck int64",
 			cond: charKv("age", "gt:30"),
 			want: DualClauses{
 				PgClause: charEavClause("$1", "value_numeric", ">", "$2"), PgArgs: []any{int16(2), float64(30)},
@@ -165,7 +165,7 @@ func buildCharNumericBoolCases() []charCase {
 			span: 2,
 		},
 		{
-			name: "bool bool-int encoding: main BETWEEN range (#565), eav truthy bool, duck true",
+			name: "bool bool-int encoding (#565): eav truthy bool, duck true",
 			cond: charKv("active", "equals:1"),
 			want: DualClauses{
 				PgClause: charEXISTS + "$1 AND (x.value_numeric > 0.5) = $2)", PgArgs: []any{int16(5), true},
@@ -174,7 +174,7 @@ func buildCharNumericBoolCases() []charCase {
 			span: 2,
 		},
 		{
-			name: "bool bool-text encoding zero: main `= '1'` contract against false (#565), eav truthy bool, duck false",
+			name: "bool bool-text encoding zero (#565): eav truthy bool, duck false",
 			cond: charKv("verified", "equals:0"),
 			want: DualClauses{
 				PgClause: charEXISTS + "$1 AND (x.value_numeric > 0.5) = $2)", PgArgs: []any{int16(6), false},
