@@ -88,7 +88,7 @@ make test
 - [Condition DSL](./condition-dsl.md) - Filter operators, `in`/`not_in`, null tests and `$now`
 - [Declared Indexes](./schema-indexes.md) - Composite indexes on column-bound attributes via `x-forma-indexes`
 - [Text collation](./text-collation.md) - Why Forma's text columns are `COLLATE "C"`, what that changes for queries, and how to migrate tables created before it
-- [Text ranges on mixed EAV attributes](./eav-text-range-plans.md) - PostgreSQL plans for text and uuid ranges sharing `eav_data.value_text`: what the planner estimates, what it costs, and why it is not a collation effect
+- [Text ranges on mixed EAV attributes](./eav-text-range-plans.md) - PostgreSQL plans for text and uuid ranges sharing `eav_data.value_text`: what the planner estimates, what it costs, and why it is not a collation effect, with the recorded run's SQL and full plans
 - [Row IDs and Unique Keys](./unique-keys.md) - Caller-supplied row IDs on create, unique keys via `x-forma-unique-keys`, `Tx.Upsert`, and `build-unique-keys`
 - [Claims](./claims.md) - `Tx.Claim`: take up to a limit of matching rows without waiting for rows others hold, with caller-defined leases and generation fencing, and per-group FIFO through group heads
 - [GitHub](https://github.com/ruoshui/forma) - Source code and issues
