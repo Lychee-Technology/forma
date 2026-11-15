@@ -4,8 +4,9 @@
 #   run   start a pinned MiniStack, create a cluster with a SQL data plane,
 #         prove the strict proxy answers, run the aurora-dsql suites through
 #         it (the generation-ledger upgrade suite with its parquet tier on
-#         MiniStack's S3), check their skips against the skip ledger, and
-#         tear everything down
+#         MiniStack's S3, the CDC export's and the federated hot leg's pgx
+#         reads), check their skips against the skip ledger, and tear
+#         everything down
 #   down  remove what an interrupted run left behind
 #
 # Every failure is a non-zero exit, including a failed cleanup. Nothing here
@@ -285,7 +286,8 @@ run_suites() {
 		die "the strict SQL proxy is not reachable: no suite ran, see $artifacts/gate.log"
 	fi
 	run_suite entity 8 -timeout=5m ./internal -run '^TestDSQL(Engine|ClusterProbe)'
-	run_suite cdc 8 -timeout=5m ./internal/cdc -run '^(TestLeaseSchemaLock|TestMarkInChunksRetriesARealConflict)'
+	run_suite cdc 10 -timeout=5m ./internal/cdc -run '^(TestLeaseSchemaLock|TestMarkInChunksRetriesARealConflict|TestDSQLExport)'
+	run_suite federated 2 -timeout=5m ./internal/federated -run '^TestDSQLHotLeg'
 	run_suite ledger 6 -timeout=10m ./cmd/tools -run '^TestLedgerUpgrade'
 	run_suite coordination 90 -timeout=20m ./internal/coordinationtest/
 	check_skips

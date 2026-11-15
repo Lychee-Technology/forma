@@ -95,3 +95,23 @@ func TestMiniStackLaneRunsTheLedgerUpgradeSuite(t *testing.T) {
 		t.Errorf("%s does not name MiniStack's S3 for the ledger suite's parquet tier", ministackScript)
 	}
 }
+
+// TestMiniStackLaneRunsThePgxReadSuites pins the pgx read paths that
+// replaced DuckDB's postgres extension in the lane (#691): the CDC export's
+// reads in the cdc suite and the federated hot leg's in a suite of their
+// own, each by name under a nonzero floor of passes.
+func TestMiniStackLaneRunsThePgxReadSuites(t *testing.T) {
+	script, err := os.ReadFile(ministackScript)
+	if err != nil {
+		t.Fatalf("read %s: %v", ministackScript, err)
+	}
+	text := string(script)
+	for name, suite := range map[string]*regexp.Regexp{
+		"the CDC export's reads":        regexp.MustCompile(`(?m)^\s*run_suite cdc ([0-9]+) .*\./internal/cdc -run '\^\([^']*\|TestDSQLExport\)'$`),
+		"the federated hot leg's reads": regexp.MustCompile(`(?m)^\s*run_suite federated ([0-9]+) .*\./internal/federated -run '\^TestDSQLHotLeg'$`),
+	} {
+		if m := suite.FindStringSubmatch(text); m == nil || m[1] == "0" {
+			t.Errorf("%s does not run %s under a nonzero floor", ministackScript, name)
+		}
+	}
+}
