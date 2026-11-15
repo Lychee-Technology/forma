@@ -40,32 +40,17 @@ const (
 	PatternKindContains             // contains -> "%value%"
 )
 
-// PredicateStorage says which physical storage a leaf resolves to.
-type PredicateStorage int
-
-const (
-	PredicateStorageEAV PredicateStorage = iota
-	PredicateStorageMain
-)
-
 // PredicateGroup mirrors a CompositeCondition.
 type PredicateGroup struct {
 	Logic    forma.Logic
 	Children []PredicateNode
-	// FullyPushable reports whether every leaf under this group can be
-	// pushed to entity_main. The pg-main walker reads it to veto partial
-	// OR branches without re-walking the subtree.
-	FullyPushable bool
-	// Source is the composite this group was normalized from, kept for the
-	// legacy CompositeGuard contract.
-	Source *forma.CompositeCondition
 }
 
 func (*PredicateGroup) isPredicateNode() {}
 
 // PredicateLeaf is a KvCondition parsed exactly once: attribute metadata,
-// operator normalization, and the converted values for all three emission
-// targets. Target payloads are computed per the entrypoint's target set and
+// operator normalization, and the converted values for every emission
+// target. Target payloads are computed per the entrypoint's target set and
 // keep their own error so strict/lenient parse policies stay per-target.
 type PredicateLeaf struct {
 	// Attr is the original attribute name; Source the leaf it came from.
@@ -84,13 +69,7 @@ type PredicateLeaf struct {
 	SQLOperator string
 	Pattern     PatternKind
 
-	// Storage and Pushable summarize main-table placement: Storage is where
-	// the leaf's value lives, Pushable whether pg-main may push it down.
-	Storage  PredicateStorage
-	Pushable bool
-
 	PgEav  PgEavLeafPayload
-	PgMain PgMainLeafPayload
 	Duck   DuckLeafPayload
 	Hybrid HybridLeafPayload
 }
@@ -104,7 +83,7 @@ func (*PredicateLeaf) isPredicateNode() {}
 // every other attribute falls to the EAV EXISTS form. Placeholder assignment,
 // identifier sanitization, table names, and the anchor alias remain the
 // emitter's responsibility (they are request/builder state), mirroring the
-// pg-main / pg-eav emitters.
+// pg-eav emitter.
 type HybridLeafPayload struct {
 	// Err is the main-branch resolution error (unsupported operator, unknown
 	// main table column, or value conversion), surfaced verbatim at emit time
@@ -179,24 +158,6 @@ func (p PgEavLeafPayload) ComparisonLHS(alias string) string {
 		return inByteOrder(column)
 	}
 	return column
-}
-
-// PgMainLeafPayload is the entity_main pushdown payload (lenient parse
-// policy). Skip marks leaves pg-main silently drops (unknown attribute or
-// no column binding).
-type PgMainLeafPayload struct {
-	Err    error
-	Skip   bool
-	Column string
-	SQLOp  string
-	Value  any
-	// Bool replaces SQLOp/Value for a bool-encoded leaf under = / != (#565):
-	// the emitter allocates Arity() placeholders, renders it over them and
-	// binds Args().
-	Bool *BoolMainPredicate
-	// NullTest (SQLOpIsNull/SQLOpIsNotNull) replaces SQLOp/Value for an
-	// is_null / is_not_null leaf (#646): no bind, no placeholder.
-	NullTest string
 }
 
 // DuckLeafPayload is the DuckDB emission payload (lenient parse policy).

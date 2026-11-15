@@ -71,27 +71,24 @@ func buildCharTextCases() []charCase {
 			name: "text equals bound",
 			cond: charKv("username", "equals:Alice"),
 			want: DualClauses{
-				PgMainClause: "m.text_01 = ?", PgMainArgs: []any{"Alice"},
-				PgClause: charEavClause("$2", "value_text", "=", "$3"), PgArgs: []any{int16(1), "Alice"},
+				PgClause: charEavClause("$1", "value_text", "=", "$2"), PgArgs: []any{int16(1), "Alice"},
 				DuckClause: "username = ?", DuckArgs: []any{"Alice"},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			name: "text bare value defaults to equals",
 			cond: charKv("username", "Alice"),
 			want: DualClauses{
-				PgMainClause: "m.text_01 = ?", PgMainArgs: []any{"Alice"},
-				PgClause: charEavClause("$2", "value_text", "=", "$3"), PgArgs: []any{int16(1), "Alice"},
+				PgClause: charEavClause("$1", "value_text", "=", "$2"), PgArgs: []any{int16(1), "Alice"},
 				DuckClause: "username = ?", DuckArgs: []any{"Alice"},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			name: "text equals unbound goes EAV only",
 			cond: charKv("tag", "equals:x"),
 			want: DualClauses{
-				PgMainClause: "", PgMainArgs: nil,
 				PgClause: charEavClause("$1", "value_text", "=", "$2"), PgArgs: []any{int16(4), "x"},
 				DuckClause: "tag = ?", DuckArgs: []any{"x"},
 			},
@@ -101,17 +98,15 @@ func buildCharTextCases() []charCase {
 			name: "starts_with wildcards suffix",
 			cond: charKv("username", "starts_with:Al"),
 			want: DualClauses{
-				PgMainClause: `m.text_01 LIKE ? ESCAPE '\'`, PgMainArgs: []any{"Al%"},
-				PgClause: charEavClause("$2", "value_text", "LIKE", "$3"), PgArgs: []any{int16(1), "Al%"},
+				PgClause: charEavClause("$1", "value_text", "LIKE", "$2"), PgArgs: []any{int16(1), "Al%"},
 				DuckClause: `username LIKE ? ESCAPE '\'`, DuckArgs: []any{"Al%"},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			name: "contains wildcards both sides",
 			cond: charKv("tag", "contains:mid"),
 			want: DualClauses{
-				PgMainClause: "", PgMainArgs: nil,
 				PgClause: charEavClause("$1", "value_text", "LIKE", "$2"), PgArgs: []any{int16(4), "%mid%"},
 				DuckClause: `tag LIKE ? ESCAPE '\'`, DuckArgs: []any{"%mid%"},
 			},
@@ -124,11 +119,10 @@ func buildCharTextCases() []charCase {
 			name: "starts_with escapes the operand's metacharacters",
 			cond: charKv("username", `starts_with:a_c%\`),
 			want: DualClauses{
-				PgMainClause: `m.text_01 LIKE ? ESCAPE '\'`, PgMainArgs: []any{`a\_c\%\\%`},
-				PgClause: charEavClause("$2", "value_text", "LIKE", "$3"), PgArgs: []any{int16(1), `a\_c\%\\%`},
+				PgClause: charEavClause("$1", "value_text", "LIKE", "$2"), PgArgs: []any{int16(1), `a\_c\%\\%`},
 				DuckClause: `username LIKE ? ESCAPE '\'`, DuckArgs: []any{`a\_c\%\\%`},
 			},
-			span: 3,
+			span: 2,
 		},
 	}
 }
@@ -142,17 +136,15 @@ func buildCharNumericBoolCases() []charCase {
 			name: "integer gt: main int64, eav narrowed float64, duck int64",
 			cond: charKv("age", "gt:30"),
 			want: DualClauses{
-				PgMainClause: "m.integer_01 > ?", PgMainArgs: []any{int64(30)},
-				PgClause: charEavClause("$2", "value_numeric", ">", "$3"), PgArgs: []any{int16(2), float64(30)},
+				PgClause: charEavClause("$1", "value_numeric", ">", "$2"), PgArgs: []any{int16(2), float64(30)},
 				DuckClause: "age > CAST(? AS DOUBLE)", DuckArgs: []any{int64(30)},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			name: "numeric unbound: duck binds decimal string",
 			cond: charKv("score", "lt:3.5"),
 			want: DualClauses{
-				PgMainClause: "", PgMainArgs: nil,
 				PgClause: charEavClause("$1", "value_numeric", "<", "$2"), PgArgs: []any{int16(3), 3.5},
 				DuckClause: "score < CAST(? AS DOUBLE)", DuckArgs: []any{"3.5"},
 			},
@@ -166,37 +158,33 @@ func buildCharNumericBoolCases() []charCase {
 			name: "integer above 2^31: eav narrows to the float64 image (#384)",
 			cond: charKv("age", "equals:9007199254740993"),
 			want: DualClauses{
-				PgMainClause: "m.integer_01 = ?", PgMainArgs: []any{int64(9007199254740993)},
-				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(2), float64(9007199254740992)},
+				PgClause: charEavClause("$1", "value_numeric", "=", "$2"), PgArgs: []any{int16(2), float64(9007199254740992)},
 				DuckClause: "age = CAST(? AS DOUBLE)", DuckArgs: []any{int64(9007199254740993)},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			name: "bool bool-int encoding: main BETWEEN range (#565), eav truthy bool, duck true",
 			cond: charKv("active", "equals:1"),
 			want: DualClauses{
-				PgMainClause: "m.bool_01 BETWEEN ? AND ?", PgMainArgs: []any{int64(1), int64(32767)},
-				PgClause: charEXISTS + "$3 AND (x.value_numeric > 0.5) = $4)", PgArgs: []any{int16(5), true},
+				PgClause: charEXISTS + "$1 AND (x.value_numeric > 0.5) = $2)", PgArgs: []any{int16(5), true},
 				DuckClause: "active = CAST(? AS BOOLEAN)", DuckArgs: []any{true},
 			},
-			span: 4,
+			span: 2,
 		},
 		{
 			name: "bool bool-text encoding zero: main `= '1'` contract against false (#565), eav truthy bool, duck false",
 			cond: charKv("verified", "equals:0"),
 			want: DualClauses{
-				PgMainClause: "(m.text_02 = '1') = ?", PgMainArgs: []any{false},
-				PgClause: charEXISTS + "$2 AND (x.value_numeric > 0.5) = $3)", PgArgs: []any{int16(6), false},
+				PgClause: charEXISTS + "$1 AND (x.value_numeric > 0.5) = $2)", PgArgs: []any{int16(6), false},
 				DuckClause: "verified = CAST(? AS BOOLEAN)", DuckArgs: []any{false},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			name: "bool unbound: eav truthy bool, duck true",
 			cond: charKv("flag", "equals:1"),
 			want: DualClauses{
-				PgMainClause: "", PgMainArgs: nil,
 				PgClause: charEXISTS + "$1 AND (x.value_numeric > 0.5) = $2)", PgArgs: []any{int16(7), true},
 				DuckClause: "flag = CAST(? AS BOOLEAN)", DuckArgs: []any{true},
 			},
@@ -205,50 +193,47 @@ func buildCharNumericBoolCases() []charCase {
 	}
 }
 
-// buildCharCompositeCases covers nested AND/OR pushdown: pg-main keeping only the
-// pushable branch, an all-pushable OR prefilter, and an AND of two main
-// predicates on the same column.
+// buildCharCompositeCases covers nested AND/OR grouping: an OR mixing bound and
+// EAV-only attributes under an AND, an OR of bound attributes, and an AND of
+// two predicates on the same bound column.
 func buildCharCompositeCases() []charCase {
 	return []charCase{
 		{
-			name: "AND(main leaf, vetoed OR): pg-main keeps only pushable branch",
+			name: "AND(bound leaf, OR of bound and EAV-only leaves)",
 			cond: charAnd(charKv("username", "equals:Alice"), charOr(charKv("age", "gt:18"), charKv("tag", "equals:x"))),
 			want: DualClauses{
-				PgMainClause: "(m.text_01 = ?)", PgMainArgs: []any{"Alice"},
-				PgClause: "((" + charEavClause("$2", "value_text", "=", "$3") + ") AND (((" +
-					charEavClause("$4", "value_numeric", ">", "$5") + ") OR (" +
-					charEavClause("$6", "value_text", "=", "$7") + "))))",
+				PgClause: "((" + charEavClause("$1", "value_text", "=", "$2") + ") AND (((" +
+					charEavClause("$3", "value_numeric", ">", "$4") + ") OR (" +
+					charEavClause("$5", "value_text", "=", "$6") + "))))",
 				PgArgs:     []any{int16(1), "Alice", int16(2), float64(18), int16(4), "x"},
 				DuckClause: "(username = ?) AND ((age > CAST(? AS DOUBLE)) OR (tag = ?))",
 				DuckArgs:   []any{"Alice", int64(18), "x"},
 			},
-			span: 7,
+			span: 6,
 		},
 		{
-			name: "OR all pushable emits pg-main prefilter",
+			name: "OR of bound leaves",
 			cond: charOr(charKv("username", "equals:A"), charKv("age", "gt:5")),
 			want: DualClauses{
-				PgMainClause: "((m.text_01 = ?) OR (m.integer_01 > ?))", PgMainArgs: []any{"A", int64(5)},
-				PgClause: "((" + charEavClause("$3", "value_text", "=", "$4") + ") OR (" +
-					charEavClause("$5", "value_numeric", ">", "$6") + "))",
+				PgClause: "((" + charEavClause("$1", "value_text", "=", "$2") + ") OR (" +
+					charEavClause("$3", "value_numeric", ">", "$4") + "))",
 				PgArgs:     []any{int16(1), "A", int16(2), float64(5)},
 				DuckClause: "(username = ?) OR (age > CAST(? AS DOUBLE))",
 				DuckArgs:   []any{"A", int64(5)},
 			},
-			span: 6,
+			span: 4,
 		},
 		{
-			name: "AND of two main predicates on same column",
+			name: "AND of two predicates on same bound column",
 			cond: charAnd(charKv("age", "gt:10"), charKv("age", "lt:90")),
 			want: DualClauses{
-				PgMainClause: "((m.integer_01 > ?) AND (m.integer_01 < ?))", PgMainArgs: []any{int64(10), int64(90)},
-				PgClause: "((" + charEavClause("$3", "value_numeric", ">", "$4") + ") AND (" +
-					charEavClause("$5", "value_numeric", "<", "$6") + "))",
+				PgClause: "((" + charEavClause("$1", "value_numeric", ">", "$2") + ") AND (" +
+					charEavClause("$3", "value_numeric", "<", "$4") + "))",
 				PgArgs:     []any{int16(2), float64(10), int16(2), float64(90)},
 				DuckClause: "(age > CAST(? AS DOUBLE)) AND (age < CAST(? AS DOUBLE))",
 				DuckArgs:   []any{int64(10), int64(90)},
 			},
-			span: 6,
+			span: 4,
 		},
 	}
 }
@@ -297,12 +282,12 @@ type charErrCase struct {
 func buildCharErrCases() []charErrCase {
 	return []charErrCase{
 		{
-			// classifyPredicate splits the raw value at the first colon, so a
-			// bare ISO timestamp reads as an unknown operator and vetoes the
-			// bound date column with an error (not a silent skip).
-			name:        "bare ISO on bound date errors in pg-main",
+			// The strict parse splits at the first colon, so a bare ISO
+			// timestamp reads as an unknown operator on a bound date as on an
+			// unbound one (below).
+			name:        "bare ISO on bound date errors in EAV operator parse",
 			cond:        charKv("born", "2024-01-02T03:04:05Z"),
-			wantErr:     "pg main generation: unsupported operator: equals",
+			wantErr:     "pg sql generation: unsupported operator: 2024-01-02T03",
 			clientError: true,
 		},
 		{
@@ -342,20 +327,20 @@ func buildCharErrCases() []charErrCase {
 			clientError: true,
 		},
 		{
-			name:        "gt on bound bool rejected by pg-main",
+			name:        "gt on bound bool rejected by EAV whitelist",
 			cond:        charKv("active", "gt:1"),
-			wantErr:     "pg main generation: unsupported operator: gt",
+			wantErr:     "pg sql generation: operator 'gt' not supported for boolean attributes (attribute 'active')",
 			clientError: true,
 		},
 		{
 			// #588: a literal the rfc3339 image cannot hold (since #842, one
 			// outside the four-digit year) is refused, not bound as an image
-			// no row stores. The PG main leg reports first here; the DuckDB
+			// no row stores. The PG EAV leg reports first here; the DuckDB
 			// leg's identical refusal is pinned by
 			// TestRFC3339FilterLiteral_RefusedUniformly.
-			name:        "out-of-year literal on rfc3339 binding refused in pg-main",
+			name:        "out-of-year literal on rfc3339 binding refused in EAV",
 			cond:        charKv("joined", "gte:253402300800000"),
-			wantErr:     "pg main generation: invalid date value for 'joined': datetime filter value 253402300800000 for 'joined' cannot be compared against main column text_03 with encoding rfc3339, which keeps years 0000 to 9999",
+			wantErr:     "pg sql generation: invalid date value for 'joined': datetime filter value 253402300800000 for 'joined' cannot be compared against main column text_03 with encoding rfc3339, which keeps years 0000 to 9999",
 			clientError: true,
 		},
 		{
@@ -367,7 +352,7 @@ func buildCharErrCases() []charErrCase {
 }
 
 // TestToDualClauses_Characterization_Errors locks the error surface: which
-// generator reports first (pg-main runs before EAV), the exact message, and
+// generator reports first (EAV runs before DuckDB), the exact message, and
 // the strict-vs-lenient parse split between entrypoints.
 func TestToDualClauses_Characterization_Errors(t *testing.T) {
 	cache := characterizationCache()
@@ -387,7 +372,7 @@ func TestToDualClauses_Characterization_Errors(t *testing.T) {
 }
 
 // TestStandaloneBuilders_Characterization locks the lenient semantics of the
-// standalone BuildDuckClause / BuildPgMainClause entrypoints, which must NOT
+// standalone BuildDuckClause entrypoint, which must NOT
 // inherit the EAV path's strict parse or its error surface.
 func TestStandaloneBuilders_Characterization(t *testing.T) {
 	cache := characterizationCache()
@@ -428,41 +413,5 @@ func TestStandaloneBuilders_Characterization(t *testing.T) {
 				require.Equal(t, tc.wantArgs, args)
 			})
 		}
-	})
-
-	t.Run("pg-main nil child skipped silently", func(t *testing.T) {
-		idx := 0
-		clause, args, err := BuildPgMainClause(charAnd(charKv("username", "equals:Alice"), nil), cache, &idx)
-		require.NoError(t, err)
-		require.Equal(t, "(m.text_01 = ?)", clause)
-		require.Equal(t, []any{"Alice"}, args)
-		require.Equal(t, 1, idx)
-	})
-
-	t.Run("pg-main unbound attr with strict-invalid value skipped without error", func(t *testing.T) {
-		idx := 0
-		clause, args, err := BuildPgMainClause(charKv("tag", "equals:"), cache, &idx)
-		require.NoError(t, err)
-		require.Equal(t, "", clause)
-		require.Nil(t, args)
-		require.Equal(t, 0, idx)
-	})
-
-	t.Run("pg-main nested OR veto cascades from inner AND", func(t *testing.T) {
-		idx := 0
-		cond := charOr(charKv("age", "gt:18"), charAnd(charKv("username", "equals:A"), charKv("tag", "equals:x")))
-		clause, args, err := BuildPgMainClause(cond, cache, &idx)
-		require.NoError(t, err)
-		require.Equal(t, "", clause)
-		require.Nil(t, args)
-		require.Equal(t, 0, idx)
-	})
-
-	t.Run("pg-main bound bool gt surfaces error", func(t *testing.T) {
-		idx := 0
-		_, _, err := BuildPgMainClause(charKv("active", "gt:1"), cache, &idx)
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "unsupported operator: gt")
-		require.ErrorIs(t, err, forma.ErrInvalidInput)
 	})
 }

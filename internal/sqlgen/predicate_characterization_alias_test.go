@@ -65,20 +65,18 @@ func TestToDualClauses_OperatorAliasesRenderAsCanonical(t *testing.T) {
 
 // TestToDualClauses_DesignExampleFilter pins the worked example of
 // docs/federated-query/design.md §4.1 (symbol eq:AAPL AND trade_type eq:2)
-// with both attributes column-bound: both leaves push to entity_main.
+// with both attributes column-bound.
 func TestToDualClauses_DesignExampleFilter(t *testing.T) {
 	cond := charAnd(charKv("username", "eq:AAPL"), charKv("age", "eq:2"))
 	paramIndex := 0
 	dc, err := ToDualClauses(cond, "eav_table", 7, characterizationCache(), &paramIndex)
 	require.NoError(t, err)
 	require.Equal(t, DualClauses{
-		PgMainClause: "((m.text_01 = ?) AND (m.integer_01 = ?))",
-		PgMainArgs:   []any{"AAPL", int64(2)},
-		PgClause: "((" + charEavClause("$3", "value_text", "=", "$4") + ") AND (" +
-			charEavClause("$5", "value_numeric", "=", "$6") + "))",
+		PgClause: "((" + charEavClause("$1", "value_text", "=", "$2") + ") AND (" +
+			charEavClause("$3", "value_numeric", "=", "$4") + "))",
 		PgArgs:     []any{int16(1), "AAPL", int16(2), float64(2)},
 		DuckClause: "(username = ?) AND (age = CAST(? AS DOUBLE))",
 		DuckArgs:   []any{"AAPL", int64(2)},
 	}, dc)
-	require.Equal(t, 6, paramIndex)
+	require.Equal(t, 4, paramIndex)
 }

@@ -11,8 +11,8 @@ const rfc3339OffsetSuffix = `[+-][0-9]{2}:[0-9]{2}$`
 
 // RFC3339EpochMs renders the read every DuckDB surface applies to a
 // date/datetime stored with the rfc3339 encoding (an RFC 3339 string in a
-// text column): the hot leg (mainColRFC3339Expr) and the CDC export
-// (cdc.castDateMainValue) share it, so the tiers agree on the value. It
+// text column): the CDC export (cdc.castDateMainValue) applies it, as the
+// retired attach hot leg did (#858), so the tiers agree on the value. It
 // yields epoch-ms BIGINT (#200), and TRY_CAST makes a string that is not a
 // timestamp read NULL on every tier alike instead of failing the read (#555).
 // The cast keeps the fraction, so the canonical image reads to its

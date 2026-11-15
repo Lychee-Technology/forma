@@ -8,11 +8,11 @@ import (
 	"github.com/lychee-technology/forma/internal/conditionexpr"
 )
 
-// BoolMainPredicate is the entity_main pushdown form of a column-bound bool
-// equality leaf (#565). The hybrid builder's main branch on the Postgres
-// route renders it, and so does the pg-main clause (which the retired DuckDB
-// attach hot leg embedded over its PostgreSQL scan, #858), so a stored image outside the write
-// contract answers a filter the way every reader already reads it:
+// BoolMainPredicate is the entity_main form of a column-bound bool equality
+// leaf (#565). The hybrid builder's main branch on the Postgres route renders
+// it (the retired pg-main pushdown clause did too, until #871), so a stored
+// image outside the write contract answers a filter the way every reader
+// already reads it:
 //
 //   - bool_smallint: `<col> BETWEEN lo AND hi` with the bounds — not the
 //     operator — carrying the verdict. The raw `= 1`/`= 0` compare read a
@@ -29,9 +29,8 @@ import (
 //     text domain.
 //
 // Why the clause text never depends on the operand: the plan caches key on
-// the query shape without operands (queryplan.HashFederatedQueryShape), and
-// the attach plan cache reused the cached PgMainClause text on a hit, so `equals:true` and `equals:false` may differ only in
-// their binds. This rules out the literal `> 0.5` / `<= 0.5` rewrite.
+// the query shape without operands and reuse the cached clause text on a
+// hit, so `equals:true` and `equals:false` may differ only in their binds. This rules out the literal `> 0.5` / `<= 0.5` rewrite.
 // Integer bounds also keep the smallint predicate on the integer_ops btree
 // family; a `0.5` literal against an int2 column casts the column. NULL
 // stays NULL under every spelling.
@@ -48,7 +47,7 @@ type BoolMainPredicate struct {
 // Render spells the predicate over an already-qualified column, drawing
 // each placeholder it needs from next in bind order (one call per bind, so
 // the emitter's counter advances exactly as many times as Args has
-// entries). It is the one spelling both pushdown emitters use (#575); because the
+// entries). It is the one spelling of the leaf (#575); because the
 // predicate allocates its own placeholders there is no arity for a caller
 // to get wrong.
 func (p BoolMainPredicate) Render(column string, next func() string) string {
@@ -123,7 +122,7 @@ func boolSmallintSetRange(sqlOp string, list []bool) BoolSmallintRange {
 
 // pgMainBoolPredicate classifies an entity_main leaf: ok is true only for a
 // bool attribute bound with a bool encoding under `=` or `!=`, in which
-// case the returned predicate replaces the value bind. Both callers refuse a
+// case the returned predicate replaces the value bind. The caller refuses a
 // bool attribute under any other operator first, through the operator
 // whitelist (checkOperatorForType): without it the hybrid route compared the
 // raw 1/0 image (`m.<col> > $n`, #575). Any other leaf (other value types)

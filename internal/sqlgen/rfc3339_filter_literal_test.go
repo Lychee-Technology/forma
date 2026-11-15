@@ -92,13 +92,12 @@ func TestRFC3339FilterLiteral_RefusedUniformly(t *testing.T) {
 			_, pgMainErr := ConvertPgMainValue(tc.literal, tc.attr, meta)
 			_, _, pgEavErr := parsePgEavValue(tc.attr, meta, tc.literal)
 			idx := 0
-			_, _, pgMainClauseErr := BuildPgMainClause(cond, cache, &idx)
 			_, _, duckErr := BuildDuckClause(cond, cache)
 			_, dualErr := ToDualClauses(cond, "eav_table", 7, cache, &idx)
 
 			for name, err := range map[string]error{
 				"ConvertPgMainValue": pgMainErr, "parsePgEavValue": pgEavErr,
-				"BuildPgMainClause": pgMainClauseErr, "BuildDuckClause": duckErr, "ToDualClauses": dualErr,
+				"BuildDuckClause": duckErr, "ToDualClauses": dualErr,
 			} {
 				require.ErrorIs(t, err, forma.ErrInvalidInput, name)
 				msg, ok := forma.ResolvePublicMessage(err)

@@ -26,7 +26,7 @@ func charEavHead(attrPh string) string {
 func buildExtendedSetCases() []charCase {
 	return []charCase{
 		{
-			name: "in text bound: pg-main skips, one array bind per target",
+			name: "in text bound: one array bind per target",
 			cond: charKv("username", `in:["Alice","Bob"]`),
 			want: DualClauses{
 				PgClause:   "EXISTS (" + charEavHead("$1") + " AND x.value_text = ANY($2))",
@@ -105,13 +105,12 @@ func buildExtendedSetCases() []charCase {
 func buildExtendedNullCases() []charCase {
 	return []charCase{
 		{
-			name: "is_null bound pushes down without a bind",
+			name: "is_null bound renders without a bind",
 			cond: charKv("username", "is_null:true"),
 			want: DualClauses{
-				PgMainClause: "m.text_01 IS NULL",
-				PgClause:     "NOT EXISTS (" + charEavHead("$1") + " AND x.value_text IS NOT NULL)",
-				PgArgs:       []any{int16(1)},
-				DuckClause:   "username IS NULL",
+				PgClause:   "NOT EXISTS (" + charEavHead("$1") + " AND x.value_text IS NOT NULL)",
+				PgArgs:     []any{int16(1)},
+				DuckClause: "username IS NULL",
 			},
 			span: 1,
 		},
@@ -139,29 +138,26 @@ func buildExtendedNullCases() []charCase {
 			name: "is_not_null bool bound",
 			cond: charKv("active", "is_not_null:true"),
 			want: DualClauses{
-				PgMainClause: "m.bool_01 IS NOT NULL",
-				PgClause:     "EXISTS (" + charEavHead("$1") + " AND x.value_numeric IS NOT NULL)",
-				PgArgs:       []any{int16(5)},
-				DuckClause:   "active IS NOT NULL",
+				PgClause:   "EXISTS (" + charEavHead("$1") + " AND x.value_numeric IS NOT NULL)",
+				PgArgs:     []any{int16(5)},
+				DuckClause: "active IS NOT NULL",
 			},
 			span: 1,
 		},
 		{
-			name: "AND of null test and equals pushes both",
+			name: "AND of null test and equals",
 			cond: charAnd(charKv("username", "is_null:true"), charKv("age", "equals:3")),
 			want: DualClauses{
-				PgMainClause: "((m.text_01 IS NULL) AND (m.integer_01 = ?))",
-				PgMainArgs:   []any{int64(3)},
-				PgClause: "((NOT EXISTS (" + charEavHead("$2") + " AND x.value_text IS NOT NULL)) AND (" +
-					charEavClause("$3", "value_numeric", "=", "$4") + "))",
+				PgClause: "((NOT EXISTS (" + charEavHead("$1") + " AND x.value_text IS NOT NULL)) AND (" +
+					charEavClause("$2", "value_numeric", "=", "$3") + "))",
 				PgArgs:     []any{int16(1), int16(2), float64(3)},
 				DuckClause: "(username IS NULL) AND (age = CAST(? AS DOUBLE))",
 				DuckArgs:   []any{int64(3)},
 			},
-			span: 4,
+			span: 3,
 		},
 		{
-			name: "OR with a set leaf is not pushed down",
+			name: "OR of a null test and a set leaf",
 			cond: charOr(charKv("username", "is_null:true"), charKv("age", "in:[3]")),
 			want: DualClauses{
 				PgClause: "((NOT EXISTS (" + charEavHead("$1") + " AND x.value_text IS NOT NULL)) OR (EXISTS (" +
@@ -176,11 +172,10 @@ func buildExtendedNullCases() []charCase {
 			name: "$now on a text attribute is a literal",
 			cond: charKv("username", "equals:$now"),
 			want: DualClauses{
-				PgMainClause: "m.text_01 = ?", PgMainArgs: []any{"$now"},
-				PgClause: charEavClause("$2", "value_text", "=", "$3"), PgArgs: []any{int16(1), "$now"},
+				PgClause: charEavClause("$1", "value_text", "=", "$2"), PgArgs: []any{int16(1), "$now"},
 				DuckClause: "username = ?", DuckArgs: []any{"$now"},
 			},
-			span: 3,
+			span: 2,
 		},
 	}
 }
@@ -271,7 +266,6 @@ func TestToDualClauses_SetOperandIsOneBindAtAnyLength(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, shortDC.DuckClause, longDC.DuckClause)
 	require.Equal(t, shortDC.PgClause, longDC.PgClause)
-	require.Equal(t, shortDC.PgMainClause, longDC.PgMainClause)
 	require.Equal(t, shortIdx, longIdx)
 
 	want := []string{"a", "b", "c", "d", "e", "f", "g"}

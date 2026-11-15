@@ -49,7 +49,7 @@ func TestRepresentableTextOperandBindsUnchanged(t *testing.T) {
 	paramIndex := 1
 	got, err := ToDualClauses(charKv("username", "equals:"+operand), "eav_table", 7, characterizationCache(), &paramIndex)
 	require.NoError(t, err)
-	require.Equal(t, []any{operand}, got.PgMainArgs)
+	require.Equal(t, []any{int16(1), operand}, got.PgArgs)
 	require.Equal(t, []any{operand}, got.DuckArgs)
 
 	paramIndex = 1

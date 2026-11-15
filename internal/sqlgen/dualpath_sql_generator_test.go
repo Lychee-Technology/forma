@@ -39,9 +39,6 @@ func TestToDualClauses_SimpleKv_NoColumnBinding(t *testing.T) {
 	require.Equal(t, "name = ?", dc.DuckClause)
 	require.Equal(t, []any{"Alice"}, dc.DuckArgs)
 
-	// PgMainClause should be empty because no main column binding exists
-	require.Equal(t, "", dc.PgMainClause)
-
 	// Postgres side: should produce an EXISTS-style clause and two args (attr_id + value)
 	require.NotEmpty(t, dc.PgClause)
 	require.GreaterOrEqual(t, len(dc.PgArgs), 2)
@@ -76,7 +73,6 @@ func TestToDualClauses_SimpleKv_WithColumnBinding(t *testing.T) {
 
 func TestToDualClauses_NestedAndOr_GroupingAndOrdering(t *testing.T) {
 	// Given: a nested composite condition A AND (B OR C) with column bindings
-	paramIndex := 0
 	cache := forma.SchemaAttributeCache{
 		"a": forma.AttributeMetadata{
 			AttributeID:   1,
@@ -102,46 +98,25 @@ func TestToDualClauses_NestedAndOr_GroupingAndOrdering(t *testing.T) {
 	inner := &forma.CompositeCondition{Logic: forma.LogicOr, Conditions: []forma.Condition{b, c}}
 	root := &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: []forma.Condition{a, inner}}
 
-	// When: building Postgres main clause
-	pgClause, pgArgs, err := buildPgMainClause(root, cache, &paramIndex)
-	require.NoError(t, err)
-	require.NotEmpty(t, pgClause)
-
-	// Then: grouping operators are present. PgMainClause is embedded in the DuckDB
-	// federated template, so it emits positional "?" placeholders, not "$n" (#161).
-	// Placeholder ordering is therefore carried by the args slice: the three leaves
-	// bind in left-to-right order A, B, C.
-	require.Contains(t, pgClause, "AND")
-	require.Contains(t, pgClause, "OR")
-	require.Equal(t, 3, strings.Count(pgClause, "?"), "expected three positional ? placeholders")
-	require.NotContains(t, pgClause, "$", "PgMainClause must not use $n placeholders in the DuckDB path")
-	require.Equal(t, []any{"A", "B", "C"}, pgArgs)
-
-	// And: DuckDB clause preserves grouping and argument ordering
+	// When: building the DuckDB clause
 	duckClause, duckArgs, err := buildDuckClause(root, cache)
 	require.NoError(t, err)
-	require.NotEmpty(t, duckClause)
+
+	// Then: it preserves grouping, uses positional "?" placeholders only, and
+	// binds the three leaves in left-to-right order A, B, C.
 	require.Contains(t, duckClause, "AND")
 	require.Contains(t, duckClause, "OR")
-	// DuckDB uses ? placeholders; args should be in same logical order
+	require.Equal(t, 3, strings.Count(duckClause, "?"), "expected three positional ? placeholders")
+	require.NotContains(t, duckClause, "$", "the DuckDB clause must not use $n placeholders (#161)")
 	require.Equal(t, []any{"A", "B", "C"}, duckArgs)
 }
 
-// Given an empty composite condition, when main and DuckDB clauses are built,
-// then both sides use their no-op behavior consistently.
+// Given an empty composite condition, when the DuckDB clause is built,
+// then it uses the no-op behavior.
 func TestToDualClauses_EmptyComposite_NoOpBehavior(t *testing.T) {
-	paramIndex := 0
 	cache := forma.SchemaAttributeCache{}
 
 	empty := &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: []forma.Condition{}}
-
-	// When: building Postgres main clause for an empty composite
-	pgClause, pgArgs, err := buildPgMainClause(empty, cache, &paramIndex)
-	require.NoError(t, err)
-
-	// Then: Postgres main pushdown for an empty AND is the identity (1=1), not a narrowing filter.
-	require.Equal(t, "1=1", pgClause)
-	require.Nil(t, pgArgs)
 
 	// When: building DuckDB clause for an empty composite
 	duckClause, duckArgs, err := buildDuckClause(empty, cache)
@@ -152,92 +127,8 @@ func TestToDualClauses_EmptyComposite_NoOpBehavior(t *testing.T) {
 	require.Nil(t, duckArgs)
 }
 
-// Given an unknown attribute, when Postgres main pushdown is built,
-// then it is ignored rather than treated as a hard failure.
-func TestToDualClauses_UnknownAttribute_IgnoredForPgMain(t *testing.T) {
-	paramIndex := 0
-	cache := forma.SchemaAttributeCache{}
-
-	cond := &forma.KvCondition{Attr: "missing_attr", Value: "equals:val"}
-
-	// When: building Postgres main clause for an unknown attribute
-	pgClause, pgArgs, err := buildPgMainClause(cond, cache, &paramIndex)
-	require.NoError(t, err)
-
-	// Then: the predicate should be skipped (no clause, no args)
-	require.Equal(t, "", pgClause)
-	require.Nil(t, pgArgs)
-}
-
-// Given bound attributes of various types, when classifyPredicate is invoked,
-// then only pushdown-safe operators are accepted for each value type.
-func TestClassifyPredicate_ValueTypeOperatorBoundAttribute_PushdownAcceptance(t *testing.T) {
-	// Prepare a pseudo KvCondition (attr name is unused by classifyPredicate except for Value)
-	kvText := &forma.KvCondition{Attr: "txt", Value: "starts_with:foo"}
-	kvTextEq := &forma.KvCondition{Attr: "txt", Value: "equals:bar"}
-	kvTextRange := &forma.KvCondition{Attr: "txt", Value: "gt:5"}
-	kvTextBad := &forma.KvCondition{Attr: "txt", Value: "similar_to:5"}
-
-	kvNum := &forma.KvCondition{Attr: "n", Value: "gt:5"}
-	kvNumBad := &forma.KvCondition{Attr: "n", Value: "contains:5"}
-
-	kvDate := &forma.KvCondition{Attr: "d", Value: "lt:2020-01-01"}
-	kvDateBad := &forma.KvCondition{Attr: "d", Value: "contains:2020"}
-
-	kvBool := &forma.KvCondition{Attr: "b", Value: "equals:true"}
-	kvBoolBad := &forma.KvCondition{Attr: "b", Value: "gt:true"}
-
-	// All metadata must include a ColumnBinding to reach operator checking
-	textMeta := forma.AttributeMetadata{ValueType: forma.ValueTypeText, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("text_01")}}
-	numMeta := forma.AttributeMetadata{ValueType: forma.ValueTypeNumeric, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("num_01")}}
-	dateMeta := forma.AttributeMetadata{ValueType: forma.ValueTypeDate, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("date_01")}}
-	boolMeta := forma.AttributeMetadata{ValueType: forma.ValueTypeBool, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("bool_01")}}
-
-	// Text: starts_with, equals and ranges supported (#676); an unknown operator is not
-	ok, reason := classifyPredicate(kvText, textMeta)
-	require.True(t, ok, "starts_with should be accepted for text")
-	require.Contains(t, reason, "text")
-
-	ok, _ = classifyPredicate(kvTextEq, textMeta)
-	require.True(t, ok, "equals should be accepted for text")
-
-	ok, _ = classifyPredicate(kvTextRange, textMeta)
-	require.True(t, ok, "gt should be accepted for text (#676)")
-
-	ok, reason = classifyPredicate(kvTextBad, textMeta)
-	require.False(t, ok, "similar_to should not be accepted for text")
-	require.Contains(t, reason, "text operator not supported")
-
-	// Numeric: gt supported; contains not
-	ok, reason = classifyPredicate(kvNum, numMeta)
-	require.True(t, ok, "gt should be accepted for numeric")
-	require.Contains(t, reason, "numeric")
-
-	ok, reason = classifyPredicate(kvNumBad, numMeta)
-	require.False(t, ok, "contains should not be accepted for numeric")
-	require.Contains(t, reason, "numeric operator not supported")
-
-	// Date: lt supported; contains not
-	ok, reason = classifyPredicate(kvDate, dateMeta)
-	require.True(t, ok, "lt should be accepted for date")
-	require.Contains(t, reason, "date")
-
-	ok, reason = classifyPredicate(kvDateBad, dateMeta)
-	require.False(t, ok, "contains should not be accepted for date")
-	require.Contains(t, reason, "date operator not supported")
-
-	// Bool: equals accepted; gt not
-	ok, reason = classifyPredicate(kvBool, boolMeta)
-	require.True(t, ok, "equals should be accepted for bool")
-	require.Contains(t, reason, "bool")
-
-	ok, reason = classifyPredicate(kvBoolBad, boolMeta)
-	require.False(t, ok, "gt should not be accepted for bool")
-	require.Contains(t, reason, "bool operator not supported")
-}
-
-// Given a bound attribute with an unsupported operator, when Postgres main pushdown is built,
-// then a clear error is returned and no clause or args are produced.
+// Given a bound attribute with an operator the DSL does not define, when the
+// dual clauses are built, then a clear invalid-input error is returned.
 func TestToDualClauses_BoundAttributeUnsupportedOperator_ReturnsError(t *testing.T) {
 	paramIndex := 0
 	cache := forma.SchemaAttributeCache{
@@ -251,18 +142,17 @@ func TestToDualClauses_BoundAttributeUnsupportedOperator_ReturnsError(t *testing
 	// Use a text attribute but pass an operator the DSL does not define
 	cond := &forma.KvCondition{Attr: "title", Value: "similar_to:foo"}
 
-	pgClause, pgArgs, err := buildPgMainClause(cond, cache, &paramIndex)
+	dc, err := ToDualClauses(cond, "eav_table", 1, cache, &paramIndex)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported operator")
-	// Should not produce a clause or args when operator is unsupported for a bound column
-	require.Equal(t, "", pgClause)
-	require.Nil(t, pgArgs)
+	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	require.Equal(t, DualClauses{}, dc)
 }
 
 // Given a datetime attribute stored on the main table with Unix-ms encoding,
-// when the Postgres main pushdown is built, then the argument is converted to int64 unix milliseconds.
-func TestToDualClauses_DateMainColumnEncoding_UnixMsArgument(t *testing.T) {
-	paramIndex := 0
+// when the entity_main operand is converted (the hybrid builder's bind), then
+// it is int64 unix milliseconds.
+func TestConvertPgMainValue_DateMainColumnEncoding_UnixMsArgument(t *testing.T) {
 	// RFC3339 literal
 	ts := "2020-01-02T03:04:05Z"
 
@@ -277,15 +167,11 @@ func TestToDualClauses_DateMainColumnEncoding_UnixMsArgument(t *testing.T) {
 		},
 	}
 
-	cond := &forma.KvCondition{Attr: "ts", Value: "equals:" + ts}
-
-	pgClause, pgArgs, err := buildPgMainClause(cond, cache, &paramIndex)
+	arg, err := ConvertPgMainValue(ts, "ts", cache["ts"])
 	require.NoError(t, err)
-	require.NotEmpty(t, pgClause)
-	require.Len(t, pgArgs, 1)
 
 	// The argument should be an int64 representing unix milliseconds
-	got, ok := pgArgs[0].(int64)
+	got, ok := arg.(int64)
 	require.True(t, ok, "expected pg main arg to be int64 unix ms")
 
 	parsed, err := time.Parse(time.RFC3339Nano, ts)

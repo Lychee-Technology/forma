@@ -78,12 +78,9 @@ func expectedWhole(values []int64, sqlOp string, operand any) []int64 {
 // numeric operator against DuckDB itself and checks the selected rows with
 // exact arithmetic: the DuckClause over the attribute-named columns the
 // federated CTEs project (a bigint attribute as BIGINT, an integer one as
-// INTEGER or DOUBLE), and the pg-main pushdown clause over m.<column>.
-// Before the rewrite, CAST(? AS BIGINT) rounded a fractional operand, so
-// equals:7.5 matched 8 and lte:7.5 matched 8 on a bigint attribute.
-//
-// The pushdown clause runs here against native DuckDB tables; in production
-// DuckDB evaluates it over the hot leg's PostgreSQL scan, which this test does not reach.
+// INTEGER or DOUBLE). Before the rewrite, CAST(? AS BIGINT) rounded a
+// fractional operand, so equals:7.5 matched 8 and lte:7.5 matched 8 on a
+// bigint attribute.
 func TestNumericOperand_DuckDBConformance(t *testing.T) {
 	db := openDuckDB(t)
 	cache := characterizationCache()
@@ -91,23 +88,14 @@ func TestNumericOperand_DuckDBConformance(t *testing.T) {
 	seedDuckColumn(t, db, "f_big", "amount", "BIGINT", wholeNumberSamples)
 	seedDuckColumn(t, db, "f_int", "age", "INTEGER", int32Samples)
 	seedDuckColumn(t, db, "f_dbl", "age", "DOUBLE", int32Samples)
-	_, err := db.Exec("CREATE TABLE m (integer_01 INTEGER, bigint_02 BIGINT)")
-	require.NoError(t, err)
-	for i, v := range wholeNumberSamples {
-		_, err := db.Exec("INSERT INTO m VALUES (?, ?)", int32Samples[i%len(int32Samples)], v)
-		require.NoError(t, err)
-	}
 
 	targets := []struct {
 		attr, table, column string
 		values              []int64
-		pgMain              bool
 	}{
-		{"amount", "f_big", "amount", wholeNumberSamples, false},
-		{"age", "f_int", "age", int32Samples, false},
-		{"age", "f_dbl", "age", int32Samples, false},
-		{"amount", "m", "bigint_02", wholeNumberSamples, true},
-		{"age", "m", "integer_01", int32Samples, true},
+		{"amount", "f_big", "amount", wholeNumberSamples},
+		{"age", "f_int", "age", int32Samples},
+		{"age", "f_dbl", "age", int32Samples},
 	}
 	for _, target := range targets {
 		vt := cache[target.attr].ValueType
@@ -115,29 +103,18 @@ func TestNumericOperand_DuckDBConformance(t *testing.T) {
 			operand, _, rangeErr := numericOperand(target.attr, literal, vt)
 			for op, sqlOp := range dslNumericOps {
 				cond := charKv(target.attr, dslLeafValue(op, literal))
-				clause, args, err := duckOrPgMainClause(cond, cache, target.pgMain)
+				clause, args, err := BuildDuckClause(cond, cache)
 				if rangeErr != nil {
 					require.ErrorIs(t, err, forma.ErrInvalidInput, "%v refused before SQL", cond)
 					continue
 				}
 				require.NoError(t, err, "%v", cond)
-				if clause == "" {
-					continue // not pushable to entity_main: DuckDB evaluates it on the merged result
-				}
 				got := queryDuckColumn(t, db, target.column, target.table, clause, args)
 				want := expectedWhole(distinctSorted(target.values), sqlOp, operand)
 				require.Equal(t, want, got, "%s.%s %s %s: %s %v", target.table, target.column, op, literal, clause, args)
 			}
 		}
 	}
-}
-
-func duckOrPgMainClause(cond forma.Condition, cache forma.SchemaAttributeCache, pgMain bool) (string, []any, error) {
-	if !pgMain {
-		return BuildDuckClause(cond, cache)
-	}
-	idx := 0
-	return BuildPgMainClause(cond, cache, &idx)
 }
 
 func distinctSorted(values []int64) []int64 {
@@ -155,14 +132,14 @@ func distinctSorted(values []int64) []int64 {
 
 // TestFederatedShapeHashCoversClauseText guards the federated plan cache:
 // two conditions with one shape hash reuse one compiled plan and differ only
-// in their binds, so they must render identical clause text on all three
-// targets. The numeric rewrite makes the operator depend on the operand's
+// in their binds, so they must render identical clause text on every
+// target. The numeric rewrite makes the operator depend on the operand's
 // class; the shape hash must key on that class.
 func TestFederatedShapeHashCoversClauseText(t *testing.T) {
 	cache := characterizationCache()
 	attrs := []string{"age", "amount", "score", "total", "username", "tag", "born", "active", "flag"}
 	operands := append(append([]string{}, numericOperandSamples...), "abc", "true", "1704164645000", "NaN")
-	type rendered struct{ cond, pg, pgMain, duck string }
+	type rendered struct{ cond, pg, duck string }
 	byShape := map[string]rendered{}
 	checked := 0
 	check := func(label string, cond forma.Condition) {
@@ -174,14 +151,14 @@ func TestFederatedShapeHashCoversClauseText(t *testing.T) {
 		if err != nil {
 			return
 		}
-		got := rendered{label, dc.PgClause, dc.PgMainClause, dc.DuckClause}
+		got := rendered{label, dc.PgClause, dc.DuckClause}
 		checked++
 		prev, seen := byShape[hash]
 		if !seen {
 			byShape[hash] = got
 			return
 		}
-		require.Equal(t, [3]string{prev.pg, prev.pgMain, prev.duck}, [3]string{got.pg, got.pgMain, got.duck},
+		require.Equal(t, [2]string{prev.pg, prev.duck}, [2]string{got.pg, got.duck},
 			"%s and %s share a shape hash", prev.cond, got.cond)
 	}
 	for _, attr := range attrs {

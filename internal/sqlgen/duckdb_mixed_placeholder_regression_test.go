@@ -32,11 +32,10 @@ func TestDuckDBMixedComposite_NoPlaceholderStyleMixing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			q := parquetOnlyTestQuery(tc.cursor)
 			dual := parityDual(t, q.Condition, cache)
-			// Sanity: the composite really does exercise both a main-column
-			// pushdown and an EAV leaf, otherwise the mixing hazard would not
-			// be present.
-			require.NotEmpty(t, dual.PgMainClause, "expected a main-column pushdown clause")
+			// Sanity: the composite renders a DuckDB logical clause and a
+			// "$n"-numbered EAV clause, so a leak of the latter would show.
 			require.NotEmpty(t, dual.DuckClause, "expected a DuckDB logical clause")
+			require.Contains(t, dual.PgClause, "$1", "expected the EAV clause's numbered placeholders")
 
 			sql, args, err := BuildParquetOnlyQuery(parquetOnlyTestParams(t), q, dual, ParquetWindow{Limit: 25})
 			require.NoError(t, err)

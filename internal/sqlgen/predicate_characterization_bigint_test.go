@@ -16,21 +16,19 @@ func buildCharBigIntCases() []charCase {
 			name: "bigint bound above 2^53: main/eav int64, duck exact string",
 			cond: charKv("amount", "equals:9007199254740993"),
 			want: DualClauses{
-				PgMainClause: "m.bigint_02 = ?", PgMainArgs: []any{int64(9007199254740993)},
-				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(12), int64(9007199254740993)},
+				PgClause: charEavClause("$1", "value_numeric", "=", "$2"), PgArgs: []any{int16(12), int64(9007199254740993)},
 				DuckClause: "amount = CAST(? AS BIGINT)", DuckArgs: []any{"9007199254740993"},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			name: "bigint bound MaxInt64: 19 digits survive %d, would die in %.15g",
 			cond: charKv("amount", "gte:9223372036854775807"),
 			want: DualClauses{
-				PgMainClause: "m.bigint_02 >= ?", PgMainArgs: []any{int64(math.MaxInt64)},
-				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(12), int64(math.MaxInt64)},
+				PgClause: charEavClause("$1", "value_numeric", ">=", "$2"), PgArgs: []any{int16(12), int64(math.MaxInt64)},
 				DuckClause: "amount >= CAST(? AS BIGINT)", DuckArgs: []any{"9223372036854775807"},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			// EAV-only bigint: the bind is exact, and the write funnel refuses
@@ -42,7 +40,6 @@ func buildCharBigIntCases() []charCase {
 			name: "bigint EAV-only above 2^53: exact bind, storage-capped semantics",
 			cond: charKv("total", "equals:9007199254740993"),
 			want: DualClauses{
-				PgMainClause: "", PgMainArgs: nil,
 				PgClause: charEavClause("$1", "value_numeric", "=", "$2"), PgArgs: []any{int16(13), int64(9007199254740993)},
 				DuckClause: "total = CAST(? AS BIGINT)", DuckArgs: []any{"9007199254740993"},
 			},
@@ -56,11 +53,10 @@ func buildCharBigIntCases() []charCase {
 			name: "bigint decimal spelling above 2^53: all three exact",
 			cond: charKv("amount", "equals:9007199254740993.0"),
 			want: DualClauses{
-				PgMainClause: "m.bigint_02 = ?", PgMainArgs: []any{int64(9007199254740993)},
-				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(12), int64(9007199254740993)},
+				PgClause: charEavClause("$1", "value_numeric", "=", "$2"), PgArgs: []any{int16(12), int64(9007199254740993)},
 				DuckClause: "amount = CAST(? AS BIGINT)", DuckArgs: []any{"9007199254740993"},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			// #357: exponent spelling — 9.007199254740993e15 is exactly 2^53+1,
@@ -69,11 +65,10 @@ func buildCharBigIntCases() []charCase {
 			name: "bigint exponent spelling above 2^53: all three exact",
 			cond: charKv("amount", "gte:9.007199254740993e15"),
 			want: DualClauses{
-				PgMainClause: "m.bigint_02 >= ?", PgMainArgs: []any{int64(9007199254740993)},
-				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(12), int64(9007199254740993)},
+				PgClause: charEavClause("$1", "value_numeric", ">=", "$2"), PgArgs: []any{int16(12), int64(9007199254740993)},
 				DuckClause: "amount >= CAST(? AS BIGINT)", DuckArgs: []any{"9007199254740993"},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			// #357 negative control: a genuinely fractional literal keeps
@@ -84,11 +79,10 @@ func buildCharBigIntCases() []charCase {
 			name: "bigint fractional spelling: float64 image, whole on DuckDB",
 			cond: charKv("amount", "lt:9007199254740993.5"),
 			want: DualClauses{
-				PgMainClause: "m.bigint_02 < ?", PgMainArgs: []any{float64(9007199254740993.5)},
-				PgClause: charEavClause("$2", "value_numeric", "<", "$3"), PgArgs: []any{int16(12), float64(9007199254740993.5)},
+				PgClause: charEavClause("$1", "value_numeric", "<", "$2"), PgArgs: []any{int16(12), float64(9007199254740993.5)},
 				DuckClause: "amount < CAST(? AS BIGINT)", DuckArgs: []any{"9007199254740994"},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			// A fraction against BIGINT compares as its whole bound
@@ -97,21 +91,19 @@ func buildCharBigIntCases() []charCase {
 			name: "bigint fractional lte: DuckDB compares the floor",
 			cond: charKv("amount", "lte:7.5"),
 			want: DualClauses{
-				PgMainClause: "m.bigint_02 <= ?", PgMainArgs: []any{float64(7.5)},
-				PgClause: charEavClause("$2", "value_numeric", "<=", "$3"), PgArgs: []any{int16(12), float64(7.5)},
+				PgClause: charEavClause("$1", "value_numeric", "<=", "$2"), PgArgs: []any{int16(12), float64(7.5)},
 				DuckClause: "amount <= CAST(? AS BIGINT)", DuckArgs: []any{"7"},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			name: "bigint fractional equals: DuckDB matches no value",
 			cond: charKv("amount", "equals:7.5"),
 			want: DualClauses{
-				PgMainClause: "m.bigint_02 = ?", PgMainArgs: []any{float64(7.5)},
-				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(12), float64(7.5)},
+				PgClause: charEavClause("$1", "value_numeric", "=", "$2"), PgArgs: []any{int16(12), float64(7.5)},
 				DuckClause: "amount < CAST(? AS BIGINT)", DuckArgs: []any{"-9223372036854775808"},
 			},
-			span: 3,
+			span: 2,
 		},
 	}
 }

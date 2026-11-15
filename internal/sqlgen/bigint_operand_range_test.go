@@ -114,9 +114,9 @@ func TestBigIntOperandRange_Entrypoints(t *testing.T) {
 		wantErrTail string
 	}{
 		{
-			name:        "bound bigint gt 1e30 rejected in pg-main first",
+			name:        "bound bigint gt 1e30 rejected in EAV",
 			cond:        charKv("amount", "gt:1e30"),
-			wantDualErr: "pg main generation: ",
+			wantDualErr: "pg sql generation: ",
 			wantErrTail: "value 1e30 out of range for bigint attribute 'amount' (operand must fit [-9223372036854775808, 9223372036854775807])",
 		},
 		{

@@ -98,7 +98,7 @@ func (e *pgEavTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, e
 // EAV target, letting ToDualClauses share one normalization pass.
 func pgEavClausesFromTree(tree PredicateNode, eavTable string, paramIndex *int) (string, []any, error) {
 	emitter := &pgEavTypedEmitter{eavTable: eavTable, paramIndex: paramIndex}
-	return walkPredicate(tree, pgEavStyle, nil, emitter)
+	return walkPredicate(tree, pgEavStyle, emitter)
 }
 
 // ToSQLClauses builds the SQL clause and arguments for a condition tree.

@@ -69,14 +69,12 @@ func TestPostgresTextRangeRendersInByteOrder(t *testing.T) {
 }
 
 // TestDuckDBRangeClausesNameNoCollation pins the other half of #728's rule:
-// the DuckDB route, and the pushdown it evaluates itself, already compare in
-// byte order. A collation there would be a second definition of that order.
+// the DuckDB route already compares in byte order. A collation there would be a second definition of that order.
 func TestDuckDBRangeClausesNameNoCollation(t *testing.T) {
 	for _, attr := range []string{"username", "tag"} {
 		paramIndex := 0
 		dc, err := ToDualClauses(charKv(attr, "gt:M"), "eav_table", 7, characterizationCache(), &paramIndex)
 		require.NoError(t, err)
 		assert.NotContains(t, dc.DuckClause, "COLLATE", attr)
-		assert.NotContains(t, dc.PgMainClause, "COLLATE", attr)
 	}
 }
