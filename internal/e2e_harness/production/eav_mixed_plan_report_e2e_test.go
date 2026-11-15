@@ -18,9 +18,14 @@ type planRow struct {
 	access                string  // the node that applies the probe's predicate
 	estimated, actual     float64 // that node's rows per loop
 	seqScans              string  // the relations the plan scans sequentially
-	rowsRead              string  // the rows the plan's scans return, by relation
-	buffers               int64
-	millis                float64
+	// scanOutput is, by relation, the rows the plan's scans returned after
+	// their filters (Actual Rows × Actual Loops); scanFiltered is the rows
+	// those scans read and discarded by a Filter or an index recheck. Neither
+	// counts index entries a btree passes over inside an Index Cond, so
+	// neither is the scans' whole work: the buffers are.
+	scanOutput, scanFiltered string
+	buffers                  int64
+	millis                   float64
 }
 
 // summarizePlan reads a planRow from out. The predicate node is the first
@@ -31,13 +36,14 @@ func summarizePlan(out explainOutput, column string) planRow {
 		millis:  out.ExecutionTime,
 	}
 	seq := map[string]int{}
-	read := map[string]float64{}
+	output, filtered := map[string]float64{}, map[string]float64{}
 	walkExecuted(out.Plan, func(n planNode) {
 		if n.NodeType == "Seq Scan" {
 			seq[n.RelationName]++
 		}
 		if n.RelationName != "" {
-			read[n.RelationName] += n.ActualRows * n.ActualLoops
+			output[n.RelationName] += n.ActualRows * n.ActualLoops
+			filtered[n.RelationName] += (n.RemovedByFilter + n.RemovedByRecheck) * n.ActualLoops
 		}
 		if row.access != "" || n.RelationName == "" || !nodeNames(n, column) {
 			return
@@ -49,12 +55,20 @@ func summarizePlan(out explainOutput, column string) planRow {
 		scans = append(scans, fmt.Sprintf("%s ×%d", rel, seq[rel]))
 	}
 	row.seqScans = strings.Join(scans, ", ")
-	var reads []string
-	for _, rel := range slices.Sorted(maps.Keys(read)) {
-		reads = append(reads, fmt.Sprintf("%s %.0f", rel, read[rel]))
-	}
-	row.rowsRead = strings.Join(reads, ", ")
+	row.scanOutput, row.scanFiltered = byRelation(output), byRelation(filtered)
 	return row
+}
+
+// byRelation renders rows counted by relation as "eav_data n, entity_main m",
+// leaving out the relations with none.
+func byRelation(rows map[string]float64) string {
+	var parts []string
+	for _, rel := range slices.Sorted(maps.Keys(rows)) {
+		if rows[rel] > 0 {
+			parts = append(parts, fmt.Sprintf("%s %.0f", rel, rows[rel]))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // walkExecuted visits the nodes of the tree that ran at least once, in plan
@@ -91,14 +105,15 @@ func accessPath(n planNode) string {
 // of estimated/actual and actual/estimated, each at least one row.
 func renderPlanRows(rows []planRow) string {
 	var sb strings.Builder
-	sb.WriteString("| eav_data | statistics | probe | matches | predicate access | seeks | est | actual | q-error | seq scans | rows read | buffers | ms |\n")
-	sb.WriteString("| --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | --- | --- | ---: | ---: |\n")
+	sb.WriteString("| eav_data | statistics | probe | matches | predicate access | seeks | est | actual | q-error | seq scans " +
+		"| scan output rows | rows filtered by scans | buffers | ms |\n")
+	sb.WriteString("| --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: | ---: |\n")
 	for _, r := range rows {
 		est, act := max(r.estimated, 1), max(r.actual, 1)
 		seeks := map[bool]string{true: "yes", false: "no"}[r.seeks]
-		fmt.Fprintf(&sb, "| %s | %s | %s | %d | %s | %s | %.0f | %.0f | %.0f | %s | %s | %d | %.2f |\n",
+		fmt.Fprintf(&sb, "| %s | %s | %s | %d | %s | %s | %.0f | %.0f | %.0f | %s | %s | %s | %d | %.2f |\n",
 			r.dataset, r.stats, r.probe, r.matches, r.access, seeks, r.estimated, r.actual, max(est/act, act/est),
-			r.seqScans, r.rowsRead, r.buffers, r.millis)
+			r.seqScans, r.scanOutput, r.scanFiltered, r.buffers, r.millis)
 	}
 	return sb.String()
 }

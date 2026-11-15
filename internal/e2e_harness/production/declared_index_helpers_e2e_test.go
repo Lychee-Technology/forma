@@ -123,19 +123,22 @@ func (p *recordingPool) takeAnchorQuery(t *testing.T) recordedQuery {
 // and WAL counts only under EXPLAIN (ANALYZE, BUFFERS, WAL); they are the
 // statement's own, whatever else the cluster runs.
 type planNode struct {
-	NodeType     string     `json:"Node Type"`
-	RelationName string     `json:"Relation Name"`
-	IndexName    string     `json:"Index Name"`
-	IndexCond    string     `json:"Index Cond"`
-	RecheckCond  string     `json:"Recheck Cond"`
-	Filter       string     `json:"Filter"`
-	PlanRows     float64    `json:"Plan Rows"`
-	ActualRows   float64    `json:"Actual Rows"`
-	ActualLoops  float64    `json:"Actual Loops"`
-	SharedHit    int64      `json:"Shared Hit Blocks"`
-	SharedRead   int64      `json:"Shared Read Blocks"`
-	WALBytes     int64      `json:"WAL Bytes"`
-	Plans        []planNode `json:"Plans"`
+	NodeType     string  `json:"Node Type"`
+	RelationName string  `json:"Relation Name"`
+	IndexName    string  `json:"Index Name"`
+	IndexCond    string  `json:"Index Cond"`
+	RecheckCond  string  `json:"Recheck Cond"`
+	Filter       string  `json:"Filter"`
+	PlanRows     float64 `json:"Plan Rows"`
+	ActualRows   float64 `json:"Actual Rows"`
+	ActualLoops  float64 `json:"Actual Loops"`
+	// RemovedByFilter and RemovedByRecheck are, like ActualRows, per loop.
+	RemovedByFilter  float64    `json:"Rows Removed by Filter"`
+	RemovedByRecheck float64    `json:"Rows Removed by Index Recheck"`
+	SharedHit        int64      `json:"Shared Hit Blocks"`
+	SharedRead       int64      `json:"Shared Read Blocks"`
+	WALBytes         int64      `json:"WAL Bytes"`
+	Plans            []planNode `json:"Plans"`
 }
 
 // explain returns the plan PostgreSQL chooses for q, run with q's arguments.

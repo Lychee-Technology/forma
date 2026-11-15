@@ -26,7 +26,8 @@ import (
 //   - Selection. Under each load and statistics state the test records, for the
 //     generated SQL under EXPLAIN (ANALYZE, BUFFERS), the predicate's access
 //     path, its estimated and actual rows, the plan's sequential scans, the
-//     rows its scans read by relation, its buffers and its time. Plan choice
+//     rows its scans returned and filtered out by relation, its buffers and
+//     its time. Plan choice
 //     is reported, not asserted: a scan is the right plan for half of an
 //     attribute, and which plan a misestimate yields depends on costs the test
 //     does not pin.
@@ -39,15 +40,17 @@ import (
 // change of collation comes from the statistics, not from the collation.
 //
 // Every probe's rows are checked against a bytewise comparison done in Go. The
-// tables log as Markdown; FORMA_EAV_PLAN_ROWS runs other sizes. The recorded
-// results and their reading are in docs/eav-text-range-plans.md.
+// tables log as Markdown, with the generated SQL, arguments and full plan text
+// of the textPlanCases; FORMA_EAV_PLAN_ROWS runs other sizes, and
+// FORMA_EAV_PLAN_EVIDENCE writes the same record to files. The recorded results
+// and their reading are in docs/eav-text-range-plans.md.
 func TestMixedEAVTextRangePlans(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	for _, rows := range eavPlanSizes(t) {
 		t.Run(fmt.Sprintf("rows=%d", rows), func(t *testing.T) {
 			b := newEAVPlanBench(ctx, t, rows)
-			b.logSetup()
+			b.recordSetup()
 
 			mixed := eavLoad{"note + token", map[string]int{"note": 1, "token": 1}}
 			b.load(mixed)
@@ -77,7 +80,7 @@ func TestMixedEAVTextRangePlans(t *testing.T) {
 			b.withoutOuterScan(mixed.name)
 			b.extendedStatistics(mixed.name)
 			b.preCollationShape(mixed.name, fresh)
-			t.Logf("rows=%d plans:\n%s", rows, renderPlanRows(b.report))
+			b.recordEvidence()
 		})
 	}
 }
@@ -99,9 +102,6 @@ func (b *eavPlanBench) runProbes(dataset, stats string, probes []eavProbe) map[s
 	got := map[string]planRow{}
 	for _, p := range probes {
 		q := b.query(p)
-		if p.name == "token gt 5" && stats == "fresh" && (dataset == "note + token" || dataset == "token only") {
-			b.logTextPlan(dataset, p.name, q)
-		}
 		row := b.explainRow(dataset, stats, p, q)
 		got[p.name] = row
 		if eligibilityProbe(p, stats) && !row.seeks && !b.forcedSeek(q, p) {
@@ -113,6 +113,9 @@ func (b *eavPlanBench) runProbes(dataset, stats string, probes []eavProbe) map[s
 
 func (b *eavPlanBench) explainRow(dataset, stats string, p eavProbe, q recordedQuery) planRow {
 	b.t.Helper()
+	if textPlanCases[[3]string{dataset, stats, p.name}] {
+		b.recordTextPlan(dataset, stats, p.name, q)
+	}
 	var raw []byte
 	if err := b.env.Pool.QueryRow(b.ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+q.sql, q.args...).Scan(&raw); err != nil {
 		b.t.Fatalf("explain %s: %v", p.name, err)
@@ -214,56 +217,6 @@ func similarEstimate(a, b float64, eavRows int) bool {
 		return true
 	}
 	return a <= 2*b && b <= 2*a
-}
-
-// logSetup records what a reader needs to reproduce the run.
-func (b *eavPlanBench) logSetup() {
-	b.t.Helper()
-	var version, collate string
-	if err := b.env.Pool.QueryRow(b.ctx, `SELECT version(), datcollate::text FROM pg_database WHERE datname = current_database()`).
-		Scan(&version, &collate); err != nil {
-		b.t.Fatalf("read the server version: %v", err)
-	}
-	rows, err := b.env.Pool.Query(b.ctx, `SELECT indexdef FROM pg_indexes WHERE tablename IN ('eav_data', 'entity_main') ORDER BY indexname`)
-	if err != nil {
-		b.t.Fatalf("read index definitions: %v", err)
-	}
-	var defs []string
-	for rows.Next() {
-		var def string
-		if err := rows.Scan(&def); err != nil {
-			b.t.Fatalf("scan index definitions: %v", err)
-		}
-		defs = append(defs, def)
-	}
-	if err := rows.Err(); err != nil {
-		b.t.Fatalf("read index definitions: %v", err)
-	}
-	b.t.Logf("%s; database collation %s; eav_data.value_text %s; e2e_wide rows %d; attr_id note=%d token=%d\nindexes:\n%s",
-		version, collate, columnCollation(b.ctx, b.t, b.env, "eav_data", "value_text"), b.rows,
-		b.attrIDs["note"], b.attrIDs["token"], strings.Join(defs, "\n"))
-}
-
-// logTextPlan logs q, its arguments and its EXPLAIN (ANALYZE, BUFFERS) in
-// PostgreSQL's own text form.
-func (b *eavPlanBench) logTextPlan(dataset, probe string, q recordedQuery) {
-	b.t.Helper()
-	rows, err := b.env.Pool.Query(b.ctx, "EXPLAIN (ANALYZE, BUFFERS) "+q.sql, q.args...)
-	if err != nil {
-		b.t.Fatalf("explain %s: %v", probe, err)
-	}
-	var lines []string
-	for rows.Next() {
-		var line string
-		if err := rows.Scan(&line); err != nil {
-			b.t.Fatalf("scan the plan of %s: %v", probe, err)
-		}
-		lines = append(lines, line)
-	}
-	if err := rows.Err(); err != nil {
-		b.t.Fatalf("explain %s: %v", probe, err)
-	}
-	b.t.Logf("%s on %s, args %v:\n%s\n%s", probe, dataset, q.args, q.sql, strings.Join(lines, "\n"))
 }
 
 // explainOutput is one EXPLAIN (FORMAT JSON) result.

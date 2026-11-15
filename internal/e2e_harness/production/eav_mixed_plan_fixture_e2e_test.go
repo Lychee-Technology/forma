@@ -74,6 +74,8 @@ type eavPlanBench struct {
 	attrIDs  map[string]int16
 	strides  map[string]int // what eav_data holds now
 	report   []planRow
+	setup    string   // the server, collations and index DDL, in Markdown
+	plans    []string // the textPlanCases' SQL and plans, in Markdown
 }
 
 // newEAVPlanBench declares by_rank_title, builds init-db's eav_data text
