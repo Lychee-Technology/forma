@@ -7,31 +7,35 @@ import (
 	"github.com/lychee-technology/forma/internal/conditionexpr"
 )
 
-// DualClauses contains SQL fragments and argument lists for both Postgres and DuckDB.
+// DualClauses contains the WHERE fragments and argument lists a federated
+// condition renders to.
 type DualClauses struct {
-	PgClause     string // existing EAV-based clause (EXISTS...)
-	PgArgs       []any
-	PgMainClause string // predicates that can be pushed into entity_main (m.*)
-	PgMainArgs   []any
+	PgClause string // EAV-based clause (EXISTS...)
+	PgArgs   []any
 
 	DuckClause string
 	DuckArgs   []any
 }
 
-// ToDualClauses generates Postgres and DuckDB WHERE fragments for the given condition.
-// - PgClause reuses existing SQLGenerator (EAV-based EXISTS expressions).
-// - PgMainClause contains predicates suitable for entity_main pushdown.
-// - DuckClause maps attributes to column names when available and emits a simple DuckDB-style clause.
-// Placeholder styles: PgClause (the EAV EXISTS clause, genuinely Postgres-bound)
-// uses "$n"; DuckClause and PgMainClause both use DuckDB positional "?", because
-// PgMainClause was only ever embedded in the DuckDB federated template's
-// pg_source CTE (see pgMainTypedEmitter and #161). That template was retired
-// with the attach hot leg (#858), so the federated pass consumes only
-// DuckClause; the hot keys render their condition through the PostgreSQL
-// route's own builder. Args are returned in order for all three.
+// ToDualClauses generates the Postgres EAV and DuckDB WHERE fragments for the
+// given condition.
+//   - PgClause renders the condition as EAV EXISTS expressions under the
+//     strict operator parse, with "$n" placeholders numbered from paramIndex.
+//   - DuckClause maps attributes to their parquet column names and uses
+//     DuckDB positional "?".
+//
+// The federated parquet pass consumes DuckClause; the pgx hot leg renders its
+// condition through the PostgreSQL route's own builder. Rendering PgClause as
+// well keeps its strict parse among the refusals the federated build raises
+// before it reads (translateDuckDBQuery). Args are returned in placeholder
+// order for both.
+//
+// The retired attach hot leg (#858) also consumed an entity_main pushdown
+// fragment (PgMainClause) that pre-filtered its PostgreSQL scan; nothing has
+// read it since, and #871 retired its generation.
 //
 // The condition tree is normalized into the typed predicate IR exactly once
-// (#143); the three emitters below consume that shared tree.
+// (#143); both emitters below consume that shared tree.
 func ToDualClauses(
 	condition forma.Condition,
 	eavTable string,
@@ -41,18 +45,11 @@ func ToDualClauses(
 ) (DualClauses, error) {
 	tree := normalizePredicates(condition, cache, targetsAll)
 
-	// Build pushdown-capable main table predicates first so paramIndex advances
-	// before the EAV clause, keeping the EAV EXISTS "$n" numbering stable. The
-	// main clause itself emits DuckDB positional "?" (see pgMainTypedEmitter).
-	pgMainClause, pgMainArgs, err := pgMainClauseFromTree(tree, paramIndex)
-	if err != nil {
-		return DualClauses{}, fmt.Errorf("pg main generation: %w", err)
-	}
-
 	// Postgres EAV side: full condition as EXISTS expressions. A nil
 	// top-level condition is skipped (only nested nils are an error).
 	var pgClause string
 	var pgArgs []any
+	var err error
 	if condition != nil {
 		pgClause, pgArgs, err = pgEavClausesFromTree(tree, eavTable, paramIndex)
 		if err != nil {
@@ -67,94 +64,11 @@ func ToDualClauses(
 	}
 
 	return DualClauses{
-		PgClause:     pgClause,
-		PgArgs:       pgArgs,
-		PgMainClause: pgMainClause,
-		PgMainArgs:   pgMainArgs,
-		DuckClause:   duckClause,
-		DuckArgs:     duckArgs,
+		PgClause:   pgClause,
+		PgArgs:     pgArgs,
+		DuckClause: duckClause,
+		DuckArgs:   duckArgs,
 	}, nil
-}
-
-// pgMainTypedGuard vetoes OR groups that are not fully pushable to
-// entity_main: pushing a partial OR would silently drop rows matched only
-// by the non-pushable branch. Pushability is precomputed per group by the
-// normalizer.
-type pgMainTypedGuard struct{}
-
-func (pgMainTypedGuard) SkipGroup(g *PredicateGroup) bool {
-	if g.Logic == forma.LogicOr {
-		return !g.FullyPushable
-	}
-	return false
-}
-
-// pgMainTypedEmitter renders typed predicate leaves for PG main table pushdown.
-type pgMainTypedEmitter struct {
-	paramIndex *int
-}
-
-func (e *pgMainTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, error) {
-	p := leaf.PgMain
-	if p.Err != nil {
-		return "", nil, p.Err
-	}
-	if p.Skip {
-		return "", nil, nil
-	}
-	if p.NullTest != "" {
-		return p.Column + " " + p.NullTest, nil, nil
-	}
-
-	// PgMainClause was only ever embedded in the DuckDB federated query template
-	// (as PG_WHERE_CLAUSE for the pg_source CTE, retired in #858) — it is never
-	// sent to Postgres.
-	// It therefore must use DuckDB's positional "?" placeholder, not "$n":
-	// DuckDB cannot mix "?" (auto-numbered) with "$1" (numbered) in one statement,
-	// and the DuckClause (also embedded here) uses "?". Mixing the two mis-binds
-	// arguments — the "$1" aliases DuckDB positional param 1 and shifts every "?"
-	// after it — so a main-column AND EAV composite silently returned zero rows
-	// (#161). The retired template's arg interleave (DuckArgs, PgMainArgs, DuckArgs)
-	// matched the left-to-right "?" order once every placeholder is "?".
-	//
-	// paramIndex is still advanced so the sibling EAV EXISTS clause (PgClause),
-	// which shares this counter and does use "$n", keeps its numbering stable.
-	if p.Bool != nil {
-		// One positional bind and one counter tick per placeholder (#565).
-		next := func() string {
-			*e.paramIndex++
-			return "?"
-		}
-		return p.Bool.Render(p.Column, next), p.Bool.Args(), nil
-	}
-	*e.paramIndex++
-	sql := fmt.Sprintf("%s %s ?", p.Column, p.SQLOp)
-	if p.SQLOp == "LIKE" {
-		sql += conditionexpr.DuckLikeEscapeClause
-	}
-	return sql, []any{p.Value}, nil
-}
-
-// pgMainClauseFromTree walks an already-normalized predicate tree and emits
-// a WHERE fragment targeting entity_main (m.*), advancing paramIndex.
-func pgMainClauseFromTree(tree PredicateNode, paramIndex *int) (string, []any, error) {
-	emitter := &pgMainTypedEmitter{paramIndex: paramIndex}
-	return walkPredicate(tree, pgMainStyle, pgMainTypedGuard{}, emitter)
-}
-
-// buildPgMainClause traverses the condition tree and emits a WHERE fragment targeting entity_main (m.*)
-// It returns the clause string (with DuckDB positional "?" placeholders, since the
-// main clause is DuckDB-embedded — see pgMainTypedEmitter) and args slice,
-// advancing paramIndex as needed to keep the sibling EAV "$n" numbering stable.
-func buildPgMainClause(cond forma.Condition, cache forma.SchemaAttributeCache, paramIndex *int) (string, []any, error) {
-	if cond == nil {
-		return "", nil, nil
-	}
-	return pgMainClauseFromTree(normalizePredicates(cond, cache, targetPgMain), paramIndex)
-}
-
-func BuildPgMainClause(cond forma.Condition, cache forma.SchemaAttributeCache, paramIndex *int) (string, []any, error) {
-	return buildPgMainClause(cond, cache, paramIndex)
 }
 
 // duckTypedEmitter renders typed predicate leaves for DuckDB with ? placeholders and CAST expressions.
@@ -197,7 +111,7 @@ func (duckTypedEmitter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, error
 // duckClauseFromTree walks an already-normalized predicate tree and produces
 // a DuckDB-compatible WHERE clause.
 func duckClauseFromTree(tree PredicateNode) (string, []any, error) {
-	return walkPredicate(tree, duckStyle, nil, duckTypedEmitter{})
+	return walkPredicate(tree, duckStyle, duckTypedEmitter{})
 }
 
 // buildDuckClause traverses the condition tree and produces a DuckDB-compatible WHERE clause.

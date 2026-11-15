@@ -156,8 +156,8 @@ func TestAdvancedQueryOperatorWhitelistIs400AndVerbatim(t *testing.T) {
 	if !strings.Contains(resp.Error, "only supported for text attributes") {
 		t.Fatalf("expected the published message naming the operator constraint, got %q", resp.Error)
 	}
-	// The generator's internal phase wraps ("pg main generation",
-	// "pg sql generation") are plain context, not publication — they must stay
+	// The generator's internal phase wraps ("pg sql generation",
+	// "duck sql generation") are plain context, not publication — they must stay
 	// out of the body now that only published text crosses (#313).
 	if strings.Contains(resp.Error, "generation") {
 		t.Fatalf("an internal phase name reached the 400 body: %q", resp.Error)

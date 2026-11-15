@@ -14,10 +14,10 @@ func TestLikeOperand_DuckDBConformance(t *testing.T) {
 	db := openDuckDB(t)
 	cache := characterizationCache()
 	values := []string{"abc", "a_c", "a%c", `a\c`, "xa_cx", "A_C", "a__c"}
-	_, err := db.Exec("CREATE TABLE f (username VARCHAR, text_01 VARCHAR)")
+	_, err := db.Exec("CREATE TABLE f (username VARCHAR)")
 	require.NoError(t, err)
 	for _, v := range values {
-		_, err := db.Exec("INSERT INTO f VALUES (?, ?)", v, v)
+		_, err := db.Exec("INSERT INTO f VALUES (?)", v)
 		require.NoError(t, err)
 	}
 	operands := []string{"a_c", "_", "%", `a\`, `\c`, "a", "a__"}
@@ -31,22 +31,19 @@ func TestLikeOperand_DuckDBConformance(t *testing.T) {
 			}
 			sort.Strings(want)
 			cond := charKv("username", op+":"+operand)
-			for _, pgMain := range []bool{false, true} {
-				clause, args, err := duckOrPgMainClause(cond, cache, pgMain)
-				require.NoError(t, err)
-				clause = strings.ReplaceAll(clause, "m.text_01", "text_01")
-				rows, err := db.Query("SELECT username FROM f WHERE "+clause+" ORDER BY username", args...)
-				require.NoError(t, err, clause)
-				var got []string
-				for rows.Next() {
-					var v string
-					require.NoError(t, rows.Scan(&v))
-					got = append(got, v)
-				}
-				require.NoError(t, rows.Close())
-				sort.Strings(got)
-				require.Equal(t, want, got, "%s:%s via %s %v", op, operand, clause, args)
+			clause, args, err := BuildDuckClause(cond, cache)
+			require.NoError(t, err)
+			rows, err := db.Query("SELECT username FROM f WHERE "+clause+" ORDER BY username", args...)
+			require.NoError(t, err, clause)
+			var got []string
+			for rows.Next() {
+				var v string
+				require.NoError(t, rows.Scan(&v))
+				got = append(got, v)
 			}
+			require.NoError(t, rows.Close())
+			sort.Strings(got)
+			require.Equal(t, want, got, "%s:%s via %s %v", op, operand, clause, args)
 		}
 	}
 }

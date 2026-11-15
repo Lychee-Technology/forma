@@ -159,8 +159,8 @@ func TestBuildDuckClause_UnregisteredAttr_RefusesFoldOntoVisibleColumn(t *testin
 	}
 }
 
-// The production federated route builds all three clauses through
-// ToDualClauses, where an unregistered attribute is refused by the PG EAV
+// The production federated route builds both clauses (PG EAV and DuckDB)
+// through ToDualClauses, where an unregistered attribute is refused by the PG EAV
 // payload before the DuckDB clause is rendered (#512 investigation). This
 // pins that the folded spellings never reach DuckDB on that route either,
 // and pins the ORDER: the error must be the PG EAV refusal, not the DuckDB

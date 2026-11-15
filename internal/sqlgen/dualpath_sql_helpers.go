@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lychee-technology/forma/internal/conditionexpr"
 	"github.com/lychee-technology/forma/internal/numutil"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 
@@ -17,8 +16,7 @@ import (
 
 // ConvertPgMainValue converts a string value to the appropriate Go type based
 // on attribute metadata. It is the canonical value converter for Postgres
-// main-table predicates, shared by the dual-path generator and the hybrid
-// condition builder. Numeric-family literals keep their own type via
+// main-table predicates, which the hybrid condition builder binds. Numeric-family literals keep their own type via
 // TryParseNumber: a literal denoting an integer in int64 range binds as exact
 // int64 in every accepted spelling ("42", "42.0", "9.007199254740993e15" —
 // #357), lossless for bigint beyond 2^53; genuinely fractional literals bind
@@ -61,13 +59,14 @@ func ConvertPgMainValue(valStr string, attr string, meta forma.AttributeMetadata
 // (#384 P2b); this route used to run strconv.Atoi alone, so `equals:true`
 // was a 400 here and a match on the EAV and DuckDB routes (#404).
 //
-// A bool-encoded leaf under = / != never reaches this bind: both pushdown
-// normalizers take the BoolMainPredicate first (#565), because `= 1` read a
-// stored 2 as neither true nor false and `= '0'` read a stored 'true' as
-// neither, while every reader derives the bool through the truthiness
-// contract. A bool leaf under any other operator is rejected there as
-// well, so the 1/0 binds below only serve a bool attribute bound with a
-// non-bool column encoding.
+// A bool-encoded leaf under = / != never reaches this bind: the hybrid
+// normalizer (normalizeHybridPayload), the only caller of this converter,
+// takes the BoolMainPredicate first (#565), because `= 1` read a stored 2 as
+// neither true nor false and `= '0'` read a stored 'true' as neither, while
+// every reader derives the bool through the truthiness contract. A bool leaf
+// under any other operator is rejected there as well, so the 1/0 binds below
+// only serve a bool attribute bound with a non-bool column encoding. (Until
+// #871 the retired pg-main pushdown normalizer applied the same rule.)
 func convertPgBoolValue(valStr string, attr string, meta forma.AttributeMetadata) (any, error) {
 	parsed, ok := parseBoolOperand(valStr)
 	if !ok {
@@ -262,62 +261,6 @@ func checkBigIntOperandRange(attr, valStr string, valueType forma.ValueType, v f
 		valStr, attr, int64(math.MinInt64), int64(math.MaxInt64))
 }
 
-// resolveMainTableColumn returns what a pg-main pushdown leaf compares: the
-// column prefixed with "m.", or the read the retired attach hot leg (#858)
-// projected where it read the column through an expression: the declared-type read of an integer in
-// a wider column (mainColIntegerExpr) and the epoch-ms read of an rfc3339
-// date (mainColRFC3339Read), each compared against the operand
-// pgMainOperand binds for it. The pushdown only pre-filtered pg_source, and
-// `visible` filters the projected value again, so a leaf on the raw column
-// was stricter wherever that read changes the value: `is_null` missed an
-// image it reads as NULL, `equals:1000` a `1000.5` it rounds (#627), and a
-// text comparison against the canonical image a fraction or an offset it
-// orders by instant (#755). The row matched only once its parquet copy
-// served it.
-func resolveMainTableColumn(attr string, meta forma.AttributeMetadata) string {
-	if meta.ColumnBinding == nil {
-		return "m." + attr
-	}
-	if expr, ok := mainColIntegerExpr(meta); ok {
-		return expr
-	}
-	if expr, ok := mainColRFC3339Read(meta); ok {
-		return expr
-	}
-	return "m." + string(meta.ColumnBinding.ColumnName)
-}
-
-// resolveMainNullTestColumn returns what a pg-main is_null / is_not_null
-// leaf tests: resolveMainTableColumn, so is_null on an rfc3339 date tests
-// the read, which is NULL for a string that is not a timestamp while the
-// column is not (#709). is_not_null on such a date keeps the raw column: the
-// read is non-NULL only where the column is, so the raw test already keeps
-// every row the read keeps, and it also keeps one whose EAV-joined
-// projection takes a retained eav_data value over a NULL read.
-func resolveMainNullTestColumn(attr string, meta forma.AttributeMetadata, nullTest string) string {
-	if nullTest == conditionexpr.SQLOpIsNotNull {
-		if _, ok := mainColRFC3339Read(meta); ok {
-			return "m." + string(meta.ColumnBinding.ColumnName)
-		}
-	}
-	return resolveMainTableColumn(attr, meta)
-}
-
-// pgMainOperand binds a pg-main comparison leaf's operand against what
-// resolveMainTableColumn compares: the literal's epoch millis for an
-// rfc3339 date's read, refused on the same four-digit-year rule the stored
-// image keeps, and ConvertPgMainValue's bind otherwise.
-func pgMainOperand(valStr, attr string, meta forma.AttributeMetadata) (any, error) {
-	if _, ok := mainColRFC3339Read(meta); !ok {
-		return ConvertPgMainValue(valStr, attr, meta)
-	}
-	ms, err := parseDateMillis(attr, valStr, meta)
-	if err != nil {
-		return nil, fmt.Errorf("invalid date value for '%s': %w", attr, err)
-	}
-	return ms, nil
-}
-
 // resolveDuckDBColumn returns the column name the DuckClause must reference.
 //
 // The DuckClause (LOGICAL_WHERE_CLAUSE) is only ever applied against the DuckDB
@@ -328,9 +271,7 @@ func pgMainOperand(valStr, attr string, meta forma.AttributeMetadata) (any, erro
 // (`integer_01`), which is not a column of those CTEs. Emitting the physical name
 // referenced a nonexistent column on non-benchmark schemas — a binder error /
 // empty result in production, previously masked in the benchmark by
-// translateDuckClauseToBenchmark (#167). Contrast resolveMainTableColumn, which
-// correctly uses the physical `m.<col>` because PgMainClause references the real
-// entity_main table `m` joined in the pg_source CTE.
+// translateDuckClauseToBenchmark (#167).
 //
 // Dotted attribute names fold through ParquetAttrColumn (#260): the CTEs
 // project every attribute under its parquet column alias, because the same

@@ -66,9 +66,8 @@ func TestToDualClauses_ScalarOperatorsAgreeAcrossStorage(t *testing.T) {
 	}
 }
 
-// buildCharTextUuidOrderCases pins the renders #676 admits to the entity_main
-// pushdown: not_equals and the range operators on a bound text or uuid
-// column, which PG_WHERE_CLAUSE filters before the logical clause does.
+// buildCharTextUuidOrderCases pins the renders of not_equals and the range
+// operators on a bound text or uuid column (#676).
 func buildCharTextUuidOrderCases() []charCase {
 	const stored = "6f1c3c3e-1111-4111-8111-111111111111"
 	return []charCase{
@@ -76,47 +75,40 @@ func buildCharTextUuidOrderCases() []charCase {
 			name: "text not_equals bound",
 			cond: charKv("username", "not_equals:Alice"),
 			want: DualClauses{
-				PgMainClause: "m.text_01 != ?", PgMainArgs: []any{"Alice"},
-				PgClause: charEavClause("$2", "value_text", "!=", "$3"), PgArgs: []any{int16(1), "Alice"},
+				PgClause: charEavClause("$1", "value_text", "!=", "$2"), PgArgs: []any{int16(1), "Alice"},
 				DuckClause: "username != ?", DuckArgs: []any{"Alice"},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			name: "text gte bound",
 			cond: charKv("username", "gte:M"),
 			want: DualClauses{
-				PgMainClause: "m.text_01 >= ?", PgMainArgs: []any{"M"},
-				PgClause: charEavClause("$2", `value_text COLLATE "C"`, ">=", "$3"), PgArgs: []any{int16(1), "M"},
+				PgClause: charEavClause("$1", `value_text COLLATE "C"`, ">=", "$2"), PgArgs: []any{int16(1), "M"},
 				DuckClause: "username >= ?", DuckArgs: []any{"M"},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			name: "uuid lt bound binds the canonical spelling",
 			cond: charKv("owner", "lt:6F1C3C3E-1111-4111-8111-111111111111"),
 			want: DualClauses{
-				PgMainClause: "m.uuid_01 < ?", PgMainArgs: []any{stored},
-				PgClause: charEavClause("$2", `value_text COLLATE "C"`, "<", "$3"), PgArgs: []any{int16(14), stored},
+				PgClause: charEavClause("$1", `value_text COLLATE "C"`, "<", "$2"), PgArgs: []any{int16(14), stored},
 				DuckClause: "CAST(owner AS VARCHAR) < CAST(? AS VARCHAR)", DuckArgs: []any{stored},
 			},
-			span: 3,
+			span: 2,
 		},
 	}
 }
 
-// TestPgMainTextUUIDOrderMatchesTheLogicalClause executes the #676 renders in
-// DuckDB, which evaluates PG_WHERE_CLAUSE over the hot leg's PostgreSQL rows of
-// entity_main (m.text_01 VARCHAR, m.uuid_01 UUID), and the DuckClause over
-// the columns the federated CTEs project for the same attributes: VARCHAR
-// from pg_source and the EAV pivot, and UUID from a bound column's parquet.
-// pg_source drops a hot row the pushdown rejects, and the dirty set already
-// discards its parquet versions, so a pushdown narrower than the logical
-// clause would lose the row. Both must select exactly the rows Go's byte
-// order selects against the operand's bound spelling (lowercase for a uuid),
+// TestDuckTextUUIDOrderMatchesByteOrder executes the #676 DuckClause renders
+// in DuckDB over the columns the federated CTEs project for a bound text and
+// a bound uuid attribute: VARCHAR from the EAV pivot, and UUID from a bound
+// column's parquet. The clause must select exactly the rows Go's byte order
+// selects against the operand's bound spelling (lowercase for a uuid),
 // including uuids whose top bit is set and text whose case or encoding orders
 // differently under a linguistic collation.
-func TestPgMainTextUUIDOrderMatchesTheLogicalClause(t *testing.T) {
+func TestDuckTextUUIDOrderMatchesByteOrder(t *testing.T) {
 	db := openDuckDB(t)
 	texts := []string{"B", "a", "abc", "ab", "é", "z", "Z"}
 	uuids := []string{
@@ -138,13 +130,13 @@ func TestPgMainTextUUIDOrderMatchesTheLogicalClause(t *testing.T) {
 	require.NoError(t, err)
 
 	cases := []struct {
-		attr, column string
-		values       []string
-		operands     []string
-		canonical    func(string) string // the spelling the operand binds as
+		attr      string
+		values    []string
+		operands  []string
+		canonical func(string) string // the spelling the operand binds as
 	}{
-		{"username", "text_01", texts, []string{"a", "ab", "B", "é", "Z"}, func(s string) string { return s }},
-		{"owner", "uuid_01", uuids, []string{"7FFFFFFF-FFFF-4FFF-BFFF-FFFFFFFFFFFF", "80000000-0000-4000-8000-000000000000"}, strings.ToLower},
+		{"username", texts, []string{"a", "ab", "B", "é", "Z"}, func(s string) string { return s }},
+		{"owner", uuids, []string{"7FFFFFFF-FFFF-4FFF-BFFF-FFFFFFFFFFFF", "80000000-0000-4000-8000-000000000000"}, strings.ToLower},
 	}
 	for _, tc := range cases {
 		for _, operand := range tc.operands {
@@ -159,8 +151,6 @@ func TestPgMainTextUUIDOrderMatchesTheLogicalClause(t *testing.T) {
 							want = append(want, v)
 						}
 					}
-					column := "CAST(m." + tc.column + " AS VARCHAR)"
-					require.ElementsMatch(t, want, queryDuckStrings(t, db, column, "ent m", dc.PgMainClause, dc.PgMainArgs), "pushdown %s", dc.PgMainClause)
 					for _, table := range []string{"unified", "parquet_tier"} {
 						got := queryDuckStrings(t, db, "CAST("+tc.attr+" AS VARCHAR)", table, dc.DuckClause, dc.DuckArgs)
 						require.ElementsMatch(t, want, got, "logical %s over %s", dc.DuckClause, table)

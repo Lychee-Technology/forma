@@ -9,25 +9,23 @@ import (
 )
 
 // A uuid operand takes one rule on every route of the federated clauses
-// (#674 review): the entity_main pushdown, the eav_data EXISTS and the DuckDB
-// clause. owner is bound to uuid_01, ref is stored in eav_data.
+// (#674 review): the eav_data EXISTS and the DuckDB clause. owner is bound to
+// uuid_01, ref is stored in eav_data.
 
 func TestUUIDOperandBindsTheStoredSpellingOnEveryRoute(t *testing.T) {
 	const stored = "6f1c3c3e-1111-4111-8111-111111111111"
 	cases := []struct {
-		attr       string
-		pgMainArgs []any
-		pgArgs     []any
+		attr   string
+		pgArgs []any
 	}{
-		{"owner", []any{stored}, []any{int16(14), stored}},
-		{"ref", nil, []any{int16(11), stored}},
+		{"owner", []any{int16(14), stored}},
+		{"ref", []any{int16(11), stored}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.attr, func(t *testing.T) {
 			paramIndex := 1
 			got, err := ToDualClauses(charKv(tc.attr, "equals:6F1C3C3E-1111-4111-8111-111111111111"), "eav_table", 7, characterizationCache(), &paramIndex)
 			require.NoError(t, err)
-			require.Equal(t, tc.pgMainArgs, got.PgMainArgs)
 			require.Equal(t, tc.pgArgs, got.PgArgs)
 			require.Equal(t, []any{stored}, got.DuckArgs)
 		})
@@ -50,12 +48,12 @@ func TestMalformedUUIDOperandIsRefusedOnEveryRoute(t *testing.T) {
 	}
 }
 
-// LIKE on a uuid column was pushed down as `m.uuid_01 LIKE ?`, which neither
-// engine can evaluate; the whitelist now refuses it there as on eav_data.
-func TestUUIDLikeIsRefusedOnTheMainPushdown(t *testing.T) {
+// LIKE on a column-bound uuid was once pushed down as `m.uuid_01 LIKE ?`,
+// which neither engine can evaluate; the operator whitelist refuses it on a
+// bound uuid as on an eav_data one.
+func TestUUIDLikeIsRefusedOnABoundUUID(t *testing.T) {
 	paramIndex := 1
 	_, err := ToDualClauses(charKv("owner", "starts_with:6f"), "eav_table", 7, characterizationCache(), &paramIndex)
-	require.ErrorContains(t, err, "pg main generation: ")
 	requirePublished(t, err, "operator 'starts_with' only supported for text attributes, not 'uuid' (attribute 'owner')")
 }
 

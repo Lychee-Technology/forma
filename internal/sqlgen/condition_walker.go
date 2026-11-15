@@ -8,17 +8,10 @@ import (
 )
 
 // leafEmitter renders a single KvCondition leaf into SQL and args.
-// Returning ("", nil, nil) signals "skip this leaf" — used by pg-main to
-// silently skip leaves without column bindings.
+// Returning ("", nil, nil) signals "skip this leaf"; the style's allEmpty
+// behavior decides what a composite whose every child skipped renders.
 type leafEmitter interface {
 	EmitLeaf(kv *forma.KvCondition) (sql string, args []any, err error)
-}
-
-// compositeGuard optionally intercepts a CompositeCondition before traversing
-// its children. pg-main uses this to veto an entire OR branch when any child
-// cannot be pushed to the main table.
-type compositeGuard interface {
-	SkipComposite(c *forma.CompositeCondition) bool
 }
 
 // typedLeafEmitter renders a typed predicate leaf into SQL and args. The
@@ -31,12 +24,6 @@ type typedLeafEmitter interface {
 // condition builder) implement to consume typed leaves via WalkHybridCondition.
 type TypedLeafEmitter = typedLeafEmitter
 
-// typedGuard optionally intercepts a PredicateGroup before traversing its
-// children, mirroring compositeGuard on the typed tree.
-type typedGuard interface {
-	SkipGroup(g *PredicateGroup) bool
-}
-
 type allEmptyBehavior int
 
 const (
@@ -48,7 +35,6 @@ type nilNodeBehavior int
 
 const (
 	nilNodeError nilNodeBehavior = iota // return error
-	nilNodeSkip                         // return ""
 	nilNodeTrue                         // return "1=1"
 )
 
@@ -69,13 +55,6 @@ var (
 		allEmpty:           allEmptyOmit,
 		nilNode:            nilNodeError,
 		strictLogic:        true,
-	}
-	pgMainStyle = compositeStyle{
-		emptyAnd:           "1=1",
-		emptyOr:            "1=0",
-		outerParensOnMulti: true,
-		allEmpty:           allEmptyOmit,
-		nilNode:            nilNodeSkip,
 	}
 	duckStyle = compositeStyle{
 		emptyAnd:           "1=1",
@@ -105,53 +84,39 @@ func (a legacyLeafAdapter) EmitTypedLeaf(leaf *PredicateLeaf) (string, []any, er
 	return a.emit.EmitLeaf(leaf.Source)
 }
 
-// legacyGuardAdapter feeds the source composite of a typed group to a legacy
-// compositeGuard.
-type legacyGuardAdapter struct{ guard compositeGuard }
-
-func (a legacyGuardAdapter) SkipGroup(g *PredicateGroup) bool {
-	return a.guard.SkipComposite(g.Source)
-}
-
 // WalkHybridCondition normalizes cond with the hybrid leaf target (parse-once)
 // and walks it with the hybrid composite style, emitting each leaf through the
 // caller's typed emitter. It is the entrypoint for the hybrid condition
 // builder: composite traversal and leaf parsing both live in the shared typed
 // walker, so the builder only formats already-resolved leaves.
 func WalkHybridCondition(cond forma.Condition, cache forma.SchemaAttributeCache, emit TypedLeafEmitter) (string, []any, error) {
-	return walkPredicate(normalizePredicates(cond, cache, targetHybrid), hybridStyle, nil, emit)
+	return walkPredicate(normalizePredicates(cond, cache, targetHybrid), hybridStyle, emit)
 }
 
 // walkCondition traverses a forma.Condition AST and emits SQL via the legacy
 // leafEmitter. The traversal itself is the typed predicate walker over a
 // structure-only normalization (no target payloads), so composite semantics
 // exist exactly once.
-func walkCondition(cond forma.Condition, style compositeStyle, guard compositeGuard, emit leafEmitter) (string, []any, error) {
-	var g typedGuard
-	if guard != nil {
-		g = legacyGuardAdapter{guard: guard}
-	}
-	return walkPredicate(normalizePredicates(cond, nil, targetsNone), style, g, legacyLeafAdapter{emit: emit})
+func walkCondition(cond forma.Condition, style compositeStyle, emit leafEmitter) (string, []any, error) {
+	return walkPredicate(normalizePredicates(cond, nil, targetsNone), style, legacyLeafAdapter{emit: emit})
 }
 
 // walkPredicate traverses a typed predicate tree and emits SQL via the
-// typedLeafEmitter. Composite traversal (empty handling, parens, joins,
-// guard) is parameterised by style.
-func walkPredicate(node PredicateNode, style compositeStyle, guard typedGuard, emit typedLeafEmitter) (string, []any, error) {
+// typedLeafEmitter. Composite traversal (empty handling, parens, joins) is
+// parameterised by style.
+func walkPredicate(node PredicateNode, style compositeStyle, emit typedLeafEmitter) (string, []any, error) {
 	switch n := node.(type) {
 	case predicateNilNode:
 		switch style.nilNode {
 		case nilNodeError:
 			return "", nil, fmt.Errorf("nil condition not allowed")
-		case nilNodeSkip:
-			return "", nil, nil
 		case nilNodeTrue:
 			return "1=1", nil, nil
 		default:
 			return "", nil, fmt.Errorf("unknown nilNode behavior")
 		}
 	case *PredicateGroup:
-		return walkPredicateGroup(n, style, guard, emit)
+		return walkPredicateGroup(n, style, emit)
 	case *PredicateLeaf:
 		return emit.EmitTypedLeaf(n)
 	case predicateInvalidNode:
@@ -161,9 +126,8 @@ func walkPredicate(node PredicateNode, style compositeStyle, guard typedGuard, e
 	}
 }
 
-func walkPredicateGroup(g *PredicateGroup, style compositeStyle, guard typedGuard, emit typedLeafEmitter) (string, []any, error) {
-	// Empty composite produces identity value BEFORE guard check (empty OR must
-	// yield "1=0", not be silently vetoed).
+func walkPredicateGroup(g *PredicateGroup, style compositeStyle, emit typedLeafEmitter) (string, []any, error) {
+	// An empty composite renders its identity value.
 	if len(g.Children) == 0 {
 		if g.Logic == forma.LogicOr {
 			return style.emptyOr, nil, nil
@@ -184,16 +148,11 @@ func walkPredicateGroup(g *PredicateGroup, style compositeStyle, guard typedGuar
 		}
 	}
 
-	// guard: ask typedGuard whether to skip this node entirely
-	if guard != nil && guard.SkipGroup(g) {
-		return "", nil, nil
-	}
-
 	var parts []string
 	var allArgs []any
 
 	for _, child := range g.Children {
-		childSQL, childArgs, err := walkPredicate(child, style, guard, emit)
+		childSQL, childArgs, err := walkPredicate(child, style, emit)
 		if err != nil {
 			return "", nil, err
 		}

@@ -9,7 +9,7 @@ import (
 )
 
 // The predicate leaves publish exactly their own message (#313): the
-// generator's "pg main generation"/"pg sql generation" phase wraps stay plain
+// generator's "pg sql generation"/"duck sql generation" phase wraps stay plain
 // fmt.Errorf, so the internal phase name never reaches a response body.
 func TestPredicateErrorsPublishLeafMessageOnly(t *testing.T) {
 	cases := []struct {

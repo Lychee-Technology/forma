@@ -92,8 +92,8 @@ func TestPlanCacheHitRendersLikeDirectBuild(t *testing.T) {
 		hit bool
 	}{
 		{
-			// The shape hash canonicalizes eq to equals, and so does the
-			// pg-main classifier since #469: both push to entity_main.
+			// The shape hash canonicalizes eq to equals, and so does every
+			// emitter since #469.
 			name: "operator alias on a column-bound attribute",
 			attr: "symbol", a: "equals:x", b: "eq:x",
 			hit: true,
@@ -130,11 +130,11 @@ func TestPlanCacheHitRendersLikeDirectBuild(t *testing.T) {
 }
 
 // TestPlanCacheHitAliasInsideOr is the #469 case the single-leaf pairs above
-// cannot reach. Inside an OR the pg-main guard does not refuse an
-// unpushable branch, it drops the whole group from PG_WHERE_CLAUSE. While
-// the classifier read the raw spelling, or(eq:x, …) was served the
-// skeleton cached for or(equals:x, …), with two more placeholders than the
-// args it bound.
+// cannot reach. Inside an OR the pg-main guard (retired in #871) did not
+// refuse an unpushable branch, it dropped the whole group from
+// PG_WHERE_CLAUSE. While its classifier read the raw spelling, or(eq:x, …)
+// was served the skeleton cached for or(equals:x, …), with two more
+// placeholders than the args it bound.
 func TestPlanCacheHitAliasInsideOr(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()

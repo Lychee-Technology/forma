@@ -29,7 +29,7 @@ func TestPgEavLeafPayload_ComparisonLHSUsesBoolTruthiness(t *testing.T) {
 	require.Equal(t, BoolTruthiness("x.value_numeric"), p.ComparisonLHS("x"))
 }
 
-// TestConvertPgMainValue_BoolAcceptsEveryOperandSpelling: the pg-main
+// TestConvertPgMainValue_BoolAcceptsEveryOperandSpelling: the entity_main
 // main-table route parses a bool operand under the same rule as the EAV and
 // DuckDB routes (parseBoolOperand, #384 P2b). Before #404 it ran strconv.Atoi
 // alone, so `equals:true` was a 400 on this route and a match on the others.
@@ -71,31 +71,18 @@ func TestConvertPgMainValue_BoolAcceptsEveryOperandSpelling(t *testing.T) {
 // TestToDualClauses_BoundBoolOperandSpellingParity is the #503 acceptance
 // at the emitter level: one operand spelling on a column-bound bool must
 // reach the same verdict on every route the dual-path generator serves —
-// the pg-main pushdown bind (the BETWEEN range for bool_smallint, the bool
-// bind against `= '1'` for bool_text; #565), the PG-EAV truthy bind and the
-// DuckDB CAST(? AS BOOLEAN) bind — or be rejected as
-// invalid input on all of them. Before #564 the pg-main bind ran
-// strconv.Atoi alone, so `equals:true` was a 400 on the PreferHot route and
-// a match through DuckDB; the converter-level pin above cannot see that
-// split, this one can.
+// the PG-EAV truthy bind and the DuckDB CAST(? AS BOOLEAN) bind — or be
+// rejected as invalid input on all of them. The entity_main form of the
+// same leaf is TestHybridMain_BoolPredicateSpelling's.
 func TestToDualClauses_BoundBoolOperandSpellingParity(t *testing.T) {
 	cache := characterizationCache()
 	type encoding struct {
-		attr   string
-		clause string
-		bind   func(truthy bool) []any
-		eav    string // the PG-EAV clause after the pg-main ticks
+		attr string
+		eav  string // the PG-EAV clause
 	}
 	encodings := []encoding{
-		{"active", "m.bool_01 BETWEEN ? AND ?", func(v bool) []any {
-			if v {
-				return []any{int64(1), int64(32767)}
-			}
-			return []any{int64(-32768), int64(0)}
-		}, charEXISTS + "$3 AND (x.value_numeric > 0.5) = $4)"},
-		{"verified", "(m.text_02 = '1') = ?", func(v bool) []any {
-			return []any{v}
-		}, charEXISTS + "$2 AND (x.value_numeric > 0.5) = $3)"},
+		{"active", charEXISTS + "$1 AND (x.value_numeric > 0.5) = $2)"},
+		{"verified", charEXISTS + "$1 AND (x.value_numeric > 0.5) = $2)"},
 	}
 	spellings := []struct {
 		operand string
@@ -113,7 +100,6 @@ func TestToDualClauses_BoundBoolOperandSpellingParity(t *testing.T) {
 				dc, err := ToDualClauses(charKv(enc.attr, "equals:"+sp.operand), "eav_table", 7, cache, &paramIndex)
 				require.NoError(t, err)
 				require.Equal(t, DualClauses{
-					PgMainClause: enc.clause, PgMainArgs: enc.bind(sp.truthy),
 					PgClause: enc.eav, PgArgs: []any{attrID, sp.truthy},
 					DuckClause: enc.attr + " = CAST(? AS BOOLEAN)", DuckArgs: []any{sp.truthy},
 				}, dc)
@@ -243,16 +229,17 @@ func TestBoolSmallintSetRange_MatchesReadContract(t *testing.T) {
 	}
 }
 
-// TestPgMainAndHybridMain_BoolPredicateSpelling pins the entity_main
-// pushdown predicate for both bool encodings and both equality operators
-// (#565), the pg-main twin of TestPgEavLeafPayload_ComparisonLHSUsesBoolTruthiness.
+// TestHybridMain_BoolPredicateSpelling pins the entity_main predicate the
+// hybrid builder's main branch renders for both bool encodings and both
+// equality operators (#565), the entity_main twin of
+// TestPgEavLeafPayload_ComparisonLHSUsesBoolTruthiness.
 // The clause text is operand-independent — the plan cache reuses it across
 // operands, so `equals:true` and `equals:false` must differ only in their
 // binds: bool_smallint renders the BETWEEN range whose bounds equal the
 // `> 0.5` verdict on a SMALLINT, bool_text renders the `= '1'` contract
 // every other leg reads by against a bool bind. Every case consumes one
 // counter tick per placeholder.
-func TestPgMainAndHybridMain_BoolPredicateSpelling(t *testing.T) {
+func TestHybridMain_BoolPredicateSpelling(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
 		"flagInt": {AttributeID: 2, ValueType: forma.ValueTypeBool,
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnSmallint01, Encoding: forma.MainColumnEncodingBoolInt}},
@@ -278,22 +265,22 @@ func TestPgMainAndHybridMain_BoolPredicateSpelling(t *testing.T) {
 		{"flagText", "equals:2", "(m.text_02 = '1') = ?", []any{true}},
 	} {
 		t.Run(tc.attr+"/"+tc.value, func(t *testing.T) {
-			paramIndex := 0
-			sqlText, args, err := buildPgMainClause(&forma.KvCondition{Attr: tc.attr, Value: tc.value}, cache, &paramIndex)
-			require.NoError(t, err)
-			require.Equal(t, tc.wantMain, sqlText)
-			require.Equal(t, tc.wantArgs, args)
-			require.Equal(t, len(tc.wantArgs), paramIndex, "one counter tick per placeholder")
-
 			leaf := normalizeLeaf(&forma.KvCondition{Attr: tc.attr, Value: tc.value}, cache, targetHybrid)
 			require.NoError(t, leaf.Hybrid.Err)
 			require.True(t, leaf.Hybrid.IsMain)
 			require.NotNil(t, leaf.Hybrid.MainBool)
+			ticks := 0
+			sqlText := leaf.Hybrid.MainBool.Render("m."+leaf.Hybrid.MainColumn, func() string {
+				ticks++
+				return "?"
+			})
+			require.Equal(t, tc.wantMain, sqlText)
 			require.Equal(t, tc.wantArgs, leaf.Hybrid.MainBool.Args())
+			require.Equal(t, len(tc.wantArgs), ticks, "one placeholder per bind")
 		})
 	}
-	_, _, err := buildPgMainClause(&forma.KvCondition{Attr: "flagInt", Value: "equals:banana"}, cache, new(int))
-	require.ErrorIs(t, err, forma.ErrInvalidInput)
+	leaf := normalizeLeaf(&forma.KvCondition{Attr: "flagInt", Value: "equals:banana"}, cache, targetHybrid)
+	require.ErrorIs(t, leaf.Hybrid.Err, forma.ErrInvalidInput)
 }
 
 // mainColBoolExpr is the read contract of a column-bound bool main-table

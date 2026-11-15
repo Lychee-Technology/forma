@@ -10,61 +10,52 @@ func buildCharTemporalUuidCases() []charCase {
 	iso := "2024-01-02T03:04:05Z"
 	// #842: the canonical image keeps three fractional digits.
 	isoImage := "2024-01-02T03:04:05.000Z"
-	// #755: pg-main compares the hot leg's epoch-ms read of the rfc3339
-	// column, the value `visible` filters again, instead of the raw text
-	// against the canonical image.
-	isoRead := RFC3339EpochMs("m.text_03")
 	return []charCase{
 		{
-			name: "date unix-ms encoding: main/eav int64 ms, duck epoch-ms int64",
+			name: "date unix-ms encoding: eav int64 ms, duck epoch-ms int64",
 			cond: charKv("born", "gte:1700000000000"),
 			want: DualClauses{
-				PgMainClause: "m.bigint_01 >= ?", PgMainArgs: []any{int64(1700000000000)},
-				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(8), int64(1700000000000)},
+				PgClause: charEavClause("$1", "value_numeric", ">=", "$2"), PgArgs: []any{int16(8), int64(1700000000000)},
 				DuckClause: "born >= CAST(? AS BIGINT)", DuckArgs: []any{int64(1700000000000)},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
-			name: "datetime RFC3339 encoding: main tests the epoch-ms read, eav binds the ISO string, duck epoch-ms int64",
+			name: "datetime RFC3339 encoding: eav binds the ISO string, duck epoch-ms int64",
 			cond: charKv("joined", "gte:"+iso),
 			want: DualClauses{
-				PgMainClause: isoRead + " >= ?", PgMainArgs: []any{int64(1704164645000)},
-				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(9), isoImage},
+				PgClause: charEavClause("$1", "value_numeric", ">=", "$2"), PgArgs: []any{int16(9), isoImage},
 				DuckClause: "joined >= CAST(? AS BIGINT)", DuckArgs: []any{int64(1704164645000)},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			// #588: the literal's offset is folded into the UTC image the
 			// column stores; before, PG bound "2024-01-02T05:04:05+02:00"
 			// and compared it lexically against the stored image.
-			name: "datetime RFC3339 encoding: offset literal binds the UTC image on PG EAV, epoch-ms on main and duck",
+			name: "datetime RFC3339 encoding: offset literal binds the UTC image on PG EAV, epoch-ms on duck",
 			cond: charKv("joined", "gte:2024-01-02T05:04:05+02:00"),
 			want: DualClauses{
-				PgMainClause: isoRead + " >= ?", PgMainArgs: []any{int64(1704164645000)},
-				PgClause: charEavClause("$2", "value_numeric", ">=", "$3"), PgArgs: []any{int16(9), isoImage},
+				PgClause: charEavClause("$1", "value_numeric", ">=", "$2"), PgArgs: []any{int16(9), isoImage},
 				DuckClause: "joined >= CAST(? AS BIGINT)", DuckArgs: []any{int64(1704164645000)},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			// #588: a unix-ms literal renders in UTC, not the process zone
 			// (TestMain pins Europe/Berlin; before, this bound "…T04:04:05+01:00").
-			name: "datetime RFC3339 encoding: unix-ms literal binds the UTC image on PG EAV, epoch-ms on main and duck",
+			name: "datetime RFC3339 encoding: unix-ms literal binds the UTC image on PG EAV, epoch-ms on duck",
 			cond: charKv("joined", "equals:1704164645000"),
 			want: DualClauses{
-				PgMainClause: isoRead + " = ?", PgMainArgs: []any{int64(1704164645000)},
-				PgClause: charEavClause("$2", "value_numeric", "=", "$3"), PgArgs: []any{int16(9), isoImage},
+				PgClause: charEavClause("$1", "value_numeric", "=", "$2"), PgArgs: []any{int16(9), isoImage},
 				DuckClause: "joined = CAST(? AS BIGINT)", DuckArgs: []any{int64(1704164645000)},
 			},
-			span: 3,
+			span: 2,
 		},
 		{
 			name: "datetime unbound: eav unix-ms int64, duck epoch-ms int64",
 			cond: charKv("seen", "gte:"+iso),
 			want: DualClauses{
-				PgMainClause: "", PgMainArgs: nil,
 				PgClause: charEavClause("$1", "value_numeric", ">=", "$2"), PgArgs: []any{int16(10), int64(1704164645000)},
 				DuckClause: "seen >= CAST(? AS BIGINT)", DuckArgs: []any{int64(1704164645000)},
 			},
@@ -74,7 +65,6 @@ func buildCharTemporalUuidCases() []charCase {
 			name: "uuid equals unbound: eav value_text, duck VARCHAR cast",
 			cond: charKv("ref", "equals:0b210f52-1f4d-4f47-9799-1e2f2c0efc07"),
 			want: DualClauses{
-				PgMainClause: "", PgMainArgs: nil,
 				PgClause: charEavClause("$1", "value_text", "=", "$2"), PgArgs: []any{int16(11), "0b210f52-1f4d-4f47-9799-1e2f2c0efc07"},
 				DuckClause: "ref = CAST(? AS VARCHAR)", DuckArgs: []any{"0b210f52-1f4d-4f47-9799-1e2f2c0efc07"},
 			},

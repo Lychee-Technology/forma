@@ -67,8 +67,8 @@ func TestBigIntOperandRangeParityBothDialects(t *testing.T) {
 	rejected := []rejectionProbe{
 		// The issue's headline: an EAV-only bigint compared against 1e30.
 		{"total_gt_1e30", Filter{Attr: "total", Op: "gt", Value: "1e30"}},
-		// The bound bigint takes the pg-main binder on Postgres and the same
-		// DuckDB cast on the other route.
+		// The bound bigint takes the entity_main binder on Postgres and the
+		// same DuckDB cast on the other route.
 		{"amount_gt_1e30", Filter{Attr: "amount", Op: "gt", Value: "1e30"}},
 		{"amount_lt_negative_1e19", Filter{Attr: "amount", Op: "lt", Value: "-1e19"}},
 		// The first integer past MaxInt64, in bare digits.

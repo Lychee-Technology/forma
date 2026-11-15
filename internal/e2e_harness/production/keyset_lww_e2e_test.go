@@ -187,7 +187,7 @@ func testKeysetCreatedAtCursorResurrection(ctx context.Context, t *testing.T, en
 }
 
 // testKeysetCursorWithMixedFilters drives a mixed MAIN+EAV composite filter
-// (DuckArgs + PgMainArgs) together with a keyset cursor through the real
+// together with a keyset cursor through the real
 // engine: one statement, one placeholder style, args bound in appearance
 // order (#161/#212). Phase 2 supersedes a row so the cursor must also drop
 // its live version without resurrecting the old one.
@@ -195,7 +195,7 @@ func testKeysetCursorWithMixedFilters(ctx context.Context, t *testing.T, env *En
 	rows := make([]*Event, 0, 5)
 	for i := 0; i < 5; i++ {
 		rows = append(rows, CreateEvent(wide, map[string]any{
-			"title": fmt.Sprintf("grp-%02d", i),  // MAIN text_01 → PgMain pushdown
+			"title": fmt.Sprintf("grp-%02d", i),  // MAIN text_01
 			"note":  fmt.Sprintf("keep-%02d", i), // EAV text → DuckDB clause
 			"count": float64(100 * (i + 1)),      // 100..500
 		}))

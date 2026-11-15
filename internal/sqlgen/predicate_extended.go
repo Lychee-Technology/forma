@@ -19,8 +19,7 @@ const (
 )
 
 // extendedLeaf is the target-independent parse of an extended leaf, done
-// once. err is the caller-facing refusal every target reports, except the
-// pg-main pushdown, which skips the leaves it cannot place.
+// once. err is the caller-facing refusal every target reports.
 type extendedLeaf struct {
 	kind  extendedKind
 	op    string // canonical logical operator
@@ -76,18 +75,12 @@ func classifyServerTimeLeaf(attr, op string, meta forma.AttributeMetadata, value
 }
 
 // applyExtendedLeaf fills the summary fields and the requested target
-// payloads of an extended leaf. A null test on a bound column is the only
-// extended leaf pg-main can push down: a set's array bind has no form in
-// the pg_source pushdown (#646 D3), and $now is refused on that route.
+// payloads of an extended leaf.
 func applyExtendedLeaf(leaf *PredicateLeaf, meta forma.AttributeMetadata, hasMeta bool, ext extendedLeaf, targets normalizeTargets) {
 	leaf.SQLOperator = ext.sqlOp
 	leaf.Pattern = PatternKindNone
-	leaf.Pushable = ext.kind == extNullTest && hasMeta && meta.ColumnBinding != nil
 	if targets&targetPgEav != 0 {
 		leaf.PgEav = extendedPgEavPayload(leaf.Attr, meta, hasMeta, ext)
-	}
-	if targets&targetPgMain != 0 {
-		leaf.PgMain = extendedPgMainPayload(leaf.Attr, meta, hasMeta, ext)
 	}
 	if targets&targetDuck != 0 {
 		leaf.Duck = extendedDuckPayload(leaf.Attr, meta, hasMeta, ext)
@@ -121,22 +114,6 @@ func extendedPgEavPayload(attr string, meta forma.AttributeMetadata, hasMeta boo
 		p.Now = &ServerTimeOperand{OffsetMs: ext.now.OffsetMs, Date: meta.ValueType == forma.ValueTypeDate}
 	}
 	return p
-}
-
-func extendedPgMainPayload(attr string, meta forma.AttributeMetadata, hasMeta bool, ext extendedLeaf) PgMainLeafPayload {
-	if !hasMeta || meta.ColumnBinding == nil {
-		return PgMainLeafPayload{Skip: true}
-	}
-	if ext.kind == extServerTime {
-		return PgMainLeafPayload{Err: serverTimeFederatedError(attr, meta.ValueType)}
-	}
-	if ext.err != nil {
-		return PgMainLeafPayload{Err: ext.err}
-	}
-	if ext.kind == extSet {
-		return PgMainLeafPayload{Skip: true}
-	}
-	return PgMainLeafPayload{Column: resolveMainNullTestColumn(attr, meta, ext.sqlOp), NullTest: ext.sqlOp}
 }
 
 func extendedDuckPayload(attr string, meta forma.AttributeMetadata, hasMeta bool, ext extendedLeaf) DuckLeafPayload {

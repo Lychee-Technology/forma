@@ -30,14 +30,14 @@ func rfc3339Cache() forma.SchemaAttributeCache {
 	}
 }
 
-// TestMainColRFC3339Expr_ExecutesToEpochMs runs the epoch-ms read a pg-main
-// leaf compares an rfc3339 date through (mainColRFC3339Read) on DuckDB over
-// the images a text column can carry: the write path's UTC RFC3339 string
+// TestRFC3339EpochMs_ExecutesToEpochMs runs the epoch-ms read the CDC export
+// applies to an rfc3339 date (RFC3339EpochMs) on DuckDB over the images a
+// text column can carry: the write path's UTC RFC3339 string
 // (transform.storeWithEncoding), one carrying fractional seconds, a non-date
 // string (NULL through TRY_CAST rather than a read-path crash, matching the
 // export) and NULL. Offsets and session TimeZones are
 // rfc3339_read_duckdb_test.go's (#756).
-func TestMainColRFC3339Expr_ExecutesToEpochMs(t *testing.T) {
+func TestRFC3339EpochMs_ExecutesToEpochMs(t *testing.T) {
 	db, err := sql.Open("duckdb", strictLambdaDSN)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
@@ -54,7 +54,7 @@ func TestMainColRFC3339Expr_ExecutesToEpochMs(t *testing.T) {
 	} {
 		t.Run(tc.image, func(t *testing.T) {
 			var got sql.NullInt64
-			query := "SELECT " + mainColRFC3339Expr("text_02") +
+			query := "SELECT " + RFC3339EpochMs("m.text_02") +
 				" FROM (SELECT CAST(" + tc.image + " AS VARCHAR) AS text_02) m"
 			require.NoError(t, db.QueryRow(query).Scan(&got))
 			require.Equal(t, tc.want, got)

@@ -2,7 +2,6 @@ package sqlgen
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/conditionexpr"
@@ -15,12 +14,11 @@ type normalizeTargets uint8
 
 const (
 	targetPgEav normalizeTargets = 1 << iota
-	targetPgMain
 	targetDuck
 	targetHybrid
 
 	targetsNone normalizeTargets = 0
-	targetsAll                   = targetPgEav | targetPgMain | targetDuck
+	targetsAll                   = targetPgEav | targetDuck
 )
 
 // normalizePredicates converts a forma.Condition into the typed predicate
@@ -35,13 +33,9 @@ func normalizePredicates(cond forma.Condition, cache forma.SchemaAttributeCache,
 	}
 	switch c := cond.(type) {
 	case *forma.CompositeCondition:
-		group := &PredicateGroup{Logic: c.Logic, Source: c, FullyPushable: true}
+		group := &PredicateGroup{Logic: c.Logic}
 		for _, child := range c.Conditions {
-			node := normalizePredicates(child, cache, targets)
-			group.Children = append(group.Children, node)
-			if !nodeFullyPushable(node) {
-				group.FullyPushable = false
-			}
+			group.Children = append(group.Children, normalizePredicates(child, cache, targets))
 		}
 		return group
 	case *forma.KvCondition:
@@ -51,26 +45,12 @@ func normalizePredicates(cond forma.Condition, cache forma.SchemaAttributeCache,
 	}
 }
 
-func nodeFullyPushable(node PredicateNode) bool {
-	switch n := node.(type) {
-	case *PredicateGroup:
-		return n.FullyPushable
-	case *PredicateLeaf:
-		return n.Pushable
-	default:
-		return false
-	}
-}
-
 func normalizeLeaf(kv *forma.KvCondition, cache forma.SchemaAttributeCache, targets normalizeTargets) *PredicateLeaf {
 	leaf := &PredicateLeaf{Attr: kv.Attr, Source: kv}
 
 	meta, hasMeta := cache[kv.Attr]
 	leaf.HasMeta = hasMeta
 	leaf.Meta = meta
-	if hasMeta && meta.ColumnBinding != nil {
-		leaf.Storage = PredicateStorageMain
-	}
 
 	lenient := conditionexpr.ParseOperatorValueLenient(kv.Value)
 	leaf.Operator = PredicateOperator(conditionexpr.CanonicalOperator(lenient.Operator))
@@ -89,17 +69,8 @@ func normalizeLeaf(kv *forma.KvCondition, cache forma.SchemaAttributeCache, targ
 		}
 	}
 
-	var classifyOK bool
-	if hasMeta {
-		classifyOK, _ = classifyPredicate(kv, meta)
-	}
-	leaf.Pushable = hasMeta && meta.ColumnBinding != nil && classifyOK
-
 	if targets&targetPgEav != 0 {
 		leaf.PgEav = normalizePgEavPayload(kv, meta, hasMeta)
-	}
-	if targets&targetPgMain != 0 {
-		leaf.PgMain = normalizePgMainPayload(kv, meta, hasMeta, classifyOK, lenient, lenientSQL, lenientSQLErr)
 	}
 	if targets&targetDuck != 0 {
 		leaf.Duck = normalizeDuckPayload(kv, meta, hasMeta, lenientSQL, lenientSQLErr)
@@ -108,69 +79,6 @@ func normalizeLeaf(kv *forma.KvCondition, cache forma.SchemaAttributeCache, targ
 		leaf.Hybrid = normalizeHybridPayload(kv, meta, hasMeta, lenient, lenientSQL, lenientSQLErr)
 	}
 	return leaf
-}
-
-// classifyPredicate returns whether a KvCondition can be pushed to main table based on metadata.
-// It splits the raw value at the first colon itself (no lenient date fallback), so
-// a bare ISO timestamp classifies as unpushable. The operator is canonicalized as on
-// every other target (#469): an alias ("eq", "neq") or letter-case spelling classifies
-// like its canonical name, which the shape-keyed plan cache relies on.
-//
-// Text and uuid columns take every scalar operator their eav_data form takes
-// (#676; checkOperatorForType still refuses LIKE on uuid). DuckDB evaluates
-// the pushed clause over the hot leg's PostgreSQL rows, so a text or uuid range
-// orders by bytes as the logical clause does and never drops a row that
-// clause keeps. A text compare the postgres extension did forward to
-// PostgreSQL carried COLLATE "C" in #631's probe, which keeps that order; any
-// future pushdown must too (#728, see pgByteOrderCollation).
-func classifyPredicate(kv *forma.KvCondition, meta forma.AttributeMetadata) (bool, string) {
-	if meta.ColumnBinding == nil {
-		return false, "no column binding"
-	}
-
-	// Simple operator extraction
-	opPart := ""
-	valPart := ""
-	if idx := strings.Index(kv.Value, ":"); idx >= 0 {
-		opPart = kv.Value[:idx]
-		valPart = kv.Value[idx+1:]
-	}
-	opStr := "equals"
-	if opPart != "" && valPart != "" {
-		opStr = conditionexpr.CanonicalOperator(opPart)
-	}
-
-	// Decide based on value type and operator
-	switch meta.ValueType {
-	case forma.ValueTypeText, forma.ValueTypeUUID:
-		switch opStr {
-		case "equals", "gt", "gte", "lt", "lte", "not_equals", "starts_with", "contains":
-			return true, "text supported"
-		default:
-			return false, "text operator not supported"
-		}
-	case forma.ValueTypeNumeric, forma.ValueTypeInteger, forma.ValueTypeBigInt, forma.ValueTypeSmallInt:
-		switch opStr {
-		case "equals", "gt", "gte", "lt", "lte", "not_equals":
-			return true, "numeric supported"
-		default:
-			return false, "numeric operator not supported"
-		}
-	case forma.ValueTypeDate, forma.ValueTypeDateTime:
-		switch opStr {
-		case "equals", "gt", "gte", "lt", "lte", "not_equals":
-			return true, "date supported"
-		default:
-			return false, "date operator not supported"
-		}
-	case forma.ValueTypeBool:
-		if opStr == "equals" || opStr == "not_equals" {
-			return true, "bool supported"
-		}
-		return false, "bool operator not supported"
-	default:
-		return false, "unknown value type"
-	}
 }
 
 // normalizePgEavPayload converts a leaf for the EAV EXISTS emitter: strict
@@ -296,53 +204,6 @@ func NarrowEAVNumericOperand(vt forma.ValueType, v int64) any {
 		return v
 	}
 	return float64(v)
-}
-
-// normalizePgMainPayload converts a leaf for entity_main pushdown: unknown
-// attributes and unbound columns skip silently, bound-but-unclassifiable
-// operators error, and values convert per column encoding; a bool-encoded
-// equality leaf carries a BoolMainPredicate instead of a value bind (#565).
-func normalizePgMainPayload(
-	kv *forma.KvCondition,
-	meta forma.AttributeMetadata,
-	hasMeta bool,
-	classifyOK bool,
-	lenient conditionexpr.OperatorValue,
-	lenientSQL conditionexpr.SQLOperatorResult,
-	lenientSQLErr error,
-) PgMainLeafPayload {
-	if !hasMeta {
-		// unknown attribute -> cannot push
-		return PgMainLeafPayload{Skip: true}
-	}
-	if !classifyOK {
-		if meta.ColumnBinding == nil {
-			return PgMainLeafPayload{Skip: true}
-		}
-		return PgMainLeafPayload{Err: forma.InvalidInputf("unsupported operator: %s", lenient.Operator)}
-	}
-	if lenientSQLErr != nil {
-		return PgMainLeafPayload{Err: lenientSQLErr}
-	}
-	if err := checkOperatorForType(kv.Attr, lenient.Operator, lenientSQL.SQLOperator, meta.ValueType); err != nil {
-		return PgMainLeafPayload{Err: err}
-	}
-
-	column := resolveMainTableColumn(kv.Attr, meta)
-	if p, ok, err := pgMainBoolPredicate(meta, lenientSQL.SQLOperator, lenientSQL.Value, kv.Attr); err != nil {
-		return PgMainLeafPayload{Err: err}
-	} else if ok {
-		return PgMainLeafPayload{Column: column, Bool: &p}
-	}
-	parsedValue, err := pgMainOperand(lenientSQL.Value, kv.Attr, meta)
-	if err != nil {
-		return PgMainLeafPayload{Err: err}
-	}
-	return PgMainLeafPayload{
-		Column: column,
-		SQLOp:  lenientSQL.SQLOperator,
-		Value:  parsedValue,
-	}
 }
 
 // normalizeDuckPayload converts a leaf for the DuckDB emitter, keeping the

@@ -8,7 +8,7 @@ import (
 )
 
 // TestBigIntOperandRangeAllBinders pins the #502 contract on the three
-// predicate binders — ConvertPgMainValue (PG main + hybrid), parsePgEavValue
+// predicate binders — ConvertPgMainValue (hybrid entity_main), parsePgEavValue
 // (PG EAV EXISTS) and parseDuckDBRawParam (DuckDB): an integral bigint operand
 // outside int64 range is invalid input on every binder, so both routes answer
 // the same 400 instead of Postgres comparing NUMERIC while DuckDB raises a
@@ -114,9 +114,9 @@ func TestBigIntOperandRange_Entrypoints(t *testing.T) {
 		wantErrTail string
 	}{
 		{
-			name:        "bound bigint gt 1e30 rejected in pg-main first",
+			name:        "bound bigint gt 1e30 rejected in EAV",
 			cond:        charKv("amount", "gt:1e30"),
-			wantDualErr: "pg main generation: ",
+			wantDualErr: "pg sql generation: ",
 			wantErrTail: "value 1e30 out of range for bigint attribute 'amount' (operand must fit [-9223372036854775808, 9223372036854775807])",
 		},
 		{

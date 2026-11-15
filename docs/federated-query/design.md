@@ -122,12 +122,9 @@ The translator (`sqlgen.ToDualClauses`) normalizes the filter tree once and rend
 
 **A. Main-Table Fragment ($PG_WHERE_CLAUSE)**
 
-`ToDualClauses` still renders this fragment (`PgMainClause`), but nothing in production consumes it since #858. It was the `WHERE` clause of the template's `pg_source` CTE, which DuckDB evaluated over the copy of `entity_main` the hot leg's scan took; PostgreSQL never saw it (§6.1, *Why*).
+Retired. Until #858 this fragment (`PgMainClause`) was the `WHERE` clause of the template's `pg_source` CTE, which DuckDB evaluated over the copy of `entity_main` the attach hot leg's scan took; PostgreSQL never saw it (§6.1, *Why*). Nothing read it after #858, and #871 removed its generation: `ToDualClauses` renders the PostgreSQL EAV clause and the DuckDB logical fragment only.
 
-* **Scope:** Only attributes mapping to entity_main.
-* **Syntax:** Physical Column Names, with DuckDB's positional `?` placeholders.
-* **Never stricter than the hot read:** while it had a consumer, `$LOGICAL_WHERE_CLAUSE` filtered the projected value again, so this fragment could keep a row the logical fragment dropped, but must not drop one it kept, or a filter answered differently before and after the row's flush. Where the hot leg read a column through an expression, the fragment tested that expression: an integer in a wider column (#627, §6.4), and an `rfc3339`-bound date's epoch milliseconds (`sqlgen.RFC3339EpochMs`, #756), which `is_null` (#709) and comparisons (#755) tested. Across the tiers the tier parity suite now guards a stronger property: PostgreSQL and DuckDB must select the same rows (§6.1, *Filtering splits by tier*).
-* *Example:* (integer_01 > 18 AND text_01 LIKE 'John%')
+It covered only attributes mapping to `entity_main`, by physical column name with DuckDB's positional `?` placeholders, and dropped any OR group with a branch it could not push. Because `$LOGICAL_WHERE_CLAUSE` filtered the projected value again, it had to be never stricter than the hot read: where the hot leg read a column through an expression, it tested that expression, an integer in a wider column (#627, §6.4) and an `rfc3339`-bound date's epoch milliseconds (#709, #755). The hot leg now reads through the OLTP reader and filters on PostgreSQL, and the tier parity suite guards the stronger property that PostgreSQL and DuckDB select the same rows (§6.1, *Filtering splits by tier*); the production e2e acceptances of #565, #627, #709 and #755 run against that path.
 
 **B. DuckDB Logical Fragment ($LOGICAL_WHERE_CLAUSE)**
 

@@ -10,10 +10,11 @@ import (
 // TestToDualClauses_OperatorAliasesRenderAsCanonical pins #469: an operator
 // alias (eq, neq) or a different letter case is the same operator as its
 // canonical spelling, as docs/condition-dsl.md states. Each pair must render
-// byte-identical clauses and args on all three emitters, or be refused by
-// both, whether the attribute is column-bound or stored in eav_data. Before
-// #469 the pg-main pushability check read the raw spelling, so eq/neq on a
-// bound column answered 400 while EAV and DuckDB accepted them.
+// byte-identical clauses and args on both emitters (EAV and DuckDB), or be
+// refused by both, whether the attribute is column-bound or stored in
+// eav_data. History: before #469 the pg-main pushability check (retired with
+// the pg-main emitter in #871) read the raw spelling, so eq/neq on a bound
+// column answered 400 while EAV and DuckDB accepted them.
 func TestToDualClauses_OperatorAliasesRenderAsCanonical(t *testing.T) {
 	cache := characterizationCache()
 	cases := []struct {
@@ -39,8 +40,9 @@ func TestToDualClauses_OperatorAliasesRenderAsCanonical(t *testing.T) {
 		{"mixed-case canonical", charKv("age", "not_equals:7"), charKv("age", "Not_Equals:7")},
 		{"upper-case range operator", charKv("age", "gt:7"), charKv("age", "GT:7")},
 		{"upper-case LIKE operator", charKv("username", "starts_with:Al"), charKv("username", "STARTS_WITH:Al")},
-		// An OR is pushed only when every branch is pushable, so an alias
-		// leaf must not veto the group.
+		// An alias leaf inside an OR renders as its canonical spelling too.
+		// (The retired pg-main emitter pushed an OR only when every branch
+		// was pushable, so an alias leaf once could veto the group.)
 		{"alias inside OR",
 			charOr(charKv("age", "equals:2"), charKv("username", "equals:A")),
 			charOr(charKv("age", "eq:2"), charKv("username", "eq:A"))},
@@ -65,20 +67,18 @@ func TestToDualClauses_OperatorAliasesRenderAsCanonical(t *testing.T) {
 
 // TestToDualClauses_DesignExampleFilter pins the worked example of
 // docs/federated-query/design.md §4.1 (symbol eq:AAPL AND trade_type eq:2)
-// with both attributes column-bound: both leaves push to entity_main.
+// with both attributes column-bound.
 func TestToDualClauses_DesignExampleFilter(t *testing.T) {
 	cond := charAnd(charKv("username", "eq:AAPL"), charKv("age", "eq:2"))
 	paramIndex := 0
 	dc, err := ToDualClauses(cond, "eav_table", 7, characterizationCache(), &paramIndex)
 	require.NoError(t, err)
 	require.Equal(t, DualClauses{
-		PgMainClause: "((m.text_01 = ?) AND (m.integer_01 = ?))",
-		PgMainArgs:   []any{"AAPL", int64(2)},
-		PgClause: "((" + charEavClause("$3", "value_text", "=", "$4") + ") AND (" +
-			charEavClause("$5", "value_numeric", "=", "$6") + "))",
+		PgClause: "((" + charEavClause("$1", "value_text", "=", "$2") + ") AND (" +
+			charEavClause("$3", "value_numeric", "=", "$4") + "))",
 		PgArgs:     []any{int16(1), "AAPL", int16(2), float64(2)},
 		DuckClause: "(username = ?) AND (age = CAST(? AS DOUBLE))",
 		DuckArgs:   []any{"AAPL", int64(2)},
 	}, dc)
-	require.Equal(t, 6, paramIndex)
+	require.Equal(t, 4, paramIndex)
 }
