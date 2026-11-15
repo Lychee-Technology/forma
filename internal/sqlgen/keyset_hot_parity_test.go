@@ -79,6 +79,9 @@ func parityColumns() []parityColumn {
 		{"k_text", forma.AttributeMetadata{ValueType: forma.ValueTypeText}, "VARCHAR", []any{
 			"", "10", "B", "a", "abc", "é", nil}},
 		{"k_ref", forma.AttributeMetadata{ValueType: forma.ValueTypeUUID}, "VARCHAR", append(ids, nil)},
+		// A column-bound uuid exports as a parquet UUID, though its export
+		// type, and so its boundary's, is VARCHAR (#869).
+		{"k_bound_ref", forma.AttributeMetadata{ValueType: forma.ValueTypeUUID, ColumnBinding: bound("text_01")}, "UUID", append(ids, nil)},
 		{"k_flag", forma.AttributeMetadata{ValueType: forma.ValueTypeBool}, "BOOLEAN", []any{false, true, nil}},
 		{"deleted_ts", forma.AttributeMetadata{}, "BIGINT", []any{int64(0), nil, int64(0), nil}},
 		{"created_at", forma.AttributeMetadata{}, "BIGINT", []any{int64(-1), int64(0), int64(1700000000000)}},
