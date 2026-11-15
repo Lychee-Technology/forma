@@ -239,9 +239,41 @@ already does.
 
 ### Controls
 
-- Half-attribute ranges plan as scans or bitmap reads under every load, with
-  estimates within a factor of two (for example 14,965 against 10,000 for
-  mixed `token gt` half at 20,000 rows). Those scans are justified.
+- **Half-attribute ranges, fresh statistics, attribute a large share of
+  `value_text`:** the one-attribute loads, `note + token` (and its passes
+  with the rewrite, the richer statistics and the pre-#728 SQL), and the
+  notes of the skewed load. Their estimates are within a factor of two (for
+  example 14,965 against 10,000 for mixed `token gt` half at 20,000 rows,
+  74,820 against 50,000 at 100,000). They plan as a sequential scan of
+  `eav_data` for the predicate, or as an index-only scan of
+  `eav_data_text_idx` hashed against the anchor's outer sequential scan. No
+  recorded plan uses a bitmap read. For half of an attribute, those reads
+  are justified.
+- **Half-attribute ranges on the skewed load's tokens, fresh statistics.**
+  The tokens are 1,000 of `value_text`'s 21,000 values at 20,000 rows (5,000
+  of 105,000 at 100,000), all below the notes. The independence product
+  described in the [Conclusion](#conclusion) therefore applies within their
+  own range: the column's share beyond the bound times the attribute's share.
+  `token gt` half is estimated at 979 against 500 (5,008 against 2,500 at
+  100,000), within a factor of two. `token lt` half is estimated at 21
+  against 500 (q-error 24) and at 123 against 2,500 (q-error 20). Its
+  predicate is an index-only scan of `eav_data_text_idx` with no sequential
+  scan in the plan, reading 5,708 buffers in 6.83 ms at 20,000 rows and
+  17,530 buffers in 18.14 ms at 100,000. The overestimated `gt` half read
+  20,527 and 10,841. This underestimate mirrors the selective `token gt`'s
+  overestimate and has the same cause, not the collation. The test asserts
+  neither plan.
+- **Half-attribute ranges, missing statistics, and the tokens under stale
+  statistics.** On `note + token`, the four half ranges without statistics
+  and the two token half ranges under stale statistics are estimated at 1 row
+  against 10,000 (50,000 at 100,000). Each plans as an index-only scan of
+  `eav_data_text_idx` with no sequential scan.
+  At 20,000 rows these plans read 108,448 to 128,444 buffers in 70 to 76 ms;
+  fresh, the same ranges read 2,769 to 2,900. At 100,000 rows they read
+  511,188 to 611,186 buffers in 348 to 529 ms; fresh, 11,179 to 11,399 (see
+  [Statistics states](#statistics-states)). Under stale statistics the notes,
+  which the `ANALYZE` saw, are estimated within one row and plan as
+  sequential scans.
 - The composite `(rank, title)` index seeks both ranges under `rank = 7` with
   estimates within one row (10 rows at 20,000, 50 at 100,000; 85 and 456
   buffers), as `eav_data`'s statistics cannot affect it.
