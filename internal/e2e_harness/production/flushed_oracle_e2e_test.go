@@ -244,8 +244,8 @@ func TestPgxHotLegTiersMatchFlushed(t *testing.T) {
 // as hot rows and the generated rows updated, so every edge value ties
 // across the tiers and hot versions shadow parquet ones. An offset walk
 // sorted on each attribute, in both directions, and a keyset walk on each
-// attribute but the column-bound uuid, must answer as the same request does
-// once every row is flushed.
+// attribute, the column-bound uuid included (#869), must answer as the same
+// request does once every row is flushed.
 func TestPgxHotLegSortKeyEdgesMatchFlushed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -281,14 +281,7 @@ func TestPgxHotLegSortKeyEdgesMatchFlushed(t *testing.T) {
 			if whole := o.answer(ctx, t, label+", one page", q); !slices.Equal(pageRowIDs(whole), walked) {
 				t.Fatalf("%s: the walk %v does not tile the whole page %v", label, walked, pageRowIDs(whole))
 			}
-			if meta := cache[attr]; meta.ValueType != forma.ValueTypeUUID || meta.ColumnBinding == nil {
-				// A cursor on a column-bound uuid fails: its parquet column
-				// is a DuckDB UUID (the export's TRY_CAST(col AS UUID)), and
-				// DuckDB refuses to compare it with the cursor's
-				// CAST(? AS VARCHAR) boundary (pgx-hot-leg-plan.md step 6,
-				// Not fixed here).
-				o.attributeKeysetWalk(ctx, t, wide, meta, desc)
-			}
+			o.attributeKeysetWalk(ctx, t, wide, cache[attr], desc)
 		}
 	}
 	if o.settle(ctx, t) == 0 {

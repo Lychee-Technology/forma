@@ -31,6 +31,16 @@ import (
 // A column without an export type has not been normalized and is refused.
 // A uuid boundary binds as its canonical text, which the cast reads back.
 //
+// A VARCHAR column reads as CAST(<column> AS VARCHAR) on the predicate's
+// side too (keysetPredicateRef). A column-bound uuid attribute exports as a
+// parquet UUID while its export type is VARCHAR, and the scan leaves that
+// pair unpinned (ScanTypesCompatible), so without the cast DuckDB refuses to
+// compare the UUID column with the VARCHAR boundary (#869). DuckDB writes a
+// UUID as its canonical lower-case text, the text cursor normalization gives
+// a uuid boundary, and orders a UUID as that text orders
+// (TestParquetUUIDSortKey), so the comparison admits the rows the ORDER BY
+// puts after the boundary. On a VARCHAR column the cast is the identity.
+//
 // deleted_ts renders as COALESCE(deleted_ts, 0), here and in the keyset
 // ORDER BY: every row a page returns is live, and a live row holds 0 or
 // NULL by its encoding (a hot row, a pre-#274 delta row), so the column
@@ -86,10 +96,10 @@ func generateKeysetWhereClause(cursor *model.KeysetCursor) (string, []interface{
 
 		var parts []string
 		for j := 0; j < i; j++ {
-			parts = append(parts, fmt.Sprintf("%s = %s", keysetColumnRef(cursor.Columns[j].Attribute), params[j]))
+			parts = append(parts, fmt.Sprintf("%s = %s", keysetPredicateRef(cursor.Columns[j]), params[j]))
 			args = append(args, keysetBindValue(cursor.Values[j]))
 		}
-		parts = append(parts, fmt.Sprintf("%s %s %s", keysetColumnRef(col.Attribute), op, params[i]))
+		parts = append(parts, fmt.Sprintf("%s %s %s", keysetPredicateRef(col), op, params[i]))
 		args = append(args, keysetBindValue(cursor.Values[i]))
 
 		clauses = append(clauses, "("+strings.Join(parts, " AND ")+")")
@@ -169,6 +179,20 @@ func keysetColumnRef(attribute string) string {
 	ref := ParquetAttrColumn(attribute)
 	if DuckDBEqualFold(attribute, keysetDeletedTS) {
 		return fmt.Sprintf("COALESCE(%s, 0)", ref)
+	}
+	return ref
+}
+
+// keysetPredicateRef is how the keyset predicate reads a cursor column:
+// keysetColumnRef, read at VARCHAR when that is the column's export type, so
+// a column-bound uuid's parquet UUID compares with its VARCHAR boundary
+// (generateKeysetWhereClause). The keyset ORDER BY keeps keysetColumnRef: it
+// orders a UUID as its text orders, and the parquet-only statement's sort key
+// columns, which the merge decodes from a UUID's 16 bytes, repeat its terms.
+func keysetPredicateRef(col model.KeysetColumn) string {
+	ref := keysetColumnRef(col.Attribute)
+	if col.ExportType == "VARCHAR" {
+		return fmt.Sprintf("CAST(%s AS VARCHAR)", ref)
 	}
 	return ref
 }
