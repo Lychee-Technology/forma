@@ -108,6 +108,13 @@ var metricCatalogue = []MetricDescriptor{
 		Help:   "DuckDB circuit breaker state changes, by the state entered (#634): open when failures reach the threshold or a half-open probe fails, half_open when a request is admitted as the probe after the open period, closed when a DuckDB pass succeeds. Emitted only on a transition, never as a heartbeat.",
 	},
 	{
+		Name:   "federated_degraded_fallback_total",
+		Kind:   MetricKindCounter,
+		Unit:   MetricUnitCount,
+		Labels: []string{"cause", "outcome"},
+		Help:   "PostgreSQL-only degraded fallbacks attempted under AllowPartialDegradedMode (#714), one per attempt. cause is the class of the failure that triggered the fallback: breaker_rejected, duckdb_unavailable, corrupt_parquet, scan_guard_violation, read_failed, postgres_read_failed or other. outcome is served when the PostgreSQL-only read answered the request and failed when that read failed.",
+	},
+	{
 		Name:   "compaction_manifest_contract_violation_total",
 		Kind:   MetricKindCounter,
 		Unit:   MetricUnitCount,
