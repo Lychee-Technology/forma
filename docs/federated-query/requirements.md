@@ -1055,8 +1055,13 @@ succeeds, so:
   the breaker.
 - The failed pass emits no `fed_query_*` sample (§10.1). During an S3 outage
   those series go flat, which reads the same as no traffic. The breaker's
-  transition counter does move: a sustained outage trips the breaker, and each
-  later probe that fails re-opens it.
+  transition counter moves only for failures that reach DuckDB and count
+  toward the breaker: when the outage fails the DuckDB statement, a sustained
+  outage trips the breaker, and each later probe that fails re-opens it. When
+  the outage fails the manifest read instead, before DuckDB is consulted, it
+  degrades every request without moving the breaker's failure count, so the
+  transition counter stays flat too. Of the metrics, only the fallback
+  counter below shows that case, under `cause` `read_failed`.
 - `federated_degraded_fallback_total` (§10.1, #714) counts the fallback once
   the PostgreSQL read has returned, with the absorbed failure's class as
   `cause` and `served` or `failed` as `outcome`. It counts every attempt the
