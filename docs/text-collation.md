@@ -212,7 +212,9 @@ If the lock is not acceptable yet, leave the columns as they are and do not
 rerun `init-db` until you migrate. The deployment keeps working as before:
 ranges answer the same rows, and the byte-order indexes of
 [Declared Indexes](schema-indexes.md#text-ranges) restore their seeks, at the
-cost measured there. #815 tracks the remaining work for such tables.
+cost measured there. Forma does not build or maintain those indexes, and it
+will not grow a compatibility mode for such tables: migration is the only
+supported path (#815).
 
 ## Aurora DSQL
 

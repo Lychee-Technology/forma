@@ -226,11 +226,16 @@ planner rightly takes the one-attribute index.
 
 The `eav_data` index keys every attribute's `value_text`, and PostgreSQL keeps
 one set of statistics for the column. A range whose bound lies beyond another
-attribute's values looks unselective to the planner, which then scans. For
-example, every uuid sorts below a `t`-prefixed note, so with both stored,
-`token gt:…` and `note lt:t…` were planned as scans in the same run. That is not
-a collation effect; the test loads one attribute at a time, and #815's EAV plan
-verification is where it belongs.
+attribute's values therefore looks unselective to the planner: every uuid
+sorts below a `t`-prefixed note, so with both stored, a `token gt:…` that
+selects 5 rows is estimated at a quarter of `eav_data`. The test above loads
+one attribute at a time to keep that out of its plans.
+`TestMixedEAVTextRangePlans` measures it with the attributes mixed
+([Text ranges on mixed EAV attributes](eav-text-range-plans.md)): the
+range still seeks this index, and the estimate is the same before #728 and
+under any statistics target, so it is not a collation effect. The cost lands
+in the query around the range, mainly the anchor's outer `eav_data` scan
+(#881).
 
 #### Tables created before #816
 
@@ -263,7 +268,9 @@ CREATE INDEX CONCURRENTLY eav_data_text_bytes
 ```
 
 In the 200,000-row run, the first of these brought the column-bound range back to
-86 buffers. Keep the ordinary index alongside: on a default-collation column
+86 buffers. These keys are a stopgap the operator builds and drops: Forma does
+not create, check or maintain them, and migration is the only supported path
+(#815). Keep the ordinary index alongside: on a default-collation column
 `equals` and `in` cannot seek a `C` key. Don't give the extra index a name
 starting with `<table>_cx_`, the prefix `init-db` reserves for declared indexes.
 

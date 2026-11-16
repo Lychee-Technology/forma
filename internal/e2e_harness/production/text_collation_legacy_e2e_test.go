@@ -10,10 +10,10 @@ import (
 	"github.com/lychee-technology/forma/internal"
 )
 
-// TestLegacyTextColumnsNeedADuplicateCIndex is the side of #816 that #815
-// keeps: a table created before the contract, whose text columns follow the
-// database default, cannot seek a text range on its ordinary indexes, and
-// needs a second, COLLATE "C" key per index for that. Equality and in still
+// TestLegacyTextColumnsNeedADuplicateCIndex is the measurement behind #815's
+// migration-only decision: a table created before the contract, whose text
+// columns follow the database default, cannot seek a text range on its
+// ordinary indexes, and needs a second, COLLATE "C" key per index for that. Equality and in still
 // seek the ordinary index, so a legacy table carries both, which is the
 // storage and write cost a column under C avoids. The test measures both on
 // the same rows: the size of each ordinary index and its C twin, and the WAL
