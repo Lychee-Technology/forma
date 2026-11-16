@@ -27,7 +27,17 @@ type degradedPlanCase struct {
 	metricCause string
 }
 
+// degradedPlanCases is the shared table of degrade points the plan, log and
+// metric tests (#639, #638, #714) drive through DBFederatedQueryEngine.Query.
 func degradedPlanCases() []degradedPlanCase {
+	cases := duckDBPassFailureCases()
+	cases = append(cases, preDuckDBReadFailureCases()...)
+	return append(cases, objectRefusalCases()...)
+}
+
+// duckDBPassFailureCases fail the DuckDB pass itself: the breaker turns the
+// request away, there is no client, or a statement of the pass fails.
+func duckDBPassFailureCases() []degradedPlanCase {
 	return []degradedPlanCase{
 		{
 			// Rejected before any DuckDB work: recordClientUnavailable still
@@ -74,6 +84,53 @@ func degradedPlanCases() []degradedPlanCase {
 			metricCause: degradeCauseReadFailed,
 		},
 		{
+			// Without a client the pass fails before the breaker is
+			// consulted.
+			name: "duckdb client unavailable",
+			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
+				return newSentinelTestEngine(t, nil, nil), coldTierQuery()
+			},
+			cause:       "duckdb client not available",
+			metricCause: degradeCauseDuckDBUnavailable,
+		},
+	}
+}
+
+// preDuckDBReadFailureCases fail a read the pass makes before DuckDB runs, so
+// the failure never counts toward the breaker (#714).
+func preDuckDBReadFailureCases() []degradedPlanCase {
+	return []degradedPlanCase{
+		{
+			// The manifest read fails before DuckDB runs, so the failure
+			// never counts toward the breaker (#714).
+			name: "manifest read failure",
+			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
+				src := &fakeParquetSource{pathsErr: fmt.Errorf("forced manifest read failure")}
+				return newParquetSourceTestEngine(t, &fakeDuckDBExecutor{}, src), coldTierQuery()
+			},
+			cause:       "forced manifest read failure",
+			metricCause: degradeCauseReadFailed,
+		},
+		{
+			// The dirty-ID fetch in the pass's snapshot fails before DuckDB
+			// runs (#714).
+			name: "dirty-ID fetch failure",
+			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
+				leg := &fakeHotLeg{changeLogErr: fmt.Errorf("forced dirty-ID failure")}
+				return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDuckDBExecutor{}, nil,
+					hybridDuckConfig(), testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(leg)), coldTierQuery()
+			},
+			cause:       "forced dirty-ID failure",
+			metricCause: degradeCausePostgresReadFailed,
+		},
+	}
+}
+
+// objectRefusalCases refuse a specific Parquet object: confirmed or cached
+// corruption (#722) and a scan-guard violation (#351).
+func objectRefusalCases() []degradedPlanCase {
+	return []degradedPlanCase{
+		{
 			// Confirmed corruption fails its pass after the dirty-set source
 			// is recorded (#722).
 			name: "confirmed corrupt object",
@@ -97,39 +154,6 @@ func degradedPlanCases() []degradedPlanCase {
 			},
 			cause:       "still cached",
 			metricCause: degradeCauseCorruptParquet,
-		},
-		{
-			// Without a client the pass fails before the breaker is
-			// consulted.
-			name: "duckdb client unavailable",
-			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
-				return newSentinelTestEngine(t, nil, nil), coldTierQuery()
-			},
-			cause:       "duckdb client not available",
-			metricCause: degradeCauseDuckDBUnavailable,
-		},
-		{
-			// The manifest read fails before DuckDB runs, so the failure
-			// never counts toward the breaker (#714).
-			name: "manifest read failure",
-			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
-				src := &fakeParquetSource{pathsErr: fmt.Errorf("forced manifest read failure")}
-				return newParquetSourceTestEngine(t, &fakeDuckDBExecutor{}, src), coldTierQuery()
-			},
-			cause:       "forced manifest read failure",
-			metricCause: degradeCauseReadFailed,
-		},
-		{
-			// The dirty-ID fetch in the pass's snapshot fails before DuckDB
-			// runs (#714).
-			name: "dirty-ID fetch failure",
-			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
-				leg := &fakeHotLeg{changeLogErr: fmt.Errorf("forced dirty-ID failure")}
-				return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDuckDBExecutor{}, nil,
-					hybridDuckConfig(), testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(leg)), coldTierQuery()
-			},
-			cause:       "forced dirty-ID failure",
-			metricCause: degradeCausePostgresReadFailed,
 		},
 		{
 			// The guarded per-file drain names the object the set scan
