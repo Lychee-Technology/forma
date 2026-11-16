@@ -69,6 +69,7 @@ func TestFlushBatchStaysInTmpWhenAGenerationIsRecordedDuringTheExport(t *testing
 	s3Client := &copyCountingS3Client{}
 	store := newInMemoryManifestStore()
 	executor := &flushBatchExecutor{
+		markFlushed:      duckStandInMark,
 		db:               db,
 		duck:             &DuckExporter{Logger: zap.NewNop()},
 		s3Client:         s3Client,

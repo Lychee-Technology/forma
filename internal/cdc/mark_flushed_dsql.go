@@ -33,12 +33,15 @@ const (
 // mark seam.
 type markFlushedFunc func(context.Context, *sql.DB, string, int16, []uuid.UUID, map[uuid.UUID]int64, int64) ([]uuid.UUID, error)
 
-// markFlushedFor answers the flush mark of engine.
+// markFlushedFor answers the flush mark of engine: MarkFlushedVersions in
+// chunks on Aurora DSQL, which takes no row locks, and markFlushedSkipLocked
+// on PostgreSQL, where a mark that waited on a writer's row lock could stall
+// or deadlock with it (#686).
 func markFlushedFor(engine forma.DatabaseEngine) markFlushedFunc {
 	if engine.Resolved() == forma.EngineAuroraDSQL {
 		return markInChunks(MarkFlushedVersions)
 	}
-	return MarkFlushedVersions
+	return markFlushedSkipLocked
 }
 
 // markInChunks answers mark sent in statements of at most

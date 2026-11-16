@@ -23,7 +23,7 @@ type flushBatchExecutor struct {
 	schemaID  int16
 	snapshot  int64
 	// versions holds the changed_at listed per batch row at selection time;
-	// marking is exact against it (MarkFlushedVersions), so a clock-ahead
+	// marking is exact against it (markFlushedFor), so a clock-ahead
 	// version flushes normally and a concurrently advanced row stays dirty.
 	versions  map[uuid.UUID]int64
 	attrCache forma.SchemaAttributeCache
@@ -108,12 +108,17 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 	//     the retry yields a second listed delta with identical
 	//     (row_id, ver_ts) rows, which LWW (rn=1 + #183 tie-break) dedups and
 	//     compaction later collapses.
+	//   - Mark skips rows -> they stay dirty, the anti-join keeps them hot,
+	//     and the next flush lists them again. A row is skipped when it
+	//     changed after it was listed, or, on PostgreSQL, when an open writer
+	//     holds its change_log entry (#686); the second kind's re-export is an
+	//     identical (row_id, ver_ts) copy that LWW dedups as above.
 	// The entry is built from batchIDs (mark has not run, so the marked subset
-	// is unknown): RowCount/RowIDMin/Max may overcount rows that concurrently
-	// changed after the snapshot. That feeds only compaction's promotion
-	// heuristic; reconcile recomputes stats from parquet contents. A batch
-	// whose rows ALL changed concurrently leaves an LWW-inert junk delta
-	// listed — accepted, never rolled back.
+	// is unknown): RowCount/RowIDMin/Max may overcount rows the mark skips.
+	// That feeds only compaction's promotion heuristic; reconcile recomputes
+	// stats from parquet contents. A batch whose rows the mark ALL skips
+	// leaves a delta listed whose rows are shadowed while dirty — accepted,
+	// never rolled back.
 	entryCreatedAt := time.Now().UnixMilli()
 	if e.manifestStore != nil {
 		if err := updateManifest(ctx, e.manifestStore, e.manifestResolver, e.schemaID, finalKey, "delta", batchIDs, entryCreatedAt, sizeBytes, stampCols, checksum, e.logger); err != nil {
@@ -121,6 +126,12 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 		}
 	}
 
+	return e.markBatch(ctx, batchIDs, finalKey, batchKind)
+}
+
+// markBatch marks the published batch flushed at its listed versions, and
+// logs how many of its rows the mark left dirty.
+func (e *flushBatchExecutor) markBatch(ctx context.Context, batchIDs []uuid.UUID, finalKey, batchKind string) error {
 	// The mark timestamp is sampled AFTER the append completes, separately
 	// from the manifest entry's CreatedMin/Max stamp: a reader that anchored
 	// its dirty-barrier cutoff and resolved its path set while the append was
@@ -138,13 +149,15 @@ func (e *flushBatchExecutor) executeBatch(ctx context.Context, batchIDs []uuid.U
 		return fmt.Errorf("mark flushed at listed versions (%s): %w", batchKind, err)
 	}
 
-	if len(updatedIDs) == 0 {
-		e.logger.Sugar().Infow("flush batch marked zero rows; possible concurrent updates", "schema_id", e.schemaID, "batch_kind", batchKind, "batch_size", len(batchIDs))
-		return nil
-	}
-
 	if len(updatedIDs) < len(batchIDs) {
-		e.logger.Sugar().Infow("flush batch marked fewer rows than requested; possible concurrent updates", "schema_id", e.schemaID, "batch_kind", batchKind, "rows_flushed", len(updatedIDs), "batch_size", len(batchIDs))
+		// Unmarked rows changed since listing or were held by an open writer;
+		// the mark cannot tell which. Either way they stay dirty.
+		e.logger.Sugar().Infow("flush batch left rows unmarked; they stay dirty for the next flush",
+			"schema_id", e.schemaID, "batch_kind", batchKind, "rows_flushed", len(updatedIDs),
+			"rows_unmarked", len(batchIDs)-len(updatedIDs), "batch_size", len(batchIDs))
+	}
+	if len(updatedIDs) == 0 {
+		return nil
 	}
 
 	e.logger.Sugar().Infow("flush batch completed", "schema_id", e.schemaID, "batch_kind", batchKind, "rows_flushed", len(updatedIDs), "batch_size", len(batchIDs), "final_key", finalKey)

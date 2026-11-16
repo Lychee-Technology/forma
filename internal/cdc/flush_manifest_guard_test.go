@@ -136,6 +136,7 @@ func newUnwiredFlushFixture(t *testing.T, clients resolvedS3Clients) *unwiredFlu
 // stubExport runs the real batch path with only the DuckDB export stubbed.
 func (f *unwiredFlushFixture) stubExport(flushCtx *schemaFlushContext) {
 	flushCtx.executeSingle = func(e *flushBatchExecutor, ids []uuid.UUID) error {
+		e.markFlushed = duckStandInMark
 		e.exportSnapshot = func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
 			f.exported = true
 			return nil

@@ -150,6 +150,7 @@ func TestExecuteBatchStampsManifestColumns(t *testing.T) {
 	// Track the URI passed to the seam to verify it receives the final key, not tmp
 	var seenURI string
 	executor := &flushBatchExecutor{
+		markFlushed:      duckStandInMark,
 		db:               db,
 		duck:             &DuckExporter{Logger: zap.NewNop()},
 		s3Client:         &objectOnlyS3Client{},
@@ -208,6 +209,7 @@ func TestExecuteBatchSkipsStampWhenNoManifestStore(t *testing.T) {
 	require.NoError(t, err)
 
 	executor := &flushBatchExecutor{
+		markFlushed:   duckStandInMark,
 		db:            db,
 		duck:          &DuckExporter{Logger: zap.NewNop()},
 		s3Client:      &objectOnlyS3Client{},
@@ -253,6 +255,7 @@ func TestExecuteBatchDescribeFailureLeavesEntryUnstamped(t *testing.T) {
 	resolver := manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"}
 
 	executor := &flushBatchExecutor{
+		markFlushed:      duckStandInMark,
 		db:               db,
 		duck:             &DuckExporter{Logger: zap.NewNop()},
 		s3Client:         &objectOnlyS3Client{},

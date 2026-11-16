@@ -174,15 +174,14 @@ same value ([Row IDs and Unique Keys](unique-keys.md)), so a claim mutation may
 not change an attribute of a declared unique key. Such a request is refused
 with `ErrInvalidInput` before any SQL.
 
-One wait remains, on CDC rather than on another write, assertion or claim. A
-CDC flush marks the `change_log` entries it exported in one statement, and the
-claim's write of a row's entry waits while that statement holds the entry. The
-statement can itself be waiting for an open transaction that rewrote another
-entry of the same flush, so the claim can wait as long as that transaction
-stays open. If the claim already wrote an entry the statement then reaches,
-PostgreSQL detects a deadlock and aborts one of the two; when it aborts the
-claim, the claim answers `ErrRetryableConflict` and poisons its Tx. Every write
-of several rows shares this exposure (#686).
+One short wait remains, on CDC rather than on another write, assertion or
+claim. A CDC flush marks the `change_log` entries it exported in one
+statement, and a claim whose write reaches an entry that statement holds waits
+until the statement ends. The statement takes only entries no other
+transaction holds and skips the rest, leaving them for the next flush, so it
+never waits for another transaction's row lock and cannot form the
+writer-and-mark deadlock (#686). The wait therefore lasts as long as one mark
+statement, not as long as some other transaction stays open.
 
 ## The claim mutation
 
