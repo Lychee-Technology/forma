@@ -223,3 +223,10 @@ func (s *inMemoryManifestStore) readLastEntry(t *testing.T) *manifest.FileEntry 
 	}
 	return &m.Files[len(m.Files)-1]
 }
+
+// duckStandInMark is the flush mark of the executor tests whose change_log
+// is an in-memory DuckDB standing in for PostgreSQL. DuckDB parses no
+// FOR UPDATE ... SKIP LOCKED, so they mark with the engine-neutral statement;
+// they pin the executor's ordering, not the statement. The PostgreSQL mark
+// runs on PostgreSQL in mark_flushed_pg_test.go (#686).
+var duckStandInMark markFlushedFunc = MarkFlushedVersions

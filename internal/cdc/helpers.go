@@ -84,6 +84,10 @@ func SelectBatchRowIDs(ctx context.Context, db *sql.DB, table string, schemaID i
 // `<=` mark would clear the dirty barrier for a payload no parquet holds.)
 // A clock-ahead listed version matches its own listing and marks normally
 // (review round 2 P1). Returns the row_ids actually marked flushed.
+//
+// This is the Aurora DSQL engine's mark (markFlushedFor). On PostgreSQL it
+// waits at every entry an open writer holds, so the PostgreSQL engine marks
+// with markFlushedSkipLocked instead (#686).
 func MarkFlushedVersions(ctx context.Context, db *sql.DB, table string, schemaID int16, rowIDs []uuid.UUID, versions map[uuid.UUID]int64, flushedAt int64) ([]uuid.UUID, error) {
 	if table == "" {
 		table = "change_log"
@@ -91,16 +95,9 @@ func MarkFlushedVersions(ctx context.Context, db *sql.DB, table string, schemaID
 	if len(rowIDs) == 0 {
 		return nil, nil
 	}
-	valueRows := make([]string, 0, len(rowIDs))
-	args := make([]any, 0, len(rowIDs)*2+2)
-	args = append(args, flushedAt, schemaID)
-	for _, id := range rowIDs {
-		version, ok := versions[id]
-		if !ok {
-			return nil, fmt.Errorf("mark flushed: row %s has no listed version", id)
-		}
-		valueRows = append(valueRows, fmt.Sprintf("($%d::uuid, $%d::bigint)", len(args)+1, len(args)+2))
-		args = append(args, id, version)
+	valueRows, args, err := listedVersionValues(rowIDs, versions, flushedAt, schemaID)
+	if err != nil {
+		return nil, err
 	}
 	query := fmt.Sprintf(
 		`UPDATE %s cl SET flushed_at = $1
@@ -109,14 +106,37 @@ func MarkFlushedVersions(ctx context.Context, db *sql.DB, table string, schemaID
 		   AND cl.row_id = v.row_id AND cl.changed_at = v.version
 		 RETURNING cl.row_id`,
 		sanitizeIdentifier(table),
-		strings.Join(valueRows, ","),
+		valueRows,
 	)
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("mark flushed by listed versions: %w", err)
 	}
-	defer rows.Close()
+	return scanMarkedRowIDs(rows)
+}
 
+// listedVersionValues renders the listed (row_id, version) pairs as a VALUES
+// list whose placeholders follow $1 = flushedAt and $2 = schemaID, and
+// answers the list with the statement's arguments.
+func listedVersionValues(rowIDs []uuid.UUID, versions map[uuid.UUID]int64, flushedAt int64, schemaID int16) (string, []any, error) {
+	valueRows := make([]string, 0, len(rowIDs))
+	args := make([]any, 0, len(rowIDs)*2+2)
+	args = append(args, flushedAt, schemaID)
+	for _, id := range rowIDs {
+		version, ok := versions[id]
+		if !ok {
+			return "", nil, fmt.Errorf("mark flushed: row %s has no listed version", id)
+		}
+		valueRows = append(valueRows, fmt.Sprintf("($%d::uuid, $%d::bigint)", len(args)+1, len(args)+2))
+		args = append(args, id, version)
+	}
+	return strings.Join(valueRows, ","), args, nil
+}
+
+// scanMarkedRowIDs reads the row_ids a mark statement returned, and closes
+// rows.
+func scanMarkedRowIDs(rows *sql.Rows) ([]uuid.UUID, error) {
+	defer rows.Close()
 	var updated []uuid.UUID
 	for rows.Next() {
 		var id uuid.UUID

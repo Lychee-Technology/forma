@@ -49,7 +49,7 @@ $$Result = (S3_{Data} \notin DirtySet) \cup PG_{HotData}$$
 
 * **DirtySet:** The set of row_ids currently present in the PostgreSQL change_log with flushed_at = 0, widened by the **flush-visibility grace** (#252): rows marked flushed at or after the instant this query resolved its parquet path set (minus the `FlushVisibilityGraceMs` clock-skew margin, default 0; a negative margin reads as 0) also count as dirty — inclusive, because millisecond stamps cannot order a mark and a path resolution landing in the same tick. Because the flush appends the manifest before marking, a row flushed before path resolution already has its delta listed — the widening therefore catches exactly the rows racing this query (their delta may be missing from the resolved set) and keeps them hot-readable, while the steady state is never widened. Only a pass in the hot form reads the widened set: the widening is safe solely because the hot leg serves the rows it discards, so hot-excluded queries (`preferred_tiers` without `hot`) keep the strict flushed_at = 0 barrier.
 * Any record found in S3 that also exists in the DirtySet is **discarded** immediately during the read phase, regardless of its timestamp.
-* **Flush ordering (#252):** the CDC flush publishes `copy tmp→final → manifest-append → mark-flushed`, so a batch is never simultaneously absent from the hot tier and from the manifest-listed delta set. The listed-but-unmarked middle state is resolved by this anti-join: the S3 copies of still-dirty rows are discarded and the hot versions serve.
+* **Flush ordering (#252):** the CDC flush publishes `copy tmp→final → manifest-append → mark-flushed`, so a batch is never simultaneously absent from the hot tier and from the manifest-listed delta set. The listed-but-unmarked middle state is resolved by this anti-join: the S3 copies of still-dirty rows are discarded and the hot versions serve. A mark can also leave some of the batch's rows unmarked for good: rows rewritten since the batch was listed, and on PostgreSQL rows whose `change_log` entry an open writer holds, which the mark skips rather than wait for (#686). Those rows stay in this middle state until a later flush lists and marks them.
 * **One snapshot (§6.1):** the dirty set and the hot rows are read over pgx in one `REPEATABLE READ` snapshot taken after path resolution, and the anti-join reads the dirty set the pass staged from that snapshot. With no cross-tier deduplication, the formula above holds only because both sides of the union come from that one snapshot. §6.1 re-derives the flush-grace argument for this order of reads. The widening is therefore always on: a negative `FlushVisibilityGraceMs` reads as the exact anchor, because the snapshot argument depends on the widening.
 
 ### **3.3 Read Consistency by API (#635)**
@@ -598,7 +598,7 @@ object (live `0`) resolves to the new object under `NULLS LAST` — the copies
 encode the same version, so this is a curiosity, not a regression. CDC is
 version-aware, not wall-clock-gated: the flush snapshot is the MAX of the
 wall clock and the batch's listed versions, and marking is exact against
-the listed `(row_id, version)` pairs (`cdc.MarkFlushedVersions`), so a
+the listed `(row_id, version)` pairs (the engine's flush mark, `cdc.markFlushedFor`), so a
 clock-ahead version exports and marks in the same run — a wall-clock-only
 cutoff would have starved such rows indefinitely under sustained
 faster-than-one-write-per-millisecond traffic. The only wall-clock trace

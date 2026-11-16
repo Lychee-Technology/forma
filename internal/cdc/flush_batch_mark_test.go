@@ -12,6 +12,7 @@ import (
 	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // Mark-flushed and before-export-hook coverage for the flush batch
@@ -38,6 +39,7 @@ func TestExecuteBatch_MarkStampSampledAfterManifestAppend(t *testing.T) {
 	resolver := manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"}
 
 	executor := &flushBatchExecutor{
+		markFlushed:      duckStandInMark,
 		db:               db,
 		duck:             &DuckExporter{Logger: zap.NewNop()},
 		s3Client:         &objectOnlyS3Client{},
@@ -145,9 +147,10 @@ func TestExecuteBatch_BeforeExportHookRunsBeforeExport(t *testing.T) {
 	var hookIDs []uuid.UUID
 	var hookSnapshot int64
 	executor := &flushBatchExecutor{
-		db:       db,
-		duck:     &DuckExporter{Logger: zap.NewNop()},
-		s3Client: &objectOnlyS3Client{},
+		markFlushed: duckStandInMark,
+		db:          db,
+		duck:        &DuckExporter{Logger: zap.NewNop()},
+		s3Client:    &objectOnlyS3Client{},
 		cfg: CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc",
 			BeforeExportHook: func(_ context.Context, schemaID int16, ids []uuid.UUID, snap int64) error {
 				calls = append(calls, "hook")
@@ -197,9 +200,10 @@ func TestExecuteBatch_BeforeExportHookErrorAbortsBeforeSideEffects(t *testing.T)
 	hookErr := errors.New("hook failed")
 	exportCalled := false
 	executor := &flushBatchExecutor{
-		db:       db,
-		duck:     &DuckExporter{Logger: zap.NewNop()},
-		s3Client: &objectOnlyS3Client{},
+		markFlushed: duckStandInMark,
+		db:          db,
+		duck:        &DuckExporter{Logger: zap.NewNop()},
+		s3Client:    &objectOnlyS3Client{},
 		cfg: CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc",
 			BeforeExportHook: func(context.Context, int16, []uuid.UUID, int64) error {
 				return hookErr
@@ -251,4 +255,41 @@ func TestExecuteFlushInChunks_ErrorNamesTheFailedChunk(t *testing.T) {
 	err := executeFlushInChunks(context.Background(), executor, ids, 2)
 	require.ErrorIs(t, err, hookErr)
 	require.Contains(t, err.Error(), "flush rows 1-2 of 5: before-export hook (chunk)")
+}
+
+// TestExecuteBatch_PartialMarkSucceedsAndCountsUnmarkedRows pins the outcome
+// of a mark that skips rows (#686): the batch succeeds with its delta listed,
+// and the log reports listed and unmarked rows without naming a cause, since
+// a skipped row may have been rewritten or only held by an open writer.
+func TestExecuteBatch_PartialMarkSucceedsAndCountsUnmarkedRows(t *testing.T) {
+	for name, markedCount := range map[string]int{"partial": 1, "zero": 0} {
+		t.Run(name, func(t *testing.T) {
+			ids := newIDs(3)
+			core, logs := observer.New(zap.InfoLevel)
+			store := newInMemoryManifestStore()
+			executor := &flushBatchExecutor{
+				s3Client:         &objectOnlyS3Client{},
+				cfg:              CDCConfig{S3Bucket: "test-bucket", S3Prefix: "cdc"},
+				schemaID:         7,
+				logger:           zap.New(core),
+				manifestStore:    store,
+				manifestResolver: manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"},
+				exportSnapshot: func(*DuckExporter, context.Context, CDCConfig, *sql.DB, string, int16, int64, []uuid.UUID, forma.SchemaAttributeCache) error {
+					return nil
+				},
+				markFlushed: func(_ context.Context, _ *sql.DB, _ string, _ int16, rowIDs []uuid.UUID, _ map[uuid.UUID]int64, _ int64) ([]uuid.UUID, error) {
+					return rowIDs[:markedCount], nil
+				},
+			}
+
+			require.NoError(t, executor.executeBatch(context.Background(), ids, "cdc/7/_tmp/file.parquet", "cdc/7/delta-file.parquet", "batch"))
+			require.Equal(t, 1, store.saved, "the delta stays listed")
+			entries := logs.FilterMessage("flush batch left rows unmarked; they stay dirty for the next flush").All()
+			require.Len(t, entries, 1)
+			fields := entries[0].ContextMap()
+			require.EqualValues(t, markedCount, fields["rows_flushed"])
+			require.EqualValues(t, 3-markedCount, fields["rows_unmarked"])
+			require.EqualValues(t, 3, fields["batch_size"])
+		})
+	}
 }

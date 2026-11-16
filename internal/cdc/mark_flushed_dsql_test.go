@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
@@ -15,7 +17,7 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
-func TestMarkFlushedForEngine(t *testing.T) {
+func TestMarkFlushedForDSQLMarksEveryListedRow(t *testing.T) {
 	ids := make([]uuid.UUID, markRowsPerStatement+1)
 	for i := range ids {
 		ids[i] = uuid.New()
@@ -34,12 +36,32 @@ func TestMarkFlushedForEngine(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	for _, engine := range []forma.DatabaseEngine{"", forma.EnginePostgreSQL, forma.EngineAuroraDSQL} {
-		_, err = db.Exec("UPDATE change_log SET flushed_at = 0")
+	marked, err := markFlushedFor(forma.EngineAuroraDSQL)(context.Background(), db, "change_log", 7, ids, versions, 99)
+	require.NoError(t, err)
+	require.ElementsMatch(t, ids, marked, "the DSQL mark must mark every listed row")
+}
+
+// TestMarkFlushedForEngineSkipsLockedOnlyOnPostgreSQL pins the engine split
+// of #686: SKIP LOCKED on PostgreSQL, the unchanged statement on DSQL.
+func TestMarkFlushedForEngineSkipsLockedOnlyOnPostgreSQL(t *testing.T) {
+	ids := newIDs(2)
+	versions := map[uuid.UUID]int64{ids[0]: 1, ids[1]: 2}
+	for engine, skipLocked := range map[forma.DatabaseEngine]bool{"": true, forma.EnginePostgreSQL: true, forma.EngineAuroraDSQL: false} {
+		var sent []string
+		db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherFunc(func(_, actual string) error {
+			sent = append(sent, actual)
+			return nil
+		})))
 		require.NoError(t, err)
+		mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"row_id"}).AddRow(ids[0].String()))
+
 		marked, err := markFlushedFor(engine)(context.Background(), db, "change_log", 7, ids, versions, 99)
 		require.NoError(t, err, "engine %q", engine)
-		require.ElementsMatch(t, ids, marked, "engine %q must mark every listed row", engine)
+		require.Equal(t, ids[:1], marked, "engine %q must answer only the rows the statement returned", engine)
+		require.Len(t, sent, 1, "engine %q", engine)
+		require.Equal(t, skipLocked, strings.Contains(sent[0], "FOR UPDATE OF cl SKIP LOCKED"), "engine %q: %s", engine, sent[0])
+		require.NoError(t, mock.ExpectationsWereMet())
+		_ = db.Close()
 	}
 }
 

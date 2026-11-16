@@ -87,6 +87,7 @@ func TestExecuteBatch_ReturnsErrorWhenManifestLoadFails(t *testing.T) {
 	resolver := manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"}
 
 	executor := &flushBatchExecutor{
+		markFlushed:      duckStandInMark,
 		db:               db,
 		duck:             &DuckExporter{Logger: zap.NewNop()},
 		s3Client:         &objectOnlyS3Client{},
@@ -140,6 +141,7 @@ func TestExecuteBatch_ReturnsErrorWhenManifestSaveFails(t *testing.T) {
 	resolver := manifest.PathResolver{Prefix: "cdc", PathTemplate: "manifest/{{.SchemaID}}.json"}
 
 	executor := &flushBatchExecutor{
+		markFlushed:      duckStandInMark,
 		db:               db,
 		duck:             &DuckExporter{Logger: zap.NewNop()},
 		s3Client:         &objectOnlyS3Client{},
@@ -194,6 +196,7 @@ func TestExecuteBatch_ReturnsErrorWhenExportFailsAndDoesNotAdvanceState(t *testi
 	store := newInMemoryManifestStore()
 	s3Client := &recordingS3Client{}
 	executor := &flushBatchExecutor{
+		markFlushed:   duckStandInMark,
 		db:            db,
 		duck:          &DuckExporter{Logger: zap.NewNop()},
 		s3Client:      s3Client,
@@ -241,6 +244,7 @@ func TestExecuteBatch_ReturnsErrorWhenCopyFailsAndDoesNotAdvanceState(t *testing
 
 	store := newInMemoryManifestStore()
 	executor := &flushBatchExecutor{
+		markFlushed:   duckStandInMark,
 		db:            db,
 		duck:          &DuckExporter{Logger: zap.NewNop()},
 		s3Client:      &copyFailingS3Client{},
@@ -288,6 +292,7 @@ func TestExecuteBatch_DryRunPerformsNoSideEffects(t *testing.T) {
 	store := newInMemoryManifestStore()
 	exportCalled := false
 	executor := &flushBatchExecutor{
+		markFlushed:      duckStandInMark,
 		db:               db,
 		duck:             &DuckExporter{Logger: zap.NewNop()},
 		s3Client:         &copyFailingS3Client{}, // any S3 call during dry-run fails the batch

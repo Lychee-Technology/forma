@@ -114,7 +114,7 @@ it creates.
 | A predicate mutation's candidate changed concurrently ([Transactions](transactions.md#predicate-mutation-updatewhere-and-deletewhere)) | Judged again under its lock | The COMMIT fails with `ErrRetryableConflict` |
 | A unique-key race ([Unique keys](unique-keys.md#aurora-dsql)) | The loser gets `ErrUniqueConflict` | `ErrUniqueConflict` or `ErrRetryableConflict` |
 | Crossed writers of two rows | Possible deadlock, `ErrRetryableConflict` | One gets `ErrRetryableConflict`, on DSQL without a deadlock |
-| A write of a row a CDC flush is marking ([The flush mark](#the-flush-mark)) | The mark waits for the writer, and the two can deadlock (#686) | One of the two gets `40001`: the mark is sent again, and a writer gets `ErrRetryableConflict` |
+| A write of a row a CDC flush is marking ([The flush mark](#the-flush-mark)) | The mark skips an entry the writer holds and leaves it dirty; a writer that reaches an entry the mark holds waits for that one statement (#686) | One of the two gets `40001`: the mark is sent again, and a writer gets `ErrRetryableConflict` |
 
 The invariants hold on both engines:
 
@@ -188,9 +188,12 @@ marked. They are in the delta the manifest already lists, and the rest stay
 dirty, as after a mark that fails once the delta is appended (#252).
 
 A mark statement and a writer of one of its `change_log` entries do not wait
-for each other on DSQL, so #686's stall and deadlock do not arise there.
-One of the two fails with `40001` instead. When the writer loses, its caller
-gets `ErrRetryableConflict`.
+for each other on DSQL. One of the two fails with `40001` instead. When the
+writer loses, its caller gets `ErrRetryableConflict`. On PostgreSQL the mark
+takes its row locks with `SKIP LOCKED` instead (#686): an entry an open writer
+holds stays dirty for the next flush, so the mark never waits on a writer and
+cannot deadlock with one. That syntax is PostgreSQL's alone, so the DSQL mark
+keeps the plain statement above.
 
 ### Operating the CDC tools on DSQL
 

@@ -43,6 +43,7 @@ func newChecksumStampExecutor(
 	require.NoError(t, err)
 
 	executor := &flushBatchExecutor{
+		markFlushed:      duckStandInMark,
 		db:               db,
 		duck:             &DuckExporter{Logger: zap.NewNop()},
 		s3Client:         &objectOnlyS3Client{},
