@@ -233,9 +233,10 @@ one attribute at a time to keep that out of its plans.
 `TestMixedEAVTextRangePlans` measures it with the attributes mixed
 ([Text ranges on mixed EAV attributes](eav-text-range-plans.md)): the
 range still seeks this index, and the estimate is the same before #728 and
-under any statistics target, so it is not a collation effect. The cost lands
-in the query around the range, mainly the anchor's outer `eav_data` scan
-(#881).
+under any statistics target, so it is not a collation effect. The cost landed
+in the query around the range, mainly the anchor's outer `eav_data` scan,
+which #881 removed; what remains is the page's joins, planned from the
+overestimate.
 
 #### Tables created before #816
 
