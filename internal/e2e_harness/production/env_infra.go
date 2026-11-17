@@ -51,6 +51,7 @@ func (e *Env) reconnectAfterRestart(ctx context.Context) error {
 	e.CDC = e.buildCDCConfig()
 	e.manager = nil
 	e.routedManagers = nil
+	e.postgresManager = nil
 	e.engine = nil
 	return nil
 }
@@ -72,6 +73,7 @@ func (e *Env) ReopenDuckDB() error {
 	e.engine = nil
 	e.manager = nil
 	e.routedManagers = nil
+	e.postgresManager = nil
 	return nil
 }
 
@@ -113,6 +115,7 @@ func (e *Env) RestartS3(ctx context.Context) error {
 	e.engine = nil
 	e.manager = nil
 	e.routedManagers = nil
+	e.postgresManager = nil
 	return nil
 }
 

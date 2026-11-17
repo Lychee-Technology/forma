@@ -15,8 +15,9 @@ import (
 // manager's own read services bound to the session's transaction, so they
 // answer what EntityManager.Get and Query answer, plus the Tx's own writes.
 // Every statement they send, relation enrichment's included, runs on the
-// transaction; the bound query service has no federated engine, and a
-// federated request is refused before any service is called.
+// transaction. The bound query service has no federated engine, so a Tx read
+// is answered from PostgreSQL alone whatever the deployment's DuckDB and
+// routing configuration: the Tx's own uncommitted writes exist nowhere else.
 
 func (s *txSession) Get(ctx context.Context, req *forma.QueryRequest, opts ...forma.ReadOption) (*forma.DataRecord, error) {
 	var record *forma.DataRecord

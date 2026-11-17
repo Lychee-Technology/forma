@@ -147,7 +147,40 @@ func storedImage(rec *model.PersistentRecord) string {
 }
 
 // postgresRouteQuery is federatedWideQuery's request on the PostgreSQL
-// route: the same page of schema, without the federated request.
-func postgresRouteQuery(ctx context.Context, env *Env, schema SchemaRef) (*forma.QueryResult, error) {
-	return env.EntityManager().Query(ctx, &forma.QueryRequest{SchemaName: schema.Name, Page: 1, ItemsPerPage: 100})
+// route: the same page of schema, on a deployment without DuckDB. Since a
+// request no longer chooses its route (#715), the deployment is what makes
+// this the PostgreSQL control; on EntityManager, which routes through
+// DuckDB, the comparison would set the federated route against itself.
+//
+// The route is pinned, not assumed. The page itself is asked for the plan
+// and must carry none, since only the federated engine records one; a page
+// the PostgreSQL route refuses carries no plan either way, so the same
+// manager first answers the empty page past it, which decodes no row and
+// must come back plan-less too.
+func postgresRouteQuery(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) (*forma.QueryResult, error) {
+	t.Helper()
+	manager := env.PostgresEntityManager()
+	query := func(page int) (*forma.QueryResult, error) {
+		return manager.Query(ctx, &forma.QueryRequest{SchemaName: schema.Name, Page: page, ItemsPerPage: 100, IncludeExecutionPlan: true})
+	}
+	probe, err := query(2)
+	if err != nil {
+		t.Fatalf("PostgreSQL control: the empty page past %s: %v", schema.Name, err)
+	}
+	requireNoEnginePlan(t, "PostgreSQL control, the empty page past "+schema.Name, probe)
+	res, err := query(1)
+	if err == nil {
+		requireNoEnginePlan(t, "PostgreSQL control, the page of "+schema.Name, res)
+	}
+	return res, err
+}
+
+// requireNoEnginePlan fails t if res, answered to a request that asked for
+// the execution plan, carries one: it then came through the federated
+// engine, not from a deployment without DuckDB.
+func requireNoEnginePlan(t *testing.T, label string, res *forma.QueryResult) {
+	t.Helper()
+	if res.ExecutionPlan != nil {
+		t.Fatalf("%s: answered through the federated engine (routing %+v), want a deployment without DuckDB", label, res.ExecutionPlan.Routing)
+	}
 }

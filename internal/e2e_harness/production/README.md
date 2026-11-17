@@ -164,6 +164,12 @@ where cdc-init bootstraps base files before federated reads. Use
   tests that must read the parquet tiers through the public API use it.
   `Env.RoutedEntityManager(strategy)` builds one for any strategy. Each is
   memoized over its own engine and plan cache.
+  `Env.PostgresEntityManager()` is the deployment without DuckDB: every
+  `Query` runs on Postgres and, asked for the plan, answers none, which is
+  how a PostgreSQL control pins its route (`postgresRouteQuery`). A control
+  that reads the federated deployment's Postgres route instead uses
+  `RoutedEntityManager(hybrid)` and requires a plan with `UsedDuckDB` false.
+  `EntityManager()` routes through DuckDB, so it is no PostgreSQL control.
   `TestServerTimeParityAcrossDeploymentsAndTiers`
   (`server_time_parity_e2e_test.go`) compares `$now` answers across a
   Postgres-only deployment and a federated deployment's Postgres and DuckDB

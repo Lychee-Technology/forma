@@ -64,5 +64,6 @@ func (e *Env) evolveSchema(ctx context.Context, newSchemaDir string, record reco
 	e.engine = nil
 	e.manager = nil
 	e.routedManagers = nil
+	e.postgresManager = nil
 	return nil
 }

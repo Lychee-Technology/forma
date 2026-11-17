@@ -66,7 +66,7 @@ func TestObjectArraySchemaReadsEveryElementOnTheFederatedRoute(t *testing.T) {
 		t.Fatalf("OLTP get reads items %v, want both elements", stored.Attributes["items"])
 	}
 	managers := map[string]forma.EntityManager{
-		"hybrid routing": env.EntityManager(),
+		"hybrid routing": env.RoutedEntityManager(forma.RoutingStrategyHybrid),
 		"duckdb-routed":  env.DuckDBRoutedEntityManager(),
 	}
 	for name, manager := range managers {

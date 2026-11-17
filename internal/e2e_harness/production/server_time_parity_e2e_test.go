@@ -157,11 +157,9 @@ type serverTimeDeployment struct {
 }
 
 func serverTimeDeployments(env *Env) []serverTimeDeployment {
-	off := env.DuckCfg
-	off.Enabled = false
 	no, yes := false, true
 	return []serverTimeDeployment{
-		{name: "postgres deployment", manager: env.buildEntityManager(off, env.Engine())},
+		{name: "postgres deployment", manager: env.PostgresEntityManager()},
 		{name: "federated, postgres route", manager: env.RoutedEntityManager(forma.RoutingStrategyHybrid), duckdb: &no},
 		{name: "federated, duckdb route", manager: env.DuckDBRoutedEntityManager(), duckdb: &yes},
 	}

@@ -76,6 +76,9 @@ type Env struct {
 	rng            *rand.Rand
 	genOrdinal     int
 	provisionErr   error
+
+	// postgresManager memoizes PostgresEntityManager's manager.
+	postgresManager forma.EntityManager
 }
 
 // EnvOption customizes NewEnv.

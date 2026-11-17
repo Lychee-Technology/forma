@@ -420,16 +420,18 @@ func testMultiKeyMixedPublicFederated(ctx context.Context, t *testing.T, env *En
 	assertPublicOrderMatches(t, "public federated mixed sort", res, buildMixedRankOracle(creates))
 }
 
-// testMultiKeyMixedPublicHot is the OLTP twin: unflushed rows without a
-// federated hint route through the Postgres optimized template, pinning that
-// the PG dialect also renders per-key directions arriving from the public
-// Sort field.
+// testMultiKeyMixedPublicHot is the OLTP twin: unflushed rows read on the
+// hybrid deployment, which answers a page under 1000 rows from PostgreSQL
+// through the optimized template, pinning that the PG dialect also renders
+// per-key directions arriving from the public Sort field. The request no
+// longer chooses its route (#715), so the plan pins it: on a deployment that
+// routed it through DuckDB this would be the federated test again.
 func testMultiKeyMixedPublicHot(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	creates := buildMixedRankRows(wide)
 	mustApplyEvents(ctx, t, env, "mixed-public hot creates", creates...)
 	// No flush: rows stay hot ⇒ OLTP path.
 
-	res, err := env.EntityManager().Query(ctx, &forma.QueryRequest{
+	res, err := env.RoutedEntityManager(forma.RoutingStrategyHybrid).Query(ctx, &forma.QueryRequest{
 		SchemaName:   wide.Name,
 		Page:         1,
 		ItemsPerPage: 20,
@@ -437,9 +439,13 @@ func testMultiKeyMixedPublicHot(ctx context.Context, t *testing.T, env *Env, wid
 			{Attribute: "rank"},
 			{Attribute: "count", SortOrder: forma.SortOrderDesc},
 		},
+		IncludeExecutionPlan: true,
 	})
 	if err != nil {
 		t.Fatalf("public mixed-direction hot query: %v", err)
+	}
+	if res.ExecutionPlan == nil || res.ExecutionPlan.Routing.UsedDuckDB {
+		t.Fatalf("expected the PostgreSQL route, got plan %+v", res.ExecutionPlan)
 	}
 	assertPublicOrderMatches(t, "public hot mixed sort", res, buildMixedRankOracle(creates))
 }

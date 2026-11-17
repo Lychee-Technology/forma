@@ -191,7 +191,7 @@ func TestUnboundDateHotImagePast2p53Residual(t *testing.T) {
 	}
 
 	_, fedErr := federatedWideQuery(ctx, env, wide)
-	_, pgErr := postgresRouteQuery(ctx, env, wide)
+	_, pgErr := postgresRouteQuery(ctx, t, env, wide)
 	requireSameRefusal(t, "the page holding the hot planted row", fedErr, pgErr, "'seen'", target.String(), pastDateImageRule)
 
 	ceiling := time.UnixMilli(dateImageCeiling).UTC()

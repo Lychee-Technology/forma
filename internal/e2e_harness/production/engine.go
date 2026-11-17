@@ -179,6 +179,22 @@ func (e *Env) RoutedEntityManager(strategy forma.RoutingStrategy) forma.EntityMa
 	return e.routedManagers[strategy]
 }
 
+// PostgresEntityManager is EntityManager on a deployment without DuckDB:
+// every Query runs on PostgreSQL alone, whatever the routing strategy, and
+// no engine records an execution plan for it (#715). It is the PostgreSQL
+// control a test compares a federated answer against: asked for the plan,
+// its answer carries none, which is how a test pins that the engine was never
+// entered. Memoized like EntityManager.
+func (e *Env) PostgresEntityManager() forma.EntityManager {
+	if e.postgresManager != nil {
+		return e.postgresManager
+	}
+	off := e.DuckCfg
+	off.Enabled = false
+	e.postgresManager = e.buildEntityManager(off, e.Engine())
+	return e.postgresManager
+}
+
 // buildEntityManager assembles a manager over engine for a deployment
 // running duckCfg.
 func (e *Env) buildEntityManager(duckCfg forma.DuckDBConfig, engine *fedengine.DBFederatedQueryEngine) forma.EntityManager {
