@@ -22,9 +22,22 @@ type degradedPlanCase struct {
 	// breakerRejected marks the case the open breaker turns away before any
 	// DuckDB work; its fallback line is logged at Debug (#638).
 	breakerRejected bool
+	// metricCause is the cause label the fallback's
+	// federated_degraded_fallback_total sample must carry (#714).
+	metricCause string
 }
 
+// degradedPlanCases is the shared table of degrade points the plan, log and
+// metric tests (#639, #638, #714) drive through DBFederatedQueryEngine.Query.
 func degradedPlanCases() []degradedPlanCase {
+	cases := duckDBPassFailureCases()
+	cases = append(cases, preDuckDBReadFailureCases()...)
+	return append(cases, objectRefusalCases()...)
+}
+
+// duckDBPassFailureCases fail the DuckDB pass itself: the breaker turns the
+// request away, there is no client, or a statement of the pass fails.
+func duckDBPassFailureCases() []degradedPlanCase {
 	return []degradedPlanCase{
 		{
 			// Rejected before any DuckDB work: recordClientUnavailable still
@@ -38,6 +51,7 @@ func degradedPlanCases() []degradedPlanCase {
 			},
 			cause:           "duckdb circuit breaker open",
 			breakerRejected: true,
+			metricCause:     degradeCauseBreakerRejected,
 		},
 		{
 			// The shape of the #636 review's reproduction ([hot, cold],
@@ -48,7 +62,8 @@ func degradedPlanCases() []degradedPlanCase {
 				duck := &fakeDuckDBExecutor{err: fmt.Errorf("forced duck failure")}
 				return newSentinelTestEngine(t, duck, nil), coldTierQuery()
 			},
-			cause: "forced duck failure",
+			cause:       "forced duck failure",
+			metricCause: degradeCauseReadFailed,
 		},
 		{
 			// The page's statement succeeds; its page is discarded when the
@@ -65,8 +80,56 @@ func degradedPlanCases() []degradedPlanCase {
 					PreferredTiers: []model.DataTier{model.DataTierWarm, model.DataTierCold},
 				}
 			},
-			cause: "forced recount failure",
+			cause:       "forced recount failure",
+			metricCause: degradeCauseReadFailed,
 		},
+		{
+			// Without a client the pass fails before the breaker is
+			// consulted.
+			name: "duckdb client unavailable",
+			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
+				return newSentinelTestEngine(t, nil, nil), coldTierQuery()
+			},
+			cause:       "duckdb client not available",
+			metricCause: degradeCauseDuckDBUnavailable,
+		},
+	}
+}
+
+// preDuckDBReadFailureCases fail a read the pass makes before DuckDB runs, so
+// the failure never counts toward the breaker (#714).
+func preDuckDBReadFailureCases() []degradedPlanCase {
+	return []degradedPlanCase{
+		{
+			// The manifest read fails before DuckDB runs, so the failure
+			// never counts toward the breaker (#714).
+			name: "manifest read failure",
+			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
+				src := &fakeParquetSource{pathsErr: fmt.Errorf("forced manifest read failure")}
+				return newParquetSourceTestEngine(t, &fakeDuckDBExecutor{}, src), coldTierQuery()
+			},
+			cause:       "forced manifest read failure",
+			metricCause: degradeCauseReadFailed,
+		},
+		{
+			// The dirty-ID fetch in the pass's snapshot fails before DuckDB
+			// runs (#714).
+			name: "dirty-ID fetch failure",
+			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
+				leg := &fakeHotLeg{changeLogErr: fmt.Errorf("forced dirty-ID failure")}
+				return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, &fakeDuckDBExecutor{}, nil,
+					hybridDuckConfig(), testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(leg)), coldTierQuery()
+			},
+			cause:       "forced dirty-ID failure",
+			metricCause: degradeCausePostgresReadFailed,
+		},
+	}
+}
+
+// objectRefusalCases refuse a specific Parquet object: confirmed or cached
+// corruption (#722) and a scan-guard violation (#351).
+func objectRefusalCases() []degradedPlanCase {
+	return []degradedPlanCase{
 		{
 			// Confirmed corruption fails its pass after the dirty-set source
 			// is recorded (#722).
@@ -77,7 +140,8 @@ func degradedPlanCases() []degradedPlanCase {
 				}}
 				return newRetryEngine(t, duck, []string{retryKeptPathA, retryCorruptPath1}), coldTierQuery()
 			},
-			cause: "confirmed corrupt",
+			cause:       "confirmed corrupt",
+			metricCause: degradeCauseCorruptParquet,
 		},
 		{
 			// A cached verdict refuses at path resolution, before any source
@@ -88,7 +152,19 @@ func degradedPlanCases() []degradedPlanCase {
 				engine.corruptPaths.Add([]string{retryCorruptPath1})
 				return engine, coldTierQuery()
 			},
-			cause: "still cached",
+			cause:       "still cached",
+			metricCause: degradeCauseCorruptParquet,
+		},
+		{
+			// The guarded per-file drain names the object the set scan
+			// failed on (#351).
+			name: "scan-guard violation",
+			setup: func(t *testing.T) (*DBFederatedQueryEngine, *model.FederatedAttributeQuery) {
+				return newGuardSeamEngine(t, &guardSeamFakeDuck{rogue: guardRoguePath},
+					&fakeParquetSource{paths: []string{guardHealthyPath, guardRoguePath}}), coldTierQuery()
+			},
+			cause:       guardRoguePath,
+			metricCause: degradeCauseScanGuardViolation,
 		},
 	}
 }

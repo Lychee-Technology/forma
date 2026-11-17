@@ -47,9 +47,9 @@ func recordDegradedFallbackPlan(opts *model.FederatedQueryOptions, tables model.
 // degradeToPostgresOnly serves the Postgres-only fallback for a degradable
 // DuckDB-path failure: it records the fallback decision and its cause on the
 // execution plan (#185 — the plan must reach callers that only see the page),
-// logs them for the operator (#638), and stitches the plan onto the returned
-// page. mark is the plan as it stood before the DuckDB attempt; see the
-// rewind below.
+// logs them for the operator (#638), counts the attempt and its outcome
+// (#714), and stitches the plan onto the returned page. mark is the plan as
+// it stood before the DuckDB attempt; see the rewind below.
 func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, mark executionPlanMark, cause error) (*model.PersistentRecordPage, error) {
 	if opts != nil {
 		// The out-parameter must agree with the page this path returns;
@@ -66,6 +66,9 @@ func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tabl
 	// error, which no longer carries the cause it was absorbing.
 	e.logDegradedFallback(fq, cause)
 	page, perr := e.queryPostgresOnly(ctx, tables, fq)
+	// Counted here rather than beside the line above, which is written
+	// before the read and so cannot know whether the attempt was served.
+	e.reportDegradedFallback(ctx, cause, perr)
 	if perr != nil {
 		return nil, fmt.Errorf("degraded postgres-only fallback: %w", perr)
 	}
@@ -82,8 +85,8 @@ const degradedFallbackMsg = "federated query degraded to postgres-only"
 
 // logDegradedFallback writes the one line a degraded fallback leaves (#638).
 // The request succeeds and toExecutionPlan drops the plan note that records
-// the cause, so without this line the absorbed failure reaches no log, no
-// metric and no caller. Warn fits a request answered with less than it asked
+// the cause, so without this line the absorbed failure reaches no log and no
+// caller; federated_degraded_fallback_total (#714) counts it only by class. Warn fits a request answered with less than it asked
 // for. A breaker rejection logs at Debug: the breaker's "opened" line (#634)
 // logged the failure that tripped it once, and a Warn per rejected request
 // would repeat it for the whole open period with only the breaker's own

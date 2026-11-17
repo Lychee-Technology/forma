@@ -957,6 +957,12 @@ state: `duckdb_circuit_breaker_transition_total` counts each state it enters,
 and there is no state gauge (#634). `docs/federated-query/design.md` §7.1
 says which events count as a transition.
 
+The degraded fallback (§10.2) is counted by
+`federated_degraded_fallback_total` (#714): one sample per PostgreSQL-only
+fallback attempt, labelled by the class of the absorbed failure (`cause`) and
+by whether the fallback read served the request (`outcome`). `docs/telemetry.md`
+lists the classes.
+
 ### 10.2 Structured Logging
 
 Forma's query path logs through zap's global logger, which discards every
@@ -1024,8 +1030,8 @@ Per-stage latency and row counts are metrics (§10.1). Routing, per-source and
 timing detail for one query is returned to the caller on request (§10.3) and
 is not logged.
 
-One kind of failure is recorded only in the engine's log. When a request
-sets `federated.allow_partial_degraded_mode`, the engine absorbs most
+One kind of failure is recorded in full only in the engine's log. When a
+request sets `federated.allow_partial_degraded_mode`, the engine absorbs most
 DuckDB-path failures, a circuit-breaker rejection included, and answers from
 PostgreSQL alone (`docs/federated-query/design.md` §7.2). The request
 succeeds, so:
@@ -1047,10 +1053,21 @@ succeeds, so:
   line above, when the absorbed failure is a guard violation, and the
   breaker's "opened" line, when the absorbed failure is the one that opens
   the breaker.
-- The failed pass emits no `fed_query_*` sample (§10.1), and no metric counts
-  degraded answers. During an S3 outage those series go flat, which reads the
-  same as no traffic. The breaker's transition counter does move: a sustained
-  outage trips the breaker, and each later probe that fails re-opens it.
+- The failed pass emits no `fed_query_*` sample (§10.1). During an S3 outage
+  those series go flat, which reads the same as no traffic. The breaker's
+  transition counter moves only for failures that reach DuckDB and count
+  toward the breaker: when the outage fails the DuckDB statement, a sustained
+  outage trips the breaker, and each later probe that fails re-opens it. When
+  the outage fails the manifest read instead, before DuckDB is consulted, it
+  degrades every request without moving the breaker's failure count, so the
+  transition counter stays flat too. Of the metrics, only the fallback
+  counter below shows that case, under `cause` `read_failed`.
+- `federated_degraded_fallback_total` (§10.1, #714) counts the fallback once
+  the PostgreSQL read has returned, with the absorbed failure's class as
+  `cause` and `served` or `failed` as `outcome`. It counts every attempt the
+  line above records, breaker rejections and failures before DuckDB included,
+  whatever the log level, but it carries the class only: the failure itself
+  and the schema stay in the line.
 - `EntityManager.Query` and the HTTP layer log their ordinary success lines.
 
 The caller sees the fallback only in the response (§10.3). The `partial`

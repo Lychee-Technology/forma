@@ -103,6 +103,16 @@ func (s *Sink) EmitCircuitBreakerTransition(ctx context.Context, state string) {
 	s.emit(ctx, "duckdb_circuit_breaker_transition_total", map[string]string{"state": state}, 1)
 }
 
+// EmitDegradedFallback records one PostgreSQL-only degraded fallback attempt
+// (#714), after the fallback read has returned. cause is the fixed class of
+// the failure that triggered the fallback, never error text; outcome is
+// "served" or "failed". The federated engine owns both enumerations.
+// name: "federated_degraded_fallback_total" with labels
+// {"cause": "<class>", "outcome": "served"|"failed"}
+func (s *Sink) EmitDegradedFallback(ctx context.Context, cause, outcome string) {
+	s.emit(ctx, "federated_degraded_fallback_total", map[string]string{"cause": cause, "outcome": outcome}, 1)
+}
+
 // EmitCompactionManifestContractViolation records a contract violation event when
 // compaction detects SaveManifest succeeded without metadata advancement.
 // name: "compaction_manifest_contract_violation_total" with label {"schema_id": "<id>"}

@@ -5,12 +5,44 @@ package production
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/lychee-technology/forma"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
 )
+
+// degradedFallbacks records the federated_degraded_fallback_total samples an
+// engine emits (#714) as "cause/outcome". The mutex honours the emitter's
+// concurrent-use contract.
+type degradedFallbacks struct {
+	mu      sync.Mutex
+	samples []string
+}
+
+func (r *degradedFallbacks) EmitMetric(_ context.Context, m forma.Metric) {
+	if m.Name != "federated_degraded_fallback_total" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.samples = append(r.samples, m.Labels["cause"]+"/"+m.Labels["outcome"])
+}
+
+// expect fails the test unless exactly want was emitted since the last call.
+func (r *degradedFallbacks) expect(t *testing.T, step string, want ...string) {
+	t.Helper()
+	r.mu.Lock()
+	got := r.samples
+	r.samples = nil
+	r.mu.Unlock()
+	if !slices.Equal(got, want) {
+		t.Fatalf("%s: degraded fallback samples %v, want %v", step, got, want)
+	}
+}
 
 // seedTwoTiers writes flushed (parquet) plus hot rows for schema so a
 // federated query has to touch both Postgres and S3.
@@ -93,7 +125,8 @@ func assertDegradedFallbackPlan(t *testing.T, result *QueryResult) {
 func TestDegradedMode_S3Unavailable(t *testing.T) {
 	ctx := context.Background()
 	cluster := DedicatedCluster(t)
-	env := NewEnv(t, cluster)
+	fallbacks := &degradedFallbacks{}
+	env := NewEnv(t, cluster, WithMetricEmitter(fallbacks))
 	wide := DefaultSchemaFixtures()[1]
 
 	seedAllTiers(ctx, t, env, wide)
@@ -119,6 +152,7 @@ func TestDegradedMode_S3Unavailable(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "duckdb federated query") {
 		t.Errorf("degraded mode off: error should wrap the duckdb failure, got: %v", err)
 	}
+	fallbacks.expect(t, "degraded mode off")
 
 	// Scenarios 1+6 (degraded ON): postgres-only fallback returns complete
 	// oracle-checked results (totals, row sets, attribute values) plus a
@@ -126,6 +160,8 @@ func TestDegradedMode_S3Unavailable(t *testing.T) {
 	const degradedLimit = 20
 	degraded := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: degradedLimit, AllowPartialDegradedMode: true})
 	assertDegradedFallbackPlan(t, degraded)
+	// One served attempt, attributed to the parquet side's read failure.
+	fallbacks.expect(t, "degraded mode on", "read_failed/served")
 
 	// The degraded page must still carry correct pagination metadata computed
 	// from the (oracle-checked) total: total pages = ceil(Total/limit) and, at
@@ -150,7 +186,8 @@ func TestDegradedMode_S3Unavailable(t *testing.T) {
 // shared.
 func TestDegradedMode_DuckDBUnavailable(t *testing.T) {
 	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t))
+	fallbacks := &degradedFallbacks{}
+	env := NewEnv(t, SharedCluster(t), WithMetricEmitter(fallbacks))
 	wide := DefaultSchemaFixtures()[1]
 
 	seedTwoTiers(ctx, t, env, wide)
@@ -167,9 +204,11 @@ func TestDegradedMode_DuckDBUnavailable(t *testing.T) {
 	if _, err := env.Query(ctx, Query{Schema: wide, Limit: 20}); err == nil {
 		t.Fatal("degraded mode off: expected error with duckdb closed, got success")
 	}
+	fallbacks.expect(t, "degraded mode off")
 
 	degraded := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20, AllowPartialDegradedMode: true})
 	assertDegradedFallbackPlan(t, degraded)
+	fallbacks.expect(t, "degraded mode on", "read_failed/served")
 }
 
 // TestDegradedMode_DirtyFetchFailure is #185 degraded scenario 4: the
@@ -194,7 +233,8 @@ func TestDegradedMode_DuckDBUnavailable(t *testing.T) {
 // should isolate the dirty-ID source from the real-time buffer scan.
 func TestDegradedMode_DirtyFetchFailure(t *testing.T) {
 	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t))
+	fallbacks := &degradedFallbacks{}
+	env := NewEnv(t, SharedCluster(t), WithMetricEmitter(fallbacks))
 	wide := DefaultSchemaFixtures()[1]
 
 	seedTwoTiers(ctx, t, env, wide)
@@ -230,6 +270,9 @@ func TestDegradedMode_DirtyFetchFailure(t *testing.T) {
 	if !strings.Contains(degradedErr.Error(), "change_log") {
 		t.Errorf("degraded on: error should reference the missing change_log relation, got: %v", degradedErr)
 	}
+	// The flag still attempts the fallback, which fails: one attempt under
+	// the dirty-ID fetch's class, and only the degraded-on request counts (#714).
+	fallbacks.expect(t, "change_log outage", "postgres_read_failed/failed")
 }
 
 // TestDegradedMode_MissingSchemaMetadataNotDegradable is #185 degraded
@@ -239,7 +282,8 @@ func TestDegradedMode_DirtyFetchFailure(t *testing.T) {
 // survive the engine's wrapping.
 func TestDegradedMode_MissingSchemaMetadataNotDegradable(t *testing.T) {
 	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t))
+	fallbacks := &degradedFallbacks{}
+	env := NewEnv(t, SharedCluster(t), WithMetricEmitter(fallbacks))
 	wide := DefaultSchemaFixtures()[1]
 
 	seedTwoTiers(ctx, t, env, wide)
@@ -252,4 +296,5 @@ func TestDegradedMode_MissingSchemaMetadataNotDegradable(t *testing.T) {
 	if !errors.Is(err, fedengine.ErrSchemaMetadataCacheRequired) {
 		t.Errorf("error = %v, want errors.Is(ErrSchemaMetadataCacheRequired)", err)
 	}
+	fallbacks.expect(t, "non-degradable refusal")
 }

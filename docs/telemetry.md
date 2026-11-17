@@ -1,6 +1,6 @@
 # Telemetry: the metric contract and how to receive it
 
-Forma is a library first. It emits nine metrics and chooses no backend for
+Forma is a library first. It emits ten metrics and chooses no backend for
 them: nothing in the module links Prometheus, OpenTelemetry, CloudWatch or
 any other telemetry SDK. An application that embeds Forma hands it a
 `forma.MetricEmitter` and adapts each `forma.Metric` onto whatever it already
@@ -63,6 +63,7 @@ a fixed enumeration.
 | `fed_query_latency_histogram` | histogram | milliseconds | `stage` (`translation`, `execution`, `streaming`, `snapshot`) | federated query engine |
 | `fed_query_row_count` | counter | count | `source` (`pg`, `duckdb`, `hot`) | federated query engine |
 | `duckdb_circuit_breaker_transition_total` | counter | count | `state` (`open`, `half_open`, `closed`) | federated query engine (#634) |
+| `federated_degraded_fallback_total` | counter | count | `cause` (`breaker_rejected`, `duckdb_unavailable`, `corrupt_parquet`, `scan_guard_violation`, `read_failed`, `postgres_read_failed`, `other`), `outcome` (`served`, `failed`) | federated query engine (#714) |
 | `compaction_manifest_contract_violation_total` | counter | count | `schema_id` | compactor |
 | `compaction_dirty_ratio` | gauge | ratio | `schema_id` | compactor |
 | `compaction_rewrite_pending_total` | counter | count | `schema_id` | compactor |
@@ -126,6 +127,52 @@ alerts on any trip. Like `compaction_dirty_ratio`, it is not a heartbeat.
 Transitions happen only when federated queries reach the breaker, so an
 `open` with no later `half_open` or `closed` means no query has arrived
 since, not that the breaker is still rejecting.
+
+`federated_degraded_fallback_total` is not one of a pass's samples either.
+It counts the PostgreSQL-only fallbacks a request with
+`allow_partial_degraded_mode` falls back to when its federated pass fails with
+a degradable error (design.md §7.2): one sample of 1 per attempt, emitted once
+the fallback's PostgreSQL read has returned. `outcome` is `served` when that
+read answered the request and `failed` when it failed, so a request is never
+counted under both. `cause` is the class of the failure the fallback absorbed,
+never its text, taken from the engine's sentinels and error types:
+
+- `breaker_rejected`: the open DuckDB circuit breaker turned the request away
+  before any DuckDB work.
+- `duckdb_unavailable`: the engine has no DuckDB client.
+- `corrupt_parquet`: the read listed parquet objects confirmed corrupt, by
+  this pass or by an earlier one whose verdict is still cached (#722).
+- `scan_guard_violation`: the guarded per-file scan named objects that break
+  the export schema invariant (#351).
+- `read_failed`: any other parquet-side failure, including a manifest read
+  that fails before DuckDB runs and a DuckDB statement or recount that fails.
+- `postgres_read_failed`: a read in the pass's PostgreSQL snapshot failed,
+  such as the dirty-ID fetch.
+- `other`: a degradable failure that carries none of these classifications.
+
+When one error carries two classifications, the more specific one wins: a
+breaker rejection is also a `duckdb_unavailable` error, and a corrupt object
+or a scan-guard violation is also a `read_failed` one. `cause` describes the
+original failure even when the fallback fails: a fallback that meets the same
+PostgreSQL outage as the pass counts as
+`{cause="postgres_read_failed", outcome="failed"}`.
+
+This counter covers what the other federated series cannot. The `fed_query_*`
+series go flat during an outage, which reads the same as no traffic, and a
+failure before DuckDB is consulted, such as a manifest read during an S3
+outage, never counts toward the breaker. The breaker series counts
+transitions, so a request the open breaker rejects adds nothing there and one
+`breaker_rejected` attempt here. The two series never count the same event.
+The counter does not follow the fallback's log line (requirements.md §10.2):
+that line is written before the PostgreSQL read, at Debug for a breaker
+rejection, while the counter is emitted after the read whatever the log
+level. A request routed to PostgreSQL alone without a failure, a failure the
+request did not ask to absorb, and a failure that is never degraded (an
+expired deadline or a manifest inconsistency, for example) add nothing.
+
+`increase(federated_degraded_fallback_total{outcome="served"}[5m]) > 0`
+alerts on degraded answers. A rising `outcome="failed"` means the fallback
+itself is failing, usually because PostgreSQL is down too.
 
 Names are wire names: dashboards key on them verbatim, so they are never
 renamed or prefixed. **Adding a metric** means adding its descriptor to
