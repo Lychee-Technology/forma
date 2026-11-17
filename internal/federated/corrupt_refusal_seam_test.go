@@ -396,8 +396,7 @@ func requireCachedRefusalKept(t *testing.T, err error) {
 // TestCorruptRefusalDegradesToPostgresOnly pins the #722 answer under
 // AllowPartialDegradedMode, for a fresh confirmation and for a cached
 // verdict: the page comes from PostgreSQL alone, which holds every live row
-// in its current version, and carries the #468 coverage marker for the cold
-// tier the request asked for.
+// in its current version, and its plan records the fallback (#715).
 func TestCorruptRefusalDegradesToPostgresOnly(t *testing.T) {
 	for _, cached := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cached=%v", cached), func(t *testing.T) {
@@ -414,54 +413,13 @@ func TestCorruptRefusalDegradesToPostgresOnly(t *testing.T) {
 				e.corruptPaths.Add([]string{retryCorruptPath1})
 			}
 
-			opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: true}
+			opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: true, IncludeExecutionPlan: true}
 			page, err := e.Query(context.Background(), corruptTables, coldTierQuery(), opts)
 			require.NoError(t, err, "degraded mode must absorb the refusal")
 			require.Equal(t, 1, pg.queryCalls, "the answer is the Postgres-only read")
-			require.NotNil(t, page.Partial, "a postgres-only answer to a hot+cold request is marked hot-tier-only (#468)")
-			require.Equal(t, []model.DataTier{model.DataTierCold}, page.Partial.UnconsultedTiers)
-			require.Same(t, page.Partial, opts.PartialScan, "the out-parameter must agree with the page")
+			require.NotNil(t, page.ExecutionPlan)
+			require.Equal(t, "degraded fallback (AllowPartialDegradedMode)", page.ExecutionPlan.Routing.Reason,
+				"the degraded answer stays visible through the plan (#715)")
 		})
 	}
-}
-
-// TestCleanQueryPageHasNoPartialMarker is the negative leg: a scan over the
-// full resolved set is not partial, and the pass clears a marker that a
-// reused options value still carries from an earlier answer.
-func TestCleanQueryPageHasNoPartialMarker(t *testing.T) {
-	restore := initTestDescriptors()
-	defer restore()
-
-	duck := &retryFakeDuck{passes: []retryPass{{}}}
-	e := newRetryEngine(t, duck, []string{retryKeptPathA, retryKeptPathB})
-
-	opts := &model.FederatedQueryOptions{
-		PartialScan: &model.PartialScan{UnconsultedTiers: []model.DataTier{model.DataTierCold}},
-	}
-	page, err := e.Query(context.Background(), corruptTables, coldTierQuery(), opts)
-	require.NoError(t, err)
-	require.Nil(t, page.Partial, "a full-set scan must not carry a partial marker")
-	require.Nil(t, opts.PartialScan, "the out-parameter must describe THIS call, not the previous one")
-}
-
-// TestPostgresOnlyAnswerClearsReusedPartialMarker pins the PR #412 review
-// observation: the hot-only gate never runs a DuckDB pass, so without the
-// Query entry reset a caller reusing one options value across queries would
-// read the PREVIOUS call's marker after a postgres-only answer.
-func TestPostgresOnlyAnswerClearsReusedPartialMarker(t *testing.T) {
-	restore := initTestDescriptors()
-	defer restore()
-
-	duck := &retryFakeDuck{passes: []retryPass{{}}}
-	e := newRetryEngine(t, duck, []string{retryKeptPathA, retryKeptPathB})
-
-	opts := &model.FederatedQueryOptions{
-		PartialScan: &model.PartialScan{UnconsultedTiers: []model.DataTier{model.DataTierCold}},
-	}
-	hotOnly := coldTierQuery()
-	hotOnly.PreferredTiers = []model.DataTier{model.DataTierHot}
-	page, err := e.Query(context.Background(), corruptTables, hotOnly, opts)
-	require.NoError(t, err)
-	require.Nil(t, page.Partial, "a hot-only page never carries the marker")
-	require.Nil(t, opts.PartialScan, "the out-parameter must describe THIS call, not the previous one")
 }

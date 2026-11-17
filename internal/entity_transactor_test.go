@@ -54,6 +54,10 @@ func newMockTransactorOver(t *testing.T, engine model.FederatedQueryEngine, sche
 	config := createTestConfig()
 	config.Database.TableNames = forma.TableNames{EntityMain: "entity_main", EAVData: "eav_data", ChangeLog: "change_log"}
 	config.Transaction.DefaultTimeout = 30 * time.Second
+	// A manager wired with an engine runs on a federated deployment, where
+	// every non-transactional Query enters it (#715): a Tx path that reached
+	// the engine there would be counted.
+	config.DuckDB.Enabled = engine != nil
 	var metadata *schemameta.MetadataCache
 	if len(schemas) > 0 {
 		metadata = schemameta.NewMetadataCache()

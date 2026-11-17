@@ -76,10 +76,9 @@ func TestPostgresHalt_ParquetTiersError(t *testing.T) {
 	assertPostgresReadFailed("parquet-only tiers", err)
 
 	// The public read APIs (#635). Get is a PostgreSQL read: it fails, and is
-	// not answered from the parquet copy of a row that exists there. A
-	// federated Query that asks for eventual consistency and degraded mode
-	// fails like the engine probes above: neither field licenses a
-	// parquet-only answer.
+	// not answered from the parquet copy of a row that exists there. A Query
+	// on a deployment that routes it through DuckDB fails like the engine
+	// probes above: nothing licenses a parquet-only answer.
 	if healthy == nil || len(healthy.Records) == 0 {
 		t.Fatalf("precondition: the healthy query returned no row to Get")
 	}
@@ -92,16 +91,10 @@ func TestPostgresHalt_ParquetTiersError(t *testing.T) {
 	}
 	queryCtx, cancelQuery := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelQuery()
-	_, err = env.EntityManager().Query(queryCtx, &forma.QueryRequest{
+	_, err = env.DuckDBRoutedEntityManager().Query(queryCtx, &forma.QueryRequest{
 		SchemaName: wide.Name, Page: 1, ItemsPerPage: 20,
-		Federated: &forma.FederatedQueryRequest{
-			Enabled:                  true,
-			PreferredTiers:           []string{"warm", "cold"},
-			AllowPartialDegradedMode: true,
-			ConsistencyMode:          "eventual",
-		},
 	})
-	assertPostgresReadFailed("EntityManager.Query, consistency_mode eventual", err)
+	assertPostgresReadFailed("EntityManager.Query on a duckdb-routed deployment", err)
 
 	// Resume and prove full recovery: oracle-complete federated read plus a
 	// fresh write/read roundtrip through the rebuilt handles.

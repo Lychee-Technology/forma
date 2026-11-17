@@ -162,15 +162,6 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 	if e == nil || e.pgSource == nil {
 		return nil, fmt.Errorf("postgres federated source is not available")
 	}
-	// #348: the partial-scan out-parameter describes THIS call only. The
-	// DuckDB path clears it per pass and the Postgres-only answers set the
-	// #468 coverage marker, but the hot-only gate below never
-	// reaches a pass and leaves the page unmarked — without this entry
-	// reset, a caller reusing one options value across queries would read
-	// the previous call's marker after a hot-only answer (PR #412 review).
-	if opts != nil {
-		opts.PartialScan = nil
-	}
 	// Guard the live renderer path: ExecuteDuckDBFederatedQuery below consumes
 	// the cursor unvalidated (duckdb_template_renderer.go). validateKeysetCursor
 	// (keyset.go) is THE contract — the same call ExecuteFederatedKeysetQuery
@@ -206,17 +197,11 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 		opts.ExecutionPlan.Routing = decision
 	}
 	if !decision.UseDuckDB {
+		// The routed Postgres-only path reads entity_main alone, which holds
+		// every live row (design.md §3.3), so the answer is complete for
+		// current state and carries no partial marker (#715).
 		recordRoutedPostgresSource(opts, tables, decision)
-		page, err := e.queryPostgresOnlyWithPlan(ctx, tables, fq, opts)
-		if err != nil {
-			return nil, err
-		}
-		// The routed Postgres-only path reads entity_main alone; a request
-		// that asked for warm/cold (explicitly, or all three by omission)
-		// is told so (#468). Hot-only requests never reach here: the gate
-		// above intercepts them and they are not marked.
-		markHotTierOnly(page, opts, fq)
-		return page, nil
+		return e.queryPostgresOnlyWithPlan(ctx, tables, fq, opts)
 	}
 	return e.queryDuckDBRouted(ctx, tables, fq, opts)
 }

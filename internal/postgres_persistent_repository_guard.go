@@ -99,6 +99,17 @@ func txClock(tx pgx.Tx) model.TxClock {
 	}
 }
 
+// ServerTimeMillis implements model.ServerClock: one statement of its own,
+// so the instant is PostgreSQL's now() at that statement, read through the
+// spelling the $now operand renders (#715).
+func (r *DBPersistentRecordRepository) ServerTimeMillis(ctx context.Context) (int64, error) {
+	var ms int64
+	if err := r.pool.QueryRow(ctx, "SELECT "+sqlgen.ServerTimeMillisSQL).Scan(&ms); err != nil {
+		return 0, fmt.Errorf("read the postgresql clock: %w", err)
+	}
+	return ms, nil
+}
+
 // rowNotFound is the error a write answers for a row that does not exist.
 func rowNotFound(schemaID int16, rowID uuid.UUID) error {
 	return forma.WithOperatorDetail(forma.NotFoundf("entity not found (row=%s)", rowID),

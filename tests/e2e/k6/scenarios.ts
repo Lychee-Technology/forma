@@ -17,8 +17,8 @@ import { check, sleep, group } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
 // Custom metrics. This is an OLTP-path load smoke — it drives the fast
-// hot-tier API endpoints and does not route through the (heavier) federated
-// engine, so there is no route split here. The federated/DuckDB path is
+// hot-tier API endpoints, which the default hybrid routing answers from
+// Postgres, so there is no route split here. The federated/DuckDB path is
 // covered by federated-check, not by this latency-SLA load run.
 const queryDuration = new Trend('forma_query_duration', true);
 const queryErrors = new Counter('forma_query_errors');
@@ -234,11 +234,11 @@ function conditionFor(schema: string): Record<string, unknown> {
   }
 }
 
-// Test: Advanced query with conditions (OLTP path). The request deliberately
-// does NOT set federated.enabled: this is a latency-SLA load smoke, and the
-// federated engine's PG path (dirty-set anti-join CTEs) is markedly heavier and
-// gets starved under a constrained CI runner. Federated routing is covered by
-// federated-check, not here.
+// Test: Advanced query with conditions. The request carries no routing: since
+// #715 the route is the server's. Against a server with the default hybrid
+// routing these page sizes are answered from Postgres, which keeps this a
+// latency-SLA load smoke; the DuckDB route is covered by federated-check
+// against a freshness-first server, not here.
 function testAdvancedQuery(schema: string): void {
   const payload = {
     schema_name: schema,

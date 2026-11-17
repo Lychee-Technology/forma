@@ -129,8 +129,9 @@ Transitions happen only when federated queries reach the breaker, so an
 since, not that the breaker is still rejecting.
 
 `federated_degraded_fallback_total` is not one of a pass's samples either.
-It counts the PostgreSQL-only fallbacks a request with
-`allow_partial_degraded_mode` falls back to when its federated pass fails with
+It counts the PostgreSQL-only fallbacks a query falls back to, on a
+deployment with `duckdb.allowPartialDegradedMode`
+(`DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE`), when its federated pass fails with
 a degradable error (design.md §7.2): one sample of 1 per attempt, emitted once
 the fallback's PostgreSQL read has returned. `outcome` is `served` when that
 read answered the request and `failed` when it failed, so a request is never
@@ -139,7 +140,9 @@ never its text, taken from the engine's sentinels and error types:
 
 - `breaker_rejected`: the open DuckDB circuit breaker turned the request away
   before any DuckDB work.
-- `duckdb_unavailable`: the engine has no DuckDB client.
+- `duckdb_unavailable`: the engine has no DuckDB client. Since #715 a
+  deployment with DuckDB enabled fails startup instead of running without
+  one, so only an engine assembled without a client reaches this.
 - `corrupt_parquet`: the read listed parquet objects confirmed corrupt, by
   this pass or by an earlier one whose verdict is still cached (#722).
 - `scan_guard_violation`: the guarded per-file scan named objects that break
@@ -166,8 +169,8 @@ transitions, so a request the open breaker rejects adds nothing there and one
 The counter does not follow the fallback's log line (requirements.md §10.2):
 that line is written before the PostgreSQL read, at Debug for a breaker
 rejection, while the counter is emitted after the read whatever the log
-level. A request routed to PostgreSQL alone without a failure, a failure the
-request did not ask to absorb, and a failure that is never degraded (an
+level. A request routed to PostgreSQL alone without a failure, a failure on a
+deployment with the fallback off, and a failure that is never degraded (an
 expired deadline or a manifest inconsistency, for example) add nothing.
 
 `increase(federated_degraded_fallback_total{outcome="served"}[5m]) > 0`

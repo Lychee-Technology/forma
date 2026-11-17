@@ -111,13 +111,11 @@ func executeServiceQuery(ctx context.Context, h *federated.FederatedTestHarness,
 	// and it now fails closed (#388). Reported as an error rather than absorbed:
 	// a benchmark that ran on with stripping disabled would be measuring a write
 	// and read path production does not have.
-	manager, err := internal.NewEntityManager(transformer, stack.repo, stack.engine, stack.registry,
+	engine := harnessLayoutEngine{engine: stack.engine, template: benchmarkS3ParquetPathTemplate(h)}
+	manager, err := internal.NewEntityManager(transformer, stack.repo, engine, stack.registry,
 		benchmarkServiceConfig(h, stack, defaultPageSize), nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build benchmark entity manager: %w", err)
-	}
-	if req != nil && req.Federated != nil && req.Federated.Enabled {
-		req.Federated.S3ParquetPathTemplate = benchmarkS3ParquetPathTemplate(h)
 	}
 	result, err := manager.Query(ctx, req)
 	if err != nil {
@@ -154,10 +152,37 @@ func benchmarkServiceConfig(h *federated.FederatedTestHarness, stack *benchmarkQ
 	}
 }
 
+// harnessLayoutEngine adapts the stack's engine to the harness's storage
+// layout. Whether the service routes a Query through the engine is the
+// deployment's choice (DuckDBConfig.Enabled, #715), and a deployment reads
+// parquet paths from its manifest or its flat fallback glob; the harness
+// writes base/ and delta/ subdirectories that neither describes, so it pins
+// them on every engine call. It also declares all three tiers, which keeps
+// the measured service workloads on the DuckDB path the benchmark exists
+// to measure, as the request-level preferred_tiers did before #715.
+type harnessLayoutEngine struct {
+	engine   model.FederatedQueryEngine
+	template string
+}
+
+// Query implements model.FederatedQueryEngine.
+func (e harnessLayoutEngine) Query(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) (*model.PersistentRecordPage, error) {
+	pinned := *fq
+	pinned.PreferredTiers = []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold}
+	if e.template != "" {
+		pinned.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: e.template}
+	}
+	page, err := e.engine.Query(ctx, tables, &pinned, opts)
+	if err != nil {
+		return nil, fmt.Errorf("benchmark federated query: %w", err)
+	}
+	return page, nil
+}
+
 // executeServiceQueryWithPlan runs req through the entity manager and, when
-// capturePlan is set on a federated request, replays it directly against the
-// federated engine to capture the execution plan the service path does not
-// expose. The replay's records are discarded: the measured result is the
+// capturePlan is set on a deployment running the federated engine, replays
+// it directly against the engine to capture the execution plan the service
+// path does not expose. The replay's records are discarded: the measured result is the
 // service query's.
 func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTestHarness, req *forma.QueryRequest, defaultPageSize int, capturePlan bool, planCache *queryplan.Cache) (*forma.QueryResult, []*model.PersistentRecord, *model.ExecutionPlan, error) {
 	pool, err := openBenchmarkPool(ctx, h)
@@ -171,13 +196,16 @@ func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTest
 		return nil, nil, nil, err
 	}
 
-	if !capturePlan || req == nil || req.Federated == nil {
+	if !capturePlan || req == nil {
 		return result, records, nil, nil
 	}
 
 	stack, err := newBenchmarkQueryStack(ctx, pool, h, planCache)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	if !stack.duckCfg.Enabled {
+		return result, records, nil, nil
 	}
 	schemaID, err := stack.resolveSchemaID(req.SchemaName)
 	if err != nil {
@@ -190,6 +218,7 @@ func executeServiceQueryWithPlan(ctx context.Context, h *federated.FederatedTest
 		ExecutionPlan:        plan,
 	}
 	fq := planCaptureQuery(req, schemaID, attributeOrdersForRequest(stack.metadata, schemaID, req), defaultPageSize)
+	fq.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: benchmarkS3ParquetPathTemplate(h)}
 	_, err = stack.engine.Query(ctx, benchmarkStorageTables(h), fq, fqOpts)
 	if err != nil {
 		return result, records, plan, nil
@@ -214,12 +243,6 @@ func planCaptureQuery(req *forma.QueryRequest, schemaID int16, attrOrders []mode
 			Offset:          (maxInt(req.Page, 1) - 1) * pageSize,
 		},
 		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold},
-	}
-	if req.Federated.S3ParquetPathTemplate != "" {
-		fq.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: req.Federated.S3ParquetPathTemplate}
-	}
-	if req.Federated.PreferHot {
-		fq.PreferHot = true
 	}
 	return fq
 }

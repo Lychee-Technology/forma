@@ -248,11 +248,10 @@ func assertTierMatrixHotGate(ctx context.Context, t *testing.T, env *Env, wide S
 	}
 }
 
-// TestTierHintRoutingAndAnchor (#184 preference behaviors): PreferHot forces
-// the hot-only path, empty/default tiers use all three, and UseMainAsAnchor
-// must surface in the execution plan even though the template does not act
-// on it yet.
-func TestTierHintRoutingAndAnchor(t *testing.T) {
+// TestTierHintRouting (#184 preference behaviors): PreferHot forces the
+// hot-only path and empty/default tiers use all three. The UseMainAsAnchor
+// hint this test also pinned left with #715: it never changed the plan.
+func TestTierHintRouting(t *testing.T) {
 	cluster := SharedCluster(t)
 	wide := DefaultSchemaFixtures()[1]
 	ctx := context.Background()
@@ -291,20 +290,6 @@ func TestTierHintRoutingAndAnchor(t *testing.T) {
 		if sqlText := duckdbPlanSQL(result.Plan); sqlText != "" {
 			t.Errorf("PreferHot: recorded a duckdb source:\n%s", sqlText)
 		}
-	}
-
-	// UseMainAsAnchor: the hint must be visible in the plan.
-	anchored, err := env.Query(ctx, Query{
-		Schema:          wide,
-		PreferredTiers:  []model.DataTier{model.DataTierHot, model.DataTierWarm},
-		UseMainAsAnchor: true,
-		Limit:           100,
-	})
-	if err != nil {
-		t.Fatalf("anchored query: %v", err)
-	}
-	if !planNotesContain(anchored.Plan, "UseMainAsAnchor hint requested") {
-		t.Errorf("UseMainAsAnchor: plan notes must record the hint as requested, got %v", anchored.Plan.Notes)
 	}
 
 	// Direct engine callers with empty PreferredTiers get the default

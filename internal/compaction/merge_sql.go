@@ -38,8 +38,8 @@ var defaultMergeCopyOptions = parquetformat.DefaultCopyOptions()
 // The escaping is the safety boundary; a character gate on top of it
 // would only refuse manifest entries the federated read path already
 // serves (#529), leaving them impossible to compact or reconcile. The
-// caller-supplied template gate in internal/federated/parquet_hint_scope.go
-// (#456) is a different trust domain and keeps its own rejection on purpose.
+// path-hint scope gate in internal/federated/parquet_hint_scope.go (#456,
+// #477) is a different trust domain and keeps its own rejection on purpose.
 func validateMergeURI(uri string) error {
 	if uri == "" {
 		return fmt.Errorf("empty parquet URI")

@@ -16,7 +16,7 @@ const unrepresentableReason = `attribute "items.sku" lies inside the array of ob
 // seam: a query whose schema the parquet tiers cannot hold is answered from
 // Postgres alone under every tier declaration, an explicit warm/cold one
 // included, with DuckDB enabled and never consulted. The plan names the
-// reason and the page carries the #468 marker for the tiers it skipped.
+// reason.
 func TestQueryParquetUnrepresentableIsServedPostgresOnly(t *testing.T) {
 	all := []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold}
 	for name, tiers := range map[string][]model.DataTier{"omitted": nil, "all three": all, "warm and cold": warmCold} {
@@ -40,28 +40,26 @@ func TestQueryParquetUnrepresentableIsServedPostgresOnly(t *testing.T) {
 			require.Contains(t, page.ExecutionPlan.Routing.Reason, unrepresentableReason)
 			require.Len(t, page.ExecutionPlan.Sources, 1)
 			require.Equal(t, "postgres", page.ExecutionPlan.Sources[0].Engine)
-			require.NotNil(t, page.Partial)
-			require.Equal(t, warmCold, page.Partial.UnconsultedTiers)
-			require.Same(t, page.Partial, opts.PartialScan)
 		})
 	}
 }
 
 // TestQueryParquetUnrepresentableKeepsTheHotOnlyGate: a hot-only request is
-// served by the gate as before, unmarked, since it asked for hot alone.
+// served by the gate as before.
 func TestQueryParquetUnrepresentableKeepsTheHotOnlyGate(t *testing.T) {
 	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 1}}
 	engine := NewDBFederatedQueryEngine(pg, &fakeDuckDBExecutor{}, nil, hybridEnabledCfg(), nil, withFakeHotLeg(nil))
 
+	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
 	page, err := engine.Query(context.Background(), testTables, &model.FederatedAttributeQuery{
 		AttributeQuery:         model.AttributeQuery{SchemaID: 7, Limit: 10},
 		PreferHot:              true,
 		ParquetUnrepresentable: unrepresentableReason,
-	}, &model.FederatedQueryOptions{})
+	}, opts)
 
 	require.NoError(t, err)
 	require.Equal(t, 1, pg.queryCalls)
-	require.Nil(t, page.Partial)
+	require.Equal(t, "hot-only gate", page.ExecutionPlan.Routing.Reason)
 }
 
 // TestQueryParquetUnrepresentableRefusesAKeysetCursor: only the DuckDB
@@ -133,15 +131,14 @@ func TestDuckDBEntryPointsRefuseAParquetUnrepresentableSchema(t *testing.T) {
 // TestQueryParquetUnrepresentableRefusesAPinnedParquetPath: a pinned
 // s3_parquet_path_template names the parquet population to read, which a
 // Postgres-only answer cannot honor, so the request is refused as invalid
-// input before Postgres is read. This holds for a hint the deployment would
-// honor for another schema and for one it would reject: either way the
-// answer would otherwise come from a different source than the caller named.
+// input before Postgres is read. This holds for a hint inside the
+// deployment's bucket and for one outside it: either way the answer would
+// otherwise come from a different source than the engine caller named.
 func TestQueryParquetUnrepresentableRefusesAPinnedParquetPath(t *testing.T) {
 	const hint = "s3://bucket/data/{{.SchemaID}}/base/*.parquet"
-	permitted := hybridEnabledCfg()
-	permitted.AllowCallerParquetPaths = true
-	permitted.S3Bucket = "bucket"
-	configs := map[string]forma.DuckDBConfig{"hint permitted": permitted, "hint disabled": hybridEnabledCfg()}
+	inScope := hybridEnabledCfg()
+	inScope.S3Bucket = "bucket"
+	configs := map[string]forma.DuckDBConfig{"hint in scope": inScope, "no bucket": hybridEnabledCfg()}
 	for cfgName, cfg := range configs {
 		for tiersName, tiers := range map[string][]model.DataTier{"omitted": nil, "warm and cold": warmCold} {
 			t.Run(cfgName+"/"+tiersName, func(t *testing.T) {

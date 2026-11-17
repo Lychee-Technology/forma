@@ -15,16 +15,16 @@ import (
 // does, nor its degraded fallback is tried.
 //
 // Every tier declaration is served this way, an explicit warm/cold one
-// included, and marked hot_tier_only like any Postgres-only answer that was
-// asked for more (#468): under the storage invariant PostgreSQL holds every
-// live row, as it does when DuckDB is disabled. Two requests are refused
+// included: under the storage invariant PostgreSQL holds every live row, so
+// the answer is complete for current state. Two requests are refused
 // instead, since only the DuckDB template could honor them. A keyset cursor:
 // the refusal says why this schema cannot reach that template, where
 // queryPostgresOnly's would advise enabling DuckDB. A pinned parquet path
-// (s3_parquet_path_template): it names the population to read, so answering
-// from PostgreSQL would silently swap the source, and would skip the hint's
-// opt-in and scope checks (duckDBParquetPathsForQuery). It is refused whether
-// or not the deployment would honor it for another schema.
+// (an engine caller's S3ParquetPathTemplate hint; no request carries one
+// since #715): it names the population to read, so answering from
+// PostgreSQL would silently swap the source, and would skip the hint's
+// scope checks (duckDBParquetPathsForQuery). It is refused whether or not
+// the deployment would honor it for another schema.
 func (e *DBFederatedQueryEngine) queryParquetUnrepresentable(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions) (*model.PersistentRecordPage, error) {
 	if hasKeysetCursor(fq) {
 		return nil, fmt.Errorf("keyset cursor cannot be served for schema id %d: its queries route to the postgres-only path, which applies no cursor predicate, because the parquet tiers cannot hold it (%s); paginate with limit/offset: %w: %w",
@@ -32,7 +32,7 @@ func (e *DBFederatedQueryEngine) queryParquetUnrepresentable(ctx context.Context
 	}
 	if fq.DuckDBHints != nil && fq.DuckDBHints.S3ParquetPathTemplate != "" {
 		return nil, forma.WithOperatorDetail(forma.InvalidInputf(
-			"s3_parquet_path_template %q cannot be honored: the parquet tiers cannot hold this schema (%s), so its queries are answered from postgres; omit the template",
+			"s3 parquet path hint %q cannot be honored: the parquet tiers cannot hold this schema (%s), so its queries are answered from postgres; omit the hint",
 			fq.DuckDBHints.S3ParquetPathTemplate, fq.ParquetUnrepresentable), ErrParquetUnrepresentable)
 	}
 	decision := model.RoutingDecision{
@@ -46,12 +46,7 @@ func (e *DBFederatedQueryEngine) queryParquetUnrepresentable(ctx context.Context
 		opts.ExecutionPlan.Routing = decision
 	}
 	recordRoutedPostgresSource(opts, tables, decision)
-	page, err := e.queryPostgresOnlyWithPlan(ctx, tables, fq, opts)
-	if err != nil {
-		return nil, err
-	}
-	markHotTierOnly(page, opts, fq)
-	return page, nil
+	return e.queryPostgresOnlyWithPlan(ctx, tables, fq, opts)
 }
 
 // refuseParquetUnrepresentable refuses a DuckDB pass over a query whose

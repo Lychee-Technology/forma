@@ -311,25 +311,31 @@ jobs:
           S3_SECRET_KEY: minio_password
           # Manifest-driven reads (#302): the flush step below writes
           # manifests (cdc-flush passes --manifest-template); these vars make
-          # the server resolve parquet paths from them instead of relying on
-          # per-request hints. S3_BUCKET/S3_PREFIX mirror the tests/e2e
+          # the server resolve parquet paths from them, the only source of
+          # parquet paths since #715. S3_BUCKET/S3_PREFIX mirror the tests/e2e
           # defaults (forma-cdc / delta) the writers use.
           DUCKDB_MANIFEST_TEMPLATE: "manifest/{{.SchemaID}}.json"
           S3_BUCKET: forma-cdc
           S3_PREFIX: delta
-          # federated-check sends an explicit s3_parquet_path_template hint
-          # (s3://forma-cdc/delta/{{.SchemaID}}/*.parquet). Since #456 that
-          # per-request hint is rejected by default; opt in here so the smoke
-          # exercises the hint path (in-scope of S3_BUCKET) rather than silently
-          # falling back to manifest reads.
-          DUCKDB_ALLOW_CALLER_PARQUET_PATHS: "true"
+        # Two servers over the same database (#715: the deployment, not the
+        # request, picks the route). :8080 keeps the default hybrid routing,
+        # which answers small pages from Postgres; :8081 routes every query
+        # through DuckDB, which is how federated-check --require-duckdb
+        # reaches the S3 tiers through the API.
         run: |
           ./build/server &
-          for i in $(seq 1 30); do
-            if curl -sf "http://localhost:8080/api/v1/lead?page=1&items_per_page=1" >/dev/null 2>&1; then echo "Server up"; exit 0; fi
-            sleep 1
+          PORT=8081 DUCKDB_ROUTING_STRATEGY=freshness-first ./build/server &
+          for port in 8080 8081; do
+            up=""
+            for i in $(seq 1 30); do
+              # Any HTTP answer means the server listens: on :8081 a list
+              # read of a never-flushed schema takes a DuckDB pass.
+              if curl -s -o /dev/null "http://localhost:${port}/api/v1/lead?page=1&items_per_page=1"; then up=1; break; fi
+              sleep 1
+            done
+            if [ -z "$up" ]; then echo "Server on :${port} did not become ready" >&2; exit 1; fi
+            echo "Server on :${port} up"
           done
-          echo "Server did not become ready" >&2; exit 1
 
       - name: Seed + flush + federated consistency + DuckDB route
         working-directory: tests/e2e
@@ -340,14 +346,10 @@ jobs:
           bun run cdc-flush
           # Row-identity consistency across all schemas (hybrid → Postgres route).
           bun run federated-check -- --schema all
-          # Prove the federated read actually goes through DuckDB/S3. 'log' is a
-          # flat schema; lead/visit have nested dotted attributes that currently
-          # hit a federated-projection binder bug (tracked separately).
-          bun run federated-check -- --schema log --require-duckdb
-          # Same route proof without the client-side path hint: an explicit
-          # hint always wins over the manifest source, so only a hint-free
-          # request exercises the server's manifest-driven read path (#302).
-          bun run federated-check -- --schema log --require-duckdb --manifest-reads
+          # Prove the federated read actually goes through DuckDB/S3, its
+          # parquet paths resolved from the manifest (#302): the :8081 server
+          # routes every query through DuckDB. 'log' is a flat schema.
+          BASE_URL=http://localhost:8081 bun run federated-check -- --schema log --require-duckdb
 
       # OLTP-path load smoke. The DuckDB route is proven above by
       # federated-check --require-duckdb; the k6 latency SLA deliberately does

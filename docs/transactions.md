@@ -130,8 +130,8 @@ committed data a test finds `Tx.Query` and `EntityManager.Query` identical.
 
 What a read sees:
 
-- **Hot tier only.** A request with `Federated.Enabled` is `ErrInvalidInput`
-  before any SQL, and no Tx read ever calls the federated engine. The
+- **Hot tier only.** No Tx read ever calls the federated engine, even on a
+  deployment that runs it for `EntityManager.Query` (`DUCKDB_ENABLED`). The
   PostgreSQL hot tier holds every live row and the Tx's own writes; the
   lakehouse tiers hold neither the uncommitted writes nor a lock.
 - **Unlocked reads follow the engine's isolation.** On PostgreSQL an

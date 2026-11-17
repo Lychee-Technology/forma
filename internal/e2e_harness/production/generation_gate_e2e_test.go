@@ -61,9 +61,8 @@ func readQtyBothRoutes(ctx context.Context, t *testing.T, env *Env, schema Schem
 	if err != nil {
 		t.Fatalf("get %s: %v", rowID, err)
 	}
-	page, err := env.EntityManager().Query(ctx, &forma.QueryRequest{
+	page, err := env.DuckDBRoutedEntityManager().Query(ctx, &forma.QueryRequest{
 		SchemaName: schema.Name, Page: 1, ItemsPerPage: 100,
-		Federated: &forma.FederatedQueryRequest{Enabled: true, PreferredTiers: []string{"hot", "warm", "cold"}},
 	})
 	if err != nil {
 		t.Fatalf("federated query: %v", err)

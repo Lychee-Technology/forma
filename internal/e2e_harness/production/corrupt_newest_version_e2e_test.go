@@ -81,10 +81,9 @@ func TestCorruptDeltaWithNewestVersionsIsNotAnsweredStale(t *testing.T) {
 		if len(res.Records) != p.want {
 			t.Errorf("degraded %s returned %d rows, want %d", p.name, len(res.Records), p.want)
 		}
+		// The plan is the degraded answer's visible trace; #715 retired the
+		// hot_tier_only marker, since PostgreSQL holds every live row.
 		assertDegradedFallbackPlan(t, res)
-		if res.Partial == nil || len(res.Partial.UnconsultedTiers) == 0 {
-			t.Errorf("degraded %s must carry the hot_tier_only coverage marker, got %+v", p.name, res.Partial)
-		}
 	}
 }
 

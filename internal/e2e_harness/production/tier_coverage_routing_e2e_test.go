@@ -45,8 +45,12 @@ func seedPrunedColdTier(ctx context.Context, t *testing.T, env *Env, schema Sche
 //   - an explicit multi-tier preferred_tiers overrides the heuristic, so an
 //     ordinary page size actually reaches the three-tier DuckDB merge and
 //     matches the oracle — the regression net the issue asks for;
-//   - an implicit (omitted) preferred_tiers keeps the heuristic, is
-//     answered hot-tier-only, and says so through the coverage marker.
+//   - an implicit (omitted) preferred_tiers, the only form the entity query
+//     service sends (#715), keeps the heuristic and is answered from
+//     PostgreSQL alone. It carries no partial marker: #715 retired
+//     hot_tier_only, since the storage invariant keeps every live row in
+//     PostgreSQL (design.md §3.3); this seed's pruning breaks that invariant
+//     on purpose, which is why the answer is short.
 func TestTierCoverageUnderHybridSmallPage(t *testing.T) {
 	cluster := SharedCluster(t)
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
@@ -75,12 +79,9 @@ func TestTierCoverageUnderHybridSmallPage(t *testing.T) {
 			t.Fatalf("the overridden decision must name both the reversed rule and the override; reason=%q",
 				result.Plan.Routing.Reason)
 		}
-		if result.Partial != nil {
-			t.Fatalf("every declared tier was consulted; page must carry no coverage marker, got %+v", result.Partial)
-		}
 	})
 
-	t.Run("implicit_tiers_marked_hot_tier_only", func(t *testing.T) {
+	t.Run("implicit_tiers_keep_the_shortcut", func(t *testing.T) {
 		result, err := env.Query(ctx, Query{Schema: wide, Limit: 10})
 		if err != nil {
 			t.Fatalf("implicit-tier query: %v", err)
@@ -91,14 +92,7 @@ func TestTierCoverageUnderHybridSmallPage(t *testing.T) {
 		if result.Plan.Routing.Reason != "hybrid small result set" {
 			t.Fatalf("reason = %q, want the unoverridden heuristic verdict", result.Plan.Routing.Reason)
 		}
-		if result.Partial == nil {
-			t.Fatal("a postgres-only answer to an all-tier request must carry the coverage marker (#468)")
-		}
-		want := []model.DataTier{model.DataTierWarm, model.DataTierCold}
-		if got := result.Partial.UnconsultedTiers; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
-			t.Fatalf("UnconsultedTiers = %v, want %v", got, want)
-		}
-		// The marker is telling the truth: the pruned cold rows are absent.
+		// The pruned cold rows are absent from a PostgreSQL-only answer.
 		if result.Total != 2 {
 			t.Fatalf("hot-tier-only answer total = %d, want 2 (the three pruned cold rows are unreachable from Postgres)", result.Total)
 		}

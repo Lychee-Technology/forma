@@ -174,7 +174,7 @@ func assertEAVIntegerReadRefused(t *testing.T, ctx context.Context, env *Env, ba
 	}
 
 	_, fedErr := federatedWideQuery(ctx, env, schema)
-	_, pgErr := postgresRouteQuery(ctx, env, schema)
+	_, pgErr := postgresRouteQuery(ctx, t, env, schema)
 	requireSameRefusal(t, label+": the page", fedErr, pgErr, refusal, rowID.String())
 }
 

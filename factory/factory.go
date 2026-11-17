@@ -208,8 +208,6 @@ func discardDuckClient(duckClient *federated.DuckDBClient) {
 //     selecting pgx, even when an embedder did not call Config.Validate (#858);
 //   - an incoherent manifest read surface must not be discovered halfway
 //     through startup, after the database has already been queried;
-//   - the caller-path opt-in without a bucket fails fast instead of surfacing
-//     as a 4xx on every hint-bearing request (#456);
 //   - the engine decides how writes exclude each other, so an unknown name
 //     fails here rather than falling back to PostgreSQL's locks (#633).
 func validateBeforeIO(cfg *forma.Config) (internal.RepoOption, error) {
@@ -218,9 +216,6 @@ func validateBeforeIO(cfg *forma.Config) (internal.RepoOption, error) {
 	}
 	if err := cfg.DuckDB.ValidateManifestRead(); err != nil {
 		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
-	}
-	if err := cfg.DuckDB.ValidateCallerParquetPaths(); err != nil {
-		return nil, fmt.Errorf("invalid duckdb caller parquet paths configuration: %w", err)
 	}
 	engine, err := internal.WithDatabaseEngine(cfg.Database.Engine)
 	if err != nil {
@@ -297,12 +292,15 @@ func newRepositoryAndEngine(
 // newFederatedReadSurface opens the DuckDB client and the manifest parquet source
 // together, because their failure modes are coupled and only make sense as a pair.
 //
-// A DuckDB client that fails to open is non-fatal: the engine degrades to
-// Postgres-only. A parquet source that fails to build is fatal, because it would
-// silently drop the cold tier. On that fatal path the already-open DuckDB client
-// has no other owner, so its handle and pool are released here rather than leaked
-// for the process lifetime. (*DuckDBClient).Close is nil-receiver safe, covering
-// the DuckDB-off and client-construction-failed cases.
+// Both failures are fatal. With DuckDB enabled every non-transactional Query
+// enters the federated engine (#715), so a client that fails to open would
+// leave the deployment answering every such query with an error, or, under
+// the degraded fallback, quietly moving every scan onto PostgreSQL: startup
+// fails instead, naming the cause. A parquet source that fails to build would
+// silently drop the cold tier. On that path the already-open DuckDB client has
+// no other owner, so its handle and pool are released here rather than leaked
+// for the process lifetime. (*DuckDBClient).Close is nil-receiver safe,
+// covering the DuckDB-off case.
 func newFederatedReadSurface(
 	ctx context.Context,
 	cfg forma.DuckDBConfig,
@@ -315,10 +313,9 @@ func newFederatedReadSurface(
 		zap.S().Infow("initializing DuckDB client", "dbPath", cfg.DBPath)
 		duckClient, err = deps.newDuckDBClient(ctx, cfg)
 		if err != nil {
-			zap.S().Warnw("failed to initialize DuckDB client; continuing without DuckDB", "err", err)
-		} else {
-			zap.S().Infow("duckdb client initialized")
+			return nil, nil, fmt.Errorf("failed to initialize duckdb client (duckdb is enabled): %w", err)
 		}
+		zap.S().Infow("duckdb client initialized")
 	}
 
 	parquetSource, err := deps.newParquetSource(ctx, cfg)

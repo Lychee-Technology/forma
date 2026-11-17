@@ -205,6 +205,8 @@ Typical examples:
 
 `prefer_hot` currently records workload intent and benchmark provenance. It tells reviewers that a workload is expected to bias toward hot data freshness or hot-tier-heavy access patterns.
 
+`prefer_hot` is a field of the workload definition, not of the query request. Since #715 a request carries no `federated` block: whether a query runs through the federated engine is the deployment's decision, and service workloads run on a DuckDB-enabled deployment config whose engine seam (`harnessLayoutEngine`) pins the harness's base/delta parquet layout and all three tiers. The request sets only `include_execution_plan`, for pushdown and tier-mix workloads. That keeps service workloads on the DuckDB path the request-level `preferred_tiers` selected before #715, so baselines captured before and after it compare.
+
 At the current stage, `prefer_hot` should mostly be interpreted as metadata. The benchmark now uses a real hot-preferred execution override only for tier-mix workloads where a Postgres-only hot-path comparison is intentional.
 
 - it appears in workload definitions, run results, summaries, and plan notes

@@ -189,13 +189,19 @@ func TestQueryPastMaxRowsIsRefusedBeforeTheRepository(t *testing.T) {
 	repo := newMockPersistentRecordRepository()
 	engine := &mockFederatedQueryEngine{}
 	em := newLimitsTestManagerWithEngine(t, config, repo, engine)
+	// The route is the deployment's (#715): the federated legs run on a
+	// manager whose deployment enables DuckDB.
+	federatedConfig := *config
+	federatedConfig.DuckDB.Enabled = true
+	federatedEM := newLimitsTestManagerWithEngine(t, &federatedConfig, repo, engine)
 	ctx := context.Background()
 	query := func(page, itemsPerPage int, federated bool) error {
 		req := &forma.QueryRequest{SchemaName: "visit", Page: page, ItemsPerPage: itemsPerPage}
+		manager := em
 		if federated {
-			req.Federated = &forma.FederatedQueryRequest{Enabled: true}
+			manager = federatedEM
 		}
-		_, err := em.Query(ctx, req)
+		_, err := manager.Query(ctx, req)
 		return err
 	}
 	search := func(page int) error {

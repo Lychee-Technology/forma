@@ -8,11 +8,12 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
-// Scope rules for caller-supplied parquet path hints
-// (federated.s3_parquet_path_template), applied after the opt-in gate and
-// template rendering in duckDBParquetPathsForQuery (#456, #477).
+// Scope rules for engine-level parquet path hints
+// (model.DuckDBRenderHints.S3ParquetPathTemplate), applied after template
+// rendering in duckDBParquetPathsForQuery (#456, #477). A request carried the
+// hint until #715; the rules still bound what a direct engine caller may scan.
 
-// validateHintPathScope fails a caller-supplied parquet path set unless every
+// validateHintPathScope fails a hinted parquet path set unless every
 // rendered path sits inside the permitted scope and has a safe shape.
 //
 // Scope (#456, #477): the path must start with s3://<bucket>/ and, when
@@ -66,13 +67,13 @@ func validateHintPathScope(paths []string, bucket, dataPrefix string) error {
 	bucket = strings.TrimSpace(bucket)
 	if bucket == "" {
 		return forma.WithOperatorDetail(
-			forma.InvalidInputf("caller-supplied s3_parquet_path_template is not permitted on this deployment"),
-			fmt.Errorf("duckdb.s3Bucket must be set to scope caller-supplied parquet paths"))
+			forma.InvalidInputf("the s3 parquet path hint is not permitted on this deployment"),
+			fmt.Errorf("duckdb.s3Bucket must be set to scope hinted parquet paths"))
 	}
 	if strings.ContainsAny(dataPrefix, forma.ParquetGlobMetacharacters) {
 		return forma.WithOperatorDetail(
-			forma.InvalidInputf("caller-supplied s3_parquet_path_template is not permitted on this deployment"),
-			fmt.Errorf("duckdb.s3DataPrefix %q contains a glob metacharacter and cannot scope caller-supplied parquet paths", dataPrefix))
+			forma.InvalidInputf("the s3 parquet path hint is not permitted on this deployment"),
+			fmt.Errorf("duckdb.s3DataPrefix %q contains a glob metacharacter and cannot scope hinted parquet paths", dataPrefix))
 	}
 	scope := "s3://" + bucket + "/"
 	if trimmed := strings.TrimSuffix(dataPrefix, "/"); trimmed != "" {

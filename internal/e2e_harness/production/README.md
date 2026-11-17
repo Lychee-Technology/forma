@@ -152,6 +152,28 @@ where cdc-init bootstraps base files before federated reads. Use
   `change_log`: backfilled rows stay hot until the operator clears the log
   (onboarding contract, see `TestInitBaseOnlyParity`) or the next flush
   re-exports them into delta (`TestInitFlushOverlapWithoutLogCleanup`).
+- `Env.EntityManager()` is the public API on a deployment that runs DuckDB:
+  every non-transactional `Query` enters the federated engine, and the Env's
+  routing strategy (`WithRoutingStrategy`) decides whether it reads DuckDB
+  or Postgres alone; `hybrid` answers a page under 1000 rows from Postgres.
+  Left unset, the strategy is empty, which the engine routes like an unknown
+  strategy: every query to DuckDB. Whether a query is federated is the
+  deployment's decision, not the request's (#715).
+  `Env.DuckDBRoutedEntityManager()` is the same deployment with
+  `freshness-first` routing, which sends every query through a DuckDB pass;
+  tests that must read the parquet tiers through the public API use it.
+  `Env.RoutedEntityManager(strategy)` builds one for any strategy. Each is
+  memoized over its own engine and plan cache.
+  `Env.PostgresEntityManager()` is the deployment without DuckDB: every
+  `Query` runs on Postgres and, asked for the plan, answers none, which is
+  how a PostgreSQL control pins its route (`postgresRouteQuery`). A control
+  that reads the federated deployment's Postgres route instead uses
+  `RoutedEntityManager(hybrid)` and requires a plan with `UsedDuckDB` false.
+  `EntityManager()` routes through DuckDB, so it is no PostgreSQL control.
+  `TestServerTimeParityAcrossDeploymentsAndTiers`
+  (`server_time_parity_e2e_test.go`) compares `$now` answers across a
+  Postgres-only deployment and a federated deployment's Postgres and DuckDB
+  routes, with rows hot, in delta and in base parquet.
 - `Query`/`AssertQueryMatches` translate one spec for both engine and
   oracle. Filters use the public `"op:value"` condition forms (bool values
   are `"1"`/`"0"`; dates accept ISO strings or epoch millis).
@@ -193,9 +215,11 @@ where cdc-init bootstraps base files before federated reads. Use
   so a scenario can assert what it emits; unset, the engine emits nothing.
   `TestCircuitBreaker_OpensAtThresholdAndRecovers` uses it to check the
   `duckdb_circuit_breaker_transition_total` samples of every leg.
-  Set `Query.AllowPartialDegradedMode` to forward the public degraded-mode
-  flag so a tier outage falls back to a postgres-only result (complete in
-  today's PG-retains-all model) instead of erroring.
+  Set `Query.AllowPartialDegradedMode` to turn on the engine's degraded
+  fallback, which a deployment sets through
+  `DuckDBConfig.AllowPartialDegradedMode` (#715), so a tier outage falls back
+  to a postgres-only result (complete in today's PG-retains-all model)
+  instead of erroring.
 
 ## Diagnostic artifacts
 

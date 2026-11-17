@@ -39,15 +39,13 @@ type Query struct {
 	PreferredTiers []model.DataTier    `json:"preferred_tiers,omitempty"`
 	Keyset         *model.KeysetCursor `json:"keyset,omitempty"`
 
-	// AllowPartialDegradedMode forwards the public degraded-mode flag (#185):
-	// on a DuckDB-side failure the engine falls back to postgres-only instead
-	// of failing the query. Non-degradable errors (missing schema metadata)
-	// still surface.
+	// AllowPartialDegradedMode sets the engine's degraded-fallback option
+	// (#185), which a deployment sets through
+	// DuckDBConfig.AllowPartialDegradedMode (#715): on a DuckDB-side failure
+	// the engine falls back to postgres-only instead of failing the query.
+	// Non-degradable errors (missing schema metadata) still surface.
 	AllowPartialDegradedMode bool `json:"allow_partial_degraded_mode,omitempty"`
 
-	// UseMainAsAnchor forwards the public anchor hint (#184 preference
-	// contract: the hint must surface in the execution plan).
-	UseMainAsAnchor bool `json:"use_main_as_anchor,omitempty"`
 	// S3ParquetPathTemplate overrides the Env's default production glob when
 	// non-empty, so tests can prove DuckDB reads the caller-specified path.
 	S3ParquetPathTemplate string `json:"s3_parquet_path_template,omitempty"`
@@ -64,9 +62,6 @@ type QueryResult struct {
 	CurrentPage int
 	Plan        *model.ExecutionPlan
 	FQ          *model.FederatedAttributeQuery
-	// Partial mirrors page.Partial (#348): the #468 coverage marker of a
-	// Postgres-only answer.
-	Partial *model.PartialScan
 }
 
 // ParquetGlob returns the production-layout parquet path template: one flat
@@ -104,7 +99,6 @@ func (e *Env) Query(ctx context.Context, q Query) (*QueryResult, error) {
 		CurrentPage: page.CurrentPage,
 		Plan:        opts.ExecutionPlan,
 		FQ:          fq,
-		Partial:     page.Partial,
 	}
 	e.queryN++
 	e.queries = append(e.queries, result)
@@ -126,9 +120,10 @@ func (e *Env) buildFederatedQuery(q Query) (*model.FederatedAttributeQuery, erro
 	}
 
 	// PreferredTiers is forwarded as declared: empty stays empty, which the
-	// engine reads as the default all-tier form (#184), and only a non-empty
-	// list counts as the explicit coverage declaration that overrides the
-	// routing cost heuristics (#468) — exactly what the service layer does.
+	// engine reads as the default all-tier form (#184) — the only form the
+	// service layer sends (#715) — and only a non-empty list counts as the
+	// explicit coverage declaration that overrides the routing cost
+	// heuristics (#468).
 	// An explicit render hint wins over the manifest-driven source (#184 pins
 	// that an explicit S3ParquetPathTemplate directs read_parquet at the
 	// specified location), so the default hint is only supplied when the Env
@@ -147,10 +142,9 @@ func (e *Env) buildFederatedQuery(q Query) (*model.FederatedAttributeQuery, erro
 			Limit:           q.Limit,
 			Offset:          q.Offset,
 		},
-		PreferredTiers:  q.PreferredTiers,
-		PreferHot:       q.PreferHot,
-		UseMainAsAnchor: q.UseMainAsAnchor,
-		KeysetCursor:    q.Keyset,
+		PreferredTiers: q.PreferredTiers,
+		PreferHot:      q.PreferHot,
+		KeysetCursor:   q.Keyset,
 	}
 	if glob != "" {
 		fq.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: glob}

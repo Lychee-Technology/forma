@@ -15,9 +15,8 @@ import (
 // stale or deleted parquet version out of the answer, so with PostgreSQL
 // down every route fails, and no parquet scan answers in its place.
 // AllowPartialDegradedMode does not change that: its fallback is itself a
-// PostgreSQL read. ConsistencyMode is forwarded to the engine but read by
-// nothing, and "eventual" in particular is not permission to skip
-// PostgreSQL.
+// PostgreSQL read. No request option, and since #715 no request carries
+// any, permits an answer without PostgreSQL.
 func TestPostgresOutageFailsEveryFederatedRoute(t *testing.T) {
 	routes := []struct {
 		name string
@@ -31,32 +30,27 @@ func TestPostgresOutageFailsEveryFederatedRoute(t *testing.T) {
 			return &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10}, PreferHot: true}
 		}},
 	}
-	modes := []model.ConsistencyMode{"", model.ConsistencyModeStrict, model.ConsistencyModeEventual}
-
 	for _, route := range routes {
 		for _, degraded := range []bool{false, true} {
-			for _, mode := range modes {
-				name := fmt.Sprintf("%s/degraded=%t/consistency_mode=%q", route.name, degraded, mode)
-				t.Run(name, func(t *testing.T) {
-					restore := initTestDescriptors()
-					defer restore()
+			name := fmt.Sprintf("%s/degraded=%t", route.name, degraded)
+			t.Run(name, func(t *testing.T) {
+				restore := initTestDescriptors()
+				defer restore()
 
-					down := fmt.Errorf("dial tcp 127.0.0.1:5432: connect: connection refused")
-					pg := &fakePostgresFederatedSource{err: down}
-					duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
-					engine := NewDBFederatedQueryEngine(pg, duck, nil,
-						hybridDuckConfig(), testMetadataCacheSchema7(t), withTestParquetPath(),
-						withFakeHotLeg(&fakeHotLeg{changeLogErr: down}))
-					opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded, ConsistencyMode: mode}
+				down := fmt.Errorf("dial tcp 127.0.0.1:5432: connect: connection refused")
+				pg := &fakePostgresFederatedSource{err: down}
+				duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
+				engine := NewDBFederatedQueryEngine(pg, duck, nil,
+					hybridDuckConfig(), testMetadataCacheSchema7(t), withTestParquetPath(),
+					withFakeHotLeg(&fakeHotLeg{changeLogErr: down}))
+				opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded}
 
-					page, err := engine.Query(context.Background(), testTables, route.fq(), opts)
+				page, err := engine.Query(context.Background(), testTables, route.fq(), opts)
 
-					require.ErrorIs(t, err, ErrPostgresReadFailed)
-					require.Nil(t, page)
-					require.Zero(t, duck.calls, "no parquet scan may answer in PostgreSQL's place")
-					require.Nil(t, opts.PartialScan, "a failed query leaves no partial marker")
-				})
-			}
+				require.ErrorIs(t, err, ErrPostgresReadFailed)
+				require.Nil(t, page)
+				require.Zero(t, duck.calls, "no parquet scan may answer in PostgreSQL's place")
+			})
 		}
 	}
 }

@@ -15,7 +15,7 @@ func TestRecordTranslation_CapturesParams(t *testing.T) {
 	planCtx := newDuckDBExecutionPlanContext(opts, time.Now)
 
 	planCtx.recordTranslation("SELECT 1 WHERE a = ? AND b = ?", []any{"x", int64(42)}, 3,
-		&model.FederatedAttributeQuery{UseMainAsAnchor: true})
+		&model.FederatedAttributeQuery{})
 
 	sources := opts.ExecutionPlan.Sources
 	if len(sources) != 1 {

@@ -17,6 +17,8 @@ This guide defines which benchmark subsets are safe for local validation, PR-tim
 - benchmark summaries now expose workload oracle provenance so selective workloads can be distinguished between `loaded-state` and `truth-pass` expected-result modes
 - benchmark summaries now expose repeated-run stability status so reviewers can quickly tell whether same-seed live runs stayed stable
 - harness-backed tests such as `go test ./internal/e2e_harness/federated/... -run TestBenchmarkWorkloadExecution_RunWithHarness` remain the focused executable coverage path for repository tests
+- service workloads (`execution_source: service`) run through the entity manager on a DuckDB-enabled deployment config, so every query enters the federated engine, as on a server started with `DUCKDB_ENABLED`; whether a query is federated is the deployment's decision, not the request's (#715)
+- a service workload's request carries no `federated` block; it sets only the top-level `include_execution_plan`, for pushdown and tier-mix workloads. The harness pins its base/delta parquet layout and all three tiers at the engine seam (`harnessLayoutEngine` in `internal/e2e_harness/federated/benchmark/execute.go`), which keeps service workloads on the DuckDB path the request-level `preferred_tiers` selected before #715, so baselines from either side of that change stay comparable
 
 This means CI can continue to treat smoke mode as the cheap artifact regression layer, while local or manual runs can use live mode for executable benchmark evidence. It is still not an official throughput gate.
 
@@ -50,7 +52,7 @@ Without this distinction, two correctness failures could look identical even tho
 
 ## PreferHot
 
-The benchmark also carries `prefer_hot` as workload intent metadata.
+The benchmark also carries `prefer_hot` as workload intent metadata. It is a field of the workload definition, not of the query request: no request field selects tiers or routing since #715.
 
 At this stage, `prefer_hot` means the workload is intended to emphasize hot-tier freshness or hot-biased access patterns. For most workloads it is still intent metadata only. The current exception is tier-mix workloads where the benchmark may apply a hot-preferred Postgres-only override to make that execution choice explicit.
 

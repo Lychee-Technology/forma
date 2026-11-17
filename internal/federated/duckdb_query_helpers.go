@@ -288,7 +288,6 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any
 	}
 
 	served := parquetTiersServed(q)
-	useMainAsAnchor := q != nil && q.UseMainAsAnchor
 	dp := model.DataSourcePlan{
 		Tier:   served[0],
 		Engine: "duckdb",
@@ -300,9 +299,8 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any
 		// unscrubbed sqlStr.
 		SQL:    redact.ConnStringPassword(sqlStr),
 		Params: formatPlanParams(args),
-		// The anchor hint is a no-op in the parquet-only statement, so it must
-		// not masquerade as actual pushdown here (#184). The hint itself is
-		// recorded as a request in the Notes below.
+		// The parquet-only statement pushes no predicate into a PostgreSQL
+		// anchor, so it must not masquerade as actual pushdown here (#184).
 		PredicatePushdown: false,
 		Reason:            "duckdb template rendered",
 	}
@@ -312,10 +310,6 @@ func (c *duckDBExecutionPlanContext) recordTranslation(sqlStr string, args []any
 	// requested subset is context, not the access boundary.
 	c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes,
 		fmt.Sprintf("parquet(read_parquet) physically serves warm+cold (single flat glob); requested parquet tiers: %s", joinTiers(served)))
-	if useMainAsAnchor {
-		c.opts.ExecutionPlan.Notes = append(c.opts.ExecutionPlan.Notes,
-			"UseMainAsAnchor hint requested (the parquet-only statement does not apply it)")
-	}
 	c.opts.ExecutionPlan.Timings["translate"] = translateMs
 }
 

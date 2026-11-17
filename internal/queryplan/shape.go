@@ -22,7 +22,9 @@ import (
 // HashFederatedQueryShape fingerprints everything about a federated query
 // that determines the compiled plan: the condition-tree structure (attribute
 // names, canonical operators, and/or logic, original child order), sort keys,
-// anchor choice, and pagination mode including keyset columns and direction.
+// hot-tier membership, and pagination mode including keyset columns and
+// direction. use_main_as_anchor left the key with #715: it never changed the
+// plan, only split the cache.
 // Filter operands (beyond their numericOperandClass), keyset cursor values,
 // limit, and offset are excluded.
 func HashFederatedQueryShape(q *model.FederatedAttributeQuery) (string, error) {
@@ -50,7 +52,6 @@ func HashFederatedQueryShape(q *model.FederatedAttributeQuery) (string, error) {
 			string(o.StorageLocation), string(o.SortOrder), string(o.ValueType))
 	}
 
-	write("anchor", strconv.FormatBool(q.UseMainAsAnchor))
 	// Only hasHot membership shapes the key (#184): it selects the dirty-set
 	// form the pass stages (and, before #858, pruned the pg_source CTE),
 	// while warm-vs-cold share the single flat parquet glob (glob

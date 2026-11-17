@@ -108,9 +108,8 @@ func (e *DBFederatedQueryEngine) ExecuteFederatedKeysetQuery(
 // filter conditions across all tiers. It strips the keyset cursor to get the
 // full unfiltered count via a lightweight query.
 //
-// The internal options it passes are discarded, and with them nothing the
-// caller's partial marker needs (#413): a DuckDB pass never sets PartialScan,
-// because it reads every listed object or fails (#722). Corruption first
+// The internal options it passes are discarded: a DuckDB pass reads every
+// listed object or fails (#722), so it has nothing to report. Corruption first
 // confirmed by this pass therefore fails the count with CorruptParquetError,
 // which the keyset coordinator returns. The total never shrinks quietly.
 func (e *DBFederatedQueryEngine) computeFederatedCount(

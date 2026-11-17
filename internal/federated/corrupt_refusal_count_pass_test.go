@@ -43,14 +43,13 @@ func TestKeysetCountPassConfirmedCorruptionFailsTheRequest(t *testing.T) {
 	require.Nil(t, recs, "the page must not be returned without its count")
 	require.Zero(t, total)
 	require.Len(t, duck.mainSQL, 2, "the page pass and the count pass, and no retry over the remainder")
-	require.Nil(t, opts.PartialScan, "a failed request carries no marker")
 }
 
 // TestEmptyPageRecountConfirmedCorruptionIsNeverQuiet pins the pass's #181
 // recount: a deep page's parquet window streams zero rows, and the recount
 // statement that would supply the parquet count confirms corruption. Without degraded mode the
 // request fails with the refusal. With it, the answer is the Postgres-only
-// page, and that page carries the #468 marker for the tier it skipped.
+// page, and its plan says it was degraded.
 func TestEmptyPageRecountConfirmedCorruptionIsNeverQuiet(t *testing.T) {
 	for _, degraded := range []bool{false, true} {
 		t.Run(fmt.Sprintf("degraded=%v", degraded), func(t *testing.T) {
@@ -64,7 +63,7 @@ func TestEmptyPageRecountConfirmedCorruptionIsNeverQuiet(t *testing.T) {
 
 			fq := coldTierQuery()
 			fq.Offset = 50
-			opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded}
+			opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded, IncludeExecutionPlan: true}
 			page, err := e.Query(context.Background(), corruptTables, fq, opts)
 			require.Len(t, duck.mainSQL, 2, "the page statement and the recount, and no retry over the remainder")
 
@@ -73,14 +72,13 @@ func TestEmptyPageRecountConfirmedCorruptionIsNeverQuiet(t *testing.T) {
 				require.ErrorContains(t, err, "recount the parquet leg")
 				require.Nil(t, page, "an empty page must not be answered with a total counted without the corrupt object")
 				require.Zero(t, pg.queryCalls)
-				require.Nil(t, opts.PartialScan, "a failed request carries no marker")
 				return
 			}
 			require.NoError(t, err, "degraded mode must absorb the recount's refusal")
 			require.Equal(t, 1, pg.queryCalls, "the answer is the Postgres-only read")
-			require.NotNil(t, page.Partial, "the degraded answer must carry the partial marker")
-			require.Equal(t, []model.DataTier{model.DataTierCold}, page.Partial.UnconsultedTiers)
-			require.Same(t, page.Partial, opts.PartialScan, "the out-parameter must agree with the page")
+			require.NotNil(t, page.ExecutionPlan)
+			require.Equal(t, "degraded fallback (AllowPartialDegradedMode)", page.ExecutionPlan.Routing.Reason,
+				"the degraded answer stays visible through the plan (#715)")
 		})
 	}
 }

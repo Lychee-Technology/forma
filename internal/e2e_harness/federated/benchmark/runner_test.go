@@ -105,25 +105,25 @@ func TestQueryOptionsForWorkloadAddsHotAndColdWindowRanges(t *testing.T) {
 	}
 }
 
-func TestQueryRequestForWorkloadEnablesFederatedHintsForServiceWorkloads(t *testing.T) {
+// TestQueryRequestForWorkloadCarriesNoRouting pins #715 on the benchmark: a
+// service workload's request carries no routing, tiers or parquet paths,
+// which are the deployment's, and asks for the plan only on the categories
+// that read it.
+func TestQueryRequestForWorkloadCarriesNoRouting(t *testing.T) {
 	req, pageSize := queryRequestForWorkload(WorkloadDefinition{Name: "baseline-page-1", ExecutionSource: "service", TargetSchema: "trade", PageSize: 20, PageNumber: 1}, 50)
 	if pageSize != 20 {
 		t.Fatalf("expected explicit page size, got %d", pageSize)
 	}
-	if req.Federated == nil {
-		t.Fatal("expected federated request hints for service workload")
-	}
-	if !req.Federated.Enabled {
-		t.Fatal("expected federated hints to be enabled")
-	}
-	if req.Federated.S3ParquetPathTemplate != "" {
-		t.Fatalf("expected harness-specific parquet template to be populated later, got %q", req.Federated.S3ParquetPathTemplate)
-	}
-	if got := req.Federated.PreferredTiers; len(got) != 3 || got[0] != "hot" || got[1] != "warm" || got[2] != "cold" {
-		t.Fatalf("unexpected preferred tiers: %+v", got)
+	if req.IncludeExecutionPlan {
+		t.Fatal("expected no plan request on a baseline workload")
 	}
 	if req.SortBy[0] != "tradeTime" || req.SortOrder != forma.SortOrderDesc {
 		t.Fatalf("expected trade sort defaults, got %+v", req)
+	}
+
+	pushdown, _ := queryRequestForWorkload(WorkloadDefinition{Name: "pushdown", ExecutionSource: "service", Category: WorkloadCategoryPushdown, TargetSchema: "trade"}, 50)
+	if !pushdown.IncludeExecutionPlan {
+		t.Fatal("expected a pushdown workload to ask for the plan")
 	}
 }
 

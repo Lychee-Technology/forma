@@ -20,8 +20,12 @@ import (
 // into the real query path. Before #646 each 200 below was a 400 ("unsupported
 // operator: in" from conditionexpr.ToSQLOperator, or an unparseable date for
 // $now), raised by the SQL generator behind the handler; the 200s are the
-// intended change. The refusals pin the error mapping: a malformed list and a
-// federated $now are caller input, answered 400 with the published message.
+// intended change. The refusal pins the error mapping: a malformed list is
+// caller input, answered 400 with the published message. The Env's
+// deployment runs DuckDB, so every query here enters the federated engine
+// (#715), and $now, pinned to one PostgreSQL instant before routing, is
+// answered like any other operand. A retired request-level federated block
+// is ignored.
 func TestHTTPAdvancedQueryConditionDSLOperators(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
@@ -74,30 +78,41 @@ func TestHTTPAdvancedQueryConditionDSLOperators(t *testing.T) {
 			t.Errorf("%s: rows %v, want %v", tc.condition, got, tc.want)
 		}
 	}
+	// An old client's federated block decodes as an unknown field: the
+	// answer is the deployment's, the same as without it.
+	for _, tc := range accepted {
+		status, body := postAdvancedQuery(t, srv.URL, wide.Name, tc.condition,
+			`,"federated":{"enabled":true,"preferred_tiers":["warm","cold"],"consistency_mode":"eventual"}`)
+		if status != http.StatusOK {
+			t.Errorf("%s: status %d body %s, want %d", tc.condition, status, body, http.StatusOK)
+			continue
+		}
+		if got := decodeQueryRowIDs(t, body); fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Errorf("%s: rows %v, want %v", tc.condition, got, tc.want)
+		}
+	}
 
 	refused := []struct {
-		condition, federated, want string
+		condition, want string
 	}{
-		{`{"a":"note","v":"in:[]"}`, "",
+		{`{"a":"note","v":"in:[]"}`,
 			"operator 'in' on attribute 'note' takes a JSON array of 1 to 1000 values; the array is empty"},
-		{`{"a":"seen","v":"lte:$now"}`, `{"enabled":true}`,
-			"the $now operand on datetime attribute 'seen' is not supported on a federated query"},
 	}
 	for _, tc := range refused {
-		status, body := postAdvancedQuery(t, srv.URL, wide.Name, tc.condition, tc.federated)
+		status, body := postAdvancedQuery(t, srv.URL, wide.Name, tc.condition, "")
 		if status != http.StatusBadRequest || !strings.Contains(decodeErrorMessage(t, body), tc.want) {
-			t.Errorf("%s (federated=%q): status %d body %s, want %d naming %q",
-				tc.condition, tc.federated, status, body, http.StatusBadRequest, tc.want)
+			t.Errorf("%s: status %d body %s, want %d naming %q",
+				tc.condition, status, body, http.StatusBadRequest, tc.want)
 		}
 	}
 }
 
-func postAdvancedQuery(t *testing.T, baseURL, schema, condition, federated string) (int, string) {
+// postAdvancedQuery posts condition to advanced_query; extra is appended to
+// the body's fields verbatim.
+func postAdvancedQuery(t *testing.T, baseURL, schema, condition, extra string) (int, string) {
 	t.Helper()
 	payload := fmt.Sprintf(`{"schema_name":%q,"condition":%s,"page":1,"items_per_page":100`, schema, condition)
-	if federated != "" {
-		payload += `,"federated":` + federated
-	}
+	payload += extra
 	payload += "}"
 	resp, err := http.Post(baseURL+"/api/v1/advanced_query", "application/json", strings.NewReader(payload))
 	if err != nil {

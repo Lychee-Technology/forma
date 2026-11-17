@@ -56,8 +56,8 @@ func (e *NoParquetPathsError) Error() string {
 		return fmt.Sprintf("schema %d resolved no parquet paths: its manifest lists no files and the fallback glob is disabled; "+
 			"repair the manifest (forma-tools manifest-reconcile) or set duckdb.s3DataPrefix", e.SchemaID)
 	}
-	return fmt.Sprintf("schema %d resolved no parquet paths: no per-request path hint and no manifest parquet source is configured; "+
-		"set duckdb.manifestTemplate with duckdb.s3Bucket, or pass federated.s3_parquet_path_template", e.SchemaID)
+	return fmt.Sprintf("schema %d resolved no parquet paths: no manifest parquet source is configured; "+
+		"set duckdb.manifestTemplate with duckdb.s3Bucket", e.SchemaID)
 }
 
 func (e *NoParquetPathsError) Unwrap() error { return ErrNoParquetPaths }

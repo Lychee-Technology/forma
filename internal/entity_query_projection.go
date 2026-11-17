@@ -11,8 +11,9 @@ import (
 
 // toExecutionPlan converts the engine's internal execution plan into the
 // public forma.ExecutionPlan projection surfaced on QueryResult. It returns nil
-// when no plan was recorded (non-federated requests, or federated requests that
-// did not ask for the plan), so QueryResult.ExecutionPlan stays omitted.
+// when no plan was recorded (a deployment without the federated engine, or a
+// request that did not ask for the plan), so QueryResult.ExecutionPlan stays
+// omitted.
 func toExecutionPlan(plan *model.ExecutionPlan) *forma.ExecutionPlan {
 	if plan == nil {
 		return nil
@@ -59,21 +60,6 @@ func toExecutionPlan(plan *model.ExecutionPlan) *forma.ExecutionPlan {
 	}
 
 	return out
-}
-
-// toPartialResult projects the engine's partial-scan report into the public
-// marker (#348): the #468 coverage gap of a Postgres-only answer.
-func toPartialResult(p *model.PartialScan) *forma.PartialResultInfo {
-	if p == nil {
-		return nil
-	}
-	if len(p.UnconsultedTiers) > 0 {
-		return &forma.PartialResultInfo{
-			Reason:           forma.PartialReasonHotTierOnly,
-			UnconsultedTiers: tiersToStrings(p.UnconsultedTiers),
-		}
-	}
-	return nil
 }
 
 func tiersToStrings(tiers []model.DataTier) []string {

@@ -139,10 +139,65 @@ func (e *Env) parquetSource() fedengine.ParquetSource {
 // It is built alongside the manager, not at provision time, so EvolveSchema —
 // which drops the memoized manager and repoints the schema directory —
 // re-derives it from the new generation, mirroring the restart it models.
+//
+// Its deployment runs DuckDB, so every non-transactional Query enters the
+// federated engine (#715) under the Env's routing strategy. The Env leaves
+// the strategy empty unless WithRoutingStrategy sets one, and the engine
+// reads an empty strategy as its default decision, a DuckDB pass for every
+// query; RoutedEntityManager picks another.
 func (e *Env) EntityManager() forma.EntityManager {
 	if e.manager != nil {
 		return e.manager
 	}
+	e.manager = e.buildEntityManager(e.DuckCfg, e.Engine())
+	return e.manager
+}
+
+// DuckDBRoutedEntityManager is EntityManager on a deployment whose routing
+// sends every query through a DuckDB pass: the freshness-first strategy
+// keeps the engine's default all-tier decision, which no cost heuristic
+// narrows to PostgreSQL. A request no longer chooses its route (#715), so
+// this is how a test reads the parquet tiers through the public API.
+func (e *Env) DuckDBRoutedEntityManager() forma.EntityManager {
+	return e.RoutedEntityManager(forma.RoutingStrategyFreshnessFirst)
+}
+
+// RoutedEntityManager is EntityManager on a deployment running the given
+// routing strategy; hybrid answers a page under 1000 rows from PostgreSQL
+// alone, as the default production configuration does. It is memoized per
+// strategy like EntityManager, each over its own engine and plan cache.
+func (e *Env) RoutedEntityManager(strategy forma.RoutingStrategy) forma.EntityManager {
+	if m, ok := e.routedManagers[strategy]; ok {
+		return m
+	}
+	cfg := e.DuckCfg
+	cfg.Routing.Strategy = strategy
+	if e.routedManagers == nil {
+		e.routedManagers = map[forma.RoutingStrategy]forma.EntityManager{}
+	}
+	e.routedManagers[strategy] = e.buildEntityManager(cfg, e.assembleEngine(cfg))
+	return e.routedManagers[strategy]
+}
+
+// PostgresEntityManager is EntityManager on a deployment without DuckDB:
+// every Query runs on PostgreSQL alone, whatever the routing strategy, and
+// no engine records an execution plan for it (#715). It is the PostgreSQL
+// control a test compares a federated answer against: asked for the plan,
+// its answer carries none, which is how a test pins that the engine was never
+// entered. Memoized like EntityManager.
+func (e *Env) PostgresEntityManager() forma.EntityManager {
+	if e.postgresManager != nil {
+		return e.postgresManager
+	}
+	off := e.DuckCfg
+	off.Enabled = false
+	e.postgresManager = e.buildEntityManager(off, e.Engine())
+	return e.postgresManager
+}
+
+// buildEntityManager assembles a manager over engine for a deployment
+// running duckCfg.
+func (e *Env) buildEntityManager(duckCfg forma.DuckDBConfig, engine *fedengine.DBFederatedQueryEngine) forma.EntityManager {
 
 	schemaDir := e.opts.schemaDir
 	if schemaDir == "" {
@@ -164,7 +219,7 @@ func (e *Env) EntityManager() forma.EntityManager {
 		Entity: forma.EntityConfig{
 			SchemaDirectory: schemaDir,
 		},
-		DuckDB: e.DuckCfg,
+		DuckDB: duckCfg,
 	}
 
 	repo := internal.NewDBPersistentRecordRepository(e.Pool, e.Metadata)
@@ -194,11 +249,10 @@ func (e *Env) EntityManager() forma.EntityManager {
 	if err != nil {
 		e.T.Fatalf("validate schema relations over the registry for %s: %v", schemaDir, err)
 	}
-	manager, err := internal.NewEntityManager(transformer, repo, e.Engine(), e.Registry, config, validator,
+	manager, err := internal.NewEntityManager(transformer, repo, engine, e.Registry, config, validator,
 		internal.WithRelationIndex(relationIndex))
 	if err != nil {
 		e.T.Fatalf("build entity manager over %s: %v", schemaDir, err)
 	}
-	e.manager = manager
-	return e.manager
+	return manager
 }

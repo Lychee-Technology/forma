@@ -15,8 +15,9 @@ import (
 // manager's own read services bound to the session's transaction, so they
 // answer what EntityManager.Get and Query answer, plus the Tx's own writes.
 // Every statement they send, relation enrichment's included, runs on the
-// transaction; the bound query service has no federated engine, and a
-// federated request is refused before any service is called.
+// transaction. The bound query service has no federated engine, so a Tx read
+// is answered from PostgreSQL alone whatever the deployment's DuckDB and
+// routing configuration: the Tx's own uncommitted writes exist nowhere else.
 
 func (s *txSession) Get(ctx context.Context, req *forma.QueryRequest, opts ...forma.ReadOption) (*forma.DataRecord, error) {
 	var record *forma.DataRecord
@@ -91,9 +92,9 @@ func (s *txSession) lockRow(ctx context.Context, schemaName string, rowID uuid.U
 	return nil
 }
 
-// resolveTxRead applies a read's options and refuses a federated request:
-// a Tx reads the PostgreSQL hot tier, which holds every live row and its own
-// uncommitted writes, and nothing else.
+// resolveTxRead applies a read's options. A Tx reads the PostgreSQL hot
+// tier, which holds every live row and its own uncommitted writes, and
+// nothing else, whatever the deployment (#715).
 func resolveTxRead(method string, req *forma.QueryRequest, opts []forma.ReadOption) (forma.ReadOptions, error) {
 	var read forma.ReadOptions
 	for _, opt := range opts {
@@ -103,10 +104,6 @@ func resolveTxRead(method string, req *forma.QueryRequest, opts []forma.ReadOpti
 	}
 	if req == nil {
 		return read, forma.InvalidInputf("query request cannot be nil")
-	}
-	if req.Federated != nil && req.Federated.Enabled {
-		return read, forma.InvalidInputf("%s inside a transaction reads the PostgreSQL hot tier only; "+
-			"send the request without federated.enabled", method)
 	}
 	return read, nil
 }

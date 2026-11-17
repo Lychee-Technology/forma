@@ -2,6 +2,7 @@ package factory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -282,6 +283,42 @@ func TestNewEntityManagerWithConfigContext_Unit_PropagatesContextToDuckDBFactory
 
 	em, err := newEntityManagerWithConfigContext(ctx, config, nil, deps)
 
-	assert.NotNil(t, em)
-	assert.NoError(t, err)
+	// A DuckDB client that cannot open fails startup (#715).
+	assert.Nil(t, em)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+// TestNewEntityManagerWithConfigContext_Unit_DuckDBInitFailureFailsStartup
+// pins #715: with DuckDB enabled every non-transactional Query enters the
+// federated engine, so a client that cannot initialise fails startup and
+// names the cause, instead of the deployment running on without DuckDB.
+func TestNewEntityManagerWithConfigContext_Unit_DuckDBInitFailureFailsStartup(t *testing.T) {
+	t.Parallel()
+
+	initErr := errors.New("duckdb: cannot load httpfs")
+	deps := buildUnitEntityManagerDeps(schemameta.NewMetadataCache())
+	deps.newDuckDBClient = func(context.Context, forma.DuckDBConfig) (*federated.DuckDBClient, error) {
+		return nil, initErr
+	}
+	parquetSourceBuilt := false
+	deps.newParquetSource = func(context.Context, forma.DuckDBConfig) (federated.ParquetSource, error) {
+		parquetSourceBuilt = true
+		return nil, nil
+	}
+
+	config := forma.DefaultConfig(newMockSchemaRegistry())
+	config.Database.TableNames = forma.TableNames{
+		SchemaRegistry: "schema_registry",
+		EAVData:        "eav_data",
+		EntityMain:     "entity_main",
+	}
+	config.Entity.SchemaDirectory = t.TempDir()
+	config.DuckDB.Enabled = true
+
+	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
+
+	assert.Nil(t, em)
+	assert.ErrorIs(t, err, initErr)
+	assert.ErrorContains(t, err, "duckdb")
+	assert.False(t, parquetSourceBuilt, "startup must stop at the duckdb failure")
 }

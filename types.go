@@ -98,27 +98,15 @@ type QueryRequest struct {
 	SortOrder    SortOrder `json:"sort_order,omitempty"`
 	// Sort carries per-key sort directions (#240). Mutually exclusive with
 	// SortBy/SortOrder; an entry's empty SortOrder defaults to asc.
-	Sort      []OrderBy              `json:"sort,omitempty"`
-	RowID     *uuid.UUID             `json:"row_id,omitempty"` // For entity-specific operations
-	Attrs     []string               `json:"attrs,omitempty"`  // Attributes to return (field projection)
-	Federated *FederatedQueryRequest `json:"federated,omitempty"`
-}
-
-// FederatedQueryRequest carries optional hints for routing QueryRequest through the
-// federated repository path while preserving the normal API surface for callers that
-// do not need DuckDB/S3-backed reads.
-type FederatedQueryRequest struct {
-	Enabled        bool     `json:"enabled,omitempty"`
-	PreferredTiers []string `json:"preferred_tiers,omitempty"`
-	PreferHot      bool     `json:"prefer_hot,omitempty"`
-	// UseMainAsAnchor has no effect: the federated template ignores it (#635).
-	UseMainAsAnchor          bool   `json:"use_main_as_anchor,omitempty"`
-	S3ParquetPathTemplate    string `json:"s3_parquet_path_template,omitempty"`
-	AllowPartialDegradedMode bool   `json:"allow_partial_degraded_mode,omitempty"`
-	IncludeExecutionPlan     bool   `json:"include_execution_plan,omitempty"`
-	// ConsistencyMode has no effect and is not validated. Read consistency is
-	// fixed per API, and no value permits an answer without PostgreSQL (#635).
-	ConsistencyMode string `json:"consistency_mode,omitempty"`
+	Sort  []OrderBy  `json:"sort,omitempty"`
+	RowID *uuid.UUID `json:"row_id,omitempty"` // For entity-specific operations
+	Attrs []string   `json:"attrs,omitempty"`  // Attributes to return (field projection)
+	// IncludeExecutionPlan asks for QueryResult.ExecutionPlan, the route the
+	// federated engine took. Like Attrs it changes what is returned, never
+	// the answer. Whether a query runs through the federated engine is the
+	// deployment's choice (DuckDBConfig.Enabled), not the request's (#715),
+	// so on a deployment without it no plan is recorded.
+	IncludeExecutionPlan bool `json:"include_execution_plan,omitempty"`
 }
 
 func unmarshalConditionField(data []byte) (Condition, bool, error) {
@@ -231,16 +219,12 @@ type QueryResult struct {
 	HasNext       bool          `json:"has_next"`
 	HasPrevious   bool          `json:"has_previous"`
 	ExecutionTime time.Duration `json:"execution_time"`
-	// ExecutionPlan is populated only for federated requests that set
-	// federated.include_execution_plan; it reports the route the engine
-	// actually took (DuckDB vs Postgres-only) and per-tier sources so callers
-	// can distinguish federated reads from hot-path reads without guessing.
+	// ExecutionPlan is populated only for a request that set
+	// include_execution_plan on a deployment that runs the federated engine;
+	// it reports the route the engine actually took (DuckDB vs
+	// Postgres-only) and per-tier sources, so a caller can tell a federated
+	// read from a hot-path read without guessing.
 	ExecutionPlan *ExecutionPlan `json:"execution_plan,omitempty"`
-	// Partial marks a response answered from fewer tiers than it asked for:
-	// a hot-tier-only answer to a request that asked for more (#468).
-	// Nil/omitted otherwise. Unlike ExecutionPlan it does not require
-	// federated.include_execution_plan.
-	Partial *PartialResultInfo `json:"partial,omitempty"`
 }
 
 // ExecutionPlan is the JSON-serializable projection of the engine's internal
@@ -288,31 +272,6 @@ type ExecutionMerge struct {
 	DedupKeys  []string `json:"dedup_keys,omitempty"`
 	DurationMs int64    `json:"duration_ms,omitempty"`
 }
-
-// PartialResultInfo marks a QueryResult whose page was answered from a
-// reduced data surface. It is the sanctioned HTTP-visible partial signal
-// (#348): the execution plan is opt-in and its Routing.Reason is free text,
-// so without this field an API consumer cannot tell which tiers an answer
-// read. Reason is a closed enum, not free text. Its one value is
-// PartialReasonHotTierOnly; corrupt_parquet_excluded was removed with #722,
-// when a corrupt parquet object stopped producing a partial answer.
-type PartialResultInfo struct {
-	Reason string `json:"reason"`
-	// UnconsultedTiers accompanies PartialReasonHotTierOnly (#468): the
-	// tiers the request asked for that the answer never read.
-	UnconsultedTiers []string `json:"unconsulted_tiers,omitempty"`
-}
-
-// PartialReasonHotTierOnly reports a #468 coverage gap: the request asked
-// for warm and/or cold tiers (explicitly, or all three by omitting
-// preferred_tiers) but was answered from the Postgres hot tier alone —
-// because the routing heuristic kept an implicit request on the small-page
-// shortcut, because DuckDB is disabled, or because the §7.2 degraded
-// fallback absorbed a DuckDB failure. UnconsultedTiers names what was
-// skipped. An explicit multi-tier preferred_tiers overrides the heuristic
-// instead of being marked, so under an enabled engine this reason appears
-// only for implicit requests and degraded answers.
-const PartialReasonHotTierOnly = "hot_tier_only"
 
 // CursorQueryResult represents cursor-based pagination results.
 type CursorQueryResult struct {

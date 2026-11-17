@@ -69,9 +69,12 @@ func main() {
 //
 // Both booleans are strict (#642): a set value that is not a boolean is an
 // *bootstrap.EnvError, returned with base unchanged. Like the engine and
-// manifest names below, DUCKDB_ALLOW_CALLER_PARQUET_PATHS is read only when
+// manifest names below, DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE is read only when
 // DuckDB is on, and also when DUCKDB_ENABLED itself is refused, since that
 // operator was configuring DuckDB and one boot should name both bad values.
+// It is the §7.2 degraded fallback, off unless set (#715): with it, a
+// degradable DuckDB failure is answered from PostgreSQL alone, which moves
+// the scans of an S3 outage onto PostgreSQL.
 // DUCKDB_QUERY_TIMEOUT_SECONDS is not gated here: it is a limit, read by
 // bootstrap.ApplyLimitsFromEnv whatever DUCKDB_ENABLED holds.
 //
@@ -95,13 +98,19 @@ func main() {
 // without a bucket, the server fails at startup (factory fail-fast).
 // DUCKDB_HOT_LEG_TRANSPORT names the federated hot leg. pgx is the only one
 // (design.md §6.1); the retired attach value fails startup (#858).
+// DUCKDB_ROUTING_STRATEGY names the engine's routing strategy (hybrid, the
+// default, cost-first or freshness-first). With DuckDB on every
+// non-transactional Query enters the engine, and the strategy, not the
+// request, decides which of them read the parquet tiers (#715); an unknown
+// name is an *bootstrap.EnvError.
 func duckDBConfigFromEnv(base forma.DuckDBConfig) (forma.DuckDBConfig, error) {
 	enabled, enabledErr := bootstrap.EnvBool("DUCKDB_ENABLED", false)
 	if enabledErr == nil && !enabled {
 		return base, nil
 	}
-	allowCallerPaths, allowErr := bootstrap.EnvBool("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", base.AllowCallerParquetPaths)
-	if err := errors.Join(enabledErr, allowErr); err != nil {
+	allowDegraded, allowErr := bootstrap.EnvBool("DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE", base.AllowPartialDegradedMode)
+	strategy, strategyErr := routingStrategyFromEnv(base.Routing.Strategy)
+	if err := errors.Join(enabledErr, allowErr, strategyErr); err != nil {
 		return base, err
 	}
 	base.Enabled = true
@@ -117,13 +126,32 @@ func duckDBConfigFromEnv(base forma.DuckDBConfig) (forma.DuckDBConfig, error) {
 	manifestOn := strings.TrimSpace(base.ManifestTemplate) != ""
 	base.S3DataPrefix = prefixFromEnv("DUCKDB_S3_PREFIX", "S3_PREFIX", base.S3DataPrefix, manifestOn)
 	base.ManifestPrefix = prefixFromEnv("DUCKDB_MANIFEST_PREFIX", "MANIFEST_PREFIX", base.ManifestPrefix, manifestOn)
-	base.AllowCallerParquetPaths = allowCallerPaths
+	base.AllowPartialDegradedMode = allowDegraded
+	base.Routing.Strategy = strategy
 	// pgx is the only transport since #858. The variable is still read so
 	// that a deployment left on the retired attach rollback fails
 	// Config.Validate at startup instead of changing transport silently.
 	base.HotLegTransport = forma.HotLegTransport(bootstrap.Env("DUCKDB_HOT_LEG_TRANSPORT", string(base.HotLegTransport)))
 	return base, nil
 }
+
+// routingStrategyFromEnv reads DUCKDB_ROUTING_STRATEGY. Unset or empty keeps
+// baseValue; a name the engine does not know is refused rather than left to
+// the engine's unknown-strategy default, which would send every query
+// through DuckDB.
+func routingStrategyFromEnv(baseValue forma.RoutingStrategy) (forma.RoutingStrategy, error) {
+	raw := bootstrap.Env("DUCKDB_ROUTING_STRATEGY", "")
+	switch strategy := forma.RoutingStrategy(raw); strategy {
+	case "":
+		return baseValue, nil
+	case forma.RoutingStrategyHybrid, forma.RoutingStrategyCostFirst, forma.RoutingStrategyFreshnessFirst:
+		return strategy, nil
+	}
+	return baseValue, &bootstrap.EnvError{Key: "DUCKDB_ROUTING_STRATEGY", Value: raw,
+		Want: "hybrid, cost-first or freshness-first", Err: errUnknownRoutingStrategy}
+}
+
+var errUnknownRoutingStrategy = errors.New("unknown routing strategy")
 
 // prefixFromEnv resolves one of the two inert-when-alone prefix fields. The
 // DUCKDB_-prefixed name always wins; the shared name is consulted only when a
