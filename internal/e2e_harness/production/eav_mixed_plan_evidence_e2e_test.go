@@ -13,8 +13,8 @@ import (
 
 // eavPlanEvidenceVar names a directory. When it is set, the #815 benchmark
 // writes each size's record there as rows-<N>.md: the setup, the full result
-// table, and the generated SQL, arguments and EXPLAIN (ANALYZE, BUFFERS) text
-// of every textPlanCase. The test logs the same record either way.
+// table, and the generated SQL, arguments and EXPLAIN (ANALYZE, BUFFERS,
+// VERBOSE) text of every textPlanCase. The test logs the same record either way.
 const eavPlanEvidenceVar = "FORMA_EAV_PLAN_EVIDENCE"
 
 // textPlanCases are the probes, by eav_data load, statistics state and probe
@@ -68,14 +68,16 @@ func (b *eavPlanBench) recordSetup() {
 	b.t.Logf("rows=%d setup:\n%s", b.rows, b.setup)
 }
 
-// recordTextPlan records q, its arguments and its EXPLAIN (ANALYZE, BUFFERS)
-// in PostgreSQL's own text form. It is its own execution of q, run just before
+// recordTextPlan records q, its arguments and its EXPLAIN (ANALYZE, BUFFERS,
+// VERBOSE) in PostgreSQL's own text form: VERBOSE adds each node's output
+// columns and schema-qualified relations, so a reader can tell which
+// eav_data alias and subquery a node belongs to (#881). It is its own execution of q, run just before
 // the JSON one the result table reads, so its timings and buffers can differ
 // from the table's slightly. The SQL is recorded as sent, less the spaces that
 // end some of its lines.
 func (b *eavPlanBench) recordTextPlan(dataset, stats, probe string, q recordedQuery) {
 	b.t.Helper()
-	rows, err := b.env.Pool.Query(b.ctx, "EXPLAIN (ANALYZE, BUFFERS) "+q.sql, q.args...)
+	rows, err := b.env.Pool.Query(b.ctx, "EXPLAIN (ANALYZE, BUFFERS, VERBOSE) "+q.sql, q.args...)
 	if err != nil {
 		b.t.Fatalf("explain %s: %v", probe, err)
 	}
