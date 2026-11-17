@@ -45,7 +45,9 @@ func TestRetentionKeepsSupersededGenerationsForTheGrace(t *testing.T) {
 	expired, err = Expired(ctx, DB(f.db), f.t, 100, 0)
 	require.NoError(t, err)
 	require.Equal(t, []int64{1, 2}, numbers(expired), "the current generation never expires")
-	require.Equal(t, cur.ManifestKey, mustRetained(t, f, 0)[0].ManifestKey)
+	head := mustRetained(t, f, 0)[0]
+	require.Equal(t, []any{cur.ManifestKey, cur.ManifestSHA256, cur.Token}, []any{head.ManifestKey, head.ManifestSHA256, head.Token},
+		"the history row carries what a collector verifies the manifest against")
 	for _, g := range expired {
 		ok, err := Forget(ctx, DB(f.db), f.t, 100, g.Generation, 0)
 		require.NoError(t, err)

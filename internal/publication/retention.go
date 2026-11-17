@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
@@ -17,6 +18,12 @@ type Generation struct {
 	Kind             Kind
 	ParentGeneration int64
 	ManifestKey      string
+	// ManifestSHA256 is the lowercase hex SHA-256 of the manifest object's
+	// stored bytes, and Token the generation's cas_token, which the manifest
+	// names as its token. A collector verifies the manifest against both
+	// before it trusts the keys it lists (ManifestFiles).
+	ManifestSHA256 string
+	Token          uuid.UUID
 	// SupersededAt is the start time of the transaction that replaced the
 	// generation, 0 while it is current.
 	SupersededAt int64
@@ -33,7 +40,7 @@ type Generation struct {
 // taken long after superseded_at. grace is the reader's pass deadline plus a
 // clock margin.
 const (
-	generationColumns = `generation, epoch, kind, parent_generation, manifest_key, superseded_at, retired_at`
+	generationColumns = `generation, epoch, kind, parent_generation, manifest_key, manifest_sha256, cas_token, superseded_at, retired_at`
 	retainedSQL       = `SELECT ` + generationColumns + ` FROM %s
 	WHERE schema_id = $1 AND (retired_at = 0 OR retired_at > ` + sqlgen.ServerTimeMillisSQL + ` - $2)
 	ORDER BY generation`
@@ -126,7 +133,7 @@ func generations(ctx context.Context, q Querier, query string, schemaID int16, g
 	for rows.Next() {
 		var g Generation
 		var kind string
-		if err := rows.Scan(&g.Generation, &g.Epoch, &kind, &g.ParentGeneration, &g.ManifestKey, &g.SupersededAt, &g.RetiredAt); err != nil {
+		if err := rows.Scan(&g.Generation, &g.Epoch, &kind, &g.ParentGeneration, &g.ManifestKey, &g.ManifestSHA256, &g.Token, &g.SupersededAt, &g.RetiredAt); err != nil {
 			return nil, fmt.Errorf("scan schema %d generation: %w", schemaID, err)
 		}
 		g.Kind = Kind(kind)

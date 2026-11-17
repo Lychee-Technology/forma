@@ -3,6 +3,7 @@ package publication
 import (
 	"context"
 	"database/sql/driver"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,7 +39,7 @@ func TestDSQLCorpus(t *testing.T) {
 	inTx(func(tx Tx) error { _, err := Initialize(ctx, tx, tb, 100); return err })
 	_, err = Read(ctx, DB(db), tb, 100)
 	require.NoError(t, err)
-	next := Next{Kind: KindFlush, Token: uuid.New(), ManifestKey: "k2", ManifestSHA256: "s2", Lineage: cur.Lineage, StagedAt: 1, StagingBudget: time.Minute}
+	next := Next{Kind: KindFlush, Token: uuid.New(), ManifestKey: "k2", ManifestSHA256: strings.Repeat("2", 64), Lineage: cur.Lineage, StagedAt: 1, StagingBudget: time.Minute}
 	var head Record
 	inTx(func(tx Tx) error {
 		if head, err = Publish(ctx, tx, tb, cur, next); err != nil {
@@ -104,7 +105,8 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 			AddRow(cur.SchemaID, cur.Epoch, string(cur.State), cur.Generation, 2, cur.ManifestKey, cur.ManifestSHA256, cur.Lineage.String(), cur.Token.String(), 1, 0, 2)
 	}
 	genRows := func() *sqlmock.Rows {
-		return sqlmock.NewRows([]string{"generation", "epoch", "kind", "parent_generation", "manifest_key", "superseded_at", "retired_at"}).AddRow(3, 1, "flush", 2, "k", 0, 0)
+		return sqlmock.NewRows([]string{"generation", "epoch", "kind", "parent_generation", "manifest_key", "manifest_sha256", "cas_token", "superseded_at", "retired_at"}).
+			AddRow(3, 1, "flush", 2, "k", "s", uuid.NewString(), 0, 0)
 	}
 	epochRow := func(epoch int64) *sqlmock.Rows {
 		return sqlmock.NewRows([]string{"epoch", "updated_at"}).AddRow(epoch, 4)

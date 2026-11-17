@@ -24,14 +24,17 @@ type Object struct {
 // RaiseHorizon committed, the objects listed under the schema's prefix, the
 // retained and expired generations read in one snapshot, and their manifests.
 type Collection struct {
+	SchemaID int16
 	Horizon  int64
 	Listed   []Object
 	Retained []Generation
 	Expired  []Generation
-	// Files maps the manifest key of each retained or expired generation to
-	// the object keys its manifest lists. A manifest key Files lacks is a
-	// manifest object S3 does not have.
-	Files map[string][]string
+	// Manifests maps the manifest key of each retained or expired generation
+	// to the manifest object's stored bytes, exactly as S3 answered them. A
+	// manifest key Manifests lacks is a manifest object S3 does not have.
+	// PlanCollection verifies every present one (ManifestFiles) before it
+	// reads a key it lists.
+	Manifests map[string][]byte
 	// ClockMargin covers the drift between S3's LastModified and the
 	// database clock the horizon is on.
 	ClockMargin time.Duration
@@ -47,8 +50,17 @@ type Plan struct {
 	Forget    []int64
 }
 
-// PlanCollection answers what a pass deletes.
+// PlanCollection answers what a pass deletes. It verifies every manifest it
+// was given before it plans anything, so a pass it refuses deletes nothing.
 //
+//   - Verified: a present manifest, retained or expired, is trusted only once
+//     ManifestFiles accepts it against its history row: the digest of its
+//     stored bytes and its identity. One that fails stops the pass
+//     (ErrManifestInvalid). A retained manifest that lied could omit a key a
+//     reader still scans; an expired one could list a key no committed
+//     generation lists, a staged object of a publication in flight included,
+//     and a listed key is deleted without the horizon's check. Neither the
+//     invalid manifest nor its row is deleted on its account.
 //   - Protected: the manifest object of every retained generation, and every
 //     key its manifest lists. A retained manifest that is missing stops the
 //     pass (ErrRetainedManifestMissing).
@@ -64,9 +76,13 @@ type Plan struct {
 func PlanCollection(c Collection) (Plan, error) {
 	protected := map[string]bool{}
 	for _, g := range c.Retained {
-		files, ok := c.Files[g.ManifestKey]
+		raw, ok := c.Manifests[g.ManifestKey]
 		if !ok {
 			return Plan{}, fmt.Errorf("generation %d of epoch %d lists manifest %s: %w", g.Generation, g.Epoch, g.ManifestKey, ErrRetainedManifestMissing)
+		}
+		files, err := ManifestFiles(raw, c.SchemaID, g)
+		if err != nil {
+			return Plan{}, fmt.Errorf("retained generation %d of epoch %d: %w", g.Generation, g.Epoch, err)
 		}
 		protected[g.ManifestKey] = true
 		for _, key := range files {
@@ -76,10 +92,16 @@ func PlanCollection(c Collection) (Plan, error) {
 	manifests, listed := map[string]bool{}, map[string]bool{}
 	var p Plan
 	for _, g := range c.Expired {
-		manifests[g.ManifestKey] = true
-		for _, key := range c.Files[g.ManifestKey] {
-			listed[key] = true
+		if raw, ok := c.Manifests[g.ManifestKey]; ok {
+			files, err := ManifestFiles(raw, c.SchemaID, g)
+			if err != nil {
+				return Plan{}, fmt.Errorf("expired generation %d of epoch %d: %w", g.Generation, g.Epoch, err)
+			}
+			for _, key := range files {
+				listed[key] = true
+			}
 		}
+		manifests[g.ManifestKey] = true
 		p.Forget = append(p.Forget, g.Generation)
 	}
 	before := c.Horizon - c.ClockMargin.Milliseconds()

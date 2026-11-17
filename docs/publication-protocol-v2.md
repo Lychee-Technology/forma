@@ -173,7 +173,9 @@ CREATE TABLE <entity_main>_publication_generation (
 The publication transaction inserts the new generation's row and stamps the replaced
 generation's `superseded_at`. A reset stamps it too. Within one epoch, generations are
 consecutive. Rebase decisions read `kind` (`KindsSince`), retention reads `retired_at`,
-and `Resolve` reads `cas_token`. `superseded_at` marks a generation as replaced, but
+and `Resolve` reads `cas_token`. The collector reads `manifest_sha256` and `cas_token`
+too (`Retained` and `Expired` answer both): they are what it verifies each manifest
+against before it trusts the keys the manifest lists. `superseded_at` marks a generation as replaced, but
 retention never counts from it: it is the replacing transaction's start, and nothing
 bounds how long after its start that transaction commits.
 
@@ -208,8 +210,10 @@ scan exactly the keys it lists. They never list objects and never glob.
 `parent_generation` is the record's: the generation the compare-and-set replaced, 0 for
 the epoch's first. `input_generation` appears on a `compact` manifest only and names the
 generation whose files the compactor merged. After a rebase over flushes the two differ.
-`files` is sorted by `key`. The record's `manifest_sha256` is the digest of the exact
-stored bytes. A reader refuses a manifest whose digest differs, whose identity fields
+`files` is sorted by `key`. The record's `manifest_sha256` is the SHA-256 of the exact
+stored bytes, as 64 lowercase hex digits, and the generation's history row keeps the same
+value. `Publish` refuses any other form, so no commit names a digest the collector would
+refuse. A reader refuses a manifest whose digest differs, whose identity fields
 (`schema_id`, `epoch`, `generation`, `token`) differ from the record's, or whose `format`
 it does not know. The digest check covers what V1's schema stamp (#520, #522) covered,
 and more. Every file field shown is required, and V2 has no footer-probe fallback for a
@@ -533,10 +537,27 @@ steps 5 to 7 from what steps 1 to 4 read.
 3. In one snapshot, read `Retained(G)` and `Expired(G)`, then end the snapshot. Run
    `Retire` for every retained generation that is superseded and not yet retired. Those
    generations expire in a later pass.
-4. Get the manifest of every retained and expired generation. If a retained
-   generation's manifest is missing, stop: the pass cannot tell what readers may still
-   scan, and deletes nothing (`ErrRetainedManifestMissing`). A missing expired manifest
-   does not stop the pass (step 6).
+4. Get the manifest of every retained and expired generation, and verify each one that
+   exists before reading its `files` (`ManifestFiles`): the SHA-256 of the stored bytes
+   must equal the history row's `manifest_sha256`, the bytes must be one JSON object of
+   format `forma-manifest/2`, its `schema_id`, `epoch`, `generation` and `token` must
+   equal the schema's and the row's (`token` is the row's `cas_token`), and every file
+   must name a key. The digest is checked first, so a corrupted manifest that still
+   parses never reaches the file list.
+   - If a retained generation's manifest is missing, stop: the pass cannot tell what
+     readers may still scan, and deletes nothing (`ErrRetainedManifestMissing`).
+   - If any manifest that exists fails verification, retained or expired, stop and
+     delete nothing (`ErrManifestInvalid`). A retained manifest that lied could omit a
+     key a reader still scans, which steps 5 and 6 would then delete as expired-only or
+     orphaned. An expired manifest that lied could list a key no committed generation
+     lists, such as an object a publication still in flight staged after H, and step 5
+     deletes an expired manifest's keys without the horizon's check. So an invalid
+     expired manifest is never trusted, never deleted and its row never forgotten: the
+     pass refuses as a whole, and so does every later pass until an operator repairs
+     the fault. Manifests are immutable and their digests committed with their rows, so
+     a failure is corruption or a writer bug, never a state the protocol produces. The
+     refusal costs liveness only: nothing is deleted while it lasts.
+   - A missing expired manifest does not stop the pass (step 6).
 5. Delete each listed object that is not protected and either is listed by an expired
    generation's manifest or is an orphan. Protected means it is a retained generation's
    manifest object or a key that manifest lists. An orphan is named by no history row,
@@ -560,8 +581,14 @@ A writer can never commit a reference to an object GC deleted:
 
 `TestRetentionKeepsSupersededGenerationsForTheGrace` pins the queries.
 `TestPlanCollectionProtectsRetainedManifests`,
-`TestPlanCollectionRecoversAfterDeletingAnExpiredManifest` and
-`TestPlanCollectionStopsOnAMissingRetainedManifest` pin steps 4 to 7.
+`TestPlanCollectionRecoversAfterDeletingAnExpiredManifest`,
+`TestPlanCollectionStopsOnAMissingRetainedManifest` and
+`TestPlanCollectionStopsOnAnInvalidManifest` pin steps 4 to 7. The last stores, under a
+retained and under an expired manifest key, bytes that differ from the row's digest, a
+manifest of another generation, token, epoch or schema sealed with a matching digest, an
+unknown format, a missing `files` or key, and bytes that do not parse. Each would drop a
+retained key from protection or list an in-flight staged object, and each stops the pass
+with an empty plan.
 
 ## State transitions
 
@@ -718,8 +745,9 @@ above:
   `TestRetireCountsFromTheReplacingCommit`: retention from the retire stamp.
 - `TestRaiseHorizonFencesAStagedPublication`,
   `TestRaiseHorizonWaitsOutAPublicationInFlight`: the collector's fence and a late commit.
-- `TestPlanCollection*`: the retained set, recovery after a deleted expired manifest, and
-  the missing retained manifest that stops a pass.
+- `TestPlanCollection*`: the retained set, recovery after a deleted expired manifest, the
+  missing retained manifest that stops a pass, and the corrupted or wrong retained or
+  expired manifest that stops it too.
 - `TestInitializeWritesOneUnpublishedRecord`: absent ≠ unpublished.
 
 `TestDSQLCorpus` exports every statement to the DSQL lint gate.

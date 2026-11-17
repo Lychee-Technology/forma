@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,6 +173,11 @@ func TestPublishRefusesTransitionsTheProtocolLacks(t *testing.T) {
 	compact := f.next(t, cur, KindCompact)
 	_, err := f.publish(ctx, cur, compact, nil)
 	require.ErrorContains(t, err, "nothing to compact")
+
+	upper := f.next(t, cur, KindFlush)
+	upper.ManifestSHA256 = strings.ToUpper(fmt.Sprintf("%064x", 0xabc))
+	_, err = f.publish(ctx, cur, upper, nil)
+	require.ErrorContains(t, err, "lowercase hex", "a digest the collector would refuse is refused at commit")
 
 	pub, err := f.publish(ctx, cur, f.next(t, cur, KindFlush), nil)
 	require.NoError(t, err)

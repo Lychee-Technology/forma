@@ -59,6 +59,8 @@ func (n Next) validate(cur Record) error {
 		return fmt.Errorf("generation token %s must be fresh and differ from the record's %s", n.Token, cur.Token)
 	case n.ManifestKey == "" || n.ManifestSHA256 == "":
 		return errors.New("a generation names its manifest key and the manifest's sha256")
+	case !isDigest(n.ManifestSHA256):
+		return fmt.Errorf("manifest sha256 %q is not 64 lowercase hex digits, which a collector would refuse (ManifestFiles)", n.ManifestSHA256)
 	case n.StagedAt <= 0 || n.StagingBudget <= 0:
 		return fmt.Errorf("staging time %d and budget %s must both be positive", n.StagedAt, n.StagingBudget)
 	case n.Lineage == uuid.Nil:
