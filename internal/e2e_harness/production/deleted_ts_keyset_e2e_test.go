@@ -274,7 +274,6 @@ func assertDeletedTSOffsetForm(ctx context.Context, t *testing.T, env *Env, f *d
 	_, err := env.EntityManager().Query(ctx, &forma.QueryRequest{
 		SchemaName: f.schema.Name,
 		Sort:       []forma.OrderBy{{Attribute: "deleted_ts"}},
-		Federated:  &forma.FederatedQueryRequest{Enabled: true},
 	})
 	if !errors.Is(err, forma.ErrInvalidInput) {
 		t.Fatalf("a federated sort on deleted_ts: err %v, want an invalid-input refusal", err)

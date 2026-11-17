@@ -113,7 +113,7 @@ func TestFactoryWiring_MetricEmitter(t *testing.T) {
 	// Flush first so the manifest lists a real object for the cold tier.
 	mustFlush(ctx, t, env)
 	before := len(rec.events)
-	if _, err := factoryQuery(ctx, loud, wide, factoryQueryOpts{}); err != nil {
+	if _, err := factoryQuery(ctx, loud, wide); err != nil {
 		t.Fatalf("federated query through the factory-built manager: %v", err)
 	}
 	if len(rec.byName("fed_query_latency_histogram")) == 0 {
@@ -148,6 +148,9 @@ func newFactoryManagerWithEmitter(ctx context.Context, t *testing.T, env *Env, e
 	}
 	duck := env.DuckCfg
 	duck.MaxConnections = 1 // see newFactoryManager (#245)
+	// Every query takes a DuckDB pass, so the federated query below reaches
+	// the engine's stages (#715: the deployment picks the route).
+	duck.Routing.Strategy = forma.RoutingStrategyFreshnessFirst
 	duck.S3Bucket = env.Cluster.Bucket
 	duck.S3DataPrefix = env.S3Prefix
 	duck.ManifestPrefix = env.CDC.ManifestPrefix

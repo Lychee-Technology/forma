@@ -13,10 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Tx reads and row assertions (#650) against a pgxmock pool: what a read
-// refuses before any SQL, which outcomes leave the Tx usable, and that no
-// read ever reaches the federated engine. The mock fails on any statement a
-// test did not queue, so "no SQL" is checked by queuing none.
+// Tx reads and row assertions (#650) against a pgxmock pool: which outcomes
+// leave the Tx usable, and that no read ever reaches the federated engine.
+// The mock fails on any statement a test did not queue, so "no SQL" is
+// checked by queuing none.
 
 // countingEngine is a federated engine that only counts its calls.
 type countingEngine struct{ calls int }
@@ -24,10 +24,6 @@ type countingEngine struct{ calls int }
 func (e *countingEngine) Query(context.Context, model.StorageTables, *model.FederatedAttributeQuery, *model.FederatedQueryOptions) (*model.PersistentRecordPage, error) {
 	e.calls++
 	return &model.PersistentRecordPage{}, nil
-}
-
-func federatedRead() *forma.QueryRequest {
-	return &forma.QueryRequest{SchemaName: "visit", RowID: &txTestRow, Federated: &forma.FederatedQueryRequest{Enabled: true}}
 }
 
 // expectGetMissing queues the single-row read finding no row.
@@ -54,28 +50,8 @@ func expectEmptyQuery(mock pgxmock.PgxPoolIface) {
 		WillReturnRows(pgxmock.NewRows([]string{"ltbase_row_id"}))
 }
 
-func TestTxReadsRefuseFederatedRequestsBeforeAnySQL(t *testing.T) {
-	engine := &countingEngine{}
-	txr, mock := newMockTransactorWithEngine(t, engine)
-	mock.ExpectBeginTx(readCommittedTx)
-	mock.ExpectCommit()
-
-	err := txr.InTx(context.Background(), func(ctx context.Context, tx forma.Tx) error {
-		_, err := tx.Get(ctx, federatedRead())
-		require.ErrorIs(t, err, forma.ErrInvalidInput)
-		require.ErrorContains(t, err, "hot tier only")
-		_, err = tx.Query(ctx, federatedRead())
-		require.ErrorIs(t, err, forma.ErrInvalidInput)
-		require.ErrorContains(t, err, "hot tier only")
-		return nil
-	})
-	require.NoError(t, err, "a refused read leaves the Tx able to commit")
-	assert.Zero(t, engine.calls)
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-// Every Tx read and assertion, run on a manager that has a federated engine:
-// none of them calls it.
+// Every Tx read and assertion, run on a manager whose deployment runs Query
+// through a federated engine (#715): none of them calls it.
 func TestTxReadsNeverCallTheFederatedEngine(t *testing.T) {
 	engine := &countingEngine{}
 	txr, mock := newMockTransactorWithEngine(t, engine)
@@ -96,8 +72,6 @@ func TestTxReadsNeverCallTheFederatedEngine(t *testing.T) {
 		require.NoError(t, err)
 		require.Empty(t, result.Data)
 		require.NoError(t, tx.AssertRow(ctx, "visit", txTestRow, nil))
-		_, err = tx.Get(ctx, federatedRead())
-		require.ErrorIs(t, err, forma.ErrInvalidInput)
 		return nil
 	})
 	require.NoError(t, err)

@@ -13,14 +13,12 @@ import (
 )
 
 func hybridDuckConfig() forma.DuckDBConfig {
-	// Enables the hybrid engine AND the #456 caller-hint feature scoped to the
-	// "b" test bucket, so hint-path unit tests run behind the same gate as
-	// production.
+	// Enables the hybrid engine with the "b" test bucket, which scopes the
+	// engine-level parquet path hints the unit tests use (#456, #477).
 	return forma.DuckDBConfig{
-		Enabled:                 true,
-		AllowCallerParquetPaths: true,
-		S3Bucket:                "b",
-		Routing:                 forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid},
+		Enabled:  true,
+		S3Bucket: "b",
+		Routing:  forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid},
 	}
 }
 
@@ -413,7 +411,7 @@ func TestParquetSource_PathsErrorClassifiedReadFailed(t *testing.T) {
 // so every other seam stays nil.
 func newExclusionTestEngine(src ParquetSource) *DBFederatedQueryEngine {
 	return NewDBFederatedQueryEngine(nil, nil, nil,
-		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}, nil, WithParquetSource(src))
+		forma.DuckDBConfig{S3Bucket: "b"}, nil, WithParquetSource(src))
 }
 
 // newCachedRefusalTestEngine is newExclusionTestEngine with schema 7's
@@ -423,7 +421,7 @@ func newExclusionTestEngine(src ParquetSource) *DBFederatedQueryEngine {
 func newCachedRefusalTestEngine(t *testing.T, src ParquetSource) *DBFederatedQueryEngine {
 	t.Helper()
 	return NewDBFederatedQueryEngine(nil, nil, nil,
-		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}, testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
+		forma.DuckDBConfig{S3Bucket: "b"}, testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
 }
 
 func exclusionTestQuery() *model.FederatedAttributeQuery {

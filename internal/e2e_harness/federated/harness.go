@@ -231,11 +231,10 @@ func NewFederatedTestHarness(ctx context.Context, opts ...HarnessOption) (*Feder
 		return nil, fmt.Errorf("start harness infrastructure: %w", err)
 	}
 
-	// #456: the federated (and benchmark) harnesses exercise the
-	// caller-supplied S3ParquetPathTemplate hint, so opt into the feature and
-	// scope it to this harness's bucket.
+	// The federated (and benchmark) harnesses drive the engine through its
+	// S3ParquetPathTemplate hint, which is scoped to this harness's bucket
+	// (#456, #477).
 	duckCfg.S3Bucket = conn.bucket
-	duckCfg.AllowCallerParquetPaths = true
 
 	s3Client, tmpDir, err := prepareHarnessStorage(ctx, base.S3Endpoint, conn)
 	if err != nil {

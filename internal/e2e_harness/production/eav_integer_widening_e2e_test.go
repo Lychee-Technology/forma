@@ -66,6 +66,9 @@ func TestApplyAllowsEAVOnlyWideningAndAnOldProcessFailsClosed(t *testing.T) {
 	mustApplyEvents(ctx, t, env, "v1 rows", qtyRow, ratioRow, narrow)
 	mustFlush(ctx, t, env)
 	old := env.EntityManager()
+	// The old process's federated reads: its deployment routes every query
+	// through DuckDB, since a request no longer chooses the route (#715).
+	oldFederated := env.DuckDBRoutedEntityManager()
 
 	if err := env.EvolveSchema(ctx, writeSimpleSchemaDir(t, eavWideningProps, eavWideningAttrs("integer", "numeric"))); err != nil {
 		t.Fatalf("EAV-only smallint to integer and integer to numeric must apply: %v", err)
@@ -88,7 +91,7 @@ func TestApplyAllowsEAVOnlyWideningAndAnOldProcessFailsClosed(t *testing.T) {
 				t.Fatalf("the new declaration reads qty %v (OLTP) and %v (federated), want 40000", oltp, federated)
 			}
 		}
-		assertOldProcessFailsClosed(ctx, t, env, old, simple, c)
+		assertOldProcessFailsClosed(ctx, t, env, old, oldFederated, simple, c)
 		// Repair through the new declaration, so the next case's refusal is
 		// the only one the old process's schema-wide federated read can meet.
 		mustApplyEvents(ctx, t, env, "repair "+c.attr, UpdateEvent(simple, rowID, map[string]any{c.attr: float64(1)}))
@@ -104,7 +107,7 @@ func TestApplyAllowsEAVOnlyWideningAndAnOldProcessFailsClosed(t *testing.T) {
 // assertOldProcessFailsClosed: old, on the old declaration, refuses c's row
 // on both routes with c's own refusal, and an unrelated update through it fails
 // and leaves c's stored value, the row version and change_log as they were.
-func assertOldProcessFailsClosed(ctx context.Context, t *testing.T, env *Env, old forma.EntityManager, schema SchemaRef, c eavWideningCase) {
+func assertOldProcessFailsClosed(ctx context.Context, t *testing.T, env *Env, old, oldFederated forma.EntityManager, schema SchemaRef, c eavWideningCase) {
 	t.Helper()
 	rowID := c.row.RowID
 	_, err := old.Get(ctx, &forma.QueryRequest{SchemaName: schema.Name, RowID: &rowID})
@@ -113,9 +116,8 @@ func assertOldProcessFailsClosed(ctx context.Context, t *testing.T, env *Env, ol
 		!strings.Contains(err.Error(), want) {
 		t.Fatalf("the old process's OLTP read of %s = %v, want the consistency error naming the row and %q", c.attr, err, want)
 	}
-	_, err = old.Query(ctx, &forma.QueryRequest{
+	_, err = oldFederated.Query(ctx, &forma.QueryRequest{
 		SchemaName: schema.Name, Page: 1, ItemsPerPage: 100,
-		Federated: &forma.FederatedQueryRequest{Enabled: true, PreferredTiers: []string{"hot", "warm", "cold"}},
 	})
 	want = "does not fit declared type " + string(c.declared)
 	if err == nil || !strings.Contains(err.Error(), rowID.String()) || !strings.Contains(err.Error(), want) {

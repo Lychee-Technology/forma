@@ -75,11 +75,11 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		return nil, err
 	}
 
-	if err := validateFederatedCondition(req, schemaCache); err != nil {
-		return nil, err
-	}
-	if err := validateFederatedSort(req, attributeOrders); err != nil {
-		return nil, err
+	federated := s.federatedRoute()
+	if federated {
+		if err := validateFederatedSort(req, attributeOrders); err != nil {
+			return nil, err
+		}
 	}
 
 	offset, err := pageOffset(req.Page, req.ItemsPerPage, s.config.Query.MaxRows)
@@ -100,7 +100,12 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 	defer cancel()
 
 	startTime := time.Now()
-	page, err := s.queryRecords(ctx, query, req, schemaCache)
+	var page *model.PersistentRecordPage
+	if federated {
+		page, err = s.queryFederated(ctx, query, req, schemaCache)
+	} else {
+		page, err = s.repository.QueryPersistentRecords(ctx, query)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query persistent records: %w", err)
 	}
@@ -137,7 +142,6 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 		HasPrevious:   req.Page > 1,
 		ExecutionTime: time.Since(startTime),
 		ExecutionPlan: toExecutionPlan(page.ExecutionPlan),
-		Partial:       toPartialResult(page.Partial),
 	}, nil
 }
 
@@ -155,77 +159,62 @@ func (s *entityQueryService) applyPageDefaults(req *forma.QueryRequest) {
 	}
 }
 
-// validateFederatedCondition refuses the $now operand on a federated
-// request. $now is the PostgreSQL transaction time, and the check runs
-// before routing: the engine may answer through its Postgres-only route,
-// where the operand would render and the answer would depend on which route
-// ran (#646).
-func validateFederatedCondition(req *forma.QueryRequest, cache forma.SchemaAttributeCache) error {
-	if req.Federated == nil || !req.Federated.Enabled {
-		return nil
-	}
-	if err := sqlgen.FederatedServerTimeError(req.Condition, cache); err != nil {
-		return fmt.Errorf("validate federated condition for schema %s: %w", req.SchemaName, err)
-	}
-	return nil
+// federatedRoute reports whether Query runs through the federated engine.
+// That is the deployment's choice, never the request's (#715): with DuckDB
+// enabled every non-transactional Query enters the engine, whose routing
+// policy may still answer it from PostgreSQL alone; without it every Query
+// runs on PostgreSQL. A Tx session's service has no engine (boundTo), so
+// its reads stay on PostgreSQL either way.
+func (s *entityQueryService) federatedRoute() bool {
+	return s.federatedQueryEngine != nil && s.config != nil && s.config.DuckDB.Enabled
 }
 
-// queryRecords serves query on the route req asks for. A federated request
-// carries why the parquet tiers cannot hold the schema, if they cannot
-// (#704): only the registry's cache, schemaCache, derives the array
-// ancestry that decides it.
-func (s *entityQueryService) queryRecords(ctx context.Context, query *model.PersistentRecordQuery, req *forma.QueryRequest, schemaCache forma.SchemaAttributeCache) (*model.PersistentRecordPage, error) {
-	if query == nil {
-		return nil, fmt.Errorf("query cannot be nil")
+// queryFederated serves query through the federated engine. A $now leaf is
+// pinned first to one instant read from PostgreSQL, so every leg compares
+// against the same value (#715). The query carries why the parquet tiers
+// cannot hold the schema, if they cannot (#704): only the registry's cache,
+// schemaCache, derives the array ancestry that decides it.
+func (s *entityQueryService) queryFederated(ctx context.Context, query *model.PersistentRecordQuery, req *forma.QueryRequest, schemaCache forma.SchemaAttributeCache) (*model.PersistentRecordPage, error) {
+	condition, err := s.resolveServerTime(ctx, query.Condition, schemaCache)
+	if err != nil {
+		return nil, err
 	}
-	if req == nil || req.Federated == nil || !req.Federated.Enabled {
-		return s.repository.QueryPersistentRecords(ctx, query)
-	}
-	if s.federatedQueryEngine == nil {
-		return nil, fmt.Errorf("federated query engine is not initialized")
-	}
-
 	fq := &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{
 			SchemaID:        query.SchemaID,
-			Condition:       query.Condition,
+			Condition:       condition,
 			AttributeOrders: query.AttributeOrders,
 			Limit:           query.Limit,
 			Offset:          query.Offset,
 		},
-		PreferredTiers:         federatedPreferredTiers(req.Federated.PreferredTiers),
-		PreferHot:              req.Federated.PreferHot,
-		UseMainAsAnchor:        req.Federated.UseMainAsAnchor,
 		ParquetUnrepresentable: sqlgen.ParquetUnrepresentableReason(schemaCache),
 	}
-	if req.Federated.S3ParquetPathTemplate != "" {
-		fq.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: req.Federated.S3ParquetPathTemplate}
-	}
-
 	return s.federatedQueryEngine.Query(ctx, query.Tables, fq, &model.FederatedQueryOptions{
-		AllowPartialDegradedMode: req.Federated.AllowPartialDegradedMode,
-		IncludeExecutionPlan:     req.Federated.IncludeExecutionPlan,
-		ConsistencyMode:          model.ConsistencyMode(req.Federated.ConsistencyMode),
+		AllowPartialDegradedMode: s.config.DuckDB.AllowPartialDegradedMode,
+		IncludeExecutionPlan:     req.IncludeExecutionPlan,
 	})
 }
 
-// federatedPreferredTiers forwards the caller's tier declaration to the
-// engine, keeping only known tier names. An omitted list — or one naming no
-// known tier — is forwarded as nil, NOT filled with the default three: the
-// engine, the DuckDB template and the plan-cache shape all read an empty
-// list as the default all-tier form (#184), and a non-empty list is what the
-// routing policy treats as an explicit coverage declaration that overrides
-// the cost heuristics (#468). Filling the default here would make every
-// request look explicit.
-func federatedPreferredTiers(tiers []string) []model.DataTier {
-	var out []model.DataTier
-	for _, tier := range tiers {
-		switch model.DataTier(tier) {
-		case model.DataTierHot, model.DataTierWarm, model.DataTierCold:
-			out = append(out, model.DataTier(tier))
-		}
+// resolveServerTime pins cond's $now leaves to one PostgreSQL instant
+// (sqlgen.ResolveServerTime). DuckDB cannot read the PostgreSQL clock, so
+// the instant is read once, before routing, and only for a condition that
+// holds a $now leaf. It is PostgreSQL's clock, not this process's: $now and
+// server_time read one clock (docs/claims.md), and comparing values written
+// with it against another would turn clock skew into lease errors. If
+// PostgreSQL cannot answer, neither can the query.
+func (s *entityQueryService) resolveServerTime(ctx context.Context, cond forma.Condition, cache forma.SchemaAttributeCache) (forma.Condition, error) {
+	if !sqlgen.HasServerTime(cond, cache) {
+		return cond, nil
 	}
-	return out
+	clock, ok := s.repository.(model.ServerClock)
+	if !ok {
+		return nil, fmt.Errorf("resolve $now for a federated query: repository %T cannot read the postgresql clock", s.repository)
+	}
+	nowMs, err := clock.ServerTimeMillis(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve $now for a federated query: %w", err)
+	}
+	return sqlgen.ResolveServerTime(cond, cache, nowMs), nil
 }
 
 func (s *entityQueryService) CrossSchemaSearch(ctx context.Context, req *forma.CrossSchemaRequest) (*forma.QueryResult, error) {

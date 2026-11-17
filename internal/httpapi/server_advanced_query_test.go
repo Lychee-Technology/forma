@@ -46,9 +46,9 @@ func TestHandleAdvancedQuerySuccess(t *testing.T) {
 }
 
 // TestHandleAdvancedQueryFederatedExecutionPlan pins the #243 wire contract:
-// a federated request with include_execution_plan reaches the manager as a
-// Federated hint, and the ExecutionPlan the manager returns marshals onto the
-// HTTP response so a caller (e.g. the k6 suite) can read the actual route.
+// a request with include_execution_plan reaches the manager with the flag
+// set, and the ExecutionPlan the manager returns marshals onto the HTTP
+// response so a caller (e.g. the k6 suite) can read the actual route.
 func TestHandleAdvancedQueryFederatedExecutionPlan(t *testing.T) {
 	result := &forma.QueryResult{
 		Data: []*forma.DataRecord{},
@@ -67,7 +67,7 @@ func TestHandleAdvancedQueryFederatedExecutionPlan(t *testing.T) {
 		"condition": {"a": "status", "v": "equals:hot"},
 		"page": 1,
 		"items_per_page": 10,
-		"federated": {"enabled": true, "include_execution_plan": true}
+		"include_execution_plan": true
 	}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/advanced_query", bytes.NewReader(payload))
@@ -78,12 +78,10 @@ func TestHandleAdvancedQueryFederatedExecutionPlan(t *testing.T) {
 		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Request side: the federated hint (incl. include_execution_plan) reached the manager.
-	if mgr.advancedReq == nil || mgr.advancedReq.Federated == nil {
-		t.Fatalf("expected federated hint on the manager request, got %+v", mgr.advancedReq)
-	}
-	if !mgr.advancedReq.Federated.Enabled || !mgr.advancedReq.Federated.IncludeExecutionPlan {
-		t.Fatalf("federated flags not parsed: %+v", mgr.advancedReq.Federated)
+	// Request side: include_execution_plan reached the manager (#715: the
+	// one request-level option left of the retired federated block).
+	if mgr.advancedReq == nil || !mgr.advancedReq.IncludeExecutionPlan {
+		t.Fatalf("expected include_execution_plan on the manager request, got %+v", mgr.advancedReq)
 	}
 
 	// Response side: execution_plan carries routing AND sources on the wire (#243).

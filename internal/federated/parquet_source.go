@@ -41,13 +41,14 @@ type ParquetSource interface {
 
 // WithParquetSource injects the manifest-driven parquet path resolver. A nil
 // source keeps the legacy behavior: paths come only from the query's render
-// hints (caller-supplied glob or explicit list).
+// hints (an engine caller's glob or explicit list; no request carries one
+// since #715).
 func WithParquetSource(src ParquetSource) EngineOption {
 	return func(e *DBFederatedQueryEngine) { e.parquetSource = src }
 }
 
 // resolveParquetPaths resolves the parquet path set once per query. An
-// explicit caller-supplied render hint always wins (#184 pins that an
+// explicit render hint always wins (#184 pins that an
 // explicit S3ParquetPathTemplate directs read_parquet at the specified
 // location) — including its failure: a hint that cannot render is invalid
 // input and must not silently fall through to the manifest source. The

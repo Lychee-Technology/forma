@@ -54,12 +54,10 @@ func queryRequestForWorkload(workload WorkloadDefinition, defaultPageSize int) (
 		Page:         maxInt(workload.PageNumber, 1),
 		ItemsPerPage: pageSize,
 	}
+	// The route and the tiers are the deployment's (#715); a request only
+	// asks for the plan.
 	if workload.ExecutionSource == "service" {
-		req.Federated = &forma.FederatedQueryRequest{
-			Enabled:              true,
-			PreferredTiers:       []string{"hot", "warm", "cold"},
-			IncludeExecutionPlan: workload.Category == WorkloadCategoryPushdown || workload.Category == WorkloadCategoryTierMix,
-		}
+		req.IncludeExecutionPlan = workload.Category == WorkloadCategoryPushdown || workload.Category == WorkloadCategoryTierMix
 	}
 	if workload.TargetSchema == "trade" {
 		req.SortBy = []string{"tradeTime"}

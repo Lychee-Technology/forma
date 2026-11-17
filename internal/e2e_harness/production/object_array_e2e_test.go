@@ -4,7 +4,6 @@ package production
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -41,9 +40,9 @@ const objectArrayAttrs = `{
 // array of objects, so a flush of such a schema used to collapse a row's
 // two items into one, and a federated read answered that collapsed shape and
 // missed a filter on the smaller element. The flush now leaves the schema's
-// rows unflushed, and every federated read of it, an explicit warm/cold
-// declaration included, is answered from PostgreSQL with both elements and
-// the hot_tier_only marker. A read that pins a parquet source is refused.
+// rows unflushed, and every federated read of it, on a deployment whose
+// routing would otherwise send it through DuckDB included, is answered from
+// PostgreSQL with both elements, and the plan says why.
 func TestObjectArraySchemaReadsEveryElementOnTheFederatedRoute(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithSchemaDir(writeSimpleSchemaDir(t, objectArrayProps, objectArrayAttrs)))
@@ -66,35 +65,28 @@ func TestObjectArraySchemaReadsEveryElementOnTheFederatedRoute(t *testing.T) {
 	if items, _ := stored.Attributes["items"].([]any); len(items) != 2 {
 		t.Fatalf("OLTP get reads items %v, want both elements", stored.Attributes["items"])
 	}
-	for _, tiers := range [][]string{nil, {"hot", "warm", "cold"}, {"warm", "cold"}} {
-		res, err := env.EntityManager().Query(ctx, &forma.QueryRequest{
+	managers := map[string]forma.EntityManager{
+		"hybrid routing": env.EntityManager(),
+		"duckdb-routed":  env.DuckDBRoutedEntityManager(),
+	}
+	for name, manager := range managers {
+		res, err := manager.Query(ctx, &forma.QueryRequest{
 			SchemaName: simple.Name, Page: 1, ItemsPerPage: 10,
-			Condition: &forma.KvCondition{Attr: "items.sku", Value: "equals:a"},
-			Federated: &forma.FederatedQueryRequest{Enabled: true, PreferredTiers: tiers, IncludeExecutionPlan: true},
+			Condition:            &forma.KvCondition{Attr: "items.sku", Value: "equals:a"},
+			IncludeExecutionPlan: true,
 		})
 		if err != nil {
-			t.Fatalf("federated query with preferred_tiers %v: %v", tiers, err)
+			t.Fatalf("federated query on the %s deployment: %v", name, err)
 		}
 		answered := make([]map[string]any, 0, len(res.Data))
 		for _, rec := range res.Data {
 			answered = append(answered, rec.Attributes)
 		}
 		if len(res.Data) != 1 || !reflect.DeepEqual(res.Data[0].Attributes["items"], stored.Attributes["items"]) {
-			t.Fatalf("federated query with preferred_tiers %v answered %v, want the row with items %v",
-				tiers, answered, stored.Attributes["items"])
+			t.Fatalf("federated query on the %s deployment answered %v, want the row with items %v",
+				name, answered, stored.Attributes["items"])
 		}
-		assertObjectArrayRoute(t, tiers, res)
-	}
-
-	// A pinned parquet source cannot be honored by a PostgreSQL answer, so it
-	// is refused even though this deployment permits the hint for the glob.
-	_, err = env.EntityManager().Query(ctx, &forma.QueryRequest{
-		SchemaName: simple.Name, Page: 1, ItemsPerPage: 10,
-		Federated: &forma.FederatedQueryRequest{Enabled: true, PreferredTiers: []string{"warm", "cold"},
-			S3ParquetPathTemplate: env.ParquetGlob()},
-	})
-	if !errors.Is(err, forma.ErrInvalidInput) || !strings.Contains(err.Error(), `array of objects "items"`) {
-		t.Fatalf("federated query with a pinned parquet path: err %v, want invalid input naming the array of objects", err)
+		assertObjectArrayRoute(t, name, res)
 	}
 
 	if flush.UnflushedAfter != flush.UnflushedBefore || len(flush.NewObjects) != 0 {
@@ -107,17 +99,12 @@ func TestObjectArraySchemaReadsEveryElementOnTheFederatedRoute(t *testing.T) {
 	}
 }
 
-// assertObjectArrayRoute: res was answered from PostgreSQL alone, says why
-// in its plan, and marks the tiers it did not read.
-func assertObjectArrayRoute(t *testing.T, tiers []string, res *forma.QueryResult) {
+// assertObjectArrayRoute: res was answered from PostgreSQL alone and says
+// why in its plan.
+func assertObjectArrayRoute(t *testing.T, deployment string, res *forma.QueryResult) {
 	t.Helper()
 	plan := res.ExecutionPlan
 	if plan == nil || plan.Routing.UsedDuckDB || !strings.Contains(plan.Routing.Reason, `array of objects "items"`) {
-		t.Fatalf("preferred_tiers %v: plan %+v, want a Postgres-only route naming the array of objects", tiers, plan)
-	}
-	want := []string{"warm", "cold"}
-	if res.Partial == nil || res.Partial.Reason != forma.PartialReasonHotTierOnly ||
-		!reflect.DeepEqual(res.Partial.UnconsultedTiers, want) {
-		t.Fatalf("preferred_tiers %v: partial %+v, want hot_tier_only with unconsulted %v", tiers, res.Partial, want)
+		t.Fatalf("%s deployment: plan %+v, want a Postgres-only route naming the array of objects", deployment, plan)
 	}
 }

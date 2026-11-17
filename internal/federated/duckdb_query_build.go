@@ -127,19 +127,13 @@ func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery, cfg forma.Duck
 	if q == nil || q.DuckDBHints == nil || q.DuckDBHints.S3ParquetPathTemplate == "" {
 		return nil, nil
 	}
+	// The template is an engine-level hint (model.DuckDBRenderHints): no
+	// request can carry one since #715, which retired the #456 opt-in that
+	// gated the caller-supplied form. The scope check below still applies.
 	tmpl := q.DuckDBHints.S3ParquetPathTemplate
-	// #456 layer 1: the template is a caller-controlled scan target, so it is
-	// honored only where the operator has explicitly opted in. Reject rather
-	// than ignore — a silent ignore would answer from a different path set than
-	// the caller named, the same provenance switch the invalid-template rule
-	// below exists to prevent.
-	if !cfg.AllowCallerParquetPaths {
-		return nil, forma.InvalidInputf(
-			"caller-supplied s3_parquet_path_template %q is not permitted on this deployment", tmpl)
-	}
 	rendered, err := sqlgen.RenderS3ParquetPath(tmpl, q.SchemaID)
 	if err != nil {
-		// A caller-supplied template that cannot render is invalid input, not
+		// A hinted template that cannot render is invalid input, not
 		// an absent hint: swallowing it would silently serve the query from a
 		// different path set (the manifest source, or none) than the caller
 		// explicitly requested (#249 review). The template is the caller's own

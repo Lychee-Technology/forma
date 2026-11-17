@@ -42,8 +42,8 @@ func TestEvaluateRoutingPolicyExplicitTiersOverrideSmallResultHeuristic(t *testi
 
 // TestEvaluateRoutingPolicyImplicitTiersKeepSmallResultHeuristic pins the
 // other half of #468: an omitted (empty) PreferredTiers is the default
-// all-tier form, not a declaration, so the cost heuristic still wins and the
-// caller is told through the coverage marker instead (engine-level tests).
+// all-tier form, not a declaration, so the cost heuristic still wins. It is
+// the only form the entity query service sends (#715).
 func TestEvaluateRoutingPolicyImplicitTiersKeepSmallResultHeuristic(t *testing.T) {
 	dec := EvaluateRoutingPolicy(hybridEnabledCfg(), &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 10},
@@ -84,8 +84,8 @@ func TestEvaluateRoutingPolicyExplicitTiersDoNotOverrideHotOnly(t *testing.T) {
 
 // TestEvaluateRoutingPolicyExplicitTiersDoNotOverrideDisabledDuckDB pins that
 // the override is a cost-heuristic override only: a disabled engine is a
-// final verdict, and the caller learns about the missing tiers through the
-// coverage marker, not by being routed onto an engine that is not there.
+// final verdict, and the caller is never routed onto an engine that is not
+// there.
 func TestEvaluateRoutingPolicyExplicitTiersDoNotOverrideDisabledDuckDB(t *testing.T) {
 	cfg := forma.DuckDBConfig{Enabled: false, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}
 	dec := EvaluateRoutingPolicy(cfg, &model.FederatedAttributeQuery{
@@ -130,8 +130,8 @@ func TestEvaluateRoutingPolicyExplicitTiersOverrideCostFirstSmallScan(t *testing
 // disabled verdict reports the route actually taken: the Postgres-only path
 // reads entity_main alone, so dec.Tiers must be [hot] regardless of what the
 // caller declared. Before the PR #525 review fix the disabled early return
-// skipped the common collapse, so the plan claimed [hot, warm, cold] while
-// the coverage marker on the same answer said warm and cold were never read.
+// skipped the common collapse, so the plan claimed [hot, warm, cold] for an
+// answer that never read warm or cold.
 func TestEvaluateRoutingPolicyDisabledDuckDBCollapsesTiersToHot(t *testing.T) {
 	cfg := forma.DuckDBConfig{Enabled: false, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}
 	dec := EvaluateRoutingPolicy(cfg, &model.FederatedAttributeQuery{

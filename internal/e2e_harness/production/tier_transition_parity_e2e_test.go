@@ -151,9 +151,9 @@ func assertTransitionQueries(ctx context.Context, t *testing.T, env *Env, wide S
 		if result == nil {
 			return
 		}
-		if !result.Plan.Routing.UseDuckDB || result.Partial != nil {
-			t.Fatalf("%s: query %+v did not read the S3 tiers through duckdb: routing %+v partial %+v",
-				label, q, result.Plan.Routing, result.Partial)
+		if !result.Plan.Routing.UseDuckDB {
+			t.Fatalf("%s: query %+v did not read the S3 tiers through duckdb: routing %+v",
+				label, q, result.Plan.Routing)
 		}
 	}
 }

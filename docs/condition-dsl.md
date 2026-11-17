@@ -166,9 +166,28 @@ rows, say so:
 { "a": "renew_on",     "v": "lte:$now+720h" }
 ```
 
-`$now` is the database server's transaction timestamp, PostgreSQL `now()`,
-truncated to milliseconds. It never reads the client or application clock, so
-every row in one query sees the same instant.
+`$now` is the database server's clock, PostgreSQL `now()`, truncated to
+milliseconds. It never reads the client's clock or the Forma process's, so
+`$now` and `server_time` read one clock ([One clock](conditional-writes.md#one-clock)),
+and every row in one query sees the same instant. Which `now()` it is depends
+on where the condition runs:
+
+- Inside a `Tx` and in a write precondition, `$now` renders inline as the
+  statement's `now()`, the transaction's start, so every `$now` and
+  `server_time` in one `Tx` is the same instant.
+- On a deployment without DuckDB, `Query` renders it inline the same way.
+- On a deployment that runs the federated engine (`DUCKDB_ENABLED`), DuckDB
+  cannot read the PostgreSQL clock. A non-transactional `Query` whose
+  condition uses `$now` therefore reads `SELECT now()` from PostgreSQL once,
+  as epoch milliseconds, before routing, and pins every `$now` leaf to that
+  instant plus the leaf's offset. The PostgreSQL leg, the DuckDB leg and a
+  degraded fallback all compare against that value, which is taken a few
+  milliseconds before the query statement runs. Only a query that uses
+  `$now` pays the extra round trip, and if PostgreSQL cannot answer it, the
+  query fails ([design §4.3](federated-query/design.md#43-federated-query-controls)).
+  Until #715 such a query was refused.
+
+The rules below hold on every route:
 
 - An optional offset follows `$now`: a signed Go duration
   (`time.ParseDuration`, units `ms`, `s`, `m`, `h`), such as `$now-30s` or
@@ -186,15 +205,6 @@ every row in one query sees the same instant.
   images with three fractional digits), `$now` compares the stored text
   against the canonical image of the shifted instant, to the millisecond,
   with the same operator (#842).
-- **Federated queries refuse `$now`.** A request with
-  `Federated.Enabled` is `ErrInvalidInput` whenever its condition names
-  `$now` on a date or datetime attribute, whichever tier the router would
-  pick, because the DuckDB-evaluated tiers cannot read the PostgreSQL
-  transaction time:
-
-  ```text
-  the $now operand on date attribute 'scheduledStartAt' is not supported on a federated query: it is the PostgreSQL transaction time, which the DuckDB-evaluated tiers cannot read; send an absolute timestamp instead
-  ```
 
 ## Go constructors
 
@@ -222,8 +232,11 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
   `= ANY(CAST(? AS T[]))` on DuckDB), and the `$now` offset binds as one
   `bigint` parameter. The rendered SQL and both plan caches (the federated
   shape cache and the Postgres render cache) are therefore independent of
-  the list's length, its contents, and the offset; `$now` and an absolute
-  timestamp are different statements.
+  the list's length, its contents, and the offset; where `$now` renders
+  inline, it and an absolute timestamp are different statements. On a
+  deployment that runs the federated engine the pinned instant is an
+  ordinary epoch-millisecond literal, a bind like any other, so the caches
+  never key on it.
 - `in` and `not_in` on a `bool` bound to a `bool_smallint` column bind no array
   on PostgreSQL. They render as `<col> BETWEEN $lo AND $hi`, the form `equals`
   takes, with the bounds of the values the list accepts, so an index on the
@@ -266,7 +279,7 @@ constructors do not enforce the 1-to-1,000 bound or the operator set
 | Backend | Status |
 | --- | --- |
 | PostgreSQL | Verified: a real-PostgreSQL truth table over every storage form, with `NUMERIC` and `DOUBLE PRECISION` EAV values, and a `$now` test seeded from `SELECT now()`. Numeric and `starts_with`/`contains` operands are checked against exact arithmetic and Go string matching rather than against another route (`TestConditionOperandConformance_*`), over `smallint`, `integer`, `bigint` and `double` columns and both EAV value types. |
-| DuckDB (federated) | Verified: `in`, `not_in`, `is_null` and `is_not_null` return the same rows on the DuckDB route and the Postgres route across cold, warm and hot tiers (`TestConditionDSLOperatorParityAcrossTiers`). The DuckDB renders of numeric and `starts_with`/`contains` leaves run against an in-memory DuckDB with exact expected rows (`TestNumericOperand_DuckDBConformance`, `TestLikeOperand_DuckDBConformance`); so do the renders of the main-table fragment, which has had no production consumer since #858. `TestConditionOperandSemanticsAcrossRoutes` runs the same operands through the production harness on the Postgres route and on the federated route over hot rows (read over pgx and filtered by PostgreSQL since #858) and warm parquet, and `TestTextUUIDOperatorsAcrossRoutes` does the same for every comparison operator on column-bound and `eav_data` text and uuid attributes. `TestPgMainTextUUIDOrderMatchesTheLogicalClause` checks in DuckDB that the main-table fragment of a text or uuid range selects exactly what the logical clause selects. `TestTierParitySuite` requires the federated route to match the Postgres route's rows for each condition-DSL case with every row hot, flushed and compacted. `TestTextRangeByteOrderAcrossRoutes` runs mixed-case and non-ASCII text ranges, and uuid ranges, on both routes over hot, warm and cold rows under `en_US.utf8`, and `TestRangeOrderIgnoresTheColumnCollation` runs them on columns under an ICU collation that sorts letters before digits. `$now` is refused. |
+| DuckDB (federated) | Verified: `in`, `not_in`, `is_null` and `is_not_null` return the same rows on the DuckDB route and the Postgres route across cold, warm and hot tiers (`TestConditionDSLOperatorParityAcrossTiers`). The DuckDB renders of numeric and `starts_with`/`contains` leaves run against an in-memory DuckDB with exact expected rows (`TestNumericOperand_DuckDBConformance`, `TestLikeOperand_DuckDBConformance`); so do the renders of the main-table fragment, which has had no production consumer since #858. `TestConditionOperandSemanticsAcrossRoutes` runs the same operands through the production harness on the Postgres route and on the federated route over hot rows (read over pgx and filtered by PostgreSQL since #858) and warm parquet, and `TestTextUUIDOperatorsAcrossRoutes` does the same for every comparison operator on column-bound and `eav_data` text and uuid attributes. `TestPgMainTextUUIDOrderMatchesTheLogicalClause` checks in DuckDB that the main-table fragment of a text or uuid range selects exactly what the logical clause selects. `TestTierParitySuite` requires the federated route to match the Postgres route's rows for each condition-DSL case with every row hot, flushed and compacted. `TestTextRangeByteOrderAcrossRoutes` runs mixed-case and non-ASCII text ranges, and uuid ranges, on both routes over hot, warm and cold rows under `en_US.utf8`, and `TestRangeOrderIgnoresTheColumnCollation` runs them on columns under an ICU collation that sorts letters before digits. `TestServerTimeParityAcrossDeploymentsAndTiers` compares `$now` answers, on EAV, `unix_ms`-bound and `rfc3339`-bound dates and datetimes with offsets, across a PostgreSQL deployment and a federated deployment's PostgreSQL and DuckDB routes, with rows hot, in delta and in base parquet. |
 | Aurora DSQL | DSQL: specified, not verified (#633). The PostgreSQL rendering uses array binds with `= ANY` / `<> ALL`, `now()`, `extract(epoch ...)`, `floor`, `mod`, `to_timestamp`, `to_char` and `COLLATE "C"`; none of it has run against a DSQL cluster. |
 
 ## Compatibility
@@ -280,6 +293,13 @@ and `lte` on a text or uuid attribute bound to an `entity_main` column
 (`unsupported operator`), though it accepted them on the same attribute
 stored in `eav_data`. They are accepted now, and no query that worked
 before changes meaning.
+
+Before #715 a federated request whose condition used `$now` on a date or
+datetime attribute was refused (`ErrInvalidInput`); it is accepted now. On
+a deployment that runs DuckDB, a query without the old `federated` block
+ran on PostgreSQL with `$now` inline. It now enters the federated engine and
+compares against the instant read just before it, a few milliseconds
+earlier than the statement's `now()`.
 
 The operand rules above corrected three answers, and each changes what an
 existing query returns:

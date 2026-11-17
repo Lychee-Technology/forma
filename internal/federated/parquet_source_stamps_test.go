@@ -89,7 +89,7 @@ func TestResolvePgxScanSourcesHintPathsHaveNoStamps(t *testing.T) {
 	}
 	duck := &fakeDuckDBExecutor{}
 	e := NewDBFederatedQueryEngine(nil, duck, nil,
-		forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"},
+		forma.DuckDBConfig{S3Bucket: "b"},
 		testMetadataCacheSchema7(t), WithParquetSource(src))
 
 	q := exclusionTestQuery()

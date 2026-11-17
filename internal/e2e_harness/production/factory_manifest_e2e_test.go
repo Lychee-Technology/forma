@@ -15,6 +15,7 @@ import (
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/factory"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
+	"github.com/lychee-technology/forma/internal/model"
 )
 
 // factorySeedRows is the seeded row count; every phase reads the same set.
@@ -31,8 +32,10 @@ const factorySeedRows = 8
 // which assemble the engine themselves and would pass with the factory line
 // removed.
 //
-// The four phases share one Env and run in order; each depends on the state
-// the previous one left behind.
+// The phases share one Env and run in order; each depends on the state the
+// previous one left behind. The managers' deployments route every query
+// through DuckDB (freshness-first), since a request no longer chooses its
+// route or its parquet paths (#715).
 func TestFactoryWiring_ManifestDrivenReads(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
@@ -52,24 +55,22 @@ func TestFactoryWiring_ManifestDrivenReads(t *testing.T) {
 		t.Fatalf("seed produced no parquet objects for schema %s", simple.Name)
 	}
 
-	manager := newFactoryManager(ctx, t, env, true)
+	manager := newFactoryManager(ctx, t, env, true, false)
+	degraded := newFactoryManager(ctx, t, env, true, true)
 	ghostKey := fmt.Sprintf("%s/%d/zz_ghost_never_written.parquet", env.S3Prefix, simple.ID)
 
-	t.Run("Phase1_ManifestListedReadWithoutHint", func(t *testing.T) {
+	t.Run("Phase1_ManifestListedRead", func(t *testing.T) {
 		factoryPhaseManifestRead(ctx, t, env, manager, simple)
 	})
-	t.Run("Phase2_ExplicitHintBypassesInconsistentManifest", func(t *testing.T) {
-		factoryPhaseHintWins(ctx, t, env, manager, simple, keys, ghostKey)
+	t.Run("Phase2_InconsistencyClassificationThroughPublicAPI", func(t *testing.T) {
+		factoryPhaseInconsistency(ctx, t, env, manager, degraded, simple, ghostKey)
 	})
-	t.Run("Phase3_InconsistencyClassificationThroughPublicAPI", func(t *testing.T) {
-		factoryPhaseInconsistency(ctx, t, manager, simple, ghostKey)
-	})
-	t.Run("Phase4_NegativeControlManifestOff", func(t *testing.T) {
+	t.Run("Phase3_NegativeControlManifestOff", func(t *testing.T) {
 		factoryPhaseManifestOff(ctx, t, env, simple, keys)
 	})
 }
 
-// factoryPhaseManifestRead is Phase 1: a hint-less federated query through the
+// factoryPhaseManifestRead is Phase 1: a federated query through the
 // factory-built manager returns every flushed row.
 //
 // The garbage object PUT below is the manifest-vs-glob discriminator. It sits
@@ -91,9 +92,9 @@ func factoryPhaseManifestRead(ctx context.Context, t *testing.T, env *Env, manag
 	t.Helper()
 	putGarbageObject(ctx, t, env, fmt.Sprintf("%s/%d/zz_unlisted.parquet", env.S3Prefix, schema.ID))
 
-	res, err := factoryQuery(ctx, manager, schema, factoryQueryOpts{})
+	res, err := factoryQuery(ctx, manager, schema)
 	if err != nil {
-		t.Fatalf("factory-path federated query without hint: %v", err)
+		t.Fatalf("factory-path federated query: %v", err)
 	}
 	if len(res.Data) != factorySeedRows {
 		t.Fatalf("factory-path query returned %d rows, want %d: the factory's parquet source did not reach the engine",
@@ -102,35 +103,10 @@ func factoryPhaseManifestRead(ctx context.Context, t *testing.T, env *Env, manag
 	assertFactoryUsedDuckDB(t, res)
 }
 
-// factoryPhaseHintWins is Phase 2 (#250 issue question 3): an explicit
-// S3ParquetPathTemplate wins over the manifest-driven source, including when
-// the manifest has since gone inconsistent. A ghost key — listed in the
-// manifest but never written — makes the manifest path fail; the hint names
-// the real objects, so the query must still succeed.
-func factoryPhaseHintWins(ctx context.Context, t *testing.T, env *Env, manager forma.EntityManager, schema SchemaRef, keys []string, ghostKey string) {
-	t.Helper()
-	if err := env.RegisterParquetInManifest(ctx, schema, ghostKey, "delta"); err != nil {
-		t.Fatalf("register ghost key in manifest: %v", err)
-	}
-
-	uris := make([]string, 0, len(keys))
-	for _, key := range keys {
-		uris = append(uris, fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, key))
-	}
-	res, err := factoryQuery(ctx, manager, schema, factoryQueryOpts{hint: strings.Join(uris, ",")})
-	if err != nil {
-		t.Fatalf("explicit parquet hint did not bypass the inconsistent manifest: %v", err)
-	}
-	if len(res.Data) != factorySeedRows {
-		t.Fatalf("hinted query returned %d rows, want %d", len(res.Data), factorySeedRows)
-	}
-	assertFactoryUsedDuckDB(t, res)
-}
-
-// factoryPhaseInconsistency is Phase 3: with the ghost key still listed and no
-// hint to bypass it, the manifest inconsistency must classify all the way out
-// through the public EntityManager.Query error — sentinel, typed error, schema
-// and missing key intact.
+// factoryPhaseInconsistency is Phase 2 (#250): with a ghost key listed in the
+// manifest but never written, the manifest inconsistency must classify all
+// the way out through the public EntityManager.Query error — sentinel, typed
+// error, schema and missing key intact.
 //
 // The ghost key is state-equivalent to deleting keys[0] (manifest lists a key
 // storage does not have) but non-destructive, so the phases after it still
@@ -138,35 +114,38 @@ func factoryPhaseHintWins(ctx context.Context, t *testing.T, env *Env, manager f
 //
 // Together with Phase 1 this is what dies if federated.WithParquetSource is
 // dropped from the factory: with no source the engine resolves an empty path
-// set for a hint-less query, so the read never reaches the manifest-listed
-// objects and the classification is unreachable (verified by mutation — the
-// engine then fails the way Phase 4's manifest-off control does). Phases 2
-// and 4 keep passing under that mutation, which is what makes this phase the
-// discriminator rather than a generic smoke test.
-func factoryPhaseInconsistency(ctx context.Context, t *testing.T, manager forma.EntityManager, schema SchemaRef, ghostKey string) {
+// set, so the read never reaches the manifest-listed objects and the
+// classification is unreachable (verified by mutation — the engine then fails
+// the way Phase 3's manifest-off control does). Phase 3 keeps passing under
+// that mutation, which is what makes this phase the discriminator rather than
+// a generic smoke test.
+func factoryPhaseInconsistency(ctx context.Context, t *testing.T, env *Env, manager, degradedManager forma.EntityManager, schema SchemaRef, ghostKey string) {
 	t.Helper()
-	res, err := factoryQuery(ctx, manager, schema, factoryQueryOpts{})
+	if err := env.RegisterParquetInManifest(ctx, schema, ghostKey, "delta"); err != nil {
+		t.Fatalf("register ghost key in manifest: %v", err)
+	}
+	res, err := factoryQuery(ctx, manager, schema)
 	if err == nil {
 		t.Fatalf("hint-less query silently succeeded with %d rows while the manifest lists a key storage does not have",
 			len(res.Data))
 	}
 	assertFactoryInconsistency(t, err, schema, ghostKey)
 
-	// Non-degradable: AllowPartialDegradedMode absorbs transient
-	// infrastructure faults, but a Postgres-only fallback here would return
-	// exactly the silent short answer the classification exists to prevent.
-	degraded, err := factoryQuery(ctx, manager, schema, factoryQueryOpts{degraded: true})
+	// Non-degradable: a deployment's AllowPartialDegradedMode absorbs
+	// transient infrastructure faults, but a Postgres-only fallback here
+	// would hide exactly the state the classification exists to report.
+	degraded, err := factoryQuery(ctx, degradedManager, schema)
 	if err == nil {
 		t.Fatalf("degraded mode re-silenced the manifest inconsistency (%d rows returned)", len(degraded.Data))
 	}
 	assertFactoryInconsistency(t, err, schema, ghostKey)
 }
 
-// factoryPhaseManifestOff is Phase 4, the negative control: a second manager
+// factoryPhaseManifestOff is Phase 3, the negative control: a second manager
 // built from the same config with the manifest read surface cleared gets no
-// parquet source at all, so the inconsistent manifest of Phases 2-3 is
+// parquet source at all, so the inconsistent manifest of Phase 2 is
 // invisible to it. Its outcome must NOT carry the inconsistency
-// classification — that proves Phase 3's error came from the new factory
+// classification — that proves Phase 2's error came from the new factory
 // wiring rather than from ambient environment damage.
 //
 // The whole surface is cleared, not just ManifestTemplate: ValidateManifestRead
@@ -175,25 +154,25 @@ func factoryPhaseInconsistency(ctx context.Context, t *testing.T, manager forma.
 //
 // Three assertions, in increasing strength:
 //
-//  1. The hint-less query fails with ErrNoParquetPaths (#299). With no source
-//     and no hint nothing authors a path set, and since #299 that is its own
-//     non-degradable classification rather than the degradable read failure a
+//  1. The query fails with ErrNoParquetPaths (#299). With no source nothing
+//     authors a path set, and since #299 that is its own non-degradable
+//     classification rather than the degradable read failure a
 //     `read_parquet(<no value>)` parser error used to produce.
-//  2. That failure is not the Phase 3 classification, and degraded mode does
+//  2. That failure is not the Phase 2 classification, and degraded mode does
 //     not absorb it.
-//  3. The SAME manager, given an explicit hint, reads every seeded row. This
-//     is what gives the control discriminating power: it proves the objects are
-//     healthy and this manager's engine works, so Phase 3's error can only have
-//     come from the manifest wiring — not from a broken environment that would
-//     fail every query regardless. Before #299 the hint-less query died at
-//     parse time and no positive assertion was possible here at all.
+//  3. The engine, pointed at the seeded objects through its path hint, reads
+//     every seeded row. This is what gives the control discriminating power:
+//     it proves the objects are healthy, so Phase 2's error can only have
+//     come from the manifest wiring — not from a broken environment that
+//     would fail every query regardless. No request can carry the hint since
+//     #715, so the control reads through the Env's engine.
 func factoryPhaseManifestOff(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, keys []string) {
 	t.Helper()
-	manager := newFactoryManager(ctx, t, env, false)
+	manager := newFactoryManager(ctx, t, env, false, false)
 
-	_, err := factoryQuery(ctx, manager, schema, factoryQueryOpts{})
+	_, err := factoryQuery(ctx, manager, schema)
 	if err == nil {
-		t.Fatal("manifest-off, hint-less query succeeded: with no parquet source and no hint there is no path set to scan")
+		t.Fatal("manifest-off query succeeded: with no parquet source there is no path set to scan")
 	}
 	// Matched through the PUBLIC package, not internal/federated: an embedder
 	// building its manager via factory.NewEntityManagerWithConfig* cannot import
@@ -201,7 +180,7 @@ func factoryPhaseManifestOff(ctx context.Context, t *testing.T, env *Env, schema
 	// comparing error text. Asserting the public name here is what proves the
 	// discriminator #299 promised is actually usable (review P2).
 	if !errors.Is(err, forma.ErrNoParquetPaths) {
-		t.Fatalf("manifest-off, hint-less query must classify as forma.ErrNoParquetPaths (#299), got: %v", err)
+		t.Fatalf("manifest-off query must classify as forma.ErrNoParquetPaths (#299), got: %v", err)
 	}
 	var noPaths *forma.NoParquetPathsError
 	if !errors.As(err, &noPaths) {
@@ -214,7 +193,7 @@ func factoryPhaseManifestOff(ctx context.Context, t *testing.T, env *Env, schema
 		t.Fatal("manifest reads are off here, so no source was consulted; the remedy differs and the flag must say so")
 	}
 	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
-		t.Fatalf("manifest-off manager reported a manifest inconsistency; Phase 3's classification is environment noise, not wiring: %v", err)
+		t.Fatalf("manifest-off manager reported a manifest inconsistency; Phase 2's classification is environment noise, not wiring: %v", err)
 	}
 	if errors.Is(err, fedengine.ErrFederatedReadFailed) {
 		t.Fatalf("an unresolvable path set must not look like a transient read failure — that conflation is the #299 bug: %v", err)
@@ -222,33 +201,36 @@ func factoryPhaseManifestOff(ctx context.Context, t *testing.T, env *Env, schema
 
 	// Non-degradable: a Postgres-only answer here would silently omit the cold
 	// tier the request asked for.
-	if _, derr := factoryQuery(ctx, manager, schema, factoryQueryOpts{degraded: true}); derr == nil {
+	if _, derr := factoryQuery(ctx, newFactoryManager(ctx, t, env, false, true), schema); derr == nil {
 		t.Fatal("degraded mode absorbed the empty path set; a misconfigured read surface must stay loud (#299)")
 	} else if !errors.Is(derr, forma.ErrNoParquetPaths) {
 		t.Fatalf("degraded-mode failure lost its classification: %v", derr)
 	}
 
-	// Positive control on the same manager: the objects are fine and the engine
-	// reads them when told where to look.
+	// Positive control: the objects are fine and the engine reads them when
+	// told where to look.
 	uris := make([]string, 0, len(keys))
 	for _, key := range keys {
 		uris = append(uris, fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, key))
 	}
-	res, err := factoryQuery(ctx, manager, schema, factoryQueryOpts{hint: strings.Join(uris, ",")})
+	res, err := env.Query(ctx, Query{Schema: schema, Limit: 20, S3ParquetPathTemplate: strings.Join(uris, ","),
+		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold}})
 	if err != nil {
-		t.Fatalf("manifest-off manager could not read the seeded objects even with an explicit hint, so Phase 3 proves nothing about wiring: %v", err)
+		t.Fatalf("the engine could not read the seeded objects even with an explicit hint, so Phase 2 proves nothing about wiring: %v", err)
 	}
-	if len(res.Data) != factorySeedRows {
-		t.Fatalf("hinted manifest-off query returned %d rows, want %d", len(res.Data), factorySeedRows)
+	if len(res.Records) != factorySeedRows {
+		t.Fatalf("hinted query returned %d rows, want %d", len(res.Records), factorySeedRows)
 	}
-	assertFactoryUsedDuckDB(t, res)
+	if !res.Plan.Routing.UseDuckDB {
+		t.Fatalf("hinted query did not route through DuckDB: %+v", res.Plan.Routing)
+	}
 }
 
 // newFactoryManager builds an EntityManager exactly the way a server does:
 // a forma.Config plus the factory composition root. manifestOn toggles the
-// manifest read surface, which is the only difference between the two
-// managers this test builds.
-func newFactoryManager(ctx context.Context, t *testing.T, env *Env, manifestOn bool) forma.EntityManager {
+// manifest read surface and degraded the deployment's degraded fallback; the
+// routing strategy sends every query through DuckDB.
+func newFactoryManager(ctx context.Context, t *testing.T, env *Env, manifestOn, degraded bool) forma.EntityManager {
 	t.Helper()
 	cfg := forma.DefaultConfig(env.Registry)
 	cfg.Entity.SchemaDirectory = FixtureSchemasDir()
@@ -264,6 +246,8 @@ func newFactoryManager(ctx context.Context, t *testing.T, env *Env, manifestOn b
 	// so MaxConn > 1 against an in-memory database yields flaky 404s in
 	// concurrent reads. Not a leak mitigation — the managers are closed below.
 	duck.MaxConnections = 1
+	duck.Routing.Strategy = forma.RoutingStrategyFreshnessFirst
+	duck.AllowPartialDegradedMode = degraded
 	if manifestOn {
 		duck.S3Bucket = env.Cluster.Bucket
 		duck.S3DataPrefix = env.S3Prefix
@@ -284,30 +268,17 @@ func newFactoryManager(ctx context.Context, t *testing.T, env *Env, manifestOn b
 	return manager
 }
 
-// factoryQueryOpts carries the per-phase knobs of the shared query.
-type factoryQueryOpts struct {
-	hint     string
-	degraded bool
-}
-
-// factoryQuery issues the phases' common federated query through the public
-// EntityManager surface.
-func factoryQuery(ctx context.Context, manager forma.EntityManager, schema SchemaRef, opts factoryQueryOpts) (*forma.QueryResult, error) {
+// factoryQuery issues the phases' common query through the public
+// EntityManager surface; the manager's deployment decides the route.
+func factoryQuery(ctx context.Context, manager forma.EntityManager, schema SchemaRef) (*forma.QueryResult, error) {
 	res, err := manager.Query(ctx, &forma.QueryRequest{
-		SchemaName:   schema.Name,
-		Page:         1,
-		ItemsPerPage: 20,
-		Federated: &forma.FederatedQueryRequest{
-			Enabled:                  true,
-			PreferredTiers:           []string{"hot", "warm", "cold"},
-			S3ParquetPathTemplate:    opts.hint,
-			AllowPartialDegradedMode: opts.degraded,
-			IncludeExecutionPlan:     true,
-		},
+		SchemaName:           schema.Name,
+		Page:                 1,
+		ItemsPerPage:         20,
+		IncludeExecutionPlan: true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("entity manager federated query (schema=%s, hinted=%t): %w",
-			schema.Name, opts.hint != "", err)
+		return nil, fmt.Errorf("entity manager federated query (schema=%s): %w", schema.Name, err)
 	}
 	return res, nil
 }

@@ -21,8 +21,8 @@ func isHotOnlyRequest(fq *model.FederatedAttributeQuery) bool {
 }
 
 // hasExplicitTierCoverage reports whether the caller explicitly declared the
-// tiers to read. Non-empty means declared; the service layer forwards an
-// omitted preferred_tiers as nil so the two cannot be confused (#468).
+// tiers to read. Non-empty means declared (#468); the entity query service
+// declares none (#715).
 func hasExplicitTierCoverage(fq *model.FederatedAttributeQuery) bool {
 	return fq != nil && len(fq.PreferredTiers) > 0
 }
@@ -47,8 +47,7 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *model.FederatedAttributeQ
 	// heuristics and overrides below are skipped — which means the common
 	// tier collapse at the end is skipped too. Collapse here as well: the
 	// Postgres-only path reads entity_main alone, and the plan must report
-	// that route, not the caller's declared tiers, or it would contradict
-	// the hot_tier_only coverage marker set on the same answer (#468).
+	// that route, not the declared tiers.
 	if !cfg.Enabled {
 		dec.UseDuckDB = false
 		dec.Reason = "duckdb disabled"
@@ -108,8 +107,8 @@ func EvaluateRoutingPolicy(cfg forma.DuckDBConfig, fq *model.FederatedAttributeQ
 	// suffix truthful, !isHotOnlyRequest leaves a [hot] declaration where it
 	// asked to be, cfg.Enabled is the reordering invariant. An EMPTY
 	// PreferredTiers is the default all-tier form, not a declaration: it
-	// keeps the heuristic and is told what was consulted through the
-	// coverage marker (engine_tier_coverage.go, markHotTierOnly).
+	// keeps the heuristic. The entity query service never declares tiers
+	// (#715), so this override serves direct engine callers only.
 	if hasExplicitTierCoverage(fq) && !dec.UseDuckDB && !isHotOnlyRequest(fq) && cfg.Enabled {
 		dec.UseDuckDB = true
 		dec.Reason += " (overridden: explicit preferred_tiers require the federated path, #468)"

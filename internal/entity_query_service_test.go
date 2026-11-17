@@ -257,9 +257,16 @@ func TestEntityManager_QueryWithConditionInvalidSortAttribute(t *testing.T) {
 	}
 }
 
+// TestEntityManager_QueryUsesFederatedPathWhenEnabled pins #715's
+// deployment-level route: with DuckDB enabled every non-transactional Query
+// enters the federated engine, carrying no tiers, no anchor and no parquet
+// paths, which are the deployment's; the degraded fallback comes from the
+// deployment's config and only the plan request comes from the request.
 func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
 	ctx := context.Background()
 	config := createTestConfig()
+	config.DuckDB.Enabled = true
+	config.DuckDB.AllowPartialDegradedMode = true
 	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
 	if err != nil {
 		t.Fatalf("failed to create schema registry: %v", err)
@@ -288,18 +295,12 @@ func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
 
 	em := mustNewEntityManager(t, transformer, mockRepo, mockEngine, registry, config, nil)
 	req := &forma.QueryRequest{
-		SchemaName:   "visit",
-		Page:         1,
-		ItemsPerPage: 10,
-		SortBy:       []string{"scheduledStartAt"},
-		SortOrder:    forma.SortOrderDesc,
-		Federated: &forma.FederatedQueryRequest{
-			Enabled:                  true,
-			PreferredTiers:           []string{"hot", "warm", "cold"},
-			UseMainAsAnchor:          true,
-			S3ParquetPathTemplate:    "s3://bucket/prefix/{{.SchemaID}}/base/*.parquet, s3://bucket/prefix/{{.SchemaID}}/delta/*.parquet",
-			AllowPartialDegradedMode: true,
-		},
+		SchemaName:           "visit",
+		Page:                 1,
+		ItemsPerPage:         10,
+		SortBy:               []string{"scheduledStartAt"},
+		SortOrder:            forma.SortOrderDesc,
+		IncludeExecutionPlan: true,
 	}
 
 	result, err := em.Query(ctx, req)
@@ -309,23 +310,23 @@ func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
 	if result == nil || len(result.Data) != 1 {
 		t.Fatalf("expected one result, got %+v", result)
 	}
+	if mockRepo.lastQuery != nil {
+		t.Fatalf("expected the repository not to be queried directly, got %+v", mockRepo.lastQuery)
+	}
 	if mockEngine.lastQuery == nil {
 		t.Fatal("expected federated query to be captured")
 	}
 	if mockEngine.lastQuery.SchemaID != schemaID {
 		t.Fatalf("expected schema id %d, got %d", schemaID, mockEngine.lastQuery.SchemaID)
 	}
-	if got := mockEngine.lastQuery.PreferredTiers; len(got) != 3 || got[0] != model.DataTierHot || got[1] != model.DataTierWarm || got[2] != model.DataTierCold {
-		t.Fatalf("unexpected preferred tiers: %+v", got)
+	if mockEngine.lastQuery.PreferredTiers != nil || mockEngine.lastQuery.PreferHot {
+		t.Fatalf("expected no tier declaration, got %+v / %v", mockEngine.lastQuery.PreferredTiers, mockEngine.lastQuery.PreferHot)
 	}
-	if !mockEngine.lastQuery.UseMainAsAnchor {
-		t.Fatal("expected use main as anchor to be forwarded")
+	if mockEngine.lastQuery.DuckDBHints != nil {
+		t.Fatalf("expected no parquet path hint, got %+v", mockEngine.lastQuery.DuckDBHints)
 	}
-	if mockEngine.lastQuery.DuckDBHints == nil || mockEngine.lastQuery.DuckDBHints.S3ParquetPathTemplate == "" {
-		t.Fatal("expected duckdb hints to be forwarded")
-	}
-	if mockEngine.lastOpts == nil || !mockEngine.lastOpts.AllowPartialDegradedMode {
-		t.Fatal("expected federated options to be forwarded")
+	if mockEngine.lastOpts == nil || !mockEngine.lastOpts.AllowPartialDegradedMode || !mockEngine.lastOpts.IncludeExecutionPlan {
+		t.Fatalf("expected the deployment's fallback and the request's plan flag, got %+v", mockEngine.lastOpts)
 	}
 	if len(mockEngine.lastQuery.AttributeOrders) != 1 {
 		t.Fatalf("expected 1 attribute order, got %d", len(mockEngine.lastQuery.AttributeOrders))
@@ -336,6 +337,46 @@ func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
 	}
 	if mockEngine.lastQuery.AttributeOrders[0].AttrID != atMeta.AttributeID {
 		t.Fatalf("expected attrID %d, got %d", atMeta.AttributeID, mockEngine.lastQuery.AttributeOrders[0].AttrID)
+	}
+
+	// The degraded fallback defaults off: a deployment that does not set it
+	// hands the engine no fallback.
+	config.DuckDB.AllowPartialDegradedMode = false
+	em = mustNewEntityManager(t, transformer, newMockPersistentRecordRepository(), mockEngine, registry, config, nil)
+	if _, err := em.Query(ctx, &forma.QueryRequest{SchemaName: "visit", Page: 1, ItemsPerPage: 10}); err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	if mockEngine.lastOpts.AllowPartialDegradedMode || mockEngine.lastOpts.IncludeExecutionPlan {
+		t.Fatalf("expected neither the fallback nor a plan, got %+v", mockEngine.lastOpts)
+	}
+}
+
+// TestEntityManager_QueryStaysOnPostgresWithoutDuckDB pins the other
+// deployment (#715): without DuckDB every Query runs on PostgreSQL, the
+// engine is never consulted, and a plan request records no plan.
+func TestEntityManager_QueryStaysOnPostgresWithoutDuckDB(t *testing.T) {
+	registry, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
+	if err != nil {
+		t.Fatalf("failed to create schema registry: %v", err)
+	}
+	mockRepo := newMockPersistentRecordRepository()
+	mockEngine := &mockFederatedQueryEngine{}
+	em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry), mockRepo, mockEngine, registry, createTestConfig(), nil)
+
+	result, err := em.Query(context.Background(), &forma.QueryRequest{
+		SchemaName: "visit", Page: 1, ItemsPerPage: 10, IncludeExecutionPlan: true,
+	})
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	if mockEngine.lastQuery != nil {
+		t.Fatalf("expected the engine not to be consulted, got %+v", mockEngine.lastQuery)
+	}
+	if mockRepo.lastQuery == nil {
+		t.Fatal("expected the repository to serve the query")
+	}
+	if result.ExecutionPlan != nil {
+		t.Fatalf("expected no plan without the engine, got %+v", result.ExecutionPlan)
 	}
 }
 

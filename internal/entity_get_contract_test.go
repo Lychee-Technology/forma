@@ -13,9 +13,10 @@ import (
 )
 
 // Get's half of the read contract (#635): Get reads PostgreSQL and nothing
-// else. A federated block on the request does not route it, a row PostgreSQL
-// does not hold is not found, and a failed PostgreSQL read fails the Get
-// instead of falling back to the lakehouse tiers.
+// else. A deployment that runs Query through the federated engine, with the
+// degraded fallback on, does not route it (#715), a row PostgreSQL does not
+// hold is not found, and a failed PostgreSQL read fails the Get instead of
+// falling back to the lakehouse tiers.
 
 // failingGetRepository stands in for an unreachable PostgreSQL on the
 // single-row read.
@@ -29,15 +30,9 @@ func (r *failingGetRepository) GetPersistentRecord(context.Context, model.Storag
 	return nil, r.err
 }
 
-// federatedEventualGet asks for everything Get must ignore: federation,
-// lakehouse tiers only, degraded mode and consistency_mode "eventual".
-func federatedEventualGet(rowID uuid.UUID) *forma.QueryRequest {
-	return &forma.QueryRequest{SchemaName: "visit", RowID: &rowID, Federated: &forma.FederatedQueryRequest{
-		Enabled:                  true,
-		PreferredTiers:           []string{"warm", "cold"},
-		AllowPartialDegradedMode: true,
-		ConsistencyMode:          "eventual",
-	}}
+// getRequest asks for one visit row.
+func getRequest(rowID uuid.UUID) *forma.QueryRequest {
+	return &forma.QueryRequest{SchemaName: "visit", RowID: &rowID}
 }
 
 func newGetContractManager(t *testing.T, repo model.PersistentRecordRepository, engine model.FederatedQueryEngine) (forma.EntityManager, model.PersistentRecordTransformer, int16) {
@@ -47,10 +42,13 @@ func newGetContractManager(t *testing.T, repo model.PersistentRecordRepository, 
 	schemaID, _, err := registry.GetSchemaAttributeCacheByName("visit")
 	require.NoError(t, err)
 	transformer := transform.NewPersistentRecordTransformer(registry)
-	return mustNewEntityManager(t, transformer, repo, engine, registry, createTestConfig(), nil), transformer, schemaID
+	config := createTestConfig()
+	config.DuckDB.Enabled = true
+	config.DuckDB.AllowPartialDegradedMode = true
+	return mustNewEntityManager(t, transformer, repo, engine, registry, config, nil), transformer, schemaID
 }
 
-func TestGetReadsPostgresWhateverTheFederatedBlockSays(t *testing.T) {
+func TestGetReadsPostgresOnAFederatedDeployment(t *testing.T) {
 	ctx := context.Background()
 	repo := newMockPersistentRecordRepository()
 	engine := &countingEngine{}
@@ -60,7 +58,7 @@ func TestGetReadsPostgresWhateverTheFederatedBlockSays(t *testing.T) {
 	require.NoError(t, err)
 	repo.storeRecord(record)
 
-	got, err := em.Get(ctx, federatedEventualGet(rowID))
+	got, err := em.Get(ctx, getRequest(rowID))
 
 	require.NoError(t, err)
 	require.Equal(t, rowID, got.RowID)
@@ -74,7 +72,7 @@ func TestGetOfARowPostgresDoesNotHoldIsNotFound(t *testing.T) {
 	engine := &countingEngine{}
 	em, _, _ := newGetContractManager(t, repo, engine)
 
-	got, err := em.Get(context.Background(), federatedEventualGet(uuid.New()))
+	got, err := em.Get(context.Background(), getRequest(uuid.New()))
 
 	require.ErrorIs(t, err, forma.ErrNotFound)
 	require.Nil(t, got)
@@ -87,7 +85,7 @@ func TestGetFailsWhenPostgresFails(t *testing.T) {
 	engine := &countingEngine{}
 	em, _, _ := newGetContractManager(t, repo, engine)
 
-	got, err := em.Get(context.Background(), federatedEventualGet(uuid.New()))
+	got, err := em.Get(context.Background(), getRequest(uuid.New()))
 
 	require.ErrorIs(t, err, down)
 	require.NotErrorIs(t, err, forma.ErrNotFound, "an unreachable PostgreSQL is a failure, not a missing row")

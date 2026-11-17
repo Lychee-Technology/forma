@@ -196,25 +196,50 @@ func TestDuckDBConfigFromEnv_ExplicitManifestPrefixKeptWithoutTemplate(t *testin
 	}
 }
 
-// TestDuckDBConfigFromEnv_AllowCallerParquetPaths pins the #456 opt-in:
-// caller-supplied parquet path templates stay off unless
-// DUCKDB_ALLOW_CALLER_PARQUET_PATHS is set, and turning it on flips the flag.
-func TestDuckDBConfigFromEnv_AllowCallerParquetPaths(t *testing.T) {
+// TestDuckDBConfigFromEnv_AllowPartialDegradedMode pins #715: the degraded
+// fallback is deployment configuration, off unless
+// DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE is set, and turning it on flips the flag.
+func TestDuckDBConfigFromEnv_AllowPartialDegradedMode(t *testing.T) {
 	t.Setenv("DUCKDB_ENABLED", "true")
-	if got := readDuckDBConfig(t, forma.DuckDBConfig{}); got.AllowCallerParquetPaths {
-		t.Fatalf("expected AllowCallerParquetPaths off by default, got true")
+	if got := readDuckDBConfig(t, forma.DuckDBConfig{}); got.AllowPartialDegradedMode {
+		t.Fatalf("expected AllowPartialDegradedMode off by default, got true")
 	}
 
-	t.Setenv("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", "true")
-	if got := readDuckDBConfig(t, forma.DuckDBConfig{}); !got.AllowCallerParquetPaths {
-		t.Fatalf("expected AllowCallerParquetPaths on when DUCKDB_ALLOW_CALLER_PARQUET_PATHS=true")
+	t.Setenv("DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE", "true")
+	if got := readDuckDBConfig(t, forma.DuckDBConfig{}); !got.AllowPartialDegradedMode {
+		t.Fatalf("expected AllowPartialDegradedMode on when DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE=true")
+	}
+}
+
+// TestDuckDBConfigFromEnv_RoutingStrategy pins #715's deployment-level
+// route: DUCKDB_ROUTING_STRATEGY sets the engine's strategy, unset keeps the
+// base value, and an unknown name is refused rather than left to the
+// engine's send-everything-to-DuckDB default.
+func TestDuckDBConfigFromEnv_RoutingStrategy(t *testing.T) {
+	base := forma.DefaultConfig(nil).DuckDB
+	t.Setenv("DUCKDB_ENABLED", "true")
+	if got := readDuckDBConfig(t, base).Routing.Strategy; got != forma.RoutingStrategyHybrid {
+		t.Fatalf("expected the base hybrid strategy kept, got %q", got)
+	}
+	t.Setenv("DUCKDB_ROUTING_STRATEGY", "freshness-first")
+	if got := readDuckDBConfig(t, base).Routing.Strategy; got != forma.RoutingStrategyFreshnessFirst {
+		t.Fatalf("expected freshness-first, got %q", got)
+	}
+	t.Setenv("DUCKDB_ROUTING_STRATEGY", "duckdb-always")
+	got, err := duckDBConfigFromEnv(base)
+	var envErr *bootstrap.EnvError
+	if !errors.As(err, &envErr) || envErr.Key != "DUCKDB_ROUTING_STRATEGY" {
+		t.Fatalf("expected an EnvError naming DUCKDB_ROUTING_STRATEGY, got %v", err)
+	}
+	if !reflect.DeepEqual(got, base) {
+		t.Fatalf("expected the base config back untouched, got %+v", got)
 	}
 }
 
 // TestDuckDBConfigFromEnv_RejectsUnrecognisedBoolean pins #642 on both DuckDB
-// switches. DUCKDB_ENABLED=yes used to leave the engine off, and
-// DUCKDB_ALLOW_CALLER_PARQUET_PATHS=on to leave the opt-in off; each is now an
-// *EnvError, and the base config comes back untouched. The opt-in is judged
+// switches. DUCKDB_ENABLED=yes used to leave the engine off; it and
+// DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE=on are each an *EnvError, and the base
+// config comes back untouched. The opt-in is judged
 // alongside a refused DUCKDB_ENABLED, so one boot names both, but stays unread
 // while DuckDB is off.
 func TestDuckDBConfigFromEnv_RejectsUnrecognisedBoolean(t *testing.T) {
@@ -226,15 +251,15 @@ func TestDuckDBConfigFromEnv_RejectsUnrecognisedBoolean(t *testing.T) {
 		want    []string
 	}{
 		{name: "enabled refused", enabled: "yes", want: []string{"DUCKDB_ENABLED"}},
-		{name: "opt-in refused", enabled: "true", allow: "on", want: []string{"DUCKDB_ALLOW_CALLER_PARQUET_PATHS"}},
-		{name: "both refused", enabled: "on", allow: "yes", want: []string{"DUCKDB_ENABLED", "DUCKDB_ALLOW_CALLER_PARQUET_PATHS"}},
+		{name: "opt-in refused", enabled: "true", allow: "on", want: []string{"DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE"}},
+		{name: "both refused", enabled: "on", allow: "yes", want: []string{"DUCKDB_ENABLED", "DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE"}},
 		{name: "opt-in unread while off", enabled: "false", allow: "on"},
 		{name: "opt-in unread while unset", allow: "on"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("DUCKDB_ENABLED", tc.enabled)
-			t.Setenv("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", tc.allow)
+			t.Setenv("DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE", tc.allow)
 			got, err := duckDBConfigFromEnv(base)
 			if !reflect.DeepEqual(got, base) {
 				t.Fatalf("expected the base config back untouched, got %+v", got)
@@ -265,29 +290,6 @@ func TestBootstrapServer_CanceledContext(t *testing.T) {
 	_, err := bootstrapServer(ctx, zap.NewNop().Sugar())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
-	}
-}
-
-// TestBootstrapServer_RejectsCallerParquetPathsWithoutBucket pins #456: the
-// caller-path opt-in without a bucket is refused at startup, before any DB I/O
-// (the check sits beside ValidateManifestRead, above the pool connect), rather
-// than surfacing as a 4xx on every hint-bearing request. This is the wiring a
-// review found missing — Config.Validate itself has no production caller.
-func TestBootstrapServer_RejectsCallerParquetPathsWithoutBucket(t *testing.T) {
-	t.Setenv("DUCKDB_ENABLED", "true")
-	t.Setenv("DUCKDB_ALLOW_CALLER_PARQUET_PATHS", "true")
-	// Env() treats an empty value as unset, so these force an empty bucket even
-	// if the ambient environment exports one.
-	t.Setenv("S3_BUCKET", "")
-	t.Setenv("DUCKDB_S3_BUCKET", "")
-
-	_, err := bootstrapServer(context.Background(), zap.NewNop().Sugar())
-	if err == nil {
-		t.Fatal("expected startup to reject allowCallerParquetPaths without a bucket, got nil")
-	}
-	var configErr *forma.ConfigError
-	if !errors.As(err, &configErr) || configErr.Field != "duckdb.s3Bucket" {
-		t.Fatalf("expected a ConfigError on duckdb.s3Bucket, got %v", err)
 	}
 }
 

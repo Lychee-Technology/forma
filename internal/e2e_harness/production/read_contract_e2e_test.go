@@ -23,8 +23,8 @@ import (
 //     a minimum, not a licence to answer stale: the dirty-set anti-join
 //     discards the stale parquet version and the hot one serves.
 //
-// Every federated request also sets consistency_mode "eventual", which is
-// accepted and ignored until #715 deletes it.
+// The route is the deployment's (#715): the federated route is a deployment
+// that routes every query through DuckDB.
 //
 // The first step reads a schema that has never been flushed, whose fallback
 // glob matches no object (#720).
@@ -77,18 +77,22 @@ func createSimpleRow(ctx context.Context, t *testing.T, manager forma.EntityMana
 	return created.RowID
 }
 
-// readContractRequests returns the two Query routes: PostgreSQL only, and
-// federated with every tier declared, which reaches DuckDB whatever the page
-// size (#468).
-func readContractRequests(schema SchemaRef) map[string]*forma.QueryRequest {
-	return map[string]*forma.QueryRequest{
-		"postgres-only": {SchemaName: schema.Name, Page: 1, ItemsPerPage: 10},
-		"federated": {SchemaName: schema.Name, Page: 1, ItemsPerPage: 10, Federated: &forma.FederatedQueryRequest{
-			Enabled:              true,
-			PreferredTiers:       []string{"hot", "warm", "cold"},
-			IncludeExecutionPlan: true,
-			ConsistencyMode:      "eventual",
-		}},
+// readContractRoute is one Query route: the deployment that takes it, and
+// whether its answer reads the parquet tiers through DuckDB.
+type readContractRoute struct {
+	manager func(*Env) forma.EntityManager
+	duckdb  bool
+}
+
+// readContractRoutes returns the two Query routes. The route is the
+// deployment's (#715): hybrid routing answers a small page from PostgreSQL
+// alone, and the DuckDB-routed deployment reads every tier whatever the page
+// size.
+func readContractRoutes() map[string]readContractRoute {
+	hybrid := func(e *Env) forma.EntityManager { return e.RoutedEntityManager(forma.RoutingStrategyHybrid) }
+	return map[string]readContractRoute{
+		"postgres-only": {manager: hybrid},
+		"federated":     {manager: (*Env).DuckDBRoutedEntityManager, duckdb: true},
 	}
 }
 
@@ -106,22 +110,22 @@ func assertCommittedRows(ctx context.Context, t *testing.T, env *Env, schema Sch
 			t.Errorf("get %s: name = %v, want the committed %q", rowID, got.Attributes["name"], name)
 		}
 	}
-	for route, req := range readContractRequests(schema) {
-		got := queryRowNames(t, route, queryReadContract(ctx, t, env, route, req))
+	for routeName, route := range readContractRoutes() {
+		got := queryRowNames(t, routeName, queryReadContract(ctx, t, env, schema, routeName, route))
 		for rowID, name := range want {
 			gotName, ok := got[rowID]
 			if !ok {
-				t.Errorf("%s query: committed row %s is missing", route, rowID)
+				t.Errorf("%s query: committed row %s is missing", routeName, rowID)
 				continue
 			}
 			if gotName != name {
 				t.Errorf("%s query: %s has name %v, want the committed %q, not a stale version",
-					route, rowID, gotName, name)
+					routeName, rowID, gotName, name)
 			}
 		}
 		for rowID := range got {
 			if _, ok := want[rowID]; !ok {
-				t.Errorf("%s query: returned %s, which is not a committed live row", route, rowID)
+				t.Errorf("%s query: returned %s, which is not a committed live row", routeName, rowID)
 			}
 		}
 	}
@@ -151,17 +155,20 @@ func assertNotFound(ctx context.Context, t *testing.T, env *Env, schema SchemaRe
 	}
 }
 
-// queryReadContract runs one route and checks the federated one really read
-// the parquet tiers, so its answer is not a PostgreSQL-only answer by
-// another name.
-func queryReadContract(ctx context.Context, t *testing.T, env *Env, route string, req *forma.QueryRequest) *forma.QueryResult {
+// queryReadContract runs one route and checks it took that route: the
+// federated one really read the parquet tiers, so its answer is not a
+// PostgreSQL-only answer by another name, and the other did not.
+func queryReadContract(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, name string, route readContractRoute) *forma.QueryResult {
 	t.Helper()
-	result, err := env.EntityManager().Query(ctx, req)
+	result, err := route.manager(env).Query(ctx, &forma.QueryRequest{
+		SchemaName: schema.Name, Page: 1, ItemsPerPage: 10, IncludeExecutionPlan: true,
+	})
 	if err != nil {
-		t.Fatalf("%s query: %v", route, err)
+		t.Fatalf("%s query: %v", name, err)
 	}
-	if req.Federated != nil && (result.ExecutionPlan == nil || !result.ExecutionPlan.Routing.UsedDuckDB) {
-		t.Fatalf("%s query did not route through DuckDB: %+v", route, result.ExecutionPlan)
+	if result.ExecutionPlan == nil || result.ExecutionPlan.Routing.UsedDuckDB != route.duckdb {
+		t.Fatalf("%s query routed use_duckdb=%v, want %v: %+v", name,
+			result.ExecutionPlan != nil && result.ExecutionPlan.Routing.UsedDuckDB, route.duckdb, result.ExecutionPlan)
 	}
 	return result
 }

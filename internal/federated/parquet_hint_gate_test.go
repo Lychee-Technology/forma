@@ -16,19 +16,10 @@ func hintQuery(tmpl string) *model.FederatedAttributeQuery {
 	}
 }
 
-// TestHintRejectedWhenFeatureOff pins #456 layer 1: a caller template is
-// rejected as invalid input when the opt-in flag is off, regardless of bucket.
-func TestHintRejectedWhenFeatureOff(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: false, S3Bucket: "b"}
-	paths, err := duckDBParquetPathsForQuery(hintQuery("s3://b/x.parquet"), cfg)
-	require.Nil(t, paths)
-	require.ErrorIs(t, err, forma.ErrInvalidInput)
-}
-
-// TestHintNoHintReturnsNil pins that an absent hint stays (nil, nil) even with
-// the feature off — resolution falls through to the manifest source.
+// TestHintNoHintReturnsNil pins that an absent hint stays (nil, nil):
+// resolution falls through to the manifest source.
 func TestHintNoHintReturnsNil(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: false}
+	cfg := forma.DuckDBConfig{}
 	paths, err := duckDBParquetPathsForQuery(&model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7},
 	}, cfg)
@@ -37,9 +28,9 @@ func TestHintNoHintReturnsNil(t *testing.T) {
 }
 
 // TestHintInScopeAccepted pins that an in-bucket path (glob included) is
-// honored when the feature is on.
+// honored.
 func TestHintInScopeAccepted(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	cfg := forma.DuckDBConfig{S3Bucket: "b"}
 	paths, err := duckDBParquetPathsForQuery(hintQuery("s3://b/7/base/*.parquet"), cfg)
 	require.NoError(t, err)
 	require.Equal(t, []string{"s3://b/7/base/*.parquet"}, paths)
@@ -49,7 +40,7 @@ func TestHintInScopeAccepted(t *testing.T) {
 // bucket is rejected, including the s3://<bucket>X/ prefix-collision bypass and
 // non-s3 targets.
 func TestHintOutOfScopeRejected(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	cfg := forma.DuckDBConfig{S3Bucket: "b"}
 	for _, tmpl := range []string{
 		"s3://other/x.parquet",
 		"s3://bx/x.parquet", // prefix collision: must NOT match "s3://b/"
@@ -65,7 +56,7 @@ func TestHintOutOfScopeRejected(t *testing.T) {
 // TestHintQuoteCharRejected pins the defense-in-depth char check: a quote in a
 // rendered path is rejected at the gate (escaping still guards the render).
 func TestHintQuoteCharRejected(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	cfg := forma.DuckDBConfig{S3Bucket: "b"}
 	paths, err := duckDBParquetPathsForQuery(hintQuery("s3://b/x.parquet') UNION ALL SELECT 1 --"), cfg)
 	require.Nil(t, paths)
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
@@ -75,7 +66,7 @@ func TestHintQuoteCharRejected(t *testing.T) {
 // rendering, not on the raw template: a template whose {{.SchemaID}} expansion
 // lands outside the bucket is rejected on its rendered value.
 func TestHintRenderedOutOfScopeRejected(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	cfg := forma.DuckDBConfig{S3Bucket: "b"}
 	paths, err := duckDBParquetPathsForQuery(hintQuery("s3://other/{{.SchemaID}}/x.parquet"), cfg)
 	require.Nil(t, paths)
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
@@ -85,17 +76,17 @@ func TestHintRenderedOutOfScopeRejected(t *testing.T) {
 // validated per segment: one out-of-scope segment rejects the whole hint, so an
 // in-scope segment cannot smuggle an out-of-scope sibling into the scan set.
 func TestHintMixedScopeRejected(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	cfg := forma.DuckDBConfig{S3Bucket: "b"}
 	paths, err := duckDBParquetPathsForQuery(
 		hintQuery("s3://b/{{.SchemaID}}/base/*.parquet, s3://other/{{.SchemaID}}/x.parquet"), cfg)
 	require.Nil(t, paths)
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 }
 
-// TestHintEmptyBucketRejected pins that the feature cannot be honored without a
-// bucket to scope against, even with the flag on.
+// TestHintEmptyBucketRejected pins that a hint cannot be honored without a
+// bucket to scope against.
 func TestHintEmptyBucketRejected(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: ""}
+	cfg := forma.DuckDBConfig{S3Bucket: ""}
 	paths, err := duckDBParquetPathsForQuery(hintQuery("s3://b/x.parquet"), cfg)
 	require.Nil(t, paths)
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
@@ -105,7 +96,7 @@ func TestHintEmptyBucketRejected(t *testing.T) {
 // same rule §4.3.1 imposes on the fallback glob, so a hint cannot widen the
 // scan across every prefix of the bucket.
 func TestHintRecursiveGlobRejected(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	cfg := forma.DuckDBConfig{S3Bucket: "b"}
 	for _, tmpl := range []string{
 		"s3://b/**/*.parquet",
 		"s3://b/data/{{.SchemaID}}/**",
@@ -120,7 +111,7 @@ func TestHintRecursiveGlobRejected(t *testing.T) {
 // TestHintTmpSegmentRejected pins #477: in-flight `_tmp/` staging objects are
 // not a scan target. A literal `_tmp` segment is refused wherever it sits.
 func TestHintTmpSegmentRejected(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	cfg := forma.DuckDBConfig{S3Bucket: "b"}
 	for _, tmpl := range []string{
 		"s3://b/data/{{.SchemaID}}/_tmp/x.parquet",
 		"s3://b/data/{{.SchemaID}}/_tmp/*.parquet",
@@ -137,7 +128,7 @@ func TestHintTmpSegmentRejected(t *testing.T) {
 // (`.../<schema>/*/x.parquet`) would match `_tmp/` without ever spelling it,
 // so the `_tmp` rule alone is not enough.
 func TestHintWildcardOutsideFinalSegmentRejected(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	cfg := forma.DuckDBConfig{S3Bucket: "b"}
 	for _, tmpl := range []string{
 		"s3://b/data/{{.SchemaID}}/*/x.parquet",
 		"s3://b/data/*/{{.SchemaID}}/*.parquet",
@@ -154,7 +145,7 @@ func TestHintWildcardOutsideFinalSegmentRejected(t *testing.T) {
 // TestHintDirectoryPathRejected pins #477: a path ending in `/` names a
 // directory, not an object or a glob, and is refused.
 func TestHintDirectoryPathRejected(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	cfg := forma.DuckDBConfig{S3Bucket: "b"}
 	for _, tmpl := range []string{"s3://b/", "s3://b/data/{{.SchemaID}}/"} {
 		paths, err := duckDBParquetPathsForQuery(hintQuery(tmpl), cfg)
 		require.Nil(t, paths, "template %q", tmpl)
@@ -166,7 +157,7 @@ func TestHintDirectoryPathRejected(t *testing.T) {
 // hint form the repo relies on: a single-`*` object glob, a multi-path
 // base/delta template, a `?`/`[]` object pattern, and a literal object URI.
 func TestHintFinalSegmentGlobAccepted(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	cfg := forma.DuckDBConfig{S3Bucket: "b"}
 	for tmpl, want := range map[string][]string{
 		"s3://b/data/{{.SchemaID}}/*.parquet": {"s3://b/data/7/*.parquet"},
 		"s3://b/data/{{.SchemaID}}/base/*.parquet, s3://b/data/{{.SchemaID}}/delta/*.parquet": {
@@ -188,7 +179,7 @@ func TestHintFinalSegmentGlobAccepted(t *testing.T) {
 // prefix is canonicalized with the writers' single TrimSuffix("/").
 func TestHintDataPrefixScope(t *testing.T) {
 	for _, prefix := range []string{"data", "data/"} {
-		cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b", S3DataPrefix: prefix}
+		cfg := forma.DuckDBConfig{S3Bucket: "b", S3DataPrefix: prefix}
 		paths, err := duckDBParquetPathsForQuery(hintQuery("s3://b/data/{{.SchemaID}}/*.parquet"), cfg)
 		require.NoError(t, err, "prefix %q", prefix)
 		require.Equal(t, []string{"s3://b/data/7/*.parquet"}, paths, "prefix %q", prefix)
@@ -211,7 +202,7 @@ func TestHintDataPrefixScope(t *testing.T) {
 // rejecting everything or scoping to the bucket root literally.
 func TestHintEmptyDataPrefixKeepsBucketScope(t *testing.T) {
 	for _, prefix := range []string{"", "/"} {
-		cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b", S3DataPrefix: prefix}
+		cfg := forma.DuckDBConfig{S3Bucket: "b", S3DataPrefix: prefix}
 		paths, err := duckDBParquetPathsForQuery(hintQuery("s3://b/anywhere/{{.SchemaID}}/*.parquet"), cfg)
 		require.NoError(t, err, "prefix %q", prefix)
 		require.Equal(t, []string{"s3://b/anywhere/7/*.parquet"}, paths, "prefix %q", prefix)
@@ -228,7 +219,7 @@ func TestHintEmptyDataPrefixKeepsBucketScope(t *testing.T) {
 // prefix out of the published message, and leaves it in the operator copy.
 func TestHintGlobMetacharDataPrefixRejected(t *testing.T) {
 	for _, prefix := range []string{"data/*", "data/**", "data?", "data[1]", "*"} {
-		cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b", S3DataPrefix: prefix}
+		cfg := forma.DuckDBConfig{S3Bucket: "b", S3DataPrefix: prefix}
 		tmpl := "s3://b/" + prefix + "/{{.SchemaID}}/x.parquet" // sits "inside" the scope string
 		paths, err := duckDBParquetPathsForQuery(hintQuery(tmpl), cfg)
 		require.Nil(t, paths, "prefix %q", prefix)
@@ -248,7 +239,7 @@ func TestHintGlobMetacharDataPrefixRejected(t *testing.T) {
 // eligible for the degraded Postgres fallback. A NUL in the template text
 // renders into the path, so the rendered value is what is judged.
 func TestHintTextRuleRejected(t *testing.T) {
-	cfg := forma.DuckDBConfig{AllowCallerParquetPaths: true, S3Bucket: "b"}
+	cfg := forma.DuckDBConfig{S3Bucket: "b"}
 	for _, tc := range []struct{ tmpl, want string }{
 		{"s3://b/{{.SchemaID}}/x\x00.parquet", `s3 parquet path "s3://b/7/x\x00.parquet" is not permitted: text cannot contain a NUL character (U+0000)`},
 		{"s3://b/x\xff.parquet", `s3 parquet path "s3://b/x\xff.parquet" is not permitted: text must be valid UTF-8`},

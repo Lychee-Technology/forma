@@ -349,9 +349,10 @@ func isClientError(err error) bool {
 // This replaces #307's chain-shape heuristic (canDiscloseVerbatim's
 // "single-cause chains may disclose verbatim"): shape proved a weak proxy for
 // provenance — a single-cause wrap could still embed driver prose in its own
-// text, and the one live mixed chain (an unrenderable caller-supplied path
-// template, internal/federated/duckdb_query_build.go) collapsed to an opaque
-// body precisely when the caller needed guidance. Publication is decided where
+// text, and the one mixed chain of the time (an unrenderable caller-supplied
+// path template, internal/federated/duckdb_query_build.go, a request field
+// until #715) collapsed to an opaque body precisely when the caller needed
+// guidance. Publication is decided where
 // the error is authored.
 //
 // The resolution itself is forma.ResolvePublicMessage — branch-provenance

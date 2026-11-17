@@ -388,9 +388,13 @@ func (e *env) buildManager(t *testing.T, pool *pgxpool.Pool) forma.EntityManager
 	config := &forma.Config{
 		Database: forma.DatabaseConfig{Engine: activeBackend().engine(), TableNames: forma.TableNames{SchemaRegistry: e.tables.schemaRegistry,
 			EntityMain: e.tables.entityMain, EAVData: e.tables.eavData, ChangeLog: e.tables.changeLog}},
-		Query:          forma.QueryConfig{DefaultPageSize: 20, MaxPageSize: 100},
-		Entity:         forma.EntityConfig{SchemaDirectory: schemaDir},
-		Transaction:    forma.TransactionConfig{DefaultTimeout: time.Minute},
+		Query:       forma.QueryConfig{DefaultPageSize: 20, MaxPageSize: 100},
+		Entity:      forma.EntityConfig{SchemaDirectory: schemaDir},
+		Transaction: forma.TransactionConfig{DefaultTimeout: time.Minute},
+		// DuckDB is on, as on a CDC deployment: every non-transactional Query
+		// then enters the federated engine (#715), which is what makes the
+		// counting engine's zero at cleanup say that no Tx path reaches it.
+		DuckDB:         coordinationDuckDBConfig(),
 		SchemaRegistry: registry,
 	}
 	ctx := internal.WithFederatedEngineWrapper(e.ctx, e.engine.wrap)
@@ -398,6 +402,16 @@ func (e *env) buildManager(t *testing.T, pool *pgxpool.Pool) forma.EntityManager
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = em.Close() })
 	return em
+}
+
+// coordinationDuckDBConfig is an in-memory DuckDB with no S3: the suite never
+// lets a read reach the parquet tiers, and the engine's routing answers its
+// one federated control read, a single-row page, from PostgreSQL.
+func coordinationDuckDBConfig() forma.DuckDBConfig {
+	cfg := forma.DefaultConfig(nil).DuckDB
+	cfg.Enabled = true
+	cfg.DBPath = ":memory:"
+	return cfg
 }
 
 // countingEngine is the manager's federated engine, wrapped to count its

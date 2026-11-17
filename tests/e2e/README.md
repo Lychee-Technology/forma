@@ -171,7 +171,7 @@ bun run compactor -- --schema-id 101
 
 ### Federated Check
 
-Validates that the federated read path (`advanced_query` with `federated.enabled=true`) agrees with records reconstructed directly from Postgres. Sampling is by identity and seed-reproducible, so both sides compare the same rows. Fails on count mismatch, checksum mismatch, zero sample overlap, or any missing/mismatched record.
+Validates that the federated read path (`advanced_query` against a server started with `DUCKDB_ENABLED`, which runs every non-transactional query through the federated engine) agrees with records reconstructed directly from Postgres. Sampling is by identity and seed-reproducible, so both sides compare the same rows. Fails on count mismatch, checksum mismatch, zero sample overlap, or any missing/mismatched record.
 
 ```bash
 # Check all schemas with default sample size
@@ -188,14 +188,15 @@ Each run writes a versioned report `reports/federated-check-<runId>.json`.
 
 The check locates its sample by paging the federated result at 100 rows per page, so it can reach as deep as the schema is large. The server refuses a page whose window ends past `MAX_QUERY_ROWS` (10000 by default, #598), which the default `DATASET_SIZE` fits exactly. For a schema holding more rows, start the server with `MAX_QUERY_ROWS` at least the row count rounded up to a multiple of 100, or `0` to disable the limit. The rounding matters because the limit bounds the whole window of the last, partially filled page: 10001 rows need `MAX_QUERY_ROWS=10100`, since page 101 ends at row 10100. Otherwise the pages past the limit answer `400` and the sampled rows beyond them are reported missing.
 
-By default the identity check routes through Postgres (hybrid routing serves small pages from the hot tier). To prove the read actually goes through **DuckDB/S3**, start the server with the federated engine enabled and pass `--require-duckdb` (or `REQUIRE_DUCKDB=1`):
+By default the identity check routes through Postgres (hybrid routing serves small pages from the hot tier). The route is the server's, not the request's (#715). To prove the read actually goes through **DuckDB/S3**, start a server whose routing sends every query there, with manifest-driven reads, and pass `--require-duckdb` (or `REQUIRE_DUCKDB=1`):
 
 ```bash
-# server env: DUCKDB_ENABLED=true S3_ENDPOINT=http://localhost:9000 S3_ACCESS_KEY=... S3_SECRET_KEY=...
+# server env: DUCKDB_ENABLED=true DUCKDB_ROUTING_STRATEGY=freshness-first DUCKDB_MANIFEST_TEMPLATE='manifest/{{.SchemaID}}.json'
+#             S3_BUCKET=forma-cdc S3_PREFIX=delta S3_ENDPOINT=http://localhost:9000 S3_ACCESS_KEY=... S3_SECRET_KEY=...
 bun run federated-check -- --schema lead --require-duckdb
 ```
 
-This forces `preferred_tiers=["warm","cold"]` (which the router serves from DuckDB) and fails unless `execution_plan.routing.used_duckdb` is true. Requires the rows to be flushed first (`cdc-flush`). Any schema works, including `lead`/`visit` with nested dotted attributes (`contact.annualIncome`) — the federated projection folds dotted names to their parquet column aliases (#260).
+The check asks for the execution plan (`include_execution_plan`) and fails unless `execution_plan.routing.used_duckdb` is true. The server resolves the parquet paths from the manifests `cdc-flush` writes. Requires the rows to be flushed first (`cdc-flush`). Any schema works, including `lead`/`visit` with nested dotted attributes (`contact.annualIncome`) — the federated projection folds dotted names to their parquet column aliases (#260).
 
 ### Clean S3 (repeatable runs)
 
@@ -233,7 +234,7 @@ The `k6-*` scripts prefer a local `k6` binary. If `k6` is not installed, they au
 
 ### k6 Thresholds
 
-Since #190/#243 the k6 smoke is a **functional concurrency gate, not a latency SLA**: precise latency numbers are owned by `benchmark-smoke` on dedicated hardware. All requests run the OLTP path (`federated.enabled` is never set); the DuckDB/S3 route is proven separately by `federated-check --require-duckdb` in CI.
+Since #190/#243 the k6 smoke is a **functional concurrency gate, not a latency SLA**: precise latency numbers are owned by `benchmark-smoke` on dedicated hardware. Against the default hybrid routing every request is answered from Postgres; the DuckDB/S3 route is proven separately in CI by `federated-check --require-duckdb` against a second, freshness-first server.
 
 | Metric | Threshold | Role |
 |--------|-----------|------|
@@ -272,7 +273,8 @@ See `.env.example` for all available configuration options:
 | `DUCKDB_S3_PREFIX` | _(unset)_ | Server: S3 data prefix for DuckDB. Falls back to `S3_PREFIX`, but **only when a manifest template is also set** (see below) |
 | `DUCKDB_MANIFEST_PREFIX` | _(unset)_ | Server: manifest prefix for DuckDB. Falls back to `MANIFEST_PREFIX`, but **only when a manifest template is also set** |
 | `DUCKDB_MANIFEST_TEMPLATE` | _(unset)_ | Server: manifest template (switch for manifest-driven reads; fails at startup if set without bucket). Falls back to `MANIFEST_TEMPLATE` |
-| `DUCKDB_ALLOW_CALLER_PARQUET_PATHS` | `false` | Server: opt in to honoring the per-request `s3_parquet_path_template` hint (#456). Default off rejects the hint; when `true`, hint paths must fall inside `S3_BUCKET`, and enabling it without a bucket fails at startup. `federated-check` sends such a hint, so this must be `true` (with `S3_BUCKET` set) to exercise the hint path |
+| `DUCKDB_ROUTING_STRATEGY` | `hybrid` | Server: the federated engine's routing strategy (`hybrid`, `cost-first` or `freshness-first`). It decides which queries read the parquet tiers through DuckDB; `freshness-first` sends every query there. Any other value fails startup |
+| `DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE` | `false` | Server: answer a query whose DuckDB pass fails degradably from Postgres alone (design §7.2). Costs Postgres load during an S3 outage, never correctness |
 | `DUCKDB_HOT_LEG_TRANSPORT` | `pgx` | Server: how a federated pass reads the hot tier. `pgx` is the only transport; `attach` (retired in #858) or any other value fails startup |
 | `REQUIRE_DUCKDB` | `0` | federated-check / k6: fail unless a DuckDB route is observed |
 

@@ -332,18 +332,15 @@ func testMultiKeyPublicAPIDesc(ctx context.Context, t *testing.T, env *Env, wide
 		return want[i].Attrs["count"].(float64) > want[j].Attrs["count"].(float64) // count DESC
 	})
 
-	res, err := env.EntityManager().Query(ctx, &forma.QueryRequest{
-		SchemaName:   wide.Name,
-		Page:         1,
-		ItemsPerPage: 20,
-		SortBy:       []string{"rank", "count"},
-		SortOrder:    forma.SortOrderDesc,
-		Federated: &forma.FederatedQueryRequest{
-			Enabled:               true,
-			PreferredTiers:        []string{"hot", "warm", "cold"},
-			S3ParquetPathTemplate: env.ParquetGlob(),
-			IncludeExecutionPlan:  true,
-		},
+	// The deployment routes every query through DuckDB (#715); the manifest
+	// names the parquet objects.
+	res, err := env.DuckDBRoutedEntityManager().Query(ctx, &forma.QueryRequest{
+		SchemaName:           wide.Name,
+		Page:                 1,
+		ItemsPerPage:         20,
+		SortBy:               []string{"rank", "count"},
+		SortOrder:            forma.SortOrderDesc,
+		IncludeExecutionPlan: true,
 	})
 	if err != nil {
 		t.Fatalf("public-api federated query: %v", err)
@@ -402,7 +399,9 @@ func testMultiKeyMixedPublicFederated(ctx context.Context, t *testing.T, env *En
 	mustFlush(ctx, t, env)
 	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
 
-	res, err := env.EntityManager().Query(ctx, &forma.QueryRequest{
+	// The deployment routes every query through DuckDB (#715); the manifest
+	// names the parquet objects.
+	res, err := env.DuckDBRoutedEntityManager().Query(ctx, &forma.QueryRequest{
 		SchemaName:   wide.Name,
 		Page:         1,
 		ItemsPerPage: 20,
@@ -410,12 +409,7 @@ func testMultiKeyMixedPublicFederated(ctx context.Context, t *testing.T, env *En
 			{Attribute: "rank"}, // direction omitted → asc default
 			{Attribute: "count", SortOrder: forma.SortOrderDesc},
 		},
-		Federated: &forma.FederatedQueryRequest{
-			Enabled:               true,
-			PreferredTiers:        []string{"hot", "warm", "cold"},
-			S3ParquetPathTemplate: env.ParquetGlob(),
-			IncludeExecutionPlan:  true,
-		},
+		IncludeExecutionPlan: true,
 	})
 	if err != nil {
 		t.Fatalf("public mixed-direction federated query: %v", err)

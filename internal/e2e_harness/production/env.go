@@ -63,17 +63,19 @@ type Env struct {
 	duckS3Access string
 	duckS3Secret string
 
-	manager      forma.EntityManager
-	engine       *fedengine.DBFederatedQueryEngine
-	breaker      *fedengine.CircuitBreaker
-	events       []*Event
-	eventSeq     int
-	queryN       int
-	queries      []*QueryResult
-	lastDiff     *Diff
-	rng          *rand.Rand
-	genOrdinal   int
-	provisionErr error
+	manager forma.EntityManager
+	// routedManagers memoizes RoutedEntityManager's managers by strategy.
+	routedManagers map[forma.RoutingStrategy]forma.EntityManager
+	engine         *fedengine.DBFederatedQueryEngine
+	breaker        *fedengine.CircuitBreaker
+	events         []*Event
+	eventSeq       int
+	queryN         int
+	queries        []*QueryResult
+	lastDiff       *Diff
+	rng            *rand.Rand
+	genOrdinal     int
+	provisionErr   error
 }
 
 // EnvOption customizes NewEnv.
@@ -281,13 +283,12 @@ func (e *Env) startDuckDB() error {
 		MaxConnections: e.opts.duckMaxConns,
 		MaxParallelism: e.opts.duckThreads,
 		QueryTimeout:   60 * time.Second,
-		// #456: the production harness drives federated reads through the
-		// caller-supplied S3ParquetPathTemplate hint, so it opts into the
-		// feature and scopes it to the cluster bucket. Setting S3Bucket without
-		// ManifestTemplate stays inert for manifest reads (ManifestReadEnabled
-		// gates on the template only).
-		S3Bucket:                c.Bucket,
-		AllowCallerParquetPaths: true,
+		// The production harness drives federated reads through the
+		// engine-level S3ParquetPathTemplate hint, scoped to the cluster
+		// bucket (#456, #477). Setting S3Bucket without ManifestTemplate stays
+		// inert for manifest reads (ManifestReadEnabled gates on the template
+		// only).
+		S3Bucket: c.Bucket,
 	}
 	e.DuckCfg.Routing.Strategy = e.opts.routing
 	duck, err := fedengine.NewDuckDBClientContext(context.Background(), e.DuckCfg)

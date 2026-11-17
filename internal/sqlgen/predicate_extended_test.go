@@ -202,10 +202,6 @@ func TestToDualClauses_ExtendedOperatorErrors(t *testing.T) {
 		cond    forma.Condition
 		wantErr string
 	}{
-		{"$now on a federated datetime", charKv("seen", "lte:$now-30s"),
-			"the $now operand on datetime attribute 'seen' is not supported on a federated query"},
-		{"$now on a federated bound date", charKv("born", "equals:$now"),
-			"the $now operand on date attribute 'born' is not supported on a federated query"},
 		{"empty list", charKv("tag", "in:[]"),
 			"operator 'in' on attribute 'tag' takes a JSON array of 1 to 1000 values; the array is empty"},
 		{"oversized list", charKv("tag", oversized),

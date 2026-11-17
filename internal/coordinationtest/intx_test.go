@@ -33,14 +33,13 @@ func TestInTxRunsFnOnceAndReturnsItsErrorUnchanged(t *testing.T) {
 	require.ErrorIs(t, err, plain)
 }
 
-// The counting engine is the manager's: a federated read reaches it. Every
-// test's cleanup asserts the count is zero, so this control proves the
-// assertion can fail.
+// The counting engine is the manager's: on a deployment with DuckDB enabled,
+// a non-transactional Query reaches it (#715). Every test's cleanup asserts
+// the count is zero, so this control proves the assertion can fail.
 func TestCountingEngineSeesAFederatedRead(t *testing.T) {
 	e := newEnv(t)
 	_, _ = e.em.Query(e.ctx, &forma.QueryRequest{SchemaName: InstanceSchema, Page: 1, ItemsPerPage: 1,
-		Condition: equals("status", "running"),
-		Federated: &forma.FederatedQueryRequest{Enabled: true, AllowPartialDegradedMode: true}})
+		Condition: equals("status", "running")})
 	require.EqualValues(t, 1, e.engine.calls.Load(), "a federated read goes through the counting engine")
 	e.engine.calls.Store(0)
 }

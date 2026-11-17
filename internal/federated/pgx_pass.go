@@ -118,10 +118,6 @@ func (e *DBFederatedQueryEngine) streamPgxPass(
 	}
 	p.src = src
 	planCtx.recordEmptyParquetScan(src.emptyCandidate)
-	if opts != nil {
-		// A pass reads every listed object or fails (#348, #722).
-		opts.PartialScan = nil
-	}
 	release, err := e.acquirePgxPassSlot(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("pgx pass over schema %d: %w", q.SchemaID, err)

@@ -58,7 +58,6 @@ type PersistentRecordPage struct {
 	TotalPages    int
 	CurrentPage   int
 	ExecutionPlan *ExecutionPlan
-	Partial       *PartialScan
 }
 
 type PersistentRecordKey struct {
@@ -132,6 +131,14 @@ type PersistentRecordReader interface {
 	// for internal batch lookups (relation enrichment); it must never expand to
 	// an OR-of-N condition per value.
 	QueryPersistentRecordsByAttrValues(ctx context.Context, tables StorageTables, schemaID int16, attr string, values []string, limit int) (*PersistentRecordPage, error)
+}
+
+// ServerClock reads PostgreSQL's clock outside any caller transaction, as
+// epoch milliseconds through the spelling the $now operand renders. A
+// federated Query reads it once and compares every $now leaf, on the
+// PostgreSQL and the DuckDB legs alike, against that one instant (#715).
+type ServerClock interface {
+	ServerTimeMillis(ctx context.Context) (int64, error)
 }
 
 type FederatedQueryEngine interface {

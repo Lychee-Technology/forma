@@ -259,36 +259,6 @@ func TestValidateDuckDBConfig_ManifestReadWiredIntoValidate(t *testing.T) {
 	}
 }
 
-// TestValidateDuckDBConfig_AllowCallerParquetPathsRequiresBucket pins #456: the
-// caller-path opt-in cannot be enabled without a bucket to scope hints against,
-// so Validate fails fast at startup rather than letting every hint-bearing
-// request 4xx at run time.
-func TestValidateDuckDBConfig_AllowCallerParquetPathsRequiresBucket(t *testing.T) {
-	t.Parallel()
-
-	config := DefaultConfig(NewMockSchemaRegistry())
-	config.DuckDB.AllowCallerParquetPaths = true
-	config.DuckDB.S3Bucket = "  " // whitespace-only is still "unset"
-
-	err := config.Validate()
-	if err == nil {
-		t.Fatal("Expected Validate to reject allowCallerParquetPaths without a bucket, got nil")
-	}
-	var configErr *ConfigError
-	if !errors.As(err, &configErr) {
-		t.Fatalf("Expected ConfigError, got %T (%v)", err, err)
-	}
-	if configErr.Field != "duckdb.s3Bucket" {
-		t.Errorf("Expected error field duckdb.s3Bucket, got %s", configErr.Field)
-	}
-
-	// With a bucket set, the same opt-in validates cleanly.
-	config.DuckDB.S3Bucket = "forma-cdc"
-	if err := config.Validate(); err != nil {
-		t.Fatalf("Expected allowCallerParquetPaths + bucket to validate, got %v", err)
-	}
-}
-
 func TestDuckDBConfig_ManifestReadEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -384,7 +354,7 @@ func TestDuckDBBreakerConfigValidation(t *testing.T) {
 
 // TestValidateDuckDBConfig_RejectsGlobPrefix pins #527, which widened the
 // #526 review finding: an S3DataPrefix carrying a DuckDB glob metacharacter is
-// rejected at startup whatever allowCallerParquetPaths says. The writers store
+// rejected at startup. The writers store
 // the prefix as a literal S3 key, while the reader's fallback glob, manifest
 // URIs and hint scope hand it to read_parquet, which expands it. The rule
 // applies before the enable gate, like the whitespace rule, so a glob prefix
@@ -393,24 +363,21 @@ func TestValidateDuckDBConfig_RejectsGlobPrefix(t *testing.T) {
 	t.Parallel()
 
 	for _, prefix := range []string{"data/*", "data/**", "data?", "data[1]", "*"} {
-		for _, allowCaller := range []bool{false, true} {
-			for _, template := range []string{"manifest/{{.SchemaID}}.json", ""} {
-				config := DefaultConfig(NewMockSchemaRegistry())
-				config.DuckDB.S3Bucket = "forma-cdc"
-				config.DuckDB.ManifestTemplate = template
-				config.DuckDB.S3DataPrefix = prefix
-				config.DuckDB.AllowCallerParquetPaths = allowCaller
+		for _, template := range []string{"manifest/{{.SchemaID}}.json", ""} {
+			config := DefaultConfig(NewMockSchemaRegistry())
+			config.DuckDB.S3Bucket = "forma-cdc"
+			config.DuckDB.ManifestTemplate = template
+			config.DuckDB.S3DataPrefix = prefix
 
-				err := config.Validate()
-				var configErr *ConfigError
-				if !errors.As(err, &configErr) {
-					t.Fatalf("prefix %q (allowCaller=%v, template=%q): expected ConfigError, got %T (%v)",
-						prefix, allowCaller, template, err, err)
-				}
-				if configErr.Field != "duckdb.s3DataPrefix" || !strings.Contains(configErr.Message, "glob metacharacter") {
-					t.Errorf("prefix %q (allowCaller=%v, template=%q): expected a glob-metacharacter error on duckdb.s3DataPrefix, got %v",
-						prefix, allowCaller, template, configErr)
-				}
+			err := config.Validate()
+			var configErr *ConfigError
+			if !errors.As(err, &configErr) {
+				t.Fatalf("prefix %q (template=%q): expected ConfigError, got %T (%v)",
+					prefix, template, err, err)
+			}
+			if configErr.Field != "duckdb.s3DataPrefix" || !strings.Contains(configErr.Message, "glob metacharacter") {
+				t.Errorf("prefix %q (template=%q): expected a glob-metacharacter error on duckdb.s3DataPrefix, got %v",
+					prefix, template, configErr)
 			}
 		}
 	}
@@ -419,7 +386,6 @@ func TestValidateDuckDBConfig_RejectsGlobPrefix(t *testing.T) {
 	config.DuckDB.S3Bucket = "forma-cdc"
 	config.DuckDB.ManifestTemplate = "manifest/{{.SchemaID}}.json"
 	config.DuckDB.S3DataPrefix = "data/v2"
-	config.DuckDB.AllowCallerParquetPaths = true
 	if err := config.Validate(); err != nil {
 		t.Fatalf("a literal prefix must validate: %v", err)
 	}

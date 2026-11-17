@@ -117,11 +117,11 @@ func extendedPgEavPayload(attr string, meta forma.AttributeMetadata, hasMeta boo
 }
 
 func extendedDuckPayload(attr string, meta forma.AttributeMetadata, hasMeta bool, ext extendedLeaf) DuckLeafPayload {
-	if ext.kind == extServerTime {
-		return DuckLeafPayload{Err: serverTimeFederatedError(attr, meta.ValueType)}
-	}
 	if ext.err != nil {
 		return DuckLeafPayload{Err: ext.err}
+	}
+	if ext.kind == extServerTime {
+		return DuckLeafPayload{Err: serverTimeUnresolvedError(attr, meta.ValueType)}
 	}
 	column := resolveDuckDBColumn(attr)
 	if !hasMeta {

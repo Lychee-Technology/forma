@@ -3,10 +3,11 @@
  * Federated Query Validation
  *
  * Validates that the Forma federated read path agrees with Postgres at the
- * row-identity level. It queries /api/v1/advanced_query with
- * federated.enabled=true (so the federated engine, not the plain OLTP list
- * endpoint, serves the read) and checks total count, row-ID set membership, and
- * a checksum over row IDs against an independent Postgres source.
+ * row-identity level. It queries /api/v1/advanced_query, which a server
+ * started with DUCKDB_ENABLED runs through the federated engine (#715: the
+ * deployment, not the request, picks the route), and checks total count,
+ * row-ID set membership, and a checksum over row IDs against an independent
+ * Postgres source.
  *
  * Sampling is by identity: a seeded, reproducible set of row IDs is drawn from
  * Postgres, then the same rows are located in the federated result — so the two
@@ -45,7 +46,6 @@ interface Args {
   seed: string;
   fullScan: boolean;
   requireDuckDB: boolean;
-  manifestReads: boolean;
 }
 
 function parseArgs(): Args {
@@ -56,8 +56,6 @@ function parseArgs(): Args {
   let fullScan = false;
   // Also honor an env flag so CI can require the DuckDB route without args.
   let requireDuckDB = process.env.REQUIRE_DUCKDB === '1' || process.env.REQUIRE_DUCKDB === 'true';
-  // Same idea for the manifest-driven read mode (see queryFederated).
-  let manifestReads = process.env.MANIFEST_READS === '1' || process.env.MANIFEST_READS === 'true';
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--schema' && args[i + 1]) {
@@ -70,19 +68,9 @@ function parseArgs(): Args {
       fullScan = true;
     } else if (args[i] === '--require-duckdb') {
       requireDuckDB = true;
-    } else if (args[i] === '--manifest-reads') {
-      manifestReads = true;
     }
   }
-  if (manifestReads && !requireDuckDB) {
-    // manifestReads only changes behavior on the forced-DuckDB route
-    // (queryFederated skips the s3_parquet_path_template hint there); without
-    // --require-duckdb this run exercises nothing manifest-driven.
-    console.warn(
-      'WARNING: --manifest-reads has no effect without --require-duckdb; the manifest-driven read path is not being exercised.',
-    );
-  }
-  return { schema, sampleSize, seed, fullScan, requireDuckDB, manifestReads };
+  return { schema, sampleSize, seed, fullScan, requireDuckDB };
 }
 
 interface DataRecord {
@@ -116,40 +104,26 @@ interface ComparisonResult {
 }
 
 /**
- * POST advanced_query on the federated path with a match-all condition. When
- * forceDuckDB is set, preferred_tiers excludes hot ("warm","cold"), which the
- * hybrid router treats as cold-only and serves from DuckDB regardless of page
- * size — the only way to reach the DuckDB/S3 path via the API (hot page sizes
- * <1000 otherwise route to Postgres). Requires the rows to be flushed to
- * warm/cold parquet first.
+ * POST advanced_query with a match-all condition, asking for the execution
+ * plan so the route the server took can be reported. The route is the
+ * server's: with the default hybrid routing small pages are answered from
+ * Postgres, and a server started with DUCKDB_ROUTING_STRATEGY=freshness-first
+ * reads every page through DuckDB, its parquet paths resolved from the
+ * manifest (DUCKDB_MANIFEST_TEMPLATE). The DuckDB route needs the rows
+ * flushed to warm/cold parquet first.
  */
 async function queryFederated(
   schemaName: string,
   page: number,
   itemsPerPage: number,
-  forceDuckDB: boolean,
-  manifestReads: boolean,
 ): Promise<FederatedQueryResult | null> {
-  const federated: Record<string, unknown> = { enabled: true, include_execution_plan: true };
-  if (forceDuckDB) {
-    federated.preferred_tiers = ['warm', 'cold'];
-    if (!manifestReads) {
-      // The DuckDB read needs to know where the parquet lives. Point read_parquet
-      // at the flushed delta layout (s3://<bucket>/<prefix>/<schemaID>/*.parquet),
-      // mirroring how the Go production harness supplies its glob. Skipped under
-      // --manifest-reads: an explicit hint always wins over the server's manifest
-      // source (duckdb_query_build.go), so sending it would leave the
-      // manifest-driven path untested (#302).
-      federated.s3_parquet_path_template = `s3://${config.s3.bucket}/${config.s3.prefix}/{{.SchemaID}}/*.parquet`;
-    }
-  }
   const response = await post<FederatedQueryResult>('/api/v1/advanced_query', {
     schema_name: schemaName,
     // Empty AND composite renders to "1=1" server-side (match all).
     condition: { l: 'and', c: [] },
     page,
     items_per_page: itemsPerPage,
-    federated,
+    include_execution_plan: true,
   });
   if (!response.ok || !response.data) {
     console.error(`Federated API error for ${schemaName}: ${response.error}`);
@@ -172,15 +146,13 @@ async function collectFederatedRowIds(
   schemaName: string,
   targetSet: Set<string>,
   formaCount: number,
-  forceDuckDB: boolean,
-  manifestReads: boolean,
 ): Promise<{ found: Set<string>; route: string }> {
   const found = new Set<string>();
   let route = 'unknown';
   const maxPages = Math.ceil(formaCount / API_PAGE_SIZE) + 2;
 
   for (let page = 1; page <= maxPages && found.size < targetSet.size; page++) {
-    const pageResult = await queryFederated(schemaName, page, API_PAGE_SIZE, forceDuckDB, manifestReads);
+    const pageResult = await queryFederated(schemaName, page, API_PAGE_SIZE);
     if (!pageResult) break;
     if (page === 1) route = routeLabel(pageResult.execution_plan);
     if (pageResult.data.length === 0) break;
@@ -219,7 +191,7 @@ async function compareSchema(
   }
 
   result.postgresCount = await getPostgresCount(sql, schemaId);
-  const countProbe = await queryFederated(schemaName, 1, 1, args.requireDuckDB, args.manifestReads);
+  const countProbe = await queryFederated(schemaName, 1, 1);
   if (countProbe) {
     result.formaCount = countProbe.total_records;
     result.route = routeLabel(countProbe.execution_plan);
@@ -246,8 +218,6 @@ async function compareSchema(
     schemaName,
     targetSet,
     result.formaCount,
-    args.requireDuckDB,
-    args.manifestReads,
   );
   if (route !== 'unknown') result.route = route;
 
@@ -272,7 +242,7 @@ async function compareSchema(
   if (!checksumMatch) result.notes.push(`Checksum mismatch: Forma=${result.formaChecksum}, Postgres=${result.postgresChecksum}`);
   if (!hasOverlap) result.notes.push('Zero sample overlap: federated result returned none of the sampled rows');
   if (!allFound) result.notes.push(`${result.missingInForma.length} sampled row(s) missing from the federated result`);
-  if (!routeOk) result.notes.push(`Expected DuckDB route but got '${result.route}' (is the server DUCKDB_ENABLED and are rows flushed?)`);
+  if (!routeOk) result.notes.push(`Expected DuckDB route but got '${result.route}' (is the server DUCKDB_ENABLED with DUCKDB_ROUTING_STRATEGY=freshness-first, and are rows flushed?)`);
   // Trim for report readability (after assertions are computed).
   result.missingInForma = result.missingInForma.slice(0, 20);
   result.notes.push(`Federated route: ${result.route}`);

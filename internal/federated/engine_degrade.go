@@ -51,12 +51,7 @@ func recordDegradedFallbackPlan(opts *model.FederatedQueryOptions, tables model.
 // (#714), and stitches the plan onto the returned page. mark is the plan as
 // it stood before the DuckDB attempt; see the rewind below.
 func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tables model.StorageTables, fq *model.FederatedAttributeQuery, opts *model.FederatedQueryOptions, mark executionPlanMark, cause error) (*model.PersistentRecordPage, error) {
-	if opts != nil {
-		// The out-parameter must agree with the page this path returns;
-		// markHotTierOnly below sets it again for the Postgres-only answer.
-		opts.PartialScan = nil
-	}
-	// The same holds for the plan (#639): whatever the abandoned attempt
+	// The plan must agree with the page this path returns (#639): whatever the abandoned attempt
 	// recorded — a failed pass's sources and timings — would sit next to
 	// UseDuckDB=false with only internal Notes to say it describes the
 	// attempt, not the answer. Rewind first so the cause note below survives.
@@ -72,11 +67,10 @@ func (e *DBFederatedQueryEngine) degradeToPostgresOnly(ctx context.Context, tabl
 	if perr != nil {
 		return nil, fmt.Errorf("degraded postgres-only fallback: %w", perr)
 	}
+	// The answer is complete for current state: PostgreSQL holds every live
+	// row. The fallback stays visible through the line above, the #714
+	// metric and, when the plan was requested, its routing reason (#715).
 	attachExecutionPlan(page, opts)
-	// §7.2 promises a partial signal on the degraded answer; Routing.Reason
-	// only reaches callers that asked for the plan, so the fallback carries
-	// the same coverage marker as the routed path (#468).
-	markHotTierOnly(page, opts, fq)
 	return page, nil
 }
 

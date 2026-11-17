@@ -1,6 +1,9 @@
 package sqlgen
 
 import (
+	"fmt"
+	"strconv"
+
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/conditionexpr"
 )
@@ -32,7 +35,9 @@ func (s ServerTimeOperand) Args() []any {
 
 // RenderComparison spells `lhs <sqlOp> $now` over the offset placeholder ph.
 // It is PostgreSQL-only: no DuckDB tier can read the transaction clock, so
-// the federated payloads refuse the operand (serverTimeFederatedError).
+// a federated query pins the operand to one instant first
+// (ResolveServerTime), and the DuckDB payloads refuse an unresolved one
+// (serverTimeUnresolvedError).
 //
 // On an rfc3339 column the operand is the canonical image of the same
 // millisecond instant. Canonical images order as their instants (#842), so
@@ -63,41 +68,100 @@ func rfc3339MillisImage(ms string) string {
 		`'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
 }
 
-// serverTimeFederatedError is the refusal of a $now leaf on a federated
-// query: the warm and cold tiers are evaluated by DuckDB, which cannot read
-// the PostgreSQL transaction clock the operand is defined by.
-func serverTimeFederatedError(attr string, vt forma.ValueType) error {
-	return forma.InvalidInputf(
-		"the $now operand on %s attribute '%s' is not supported on a federated query: it is the PostgreSQL transaction time, which the DuckDB-evaluated tiers cannot read; send an absolute timestamp instead",
-		vt, attr)
+// serverTimeUnresolvedError refuses a $now leaf that reached a DuckDB
+// payload unresolved. DuckDB cannot read the PostgreSQL clock the operand
+// is defined by, so a federated Query pins every $now leaf to one instant
+// read from PostgreSQL before routing (ResolveServerTime, #715); only a
+// direct engine caller that skipped that step lands here.
+func serverTimeUnresolvedError(attr string, vt forma.ValueType) error {
+	return fmt.Errorf("the $now operand on %s attribute '%s' reached a duckdb pass unresolved: "+
+		"a federated query must pin it to one postgresql instant first (sqlgen.ResolveServerTime)", vt, attr)
 }
 
-// FederatedServerTimeError returns the refusal for the first leaf of cond
-// that compares a date or datetime attribute against $now, or nil. The
-// entity query service calls it before routing a federated request, since
-// the engine may answer one through its Postgres-only route, where the
-// operand would otherwise render.
-func FederatedServerTimeError(cond forma.Condition, cache forma.SchemaAttributeCache) error {
+// HasServerTime reports whether cond holds a well-formed $now leaf that
+// ResolveServerTime would pin, so a caller reads the clock only for a
+// condition that needs it.
+func HasServerTime(cond forma.Condition, cache forma.SchemaAttributeCache) bool {
+	found := false
+	_ = rewriteServerTime(cond, cache, func(forma.AttributeMetadata, extendedLeaf) string {
+		found = true
+		return ""
+	})
+	return found
+}
+
+// ResolveServerTime returns a copy of cond in which every well-formed $now
+// leaf on a date or datetime attribute compares against the fixed instant
+// nowMs, shifted by the leaf's offset, instead of the statement's now()
+// (#715). A federated Query reads nowMs once from PostgreSQL before routing,
+// so the PostgreSQL and the DuckDB legs, and any fallback, compare against
+// the same instant.
+//
+// Each such leaf becomes an ordinary epoch-millisecond literal under the
+// same operator, which every leg already compares exactly as $now does: a
+// datetime attribute against the shifted instant, a date attribute against
+// the start of its UTC calendar day (the truncation RenderComparison
+// applies), and an rfc3339-bound column against the instant's canonical
+// image, which orders as the instant does (#842). A literal is a bind, so
+// the plan caches never key on the instant. A malformed $now leaf is left
+// as it is, so normalization refuses it with its own message. cond itself
+// is not modified.
+func ResolveServerTime(cond forma.Condition, cache forma.SchemaAttributeCache, nowMs int64) forma.Condition {
+	return rewriteServerTime(cond, cache, func(meta forma.AttributeMetadata, ext extendedLeaf) string {
+		instant := nowMs + ext.now.OffsetMs
+		if meta.ValueType == forma.ValueTypeDate {
+			instant = utcDayStartMillis(instant)
+		}
+		return strconv.FormatInt(instant, 10)
+	})
+}
+
+// utcDayStartMillis floors ms to the start of its UTC calendar day,
+// matching RenderComparison's floor(ms / 86400000.0) * 86400000 for
+// instants before the epoch too.
+func utcDayStartMillis(ms int64) int64 {
+	const day = int64(86400000)
+	q := ms / day
+	if ms%day < 0 {
+		q--
+	}
+	return q * day
+}
+
+// rewriteServerTime copies cond, replacing the operand of each well-formed
+// $now leaf with what literal returns for it. A leaf whose replacement is
+// empty, and every other node, keeps its value.
+func rewriteServerTime(cond forma.Condition, cache forma.SchemaAttributeCache, literal func(forma.AttributeMetadata, extendedLeaf) string) forma.Condition {
 	switch c := cond.(type) {
 	case *forma.CompositeCondition:
 		if c == nil {
-			return nil
+			return cond
 		}
-		for _, child := range c.Conditions {
-			if err := FederatedServerTimeError(child, cache); err != nil {
-				return err
-			}
+		out := &forma.CompositeCondition{Logic: c.Logic, Conditions: make([]forma.Condition, len(c.Conditions))}
+		for i, child := range c.Conditions {
+			out.Conditions[i] = rewriteServerTime(child, cache, literal)
 		}
+		return out
 	case *forma.KvCondition:
 		if c == nil {
-			return nil
+			return cond
 		}
 		meta, ok := cache[c.Attr]
-		if isServerTimeLeaf(meta, ok, conditionexpr.ParseOperatorValueLenient(c.Value)) {
-			return serverTimeFederatedError(c.Attr, meta.ValueType)
+		lenient := conditionexpr.ParseOperatorValueLenient(c.Value)
+		if !isServerTimeLeaf(meta, ok, lenient) {
+			return cond
 		}
+		ext := classifyServerTimeLeaf(c.Attr, conditionexpr.CanonicalOperator(lenient.Operator), meta, lenient.Value)
+		if ext.err != nil {
+			return cond
+		}
+		value := literal(meta, ext)
+		if value == "" {
+			return cond
+		}
+		return &forma.KvCondition{Attr: c.Attr, Value: lenient.Operator + ":" + value}
 	}
-	return nil
+	return cond
 }
 
 // isServerTimeLeaf reports whether a leaf compares against the $now operand:

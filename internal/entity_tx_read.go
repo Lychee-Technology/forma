@@ -91,9 +91,9 @@ func (s *txSession) lockRow(ctx context.Context, schemaName string, rowID uuid.U
 	return nil
 }
 
-// resolveTxRead applies a read's options and refuses a federated request:
-// a Tx reads the PostgreSQL hot tier, which holds every live row and its own
-// uncommitted writes, and nothing else.
+// resolveTxRead applies a read's options. A Tx reads the PostgreSQL hot
+// tier, which holds every live row and its own uncommitted writes, and
+// nothing else, whatever the deployment (#715).
 func resolveTxRead(method string, req *forma.QueryRequest, opts []forma.ReadOption) (forma.ReadOptions, error) {
 	var read forma.ReadOptions
 	for _, opt := range opts {
@@ -103,10 +103,6 @@ func resolveTxRead(method string, req *forma.QueryRequest, opts []forma.ReadOpti
 	}
 	if req == nil {
 		return read, forma.InvalidInputf("query request cannot be nil")
-	}
-	if req.Federated != nil && req.Federated.Enabled {
-		return read, forma.InvalidInputf("%s inside a transaction reads the PostgreSQL hot tier only; "+
-			"send the request without federated.enabled", method)
 	}
 	return read, nil
 }

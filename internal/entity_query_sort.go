@@ -123,21 +123,18 @@ func buildAttributeOrders(req *forma.QueryRequest, schemaCache forma.SchemaAttri
 	return orders, nil
 }
 
-// validateFederatedSort refuses a sort on a list attribute on a federated
-// request (#853). DuckDB orders a LIST element by element, and the hot
-// leg's Go comparator, which must reproduce the parquet leg's order key for
-// key (design.md §6.1, Ordering parity), has no LIST order: such a page
-// would merge its hot rows in an order no cursor can continue. The check
-// runs before routing, like validateFederatedCondition, so the answer does
-// not depend on whether the engine routed the request to PostgreSQL or to
-// DuckDB. A request without the federated flag keeps its sort.
+// validateFederatedSort refuses a sort on a list attribute on a deployment
+// that runs Query through the federated engine (#853, #715). DuckDB orders a
+// LIST element by element, and the hot leg's Go comparator, which must
+// reproduce the parquet leg's order key for key (design.md §6.1, Ordering
+// parity), has no LIST order: such a page would merge its hot rows in an
+// order no cursor can continue. The caller checks before routing, so the
+// answer does not depend on whether the engine routed the request to
+// PostgreSQL or to DuckDB. A deployment without DuckDB keeps the sort.
 func validateFederatedSort(req *forma.QueryRequest, orders []model.AttributeOrder) error {
-	if req.Federated == nil || !req.Federated.Enabled {
-		return nil
-	}
 	for _, ao := range orders {
 		if ao.ValueType == forma.ValueTypeList {
-			return forma.InvalidInputf("cannot sort a federated query on list attribute '%s' in schema '%s': the federated route does not order lists; sort on a scalar attribute, or query without federated", ao.AttrName, req.SchemaName)
+			return forma.InvalidInputf("cannot sort a federated query on list attribute '%s' in schema '%s': this deployment runs queries through the federated engine, which does not order lists; sort on a scalar attribute", ao.AttrName, req.SchemaName)
 		}
 	}
 	return nil

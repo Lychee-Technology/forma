@@ -16,8 +16,8 @@ import (
 func TestQueryRequest_UnmarshalJSON(t *testing.T) {
 	rowID := uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
 
-	// A row leaves wantRowID and wantFederated nil when the JSON carries
-	// neither, and the test then checks they decode to nil.
+	// A row leaves wantRowID nil when the JSON carries none, and the test
+	// then checks it decodes to nil.
 	tests := []struct {
 		name           string
 		json           string
@@ -25,7 +25,7 @@ func TestQueryRequest_UnmarshalJSON(t *testing.T) {
 		wantPage       int
 		wantCondition  bool
 		wantRowID      *uuid.UUID
-		wantFederated  *FederatedQueryRequest
+		wantPlan       bool
 		wantErr        bool
 	}{
 		{
@@ -62,17 +62,22 @@ func TestQueryRequest_UnmarshalJSON(t *testing.T) {
 			wantRowID:      &rowID,
 		},
 		{
-			name:           "with federated hints",
-			json:           `{"schema_name":"users","page":1,"items_per_page":10,"federated":{"enabled":true,"preferred_tiers":["hot","warm","cold"],"prefer_hot":false,"use_main_as_anchor":true,"s3_parquet_path_template":"s3://bucket/prefix/{{.SchemaID}}/base/*.parquet, s3://bucket/prefix/{{.SchemaID}}/delta/*.parquet","allow_partial_degraded_mode":true}}`,
+			name:           "with include_execution_plan",
+			json:           `{"schema_name":"users","page":1,"items_per_page":10,"include_execution_plan":true}`,
 			wantSchemaName: "users",
 			wantPage:       1,
-			wantFederated: &FederatedQueryRequest{
-				Enabled:                  true,
-				PreferredTiers:           []string{"hot", "warm", "cold"},
-				UseMainAsAnchor:          true,
-				S3ParquetPathTemplate:    "s3://bucket/prefix/{{.SchemaID}}/base/*.parquet, s3://bucket/prefix/{{.SchemaID}}/delta/*.parquet",
-				AllowPartialDegradedMode: true,
-			},
+			wantPlan:       true,
+		},
+		{
+			// #715: the request-level federated block is gone with no
+			// compatibility period. The decoder ignores unknown fields, so an
+			// old client's block decodes as if it were absent: the deployment
+			// decides the route, and the block's include_execution_plan no
+			// longer asks for a plan.
+			name:           "retired federated block is ignored",
+			json:           `{"schema_name":"users","page":1,"items_per_page":10,"federated":{"enabled":true,"preferred_tiers":["hot"],"include_execution_plan":true,"consistency_mode":"eventual"}}`,
+			wantSchemaName: "users",
+			wantPage:       1,
 		},
 		{
 			name:    "invalid JSON",
@@ -103,7 +108,7 @@ func TestQueryRequest_UnmarshalJSON(t *testing.T) {
 				assert.Nil(t, req.Condition)
 			}
 			assert.Equal(t, tt.wantRowID, req.RowID)
-			assert.Equal(t, tt.wantFederated, req.Federated)
+			assert.Equal(t, tt.wantPlan, req.IncludeExecutionPlan)
 		})
 	}
 }
@@ -158,18 +163,12 @@ func TestQueryRequest_MarshalJSON(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "with federated hints",
+			name: "with include_execution_plan",
 			req: QueryRequest{
-				SchemaName:   "users",
-				Page:         1,
-				ItemsPerPage: 10,
-				Federated: &FederatedQueryRequest{
-					Enabled:                  true,
-					PreferredTiers:           []string{"hot", "warm", "cold"},
-					UseMainAsAnchor:          true,
-					S3ParquetPathTemplate:    "s3://bucket/prefix/{{.SchemaID}}/base/*.parquet, s3://bucket/prefix/{{.SchemaID}}/delta/*.parquet",
-					AllowPartialDegradedMode: true,
-				},
+				SchemaName:           "users",
+				Page:                 1,
+				ItemsPerPage:         10,
+				IncludeExecutionPlan: true,
 			},
 			wantErr: false,
 		},
@@ -191,11 +190,8 @@ func TestQueryRequest_MarshalJSON(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, tt.req.SchemaName, req2.SchemaName)
 				assert.Equal(t, tt.req.Page, req2.Page)
-				if tt.req.Federated != nil {
-					require.NotNil(t, req2.Federated)
-					assert.Equal(t, tt.req.Federated.PreferredTiers, req2.Federated.PreferredTiers)
-					assert.Equal(t, tt.req.Federated.S3ParquetPathTemplate, req2.Federated.S3ParquetPathTemplate)
-				}
+				assert.Equal(t, tt.req.IncludeExecutionPlan, req2.IncludeExecutionPlan)
+				assert.NotContains(t, string(data), "federated")
 			}
 		})
 	}

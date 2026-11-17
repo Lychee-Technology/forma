@@ -1506,14 +1506,15 @@ rows in that object are simply gone from the result set.
 - **Plain error, not `ErrInvalidInput`.** Nothing about the request is wrong;
   persisted data and the metadata indexing it disagree. It is an
   operator-visible consistency failure, not a user-facing `4xx`.
-- **Not degradable.** It surfaces even under
-  `federated.allow_partial_degraded_mode`, unlike the transient DuckDB/S3
+- **Not degradable.** It surfaces even on a deployment with
+  `duckdb.allowPartialDegradedMode`, unlike the transient DuckDB/S3
   failures that fall back to Postgres-only. Degrading here would return
   exactly the silently short answer this classification exists to make loud.
 - **Trigger precondition.** Only reachable when the server resolves parquet
   paths from the manifest source (`duckdb.manifestTemplate` configured — see
-  `docs/federated-query/design.md` §4.3.1). With per-request path hints, or
-  with glob paths, the classification is skipped: a hinted path set whose
+  `docs/federated-query/design.md` §4.3.1). With an engine-level path hint
+  (no request can set one since #715), or with glob paths, the
+  classification is skipped: a hinted path set whose
   object is missing still fails the scan, but as a plain
   `ErrFederatedReadFailed`, while a glob quietly expands to whatever objects
   survive and returns a shorter result set with no error at all.
@@ -1535,19 +1536,18 @@ rows in that object are simply gone from the result set.
 `forma.ErrNoParquetPaths`, carried by
 `forma.NoParquetPathsError{SchemaID, SourceConfigured}`, marks a
 DuckDB-routed federated read whose parquet path set resolved **empty**: no
-per-request render hint, and either no configured parquet source or a source
+engine-level path hint, and either no configured parquet source or a source
 whose manifest lists no files while the fallback glob is disabled (see
 `docs/federated-query/design.md` §4.3.1).
 
-- **Plain error, not `ErrInvalidInput`.** With a per-request hint the caller
-  can be at fault and the error wraps `ErrInvalidInput` instead (an
-  unrenderable or degenerate `s3_parquet_path_template`). Reaching *this*
-  error means no hint was supplied, so the read surface — server
-  configuration, or manifest state — is what cannot answer the query.
-- **Not degradable.** Like `ErrParquetSetInconsistent`, it surfaces even under
-  `federated.allow_partial_degraded_mode`. Every query that reaches the DuckDB
-  engine wants warm and/or cold data (hot-only and `prefer_hot` requests
-  short-circuit to Postgres before this point), so a Postgres-only fallback
+- **Plain error, not `ErrInvalidInput`.** No request names parquet paths
+  since #715, so the read surface — server configuration, or manifest
+  state — is what cannot answer the query. (An engine-level hint that cannot
+  render is invalid input instead; only the test harnesses set one.)
+- **Not degradable.** Like `ErrParquetSetInconsistent`, it surfaces even on a
+  deployment with `duckdb.allowPartialDegradedMode`. Every query that reaches
+  the DuckDB engine wants warm and/or cold data (an engine-level hot-only
+  query short-circuits to Postgres before this point), so a Postgres-only fallback
   would be silently short precisely where the cold tier was requested.
 - **Why it is not a read failure.** Before #299 the empty set rendered
   `read_parquet(<no value>)`, and the resulting DuckDB parser error classified
@@ -1576,7 +1576,7 @@ being read. It is raised before any path reaches a scan.
   collision between two schemas would not merely under-read — it would serve
   another schema's rows under this schema's identity.
 - **Not degradable.** Cross-schema contamination is the opposite of a partial
-  answer, so `allow_partial_degraded_mode` does not absorb it. It is also not
+  answer, so `duckdb.allowPartialDegradedMode` does not absorb it. It is also not
   relabelled as `ErrFederatedReadFailed` on the way out of path resolution,
   which would have handed it to the degraded fallback.
 - **Relationship to config validation.** `duckdb.manifestTemplate` is
@@ -1733,14 +1733,14 @@ enumerates the sweep, and counts only it.
 
 | site | caller mistake |
 | --- | --- |
-| `internal/entity_query_sort.go` | sorting by an attribute the schema does not define (#296) |
+| `internal/entity_query_sort.go` | sorting by an attribute the schema does not define (#296); on a deployment that runs the federated engine, sorting by a list attribute (#853, #715) |
 | `internal/transform/document_walk.go` (`requireWrittenAttributes`) | create/update that would store a row lacking an attribute whose metadata `required_policy` demands it |
 | `internal/sqlgen/predicate_normalizer.go` | filtering on an unknown attribute; unparseable numeric/bool filter value; unsupported operator; an operator the attribute's type does not accept (`starts_with`/`contains` on a non-text column, an inequality on a boolean) |
 | `internal/sqlgen/dualpath_sql_helpers.go` | unparseable numeric/date/bool literal in a main-column or federated predicate; a text operand with a NUL character or invalid UTF-8 |
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
 | `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites, `body_limit.go`) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360); a request body over the configured cap (`413`, #465); a body net/http could not frame (`400`, `malformed request body`). A body the transport failed to deliver is not caller input and takes the redacted branch (`408` on a read timeout, see "Request limits") |
 | `internal/entity_request_limits.go` (`validateBatchOperation`, `pageOffset`) | a batch carrying more operations than `PerformanceConfig.MaxBatchSize`; a `page` whose offset overflows an `int` (#465); a `page` whose window ends past `QueryConfig.MaxRows` (#598) |
-| `internal/federated/duckdb_query_build.go` (`duckDBParquetPathsForQuery`), `internal/federated/parquet_hint_scope.go` (`validateHintPathScope`) | a `federated.s3_parquet_path_template` hint that is disabled by the deployment, unrenderable, renders to no usable path, contains a disallowed character, a NUL character or invalid UTF-8 (#771), resolves outside the configured bucket / `s3DataPrefix` scope, or has a forbidden shape — `**`, a wildcard outside the object-name segment, a `_tmp` segment, a trailing `/` (#456, #477) — or any hint at all on an engine whose bucket is empty or whose `s3DataPrefix` carries a glob metacharacter, combinations startup validation normally rejects. The hint template and the offending rendered path are caller-owned and published; the configured bucket and prefix are operator detail (`WithOperatorDetail`). |
+| `internal/federated/duckdb_query_build.go` (`duckDBParquetPathsForQuery`), `internal/federated/parquet_hint_scope.go` (`validateHintPathScope`) | an engine-level parquet path hint (`model.DuckDBRenderHints.S3ParquetPathTemplate`) that is unrenderable, renders to no usable path, contains a disallowed character, a NUL character or invalid UTF-8 (#771), resolves outside the configured bucket / `s3DataPrefix` scope, or has a forbidden shape — `**`, a wildcard outside the object-name segment, a `_tmp` segment, a trailing `/` (#456, #477) — or any hint at all on an engine whose bucket is empty or whose `s3DataPrefix` carries a glob metacharacter. Since #715 no request carries a hint (the `federated.s3_parquet_path_template` field and its `duckdb.allowCallerParquetPaths` opt-in are gone), so only an in-module engine caller reaches this row. The hint template and the offending rendered path are published; the configured bucket and prefix are operator detail (`WithOperatorDetail`). |
 
 ### A success body that fails to encode (#591)
 
@@ -1878,7 +1878,8 @@ shape:
   with `strconv.ErrSyntax` (#642). The `*FromEnv` overlays
   (`DatabaseConfigFromEnv`, `HTTPServerConfigFromEnv`, `ApplyLimitsFromEnv`,
   `EntityConfigFromEnv`, `MetricEmitterFromEnv`, and cmd/server's DuckDB
-  overlay) read all of their variables and join every failure, and cmd/server
+  overlay, where `DUCKDB_ROUTING_STRATEGY` must name `hybrid`, `cost-first`
+  or `freshness-first` (#715)) read all of their variables and join every failure, and cmd/server
   and cmd/lambda join the overlays' errors in turn, so one boot names every
   bad variable. That check runs before `Config.Validate`: a
   value that never reached its field would make validation judge a default
@@ -2478,8 +2479,8 @@ refused before any DuckDB statement with `ErrInvalidInput` naming the path
 (`s3 parquet path "…" is not permitted: text cannot contain a NUL character
 (U+0000)`), the rule PostgreSQL text applies elsewhere (`sqlutil.CheckText`).
 Only the NUL reaches the server from a JSON body (`\u0000`); the Go API can
-send both. The hint is reachable only where `duckdb.allowCallerParquetPaths`
-is on.
+send both. Since #715 no request carries the hint, so the refusal is
+reachable only by an in-module caller of the engine.
 
 ### Status change: a duplicate-attribute payload now succeeds
 

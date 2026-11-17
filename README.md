@@ -89,9 +89,9 @@ a time (search spans several), and offset pagination is capped at a configurable
   ([Conditional Writes](docs/conditional-writes.md)), predicate updates/deletes and
   claims. There is no HTTP transaction endpoint (deferred to #656).
 - **CDC to Parquet and federated queries (optional).** `cdc-flush` exports changed
-  rows to S3 Parquet, `compactor` merges them into base files, and a query that opts
-  in is answered by DuckDB over Parquet merged with unexported PostgreSQL rows.
-  Off by default; see [limitations](#federated-queries).
+  rows to S3 Parquet, `compactor` merges them into base files, and on a server that
+  enables DuckDB a query can be answered by DuckDB over Parquet merged with unexported
+  PostgreSQL rows. Off by default; see [limitations](#federated-queries).
 - **Deployment entry points.** An HTTP server (`cmd/server`), an AWS Lambda handler
   for API Gateway HTTP APIs (`cmd/lambda`), an operations CLI (`cmd/tools`), and the
   Go packages `forma` and `factory` for embedding.
@@ -211,7 +211,7 @@ flowchart LR
     forma -- "Get, Query, Search" --> pg
     pg -. "cdc-flush (batch job)" .-> delta
     delta -. "compactor" .-> base
-    forma -. "federated Query (opt-in)" .-> duck
+    forma -. "federated Query (DUCKDB_ENABLED)" .-> duck
     duck -.-> delta
     duck -.-> base
 ```
@@ -220,8 +220,8 @@ flowchart LR
   attribute to its column or EAV row through the attributes file, and writes
   `entity_main`, `eav_data` and a `change_log` entry in one PostgreSQL transaction.
   S3 is never part of a write.
-- **Read path.** `Get`, the default `Query` and cross-schema search read PostgreSQL,
-  which always holds the complete current state of every live entity.
+- **Read path.** `Get`, cross-schema search and, on a server without DuckDB, `Query`
+  read PostgreSQL, which always holds the complete current state of every live entity.
 - **CDC and the Parquet tiers (optional).** `forma-tools cdc-flush` exports rows whose
   `change_log` entry is unflushed to Parquet under `/delta/`, records them in an S3
   manifest, then marks them flushed. `forma-tools compactor` merges delta files into
@@ -290,35 +290,49 @@ Each read API has a minimum guarantee, whichever execution path answers it
 | API | Guarantee |
 |-----|-----------|
 | `GET /api/v1/{schema}/{row_id}` (`Get`) | Read-after-write: once a create, update or delete has returned, every later `Get` sees it. A record's attributes come from one snapshot; relation fields are fetched separately and can reflect a different commit. Always served by PostgreSQL, so it fails if PostgreSQL is unavailable. |
-| `GET /api/v1/{schema}`, `POST /api/v1/advanced_query` (`Query`) | Eventually consistent: an answer converges on committed state once CDC catches up. No path deliberately serves a stale version, and a deleted row does not reappear. Fails if PostgreSQL is unavailable. Federated exceptions are listed [below](#federated-queries). |
+| `GET /api/v1/{schema}`, `POST /api/v1/advanced_query` (`Query`) | Eventually consistent: an answer converges on committed state once CDC catches up. No path deliberately serves a stale version, and a deleted row does not reappear. Fails if PostgreSQL is unavailable. Served by PostgreSQL, or on a federated server by PostgreSQL and DuckDB over Parquet ([below](#federated-queries)). |
 | `GET /api/v1/search` (`CrossSchemaSearch`) | Eventually consistent. Served by PostgreSQL only. |
 | `Tx.Get`, `Tx.Query` (Go API) | See the transaction's own writes, at READ COMMITTED on PostgreSQL and REPEATABLE READ on `aurora-dsql` ([Transactions](docs/transactions.md#reading-inside-a-tx)). |
 
-No read is serializable. In a query's `federated` block, `consistency_mode` and
-`use_main_as_anchor` are accepted and have no effect.
+No read is serializable.
 
 ### Federated queries
 
-The federated path is off unless the server runs with `DUCKDB_ENABLED=true` and S3
-settings, CDC is running, and a query sends `"federated": {"enabled": true, ...}` in
-its advanced-query body ([request controls](docs/federated-query/design.md#43-federated-request-controls)).
+Federation is a deployment decision, not a request option
+([federated query controls](docs/federated-query/design.md#43-federated-query-controls)).
+On a server started with `DUCKDB_ENABLED=true` and S3 settings, every
+`GET /api/v1/{schema}` and `POST /api/v1/advanced_query` enters the federated engine,
+and its routing strategy decides whether DuckDB reads the Parquet tiers that CDC
+writes or PostgreSQL answers alone. Both return the same rows. Without `DUCKDB_ENABLED`, every query runs on
+PostgreSQL. `Get`, search and Go `Tx` reads always read PostgreSQL. A request can only
+ask to see the route: `"include_execution_plan": true` in the advanced-query body
+returns `execution_plan`, on a federated server only.
+
+The request-level `federated` block was removed in #715 without a compatibility
+period. The server ignores unknown JSON fields, so a client still sending it gets the
+server's route; Go code that sets `QueryRequest.Federated` no longer compiles.
+
 Limitations to know before relying on it:
 
-- With the default routing, a page smaller than 1000 rows (every API page) is answered
-  from PostgreSQL alone and marked `partial: {"reason": "hot_tier_only", ...}` unless
-  `preferred_tiers` names a tier beyond `hot` explicitly (#468).
+- With the default `hybrid` routing, a page smaller than 1000 rows (every API page) is
+  answered from PostgreSQL alone unless its offset is 10000 or more, which the default
+  `MAX_QUERY_ROWS` refuses. A server on the defaults therefore never reads Parquet; set
+  `DUCKDB_ROUTING_STRATEGY` to `freshness-first` or `cost-first` to read it.
 - A schema with an attribute inside an array of objects (the sample `lead` has two)
-  cannot be represented in Parquet: its federated queries are answered from
-  PostgreSQL, and `cdc-flush` skips it with a warning (#704).
-- A corrupt Parquet object fails the query or, with `allow_partial_degraded_mode`,
-  is answered from PostgreSQL alone ([design §7.3](docs/federated-query/design.md#73-corrupt-parquet-objects-251-722)).
-- On a deployment that sets `DUCKDB_ALLOW_CALLER_PARQUET_PATHS`, a query whose
-  `federated.s3_parquet_path_template` omits the newest Parquet objects can miss rows
-  or return an older version of a row, a deleted row included, with no `partial`
-  marker, and does not converge as CDC catches up. The opt-in is off by default.
-
-The federated request surface is due to change: #715 makes federation a deployment
-decision and removes several of these request fields.
+  cannot be represented in Parquet: its queries are answered from PostgreSQL, and
+  `cdc-flush` skips it with a warning (#704).
+- When S3 or DuckDB fails, or a Parquet object is corrupt, the query fails; with
+  `DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE` it is answered from PostgreSQL alone
+  ([design §7.2](docs/federated-query/design.md#72-degraded-modes),
+  [§7.3](docs/federated-query/design.md#73-corrupt-parquet-objects-251-722)). That
+  answer is complete, but during an S3 outage it moves every scan onto PostgreSQL. The
+  response does not mark it; the log line "federated query degraded to postgres-only",
+  the `federated_degraded_fallback_total` metric and the execution plan's routing
+  reason do.
+- On a federated server a sort on a list attribute is refused (`400`); a PostgreSQL-only
+  server accepts it.
+- If `DUCKDB_ENABLED` is set and the DuckDB client cannot initialise, the server does
+  not start.
 
 ### Database compatibility
 
@@ -374,6 +388,8 @@ The server is configured through environment variables. The common ones:
 | `SCHEMA_TABLE`, `EAV_TABLE`, `ENTITY_MAIN_TABLE`, `CHANGE_LOG_TABLE` | `schema_registry_dev`, `eav_data_dev`, `entity_main_dev`, `change_log_dev` | Table names; must match what `init-db` created |
 | `PORT` | `8080` | HTTP listen port |
 | `DUCKDB_ENABLED` | `false` | Enables the federated engine; its S3 and manifest settings are in [design §4.3.1](docs/federated-query/design.md#431-parquet-path-resolution-and-manifest-driven-reads) |
+| `DUCKDB_ROUTING_STRATEGY` | `hybrid` | Which queries the federated engine sends through DuckDB: `hybrid`, `cost-first` or `freshness-first` (every query) ([design §4.3](docs/federated-query/design.md#43-federated-query-controls)) |
+| `DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE` | `false` | `true` answers a query from PostgreSQL alone when its DuckDB pass fails degradably, instead of failing it |
 | `METRICS_STDOUT` | unset (off) | `true` writes every emitted metric as a JSON line on stdout ([Telemetry](docs/telemetry.md)) |
 | `VALIDATE_UPDATES_STRICT` | `false` | `true` rejects updates that violate the schema; by default they are logged and written ([Error Handling](docs/error-handling.md)) |
 
@@ -414,13 +430,14 @@ one failed boot names every bad variable:
   Go duration, fails startup of the server and the Lambda cold start, for example
   `environment variable QUERY_TIMEOUT_SECONDS="30s" must be a whole number of seconds: invalid syntax`.
 - **Booleans.** `METRICS_STDOUT`, `VALIDATE_UPDATES_STRICT`, `DUCKDB_ENABLED` and
-  `DUCKDB_ALLOW_CALLER_PARQUET_PATHS` take `true`/`false`, `1`/`0` or `t`/`f` in any
+  `DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE` take `true`/`false`, `1`/`0` or `t`/`f` in any
   case. Any other value, such as `yes`, `on` or `true ` with a trailing space, fails
   startup (before #642 it read as false, silently). `compactor` applies the same rule
   to `METRICS_STDOUT`, and `cmd/sample` to `VALIDATE_UPDATES_STRICT`.
-  `DUCKDB_ALLOW_CALLER_PARQUET_PATHS` and the other DuckDB engine and manifest settings
-  are read only when `DUCKDB_ENABLED` is true, or is itself refused (so one boot names
-  both). `DUCKDB_QUERY_TIMEOUT_SECONDS` is a limit and is always checked.
+  `DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE`, `DUCKDB_ROUTING_STRATEGY` (which must name one
+  of its three strategies) and the other DuckDB engine and manifest settings are read
+  only when `DUCKDB_ENABLED` is true, or is itself refused (so one boot names every bad
+  value). `DUCKDB_QUERY_TIMEOUT_SECONDS` is a limit and is always checked.
 - **Kubernetes.** A Service named `db` makes the kubelet inject
   `DB_PORT=tcp://<ip>:<port>` into pods in its namespace. That value is refused rather
   than read as `5432`, so set `DB_PORT` explicitly or set `enableServiceLinks: false`.

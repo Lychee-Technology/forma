@@ -114,13 +114,6 @@ func TestShapeHashDistinguishesTierHotMembership(t *testing.T) {
 		"empty tiers default to all three and must share the full-form skeleton")
 }
 
-func TestShapeHashAnchorParticipates(t *testing.T) {
-	a := baseQuery("gt:10")
-	b := baseQuery("gt:10")
-	b.UseMainAsAnchor = true
-	require.NotEqual(t, mustHash(t, a), mustHash(t, b))
-}
-
 func TestShapeHashLimitOffsetDoNotParticipate(t *testing.T) {
 	a := baseQuery("gt:10")
 	b := baseQuery("gt:10")

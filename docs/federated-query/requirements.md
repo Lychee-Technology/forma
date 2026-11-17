@@ -912,8 +912,8 @@ reads. Where the two documents differ, design.md wins.
 
 | Failure | Response |
 |---------|----------|
-| PostgreSQL unavailable | Every read fails: `Get`, PostgreSQL-only queries and federated queries. No query is answered from S3 alone, whatever the request sets. A federated query fails with `ErrPostgresReadFailed`, which every PostgreSQL read of the federated engine wraps (design.md §7.2). |
-| S3 or DuckDB unavailable | `Get` and PostgreSQL-only queries are unaffected. A federated query that reaches DuckDB fails, or, with `allow_partial_degraded_mode`, is answered from PostgreSQL alone and marked `partial: {reason: "hot_tier_only"}` (design.md §7.2). |
+| PostgreSQL unavailable | Every read fails: `Get`, PostgreSQL-only queries and federated queries. No query is answered from S3 alone, whatever the deployment sets. A federated query fails with `ErrPostgresReadFailed`, which every PostgreSQL read of the federated engine wraps (design.md §7.2). |
+| S3 or DuckDB unavailable | `Get` and PostgreSQL-only queries are unaffected. A federated query that reaches DuckDB fails, or, on a deployment with `duckdb.allowPartialDegradedMode` (`DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE`), is answered from PostgreSQL alone (design.md §7.2). |
 | DuckDB out of memory | No dedicated handling and no 507: it is a DuckDB read error like any other (design.md §7.1-§7.3). |
 | Query timeout | The request fails, answered 504 over HTTP (`QueryConfig.DefaultTimeout`, `DuckDBConfig.QueryTimeout`, #465). No partial result is returned, and an expired deadline is never degraded to PostgreSQL. |
 | Invalid cursor | There is no public cursor: HTTP pagination is offset-based. The engine's internal keyset cursor is validated before any SQL. |
@@ -928,12 +928,15 @@ used other parameters and has been removed.
 
 ### 9.3 Degraded Mode: S3 Unavailable
 
-design.md §7.2 specifies the degraded mode. The answer comes from PostgreSQL
-alone and carries `partial: {reason: "hot_tier_only", unconsulted_tiers:
-[...]}`. The `partial_result`/`warnings` response the sketch returned, and
-its "last 24 hours" freshness hint, were never built. Under the storage
-invariant (design.md §3.3) a degraded answer holds every live row: the marker
-reports the tiers the answer did not consult, not missing rows.
+design.md §7.2 specifies the degraded mode. The deployment turns it on
+(`duckdb.allowPartialDegradedMode`), and the answer comes from PostgreSQL
+alone. Under the storage invariant (design.md §3.3) a degraded answer holds
+every live row, so the response carries no marker; the fallback shows in the
+log, in `federated_degraded_fallback_total` and in a requested execution
+plan (§10.2). The `partial_result`/`warnings` response the sketch returned,
+and its "last 24 hours" freshness hint, were never built, and the
+`partial: {reason: "hot_tier_only"}` marker that stood in for them was
+removed by #715.
 
 ---
 
@@ -1030,8 +1033,8 @@ Per-stage latency and row counts are metrics (§10.1). Routing, per-source and
 timing detail for one query is returned to the caller on request (§10.3) and
 is not logged.
 
-One kind of failure is recorded in full only in the engine's log. When a
-request sets `federated.allow_partial_degraded_mode`, the engine absorbs most
+One kind of failure is recorded in full only in the engine's log. On a
+deployment with `duckdb.allowPartialDegradedMode`, the engine absorbs most
 DuckDB-path failures, a circuit-breaker rejection included, and answers from
 PostgreSQL alone (`docs/federated-query/design.md` §7.2). The request
 succeeds, so:
@@ -1070,11 +1073,12 @@ succeeds, so:
   and the schema stay in the line.
 - `EntityManager.Query` and the HTTP layer log their ordinary success lines.
 
-The caller sees the fallback only in the response (§10.3). The `partial`
-marker reads `hot_tier_only`, which the routing shortcut for small pages sets
-too, so it does not identify a failure. A requested `execution_plan` names
-the degraded fallback in its `routing` reason. Neither carries the cause of
-the failure.
+The caller sees the fallback only in a requested `execution_plan`
+(§10.3), whose `routing` reason names the degraded fallback without the
+cause of the failure. An answer without a plan looks like any other: it is
+complete for current state (design.md §3.3), and #715 removed the
+`partial` marker, which the routing shortcut for small pages set too and so
+never identified a failure.
 
 ### 10.3 Query Diagnostics in the Response
 
@@ -1086,13 +1090,14 @@ inside the library, as integer nanoseconds. It excludes HTTP decoding and
 response encoding. The PostgreSQL-only path and cross-schema search set it
 too, so it does not depend on a federated execution plan.
 
-Two more fields carry diagnostics, and only the federated path sets them. A
-request without `federated.enabled` is answered by the PostgreSQL-only path
-(`docs/federated-query/design.md` §4.1) and carries neither field, whatever
-else its `federated` block says.
+One more field carries diagnostics, and only the federated engine sets it.
+On a deployment without DuckDB every query is answered by the
+PostgreSQL-only path (`docs/federated-query/design.md` §4.1) and carries no
+plan.
 
-- `execution_plan` is attached when a federated request also sets
-  `federated.include_execution_plan` (`docs/federated-query/design.md` §4.3).
+- `execution_plan` is attached when the request sets the top-level
+  `include_execution_plan` on a deployment that runs the federated engine
+  (`docs/federated-query/design.md` §4.3).
   It reports the routing decision (`routing`: whether DuckDB was used, the
   tiers read, the reason) and the sources the engine recorded (`sources`).
   Every source names its tier, engine and reason. A source's other fields
@@ -1100,10 +1105,10 @@ else its `federated` block says.
   duration)
   are omitted when zero, and `timings` is omitted when empty. Which of them
   appear depends on the path that answered:
-  - A page answered by PostgreSQL alone, through the hot-only gate or because
-    routing chose PostgreSQL, has one `postgres` source with no other fields
+  - A page answered by PostgreSQL alone, because routing chose PostgreSQL or
+    the parquet tiers cannot hold the schema, has one `postgres` source with no other fields
     and no `timings`. This is the usual shape under the default `hybrid`
-    strategy, which answers a small page with implicit tiers from PostgreSQL
+    strategy, which answers a small page from PostgreSQL
     (`docs/federated-query/design.md` §4.3).
   - A page answered by a federated pass has a `postgres` source for the
     dirty set the pass read in its snapshot, with the set's size as
@@ -1131,12 +1136,12 @@ else its `federated` block says.
   not projected into the response. `forma.ExecutionPlan` also declares
   `merge`. Nothing populates it, so it never appears in a response; #613
   tracks retiring or populating it.
-- `partial` is set on a federated request, whether or not a plan was
-  requested, when the page was answered from less than the request asked for.
-  Its one reason is `hot_tier_only`, with the tiers that were not consulted
-  (`docs/federated-query/design.md` §7.3). A read over a corrupt parquet
-  object is never answered from the remaining objects: it fails, or degrades
-  to a `hot_tier_only` answer (#722).
+
+Until #715 a response could also carry `partial`, a coverage marker whose one
+reason was `hot_tier_only` (`docs/federated-query/design.md` §7.3). Nothing
+replaces it: every answer is complete for current state, and a read over a
+corrupt parquet object is never answered from the remaining objects. It
+fails, or degrades to a PostgreSQL-only answer (#722).
 
 ---
 

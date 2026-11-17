@@ -27,18 +27,14 @@ const (
 
 // federatedWideQuery reads every e2e_wide row through the public
 // EntityManager on the DuckDB path, whatever tier the rows sit on: the
-// explicit tier declaration routes it there (#468), and the manifest names
-// the Parquet objects it reads.
+// manager's deployment routes every query there (#715), and the manifest
+// names the Parquet objects it reads.
 func federatedWideQuery(ctx context.Context, env *Env, wide SchemaRef) (*forma.QueryResult, error) {
-	return env.EntityManager().Query(ctx, &forma.QueryRequest{
-		SchemaName:   wide.Name,
-		Page:         1,
-		ItemsPerPage: 100,
-		Federated: &forma.FederatedQueryRequest{
-			Enabled:              true,
-			PreferredTiers:       []string{"hot", "warm", "cold"},
-			IncludeExecutionPlan: true,
-		},
+	return env.DuckDBRoutedEntityManager().Query(ctx, &forma.QueryRequest{
+		SchemaName:           wide.Name,
+		Page:                 1,
+		ItemsPerPage:         100,
+		IncludeExecutionPlan: true,
 	})
 }
 

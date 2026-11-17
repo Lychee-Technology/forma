@@ -80,9 +80,9 @@ type DuckDBConfig struct {
 	// ErrNoParquetPaths — a non-degradable read-path error naming the schema,
 	// distinct from the transient failures AllowPartialDegradedMode absorbs
 	// (#299). Leave this set unless every schema is known to be manifested.
-	// Second, when AllowCallerParquetPaths is on, a non-empty prefix narrows
-	// the scope of caller-supplied parquet paths from the whole bucket to
-	// s3://<S3Bucket>/<S3DataPrefix>/ (#477); empty keeps bucket granularity.
+	// Second, a non-empty prefix narrows the scope of an engine-level parquet
+	// path hint from the whole bucket to s3://<S3Bucket>/<S3DataPrefix>/
+	// (#477); empty keeps bucket granularity.
 	// The prefix must never contain a glob metacharacter (`*`, `?`, `[`):
 	// the writers store it as a literal S3 key while DuckDB would expand it in
 	// the fallback glob, the manifest URIs and every honored hint, so
@@ -100,16 +100,15 @@ type DuckDBConfig struct {
 	// pre-existing glob-based read path.
 	ManifestTemplate string `json:"manifestTemplate"`
 
-	// AllowCallerParquetPaths opts the deployment into honoring the
-	// per-request federated.s3_parquet_path_template field (#456). It defaults
-	// to false: the field is a caller-controlled scan target, so on every
-	// existing deployment a request carrying it is rejected. When true, a
-	// caller template is still honored only for paths inside the configured
-	// S3Bucket — under S3DataPrefix too when one is set — and only in the
-	// fallback glob's shape: no `**`, wildcards in the object-name segment
-	// only, no `_tmp/` staging segment (#477; see the engine's path
-	// resolver). The flag is necessary, not sufficient.
-	AllowCallerParquetPaths bool `json:"allowCallerParquetPaths"`
+	// AllowPartialDegradedMode lets a federated query whose DuckDB pass
+	// fails with a degradable error be answered from PostgreSQL alone (the
+	// design.md §7.2 degraded fallback). Under the storage invariant every
+	// live row is in PostgreSQL, so the fallback costs no correctness; it
+	// costs load, since an S3 or DuckDB outage then moves every scan onto
+	// PostgreSQL. Whether PostgreSQL can absorb that is the operator's call,
+	// so it is deployment configuration, off by default (#715): off, the
+	// failure is the query's error.
+	AllowPartialDegradedMode bool `json:"allowPartialDegradedMode"`
 
 	Routing RoutingPolicy `json:"routing"` // routing policy for federated queries
 }
@@ -325,9 +324,9 @@ const (
 	// RoutingStrategyHybrid uses DuckDB by default but short-circuits to
 	// PostgreSQL when the result set is expected to be small or hot data is
 	// explicitly preferred. The small-result shortcut is a cost heuristic:
-	// a keyset cursor (#354) or an explicit multi-tier PreferredTiers
-	// (#468) overrides it onto the federated path, and a request it keeps
-	// on Postgres is marked partial (hot_tier_only) when it asked for more.
+	// a keyset cursor (#354) overrides it onto the federated path. A query
+	// it keeps on Postgres is complete for current state, since every live
+	// row is in PostgreSQL (design.md §3.3).
 	RoutingStrategyHybrid RoutingStrategy = "hybrid"
 )
 
@@ -420,16 +419,12 @@ func (c *Config) validateDuckDBConfig() error {
 	if err := c.DuckDB.ValidateManifestRead(); err != nil {
 		return fmt.Errorf("invalid duckdb manifest read configuration: %w", err)
 	}
-	if err := c.DuckDB.ValidateCallerParquetPaths(); err != nil {
-		return err
-	}
-
 	return nil
 }
 
 // ParquetGlobMetacharacters are the characters DuckDB's read_parquet treats as
 // glob metacharacters in an S3 path (`**` is two of the first). The federated
-// engine uses them to place caller-supplied wildcards, and
+// engine uses them to place a path hint's wildcards, and
 // ValidateParquetPrefix refuses them in every parquet prefix (#477, #526
 // review, #527).
 const ParquetGlobMetacharacters = "*?["
@@ -439,7 +434,7 @@ const ParquetGlobMetacharacters = "*?["
 // the two sides of the lakehouse: the CDC writers (internal/cdc.BuildDeltaPath,
 // BuildTempPath, BuildBasePath) store it as a literal S3 key, which S3 permits,
 // while the reader hands it to DuckDB's read_parquet — in the level-3 fallback
-// glob, in every manifest URI and in the caller-hint scope — where it is
+// glob, in every manifest URI and in the path-hint scope — where it is
 // expanded. A prefix of `data/*` then scans every sibling directory, and
 // `data/**` recurses into the `_tmp/` staging objects the fallback must never
 // read, with nothing to say why. DuckDB's S3 glob has no documented escape
@@ -453,33 +448,6 @@ func ValidateParquetPrefix(field, prefix string) error {
 			Field: field,
 			Message: "must not contain a glob metacharacter (*, ?, [): the writers store it as a literal S3 key " +
 				"but DuckDB's read_parquet would expand it",
-		}
-	}
-	return nil
-}
-
-// ValidateCallerParquetPaths rejects the #456 caller-path opt-in when no bucket
-// is configured to scope hints against. Honoring
-// federated.s3_parquet_path_template requires a non-empty S3Bucket:
-// validateHintPathScope would otherwise reject every such request at run time,
-// turning an operator misconfiguration into invalid caller input. A glob
-// metacharacter in S3DataPrefix, which would hand every hint a directory
-// wildcard the caller never wrote (#526 review), needs no rule here:
-// ValidateManifestRead rejects it unconditionally (#527), and
-// validateHintPathScope still refuses every hint on a hand-built config that
-// skipped validation. Like ValidateManifestRead, validation is independent of
-// Enabled — whether the setting takes effect is the factory's gate, but an
-// incoherent combination is always a configuration error. Both cmd/server and
-// the factory call this beside ValidateManifestRead so the failure lands at
-// startup, before any I/O, rather than on the first hint-bearing request.
-func (d DuckDBConfig) ValidateCallerParquetPaths() error {
-	if !d.AllowCallerParquetPaths {
-		return nil
-	}
-	if strings.TrimSpace(d.S3Bucket) == "" {
-		return &ConfigError{
-			Field:   "duckdb.s3Bucket",
-			Message: "must be set when duckdb.allowCallerParquetPaths is enabled",
 		}
 	}
 	return nil
