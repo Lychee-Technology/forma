@@ -278,6 +278,7 @@ fake_go() {
 		./internal) suite=entity passes=10 ;;
 		./internal/cdc) suite=cdc passes=11 ;;
 		./internal/federated) suite=federated passes=2 ;;
+		./internal/publication) suite=publication passes=17 ;;
 		./cmd/tools) suite=ledger passes=6 ;;
 		./internal/coordinationtest/) suite=coordination passes=96 ;;
 		esac
