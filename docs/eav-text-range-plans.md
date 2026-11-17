@@ -91,8 +91,10 @@ FORMA_EAV_PLAN_EVIDENCE=<dir> FORMA_EAV_PLAN_ROWS=20000,100000 GOTOOLCHAIN=go1.2
 For each size it records the server version, the database and column
 collations, the attribute ids, the index DDL, the full result table and, for
 the cases listed in `textPlanCases`, the SQL the repository sent, its
-arguments and PostgreSQL's `EXPLAIN (ANALYZE, BUFFERS)` text. It logs the same
-record when `FORMA_EAV_PLAN_EVIDENCE` is unset.
+arguments and PostgreSQL's `EXPLAIN (ANALYZE, BUFFERS, VERBOSE)` text. It logs
+the same record when `FORMA_EAV_PLAN_EVIDENCE` is unset. The recorder added
+`VERBOSE` during #881; the #815 records and the first #881 records below were
+written without it.
 
 **Recorded run.** Revision `9fa2824`, which adds only test code to `main` at
 `bfeead9`: the SQL generation and `init-db` are `main`'s. PostgreSQL 16.15
@@ -298,6 +300,24 @@ without its outer scan now does the reverse: it rebuilds the pre-#881 anchor
 from the SQL the repository sends, on the same table and statistics as the
 mixed load's `missing` and `fresh` runs, so the two differ only in the anchor.
 
+A second run, under `EXPLAIN (ANALYZE, BUFFERS, VERBOSE)`, is committed as
+[N = 20,000](eav-text-range-plans/rows-20000-881-verbose.md) and
+[N = 100,000](eav-text-range-plans/rows-100000-881-verbose.md), at revision
+`675a9f5`, which changes only the recorder's `EXPLAIN` options. Its trees
+name each node's alias and output columns: in the pre-#881 `token gt 5` plan
+at 100,000 rows, `Seq Scan on public.eav_data t` (200,000 rows, output every
+column of `t`) is the outer side of the `Hash Semi Join` whose inner side is
+the `Index Only Scan using eav_data_text_idx on public.eav_data x` (5 rows),
+and the `change_log` branch's `eav_data t_1` is never executed. On the mixed
+load its plan shapes, and its buffers at 100,000 rows, are the first run's.
+`ANALYZE` samples at random, and with its estimates two pages differ: at
+20,000 rows the mixed `token gt` 5 page walks `entity_main_pkey` a little
+further (18,762 buffers against 18,421), and on the skewed load at 100,000
+rows `token gt` 5 (estimated 4,654) hashes all 105,000 `eav_data e` rows for
+the page (821 buffers, spilling to disk) while its anchor reads 8, as
+described under [the page joins](#what-remains-the-page-joins). The figures
+below are the first run's.
+
 ### What the scan was
 
 The PostgreSQL route anchors a condition on `eav_data` when it tests only EAV
@@ -432,8 +452,9 @@ a full page of 1,000 rows.
   reads 53 buffers in the recorded run. In an earlier run of the same SQL
   generation, at `0f2afb9` (only the benchmark's pass order differs), an
   estimate of 4,828 led the page to hash all 105,000 `eav_data` rows for
-  `eav_aggregated` (821 buffers, 33 ms, spilling to disk). #815 measured
-  846 buffers there with the outer scan included.
+  `eav_aggregated` (821 buffers, 33 ms, spilling to disk). The `VERBOSE`
+  run recorded the same plan (estimate 4,654, 821 buffers, of which the
+  anchor's 8). #815 measured 846 buffers there with the outer scan included.
 
 Both come from the estimate, not from the anchor's shape, and #815 showed
 the statistics cannot correct that estimate. They are bounded by the
