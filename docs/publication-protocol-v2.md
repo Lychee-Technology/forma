@@ -747,17 +747,35 @@ the V1 code it replaces:
 
 | Area | Moves to | Child |
 | --- | --- | --- |
-| `init-db` registration, table DDL, the upgrade cutover | `Statements`. `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock | writer |
-| `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit | writer |
-| `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. This closes #760's durable initialization record | writer |
-| compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes | compaction |
-| federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. `docs/federated-query/design.md` §6.1 is rewritten here | reader |
-| `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire` and `PlanCollection` in the collection order above. Repair becomes re-init. Verification walks retained generations | GC |
+| `init-db` registration, table DDL, the upgrade cutover | `Statements`. `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock | #889 (writer) |
+| `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path | #889 (writer) |
+| `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage` | #889 (writer), closing #760 |
+| compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891 | #890 (compaction) |
+| federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. `docs/federated-query/design.md` §6.1 is rewritten here | #759 (reader) |
+| `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire` and `PlanCollection` in the collection order above. Repair becomes re-init. Verification walks retained generations | #891 (GC) |
+| fault matrix, operator docs, EPIC evidence | crash injection at every staging, publish and commit boundary; a guard that fails if `QuerySource.Fallback`, the level-3 glob or a glob-only flag returns | #892 |
+| live Aurora DSQL behaviour | the assumptions in [Verification](#verification) | #893, under #817 |
 
-#888 names #759 alongside #760 as work to place. #760's scope, the durable
-initialization record `design.md` asks for, is the `init` generation and its history row.
-This document does not restate #759's scope, so where it lands is for review to decide
-against the table above.
+Sequencing: #888, then #889, then #890 and #759 (both use the publication interface
+#889 lands), then #891, then #892.
+
+**#759 is the reader child.** Its original evidence, a zero-match or partial-match glob
+that returns 200 with silently incomplete data, is what the reader cutover must close. #759
+deletes `QuerySource.Fallback`, the level-3 glob discovery and the config and read branches
+that reach them, with no compatibility flag and no read-path repair. A `PUBLISHED` record
+whose manifest is missing, fails the checks in step 4 of the reader protocol, or lists a
+missing object fails the read as a read-path consistency error. #759 gives that error its
+type; it does not degrade, is never relabelled `ErrFederatedReadFailed` and is never
+charged to the DuckDB breaker. `UNPUBLISHED` answers from PostgreSQL without listing S3, so
+#720's never-flushed behaviour holds. #759's tests cover its original zero-match and
+partial-match loss alongside #720.
+
+**#760 closes with #889.** #760's scope, the durable initialization record `design.md` asks
+for, is the `init` generation and its history row, which #889 writes when it moves
+`cdc-init` onto `Publish`. No second history table or per-query probe is added for it. #889
+carries #760's init-specific regressions: idempotent retry, interrupted export, partial
+staging, a lost pointer CAS, an unknown commit outcome, and re-onboarding an already
+published schema. Its PR closes #760 alongside #889.
 
 ## Open questions
 
