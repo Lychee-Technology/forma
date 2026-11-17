@@ -23,7 +23,7 @@ const kindsSinceSQL = `SELECT generation, kind FROM %s
 // means garbage collection already removed history the rebase decision
 // needs, and is refused rather than read as "nothing happened".
 func KindsSince(ctx context.Context, q Querier, t Tables, from, head Record) ([]Kind, error) {
-	rows, err := q.QueryContext(ctx, fmt.Sprintf(kindsSinceSQL, t.Generation), from.SchemaID, from.Generation, head.Generation)
+	rows, err := q.runner().query(ctx, fmt.Sprintf(kindsSinceSQL, t.Generation), from.SchemaID, from.Generation, head.Generation)
 	if err != nil {
 		return nil, fmt.Errorf("read schema %d generations %d..%d: %w", from.SchemaID, from.Generation+1, head.Generation, err)
 	}
@@ -59,8 +59,14 @@ func KindsSince(ctx context.Context, q Querier, t Tables, from, head Record) ([]
 //
 //   - Any writer: never across an epoch. The new epoch's record promises
 //     nothing about the old epoch's rows.
-//   - A flush appends rows it exported at exact versions, which stay correct
-//     over any head of the same epoch; it keeps head's lineage.
+//   - A flush appends rows it exported at exact versions. Last-writer-wins
+//     keeps them harmless over a head that still holds every newer version
+//     of those rows, tombstones included: a flush appends files and a
+//     compaction keeps each row's newest version. A cdc-init in between
+//     exports live rows only, so it drops the tombstone of a row deleted
+//     after the flush exported it; the flush's older live copy would then be
+//     the row's only one, and a deletion entry already marked would not hide
+//     it. A flush therefore never rebases over a cdc-init.
 //   - A compaction replaces the files it merged. It may rebase over flushes
 //     only, which append files and remove none; a compaction or cdc-init in
 //     between may have removed or replaced files it merged.
@@ -73,7 +79,7 @@ func Rebase(kind Kind, from, head Record, since []Kind) error {
 		return fmt.Errorf("schema %d moved from epoch %d to %d: %w", from.SchemaID, from.Epoch, head.Epoch, ErrRebaseRefused)
 	}
 	allowed := map[Kind][]Kind{
-		KindFlush:   {KindFlush, KindCompact, KindInit},
+		KindFlush:   {KindFlush, KindCompact},
 		KindCompact: {KindFlush},
 		KindInit:    {KindCompact},
 	}[kind]

@@ -20,10 +20,10 @@ import (
 var ErrRecordMoved = errors.New("publication record moved")
 
 // ErrStagingExpired reports a publication whose staging began longer ago than
-// its budget allows. Garbage collection may already treat its unlisted objects
-// as orphans, so it must not commit them (docs/publication-protocol-v2.md,
-// "Garbage collection").
-var ErrStagingExpired = errors.New("publication staging budget exceeded")
+// its budget allows, or at or before the collector's horizon. Garbage
+// collection may already treat its unlisted objects as orphans, so it must
+// not commit them (docs/publication-protocol-v2.md, "Garbage collection").
+var ErrStagingExpired = errors.New("publication staging expired")
 
 // Conflict reports whether err is a lost compare-and-set race, in either of
 // the forms the engines answer it with.
@@ -63,6 +63,10 @@ func (n Next) validate(cur Record) error {
 		return fmt.Errorf("staging time %d and budget %s must both be positive", n.StagedAt, n.StagingBudget)
 	case n.Lineage == uuid.Nil:
 		return errors.New("a generation names a lineage")
+	case cur.State == Dropped:
+		return fmt.Errorf("schema %d at epoch %d: nothing publishes until re-registration activates it: %w", cur.SchemaID, cur.Epoch, ErrDropped)
+	case cur.State == AwaitingInit && n.Kind != KindInit:
+		return fmt.Errorf("schema %d is %s: only a cdc-init publishes its first V2 generation, not a %s", cur.SchemaID, cur.State, n.Kind)
 	}
 	switch n.Kind {
 	case KindInit:
@@ -86,17 +90,21 @@ func (n Next) validate(cur Record) error {
 
 // casSQL is the compare-and-set: it moves the record from exactly the epoch,
 // generation and token the writer read to the next generation, and only while
-// the writer's staging is within its budget on the database clock.
+// the writer's staging is within its budget on the database clock and began
+// after the collector's horizon. The new generation's parent is the record's
+// current generation when it is published, and 0 when the record had none in
+// this epoch: the counter alone is no parent. Every right-hand side reads the
+// row as it was before the update.
 const casSQL = `UPDATE %s SET state = '` + string(Published) + `',
-		generation = generation + 1, parent_generation = generation,
+		parent_generation = CASE WHEN state = '` + string(Published) + `' THEN generation ELSE 0 END,
+		generation = generation + 1,
 		manifest_key = $5, manifest_sha256 = $6, lineage = $7, cas_token = $8,
 		updated_at = ` + sqlgen.ServerTimeMillisSQL + `
 	WHERE schema_id = $1 AND epoch = $2 AND generation = $3 AND cas_token = $4
-	  AND $9 >= ` + sqlgen.ServerTimeMillisSQL + ` - $10
-	RETURNING generation, updated_at`
+	  AND $9 >= ` + sqlgen.ServerTimeMillisSQL + ` - $10 AND $9 > gc_horizon
+	RETURNING generation, parent_generation, updated_at`
 
-// supersedeSQL stamps the generation a transition replaces. It matches no row
-// when the record had no current generation (never published, or reset).
+// supersedeSQL stamps the generation a transition replaces.
 const supersedeSQL = `UPDATE %s SET superseded_at = ` + sqlgen.ServerTimeMillisSQL + `
 	WHERE schema_id = $1 AND generation = $2 AND superseded_at = 0`
 
@@ -108,20 +116,22 @@ const insertGenerationSQL = `INSERT INTO %s (schema_id, generation, epoch, kind,
 // generation after cur. The compare-and-set is its first statement, so a
 // writer that lost the race learns it before it marks anything: the caller
 // marks the generation's change_log entries on the same tx only after Publish
-// returns, and commits once. Rolled back, the transaction leaves neither the
-// pointer nor a mark. It modifies three rows besides the marks: the record,
-// the replaced generation's row and the new one's.
-func Publish(ctx context.Context, tx Querier, t Tables, cur Record, next Next) (Record, error) {
+// returns, and commits or rolls back tx itself. Rolled back, the transaction
+// leaves neither the pointer nor a mark. It modifies at most three rows
+// besides the marks: the record, the replaced generation's row and the new
+// one's.
+func Publish(ctx context.Context, tx Tx, t Tables, cur Record, next Next) (Record, error) {
 	if err := next.validate(cur); err != nil {
 		return Record{}, fmt.Errorf("publish schema %d generation after %d: %w", cur.SchemaID, cur.Generation, err)
 	}
+	r := tx.runner()
 	out := cur
-	err := tx.QueryRowContext(ctx, fmt.Sprintf(casSQL, t.Record),
+	err := r.queryRow(ctx, fmt.Sprintf(casSQL, t.Record),
 		cur.SchemaID, cur.Epoch, cur.Generation, cur.Token,
 		next.ManifestKey, next.ManifestSHA256, next.Lineage, next.Token,
-		next.StagedAt, next.StagingBudget.Milliseconds()).Scan(&out.Generation, &out.UpdatedAt)
+		next.StagedAt, next.StagingBudget.Milliseconds()).Scan(&out.Generation, &out.ParentGeneration, &out.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Record{}, classifyMiss(ctx, tx, t, cur)
+		return Record{}, classifyMiss(ctx, tx, t, cur, next)
 	}
 	if err != nil {
 		return Record{}, fmt.Errorf("compare-and-set schema %d from generation %d: %w", cur.SchemaID, cur.Generation, err)
@@ -129,13 +139,15 @@ func Publish(ctx context.Context, tx Querier, t Tables, cur Record, next Next) (
 	if out.Generation != cur.Generation+1 {
 		return Record{}, fmt.Errorf("compare-and-set schema %d from generation %d answered generation %d", cur.SchemaID, cur.Generation, out.Generation)
 	}
-	out.State, out.ParentGeneration = Published, cur.Generation
+	out.State = Published
 	out.ManifestKey, out.ManifestSHA256 = next.ManifestKey, next.ManifestSHA256
 	out.Lineage, out.Token = next.Lineage, next.Token
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(supersedeSQL, t.Generation), cur.SchemaID, cur.Generation); err != nil {
-		return Record{}, fmt.Errorf("supersede schema %d generation %d: %w", cur.SchemaID, cur.Generation, err)
+	if cur.State == Published {
+		if _, err := r.exec(ctx, fmt.Sprintf(supersedeSQL, t.Generation), cur.SchemaID, cur.Generation); err != nil {
+			return Record{}, fmt.Errorf("supersede schema %d generation %d: %w", cur.SchemaID, cur.Generation, err)
+		}
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(insertGenerationSQL, t.Generation),
+	if _, err := r.exec(ctx, fmt.Sprintf(insertGenerationSQL, t.Generation),
 		out.SchemaID, out.Generation, out.Epoch, string(next.Kind), out.ParentGeneration,
 		out.ManifestKey, out.ManifestSHA256, out.Lineage, out.Token, out.UpdatedAt); err != nil {
 		return Record{}, fmt.Errorf("record schema %d generation %d: %w", out.SchemaID, out.Generation, err)
@@ -143,15 +155,16 @@ func Publish(ctx context.Context, tx Querier, t Tables, cur Record, next Next) (
 	return out, nil
 }
 
-// classifyMiss tells a moved record from an expired staging budget after the
-// compare-and-set matched no row, by reading the record on the same tx.
-func classifyMiss(ctx context.Context, tx Querier, t Tables, cur Record) error {
+// classifyMiss tells a moved record from an expired or fenced staging after
+// the compare-and-set matched no row, by reading the record on the same tx.
+func classifyMiss(ctx context.Context, tx Tx, t Tables, cur Record, next Next) error {
 	now, err := Read(ctx, tx, t, cur.SchemaID)
 	if err != nil {
 		return fmt.Errorf("classify a missed compare-and-set of schema %d: %w", cur.SchemaID, err)
 	}
 	if now.Epoch == cur.Epoch && now.Generation == cur.Generation && now.Token == cur.Token {
-		return fmt.Errorf("publish schema %d generation %d: %w", cur.SchemaID, cur.Generation+1, ErrStagingExpired)
+		return fmt.Errorf("publish schema %d generation %d staged at %d (budget %s, collector horizon %d): %w",
+			cur.SchemaID, cur.Generation+1, next.StagedAt, next.StagingBudget, now.Horizon, ErrStagingExpired)
 	}
 	return fmt.Errorf("publish schema %d from epoch %d generation %d token %s, found epoch %d generation %d token %s: %w",
 		cur.SchemaID, cur.Epoch, cur.Generation, cur.Token, now.Epoch, now.Generation, now.Token, ErrRecordMoved)

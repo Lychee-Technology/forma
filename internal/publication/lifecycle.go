@@ -8,28 +8,34 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/sqlgen"
+	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
-// resetSQL starts the schema's next epoch: unpublished, no manifest, no
+// resetSQL drops the schema: the next epoch, DROPPED, no manifest, no
 // lineage. generation keeps its value, so a later publication never reuses a
 // number an earlier epoch committed.
-const resetSQL = `UPDATE %s SET epoch = epoch + 1, state = '` + string(Unpublished) + `',
-		parent_generation = generation, manifest_key = '', manifest_sha256 = '',
+const resetSQL = `UPDATE %s SET epoch = epoch + 1, state = '` + string(Dropped) + `',
+		parent_generation = 0, manifest_key = '', manifest_sha256 = '',
 		lineage = NULL, cas_token = $4, updated_at = ` + sqlgen.ServerTimeMillisSQL + `
-	WHERE schema_id = $1 AND epoch = $2 AND cas_token = $3
+	WHERE schema_id = $1 AND epoch = $2 AND cas_token = $3 AND state <> '` + string(Dropped) + `'
 	RETURNING epoch, updated_at`
 
-// Reset moves cur's schema to its next epoch, unpublished, on tx. It is the
-// drop transition: the caller deletes the schema's registry row on the same
-// tx, and the schema's entity_main, eav_data and change_log rows are purged
-// before the id is registered again (docs/publication-protocol-v2.md,
-// "Drop and re-creation"), because an unpublished record promises that every
-// live row has an unflushed entry. Every writer staged under cur's epoch then
-// fails its compare-and-set, whatever generation it expected.
-func Reset(ctx context.Context, tx Querier, t Tables, cur Record) (Record, error) {
+// Reset moves cur's schema to its next epoch, DROPPED, on tx. It is the drop
+// transition: the caller deletes the schema's registry row on the same tx.
+// While the record is DROPPED readers fail closed and nothing publishes or
+// marks, so the schema's entity_main, eav_data and change_log rows can be
+// purged without a reader or a writer seeing them; Activate then refuses to
+// re-register the id while any remain (docs/publication-protocol-v2.md,
+// "Lifecycle of the row"). Every writer staged under cur's epoch fails its
+// compare-and-set, whatever generation it expected.
+func Reset(ctx context.Context, tx Tx, t Tables, cur Record) (Record, error) {
+	if cur.State == Dropped {
+		return Record{}, fmt.Errorf("reset schema %d at epoch %d: %w", cur.SchemaID, cur.Epoch, ErrDropped)
+	}
+	r := tx.runner()
 	out := cur
 	out.Token = uuid.New()
-	err := tx.QueryRowContext(ctx, fmt.Sprintf(resetSQL, t.Record), cur.SchemaID, cur.Epoch, cur.Token, out.Token).
+	err := r.queryRow(ctx, fmt.Sprintf(resetSQL, t.Record), cur.SchemaID, cur.Epoch, cur.Token, out.Token).
 		Scan(&out.Epoch, &out.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, fmt.Errorf("reset schema %d from epoch %d token %s: %w", cur.SchemaID, cur.Epoch, cur.Token, ErrRecordMoved)
@@ -37,11 +43,64 @@ func Reset(ctx context.Context, tx Querier, t Tables, cur Record) (Record, error
 	if err != nil {
 		return Record{}, fmt.Errorf("reset schema %d from epoch %d: %w", cur.SchemaID, cur.Epoch, err)
 	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(supersedeSQL, t.Generation), cur.SchemaID, cur.Generation); err != nil {
-		return Record{}, fmt.Errorf("supersede schema %d generation %d on reset: %w", cur.SchemaID, cur.Generation, err)
+	if cur.State == Published {
+		if _, err := r.exec(ctx, fmt.Sprintf(supersedeSQL, t.Generation), cur.SchemaID, cur.Generation); err != nil {
+			return Record{}, fmt.Errorf("supersede schema %d generation %d on reset: %w", cur.SchemaID, cur.Generation, err)
+		}
 	}
-	out.State, out.ParentGeneration = Unpublished, cur.Generation
+	out.State, out.ParentGeneration = Dropped, 0
 	out.ManifestKey, out.ManifestSHA256, out.Lineage = "", "", uuid.Nil
+	return out, nil
+}
+
+// ErrResidue reports rows of a dropped schema that are still there when its
+// id is registered again: an UNPUBLISHED record would promise that each of
+// them has an unflushed entry, and a writer of the new schema would export
+// them.
+var ErrResidue = errors.New("dropped schema's rows not purged")
+
+const residueSQL = `SELECT 1 FROM %s WHERE schema_id = $1 LIMIT 1`
+
+// activateSQL starts the re-registered schema's epoch, UNPUBLISHED, from a
+// DROPPED record.
+const activateSQL = `UPDATE %s SET epoch = epoch + 1, state = '` + string(Unpublished) + `',
+		cas_token = $4, updated_at = ` + sqlgen.ServerTimeMillisSQL + `
+	WHERE schema_id = $1 AND epoch = $2 AND cas_token = $3 AND state = '` + string(Dropped) + `'
+	RETURNING epoch, updated_at`
+
+// Activate re-registers a dropped schema id on tx, the registration
+// transaction that inserts its registry row again: it checks in tx that none
+// of the schema's rows remain in residue (its entity_main, eav_data and
+// change_log tables), then moves the record from DROPPED to the next epoch,
+// UNPUBLISHED, under a new token. Nothing that read the record before it
+// carries the new epoch, so no reader, writer or handoff of the old schema
+// acts on the new one without reading the record again.
+func Activate(ctx context.Context, tx Tx, t Tables, cur Record, residue []string) (Record, error) {
+	if cur.State != Dropped {
+		return Record{}, fmt.Errorf("activate schema %d: its record is %s, and only a %s one is activated", cur.SchemaID, cur.State, Dropped)
+	}
+	r := tx.runner()
+	for _, table := range residue {
+		var one int
+		err := r.queryRow(ctx, fmt.Sprintf(residueSQL, sqlutil.SanitizeIdentifier(table)), cur.SchemaID).Scan(&one)
+		if err == nil {
+			return Record{}, fmt.Errorf("activate schema %d: rows of epoch %d remain in %s: %w", cur.SchemaID, cur.Epoch, table, ErrResidue)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Record{}, fmt.Errorf("activate schema %d: check %s for its rows: %w", cur.SchemaID, table, err)
+		}
+	}
+	out := cur
+	out.Token = uuid.New()
+	err := r.queryRow(ctx, fmt.Sprintf(activateSQL, t.Record), cur.SchemaID, cur.Epoch, cur.Token, out.Token).
+		Scan(&out.Epoch, &out.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Record{}, fmt.Errorf("activate schema %d from epoch %d token %s: %w", cur.SchemaID, cur.Epoch, cur.Token, ErrRecordMoved)
+	}
+	if err != nil {
+		return Record{}, fmt.Errorf("activate schema %d from epoch %d: %w", cur.SchemaID, cur.Epoch, err)
+	}
+	out.State = Unpublished
 	return out, nil
 }
 
@@ -50,38 +109,61 @@ func Reset(ctx context.Context, tx Querier, t Tables, cur Record) (Record, error
 type Outcome int
 
 const (
-	// NotCommitted: no generation with that number committed. The writer may
-	// send the same publication again, with the same expectation and token:
-	// if the lost commit lands first, the retry loses the compare-and-set and
-	// Resolve then answers Committed.
+	// NotCommitted: the record still carries the attempt's expectation, so no
+	// generation committed from it. The writer may send the same publication
+	// again, with the same expectation and token: if the lost commit lands
+	// first, the retry loses the compare-and-set and Resolve then answers
+	// Committed.
 	NotCommitted Outcome = iota
-	// Committed: the generation committed with the writer's token.
+	// Committed: the generation committed with the writer's token, or the
+	// record carries the fresh lineage only this attempt introduced.
 	Committed
 	// Lost: another writer's generation took the number. The writer's own
 	// transaction cannot commit any more, because both moved the record from
 	// the same generation; the writer reads the record and rebases.
 	Lost
+	// Unknown: the record moved past the attempt's expectation, and the
+	// history no longer holds the number. The attempt can never commit now,
+	// and whether it did is not recoverable. The writer abandons it and starts
+	// over from the head, which is safe for every kind: a flush selects the
+	// still unflushed entries, a compaction reads the head's files, and a
+	// cdc-init's lineage is no longer the record's, so its handoff would stop.
+	Unknown
 )
 
-const resolveSQL = `SELECT cas_token FROM %s WHERE schema_id = $1 AND generation = $2`
+// resolveSQL reads the record and the history row of the attempt's number in
+// one statement, so both come from one snapshot.
+const resolveSQL = `SELECT r.epoch, r.generation, r.cas_token, r.lineage, g.cas_token
+	FROM %s r LEFT JOIN %s g ON g.schema_id = r.schema_id AND g.generation = $2
+	WHERE r.schema_id = $1`
 
-// Resolve answers what became of a publication of generation on schemaID
-// with token, after its COMMIT failed without an answer. It reads in a new
-// transaction. The generation's row is written in the transaction that
-// commits the generation, and garbage collection removes a row only long
-// after it was superseded, so Resolve is meant to run right after the failure.
-func Resolve(ctx context.Context, q Querier, t Tables, schemaID int16, generation int64, token uuid.UUID) (Outcome, error) {
-	var got uuid.UUID
-	err := q.QueryRowContext(ctx, fmt.Sprintf(resolveSQL, t.Generation), schemaID, generation).Scan(&got)
+// Resolve answers what became of next, published on cur, after its COMMIT
+// failed without an answer. It reads in a new transaction, at any time after
+// the failure: a forgotten history row is told apart from an attempt that
+// never committed by the record read in the same snapshot.
+func Resolve(ctx context.Context, q Querier, t Tables, cur Record, next Next) (Outcome, error) {
+	var epoch, generation int64
+	var token uuid.UUID
+	var lineage, got uuid.NullUUID
+	err := q.runner().queryRow(ctx, fmt.Sprintf(resolveSQL, t.Record, t.Generation), cur.SchemaID, cur.Generation+1).
+		Scan(&epoch, &generation, &token, &lineage, &got)
+	if errors.Is(err, sql.ErrNoRows) {
+		return NotCommitted, fmt.Errorf("resolve schema %d generation %d: %w", cur.SchemaID, cur.Generation+1, ErrNoRecord)
+	}
+	if err != nil {
+		return NotCommitted, fmt.Errorf("resolve schema %d generation %d: %w", cur.SchemaID, cur.Generation+1, err)
+	}
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	case got.Valid && got.UUID == next.Token:
+		return Committed, nil
+	case got.Valid:
+		return Lost, nil
+	case epoch == cur.Epoch && generation == cur.Generation && token == cur.Token:
 		return NotCommitted, nil
-	case err != nil:
-		return NotCommitted, fmt.Errorf("resolve schema %d generation %d: %w", schemaID, generation, err)
-	case got == token:
+	case epoch == cur.Epoch && next.Lineage != cur.Lineage && lineage.Valid && lineage.UUID == next.Lineage:
 		return Committed, nil
 	}
-	return Lost, nil
+	return Unknown, nil
 }
 
 // ErrLineageReplaced reports that the lineage a cdc-init handoff marks for is
@@ -101,10 +183,10 @@ const holdSQL = `SELECT generation FROM %s
 // marks a chunk of the entries the export holds after the init's generation
 // committed. It holds the record at epoch and lineage until tx ends, so no
 // transition that would replace the lineage commits between the check and the
-// marks.
-func HoldLineage(ctx context.Context, tx Querier, t Tables, schemaID int16, epoch int64, lineage uuid.UUID) (int64, error) {
+// marks; the caller marks on tx and commits or rolls it back.
+func HoldLineage(ctx context.Context, tx Tx, t Tables, schemaID int16, epoch int64, lineage uuid.UUID) (int64, error) {
 	var generation int64
-	err := tx.QueryRowContext(ctx, fmt.Sprintf(holdSQL, t.Record), schemaID, epoch, lineage).Scan(&generation)
+	err := tx.runner().queryRow(ctx, fmt.Sprintf(holdSQL, t.Record), schemaID, epoch, lineage).Scan(&generation)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, fmt.Errorf("hold schema %d lineage %s at epoch %d: %w", schemaID, lineage, epoch, ErrLineageReplaced)
 	}

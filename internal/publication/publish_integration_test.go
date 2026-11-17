@@ -3,10 +3,12 @@ package publication
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,14 +18,15 @@ func TestInitializeWritesOneUnpublishedRecord(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	_, err := Read(ctx, f.db, f.t, 100)
+	_, err := Read(ctx, DB(f.db), f.t, 100)
 	require.ErrorIs(t, err, ErrNoRecord)
 
 	rec := f.initialized(t, 100)
 	require.Equal(t, Record{SchemaID: 100, Epoch: 1, State: Unpublished, Token: rec.Token, UpdatedAt: rec.UpdatedAt}, rec)
 	require.NotEqual(t, uuid.Nil, rec.Token)
+	require.NoError(t, rec.Readable())
 
-	again, err := Initialize(ctx, f.db, f.t, 100)
+	again, err := f.initialize(t, 100)
 	require.NoError(t, err)
 	require.False(t, again, "registering the schema again must not rewrite its record")
 	require.Equal(t, rec, f.read(t, 100))
@@ -44,7 +47,7 @@ func TestPublishCommitsPointerAndMarksAtOneBoundary(t *testing.T) {
 	tx, err := f.db.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback() }()
-	out, err := Publish(ctx, tx, f.t, cur, f.next(t, cur, KindFlush))
+	out, err := Publish(ctx, SQLTx(tx), f.t, cur, f.next(t, cur, KindFlush))
 	require.NoError(t, err)
 	require.NoError(t, f.mark(ctx, tx, 100, rows))
 
@@ -73,7 +76,8 @@ func TestPublishRolledBackLeavesNeitherPointerNorMarks(t *testing.T) {
 
 	tx, err := f.db.BeginTx(ctx, nil)
 	require.NoError(t, err)
-	_, err = Publish(ctx, tx, f.t, cur, f.next(t, cur, KindFlush))
+	next := f.next(t, cur, KindFlush)
+	_, err = Publish(ctx, SQLTx(tx), f.t, cur, next)
 	require.NoError(t, err)
 	require.NoError(t, f.mark(ctx, tx, 100, rows))
 	require.NoError(t, tx.Rollback())
@@ -81,7 +85,7 @@ func TestPublishRolledBackLeavesNeitherPointerNorMarks(t *testing.T) {
 	_, now := f.snapshot(t, 100)
 	require.Equal(t, view{State: Unpublished, Dirty: 2}, now())
 	require.Equal(t, cur, f.read(t, 100))
-	outcome, err := Resolve(ctx, f.db, f.t, 100, 1, uuid.Nil)
+	outcome, err := Resolve(ctx, DB(f.db), f.t, cur, next)
 	require.NoError(t, err)
 	require.Equal(t, NotCommitted, outcome)
 }
@@ -118,7 +122,7 @@ func TestPublishRacingRivalsCommitOne(t *testing.T) {
 	tx, err := f.db.BeginTx(ctx, nil)
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback() }()
-	_, errA := Publish(ctx, tx, f.t, cur, f.next(t, cur, KindFlush))
+	_, errA := Publish(ctx, SQLTx(tx), f.t, cur, f.next(t, cur, KindFlush))
 
 	rival := f.next(t, cur, KindFlush)
 	done := make(chan error, 1)
@@ -182,4 +186,47 @@ func TestPublishRefusesTransitionsTheProtocolLacks(t *testing.T) {
 	require.ErrorContains(t, err, "new lineage")
 	require.False(t, errors.Is(err, ErrRecordMoved))
 	require.Equal(t, pub, f.read(t, 100))
+}
+
+// TestPublishThroughAPgxTransaction pins the path the pgx-based callers
+// (init-db's registration among them) take: their own pgx transaction, which
+// they commit, carries the transition and their statements together.
+func TestPublishThroughAPgxTransaction(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	conn, err := f.db.Conn(ctx)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	rows := f.write(t, 100, 2)
+
+	require.NoError(t, conn.Raw(func(driverConn any) error {
+		pc := driverConn.(*stdlib.Conn).Conn()
+		tx, err := pc.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := Initialize(ctx, PgxTx(tx), f.t, 100); err != nil {
+			return err
+		}
+		cur, err := Read(ctx, PgxTx(tx), f.t, 100)
+		if err != nil {
+			return err
+		}
+		if _, err := Publish(ctx, PgxTx(tx), f.t, cur.Record, f.next(t, cur.Record, KindFlush)); err != nil {
+			return err
+		}
+		for id, version := range rows {
+			if _, err := tx.Exec(ctx, "UPDATE "+f.changeLog+" SET flushed_at = 1 WHERE schema_id = 100 AND row_id = $1 AND changed_at = $2 AND flushed_at = 0", id, version); err != nil {
+				return err
+			}
+		}
+		_, err = Read(ctx, PgxTx(tx), f.t, 101)
+		if !errors.Is(err, ErrNoRecord) {
+			return fmt.Errorf("a missing record through pgx reads as %v, want ErrNoRecord", err)
+		}
+		return tx.Commit(ctx)
+	}))
+	_, now := f.snapshot(t, 100)
+	require.Equal(t, view{State: Published, Generation: 1, Dirty: 0}, now())
 }

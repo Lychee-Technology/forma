@@ -12,7 +12,7 @@ func TestRebaseTable(t *testing.T) {
 	from := Record{SchemaID: 100, Epoch: 1, Generation: 4}
 	head := Record{SchemaID: 100, Epoch: 1, Generation: 5}
 	allowed := map[Kind]map[Kind]bool{
-		KindFlush:   {KindFlush: true, KindCompact: true, KindInit: true},
+		KindFlush:   {KindFlush: true, KindCompact: true},
 		KindCompact: {KindFlush: true},
 		KindInit:    {KindCompact: true},
 	}

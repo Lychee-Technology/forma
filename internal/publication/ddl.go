@@ -58,16 +58,23 @@ func TablesFor(entityMain string) Tables {
 // schema_id that has ever been registered. It is never deleted, so a schema
 // id is never reused with an epoch, generation or token it had before.
 //
-//   - epoch is the schema's lifecycle epoch. Drop (Reset) increases it, and
-//     every compare-and-set names it.
-//   - state is UNPUBLISHED or PUBLISHED. generation is 0 only before the first
-//     publication, and only ever increases, across epochs too.
+//   - epoch is the schema's lifecycle epoch. Drop (Reset) and re-activation
+//     (Activate) each increase it, and every compare-and-set names it.
+//   - state is UNPUBLISHED, PUBLISHED, AWAITING_INIT or DROPPED.
+//   - generation is the allocation counter: the last generation number
+//     committed, across epochs too, so a number is never reused. Only a
+//     PUBLISHED record names it as its current generation.
+//   - parent_generation is the current generation's CAS predecessor in the
+//     same epoch, and 0 when the generation is its epoch's first or when the
+//     record has no current generation.
 //   - manifest_key and manifest_sha256 name the generation's immutable
-//     manifest object; both are empty exactly when state is UNPUBLISHED.
+//     manifest object; both are empty exactly when state is not PUBLISHED.
 //   - lineage identifies the content line a cdc-init export started; flush
-//     and compaction keep it. NULL exactly when state is UNPUBLISHED.
+//     and compaction keep it. NULL exactly when state is not PUBLISHED.
 //   - cas_token changes on every transition. It is the token of the
 //     transaction that wrote the row, and the generation's own identity.
+//   - gc_horizon is the garbage collector's fence (RaiseHorizon): no
+//     publication whose staging began at or before it commits.
 const recordDDL = `CREATE TABLE IF NOT EXISTS %s (
 		schema_id         SMALLINT NOT NULL,
 		epoch             BIGINT   NOT NULL,
@@ -79,13 +86,17 @@ const recordDDL = `CREATE TABLE IF NOT EXISTS %s (
 		lineage           UUID,
 		cas_token         UUID     NOT NULL,
 		updated_at        BIGINT   NOT NULL,
+		gc_horizon        BIGINT   NOT NULL,
 		PRIMARY KEY (schema_id)
 	)`
 
 // generationDDL is one row per committed generation, written in the
 // transaction that commits it. superseded_at is 0 while the generation is
-// the record's current one, and the database time of the transaction that
-// replaced it afterwards; garbage collection reads it (retention.go).
+// the record's current one, and the start time of the transaction that
+// replaced it afterwards. retired_at is 0 until a collector, in a transaction
+// that began after it saw the replacement committed, stamps its own time:
+// retention counts from retired_at, never from superseded_at, because the
+// replacing transaction may commit long after it started (retention.go).
 const generationDDL = `CREATE TABLE IF NOT EXISTS %s (
 		schema_id         SMALLINT NOT NULL,
 		generation        BIGINT   NOT NULL,
@@ -98,6 +109,7 @@ const generationDDL = `CREATE TABLE IF NOT EXISTS %s (
 		cas_token         UUID     NOT NULL,
 		committed_at      BIGINT   NOT NULL,
 		superseded_at     BIGINT   NOT NULL DEFAULT 0,
+		retired_at        BIGINT   NOT NULL DEFAULT 0,
 		PRIMARY KEY (schema_id, generation)
 	)`
 
