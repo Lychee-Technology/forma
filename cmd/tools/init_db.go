@@ -313,16 +313,17 @@ func mainColumnIndexDDL(opts initDBOptions) []tableDDL {
 }
 
 // tableTransactionDDL is every statement ensureTables runs in init-db's one
-// table transaction, in order: the core tables, the ledger, the EAV,
-// change-log and main-column indexes, and the unique key row index. The DSQL
-// lint corpus (#740) renders this same list, so what it checks is what
-// init-db sends.
+// table transaction, in order: the core tables, the ledger, the publication
+// tables, the EAV, change-log and main-column indexes, and the unique key row
+// index. The DSQL lint corpus (#740) renders this same list, so what it checks
+// is what init-db sends.
 func tableTransactionDDL(opts initDBOptions) []tableDDL {
 	_, uniqueKeyIndex := uniqueKeyDDL(opts)
 	var all []tableDDL
 	for _, group := range [][]tableDDL{
 		coreTableDDL(opts),
 		ledgerDDL(opts),
+		publicationDDL(opts),
 		eavIndexDDL(opts),
 		{changeLogFlushIndexDDL(opts)},
 		mainColumnIndexDDL(opts),

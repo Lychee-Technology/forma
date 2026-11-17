@@ -14,7 +14,8 @@
 // Nothing in Forma's writers or readers uses this package yet: it fixes the
 // statements and their semantics, and the #887 children move cdc-flush,
 // cdc-init, the compactor, the federated reader and manifest-reconcile onto
-// it.
+// it. init-db creates the two tables from Statements (#895) and writes no
+// row; the writers and the reader move onto the record together in #896.
 //
 // Both tables keep plain rows: no JSONB, arrays, sequences, enums, CHECK
 // constraints or foreign keys, none of which this package relies on Aurora

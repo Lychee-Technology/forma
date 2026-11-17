@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/schemalease"
 	"github.com/lychee-technology/forma/internal/schemaledger"
@@ -14,11 +15,13 @@ import (
 )
 
 // ownedTables names every table init-db ensures, as SQL spells it: the core
-// tables, the unique-key, row-guard and schema-lease tables, and the
-// generation ledger. Each is a table Forma owns, so each falls under the text
-// collation contract (#816), including those that hold no text today.
+// tables, the unique-key, row-guard and schema-lease tables, the generation
+// ledger and the publication tables. Each is a table Forma owns, so each
+// falls under the text collation contract (#816), including those that hold
+// no text today.
 func ownedTables(opts initDBOptions) []string {
 	ledger := schemaledger.TablesFor(opts.schemaTable)
+	pub := publication.TablesFor(opts.entityMain)
 	return []string{
 		quoteIdentifier(opts.schemaTable),
 		quoteIdentifier(opts.entityMain),
@@ -30,6 +33,8 @@ func ownedTables(opts initDBOptions) []string {
 		quoteIdentifier(schemalease.Table(opts.entityMain)),
 		ledger.Generation,
 		ledger.Attribute,
+		pub.Record,
+		pub.Generation,
 	}
 }
 

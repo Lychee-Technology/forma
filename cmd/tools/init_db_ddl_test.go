@@ -23,8 +23,9 @@ func testInitDBOptions() initDBOptions {
 }
 
 // allDDLStatements is every statement ensureTables executes, in order: 8
-// core tables, the 3 ledger statements, 2 EAV indexes, 10 main-column
-// indexes, and the unique key row index.
+// core tables, the 3 ledger statements, the 2 publication tables, 2 EAV
+// indexes, the change log flush index, 10 main-column indexes, and the unique
+// key row index.
 func allDDLStatements(opts initDBOptions) []tableDDL { return tableTransactionDDL(opts) }
 
 // wantDDLStatements is the golden text of every statement init-db issues,
@@ -103,6 +104,7 @@ func wantDDLStatements() []string {
 	}
 	statements = append(statements, wantUniqueKeyTableDDL()...)
 	statements = append(statements, wantLedgerDDL()...)
+	statements = append(statements, wantPublicationDDL()...)
 	return append(statements,
 		// eav numeric index
 		"CREATE INDEX IF NOT EXISTS \"eav_data_numeric_idx\" ON \"eav_data\" (schema_id, attr_id, value_numeric, row_id) WHERE value_numeric IS NOT NULL",
@@ -423,8 +425,8 @@ func TestOwnedTablesNameEveryTableInitDBCreates(t *testing.T) {
 			want = append(want, m[1])
 		}
 	}
-	if len(want) != 10 {
-		t.Fatalf("init-db creates %d tables, want 10: %q", len(want), want)
+	if len(want) != 12 {
+		t.Fatalf("init-db creates %d tables, want 12: %q", len(want), want)
 	}
 	if got := ownedTables(testInitDBOptions()); !slices.Equal(got, want) {
 		t.Fatalf("ownedTables = %q, want the tables init-db creates, in order: %q", got, want)
