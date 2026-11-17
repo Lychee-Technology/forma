@@ -87,6 +87,7 @@ make test
 - [Conditional Writes](./conditional-writes.md) - Preconditions, `increment` and `server_time` on Update and Delete
 - [Condition DSL](./condition-dsl.md) - Filter operators, `in`/`not_in`, null tests and `$now`
 - [Declared Indexes](./schema-indexes.md) - Composite indexes on column-bound attributes via `x-forma-indexes`
+- [Parquet publication protocol V2](./publication-protocol-v2.md) - The per-schema PostgreSQL publication record, immutable manifest generations, the one commit that publishes a generation and marks its rows, reader snapshots and GC retention
 - [Text collation](./text-collation.md) - Why Forma's text columns are `COLLATE "C"`, what that changes for queries, and how to migrate tables created before it
 - [Text ranges on mixed EAV attributes](./eav-text-range-plans.md) - PostgreSQL plans for text and uuid ranges sharing `eav_data.value_text`: what the planner estimates, what it costs, and why it is not a collation effect, and what removing the anchor's outer `eav_data` scan saved (#881), with the recorded runs' SQL and full plans
 - [Row IDs and Unique Keys](./unique-keys.md) - Caller-supplied row IDs on create, unique keys via `x-forma-unique-keys`, `Tx.Upsert`, and `build-unique-keys`
