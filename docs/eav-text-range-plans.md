@@ -66,6 +66,15 @@ values) is #881's to establish. The page joins on small tables are bounded by
 the table sizes and need no separate fix until #881's change is measured with
 this benchmark.
 
+**Update (#881).** The anchor no longer reads `eav_data` as an outer `t` for
+these conditions: each EAV leaf that can tests `t` itself. At 100,000 rows the
+mixed `token gt 5` reads 51 buffers in 0.37 ms, against 1,923 with the
+outer scan on the same table and 46 for the one-attribute control. The
+measurements, the argument that every condition answers the same, and the
+page joins that remain are in
+[The anchor without its outer scan](#the-anchor-without-its-outer-scan-881).
+The results below are #815's run, before that change.
+
 ## How it was measured
 
 `TestMixedEAVTextRangePlans`
@@ -82,8 +91,10 @@ FORMA_EAV_PLAN_EVIDENCE=<dir> FORMA_EAV_PLAN_ROWS=20000,100000 GOTOOLCHAIN=go1.2
 For each size it records the server version, the database and column
 collations, the attribute ids, the index DDL, the full result table and, for
 the cases listed in `textPlanCases`, the SQL the repository sent, its
-arguments and PostgreSQL's `EXPLAIN (ANALYZE, BUFFERS)` text. It logs the same
-record when `FORMA_EAV_PLAN_EVIDENCE` is unset.
+arguments and PostgreSQL's `EXPLAIN (ANALYZE, BUFFERS, VERBOSE)` text. It logs
+the same record when `FORMA_EAV_PLAN_EVIDENCE` is unset. The recorder added
+`VERBOSE` during #881; the #815 records and the first #881 records below were
+written without it.
 
 **Recorded run.** Revision `9fa2824`, which adds only test code to `main` at
 `bfeead9`: the SQL generation and `init-db` are `main`'s. PostgreSQL 16.15
@@ -278,3 +289,181 @@ already does.
   estimates within one row (10 rows at 20,000, 50 at 100,000; 85 and 456
   buffers), as `eav_data`'s statistics cannot affect it.
 - `equals` and `in` seek the index under fresh statistics in every load.
+
+## The anchor without its outer scan (#881)
+
+Written after the change, from the run it reads:
+[N = 20,000](eav-text-range-plans/rows-20000-881.md) and
+[N = 100,000](eav-text-range-plans/rows-100000-881.md), at revision
+`1f62c60`, PostgreSQL 16.15. The benchmark's pass that measured the anchor
+without its outer scan now does the reverse: it rebuilds the pre-#881 anchor
+from the SQL the repository sends, on the same table and statistics as the
+mixed load's `missing` and `fresh` runs, so the two differ only in the anchor.
+
+A second run, under `EXPLAIN (ANALYZE, BUFFERS, VERBOSE)`, is committed as
+[N = 20,000](eav-text-range-plans/rows-20000-881-verbose.md) and
+[N = 100,000](eav-text-range-plans/rows-100000-881-verbose.md), at revision
+`675a9f5`, which changes only the recorder's `EXPLAIN` options. Its trees
+name each node's alias and output columns: in the pre-#881 `token gt 5` plan
+at 100,000 rows, `Seq Scan on public.eav_data t` (200,000 rows, output every
+column of `t`) is the outer side of the `Hash Semi Join` whose inner side is
+the `Index Only Scan using eav_data_text_idx on public.eav_data x` (5 rows),
+and the `change_log` branch's `eav_data t_1` is never executed. On the mixed
+load its plan shapes, and its buffers at 100,000 rows, are the first run's.
+`ANALYZE` samples at random, and with its estimates two pages differ: at
+20,000 rows the mixed `token gt` 5 page walks `entity_main_pkey` a little
+further (18,762 buffers against 18,421), and on the skewed load at 100,000
+rows `token gt` 5 (estimated 4,654) hashes all 105,000 `eav_data e` rows for
+the page (821 buffers, spilling to disk) while its anchor reads 8, as
+described under [the page joins](#what-remains-the-page-joins). The figures
+below are the first run's.
+
+### What the scan was
+
+The PostgreSQL route anchors a condition on `eav_data` when it tests only EAV
+attributes; `hasMainTableCondition` sends every condition that could hold for
+an entity without `eav_data` rows (a main-table leaf, `is_null`, an empty
+`and`) to `entity_main`. Before #881 the anchor's first branch was
+
+```sql
+SELECT DISTINCT t.row_id
+FROM "eav_data" t
+WHERE t.schema_id = $1 AND (EXISTS (SELECT 1 FROM "eav_data" x
+    WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id
+      AND x.attr_id = $2 AND x.value_text COLLATE "C" > $3))
+```
+
+`t` carries no predicate but `schema_id`. It gives the clause a row to
+correlate to, and keeps only entities with an `eav_data` row, which a
+condition on this anchor already requires. In #815's 100,000-row plan it is
+`Seq Scan on eav_data t` (Filter: `schema_id` only, 200,000 rows, 1,872
+buffers), the outer side of a `Hash Semi Join` over the predicate's
+index-only scan of `x`. It is not #669's `change_log` scan: the anchor's
+`change_log` branch is an index-only scan of `change_log_pkey` on
+`(schema_id, flushed_at = 0)` that reads 2 buffers in every plan of this
+benchmark, which loads no unflushed row. #685's candidate query was not
+examined.
+
+The anchor now tests the leaf on `t` itself, in both of its branches:
+
+```sql
+SELECT DISTINCT t.row_id
+FROM "eav_data" t
+WHERE t.schema_id = $1 AND (t.attr_id = $2 AND t.value_text COLLATE "C" > $3)
+```
+
+This is the shape `QueryPersistentRecordsByAttrValues` has used since #268.
+The comparison's text, `COLLATE "C"` included, is unchanged; only its alias
+moved, so #728's byte order and the one index of #816 apply as before.
+
+### Why every condition answers the same
+
+The anchor keeps an entity when some `eav_data` row `t` of it passes the
+clause. Before #881 the clause tested only the entity, so the anchor kept
+the entities with an `eav_data` row that satisfy the condition. Written `R`
+for the clause as it is now rendered, the renderer must keep "some `t` of
+the entity satisfies `R`" equal to "the entity satisfies the condition"
+(`sqlgen.rowLeaves`):
+
+- **A leaf.** Every EAV leaf but `is_null` renders as `EXISTS (some x of the
+  entity with P(x))`; with `R = P(t)` the anchor asks the same. That holds
+  for the negations too: `not_equals` and `not_in` are already tests of one
+  row (`x.value_text <> $3`, `x.value_text IS NOT NULL AND x.value_text <>
+  ALL($3)`), true where the attribute holds another value, so moving `P`
+  from `x` to `t` changes nothing. `is_null` renders `NOT EXISTS`, which an
+  entity without the row satisfies, and keeps its rendering; like a
+  main-table leaf, it anchors on `entity_main` anyway.
+- **An `and`.** One child that qualifies is tested on `t` (the first), and
+  the others keep their `EXISTS`: some `t` with `A(t)` and `B` is (some `t`
+  with `A(t)`) and `B`, since `B` tests the entity, not `t`.
+- **An `or`.** Only when every child qualifies, and then every child is
+  tested on `t`: "some `t`" distributes over `or`.
+- **Anything else**, such as an empty `or` (`1=0`) or an `or` with a child
+  that does not qualify, renders as before, and the anchor keeps its
+  pre-#881 answer.
+
+Each such `R` implies an `eav_data` row of the entity, so no entity is lost
+that the outer `t` would have kept; an entity without `eav_data` rows could
+not pass a condition on this anchor before either. List attributes and
+several attributes give an entity several rows `t`; `DISTINCT` and the
+`COUNT(*) OVER()` over the distinct anchor are unchanged. The main anchor,
+the federated hot leg and row guards render as before.
+
+`TestEAVAnchorRowLeavesAnswerAsTheEntity` checks this on PostgreSQL: each of
+15 conditions (ranges on text, uuid and integer, `not_equals`, `not_in`,
+`starts_with`, bool, scalar and list presence, the empty-list marker, and
+`and`/`or` nestings with negations) must answer the same rows, in the same
+order, with the same total, on a full page and an offset page, as the same
+condition anchored on `entity_main`. The fixture has entities without
+`eav_data` rows and rows unflushed in `change_log`. Testing every child of an
+`and` on `t`, which is wrong, fails five of them.
+
+### What it saves
+
+On the same table and statistics, the predicate's estimate the same in both
+("est"), buffers and milliseconds of the whole query:
+
+| N | probe | statistics | est | actual | pre-#881 anchor | now | one-attribute control |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 100,000 | `token gt` 5 rows | fresh | 50,684 | 5 | 1,923 buf, 28.18 ms | 51 buf, 0.37 ms | 46 buf, 0.16 ms |
+| 100,000 | `note lt` 5 rows | fresh | 50,309 | 5 | 1,923 buf, 39.86 ms | 51 buf, 0.47 ms | 46 buf, 0.12 ms |
+| 100,000 | `token gt` half | fresh | 74,556 | 50,000 | 11,398 buf, 104.30 ms | 9,526 buf, 85.61 ms | 11,002 buf, 57.68 ms |
+| 100,000 | `token lt` half | fresh | 24,824 | 50,000 | 11,399 buf, 107.66 ms | 9,527 buf, 59.59 ms | 11,002 buf, 58.00 ms |
+| 100,000 | `note gt` half | fresh | 24,165 | 50,000 | 11,179 buf, 106.11 ms | 9,307 buf, 57.95 ms | 10,601 buf, 58.43 ms |
+| 100,000 | `token gt` half | missing | 1 | 50,000 | 611,184 buf, 582.09 ms | 10,094 buf, 68.45 ms | |
+| 100,000 | `note gt` half | missing | 1 | 50,000 | 610,346 buf, 581.99 ms | 9,675 buf, 62.99 ms | |
+| 20,000 | `token gt` 5 rows | fresh | 10,021 | 5 | 18,796 buf, 22.34 ms | 18,421 buf, 16.48 ms | 41 buf, 0.10 ms |
+| 20,000 | `note lt` 5 rows | fresh | 10,178 | 5 | 13,522 buf, 20.43 ms | 13,147 buf, 16.29 ms | 41 buf, 0.10 ms |
+| 20,000 | `token gt` half | fresh | 15,030 | 10,000 | 2,825 buf, 37.17 ms | 2,450 buf, 27.91 ms | 3,167 buf, 21.20 ms |
+| 20,000 | `token gt` half | missing | 1 | 10,000 | 128,444 buf, 83.71 ms | 8,224 buf, 21.00 ms | |
+
+At 100,000 rows the overestimated 5-row ranges now plan as the control does:
+the anchor is the predicate's index-only scan (4 buffers) under a
+`HashAggregate`, and the page reads `entity_main` and `eav_data` by primary
+key. Half ranges read 1,872 fewer buffers, the outer scan's, 16 to 17% of
+their total, and none is slower than before. In-range bounds (`token lt` 5,
+`note gt` 5) read 51 buffers instead of 67.
+
+The `missing` rows are the largest change, and #815 recorded them as an
+ordinary cost of planning before `ANALYZE`. Estimated at 1 row, the
+pre-#881 anchor drove a nested loop from the 50,000 `x` rows into `t`
+through `eav_data_pkey` (250,000 buffers), and did it twice: its
+`change_log` branch's `EXISTS` over `t` held the same nested `EXISTS` over
+`x`, which the planner also flattened into a join driven from `x`
+(351,092 buffers). Now the first branch reads the predicate's rows, and the
+`change_log` branch starts from the unflushed rows, of which this load has
+none. The same
+estimate's page plan (nested loops over `entity_main` and `eav_data` for
+1,000 rows) is unchanged.
+
+### What remains: the page joins
+
+In every selective plan above, the anchor now reads at most 8 buffers. What a
+5-row range still costs beyond the control is the page, which the planner
+sizes from the anchor's estimate: an overestimated predicate makes it expect
+a full page of 1,000 rows.
+
+- **Mixed load, 20,000 rows.** `token gt` 5 merge-joins the page against
+  `entity_main`, walking `entity_main_pkey` for 18,003 rows, and hash-joins
+  it against a sequential scan of all 40,000 `eav_data` rows for the page's
+  attributes: 18,040 and 375 of its 18,421 buffers. At 100,000 rows the
+  planner takes nested loops for the same estimate.
+- **Token on 1 row in 20, 100,000 rows.** `token gt` 5 (estimated 4,832)
+  reads 53 buffers in the recorded run. In an earlier run of the same SQL
+  generation, at `0f2afb9` (only the benchmark's pass order differs), an
+  estimate of 4,828 led the page to hash all 105,000 `eav_data` rows for
+  `eav_aggregated` (821 buffers, 33 ms, spilling to disk). The `VERBOSE`
+  run recorded the same plan (estimate 4,654, 821 buffers, of which the
+  anchor's 8). #815 measured 846 buffers there with the outer scan included.
+
+Both come from the estimate, not from the anchor's shape, and #815 showed
+the statistics cannot correct that estimate. They are bounded by the
+schema's table sizes but grow with them, where the planner keeps the hash
+join. Whether to plan the page from the page's actual rows (for example
+probing `entity_main` and `eav_data` per page row) is a separate change,
+with its own plan risk for genuinely large pages, and is not made here.
+
+**Not covered.** The benchmark loads no unflushed row, so the `change_log`
+branch's cost under load is not measured here (#669); its answer is
+covered by the equivalence test. Generic plans of a prepared statement were
+not measured.

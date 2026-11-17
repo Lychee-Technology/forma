@@ -33,8 +33,8 @@ import (
 //     does not pin.
 //
 // Two passes report what would change the picture: one with richer
-// statistics, and one with the anchor's single-leaf EAV branch rewritten
-// without its outer eav_data scan (#881). A last pass moves value_text back to
+// statistics, and one with the anchor as it was before #881, reading every
+// eav_data row of the schema as an outer t. A last pass moves value_text back to
 // the database default and runs the pre-#728 SQL, without COLLATE "C". Its
 // estimates must match the compliant table's: a misestimate that survives the
 // change of collation comes from the statistics, not from the collation.
@@ -56,8 +56,10 @@ func TestMixedEAVTextRangePlans(t *testing.T) {
 			b.load(mixed)
 			b.requireNoStatistics()
 			b.run(mixed.name, "missing", "note", "token")
+			b.withOuterScan(mixed.name, "missing")
 			b.analyze()
 			fresh := b.run(mixed.name, "fresh", "note", "token")
+			b.withOuterScan(mixed.name, "fresh")
 			b.runProbes(mixed.name, "fresh", b.compositeProbes())
 
 			b.load(eavLoad{"note only", map[string]int{"note": 1}})
@@ -77,7 +79,6 @@ func TestMixedEAVTextRangePlans(t *testing.T) {
 
 			b.load(mixed)
 			b.analyze()
-			b.withoutOuterScan(mixed.name)
 			b.extendedStatistics(mixed.name)
 			b.preCollationShape(mixed.name, fresh)
 			b.recordEvidence()
@@ -128,14 +129,15 @@ func (b *eavPlanBench) explainRow(dataset, stats string, p eavProbe, q recordedQ
 	return row
 }
 
-// withoutOuterScan records the ranges with the anchor's first branch, which
-// reads every eav_data row of the schema as t and keeps those of a row with a
-// matching x, rewritten to read x alone. For one EAV leaf both select the
-// same row ids; whether the rewrite holds for every condition is #881's
-// question, not this one's. The pass only measures what the outer scan costs
-// once the predicate is overestimated, and logs instead when the generated
-// SQL no longer has the branch.
-func (b *eavPlanBench) withoutOuterScan(dataset string) {
+// withOuterScan records the ranges with the anchor as it was before #881,
+// which read every eav_data row of the schema as t and kept those of a row
+// with a matching x: each leaf moved back off t into an EXISTS over x. The
+// generated SQL tests the leaf on t in the anchor and in its change_log
+// branch; the pass rewrites both, and logs instead when the SQL no longer
+// has that shape. It runs on the table and statistics of the mixed load's
+// missing and fresh runs, so the two differ only in the anchor, and measures
+// what testing the leaf on t saves once the predicate is misestimated.
+func (b *eavPlanBench) withOuterScan(dataset, stats string) {
 	b.t.Helper()
 	for _, attr := range []string{"note", "token"} {
 		for _, p := range b.eavProbes(attr) {
@@ -143,20 +145,20 @@ func (b *eavPlanBench) withoutOuterScan(dataset string) {
 				continue
 			}
 			q := b.query(p)
-			if n := len(outerEAVBranch.FindAllStringIndex(q.sql, -1)); n != 1 {
-				b.t.Logf("the anchor of %s reads eav_data as an outer t %d times, not once; skipping the rewrite", p.name, n)
+			if n := len(anchorRowLeaf.FindAllStringIndex(q.sql, -1)); n != 2 {
+				b.t.Logf("the anchor of %s tests the leaf on t %d times, not twice; skipping the pre-#881 shape", p.name, n)
 				return
 			}
-			q.sql = outerEAVBranch.ReplaceAllString(q.sql, `SELECT DISTINCT x.row_id FROM "eav_data" x WHERE x.schema_id = $$1 AND $1`)
-			b.explainRow(dataset+", anchor without the outer eav_data scan", "fresh", p, q)
+			q.sql = anchorRowLeaf.ReplaceAllString(q.sql,
+				`(EXISTS (SELECT 1 FROM "eav_data" x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $$2 AND x.value_text COLLATE "C" $1 $$3))`)
+			b.explainRow(dataset+", pre-#881 anchor with the outer eav_data scan", stats, p, q)
 		}
 	}
 }
 
-// outerEAVBranch is the anchor's first branch for one EAV leaf; its group is
-// the leaf's attribute and value compare.
-var outerEAVBranch = regexp.MustCompile(`SELECT DISTINCT t\.row_id\s+FROM "eav_data" t\s+WHERE t\.schema_id = \$1 AND \(EXISTS \(SELECT 1 FROM "eav_data" x ` +
-	`WHERE x\.schema_id = t\.schema_id AND x\.row_id = t\.row_id AND (x\.attr_id = \$2 AND x\.value_text COLLATE "C" [<>=]+ \$3)\)\)`)
+// anchorRowLeaf is one EAV range leaf tested on the anchor row t; its group
+// is the comparison operator.
+var anchorRowLeaf = regexp.MustCompile(`\(t\.attr_id = \$2 AND t\.value_text COLLATE "C" ([<>=]+) \$3\)`)
 
 // extendedStatistics records the ranges with the planner's statistics at
 // their richest: value_text's statistics target at its maximum, and an mcv
