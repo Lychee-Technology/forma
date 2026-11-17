@@ -16,23 +16,39 @@ import (
 // included (#204), so is_null answers exactly the attributes the read path
 // returns as absent (#646 D6).
 func (p PgEavLeafPayload) Render(eavTable, schemaExpr, rowExpr string, next func() string) string {
-	head := fmt.Sprintf("SELECT 1 FROM %s x WHERE x.schema_id = %s AND x.row_id = %s AND x.attr_id = %s",
-		eavTable, schemaExpr, rowExpr, next())
+	head := fmt.Sprintf("SELECT 1 FROM %s x WHERE x.schema_id = %s AND x.row_id = %s AND %s",
+		eavTable, schemaExpr, rowExpr, p.RenderOnRow("x", next))
+	if p.NullTest == conditionexpr.SQLOpIsNull {
+		return "NOT EXISTS (" + head + ")"
+	}
+	return "EXISTS (" + head + ")"
+}
+
+// MatchesOnRow reports whether the payload holds exactly for the entities
+// with an eav_data row that RenderOnRow selects: every leaf but is_null,
+// whose NOT EXISTS holds where no such row exists.
+func (p PgEavLeafPayload) MatchesOnRow() bool {
+	return p.Err == nil && p.NullTest != conditionexpr.SQLOpIsNull
+}
+
+// RenderOnRow spells the payload's test of one eav_data row aliased alias,
+// the body Render's EXISTS asks of some row of the entity, drawing each
+// placeholder from next in Args order. For is_null it spells the presence
+// test Render negates.
+func (p PgEavLeafPayload) RenderOnRow(alias string, next func() string) string {
+	match := alias + ".attr_id = " + next()
 	switch {
 	case p.NullTest != "":
 		if !p.List {
-			head += " AND x." + p.ValueColumn + " IS NOT NULL"
+			match += " AND " + alias + "." + p.ValueColumn + " IS NOT NULL"
 		}
-		if p.NullTest == conditionexpr.SQLOpIsNull {
-			return "NOT EXISTS (" + head + ")"
-		}
-		return "EXISTS (" + head + ")"
+		return match
 	case p.Set != nil:
-		return "EXISTS (" + head + " AND " + p.Set.RenderPg(p.ComparisonLHS("x"), next()) + ")"
+		return match + " AND " + p.Set.RenderPg(p.ComparisonLHS(alias), next())
 	case p.Now != nil:
-		return "EXISTS (" + head + " AND " + p.Now.RenderComparison(p.ComparisonLHS("x"), p.SQLOp, next()) + ")"
+		return match + " AND " + p.Now.RenderComparison(p.ComparisonLHS(alias), p.SQLOp, next())
 	}
-	return fmt.Sprintf("EXISTS (%s AND %s %s %s)", head, p.ComparisonLHS("x"), p.SQLOp, next())
+	return fmt.Sprintf("%s AND %s %s %s", match, p.ComparisonLHS(alias), p.SQLOp, next())
 }
 
 // Args returns the binds of Render in placeholder order.

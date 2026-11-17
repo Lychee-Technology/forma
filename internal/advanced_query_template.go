@@ -17,6 +17,11 @@ var optimizedQuerySQLTemplate = template.Must(template.New("optimizedQuery").Fun
 	            FROM {{.MainTable}} m
 	            WHERE m.ltbase_schema_id = {{.SchemaID}} AND ({{.Anchor.Condition}})
 	            {{- else }}
+	            {{- /* Both eav_data sites keep an entity when some row t of
+	                 it passes the condition, which tests t itself wherever
+	                 that answers the same (#881, sqlgen.WalkHybridEAVAnchor):
+	                 the anchor then reads the rows a leaf selects, not every
+	                 eav_data row of the schema. */}}
 	            SELECT DISTINCT t.row_id
 	            FROM {{.EAVTable}} t
 	            WHERE t.schema_id = {{.SchemaID}} AND ({{.Anchor.Condition}})

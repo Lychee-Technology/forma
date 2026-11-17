@@ -131,7 +131,8 @@ func TestHybrid_MainColumn_AnchorFalse(t *testing.T) {
 }
 
 // TestHybrid_EAVLeaf_AnchorFalse asserts that an EAV-only attribute with
-// anchor=false produces an EXISTS clause with e.* rewritten to t.*.
+// anchor=false tests the anchor row t itself rather than an EXISTS over a
+// second eav_data row correlated on t (#881).
 // argCounter starts at 1; EAV emits two params (attr_id at $2, value at $3).
 func TestHybrid_EAVLeaf_AnchorFalse(t *testing.T) {
 	h := newHybridTestHelper(false)
@@ -139,7 +140,7 @@ func TestHybrid_EAVLeaf_AnchorFalse(t *testing.T) {
 	clause, args, err := h.build(cond)
 	require.NoError(t, err)
 	require.Equal(t,
-		"EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $2 AND x.value_text = $3)",
+		"t.attr_id = $2 AND t.value_text = $3",
 		clause)
 	require.Equal(t, []any{int16(7), "Alice"}, args)
 }
@@ -173,8 +174,9 @@ func TestHybrid_MixedMainAndEAV_AND(t *testing.T) {
 
 	// Sub-clauses each wrapped in (), joined with AND, no outer parens; $N
 	// placeholders continuous across the main→EAV boundary ($2 age, $3 attr_id, $4 value).
+	// The main leaf cannot test t, so the EAV leaf is the one moved onto it.
 	require.Equal(t,
-		`(EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" > $2::bigint)) AND (EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $3 AND x.value_text = $4))`,
+		`(EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" > $2::bigint)) AND (t.attr_id = $3 AND t.value_text = $4)`,
 		clause)
 	// Args: [int64(18), int16(7) (attr_id of "name"), "Alice"]
 	require.Equal(t, []any{int64(18), int16(7), "Alice"}, args)
@@ -217,8 +219,10 @@ func TestHybrid_EmptyCompositeAndNestedOR(t *testing.T) {
 	clause2, args2, err := h.build(root2)
 	require.NoError(t, err)
 	// Nested OR wrapped as one AND-child; placeholders $2 (age), $3/$4 (name), $5/$6 (tag).
+	// Both OR children test t, since some t satisfies A or B exactly when
+	// some t satisfies A or some t satisfies B.
 	require.Equal(t,
-		`(EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" = $2::bigint)) AND ((EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $3 AND x.value_text = $4)) OR (EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $5 AND x.value_text = $6)))`,
+		`(EXISTS (SELECT 1 FROM "entity_main" m WHERE m.ltbase_row_id = t.row_id AND m."integer_01" = $2::bigint)) AND ((t.attr_id = $3 AND t.value_text = $4) OR (t.attr_id = $5 AND t.value_text = $6))`,
 		clause2)
 	require.Equal(t, []any{int64(25), int16(7), "Alice", int16(9), "admin"}, args2)
 }

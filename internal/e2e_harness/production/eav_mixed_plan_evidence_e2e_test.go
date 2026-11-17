@@ -20,17 +20,21 @@ const eavPlanEvidenceVar = "FORMA_EAV_PLAN_EVIDENCE"
 // textPlanCases are the probes, by eav_data load, statistics state and probe
 // name, whose plan trees back docs/eav-text-range-plans.md: the overestimated
 // mixed token gt and its one-attribute control, its note lt mirror, the
-// anchor rewrite, the pre-#728 SQL, the richer statistics, a justified scan,
-// and an in list planned on statistics that never saw the attribute.
+// skewed load's token gt, the pre-#881 anchor, the pre-#728 SQL, the richer
+// statistics, a justified scan, a half range planned without statistics, and
+// an in list planned on statistics that never saw the attribute.
 var textPlanCases = map[[3]string]bool{
-	{"note + token", "fresh", "token gt 5"}:                                             true,
-	{"token only", "fresh", "token gt 5"}:                                               true,
-	{"note + token", "fresh", "note lt 5"}:                                              true,
-	{"note + token", "fresh", "token gt half"}:                                          true,
-	{"note + token", "stale (note only)", "token in"}:                                   true,
-	{"note + token, anchor without the outer eav_data scan", "fresh", "token gt 5"}:     true,
-	{"note + token", "fresh, target 10000 + mcv(attr_id, value_text)", "token gt 5"}:    true,
-	{"note + token, pre-#728 SQL on a default-collation column", "fresh", "token gt 5"}: true,
+	{"note + token", "fresh", "token gt 5"}:                                                    true,
+	{"token only", "fresh", "token gt 5"}:                                                      true,
+	{"note + token", "fresh", "note lt 5"}:                                                     true,
+	{"note + token", "fresh", "token gt half"}:                                                 true,
+	{"note + token", "missing", "token gt half"}:                                               true,
+	{"note + token", "stale (note only)", "token in"}:                                          true,
+	{"note + token on 1 row in 20", "fresh", "token gt 5"}:                                     true,
+	{"note + token, pre-#881 anchor with the outer eav_data scan", "missing", "token gt half"}: true,
+	{"note + token, pre-#881 anchor with the outer eav_data scan", "fresh", "token gt 5"}:      true,
+	{"note + token", "fresh, target 10000 + mcv(attr_id, value_text)", "token gt 5"}:           true,
+	{"note + token, pre-#728 SQL on a default-collation column", "fresh", "token gt 5"}:        true,
 }
 
 // recordSetup records what a reader needs to reproduce the run: the server,

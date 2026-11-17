@@ -63,8 +63,7 @@ func TestHybrid_SetOperandOnEAV(t *testing.T) {
 	clause, args, err := h.build(&forma.KvCondition{Attr: "name", Value: `not_in:["a","b"]`})
 	require.NoError(t, err)
 	require.Equal(t,
-		"EXISTS (SELECT 1 FROM eav_data x WHERE x.schema_id = t.schema_id AND x.row_id = t.row_id AND x.attr_id = $2 "+
-			"AND (x.value_text IS NOT NULL AND x.value_text <> ALL($3)))",
+		"t.attr_id = $2 AND (t.value_text IS NOT NULL AND t.value_text <> ALL($3))",
 		clause)
 	require.Equal(t, []any{int16(7), []string{"a", "b"}}, args)
 }

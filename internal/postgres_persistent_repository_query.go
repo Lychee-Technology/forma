@@ -295,8 +295,14 @@ func (b *hybridConditionBuilder) initCache() {
 	}
 }
 
+// build renders c. Anchored on eav_data, the clause is a test of the anchor
+// row t (optimizedQuerySQLTemplate keeps an entity when some t of it passes),
+// so the leaves that can test t itself do (#881).
 func (b *hybridConditionBuilder) build(c forma.Condition) (string, []any, error) {
-	return sqlgen.WalkHybridCondition(c, b.cache, b)
+	if b.useMainTableAsAnchor {
+		return sqlgen.WalkHybridCondition(c, b.cache, b)
+	}
+	return sqlgen.WalkHybridEAVAnchor(c, b.cache, b)
 }
 
 // EmitTypedLeaf renders a parse-once hybrid leaf. Routing (main vs EAV) and
@@ -370,4 +376,18 @@ func (b *hybridConditionBuilder) emitEAVLeaf(p sqlgen.HybridLeafPayload) (string
 	}
 
 	return eav.Render(b.eavTable, schemaAlias, rowAlias, b.nextPlaceholder), eav.Args(), nil
+}
+
+// EmitRowLeaf renders an EAV leaf as a test of the eav_data anchor row t
+// itself, the shape QueryPersistentRecordsByAttrValues has used since #268,
+// with the placeholders emitEAVLeaf would draw.
+func (b *hybridConditionBuilder) EmitRowLeaf(leaf *sqlgen.PredicateLeaf) (string, []any, error) {
+	if b.cache == nil {
+		return "", nil, fmt.Errorf("schema metadata cache not available for schema_id %d", b.schemaID)
+	}
+	eav := leaf.Hybrid.Eav
+	if eav.Err != nil {
+		return "", nil, eav.Err
+	}
+	return eav.RenderOnRow("t", b.nextPlaceholder), eav.Args(), nil
 }
