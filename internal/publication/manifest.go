@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/google/uuid"
 )
@@ -72,7 +73,11 @@ func ManifestFiles(raw []byte, schemaID int16, g Generation) ([]string, error) {
 	if err := dec.Decode(&m); err != nil {
 		return nil, fail("parse: %v", err)
 	}
-	if dec.More() {
+	// The object must be the whole of raw: decoding another value has to
+	// reach EOF. Decoder.More is not that check, for it answers false at a
+	// closing delimiter, so `{...}]` or `{...}}` would pass as one object.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err != io.EOF {
 		return nil, fail("trailing data after the manifest object")
 	}
 	switch {

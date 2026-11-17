@@ -171,6 +171,16 @@ func TestPlanCollectionStopsOnAnInvalidManifest(t *testing.T) {
 			raw := append(append([]byte{}, c.Manifests[g.ManifestKey]...), `{"files": [{"key": "staged"}]}`...)
 			c.Manifests[g.ManifestKey], g.ManifestSHA256 = raw, digest(raw)
 		},
+		// Decoder.More answers false at a closing delimiter, so these two
+		// pin that verification decodes to EOF rather than asking More.
+		"trailing closing brace": func(_ *testing.T, c *Collection, g *Generation) {
+			raw := append(append([]byte{}, c.Manifests[g.ManifestKey]...), "\n}"...)
+			c.Manifests[g.ManifestKey], g.ManifestSHA256 = raw, digest(raw)
+		},
+		"trailing closing bracket": func(_ *testing.T, c *Collection, g *Generation) {
+			raw := append(append([]byte{}, c.Manifests[g.ManifestKey]...), "]"...)
+			c.Manifests[g.ManifestKey], g.ManifestSHA256 = raw, digest(raw)
+		},
 	}
 	targets := map[string]func(c *Collection) *Generation{
 		"retained": func(c *Collection) *Generation { return &c.Retained[0] },
