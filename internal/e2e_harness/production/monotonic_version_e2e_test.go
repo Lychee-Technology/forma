@@ -152,7 +152,7 @@ func testUpdateAdvancesPastClockAheadVersion(ctx context.Context, t *testing.T, 
 	if _, err := env.RunInitKeepingDelta(ctx, wide); err != nil {
 		t.Fatalf("run init keeping delta: %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
+	env.MarkAllOnboarded(ctx) // cold-only ⇒ DuckDB routing
 
 	// Positive control: the bystander is visible on the DuckDB path.
 	bystanderQ := Query{Schema: wide, Filters: []Filter{{Attr: "title", Op: "equals", Value: "mono-bystander"}}, Limit: 10}
@@ -201,7 +201,7 @@ func testDeleteOutranksClockAheadLiveVersion(ctx context.Context, t *testing.T, 
 		t.Fatalf("flush left %d rows dirty, want 0 — the clock-ahead tombstone was not marked", flush.UnflushedAfter)
 	}
 	assertTombstoneParquet(ctx, t, env, soleParquetKey(t, flush), del)
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
+	env.RetireAllFlushed(ctx) // cold-only ⇒ DuckDB routing
 
 	controlQ := Query{Schema: wide, Filters: []Filter{{Attr: "title", Op: "equals", Value: "mono-control"}}, Limit: 10}
 	assertRowCount(ctx, t, env, "delete-guard control", controlQ, 1)
@@ -303,7 +303,7 @@ func TestRecreateBetweenExportAndMark(t *testing.T) {
 
 	// Cold-only: the recreate @ ahead+2 must outrank the flushed tombstone @
 	// ahead+1 — no resurrection of the delete, no hidden recreate.
-	env.ExecSQL(ctx, "DELETE FROM change_log")
+	env.RetireAllFlushed(ctx)
 	controlQ := Query{Schema: wide, Filters: []Filter{{Attr: "title", Op: "equals", Value: "recreate-control"}}, Limit: 10}
 	assertRowCount(ctx, t, env, "recreate-race control", controlQ, 1)
 	assertRowCount(ctx, t, env, "recreate wins cold", rebornQ, 1)

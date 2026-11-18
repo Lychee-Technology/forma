@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/reconcile"
 )
 
@@ -72,7 +71,7 @@ func TestManifestReconcile_RefusesPartialInitPromotion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list s3 keys before refusal run: %v", err)
 	}
-	mBefore, _ := loadManifestWithETag(t, ctx, env, schema)
+	mBefore := loadSchemaManifest(ctx, t, env, schema)
 
 	r, cleanup := newReconcileHarness(t, ctx, env, schema,
 		reconcile.Options{Repair: true, MaxETagRetries: 3}, true)
@@ -101,12 +100,12 @@ func TestManifestReconcile_RefusesPartialInitPromotion(t *testing.T) {
 	// still reported as orphans and still on the GC path.
 	assertSameKeySet(t, "base orphans after refusal", s.BaseOrphans, entryPaths(original))
 
-	mAfter, _ := loadManifestWithETag(t, ctx, env, schema)
+	mAfter := loadSchemaManifest(ctx, t, env, schema)
 	if got := baseTierEntries(mAfter); len(got) != 0 {
 		t.Fatalf("refused run wrote %d base entries: %+v", len(got), got)
 	}
-	if mAfter.Version != mBefore.Version {
-		t.Fatalf("refused run bumped manifest version %d -> %d", mBefore.Version, mAfter.Version)
+	if n := publishesBetween(mBefore, mAfter); n != 0 {
+		t.Fatalf("refused run published %d times, want none", n)
 	}
 	assertKeysStillPresent(t, ctx, env, keysBefore, entryPaths(original))
 }
@@ -116,7 +115,7 @@ func TestManifestReconcile_RefusesPartialInitPromotion(t *testing.T) {
 // S3 — the exact post-state of a failed manifest publish. It returns the
 // entries init itself wrote, which serve as the per-field oracle for whatever
 // promotion later reconstructs.
-func seedStrippedInitBase(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) []manifest.FileEntry {
+func seedStrippedInitBase(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) []ManifestEntry {
 	t.Helper()
 	env.CDC.BatchSize = initBaseSeedBatch
 
@@ -142,8 +141,7 @@ func seedStrippedInitBase(t *testing.T, ctx context.Context, env *Env, schema Sc
 		t.Fatalf("init exported %d rows, want %d", report.RowsExported, initBaseSeedCreates)
 	}
 
-	m, etag := loadManifestWithETag(t, ctx, env, schema)
-	original := baseTierEntries(m)
+	original := baseTierEntries(loadSchemaManifest(ctx, t, env, schema))
 	if len(original) == 0 {
 		t.Fatal("init published no base manifest entries to strip")
 	}
@@ -151,23 +149,16 @@ func seedStrippedInitBase(t *testing.T, ctx context.Context, env *Env, schema Sc
 		t.Fatalf("manifest holds %d base entries, init created %d files", len(original), report.FilesCreated)
 	}
 
-	var kept []manifest.FileEntry
-	for _, f := range m.Files {
-		if !strings.EqualFold(f.Tier, "base") {
-			kept = append(kept, f)
-		}
-	}
-	m.Files = kept
-	saveManifestWithETag(t, ctx, env, schema, m, etag)
+	unpublishFiles(ctx, t, env, schema, func(f ManifestEntry) bool { return strings.EqualFold(f.Tier, "base") })
 
-	stripped, _ := loadManifestWithETag(t, ctx, env, schema)
+	stripped := loadSchemaManifest(ctx, t, env, schema)
 	if got := baseTierEntries(stripped); len(got) != 0 {
 		t.Fatalf("strip left %d base entries behind: %+v", len(got), got)
 	}
 	return original
 }
 
-func testPromoteRestoresBaseTier(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, original []manifest.FileEntry) {
+func testPromoteRestoresBaseTier(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, original []ManifestEntry) {
 	r, cleanup := newReconcileHarness(t, ctx, env, schema,
 		reconcile.Options{Repair: true, MaxETagRetries: 3}, true)
 	defer cleanup()
@@ -188,12 +179,12 @@ func testPromoteRestoresBaseTier(t *testing.T, ctx context.Context, env *Env, sc
 		t.Fatalf("a fully promoted set leaves no residual discrepancies, got %+v", s)
 	}
 
-	mAfter, _ := loadManifestWithETag(t, ctx, env, schema)
+	mAfter := loadSchemaManifest(ctx, t, env, schema)
 	promoted := baseTierEntries(mAfter)
 	if len(promoted) != len(original) {
 		t.Fatalf("manifest holds %d base entries after promotion, want %d", len(promoted), len(original))
 	}
-	byPath := make(map[string]manifest.FileEntry, len(promoted))
+	byPath := make(map[string]ManifestEntry, len(promoted))
 	for _, e := range promoted {
 		byPath[e.Path] = e
 	}
@@ -216,7 +207,7 @@ func testPromoteRestoresBaseTier(t *testing.T, ctx context.Context, env *Env, sc
 // (ltbase_updated_at) values, which necessarily precede that stamp. So the
 // promoted range is only required to be a real, positive range that does not
 // exceed init's stamp.
-func assertPromotedEntryMatches(t *testing.T, got, want manifest.FileEntry) {
+func assertPromotedEntryMatches(t *testing.T, got, want ManifestEntry) {
 	t.Helper()
 	if !strings.EqualFold(got.Tier, "base") {
 		t.Errorf("promoted entry %s has tier %q, want base", got.Path, got.Tier)
@@ -255,7 +246,7 @@ func assertPromotedEntryMatches(t *testing.T, got, want manifest.FileEntry) {
 // inventory: nothing is orphaned, nothing is promoted again, and the manifest
 // is not rewritten.
 func testPromoteSecondRunClean(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, wantBase int) {
-	mBefore, _ := loadManifestWithETag(t, ctx, env, schema)
+	mBefore := loadSchemaManifest(ctx, t, env, schema)
 	r, cleanup := newReconcileHarness(t, ctx, env, schema,
 		reconcile.Options{Repair: true, MaxETagRetries: 3}, true)
 	defer cleanup()
@@ -275,9 +266,9 @@ func testPromoteSecondRunClean(t *testing.T, ctx context.Context, env *Env, sche
 		t.Fatalf("second run reports residual discrepancies: %+v", s)
 	}
 
-	mAfter, _ := loadManifestWithETag(t, ctx, env, schema)
-	if mAfter.Version != mBefore.Version {
-		t.Fatalf("second run bumped manifest version %d -> %d", mBefore.Version, mAfter.Version)
+	mAfter := loadSchemaManifest(ctx, t, env, schema)
+	if n := publishesBetween(mBefore, mAfter); n != 0 {
+		t.Fatalf("second run published %d times, want none", n)
 	}
 	if got := baseTierEntries(mAfter); len(got) != wantBase {
 		t.Fatalf("base tier holds %d entries after the second run, want %d", len(got), wantBase)
@@ -285,8 +276,8 @@ func testPromoteSecondRunClean(t *testing.T, ctx context.Context, env *Env, sche
 	assertNoDuplicateManifestEntries(t, mAfter)
 }
 
-func baseTierEntries(m *manifest.Manifest) []manifest.FileEntry {
-	var out []manifest.FileEntry
+func baseTierEntries(m *Manifest) []ManifestEntry {
+	var out []ManifestEntry
 	for _, f := range m.Files {
 		if strings.EqualFold(f.Tier, "base") {
 			out = append(out, f)
@@ -295,7 +286,7 @@ func baseTierEntries(m *manifest.Manifest) []manifest.FileEntry {
 	return out
 }
 
-func entryPaths(entries []manifest.FileEntry) []string {
+func entryPaths(entries []ManifestEntry) []string {
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, e.Path)

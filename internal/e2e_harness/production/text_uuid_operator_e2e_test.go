@@ -36,7 +36,7 @@ func TestTextUUIDOperatorsAcrossRoutes(t *testing.T) {
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 
 	type seeded struct {
 		ev         *Event // its RowID is assigned when the event is applied

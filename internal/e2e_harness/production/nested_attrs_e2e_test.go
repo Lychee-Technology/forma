@@ -37,7 +37,7 @@ func TestFederatedReadNestedDottedAttributes(t *testing.T) {
 	if _, err := env.RunInit(ctx, nested); err != nil {
 		t.Fatalf("run init (base export): %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", nested.ID)
+	env.MarkOnboarded(ctx, nested)
 
 	// Warm tier: 4 creates flushed into a delta file. Everything is now
 	// flushed, so warm+cold reads must serve the full data set.

@@ -7,8 +7,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // resultSnapshot is a canonical fold of one engine query result, used for the
@@ -106,28 +104,13 @@ func seedCompactionBase(ctx context.Context, t *testing.T, env *Env, schema Sche
 	if _, err := env.RunInit(ctx, schema); err != nil {
 		t.Fatalf("run init (base export): %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", schema.ID)
+	env.MarkOnboarded(ctx, schema)
 	return creates
-}
-
-// loadSchemaManifest loads and parses the schema's current manifest, failing
-// the test when it does not exist.
-func loadSchemaManifest(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) *manifest.Manifest {
-	t.Helper()
-	manifests, err := env.loadManifests(ctx)
-	if err != nil {
-		t.Fatalf("load manifests: %v", err)
-	}
-	m := manifests[schema.ID]
-	if m == nil {
-		t.Fatalf("schema %d has no manifest", schema.ID)
-	}
-	return m
 }
 
 // assertNoDuplicateManifestEntries pins the "no duplicate manifest entries"
 // success criterion (#188).
-func assertNoDuplicateManifestEntries(t *testing.T, m *manifest.Manifest) {
+func assertNoDuplicateManifestEntries(t *testing.T, m *Manifest) {
 	t.Helper()
 	seen := make(map[string]bool, len(m.Files))
 	for _, f := range m.Files {
@@ -141,7 +124,7 @@ func assertNoDuplicateManifestEntries(t *testing.T, m *manifest.Manifest) {
 // assertDeltaSizesPopulated is the positive control that the SizeBytes fix is
 // active: without it the promotion scenarios would pass vacuously (a zero
 // threshold override could promote empty tiers).
-func assertDeltaSizesPopulated(t *testing.T, m *manifest.Manifest) {
+func assertDeltaSizesPopulated(t *testing.T, m *Manifest) {
 	t.Helper()
 	deltas := 0
 	for _, f := range m.Files {

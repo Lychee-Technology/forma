@@ -121,8 +121,7 @@ func testDeleteBeforeFlush(ctx context.Context, t *testing.T, env *Env, wide Sch
 	if initReport.RowsExported != 1 {
 		t.Fatalf("init exported %d rows, want 1", initReport.RowsExported)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1 AND row_id = $2",
-		wide.ID, row.RowID)
+	env.MarkRowsOnboarded(ctx, wide, rowIDs([]*Event{row}))
 
 	// The base file must actually serve the row before the delete —
 	// otherwise the post-delete zero-row check could be a glob-mismatch

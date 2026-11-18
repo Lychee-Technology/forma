@@ -220,9 +220,7 @@ func TestNullAndBoundaryRoundTripAcrossTiers(t *testing.T) {
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	env.ExecSQL(ctx,
-		"DELETE FROM change_log WHERE schema_id = $1 AND row_id = ANY($2)",
-		wide.ID, rowIDs([]*Event{nullRow, maxRow}))
+	env.MarkRowsOnboarded(ctx, wide, rowIDs([]*Event{nullRow, maxRow}))
 
 	// Warm tier: a fresh max-shape row applied after init and flushed to
 	// delta, so +MaxInt64 is proven on warm too (PR #284 review, AC4) —

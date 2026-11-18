@@ -66,7 +66,7 @@ func TestCompactionManifestAtomicity(t *testing.T) {
 	}
 	mustFlush(ctx, t, env)
 	recordListedKeys(ctx, t, env, wide, everListed) // + the concurrent delta
-	midVersion := loadSchemaManifest(ctx, t, env, wide).Version
+	mid := loadSchemaManifest(ctx, t, env, wide)
 
 	pauser.Resume()
 	o := <-done
@@ -78,8 +78,8 @@ func TestCompactionManifestAtomicity(t *testing.T) {
 	}
 	// Monotonicity past the concurrent writer proves the stale first attempt
 	// did not clobber it (If-Match held) and the commit happened after.
-	if o.result.Version <= midVersion {
-		t.Errorf("final manifest version = %d, want > %d (the concurrent flush's save)", o.result.Version, midVersion)
+	if n := compactionPublishesSince(mid, o.result); n <= 0 {
+		t.Errorf("compaction committed %d publishes past the concurrent flush's, want at least one", n)
 	}
 
 	// No lost entries: the retry recomputed from the fresh manifest, so the

@@ -13,7 +13,6 @@ import (
 
 	"github.com/lychee-technology/forma"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // #732: a declaration changed after its parquet was written must not reach
@@ -98,7 +97,7 @@ func requireTypeRefusal(ctx context.Context, t *testing.T, env *Env, schema Sche
 	// manifest entry.
 	describeParquetCols(ctx, t, env, key)
 	m := loadSchemaManifest(ctx, t, env, schema)
-	if !slices.ContainsFunc(m.Files, func(f manifest.FileEntry) bool { return f.Path == key }) {
+	if !slices.ContainsFunc(m.Files, func(f ManifestEntry) bool { return f.Path == key }) {
 		t.Errorf("refused object %s must stay listed in the manifest", key)
 	}
 }

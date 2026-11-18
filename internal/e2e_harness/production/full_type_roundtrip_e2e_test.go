@@ -31,9 +31,7 @@ func TestFullTypeRoundTripAcrossTiers(t *testing.T) {
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	env.ExecSQL(ctx,
-		"DELETE FROM change_log WHERE schema_id = $1 AND row_id = ANY($2)",
-		wide.ID, rowIDs(creates[0:6]))
+	env.MarkRowsOnboarded(ctx, wide, rowIDs(creates[0:6]))
 
 	// Warm tier: flush creates[6:12] into a delta file.
 	if _, err := env.RunFlush(ctx); err != nil {

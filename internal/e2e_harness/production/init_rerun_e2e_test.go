@@ -6,8 +6,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // TestInitRerunIdempotency (#176 scenario 4, re-keyed by #416): rerunning
@@ -72,7 +70,7 @@ func TestInitRerunIdempotency(t *testing.T) {
 	}
 	// No duplicate manifest entries: count RAW entries, not unique paths —
 	// this is the assertion that goes red on append semantics (6 vs 3).
-	rawEntries := manifest.FilterByTier(second.Manifest, "base")
+	rawEntries := TierEntries(second.Manifest, "base")
 	if len(rawEntries) != 3 {
 		t.Fatalf("manifest holds %d base entries after rerun, want 3 (no duplicates)", len(rawEntries))
 	}
@@ -89,14 +87,14 @@ func TestInitRerunIdempotency(t *testing.T) {
 	assertBaseRows(ctx, t, env, second.Manifest, 20)
 
 	// Same federated results after the rerun (base-only source).
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 	assertFederatedRowCount(ctx, t, env, "post-rerun base tier",
 		Query{Schema: wide, Limit: 100}, 20)
 }
 
-func buildBasePaths(m *manifest.Manifest) map[string]bool {
+func buildBasePaths(m *Manifest) map[string]bool {
 	paths := make(map[string]bool)
-	for _, f := range manifest.FilterByTier(m, "base") {
+	for _, f := range TierEntries(m, "base") {
 		paths[f.Path] = true
 	}
 	return paths
@@ -146,7 +144,7 @@ func TestInitRerunAfterChangesReconcilesManifest(t *testing.T) {
 	if second.RowsExported != 23 {
 		t.Fatalf("second init exported %d rows, want 23 (20 - 2 deleted + 5 new)", second.RowsExported)
 	}
-	entries := manifest.FilterByTier(second.Manifest, "base")
+	entries := TierEntries(second.Manifest, "base")
 	if len(entries) != 4 {
 		t.Fatalf("manifest holds %d base entries after changed rerun, want 4 (ceil(23/7)), got %+v", len(entries), entries)
 	}

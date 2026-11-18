@@ -177,8 +177,27 @@ where cdc-init bootstraps base files before federated reads. Use
 - `Query`/`AssertQueryMatches` translate one spec for both engine and
   oracle. Filters use the public `"op:value"` condition forms (bool values
   are `"1"`/`"0"`; dates accept ISO strings or epoch millis).
-- `ExecSQL` is the escape hatch for failure-state injection (#179/#181),
-  e.g. truncating `change_log` to model post-init onboarding.
+- `ExecSQL` is the escape hatch for failure-state injection (#179/#181).
+  Clearing `change_log` goes through the helpers of `handoff.go` instead,
+  named for what the test means: `MarkOnboarded`/`MarkRowsOnboarded`/
+  `MarkAllOnboarded` stand in for the onboarding handoff after `RunInit`,
+  `RetireFlushed`/`RetireAllFlushed` drop the entries a flush already
+  exported. E2E scenarios do not import `internal/manifest`: they read the
+  published files through `manifest_access.go` (`Manifest`, `ManifestEntry`,
+  `TierEntries`, `loadSchemaManifest`), compare publications through
+  `publication_state.go` (`publishesBetween`, `compactionPublishesSince`,
+  `snapshotPublication`/`publicationChanges`) and stage inventory faults
+  through `publication_faults.go` (`unpublishFiles`,
+  `poisonManifestChecksum`, `restampBaseColumns`). They never read the V1
+  manifest's version, ETag or bytes, nor save a manifest themselves. Two
+  untagged unit tests of the harness's own manifest wrappers,
+  `faults_test.go` and `manifest_load_gate_test.go`, are explicitly exempt
+  and import the package. `TestE2ETestsReachV1StandInsOnlyThroughHelpers`
+  keeps these rules, so Protocol V2 (#896) changes those helper bodies
+  rather than the tests (#901). The guard is syntactic: it catches a
+  `change_log` delete in a literal (quoted or schema-qualified) and one that
+  takes `Tables.ChangeLog` as its target through `+` or `Sprintf`, not SQL
+  assembled any other way at run time.
 - `InjectRestore` (#175) re-materializes a hard-deleted row under its
   original row_id at the storage layer — production has no restore API
   (Update on a deleted row returns `ErrNotFound`, pinned live) — with the

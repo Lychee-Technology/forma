@@ -77,9 +77,7 @@ func runListRoundTripSpec(ctx context.Context, t *testing.T, cluster *Cluster) {
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	env.ExecSQL(ctx,
-		"DELETE FROM change_log WHERE schema_id = $1 AND row_id = $2",
-		wide.ID, row1.RowID)
+	env.MarkRowsOnboarded(ctx, wide, rowIDs([]*Event{row1}))
 
 	// Warm tier: a second list row that stays in change_log for RunFlush -> delta.
 	row2 := CreateEvent(wide, map[string]any{

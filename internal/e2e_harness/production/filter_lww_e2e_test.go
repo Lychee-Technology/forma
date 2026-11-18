@@ -93,7 +93,7 @@ func testStaleFilterBaseVsDelta(ctx context.Context, t *testing.T, env *Env, wid
 	if report.RowsExported != 5 {
 		t.Fatalf("init exported %d rows, want 5", report.RowsExported)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 
 	// Load-bearing positive: base serves v1 by its own value.
 	assertRowCount(ctx, t, env, "v1 positive control", Query{

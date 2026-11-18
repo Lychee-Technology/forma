@@ -74,7 +74,7 @@ func seedAllTiers(ctx context.Context, t *testing.T, env *Env, schema SchemaRef)
 	if _, err := env.RunInit(ctx, schema); err != nil {
 		t.Fatalf("run init (base export): %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", schema.ID)
+	env.MarkOnboarded(ctx, schema)
 
 	delta := env.GenerateScript(ScriptSpec{Schema: schema, Creates: 4})
 	if err := env.ApplyEvents(ctx, delta...); err != nil {

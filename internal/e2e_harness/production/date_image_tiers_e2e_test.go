@@ -86,10 +86,11 @@ func seedColdWide(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, t
 		if _, err := env.RunInit(ctx, wide); err != nil {
 			t.Fatalf("run init: %v", err)
 		}
+		env.MarkOnboarded(ctx, wide)
 	} else {
 		mustFlush(ctx, t, env)
+		env.RetireFlushed(ctx, wide)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
 	keys := schemaParquetKeys(ctx, t, env, wide)
 	if len(keys) != 1 {
 		t.Fatalf("expected one %s parquet object, got %v", tier, keys)

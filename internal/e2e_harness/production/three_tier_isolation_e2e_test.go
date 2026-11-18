@@ -56,7 +56,7 @@ func testTierBaseOnly(ctx context.Context, t *testing.T, env *Env, wide SchemaRe
 	if report.RowsExported != 12 {
 		t.Fatalf("init exported %d rows, want 12", report.RowsExported)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 
 	result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})
 	if result != nil {

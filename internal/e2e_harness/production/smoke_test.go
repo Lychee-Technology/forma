@@ -47,9 +47,7 @@ func TestProductionSmoke(t *testing.T) {
 	// Onboarding contract: the base export covers creates[0:10]; clearing
 	// their change_log entries makes the base file their only source.
 	coldIDs := rowIDs(creates[0:10])
-	env.ExecSQL(ctx,
-		"DELETE FROM change_log WHERE schema_id = $1 AND row_id = ANY($2)",
-		wide.ID, coldIDs)
+	env.MarkRowsOnboarded(ctx, wide, coldIDs)
 
 	// Mutations that will become the warm tier.
 	var warmEvents []*Event

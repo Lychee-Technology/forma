@@ -202,7 +202,7 @@ func assertRankThenCountDesc(t *testing.T, records []*model.PersistentRecord) {
 func testDuplicateKeyPageUnion(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	creates := seedDuplicateQty(ctx, t, env, wide)
 	mustFlush(ctx, t, env)
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
+	env.RetireAllFlushed(ctx) // cold-only ⇒ DuckDB routing
 
 	base := Query{Schema: wide, Sorts: []Sort{{Attr: "qty"}}}
 	for _, off := range []int{0, 6, 12, 18} {
@@ -225,7 +225,7 @@ func testDuplicateKeyPageUnion(ctx context.Context, t *testing.T, env *Env, wide
 func testRepeatNStableOrder(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
 	seedDuplicateQty(ctx, t, env, wide)
 	mustFlush(ctx, t, env)
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
+	env.RetireAllFlushed(ctx) // cold-only ⇒ DuckDB routing
 
 	q := Query{Schema: wide, Sorts: []Sort{{Attr: "qty"}}, Limit: 25}
 	res := env.AssertQueryMatches(ctx, q)
@@ -284,7 +284,7 @@ func testMultiKeyMixedDirections(ctx context.Context, t *testing.T, env *Env, wi
 	creates := buildMixedRankRows(wide)
 	mustApplyEvents(ctx, t, env, "mixed-rank creates", creates...)
 	mustFlush(ctx, t, env)
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
+	env.RetireAllFlushed(ctx) // cold-only ⇒ DuckDB routing
 
 	q := Query{Schema: wide, Sorts: []Sort{{Attr: "rank"}, {Attr: "count", Desc: true}}, Limit: 20}
 	res := env.AssertQueryMatches(ctx, q)
@@ -319,7 +319,7 @@ func testMultiKeyPublicAPIDesc(ctx context.Context, t *testing.T, env *Env, wide
 	creates := buildMixedRankRows(wide)
 	mustApplyEvents(ctx, t, env, "public-api multi-key creates", creates...)
 	mustFlush(ctx, t, env)
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold/warm-only ⇒ federated DuckDB path
+	env.RetireAllFlushed(ctx) // cold/warm-only ⇒ federated DuckDB path
 
 	// Oracle: uniform DESC over (rank, count), row_id irrelevant (count unique).
 	want := make([]*Event, len(creates))
@@ -397,7 +397,7 @@ func testMultiKeyMixedPublicFederated(ctx context.Context, t *testing.T, env *En
 	creates := buildMixedRankRows(wide)
 	mustApplyEvents(ctx, t, env, "mixed-public federated creates", creates...)
 	mustFlush(ctx, t, env)
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
+	env.RetireAllFlushed(ctx) // cold-only ⇒ DuckDB routing
 
 	// The deployment routes every query through DuckDB (#715); the manifest
 	// names the parquet objects.

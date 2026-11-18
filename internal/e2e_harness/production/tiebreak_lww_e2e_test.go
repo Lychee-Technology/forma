@@ -67,8 +67,8 @@ func testEqualVertsIdenticalCopies(ctx context.Context, t *testing.T, env *Env, 
 	if _, err := env.RunInit(ctx, wide); err != nil { // base copies @ create-ts
 		t.Fatalf("run init: %v", err)
 	}
-	mustFlush(ctx, t, env)                     // delta copies @ create-ts
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
+	mustFlush(ctx, t, env)    // delta copies @ create-ts
+	env.RetireAllFlushed(ctx) // cold-only ⇒ DuckDB routing
 
 	q := Query{Schema: wide, Sorts: []Sort{{Attr: "count"}}, Limit: 10}
 	res := env.AssertQueryMatches(ctx, q) // oracle also pins v1 values
@@ -122,7 +122,7 @@ func testInitRestampBeatsStaleDelta(ctx context.Context, t *testing.T, env *Env,
 	if _, err := env.RunInitKeepingDelta(ctx, wide); err != nil { // base v2 attrs @ ver_ts = update T2 (#210)
 		t.Fatalf("run init keeping delta: %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
+	env.MarkAllOnboarded(ctx) // cold-only ⇒ DuckDB routing
 
 	q := Query{Schema: wide, Sorts: []Sort{{Attr: "count"}}, Limit: 10}
 	res := env.AssertQueryMatches(ctx, q) // oracle expects fresh-v2 by strict recency
@@ -185,8 +185,8 @@ func testEqualVertsTombstoneWins(ctx context.Context, t *testing.T, env *Env, wi
 		t.Fatalf("tombstone restamp matched %d rows, want 1 — the equal-ver_ts construction did not take", restamped)
 	}
 
-	mustFlush(ctx, t, env)                     // tombstone parquet @ ver_ts T1, deleted_ts T1
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
+	mustFlush(ctx, t, env)    // tombstone parquet @ ver_ts T1, deleted_ts T1
+	env.RetireAllFlushed(ctx) // cold-only ⇒ DuckDB routing
 
 	// Positive control first: the bystander is visible on the DuckDB path, so a
 	// zero-row victim probe cannot be a false green from a broken read path.

@@ -153,7 +153,7 @@ func runInitBase(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) 
 	if err != nil {
 		t.Fatalf("run init (base export): %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", schema.ID)
+	env.MarkOnboarded(ctx, schema)
 	return requireSoleParquet(t, "init", init.NewObjects)
 }
 

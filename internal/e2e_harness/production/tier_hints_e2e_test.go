@@ -83,7 +83,7 @@ func seedTierMatrix(ctx context.Context, t *testing.T, env *Env, wide SchemaRef)
 	if report.RowsExported != 6 {
 		t.Fatalf("init exported %d rows, want 6", report.RowsExported)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 
 	rEvent := coldEvents[len(coldEvents)-1]
 	seed.rowR = rEvent.RowID
@@ -264,7 +264,7 @@ func TestTierHintRouting(t *testing.T) {
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 	hot := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 2})
 	if err := env.ApplyEvents(ctx, hot...); err != nil {
 		t.Fatalf("apply hot creates: %v", err)

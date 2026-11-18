@@ -71,7 +71,7 @@ func testFreshBaseBeatsStaleDelta(ctx context.Context, t *testing.T, env *Env, w
 	if _, err := env.RunInitKeepingDelta(ctx, wide); err != nil { // base: v3 attrs @ init's ver_ts stamp
 		t.Fatalf("run init keeping delta: %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log") // onboarding cleanup (#176) ⇒ cold-only, DuckDB routing
+	env.MarkAllOnboarded(ctx) // onboarding cleanup (#176) ⇒ cold-only, DuckDB routing
 
 	q := Query{Schema: wide, Sorts: []Sort{{Attr: "count"}}, Limit: 10}
 	res := env.AssertQueryMatches(ctx, q) // oracle expects v3 attributes
