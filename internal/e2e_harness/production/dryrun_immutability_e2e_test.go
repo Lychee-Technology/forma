@@ -3,9 +3,7 @@
 package production
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -85,20 +83,18 @@ type changeLogRow struct {
 
 // stateSnapshot captures the three mutation surfaces #180 guards.
 type stateSnapshot struct {
-	changeLog    map[string]changeLogRow
-	s3           map[string]s3ObjectStat
-	manifestRaw  []byte
-	manifestETag string
+	changeLog   map[string]changeLogRow
+	s3          map[string]s3ObjectStat
+	publication publicationSnapshot
 }
 
 func captureState(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) stateSnapshot {
 	t.Helper()
-	raw, etag := snapshotManifest(t, ctx, env, schema)
+	publication := snapshotPublication(t, ctx, env, schema)
 	return stateSnapshot{
-		changeLog:    snapshotChangeLog(t, ctx, env),
-		s3:           snapshotS3Inventory(t, ctx, env, env.S3Prefix+"/"),
-		manifestRaw:  raw,
-		manifestETag: etag,
+		changeLog:   snapshotChangeLog(t, ctx, env),
+		s3:          snapshotS3Inventory(t, ctx, env, env.S3Prefix+"/"),
+		publication: publication,
 	}
 }
 
@@ -147,21 +143,12 @@ func assertStateUnchanged(t *testing.T, label string, before, after stateSnapsho
 			t.Errorf("%s: s3 object created: %s", label, key)
 		}
 	}
-	if !bytes.Equal(before.manifestRaw, after.manifestRaw) {
-		t.Errorf("%s: manifest bytes changed:\n before: %s\n after:  %s", label, before.manifestRaw, after.manifestRaw)
+	changes, err := publicationChanges(before.publication, after.publication)
+	if err != nil {
+		t.Fatalf("%s: %v", label, err)
 	}
-	if before.manifestETag != after.manifestETag {
-		t.Errorf("%s: manifest etag changed: %s -> %s", label, before.manifestETag, after.manifestETag)
-	}
-	var mBefore, mAfter Manifest
-	if err := json.Unmarshal(before.manifestRaw, &mBefore); err != nil {
-		t.Fatalf("%s: unmarshal before-manifest: %v", label, err)
-	}
-	if err := json.Unmarshal(after.manifestRaw, &mAfter); err != nil {
-		t.Fatalf("%s: unmarshal after-manifest: %v", label, err)
-	}
-	if mBefore.Version != mAfter.Version {
-		t.Errorf("%s: manifest version changed: %d -> %d", label, mBefore.Version, mAfter.Version)
+	for _, change := range changes {
+		t.Errorf("%s: %s", label, change)
 	}
 }
 

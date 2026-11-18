@@ -19,8 +19,11 @@ import (
 //   - flushed: a flush already exported and marked the rows, and the test
 //     drops the marked entries so no hot entry is left at all.
 //
-// Each helper issues exactly the statement its call sites issued before #901,
-// scoped the same way (one schema, some rows, or every schema).
+// Each helper affects the same change_log rows its call sites did before
+// #901, scoped the same way (one schema, some rows, or every schema). The
+// statements are the same too, except that the two call sites which deleted
+// a single row by scalar equality (row_id = $2) now go through
+// MarkRowsOnboarded's row_id = ANY($2) with a one-element array.
 
 // MarkOnboarded stands in for the cdc-init onboarding handoff of schema: after
 // RunInit exported the schema's rows to base, the base parquet becomes their

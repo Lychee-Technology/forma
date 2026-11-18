@@ -38,7 +38,7 @@ func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema Sch
 		t.Fatalf("schema lock for reconcile: %v", err)
 	}
 	store := &reconcile.S3ObjectStore{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
-	manifestStore, resolver := env.manifestAccess()
+	manifests, gcStates := env.reconcileStores()
 	r := &reconcile.Reconciler{
 		Lister:  store,
 		Deleter: store,
@@ -47,8 +47,8 @@ func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema Sch
 		// answers a configuration error instead of scrubbing, and --repair
 		// publishes its adopted and promoted entries unstamped.
 		Objects:    env.Cluster.S3,
-		Manifests:  &reconcile.ResolverManifestStore{Store: manifestStore, Resolver: resolver},
-		GCStates:   &reconcile.ManifestGCStateStore{Store: manifestStore, Resolver: resolver},
+		Manifests:  manifests,
+		GCStates:   gcStates,
 		Locker:     locker,
 		Schemas:    &reconcile.RegistrySchemaEnumerator{DB: db, Table: env.Tables.SchemaRegistry, SchemaIDFilter: int(schema.ID)},
 		Now:        time.Now,
@@ -128,7 +128,7 @@ func seedStrippedDeltaOrphan(t *testing.T, ctx context.Context, env *Env, schema
 		t.Fatalf("apply seed events: %v", err)
 	}
 	mustFlush(ctx, t, env)
-	mKept, _ := loadManifestWithETag(t, ctx, env, schema)
+	mKept := loadSchemaManifest(ctx, t, env, schema)
 	keptPaths := make(map[string]bool, len(mKept.Files))
 	for _, f := range mKept.Files {
 		keptPaths[f.Path] = true
@@ -140,22 +140,18 @@ func seedStrippedDeltaOrphan(t *testing.T, ctx context.Context, env *Env, schema
 	}
 	mustFlush(ctx, t, env)
 
-	m, etag := loadManifestWithETag(t, ctx, env, schema)
 	var original *ManifestEntry
-	var kept []ManifestEntry
-	for _, f := range m.Files {
+	unpublishFiles(ctx, t, env, schema, func(f ManifestEntry) bool {
 		if f.Tier == "delta" && !keptPaths[f.Path] && original == nil {
 			e := f
 			original = &e
-			continue
+			return true
 		}
-		kept = append(kept, f)
-	}
+		return false
+	})
 	if original == nil {
 		t.Fatal("second flush produced no new delta manifest entry to strip")
 	}
-	m.Files = kept
-	saveManifestWithETag(t, ctx, env, schema, m, etag)
 
 	stripped, err := env.Query(ctx, Query{Schema: schema, Limit: 100})
 	if err != nil {
@@ -176,7 +172,7 @@ func testReconcileReportOnly(t *testing.T, ctx context.Context, env *Env, schema
 		t.Fatalf("register ghost manifest entry: %v", err)
 	}
 
-	mBefore, _ := loadManifestWithETag(t, ctx, env, schema)
+	mBefore := loadSchemaManifest(ctx, t, env, schema)
 	r, cleanup := newReconcileHarness(t, ctx, env, schema, reconcile.Options{}, false)
 	defer cleanup()
 
@@ -197,20 +193,13 @@ func testReconcileReportOnly(t *testing.T, ctx context.Context, env *Env, schema
 	if !report.HasResidualDiscrepancies() {
 		t.Fatal("report run must flag residual discrepancies")
 	}
-	mAfter, etagAfter := loadManifestWithETag(t, ctx, env, schema)
-	if mAfter.Version != mBefore.Version {
-		t.Fatalf("report mode bumped manifest version %d -> %d", mBefore.Version, mAfter.Version)
+	mAfter := loadSchemaManifest(ctx, t, env, schema)
+	if n := publishesBetween(mBefore, mAfter); n != 0 {
+		t.Fatalf("report mode published %d times, want none", n)
 	}
 
 	// Remove the ghost entry again.
-	var files []ManifestEntry
-	for _, f := range mAfter.Files {
-		if f.Path != ghostKey {
-			files = append(files, f)
-		}
-	}
-	mAfter.Files = files
-	saveManifestWithETag(t, ctx, env, schema, mAfter, etagAfter)
+	unpublishFiles(ctx, t, env, schema, func(f ManifestEntry) bool { return f.Path == ghostKey })
 }
 
 func testReconcileRepairRestores(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, original *ManifestEntry) {
@@ -227,7 +216,7 @@ func testReconcileRepairRestores(t *testing.T, ctx context.Context, env *Env, sc
 		t.Fatalf("repaired = %v, want [%s]", s.Repaired, original.Path)
 	}
 
-	mAfter, _ := loadManifestWithETag(t, ctx, env, schema)
+	mAfter := loadSchemaManifest(ctx, t, env, schema)
 	var repaired *ManifestEntry
 	for _, f := range mAfter.Files {
 		if f.Path == original.Path {
@@ -281,7 +270,7 @@ func assertRepairedEntryMatches(t *testing.T, repaired, original *ManifestEntry)
 }
 
 func testReconcileRepairIdempotent(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) {
-	mBefore, _ := loadManifestWithETag(t, ctx, env, schema)
+	mBefore := loadSchemaManifest(ctx, t, env, schema)
 	r, cleanup := newReconcileHarness(t, ctx, env, schema,
 		reconcile.Options{Repair: true, MaxETagRetries: 3}, true)
 	defer cleanup()
@@ -293,9 +282,9 @@ func testReconcileRepairIdempotent(t *testing.T, ctx context.Context, env *Env, 
 	if len(report.Schemas[0].Repaired) != 0 {
 		t.Fatalf("second run repaired %v, want nothing", report.Schemas[0].Repaired)
 	}
-	mAfter, _ := loadManifestWithETag(t, ctx, env, schema)
-	if mAfter.Version != mBefore.Version {
-		t.Fatalf("idempotent run bumped manifest version %d -> %d", mBefore.Version, mAfter.Version)
+	mAfter := loadSchemaManifest(ctx, t, env, schema)
+	if n := publishesBetween(mBefore, mAfter); n != 0 {
+		t.Fatalf("idempotent run published %d times, want none", n)
 	}
 	assertNoDuplicateManifestEntries(t, mAfter)
 }
@@ -352,7 +341,7 @@ func TestManifestReconcile_GCRemovesRewriteLeftovers(t *testing.T) {
 	})
 
 	t.Run("past_grace_deletes_leftovers_only", func(t *testing.T) {
-		mBefore, _ := loadManifestWithETag(t, ctx, env, schema)
+		mBefore := loadSchemaManifest(ctx, t, env, schema)
 		r, cleanup := newReconcileHarness(t, ctx, env, schema, gcOpts, false)
 		defer cleanup()
 		// Pretend the run happens an hour later instead of sleeping past
@@ -389,9 +378,9 @@ func TestManifestReconcile_GCRemovesRewriteLeftovers(t *testing.T) {
 			}
 		}
 
-		mAfter, _ := loadManifestWithETag(t, ctx, env, schema)
-		if mAfter.Version != mBefore.Version {
-			t.Fatalf("gc bumped manifest version %d -> %d", mBefore.Version, mAfter.Version)
+		mAfter := loadSchemaManifest(ctx, t, env, schema)
+		if n := publishesBetween(mBefore, mAfter); n != 0 {
+			t.Fatalf("gc published %d times, want none", n)
 		}
 	})
 }

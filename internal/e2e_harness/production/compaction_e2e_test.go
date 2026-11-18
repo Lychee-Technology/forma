@@ -159,8 +159,8 @@ func TestCompactionPromotionEquivalence(t *testing.T) {
 	if result.Outcome != compaction.PromotionApplied {
 		t.Fatalf("outcome = %s (dirty ratio %.2f), want %s", result.Outcome, result.DirtyRatio, compaction.PromotionApplied)
 	}
-	if result.Version != mBefore.Version+1 {
-		t.Errorf("manifest version = %d, want %d (exactly one save)", result.Version, mBefore.Version+1)
+	if n := compactionPublishesSince(mBefore, result); n != 1 {
+		t.Errorf("compaction committed %d publishes, want exactly one", n)
 	}
 
 	mAfter := loadSchemaManifest(ctx, t, env, wide)

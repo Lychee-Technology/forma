@@ -5,15 +5,22 @@ import (
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/reconcile"
 )
 
-// The test files of this package read and write the published file
-// inventory only through this file and the harness sources that already wrap
-// internal/manifest (cdc.go, engine.go, init_keep_delta.go); none of them
-// imports the package (#901). Protocol V2 replaces the mutable V1 manifest
-// with immutable generations behind a publication record
-// (docs/publication-protocol-v2.md), and #896 then rewrites these bodies
-// instead of every test that asserts over the inventory.
+// The test files of this package reach the published file inventory only
+// through this file, publication_state.go, publication_faults.go and the
+// harness sources that already wrap internal/manifest (cdc.go, engine.go,
+// init_keep_delta.go); no e2e scenario imports the package (#901). A test
+// observes the published files (loadSchemaManifest, TierEntries and the
+// entries they answer), compares publications through publication_state.go
+// and stages a fault in the inventory through publication_faults.go. It never
+// reads the V1 manifest's version, ETag or bytes, and never saves a manifest
+// itself: Protocol V2 replaces the mutable V1 manifest with immutable
+// generations behind a publication record (docs/publication-protocol-v2.md),
+// and #896 then rewrites these bodies instead of every test that asserts
+// over the inventory. The ETag load and save below exist for the fault
+// helpers alone.
 
 // Manifest is a schema's published file inventory, as the flush, init,
 // compaction and reconcile paths leave it.
@@ -43,8 +50,9 @@ func loadSchemaManifest(ctx context.Context, t *testing.T, env *Env, schema Sche
 }
 
 // loadManifestWithETag loads the schema's manifest together with the ETag a
-// later saveManifestWithETag must present, for tests that rewrite the
-// published inventory to stage a fault (a stripped entry, a lost publish).
+// later saveManifestWithETag must present, for the helpers of
+// publication_faults.go that rewrite the published inventory to stage a
+// fault (a stripped entry, a lost publish).
 func loadManifestWithETag(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) (*Manifest, string) {
 	t.Helper()
 	store, resolver := env.manifestAccess()
@@ -85,4 +93,12 @@ func replaceManifestTier(ctx context.Context, t *testing.T, env *Env, schema Sch
 	if err := manifest.ReplaceTierFiles(ctx, store, path, schema.ID, tier, entries); err != nil {
 		t.Fatalf("replace %s entries: %v", tier, err)
 	}
+}
+
+// reconcileStores answers the manifest and GC-state stores the
+// manifest-reconcile tool wires, over the store the other harness paths use.
+func (e *Env) reconcileStores() (*reconcile.ResolverManifestStore, *reconcile.ManifestGCStateStore) {
+	store, resolver := e.manifestAccess()
+	return &reconcile.ResolverManifestStore{Store: store, Resolver: resolver},
+		&reconcile.ManifestGCStateStore{Store: store, Resolver: resolver}
 }

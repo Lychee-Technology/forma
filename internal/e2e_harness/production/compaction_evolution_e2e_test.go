@@ -245,8 +245,8 @@ func assertMixedGenRewriteSurfaces(ctx context.Context, t *testing.T, env *Env, 
 	if got := countTier(mAfter, "base"); got != 1 {
 		t.Errorf("base entries after rewrite = %d, want exactly the merged file", got)
 	}
-	if mAfter.Version <= mBefore.Version {
-		t.Errorf("manifest version %d -> %d, want monotonic advance", mBefore.Version, mAfter.Version)
+	if n := publishesBetween(mBefore, mAfter); n <= 0 {
+		t.Errorf("published %d times since the snapshot, want a monotonic advance", n)
 	}
 	assertNoDuplicateManifestEntries(t, mAfter)
 	everListed := make(map[string]bool, len(mBefore.Files))

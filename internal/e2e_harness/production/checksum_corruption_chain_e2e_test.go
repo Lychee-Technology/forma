@@ -167,8 +167,8 @@ func assertCompactionRefusesCorruptSource(ctx context.Context, t *testing.T, env
 	}
 
 	after := loadSchemaManifest(ctx, t, env, schema)
-	if after.Version != before.Version {
-		t.Errorf("refused pass moved the manifest version %d -> %d", before.Version, after.Version)
+	if n := publishesBetween(before, after); n != 0 {
+		t.Errorf("refused pass published %d times, want none", n)
 	}
 	if countTier(after, "delta") != countTier(before, "delta") || countTier(after, "base") != countTier(before, "base") {
 		t.Errorf("refused pass changed the manifest tiers:\n before: %+v\n after:  %+v", before.Files, after.Files)
@@ -302,25 +302,6 @@ func putObjectBytes(ctx context.Context, t *testing.T, env *Env, key string, dat
 		t.Fatalf("object %s came back %d bytes, wrote %d: the store altered the body",
 			key, len(restored), len(data))
 	}
-}
-
-// poisonManifestChecksum replaces one entry's stamp with a well-formed but
-// wrong digest — a stamp/bytes divergence whose object is still decodable.
-func poisonManifestChecksum(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, path string) {
-	t.Helper()
-	m, etag := loadManifestWithETag(t, ctx, env, schema)
-	poisoned := false
-	for i := range m.Files {
-		if m.Files[i].Path != path {
-			continue
-		}
-		m.Files[i].Checksum = cdc.ChecksumSHA256Prefix + strings.Repeat("0", 64)
-		poisoned = true
-	}
-	if !poisoned {
-		t.Fatalf("manifest has no entry at %s to poison: %+v", path, m.Files)
-	}
-	saveManifestWithETag(t, ctx, env, schema, m, etag)
 }
 
 // soleTierEntry returns the schema's single manifest entry in tier, failing

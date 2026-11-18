@@ -119,11 +119,5 @@ func rewriteBaseWithoutScore(ctx context.Context, t *testing.T, env *Env, schema
 	}
 	writeParquetViaDuck(ctx, t, env, "SELECT * FROM "+staging, baseKey)
 
-	entries := TierEntries(loadSchemaManifest(ctx, t, env, schema), "base")
-	for i := range entries {
-		if entries[i].Path == baseKey {
-			entries[i].Columns = describeParquetCols(ctx, t, env, baseKey)
-		}
-	}
-	replaceManifestTier(ctx, t, env, schema, "base", entries)
+	restampBaseColumns(ctx, t, env, schema, baseKey, describeParquetCols(ctx, t, env, baseKey))
 }

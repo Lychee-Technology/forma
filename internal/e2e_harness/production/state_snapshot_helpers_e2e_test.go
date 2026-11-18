@@ -3,9 +3,9 @@
 package production
 
 import (
-	"bytes"
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,21 +47,6 @@ func snapshotS3Inventory(t *testing.T, ctx context.Context, env *Env, prefix str
 	return inv
 }
 
-// snapshotManifest returns the manifest's raw bytes and ETag. Callers snapshot
-// only after the schema's manifest exists — a load failure here is a test
-// bug, not a skip.
-func snapshotManifest(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) ([]byte, string) {
-	t.Helper()
-	store, _ := env.manifestAccess()
-	path := buildSchemaManifestKey(t, env, schema)
-	raw, etag, err := store.Load(ctx, path)
-	if err != nil {
-		t.Fatalf("load manifest %s (caller guarantees it exists by now; a missing one "+
-			"was never created or was deleted since): %v", path, err)
-	}
-	return raw, etag
-}
-
 // schemaS3State is one schema's full observable S3 surface: every object
 // under its partition plus its manifest object, with the manifest's raw
 // bytes. The key diff in InitReport.NewObjects cannot see an overwrite that
@@ -72,9 +57,8 @@ func snapshotManifest(t *testing.T, ctx context.Context, env *Env, schema Schema
 // store increments its version field, so its bytes and ETag necessarily move
 // even when the data objects beside it are reproduced byte-for-byte (see s3ObjectStat).
 type schemaS3State struct {
-	objects      map[string]s3ObjectStat
-	manifestRaw  []byte
-	manifestETag string
+	objects     map[string]s3ObjectStat
+	publication publicationSnapshot
 }
 
 func captureSchemaS3State(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) schemaS3State {
@@ -91,8 +75,7 @@ func captureSchemaS3State(t *testing.T, ctx context.Context, env *Env, schema Sc
 			manifestKey, manifestObjects)
 	}
 	objects[manifestKey] = stat
-	raw, etag := snapshotManifest(t, ctx, env, schema)
-	return schemaS3State{objects: objects, manifestRaw: raw, manifestETag: etag}
+	return schemaS3State{objects: objects, publication: snapshotPublication(t, ctx, env, schema)}
 }
 
 // assertSchemaS3StateUnchanged requires exact identity — same key set, same
@@ -104,8 +87,11 @@ func assertSchemaS3StateUnchanged(t *testing.T, label string, before, after sche
 		t.Errorf("%s: schema objects mutated:\n before: %+v\n after:  %+v",
 			label, before.objects, after.objects)
 	}
-	if before.manifestETag != after.manifestETag || !bytes.Equal(before.manifestRaw, after.manifestRaw) {
-		t.Errorf("%s: schema manifest rewritten in place: etag %s -> %s\n before: %s\n after:  %s",
-			label, before.manifestETag, after.manifestETag, before.manifestRaw, after.manifestRaw)
+	changes, err := publicationChanges(before.publication, after.publication)
+	if err != nil {
+		t.Fatalf("%s: %v", label, err)
+	}
+	if len(changes) != 0 {
+		t.Errorf("%s: schema manifest rewritten in place:\n%s", label, strings.Join(changes, "\n"))
 	}
 }

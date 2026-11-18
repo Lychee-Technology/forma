@@ -212,7 +212,7 @@ func TestFlushFaultTempCleanup(t *testing.T) {
 			t.Errorf("final delta object %s must survive gc", final)
 		}
 	}
-	mAfter, _ := loadManifestWithETag(t, ctx, env, simple)
+	mAfter := loadSchemaManifest(ctx, t, env, simple)
 	assertManifestDeltaPaths(t, map[int16]*Manifest{simple.ID: mAfter}, simple, finals)
 	env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 100})
 }
