@@ -9,14 +9,19 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/uuid"
 )
 
 // FSStore is a write-once Store over a local directory, with S3Store's
 // semantics, so unit tests exercise the contract the deployment relies on.
-// A key is a slash-separated path under Dir, and must stay inside it: a key
-// with a leading "/" (an empty Layout prefix) or a ".." element is refused.
+// A key is any non-empty string, as on S3: FSStore maps it to a path under Dir
+// one slash-separated segment at a time (fsName), so the key of an empty
+// Layout prefix ("/100/...") is held under its own name, distinct keys
+// ("/x" and "x", "a//b" and "a/b") never share a file, and no key reaches
+// outside Dir. Unlike S3, a key cannot be both an object and the directory of
+// another ("a" and "a/b"); no Layout builds such a pair.
 type FSStore struct {
 	Dir string
 }
@@ -78,14 +83,39 @@ func (f *FSStore) open(key string) (*os.Root, string, error) {
 	if f == nil || f.Dir == "" {
 		return nil, "", errors.New("fs store is not configured")
 	}
-	if !fs.ValidPath(key) || key != path.Clean(key) || key == "." {
-		return nil, "", fmt.Errorf("object key %q is not a clean relative path the fs store can hold", key)
+	if key == "" {
+		return nil, "", errors.New("object key is empty")
+	}
+	segments := strings.Split(key, "/")
+	for i, s := range segments {
+		segments[i] = fsName(s)
+	}
+	rel := path.Join(segments...)
+	if !fs.ValidPath(rel) {
+		return nil, "", fmt.Errorf("object key %q maps to %q, not a path the fs store can hold", key, rel)
 	}
 	root, err := os.OpenRoot(f.Dir)
 	if err != nil {
 		return nil, "", fmt.Errorf("open fs store %s: %w", f.Dir, err)
 	}
-	return root, filepath.FromSlash(key), nil
+	return root, filepath.FromSlash(rel), nil
+}
+
+// fsName is the file name of one key segment. It is injective, so two keys
+// never map to one path: "%" becomes "%25" and a leading "." becomes "%2E"
+// (so a "%" in a name is always followed by "25" or "2E"), and the empty
+// segment, of a leading or a doubled slash, becomes a lone "%". No name it
+// answers is empty, "." or "..", or starts with ".", the mark of Put's
+// temporary files.
+func fsName(segment string) string {
+	if segment == "" {
+		return "%"
+	}
+	name := strings.ReplaceAll(segment, "%", "%25")
+	if rest, ok := strings.CutPrefix(name, "."); ok {
+		name = "%2E" + rest
+	}
+	return name
 }
 
 func writeFile(root *os.Root, name string, body io.Reader) error {

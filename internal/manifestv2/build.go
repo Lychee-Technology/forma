@@ -2,6 +2,7 @@ package manifestv2
 
 import (
 	"fmt"
+	"maps"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/publication"
@@ -50,8 +51,19 @@ func (h Header) manifest(files []File) Manifest {
 		Format: publication.ManifestFormat, SchemaID: h.SchemaID, Epoch: h.Epoch,
 		Generation: h.Generation, ParentGeneration: h.ParentGeneration,
 		Lineage: h.Lineage, Token: h.Token, Kind: h.Kind, InputGeneration: h.InputGeneration,
-		Files: sortedFiles(files),
+		Files: ownedFiles(files),
 	}
+}
+
+// ownedFiles answers files sorted by key, each with its own Columns map, so a
+// built manifest shares nothing mutable with its parent, which may be a
+// Cache's verified entry, or with the caller's input files.
+func ownedFiles(files []File) []File {
+	out := sortedFiles(files)
+	for i := range out {
+		out[i].Columns = maps.Clone(out[i].Columns)
+	}
+	return out
 }
 
 // NewFlush builds a flush generation: the parent's files and the new delta
@@ -59,7 +71,9 @@ func (h Header) manifest(files []File) Manifest {
 // parent is the manifest of h's parent generation, nil exactly when h has
 // none (the first flush of an unpublished epoch). A rebased flush passes the
 // new head as parent, under a fresh token. The parent must be the same
-// schema, epoch and lineage, since a flush keeps the record's lineage.
+// schema, epoch and lineage, since a flush keeps the record's lineage. The
+// manifest answered owns its files: editing it changes neither parent, which
+// a Cache may hold, nor deltas.
 func NewFlush(parent *Manifest, h Header, deltas []File) (Manifest, error) {
 	fail := func(format string, args ...any) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("build flush generation %d of schema %d: %s", h.Generation, h.SchemaID, fmt.Sprintf(format, args...))

@@ -1,6 +1,7 @@
 package manifestv2
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/uuid"
@@ -94,4 +95,45 @@ func TestNewInitListsTheExportsBaseFilesOnly(t *testing.T) {
 	h.Kind = publication.KindFlush
 	_, err = NewInit(h, []File{b1})
 	require.Error(t, err)
+}
+
+// TestABuiltManifestSharesNothingWithItsParentOrItsInputs pins that a flush
+// built from a Cache's verified parent, and an init built from the export's
+// files, own their files: editing the built manifest's columns leaves the
+// cached parent as verified, and editing an input after the build leaves the
+// built manifest as built.
+func TestABuiltManifestSharesNothingWithItsParentOrItsInputs(t *testing.T) {
+	ctx := context.Background()
+	raw, ref := encoded(t, testManifest(t))
+	cache, _ := stored(t, raw, ref, 4)
+	parent, err := cache.Get(ctx, ref)
+	require.NoError(t, err)
+
+	added := testFile(t, TierDelta, 4)
+	h := Header{SchemaID: 100, Epoch: 1, Generation: 8, ParentGeneration: 7, Lineage: testLineage, Token: uuid.New(), Kind: publication.KindFlush}
+	m, err := NewFlush(parent, h, []File{added})
+	require.NoError(t, err)
+	for _, f := range m.Files {
+		f.Columns["name"] = "BLOB"
+		f.Columns["added"] = "INTEGER"
+	}
+	again, err := cache.Get(ctx, ref)
+	require.NoError(t, err)
+	want, err := Verify(raw, ref)
+	require.NoError(t, err)
+	require.Equal(t, want, again, "the cached parent is the manifest its bytes verify to")
+	require.Equal(t, "VARCHAR", added.Columns["name"], "nor is the new delta file's input edited")
+
+	m, err = NewFlush(parent, h, []File{added})
+	require.NoError(t, err)
+	built := m.Files[len(m.Files)-1]
+	require.Equal(t, added.Key, built.Key)
+	added.Columns["name"] = "BLOB"
+	require.Equal(t, "VARCHAR", built.Columns["name"], "editing an input after the build leaves the flush as built")
+
+	base := testFile(t, TierBase, 2)
+	init, err := NewInit(Header{SchemaID: 100, Epoch: 1, Generation: 9, ParentGeneration: 8, Lineage: uuid.New(), Token: uuid.New(), Kind: publication.KindInit}, []File{base})
+	require.NoError(t, err)
+	base.Columns["name"] = "BLOB"
+	require.Equal(t, "VARCHAR", init.Files[0].Columns["name"], "editing an input after the build leaves the init as built")
 }

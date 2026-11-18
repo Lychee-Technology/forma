@@ -34,13 +34,30 @@ type Store interface {
 }
 
 // PutManifest encodes m and writes it once to its key under l, and answers
-// the key and the digest that Publish then commits.
+// the key and the digest that Publish then commits. Before it writes, it runs
+// Verify, the reader's check, over those bytes and the reference that commit
+// would hold, so a manifest a reader would refuse is never staged: one that
+// lists a file under another prefix than l is refused here, wrapping
+// publication.ErrManifestInvalid, and the store is left untouched.
 func PutManifest(ctx context.Context, st Store, l Layout, m Manifest) (key, digest string, err error) {
 	raw, digest, err := m.Encode()
 	if err != nil {
 		return "", "", err
 	}
 	key = l.ManifestKey(m.SchemaID, m.Epoch, m.Generation, m.Token)
+	ref := Ref{
+		SchemaID: m.SchemaID, Epoch: m.Epoch, Generation: m.Generation, ParentGeneration: m.ParentGeneration,
+		Token: m.Token, Lineage: m.Lineage, Kind: m.Kind, ManifestKey: key, ManifestSHA256: digest,
+	}
+	if _, err := Verify(raw, ref); err != nil {
+		// Verify's ConsistencyError is the read path's; a writer gets
+		// what it wraps.
+		var ce *ConsistencyError
+		if errors.As(err, &ce) {
+			err = ce.Err
+		}
+		return "", "", fmt.Errorf("stage manifest of schema %d generation %d under prefix %q: a reader would refuse it: %w", m.SchemaID, m.Generation, l.root(), err)
+	}
 	if err := st.Put(ctx, key, bytes.NewReader(raw)); err != nil {
 		return "", "", fmt.Errorf("stage manifest of schema %d generation %d: %w", m.SchemaID, m.Generation, err)
 	}

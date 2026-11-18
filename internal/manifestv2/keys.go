@@ -27,17 +27,27 @@ const manifestsDir = "_manifests"
 //	{prefix}/{schema_id}/_manifests/e{epoch}/g{generation:020d}-{token}.json
 //	{prefix}/{schema_id}/e{epoch}/{base|delta}/{uuidv7}.parquet
 //
-// A trailing slash of Prefix is dropped, and an empty Prefix yields a key that
-// starts with "/", as the V1 key builders do (internal/cdc). Correctness never
-// depends on the layout, since a reader fetches the one key the record names
-// and scans the keys its manifest lists. Verify still refuses a key that does
-// not spell the identity it belongs to, which catches a manifest that lists
-// another schema's or another epoch's object.
+// The prefix's trailing slashes are dropped, all of them, so "data", "data/"
+// and "data//" build the same keys, and its parsers read back the prefix in
+// that canonical form; the rest of Prefix is used verbatim. An empty Prefix
+// (or one of slashes only) yields a key that starts with "/", as the V1 key
+// builders do (internal/cdc, #516), and both stores hold such a key under its
+// own name (FSStore escapes it rather than strip the slash). S3 accepts such
+// a key; a server that refuses it (the RustFS e2e harness answers 400) cannot
+// back an empty prefix, for V2 as for V1. Correctness never depends on the
+// layout, since a reader fetches the one key the record names and scans the
+// keys its manifest lists. Verify still refuses a key that does not spell the
+// identity it belongs to, which catches a manifest that lists another
+// schema's or another epoch's object.
 type Layout struct {
 	Prefix string
 }
 
-func (l Layout) root() string { return strings.TrimSuffix(l.Prefix, "/") }
+// root is the canonical prefix: Prefix without any trailing slash. Every key
+// a Layout builds starts with root+"/", and a parser rebuilds a key from the
+// prefix it reads, so a key with a slash before its schema id segment that
+// root would drop is one no Layout builds, and is refused.
+func (l Layout) root() string { return strings.TrimRight(l.Prefix, "/") }
 
 // ManifestKey is the key of a generation's manifest object. The token is in
 // the key, so two writers that stage the same generation number never write

@@ -117,6 +117,75 @@ func TestVerifyRefusesBytesPostgreSQLDidNotCommit(t *testing.T) {
 	}
 }
 
+// edited answers raw with old replaced, once, by new, and ref naming the
+// result's digest: a byte-level edit no map re-encoding can make (a member
+// named twice, a case-folded name), sealed as PostgreSQL would have it.
+func edited(t *testing.T, raw []byte, ref Ref, old, new string) ([]byte, Ref) {
+	t.Helper()
+	require.Contains(t, string(raw), old)
+	out := bytes.Replace(raw, []byte(old), []byte(new), 1)
+	ref.ManifestSHA256 = Digest(out)
+	return out, ref
+}
+
+// TestVerifyRefusesMembersOutsideTheWireFormat pins the exact wire format:
+// every case carries the digest PostgreSQL committed and decodes, under
+// encoding/json, to the very manifest the fixture is, so only the member
+// names and their presence tell it apart.
+func TestVerifyRefusesMembersOutsideTheWireFormat(t *testing.T) {
+	raw, ref := encoded(t, testManifest(t))
+	cases := map[string]func() ([]byte, Ref){
+		"input_generation 0 on a flush": func() ([]byte, Ref) {
+			return reseal(t, raw, ref, func(d map[string]any) { d["input_generation"] = 0 })
+		},
+		"a null input_generation on a flush": func() ([]byte, Ref) {
+			return reseal(t, raw, ref, func(d map[string]any) { d["input_generation"] = nil })
+		},
+		"a manifest member named twice": func() ([]byte, Ref) {
+			return edited(t, raw, ref, `"epoch":1,`, `"epoch":1,"epoch":1,`)
+		},
+		"a file member named twice": func() ([]byte, Ref) {
+			return edited(t, raw, ref, `"row_count":10,`, `"row_count":10,"row_count":10,`)
+		},
+		"a column named twice": func() ([]byte, Ref) {
+			return edited(t, raw, ref, `"name":"VARCHAR"`, `"name":"VARCHAR","name":"VARCHAR"`)
+		},
+		"a case-folded alias beside a member": func() ([]byte, Ref) {
+			return edited(t, raw, ref, `"kind":"flush"`, `"kind":"flush","KIND":"flush"`)
+		},
+		"a case-folded alias of a file member": func() ([]byte, Ref) {
+			return edited(t, raw, ref, `"row_count":10,`, `"row_count":10,"Row_Count":10,`)
+		},
+		"a case-folded spelling of a member": func() ([]byte, Ref) {
+			return edited(t, raw, ref, `"parent_generation":6`, `"Parent_Generation":6`)
+		},
+	}
+	for name, build := range cases {
+		t.Run(name, func(t *testing.T) {
+			raw, r := build()
+			m, err := Verify(raw, r)
+			require.Nil(t, m)
+			requireInvalid(t, err, r)
+		})
+	}
+
+	compact := testManifest(t)
+	compact.Kind, compact.InputGeneration = publication.KindCompact, 5
+	raw, ref = encoded(t, compact)
+	m, err := Verify(raw, ref)
+	require.NoError(t, err, "a compact manifest names its input_generation")
+	require.Equal(t, int64(5), m.InputGeneration)
+	for name, edit := range map[string]func(d map[string]any){
+		"absent": func(d map[string]any) { delete(d, "input_generation") },
+		"null":   func(d map[string]any) { d["input_generation"] = nil },
+	} {
+		bad, r := reseal(t, raw, ref, edit)
+		_, err := Verify(bad, r)
+		requireInvalid(t, err, r)
+		require.ErrorContains(t, err, "input_generation", "a compact manifest's input_generation is %s", name)
+	}
+}
+
 func TestVerifyChecksLineageAndKindWhenTheReferenceNamesThem(t *testing.T) {
 	raw, ref := encoded(t, testManifest(t))
 	rec, err := RecordRef(publication.Record{
