@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -82,12 +83,38 @@ func TestPublicationDDLAnnouncements(t *testing.T) {
 	}
 }
 
-// TestRequireDistinctPublicationTables refuses each configured or derived
-// table a publication table's derived name could also be, naming the flags
-// that resolve it, and accepts the defaults (R1-F2 of #897's review).
-func TestRequireDistinctPublicationTables(t *testing.T) {
-	if err := requireDistinctPublicationTables(testInitDBOptions()); err != nil {
+// resolveLikeDefaultSearchPath resolves spellings as PostgreSQL does under
+// the default search path, for names that need no case folding or
+// truncation: an unqualified name is public's. The integration tests resolve
+// on the server.
+func resolveLikeDefaultSearchPath(roles []ownedTable) []resolvedTable {
+	var out []resolvedTable
+	for _, table := range roles {
+		parts := strings.Split(strings.ReplaceAll(table.sql, `"`, ""), ".")
+		r := resolvedTable{schema: "public", name: parts[len(parts)-1]}
+		if len(parts) > 1 {
+			r.schema = parts[len(parts)-2]
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// TestPublicationTableCollision refuses each configured or derived table a
+// publication table could also be, however it is spelled, naming the flags
+// that resolve it, and accepts the defaults (R1-F2, R2-F2 of #897's review).
+func TestPublicationTableCollision(t *testing.T) {
+	check := func(opts initDBOptions) error {
+		roles := ownedTableRoles(opts)
+		return publicationTableCollision(opts, roles, resolveLikeDefaultSearchPath(roles))
+	}
+	if err := check(testInitDBOptions()); err != nil {
 		t.Fatalf("the default table names: %v", err)
+	}
+	other := testInitDBOptions()
+	other.changeLog = "app.entity_main_publication"
+	if err := check(other); err != nil {
+		t.Fatalf("a change log named like the record table in another schema: %v", err)
 	}
 	for name, tc := range map[string]struct {
 		set  func(*initDBOptions)
@@ -97,6 +124,11 @@ func TestRequireDistinctPublicationTables(t *testing.T) {
 			set: func(o *initDBOptions) { o.changeLog = "entity_main_publication" },
 			want: []string{`"entity_main_publication" is the publication record table, derived from --entity-main-table entity_main`,
 				"the change log table, which --change-log-table names", "change --entity-main-table or --change-log-table"},
+		},
+		"a qualified change log is the unqualified record table": {
+			set: func(o *initDBOptions) { o.changeLog = "public.entity_main_publication" },
+			want: []string{`"entity_main_publication" is the publication record table`,
+				`"public"."entity_main_publication" is the change log table`, `PostgreSQL resolves both to "public"."entity_main_publication"`},
 		},
 		"the EAV table is the generation table": {
 			set: func(o *initDBOptions) { o.eavTable = "entity_main_publication_generation" },
@@ -118,9 +150,9 @@ func TestRequireDistinctPublicationTables(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			opts := testInitDBOptions()
 			tc.set(&opts)
-			err := requireDistinctPublicationTables(opts)
+			err := check(opts)
 			if err == nil {
-				t.Fatal("requireDistinctPublicationTables accepted a publication table name another table holds")
+				t.Fatal("publicationTableCollision accepted a publication table another table resolves to")
 			}
 			for _, want := range tc.want {
 				if !strings.Contains(err.Error(), want) {
@@ -128,5 +160,15 @@ func TestRequireDistinctPublicationTables(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// On Aurora DSQL, where init-db cannot run yet (#690), the check sends
+// nothing, like the collation check.
+func TestRequireDistinctPublicationTablesSkipsDSQL(t *testing.T) {
+	opts := testInitDBOptions()
+	opts.engine = forma.EngineAuroraDSQL
+	if err := requireDistinctPublicationTables(context.Background(), nil, opts); err != nil {
+		t.Fatalf("requireDistinctPublicationTables on DSQL: %v", err)
 	}
 }

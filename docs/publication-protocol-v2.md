@@ -775,7 +775,7 @@ the V1 code it replaces:
 
 | Area | Moves to | Child |
 | --- | --- | --- |
-| `init-db` table DDL | `Statements` for the configured `entity_main`, in init-db's table transaction, on PostgreSQL and in the DSQL rendering. The tables only: nothing inserts, reads or updates them | #895 |
+| `init-db` table DDL | `Statements` for the configured `entity_main`, in init-db's table transaction. `init-db` creates the tables on PostgreSQL. On Aurora DSQL, #895 covers statement validity only: `make lint-dsql` and the MiniStack strict lane accept the DSQL rendering, but `init-db` cannot execute there, because it has no engine selection and sends its DDL in one transaction, which DSQL rejects. An executable DSQL `init-db` (one DDL statement per transaction, strict-lane fresh init, upgrade and rerun) is #690's. The tables only: nothing inserts, reads or updates them | #895 (DSQL execution: #690) |
 | `init-db` registration, the upgrade cutover | `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock | #896 (writers and reader) |
 | `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path | #896 (writers and reader) |
 | `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage` | #896 (writers and reader), closing #760 |
@@ -796,8 +796,14 @@ stale, because V1 keeps flushing into a schema whose record says `UNPUBLISHED` a
 cutover only inserts records for schemas that have none, and the V2 reader would then
 answer that schema from the hot leg alone. So #896 moves the writers and the reader in one
 change, and #895 lands ahead of it only the table DDL, which nothing reads or writes. Until
-#896, a guard in `internal/publication` fails if production code outside the package uses
-anything but the tables' names and DDL.
+#896, two checks hold that line, and neither alone proves it. A static test in
+`internal/publication` checks imports and literals: outside the package, only init-db's
+DDL step and its collation check may import it, only for `Statements`, `TablesFor` and
+the table-name suffixes, never through a dot import, and no production file may spell a
+publication table name in a string literal. It does not inspect the SQL those files
+build, so an allowlisted file could still assemble a record statement from a name
+`TablesFor` returns. What shows that init-db sends none is the traced SQL of its fresh,
+upgrade and rerun runs in `TestInitDBCreatesThePublicationTablesOnceAndWritesNoRecord`.
 
 **#759 is the reader scope, and lands in #896.** Its original evidence, a zero-match or
 partial-match glob that returns 200 with silently incomplete data, is what the reader
