@@ -7,7 +7,7 @@ This README documents the Go harness only. For the repo-wide E2E inventory that 
 ## Prerequisites
 
 - **Go 1.21+**
-- **Docker** - Required for running test containers (Postgres, RustFS/MinIO)
+- **Docker** - Required for running test containers (Postgres, RustFS, and LocalStack for the V2 manifest write-once check)
 - **Sufficient memory** - Tests may require 2GB+ for container orchestration
 
 ## Quick Start
@@ -323,6 +323,8 @@ Located in `harness.go`, provides:
 - S3/RustFS container management
 - DuckDB client initialization
 - Basic seeding and parquet file operations
+
+`localstack.go` starts a second S3 backend, a digest-pinned LocalStack community image serving only S3. `TestManifestV2PutIsWriteOnceOnS3` runs the V2 manifest write-once contract (`If-None-Match: *`) on both LocalStack and RustFS. Later LocalStack images refuse to start without an auth token, so keep any bump on an image that starts without one.
 
 ### FederatedTestHarness (Extended)
 

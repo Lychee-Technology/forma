@@ -16,24 +16,47 @@ import (
 	"github.com/lychee-technology/forma/internal/publication"
 )
 
-// TestManifestV2PutIsWriteOnceOnS3 pins the V2 write-once put against a real
-// S3-compatible server (#898): S3 itself refuses a second put to a key under
+// TestManifestV2PutIsWriteOnceOnS3 pins the V2 write-once put against real
+// S3-compatible servers (#898): S3 itself refuses a second put to a key under
 // If-None-Match: *, whether the puts are sequential or race, and the refused
-// put leaves the first object unchanged. The fs store's unit tests pin the
-// same contract without a server.
+// put leaves the first object unchanged. It runs on LocalStack, the backend
+// the issue names, and on the harness's RustFS, the store the rest of the
+// e2e suite runs on. The fs store's unit tests pin the same contract without
+// a server.
 func TestManifestV2PutIsWriteOnceOnS3(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping the S3 write-once check in -short mode")
 	}
+	t.Run("localstack", func(t *testing.T) {
+		ctx := context.Background()
+		endpoint, stop, err := StartLocalStackS3(ctx)
+		require.NoError(t, err)
+		defer func() { _ = stop(ctx) }()
+		client, err := NewS3Client(ctx, endpoint, "", LocalStackAccessKey, LocalStackSecretKey)
+		require.NoError(t, err)
+		requireS3PutIsWriteOnce(t, client)
+	})
+	t.Run("rustfs", func(t *testing.T) {
+		ctx := context.Background()
+		h := &TestHarness{}
+		endpoint, err := h.StartS3(ctx)
+		require.NoError(t, err)
+		defer func() { _ = h.StopS3(ctx) }()
+		client, err := NewS3Client(ctx, endpoint, "", RustFSAccessKey, RustFSSecretKey)
+		require.NoError(t, err)
+		requireS3PutIsWriteOnce(t, client)
+	})
+}
+
+// requireS3PutIsWriteOnce runs the write-once contract on a fresh bucket of
+// client's server: a sequential second put, racing puts, and a manifest
+// staged and read back through the verifying cache.
+func requireS3PutIsWriteOnce(t *testing.T, client *s3.Client) {
+	t.Helper()
 	ctx := context.Background()
-	h := &TestHarness{}
-	endpoint, err := h.StartS3(ctx)
-	require.NoError(t, err)
-	defer func() { _ = h.StopS3(ctx) }()
-	client, err := NewS3Client(ctx, endpoint, "", RustFSAccessKey, RustFSSecretKey)
-	require.NoError(t, err)
 	const bucket = "manifest-v2"
 	// RustFS answers 503 for a moment after its HTTP port first answers.
+	var err error
 	require.Eventually(t, func() bool {
 		_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
 		return err == nil
