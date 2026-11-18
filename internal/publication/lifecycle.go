@@ -195,3 +195,27 @@ func HoldLineage(ctx context.Context, tx Tx, t Tables, schemaID int16, epoch int
 	}
 	return generation, nil
 }
+
+// fenceSQL writes the record row, changing nothing, while it still carries
+// the expectation of a publication whose COMMIT went without an answer.
+const fenceSQL = `UPDATE %s SET cas_token = cas_token
+	WHERE schema_id = $1 AND epoch = $2 AND generation = $3 AND cas_token = $4`
+
+// Fence settles a publication from cur whose COMMIT went without an answer
+// and which Resolve found NotCommitted, when that COMMIT may still be on its
+// way. It writes the record on tx while the record still carries cur, and
+// answers whether it did; the caller commits tx. A COMMIT the fence's commit
+// precedes can never land: the publication's compare-and-set wrote the same
+// row before its COMMIT was sent, so on PostgreSQL the fence's write waits
+// on the row lock that transaction holds until it ends (and finds the record
+// moved if it committed), and on Aurora DSQL whichever of the two commits
+// second fails with 40001. So once a fence that answered true commits,
+// NotCommitted is final. False says the record moved: Resolve then answers
+// Committed, Lost or Unknown, and none of them changes again.
+func Fence(ctx context.Context, tx Tx, t Tables, cur Record) (bool, error) {
+	n, err := tx.runner().exec(ctx, fmt.Sprintf(fenceSQL, t.Record), cur.SchemaID, cur.Epoch, cur.Generation, cur.Token)
+	if err != nil {
+		return false, fmt.Errorf("fence schema %d at epoch %d generation %d: %w", cur.SchemaID, cur.Epoch, cur.Generation, err)
+	}
+	return n == 1, nil
+}

@@ -289,6 +289,7 @@ run_suites() {
 	run_suite cdc 10 -timeout=5m ./internal/cdc -run '^(TestLeaseSchemaLock|TestMarkInChunksRetriesARealConflict|TestDSQLExport)'
 	run_suite federated 2 -timeout=5m ./internal/federated -run '^TestDSQLHotLeg'
 	run_suite publication 30 -timeout=5m ./internal/publication
+	run_suite cdcv2 50 -timeout=10m ./internal/cdcv2
 	run_suite ledger 6 -timeout=10m ./cmd/tools -run '^TestLedgerUpgrade'
 	run_suite coordination 90 -timeout=20m ./internal/coordinationtest/
 	check_skips

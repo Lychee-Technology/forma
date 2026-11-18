@@ -35,6 +35,10 @@ internal/cdc/init_batch_select.go:selectEntityMainBatch 1
 internal/cdc/schema_lease.go:leaseSchemaLocker.acquire 1
 internal/cdc/schema_lease.go:leaseSchemaLocker.deleteLease 1
 internal/cdc/schema_lease.go:leaseSchemaLocker.renew 1
+internal/cdcv2/init.go:Writer.readVersions 2
+internal/cdcv2/marks.go:Writer.mark 2
+internal/cdcv2/marks.go:Writer.selectEntries 1
+internal/cdcv2/writer.go:Writer.now 3
 internal/declaredindex/ensure.go:catalogQuery 1
 internal/declaredindex/ensure.go:tableSchemaQuery 1
 internal/declaredindex/plan.go:Index.CreateSQL 1

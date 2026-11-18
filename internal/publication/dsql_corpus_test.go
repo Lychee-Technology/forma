@@ -17,9 +17,9 @@ import (
 
 // TestDSQLCorpus exports the publication contract's statements for the DSQL
 // lint gate (#740): the two tables' DDL, and every statement the transitions,
-// the reader's read, the commit-outcome check and the collector send, in the
-// order a writer's life sends them. Each transition runs in a transaction, as
-// its Tx parameter demands.
+// the reader's read, the commit-outcome check and its fence, and the
+// collector send, in the order a writer's life sends them. Each transition
+// runs in a transaction, as its Tx parameter demands.
 func TestDSQLCorpus(t *testing.T) {
 	ctx := context.Background()
 	var rec corpus.Recorder
@@ -52,6 +52,7 @@ func TestDSQLCorpus(t *testing.T) {
 	require.NoError(t, err)
 	_, err = Resolve(ctx, DB(db), tb, cur, next)
 	require.NoError(t, err)
+	inTx(func(tx Tx) error { _, err := Fence(ctx, tx, tb, cur); return err })
 	var dropped Record
 	inTx(func(tx Tx) error { dropped, err = Reset(ctx, tx, tb, head); return err })
 	inTx(func(tx Tx) error {
@@ -84,6 +85,7 @@ func TestDSQLCorpus(t *testing.T) {
 		"internal/publication/lifecycle.go:HoldLineage",
 		"internal/publication/rebase.go:KindsSince",
 		"internal/publication/lifecycle.go:Resolve",
+		"internal/publication/lifecycle.go:Fence",
 		"internal/publication/lifecycle.go:Reset",
 		"internal/publication/lifecycle.go:Reset",
 		"internal/publication/lifecycle.go:Activate",
@@ -125,6 +127,9 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectQuery("").WithArgs(anyArgs(3)...).WillReturnRows(sqlmock.NewRows([]string{"generation", "kind"}).AddRow(4, "flush"))
 	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(sqlmock.NewRows([]string{"epoch", "generation", "cas_token", "lineage", "cas_token"}).
 		AddRow(1, 4, uuid.NewString(), cur.Lineage.String(), uuid.NewString()))
+	mock.ExpectBegin()
+	mock.ExpectExec("").WithArgs(anyArgs(4)...).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
 	mock.ExpectBegin()
 	mock.ExpectQuery("").WithArgs(anyArgs(4)...).WillReturnRows(epochRow(2))
 	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))

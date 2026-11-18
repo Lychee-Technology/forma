@@ -19,17 +19,28 @@ import (
 
 const publicationImport = "github.com/lychee-technology/forma/internal/publication"
 
-// manifestV2Import is the package that produces and fetches V2 manifest
-// objects (#898). It may import this package freely, and nothing in
-// production may import it until #896 moves the writers and the reader.
+// The dormant packages are the V2 code nothing in production may call until
+// #896 moves the writers and the reader: internal/manifestv2, which produces
+// and fetches V2 manifest objects (#898), and internal/cdcv2, the cdc-flush
+// and cdc-init publication paths (#899). Each may import this package freely
+// and use the other dormant packages, and no other production file may
+// import any of them.
 //
-// The two directories are Go packages, not trees: a subpackage of either is
+// The directories are Go packages, not trees: a subpackage of any of them is
 // another package, held to every rule.
 const (
 	manifestV2Import = "github.com/lychee-technology/forma/internal/manifestv2"
 	manifestV2Dir    = "internal/manifestv2"
+	cdcV2Import      = "github.com/lychee-technology/forma/internal/cdcv2"
+	cdcV2Dir         = "internal/cdcv2"
 	publicationDir   = "internal/publication"
 )
+
+// dormantPackages maps each dormant package's directory to its import path.
+var dormantPackages = map[string]string{
+	manifestV2Dir: manifestV2Import,
+	cdcV2Dir:      cdcV2Import,
+}
 
 // ddlConsumers are the production files outside this package allowed to
 // import it before the writers and the reader move onto the record together
@@ -56,17 +67,17 @@ var ddlIdentifiers = map[string]bool{
 // two rules:
 //
 //   - The publication rule, to every file outside this package: it refuses an
-//     import of this package outside ddlConsumers and the internal/manifestv2
-//     package, a dot import anywhere (it would hide which identifiers a file
-//     uses), a use of anything but ddlIdentifiers in ddlConsumers, and a
-//     string literal that spells a publication table name.
-//   - The dormancy rule, to every file outside the internal/manifestv2
-//     package, this package's and the ddlConsumers included: it refuses a
-//     production import of internal/manifestv2, so no binary reaches it
-//     before #896.
+//     import of this package outside ddlConsumers and the dormant packages, a
+//     dot import anywhere (it would hide which identifiers a file uses), a
+//     use of anything but ddlIdentifiers in ddlConsumers, and a string
+//     literal that spells a publication table name.
+//   - The dormancy rule, to every file outside the dormant packages, this
+//     package's and the ddlConsumers included: it refuses a production
+//     import of internal/manifestv2 or internal/cdcv2, so no binary reaches
+//     either before #896.
 //
 // Exemptions are by package directory, never by subtree: a subpackage of
-// either package is held to both rules.
+// any of these packages is held to both rules.
 //
 // It is not a guarantee against publication record I/O: an allowlisted file
 // could still build a statement over a name TablesFor returns. What shows that
@@ -84,7 +95,7 @@ func TestOnlyInitDBDDLReachesThePublicationTables(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, violations)
 
-	t.Run("the guard catches a planted writer, a dot import, a spelled table name and a manifest caller", func(t *testing.T) {
+	t.Run("the guard catches a planted writer, a dot import, a spelled table name and a caller of a dormant package", func(t *testing.T) {
 		dir := t.TempDir()
 		for rel, src := range map[string]string{
 			"internal/cdc/planted.go": "package cdc\n\nimport \"" + publicationImport + "\"\n\nvar _ = publication.TablesFor\n\n" +
@@ -110,6 +121,14 @@ func TestOnlyInitDBDDLReachesThePublicationTables(t *testing.T) {
 			"internal/publication/sub/planted.go":      "package sub\n\nimport \"" + manifestV2Import + "\"\n\nvar _ = manifestv2.Verify\n",
 			"internal/publication/sub/planted_test.go": "package sub\n\nimport \"" + manifestV2Import + "\"\n\nvar _ = manifestv2.Verify\n",
 			".hidden/planted.go":                       "package hidden\n\nimport \"" + manifestV2Import + "\"\n",
+			// A production caller of the dormant writer package.
+			"cmd/tools/planted.go": "package main\n\nimport \"" + cdcV2Import + "\"\n\nvar _ = cdcv2.New\n",
+			// The writer package may use all of this package and the
+			// manifest package, but never spell a table.
+			"internal/cdcv2/planted.go": "package cdcv2\n\nimport (\n\t\"" + publicationImport + "\"\n\t\"" + manifestV2Import + "\"\n)\n\n" +
+				"var _ = publication.Publish\nvar _ = manifestv2.PutManifest\n\nconst table = \"z_publication\"\n",
+			// A subpackage of the writer package is another package.
+			"internal/cdcv2/sub/planted.go": "package sub\n\nimport \"" + cdcV2Import + "\"\n\nvar _ = cdcv2.New\n",
 		} {
 			file := filepath.Join(dir, filepath.FromSlash(rel))
 			require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
@@ -117,14 +136,17 @@ func TestOnlyInitDBDDLReachesThePublicationTables(t *testing.T) {
 		}
 		files, err := productionFiles(dir)
 		require.NoError(t, err)
-		require.Len(t, files, 8, "the walk scans every production file but tests and hidden directories")
+		require.Len(t, files, 11, "the walk scans every production file but tests and hidden directories")
 		violations, err := publicationViolations(dir, files)
 		require.NoError(t, err)
 		require.Equal(t, []string{
 			"cmd/tools/init_db_collation.go dot-imports " + publicationImport,
 			"cmd/tools/init_db_publication.go uses publication.Publish",
+			"cmd/tools/planted.go imports " + cdcV2Import,
 			"internal/cdc/planted.go imports " + publicationImport,
 			`internal/cdc/planted.go spells a publication table name: "entity_main_publication"`,
+			`internal/cdcv2/planted.go spells a publication table name: "z_publication"`,
+			"internal/cdcv2/sub/planted.go imports " + cdcV2Import,
 			"internal/federated/planted.go imports " + manifestV2Import,
 			`internal/manifestv2/planted.go spells a publication table name: "x_publication"`,
 			"internal/manifestv2/sub/planted.go imports " + manifestV2Import,
@@ -200,26 +222,31 @@ func fileViolations(rel string, file *ast.File) []string {
 	if pkg == publicationDir {
 		return violations // this package may spell and use itself
 	}
-	return append(violations, publicationRuleViolations(rel, pkg == manifestV2Dir, file)...)
+	_, dormant := dormantPackages[pkg]
+	return append(violations, publicationRuleViolations(rel, dormant, file)...)
 }
 
-// dormancyViolations refuses an import of internal/manifestv2 from any file
-// outside that package.
+// dormancyViolations refuses an import of a dormant package from any file
+// outside the dormant packages.
 func dormancyViolations(rel, pkg string, file *ast.File) []string {
-	if pkg == manifestV2Dir {
+	if _, dormant := dormantPackages[pkg]; dormant {
 		return nil
+	}
+	imported := map[string]bool{}
+	for _, importPath := range dormantPackages {
+		imported[importPath] = true
 	}
 	var violations []string
 	for _, imp := range file.Imports {
-		if p, _ := strconv.Unquote(imp.Path.Value); p == manifestV2Import {
-			violations = append(violations, rel+" imports "+manifestV2Import)
+		if p, _ := strconv.Unquote(imp.Path.Value); imported[p] {
+			violations = append(violations, rel+" imports "+p)
 		}
 	}
 	return violations
 }
 
 // publicationRuleViolations refuses an import of this package outside
-// ddlConsumers and the manifest package (inV2), a dot import of it, a use of
+// ddlConsumers and the dormant packages (inV2), a dot import of it, a use of
 // an identifier outside ddlIdentifiers, and a string literal that spells a
 // publication table's suffix.
 func publicationRuleViolations(rel string, inV2 bool, file *ast.File) []string {
@@ -241,7 +268,7 @@ func publicationRuleViolations(rel string, inV2 bool, file *ast.File) []string {
 		}
 	}
 	if inV2 {
-		name = "" // the manifest package may use every identifier
+		name = "" // a dormant package may use every identifier
 	}
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch n := n.(type) {

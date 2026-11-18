@@ -3,9 +3,10 @@
 Status: the contract #888 proposes for EPIC #887. The SQL and its semantics are in
 `internal/publication`, with tests on PostgreSQL and on the MiniStack lane. The manifest
 objects (document, digest, keys, write-once store, verifying cache) are in
-`internal/manifestv2` (#898). Nothing in `cdc-flush`, `cdc-init`, the compactor, the
-federated reader or `manifest-reconcile` uses either yet: the other #887 children move those
-consumers onto them ([Ownership](#ownership-and-migration)).
+`internal/manifestv2` (#898), and the `cdc-flush` and `cdc-init` publication paths built on
+both are in `internal/cdcv2` (#899). Nothing in `cdc-flush`, `cdc-init`, the compactor, the
+federated reader or `manifest-reconcile` uses any of them yet: the other #887 children move
+those consumers onto them ([Ownership](#ownership-and-migration)).
 Behaviour on a real Aurora DSQL cluster has not been checked. #817 tracks that, and
 [Verification](#verification) lists what this contract assumes until then.
 
@@ -377,7 +378,10 @@ earlier epoch misses. `TestResetFencesEveryWriterOfTheOldEpoch`
 pins this.
 
 **Commit outcome unknown.** When `COMMIT` fails without an answer, the writer calls
-`Resolve(cur, next)` in a new transaction, at any time afterwards. `Resolve` reads the
+`Resolve(cur, next)` in a new transaction, at any time afterwards. A `FATAL` or `PANIC`
+answer counts as none, whatever its SQLSTATE: the session ended, and a pooler answers so
+for a backend it lost after it forwarded the `COMMIT`. Only an `ERROR` is the server's
+refusal, a `40001` sent again with the same token. `Resolve` reads the
 record and the history row of the attempt's number in one statement, so one snapshot
 answers both:
 
@@ -390,10 +394,47 @@ answers both:
 - `NotCommitted`: the record still carries the attempt's epoch, generation and token, so
   nothing committed from that expectation. The writer sends the *same* publication
   again, with the same expectation and token. If the lost commit lands first, the resend
-  loses the compare-and-set and `Resolve` then answers `Committed`. On PostgreSQL the
+  loses the compare-and-set, or fails with `40001` when the commit landed after its
+  snapshot, and the writer asks `Resolve` again, which then answers `Committed`. It asks on
+  every miss or `40001` of a staging whose commit went unanswered, the last allowed
+  transaction's too, so a commit that landed never reads as attempts exhausted. On PostgreSQL the
   resend waits on the original's row lock, so the two never both commit. On DSQL the
-  conflict check covers it. A resend refused with `ErrStagingExpired` abandons its
-  staging, and the orphan rule reclaims it.
+  conflict check covers it.
+
+  A `NotCommitted` is not final while the lost commit may still be on its way. So when the
+  writer would give such a staging up (the attempts ran out, a resend was refused with
+  `ErrStagingExpired`, or a resend failed), it first settles it with `Fence(cur)`. That
+  transaction writes the record row, changing nothing, while the record still carries the
+  expectation, and commits. The original's compare-and-set wrote that row before its
+  `COMMIT` was sent. On PostgreSQL the fence waits on that row lock until the original
+  ends, and on DSQL whichever of the two commits second fails with `40001`. So a fence
+  that held the record and committed proves the commit can never land: only then is the
+  staging abandoned (the orphan rule reclaims it) or reported as attempts exhausted. A
+  fence that finds the record moved hands over to `Resolve`, whose answer is final now. A
+  `Committed` there, however late the commit landed, counts as committed, and an init
+  runs its handoff. When no fence can settle it (the database is out, or the caller's
+  context ended), the writer reports `ErrUnresolved`, never `ErrAbandoned`. The error
+  carries the expectation, the token and, for an init, the exported entries at their
+  listed versions. The staged objects must then stay, and a flush does not start over.
+  The caller settles it later with a fresh context: `Settle` for a flush, `ResumeInit`
+  for an init. Each runs the same fence and `Resolve` again. A commit found then,
+  however late it landed, is committed: a flush's marks committed with it, and
+  `ResumeInit` runs the init's handoff from the kept entries, at exactly their export
+  versions and fenced by the init's lineage, so a row written since stays dirty. A
+  fence that holds the record, or a `Lost` or `Unknown`, answers `ErrAbandoned`, and the
+  caller runs the flush or the init again. Still unsettled, it answers a fresh
+  `ErrUnresolved`. A process that exits before it settles leaves the init's entries
+  dirty for the next flush, as a crash between an init's commit and its handoff does.
+  `TestInitSettlesALostCommitAfterItsLastResolve`,
+  `TestInitFenceWaitsForACommitStillInFlight`,
+  `TestFlushSettlesAStagingThatExpiresDuringAnUncertainResend`,
+  `TestFlushReportsAnOutcomeItCannotSettle` and
+  `TestResumeInitHandsOffAnInitWhoseFenceFailed` pin this.
+
+  A flush found committed through `Resolve` reports the marks of the transaction that
+  committed. That is one of those whose `COMMIT` went without an answer, never a resend
+  that failed. When they marked different counts, the report gives the range
+  (`Marked`, `Unconfirmed`). `TestFlushReportsTheMarksOfTheCommitThatLanded` pins this.
 - `Unknown`: the record has moved past the expectation and the history row is gone. An
   outage or a pause outlasted the collector's grace, and the generation was superseded
   and forgotten, or the epoch changed. The attempt can never commit now, and whether it
@@ -609,7 +650,7 @@ with an empty plan.
 | Drop | any but `DROPPED` | `Reset` with the registry delete | e+1, `DROPPED`, no current generation | purged afterwards, in chunks | readers fail closed. Every CAS/hold misses or is refused. Old objects expire after `G` |
 | Re-create | e+1 `DROPPED` | residue check + `Activate` with the registry insert | e+2, `UNPUBLISHED`, new token | — | `ErrResidue` while the id still has rows |
 | Failed publication | g | rolled back | g | unchanged | objects unreferenced. Orphan rule reclaims them |
-| Commit outcome unknown | g | `Resolve` in a new transaction | g or g+1 | with the pointer | `NotCommitted` → resend the same publication. `Lost` → rebase. `Unknown` → abandon, start over from the head |
+| Commit outcome unknown | g | `Resolve` in a new transaction | g or g+1 | with the pointer | `NotCommitted` → resend the same publication, and `Fence` before giving it up. `Lost` → rebase. `Unknown` → abandon, start over from the head |
 | Rollback to an older generation | — | not a transition | — | — | Refused by design: marks committed by later generations would point at missing rows. Re-init rebuilds from PostgreSQL instead |
 | Orphan cleanup | any | `RaiseHorizon`; `Retained`/`Expired`, `Retire`; then `Forget` | `gc_horizon` raised | — | see collection order |
 
@@ -754,6 +795,41 @@ above:
 
 `TestDSQLCorpus` exports every statement to the DSQL lint gate.
 
+The `cdc-flush` and `cdc-init` writers (#899) are tested in `internal/cdcv2` on the same
+targets, as the `aurora-dsql` engine on the MiniStack lane (`run_suite cdcv2`). Every test
+also checks Invariant B as a reader sees it (a row whose newest entry is flushed at `v` has
+its newest copy in the head at `v`) and that every committed generation's manifest is still
+the one its row names:
+
+- `TestFlushFaultAtEveryBoundaryLeavesOnlyOrphans`, `TestInitFaultLeavesNothingVisible`: a
+  fault at object staging, manifest upload, `BEGIN`, the compare-and-set, the marks or
+  `COMMIT`, and an interrupted or partly staged export, leave the record, the history and
+  `change_log` as they were.
+- `TestFlushResolvesACommitWithoutAnAnswer`, `TestInitResolvesACommitWithoutAnAnswer`,
+  `TestFlushResolvesACommitWhoseSessionEnded`, `TestFlushAbandonsAnOutcomeItCannotRecover`:
+  `Committed`, `NotCommitted` (the same token sent again, no second manifest), a `COMMIT`
+  that landed and was answered with a `FATAL` error whatever its code, a lost `COMMIT` that
+  lands, with its marks, before its resend's snapshot or after it (the resend's miss or
+  `40001` goes back to `Resolve`, never to a rebase or exhaustion, even on the last allowed
+  transaction) and `Unknown`, and a handoff chunk whose answer was lost, whose entries the
+  report counts as unconfirmed rather than marked.
+- `TestFlushResendsASerializationFailureWithTheSameToken`,
+  `TestFlushResendsAfterThePublishDeadline`, `TestFlushAbandonsAnExpiredStaging`: `40001`,
+  `T_pub` and `W`.
+- `TestConcurrentFlushersCommitOnePerParent`, `TestFlushStagedBeforeAnInitStartsOver`,
+  `TestInitStagedBeforeAFlushIsAbandoned`, `TestWritersRebaseOverACompaction`,
+  `TestWritersStagedBeforeADropNeverCommit`: the rebase table and epoch fencing, with real
+  racing transactions.
+- `TestFlushGenerationSize`: ten generations of 1,000 entries for a 10,000-entry DSQL batch.
+  `TestNewBoundsAPostgreSQLBatchToOneMark`, `TestMarkBindsMaxMarkEntries`: a PostgreSQL batch
+  is marked in one statement, so it is held to 32,766 entries, what 65,535 bind parameters
+  allow.
+- `TestInitLeavesRowsThatMovedDirty`, `TestReinitStopsTheReplacedLineagesHandoff`,
+  `TestInitRetryIsIdempotent`, `TestInitOfAnEmptySchemaPublishesAnEmptyGeneration`: the
+  export versions (a row written between the snapshot's version read and the exporter's
+  content read is exported at the listed version and stays dirty at the new one), a fully
+  shadowed export that stays recorded, re-initialization, and an empty export.
+
 **Not verified. Assumed until #817 checks a real cluster:**
 
 - That `SELECT … FOR UPDATE` puts the record into DSQL's conflict check, so a handoff and
@@ -780,8 +856,8 @@ the V1 code it replaces:
 | `init-db` table DDL | `Statements` for the configured `entity_main`, in init-db's table transaction. `init-db` creates the tables on PostgreSQL. On Aurora DSQL, #895 covers statement validity only: `make lint-dsql` and the MiniStack strict lane accept the DSQL rendering, but `init-db` cannot execute there, because it has no engine selection and sends its DDL in one transaction, which DSQL rejects. An executable DSQL `init-db` (one DDL statement per transaction, strict-lane fresh init, upgrade and rerun) is #690's. The tables only: nothing inserts, reads or updates them | #895 (DSQL execution: #690) |
 | V2 manifest objects | `internal/manifestv2`: the document and its deterministic bytes and digest, the `flush` and `init` file lists, the object keys, a write-once put (`If-None-Match: *`) on S3 and the same contract on a local directory, and a process-wide cache of manifests verified with `ManifestFiles` and the full-document checks. A missing or refused manifest is a `ConsistencyError`. Nothing in production imports it until #896 | #898 |
 | `init-db` registration, the upgrade cutover | `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock | #896 (writers and reader, built in #899 to #901) |
-| `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path | #896 (writers and reader, built in #899 to #901) |
-| `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage` | #896 (writers and reader, built in #899 to #901), closing #760 |
+| `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path. The publication loop is `internal/cdcv2`'s `Writer.Flush` (#899), behind a `DeltaStager` that writes the parquet; #896 adapts the DuckDB export to it and calls it | #896 (writers and reader, built in #899 to #901) |
+| `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot; #896 adapts the DuckDB export to it and calls it | #896 (writers and reader, built in #899 to #901), closing #760 |
 | compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891 | #890 (compaction) |
 | federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. `docs/federated-query/design.md` §6.1 is rewritten here | #896 (writers and reader, built in #899 to #901), carrying #759 |
 | `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire` and `PlanCollection` in the collection order above. Repair becomes re-init. Verification walks retained generations | #891 (GC) |
@@ -811,9 +887,9 @@ publication table name in a string literal. It does not inspect the SQL those fi
 build, so an allowlisted file could still assemble a record statement from a name
 `TablesFor` returns. What shows that init-db sends none is the traced SQL of its fresh,
 upgrade and rerun runs in `TestInitDBCreatesThePublicationTablesOnceAndWritesNoRecord`.
-`internal/manifestv2` may use all of `internal/publication`, and the same static test
-refuses a production import of `internal/manifestv2` from any file outside it, so no
-binary reaches the manifest code before #896 either.
+`internal/manifestv2` and `internal/cdcv2` may use all of `internal/publication`, and the
+same static test refuses a production import of either from any file outside the two, so no
+binary reaches the manifest or the writer code before #896 either.
 
 **#759 is the reader scope, and lands in #896.** Its original evidence, a zero-match or
 partial-match glob that returns 200 with silently incomplete data, is what the reader
