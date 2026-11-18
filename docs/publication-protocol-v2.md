@@ -3,9 +3,10 @@
 Status: the contract #888 proposes for EPIC #887. The SQL and its semantics are in
 `internal/publication`, with tests on PostgreSQL and on the MiniStack lane. The manifest
 objects (document, digest, keys, write-once store, verifying cache) are in
-`internal/manifestv2` (#898). Nothing in `cdc-flush`, `cdc-init`, the compactor, the
-federated reader or `manifest-reconcile` uses either yet: the other #887 children move those
-consumers onto them ([Ownership](#ownership-and-migration)).
+`internal/manifestv2` (#898), and the `cdc-flush` and `cdc-init` publication paths built on
+both are in `internal/cdcv2` (#899). Nothing in `cdc-flush`, `cdc-init`, the compactor, the
+federated reader or `manifest-reconcile` uses any of them yet: the other #887 children move
+those consumers onto them ([Ownership](#ownership-and-migration)).
 Behaviour on a real Aurora DSQL cluster has not been checked. #817 tracks that, and
 [Verification](#verification) lists what this contract assumes until then.
 
@@ -754,6 +755,34 @@ above:
 
 `TestDSQLCorpus` exports every statement to the DSQL lint gate.
 
+The `cdc-flush` and `cdc-init` writers (#899) are tested in `internal/cdcv2` on the same
+targets, as the `aurora-dsql` engine on the MiniStack lane (`run_suite cdcv2`). Every test
+also checks Invariant B as a reader sees it (a row whose newest entry is flushed at `v` has
+its newest copy in the head at `v`) and that every committed generation's manifest is still
+the one its row names:
+
+- `TestFlushFaultAtEveryBoundaryLeavesOnlyOrphans`, `TestInitFaultLeavesNothingVisible`: a
+  fault at object staging, manifest upload, `BEGIN`, the compare-and-set, the marks or
+  `COMMIT`, and an interrupted or partly staged export, leave the record, the history and
+  `change_log` as they were.
+- `TestFlushResolvesACommitWithoutAnAnswer`, `TestInitResolvesACommitWithoutAnAnswer`,
+  `TestFlushAbandonsAnOutcomeItCannotRecover`: `Committed`, `NotCommitted` (the same token
+  sent again, no second manifest), a lost `COMMIT` that lands after its resend began (the
+  resend's miss goes back to `Resolve`, never to a rebase) and `Unknown`, and a handoff chunk
+  whose answer was lost.
+- `TestFlushResendsASerializationFailureWithTheSameToken`,
+  `TestFlushResendsAfterThePublishDeadline`, `TestFlushAbandonsAnExpiredStaging`: `40001`,
+  `T_pub` and `W`.
+- `TestConcurrentFlushersCommitOnePerParent`, `TestFlushStagedBeforeAnInitStartsOver`,
+  `TestInitStagedBeforeAFlushIsAbandoned`, `TestWritersRebaseOverACompaction`,
+  `TestWritersStagedBeforeADropNeverCommit`: the rebase table and epoch fencing, with real
+  racing transactions.
+- `TestFlushGenerationSize`: ten generations of 1,000 entries for a 10,000-entry DSQL batch.
+- `TestInitLeavesRowsThatMovedDirty`, `TestReinitStopsTheReplacedLineagesHandoff`,
+  `TestInitRetryIsIdempotent`, `TestInitOfAnEmptySchemaPublishesAnEmptyGeneration`: the
+  export versions, a fully shadowed export that stays recorded, re-initialization, and an
+  empty export.
+
 **Not verified. Assumed until #817 checks a real cluster:**
 
 - That `SELECT … FOR UPDATE` puts the record into DSQL's conflict check, so a handoff and
@@ -780,8 +809,8 @@ the V1 code it replaces:
 | `init-db` table DDL | `Statements` for the configured `entity_main`, in init-db's table transaction. `init-db` creates the tables on PostgreSQL. On Aurora DSQL, #895 covers statement validity only: `make lint-dsql` and the MiniStack strict lane accept the DSQL rendering, but `init-db` cannot execute there, because it has no engine selection and sends its DDL in one transaction, which DSQL rejects. An executable DSQL `init-db` (one DDL statement per transaction, strict-lane fresh init, upgrade and rerun) is #690's. The tables only: nothing inserts, reads or updates them | #895 (DSQL execution: #690) |
 | V2 manifest objects | `internal/manifestv2`: the document and its deterministic bytes and digest, the `flush` and `init` file lists, the object keys, a write-once put (`If-None-Match: *`) on S3 and the same contract on a local directory, and a process-wide cache of manifests verified with `ManifestFiles` and the full-document checks. A missing or refused manifest is a `ConsistencyError`. Nothing in production imports it until #896 | #898 |
 | `init-db` registration, the upgrade cutover | `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock | #896 (writers and reader, built in #899 to #901) |
-| `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path | #896 (writers and reader, built in #899 to #901) |
-| `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage` | #896 (writers and reader, built in #899 to #901), closing #760 |
+| `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path. The publication loop is `internal/cdcv2`'s `Writer.Flush` (#899), behind a `DeltaStager` that writes the parquet; #896 adapts the DuckDB export to it and calls it | #896 (writers and reader, built in #899 to #901) |
+| `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot; #896 adapts the DuckDB export to it and calls it | #896 (writers and reader, built in #899 to #901), closing #760 |
 | compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891 | #890 (compaction) |
 | federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. `docs/federated-query/design.md` §6.1 is rewritten here | #896 (writers and reader, built in #899 to #901), carrying #759 |
 | `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire` and `PlanCollection` in the collection order above. Repair becomes re-init. Verification walks retained generations | #891 (GC) |
@@ -811,9 +840,9 @@ publication table name in a string literal. It does not inspect the SQL those fi
 build, so an allowlisted file could still assemble a record statement from a name
 `TablesFor` returns. What shows that init-db sends none is the traced SQL of its fresh,
 upgrade and rerun runs in `TestInitDBCreatesThePublicationTablesOnceAndWritesNoRecord`.
-`internal/manifestv2` may use all of `internal/publication`, and the same static test
-refuses a production import of `internal/manifestv2` from any file outside it, so no
-binary reaches the manifest code before #896 either.
+`internal/manifestv2` and `internal/cdcv2` may use all of `internal/publication`, and the
+same static test refuses a production import of either from any file outside the two, so no
+binary reaches the manifest or the writer code before #896 either.
 
 **#759 is the reader scope, and lands in #896.** Its original evidence, a zero-match or
 partial-match glob that returns 200 with silently incomplete data, is what the reader

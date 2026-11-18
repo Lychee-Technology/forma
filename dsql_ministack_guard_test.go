@@ -99,8 +99,9 @@ func TestMiniStackLaneRunsTheLedgerUpgradeSuite(t *testing.T) {
 // TestMiniStackLaneRunsThePgxReadSuites pins the pgx read paths that
 // replaced DuckDB's postgres extension in the lane (#691): the CDC export's
 // reads in the cdc suite and the federated hot leg's in a suite of their
-// own, each by name under a nonzero floor of passes, and the Protocol V2
-// publication contract's compare-and-set suite (#888).
+// own, each by name under a nonzero floor of passes, the Protocol V2
+// publication contract's compare-and-set suite (#888), and the V2 cdc-flush
+// and cdc-init writers built on it (#899).
 func TestMiniStackLaneRunsThePgxReadSuites(t *testing.T) {
 	script, err := os.ReadFile(ministackScript)
 	if err != nil {
@@ -111,6 +112,7 @@ func TestMiniStackLaneRunsThePgxReadSuites(t *testing.T) {
 		"the CDC export's reads":        regexp.MustCompile(`(?m)^\s*run_suite cdc ([0-9]+) .*\./internal/cdc -run '\^\([^']*\|TestDSQLExport\)'$`),
 		"the federated hot leg's reads": regexp.MustCompile(`(?m)^\s*run_suite federated ([0-9]+) .*\./internal/federated -run '\^TestDSQLHotLeg'$`),
 		"the publication contract":      regexp.MustCompile(`(?m)^\s*run_suite publication ([0-9]+) .*\./internal/publication$`),
+		"the V2 cdc writers":            regexp.MustCompile(`(?m)^\s*run_suite cdcv2 ([0-9]+) .*\./internal/cdcv2$`),
 	} {
 		if m := suite.FindStringSubmatch(text); m == nil || m[1] == "0" {
 			t.Errorf("%s does not run %s under a nonzero floor", ministackScript, name)
