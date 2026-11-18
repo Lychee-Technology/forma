@@ -18,6 +18,14 @@ import (
 
 const publicationImport = "github.com/lychee-technology/forma/internal/publication"
 
+// manifestV2Import is the package that produces and fetches V2 manifest
+// objects (#898). It may import this package freely, and nothing in
+// production may import it until #896 moves the writers and the reader.
+const (
+	manifestV2Import = "github.com/lychee-technology/forma/internal/manifestv2"
+	manifestV2Dir    = "internal/manifestv2/"
+)
+
 // ddlConsumers are the production files outside this package allowed to
 // import it before the writers and the reader move onto the record together
 // (#896): init-db's DDL step and its collation catalog check (#895).
@@ -39,10 +47,13 @@ var ddlIdentifiers = map[string]bool{
 // literal check that keeps an early dependency on this package out until
 // #896: a record written while V1 cdc-flush still runs goes stale, and the V2
 // reader would then answer the schema from the hot leg alone, dropping every
-// V1-flushed row. It refuses an import of this package outside ddlConsumers,
-// a dot import anywhere (it would hide which identifiers a file uses), a use
-// of anything but ddlIdentifiers in those files, and a string literal that
-// spells a publication table name in any production file.
+// V1-flushed row. It refuses an import of this package outside ddlConsumers
+// and internal/manifestv2, a dot import anywhere (it would hide which
+// identifiers a file uses), a use of anything but ddlIdentifiers in
+// ddlConsumers, and a string literal that spells a publication table name in
+// any production file. internal/manifestv2 may use the whole package, and is
+// held dormant the same way: a production import of it from any other file
+// is refused, so no binary reaches it before #896.
 //
 // It is not a guarantee against publication record I/O: an allowlisted file
 // could still build a statement over a name TablesFor returns. What shows that
@@ -58,11 +69,13 @@ func TestOnlyInitDBDDLReachesThePublicationTables(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, violations)
 
-	t.Run("the guard catches a planted writer, a dot import and a spelled table name", func(t *testing.T) {
+	t.Run("the guard catches a planted writer, a dot import, a spelled table name and a manifest caller", func(t *testing.T) {
 		dir := t.TempDir()
 		planted := filepath.Join(dir, "internal", "cdc", "planted.go")
 		allowed := filepath.Join(dir, "cmd", "tools", "init_db_publication.go")
 		dotted := filepath.Join(dir, "cmd", "tools", "init_db_collation.go")
+		reader := filepath.Join(dir, "internal", "federated", "planted.go")
+		v2 := filepath.Join(dir, "internal", "manifestv2", "planted.go")
 		for path, src := range map[string]string{
 			planted: "package cdc\n\nimport \"" + publicationImport + "\"\n\nvar _ = publication.TablesFor\n\n" +
 				"const table = \"entity_main_publication\"\n",
@@ -70,17 +83,25 @@ func TestOnlyInitDBDDLReachesThePublicationTables(t *testing.T) {
 			// An allowlisted file whose dot import would let it call
 			// Publish with no selector for the guard to see.
 			dotted: "package main\n\nimport . \"" + publicationImport + "\"\n\nvar _ = Publish\n",
+			// A production caller of the dormant manifest package.
+			reader: "package federated\n\nimport \"" + manifestV2Import + "\"\n\nvar _ = manifestv2.Verify\n",
+			// The manifest package itself may use all of this package,
+			// and import itself in a subpackage, but never spell a table.
+			v2: "package manifestv2\n\nimport (\n\t\"" + publicationImport + "\"\n\t_ \"" + manifestV2Import + "\"\n)\n\n" +
+				"var _ = publication.Publish\nvar _ = publication.ManifestFiles\n\nconst table = \"x_publication\"\n",
 		} {
 			require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 			require.NoError(t, os.WriteFile(path, []byte(src), 0o600))
 		}
-		violations, err := publicationViolations(dir, []string{planted, allowed, dotted})
+		violations, err := publicationViolations(dir, []string{planted, allowed, dotted, reader, v2})
 		require.NoError(t, err)
 		require.Equal(t, []string{
 			"cmd/tools/init_db_collation.go dot-imports " + publicationImport,
 			"cmd/tools/init_db_publication.go uses publication.Publish",
 			"internal/cdc/planted.go imports " + publicationImport,
 			`internal/cdc/planted.go spells a publication table name: "entity_main_publication"`,
+			"internal/federated/planted.go imports " + manifestV2Import,
+			`internal/manifestv2/planted.go spells a publication table name: "x_publication"`,
 		}, violations)
 	})
 
@@ -119,9 +140,10 @@ func productionFilesOutsidePublication(t *testing.T, root string) []string {
 }
 
 // publicationViolations answers, sorted, each import of this package from a
-// file outside ddlConsumers, each dot import of it, each use of an
-// identifier outside ddlIdentifiers, and each string literal that spells a
-// publication table's suffix.
+// file outside ddlConsumers and internal/manifestv2, each dot import of it,
+// each use of an identifier outside ddlIdentifiers in ddlConsumers, each
+// import of internal/manifestv2 from outside it, and each string literal that
+// spells a publication table's suffix.
 func publicationViolations(root string, files []string) ([]string, error) {
 	var violations []string
 	fset := token.NewFileSet()
@@ -144,8 +166,13 @@ func publicationViolations(root string, files []string) ([]string, error) {
 func fileViolations(rel string, file *ast.File) []string {
 	var violations []string
 	name := ""
+	inV2 := strings.HasPrefix(rel, manifestV2Dir)
 	for _, imp := range file.Imports {
-		if path, _ := strconv.Unquote(imp.Path.Value); path != publicationImport {
+		path, _ := strconv.Unquote(imp.Path.Value)
+		if path == manifestV2Import && !inV2 {
+			violations = append(violations, rel+" imports "+manifestV2Import)
+		}
+		if path != publicationImport {
 			continue
 		}
 		name = "publication"
@@ -155,9 +182,12 @@ func fileViolations(rel string, file *ast.File) []string {
 		if name == "." {
 			violations = append(violations, rel+" dot-imports "+publicationImport)
 		}
-		if !ddlConsumers[rel] {
+		if !ddlConsumers[rel] && !inV2 {
 			violations = append(violations, rel+" imports "+publicationImport)
 		}
+	}
+	if inV2 {
+		name = "" // the manifest package may use every identifier
 	}
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch n := n.(type) {
