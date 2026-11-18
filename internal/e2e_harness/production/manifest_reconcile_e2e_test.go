@@ -15,7 +15,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/lychee-technology/forma/internal/cdc"
-	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/reconcile"
 )
 
@@ -39,8 +38,7 @@ func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema Sch
 		t.Fatalf("schema lock for reconcile: %v", err)
 	}
 	store := &reconcile.S3ObjectStore{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
-	manifestStore := &manifest.S3Store{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
-	resolver := manifest.PathResolver{Prefix: env.CDC.ManifestPrefix, PathTemplate: env.CDC.ManifestTemplate}
+	manifestStore, resolver := env.manifestAccess()
 	r := &reconcile.Reconciler{
 		Lister:  store,
 		Deleter: store,
@@ -77,34 +75,6 @@ func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema Sch
 		}
 	}
 	return r, cleanup
-}
-
-func loadManifestWithETag(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) (*manifest.Manifest, string) {
-	t.Helper()
-	store := &manifest.S3Store{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
-	resolver := manifest.PathResolver{Prefix: env.CDC.ManifestPrefix, PathTemplate: env.CDC.ManifestTemplate}
-	path, err := resolver.Resolve(schema.ID)
-	if err != nil {
-		t.Fatalf("resolve manifest path: %v", err)
-	}
-	m, etag, err := manifest.Load(ctx, store, path)
-	if err != nil {
-		t.Fatalf("load manifest: %v", err)
-	}
-	return m, etag
-}
-
-func saveManifestWithETag(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, m *manifest.Manifest, etag string) {
-	t.Helper()
-	store := &manifest.S3Store{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
-	resolver := manifest.PathResolver{Prefix: env.CDC.ManifestPrefix, PathTemplate: env.CDC.ManifestTemplate}
-	path, err := resolver.Resolve(schema.ID)
-	if err != nil {
-		t.Fatalf("resolve manifest path: %v", err)
-	}
-	if _, err := manifest.Save(ctx, store, path, m, etag); err != nil {
-		t.Fatalf("save manifest: %v", err)
-	}
 }
 
 func putJunkObject(t *testing.T, ctx context.Context, env *Env, key string) {
@@ -151,7 +121,7 @@ func TestManifestReconcile_RepairsDeltaOrphan(t *testing.T) {
 // manifest sends reads to the legacy glob fallback
 // (manifest/query_source.go), which would see the orphan and defeat the
 // visibility oracle. Returns the stripped entry.
-func seedStrippedDeltaOrphan(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) *manifest.FileEntry {
+func seedStrippedDeltaOrphan(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) *ManifestEntry {
 	t.Helper()
 	seed := env.GenerateScript(ScriptSpec{Schema: schema, Creates: 4})
 	if err := env.ApplyEvents(ctx, seed...); err != nil {
@@ -171,8 +141,8 @@ func seedStrippedDeltaOrphan(t *testing.T, ctx context.Context, env *Env, schema
 	mustFlush(ctx, t, env)
 
 	m, etag := loadManifestWithETag(t, ctx, env, schema)
-	var original *manifest.FileEntry
-	var kept []manifest.FileEntry
+	var original *ManifestEntry
+	var kept []ManifestEntry
 	for _, f := range m.Files {
 		if f.Tier == "delta" && !keptPaths[f.Path] && original == nil {
 			e := f
@@ -197,7 +167,7 @@ func seedStrippedDeltaOrphan(t *testing.T, ctx context.Context, env *Env, schema
 	return original
 }
 
-func testReconcileReportOnly(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, original *manifest.FileEntry) {
+func testReconcileReportOnly(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, original *ManifestEntry) {
 	// Dangling probe: a manifest entry pointing at a key that never
 	// existed. Removed again at the end so the ghost does not break later
 	// read-path assertions.
@@ -233,7 +203,7 @@ func testReconcileReportOnly(t *testing.T, ctx context.Context, env *Env, schema
 	}
 
 	// Remove the ghost entry again.
-	var files []manifest.FileEntry
+	var files []ManifestEntry
 	for _, f := range mAfter.Files {
 		if f.Path != ghostKey {
 			files = append(files, f)
@@ -243,7 +213,7 @@ func testReconcileReportOnly(t *testing.T, ctx context.Context, env *Env, schema
 	saveManifestWithETag(t, ctx, env, schema, mAfter, etagAfter)
 }
 
-func testReconcileRepairRestores(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, original *manifest.FileEntry) {
+func testReconcileRepairRestores(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, original *ManifestEntry) {
 	r, cleanup := newReconcileHarness(t, ctx, env, schema,
 		reconcile.Options{Repair: true, MaxETagRetries: 3}, true)
 	defer cleanup()
@@ -258,7 +228,7 @@ func testReconcileRepairRestores(t *testing.T, ctx context.Context, env *Env, sc
 	}
 
 	mAfter, _ := loadManifestWithETag(t, ctx, env, schema)
-	var repaired *manifest.FileEntry
+	var repaired *ManifestEntry
 	for _, f := range mAfter.Files {
 		if f.Path == original.Path {
 			e := f
@@ -291,7 +261,7 @@ func testReconcileRepairRestores(t *testing.T, ctx context.Context, env *Env, sc
 // the flusher stamps the flush timestamp, reconcile recomputes the
 // parquet's changed_at range (compaction's convention for merged files),
 // and row changed_at is always <= the flush timestamp.
-func assertRepairedEntryMatches(t *testing.T, repaired, original *manifest.FileEntry) {
+func assertRepairedEntryMatches(t *testing.T, repaired, original *ManifestEntry) {
 	t.Helper()
 	if repaired.Tier != original.Tier ||
 		repaired.RowCount != original.RowCount ||

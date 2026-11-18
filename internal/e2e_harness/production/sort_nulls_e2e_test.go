@@ -82,7 +82,7 @@ func testFederatedNullsLast(ctx context.Context, t *testing.T, env *Env, wide Sc
 	events := buildSparseNoteRows(wide, 4, 4)
 	mustApplyEvents(ctx, t, env, "sparse creates", events...)
 	mustFlush(ctx, t, env)
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only ⇒ DuckDB routing
+	env.RetireAllFlushed(ctx) // cold-only ⇒ DuckDB routing
 	for _, desc := range []bool{false, true} {
 		q := Query{Schema: wide, Sorts: []Sort{{Attr: "note", Desc: desc}}, Limit: 20}
 		res := env.AssertQueryMatches(ctx, q)

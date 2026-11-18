@@ -72,9 +72,7 @@ func TestBigintFilterBoundaryBothDialects(t *testing.T) {
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	env.ExecSQL(ctx,
-		"DELETE FROM change_log WHERE schema_id = $1 AND row_id = ANY($2)",
-		wide.ID, rowIDs(seeded))
+	env.MarkRowsOnboarded(ctx, wide, rowIDs(seeded))
 	runBoundaryProbes(ctx, t, env, "cold-duck", Query{Schema: wide, Limit: 100}, true, probes)
 }
 
@@ -144,9 +142,7 @@ func TestEAVBigintFilterBoundaryBothDialects(t *testing.T) {
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	env.ExecSQL(ctx,
-		"DELETE FROM change_log WHERE schema_id = $1 AND row_id = ANY($2)",
-		wide.ID, rowIDs(seeded))
+	env.MarkRowsOnboarded(ctx, wide, rowIDs(seeded))
 
 	coldBase := Query{Schema: wide, Limit: 100}
 	assertEAVCeilingStored(ctx, t, env, "cold-duck", coldBase, true, atCeiling)

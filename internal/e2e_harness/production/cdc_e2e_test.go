@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/cdc"
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // TestCDCFlushAndInit verifies the real CDC runner and the extracted
@@ -67,7 +66,7 @@ func TestCDCFlushAndInit(t *testing.T) {
 	}
 	// #256: the flush writer stamps each delta entry from a DESCRIBE of the
 	// object it just published.
-	assertEntriesStampedToByteTruth(ctx, t, env, "cdc flush (delta)", manifest.FilterByTier(m, "delta"))
+	assertEntriesStampedToByteTruth(ctx, t, env, "cdc flush (delta)", TierEntries(m, "delta"))
 
 	// #371: a re-init over a populated delta tier refuses unless the run may
 	// replace it — a base-only swap would leave the stale generations listed
@@ -83,7 +82,7 @@ func TestCDCFlushAndInit(t *testing.T) {
 		t.Fatalf("refused init changed the delta tier: %d entries, want %d", got, countTier(m, "delta"))
 	}
 	deltaKeys := make([]string, 0, countTier(m, "delta"))
-	for _, entry := range manifest.FilterByTier(m, "delta") {
+	for _, entry := range TierEntries(m, "delta") {
 		key, ok := cdc.NormalizeObjectKey(env.Cluster.Bucket, entry.Path)
 		if !ok {
 			t.Fatalf("delta entry %q is not addressable in the test bucket", entry.Path)
@@ -113,7 +112,7 @@ func TestCDCFlushAndInit(t *testing.T) {
 	}
 	// #256: the init writer stamps each base entry the same way.
 	assertEntriesStampedToByteTruth(ctx, t, env, "cdc init (base)",
-		manifest.FilterByTier(initReport.Manifest, "base"))
+		TierEntries(initReport.Manifest, "base"))
 	// #371: the swap emptied the delta tier in the same manifest write, and
 	// the purge that followed removed the objects themselves.
 	if got := countTier(initReport.Manifest, "delta"); got != 0 {
@@ -150,7 +149,7 @@ func anyKeyMatches(keys []string, prefix, suffix string) bool {
 	return false
 }
 
-func countTier(m *manifest.Manifest, tier string) int {
+func countTier(m *Manifest, tier string) int {
 	n := 0
 	for _, f := range m.Files {
 		if f.Tier == tier {

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // TestInitBaseOnlyParity (#176 scenario 1): a multi-batch cdc-init backfill
@@ -40,14 +38,14 @@ func TestInitBaseOnlyParity(t *testing.T) {
 	if got := filterParquetKeys(report.NewObjects); len(got) != 3 {
 		t.Fatalf("init created parquet objects %v, want exactly 3", got)
 	}
-	if entries := manifest.FilterByTier(report.Manifest, "base"); len(entries) != 3 {
+	if entries := TierEntries(report.Manifest, "base"); len(entries) != 3 {
 		t.Fatalf("manifest holds %d base entries, want 3", len(entries))
 	}
 	assertBaseRows(ctx, t, env, report.Manifest, 20)
 
 	// Onboarding contract (mirrors production cdc-init handoff): clearing the
 	// change_log makes the base parquet the ONLY source for these rows.
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 
 	result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})
 	if result != nil && len(result.Records) != 20 {
@@ -79,13 +77,13 @@ func filterParquetKeys(keys []string) []string {
 
 // assertBaseRows sums the physical row counts of every base-tier parquet in
 // the manifest and compares against want.
-func assertBaseRows(ctx context.Context, t *testing.T, env *Env, m *manifest.Manifest, want int64) {
+func assertBaseRows(ctx context.Context, t *testing.T, env *Env, m *Manifest, want int64) {
 	t.Helper()
 	if m == nil {
 		t.Fatal("nil manifest")
 	}
 	var got int64
-	for _, f := range manifest.FilterByTier(m, "base") {
+	for _, f := range TierEntries(m, "base") {
 		got += parquetRowCount(ctx, t, env, f.Path)
 	}
 	if got != want {
@@ -114,7 +112,7 @@ func TestInitThenIncrementalFlush(t *testing.T) {
 	if report.RowsExported != 20 {
 		t.Fatalf("init exported %d rows, want 20", report.RowsExported)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 
 	// Incremental phase: update 5 backfilled rows (base holds v1, delta will
 	// hold v2 -> genuine cross-tier overlap) and create 10 new rows.
@@ -138,7 +136,7 @@ func TestInitThenIncrementalFlush(t *testing.T) {
 	if flush.UnflushedAfter != 0 {
 		t.Fatalf("flush left %d unflushed rows", flush.UnflushedAfter)
 	}
-	if len(manifest.FilterByTier(flush.Manifests[wide.ID], "delta")) == 0 {
+	if len(TierEntries(flush.Manifests[wide.ID], "delta")) == 0 {
 		t.Fatal("no delta entries in manifest after incremental flush")
 	}
 
@@ -193,7 +191,7 @@ func TestInitFlushOverlapWithoutLogCleanup(t *testing.T) {
 		t.Fatalf("flush left %d unflushed rows", flush.UnflushedAfter)
 	}
 	var deltaRows int64
-	for _, f := range manifest.FilterByTier(flush.Manifests[wide.ID], "delta") {
+	for _, f := range TierEntries(flush.Manifests[wide.ID], "delta") {
 		deltaRows += parquetRowCount(ctx, t, env, f.Path)
 	}
 	if deltaRows != 15 {

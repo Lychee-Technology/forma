@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/reconcile"
 )
 
@@ -214,6 +213,6 @@ func TestFlushFaultTempCleanup(t *testing.T) {
 		}
 	}
 	mAfter, _ := loadManifestWithETag(t, ctx, env, simple)
-	assertManifestDeltaPaths(t, map[int16]*manifest.Manifest{simple.ID: mAfter}, simple, finals)
+	assertManifestDeltaPaths(t, map[int16]*Manifest{simple.ID: mAfter}, simple, finals)
 	env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 100})
 }

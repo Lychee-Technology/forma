@@ -317,7 +317,7 @@ func testKeysetIncompleteCursorRejected(ctx context.Context, t *testing.T, env *
 	}
 	mustApplyEvents(ctx, t, env, "incomplete-cursor creates", events...)
 	mustFlush(ctx, t, env)
-	env.ExecSQL(ctx, "DELETE FROM change_log") // cold-only
+	env.RetireAllFlushed(ctx) // cold-only
 
 	// Positive control: the read path returns all five rows.
 	assertRowCount(ctx, t, env, "reject control", Query{Schema: wide, Limit: 10}, n)

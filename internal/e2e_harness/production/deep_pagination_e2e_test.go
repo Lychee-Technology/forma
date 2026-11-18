@@ -156,7 +156,7 @@ func testMultiTierDeepOffset(ctx context.Context, t *testing.T, env *Env, wide S
 	if report.RowsExported != 10 {
 		t.Fatalf("init exported %d rows, want 10", report.RowsExported)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 
 	mid := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 8})
 	mustApplyEvents(ctx, t, env, "apply delta creates", mid...)

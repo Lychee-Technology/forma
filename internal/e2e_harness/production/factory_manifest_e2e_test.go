@@ -48,7 +48,7 @@ func TestFactoryWiring_ManifestDrivenReads(t *testing.T) {
 	creates := env.GenerateScript(ScriptSpec{Schema: simple, Creates: factorySeedRows})
 	mustApplyEvents(ctx, t, env, "factory-path seed", creates...)
 	mustFlush(ctx, t, env)
-	env.ExecSQL(ctx, "DELETE FROM change_log")
+	env.RetireAllFlushed(ctx)
 
 	keys := schemaParquetKeys(ctx, t, env, simple)
 	if len(keys) == 0 {

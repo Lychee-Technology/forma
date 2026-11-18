@@ -18,7 +18,6 @@ import (
 
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
-	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/reconcile"
 )
 
@@ -241,7 +240,7 @@ func assertChecksumOptOutRewrites(ctx context.Context, t *testing.T, env *Env,
 // prefixed format, and equality with a SHA-256 the test computes over the
 // object's bytes as the store returns them today.
 func assertEntryChecksumMatchesBytes(ctx context.Context, t *testing.T, env *Env,
-	label string, entry manifest.FileEntry) {
+	label string, entry ManifestEntry) {
 	t.Helper()
 	if !strings.HasPrefix(entry.Checksum, cdc.ChecksumSHA256Prefix) {
 		t.Fatalf("%s: manifest entry %s has checksum %q, want a %q-prefixed stamp",
@@ -327,9 +326,9 @@ func poisonManifestChecksum(ctx context.Context, t *testing.T, env *Env, schema 
 // soleTierEntry returns the schema's single manifest entry in tier, failing
 // when the seed produced any other count (an ambiguous fixture would make the
 // assertions above address the wrong object).
-func soleTierEntry(t *testing.T, m *manifest.Manifest, tier string) manifest.FileEntry {
+func soleTierEntry(t *testing.T, m *Manifest, tier string) ManifestEntry {
 	t.Helper()
-	var found []manifest.FileEntry
+	var found []ManifestEntry
 	for _, f := range m.Files {
 		if strings.EqualFold(f.Tier, tier) {
 			found = append(found, f)

@@ -27,7 +27,7 @@ func seedPrunedColdTier(ctx context.Context, t *testing.T, env *Env, schema Sche
 	if _, err := env.RunInit(ctx, schema); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", schema.ID)
+	env.MarkOnboarded(ctx, schema)
 	env.ExecSQL(ctx, fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1", env.Tables.EAVData), schema.ID)
 	env.ExecSQL(ctx, fmt.Sprintf("DELETE FROM %s WHERE ltbase_schema_id = $1", env.Tables.EntityMain), schema.ID)
 	hot := env.GenerateScript(ScriptSpec{Schema: schema, Creates: 2})

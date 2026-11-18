@@ -159,7 +159,7 @@ func seedParityTiers(ctx context.Context, t *testing.T, env *Env, wide SchemaRef
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 
 	w1 := CreateEvent(wide, parityAttrsAt(1, []any{}))
 	w2 := CreateEvent(wide, map[string]any{"note": "z"})

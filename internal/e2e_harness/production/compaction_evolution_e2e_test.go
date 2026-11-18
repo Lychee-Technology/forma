@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/compaction"
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // #257: mixed-generation compaction equivalence. Base parquet is written
@@ -237,7 +236,7 @@ func assertMergedBaseUnion(ctx context.Context, t *testing.T, env *Env, key stri
 // zero delta entries, monotonic manifest version, no duplicate entries,
 // manifest ⊆ S3 inventory with only retired sources unlisted (#461), and an
 // untouched hot tier.
-func assertMixedGenRewriteSurfaces(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, mBefore *manifest.Manifest, hotBefore int64) {
+func assertMixedGenRewriteSurfaces(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, mBefore *Manifest, hotBefore int64) {
 	t.Helper()
 	mAfter := loadSchemaManifest(ctx, t, env, schema)
 	if got := countTier(mAfter, "delta"); got != 0 {

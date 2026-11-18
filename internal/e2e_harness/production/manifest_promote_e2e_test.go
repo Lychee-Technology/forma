@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/reconcile"
 )
 
@@ -116,7 +115,7 @@ func TestManifestReconcile_RefusesPartialInitPromotion(t *testing.T) {
 // S3 — the exact post-state of a failed manifest publish. It returns the
 // entries init itself wrote, which serve as the per-field oracle for whatever
 // promotion later reconstructs.
-func seedStrippedInitBase(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) []manifest.FileEntry {
+func seedStrippedInitBase(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) []ManifestEntry {
 	t.Helper()
 	env.CDC.BatchSize = initBaseSeedBatch
 
@@ -151,7 +150,7 @@ func seedStrippedInitBase(t *testing.T, ctx context.Context, env *Env, schema Sc
 		t.Fatalf("manifest holds %d base entries, init created %d files", len(original), report.FilesCreated)
 	}
 
-	var kept []manifest.FileEntry
+	var kept []ManifestEntry
 	for _, f := range m.Files {
 		if !strings.EqualFold(f.Tier, "base") {
 			kept = append(kept, f)
@@ -167,7 +166,7 @@ func seedStrippedInitBase(t *testing.T, ctx context.Context, env *Env, schema Sc
 	return original
 }
 
-func testPromoteRestoresBaseTier(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, original []manifest.FileEntry) {
+func testPromoteRestoresBaseTier(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, original []ManifestEntry) {
 	r, cleanup := newReconcileHarness(t, ctx, env, schema,
 		reconcile.Options{Repair: true, MaxETagRetries: 3}, true)
 	defer cleanup()
@@ -193,7 +192,7 @@ func testPromoteRestoresBaseTier(t *testing.T, ctx context.Context, env *Env, sc
 	if len(promoted) != len(original) {
 		t.Fatalf("manifest holds %d base entries after promotion, want %d", len(promoted), len(original))
 	}
-	byPath := make(map[string]manifest.FileEntry, len(promoted))
+	byPath := make(map[string]ManifestEntry, len(promoted))
 	for _, e := range promoted {
 		byPath[e.Path] = e
 	}
@@ -216,7 +215,7 @@ func testPromoteRestoresBaseTier(t *testing.T, ctx context.Context, env *Env, sc
 // (ltbase_updated_at) values, which necessarily precede that stamp. So the
 // promoted range is only required to be a real, positive range that does not
 // exceed init's stamp.
-func assertPromotedEntryMatches(t *testing.T, got, want manifest.FileEntry) {
+func assertPromotedEntryMatches(t *testing.T, got, want ManifestEntry) {
 	t.Helper()
 	if !strings.EqualFold(got.Tier, "base") {
 		t.Errorf("promoted entry %s has tier %q, want base", got.Path, got.Tier)
@@ -285,8 +284,8 @@ func testPromoteSecondRunClean(t *testing.T, ctx context.Context, env *Env, sche
 	assertNoDuplicateManifestEntries(t, mAfter)
 }
 
-func baseTierEntries(m *manifest.Manifest) []manifest.FileEntry {
-	var out []manifest.FileEntry
+func baseTierEntries(m *Manifest) []ManifestEntry {
+	var out []ManifestEntry
 	for _, f := range m.Files {
 		if strings.EqualFold(f.Tier, "base") {
 			out = append(out, f)
@@ -295,7 +294,7 @@ func baseTierEntries(m *manifest.Manifest) []manifest.FileEntry {
 	return out
 }
 
-func entryPaths(entries []manifest.FileEntry) []string {
+func entryPaths(entries []ManifestEntry) []string {
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, e.Path)

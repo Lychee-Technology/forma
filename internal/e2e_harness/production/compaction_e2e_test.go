@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/compaction"
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // compactionEquivalenceQueries returns the query set every compaction
@@ -176,7 +175,7 @@ func TestCompactionPromotionEquivalence(t *testing.T) {
 	// the init/flush stamps through the relabel intact. A relabel that dropped
 	// or rebuilt Columns would silently push every read back onto the probe.
 	assertEntriesStampedToByteTruth(ctx, t, env, "compaction promotion (relabeled base)",
-		manifest.FilterByTier(mAfter, "base"))
+		TierEntries(mAfter, "base"))
 
 	// Promotion is a manifest-only relabel: zero parquet objects created,
 	// deleted, or modified.

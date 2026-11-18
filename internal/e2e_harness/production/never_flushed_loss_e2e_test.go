@@ -34,7 +34,7 @@ func TestLostInitializedDataStillFails(t *testing.T) {
 		t.Fatalf("precondition: init exported %d rows into %v, want 3 rows, a parquet object and the manifest",
 			report.RowsExported, report.NewObjects)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 	for _, key := range report.NewObjects {
 		deleteObject(ctx, t, env, key)
 	}
@@ -163,7 +163,7 @@ func TestInitHandoffAfterTheEmptyScanCheckStaysComplete(t *testing.T) {
 		if report.RowsExported != 3 {
 			return fmt.Errorf("init exported %d rows, want 3", report.RowsExported)
 		}
-		env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", schema.ID)
+		env.MarkOnboarded(ctx, schema)
 		return nil
 	})
 }

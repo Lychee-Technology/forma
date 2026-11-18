@@ -12,7 +12,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/compaction"
-	"github.com/lychee-technology/forma/internal/manifest"
 	"github.com/lychee-technology/forma/internal/rfc3339"
 )
 
@@ -331,7 +330,7 @@ func rewriteCanonicalRowsToBase(ctx context.Context, t *testing.T, env *Env, sch
 	if base, delta := countTier(m, "base"), countTier(m, "delta"); base != 1 || delta != 0 {
 		t.Fatalf("after rewrite: base = %d, delta = %d, want 1 and 0", base, delta)
 	}
-	if got := manifest.FilterByTier(m, "base")[0].Path; result.NewBaseKey == "" || got != result.NewBaseKey {
+	if got := TierEntries(m, "base")[0].Path; result.NewBaseKey == "" || got != result.NewBaseKey {
 		t.Errorf("base entry %q is not the rewrite's new base %q", got, result.NewBaseKey)
 	}
 }

@@ -133,8 +133,9 @@ func (e *Env) Events() []*Event {
 
 // ExecSQL is the failure-matrix escape hatch (for #179/#181): it executes
 // raw SQL against the per-test database and fails the test on error. Use it
-// to inject states production code cannot produce through its API (e.g.
-// truncating change_log to model post-init onboarding).
+// to inject states production code cannot produce through its API. Clearing
+// change_log is not one of them: use the helpers of handoff.go, which name
+// the intent (#901).
 func (e *Env) ExecSQL(ctx context.Context, sql string, args ...any) {
 	e.T.Helper()
 	if _, err := e.Pool.Exec(ctx, sql, args...); err != nil {

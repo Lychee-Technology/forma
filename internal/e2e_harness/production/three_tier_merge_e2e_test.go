@@ -6,8 +6,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // TestThreeTierMerge (#177 scenarios 4-6): merge-on-read correctness when
@@ -53,7 +51,7 @@ func testThreeTierUnion(ctx context.Context, t *testing.T, env *Env, wide Schema
 	if report.RowsExported != 10 {
 		t.Fatalf("init exported %d rows, want 10", report.RowsExported)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 
 	mid := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 8})
 	if err := env.ApplyEvents(ctx, mid...); err != nil {
@@ -116,7 +114,7 @@ func testTripleOverlapHotWins(ctx context.Context, t *testing.T, env *Env, wide 
 	if report.RowsExported != 6 {
 		t.Fatalf("init exported %d rows, want 6", report.RowsExported)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 
 	v2 := make([]*Event, 0, len(creates))
 	for i, c := range creates {
@@ -175,7 +173,7 @@ func testDirtyHotShadowsCold(ctx context.Context, t *testing.T, env *Env, wide S
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 
 	// Load-bearing positive: base serves all 5 rows before anything is dirty
 	// (guards every zero-row probe below against a broken read path).
@@ -263,7 +261,7 @@ func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, w
 		t.Fatalf("manifest holds %d delta files, want 2 (v1 and v2 generations)", got)
 	}
 
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID) // no hot rows
+	env.RetireFlushed(ctx, wide) // no hot rows
 
 	// Physical precondition: three copies of every row — v1 and v2 in the two
 	// deltas plus the base copy of v1 — so dedup genuinely has to choose.
@@ -271,7 +269,7 @@ func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, w
 	var deltaRows int64
 	// report.Manifest predates both flushes (init ran first); the delta
 	// entries live in the manifest the second flush published.
-	for _, f := range manifest.FilterByTier(flush2.Manifests[wide.ID], "delta") {
+	for _, f := range TierEntries(flush2.Manifests[wide.ID], "delta") {
 		deltaRows += parquetRowCount(ctx, t, env, f.Path)
 	}
 	if deltaRows != 10 {

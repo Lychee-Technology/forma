@@ -314,7 +314,7 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 	// is only cold-tier evidence if the query actually routed to DuckDB —
 	// a PG-only routing regression would still count 5 entity_main rows (#248).
 	for _, ref := range []SchemaRef{simple, second} {
-		env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", ref.ID)
+		env.MarkOnboarded(ctx, ref)
 	}
 	for _, ref := range []SchemaRef{simple, second} {
 		assertFederatedRowCount(ctx, t, env,

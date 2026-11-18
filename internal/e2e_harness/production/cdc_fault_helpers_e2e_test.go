@@ -9,8 +9,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // seedRows creates n rows through the real EntityManager and returns the
@@ -56,7 +54,7 @@ func assertUntouched(t *testing.T, report *FlushReport, schema SchemaRef, wantUn
 // assertManifestDeltaPaths asserts the schema manifest tracks exactly the
 // given delta parquet keys (order-insensitive). Empty wantKeys asserts the
 // manifest has no delta entries (or does not exist).
-func assertManifestDeltaPaths(t *testing.T, manifests map[int16]*manifest.Manifest, schema SchemaRef, wantKeys []string) {
+func assertManifestDeltaPaths(t *testing.T, manifests map[int16]*Manifest, schema SchemaRef, wantKeys []string) {
 	t.Helper()
 	var got []string
 	if m := manifests[schema.ID]; m != nil {
@@ -262,7 +260,7 @@ func assertSchemaUntouchedByFault(ctx context.Context, t *testing.T, env *Env, r
 // is the object set to attribute (a report diff or a fresh listing — under
 // concurrency a paused runner's report diff absorbs its sibling's writes, so
 // concurrent scenarios pass a fresh listS3Keys instead). Returns the finals.
-func assertSchemaFullyFlushed(ctx context.Context, t *testing.T, env *Env, newKeys []string, manifests map[int16]*manifest.Manifest, schema SchemaRef, wantRows int) []string {
+func assertSchemaFullyFlushed(ctx context.Context, t *testing.T, env *Env, newKeys []string, manifests map[int16]*Manifest, schema SchemaRef, wantRows int) []string {
 	t.Helper()
 	flushed, dirty := fetchChangeLogRowIDs(ctx, t, env, schema)
 	if len(flushed) != wantRows || len(dirty) != 0 {

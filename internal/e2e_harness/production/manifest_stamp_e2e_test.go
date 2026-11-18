@@ -6,8 +6,6 @@ import (
 	"context"
 	"maps"
 	"testing"
-
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // assertEntriesStampedToByteTruth pins the #256 correctness bar: every
@@ -25,7 +23,7 @@ import (
 //
 // The empty-slice guard is a vacuity guard: a scenario whose writer produced
 // no entries would otherwise satisfy this loop silently.
-func assertEntriesStampedToByteTruth(ctx context.Context, t *testing.T, env *Env, label string, entries []manifest.FileEntry) {
+func assertEntriesStampedToByteTruth(ctx context.Context, t *testing.T, env *Env, label string, entries []ManifestEntry) {
 	t.Helper()
 	if len(entries) == 0 {
 		t.Fatalf("%s: no manifest entries to check; the stamp assertion would be vacuous", label)

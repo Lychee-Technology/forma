@@ -31,7 +31,7 @@ func TestCorruptDeltaWithNewestVersionsIsNotAnsweredStale(t *testing.T) {
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init (base export): %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", wide.ID)
+	env.MarkOnboarded(ctx, wide)
 
 	deleted, updated := creates[0], creates[1]
 	mustApplyEvents(ctx, t, env, "apply the newest versions",

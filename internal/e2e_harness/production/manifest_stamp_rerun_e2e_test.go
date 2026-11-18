@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"testing"
-
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // TestManifestStamp_InPlaceRewriteInvalidatesValidatorCache is the cache-keying
@@ -74,8 +72,8 @@ func TestManifestStamp_InPlaceRewriteInvalidatesValidatorCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init rerun: %v", err)
 	}
-	env.ExecSQL(ctx, "DELETE FROM change_log WHERE schema_id = $1", simple.ID)
-	baseEntries := manifest.FilterByTier(rerun.Manifest, "base")
+	env.MarkOnboarded(ctx, simple)
+	baseEntries := TierEntries(rerun.Manifest, "base")
 	if len(baseEntries) != 1 || baseEntries[0].Path == baseKey {
 		t.Fatalf("init rerun did not replace %s with a fresh write-once key; base entries: %+v", baseKey, baseEntries)
 	}
@@ -121,33 +119,11 @@ func rewriteBaseWithoutScore(ctx context.Context, t *testing.T, env *Env, schema
 	}
 	writeParquetViaDuck(ctx, t, env, "SELECT * FROM "+staging, baseKey)
 
-	entries := manifest.FilterByTier(mustLoadManifest(ctx, t, env, schema), "base")
+	entries := TierEntries(loadSchemaManifest(ctx, t, env, schema), "base")
 	for i := range entries {
 		if entries[i].Path == baseKey {
 			entries[i].Columns = describeParquetCols(ctx, t, env, baseKey)
 		}
 	}
-	store := &manifest.S3Store{Client: env.Cluster.S3, Bucket: env.Cluster.Bucket}
-	resolver := manifest.PathResolver{Prefix: env.CDC.ManifestPrefix, PathTemplate: env.CDC.ManifestTemplate}
-	path, err := resolver.Resolve(schema.ID)
-	if err != nil {
-		t.Fatalf("resolve manifest path: %v", err)
-	}
-	if err := manifest.ReplaceTierFiles(ctx, store, path, schema.ID, "base", entries); err != nil {
-		t.Fatalf("re-stamp base entries: %v", err)
-	}
-}
-
-// mustLoadManifest returns the schema's current manifest.
-func mustLoadManifest(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) *manifest.Manifest {
-	t.Helper()
-	manifests, err := env.loadManifests(ctx)
-	if err != nil {
-		t.Fatalf("load manifests: %v", err)
-	}
-	m := manifests[schema.ID]
-	if m == nil {
-		t.Fatalf("schema %s has no manifest", schema.Name)
-	}
-	return m
+	replaceManifestTier(ctx, t, env, schema, "base", entries)
 }

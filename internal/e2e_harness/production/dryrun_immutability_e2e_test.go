@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/cdc"
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // TestDryRunImmutability proves cdc-flush --dry-run and cdc-init --dry-run
@@ -154,7 +153,7 @@ func assertStateUnchanged(t *testing.T, label string, before, after stateSnapsho
 	if before.manifestETag != after.manifestETag {
 		t.Errorf("%s: manifest etag changed: %s -> %s", label, before.manifestETag, after.manifestETag)
 	}
-	var mBefore, mAfter manifest.Manifest
+	var mBefore, mAfter Manifest
 	if err := json.Unmarshal(before.manifestRaw, &mBefore); err != nil {
 		t.Fatalf("%s: unmarshal before-manifest: %v", label, err)
 	}

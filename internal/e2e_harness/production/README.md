@@ -177,8 +177,16 @@ where cdc-init bootstraps base files before federated reads. Use
 - `Query`/`AssertQueryMatches` translate one spec for both engine and
   oracle. Filters use the public `"op:value"` condition forms (bool values
   are `"1"`/`"0"`; dates accept ISO strings or epoch millis).
-- `ExecSQL` is the escape hatch for failure-state injection (#179/#181),
-  e.g. truncating `change_log` to model post-init onboarding.
+- `ExecSQL` is the escape hatch for failure-state injection (#179/#181).
+  Clearing `change_log` goes through the helpers of `handoff.go` instead,
+  named for what the test means: `MarkOnboarded`/`MarkRowsOnboarded`/
+  `MarkAllOnboarded` stand in for the onboarding handoff after `RunInit`,
+  `RetireFlushed`/`RetireAllFlushed` drop the entries a flush already
+  exported. Test files read and write the manifest through
+  `manifest_access.go` (`Manifest`, `ManifestEntry`, `TierEntries`, the
+  load/save helpers) and never import `internal/manifest`.
+  `TestE2ETestsReachV1StandInsOnlyThroughHelpers` keeps both rules, so
+  Protocol V2 (#896) changes those helper bodies rather than the tests (#901).
 - `InjectRestore` (#175) re-materializes a hard-deleted row under its
   original row_id at the storage layer — production has no restore API
   (Update on a deleted row returns `ErrNotFound`, pinned live) — with the
