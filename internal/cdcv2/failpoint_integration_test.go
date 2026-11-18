@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
 
@@ -110,17 +111,65 @@ func TestFlushResolvesACommitWithoutAnAnswer(t *testing.T) {
 		})
 	}
 
-	t.Run("the lost commit lands after its resend began", func(t *testing.T) {
-		f := newFixture(t)
-		published(t, f)
-		rep, err := f.writer(t, func(c *Config) { c.Failpoint = f.lateCommit(t) }).Flush(context.Background(), schemaID, 1, &stager{f: f})
-		require.NoError(t, err)
-		require.Equal(t, 1, rep.Resends)
-		require.Zero(t, rep.Rebases, "the resend's miss was its own commit, not a rival's")
-		require.Len(t, f.history(t), 2)
-		require.Equal(t, rep.Generations[0].Token, f.record(t).Token)
-		f.checkInvariants(t)
-	})
+	for _, tc := range []struct {
+		name   string
+		at     Point
+		answer error
+	}{
+		{"the lost commit lands after its resend began", PointBegin, nil},
+		{"the lost commit lands after the final resend's snapshot", PointPublish, serializationConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			published(t, f)
+			dirty := f.dirty(t)
+			w := f.writer(t, func(c *Config) { c.Attempts = 2; c.Failpoint = f.lateCommit(t, tc.at, tc.answer) })
+			rep, err := w.Flush(context.Background(), schemaID, 1, &stager{f: f})
+			require.NoError(t, err, "the resend's failure was its own commit landing, within the attempt cap")
+			require.Equal(t, 1, rep.Resends)
+			require.Zero(t, rep.Rebases, "the resend's miss was its own commit, not a rival's")
+			require.Zero(t, rep.Restarts)
+			require.Len(t, f.history(t), 2)
+			head := f.record(t)
+			require.Equal(t, rep.Generations[0].Token, head.Token)
+			require.Empty(t, f.dirty(t))
+			f.markedOnce(t, dirty, head.UpdatedAt)
+			f.checkInvariants(t)
+		})
+	}
+}
+
+// serializationConflict is the 40001 a server answers a transaction that
+// lost a write conflict: an ERROR, which ends the transaction, not the
+// session.
+var serializationConflict = &pgconn.PgError{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "40001", Message: "could not serialize access due to concurrent update"}
+
+// sessionEndedWith answers the FATAL error with code a pooler answers a COMMIT
+// it forwarded before it lost the backend: the session ended, and whether
+// the COMMIT landed is unknown.
+func sessionEndedWith(code string) error {
+	return &pgconn.PgError{Severity: "FATAL", SeverityUnlocalized: "FATAL", Code: code, Message: "terminating connection"}
+}
+
+// TestFlushResolvesACommitWhoseSessionEnded: a COMMIT that landed and was
+// answered with a FATAL error, even one carrying 40001, is resolved, found
+// committed, and not sent again.
+func TestFlushResolvesACommitWhoseSessionEnded(t *testing.T) {
+	for _, code := range []string{"40001", "57P01"} {
+		t.Run(code, func(t *testing.T) {
+			f := newFixture(t)
+			published(t, f)
+			fp := once(PointCommitAnswer, failWith(sessionEndedWith(code)))
+			rep, err := f.writer(t, func(c *Config) { c.Failpoint = fp }).Flush(context.Background(), schemaID, 1, &stager{f: f})
+			require.NoError(t, err)
+			require.Zero(t, rep.Resends)
+			require.Zero(t, rep.Rebases)
+			require.Len(t, rep.Generations, 1)
+			require.Equal(t, rep.Generations[0].Token, f.record(t).Token)
+			require.Empty(t, f.dirty(t))
+			f.checkInvariants(t)
+		})
+	}
 }
 
 // TestFlushResendsASerializationFailureWithTheSameToken is DSQL's 40001 on a
@@ -129,8 +178,7 @@ func TestFlushResolvesACommitWithoutAnAnswer(t *testing.T) {
 func TestFlushResendsASerializationFailureWithTheSameToken(t *testing.T) {
 	f := newFixture(t)
 	published(t, f)
-	conflict := &pgconn.PgError{Code: "40001", Message: "change conflicts with another transaction"}
-	rep, err := f.writer(t, func(c *Config) { c.Failpoint = once(PointMarks, failWith(conflict)) }).Flush(context.Background(), schemaID, 1, &stager{f: f})
+	rep, err := f.writer(t, func(c *Config) { c.Failpoint = once(PointMarks, failWith(serializationConflict)) }).Flush(context.Background(), schemaID, 1, &stager{f: f})
 	require.NoError(t, err)
 	require.Equal(t, 1, rep.Resends)
 	require.Equal(t, 2, rep.Marked)
@@ -216,28 +264,61 @@ func TestFlushResendsAfterThePublishDeadline(t *testing.T) {
 }
 
 // lateCommit answers a failpoint that loses the first COMMIT's answer, the
-// COMMIT not landing, and then, before the resend's BEGIN, lands that very
-// publication, as a COMMIT delayed in the network would. The resend loses
-// its compare-and-set to it.
-func (f *fixture) lateCommit(t *testing.T) func(context.Context, Point) error {
-	var commits, begins atomic.Int32
+// COMMIT not landing, and then, at the resend's first hit of at, lands that
+// very publication, as a COMMIT delayed in the network would, and answers
+// answer there. At PointBegin with no answer the late COMMIT lands before
+// the resend's snapshot, so the resend loses its compare-and-set to it. At
+// PointPublish with a 40001 it lands after the resend's BEGIN, and the
+// resend fails as a snapshot engine fails a transaction whose snapshot
+// predates a conflicting commit.
+func (f *fixture) lateCommit(t *testing.T, at Point, answer error) func(context.Context, Point) error {
+	var commits, landed atomic.Int32
 	return func(ctx context.Context, p Point) error {
 		switch {
 		case p == PointCommit && commits.Add(1) == 1:
 			return ErrCommitAnswerLost
-		case p == PointBegin && commits.Load() == 1 && begins.Add(1) == 1:
+		case p == at && commits.Load() == 1 && landed.Add(1) == 1:
 			f.landStaged(t)
+			return answer
 		}
 		return nil
 	}
 }
 
 // landStaged commits the one staged manifest of the next generation that no
-// history row names, with its own token, key and digest.
+// history row names, with its own token, key and digest, as the writer's
+// transaction would: for a flush, the compare-and-set and the exact-version
+// marks of the entries its new delta objects hold, in one transaction.
 func (f *fixture) landStaged(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	cur := f.record(t)
+	m, raw := f.stagedNext(t, cur)
+	entries := f.newEntries(t, cur, m)
+	f.inTx(t, func(tx *sql.Tx) error {
+		var now int64
+		if err := tx.QueryRow("SELECT floor(extract(epoch from now()) * 1000)::bigint").Scan(&now); err != nil {
+			return err
+		}
+		out, err := publication.Publish(ctx, publication.SQLTx(tx), f.tables, cur, publication.Next{
+			Kind: m.Kind, Token: m.Token, ManifestKey: f.layout.ManifestKey(m.SchemaID, m.Epoch, m.Generation, m.Token),
+			ManifestSHA256: manifestv2.Digest(raw), Lineage: m.Lineage, StagedAt: now, StagingBudget: time.Minute,
+		})
+		if err != nil || m.Kind != publication.KindFlush {
+			return err
+		}
+		n, err := f.writer(t).mark(ctx, tx, schemaID, entries, out.UpdatedAt)
+		if err == nil && n != len(entries) {
+			err = fmt.Errorf("the late commit marked %d of its %d entries", n, len(entries))
+		}
+		return err
+	})
+}
+
+// stagedNext answers the one staged manifest of the generation after cur
+// that no history row names, and its bytes.
+func (f *fixture) stagedNext(t *testing.T, cur publication.Record) (manifestv2.Manifest, []byte) {
+	t.Helper()
 	committed := map[string]bool{}
 	for _, g := range f.history(t) {
 		committed[g.ManifestKey] = true
@@ -262,18 +343,56 @@ func (f *fixture) landStaged(t *testing.T) {
 		return nil
 	}))
 	require.Len(t, staged, 1, "one staged publication waits for its commit")
-	m := staged[0]
-	f.inTx(t, func(tx *sql.Tx) error {
-		var now int64
-		if err := tx.QueryRow("SELECT floor(extract(epoch from now()) * 1000)::bigint").Scan(&now); err != nil {
-			return err
+	return staged[0], raws[0]
+}
+
+// newEntries answers the entries m's objects hold that cur's manifest does
+// not list: what a flush generation of m marks.
+func (f *fixture) newEntries(t *testing.T, cur publication.Record, m manifestv2.Manifest) []Entry {
+	t.Helper()
+	listed := map[string]bool{}
+	if cur.State == publication.Published {
+		ref, err := manifestv2.RecordRef(cur)
+		require.NoError(t, err)
+		parent, err := manifestv2.Fetch(context.Background(), f.store, ref)
+		require.NoError(t, err)
+		for _, file := range parent.Files {
+			listed[file.Key] = true
 		}
-		_, err := publication.Publish(ctx, publication.SQLTx(tx), f.tables, cur, publication.Next{
-			Kind: m.Kind, Token: m.Token, ManifestKey: f.layout.ManifestKey(m.SchemaID, m.Epoch, m.Generation, m.Token),
-			ManifestSHA256: manifestv2.Digest(raws[0]), Lineage: m.Lineage, StagedAt: now, StagingBudget: time.Minute,
-		})
-		return err
-	})
+	}
+	var entries []Entry
+	for _, file := range m.Files {
+		if listed[file.Key] {
+			continue
+		}
+		raw, err := f.store.Get(context.Background(), file.Key)
+		require.NoError(t, err)
+		var copies []rowCopy
+		require.NoError(t, json.Unmarshal(raw, &copies))
+		for _, c := range copies {
+			entries = append(entries, Entry{RowID: c.Row, Version: c.Version})
+		}
+	}
+	return entries
+}
+
+// markedOnce checks that each of entries, a row and its version, is
+// change_log's only entry of its row, flushed at flushedAt.
+func (f *fixture) markedOnce(t *testing.T, entries map[uuid.UUID]int64, flushedAt int64) {
+	t.Helper()
+	for row, version := range entries {
+		rows, err := f.db.Query(fmt.Sprintf("SELECT changed_at, flushed_at FROM %s WHERE schema_id = $1 AND row_id = $2", f.changeLog), schemaID, row)
+		require.NoError(t, err)
+		var got [][2]int64
+		for rows.Next() {
+			var e [2]int64
+			require.NoError(t, rows.Scan(&e[0], &e[1]))
+			got = append(got, e)
+		}
+		require.NoError(t, rows.Err())
+		require.NoError(t, rows.Close())
+		require.Equal(t, [][2]int64{{version, flushedAt}}, got, "row %s is marked once, by the generation that committed", row)
+	}
 }
 
 // forget collects generation as a collector would with a zero grace.

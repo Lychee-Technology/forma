@@ -76,10 +76,14 @@ const markPlainSQL = `UPDATE %s cl SET flushed_at = $1
 
 // mark marks entries of schemaID flushed at flushedAt on tx, in the
 // engine's form, and answers how many it marked. It is one statement: a
-// caller bounds entries to the engine's transaction budget.
+// caller bounds entries to the engine's transaction budget, and to
+// MaxMarkEntries, which New holds a PostgreSQL batch to.
 func (w *Writer) mark(ctx context.Context, tx *sql.Tx, schemaID int16, entries []Entry, flushedAt int64) (int, error) {
 	if len(entries) == 0 {
 		return 0, nil
+	}
+	if len(entries) > MaxMarkEntries {
+		return 0, fmt.Errorf("mark %d entries of schema %d in one statement: at most %d (MaxMarkEntries) fit its bind parameters", len(entries), schemaID, MaxMarkEntries)
 	}
 	values, args := listedValues(entries, flushedAt, schemaID)
 	query := fmt.Sprintf(markSkipLockedSQL, values, w.changeLog, w.changeLog)

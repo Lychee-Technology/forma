@@ -31,13 +31,16 @@ type rowCopy struct {
 
 // stager is a DeltaStager and a BaseExporter over the fixture: it reads the
 // rows' current entity_main state, as an export does, and writes their
-// copies once to the key. during runs after the read and before the write,
-// to change rows under an export in flight; fail fails the n-th call.
+// copies once to the key. beforeRead runs before that read, and for an init
+// after its snapshot read the rows' versions; during runs after the read and
+// before the write. Both change rows under an export in flight. fail fails
+// the n-th call.
 type stager struct {
-	f      *fixture
-	during func(ctx context.Context, rows []uuid.UUID) error
-	fail   func(call int) error
-	calls  int
+	f          *fixture
+	beforeRead func(ctx context.Context, rows []uuid.UUID) error
+	during     func(ctx context.Context, rows []uuid.UUID) error
+	fail       func(call int) error
+	calls      int
 }
 
 func (s *stager) StageDelta(ctx context.Context, req DeltaRequest) ([]manifestv2.File, error) {
@@ -68,6 +71,11 @@ func (s *stager) write(ctx context.Context, q querier, key string, tier manifest
 	s.calls++
 	if s.fail != nil {
 		if err := s.fail(s.calls); err != nil {
+			return manifestv2.File{}, err
+		}
+	}
+	if s.beforeRead != nil {
+		if err := s.beforeRead(ctx, rows); err != nil {
 			return manifestv2.File{}, err
 		}
 	}

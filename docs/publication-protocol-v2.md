@@ -378,7 +378,10 @@ earlier epoch misses. `TestResetFencesEveryWriterOfTheOldEpoch`
 pins this.
 
 **Commit outcome unknown.** When `COMMIT` fails without an answer, the writer calls
-`Resolve(cur, next)` in a new transaction, at any time afterwards. `Resolve` reads the
+`Resolve(cur, next)` in a new transaction, at any time afterwards. A `FATAL` or `PANIC`
+answer counts as none, whatever its SQLSTATE: the session ended, and a pooler answers so
+for a backend it lost after it forwarded the `COMMIT`. Only an `ERROR` is the server's
+refusal, a `40001` sent again with the same token. `Resolve` reads the
 record and the history row of the attempt's number in one statement, so one snapshot
 answers both:
 
@@ -391,7 +394,10 @@ answers both:
 - `NotCommitted`: the record still carries the attempt's epoch, generation and token, so
   nothing committed from that expectation. The writer sends the *same* publication
   again, with the same expectation and token. If the lost commit lands first, the resend
-  loses the compare-and-set and `Resolve` then answers `Committed`. On PostgreSQL the
+  loses the compare-and-set, or fails with `40001` when the commit landed after its
+  snapshot, and the writer asks `Resolve` again, which then answers `Committed`. It asks on
+  every miss or `40001` of a staging whose commit went unanswered, the last allowed
+  transaction's too, so a commit that landed never reads as attempts exhausted. On PostgreSQL the
   resend waits on the original's row lock, so the two never both commit. On DSQL the
   conflict check covers it. A resend refused with `ErrStagingExpired` abandons its
   staging, and the orphan rule reclaims it.
@@ -766,10 +772,13 @@ the one its row names:
   `COMMIT`, and an interrupted or partly staged export, leave the record, the history and
   `change_log` as they were.
 - `TestFlushResolvesACommitWithoutAnAnswer`, `TestInitResolvesACommitWithoutAnAnswer`,
-  `TestFlushAbandonsAnOutcomeItCannotRecover`: `Committed`, `NotCommitted` (the same token
-  sent again, no second manifest), a lost `COMMIT` that lands after its resend began (the
-  resend's miss goes back to `Resolve`, never to a rebase) and `Unknown`, and a handoff chunk
-  whose answer was lost.
+  `TestFlushResolvesACommitWhoseSessionEnded`, `TestFlushAbandonsAnOutcomeItCannotRecover`:
+  `Committed`, `NotCommitted` (the same token sent again, no second manifest), a `COMMIT`
+  that landed and was answered with a `FATAL` error whatever its code, a lost `COMMIT` that
+  lands, with its marks, before its resend's snapshot or after it (the resend's miss or
+  `40001` goes back to `Resolve`, never to a rebase or exhaustion, even on the last allowed
+  transaction) and `Unknown`, and a handoff chunk whose answer was lost, whose entries the
+  report counts as unconfirmed rather than marked.
 - `TestFlushResendsASerializationFailureWithTheSameToken`,
   `TestFlushResendsAfterThePublishDeadline`, `TestFlushAbandonsAnExpiredStaging`: `40001`,
   `T_pub` and `W`.
@@ -778,10 +787,14 @@ the one its row names:
   `TestWritersStagedBeforeADropNeverCommit`: the rebase table and epoch fencing, with real
   racing transactions.
 - `TestFlushGenerationSize`: ten generations of 1,000 entries for a 10,000-entry DSQL batch.
+  `TestNewBoundsAPostgreSQLBatchToOneMark`, `TestMarkBindsMaxMarkEntries`: a PostgreSQL batch
+  is marked in one statement, so it is held to 32,766 entries, what 65,535 bind parameters
+  allow.
 - `TestInitLeavesRowsThatMovedDirty`, `TestReinitStopsTheReplacedLineagesHandoff`,
   `TestInitRetryIsIdempotent`, `TestInitOfAnEmptySchemaPublishesAnEmptyGeneration`: the
-  export versions, a fully shadowed export that stays recorded, re-initialization, and an
-  empty export.
+  export versions (a row written between the snapshot's version read and the exporter's
+  content read is exported at the listed version and stays dirty at the new one), a fully
+  shadowed export that stays recorded, re-initialization, and an empty export.
 
 **Not verified. Assumed until #817 checks a real cluster:**
 

@@ -178,3 +178,32 @@ func (f *fixture) recreate(t *testing.T) publication.Record {
 	})
 	return f.record(t)
 }
+
+// TestMarkBindsMaxMarkEntries runs the PostgreSQL mark at its bound: a
+// statement of MaxMarkEntries entries binds on the server, and one entry
+// more is refused before it is sent, so a publication never stages a batch
+// it cannot mark with its pointer.
+func TestMarkBindsMaxMarkEntries(t *testing.T) {
+	f := newFixture(t)
+	if f.engine != forma.EnginePostgreSQL {
+		t.Skip("an Aurora DSQL generation marks at most DSQLGenerationLimit entries")
+	}
+	w := f.writer(t, func(c *Config) { c.BatchSize = MaxMarkEntries })
+	entries := make([]Entry, MaxMarkEntries+1)
+	for i := range entries {
+		entries[i] = Entry{RowID: uuid.New(), Version: 1000}
+	}
+	ctx := context.Background()
+	f.inTx(t, func(tx *sql.Tx) error {
+		n, err := w.mark(ctx, tx, schemaID, entries[:MaxMarkEntries], 1)
+		if err == nil && n != 0 {
+			err = fmt.Errorf("marked %d entries change_log does not hold", n)
+		}
+		return err
+	})
+	tx, err := f.db.Begin()
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	_, err = w.mark(ctx, tx, schemaID, entries, 1)
+	require.ErrorContains(t, err, "at most 32766 (MaxMarkEntries)")
+}

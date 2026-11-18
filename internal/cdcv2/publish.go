@@ -34,9 +34,12 @@ type pub struct {
 	// resends and rebases count the transactions sent again with the same
 	// token, and the restagings onto a new head.
 	resends, rebases int
-	// uncertain says a COMMIT of this staging went without an answer. Its
-	// resend may then lose the compare-and-set to that very COMMIT landing
-	// late, so a miss is resolved before it is taken for a rival's.
+	// uncertain says a COMMIT of this staging went without an answer. That
+	// COMMIT may still land while the staging is sent again: before the
+	// resend's snapshot, and the resend's compare-and-set misses
+	// (ErrRecordMoved), or after it, and the resend fails with 40001 on a
+	// snapshot engine. So while it is set, a resend's miss or conflict is
+	// resolved before it is taken for a rival's or sent once more.
 	uncertain bool
 }
 
@@ -69,7 +72,7 @@ func (w *Writer) publish(ctx context.Context, p *pub) (publication.Record, error
 		}
 		last = err
 		v := w.classify(ctx, err)
-		if v == resolve || (v == rebase && p.uncertain) {
+		if v == resolve || (p.uncertain && (v == rebase || v == resend)) {
 			p.uncertain = true
 			v, out, err = w.resolve(ctx, p, err)
 			last = err
@@ -140,18 +143,24 @@ func (w *Writer) commit(ctx context.Context, p *pub) (publication.Record, error)
 // classify answers what a failed transaction of a publication calls for.
 // Only a COMMIT the server did not answer has an unknown outcome: every
 // failure before it rolled the transaction back, and a COMMIT the server
-// refused did not land.
+// refused did not land. A COMMIT is told refused by severity first, as
+// internal/storage_outcome.go's classifyCommitError does: an ERROR rejected
+// it and aborted the transaction, so its SQLSTATE decides (40001 is sent
+// again, anything else fails), while a FATAL or PANIC ended the session,
+// which a pooler also answers for a backend lost after it forwarded the
+// COMMIT. That proves nothing about the commit, whatever its code, so it is
+// resolved like a COMMIT without any answer.
 func (w *Writer) classify(ctx context.Context, err error) verdict {
 	var ce *commitError
 	if errors.As(err, &ce) {
-		if serializationFailure(err) {
+		var pgErr *pgconn.PgError
+		switch {
+		case !errors.As(err, &pgErr), sessionEnded(pgErr):
+			return resolve
+		case pgErr.Code == "40001":
 			return resend
 		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) {
-			return fail
-		}
-		return resolve
+		return fail
 	}
 	switch {
 	case errors.Is(err, ErrCommitAnswerLost):
@@ -237,6 +246,18 @@ func (w *Writer) refused(p *pub, err error) error {
 func serializationFailure(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "40001"
+}
+
+// sessionEnded reports whether a server error ended the session rather than
+// only the statement or the transaction. It reads the unlocalized severity, a
+// protocol enumeration rather than message text, and falls back to the
+// localized one for a server that predates the field (PostgreSQL < 9.6).
+func sessionEnded(pgErr *pgconn.PgError) bool {
+	severity := pgErr.SeverityUnlocalized
+	if severity == "" {
+		severity = pgErr.Severity
+	}
+	return severity == "FATAL" || severity == "PANIC"
 }
 
 func pause(ctx context.Context, d time.Duration) error {

@@ -37,9 +37,17 @@ type InitReport struct {
 	// Entries the exported rows that had an unflushed entry, the handoff's
 	// candidates.
 	Rows, Files, Entries int
-	// Marked counts the entries the handoff marked. One whose row moved past
-	// its listed version since the export stays dirty.
+	// Marked counts the entries the handoff's answered transactions marked.
+	// One whose row moved past its listed version since the export stays
+	// dirty.
 	Marked int
+	// Unconfirmed counts the entries of handoff chunks a COMMIT without an
+	// answer may have marked: the chunk was sent again, and the answered
+	// transaction did not mark them, because that COMMIT had landed, a
+	// flush had marked them, or their rows had moved. They are flushed or
+	// dirty as change_log says, and Marked does not count them: the handoff
+	// marked at least Marked entries and at most Marked + Unconfirmed.
+	Unconfirmed int
 	// HandoffStopped says the handoff stopped at ErrLineageReplaced: a later
 	// cdc-init or a drop replaced the lineage, and the entries it had not
 	// marked stay dirty for the next flush.
@@ -103,8 +111,7 @@ func (w *Writer) Init(ctx context.Context, schemaID int16, pin int64, exp BaseEx
 	if err != nil {
 		return rep, fmt.Errorf("init: %w", err)
 	}
-	rep.Marked, rep.HandoffStopped, err = w.handoff(ctx, rep.Generation, entries)
-	if err != nil {
+	if err := w.handoff(ctx, rep.Generation, entries, &rep); err != nil {
 		return rep, fmt.Errorf("init schema %d generation %d: %w", schemaID, rep.Generation.Generation, err)
 	}
 	return rep, nil

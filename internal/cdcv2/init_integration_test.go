@@ -46,6 +46,7 @@ func TestInitPublishesTheExportAndHandsItOff(t *testing.T) {
 	require.Equal(t, 3, rep.Files)
 	require.Equal(t, len(dirty), rep.Entries)
 	require.Equal(t, len(dirty), rep.Marked)
+	require.Zero(t, rep.Unconfirmed)
 	require.False(t, rep.HandoffStopped)
 	require.Equal(t, int32(3), handoffs.Load(), "chunks of at most HandoffChunk entries")
 
@@ -83,10 +84,12 @@ func TestInitOfAnEmptySchemaPublishesAnEmptyGeneration(t *testing.T) {
 	f.checkInvariants(t)
 }
 
-// TestInitLeavesRowsThatMovedDirty pins the export versions: a row written
-// after its snapshot read it moved past its listed version, so the handoff
-// skips it and it stays dirty, and an export every row of which moved is
-// still a recorded init generation.
+// TestInitLeavesRowsThatMovedDirty pins the export snapshot: a row written
+// after the snapshot read its listed version, and before the exporter read
+// its content, is exported at the listed version from that snapshot, not at
+// the new one. It moved past its listed version, so the handoff skips it and
+// it stays dirty at the new version, and an export every row of which moved
+// is still a recorded init generation.
 func TestInitLeavesRowsThatMovedDirty(t *testing.T) {
 	for _, moved := range []int{1, 4} {
 		t.Run(fmt.Sprintf("%d of 4 moved", moved), func(t *testing.T) {
@@ -94,7 +97,7 @@ func TestInitLeavesRowsThatMovedDirty(t *testing.T) {
 			ctx := context.Background()
 			f.register(t)
 			rows := f.insert(t, 4)
-			st := &stager{f: f, during: func(context.Context, []uuid.UUID) error {
+			st := &stager{f: f, beforeRead: func(context.Context, []uuid.UUID) error {
 				for i, row := range rows[:moved] {
 					f.put(t, row, int64(3000+i), false)
 				}
@@ -104,10 +107,12 @@ func TestInitLeavesRowsThatMovedDirty(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, 4, rep.Entries)
 			require.Equal(t, 4-moved, rep.Marked)
-			require.Len(t, f.dirty(t), moved)
-			for _, row := range rows[:moved] {
-				require.Equal(t, int64(1000), f.held(t)[row].Version, "the export read the row in its snapshot")
+			want := map[uuid.UUID]int64{}
+			for i, row := range rows[:moved] {
+				want[row] = int64(3000 + i)
+				require.Equal(t, int64(1000), f.held(t)[row].Version, "the export read the row's content in the snapshot that listed its version")
 			}
+			require.Equal(t, want, f.dirty(t), "a moved row stays dirty at its new version")
 			require.Len(t, f.history(t), 1)
 			require.Equal(t, publication.KindInit, f.history(t)[0].Kind, "the init generation stays recorded")
 			f.checkInvariants(t)
@@ -166,15 +171,18 @@ func TestInitFaultLeavesNothingVisible(t *testing.T) {
 }
 
 // TestInitResolvesACommitWithoutAnAnswer: a lost answer of a COMMIT that
-// landed is Committed, and the handoff runs; one of a COMMIT that did not
-// land is resent with the same token. A handoff chunk whose answer was lost
-// is sent again and marks nothing twice.
+// landed is Committed, and the handoff runs, as it does when the COMMIT
+// landed and the session ended with a FATAL error, whatever its code; one of
+// a COMMIT that did not land is resent with the same token. A handoff chunk
+// whose answer was lost is sent again and marks nothing twice.
 func TestInitResolvesACommitWithoutAnAnswer(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		fp   func(context.Context, Point) error
 	}{
 		{"commit landed", once(PointCommitAnswer, failWith(errors.New("connection reset")))},
+		{"commit landed, the session ended with 40001", once(PointCommitAnswer, failWith(sessionEndedWith("40001")))},
+		{"commit landed, the session ended", once(PointCommitAnswer, failWith(sessionEndedWith("57P01")))},
 		{"commit lost", once(PointCommit, failWith(ErrCommitAnswerLost))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -184,7 +192,8 @@ func TestInitResolvesACommitWithoutAnAnswer(t *testing.T) {
 			entries := f.entries(t)
 			rep, err := f.writer(t, func(c *Config) { c.Failpoint = tc.fp }).Init(ctx, schemaID, 1, &stager{f: f})
 			require.NoError(t, err)
-			require.Equal(t, 2, rep.Marked)
+			require.Equal(t, 2, rep.Marked, "the handoff runs")
+			require.Zero(t, rep.Unconfirmed)
 			require.Equal(t, rep.Generation.Token, f.record(t).Token)
 			require.Len(t, f.history(t), 2)
 			require.Empty(t, f.dirty(t))
@@ -193,20 +202,34 @@ func TestInitResolvesACommitWithoutAnAnswer(t *testing.T) {
 		})
 	}
 
-	t.Run("the lost commit lands after its resend began", func(t *testing.T) {
-		f := newFixture(t)
-		published(t, f)
-		rep, err := f.writer(t, func(c *Config) { c.Failpoint = f.lateCommit(t) }).Init(context.Background(), schemaID, 1, &stager{f: f})
-		require.NoError(t, err, "an init never rebases over an init, so taking its own commit for a rival's would abandon it")
-		require.Equal(t, 2, rep.Marked, "the handoff runs")
-		require.Equal(t, rep.Generation.Token, f.record(t).Token)
-		require.Len(t, f.history(t), 2)
-		f.checkInvariants(t)
-	})
+	for _, late := range []struct {
+		name   string
+		at     Point
+		answer error
+	}{
+		{"the lost commit lands after its resend began", PointBegin, nil},
+		{"the lost commit lands after the final resend's snapshot", PointPublish, serializationConflict},
+	} {
+		t.Run(late.name, func(t *testing.T) {
+			f := newFixture(t)
+			published(t, f)
+			w := f.writer(t, func(c *Config) { c.Attempts = 2; c.Failpoint = f.lateCommit(t, late.at, late.answer) })
+			rep, err := w.Init(context.Background(), schemaID, 1, &stager{f: f})
+			require.NoError(t, err, "an init never rebases over an init, and its final resend's failure was its own commit landing")
+			require.Equal(t, 1, rep.Resends)
+			require.Zero(t, rep.Rebases)
+			require.Equal(t, 2, rep.Marked, "the handoff runs")
+			require.Equal(t, rep.Generation.Token, f.record(t).Token)
+			require.Len(t, f.history(t), 2)
+			require.Empty(t, f.dirty(t))
+			f.checkInvariants(t)
+		})
+	}
 
 	t.Run("handoff answer lost", func(t *testing.T) {
 		f := newFixture(t)
 		published(t, f)
+		entries := f.entries(t)
 		var answers atomic.Int32
 		fp := func(_ context.Context, p Point) error {
 			if p == PointCommitAnswer && answers.Add(1) == 2 { // the first handoff chunk
@@ -216,8 +239,14 @@ func TestInitResolvesACommitWithoutAnAnswer(t *testing.T) {
 		}
 		rep, err := f.writer(t, func(c *Config) { c.Failpoint = fp }).Init(context.Background(), schemaID, 1, &stager{f: f})
 		require.NoError(t, err)
-		require.Zero(t, rep.Marked, "the resent chunk found its entries marked")
+		// The report: no answered transaction marked an entry, and the two the
+		// lost COMMIT may have marked are reported as unconfirmed.
+		require.Zero(t, rep.Marked, "the answered resend found its entries marked")
+		require.Equal(t, 2, rep.Unconfirmed)
+		require.Equal(t, 2, rep.Entries)
+		// The database: the lost COMMIT marked both, once.
 		require.Empty(t, f.dirty(t))
+		require.Equal(t, entries, f.entries(t))
 		f.checkInvariants(t)
 	})
 }

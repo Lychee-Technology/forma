@@ -12,44 +12,55 @@ import (
 
 // handoff marks the init generation's exported entries at their export
 // versions, in transactions of at most HandoffChunk entries, each starting
-// with HoldLineage on gen's epoch and lineage. It answers how many it marked
-// and whether ErrLineageReplaced stopped it. Marks are exact against
+// with HoldLineage on gen's epoch and lineage, and records in rep what it
+// marked and whether ErrLineageReplaced stopped it. Marks are exact against
 // flushed_at = 0 and the version, so a chunk sent again, after a 40001 or a
 // COMMIT without an answer, marks nothing twice.
-func (w *Writer) handoff(ctx context.Context, gen publication.Record, entries []Entry) (int, bool, error) {
-	marked := 0
+func (w *Writer) handoff(ctx context.Context, gen publication.Record, entries []Entry, rep *InitReport) error {
 	for chunk := range slices.Chunk(entries, HandoffChunk) {
-		n, err := w.handoffChunk(ctx, gen, chunk)
+		n, lost, err := w.handoffChunk(ctx, gen, chunk)
+		if lost {
+			// A COMMIT of this chunk went without an answer and may have
+			// landed: what the answered transaction did not mark, that
+			// COMMIT may have, and the report cannot say which.
+			rep.Unconfirmed += len(chunk) - n
+		}
 		if errors.Is(err, publication.ErrLineageReplaced) {
-			return marked, true, nil
+			rep.HandoffStopped = true
+			return nil
 		}
 		if err != nil {
-			return marked, false, fmt.Errorf("hand off %d of %d exported entries after %d marked: %w", len(chunk), len(entries), marked, err)
+			return fmt.Errorf("hand off %d of %d exported entries after %d marked: %w", len(chunk), len(entries), rep.Marked, err)
 		}
-		marked += n
+		rep.Marked += n
 	}
-	return marked, false, nil
+	return nil
 }
 
 // handoffChunk sends one handoff transaction until it commits, in at most
 // Config.Attempts transactions. A 40001, the T_pub deadline or a COMMIT
-// without an answer sends it again.
-func (w *Writer) handoffChunk(ctx context.Context, gen publication.Record, chunk []Entry) (int, error) {
+// without an answer sends it again. It answers how many entries the
+// transaction that committed marked, and lost, whether a COMMIT of the chunk
+// went without an answer before, which may have marked the rest.
+func (w *Writer) handoffChunk(ctx context.Context, gen publication.Record, chunk []Entry) (int, bool, error) {
 	var last error
+	lost := false
 	for attempt := 1; attempt <= w.cfg.Attempts; attempt++ {
 		n, err := w.handoffOnce(ctx, gen, chunk)
 		if err == nil || errors.Is(err, publication.ErrLineageReplaced) {
-			return n, err
+			return n, lost, err
 		}
 		last = err
-		if v := w.classify(ctx, err); v != resend && v != resolve {
-			return 0, err
+		v := w.classify(ctx, err)
+		if v != resend && v != resolve {
+			return 0, lost, err
 		}
+		lost = lost || v == resolve
 		if err := pause(ctx, time.Duration(attempt)*resendBackoff); err != nil {
-			return 0, err
+			return 0, lost, err
 		}
 	}
-	return 0, fmt.Errorf("after %d transactions: %w: %w", w.cfg.Attempts, ErrAttemptsExhausted, last)
+	return 0, lost, fmt.Errorf("after %d transactions: %w: %w", w.cfg.Attempts, ErrAttemptsExhausted, last)
 }
 
 // handoffOnce sends one handoff transaction: HoldLineage first, then the

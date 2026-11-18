@@ -58,6 +58,15 @@ const (
 	HandoffChunk        = 1000
 )
 
+// MaxMarkEntries is the most entries one mark statement binds: it binds
+// flushed_at and the schema id, then a row id and a version per entry, and a
+// PostgreSQL statement takes at most 65,535 bind parameters. A PostgreSQL
+// flush generation is the whole batch, marked in its publication's one
+// statement, so New refuses a larger PostgreSQL BatchSize: such a batch would
+// stage, then roll back at every attempt. A DSQL generation and a handoff
+// chunk stay far below it.
+const MaxMarkEntries = (65535 - 2) / 2
+
 // ErrAbandoned reports a publication the writer gave up on as the protocol
 // says it must: its staging expired, the record moved in a way it may not
 // rebase over (a cdc-init or another epoch for a flush, a flush for an init),
@@ -135,13 +144,17 @@ func New(cfg Config) (*Writer, error) {
 	cfg.Restarts = orDefault(cfg.Restarts, DefaultRestarts)
 	cfg.BatchSize = orDefault(cfg.BatchSize, DefaultBatchSize)
 	cfg.InitBatchSize = orDefault(cfg.InitBatchSize, DefaultInitBatchSize)
-	return &Writer{
+	w := &Writer{
 		cfg:       cfg,
 		tables:    publication.TablesFor(cfg.EntityMain),
 		changeLog: sqlutil.SanitizeIdentifier(cfg.ChangeLog),
 		main:      sqlutil.SanitizeIdentifier(cfg.EntityMain),
 		dsql:      cfg.Engine.Resolved() == forma.EngineAuroraDSQL,
-	}, nil
+	}
+	if limit := w.generationLimit(); limit > MaxMarkEntries {
+		return nil, fmt.Errorf("a V2 writer on PostgreSQL marks a flush batch in one statement, so BatchSize %d must be at most %d (MaxMarkEntries)", limit, MaxMarkEntries)
+	}
+	return w, nil
 }
 
 func orDefault[T int | time.Duration](v, def T) T {
