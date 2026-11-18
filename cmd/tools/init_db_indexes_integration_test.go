@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/declaredindex"
+	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/schemalease"
 	"github.com/lychee-technology/forma/internal/schemaledger"
@@ -103,7 +104,9 @@ func newInitDBTarget(t *testing.T) *initDBTarget {
 			uniquekey.KeyTable(tg.opts.entityMain), uniquekey.StateTable(tg.opts.entityMain), rowguard.Table(tg.opts.entityMain),
 			schemalease.Table(tg.opts.entityMain),
 			sqlutil.SuffixedIdentifier(tg.opts.schemaTable, schemaledger.GenerationTableSuffix),
-			sqlutil.SuffixedIdentifier(tg.opts.schemaTable, schemaledger.AttributeTableSuffix)} {
+			sqlutil.SuffixedIdentifier(tg.opts.schemaTable, schemaledger.AttributeTableSuffix),
+			sqlutil.SuffixedIdentifier(tg.opts.entityMain, publication.RecordTableSuffix),
+			sqlutil.SuffixedIdentifier(tg.opts.entityMain, publication.GenerationTableSuffix)} {
 			if _, err := pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+quoteIdentifier(table)); err != nil {
 				t.Logf("drop %s: %v", table, err)
 			}

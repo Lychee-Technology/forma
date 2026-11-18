@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/schemalease"
 	"github.com/lychee-technology/forma/internal/schemaledger"
@@ -52,6 +53,7 @@ func (tg *initDBTarget) collatableColumns(t *testing.T) []catalogColumn {
 // wantTextColumns is every text column init-db creates, by table.
 func (tg *initDBTarget) wantTextColumns() map[string][]string {
 	ledger := schemaledger.TablesFor(tg.opts.schemaTable)
+	pub := publication.TablesFor(tg.opts.entityMain)
 	return map[string][]string{
 		quoteIdentifier(tg.opts.schemaTable): {"schema_name"},
 		quoteIdentifier(tg.opts.entityMain): {"text_01", "text_02", "text_03", "text_04", "text_05", "text_06", "text_07",
@@ -61,6 +63,8 @@ func (tg *initDBTarget) wantTextColumns() map[string][]string {
 		quoteIdentifier(uniquekey.StateTable(tg.opts.entityMain)): {"attributes_hash", "storage_hash"},
 		ledger.Generation: {"content_hash", "recorded_by", "warnings"},
 		ledger.Attribute:  {"attr_name", "value_type", "items_type", "column_name", "encoding"},
+		pub.Record:        {"state", "manifest_key", "manifest_sha256"},
+		pub.Generation:    {"kind", "manifest_key", "manifest_sha256"},
 	}
 }
 

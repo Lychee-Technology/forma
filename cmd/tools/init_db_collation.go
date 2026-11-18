@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/schemalease"
 	"github.com/lychee-technology/forma/internal/schemaledger"
@@ -13,24 +14,44 @@ import (
 	"github.com/lychee-technology/forma/internal/uniquekey"
 )
 
-// ownedTables names every table init-db ensures, as SQL spells it: the core
-// tables, the unique-key, row-guard and schema-lease tables, and the
-// generation ledger. Each is a table Forma owns, so each falls under the text
-// collation contract (#816), including those that hold no text today.
-func ownedTables(opts initDBOptions) []string {
+// ownedTable is one table init-db ensures, as SQL spells it, the role an
+// operator knows it by, and the flag whose value names it or the table it is
+// derived from.
+type ownedTable struct {
+	role, flag, sql string
+}
+
+// ownedTableRoles names every table init-db ensures: the core tables, the
+// unique-key, row-guard and schema-lease tables, the generation ledger and
+// the publication tables. Each is a table Forma owns, so each falls under the
+// text collation contract (#816), including those that hold no text today.
+func ownedTableRoles(opts initDBOptions) []ownedTable {
 	ledger := schemaledger.TablesFor(opts.schemaTable)
-	return []string{
-		quoteIdentifier(opts.schemaTable),
-		quoteIdentifier(opts.entityMain),
-		quoteIdentifier(opts.eavTable),
-		quoteIdentifier(opts.changeLog),
-		quoteIdentifier(uniquekey.KeyTable(opts.entityMain)),
-		quoteIdentifier(uniquekey.StateTable(opts.entityMain)),
-		quoteIdentifier(rowguard.Table(opts.entityMain)),
-		quoteIdentifier(schemalease.Table(opts.entityMain)),
-		ledger.Generation,
-		ledger.Attribute,
+	pub := publication.TablesFor(opts.entityMain)
+	return []ownedTable{
+		{"the schema registry table", "--schema-table", quoteIdentifier(opts.schemaTable)},
+		{"the entity main table", "--entity-main-table", quoteIdentifier(opts.entityMain)},
+		{"the EAV table", "--eav-table", quoteIdentifier(opts.eavTable)},
+		{"the change log table", "--change-log-table", quoteIdentifier(opts.changeLog)},
+		{"the unique-key table", "--entity-main-table", quoteIdentifier(uniquekey.KeyTable(opts.entityMain))},
+		{"the unique-key state table", "--entity-main-table", quoteIdentifier(uniquekey.StateTable(opts.entityMain))},
+		{"the row-guard table", "--entity-main-table", quoteIdentifier(rowguard.Table(opts.entityMain))},
+		{"the schema-lease table", "--entity-main-table", quoteIdentifier(schemalease.Table(opts.entityMain))},
+		{"the generation ledger table", "--schema-table", ledger.Generation},
+		{"the attribute ledger table", "--schema-table", ledger.Attribute},
+		{publicationRecordRole, "--entity-main-table", pub.Record},
+		{publicationGenerationRole, "--entity-main-table", pub.Generation},
 	}
+}
+
+// ownedTables is ownedTableRoles' tables alone, as SQL spells them.
+func ownedTables(opts initDBOptions) []string {
+	roles := ownedTableRoles(opts)
+	tables := make([]string, 0, len(roles))
+	for _, table := range roles {
+		tables = append(tables, table.sql)
+	}
+	return tables
 }
 
 // requireTextCollation reads the catalog of every table init-db just ensured

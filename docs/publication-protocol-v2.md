@@ -775,21 +775,39 @@ the V1 code it replaces:
 
 | Area | Moves to | Child |
 | --- | --- | --- |
-| `init-db` registration, table DDL, the upgrade cutover | `Statements`. `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock | #889 (writer) |
-| `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path | #889 (writer) |
-| `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage` | #889 (writer), closing #760 |
+| `init-db` table DDL | `Statements` for the configured `entity_main`, in init-db's table transaction. `init-db` creates the tables on PostgreSQL. On Aurora DSQL, #895 covers statement validity only: `make lint-dsql` and the MiniStack strict lane accept the DSQL rendering, but `init-db` cannot execute there, because it has no engine selection and sends its DDL in one transaction, which DSQL rejects. An executable DSQL `init-db` (one DDL statement per transaction, strict-lane fresh init, upgrade and rerun) is #690's. The tables only: nothing inserts, reads or updates them | #895 (DSQL execution: #690) |
+| `init-db` registration, the upgrade cutover | `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock | #896 (writers and reader) |
+| `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path | #896 (writers and reader) |
+| `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage` | #896 (writers and reader), closing #760 |
 | compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891 | #890 (compaction) |
-| federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. `docs/federated-query/design.md` §6.1 is rewritten here | #759 (reader) |
+| federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. `docs/federated-query/design.md` §6.1 is rewritten here | #896 (writers and reader), carrying #759 |
 | `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire` and `PlanCollection` in the collection order above. Repair becomes re-init. Verification walks retained generations | #891 (GC) |
 | fault matrix, operator docs, EPIC evidence | crash injection at every staging, publish and commit boundary; a guard that fails if `QuerySource.Fallback`, the level-3 glob or a glob-only flag returns | #892 |
 | live Aurora DSQL behaviour | the assumptions in [Verification](#verification) | #893, under #817 |
 
-Sequencing: #888, then #889, then #890 and #759 (both use the publication interface
-#889 lands), then #891, then #892.
+Sequencing: #888, then #895, then #896, then #890 (it uses the publication interface
+#896 lands), then #891, then #892. #889's writer scope is split in two because the
+writers cannot land on `main` ahead of the reader. A V2 flush stages its objects under
+`e{epoch}/`, stops appending to `manifest.json` and marks its rows flushed in the
+transaction of its `Publish`, and today's reader reads neither the record nor `e{epoch}/`,
+so every row such a flush marks would disappear from query answers. Registration and the
+cutover cannot go first either: a record written while V1 `cdc-flush` still runs goes
+stale, because V1 keeps flushing into a schema whose record says `UNPUBLISHED` and the
+cutover only inserts records for schemas that have none, and the V2 reader would then
+answer that schema from the hot leg alone. So #896 moves the writers and the reader in one
+change, and #895 lands ahead of it only the table DDL, which nothing reads or writes. Until
+#896, two checks hold that line, and neither alone proves it. A static test in
+`internal/publication` checks imports and literals: outside the package, only init-db's
+DDL step and its collation check may import it, only for `Statements`, `TablesFor` and
+the table-name suffixes, never through a dot import, and no production file may spell a
+publication table name in a string literal. It does not inspect the SQL those files
+build, so an allowlisted file could still assemble a record statement from a name
+`TablesFor` returns. What shows that init-db sends none is the traced SQL of its fresh,
+upgrade and rerun runs in `TestInitDBCreatesThePublicationTablesOnceAndWritesNoRecord`.
 
-**#759 is the reader child.** Its original evidence, a zero-match or partial-match glob
-that returns 200 with silently incomplete data, is what the reader cutover must close. #759
-deletes `QuerySource.Fallback`, the level-3 glob discovery and the config and read branches
+**#759 is the reader scope, and lands in #896.** Its original evidence, a zero-match or
+partial-match glob that returns 200 with silently incomplete data, is what the reader
+cutover must close. #759 deletes `QuerySource.Fallback`, the level-3 glob discovery and the config and read branches
 that reach them, with no compatibility flag and no read-path repair. A `PUBLISHED` record
 whose manifest is missing, fails the checks in step 4 of the reader protocol, or lists a
 missing object fails the read as a read-path consistency error. #759 gives that error its
@@ -798,12 +816,12 @@ charged to the DuckDB breaker. `UNPUBLISHED` answers from PostgreSQL without lis
 #720's never-flushed behaviour holds. #759's tests cover its original zero-match and
 partial-match loss alongside #720.
 
-**#760 closes with #889.** #760's scope, the durable initialization record `design.md` asks
-for, is the `init` generation and its history row, which #889 writes when it moves
-`cdc-init` onto `Publish`. No second history table or per-query probe is added for it. #889
+**#760 closes with #896.** #760's scope, the durable initialization record `design.md` asks
+for, is the `init` generation and its history row, which #896 writes when it moves
+`cdc-init` onto `Publish`. No second history table or per-query probe is added for it. #896
 carries #760's init-specific regressions: idempotent retry, interrupted export, partial
 staging, a lost pointer CAS, an unknown commit outcome, and re-onboarding an already
-published schema. Its PR closes #760 alongside #889.
+published schema. Its PR closes #760 alongside #896.
 
 ## Open questions
 
