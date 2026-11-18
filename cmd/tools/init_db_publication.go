@@ -35,3 +35,38 @@ func publicationDDL(opts initDBOptions) []tableDDL {
 		},
 	}
 }
+
+// The roles ownedTableRoles gives the publication tables.
+const (
+	publicationRecordRole     = "the publication record table"
+	publicationGenerationRole = "the publication generation table"
+)
+
+// requireDistinctPublicationTables refuses a configuration under which a
+// publication table's name, derived from --entity-main-table, is also the
+// name of another table init-db ensures. CREATE TABLE IF NOT EXISTS would
+// skip the occupied name without an error, and init-db would report the
+// publication table ready while the relation under its name has another
+// table's columns. It runs before init-db connects, so the refusal changes
+// nothing, and the remedy, renaming one of the two, is the operator's.
+func requireDistinctPublicationTables(opts initDBOptions) error {
+	roles := ownedTableRoles(opts)
+	for _, pub := range roles {
+		if pub.role != publicationRecordRole && pub.role != publicationGenerationRole {
+			continue
+		}
+		for _, other := range roles {
+			if other.role == pub.role || other.sql != pub.sql {
+				continue
+			}
+			remedy := "--entity-main-table"
+			if other.flag != remedy {
+				remedy += " or " + other.flag
+			}
+			return fmt.Errorf("%s is %s, derived from --entity-main-table %s, and also %s, which %s names: "+
+				"CREATE TABLE IF NOT EXISTS would skip it and leave that table in its place; change %s so the two differ",
+				pub.sql, pub.role, opts.entityMain, other.role, other.flag, remedy)
+		}
+	}
+	return nil
+}

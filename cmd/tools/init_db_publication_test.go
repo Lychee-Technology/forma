@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/lychee-technology/forma"
@@ -78,5 +79,54 @@ func TestPublicationDDLAnnouncements(t *testing.T) {
 		if ddl[i].announce != want[i].announce || ddl[i].failure != want[i].failure {
 			t.Errorf("statement %d announces %q, fails as %q; want %q, %q", i, ddl[i].announce, ddl[i].failure, want[i].announce, want[i].failure)
 		}
+	}
+}
+
+// TestRequireDistinctPublicationTables refuses each configured or derived
+// table a publication table's derived name could also be, naming the flags
+// that resolve it, and accepts the defaults (R1-F2 of #897's review).
+func TestRequireDistinctPublicationTables(t *testing.T) {
+	if err := requireDistinctPublicationTables(testInitDBOptions()); err != nil {
+		t.Fatalf("the default table names: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		set  func(*initDBOptions)
+		want []string
+	}{
+		"the change log is the record table": {
+			set: func(o *initDBOptions) { o.changeLog = "entity_main_publication" },
+			want: []string{`"entity_main_publication" is the publication record table, derived from --entity-main-table entity_main`,
+				"the change log table, which --change-log-table names", "change --entity-main-table or --change-log-table"},
+		},
+		"the EAV table is the generation table": {
+			set: func(o *initDBOptions) { o.eavTable = "entity_main_publication_generation" },
+			want: []string{`"entity_main_publication_generation" is the publication generation table`,
+				"the EAV table, which --eav-table names"},
+		},
+		"the registry's generation ledger is the generation table": {
+			set:  func(o *initDBOptions) { o.schemaTable = "entity_main_publication" },
+			want: []string{"the schema registry table, which --schema-table names"},
+		},
+		"a schema-qualified schema table": {
+			set: func(o *initDBOptions) {
+				o.entityMain = "app.entity_main"
+				o.schemaTable = "app.entity_main_publication"
+			},
+			want: []string{`"app"."entity_main_publication" is the publication record table`},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := testInitDBOptions()
+			tc.set(&opts)
+			err := requireDistinctPublicationTables(opts)
+			if err == nil {
+				t.Fatal("requireDistinctPublicationTables accepted a publication table name another table holds")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q lacks %q", err, want)
+				}
+			}
+		})
 	}
 }

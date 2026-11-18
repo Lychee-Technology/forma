@@ -109,6 +109,9 @@ func runInitDB(ctx context.Context, args []string) error {
 }
 
 func initDatabase(ctx context.Context, opts initDBOptions, dbConfig forma.DatabaseConfig) error {
+	if err := requireDistinctPublicationTables(opts); err != nil {
+		return fmt.Errorf("check the publication table names: %w", err)
+	}
 	pool, err := buildToolPostgresPool(ctx, dbConfig)
 	if err != nil {
 		return fmt.Errorf("create connection pool: %w", err)
