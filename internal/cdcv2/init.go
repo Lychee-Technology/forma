@@ -71,8 +71,9 @@ type InitReport struct {
 // nothing visible and returns ErrAbandoned; running Init again starts a fresh
 // export. A COMMIT of the publication that went without an answer is settled
 // before Init gives up: one that landed, however late, is taken as committed
-// and handed off. One the writer could not settle returns ErrUnresolved with
-// no handoff, and the exported entries stay dirty for the next flush.
+// and handed off. One the writer could not settle returns ErrUnresolved before
+// any handoff: its UnresolvedError keeps the exported entries, and ResumeInit
+// settles it later and, if the init committed, runs the handoff.
 func (w *Writer) Init(ctx context.Context, schemaID int16, pin int64, exp BaseExporter) (InitReport, error) {
 	var rep InitReport
 	cur, err := w.readRecord(ctx, schemaID, pin)
@@ -92,8 +93,9 @@ func (w *Writer) Init(ctx context.Context, schemaID int16, pin int64, exp BaseEx
 	}
 	lineage := uuid.New()
 	p := &pub{
-		kind: publication.KindInit,
-		cur:  cur,
+		kind:    publication.KindInit,
+		cur:     cur,
+		handoff: entries,
 		build: func(ctx context.Context, cur publication.Record) (publication.Next, error) {
 			h, err := manifestv2.Stage(cur, publication.KindInit, lineage, uuid.New())
 			if err != nil {

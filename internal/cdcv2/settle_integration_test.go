@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lychee-technology/forma/internal/manifestv2"
@@ -160,11 +161,124 @@ func TestFlushReportsAnOutcomeItCannotSettle(t *testing.T) {
 	require.True(t, errors.As(err, &unresolved))
 	require.Equal(t, before, unresolved.Cur)
 	require.ErrorIs(t, unresolved.Cause, ErrAttemptsExhausted)
+	require.Nil(t, unresolved.Handoff, "a flush's marks commit with its publication")
 	outcome, err := publication.Resolve(context.Background(), publication.DB(f.db), f.tables, unresolved.Cur, unresolved.Next)
 	require.NoError(t, err)
 	require.Equal(t, publication.NotCommitted, outcome)
 	require.Equal(t, before, f.record(t))
 	require.Equal(t, dirty, f.dirty(t))
+
+	// Settled later, the fence holds the record: the lost COMMIT can never
+	// land, so the flush is abandoned and the next one publishes its entries.
+	_, err = f.writer(t).Settle(context.Background(), unresolved)
+	require.ErrorIs(t, err, ErrAbandoned)
+	require.Equal(t, before, f.record(t))
+	rep, err = f.writer(t).Flush(context.Background(), schemaID, 1, &stager{f: f})
+	require.NoError(t, err)
+	require.Equal(t, 2, rep.Marked)
+	require.Empty(t, f.dirty(t))
+	f.checkInvariants(t)
+}
+
+// TestResumeInitHandsOffAnInitWhoseFenceFailed: the init's COMMIT goes
+// without an answer, the attempts run out, and the fence fails too, on a
+// database outage or because the caller's context ended. Init returns
+// ErrUnresolved with its exported entries and no handoff. When the COMMIT
+// lands afterwards, ResumeInit finds the init committed and hands its entries
+// off at their export versions: a row written again since stays dirty at its
+// newer version. When nothing lands, ResumeInit's fence holds the record, the
+// init is abandoned, and running Init again publishes and hands off.
+func TestResumeInitHandsOffAnInitWhoseFenceFailed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		atFence func(cancel context.CancelFunc) error
+		lands   bool
+	}{
+		{"the database is out at the fence", func(context.CancelFunc) error { return errInjected }, true},
+		{"the caller's context ends at the fence", func(cancel context.CancelFunc) error { cancel(); return nil }, true},
+		{"nothing lands", func(context.CancelFunc) error { return errInjected }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			published(t, f)
+			before, dirty := f.record(t), f.dirty(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var commits atomic.Int32
+			fp := func(_ context.Context, p Point) error {
+				switch {
+				case p == PointCommit && commits.Add(1) == 1:
+					return ErrCommitAnswerLost
+				case p == PointFence:
+					return tc.atFence(cancel)
+				}
+				return nil
+			}
+			_, err := f.writer(t, func(c *Config) { c.Attempts = 1; c.Failpoint = fp }).Init(ctx, schemaID, 1, &stager{f: f})
+			require.ErrorIs(t, err, ErrUnresolved)
+			require.NotErrorIs(t, err, ErrAbandoned)
+			var u *UnresolvedError
+			require.True(t, errors.As(err, &u))
+			require.Equal(t, publication.KindInit, u.Kind)
+			require.Equal(t, dirty, entryMap(u.Handoff), "the error keeps the exported entries at their listed versions")
+			require.Equal(t, before, f.record(t))
+			require.Equal(t, dirty, f.dirty(t), "no handoff ran")
+
+			if !tc.lands {
+				_, err := f.writer(t).ResumeInit(context.Background(), u)
+				require.ErrorIs(t, err, ErrAbandoned, "the fence holds the record: the init can never commit")
+				require.Equal(t, before, f.record(t))
+				require.Equal(t, dirty, f.dirty(t))
+				rep, err := f.writer(t).Init(context.Background(), schemaID, 1, &stager{f: f})
+				require.NoError(t, err)
+				require.Equal(t, 2, rep.Marked)
+				require.Empty(t, f.dirty(t))
+				f.checkInvariants(t)
+				return
+			}
+			f.landStaged(t) // the lost COMMIT lands late
+			var moved uuid.UUID
+			for row := range dirty {
+				moved = row
+				break
+			}
+			f.put(t, moved, 2000, false) // a write after the export
+
+			// Still unable to fence, a resume stays unresolved and keeps the
+			// entries for the next one.
+			outage := func(_ context.Context, p Point) error {
+				if p == PointFence {
+					return errInjected
+				}
+				return nil
+			}
+			_, err = f.writer(t, func(c *Config) { c.Failpoint = outage }).ResumeInit(context.Background(), u)
+			var again *UnresolvedError
+			require.True(t, errors.As(err, &again), "%v", err)
+			require.Equal(t, u.Handoff, again.Handoff)
+			require.Len(t, f.dirty(t), 2)
+
+			rep, err := f.writer(t).ResumeInit(context.Background(), again)
+			require.NoError(t, err, "the late COMMIT landed: the init committed")
+			require.Equal(t, f.record(t).Token, rep.Generation.Token)
+			require.Equal(t, u.Next.Token, rep.Generation.Token)
+			require.Equal(t, 2, rep.Entries)
+			require.Equal(t, 1, rep.Marked, "the moved row's newer version is not marked")
+			require.Zero(t, rep.Unconfirmed)
+			require.False(t, rep.HandoffStopped)
+			require.Equal(t, map[uuid.UUID]int64{moved: 2000}, f.dirty(t))
+			f.checkInvariants(t)
+		})
+	}
+}
+
+// entryMap answers entries as change_log's dirty set reads.
+func entryMap(entries []Entry) map[uuid.UUID]int64 {
+	out := map[uuid.UUID]int64{}
+	for _, e := range entries {
+		out[e.RowID] = e.Version
+	}
+	return out
 }
 
 // publishStaged runs, in a transaction it leaves open, the compare-and-set

@@ -412,13 +412,29 @@ answers both:
   staging abandoned (the orphan rule reclaims it) or reported as attempts exhausted. A
   fence that finds the record moved hands over to `Resolve`, whose answer is final now. A
   `Committed` there, however late the commit landed, counts as committed, and an init
-  runs its handoff. When no fence can settle it, the writer reports `ErrUnresolved` with
-  the expectation and the token, never `ErrAbandoned`. The staged objects must then
-  stay. A flush does not start over, and an init leaves its entries dirty for the next
-  flush. `TestInitSettlesALostCommitAfterItsLastResolve`,
+  runs its handoff. When no fence can settle it (the database is out, or the caller's
+  context ended), the writer reports `ErrUnresolved`, never `ErrAbandoned`. The error
+  carries the expectation, the token and, for an init, the exported entries at their
+  listed versions. The staged objects must then stay, and a flush does not start over.
+  The caller settles it later with a fresh context: `Settle` for a flush, `ResumeInit`
+  for an init. Each runs the same fence and `Resolve` again. A commit found then,
+  however late it landed, is committed: a flush's marks committed with it, and
+  `ResumeInit` runs the init's handoff from the kept entries, at exactly their export
+  versions and fenced by the init's lineage, so a row written since stays dirty. A
+  fence that holds the record, or a `Lost` or `Unknown`, answers `ErrAbandoned`, and the
+  caller runs the flush or the init again. Still unsettled, it answers a fresh
+  `ErrUnresolved`. A process that exits before it settles leaves the init's entries
+  dirty for the next flush, as a crash between an init's commit and its handoff does.
+  `TestInitSettlesALostCommitAfterItsLastResolve`,
   `TestInitFenceWaitsForACommitStillInFlight`,
-  `TestFlushSettlesAStagingThatExpiresDuringAnUncertainResend` and
-  `TestFlushReportsAnOutcomeItCannotSettle` pin this.
+  `TestFlushSettlesAStagingThatExpiresDuringAnUncertainResend`,
+  `TestFlushReportsAnOutcomeItCannotSettle` and
+  `TestResumeInitHandsOffAnInitWhoseFenceFailed` pin this.
+
+  A flush found committed through `Resolve` reports the marks of the transaction that
+  committed. That is one of those whose `COMMIT` went without an answer, never a resend
+  that failed. When they marked different counts, the report gives the range
+  (`Marked`, `Unconfirmed`). `TestFlushReportsTheMarksOfTheCommitThatLanded` pins this.
 - `Unknown`: the record has moved past the expectation and the history row is gone. An
   outage or a pause outlasted the collector's grace, and the generation was superseded
   and forgotten, or the epoch changed. The attempt can never commit now, and whether it

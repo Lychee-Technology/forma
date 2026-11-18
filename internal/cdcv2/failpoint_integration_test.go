@@ -100,6 +100,8 @@ func TestFlushResolvesACommitWithoutAnAnswer(t *testing.T) {
 			rep, err := f.writer(t, func(c *Config) { c.Failpoint = fp }).Flush(ctx, schemaID, 1, &stager{f: f})
 			require.NoError(t, err)
 			require.Equal(t, tc.resends, rep.Resends)
+			require.Equal(t, 2, rep.Marked, "one transaction's COMMIT went without an answer: its marks committed")
+			require.Zero(t, rep.Unconfirmed)
 			require.Len(t, rep.Generations, 1)
 			head := f.record(t)
 			require.Equal(t, int64(2), head.Generation)
@@ -129,6 +131,8 @@ func TestFlushResolvesACommitWithoutAnAnswer(t *testing.T) {
 			require.Equal(t, 1, rep.Resends)
 			require.Zero(t, rep.Rebases, "the resend's miss was its own commit, not a rival's")
 			require.Zero(t, rep.Restarts)
+			require.Equal(t, 2, rep.Marked, "the lost COMMIT's marks, not the resend's")
+			require.Zero(t, rep.Unconfirmed)
 			require.Len(t, f.history(t), 2)
 			head := f.record(t)
 			require.Equal(t, rep.Generations[0].Token, head.Token)
@@ -137,6 +141,43 @@ func TestFlushResolvesACommitWithoutAnAnswer(t *testing.T) {
 			f.checkInvariants(t)
 		})
 	}
+}
+
+// TestFlushReportsTheMarksOfTheCommitThatLanded: the flush's COMMIT goes
+// without an answer, the resend's marks fail (T_pub runs out in them), and the
+// lost COMMIT lands before the next resend, which misses and finds the flush
+// committed. The report counts the marks of the transaction that committed,
+// not the failed resend's zero, and the database agrees on its own.
+func TestFlushReportsTheMarksOfTheCommitThatLanded(t *testing.T) {
+	f := newFixture(t)
+	published(t, f)
+	dirty := f.dirty(t)
+	var commits, marks, begins atomic.Int32
+	fp := func(ctx context.Context, p Point) error {
+		switch {
+		case p == PointCommit && commits.Add(1) == 1:
+			return ErrCommitAnswerLost
+		case p == PointMarks && marks.Add(1) == 2: // the resend
+			<-ctx.Done() // T_pub runs out before its marks
+		case p == PointBegin && begins.Add(1) == 3:
+			f.landStaged(t) // the lost COMMIT lands
+		}
+		return nil
+	}
+	w := f.writer(t, func(c *Config) { c.PublishTimeout = 500 * time.Millisecond; c.Failpoint = fp })
+	rep, err := w.Flush(context.Background(), schemaID, 1, &stager{f: f})
+	require.NoError(t, err)
+	require.Equal(t, int32(3), begins.Load())
+	require.Equal(t, 2, rep.Resends)
+	require.Zero(t, rep.Rebases)
+	require.Equal(t, 2, rep.Marked, "the report counts the committed transaction's marks")
+	require.Zero(t, rep.Unconfirmed)
+
+	head := f.record(t)
+	require.Equal(t, rep.Generations[0].Token, head.Token)
+	require.Empty(t, f.dirty(t))
+	f.markedOnce(t, dirty, head.UpdatedAt)
+	f.checkInvariants(t)
 }
 
 // serializationConflict is the 40001 a server answers a transaction that

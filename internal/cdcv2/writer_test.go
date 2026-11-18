@@ -139,3 +139,25 @@ func TestNewBoundsAPostgreSQLBatchToOneMark(t *testing.T) {
 	_, args = listedValues(entries, 1, schemaID)
 	require.Greater(t, len(args), 65535, "one entry more does not")
 }
+
+// TestMarkedRange pins what a flush reports it marked. After an answered
+// COMMIT, its transaction's count; after Resolve found the staging committed,
+// the counts of the transactions whose COMMIT went without an answer, one of
+// which committed, never the count of a resend that failed.
+func TestMarkedRange(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		p      pub
+		lo, hi int
+	}{
+		{"an answered commit", pub{marked: 3, unanswered: []int{2}}, 3, 3},
+		{"one lost answer, then a failed resend", pub{resolved: true, marked: 0, unanswered: []int{2}}, 2, 2},
+		{"two lost answers that marked alike", pub{resolved: true, marked: 2, unanswered: []int{2, 2}}, 2, 2},
+		{"two lost answers that marked differently", pub{resolved: true, marked: 0, unanswered: []int{2, 1}}, 1, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lo, hi := tc.p.markedRange()
+			require.Equal(t, [2]int{tc.lo, tc.hi}, [2]int{lo, hi})
+		})
+	}
+}

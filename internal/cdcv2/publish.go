@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -16,8 +17,9 @@ import (
 const resendBackoff = 20 * time.Millisecond
 
 // markFunc marks a generation's entries on the publication transaction tx,
-// after the compare-and-set moved the record to out.
-type markFunc func(ctx context.Context, tx *sql.Tx, out publication.Record) error
+// after the compare-and-set moved the record to out, and answers how many it
+// marked.
+type markFunc func(ctx context.Context, tx *sql.Tx, out publication.Record) (int, error)
 
 // buildFunc stages the generation's manifest for cur under a fresh token and
 // answers what Publish commits: the first staging, and every rebase's.
@@ -31,9 +33,22 @@ type pub struct {
 	next  publication.Next
 	build buildFunc
 	mark  markFunc // nil for an init, whose publication carries no marks
+	// handoff is an init's exported entries at their export versions, what
+	// its handoff marks once the init committed: an UnresolvedError keeps
+	// them, so that ResumeInit can still hand them off.
+	handoff []Entry
 	// resends and rebases count the transactions sent again with the same
 	// token, and the restagings onto a new head.
 	resends, rebases int
+	// marked is what the marks of the transaction sent last counted, and
+	// unanswered what those of each transaction of this staging whose
+	// COMMIT went without an answer counted. resolved says the record
+	// publish answered came from Resolve, not from an answered COMMIT: then
+	// one of the unanswered transactions is the one that committed, and the
+	// report cannot say which (markedRange).
+	marked     int
+	unanswered []int
+	resolved   bool
 	// uncertain says a COMMIT of this staging went without an answer. That
 	// COMMIT may still land while the staging is sent again: before the
 	// resend's snapshot, and the resend's compare-and-set misses
@@ -89,6 +104,9 @@ func (w *Writer) send(ctx context.Context, p *pub) (publication.Record, error) {
 		}
 		last = err
 		v := w.classify(ctx, err)
+		if v == resolve {
+			p.unanswered = append(p.unanswered, p.marked)
+		}
 		if v == resolve || (p.uncertain && (v == rebase || v == resend)) {
 			p.uncertain = true
 			v, out, err = w.resolve(ctx, p, err)
@@ -96,6 +114,7 @@ func (w *Writer) send(ctx context.Context, p *pub) (publication.Record, error) {
 		}
 		switch v {
 		case done:
+			p.resolved = true
 			return out, nil
 		case resend:
 			p.resends++
@@ -106,7 +125,8 @@ func (w *Writer) send(ctx context.Context, p *pub) (publication.Record, error) {
 			if err := w.rebase(ctx, p); err != nil {
 				return publication.Record{}, err
 			}
-			p.rebases, p.uncertain = p.rebases+1, false
+			// No COMMIT of the staging given up can land any more.
+			p.rebases, p.uncertain, p.unanswered = p.rebases+1, false, nil
 		case abandon:
 			return publication.Record{}, fmt.Errorf("%s of schema %d staged on generation %d: %w: %w", p.kind, p.cur.SchemaID, p.cur.Generation, ErrAbandoned, err)
 		default:
@@ -120,6 +140,7 @@ func (w *Writer) send(ctx context.Context, p *pub) (publication.Record, error) {
 // the T_pub deadline. Every S3 write happened before, so the transaction is
 // its statements alone.
 func (w *Writer) commit(ctx context.Context, p *pub) (publication.Record, error) {
+	p.marked = 0
 	if err := w.fail(ctx, PointBegin); err != nil {
 		return publication.Record{}, err
 	}
@@ -141,9 +162,11 @@ func (w *Writer) commit(ctx context.Context, p *pub) (publication.Record, error)
 		return publication.Record{}, err
 	}
 	if p.mark != nil {
-		if err := p.mark(tctx, tx, out); err != nil {
+		n, err := p.mark(tctx, tx, out)
+		if err != nil {
 			return publication.Record{}, err
 		}
+		p.marked = n
 	}
 	if err := w.fail(tctx, PointCommit); err != nil {
 		return publication.Record{}, err
@@ -214,6 +237,20 @@ func (w *Writer) resolve(ctx context.Context, p *pub, cause error) (verdict, pub
 	}
 	p.uncertain = false // the record moved past p.cur: nothing of p can land
 	return abandon, publication.Record{}, fmt.Errorf("the record moved past generation %d and its history row is gone, so whether it committed cannot be recovered: %w", p.cur.Generation+1, cause)
+}
+
+// markedRange answers how many entries the transaction of p that committed
+// marked, at least lo and at most hi. After an answered COMMIT that is
+// exactly what its marks counted. After Resolve found the staging committed,
+// the transaction that committed is one of those whose COMMIT went without an
+// answer, so the count is exact when they all counted alike, and a range
+// otherwise: an entry a writer held locked, or a row that moved, between
+// them.
+func (p *pub) markedRange() (lo, hi int) {
+	if !p.resolved || len(p.unanswered) == 0 {
+		return p.marked, p.marked
+	}
+	return slices.Min(p.unanswered), slices.Max(p.unanswered)
 }
 
 // committed is the record next committed on cur, as Publish answers it, but

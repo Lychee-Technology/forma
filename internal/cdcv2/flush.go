@@ -34,8 +34,17 @@ type DeltaRequest struct {
 type FlushReport struct {
 	// Generations are the records the flush committed, in order.
 	Generations []publication.Record
-	// Selected counts the entries selected, Marked those marked flushed.
+	// Selected counts the entries selected, Marked those the committed
+	// generations marked flushed.
 	Selected, Marked int
+	// Unconfirmed counts the entries a generation may have marked beyond
+	// Marked: it was found committed after COMMITs that went without an
+	// answer (Resolve), so the transaction that committed is one of those,
+	// and their marks counted differently (a row moved, or a writer held
+	// an entry locked, between them). change_log says which are flushed: the
+	// flush marked at least Marked entries and at most Marked + Unconfirmed.
+	// When they counted alike, Marked is exact and Unconfirmed zero.
+	Unconfirmed int
 	// Restarts counts abandoned publications after which the flush selected
 	// its entries again.
 	Restarts int
@@ -87,53 +96,53 @@ func (w *Writer) flushRound(ctx context.Context, schemaID int16, pin int64, st D
 	// one keeps the record's.
 	lineage := uuid.New()
 	for chunk := range slices.Chunk(entries, w.generationLimit()) {
-		out, marked, err := w.flushGeneration(ctx, cur, lineage, chunk, st, rep)
+		out, err := w.flushGeneration(ctx, cur, lineage, chunk, st, rep)
 		if err != nil {
 			return err
 		}
 		rep.Generations = append(rep.Generations, out)
-		rep.Marked += marked
 		cur = out
 	}
 	return nil
 }
 
-// flushGeneration stages and publishes one generation of entries on cur.
-func (w *Writer) flushGeneration(ctx context.Context, cur publication.Record, lineage uuid.UUID, entries []Entry, st DeltaStager, rep *FlushReport) (publication.Record, int, error) {
+// flushGeneration stages and publishes one generation of entries on cur, and
+// records in rep what it marked.
+func (w *Writer) flushGeneration(ctx context.Context, cur publication.Record, lineage uuid.UUID, entries []Entry, st DeltaStager, rep *FlushReport) (publication.Record, error) {
 	stagedAt, err := w.now(ctx, w.cfg.DB)
 	if err != nil {
-		return publication.Record{}, 0, fmt.Errorf("flush schema %d: %w", cur.SchemaID, err)
+		return publication.Record{}, fmt.Errorf("flush schema %d: %w", cur.SchemaID, err)
 	}
 	if err := w.fail(ctx, PointStageObjects); err != nil {
-		return publication.Record{}, 0, fmt.Errorf("flush schema %d: %w", cur.SchemaID, err)
+		return publication.Record{}, fmt.Errorf("flush schema %d: %w", cur.SchemaID, err)
 	}
 	deltas, err := st.StageDelta(ctx, DeltaRequest{SchemaID: cur.SchemaID, Epoch: cur.Epoch, Layout: w.cfg.Layout, Entries: entries})
 	if err != nil {
-		return publication.Record{}, 0, fmt.Errorf("flush schema %d: stage the delta objects of %d entries: %w", cur.SchemaID, len(entries), err)
+		return publication.Record{}, fmt.Errorf("flush schema %d: stage the delta objects of %d entries: %w", cur.SchemaID, len(entries), err)
 	}
-	marked := 0
 	p := &pub{
 		kind: publication.KindFlush,
 		cur:  cur,
 		build: func(ctx context.Context, cur publication.Record) (publication.Next, error) {
 			return w.stageFlushManifest(ctx, cur, lineage, deltas, stagedAt)
 		},
-		mark: func(ctx context.Context, tx *sql.Tx, out publication.Record) error {
-			n, err := w.mark(ctx, tx, out.SchemaID, entries, out.UpdatedAt)
-			marked = n
-			return err
+		mark: func(ctx context.Context, tx *sql.Tx, out publication.Record) (int, error) {
+			return w.mark(ctx, tx, out.SchemaID, entries, out.UpdatedAt)
 		},
 	}
 	if p.next, err = p.build(ctx, cur); err != nil {
-		return publication.Record{}, 0, fmt.Errorf("flush schema %d: %w", cur.SchemaID, err)
+		return publication.Record{}, fmt.Errorf("flush schema %d: %w", cur.SchemaID, err)
 	}
 	out, err := w.publish(ctx, p)
 	rep.Resends += p.resends
 	rep.Rebases += p.rebases
 	if err != nil {
-		return publication.Record{}, 0, fmt.Errorf("flush: %w", err)
+		return publication.Record{}, fmt.Errorf("flush: %w", err)
 	}
-	return out, marked, nil
+	lo, hi := p.markedRange()
+	rep.Marked += lo
+	rep.Unconfirmed += hi - lo
+	return out, nil
 }
 
 // stageFlushManifest stages the flush generation after cur: the parent's
