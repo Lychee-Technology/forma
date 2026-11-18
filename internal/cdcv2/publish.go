@@ -39,7 +39,9 @@ type pub struct {
 	// resend's snapshot, and the resend's compare-and-set misses
 	// (ErrRecordMoved), or after it, and the resend fails with 40001 on a
 	// snapshot engine. So while it is set, a resend's miss or conflict is
-	// resolved before it is taken for a rival's or sent once more.
+	// resolved before it is taken for a rival's or sent once more, and
+	// publish settles it before it gives the staging up. Only a read that
+	// proves the COMMIT can no longer land clears it.
 	uncertain bool
 }
 
@@ -62,8 +64,23 @@ func (e *commitError) Error() string { return "commit the publication: " + e.err
 func (e *commitError) Unwrap() error { return e.err }
 
 // publish sends p until it commits, is abandoned or fails, in at most
-// Config.Attempts transactions, and answers the record it committed.
+// Config.Attempts transactions, and answers the record it committed. When it
+// would give p up while a COMMIT of p's staging went without an answer and
+// may still land, it settles that COMMIT first (settle): it answers the
+// record if the COMMIT landed, the failure only once the COMMIT can no
+// longer land, and ErrUnresolved when it could tell neither.
 func (w *Writer) publish(ctx context.Context, p *pub) (publication.Record, error) {
+	out, err := w.send(ctx, p)
+	if err == nil || !p.uncertain {
+		return out, err
+	}
+	return w.settle(ctx, p, err)
+}
+
+// send is publish's loop: it answers the record p committed, or why it
+// stopped, with p.uncertain still set when a COMMIT of the staging it stopped
+// on went without an answer that no later read settled.
+func (w *Writer) send(ctx context.Context, p *pub) (publication.Record, error) {
 	var last error
 	for attempt := 1; attempt <= w.cfg.Attempts; attempt++ {
 		out, err := w.commit(ctx, p)
@@ -188,10 +205,14 @@ func (w *Writer) resolve(ctx context.Context, p *pub, cause error) (verdict, pub
 	case publication.Committed:
 		return done, committed(p.cur, p.next), nil
 	case publication.Lost:
+		// The record moved from p.cur to another generation, so no COMMIT of
+		// p's staging can land any more.
+		p.uncertain = false
 		return rebase, publication.Record{}, fmt.Errorf("another generation took number %d: %w", p.cur.Generation+1, publication.ErrRecordMoved)
 	case publication.NotCommitted:
 		return resend, publication.Record{}, cause
 	}
+	p.uncertain = false // the record moved past p.cur: nothing of p can land
 	return abandon, publication.Record{}, fmt.Errorf("the record moved past generation %d and its history row is gone, so whether it committed cannot be recovered: %w", p.cur.Generation+1, cause)
 }
 

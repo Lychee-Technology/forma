@@ -69,7 +69,10 @@ type InitReport struct {
 // schema at (0 pins nothing). A publication the rebase rules abandon (a
 // flush committed since the export began, a drop, an expired staging) leaves
 // nothing visible and returns ErrAbandoned; running Init again starts a fresh
-// export.
+// export. A COMMIT of the publication that went without an answer is settled
+// before Init gives up: one that landed, however late, is taken as committed
+// and handed off. One the writer could not settle returns ErrUnresolved with
+// no handoff, and the exported entries stay dirty for the next flush.
 func (w *Writer) Init(ctx context.Context, schemaID int16, pin int64, exp BaseExporter) (InitReport, error) {
 	var rep InitReport
 	cur, err := w.readRecord(ctx, schemaID, pin)

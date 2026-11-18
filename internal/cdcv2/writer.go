@@ -73,6 +73,8 @@ const MaxMarkEntries = (65535 - 2) / 2
 // or a lost commit answer can no longer be resolved. Nothing it staged is
 // visible, and the entries it would have marked stay dirty. A flush selects
 // the unflushed entries again by itself; an init is run again by its caller.
+// A publication whose COMMIT went without an answer is abandoned only once
+// the writer has settled that the COMMIT can no longer land (ErrUnresolved).
 var ErrAbandoned = errors.New("publication abandoned")
 
 // ErrEpochChanged reports a record whose epoch is not the one the process
@@ -81,7 +83,9 @@ var ErrAbandoned = errors.New("publication abandoned")
 var ErrEpochChanged = errors.New("publication epoch changed since the schema was loaded")
 
 // ErrAttemptsExhausted reports a publication still neither committed nor
-// abandoned after Config.Attempts transactions.
+// abandoned after Config.Attempts transactions. When a COMMIT of it went
+// without an answer, the writer has settled first that it can no longer land
+// (ErrUnresolved).
 var ErrAttemptsExhausted = errors.New("publication attempts exhausted")
 
 // Config is one deployment's V2 writer.

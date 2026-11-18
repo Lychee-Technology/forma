@@ -399,8 +399,26 @@ answers both:
   every miss or `40001` of a staging whose commit went unanswered, the last allowed
   transaction's too, so a commit that landed never reads as attempts exhausted. On PostgreSQL the
   resend waits on the original's row lock, so the two never both commit. On DSQL the
-  conflict check covers it. A resend refused with `ErrStagingExpired` abandons its
-  staging, and the orphan rule reclaims it.
+  conflict check covers it.
+
+  A `NotCommitted` is not final while the lost commit may still be on its way. So when the
+  writer would give such a staging up (the attempts ran out, a resend was refused with
+  `ErrStagingExpired`, or a resend failed), it first settles it with `Fence(cur)`. That
+  transaction writes the record row, changing nothing, while the record still carries the
+  expectation, and commits. The original's compare-and-set wrote that row before its
+  `COMMIT` was sent. On PostgreSQL the fence waits on that row lock until the original
+  ends, and on DSQL whichever of the two commits second fails with `40001`. So a fence
+  that held the record and committed proves the commit can never land: only then is the
+  staging abandoned (the orphan rule reclaims it) or reported as attempts exhausted. A
+  fence that finds the record moved hands over to `Resolve`, whose answer is final now. A
+  `Committed` there, however late the commit landed, counts as committed, and an init
+  runs its handoff. When no fence can settle it, the writer reports `ErrUnresolved` with
+  the expectation and the token, never `ErrAbandoned`. The staged objects must then
+  stay. A flush does not start over, and an init leaves its entries dirty for the next
+  flush. `TestInitSettlesALostCommitAfterItsLastResolve`,
+  `TestInitFenceWaitsForACommitStillInFlight`,
+  `TestFlushSettlesAStagingThatExpiresDuringAnUncertainResend` and
+  `TestFlushReportsAnOutcomeItCannotSettle` pin this.
 - `Unknown`: the record has moved past the expectation and the history row is gone. An
   outage or a pause outlasted the collector's grace, and the generation was superseded
   and forgotten, or the epoch changed. The attempt can never commit now, and whether it
@@ -616,7 +634,7 @@ with an empty plan.
 | Drop | any but `DROPPED` | `Reset` with the registry delete | e+1, `DROPPED`, no current generation | purged afterwards, in chunks | readers fail closed. Every CAS/hold misses or is refused. Old objects expire after `G` |
 | Re-create | e+1 `DROPPED` | residue check + `Activate` with the registry insert | e+2, `UNPUBLISHED`, new token | — | `ErrResidue` while the id still has rows |
 | Failed publication | g | rolled back | g | unchanged | objects unreferenced. Orphan rule reclaims them |
-| Commit outcome unknown | g | `Resolve` in a new transaction | g or g+1 | with the pointer | `NotCommitted` → resend the same publication. `Lost` → rebase. `Unknown` → abandon, start over from the head |
+| Commit outcome unknown | g | `Resolve` in a new transaction | g or g+1 | with the pointer | `NotCommitted` → resend the same publication, and `Fence` before giving it up. `Lost` → rebase. `Unknown` → abandon, start over from the head |
 | Rollback to an older generation | — | not a transition | — | — | Refused by design: marks committed by later generations would point at missing rows. Re-init rebuilds from PostgreSQL instead |
 | Orphan cleanup | any | `RaiseHorizon`; `Retained`/`Expired`, `Retire`; then `Forget` | `gc_horizon` raised | — | see collection order |
 

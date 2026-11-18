@@ -32,6 +32,10 @@ const (
 	PointCommitAnswer Point = "commit-answer"
 	// PointHandoff precedes BEGIN of each cdc-init handoff transaction.
 	PointHandoff Point = "handoff"
+	// PointFence precedes BEGIN of each fence transaction, which settles a
+	// COMMIT without an answer before the writer gives its publication up.
+	// A COMMIT still on its way may land there, as late as it can.
+	PointFence Point = "fence"
 )
 
 // ErrCommitAnswerLost is the fault a failpoint answers at PointCommit to
