@@ -112,12 +112,19 @@ func (c *duckDBExecutionPlanContext) recordScanOutcome(o duckDBScanOutcome) {
 // and the error names the object(s). Identification decorates — it never
 // caches, never retries, and never changes the classification chain.
 func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.FederatedAttributeQuery, sc scan, cause error, op string) error {
-	if err := e.publishedObjectsMissing(ctx, sc, cause, op); err != nil {
-		return err
+	var classified error
+	if sc.published != nil {
+		// A published generation's objects are probed through the
+		// publication reader, ahead of every other classification; the V1
+		// source vouches for none of them.
+		final, c := e.classifyPublishedReadError(ctx, sc, cause, op)
+		if final != nil {
+			return final
+		}
+		classified = c
+	} else {
+		classified = e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource && !sc.globListed)
 	}
-	// A published generation's objects were probed above, through the
-	// publication reader; the V1 source vouches for none of them.
-	classified := e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource && !sc.globListed && sc.published == nil)
 	var inconsistent *ParquetSetInconsistentError
 	wrapped := fmt.Errorf("%s: %w: %w", op, classified, cause)
 	if errors.As(classified, &inconsistent) {

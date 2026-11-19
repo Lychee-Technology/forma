@@ -28,8 +28,12 @@ type fakePublication struct {
 	recErr error
 	gen    PublishedGeneration
 	genErr error
-	// missing are the keys MissingIn reports lost.
-	missing []string
+	// missing are the keys MissingIn reports lost, beside probeErr, the
+	// probes that failed. probeBlocks makes MissingIn wait for its context
+	// to end, and answer its error.
+	missing     []string
+	probeErr    error
+	probeBlocks bool
 
 	reads, resolves, probes int
 }
@@ -47,9 +51,13 @@ func (f *fakePublication) ResolveGeneration(_ context.Context, rec PublicationRe
 	return f.gen, f.genErr
 }
 
-func (f *fakePublication) MissingIn(_ context.Context, _ PublishedGeneration, _ []string) ([]string, error) {
+func (f *fakePublication) MissingIn(ctx context.Context, _ PublishedGeneration, _ []string) ([]string, error) {
 	f.probes++
-	return f.missing, nil
+	if f.probeBlocks {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return f.missing, f.probeErr
 }
 
 // unpublished is an UNPUBLISHED record of the fixture's schema.

@@ -76,8 +76,10 @@ func (p *pgxPass) recordPlan(o pgxOutcome) {
 
 // recordSnapshotDirtySet records the dirty set the snapshot read: the
 // widened set of the hot form at the pass's cutoff, or the strict set of the
-// hot-excluded form, which the parquet leg anti-joins against.
-func (c *duckDBExecutionPlanContext) recordSnapshotDirtySet(changeLog string, schemaID int16, form DirtySetForm, cutoffMs int64, n int) {
+// hot-excluded form, which the parquet leg anti-joins against. staged is
+// false for a published pass without a parquet leg, which stages nothing
+// and runs no DuckDB statement; a V1 pass always reports it staged.
+func (c *duckDBExecutionPlanContext) recordSnapshotDirtySet(changeLog string, schemaID int16, form DirtySetForm, cutoffMs int64, n int, staged bool) {
 	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
 		return
 	}
@@ -88,7 +90,10 @@ func (c *duckDBExecutionPlanContext) recordSnapshotDirtySet(changeLog string, sc
 		GraceCutoffMs: cutoffMs,
 	})
 	reason := "dirty set read in the pass's snapshot and staged for the anti-join"
-	if form == DirtySetHotExcluded {
+	switch {
+	case !staged:
+		reason = dirtySetUnstagedReason
+	case form == DirtySetHotExcluded:
 		reason = "consistency barrier (dirty set read in the pass's snapshot, staged for the anti-join)"
 	}
 	c.opts.ExecutionPlan.Sources = append(c.opts.ExecutionPlan.Sources, model.DataSourcePlan{
@@ -100,3 +105,8 @@ func (c *duckDBExecutionPlanContext) recordSnapshotDirtySet(changeLog string, sc
 		Reason:      reason,
 	})
 }
+
+// dirtySetUnstagedReason is the plan's reason for the dirty set of a
+// published pass without a parquet leg: read in the snapshot, and staged
+// nowhere, since the pass runs no DuckDB statement.
+const dirtySetUnstagedReason = "dirty set read in the pass's snapshot; the pass has no parquet leg, so nothing is staged"

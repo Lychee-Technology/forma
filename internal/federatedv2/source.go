@@ -78,13 +78,20 @@ func New(cfg Config) (*Source, error) {
 }
 
 // ReadRecord reads schemaID's record on tx, the pass's snapshot, and refuses
-// a record the reader must fail closed on: absent, AWAITING_INIT, DROPPED, or
-// at an epoch the process did not pin. Each refusal is a
+// a record the reader must fail closed on: absent, malformed
+// (publication.ErrRecordInvalid), AWAITING_INIT, DROPPED, or at an epoch the
+// process did not pin. Each refusal is a
 // *federated.PublicationConsistencyError; a failed read is a plain error.
 func (s *Source) ReadRecord(ctx context.Context, tx pgx.Tx, schemaID int16) (federated.PublicationRecord, error) {
 	snap, err := publication.Read(ctx, publication.PgxTx(tx), s.tables, schemaID)
 	if errors.Is(err, publication.ErrNoRecord) {
 		return federated.PublicationRecord{}, inconsistent(schemaID, 0, 0, err)
+	}
+	// A row the read returned and refused is a fault of the record, not of
+	// the read: answering around it would drop what its generation holds.
+	var invalid *publication.InvalidRecordError
+	if errors.As(err, &invalid) {
+		return federated.PublicationRecord{}, inconsistent(schemaID, invalid.Record.Epoch, invalid.Record.Generation, err)
 	}
 	if err != nil {
 		return federated.PublicationRecord{}, fmt.Errorf("read the publication record of schema %d: %w", schemaID, err)
@@ -145,27 +152,36 @@ func (s *Source) ResolveGeneration(ctx context.Context, rec federated.Publicatio
 
 // MissingIn probes the objects of gen among scanned and answers the keys the
 // store does not hold. A path gen does not list is not probed: its absence
-// would prove nothing about the generation.
+// would prove nothing about the generation. A probe that fails does not stop
+// the others, and does not take back a key another probe found missing: the
+// answer holds every confirmed loss, with the failed probes joined into the
+// error. Once ctx ends, no further probe runs.
 func (s *Source) MissingIn(ctx context.Context, gen federated.PublishedGeneration, scanned []string) ([]string, error) {
 	keys := make(map[string]string, len(gen.Paths))
 	for i, p := range gen.Paths {
 		keys[p] = gen.Keys[i]
 	}
 	var missing []string
+	var failed []error
 	for _, p := range scanned {
 		key, listed := keys[p]
 		if !listed {
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			failed = append(failed, fmt.Errorf("probe the objects of schema %d generation %d from %s on: %w", gen.SchemaID, gen.Generation, key, err))
+			break
+		}
 		ok, err := s.exists(ctx, key)
 		if err != nil {
-			return nil, fmt.Errorf("probe object %s of schema %d generation %d: %w", key, gen.SchemaID, gen.Generation, err)
+			failed = append(failed, fmt.Errorf("probe object %s of schema %d generation %d: %w", key, gen.SchemaID, gen.Generation, err))
+			continue
 		}
 		if !ok {
 			missing = append(missing, key)
 		}
 	}
-	return missing, nil
+	return missing, errors.Join(failed...)
 }
 
 func inconsistent(schemaID int16, epoch, generation int64, err error) error {

@@ -53,20 +53,32 @@ func publicationFaults() []publicationFault {
 		}},
 		// #759's partial-match loss: one listed object of two is gone, and
 		// the other would answer a short page.
-		{name: "a listed object missing", lost: []string{"gone.parquet"}, seed: func(t *testing.T, f *pgxFixture) *fakePublication {
-			gone := f.writeParquet(t, "gone.parquet", []pgxRow{{i: 40, createdAt: 900, age: ageOf(40), parquet: true}})
-			pub := publishedOver(filepath.Join(f.dir, "base.parquet"), gone)
-			// The stamps let the pre-read checks pass without the
-			// object, so the scan itself finds it gone.
-			pub.gen.Columns = map[string]map[string]string{}
-			for _, p := range pub.gen.Paths {
-				pub.gen.Columns[p] = parquetFooterColumns(t, f, p)
-			}
-			require.NoError(t, os.Remove(gone))
-			pub.missing = []string{"gone.parquet"}
+		{name: "a listed object missing", lost: []string{"gone.parquet"}, seed: partialLoss},
+		// A lost object stays lost when the probe of another failed: the
+		// read fails with the typed error, not as a failed scan the
+		// breaker would be charged for and a fallback would absorb.
+		{name: "a listed object missing beside a failed probe", lost: []string{"gone.parquet"}, seed: func(t *testing.T, f *pgxFixture) *fakePublication {
+			pub := partialLoss(t, f)
+			pub.probeErr = errors.New("probe object base.parquet: HeadObject answered 503")
 			return pub
 		}},
 	}
+}
+
+// partialLoss is a generation of two listed objects, one of which the store
+// lost after the manifest stamped it.
+func partialLoss(t *testing.T, f *pgxFixture) *fakePublication {
+	gone := f.writeParquet(t, "gone.parquet", []pgxRow{{i: 40, createdAt: 900, age: ageOf(40), parquet: true}})
+	pub := publishedOver(filepath.Join(f.dir, "base.parquet"), gone)
+	// The stamps let the pre-read checks pass without the object, so the
+	// scan itself finds it gone.
+	pub.gen.Columns = map[string]map[string]string{}
+	for _, p := range pub.gen.Paths {
+		pub.gen.Columns[p] = parquetFooterColumns(t, f, p)
+	}
+	require.NoError(t, os.Remove(gone))
+	pub.missing = []string{"gone.parquet"}
+	return pub
 }
 
 // parquetFooterColumns reads a fixture object's columns as a manifest stamps

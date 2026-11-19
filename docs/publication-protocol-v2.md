@@ -492,15 +492,25 @@ choices the steps above leave open:
   read over the unflushed entries alone. The flush-grace widening (#252) made up for a path
   set resolved before the snapshot. A generation read in S holds every row S shows flushed,
   so nothing widens the barrier, and the parquet-history probe (#720) has nothing to decide.
-- The manifest is fetched after the dirty set and before the hot keys, and the pre-read
+- The manifest is fetched after the dirty set and before the hot keys. Every listed object
+  must reach DuckDB as one concrete object: a listed address holding a glob metacharacter
+  (`*`, `?`, `[`), which DuckDB would expand and match against unlisted objects, fails the
+  read with the consistency error (`federated.ErrPublishedPathNotConcrete`) before any
+  DuckDB statement. The pre-read
   schema and type checks (#189, #732) take the manifest's `columns` in place of a footer
   probe. A generation that lists objects cached as corrupt (#722) is refused without a scan,
   as under V1. `duckdb.hotLegMaxDirtyRows` bounds what a pass stages in DuckDB, so it does
   not apply to a pass without a parquet leg: every live row of an `UNPUBLISHED` schema is
-  dirty, and nothing is staged.
+  dirty, and nothing is staged. The execution plan reports such a pass's dirty set as read,
+  not staged.
+- DuckDB admission (the breaker, and a DuckDB client being there) applies only once the
+  snapshot's generation lists objects to scan. A pass without a parquet leg needs no DuckDB,
+  so an open breaker never refuses it, and a publication fault is read and reported before
+  admission could answer for it with a degradable rejection.
 - The consistency error is `federated.PublicationConsistencyError`, which matches
   `federated.ErrPublicationInconsistent` and the fault it wraps (`publication.ErrNoRecord`,
-  `ErrAwaitingInit`, `ErrDropped`, `federatedv2.ErrEpochChanged`, a
+  `ErrAwaitingInit`, `ErrDropped`, `publication.ErrRecordInvalid` for a row the read
+  returned and refused, `federatedv2.ErrEpochChanged`, a
   `manifestv2.ConsistencyError`) and names schema, epoch and generation, with the lost keys
   when objects are missing. It is not degradable, hands the breaker its probe back rather than
   counting a failure, and is never `ErrFederatedReadFailed`. A record the snapshot could not
@@ -509,10 +519,17 @@ choices the steps above leave open:
   counterparts are.
 - A listed object is found missing only after a read fails: the reader probes the failed
   read's objects (`HeadObject` on S3) before any other classification, so a happy path costs
-  no probe.
+  no probe. A probe that fails does not stop the others or take back a key another found
+  missing, so a confirmed loss is the consistency error even beside a failed probe. A probe
+  the request's deadline ends keeps that error, so the read stays non-degradable.
 - `R_max` is armed at `t0` with `context.WithTimeoutCause`. A pass it ends fails with
   `federated.ErrPassDeadline` and is retried once on a fresh snapshot, as the #720 race was. An
-  expired deadline is not degradable (#465), so a retry that runs out too surfaces.
+  expired deadline is not degradable (#465): `ErrPassDeadline` is refused by the degraded
+  fallback on its own, and a retry that fails, a breaker rejection included, keeps the first
+  pass's deadline in its error. A pass `R_max` ends is not charged to the breaker and
+  is not probed for lost objects: `R_max` bounds how long a pass holds its generation against
+  garbage collection, not how fast DuckDB answers, which `DuckDBConfig.QueryTimeout` bounds
+  and charges as under V1.
 
 **Invariant R (the scanned generation matches S).** For every row `r`, the answer holds
 `r`'s state as of S.
@@ -887,6 +904,23 @@ in-memory snapshot in `internal/federated`, where a fake reader stages each faul
 - `TestPublishedPassPastItsDeadlineIsAbortedAndRetried`,
   `TestPublishedPassUnderTheRequestDeadlineIsNotRetried`: `R_max` cancels the running scan
   and earns one retry on a fresh snapshot; the request's own deadline earns none.
+  `TestAPassDeadlineIsNotChargedToTheBreakerAndNeverDegrades`,
+  `TestARetryRefusedAfterAPassDeadlineKeepsTheDeadline`,
+  `TestAProbeThatRunsOutOfTimeKeepsTheDeadline`: through `Query` under
+  `AllowPartialDegradedMode`, with a breaker that opens on its first failure, the deadline
+  stays non-degradable whether the retry runs out too or is refused, and whether the deadline
+  ends the scan or the missing-object probe.
+- `TestAGenerationListingAnAddressDuckDBWouldExpandFailsClosed`,
+  `TestPublishedPassRefusesAListedAddressDuckDBWouldExpand`: a layout prefix such as
+  `da[t]a` passes manifest verification, and its keys would let DuckDB read an unlisted copy;
+  the read fails closed with no DuckDB statement.
+  `TestMissingInKeepsEveryConfirmedLossBesideAFailedProbe` and the mixed case of
+  `TestPublishedPassFailsClosedOnAPublicationFault`: a confirmed loss beside a failed probe.
+  `TestAMalformedRecordFailsClosedAndAFailedRecordReadDegrades`: a `PUBLISHED` row naming no
+  manifest fails closed, while a record table PostgreSQL cannot read degrades.
+- `TestPublishedPassWithoutAParquetLegNeedsNoDuckDBAdmission`,
+  `TestPublishedPassUnderAnOpenBreaker`, `TestPublishedPassPlanReportsStagingOnlyWithAParquetLeg`:
+  admission and the plan's staging claim follow the generation's objects.
 
 **Not verified. Assumed until #817 checks a real cluster:**
 
@@ -950,8 +984,8 @@ upgrade and rerun runs in `TestInitDBCreatesThePublicationTablesOnceAndWritesNoR
 from any file outside the three, so no binary reaches the manifest, the writer or the reader
 code before #896 either. The reader's seam is in `internal/federated`, a production package,
 and stays inert without an implementation: the same test refuses a production use of
-`federated.WithPublicationReader` outside the dormant packages, so no binary builds an engine
-that reads the record.
+`federated.WithPublicationReader` outside the dormant packages, the engine package's own
+unqualified calls included, so no binary builds an engine that reads the record.
 
 **#759 is the reader scope, and lands in #896.** Its original evidence, a zero-match or
 partial-match glob that returns 200 with silently incomplete data, is what the reader

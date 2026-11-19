@@ -84,7 +84,8 @@ var ddlIdentifiers = map[string]bool{
 //   - The reader seam rule, to the same files: it refuses a use of
 //     federated.WithPublicationReader, the engine option that turns on the V2
 //     read path, so no binary builds such an engine with a reader of its own
-//     either.
+//     either. In the engine package itself it refuses every use of the
+//     option but its declaration.
 //
 // Exemptions are by package directory, never by subtree: a subpackage of
 // any of these packages is held to every rule.
@@ -144,6 +145,12 @@ func TestOnlyInitDBDDLReachesThePublicationTables(t *testing.T) {
 			// the engine's V2 path on with a reader of its own.
 			"factory/planted.go": "package factory\n\nimport (\n\t\"" + federatedV2Import + "\"\n\tfed \"" + federatedImport + "\"\n)\n\n" +
 				"var _ = federatedv2.New\nvar _ = fed.WithPublicationReader\n",
+			// The engine package declares the option and may not use
+			// it: a call of its own, unqualified, turns its V2 path on
+			// with no import to give it away.
+			"internal/federated/planted_seam.go": "package federated\n\n" +
+				"func WithPublicationReader(r any, d int) func() { return nil }\n\n" +
+				"var _ = WithPublicationReader(nil, 0)\n",
 			// The reader source may read records, fetch manifests and
 			// use the engine's seam, but never spell a table.
 			"internal/federatedv2/planted.go": "package federatedv2\n\nimport (\n\t\"" + publicationImport + "\"\n\t\"" + manifestV2Import + "\"\n)\n\n" +
@@ -155,7 +162,7 @@ func TestOnlyInitDBDDLReachesThePublicationTables(t *testing.T) {
 		}
 		files, err := productionFiles(dir)
 		require.NoError(t, err)
-		require.Len(t, files, 13, "the walk scans every production file but tests and hidden directories")
+		require.Len(t, files, 14, "the walk scans every production file but tests and hidden directories")
 		violations, err := publicationViolations(dir, files)
 		require.NoError(t, err)
 		require.Equal(t, []string{
@@ -169,6 +176,7 @@ func TestOnlyInitDBDDLReachesThePublicationTables(t *testing.T) {
 			`internal/cdcv2/planted.go spells a publication table name: "z_publication"`,
 			"internal/cdcv2/sub/planted.go imports " + cdcV2Import,
 			"internal/federated/planted.go imports " + manifestV2Import,
+			"internal/federated/planted_seam.go uses WithPublicationReader",
 			`internal/federatedv2/planted.go spells a publication table name: "w_publication"`,
 			`internal/manifestv2/planted.go spells a publication table name: "x_publication"`,
 			"internal/manifestv2/sub/planted.go imports " + manifestV2Import,
@@ -249,17 +257,24 @@ func fileViolations(rel string, file *ast.File) []string {
 }
 
 // federatedImport is the engine package whose WithPublicationReader turns on
-// the V2 read path (#900).
-const federatedImport = "github.com/lychee-technology/forma/internal/federated"
+// the V2 read path (#900), and federatedDir its directory.
+const (
+	federatedImport = "github.com/lychee-technology/forma/internal/federated"
+	federatedDir    = "internal/federated"
+)
 
 // readerSeamViolations refuses a production use of
 // federated.WithPublicationReader outside the dormant packages: the option is
 // the only way into the V2 read path, and an engine built with it before #896
 // would answer a schema from a record no V1 writer keeps (the guard's own
-// reason). The engine package declares the option without using it.
+// reason). The engine package declares the option, and is held to the rule
+// too: it would call the option unqualified (engineSeamViolations).
 func readerSeamViolations(rel, pkg string, file *ast.File) []string {
 	if _, dormant := dormantPackages[pkg]; dormant {
 		return nil
+	}
+	if pkg == federatedDir {
+		return engineSeamViolations(rel, file)
 	}
 	name := ""
 	for _, imp := range file.Imports {
@@ -287,6 +302,27 @@ func readerSeamViolations(rel, pkg string, file *ast.File) []string {
 	if name == "." {
 		violations = append(violations, rel+" dot-imports "+federatedImport)
 	}
+	return violations
+}
+
+// engineSeamViolations refuses any use of WithPublicationReader in a file of
+// the engine package but the option's own declaration: the package could
+// otherwise turn its V2 path on for itself, unqualified, with no import for
+// readerSeamViolations to see.
+func engineSeamViolations(rel string, file *ast.File) []string {
+	declared := map[*ast.Ident]bool{}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil {
+			declared[fn.Name] = true
+		}
+	}
+	var violations []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && id.Name == "WithPublicationReader" && !declared[id] {
+			violations = append(violations, rel+" uses WithPublicationReader")
+		}
+		return true
+	})
 	return violations
 }
 

@@ -245,7 +245,6 @@ func (p *pgxPass) readSnapshot(ctx context.Context, snap hotLegSnapshot) ([]uuid
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the dirty set in the pass's snapshot: %w: %w", ErrPostgresReadFailed, err)
 	}
-	p.planCtx.recordSnapshotDirtySet(p.tables.ChangeLog, p.q.SchemaID, form, p.graceCutoffMs(), len(cl.DirtyIDs))
 	if p.src.emptyCandidate {
 		if err := p.settleEmptyCandidate(ctx, cl.HasParquetHistory); err != nil {
 			return nil, nil, err
@@ -256,10 +255,14 @@ func (p *pgxPass) readSnapshot(ctx context.Context, snap hotLegSnapshot) ([]uuid
 			return nil, nil, err
 		}
 	}
+	// Recorded once the pass knows whether it has a parquet leg: a published
+	// pass without one stages nothing.
+	staged := !(p.published() && p.noObjects)
+	p.planCtx.recordSnapshotDirtySet(p.tables.ChangeLog, p.q.SchemaID, form, p.graceCutoffMs(), len(cl.DirtyIDs), staged)
 	// The cap bounds what the pass stages in DuckDB. A published pass
 	// without a parquet leg stages nothing: an unpublished schema's every
 	// live row is dirty, and the hot leg is its whole answer.
-	if limit := p.e.cfg.HotLegMaxDirtyRows; limit > 0 && len(cl.DirtyIDs) > limit && !(p.published() && p.noObjects) {
+	if limit := p.e.cfg.HotLegMaxDirtyRows; limit > 0 && len(cl.DirtyIDs) > limit && staged {
 		return nil, nil, fmt.Errorf("schema %d: the dirty set holds %d rows, past duckdb.hotLegMaxDirtyRows (%d), so the pass does not stage it: %w",
 			p.q.SchemaID, len(cl.DirtyIDs), limit, ErrFederatedReadFailed)
 	}

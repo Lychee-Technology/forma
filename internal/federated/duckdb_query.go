@@ -71,9 +71,10 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 		// second retryable failure surfaces: a publication racing the same
 		// request twice must not loop.
 		mark.rewind(opts)
+		first := err
 		recs, total, err = e.collectDuckDBFederatedQuery(ctx, tables, q, limit, offset, attributeOrders, opts)
 		if err != nil {
-			return nil, 0, fmt.Errorf("retry after %s: %w", reason, err)
+			return nil, 0, retryFailure(reason, first, err)
 		}
 	}
 	if err != nil {
@@ -199,7 +200,12 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// Initialize execution plan tracking
 	planCtx := newDuckDBExecutionPlanContext(opts, e.clock())
 
-	if e == nil || e.duck == nil {
+	// A published pass (WithPublicationReader) meets the DuckDB admission
+	// below only once the generation its snapshot reads lists objects
+	// (admitPublishedScan, pgx_publication.go): a pass without a parquet leg
+	// needs no DuckDB, and a publication fault is not DuckDB's to answer for.
+	published := e != nil && e.publication != nil
+	if e == nil || (e.duck == nil && !published) {
 		planCtx.recordClientUnavailable()
 		return 0, fmt.Errorf("duckdb client not available: %w", ErrDuckDBUnavailable)
 	}
@@ -211,10 +217,14 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 	// and duck.Query hand it back through the deferred ReleaseProbe below.
 	// breakerAllow reports the transition when this caller is the probe
 	// (#634).
-	admitted, probe := e.breakerAllow(ctx)
-	if !admitted {
-		planCtx.recordClientUnavailable()
-		return 0, fmt.Errorf("%w: %w", errBreakerRejected, ErrDuckDBUnavailable)
+	var probe ProbeToken
+	if !published {
+		admitted, token := e.breakerAllow(ctx)
+		if !admitted {
+			planCtx.recordClientUnavailable()
+			return 0, fmt.Errorf("%w: %w", errBreakerRejected, ErrDuckDBUnavailable)
+		}
+		probe = token
 	}
 
 	// DuckDBConfig.QueryTimeout bounds one DuckDB pass end to end (#465):

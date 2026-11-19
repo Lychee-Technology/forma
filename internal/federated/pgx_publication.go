@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/lychee-technology/forma"
 )
 
 // The Protocol V2 source of a pgx pass (docs/publication-protocol-v2.md,
@@ -38,16 +39,19 @@ const DefaultPublishedPassDeadline = 60 * time.Second
 type PublicationReader interface {
 	// ReadRecord reads schemaID's publication record on tx, the pass's
 	// REPEATABLE READ snapshot, as the snapshot's first statement. A record
-	// that is absent, AWAITING_INIT, DROPPED or at an epoch other than the
-	// one the process pinned fails with a *PublicationConsistencyError; any
-	// other error is a failed PostgreSQL read.
+	// that is absent, malformed, AWAITING_INIT, DROPPED or at an epoch other
+	// than the one the process pinned fails with a
+	// *PublicationConsistencyError; any other error is a failed PostgreSQL
+	// read.
 	ReadRecord(ctx context.Context, tx pgx.Tx, schemaID int16) (PublicationRecord, error)
 	// ResolveGeneration answers the objects a published record's generation
 	// lists, from its verified manifest. A missing or invalid manifest is a
 	// *PublicationConsistencyError; any other error is a failed fetch.
 	ResolveGeneration(ctx context.Context, rec PublicationRecord) (PublishedGeneration, error)
 	// MissingIn answers the keys of gen's objects among scanned that the
-	// store does not hold. It runs only after a failed read.
+	// store does not hold. It runs only after a failed read. A probe that
+	// fails leaves the keys the other probes found missing in the answer,
+	// beside the error: a confirmed loss is never taken back.
 	MissingIn(ctx context.Context, gen PublishedGeneration, scanned []string) ([]string, error)
 }
 
@@ -137,30 +141,6 @@ func (e *PublicationConsistencyError) Unwrap() []error {
 	return []error{ErrPublicationInconsistent, e.Err}
 }
 
-// errPublishedObjectMissing is the fault of a generation that lists an object
-// the store does not hold: loss, which garbage collection never causes
-// within its grace.
-var errPublishedObjectMissing = errors.New("the generation lists objects the store does not hold")
-
-// ErrPassDeadline marks a published pass that ran past its deadline, R_max,
-// and was aborted, its DuckDB statement cancelled. The engine retries the
-// pass once, on a fresh snapshot. Like any expired deadline it is not
-// degradable (#465).
-var ErrPassDeadline = errors.New("published pass ran past its deadline")
-
-// passDeadlineError wraps the failure of a pass its deadline aborted.
-type passDeadlineError struct {
-	SchemaID int16
-	Deadline time.Duration
-	cause    error
-}
-
-func (e *passDeadlineError) Error() string {
-	return fmt.Sprintf("schema %d: the pass ran past its %s deadline and was aborted: %v", e.SchemaID, e.Deadline, e.cause)
-}
-
-func (e *passDeadlineError) Unwrap() []error { return []error{ErrPassDeadline, e.cause} }
-
 // noGraceCutoffMs is a published pass's dirty-window cutoff: no entry is
 // marked at or after it, so the hot keys' window is the unflushed entries
 // alone. The generation is read in the snapshot, so a row marked flushed in it
@@ -187,16 +167,6 @@ func (p *pgxPass) armDeadline(ctx context.Context) (context.Context, context.Can
 	return context.WithTimeoutCause(ctx, p.e.publishedPassDeadline, ErrPassDeadline)
 }
 
-// deadlineFailure turns the failure of a pass its own deadline aborted into a
-// retryable passDeadlineError. A failure the request's own deadline or
-// cancellation caused is left as it is.
-func (p *pgxPass) deadlineFailure(passCtx context.Context, err error) error {
-	if err == nil || !p.published() || !errors.Is(context.Cause(passCtx), ErrPassDeadline) {
-		return err
-	}
-	return &passDeadlineError{SchemaID: p.q.SchemaID, Deadline: p.e.publishedPassDeadline, cause: err}
-}
-
 // readPublication reads the record as the snapshot's first statement. An
 // unpublished record leaves the pass without a parquet leg.
 func (p *pgxPass) readPublication(ctx context.Context, snap hotLegSnapshot) error {
@@ -210,15 +180,6 @@ func (p *pgxPass) readPublication(ctx context.Context, snap hotLegSnapshot) erro
 	p.record = rec
 	p.noObjects = !rec.Published
 	return nil
-}
-
-// publicationFailure keeps a consistency error as it is, and labels any other
-// failure with class.
-func (p *pgxPass) publicationFailure(err, class error, op string) error {
-	if errors.Is(err, ErrPublicationInconsistent) {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	return fmt.Errorf("%s: %w: %w", op, class, err)
 }
 
 // resolveGeneration fetches the generation's manifest and runs the pre-read
@@ -241,8 +202,62 @@ func (p *pgxPass) resolveGeneration(ctx context.Context) error {
 		p.noObjects = true
 		return nil
 	}
+	if err := refuseGlobPaths(gen); err != nil {
+		return err
+	}
+	if err := p.admitPublishedScan(ctx); err != nil {
+		return err
+	}
 	p.src = pgxScanSources{scanSources: scanSources{paths: gen.Paths, fromSource: true, graceCutoffMs: noGraceCutoffMs}}
 	return p.checkPublishedObjects(ctx)
+}
+
+// ErrPublishedPathNotConcrete is the fault of a generation that lists an
+// object whose address holds a glob metacharacter (forma.
+// ParquetGlobMetacharacters). DuckDB would expand such an address, in the
+// pre-read checks and in read_parquet alike, and read whatever matches it:
+// objects the generation does not list. The pass refuses the generation
+// before any DuckDB work, as a PublicationConsistencyError.
+var ErrPublishedPathNotConcrete = errors.New("the generation lists an object whose address DuckDB would expand as a glob")
+
+// refuseGlobPaths refuses a generation that lists an address DuckDB would
+// expand: every listed object must reach DuckDB as one concrete object.
+func refuseGlobPaths(gen PublishedGeneration) error {
+	var globs []string
+	for _, path := range gen.Paths {
+		if strings.ContainsAny(path, forma.ParquetGlobMetacharacters) {
+			globs = append(globs, path)
+		}
+	}
+	if len(globs) == 0 {
+		return nil
+	}
+	return &PublicationConsistencyError{
+		SchemaID: gen.SchemaID, Epoch: gen.Epoch, Generation: gen.Generation,
+		Err: fmt.Errorf("%w: %s", ErrPublishedPathNotConcrete, strings.Join(globs, ", ")),
+	}
+}
+
+// admitPublishedScan applies to a published pass the DuckDB admission a V1
+// pass meets on entry (StreamDuckDBFederatedQuery): DuckDB must be there,
+// and the breaker must admit the scan, reserving its half-open probe. A
+// published pass meets it only here, once its snapshot's generation lists
+// objects to scan. A pass without a parquet leg, unpublished or over an
+// empty generation, needs no DuckDB, so DuckDB's health never refuses it,
+// and a record the pass must fail closed on is refused before admission can
+// answer for it with a degradable rejection.
+func (p *pgxPass) admitPublishedScan(ctx context.Context) error {
+	if p.e.duck == nil {
+		p.planCtx.recordClientUnavailable()
+		return fmt.Errorf("duckdb client not available: %w", ErrDuckDBUnavailable)
+	}
+	admitted, probe := p.e.breakerAllow(ctx)
+	if !admitted {
+		p.planCtx.recordClientUnavailable()
+		return fmt.Errorf("%w: %w", errBreakerRejected, ErrDuckDBUnavailable)
+	}
+	p.probe = probe
+	return nil
 }
 
 // checkPublishedObjects runs the pre-read checks the V1 resolution runs
@@ -266,44 +281,4 @@ func (p *pgxPass) checkPublishedObjects(ctx context.Context) error {
 	}
 	p.src.cold = cold
 	return nil
-}
-
-// refusePublishedCorrupt fails a generation that lists objects cached as
-// corrupt without scanning it, as refuseCachedCorrupt does for a V1 set: the
-// type guard over the rest first, then the missing-object probe, so a listed
-// object the store lost is reported as the consistency error it is.
-func (p *pgxPass) refusePublishedCorrupt(ctx context.Context, corrupt []string) error {
-	e := p.e
-	if err := e.typeGuardReadableRemainder(ctx, p.q.SchemaID, p.gen.Paths, corrupt, p.gen.Columns); err != nil {
-		return fmt.Errorf("type-check the objects listed beside ones cached as corrupt: %w", err)
-	}
-	cause := errors.New("verified corrupt by an earlier read and still cached")
-	sc := scan{parquetPaths: p.gen.Paths, pathsFromSource: true, probe: p.probe, published: p.gen}
-	if err := e.publishedObjectsMissing(ctx, sc, cause, "probe a generation listing objects cached as corrupt"); err != nil {
-		p.resolved = true // the probe went back with the consistency error
-		return err
-	}
-	return &CorruptParquetError{SchemaID: p.q.SchemaID, Paths: corrupt, cause: fmt.Errorf("%w: %w", cause, ErrFederatedReadFailed)}
-}
-
-// publishedObjectsMissing probes a failed published read's objects, and
-// answers the consistency error when the store lost any of them. The breaker
-// gets its probe back: a lost object says nothing about DuckDB. A probe that
-// cannot run proves no loss, and answers nil.
-func (e *DBFederatedQueryEngine) publishedObjectsMissing(ctx context.Context, sc scan, cause error, op string) error {
-	gen := sc.published
-	if gen == nil || e.publication == nil {
-		return nil
-	}
-	missing, err := e.publication.MissingIn(ctx, *gen, sc.parquetPaths)
-	if err != nil || len(missing) == 0 {
-		return nil
-	}
-	e.breaker.ReleaseProbe(sc.probe)
-	return &PublicationConsistencyError{
-		SchemaID: gen.SchemaID, Epoch: gen.Epoch, Generation: gen.Generation, MissingKeys: missing,
-		// The cause is text only: it may carry ErrFederatedReadFailed or an
-		// expired deadline, and neither may reclassify a lost object.
-		Err: fmt.Errorf("%w: %s: %s", errPublishedObjectMissing, op, cause.Error()),
-	}
 }
