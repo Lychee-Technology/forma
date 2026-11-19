@@ -2,11 +2,13 @@ package factory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/bootstrap"
@@ -64,6 +66,12 @@ type publicationReaderSpec struct {
 	// metadataEpochs are the records' epochs as read before meta was loaded
 	// (loadMetadataWithEpochs); nil when they were not read.
 	metadataEpochs map[int16]int64
+	// registryEpochs are the records' epochs as read before the caller's
+	// schema registry loaded (forma.Config.SchemaRegistryEpochs). The reader
+	// refuses to start without them: the registry resolves the schemas, their
+	// sort attributes and their decoding for every query, and it loaded
+	// before the factory read anything.
+	registryEpochs map[int16]int64
 	// entityMain names the publication tables (publication.TablesFor).
 	entityMain string
 }
@@ -104,24 +112,73 @@ func readPublicationEpochs(ctx context.Context, pool snapshotPool, entityMain st
 	return epochs, nil
 }
 
-// bindEpochPins keeps the pins whose epoch is the one read before the
-// metadata was loaded. A schema whose record moved in between was dropped,
-// or dropped and registered again, while the metadata loaded: the metadata
-// may be the dropped schema's, so the schema gets no pin and every read of
+// bindEpochPins keeps the pins whose epoch is the one each of befores read:
+// before the factory's metadata loaded, and before the caller's schema
+// registry loaded. A schema whose record moved in between, or had none then,
+// was dropped, or dropped and registered again, while that metadata loaded:
+// it may be the dropped schema's, so the schema gets no pin and every read of
 // it fails closed (federatedv2.ErrNotPinned) until the process loads its
-// metadata again. nil before keeps every pin.
-func bindEpochPins(pins, before map[int16]int64) map[int16]int64 {
-	if before == nil {
-		return pins
-	}
-	for id, epoch := range pins {
-		if was, ok := before[id]; !ok || was != epoch {
-			zap.S().Warnw("schema's publication record moved while its metadata loaded; its federated reads fail closed until the process restarts",
-				"schema_id", id, "epoch_before_load", was, "epoch_after_load", epoch, "had_record_before_load", ok)
-			delete(pins, id)
+// metadata again. A nil reading binds nothing.
+func bindEpochPins(pins map[int16]int64, befores ...map[int16]int64) map[int16]int64 {
+	for _, before := range befores {
+		if before == nil {
+			continue
+		}
+		for id, epoch := range pins {
+			if was, ok := before[id]; !ok || was != epoch {
+				zap.S().Warnw("schema's publication record moved while its metadata loaded; its federated reads fail closed until the process restarts",
+					"schema_id", id, "epoch_before_load", was, "epoch_after_load", epoch, "had_record_before_load", ok)
+				delete(pins, id)
+			}
 		}
 	}
 	return pins
+}
+
+// ErrSchemaRegistryEpochsRequired refuses a federated reader whose caller
+// gave no forma.Config.SchemaRegistryEpochs: without the epochs read before
+// the caller's registry loaded, no pin proves that the registry describes the
+// schema the record belongs to.
+var ErrSchemaRegistryEpochsRequired = errors.New("config.SchemaRegistryEpochs is required when DuckDB is enabled")
+
+// ReadSchemaRegistryEpochs reads every schema's publication epoch, in one
+// snapshot, for config.SchemaRegistryEpochs. Call it before loading
+// config.SchemaRegistry, on the pool the factory is given: the federated
+// reader pins only the schemas whose record is still at the epoch read here,
+// so a drop or re-registration that commits while the registry loads cannot
+// pair the registry's view of the dropped schema with the new schema's
+// generations. It answers nil, reading nothing, when DuckDB is disabled.
+func ReadSchemaRegistryEpochs(ctx context.Context, config *forma.Config, pool *pgxpool.Pool) (map[int16]int64, error) {
+	if config == nil || !config.DuckDB.Enabled {
+		return nil, nil
+	}
+	if pool == nil {
+		return nil, errors.New("read the schema registry's publication epochs: a database pool is required")
+	}
+	qualified := configWithQualifiedTables(config, normalizeSchemaName(config.Database.Schema))
+	epochs, err := readPublicationEpochs(ctx, pool, qualified.Database.TableNames.EntityMain)
+	if err != nil {
+		return nil, fmt.Errorf("read the schema registry's publication epochs: %w", err)
+	}
+	return epochs, nil
+}
+
+// LoadFileSchemaRegistryContext loads the file schema registry of config
+// (config.Database.TableNames.SchemaRegistry over schemaDir) on pool, after
+// reading the publication epochs it belongs to, and sets both
+// config.SchemaRegistry and config.SchemaRegistryEpochs. It is the startup
+// order the server and the Lambda follow: epochs, registry, then the factory.
+func LoadFileSchemaRegistryContext(ctx context.Context, config *forma.Config, pool *pgxpool.Pool, schemaDir string) error {
+	epochs, err := ReadSchemaRegistryEpochs(ctx, config, pool)
+	if err != nil {
+		return err
+	}
+	registry, err := schemameta.NewFileSchemaRegistryContext(ctx, pool, config.Database.TableNames.SchemaRegistry, schemaDir)
+	if err != nil {
+		return fmt.Errorf("failed to create schema registry: %w", err)
+	}
+	config.SchemaRegistry, config.SchemaRegistryEpochs = registry, epochs
+	return nil
 }
 
 // newPublicationReader builds the federated reader's Protocol V2 source
@@ -138,11 +195,14 @@ func newPublicationReader(ctx context.Context, spec publicationReaderSpec) (fede
 	if spec.pool == nil {
 		return nil, fmt.Errorf("the publication reader needs a database pool to pin the schemas' epochs")
 	}
+	if spec.registryEpochs == nil {
+		return nil, fmt.Errorf("read them with factory.ReadSchemaRegistryEpochs before loading config.SchemaRegistry: %w", ErrSchemaRegistryEpochsRequired)
+	}
 	pins, err := loadEpochPins(ctx, spec.pool, spec.entityMain, registeredSchemaIDs(spec.meta))
 	if err != nil {
 		return nil, err
 	}
-	pins = bindEpochPins(pins, spec.metadataEpochs)
+	pins = bindEpochPins(pins, spec.metadataEpochs, spec.registryEpochs)
 	client, err := newPublicationS3Client(ctx, spec.duck)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build the s3 client of the publication reader: %w", err)

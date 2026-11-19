@@ -16,6 +16,17 @@ type Config struct {
 	Reference      ReferenceConfig   `json:"reference"`
 	DuckDB         DuckDBConfig      `json:"duckdb"`
 	SchemaRegistry SchemaRegistry    `json:"-"` // Custom schema registry implementation (optional)
+	// SchemaRegistryEpochs is the epoch of every schema's publication record
+	// as read before SchemaRegistry loaded (factory.ReadSchemaRegistryEpochs).
+	// A drop, and a registration of a dropped id, moves a record to its next
+	// epoch, so a schema whose record the federated reader later pins at
+	// another epoch, or that had no record then, may be described by
+	// SchemaRegistry as the dropped schema it was: the reader does not pin it,
+	// and every federated read of it fails closed until the process loads the
+	// registry again. Required when DuckDB is enabled; the factory refuses to
+	// build the federated reader without it, since an epoch read after the
+	// registry loaded proves nothing about the registry.
+	SchemaRegistryEpochs map[int16]int64 `json:"-"`
 }
 
 // DatabaseConfig contains database connection settings

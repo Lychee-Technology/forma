@@ -299,3 +299,39 @@ func (e *Env) RunInitKeepingDelta(ctx context.Context, schema SchemaRef) (*InitR
 	})
 	return report, nil
 }
+
+// redropSchema drops schema and registers it again under its id, as
+// drop-schema and init-db do: Reset, then Activate, each in its own
+// transaction. Its rows stay (no purge, no residue check): the tests that use
+// it only observe that every process that loaded the schema before is fenced
+// off it. The record ends two epochs on, UNPUBLISHED.
+func redropSchema(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) publication.Record {
+	t.Helper()
+	tables := publication.TablesFor(env.Tables.EntityMain)
+	var rec publication.Record
+	for _, step := range []func(publication.Tx, publication.Record) (publication.Record, error){
+		func(tx publication.Tx, cur publication.Record) (publication.Record, error) {
+			return publication.Reset(ctx, tx, tables, cur)
+		},
+		func(tx publication.Tx, cur publication.Record) (publication.Record, error) {
+			return publication.Activate(ctx, tx, tables, cur, nil)
+		},
+	} {
+		tx, err := env.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("redrop %s: begin: %v", schema.Name, err)
+		}
+		snap, err := publication.Read(ctx, publication.PgxTx(tx), tables, schema.ID)
+		if err == nil {
+			rec, err = step(publication.PgxTx(tx), snap.Record)
+		}
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("redrop %s: %v", schema.Name, err)
+		}
+	}
+	return rec
+}

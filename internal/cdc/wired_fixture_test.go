@@ -50,6 +50,22 @@ type wiredFixture struct {
 	store  *manifestv2.FSStore
 	duck   *DuckExporter
 	logger *zap.Logger
+	// noCallerEpochs leaves CDCConfig.RegistryEpochs unset, where the
+	// fixture otherwise reads them as a caller does before loading its
+	// registry (callerEpochs).
+	noCallerEpochs bool
+}
+
+// callerEpochs gives cfg the epochs a caller reads before loading the run's
+// registry, unless mods set them or the test runs without them.
+func (f *wiredFixture) callerEpochs(t *testing.T, cfg *CDCConfig) {
+	t.Helper()
+	if cfg.RegistryEpochs != nil || f.noCallerEpochs {
+		return
+	}
+	epochs, err := ReadRegistryEpochs(context.Background(), f.db, cfg.EntityMainTable)
+	require.NoError(t, err)
+	cfg.RegistryEpochs = epochs
 }
 
 func newWiredFixture(t *testing.T) *wiredFixture {
@@ -293,6 +309,7 @@ func (f *wiredFixture) flush(t *testing.T, registry forma.SchemaRegistry, dryRun
 	for _, mod := range mods {
 		mod(&cfg)
 	}
+	f.callerEpochs(t, &cfg)
 	if registry == nil {
 		registry = stubSchemaRegistry{cache: testAttrCache()}
 	}
@@ -312,10 +329,13 @@ func (f *wiredFixture) runInit(t *testing.T, registry forma.SchemaRegistry, dryR
 	if registry == nil {
 		registry = stubSchemaRegistry{cache: testAttrCache()}
 	}
+	f.callerEpochs(t, &cfg)
 	locker, err := NewSchemaLocker(f.db, cfg.Engine, cfg.EntityMainTable)
 	require.NoError(t, err)
-	epochs, err := runEpochs(context.Background(), cfg, f.db)
-	require.NoError(t, err)
+	epochs, err := runEpochs(cfg)
+	if err != nil {
+		return InitSummary{}, err
+	}
 	runCtx := &initRunContext{
 		cfg: cfg, epochs: epochs, db: f.db, duck: f.duck, store: f.store, schemaRegistry: registry,
 		logger: f.logger, dryRun: dryRun, locker: locker,

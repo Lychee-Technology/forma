@@ -155,11 +155,19 @@ compactor, reader, GC) is given that name.
   epoch fails closed: the schema was dropped, and maybe re-created, since the process
   loaded what it knows about it. The pin binds only if it is read *before* the metadata
   loads and still holds after: a pin read after the load could already be a re-created
-  schema's epoch, paired with the dropped schema's metadata. So the factory reads every
-  record's epoch (`publication.Epochs`) before it loads the metadata and pins a schema only
-  if its epoch is the same when it pins it; `cdc-flush` and `cdc-init` read them before they
-  load the schema registry (`CDCConfig.RegistryEpochs`, or at the run's start before it
-  resolves the attributes) and refuse, under the schema lock, a record at another epoch.
+  schema's epoch, paired with the dropped schema's metadata. Every copy of the metadata
+  a process uses is bound this way, the caller-facing schema registry included: it
+  resolves the schema, its sort attributes and its decoding on every query, and the caller
+  loads it before the factory reads anything. So the server and the Lambda read every
+  record's epoch before they load the registry (`factory.LoadFileSchemaRegistryContext`,
+  which sets `forma.Config.SchemaRegistryEpochs`), the factory reads them again before it
+  loads its own metadata, and it pins a schema only if its epoch is the same in both
+  readings and when it pins it; with DuckDB enabled it refuses to build the reader without
+  `SchemaRegistryEpochs`. `cdc-flush` and `cdc-init` are given the epochs read before
+  their registry loaded (`CDCConfig.RegistryEpochs`, `cdc.ReadRegistryEpochs`), refuse a
+  run without them before any I/O, since an epoch a run reads itself proves nothing about
+  a registry loaded before it, and refuse, under the schema lock, a record at another
+  epoch.
 - *Re-onboarding* an existing schema is a `cdc-init` (a new lineage in the same epoch).
   It never resets, for the same reason: a reset would hide every flushed row.
 

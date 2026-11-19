@@ -74,3 +74,37 @@ func TestWritersRefuseAnUnaddressableDataPrefixBeforeAnyIO(t *testing.T) {
 		t.Fatalf("a literal prefix is a valid flush configuration: %v", err)
 	}
 }
+
+// A caller that gives a run no RegistryEpochs is refused before any S3,
+// PostgreSQL or DuckDB I/O, on both flush entry points and init: the run
+// cannot tell what epoch its already-loaded registry belongs to.
+func TestWritersRefuseARunWithoutRegistryEpochsBeforeAnyIO(t *testing.T) {
+	entrypoints := map[string]func(CDCConfig, S3Client) error{
+		"RunOnce": func(cfg CDCConfig, client S3Client) error {
+			_, err := RunOnce(context.Background(), cfg, client, false, zap.NewNop(), &stubSchemaRegistry{})
+			return err
+		},
+		"Runner.RunOnce": func(cfg CDCConfig, client S3Client) error {
+			r := NewRunner(zap.NewNop())
+			defer func() { _ = r.Close() }()
+			_, err := r.RunOnce(context.Background(), cfg, client, false, &stubSchemaRegistry{})
+			return err
+		},
+		"RunInit": func(cfg CDCConfig, client S3Client) error {
+			_, err := RunInit(context.Background(), InitOptions{Config: cfg, S3Client: client, SchemaRegistry: &stubSchemaRegistry{}})
+			return err
+		},
+	}
+	for entry, run := range entrypoints {
+		t.Run(entry, func(t *testing.T) {
+			client := &countingS3{}
+			err := run(CDCConfig{S3Bucket: "bucket", S3Prefix: "data", PGHost: "unreachable.invalid", PGPort: 1}, client)
+			if !errors.Is(err, ErrRegistryEpochsRequired) {
+				t.Fatalf("%s without RegistryEpochs: want ErrRegistryEpochsRequired, got %v", entry, err)
+			}
+			if n := client.calls.Load(); n != 0 {
+				t.Fatalf("%s made %d S3 calls before refusing the run", entry, n)
+			}
+		})
+	}
+}

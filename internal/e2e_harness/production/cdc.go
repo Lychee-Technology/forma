@@ -92,6 +92,9 @@ func (e *Env) RunFlushWith(ctx context.Context, ov FlushOverrides) (*FlushReport
 	if ov.Config != nil {
 		cfg = *ov.Config
 	}
+	if cfg.RegistryEpochs == nil {
+		cfg.RegistryEpochs = e.RegistryEpochs
+	}
 	var s3Client cdc.S3Client = e.Cluster.S3
 	if ov.S3 != nil {
 		s3Client = ov.S3
@@ -155,6 +158,9 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 	cfg := e.CDC
 	if ov.Config != nil {
 		cfg = *ov.Config
+	}
+	if cfg.RegistryEpochs == nil {
+		cfg.RegistryEpochs = e.RegistryEpochs
 	}
 	schemaIDFilter := int(schema.ID)
 	if ov.AllSchemas {

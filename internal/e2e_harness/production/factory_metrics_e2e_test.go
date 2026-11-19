@@ -139,6 +139,7 @@ func TestFactoryWiring_MetricEmitter(t *testing.T) {
 func newFactoryManagerWithEmitter(ctx context.Context, t *testing.T, env *Env, emitter forma.MetricEmitter) forma.EntityManager {
 	t.Helper()
 	cfg := forma.DefaultConfig(env.Registry)
+	cfg.SchemaRegistryEpochs = env.RegistryEpochs
 	cfg.Entity.SchemaDirectory = FixtureSchemasDir()
 	cfg.Database.TableNames = forma.TableNames{
 		SchemaRegistry: env.Tables.SchemaRegistry,

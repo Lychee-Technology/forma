@@ -167,15 +167,20 @@ func (p failingSnapshotPool) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, er
 	return nil, p.err
 }
 
-// The production reader refuses a missing pool, a snapshot it cannot open and
-// an S3 client it cannot build, each naming the cause.
+// The production reader refuses a missing pool, missing registry epochs, a
+// snapshot it cannot open and an S3 client it cannot build, each naming the
+// cause.
 func TestNewPublicationReaderFailures(t *testing.T) {
 	ctx := context.Background()
 	_, err := newPublicationReader(ctx, publicationReaderSpec{duck: duckDBReadConfig(), entityMain: "entity_main"})
 	require.ErrorContains(t, err, "needs a database pool")
 
+	_, err = newPublicationReader(ctx, publicationReaderSpec{duck: duckDBReadConfig(), entityMain: "entity_main", pool: noSchemaPool{}})
+	require.ErrorIs(t, err, ErrSchemaRegistryEpochsRequired, "no epochs read before the caller's registry loaded")
+
+	none := map[int16]int64{}
 	beginErr := errors.New("connection refused")
-	_, err = newPublicationReader(ctx, publicationReaderSpec{duck: duckDBReadConfig(), entityMain: "entity_main", pool: failingSnapshotPool{beginErr}})
+	_, err = newPublicationReader(ctx, publicationReaderSpec{duck: duckDBReadConfig(), entityMain: "entity_main", pool: failingSnapshotPool{beginErr}, registryEpochs: none})
 	require.ErrorIs(t, err, beginErr)
 	require.ErrorContains(t, err, "pinned")
 
@@ -183,7 +188,7 @@ func TestNewPublicationReaderFailures(t *testing.T) {
 	swapPublicationS3Client(t, func(context.Context, forma.DuckDBConfig) (publicationS3Client, error) { return nil, clientErr })
 	// With no schema to pin, only the S3 client seam can fail the reader.
 	_, err = newPublicationReader(ctx, publicationReaderSpec{
-		duck: duckDBReadConfig(), entityMain: "entity_main", pool: noSchemaPool{}, meta: schemameta.NewMetadataCache(),
+		duck: duckDBReadConfig(), entityMain: "entity_main", pool: noSchemaPool{}, meta: schemameta.NewMetadataCache(), registryEpochs: none,
 	})
 	require.ErrorIs(t, err, clientErr)
 }

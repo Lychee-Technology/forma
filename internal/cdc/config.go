@@ -98,10 +98,11 @@ type CDCConfig struct {
 	// at another epoch under its schema lock refuses the schema
 	// (cdcv2.ErrEpochChanged) before any export: the metadata it holds may be
 	// the dropped schema's. A schema without an entry is refused the same
-	// way. nil: the run reads them itself at its start, before it resolves
-	// the schemas' attributes, which binds the run to a registry loaded no
-	// earlier; a caller that keeps a registry across runs supplies the
-	// epochs it read before loading it.
+	// way. Required: a run without them is refused before any export
+	// (ErrRegistryEpochsRequired), since the registry it is given loaded
+	// before the run started and an epoch the run read itself proves nothing
+	// about it. Read them with ReadRegistryEpochs before loading the
+	// registry, and again whenever the registry is loaded again.
 	RegistryEpochs map[int16]int64
 }
 

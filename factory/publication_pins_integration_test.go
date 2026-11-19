@@ -78,10 +78,12 @@ func TestFactoryPinsNoEpochARedropDuringTheMetadataLoadMoved(t *testing.T) {
 			cfg.DuckDB = duckDBReadConfig()
 			cfg.DuckDB.AllowPartialDegradedMode = true
 
+			registryEpochs, err := readPublicationEpochs(w.ctx, w.pool, w.tables.EntityMain)
+			require.NoError(t, err)
 			loaded, epochs, err := loadMetadataWithEpochs(w.ctx, loader, cfg.DuckDB, w.pool, w.tables.EntityMain)
 			require.NoError(t, err)
 			reader, err := newPublicationReader(w.ctx, publicationReaderSpec{
-				duck: cfg.DuckDB, pool: w.pool, meta: loaded, metadataEpochs: epochs, entityMain: w.tables.EntityMain,
+				duck: cfg.DuckDB, pool: w.pool, meta: loaded, metadataEpochs: epochs, registryEpochs: registryEpochs, entityMain: w.tables.EntityMain,
 			})
 			require.NoError(t, err)
 			_, engine := newRepositoryAndEngine(w.pool, loaded, cfg, closedDuckDBClient(t), reader)
@@ -98,4 +100,50 @@ func TestFactoryPinsNoEpochARedropDuringTheMetadataLoadMoved(t *testing.T) {
 			require.Zero(t, w.s3.called())
 		})
 	}
+}
+
+// The caller's schema registry loads before the factory reads anything, so
+// the factory's own epoch reading cannot bind it. A drop and re-registration
+// of schema 7 that commits after the caller read its epochs and loaded its
+// registry, and before the factory loads its metadata, leaves the registry
+// describing the dropped schema while the factory's metadata and the pins
+// would agree on the new epoch: the reader pins the schema only when its
+// epoch is also the one read before the registry loaded, so here it gets no
+// pin and its reads fail closed. Without such a reading the reader refuses
+// to start.
+func TestFactoryPinsNoEpochARedropAfterTheRegistryLoadedMoved(t *testing.T) {
+	w := newWiredEngine(t)
+	cfg := forma.DefaultConfig(newMockSchemaRegistry())
+	cfg.Database.TableNames = forma.TableNames{EntityMain: w.tables.EntityMain, EAVData: w.tables.EAVData, ChangeLog: w.tables.ChangeLog}
+	cfg.DuckDB = duckDBReadConfig()
+	cfg.DuckDB.AllowPartialDegradedMode = true
+
+	registryEpochs, err := ReadSchemaRegistryEpochs(w.ctx, cfg, w.pool)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), registryEpochs[unpublishedSchema])
+	w.redrop(t, unpublishedSchema) // after the registry loaded, before the factory reads
+
+	meta := schemameta.NewMetadataCache()
+	require.NoError(t, meta.RegisterSchema("published_later", unpublishedSchema, forma.SchemaAttributeCache{
+		"name": {AttributeID: 1, ValueType: forma.ValueTypeText, ColumnBinding: &forma.MainColumnBinding{ColumnName: "text_01"}},
+	}))
+	loaded, metadataEpochs, err := loadMetadataWithEpochs(w.ctx, &racingLoader{meta: meta}, cfg.DuckDB, w.pool, w.tables.EntityMain)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), metadataEpochs[unpublishedSchema], "the factory's own reading already sees the new epoch")
+
+	_, err = newPublicationReader(w.ctx, publicationReaderSpec{
+		duck: cfg.DuckDB, pool: w.pool, meta: loaded, metadataEpochs: metadataEpochs, entityMain: w.tables.EntityMain,
+	})
+	require.ErrorIs(t, err, ErrSchemaRegistryEpochsRequired)
+
+	reader, err := newPublicationReader(w.ctx, publicationReaderSpec{
+		duck: cfg.DuckDB, pool: w.pool, meta: loaded, metadataEpochs: metadataEpochs, registryEpochs: registryEpochs, entityMain: w.tables.EntityMain,
+	})
+	require.NoError(t, err)
+	_, engine := newRepositoryAndEngine(w.pool, loaded, cfg, closedDuckDBClient(t), reader)
+	_, err = engine.Query(w.ctx, w.tables, query(unpublishedSchema), &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+	require.ErrorIs(t, err, forma.ErrPublicationInconsistent)
+	require.ErrorIs(t, err, federatedv2.ErrNotPinned)
+	require.NotErrorIs(t, err, federated.ErrFederatedReadFailed)
+	require.Zero(t, w.s3.called())
 }

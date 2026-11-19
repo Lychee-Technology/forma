@@ -2,6 +2,7 @@ package cdc
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/lychee-technology/forma"
 	internalcdc "github.com/lychee-technology/forma/internal/cdc"
@@ -60,6 +61,21 @@ var ErrPublicationUnresolved = cdcv2.ErrUnresolved
 // PostgreSQL flush cannot mark in one statement (more than
 // cdcv2.MaxMarkEntries entries). RunOnce returns it before any side effect.
 var ErrBatchSizeTooLarge = internalcdc.ErrBatchSizeTooLarge
+
+// ErrRegistryEpochsRequired refuses a flush whose Config carries no
+// RegistryEpochs, before any I/O. Read them with ReadRegistryEpochs before
+// loading the schema registry the flush is given.
+var ErrRegistryEpochsRequired = internalcdc.ErrRegistryEpochsRequired
+
+// ReadRegistryEpochs reads every schema's publication epoch on db, for
+// Config.RegistryEpochs. Call it before loading the schema registry a flush
+// is given, and again whenever that registry is loaded again: a flush refuses
+// a schema whose record is at another epoch under its schema lock, since the
+// registry may describe the schema it was before a drop. entityMain names the
+// publication tables ("entity_main" when empty).
+func ReadRegistryEpochs(ctx context.Context, db *sql.DB, entityMain string) (map[int16]int64, error) {
+	return internalcdc.ReadRegistryEpochs(ctx, db, entityMain)
+}
 
 // ErrSchemaLockLost matches a flush whose per-schema lock ended before its
 // work did: under the aurora-dsql engine, a lease the run could not renew in

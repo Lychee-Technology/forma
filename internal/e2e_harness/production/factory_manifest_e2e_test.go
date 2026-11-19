@@ -170,7 +170,14 @@ func factoryPhaseNeverPublished(ctx context.Context, t *testing.T, manager forma
 // degraded fallback; the routing strategy sends every query through DuckDB.
 func newFactoryManager(ctx context.Context, t *testing.T, env *Env, degraded bool) forma.EntityManager {
 	t.Helper()
+	return buildFactoryManager(ctx, t, env, factoryConfig(env, degraded), degraded)
+}
+
+// factoryConfig is the deployment configuration newFactoryManager builds
+// with: the Env's registry, loaded at the Env's registry epochs.
+func factoryConfig(env *Env, degraded bool) *forma.Config {
 	cfg := forma.DefaultConfig(env.Registry)
+	cfg.SchemaRegistryEpochs = env.RegistryEpochs
 	cfg.Entity.SchemaDirectory = FixtureSchemasDir()
 	cfg.Database.TableNames = forma.TableNames{
 		SchemaRegistry: env.Tables.SchemaRegistry,
@@ -188,7 +195,13 @@ func newFactoryManager(ctx context.Context, t *testing.T, env *Env, degraded boo
 	duck.AllowPartialDegradedMode = degraded
 	duck.S3Bucket = env.Cluster.Bucket
 	cfg.DuckDB = duck
+	return cfg
+}
 
+// buildFactoryManager builds the manager of cfg with the factory and closes
+// it when the test ends.
+func buildFactoryManager(ctx context.Context, t *testing.T, env *Env, cfg *forma.Config, degraded bool) forma.EntityManager {
+	t.Helper()
 	manager, err := factory.NewEntityManagerWithConfigContext(ctx, cfg, env.Pool)
 	if err != nil {
 		t.Fatalf("build entity manager via factory (degraded=%t): %v", degraded, err)

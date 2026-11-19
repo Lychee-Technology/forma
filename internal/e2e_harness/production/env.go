@@ -38,11 +38,14 @@ type Env struct {
 	Pool     *pgxpool.Pool
 	Tables   model.StorageTables
 	Registry forma.SchemaRegistry
-	Metadata *schemameta.MetadataCache
-	Duck     *fedengine.DuckDBClient
-	DuckCfg  forma.DuckDBConfig
-	S3Prefix string
-	CDC      cdc.CDCConfig
+	// RegistryEpochs are the publication epochs read before Registry loaded
+	// (loadRegistry); CDC runs and factory-built managers are given them.
+	RegistryEpochs map[int16]int64
+	Metadata       *schemameta.MetadataCache
+	Duck           *fedengine.DuckDBClient
+	DuckCfg        forma.DuckDBConfig
+	S3Prefix       string
+	CDC            cdc.CDCConfig
 
 	// PublicationReaderWrap, when set before the Env's first query, decorates
 	// the Protocol V2 publication reader the engine is built with — the seam
@@ -258,11 +261,11 @@ func (e *Env) provision(ctx context.Context) error {
 		return fmt.Errorf("record the fixtures' generation: %w", err)
 	}
 
-	registry, err := schemameta.NewFileSchemaRegistryContext(ctx, pool, e.Tables.SchemaRegistry, schemaDir)
+	registry, epochs, err := e.loadRegistry(ctx, pool, schemaDir)
 	if err != nil {
 		return fmt.Errorf("build schema registry: %w", err)
 	}
-	e.Registry = registry
+	e.setRegistry(registry, epochs)
 	if err := applyDeclaredIndexes(ctx, pool, e.Tables.EntityMain, registry); err != nil {
 		return fmt.Errorf("provision database %s: %w", e.DBName, err)
 	}

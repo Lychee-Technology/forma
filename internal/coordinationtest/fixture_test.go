@@ -389,8 +389,14 @@ func entityMainDDL(table string) string {
 // manager with the public factory, its federated engine wrapped to count.
 func (e *env) buildManager(t *testing.T, pool *pgxpool.Pool) forma.EntityManager {
 	t.Helper()
-	registry, err := factory.NewFileSchemaRegistryContext(e.ctx, e.pool, e.tables.schemaRegistry, schemaDir)
-	require.NoError(t, err)
+	// The publication epochs first, then the registry, as a server loads
+	// them (forma.Config.SchemaRegistryEpochs).
+	loaded := &forma.Config{
+		Database: forma.DatabaseConfig{TableNames: forma.TableNames{SchemaRegistry: e.tables.schemaRegistry, EntityMain: e.tables.entityMain}},
+		DuckDB:   coordinationDuckDBConfig(),
+	}
+	require.NoError(t, factory.LoadFileSchemaRegistryContext(e.ctx, loaded, e.pool, schemaDir))
+	registry := loaded.SchemaRegistry
 	e.registry = registry
 	catalog, err := internal.NewUniqueKeyCatalog(registry)
 	require.NoError(t, err)
@@ -409,8 +415,9 @@ func (e *env) buildManager(t *testing.T, pool *pgxpool.Pool) forma.EntityManager
 		// DuckDB is on, as on a CDC deployment: every non-transactional Query
 		// then enters the federated engine (#715), which is what makes the
 		// counting engine's zero at cleanup say that no Tx path reaches it.
-		DuckDB:         coordinationDuckDBConfig(),
-		SchemaRegistry: registry,
+		DuckDB:               coordinationDuckDBConfig(),
+		SchemaRegistry:       registry,
+		SchemaRegistryEpochs: loaded.SchemaRegistryEpochs,
 	}
 	ctx := internal.WithFederatedEngineWrapper(e.ctx, e.engine.wrap)
 	em, err := factory.NewEntityManagerWithConfigContext(ctx, config, pool)

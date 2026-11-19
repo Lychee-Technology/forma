@@ -77,6 +77,9 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3Client, dryRun bool,
 	if err := cfg.ValidateFlush(); err != nil {
 		return FlushReport{}, fmt.Errorf("cdc flush configuration: %w", err)
 	}
+	if _, err := runEpochs(cfg); err != nil {
+		return FlushReport{}, fmt.Errorf("cdc flush configuration: %w", err)
+	}
 	region, credProvider, defaultS3Client, err := setupAWSClient(ctx, cfg)
 	if err != nil {
 		return FlushReport{}, fmt.Errorf("setup aws client: %w", err)

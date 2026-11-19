@@ -175,6 +175,9 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3Client, 
 	if err := cfg.ValidateFlush(); err != nil {
 		return FlushReport{}, fmt.Errorf("cdc flush configuration: %w", err)
 	}
+	if _, err := runEpochs(cfg); err != nil {
+		return FlushReport{}, fmt.Errorf("cdc flush configuration: %w", err)
+	}
 
 	s3Runtime, err := r.getOrCreateS3Runtime(ctx, cfg)
 	if err != nil {

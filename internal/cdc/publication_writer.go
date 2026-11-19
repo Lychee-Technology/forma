@@ -169,20 +169,34 @@ func readPublicationRecord(ctx context.Context, db *sql.DB, entityMain string, s
 	return snap.Record, nil
 }
 
+// ErrRegistryEpochsRequired refuses a run whose caller gave no
+// CDCConfig.RegistryEpochs. The run's schema registry is loaded before the
+// run starts, so an epoch the run read itself could already be a re-created
+// schema's, paired with the dropped schema's metadata the registry holds.
+var ErrRegistryEpochsRequired = errors.New("CDCConfig.RegistryEpochs is required: the publication epochs read before the schema registry loaded")
+
 // runEpochs answers the epochs the run's schema metadata belongs to:
-// cfg.RegistryEpochs, or, when the caller supplied none, every record's epoch
-// read now, before the run resolves the schemas' attributes.
-func runEpochs(ctx context.Context, cfg CDCConfig, db *sql.DB) (map[int16]int64, error) {
-	if cfg.RegistryEpochs != nil {
-		return cfg.RegistryEpochs, nil
+// cfg.RegistryEpochs, which the caller read before it loaded the run's
+// registry (ReadRegistryEpochs). A run without them is refused: it cannot
+// tell what epoch an already-loaded registry belongs to.
+func runEpochs(cfg CDCConfig) (map[int16]int64, error) {
+	if cfg.RegistryEpochs == nil {
+		return nil, fmt.Errorf("read them with ReadRegistryEpochs before loading the schema registry the run is given: %w", ErrRegistryEpochsRequired)
 	}
-	entityMain := cfg.EntityMainTable
+	return cfg.RegistryEpochs, nil
+}
+
+// ReadRegistryEpochs reads every schema's publication epoch on db, for
+// CDCConfig.RegistryEpochs: call it before loading the schema registry a run
+// is given. entityMain names the publication tables ("entity_main" when
+// empty).
+func ReadRegistryEpochs(ctx context.Context, db *sql.DB, entityMain string) (map[int16]int64, error) {
 	if entityMain == "" {
 		entityMain = "entity_main"
 	}
 	epochs, err := publication.Epochs(ctx, publication.DB(db), publication.TablesFor(entityMain))
 	if err != nil {
-		return nil, fmt.Errorf("read the publication epochs the run's schema metadata belongs to: %w", err)
+		return nil, fmt.Errorf("read the publication epochs before loading the schema registry: %w", err)
 	}
 	return epochs, nil
 }

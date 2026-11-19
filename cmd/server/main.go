@@ -10,8 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lychee-technology/forma/internal/schemameta"
-
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/factory"
@@ -166,13 +164,12 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 		return nil, fmt.Errorf("failed to create database pool: %w", err)
 	}
 
-	// Create file-based schema registry from database
-	registry, err := schemameta.NewFileSchemaRegistryContext(startupCtx, pool, dbConfig.TableNames.SchemaRegistry, schemaDir)
-	if err != nil {
+	// Create the file-based schema registry from the database, after reading
+	// the publication epochs it belongs to (forma.Config.SchemaRegistryEpochs).
+	if err := factory.LoadFileSchemaRegistryContext(startupCtx, config, pool, schemaDir); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("failed to create schema registry: %w", err)
+		return nil, err
 	}
-	config.SchemaRegistry = registry
 
 	// Initialize EntityManager with the same pool used by schema registry.
 	manager, err := factory.NewEntityManagerWithConfigContext(startupCtx, config, pool)

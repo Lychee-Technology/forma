@@ -119,9 +119,10 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 		return nil, fmt.Errorf("new duck exporter: %w", err)
 	}
 
-	// Read before processInitSchemas resolves the attributes: a schema whose
-	// record is at another epoch under its lock is refused (refuseMovedEpoch).
-	epochs, err := runEpochs(ctx, cfg, db)
+	// The epochs the caller read before loading the run's registry: a schema
+	// whose record is at another epoch under its lock is refused
+	// (refuseMovedEpoch).
+	epochs, err := runEpochs(cfg)
 	if err != nil {
 		_ = duck.DB.Close()
 		_ = db.Close()
@@ -164,6 +165,9 @@ func RunInit(ctx context.Context, opts InitOptions) (InitSummary, error) {
 	// A configuration the writer cannot run is refused before any AWS,
 	// PostgreSQL or DuckDB setup.
 	if err := opts.Config.ValidateInit(); err != nil {
+		return InitSummary{}, fmt.Errorf("cdc init configuration: %w", err)
+	}
+	if _, err := runEpochs(opts.Config); err != nil {
 		return InitSummary{}, fmt.Errorf("cdc init configuration: %w", err)
 	}
 

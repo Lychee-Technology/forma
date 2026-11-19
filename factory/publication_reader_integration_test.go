@@ -78,7 +78,9 @@ func newWiredEngine(t *testing.T) *wiredEngine {
 	cfg.DuckDB.AllowPartialDegradedMode = true
 
 	swapPublicationS3Client(t, func(context.Context, forma.DuckDBConfig) (publicationS3Client, error) { return w.s3, nil })
-	reader, err := newPublicationReader(ctx, publicationReaderSpec{duck: cfg.DuckDB, pool: pool, meta: meta, entityMain: w.tables.EntityMain})
+	epochs, err := readPublicationEpochs(ctx, pool, w.tables.EntityMain)
+	require.NoError(t, err)
+	reader, err := newPublicationReader(ctx, publicationReaderSpec{duck: cfg.DuckDB, pool: pool, meta: meta, entityMain: w.tables.EntityMain, registryEpochs: epochs})
 	require.NoError(t, err)
 	_, w.engine = newRepositoryAndEngine(pool, meta, cfg, closedDuckDBClient(t), reader)
 	return w

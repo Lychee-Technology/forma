@@ -49,9 +49,10 @@ func newSchemaFlushContext(ctx context.Context, p flushContextParams) (*schemaFl
 	if err != nil {
 		return nil, fmt.Errorf("cdc flush: %w", err)
 	}
-	// Read before processSchemas resolves the attributes: a schema whose
-	// record is at another epoch under its lock is refused (refuseMovedEpoch).
-	epochs, err := runEpochs(ctx, cfg, p.db)
+	// The epochs the caller read before loading the run's registry: a schema
+	// whose record is at another epoch under its lock is refused
+	// (refuseMovedEpoch).
+	epochs, err := runEpochs(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("cdc flush: %w", err)
 	}

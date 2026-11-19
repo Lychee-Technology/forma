@@ -155,7 +155,7 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 
 	duckClient, reader, err := newFederatedReadSurface(ctx, deps, publicationReaderSpec{
 		duck: effectiveConfig.DuckDB, pool: snapshotPoolOf(pool), meta: metadataCache,
-		metadataEpochs: metadataEpochs, entityMain: entityMain,
+		metadataEpochs: metadataEpochs, registryEpochs: effectiveConfig.SchemaRegistryEpochs, entityMain: entityMain,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open the federated read surface: %w", err)
