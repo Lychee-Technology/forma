@@ -11,7 +11,8 @@ import (
 // publication fault is a read-path consistency error, never degradable and
 // never charged to the breaker. A failed read keeps its V1 class. A pass its
 // own deadline, R_max, aborted is retried once on a fresh snapshot, and stays
-// non-degradable whatever the retry meets.
+// non-degradable whatever the retry meets, unless it had already confirmed a
+// publication fault: that fault is final.
 
 // errPublishedObjectMissing is the fault of a generation that lists an object
 // the store does not hold: loss, which garbage collection never causes
@@ -49,9 +50,15 @@ func passDeadlineExpired(ctx context.Context) bool {
 
 // deadlineFailure turns the failure of a pass its own deadline aborted into a
 // retryable passDeadlineError. A failure the request's own deadline or
-// cancellation caused is left as it is.
+// cancellation caused is left as it is, and so is a consistency error: a
+// confirmed fault, such as a listed object the missing-object probe found
+// lost before R_max stopped its other probes, is the pass's final answer,
+// and a retry on a fresh snapshot must not get the chance to hide it.
 func (p *pgxPass) deadlineFailure(passCtx context.Context, err error) error {
 	if err == nil || !p.published() || !passDeadlineExpired(passCtx) {
+		return err
+	}
+	if errors.Is(err, ErrPublicationInconsistent) {
 		return err
 	}
 	return &passDeadlineError{SchemaID: p.q.SchemaID, Deadline: p.e.publishedPassDeadline, cause: err}

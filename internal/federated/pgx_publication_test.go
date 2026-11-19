@@ -30,7 +30,8 @@ type fakePublication struct {
 	genErr error
 	// missing are the keys MissingIn reports lost, beside probeErr, the
 	// probes that failed. probeBlocks makes MissingIn wait for its context
-	// to end, and answer its error.
+	// to end, and answer its error beside missing: the keys found lost
+	// before a probe blocked on another object.
 	missing     []string
 	probeErr    error
 	probeBlocks bool
@@ -55,7 +56,7 @@ func (f *fakePublication) MissingIn(ctx context.Context, _ PublishedGeneration, 
 	f.probes++
 	if f.probeBlocks {
 		<-ctx.Done()
-		return nil, ctx.Err()
+		return f.missing, ctx.Err()
 	}
 	return f.missing, f.probeErr
 }

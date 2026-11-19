@@ -529,7 +529,11 @@ choices the steps above leave open:
   pass's deadline in its error. A pass `R_max` ends is not charged to the breaker and
   is not probed for lost objects: `R_max` bounds how long a pass holds its generation against
   garbage collection, not how fast DuckDB answers, which `DuckDBConfig.QueryTimeout` bounds
-  and charges as under V1.
+  and charges as under V1. A consistency error the pass confirmed before `R_max` ended it
+  is not retried: when the missing-object probe finds a listed key lost and `R_max` then
+  stops a probe of another object, the read fails with the
+  `PublicationConsistencyError` naming that key, not with `ErrPassDeadline`, so a retry on
+  a fresh snapshot cannot hide a loss already found.
 
 **Invariant R (the scanned generation matches S).** For every row `r`, the answer holds
 `r`'s state as of S.

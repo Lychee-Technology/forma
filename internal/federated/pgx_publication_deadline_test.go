@@ -134,6 +134,36 @@ func TestAProbeThatRunsOutOfTimeKeepsTheDeadline(t *testing.T) {
 	})
 }
 
+// A read that failed for its own reason, whose missing-object probe found a
+// listed key lost and then blocked on another object until R_max: the loss
+// is confirmed, so it is the request's answer. The pass is not retried, the
+// typed error keeps the missing key, nothing degrades, and the breaker hears
+// of nothing.
+func TestAConfirmedLossSurvivesAPassDeadlineDuringTheProbe(t *testing.T) {
+	f := newPgxFixture(t, tieRunRows())
+	pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
+	pub.missing = []string{"base.parquet"}
+	pub.probeBlocks = true
+	e, duck, _ := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
+	e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
+	rec := recordDegradedFallbacks(e)
+	e.duck = &failingScan{countingDuck: duck}
+
+	_, err := e.Query(context.Background(), tieRunTables, pgxQuery(), &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+	require.ErrorIs(t, err, ErrPublicationInconsistent)
+	require.NotErrorIs(t, err, ErrPassDeadline, "a confirmed loss is not a retryable deadline")
+	var typed *PublicationConsistencyError
+	require.ErrorAs(t, err, &typed)
+	require.Equal(t, []string{"base.parquet"}, typed.MissingKeys)
+	require.ErrorContains(t, err, "other objects could not be probed")
+	require.False(t, degradableFederatedError(err))
+	require.Equal(t, 1, f.leg.begins, "not retried")
+	require.Equal(t, 1, pub.probes)
+	require.Empty(t, rec.take(), "no degraded fallback")
+	require.Empty(t, rec.transitions, "no breaker transition")
+	require.False(t, e.breaker.IsOpen())
+}
+
 // ErrPassDeadline is not degradable on its own, without the context error
 // beside it.
 func TestThePassDeadlineIsNotDegradableOnItsOwn(t *testing.T) {
