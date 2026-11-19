@@ -78,6 +78,42 @@ func (h *FederatedTestHarness) registerSchema(ctx context.Context, schemaID int1
 	return nil
 }
 
+// retirePublishedGenerations replaces the current generation of every
+// PUBLISHED schema with an empty init generation, before ClearAllData
+// deletes the objects under the harness's prefix, and answers the keys of
+// the empty generations' manifests, which the reset keeps: a record never
+// points at a manifest or an object the reset deleted. An empty init
+// generation says the parquet tiers hold nothing, so a schema the next
+// dataset leaves without parquet reads from PostgreSQL alone, and
+// PublishTiers replaces it for one that has parquet.
+func (h *FederatedTestHarness) retirePublishedGenerations(ctx context.Context) (map[string]bool, error) {
+	keep := map[string]bool{}
+	epochs, err := publication.Epochs(ctx, publication.DB(h.PGDB), h.publicationTables())
+	if err != nil {
+		return nil, fmt.Errorf("list the publication records to retire: %w", err)
+	}
+	for schemaID := range epochs {
+		snap, err := publication.Read(ctx, publication.DB(h.PGDB), h.publicationTables(), schemaID)
+		if err != nil {
+			return nil, fmt.Errorf("read the publication record of schema %d: %w", schemaID, err)
+		}
+		if snap.State != publication.Published {
+			continue
+		}
+		stagedAt, err := h.databaseMillis(ctx)
+		if err != nil {
+			return nil, err
+		}
+		empty, err := h.publish(ctx, snap.Record, stagedAt, publication.KindInit, uuid.New(),
+			func(hdr manifestv2.Header) (manifestv2.Manifest, error) { return manifestv2.NewInit(hdr, nil) })
+		if err != nil {
+			return nil, fmt.Errorf("replace the published generation of schema %d before the reset deletes its objects: %w", schemaID, err)
+		}
+		keep[empty.record.ManifestKey] = true
+	}
+	return keep, nil
+}
+
 // publishedGeneration is a generation the harness committed: the record the
 // compare-and-set answered and the manifest it names.
 type publishedGeneration struct {
@@ -249,4 +285,13 @@ func (h *FederatedTestHarness) PublishedFiles(ctx context.Context, schemaID int1
 		return nil, fmt.Errorf("fetch the manifest of schema %d generation %d: %w", schemaID, snap.Generation, err)
 	}
 	return m.Files, nil
+}
+
+// ObjectExists answers whether the harness's bucket holds key.
+func (h *FederatedTestHarness) ObjectExists(ctx context.Context, key string) (bool, error) {
+	exists, err := manifestv2.S3Exists(h.s3Client, h.S3Bucket)(ctx, key)
+	if err != nil {
+		return false, fmt.Errorf("probe object %s: %w", key, err)
+	}
+	return exists, nil
 }

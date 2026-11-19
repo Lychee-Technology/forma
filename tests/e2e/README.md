@@ -199,11 +199,19 @@ The check asks for the execution plan (`include_execution_plan`) and fails unles
 
 ### Clean S3 (repeatable runs)
 
-Deletes CDC objects (`delta/`, `base/`, `manifest/`) so a re-run starts clean. Destructive — test bucket only:
+Deletes CDC objects under the data prefix (`S3_PREFIX`) and the legacy `delta/`, `base/` and `manifest/` prefixes so a re-run starts clean. Destructive — test bucket only.
+
+Under Protocol V2 a schema's published parquet is what its PostgreSQL publication record names, and the marks of its flushed `change_log` entries commit with that record (`docs/publication-protocol-v2.md`). Deleting the objects a `PUBLISHED` record points at would make every read of the schema fail closed and lose its flushed rows, so `clean-s3` refuses (exit 2) while any record is `PUBLISHED`. Reset in this order:
+
+1. Drop and recreate the E2E database, or point `PG_DB` at a fresh one.
+2. Run `forma-tools init-db` against it with the schema directory; every schema's record starts `UNPUBLISHED`.
+3. Run `clean-s3`, then seed and flush again.
 
 ```bash
 bun run clean-s3
 ```
+
+`cdc-init` checks what it committed, not what the prefix lists: each initialized schema's record must name an `init` generation whose manifest is in the bucket with the record's digest, and every object that manifest lists must exist. A schema with no live rows commits an empty `init` generation and writes no parquet; that is a success.
 
 ## Load Testing with k6
 

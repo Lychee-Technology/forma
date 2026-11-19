@@ -432,8 +432,19 @@ func (h *FederatedTestHarness) ClearChangeLog(ctx context.Context) error {
 	return err
 }
 
-// ClearAllData removes all test data.
+// ClearAllData removes all test data. The publication records stay, so a
+// reload keeps each schema's epoch; every PUBLISHED one is first moved to an
+// empty generation (retirePublishedGenerations), and the reset deletes every
+// object under the prefix but those empty generations' manifests, so no
+// record points at an object the reset deleted.
 func (h *FederatedTestHarness) ClearAllData(ctx context.Context) error {
+	keep := map[string]bool{}
+	if !h.s3Disabled {
+		var err error
+		if keep, err = h.retirePublishedGenerations(ctx); err != nil {
+			return fmt.Errorf("clear all data: %w", err)
+		}
+	}
 	tables := []string{"change_log", "eav_data", "entity_main"}
 	for _, t := range tables {
 		if _, err := h.PGDB.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1 OR ltbase_schema_id = $1", t), h.SchemaID); err != nil {
@@ -442,8 +453,8 @@ func (h *FederatedTestHarness) ClearAllData(ctx context.Context) error {
 		}
 	}
 
-	// Clear S3
-	_ = h.deleteS3Prefix(ctx, h.S3Prefix)
+	// Clear S3, keeping the manifests the records now name.
+	_ = deleteAllUnderPrefixExcept(ctx, h.s3Client, h.S3Bucket, h.S3Prefix, keep)
 	h.seededRecords = make(map[string][]TestRecord)
 	return nil
 }

@@ -20,7 +20,9 @@ import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { config } from '../lib/env';
 import { runTool, redactArgs } from '../lib/proc';
-import { validateCDCOutput, ensureBucket, amzDate, type CDCValidation } from '../lib/s3';
+import { ensureBucket, amzDate } from '../lib/s3';
+import { checkCommittedGeneration, type GenerationCheck } from '../lib/publication';
+import { bucketStore, openDatabase, readPublicationRecords, readRegisteredSchemaIds } from '../lib/publication_io';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -54,7 +56,8 @@ interface CDCInitReport {
     parquetFiles?: string[];
     error?: string;
   };
-  s3Validation?: CDCValidation;
+  /** The generation each initialized schema's record committed, checked. */
+  generations?: GenerationCheck[];
 }
 
 function parseArgs(): { dryRun: boolean; schemaId: number; targetFileSizeMB: number } {
@@ -186,23 +189,26 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
       return report;
     }
 
-    // Validate the actual S3 state rather than trusting exit code. cdc-init
-    // writes its base objects and its manifest generation under the data
-    // prefix; a dry run writes nothing.
-    const validation = await validateCDCOutput({
-      dataPrefix: config.s3.prefix,
-      manifestPrefix: config.s3.prefix,
-      requireParquet: !dryRun,
-    });
-    report.s3Validation = validation;
-    report.result.parquetFiles = validation.parquetKeys;
-    report.result.filesCreated = validation.parquetCount;
-    report.result.schemasProcessed = Object.keys(validation.parquetBySchema).length;
-
-    if (!validation.ok) {
-      report.result.success = false;
-      report.result.error = `S3 validation failed: ${validation.errors.join('; ')}`;
-      return report;
+    // Validate what the run committed rather than trusting the exit code.
+    // Protocol V2 (#896): each initialized schema's record names one
+    // immutable init generation, and only the objects its manifest lists are
+    // published. A zero-row init commits a manifest that lists nothing and
+    // writes no parquet, so the check reads the committed generation, never
+    // a listing of the prefix: the manifest the record names must be there
+    // with the record's digest, and every object it lists must exist. A dry
+    // run commits nothing.
+    if (!dryRun) {
+      const generations = await verifyCommittedGenerations(schemaId);
+      report.generations = generations;
+      report.result.parquetFiles = generations.flatMap((g) => g.files);
+      report.result.filesCreated = report.result.parquetFiles.length;
+      report.result.schemasProcessed = generations.length;
+      const errors = generations.flatMap((g) => g.errors);
+      if (errors.length > 0) {
+        report.result.success = false;
+        report.result.error = `committed generation check failed: ${errors.join('; ')}`;
+        return report;
+      }
     }
 
     report.result.success = true;
@@ -213,6 +219,26 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
   }
 
   return report;
+}
+
+/**
+ * Check the generation each schema's record committed: the schema asked for,
+ * or every registered schema when cdc-init ran over all of them.
+ */
+async function verifyCommittedGenerations(schemaId: number): Promise<GenerationCheck[]> {
+  const sql = openDatabase();
+  try {
+    const records = await readPublicationRecords(sql);
+    const ids = schemaId > 0 ? [schemaId] : await readRegisteredSchemaIds(sql);
+    const store = bucketStore();
+    const checks: GenerationCheck[] = [];
+    for (const id of ids) {
+      checks.push(await checkCommittedGeneration(records.get(id), id, store));
+    }
+    return checks;
+  } finally {
+    await sql.end();
+  }
 }
 
 async function main() {
@@ -253,15 +279,12 @@ async function main() {
     console.log(`Schemas Processed: ${report.result.schemasProcessed}`);
   }
   if (report.result.parquetFiles && report.result.parquetFiles.length > 0) {
-    console.log(`Parquet Files (from S3 listing): ${report.result.parquetFiles.length}`);
+    console.log(`Parquet Files (listed by the committed generations): ${report.result.parquetFiles.length}`);
     report.result.parquetFiles.slice(0, 5).forEach((f) => console.log(`  - ${f}`));
   }
-  if (report.s3Validation) {
-    const v = report.s3Validation;
-    console.log(`S3 Validation: ${v.ok ? 'PASS' : 'FAIL'} — ${v.parquetCount} parquet across ${Object.keys(v.parquetBySchema).length} schema(s), ${v.manifestCount} manifest(s)`);
-    if (v.missingFiles.length > 0) {
-      console.log(`  Missing (manifest-referenced): ${v.missingFiles.slice(0, 5).join(', ')}`);
-    }
+  for (const g of report.generations ?? []) {
+    const what = g.ok ? `PASS: ${g.kind} generation listing ${g.files.length} object(s)` : `FAIL: ${g.errors.join('; ')}`;
+    console.log(`Schema ${g.schemaId} committed generation: ${what}`);
   }
   if (report.result.error) {
     console.log(`Error: ${report.result.error}`);

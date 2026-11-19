@@ -94,3 +94,15 @@ func TestDeleteAllUnderPrefix_UnfollowableTruncationFailsClosed(t *testing.T) {
 	require.ErrorIs(t, err, cdc.ErrIncompleteObjectListing)
 	require.Empty(t, client.deleted, "nothing may be deleted on the strength of an incomplete listing")
 }
+
+// The publication-aware reset deletes everything under the prefix but the
+// manifests the records now name.
+func TestDeleteAllUnderPrefixExcept_KeepsTheNamedKeys(t *testing.T) {
+	client := &scriptedPrefixClient{pages: []*s3.ListObjectsV2Output{
+		page(false, nil, "p/1/_manifests/e1/g1.json", "p/1/e1/base/a.parquet", "p/1/_manifests/e1/g2.json"),
+	}}
+
+	err := deleteAllUnderPrefixExcept(context.Background(), client, "bkt", "p/", map[string]bool{"p/1/_manifests/e1/g2.json": true})
+	require.NoError(t, err)
+	require.Equal(t, []string{"p/1/_manifests/e1/g1.json", "p/1/e1/base/a.parquet"}, client.deleted)
+}

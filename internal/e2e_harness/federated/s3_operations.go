@@ -274,11 +274,20 @@ func (h *FederatedTestHarness) deleteS3Prefix(ctx context.Context, prefix string
 // The listing fails closed through the shared paginator; individual delete
 // failures stay best-effort, as the cleanup callers expect.
 func deleteAllUnderPrefix(ctx context.Context, client s3PrefixClient, bucket, prefix string) error {
+	return deleteAllUnderPrefixExcept(ctx, client, bucket, prefix, nil)
+}
+
+// deleteAllUnderPrefixExcept is deleteAllUnderPrefix keeping the keys in
+// keep.
+func deleteAllUnderPrefixExcept(ctx context.Context, client s3PrefixClient, bucket, prefix string, keep map[string]bool) error {
 	keys, err := cdc.ListObjectKeys(ctx, client, bucket, prefix)
 	if err != nil {
 		return fmt.Errorf("list objects to delete in bucket %s: %w", bucket, err)
 	}
 	for _, key := range keys {
+		if keep[key] {
+			continue
+		}
 		_, _ = client.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(key),
