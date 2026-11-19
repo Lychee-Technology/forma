@@ -124,10 +124,13 @@ func (e *DBFederatedQueryEngine) logDegradedFallback(fq *model.FederatedAttribut
 // replace the cause it was absorbing. Two more belong to the pgx hot leg: a
 // pass whose legs overlap (ErrHotLegNotDisjoint) is an internal
 // inconsistency an operator must see, and an engine built without the hot
-// leg's snapshot pool (WithPgxHotLeg) is a configuration error.
+// leg's snapshot pool (WithPgxHotLeg) is a configuration error. A published
+// read whose publication state is inconsistent (ErrPublicationInconsistent)
+// is the V2 form of #187's inconsistency, and stays loud for the same reason.
 func degradableFederatedError(err error) bool {
 	return !errors.Is(err, ErrSchemaMetadataCacheRequired) &&
 		!errors.Is(err, ErrParquetSetInconsistent) &&
+		!errors.Is(err, ErrPublicationInconsistent) &&
 		!errors.Is(err, forma.ErrParquetTypeIncompatible) &&
 		!errors.Is(err, ErrNoParquetPaths) &&
 		!errors.Is(err, ErrManifestSchemaMismatch) &&

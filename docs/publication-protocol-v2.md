@@ -4,9 +4,12 @@ Status: the contract #888 proposes for EPIC #887. The SQL and its semantics are 
 `internal/publication`, with tests on PostgreSQL and on the MiniStack lane. The manifest
 objects (document, digest, keys, write-once store, verifying cache) are in
 `internal/manifestv2` (#898), and the `cdc-flush` and `cdc-init` publication paths built on
-both are in `internal/cdcv2` (#899). Nothing in `cdc-flush`, `cdc-init`, the compactor, the
-federated reader or `manifest-reconcile` uses any of them yet: the other #887 children move
-those consumers onto them ([Ownership](#ownership-and-migration)).
+both are in `internal/cdcv2` (#899). The federated reader's pass resolves its source in its
+snapshot when an engine is built with `federated.WithPublicationReader`, whose only
+implementation is `internal/federatedv2` (#900). Nothing in `cdc-flush`, `cdc-init`, the
+compactor, the federated reader or `manifest-reconcile` uses any of them yet, and no engine
+is built with that option: the other #887 children move those consumers onto them
+([Ownership](#ownership-and-migration)).
 Behaviour on a real Aurora DSQL cluster has not been checked. #817 tracks that, and
 [Verification](#verification) lists what this contract assumes until then.
 
@@ -481,6 +484,36 @@ horizon is what the orphan rule relies on.
 A listed key that is missing is loss, as under V1's one-directional contract. The read
 fails loudly and classifies, and GC never makes this happen within the retention window.
 
+**As built (#900, dormant until #896).** The pass in `internal/federated` takes these steps
+when its engine has a `PublicationReader`, and resolves nothing before its snapshot. A few
+choices the steps above leave open:
+
+- The dirty set is the strict one (`flushed_at = 0`) in both forms, and the hot keys are
+  read over the unflushed entries alone. The flush-grace widening (#252) made up for a path
+  set resolved before the snapshot. A generation read in S holds every row S shows flushed,
+  so nothing widens the barrier, and the parquet-history probe (#720) has nothing to decide.
+- The manifest is fetched after the dirty set and before the hot keys, and the pre-read
+  schema and type checks (#189, #732) take the manifest's `columns` in place of a footer
+  probe. A generation that lists objects cached as corrupt (#722) is refused without a scan,
+  as under V1. `duckdb.hotLegMaxDirtyRows` bounds what a pass stages in DuckDB, so it does
+  not apply to a pass without a parquet leg: every live row of an `UNPUBLISHED` schema is
+  dirty, and nothing is staged.
+- The consistency error is `federated.PublicationConsistencyError`, which matches
+  `federated.ErrPublicationInconsistent` and the fault it wraps (`publication.ErrNoRecord`,
+  `ErrAwaitingInit`, `ErrDropped`, `federatedv2.ErrEpochChanged`, a
+  `manifestv2.ConsistencyError`) and names schema, epoch and generation, with the lost keys
+  when objects are missing. It is not degradable, hands the breaker its probe back rather than
+  counting a failure, and is never `ErrFederatedReadFailed`. A record the snapshot could not
+  read, or a manifest the store could not answer, is a failed read instead: the first
+  `ErrPostgresReadFailed`, the second `ErrFederatedReadFailed`, both degradable as their V1
+  counterparts are.
+- A listed object is found missing only after a read fails: the reader probes the failed
+  read's objects (`HeadObject` on S3) before any other classification, so a happy path costs
+  no probe.
+- `R_max` is armed at `t0` with `context.WithTimeoutCause`. A pass it ends fails with
+  `federated.ErrPassDeadline` and is retried once on a fresh snapshot, as the #720 race was. An
+  expired deadline is not degradable (#465), so a retry that runs out too surfaces.
+
 **Invariant R (the scanned generation matches S).** For every row `r`, the answer holds
 `r`'s state as of S.
 
@@ -830,6 +863,31 @@ the one its row names:
   content read is exported at the listed version and stays dirty at the new one), a fully
   shadowed export that stays recorded, re-initialization, and an empty export.
 
+The reader (#900) is tested in `internal/federatedv2` on the integration PostgreSQL, over
+records, history rows and manifests committed as a V2 writer commits them, and against an
+in-memory snapshot in `internal/federated`, where a fake reader stages each fault:
+
+- `TestNeverPublishedSchemaIsAnsweredFromPostgreSQL`,
+  `TestPublishedPassOfAnUnpublishedSchemaAnswersFromPostgreSQL`: an `UNPUBLISHED` schema
+  serves offset and cursor pages from PostgreSQL, through an engine whose DuckDB is closed,
+  with no manifest fetched, no object probed and the record as the snapshot's first read.
+  `TestPublishedPassOfAnEmptyGenerationRunsNoDuckDB`: `files: []`.
+- `TestAGenerationCommittedDuringAPassIsSeenByTheNextPassOnly`: a generation and its marks
+  committed right after a pass read the record. That pass scans the generation its snapshot
+  read and serves the newly flushed row hot. The next pass reads both, and serves it from
+  parquet. `TestPublishedPassScansExactlyTheListedObjects`: an object beside the listed
+  ones, which a glob would read, stays out of the answer.
+- `TestAGenerationWithLostObjectsFailsTheRead`, `TestAReadFailsClosedOnItsRecordOrManifest`,
+  `TestPublishedPassFailsClosedOnAPublicationFault`: #759's zero and partial match, an absent
+  record, `AWAITING_INIT`, `DROPPED`, an epoch the process did not pin, and a missing or
+  corrupt manifest fail with the typed error under `AllowPartialDegradedMode`. The
+  degraded-fallback counter (#714) records nothing, and a breaker that opens on its first
+  failure stays closed. `TestPublishedPassTellsAFailedReadFromAPublicationFault`: a record
+  or manifest that could not be read degrades instead.
+- `TestPublishedPassPastItsDeadlineIsAbortedAndRetried`,
+  `TestPublishedPassUnderTheRequestDeadlineIsNotRetried`: `R_max` cancels the running scan
+  and earns one retry on a fresh snapshot; the request's own deadline earns none.
+
 **Not verified. Assumed until #817 checks a real cluster:**
 
 - That `SELECT … FOR UPDATE` puts the record into DSQL's conflict check, so a handoff and
@@ -859,7 +917,7 @@ the V1 code it replaces:
 | `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path. The publication loop is `internal/cdcv2`'s `Writer.Flush` (#899), behind a `DeltaStager` that writes the parquet; #896 adapts the DuckDB export to it and calls it | #896 (writers and reader, built in #899 to #901) |
 | `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot; #896 adapts the DuckDB export to it and calls it | #896 (writers and reader, built in #899 to #901), closing #760 |
 | compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891 | #890 (compaction) |
-| federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. `docs/federated-query/design.md` §6.1 is rewritten here | #896 (writers and reader, built in #899 to #901), carrying #759 |
+| federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. #900 builds the pass behind `federated.WithPublicationReader` and its source in `internal/federatedv2`, with no caller ([As built](#readers)); #896 loads the epoch pins with the schema metadata, builds the engine with the option, deletes the V1 resolution and rewrites `docs/federated-query/design.md` §6.1 | #896 (writers and reader, built in #899 to #901), carrying #759 |
 | `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire` and `PlanCollection` in the collection order above. Repair becomes re-init. Verification walks retained generations | #891 (GC) |
 | fault matrix, operator docs, EPIC evidence | crash injection at every staging, publish and commit boundary; a guard that fails if `QuerySource.Fallback`, the level-3 glob or a glob-only flag returns | #892 |
 | live Aurora DSQL behaviour | the assumptions in [Verification](#verification) | #893, under #817 |
@@ -887,17 +945,21 @@ publication table name in a string literal. It does not inspect the SQL those fi
 build, so an allowlisted file could still assemble a record statement from a name
 `TablesFor` returns. What shows that init-db sends none is the traced SQL of its fresh,
 upgrade and rerun runs in `TestInitDBCreatesThePublicationTablesOnceAndWritesNoRecord`.
-`internal/manifestv2` and `internal/cdcv2` may use all of `internal/publication`, and the
-same static test refuses a production import of either from any file outside the two, so no
-binary reaches the manifest or the writer code before #896 either.
+`internal/manifestv2`, `internal/cdcv2` and `internal/federatedv2` may use all of
+`internal/publication`, and the same static test refuses a production import of any of them
+from any file outside the three, so no binary reaches the manifest, the writer or the reader
+code before #896 either. The reader's seam is in `internal/federated`, a production package,
+and stays inert without an implementation: the same test refuses a production use of
+`federated.WithPublicationReader` outside the dormant packages, so no binary builds an engine
+that reads the record.
 
 **#759 is the reader scope, and lands in #896.** Its original evidence, a zero-match or
 partial-match glob that returns 200 with silently incomplete data, is what the reader
 cutover must close. #759 deletes `QuerySource.Fallback`, the level-3 glob discovery and the config and read branches
 that reach them, with no compatibility flag and no read-path repair. A `PUBLISHED` record
 whose manifest is missing, fails the checks in step 4 of the reader protocol, or lists a
-missing object fails the read as a read-path consistency error. #759 gives that error its
-type; it does not degrade, is never relabelled `ErrFederatedReadFailed` and is never
+missing object fails the read as a read-path consistency error. #900 gives that error its
+type, `federated.PublicationConsistencyError`; it does not degrade, is never relabelled `ErrFederatedReadFailed` and is never
 charged to the DuckDB breaker. `UNPUBLISHED` answers from PostgreSQL without listing S3, so
 #720's never-flushed behaviour holds. #759's tests cover its original zero-match and
 partial-match loss alongside #720.
@@ -911,9 +973,13 @@ published schema. Its PR closes #760 alongside #896.
 
 ## Open questions
 
-- Values for `R_max`, `T_pub`, `W`, `C`, `G` and `A`, and whether `R_max` is the
-  federated query timeout or a separate setting. `W` must cover the longest staging,
-  which is a `cdc-init` export.
+- Values for `T_pub`, `W`, `C`, `G` and `A`. `W` must cover the longest staging, which is a
+  `cdc-init` export. `R_max` is a setting of its own, not the federated query timeout,
+  because `DuckDBConfig.QueryTimeout` may be zero (no bound) and garbage collection needs
+  one. #900 sets its default, `federated.DefaultPublishedPassDeadline`, to 60 s: twice the
+  query budget's default, so under the default configuration the query budget expires
+  first and `R_max` only bounds a deployment that raised or disabled it. `G` must then be
+  at least 60 s + `C`. Whether #896 exposes `R_max` in the configuration is open.
 - Whether the DSQL flush should shrink its batch to 1,000 rows, or keep 10,000 and
   publish ten generations per batch. Ten manifests per batch multiply manifest objects
   and history rows, and GC bounds both.
