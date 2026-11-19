@@ -187,8 +187,35 @@ func (e *InvalidRecordError) Error() string {
 func (e *InvalidRecordError) Unwrap() []error { return []error{ErrRecordInvalid, e.Err} }
 
 // validate refuses a record no transition of this package writes: a reader
-// must not guess what such a row means.
+// must not guess what such a row means. Its identity first: every record is
+// created at epoch 1 with a fresh token, and every transition moves the epoch
+// up, the generation counter up or not at all, and writes a fresh token, so
+// a non-positive epoch, a negative counter or horizon, or a nil token is a
+// row nobody wrote through the protocol, whatever its state.
 func (r Record) validate() error {
+	if err := r.validateIdentity(); err != nil {
+		return err
+	}
+	return r.validateShape()
+}
+
+// validateIdentity refuses identity values no transition emits.
+func (r Record) validateIdentity() error {
+	switch {
+	case r.Epoch < 1:
+		return fmt.Errorf("record of schema %d is at epoch %d; every record starts at epoch 1 and epochs only grow", r.SchemaID, r.Epoch)
+	case r.Generation < 0 || r.ParentGeneration < 0:
+		return fmt.Errorf("record of schema %d names generation %d with parent %d; generation numbers start at 1 and the counter at 0", r.SchemaID, r.Generation, r.ParentGeneration)
+	case r.Token == uuid.Nil:
+		return fmt.Errorf("record of schema %d at epoch %d has the nil token; every transition writes a fresh one", r.SchemaID, r.Epoch)
+	case r.Horizon < 0:
+		return fmt.Errorf("record of schema %d at epoch %d has the negative horizon %d", r.SchemaID, r.Epoch, r.Horizon)
+	}
+	return nil
+}
+
+// validateShape refuses the fields a record's state does not allow.
+func (r Record) validateShape() error {
 	switch r.State {
 	case Unpublished, AwaitingInit, Dropped:
 		if r.ManifestKey != "" || r.ManifestSHA256 != "" || r.Lineage != uuid.Nil || r.ParentGeneration != 0 {
@@ -197,6 +224,9 @@ func (r Record) validate() error {
 	case Published:
 		if r.Generation <= 0 || r.ManifestKey == "" || r.ManifestSHA256 == "" || r.Lineage == uuid.Nil {
 			return fmt.Errorf("record of schema %d is %s at generation %d with manifest %q, lineage %s; a published record names a positive generation, its manifest, digest and lineage", r.SchemaID, r.State, r.Generation, r.ManifestKey, r.Lineage)
+		}
+		if r.ParentGeneration >= r.Generation {
+			return fmt.Errorf("record of schema %d is %s at generation %d with parent %d; a generation's parent precedes it", r.SchemaID, r.State, r.Generation, r.ParentGeneration)
 		}
 	default:
 		return fmt.Errorf("record of schema %d has state %q, want %s, %s, %s or %s", r.SchemaID, r.State, Unpublished, Published, AwaitingInit, Dropped)
