@@ -143,6 +143,42 @@ func TestPublishedPassRefusesAListedAddressDuckDBWouldExpand(t *testing.T) {
 	}
 }
 
+// A listed address with a `.` or `..` segment names, as the writer stored
+// it, another object than the one DuckDB would address after normalizing the
+// path. The pass refuses the generation with the typed error before any
+// DuckDB statement: nothing is read or probed, nothing degrades, and the
+// breaker hears nothing.
+func TestPublishedPassRefusesAListedAddressDuckDBWouldNormalize(t *testing.T) {
+	for name, listed := range map[string]string{
+		"dot":        "./base.parquet",
+		"dot dot":    "sub/../base.parquet",
+		"s3 dot dot": "s3://bucket/data/../1/e1/base/x.parquet",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newPgxFixture(t, tieRunRows())
+			path := listed
+			if !strings.HasPrefix(listed, "s3://") {
+				path = f.dir + "/" + listed
+			}
+			pub := publishedOver(path)
+			e, duck := publishedEngine(t, f, pub)
+			e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
+			rec := recordDegradedFallbacks(e)
+
+			_, err := e.Query(context.Background(), tieRunTables, pgxQuery(), &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+			require.ErrorIs(t, err, ErrPublicationInconsistent)
+			require.ErrorIs(t, err, ErrPublishedPathNotCanonical)
+			require.NotErrorIs(t, err, ErrFederatedReadFailed)
+			require.ErrorContains(t, err, listed)
+			require.Zero(t, duck.statements(), "no listing and no read")
+			require.Zero(t, pub.probes)
+			require.Empty(t, rec.take())
+			require.Empty(t, rec.transitions)
+			require.False(t, e.breaker.IsOpen())
+		})
+	}
+}
+
 // The plan reports the dirty set of a pass without a parquet leg as read,
 // never as staged: such a pass runs no DuckDB statement. A pass that scans
 // objects reports it staged.

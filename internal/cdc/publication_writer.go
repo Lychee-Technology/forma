@@ -73,13 +73,15 @@ func (c CDCConfig) ValidateInit() error {
 	return nil
 }
 
-// validateLayout refuses an S3Prefix holding a glob metacharacter, as the
-// tools' -s3-prefix flag does (forma.ValidateParquetPrefix). Every object key
-// and manifest key the writer publishes starts with the prefix, and the
-// federated reader refuses a generation listing a path DuckDB would expand
-// (federated.ErrPublishedPathNotConcrete). A writer that staged and
-// committed under such a prefix would mark rows flushed in a generation no
-// read can use, so an embedded caller is refused here, before any staging.
+// validateLayout refuses an S3Prefix holding a glob metacharacter or a `.`
+// or `..` segment, as the tools' -s3-prefix flag does
+// (forma.ValidateParquetPrefix). Every object key and manifest key the writer
+// publishes starts with the prefix, and the federated reader refuses a
+// generation listing a path DuckDB would expand or normalize
+// (federated.ErrPublishedPathNotConcrete, ErrPublishedPathNotCanonical). A
+// writer that staged and committed under such a prefix would mark rows
+// flushed in a generation no read can use, so an embedded caller is refused
+// here, before any staging.
 func (c CDCConfig) validateLayout() error {
 	if err := forma.ValidateParquetPrefix("S3Prefix", c.S3Prefix); err != nil {
 		return fmt.Errorf("data prefix %q: %w", c.S3Prefix, err)

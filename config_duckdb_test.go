@@ -164,12 +164,13 @@ func TestDuckDBBreakerConfigValidation(t *testing.T) {
 func TestValidateParquetPrefix(t *testing.T) {
 	t.Parallel()
 
-	for _, prefix := range []string{"", "data", "delta/v2/", "base_2026-11"} {
+	for _, prefix := range []string{"", "data", "delta/v2/", "base_2026-11", "v1.2/data", "...", ".hidden/x", "x/..y"} {
 		if err := ValidateParquetPrefix("s3-prefix", prefix); err != nil {
 			t.Errorf("prefix %q: expected nil, got %v", prefix, err)
 		}
 	}
-	for _, prefix := range []string{"data/*", "data/**", "data?", "data[1]", "a]b[c"} {
+	for _, prefix := range []string{"data/*", "data/**", "data?", "data[1]", "a]b[c",
+		".", "..", "./data", "../data", "data/.", "data/..", "a/./b", "a/../b", "a//../b/"} {
 		err := ValidateParquetPrefix("s3-prefix", prefix)
 		var configErr *ConfigError
 		if !errors.As(err, &configErr) || configErr.Field != "s3-prefix" {

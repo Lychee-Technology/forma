@@ -26,13 +26,15 @@ func (c *countingS3) PutObject(context.Context, *s3.PutObjectInput, ...func(*s3.
 }
 
 // An embedded caller hands the writers a cdc.Config directly, without the
-// tools' -s3-prefix check. A prefix holding a glob metacharacter would let
-// the writer stage and commit a generation, and mark its rows flushed, that
-// the federated reader refuses on every read (ErrPublishedPathNotConcrete).
+// tools' -s3-prefix check. A prefix holding a glob metacharacter, or a `.` or
+// `..` segment that the AWS SDK keeps in the key while DuckDB normalizes it
+// away, would let the writer stage and commit a generation, and mark its rows
+// flushed, that the federated reader refuses on every read
+// (ErrPublishedPathNotConcrete, ErrPublishedPathNotCanonical).
 // Both flush entry points and init refuse it as a *forma.ConfigError before
 // any S3, PostgreSQL or DuckDB I/O: the client sees no call, and the
 // unreachable PostgreSQL host is never dialled.
-func TestWritersRefuseAGlobDataPrefixBeforeAnyIO(t *testing.T) {
+func TestWritersRefuseAnUnaddressableDataPrefixBeforeAnyIO(t *testing.T) {
 	entrypoints := map[string]func(CDCConfig, S3Client) error{
 		"RunOnce": func(cfg CDCConfig, client S3Client) error {
 			_, err := RunOnce(context.Background(), cfg, client, false, zap.NewNop(), &stubSchemaRegistry{})
@@ -49,7 +51,7 @@ func TestWritersRefuseAGlobDataPrefixBeforeAnyIO(t *testing.T) {
 			return err
 		},
 	}
-	for _, prefix := range []string{"da*ta", "data?", "d[a]ta"} {
+	for _, prefix := range []string{"da*ta", "data?", "d[a]ta", "data/../other", "./data", "data/.", ".."} {
 		for entry, run := range entrypoints {
 			t.Run(entry+"/"+prefix, func(t *testing.T) {
 				client := &countingS3{}

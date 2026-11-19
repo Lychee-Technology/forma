@@ -181,21 +181,39 @@ func (p *pgxPass) resolveGeneration(ctx context.Context) error {
 // before any DuckDB work, as a PublicationConsistencyError.
 var ErrPublishedPathNotConcrete = errors.New("the generation lists an object whose address DuckDB would expand as a glob")
 
+// ErrPublishedPathNotCanonical is the fault of a generation that lists an
+// object whose address holds a `.` or `..` segment (forma.HasDotPathSegment).
+// The writer stored the object under the key as spelled, while DuckDB
+// normalizes the segment away and would address another object. The pass
+// refuses the generation before any DuckDB work, as a
+// PublicationConsistencyError: the committed inventory is not what a read can
+// address, and a PostgreSQL-only answer would drop its rows.
+var ErrPublishedPathNotCanonical = errors.New("the generation lists an object whose address DuckDB would normalize to another object")
+
 // refuseGlobPaths refuses a generation that lists an address DuckDB would
-// expand: every listed object must reach DuckDB as one concrete object.
+// not read as written: every listed object must reach DuckDB as one concrete
+// object, under the key the writer stored it at.
 func refuseGlobPaths(gen PublishedGeneration) error {
-	var globs []string
+	var globs, dotted []string
 	for _, path := range gen.Paths {
-		if strings.ContainsAny(path, forma.ParquetGlobMetacharacters) {
+		switch {
+		case strings.ContainsAny(path, forma.ParquetGlobMetacharacters):
 			globs = append(globs, path)
+		case forma.HasDotPathSegment(path):
+			dotted = append(dotted, path)
 		}
 	}
-	if len(globs) == 0 {
+	var err error
+	switch {
+	case len(globs) > 0:
+		err = fmt.Errorf("%w: %s", ErrPublishedPathNotConcrete, strings.Join(globs, ", "))
+	case len(dotted) > 0:
+		err = fmt.Errorf("%w: %s", ErrPublishedPathNotCanonical, strings.Join(dotted, ", "))
+	default:
 		return nil
 	}
 	return &PublicationConsistencyError{
-		SchemaID: gen.SchemaID, Epoch: gen.Epoch, Generation: gen.Generation,
-		Err: fmt.Errorf("%w: %s", ErrPublishedPathNotConcrete, strings.Join(globs, ", ")),
+		SchemaID: gen.SchemaID, Epoch: gen.Epoch, Generation: gen.Generation, Err: err,
 	}
 }
 

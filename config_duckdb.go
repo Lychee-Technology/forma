@@ -306,13 +306,17 @@ func (c *Config) validateDuckDBConfig() error {
 const ParquetGlobMetacharacters = "*?["
 
 // ValidateParquetPrefix rejects a parquet data prefix carrying any of
-// ParquetGlobMetacharacters (#527). The CDC writers store the prefix as a
-// literal S3 key, which S3 permits, while the reader hands every listed
-// object's address to DuckDB's read_parquet, which would expand it: a prefix
-// of `data/*` would make every object under it unreadable as listed. DuckDB's
-// S3 glob has no documented escape syntax, so the prefix is refused rather than
-// escaped. field names the setting in the returned ConfigError: the writer
-// tools call it on their prefix flags. An empty prefix passes.
+// ParquetGlobMetacharacters (#527) or a `.` or `..` path segment
+// (HasDotPathSegment). The CDC writers store the prefix as a literal S3 key,
+// which S3 permits, while the reader hands every listed object's address to
+// DuckDB's read_parquet. DuckDB would expand a glob, so a prefix of `data/*`
+// would make every object under it unreadable as listed, and it normalizes a
+// dot segment away, so `data/../x` would address another object than the one
+// the writer stored. DuckDB's S3 path handling has no documented escape
+// syntax for either, so the prefix is refused rather than escaped. field
+// names the setting in the returned ConfigError: the writer tools call it on
+// their prefix flags, and the CDC writers on their configured prefix. An
+// empty prefix passes.
 func ValidateParquetPrefix(field, prefix string) error {
 	if strings.ContainsAny(prefix, ParquetGlobMetacharacters) {
 		return &ConfigError{
@@ -321,5 +325,25 @@ func ValidateParquetPrefix(field, prefix string) error {
 				"but DuckDB's read_parquet would expand it",
 		}
 	}
+	if HasDotPathSegment(prefix) {
+		return &ConfigError{
+			Field: field,
+			Message: "must not contain a . or .. path segment: the writers store it as a literal S3 key " +
+				"but DuckDB normalizes the path and would address another object",
+		}
+	}
 	return nil
+}
+
+// HasDotPathSegment reports whether path has a segment, between slashes or
+// at either end, that is exactly `.` or `..`. The AWS SDK keeps such a
+// segment in the object key it writes, while DuckDB normalizes the path
+// before it addresses the object, so the two name different objects (#896).
+func HasDotPathSegment(path string) bool {
+	for _, segment := range strings.Split(path, "/") {
+		if segment == "." || segment == ".." {
+			return true
+		}
+	}
+	return false
 }
