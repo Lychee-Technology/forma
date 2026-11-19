@@ -1577,8 +1577,19 @@ the V1 resolution (#896), together with their HTTP classes
 
 `forma.ErrManifestSchemaMismatch`, carried by
 `forma.ManifestSchemaMismatchError{RequestedSchemaID, ManifestSchemaID, Path}`,
-marks a manifest object whose recorded `schema_id` disagrees with the schema
-being read. It is raised before any path reaches a scan.
+marks a **V1** manifest object whose recorded `schema_id` disagrees with the
+schema being read. It is raised before any path reaches a scan.
+
+**Scope since #896.** Only the remaining V1 tools raise it: the compactor's
+manifest load and `manifest-reconcile`, which a cut-over deployment keeps
+stopped until V2 compaction (#890) and garbage collection (#891) replace them.
+The server and the federated read path no longer read a V1 manifest, and
+`duckdb.manifestTemplate` is no longer a server setting. A V2 read resolves
+the manifest the publication record names, verified against its committed
+digest and identity: a manifest that names another schema, epoch or
+generation fails as `ErrPublicationInconsistent` (wrapping
+`publication.ErrManifestInvalid`), whose HTTP class is
+`publication_inconsistent`, not this one.
 
 - **Why it is loud rather than a short read.** A manifest addresses one schema
   by path convention alone. Nothing downstream re-checks it: the parquet scan
@@ -1586,23 +1597,20 @@ being read. It is raised before any path reaches a scan.
   projection stamps whatever it scans as the *requested* schema. So a path
   collision between two schemas would not merely under-read — it would serve
   another schema's rows under this schema's identity.
-- **Not degradable.** Cross-schema contamination is the opposite of a partial
-  answer, so `duckdb.allowPartialDegradedMode` does not absorb it. It is also not
-  relabelled as `ErrFederatedReadFailed` on the way out of path resolution,
-  which would have handed it to the degraded fallback.
-- **Relationship to config validation.** `duckdb.manifestTemplate` is
-  probe-validated at startup against two schema IDs, which catches a collapsed
+- **Not a degradable read.** Cross-schema contamination is the opposite of a
+  partial answer, so a V1 tool fails on it rather than work around it.
+- **Relationship to flag validation.** The compactor and `manifest-reconcile`
+  probe `--manifest-template` at flag parsing against two schema IDs
+  (`forma.ValidateManifestPathTemplate`, #520), which catches a collapsed
   template (a constant path, a `{{.SchemaId}}` typo) but cannot prove
   injectivity over the whole schema domain. This error is the runtime
   enforcement of what that check can only sample.
-- **Where it is enforced.** Every per-schema V1 manifest consumer: the
-  federated read path, the compactor's manifest load and `manifest-reconcile`
-  (which wraps it in its own `claims schema N, not requested schema M`
-  wording). Those CLI tools also probe `--manifest-template` at flag parsing
-  with the same two-schema check the server applies to
-  `duckdb.manifestTemplate` (#520). `cdc-flush` and `cdc-init` no longer read
-  or write a V1 manifest (#896): a V2 manifest names its schema, epoch and
-  generation, and its digest is committed in the record.
+- **Where it is enforced.** The two V1 manifest consumers left: the
+  compactor's manifest load and `manifest-reconcile` (which wraps it in its
+  own `claims schema N, not requested schema M` wording). `cdc-flush`,
+  `cdc-init` and the federated reader no longer read or write a V1 manifest
+  (#896): a V2 manifest names its schema, epoch and generation, and its digest
+  is committed in the record.
 - **Zero stamp (#522).** A manifest whose `schema_id` is zero is unstamped
   rather than schema 0 (schema IDs are always positive), and it is not a legacy
   format either: the field has been on the manifest, and set by every Forma
@@ -1626,20 +1634,18 @@ being read. It is raised before any path reaches a scan.
   `VerifySchemaStamp` refuses a non-positive request before comparing any
   stamp, as a plain error (an invariant violation by the caller, not a
   property of the manifest), so it does not classify as a schema mismatch.
-  Because it is unclassified, the federated engine must not let it reach the
-  parquet source at all: `resolveParquetPaths` relabels every unclassified
-  source failure as `ErrFederatedReadFailed`, which `AllowPartialDegradedMode`
-  absorbs into a Postgres-only answer. So `Query` and
-  `ExecuteFederatedKeysetQuery` refuse a non-positive `SchemaID` at entry,
-  before routing (PR #537 review) — the same `schema id must be positive`
-  invariant the OLTP repository enforces — and no degraded fallback runs.
+  The federated engine still refuses a non-positive `SchemaID` at entry
+  (`Query`, `ExecuteFederatedKeysetQuery`, PR #537 review), the same `schema
+  id must be positive` invariant the OLTP repository enforces.
 - **Where the zero-stamp rule is enforced.** The same single site,
-  `manifest.VerifySchemaStamp`, reached through `LoadOrCreateForSchema` by the
-  federated read path, `cdc-flush`, `cdc-init` and `manifest-reconcile`, and
-  directly by the compactor's manifest load.
+  `manifest.VerifySchemaStamp`, reached through `LoadOrCreateForSchema` by
+  `manifest-reconcile`, and directly by the compactor's manifest load.
 - **Operator action.** The message names both schema IDs and the manifest key.
-  Fix the template so each schema resolves a distinct object, then repair the
-  affected manifests (`docs/manifest-reconcile.md`).
+  Fix the tool's `--manifest-template` so each schema resolves a distinct
+  object, then repair the affected manifests (`docs/manifest-reconcile.md`).
+- **HTTP.** The `manifest_schema_mismatch` class stays in
+  `internal/httpapi`'s classification for an embedder that surfaces a V1
+  tool's error. The server's own reads raise `publication_inconsistent`.
 
 ## Public HTTP error surface
 
