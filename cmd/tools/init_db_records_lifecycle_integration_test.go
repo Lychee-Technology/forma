@@ -249,8 +249,8 @@ func TestInitDBRecoversALostRecordWithoutReusingItsHistory(t *testing.T) {
 		t.Fatalf("init-db: %v\n%s", err, out)
 	}
 	outbox := tg.publishInit(t, 100)
+	tg.publishInit(t, 101)
 	timer := tg.publishInit(t, 101)
-	timer = tg.publishInit(t, 101)
 
 	tg.removeRecord(t, 100)
 	out, err := tg.run(t)

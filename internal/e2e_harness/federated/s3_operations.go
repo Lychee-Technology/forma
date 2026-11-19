@@ -263,13 +263,6 @@ type s3PrefixClient interface {
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 }
 
-// deleteS3Prefix deletes all objects under a prefix, across every listing
-// page, so a cleanup between cases cannot leave later-page objects behind
-// for the next case to see (#521).
-func (h *FederatedTestHarness) deleteS3Prefix(ctx context.Context, prefix string) error {
-	return deleteAllUnderPrefix(ctx, h.s3Client, h.S3Bucket, prefix)
-}
-
 // deleteAllUnderPrefix lists the whole prefix first, then deletes each key.
 // The listing fails closed through the shared paginator; individual delete
 // failures stay best-effort, as the cleanup callers expect.
