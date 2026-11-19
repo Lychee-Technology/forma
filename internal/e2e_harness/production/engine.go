@@ -2,12 +2,16 @@ package production
 
 import (
 	"context"
+	"fmt"
+	"slices"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/jackc/pgx/v5"
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal"
 	fedengine "github.com/lychee-technology/forma/internal/federated"
-	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/federatedv2"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/queryplan"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/transform"
@@ -15,7 +19,8 @@ import (
 
 // Engine returns the Env's real federated query engine, assembling it on
 // first use: the production DBPersistentRecordRepository over the per-test
-// pool, the pgx hot leg's snapshot pool and reader, the per-test DuckDB client, the
+// pool, the pgx hot leg's snapshot pool and reader, the Protocol V2
+// publication reader (publicationReader), the per-test DuckDB client, the
 // factory-shape shared plan cache (#345), an optional circuit breaker
 // (WithBreaker), and the loaded metadata cache.
 // This mirrors the production assembly used by the benchmark runner
@@ -57,12 +62,15 @@ func (e *Env) assembleEngine(cfg forma.DuckDBConfig) *fedengine.DBFederatedQuery
 		hotLeg = e.HotLegReaderWrap(hotLeg)
 	}
 	opts = append(opts, fedengine.WithPgxHotLeg(e.Pool, hotLeg))
-	if src := e.parquetSource(); src != nil {
-		if e.ParquetSourceWrap != nil {
-			src = e.ParquetSourceWrap(src)
-		}
-		opts = append(opts, fedengine.WithParquetSource(src))
+	reader, err := e.publicationReader(context.Background())
+	if err != nil {
+		e.T.Fatalf("assemble the federated engine: %v", err)
 	}
+	var pub fedengine.PublicationReader = reader
+	if e.PublicationReaderWrap != nil {
+		pub = e.PublicationReaderWrap(pub)
+	}
+	opts = append(opts, fedengine.WithPublicationReader(pub, fedengine.DefaultPublishedPassDeadline))
 	return fedengine.NewDBFederatedQueryEngine(
 		repo,
 		fedengine.NewDuckDBClientQueryExecutor(e.Duck),
@@ -87,12 +95,13 @@ func (e *Env) Breaker() *fedengine.CircuitBreaker {
 
 // clusterS3Client forwards every S3 call to the Cluster's *current* client at
 // call time, so a client rebuilt by RestartS3 (the host-mapped port can change)
-// is picked up without re-wiring. This is what lets parquetSource dedup onto
-// manifest.NewS3QuerySource without freezing the client at construction —
-// the naive dedup #250 plan decision D2 rejected (#302).
+// is picked up without re-wiring the publication reader built over it (#302).
 type clusterS3Client struct{ cluster *Cluster }
 
-var _ manifest.S3ProbeClient = clusterS3Client{}
+var (
+	_ manifestv2.S3Client     = clusterS3Client{}
+	_ manifestv2.S3HeadClient = clusterS3Client{}
+)
 
 func (f clusterS3Client) GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	return f.cluster.S3.GetObject(ctx, params, optFns...)
@@ -106,22 +115,69 @@ func (f clusterS3Client) HeadObject(ctx context.Context, params *s3.HeadObjectIn
 	return f.cluster.S3.HeadObject(ctx, params, optFns...)
 }
 
-// parquetSource builds the manifest-driven parquet path resolver matching the
-// Env's CDC manifest wiring (#187) through the shared production assembly
-// (manifest.NewS3QuerySource, #250/#302). Reads scan exactly the listed
-// objects, missing listed keys classify as ErrParquetSetInconsistent, and
-// never-flushed schemas fall back to the legacy glob. Nil when the Env opted
-// out of manifests (WithoutManifest) — those Envs keep glob reads.
-func (e *Env) parquetSource() fedengine.ParquetSource {
-	if e.CDC.ManifestTemplate == "" {
-		return nil
+// manifestCacheEntries bounds the reader's cache of verified manifests, as
+// the factory's does.
+const manifestCacheEntries = 1024
+
+// publicationReader builds the engine's Protocol V2 source the way the
+// factory does (factory/publication_reader.go): a federatedv2.Source over a
+// verifying manifest cache on the cluster bucket, with the epoch of every
+// schema the metadata cache holds pinned as of one snapshot, read when the
+// Env's first engine is assembled, after provisioning registered the fixtures
+// and wrote their records. Every engine of one process shares those pins (an
+// engine assembled for another config, such as degraded mode, while
+// PostgreSQL is down included); every rebuild that models a process restart
+// (ReopenDuckDB, EvolveSchema, a Postgres restart) drops them and pins again.
+func (e *Env) publicationReader(ctx context.Context) (*federatedv2.Source, error) {
+	if e.epochPins == nil {
+		pins, err := e.loadEpochPins(ctx)
+		if err != nil {
+			return nil, err
+		}
+		e.epochPins = pins
 	}
-	return manifest.NewS3QuerySource(clusterS3Client{e.Cluster}, manifest.S3QuerySourceConfig{
-		Bucket:           e.Cluster.Bucket,
-		ManifestPrefix:   e.CDC.ManifestPrefix,
-		ManifestTemplate: e.CDC.ManifestTemplate,
-		DataPrefix:       e.S3Prefix,
+	pins := e.epochPins
+	client := clusterS3Client{e.Cluster}
+	cache, err := manifestv2.NewCache(&manifestv2.S3Store{Client: client, Bucket: e.Cluster.Bucket}, manifestCacheEntries)
+	if err != nil {
+		return nil, fmt.Errorf("build the manifest cache: %w", err)
+	}
+	src, err := federatedv2.New(federatedv2.Config{
+		EntityMain: e.Tables.EntityMain,
+		Manifests:  cache,
+		Epochs:     pins,
+		ObjectURI:  federatedv2.S3URI(e.Cluster.Bucket),
+		Exists:     manifestv2.S3Exists(client, e.Cluster.Bucket),
 	})
+	if err != nil {
+		return nil, fmt.Errorf("build the publication reader: %w", err)
+	}
+	return src, nil
+}
+
+// loadEpochPins reads the epoch pins of every schema the metadata cache holds
+// in one REPEATABLE READ READ ONLY snapshot, as the factory's startup does.
+func (e *Env) loadEpochPins(ctx context.Context) (map[int16]int64, error) {
+	tx, err := e.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("open the snapshot the publication epochs are pinned in: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	var ids []int16
+	for _, name := range e.Metadata.ListSchemas() {
+		if id, ok := e.Metadata.GetSchemaID(name); ok {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	pins, err := federatedv2.LoadEpochPins(ctx, tx, e.Tables.EntityMain, ids)
+	if err != nil {
+		return nil, fmt.Errorf("pin the publication epochs of %d schemas: %w", len(ids), err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("end the snapshot the publication epochs were pinned in: %w", err)
+	}
+	return pins, nil
 }
 
 // EntityManager returns the Env's real production EntityManager, assembling

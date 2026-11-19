@@ -108,13 +108,12 @@ func (c *captureTierLoader) ClearAllData(context.Context) error {
 	return nil
 }
 
-func (c *captureTierLoader) WriteParquet(_ context.Context, tier, _ string, records []federated.TestRecord) error {
-	copyRecords := append([]federated.TestRecord(nil), records...)
-	switch tier {
-	case "base":
-		c.baseWrites = append(c.baseWrites, copyRecords)
-	case "delta":
-		c.deltaWrites = append(c.deltaWrites, copyRecords)
+func (c *captureTierLoader) PublishTiers(_ context.Context, _ int16, base, delta []federated.TestRecord) error {
+	if len(base) > 0 {
+		c.baseWrites = append(c.baseWrites, append([]federated.TestRecord(nil), base...))
+	}
+	if len(delta) > 0 {
+		c.deltaWrites = append(c.deltaWrites, append([]federated.TestRecord(nil), delta...))
 	}
 	return nil
 }

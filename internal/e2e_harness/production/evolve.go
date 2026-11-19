@@ -61,7 +61,7 @@ func (e *Env) evolveSchema(ctx context.Context, newSchemaDir string, record reco
 	e.Registry = registry
 	e.Metadata = metadata
 	e.opts.schemaDir = newSchemaDir
-	e.engine = nil
+	e.engine, e.epochPins = nil, nil
 	e.manager = nil
 	e.routedManagers = nil
 	e.postgresManager = nil

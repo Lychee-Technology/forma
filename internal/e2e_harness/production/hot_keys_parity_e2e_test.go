@@ -5,7 +5,6 @@ package production
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 	"testing"
 
@@ -27,8 +26,8 @@ import (
 // "all hot" writes the parity rows' final states without a flush, so every
 // row is in the dirty window and the hot-keys query must answer exactly what
 // the route answers. "tiers" reuses the parity test's cold/warm/hot layout:
-// there the hot keys must be the route's rows that are in the window, at the
-// widest cutoff and at the strict one, read in one snapshot.
+// there the hot keys must be the route's rows that are in the window, read in
+// one snapshot.
 func TestHotKeysQueryConditionDSLParity(t *testing.T) {
 	ctx := context.Background()
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
@@ -39,7 +38,7 @@ func TestHotKeysQueryConditionDSLParity(t *testing.T) {
 		forEachParityCase(rows, func(f Filter, want []uuid.UUID) {
 			pg := pgRouteIDs(ctx, t, env, wide, f)
 			assertSameIDs(t, f, "the PostgreSQL route", pg, want)
-			hot, window := hotKeyIDsInWindow(ctx, t, env, wide, f, 0)
+			hot, window := hotKeyIDsInWindow(ctx, t, env, wide, f)
 			assertSameIDs(t, f, "the dirty window", window, rows.ids())
 			assertSameIDs(t, f, "the hot-keys query", hot, pg)
 		})
@@ -48,14 +47,12 @@ func TestHotKeysQueryConditionDSLParity(t *testing.T) {
 	t.Run("tiers", func(t *testing.T) {
 		env := NewEnv(t, SharedCluster(t))
 		rows := seedParityTiers(ctx, t, env, wide)
-		for _, cutoff := range []int64{0, math.MaxInt64} {
-			forEachParityCase(rows, func(f Filter, want []uuid.UUID) {
-				pg := pgRouteIDs(ctx, t, env, wide, f)
-				assertSameIDs(t, f, "the PostgreSQL route", pg, want)
-				hot, window := hotKeyIDsInWindow(ctx, t, env, wide, f, cutoff)
-				assertSameIDs(t, f, fmt.Sprintf("the hot-keys query at cutoff %d", cutoff), hot, intersectIDs(pg, window))
-			})
-		}
+		forEachParityCase(rows, func(f Filter, want []uuid.UUID) {
+			pg := pgRouteIDs(ctx, t, env, wide, f)
+			assertSameIDs(t, f, "the PostgreSQL route", pg, want)
+			hot, window := hotKeyIDsInWindow(ctx, t, env, wide, f)
+			assertSameIDs(t, f, "the hot-keys query", hot, intersectIDs(pg, window))
+		})
 	})
 
 	// Text ranges compare bytes on the hot-keys query as on the route (#728):
@@ -87,7 +84,7 @@ func TestHotKeysQueryConditionDSLParity(t *testing.T) {
 					}
 					pg := pgRouteIDs(ctx, t, env, wide, f)
 					assertSameIDs(t, f, "the PostgreSQL route", pg, sortedUUIDs(want))
-					hot, _ := hotKeyIDsInWindow(ctx, t, env, wide, f, 0)
+					hot, _ := hotKeyIDsInWindow(ctx, t, env, wide, f)
 					assertSameIDs(t, f, "the hot-keys query", hot, pg)
 				}
 			}
@@ -157,9 +154,9 @@ func pgRouteIDs(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, f F
 }
 
 // hotKeyIDsInWindow reads, in one REPEATABLE READ READ ONLY snapshot as a
-// pgx pass does, the rows the hot-keys query selects for f at cutoff and the
-// rows of the dirty window it reads.
-func hotKeyIDsInWindow(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, f Filter, cutoff int64) (hot, window []uuid.UUID) {
+// pgx pass does, the rows the hot-keys query selects for f and the rows of
+// the dirty set it reads: the rows with an unflushed change_log entry.
+func hotKeyIDsInWindow(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, f Filter) (hot, window []uuid.UUID) {
 	t.Helper()
 	fq, err := env.buildFederatedQuery(Query{Schema: wide, Filters: []Filter{f}})
 	if err != nil {
@@ -173,7 +170,7 @@ func hotKeyIDsInWindow(ctx context.Context, t *testing.T, env *Env, wide SchemaR
 
 	repo := internal.NewDBPersistentRecordRepository(env.Pool, env.Metadata)
 	keys, err := repo.QueryHotKeys(ctx, tx, model.HotKeysQuery{
-		Tables: env.Tables, SchemaID: wide.ID, Condition: fq.Condition, GraceCutoffMs: cutoff,
+		Tables: env.Tables, SchemaID: wide.ID, Condition: fq.Condition,
 	})
 	if err != nil {
 		t.Fatalf("%s %s:%s on the hot-keys query: %v", f.Attr, f.Op, f.Value, err)
@@ -181,8 +178,8 @@ func hotKeyIDsInWindow(ctx context.Context, t *testing.T, env *Env, wide SchemaR
 	for _, k := range keys {
 		hot = append(hot, k.RowID)
 	}
-	rows, err := tx.Query(ctx, fmt.Sprintf("SELECT DISTINCT row_id FROM %s WHERE schema_id = $1 AND (flushed_at = 0 OR flushed_at >= $2)",
-		sqlutil.SanitizeIdentifier(env.Tables.ChangeLog)), wide.ID, cutoff)
+	rows, err := tx.Query(ctx, fmt.Sprintf("SELECT DISTINCT row_id FROM %s WHERE schema_id = $1 AND flushed_at = 0",
+		sqlutil.SanitizeIdentifier(env.Tables.ChangeLog)), wide.ID)
 	if err != nil {
 		t.Fatalf("read the dirty window: %v", err)
 	}

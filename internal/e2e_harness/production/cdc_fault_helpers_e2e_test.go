@@ -22,8 +22,10 @@ func seedRows(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, n i
 	return events
 }
 
-// splitKeys partitions new S3 keys into final delta parquet files and _tmp
-// leftovers; manifest JSON objects fall through both buckets.
+// splitKeys partitions new S3 keys into parquet objects and _tmp leftovers;
+// manifest JSON objects fall through both buckets. Protocol V2 writes every
+// object once at its final key, so tmps stays empty: a test that asserts it
+// pins that no staging object appears.
 func splitKeys(keys []string) (finals, tmps []string) {
 	for _, k := range keys {
 		switch {
@@ -37,7 +39,8 @@ func splitKeys(keys []string) (finals, tmps []string) {
 }
 
 // assertUntouched asserts a failed flush left no observable side effects: no
-// new S3 objects, the dirty count unchanged, and no manifest for the schema.
+// new S3 objects, the dirty count unchanged, and no published file for the
+// schema.
 func assertUntouched(t *testing.T, report *FlushReport, schema SchemaRef, wantUnflushed int64) {
 	t.Helper()
 	if len(report.NewObjects) != 0 {
@@ -92,15 +95,23 @@ func healMarkFlushed(ctx context.Context, t *testing.T, env *Env) {
 	env.ExecSQL(ctx, `DROP TRIGGER IF EXISTS e2e_poison_flush ON change_log`)
 }
 
-// assertNoRowExportedTwice reads every delta/base parquet under the schema's
-// glob and fails if any row_id appears more than once. Valid only for
-// create-only fixtures (a single version per row); update flows legitimately
-// export the same row_id at different ver_ts.
+// assertNoRowExportedTwice reads every object the schema's published
+// generation lists, what a reader scans, and fails if any row_id appears more
+// than once. Orphans of a failed attempt are unlisted and never read, so they
+// do not count. Valid only for create-only fixtures (a single version per
+// row); update flows legitimately export the same row_id at different ver_ts.
 func assertNoRowExportedTwice(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
 	t.Helper()
-	glob := fmt.Sprintf("s3://%s/%s/%d/*.parquet", env.Cluster.Bucket, env.S3Prefix, schema.ID)
+	files := loadSchemaManifest(ctx, t, env, schema).Files
+	if len(files) == 0 {
+		return
+	}
+	uris := make([]string, 0, len(files))
+	for _, f := range files {
+		uris = append(uris, "'"+env.ParquetURI(f.Path)+"'")
+	}
 	rows, err := env.Duck.DB.QueryContext(ctx, fmt.Sprintf(
-		`SELECT CAST(row_id AS VARCHAR), count(*) FROM read_parquet('%s') GROUP BY 1 HAVING count(*) > 1`, glob))
+		`SELECT CAST(row_id AS VARCHAR), count(*) FROM read_parquet([%s]) GROUP BY 1 HAVING count(*) > 1`, strings.Join(uris, ", ")))
 	if err != nil {
 		t.Fatalf("scan parquet for duplicate row_ids: %v", err)
 	}
@@ -202,19 +213,6 @@ func buildSchemaKeyPrefix(env *Env, schema SchemaRef) string {
 	return fmt.Sprintf("%s/%d/", env.S3Prefix, schema.ID)
 }
 
-// buildSchemaManifestKey is buildSchemaKeyPrefix's sibling for the schema's
-// manifest object: the single source of the manifest key in the e2e tests,
-// resolved through Env.manifestKey so a ManifestTemplate override moves
-// every listing, fault filter and touch check with it (#427).
-func buildSchemaManifestKey(t *testing.T, env *Env, schema SchemaRef) string {
-	t.Helper()
-	key, err := env.manifestKey(schema.ID)
-	if err != nil {
-		t.Fatalf("manifest key: %v", err)
-	}
-	return key
-}
-
 // filterFinalsForSchema filters keys down to one schema's final parquet objects
 // (multi-schema passes legitimately mix partitions in one report, so the
 // global splitKeys alone cannot attribute objects to a schema).
@@ -230,9 +228,9 @@ func filterFinalsForSchema(env *Env, keys []string, schema SchemaRef) []string {
 }
 
 // assertSchemaUntouchedByFault is the per-schema face of assertUntouched for
-// multi-schema passes (#186): the faulted schema promoted no final parquet,
-// no /_tmp/ residue (in-band cleanup, #226), every one of its rows stays
-// dirty, and its manifest tracks nothing — while sibling schemas may
+// multi-schema passes (#186): the faulted schema staged no parquet, no
+// /_tmp/ residue, every one of its rows stays dirty, and its generation
+// lists nothing — while sibling schemas may
 // legitimately create objects in the same report.
 func assertSchemaUntouchedByFault(ctx context.Context, t *testing.T, env *Env, report *FlushReport, schema SchemaRef, wantDirty int) {
 	t.Helper()
@@ -242,7 +240,7 @@ func assertSchemaUntouchedByFault(ctx context.Context, t *testing.T, env *Env, r
 	_, tmps := splitKeys(report.NewObjects)
 	for _, k := range tmps {
 		if strings.HasPrefix(k, buildSchemaKeyPrefix(env, schema)) {
-			t.Errorf("schema %d must leave no tmp residue after its copy fault (#226), got %s", schema.ID, k)
+			t.Errorf("schema %d must leave no tmp residue after its fault, got %s", schema.ID, k)
 		}
 	}
 	flushed, dirty := fetchChangeLogRowIDs(ctx, t, env, schema)

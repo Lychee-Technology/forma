@@ -69,13 +69,6 @@ func queryRequestForWorkload(workload WorkloadDefinition, defaultPageSize int) (
 	return req, pageSize
 }
 
-func benchmarkS3ParquetPathTemplate(h *federated.FederatedTestHarness) string {
-	if h == nil {
-		return ""
-	}
-	return fmt.Sprintf("s3://%s/%s/{{.SchemaID}}/base/*.parquet, s3://%s/%s/{{.SchemaID}}/delta/*.parquet", h.S3Bucket, h.S3Prefix, h.S3Bucket, h.S3Prefix)
-}
-
 func conditionForWorkload(workload WorkloadDefinition) forma.Condition {
 	conditions := make([]forma.Condition, 0, len(workload.ResolvedFilterConditions())+1)
 	for key, value := range workload.ResolvedFilterConditions() {

@@ -27,13 +27,19 @@ func TestFullTypeRoundTripAcrossTiers(t *testing.T) {
 	// Hot baseline: full-attribute oracle comparison from Postgres.
 	env.AssertQueryMatches(ctx, Query{Schema: wide, PreferHot: true, Limit: 100})
 
-	// Cold tier: base parquet becomes the only source for creates[0:6].
+	// Cold tier: base parquet becomes the only source for creates[0:6]
+	// (and, until the flush below, for creates[6:12] too).
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	env.MarkRowsOnboarded(ctx, wide, rowIDs(creates[0:6]))
+	env.MarkOnboarded(ctx, wide)
+	// The base holds every row as exported, before the re-write below moves
+	// six rows' version stamps on.
+	baseTruth := buildWideTruth(ctx, t, env, wide.ID, creates)
 
-	// Warm tier: flush creates[6:12] into a delta file.
+	// Warm tier: flush creates[6:12] into a delta file. The init handoff
+	// marked all twelve, so they are written again at unchanged values first.
+	rewrites := redirtyRows(ctx, t, env, wide, creates[6:12])
 	if _, err := env.RunFlush(ctx); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
@@ -45,7 +51,12 @@ func TestFullTypeRoundTripAcrossTiers(t *testing.T) {
 	}
 
 	// Physical layer: schema + values of every parquet file.
+	// The delta copies carry the re-write's version: same values, its
+	// changed_at, and the system timestamps entity_main holds now.
 	truth := buildWideTruth(ctx, t, env, wide.ID, creates)
+	for _, rw := range rewrites {
+		truth[rw.RowID].changedAt = rw.ChangedAt
+	}
 	manifests, err := env.loadManifests(ctx)
 	if err != nil {
 		t.Fatalf("load manifests: %v", err)
@@ -57,7 +68,11 @@ func TestFullTypeRoundTripAcrossTiers(t *testing.T) {
 	tierRows := map[string]int{}
 	for _, f := range m.Files {
 		assertWideParquetSchema(ctx, t, env, f.Path, f.Tier)
-		tierRows[f.Tier] += assertWideParquetValues(ctx, t, env, f.Path, f.Tier, wide.ID, truth)
+		want := truth
+		if f.Tier == "base" {
+			want = baseTruth
+		}
+		tierRows[f.Tier] += assertWideParquetValues(ctx, t, env, f.Path, f.Tier, wide.ID, want)
 	}
 	if tierRows["base"] != 12 {
 		t.Errorf("base parquet rows = %d, want 12", tierRows["base"])

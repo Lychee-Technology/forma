@@ -16,7 +16,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const manifestImport = "github.com/lychee-technology/forma/internal/manifest"
+// v1ManifestImport is the V1 manifest package, which no test reaches.
+const v1ManifestImport = "github.com/lychee-technology/forma/internal/manifest"
+
+// publicationImports are the Protocol V2 packages that hold a schema's
+// published inventory: its record and its immutable manifests.
+var publicationImports = map[string]bool{
+	"github.com/lychee-technology/forma/internal/manifestv2":  true,
+	"github.com/lychee-technology/forma/internal/publication": true,
+}
 
 // clearVerb opens a statement that deletes or truncates a table's rows.
 const clearVerb = `\b(?:delete\s+from|truncate(?:\s+table)?)\s+(?:only\s+)?`
@@ -37,60 +45,39 @@ var (
 	formatVerb = regexp.MustCompile(`%%|%[-+# 0-9.]*[a-zA-Z]`)
 )
 
-// changeLogHelpers is the one file of the package that may clear change_log:
-// the helpers that name why a test does it (onboarded or flushed).
-var changeLogHelpers = map[string]bool{"handoff.go": true}
-
-// manifestWrapperTests are the unit tests of the harness's own manifest
-// wrappers, which run without the e2e tag and drive them with fake stores:
-// that loadManifestsFrom and loadKeptDeltaEntries only treat
-// manifest.ErrObjectNotFound as absent, and that an injected S3 fault never
-// classifies as manifest.IsNotFound (#464). They test the wrappers, so they
-// name the package the wrappers wrap.
-var manifestWrapperTests = map[string]bool{
-	"faults_test.go":             true,
-	"manifest_load_gate_test.go": true,
+// publicationHelperTests are the test files that may import the Protocol V2
+// packages: the fault helpers that publish a test-made generation
+// (publication_faults_test.go), the record initializer provisioning installs
+// (publication_records_test.go), and the unit tests of the harness's own
+// inventory reader and fault-injecting client, which drive them with fake
+// stores (manifest_load_gate_test.go, faults_test.go).
+var publicationHelperTests = map[string]bool{
+	"faults_test.go":              true,
+	"manifest_load_gate_test.go":  true,
+	"publication_faults_test.go":  true,
+	"publication_records_test.go": true,
 }
 
-// manifestDocumentHelpers are the harness functions that reach the V1
-// manifest document itself (its ETag, its store, its path) rather than the
-// published files. Only the harness sources call them: a test compares
-// publications through publication_state.go and stages a fault through
-// publication_faults.go.
-var manifestDocumentHelpers = map[string]bool{
-	"loadManifestWithETag": true,
-	"saveManifestWithETag": true,
-	"replaceManifestTier":  true,
-	"manifestAccess":       true,
-	"manifestResolver":     true,
-}
-
-// manifestDocumentFields are the fields of the V1 manifest that describe the
-// document rather than the files it publishes.
-var manifestDocumentFields = map[string]bool{"Version": true, "UpdatedAtMs": true}
-
-// TestE2ETestsReachV1StandInsOnlyThroughHelpers keeps the production e2e
-// tests off the Protocol V1 stand-ins #896 replaces (#901):
+// TestE2ETestsReachPublicationOnlyThroughHelpers keeps the production e2e
+// tests on the tools' own Protocol V2 publication (#901, #896):
 //
-//   - No file but changeLogHelpers clears change_log, in a string literal or
-//     in SQL that takes Tables.ChangeLog as the target of a delete or
-//     truncate. V2 never clears it, and gives each intent the helpers name a
-//     different replacement.
-//   - No test file but manifestWrapperTests imports internal/manifest. E2E
-//     scenarios read the published inventory through manifest_access.go and
-//     the other harness sources, whose bodies #896 rewrites.
-//   - No test file but manifestWrapperTests reaches the V1 manifest document:
-//     it calls none of manifestDocumentHelpers, selects none of
-//     manifestDocumentFields and assigns no Files. V2 publishes immutable
-//     generations behind a publication record, so a test that edited or
-//     versioned the document could not move with the helper bodies.
+//   - No file clears change_log, in a string literal or in SQL that takes
+//     Tables.ChangeLog as the target of a delete or truncate. V2 never clears
+//     it: cdc-flush and the cdc-init handoff take rows out of the dirty set
+//     by marking their entries, and handoff.go's helpers only check that
+//     they did.
+//   - No test file imports the V1 manifest package. Nothing in the product
+//     reads a V1 manifest any more.
+//   - No test file but publicationHelperTests imports internal/manifestv2 or
+//     internal/publication. E2E scenarios observe the published inventory
+//     through manifest_access.go and publication_state.go, and stage a fault
+//     in it only through publication_faults_test.go.
 //
-// An exemption that no longer imports the package fails too, so the list
+// An exemption that no longer imports either package fails too, so the list
 // cannot outlive its reason. The scan parses every Go file of the package,
 // whatever its build tags. It is syntactic: a statement assembled at run time
-// from anything but a literal and Tables.ChangeLog is not caught, and
-// another type's Version field reads as the manifest's.
-func TestE2ETestsReachV1StandInsOnlyThroughHelpers(t *testing.T) {
+// from anything but a literal and Tables.ChangeLog is not caught.
+func TestE2ETestsReachPublicationOnlyThroughHelpers(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	require.NoError(t, err)
 	require.Greater(t, len(files), 150, "the package's Go files, e2e-tagged tests included")
@@ -130,9 +117,11 @@ func plantedStandIns() (map[string]string, []string) {
 	qualified := "DELETE FROM public." + table + " WHERE schema_id = $1"
 	quoted := `TRUNCATE TABLE "public"."` + table + `"`
 	pkg := "package p\n\n"
+	pubImport := "github.com/lychee-technology/forma/internal/publication"
+	v2Import := "github.com/lychee-technology/forma/internal/manifestv2"
 	planted := map[string]string{
 		"handoff.go":        pkg + "const q = \"" + stmt + "\"\n\nvar _ = \"DELETE FROM \" + e.Tables.ChangeLog\n",
-		"cdc.go":            pkg + "import _ \"" + manifestImport + "\"\n\nconst q = `" + stmt + " WHERE flushed_at <> 0`\n",
+		"cdc.go":            pkg + "import _ \"" + v1ManifestImport + "\"\n\nconst q = `" + stmt + " WHERE flushed_at <> 0`\n",
 		"lower_e2e_test.go": "//go:build e2e\n\n" + pkg + "const q = \"delete\\n\\tfrom " + table + "\"\n",
 		"trunc_e2e_test.go": pkg + "const q = `" + trunc + "`\n",
 		"qualified_test.go": pkg + "const q = `" + qualified + "`\n\nconst r = `" + quoted + "`\n",
@@ -141,38 +130,39 @@ func plantedStandIns() (map[string]string, []string) {
 		"format_e2e_test.go": pkg + "var q = fmt.Sprintf(\"SELECT %d, 100%%; DELETE FROM %s WHERE schema_id = %d\", " +
 			"1, sqlutil.SanitizeIdentifier(env.Tables.ChangeLog), 2)\n\n" +
 			"var r = fmt.Sprintf(\"DELETE FROM %s WHERE schema_id = %d\", env.Tables.EntityMain, env.Tables.ChangeLog)\n",
-		"import_e2e_test.go": pkg + "import m \"" + manifestImport + "\"\n\nvar _ = m.FilterByTier\n",
-		"faults_test.go":     pkg + "import _ \"" + manifestImport + "\"\n\nvar _ = m.Version\n",
-		"document_e2e_test.go": pkg + "func f() {\n\tm, etag := loadManifestWithETag(t, ctx, env, s)\n\tm.Files = nil\n" +
-			"\tm.Files[0].Checksum = \"\"\n\t_ = m.Version\n\tsaveManifestWithETag(t, ctx, env, s, m, etag)\n}\n",
-		// A harness source may reach the document; a test may read files.
-		"publication_faults.go":      pkg + "func f() { m, _ := loadManifestWithETag(); m.Files = nil; _ = m.Version }\n",
-		"published_e2e_test.go":      pkg + "func f() { for _, e := range m.Files { _ = e.Path }; x := m.Files; _ = x }\n",
-		"sibling_e2e_test.go":        pkg + "const q = \"" + stmt + "_archive\"\n\nconst r = \"DELETE FROM public." + table + "_archive\"\n",
-		"manifest_load_gate_test.go": pkg + "const q = \"SELECT 1\"\n",
+		"import_e2e_test.go":          pkg + "import m \"" + v1ManifestImport + "\"\n\nvar _ = m.FilterByTier\n",
+		"record_e2e_test.go":          pkg + "import p \"" + pubImport + "\"\n\nvar _ = p.Publish\n",
+		"generation_e2e_test.go":      pkg + "import (\n\tm \"" + v2Import + "\"\n\tp \"" + pubImport + "\"\n)\n\nvar _, _ = m.Fetch, p.Read\n",
+		"publication_faults_test.go":  pkg + "import p \"" + pubImport + "\"\n\nvar _ = p.Publish\n",
+		"faults_test.go":              pkg + "import _ \"" + v1ManifestImport + "\"\n\nimport _ \"" + v2Import + "\"\n",
+		"published_e2e_test.go":       pkg + "func f() { for _, e := range m.Files { _ = e.Path }; x := m.Files; _ = x }\n",
+		"sibling_e2e_test.go":         pkg + "const q = \"" + stmt + "_archive\"\n\nconst r = \"DELETE FROM public." + table + "_archive\"\n",
+		"manifest_load_gate_test.go":  pkg + "const q = \"SELECT 1\"\n",
+		"publication_records_test.go": pkg + "import _ \"" + pubImport + "\"\n",
 	}
 	want := []string{
 		`cdc.go clears change_log: "` + stmt + ` WHERE flushed_at <> 0"`,
 		`concat_e2e_test.go clears change_log: "DELETE FROM " + Tables.ChangeLog`,
-		"document_e2e_test.go assigns the V1 manifest's Files",
-		"document_e2e_test.go assigns the V1 manifest's Files",
-		"document_e2e_test.go reaches the V1 manifest document through loadManifestWithETag",
-		"document_e2e_test.go reaches the V1 manifest document through saveManifestWithETag",
-		"document_e2e_test.go reads the V1 manifest's Version",
+		"faults_test.go imports " + v1ManifestImport,
 		`format_e2e_test.go clears change_log: "SELECT %d, 100%%; DELETE FROM %s WHERE schema_id = %d" with Tables.ChangeLog`,
-		"import_e2e_test.go imports " + manifestImport,
+		"generation_e2e_test.go imports " + v2Import,
+		"generation_e2e_test.go imports " + pubImport,
+		`handoff.go clears change_log: "DELETE FROM " + Tables.ChangeLog`,
+		`handoff.go clears change_log: "` + stmt + `"`,
+		"import_e2e_test.go imports " + v1ManifestImport,
 		`lower_e2e_test.go clears change_log: "delete\n\tfrom ` + table + `"`,
-		"manifest_load_gate_test.go is exempt from the manifest import rule but no longer imports " + manifestImport,
+		"manifest_load_gate_test.go is exempt from the publication import rule but imports neither package",
 		`qualified_test.go clears change_log: "` + qualified + `"`,
 		`qualified_test.go clears change_log: "TRUNCATE TABLE \"public\".\"` + table + `\""`,
+		"record_e2e_test.go imports " + pubImport,
 		`trunc_e2e_test.go clears change_log: "` + trunc + `"`,
 	}
 	return planted, want
 }
 
 // standInViolations answers, sorted, each violation of the rules of
-// TestE2ETestsReachV1StandInsOnlyThroughHelpers among files, which are named
-// by their base name.
+// TestE2ETestsReachPublicationOnlyThroughHelpers among files, which are
+// named by their base name.
 func standInViolations(files []string) ([]string, error) {
 	var violations []string
 	fset := token.NewFileSet()
@@ -182,82 +172,37 @@ func standInViolations(files []string) ([]string, error) {
 			return nil, fmt.Errorf("parse %s for V1 stand-ins: %w", name, err)
 		}
 		base := filepath.Base(name)
-		violations = append(violations, manifestImportViolations(base, file)...)
-		if strings.HasSuffix(base, "_test.go") && !manifestWrapperTests[base] {
-			violations = append(violations, manifestDocumentViolations(base, file)...)
-		}
-		if !changeLogHelpers[base] {
-			violations = append(violations, changeLogClearViolations(base, file)...)
-		}
+		violations = append(violations, importViolations(base, file)...)
+		violations = append(violations, changeLogClearViolations(base, file)...)
 	}
 	sort.Strings(violations)
 	return violations, nil
 }
 
-// manifestImportViolations applies the import rule to one file.
-func manifestImportViolations(base string, file *ast.File) []string {
+// importViolations applies the import rules to one test file.
+func importViolations(base string, file *ast.File) []string {
 	if !strings.HasSuffix(base, "_test.go") {
 		return nil
 	}
-	imports := false
-	for _, spec := range file.Imports {
-		if p, err := strconv.Unquote(spec.Path.Value); err == nil && p == manifestImport {
-			imports = true
-		}
-	}
-	switch {
-	case imports && !manifestWrapperTests[base]:
-		return []string{base + " imports " + manifestImport}
-	case !imports && manifestWrapperTests[base]:
-		return []string{base + " is exempt from the manifest import rule but no longer imports " + manifestImport}
-	}
-	return nil
-}
-
-// manifestDocumentViolations applies the manifest document rule to one test
-// file.
-func manifestDocumentViolations(base string, file *ast.File) []string {
 	var violations []string
-	ast.Inspect(file, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.Ident:
-			if manifestDocumentHelpers[n.Name] {
-				violations = append(violations, base+" reaches the V1 manifest document through "+n.Name)
+	publicationImported := false
+	for _, spec := range file.Imports {
+		p, err := strconv.Unquote(spec.Path.Value)
+		switch {
+		case err != nil:
+		case p == v1ManifestImport:
+			violations = append(violations, base+" imports "+p)
+		case publicationImports[p]:
+			publicationImported = true
+			if !publicationHelperTests[base] {
+				violations = append(violations, base+" imports "+p)
 			}
-		case *ast.SelectorExpr:
-			if manifestDocumentFields[n.Sel.Name] {
-				violations = append(violations, base+" reads the V1 manifest's "+n.Sel.Name)
-			}
-		case *ast.AssignStmt:
-			for _, lhs := range n.Lhs {
-				if selectsFiles(lhs) {
-					violations = append(violations, base+" assigns the V1 manifest's Files")
-				}
-			}
-		}
-		return true
-	})
-	return violations
-}
-
-// selectsFiles reports whether an assignment target writes a manifest's
-// Files or an element of them: m.Files, m.Files[i] or m.Files[i].Checksum.
-func selectsFiles(lhs ast.Expr) bool {
-	for {
-		switch e := lhs.(type) {
-		case *ast.SelectorExpr:
-			if e.Sel.Name == "Files" {
-				return true
-			}
-			lhs = e.X
-		case *ast.IndexExpr:
-			lhs = e.X
-		case *ast.ParenExpr:
-			lhs = e.X
-		default:
-			return false
 		}
 	}
+	if !publicationImported && publicationHelperTests[base] {
+		violations = append(violations, base+" is exempt from the publication import rule but imports neither package")
+	}
+	return violations
 }
 
 // changeLogClearViolations applies the change_log rule to one file: to every

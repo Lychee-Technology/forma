@@ -25,16 +25,8 @@ func (h *FederatedTestHarness) WriteParquet(ctx context.Context, tier, filename 
 		return fmt.Errorf("S3 is disabled (simulated failure)")
 	}
 
-	// Build CSV content for DuckDB conversion
-	csvPath := filepath.Join(h.tmpDir, "temp.csv")
-	parquetPath := filepath.Join(h.tmpDir, filename)
-
-	if err := h.writeRecordsToCSV(csvPath, records); err != nil {
-		return fmt.Errorf("write csv: %w", err)
-	}
-
-	// Use DuckDB to convert CSV to Parquet
-	if err := h.convertCSVToParquet(ctx, csvPath, parquetPath); err != nil {
+	parquetPath, err := h.writeLocalParquet(ctx, filename, records)
+	if err != nil {
 		return err
 	}
 
@@ -46,6 +38,21 @@ func (h *FederatedTestHarness) WriteParquet(ctx context.Context, tier, filename 
 
 	h.flushedFiles = append(h.flushedFiles, s3Key)
 	return nil
+}
+
+// writeLocalParquet writes records to the parquet file filename in the
+// harness's scratch directory, through a CSV that DuckDB converts, and
+// answers its path.
+func (h *FederatedTestHarness) writeLocalParquet(ctx context.Context, filename string, records []TestRecord) (string, error) {
+	csvPath := filepath.Join(h.tmpDir, "temp.csv")
+	parquetPath := filepath.Join(h.tmpDir, filename)
+	if err := h.writeRecordsToCSV(csvPath, records); err != nil {
+		return "", fmt.Errorf("write csv: %w", err)
+	}
+	if err := h.convertCSVToParquet(ctx, csvPath, parquetPath); err != nil {
+		return "", err
+	}
+	return parquetPath, nil
 }
 
 // convertCSVToParquet uses DuckDB to convert a CSV file to Parquet format.

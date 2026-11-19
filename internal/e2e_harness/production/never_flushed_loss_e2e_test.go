@@ -7,17 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	fedengine "github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/model"
 )
 
 // TestLostInitializedDataStillFails (#720 review): a cdc-init export leaves
-// its rows in base parquet with no change_log entry once the onboarding
-// handoff clears the log, so no flush history records them. When that
-// export's manifest and objects are lost, the empty fallback glob must keep
-// failing the read rather than answer from the later hot rows alone.
+// its rows in base parquet with no unflushed change_log entry once the
+// onboarding handoff marks them. When that export's manifest and objects are
+// lost, the published generation must keep failing the read as inconsistent
+// rather than answer from the later hot rows alone.
 func TestLostInitializedDataStillFails(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t))
@@ -42,15 +41,13 @@ func TestLostInitializedDataStillFails(t *testing.T) {
 	assertLostParquetFailsBothShapes(ctx, t, env, wide)
 }
 
-// TestLostRecentFlushStillFailsInsideTheGraceMargin (#720 review): a flush
-// marked inside the #252 grace margin published its manifest before the
-// query resolved its paths, so losing that manifest is as much a loss as
-// losing an old one. The read must fail at once, not only after the margin
-// expires, and the hot-excluded shape must agree.
-func TestLostRecentFlushStillFailsInsideTheGraceMargin(t *testing.T) {
+// TestLostFlushedDataStillFails (#720 review): a flush published its
+// generation and marked its rows in one transaction, so losing the
+// generation's manifest and objects is loss. The read must fail at once, and
+// the hot-excluded shape must agree.
+func TestLostFlushedDataStillFails(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t))
-	env.DuckCfg.FlushVisibilityGraceMs = 60_000
 	wide := DefaultSchemaFixtures()[1]
 
 	if err := env.ApplyEvents(ctx, env.GenerateScript(ScriptSpec{Schema: wide, Creates: 3})...); err != nil {
@@ -60,32 +57,6 @@ func TestLostRecentFlushStillFailsInsideTheGraceMargin(t *testing.T) {
 	if len(flush.NewObjects) < 2 {
 		t.Fatalf("precondition: first flush wrote %v, want a parquet object and the manifest", flush.NewObjects)
 	}
-	for _, key := range flush.NewObjects {
-		deleteObject(ctx, t, env, key)
-	}
-
-	assertLostParquetFailsBothShapes(ctx, t, env, wide)
-}
-
-// TestLostFlushStampedAheadOfTheReaderStillFails (#720 review): flushed_at
-// comes from the CDC host's clock, which can run ahead of the reader's. A
-// completed flush stamped after the reader's "now" is still a prior
-// publication, and losing it must fail the read.
-func TestLostFlushStampedAheadOfTheReaderStillFails(t *testing.T) {
-	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t))
-	env.DuckCfg.FlushVisibilityGraceMs = 60_000
-	wide := DefaultSchemaFixtures()[1]
-
-	if err := env.ApplyEvents(ctx, env.GenerateScript(ScriptSpec{Schema: wide, Creates: 3})...); err != nil {
-		t.Fatalf("apply events: %v", err)
-	}
-	flush := mustFlush(ctx, t, env)
-	if len(flush.NewObjects) < 2 {
-		t.Fatalf("precondition: first flush wrote %v, want a parquet object and the manifest", flush.NewObjects)
-	}
-	env.ExecSQL(ctx, "UPDATE change_log SET flushed_at = $2 WHERE schema_id = $1 AND flushed_at <> 0",
-		wide.ID, time.Now().UnixMilli()+30_000)
 	for _, key := range flush.NewObjects {
 		deleteObject(ctx, t, env, key)
 	}
@@ -94,8 +65,9 @@ func TestLostFlushStampedAheadOfTheReaderStillFails(t *testing.T) {
 }
 
 // assertLostParquetFailsBothShapes adds hot rows beside a schema whose
-// parquet is lost, then requires both the all-tier and the hot-excluded
-// query to fail rather than answer short.
+// published generation is lost, then requires both the all-tier and the
+// hot-excluded query to fail as a publication inconsistency rather than
+// answer short.
 func assertLostParquetFailsBothShapes(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
 	t.Helper()
 	if err := env.ApplyEvents(ctx, env.GenerateScript(ScriptSpec{Schema: schema, Creates: 2})...); err != nil {
@@ -107,51 +79,34 @@ func assertLostParquetFailsBothShapes(ctx context.Context, t *testing.T, env *En
 			t.Fatalf("tiers %v: query answered %d rows with the parquet data lost; want a read failure",
 				tiers, len(res.Records))
 		}
-		if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
-			t.Fatalf("tiers %v: got %v, want ErrFederatedReadFailed", tiers, err)
+		if !errors.Is(err, fedengine.ErrPublicationInconsistent) {
+			t.Fatalf("tiers %v: got %v, want ErrPublicationInconsistent", tiers, err)
+		}
+		if errors.Is(err, fedengine.ErrFederatedReadFailed) {
+			t.Fatalf("tiers %v: a lost generation is not a degradable read failure: %v", tiers, err)
 		}
 	}
 }
 
-// The tests below run a writer inside a pass over a never-flushed schema,
-// after its snapshot has found no parquet object to read (#720) and read the
-// hot keys, before the pass answers. The writer publishes and then changes
-// change_log, moving the rows out of the hot set. The pass answers from its
-// snapshot, which still holds them, so the answer stays complete whatever
-// the CDC host's clock says.
+// The tests below run a writer inside a pass over a never-published schema,
+// after its snapshot read the schema's record as UNPUBLISHED (#720) and read
+// the hot keys, before the pass answers. The writer publishes a generation
+// and marks the rows' entries, moving them out of the hot set. The pass
+// answers from its snapshot, which still holds the record unpublished and
+// the rows hot, so the answer stays complete.
 
-// TestFirstFlushAfterTheEmptyScanCheckStaysComplete: FlushVisibilityGraceMs
-// -1, which disabled the #252 widening before the pgx hot leg and now reads
-// as 0 (design.md §6.1, The widening is never disabled).
+// TestFirstFlushAfterTheEmptyScanCheckStaysComplete: a first flush.
 func TestFirstFlushAfterTheEmptyScanCheckStaysComplete(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t))
-	env.DuckCfg.FlushVisibilityGraceMs = -1
 	runFirstFlushRace(ctx, t, env, func(ctx context.Context, schema SchemaRef) error {
 		return expectFlushedEverything(env.RunFlush(ctx))
 	})
 }
 
-// TestFirstFlushOnASlowClockAfterTheEmptyScanCheckStaysComplete (#720
-// review): a CDC host 30 seconds behind the reader stamps the marks below
-// any cutoff the reader could pick, so no barrier keeps them hot.
-func TestFirstFlushOnASlowClockAfterTheEmptyScanCheckStaysComplete(t *testing.T) {
-	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t))
-	env.DuckCfg.FlushVisibilityGraceMs = 5_000
-	runFirstFlushRace(ctx, t, env, func(ctx context.Context, schema SchemaRef) error {
-		if err := expectFlushedEverything(env.RunFlush(ctx)); err != nil {
-			return err
-		}
-		env.ExecSQL(ctx, "UPDATE change_log SET flushed_at = $2 WHERE schema_id = $1 AND flushed_at <> 0",
-			schema.ID, time.Now().UnixMilli()-30_000)
-		return nil
-	})
-}
-
 // TestInitHandoffAfterTheEmptyScanCheckStaysComplete (#720 review): cdc-init
-// publishes base parquet and the onboarding handoff then clears change_log,
-// which leaves the hot leg with no entry to serve the rows by.
+// publishes base parquet and its handoff marks the exported entries, which
+// leaves the hot leg with no entry to serve the rows by.
 func TestInitHandoffAfterTheEmptyScanCheckStaysComplete(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t))
@@ -168,9 +123,9 @@ func TestInitHandoffAfterTheEmptyScanCheckStaysComplete(t *testing.T) {
 	})
 }
 
-// runFirstFlushRace creates three rows on a never-flushed schema, runs
+// runFirstFlushRace creates three rows on a never-published schema, runs
 // publish once inside the first pass that reads hot keys, after its snapshot
-// has cleared the schema, and requires the query that raced it to match the
+// read the record unpublished, and requires the query that raced it to match the
 // oracle.
 func runFirstFlushRace(ctx context.Context, t *testing.T, env *Env, publish func(context.Context, SchemaRef) error) {
 	t.Helper()

@@ -73,7 +73,7 @@ func assertErrorNamesOnlySchema(t *testing.T, err error, faulted, healthy Schema
 	}
 }
 
-// testMultiSchemaCopyFault breaks the tmp->final promotion for one schema
+// testMultiSchemaCopyFault breaks the staging of one schema's delta object
 // only (the fault matches the schema's S3 partition) and asserts the sibling
 // schema's commit is complete and the failure is attributed correctly.
 func testMultiSchemaCopyFault(ctx context.Context, t *testing.T) {
@@ -81,17 +81,17 @@ func testMultiSchemaCopyFault(ctx context.Context, t *testing.T) {
 	simple, second := seedTwoSchemas(ctx, t, env)
 
 	faulty := &FaultInjectingS3{Inner: env.Cluster.S3,
-		Fault: S3Fault{Op: S3OpCopy, KeyContains: buildSchemaKeyPrefix(env, second)}}
+		Fault: S3Fault{Op: S3OpPut, KeyContains: buildSchemaKeyPrefix(env, second)}}
 	report, err := env.RunFlushWith(ctx, FlushOverrides{S3: faulty})
 	if err == nil {
-		t.Fatal("flush with one schema's CopyObject failing must fail")
+		t.Fatal("flush with one schema's parquet staging failing must fail")
 	}
 	if faulty.Injected() == 0 {
 		t.Fatal("fault never fired")
 	}
 	assertErrorNamesOnlySchema(t, err, second, simple)
-	if !strings.Contains(err.Error(), "copy tmp to final") {
-		t.Errorf("error must surface at the copy step, got: %v", err)
+	if !strings.Contains(err.Error(), "e2e injected s3 fault") {
+		t.Errorf("error must surface the injected staging fault, got: %v", err)
 	}
 
 	// The healthy schema commits fully; the faulted schema keeps every row
@@ -109,18 +109,18 @@ func testMultiSchemaCopyFault(ctx context.Context, t *testing.T) {
 }
 
 // testMultiSchemaManifestSaveFault breaks the manifest PutObject for one
-// schema only. Under the #252 ordering the faulted schema's append fails
-// BEFORE mark-flushed, so its rows stay dirty and the healed retry
-// self-heals them into a fresh listed delta (the first copied final stays an
-// unlisted orphan for reconcile --gc) — while the sibling schema's manifest
-// and data are untouched by the failure.
+// schema only. A V2 flush stages its parquet and then its manifest before the
+// transaction that publishes and marks, so the faulted schema publishes
+// nothing and marks nothing: its rows stay dirty and the healed retry
+// re-exports them into a fresh listed delta (the first staged object stays an
+// unlisted orphan for garbage collection, #891) — while the sibling schema's
+// generation and data are untouched by the failure.
 func testMultiSchemaManifestSaveFault(ctx context.Context, t *testing.T) {
 	env := NewEnv(t, SharedCluster(t))
 	simple, second := seedTwoSchemas(ctx, t, env)
 
-	manifestKey := buildSchemaManifestKey(t, env, second)
 	faulty := &FaultInjectingS3{Inner: env.Cluster.S3,
-		Fault: S3Fault{Op: S3OpPut, KeyContains: manifestKey}}
+		Fault: S3Fault{Op: S3OpPut, KeyContains: env.manifestKeyPrefix(second.ID)}}
 	report, err := env.RunFlushWith(ctx, FlushOverrides{S3: faulty})
 	if err == nil {
 		t.Fatal("flush with one schema's manifest save failing must fail")
@@ -133,26 +133,26 @@ func testMultiSchemaManifestSaveFault(ctx context.Context, t *testing.T) {
 	// Healthy schema: complete commit including its manifest entry.
 	assertSchemaFullyFlushed(ctx, t, env, report.NewObjects, report.Manifests, simple, 3)
 
-	// Faulted schema: the failed append precedes mark-flushed (#252), so its
-	// rows stay dirty; the copied final exists and the error names it for
-	// observability, but the manifest tracks nothing.
+	// Faulted schema: the failed manifest put precedes the publication, so
+	// its rows stay dirty; the staged object exists, but no generation
+	// lists it.
 	flushed, dirty := fetchChangeLogRowIDs(ctx, t, env, second)
 	if len(flushed) != 0 || len(dirty) != 3 {
-		t.Fatalf("schema %d rows must stay dirty when its manifest append fails: flushed=%v dirty=%v",
+		t.Fatalf("schema %d rows must stay dirty when its manifest put fails: flushed=%v dirty=%v",
 			second.ID, flushed, dirty)
 	}
 	finals := filterFinalsForSchema(env, report.NewObjects, second)
 	if len(finals) != 1 {
-		t.Fatalf("schema %d final must exist when its manifest save fails, got %v", second.ID, finals)
+		t.Fatalf("schema %d staged object must exist when its manifest put fails, got %v", second.ID, finals)
 	}
-	if !strings.Contains(err.Error(), "manifest update") || !strings.Contains(err.Error(), finals[0]) {
-		t.Errorf("error must point at the copied final key %q, got: %v", finals[0], err)
+	if !strings.Contains(err.Error(), "e2e injected s3 fault") {
+		t.Errorf("error must surface the injected manifest fault, got: %v", err)
 	}
 	assertManifestDeltaPaths(t, report.Manifests, second, nil)
 
 	// Retry self-heals ONLY the faulted schema: the healthy schema has
 	// nothing dirty and gains no objects; the faulted schema re-exports to a
-	// fresh listed delta (#252 supersedes the #197 no-op-retry contract).
+	// fresh listed delta.
 	retry, err := env.RunFlushWith(ctx, FlushOverrides{})
 	if err != nil {
 		t.Fatalf("clean retry flush: %v", err)
@@ -176,7 +176,7 @@ func testMultiSchemaManifestSaveFault(ctx context.Context, t *testing.T) {
 }
 
 // TestMultiSchemaRetryRepairsOnlyFailed pins issue #186 scenario 2: after a
-// pass where one schema failed at the copy step, a healed retry re-exports
+// pass where one schema failed at the staging step, a healed retry re-exports
 // only the failed schema. The healthy schema has nothing dirty, so it is not
 // re-exported, gains no new objects, and its manifest keeps exactly the
 // first pass's entry.
@@ -187,10 +187,10 @@ func TestMultiSchemaRetryRepairsOnlyFailed(t *testing.T) {
 	simple, second := seedTwoSchemas(ctx, t, env)
 
 	faulty := &FaultInjectingS3{Inner: env.Cluster.S3,
-		Fault: S3Fault{Op: S3OpCopy, KeyContains: buildSchemaKeyPrefix(env, second)}}
+		Fault: S3Fault{Op: S3OpPut, KeyContains: buildSchemaKeyPrefix(env, second)}}
 	report, err := env.RunFlushWith(ctx, FlushOverrides{S3: faulty})
 	if err == nil {
-		t.Fatal("flush with one schema's CopyObject failing must fail")
+		t.Fatal("flush with one schema's parquet staging failing must fail")
 	}
 	if faulty.Injected() == 0 {
 		t.Fatal("fault never fired")
@@ -225,9 +225,10 @@ func TestMultiSchemaRetryRepairsOnlyFailed(t *testing.T) {
 // TestInitSchemaScopedIsolation pins the backfill side of issue #186's
 // multi-schema story: cdc-init runs (and reruns) scoped to one schema via
 // SchemaIDFilter touch nothing of a sibling schema — no objects under its
-// partition, no manifest writes. Isolation is structural (per-schema key
-// partitions and per-schema manifest files); this test documents the
-// contract symmetrically with the flush-side isolation above. The rerun
+// partition, its manifests included, and no publication. Isolation is
+// structural (per-schema key partitions and per-schema records); this test
+// documents the contract symmetrically with the flush-side isolation above.
+// The rerun
 // half of the backfill story is owned by #176 (TestInitRerunIdempotency,
 // TestInitRerunAfterChangesReconcilesManifest, TestInitUnderConcurrentMutation).
 func TestInitSchemaScopedIsolation(t *testing.T) {
@@ -241,9 +242,8 @@ func TestInitSchemaScopedIsolation(t *testing.T) {
 
 	assertInitTouchesOnly := func(report *InitReport, target, sibling SchemaRef) {
 		t.Helper()
-		siblingManifestKey := buildSchemaManifestKey(t, env, sibling)
 		for _, k := range report.NewObjects {
-			if strings.HasPrefix(k, buildSchemaKeyPrefix(env, sibling)) || k == siblingManifestKey {
+			if strings.HasPrefix(k, buildSchemaKeyPrefix(env, sibling)) {
 				t.Errorf("init of schema %d touched sibling schema %d: %s", target.ID, sibling.ID, k)
 			}
 		}

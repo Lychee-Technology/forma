@@ -24,6 +24,7 @@ func TestCompactionManifestAtomicity(t *testing.T) {
 	ctx := context.Background()
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
 	env := NewEnv(t, cluster)
+	env.SkipUntilV2Compaction() // the compaction below runs off the test goroutine
 
 	creates := seedCompactionBase(ctx, t, env, wide, 5)
 	update := UpdateEvent(wide, creates[0].RowID, map[string]any{"title": "atomicity-v2"})

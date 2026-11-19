@@ -1,16 +1,16 @@
 # Parquet publication protocol V2
 
-Status: the contract #888 proposes for EPIC #887. The SQL and its semantics are in
+Status: the contract #888 proposes for EPIC #887, in production since #896 for registration,
+`cdc-flush`, `cdc-init` and the federated reader. The SQL and its semantics are in
 `internal/publication`, with tests on PostgreSQL and on the MiniStack lane. The manifest
 objects (document, digest, keys, write-once store, verifying cache) are in
-`internal/manifestv2` (#898), and the `cdc-flush` and `cdc-init` publication paths built on
-both are in `internal/cdcv2` (#899). The federated reader's pass resolves its source in its
-snapshot when an engine is built with `federated.WithPublicationReader`, whose only
-implementation is `internal/federatedv2` (#900). Since #896 `cdc-flush` and `cdc-init`
-publish only through `internal/cdcv2`: `internal/cdc` adapts the DuckDB export into its
-`DeltaStager` and `BaseExporter`. Nothing in the compactor, the federated reader or
-`manifest-reconcile` uses any of them yet, and no engine is built with that option: the
-other #887 children move those consumers onto them ([Ownership](#ownership-and-migration)).
+`internal/manifestv2` (#898). `cdc-flush` and `cdc-init` publish only through
+`internal/cdcv2` (#899), into which `internal/cdc` adapts the DuckDB export as its
+`DeltaStager` and `BaseExporter`. The factory builds every federated engine with
+`federated.WithPublicationReader` over `internal/federatedv2` (#900), and `init-db` writes
+each registered schema's record and runs the V2 cutover ([Upgrade](#removed-from-v1)). The
+compactor (#890) and `manifest-reconcile` (#891) are still V1: a cut-over deployment keeps
+both stopped (Upgrade step 1) until they move ([Ownership](#ownership-and-migration)).
 Behaviour on a real Aurora DSQL cluster has not been checked. #817 tracks that, and
 [Verification](#verification) lists what this contract assumes until then.
 
@@ -794,8 +794,9 @@ writers and their marks out:
 1. Stop every V1 writer: `cdc-flush`, `cdc-init`, the compactor and
    `manifest-reconcile`. Their V2 replacements refuse a schema without a record
    (`ErrNoRecord`), so a V2 writer that starts early does nothing.
-2. For each registered schema, take the schema lock that every V1 marker (`cdc-flush`
-   and the onboarding handoff) takes. In one transaction, run the parquet-history check
+2. Run `init-db` (#896 does the cutover there, `cmd/tools/init_db_records.go`). For each
+   registered schema without a record, it takes the schema lock that every V1 marker
+   (`cdc-flush` and the onboarding handoff) takes. In one transaction, run the parquet-history check
    (today's `parquetHistoryQuery`: a flushed entry, or a live row without an entry) and
    insert the record. With no history the schema satisfies the `UNPUBLISHED` invariant,
    and the insert is `Initialize`. With history it is `InitializeAwaitingInit`. If the
@@ -965,7 +966,7 @@ the V1 code it replaces:
 | --- | --- | --- |
 | `init-db` table DDL | `Statements` for the configured `entity_main`, in init-db's table transaction. `init-db` creates the tables on PostgreSQL. On Aurora DSQL, #895 covers statement validity only: `make lint-dsql` and the MiniStack strict lane accept the DSQL rendering, but `init-db` cannot execute there, because it has no engine selection and sends its DDL in one transaction, which DSQL rejects. An executable DSQL `init-db` (one DDL statement per transaction, strict-lane fresh init, upgrade and rerun) is #690's. The tables only: nothing inserts, reads or updates them | #895 (DSQL execution: #690) |
 | V2 manifest objects | `internal/manifestv2`: the document and its deterministic bytes and digest, the `flush` and `init` file lists, the object keys, a write-once put (`If-None-Match: *`) on S3 and the same contract on a local directory, and a process-wide cache of manifests verified with `ManifestFiles` and the full-document checks. A missing or refused manifest is a `ConsistencyError`. Nothing in production imports it until #896 | #898 |
-| `init-db` registration, the upgrade cutover | `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock | #896 (writers and reader, built in #899 to #901) |
+| `init-db` registration, the upgrade cutover | `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock. #896 does both in one step of that transaction (`ensurePublicationRecords`) for every registered schema: a record is kept, a `DROPPED` one is activated (its residue checked in `entity_main`, `eav_data` and `change_log`), and a missing one is written under `pg_try_advisory_xact_lock` on the key `cdc-flush` and `cdc-init` take, `AWAITING_INIT` when the schema has parquet history, `UNPUBLISHED` otherwise. A schema whose lock is held keeps no record, is reported, and is retried by the next run | #896 (writers and reader, built in #899 to #901) |
 | `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path. The publication loop is `internal/cdcv2`'s `Writer.Flush` (#899), behind a `DeltaStager` that writes the parquet. #896 adapts the DuckDB export to it (`internal/cdc`'s `deltaStager`: a local scratch file, then a conditional put under a fresh key), calls it with the epoch the run loads from the record, and deletes the V1 append, the #474 probe, both V1 marks, `--glob-only` and the writers' `--manifest-template`/`--manifest-prefix` | #896 (writers and reader, built in #899 to #901) |
 | `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot. #896 adapts the DuckDB export to it (`internal/cdc`'s `baseExporter`, which reads the rows on that snapshot), calls it, settles a lost `COMMIT` once in-process (`ResumeInit`), and deletes the V1 manifest swap, the ambiguous-save confirmation, the delta purge (`--replace-delta`, `--delta-prefix`) and the zero-row placeholder | #896 (writers and reader, built in #899 to #901), closing #760 |
 | compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891 | #890 (compaction) |
@@ -975,35 +976,29 @@ the V1 code it replaces:
 | live Aurora DSQL behaviour | the assumptions in [Verification](#verification) | #893, under #817 |
 
 Sequencing: #888, then #895, then #896, then #890 (it uses the publication interface
-#896 lands), then #891, then #892. #896 is built in #898 to #901. The parts nothing calls
-land first and stay dormant: #898 the manifest objects, and the flush writer, init and
-reader slices that build on them (#899, #900). The writers and the reader still switch in
-one merge. #889's writer scope is split in two because the
-writers cannot land on `main` ahead of the reader. A V2 flush stages its objects under
-`e{epoch}/`, stops appending to `manifest.json` and marks its rows flushed in the
-transaction of its `Publish`, and today's reader reads neither the record nor `e{epoch}/`,
-so every row such a flush marks would disappear from query answers. Registration and the
-cutover cannot go first either: a record written while V1 `cdc-flush` still runs goes
-stale, because V1 keeps flushing into a schema whose record says `UNPUBLISHED` and the
-cutover only inserts records for schemas that have none, and the V2 reader would then
-answer that schema from the hot leg alone. So #896 moves the writers and the reader in one
-change. Ahead of it land only the table DDL (#895), which nothing reads or writes, and
-code that nothing calls (#898 to #900). Until
-#896, two checks hold that line, and neither alone proves it. A static test in
-`internal/publication` checks imports and literals: outside the package, only init-db's
-DDL step and its collation check may import it, only for `Statements`, `TablesFor` and
-the table-name suffixes, never through a dot import, and no production file may spell a
-publication table name in a string literal. It does not inspect the SQL those files
-build, so an allowlisted file could still assemble a record statement from a name
-`TablesFor` returns. What shows that init-db sends none is the traced SQL of its fresh,
-upgrade and rerun runs in `TestInitDBCreatesThePublicationTablesOnceAndWritesNoRecord`.
-`internal/manifestv2`, `internal/cdcv2` and `internal/federatedv2` may use all of
-`internal/publication`, and the same static test refuses a production import of any of them
-from any file outside the three, so no binary reaches the manifest, the writer or the reader
-code before #896 either. The reader's seam is in `internal/federated`, a production package,
-and stays inert without an implementation: the same test refuses a production use of
-`federated.WithPublicationReader` outside the dormant packages, the engine package's own
-unqualified calls included, so no binary builds an engine that reads the record.
+#896 lands), then #891, then #892. #896 was built in #898 to #901: the manifest objects,
+the flush and init writer and the reader source landed first with no caller (#898 to
+#900), and the production e2e harness routed its V1 stand-ins through helpers (#901).
+#896 then switched registration, the cutover, the writers and the reader in one merge,
+because neither side can land alone. A V2 flush stages its objects under `e{epoch}/`, stops
+appending to `manifest.json` and marks its rows flushed in the transaction of its
+`Publish`, which a V1 reader reads neither of, so every marked row would disappear from its
+answers; a V2 reader fails closed on every schema a V1 writer leaves without a V2
+generation; and a record written while V1 `cdc-flush` still runs goes stale.
+
+Once the consumers moved, a static test in `internal/publication`
+(`TestOnlyTheProtocolOwnersMoveAPublicationRecord`) keeps the record's transitions with
+their owners: outside the package, `Initialize`, `InitializeAwaitingInit` and `Activate`
+only in `cmd/tools/init_db_records.go`, `Publish`, `HoldLineage` and `Fence` only in
+`internal/cdcv2`, and `Reset`, `RaiseHorizon`, `Retire` and `Forget` nowhere yet (a drop
+tool and #891 add theirs). The one other non-test file allowed `Initialize` and
+`Publish` is the federated e2e harness's `publication.go`, which registers the benchmark's
+schemas and publishes its synthetic parquet, which has no PostgreSQL rows for a writer to
+export; `cmd/benchmark` runs it outside any test. Test files are not scanned: the
+production e2e harness writes its fixtures' records and stages fault generations from
+test files. It refuses a dot import of the package and any production string
+literal that spells a publication table name, so every statement over the tables is the
+package's own. Reading a record is free.
 
 **#759 is the reader scope, and lands in #896.** Its original evidence, a zero-match or
 partial-match glob that returns 200 with silently incomplete data, is what the reader

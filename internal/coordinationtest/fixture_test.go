@@ -10,12 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/factory"
 	"github.com/lychee-technology/forma/internal"
 	"github.com/lychee-technology/forma/internal/declaredindex"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/schemaledger"
 	"github.com/lychee-technology/forma/internal/schemaledger/ledgertest"
@@ -247,6 +249,7 @@ func (e *env) createTables(t *testing.T) {
 			changed_at BIGINT NOT NULL, deleted_at BIGINT, PRIMARY KEY (schema_id, row_id, flushed_at))`, e.tables.changeLog),
 	}, uniquekey.StatementsFor(e.tables.entityMain)...)
 	statements = append(statements, rowguard.StatementFor(e.tables.entityMain))
+	statements = append(statements, publication.Statements(activeBackend().engine(), e.tables.entityMain)...)
 	statements = append(statements, initDBIndexes(e.tables)...)
 	t.Cleanup(e.dropTables)
 	for _, stmt := range statements {
@@ -258,6 +261,17 @@ func (e *env) createTables(t *testing.T) {
 	}
 	// Generation 1 of each schema, as init-db records it (#733).
 	require.NoError(t, ledgertest.SeedFor(e.ctx, e.pool, activeBackend().engine(), e.tables.schemaRegistry, schemaDir))
+	// Each schema's publication record, UNPUBLISHED, as init-db's
+	// registration writes it (#896): the federated engine pins its epoch at
+	// startup and reads it in every pass.
+	tables := publication.TablesFor(e.tables.entityMain)
+	for _, id := range schemaIDs {
+		err := pgx.BeginFunc(e.ctx, e.pool, func(tx pgx.Tx) error {
+			_, err := publication.Initialize(e.ctx, publication.PgxTx(tx), tables, id)
+			return err
+		})
+		require.NoError(t, err)
+	}
 }
 
 // refusingInserts adds the constraint newEnvRefusingInserts names to
@@ -313,7 +327,8 @@ func (e *env) dropTables() {
 	defer cancel()
 	for _, table := range []string{e.tables.schemaRegistry, e.tables.entityMain, e.tables.eavData, e.tables.changeLog,
 		uniquekey.KeyTable(e.tables.entityMain), uniquekey.StateTable(e.tables.entityMain), rowguard.Table(e.tables.entityMain),
-		schemaledger.TablesFor(e.tables.schemaRegistry).Generation, schemaledger.TablesFor(e.tables.schemaRegistry).Attribute} {
+		schemaledger.TablesFor(e.tables.schemaRegistry).Generation, schemaledger.TablesFor(e.tables.schemaRegistry).Attribute,
+		publication.TablesFor(e.tables.entityMain).Record, publication.TablesFor(e.tables.entityMain).Generation} {
 		_, _ = e.pool.Exec(ctx, "DROP TABLE IF EXISTS "+table)
 	}
 }
@@ -404,13 +419,16 @@ func (e *env) buildManager(t *testing.T, pool *pgxpool.Pool) forma.EntityManager
 	return em
 }
 
-// coordinationDuckDBConfig is an in-memory DuckDB with no S3: the suite never
-// lets a read reach the parquet tiers, and the engine's routing answers its
-// one federated control read, a single-row page, from PostgreSQL.
+// coordinationDuckDBConfig is an in-memory DuckDB whose bucket nothing reads:
+// the suite never lets a read reach the parquet tiers, and the engine's
+// routing answers its one federated control read, a single-row page, from
+// PostgreSQL. A deployment with DuckDB enabled must name the bucket its
+// published generations live in, so the config names one.
 func coordinationDuckDBConfig() forma.DuckDBConfig {
 	cfg := forma.DefaultConfig(nil).DuckDB
 	cfg.Enabled = true
 	cfg.DBPath = ":memory:"
+	cfg.S3Bucket = "coordination-unread"
 	return cfg
 }
 

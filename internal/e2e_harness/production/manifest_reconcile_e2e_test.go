@@ -25,6 +25,7 @@ import (
 // reading parquet through httpfs. The returned cleanup closes both handles.
 func newReconcileHarness(t *testing.T, ctx context.Context, env *Env, schema SchemaRef, opts reconcile.Options, withStats bool) (*reconcile.Reconciler, func()) {
 	t.Helper()
+	skipV1Reconcile(t)
 
 	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		env.CDC.PGHost, env.CDC.PGPort, env.CDC.PGUser, env.CDC.PGPassword, env.CDC.PGDB, env.CDC.PGSSLMode)
@@ -96,6 +97,7 @@ func putJunkObject(t *testing.T, ctx context.Context, env *Env, key string) {
 // via DuckDB — matches what the flusher originally wrote, restoring query
 // visibility. A second repair run proves idempotency.
 func TestManifestReconcile_RepairsDeltaOrphan(t *testing.T) {
+	skipV1Reconcile(t)
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
 	ctx := context.Background()
@@ -298,6 +300,7 @@ func testReconcileRepairIdempotent(t *testing.T, ctx context.Context, env *Env, 
 // advisory lock reconcile takes). Delta-shaped orphans and manifest-listed
 // objects are never touched.
 func TestManifestReconcile_GCRemovesRewriteLeftovers(t *testing.T) {
+	skipV1Reconcile(t)
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
 	ctx := context.Background()

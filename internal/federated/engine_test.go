@@ -43,10 +43,10 @@ const testParquetPath = "s3://b/7/a.parquet"
 // withTestParquetPath supplies a resolvable single-object path set and marks it
 // pre-validated. Two reasons, both mechanical:
 //
-// Since #299 a DuckDB-routed query whose path set resolves empty fails at
-// resolution with ErrNoParquetPaths, so every engine test that drives the
-// render/execute path must author one — these tests are about routing, plans,
-// breakers and recounts, not about path resolution.
+// A DuckDB-routed query scans the objects its pass's generation lists, so
+// every engine test that drives the render/execute path must author one —
+// these tests are about routing, plans, breakers and recounts, not about
+// generation resolution.
 //
 // A non-empty path set then activates the pre-read footer probe
 // (parquetSchemaValidator), which issues its own DuckDB queries through the

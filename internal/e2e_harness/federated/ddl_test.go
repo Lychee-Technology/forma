@@ -5,7 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/schemalease"
 	"github.com/lychee-technology/forma/internal/textcollation"
@@ -52,6 +54,16 @@ func TestFederatedDDLCreatesRowGuardTableFromSharedSource(t *testing.T) {
 func TestFederatedDDLCreatesSchemaLeaseTableFromSharedSource(t *testing.T) {
 	if want := schemalease.StatementFor("entity_main"); !slices.Contains(federatedDDL, want) {
 		t.Errorf("federatedDDL lacks the shared schema lease statement:\n%s", want)
+	}
+}
+
+// #896: the publication tables the harness registers and publishes into
+// come from publication, the source init-db's DDL is built from.
+func TestFederatedDDLCreatesPublicationTablesFromSharedSource(t *testing.T) {
+	for _, want := range publication.Statements(forma.EnginePostgreSQL, "entity_main") {
+		if !slices.Contains(federatedDDL, want) {
+			t.Errorf("federatedDDL lacks the shared publication statement:\n%s", want)
+		}
 	}
 }
 

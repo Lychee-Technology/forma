@@ -43,12 +43,11 @@ func TestInitRerunIdempotency(t *testing.T) {
 		t.Fatalf("second init: %v", err)
 	}
 	// Write-once keys (#416): the rerun mints exactly one fresh base object per
-	// batch and never reuses a first-run key. (_tmp keys are copy-staging
-	// garbage, not exports, if one survives — swallowed-delete residue is
-	// reclaimed by manifest-reconcile --gc, #226.)
+	// batch and never reuses a first-run key. Its other new object is the
+	// init generation's manifest, which is not an export.
 	minted := make(map[string]bool)
 	for _, k := range second.NewObjects {
-		if strings.Contains(k, "/_tmp/") {
+		if !strings.HasSuffix(k, ".parquet") {
 			continue
 		}
 		if _, dup := firstObjects[k]; dup {

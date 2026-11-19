@@ -7,10 +7,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/declaredindex"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -62,6 +64,12 @@ type FederatedTestHarness struct {
 
 	// S3 failure simulation
 	s3Disabled bool
+
+	// The verifying manifest cache the harness's publication readers share
+	// (PublicationReader), built once.
+	manifestsOnce sync.Once
+	manifests     *manifestv2.Cache
+	manifestsErr  error
 }
 
 // TestRecord represents a record for testing across all tiers.
@@ -231,9 +239,8 @@ func NewFederatedTestHarness(ctx context.Context, opts ...HarnessOption) (*Feder
 		return nil, fmt.Errorf("start harness infrastructure: %w", err)
 	}
 
-	// The federated (and benchmark) harnesses drive the engine through its
-	// S3ParquetPathTemplate hint, which is scoped to this harness's bucket
-	// (#456, #477).
+	// The engine's configured bucket is the harness's, which the objects
+	// the harness publishes are addressed in (PublicationReader).
 	duckCfg.S3Bucket = conn.bucket
 
 	s3Client, tmpDir, err := prepareHarnessStorage(ctx, base.S3Endpoint, conn)
@@ -416,12 +423,10 @@ func (h *FederatedTestHarness) UseRegistry(ctx context.Context, registry forma.S
 	return nil
 }
 
-// SetupSchema configures the schema for testing.
+// SetupSchema makes schemaID the harness's current schema and registers it:
+// its registry row and its publication record, UNPUBLISHED unless it
+// already has one (registerSchema).
 func (h *FederatedTestHarness) SetupSchema(schemaID int16, schemaName string) error {
 	h.SchemaID = schemaID
-	_, err := h.PGDB.Exec(
-		`INSERT INTO schema_registry (schema_id, schema_name) VALUES ($1, $2) ON CONFLICT (schema_id) DO UPDATE SET schema_name = $2`,
-		schemaID, schemaName,
-	)
-	return err
+	return h.registerSchema(context.Background(), schemaID, schemaName)
 }

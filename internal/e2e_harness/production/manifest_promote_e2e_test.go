@@ -30,6 +30,7 @@ const (
 // base tier, reconstructing entries equivalent to init's own — after which a
 // second run finds nothing left to do.
 func TestManifestReconcile_PromotesStrippedInitBase(t *testing.T) {
+	skipV1Reconcile(t)
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
 	ctx := context.Background()
@@ -52,6 +53,7 @@ func TestManifestReconcile_PromotesStrippedInitBase(t *testing.T) {
 // canonical inventory, so reconcile must refuse, leave the base tier empty,
 // touch no object, and report residual discrepancies (the tool's exit 2).
 func TestManifestReconcile_RefusesPartialInitPromotion(t *testing.T) {
+	skipV1Reconcile(t)
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
 	ctx := context.Background()

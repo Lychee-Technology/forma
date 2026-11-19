@@ -126,7 +126,7 @@ func assertCorruptRefusal(t *testing.T, err error, key string) {
 	if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
 		t.Errorf("a corrupt-object failure must stay ErrFederatedReadFailed (degradable): %v", err)
 	}
-	if errors.Is(err, fedengine.ErrParquetSetInconsistent) || errors.Is(err, fedengine.ErrDuckDBUnavailable) {
+	if errors.Is(err, fedengine.ErrPublicationInconsistent) || errors.Is(err, fedengine.ErrDuckDBUnavailable) {
 		t.Errorf("a corrupt-object failure must not classify as inconsistency or a breaker rejection: %v", err)
 	}
 }

@@ -35,41 +35,6 @@ func recordTitle(t *testing.T, env *Env, schema SchemaRef, rec *model.Persistent
 	return s
 }
 
-// A flush that races the query with the widening configured off
-// (FlushVisibilityGraceMs = -1): it appends and marks between path
-// resolution and the snapshot. The pgx hot leg reads -1 as the exact anchor,
-// so the raced rows stay in the hot leg. Before it, -1 disabled the widening
-// and the attach hot leg lost them.
-func TestPgxHotLegRacedFlushWithWideningOff(t *testing.T) {
-	t.Parallel()
-
-	t.Run("NewRows", func(t *testing.T) {
-		t.Parallel()
-		env := NewEnv(t, SharedCluster(t))
-		env.DuckCfg.FlushVisibilityGraceMs = -1
-		res := runRacedFlushQuery(t, env, racedCreates)
-		if got := len(res.Records); got != 8 {
-			t.Errorf("raced query saw %d rows, want 8: the pgx hot leg never disables the widening", got)
-		}
-	})
-
-	t.Run("UpdatedRows", func(t *testing.T) {
-		t.Parallel()
-		env := NewEnv(t, SharedCluster(t))
-		env.DuckCfg.FlushVisibilityGraceMs = -1
-		res := runRacedFlushQuery(t, env, buildClosedUpdates)
-		wide := DefaultSchemaFixtures()[1]
-		if len(res.Records) != 4 {
-			t.Fatalf("raced query saw %d rows, want the 4 updated rows", len(res.Records))
-		}
-		for _, rec := range res.Records {
-			if title := recordTitle(t, env, wide, rec); len(title) < 6 || title[:6] != "closed" {
-				t.Errorf("row %s reads title %q, want its raced update (closed-*), not the version in the resolved set", rec.RowID, title)
-			}
-		}
-	})
-}
-
 // hookedHotLegReader runs hook once, inside the first pass that reads hot
 // keys, after its snapshot is taken and before DuckDB scans.
 type hookedHotLegReader struct {
@@ -84,12 +49,13 @@ func (r *hookedHotLegReader) QueryHotKeys(ctx context.Context, tx pgx.Tx, req mo
 	return keys, err
 }
 
-// A publication after the snapshot, over a non-empty level-3 glob
-// (design.md §6.1, Frozen inventory): between the snapshot and the DuckDB
-// scan a writer updates one clean row and flushes it, and deletes and flushes
-// another. The glob was listed at path resolution, so the scan reads neither
-// new object: the page holds the first row at its snapshot version and still
-// holds the second.
+// A publication after the snapshot (design.md §6.1): between the pass's
+// snapshot and its DuckDB scan a writer updates one clean row and flushes it,
+// and deletes and flushes another. Each flush publishes a new generation and
+// marks its entries in one transaction, after the snapshot read the record,
+// so the pass scans the generation its snapshot named and sees neither new
+// object nor mark: the page holds the first row at its snapshot version and
+// still holds the second.
 func TestPgxHotLegPublicationAfterTheSnapshot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -110,13 +76,6 @@ func TestPgxHotLegPublicationAfterTheSnapshot(t *testing.T) {
 	creates := buildOpenCreates(wide, 4)
 	mustApplyEvents(ctx, t, env, "seed", creates...)
 	mustFlush(ctx, t, env)
-	// Losing the manifest leaves the objects: the source falls back to the
-	// level-3 glob, which lists them.
-	key, err := env.manifestKey(wide.ID)
-	if err != nil {
-		t.Fatalf("manifest key: %v", err)
-	}
-	deleteObject(ctx, t, env, key)
 	// One hot row, so the pass reads hot keys and the hook runs.
 	mustApplyEvents(ctx, t, env, "hot row", CreateEvent(wide, map[string]any{"title": "hot", "count": float64(1)}))
 	updated, deleted = creates[0], creates[1]
@@ -251,7 +210,6 @@ func TestPgxHotLegMixedTierTiebreakWalk(t *testing.T) {
 	}
 
 	mustFlush(ctx, t, env)
-	waitWallClockTick(t)
 	for _, w := range tieWalks() {
 		want := w.pageOf(ctx, t, env, wide, rows+1, rows)
 		if len(want) != rows {

@@ -3,6 +3,7 @@ package benchmark
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	forma "github.com/lychee-technology/forma"
@@ -42,7 +43,11 @@ func openBenchmarkPool(ctx context.Context, h *federated.FederatedTestHarness) (
 
 // newBenchmarkQueryStack resets the benchmark schema registry table (see
 // ensureBenchmarkSchemaRegistry), then loads the registry and metadata from it
-// and builds the repository and federated engine.
+// and builds the repository and federated engine. With DuckDB enabled the
+// engine reads through the product's V2 publication reader, as the factory
+// builds it: each pass scans exactly the objects the generation in its
+// snapshot lists, which the harness published (federated.PublishTiers), with
+// the fixtures' epochs pinned beside the metadata.
 func newBenchmarkQueryStack(ctx context.Context, pool *pgxpool.Pool, h *federated.FederatedTestHarness, planCache *queryplan.Cache) (*benchmarkQueryStack, error) {
 	schemaTable, err := ensureBenchmarkSchemaRegistry(ctx, pool)
 	if err != nil {
@@ -58,14 +63,21 @@ func newBenchmarkQueryStack(ctx context.Context, pool *pgxpool.Pool, h *federate
 	}
 	duckCfg := engineDuckDBConfig(h)
 	repo := internal.NewDBPersistentRecordRepository(pool, metadata, internal.WithPlanCache(planCache))
+	engineOpts := []fedengine.EngineOption{fedengine.WithPlanCache(planCache), fedengine.WithPgxHotLeg(pool, repo)}
+	if duckCfg.Enabled {
+		reader, err := h.PublicationReader(ctx, pool, registeredSchemaIDs(metadata))
+		if err != nil {
+			return nil, fmt.Errorf("build benchmark publication reader: %w", err)
+		}
+		engineOpts = append(engineOpts, fedengine.WithPublicationReader(reader, fedengine.DefaultPublishedPassDeadline))
+	}
 	engine := fedengine.NewDBFederatedQueryEngine(
 		repo,
 		fedengine.NewDuckDBClientQueryExecutor(h.Duck),
 		nil,
 		duckCfg,
 		metadata,
-		fedengine.WithPlanCache(planCache),
-		fedengine.WithPgxHotLeg(pool, repo),
+		engineOpts...,
 	)
 	return &benchmarkQueryStack{
 		schemaTable: schemaTable,
@@ -106,4 +118,18 @@ func benchmarkStorageTables(h *federated.FederatedTestHarness) model.StorageTabl
 		EAVData:    h.CDCConfig.EAVDataTable,
 		ChangeLog:  h.CDCConfig.ChangeLogTable,
 	}
+}
+
+// registeredSchemaIDs answers the IDs of every schema metadata holds, sorted,
+// the schemas the publication reader pins.
+func registeredSchemaIDs(metadata *schemameta.MetadataCache) []int16 {
+	names := metadata.ListSchemas()
+	ids := make([]int16, 0, len(names))
+	for _, name := range names {
+		if id, ok := metadata.GetSchemaID(name); ok {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }

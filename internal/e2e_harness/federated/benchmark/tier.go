@@ -37,10 +37,13 @@ type TieredDatasetStats struct {
 }
 
 // TierLoader is the harness contract needed to load a tiered dataset.
+// PublishTiers publishes a schema's base and delta rows as Protocol V2
+// generations, which is how the product reader finds them: it scans what the
+// schema's publication record names, never a glob.
 type TierLoader interface {
 	SetupSchema(schemaID int16, schemaName string) error
 	ClearAllData(ctx context.Context) error
-	WriteParquet(ctx context.Context, tier, filename string, records []federated.TestRecord) error
+	PublishTiers(ctx context.Context, schemaID int16, base, delta []federated.TestRecord) error
 	SeedHotRecordsWithData(ctx context.Context, records []federated.TestRecord) error
 }
 
@@ -164,14 +167,10 @@ func LoadTieredDataset(ctx context.Context, loader TierLoader, dataset *TieredDa
 		if err := loader.SetupSchema(fixture.ID, fixture.Name); err != nil {
 			return fmt.Errorf("setup schema %s: %w", fixture.Name, err)
 		}
-		if records := baseBySchema[fixture.ID]; len(records) > 0 {
-			if err := loader.WriteParquet(ctx, "base", fmt.Sprintf("benchmark_base_%s.parquet", fixture.Name), ToTestRecords(records)); err != nil {
-				return fmt.Errorf("write base parquet for %s: %w", fixture.Name, err)
-			}
-		}
-		if records := deltaBySchema[fixture.ID]; len(records) > 0 {
-			if err := loader.WriteParquet(ctx, "delta", fmt.Sprintf("benchmark_delta_%s.parquet", fixture.Name), ToTestRecords(records)); err != nil {
-				return fmt.Errorf("write delta parquet for %s: %w", fixture.Name, err)
+		base, delta := baseBySchema[fixture.ID], deltaBySchema[fixture.ID]
+		if len(base) > 0 || len(delta) > 0 {
+			if err := loader.PublishTiers(ctx, fixture.ID, ToTestRecords(base), ToTestRecords(delta)); err != nil {
+				return fmt.Errorf("publish base and delta parquet for %s: %w", fixture.Name, err)
 			}
 		}
 		if records := hotBySchema[fixture.ID]; len(records) > 0 {

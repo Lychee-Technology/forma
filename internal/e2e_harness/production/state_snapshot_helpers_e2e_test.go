@@ -47,15 +47,15 @@ func snapshotS3Inventory(t *testing.T, ctx context.Context, env *Env, prefix str
 	return inv
 }
 
-// schemaS3State is one schema's full observable S3 surface: every object
-// under its partition plus its manifest object, with the manifest's raw
-// bytes. The key diff in InitReport.NewObjects cannot see an overwrite that
-// reuses a deterministic key, and a base-path set comparison cannot see a
-// manifest rewritten with the same paths; stat + byte identity can (#248).
+// schemaS3State is one schema's full observable publication surface: every
+// object under its partition, its V2 manifests included, and its publication
+// record. The key diff in InitReport.NewObjects cannot see an overwrite that
+// reuses a key, and a base-path set comparison cannot see a new generation
+// listing the same paths; stat identity and the record can (#248).
 //
-// The manifest is the leg that always fires: any save through the manifest
-// store increments its version field, so its bytes and ETag necessarily move
-// even when the data objects beside it are reproduced byte-for-byte (see s3ObjectStat).
+// The record is the leg that always fires: every publication commits it onto
+// a new generation and token, even when the data objects beside it are
+// reproduced byte-for-byte (see s3ObjectStat).
 type schemaS3State struct {
 	objects     map[string]s3ObjectStat
 	publication publicationSnapshot
@@ -64,22 +64,11 @@ type schemaS3State struct {
 func captureSchemaS3State(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) schemaS3State {
 	t.Helper()
 	objects := snapshotS3Inventory(t, ctx, env, buildSchemaKeyPrefix(env, schema))
-	manifestKey := buildSchemaManifestKey(t, env, schema)
-	manifestObjects := snapshotS3Inventory(t, ctx, env, manifestKey)
-	stat, ok := manifestObjects[manifestKey]
-	if !ok || len(manifestObjects) != 1 {
-		// An empty listing is not an error to ListObjectsV2, so a key that
-		// drifted from the stored manifest would silently drop the stat leg —
-		// the only one that sees a byte-identical re-put (via LastModified).
-		t.Fatalf("manifest listing for %s must hold exactly that one object, got %v",
-			manifestKey, manifestObjects)
-	}
-	objects[manifestKey] = stat
 	return schemaS3State{objects: objects, publication: snapshotPublication(t, ctx, env, schema)}
 }
 
 // assertSchemaS3StateUnchanged requires exact identity — same key set, same
-// per-object size/ETag/LastModified, byte-identical manifest — so both
+// per-object size/ETag/LastModified, the same publication record — so both
 // creations/deletions and in-place mutations fail the no-write contract.
 func assertSchemaS3StateUnchanged(t *testing.T, label string, before, after schemaS3State) {
 	t.Helper()
@@ -92,6 +81,6 @@ func assertSchemaS3StateUnchanged(t *testing.T, label string, before, after sche
 		t.Fatalf("%s: %v", label, err)
 	}
 	if len(changes) != 0 {
-		t.Errorf("%s: schema manifest rewritten in place:\n%s", label, strings.Join(changes, "\n"))
+		t.Errorf("%s: schema publication changed:\n%s", label, strings.Join(changes, "\n"))
 	}
 }

@@ -4,24 +4,21 @@ package production
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/cdc"
 )
 
-// TestInitReplaceDeltaRetiresEmptiedSchema (#519): a schema that was
+// TestReInitRetiresEmptiedSchema (#519, #896): a schema that was
 // initialized, then had every row deleted and the tombstones flushed, has
-// zero live rows but still lists a base and a delta tier. A plain re-init
-// refuses (#371); a dry-run with --replace-delta mutates nothing; a real
-// --replace-delta run exports one zero-row base object and publishes it as
-// the sole base entry with no delta listed (a manifest listing nothing
-// would send reads to the glob fallback and resurrect the deleted rows),
-// deletes the delta objects, leaves the superseded base objects on S3 as
-// unlisted orphans for manifest-reconcile --gc, and the federated result is
-// empty. Once rows exist again a plain init succeeds: the flag is
-// idempotent for emptied schemas.
-func TestInitReplaceDeltaRetiresEmptiedSchema(t *testing.T) {
+// zero live rows but still lists a base and a delta tier. Re-onboarding it
+// with cdc-init publishes an empty init generation, which says the parquet
+// tiers hold nothing: no base and no delta is listed, the federated result is
+// empty, and no deleted row is resurrected. A dry run mutates nothing. Init
+// deletes no object: the superseded base and delta objects stay on S3,
+// unlisted, for V2 garbage collection (#891). Once rows exist again a plain
+// init exports them.
+func TestReInitRetiresEmptiedSchema(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
 	ctx := context.Background()
@@ -62,62 +59,49 @@ func TestInitReplaceDeltaRetiresEmptiedSchema(t *testing.T) {
 		t.Fatal("flush listed no delta entries for the tombstones")
 	}
 
-	// Zero live rows, delta listed: the plain re-init still refuses.
-	if _, err := env.RunInit(ctx, wide); !errors.Is(err, cdc.ErrDeltaTierPresent) {
-		t.Fatalf("plain init over emptied schema: err = %v, want cdc.ErrDeltaTierPresent", err)
-	}
-
 	before := captureState(t, ctx, env, wide)
-	dry, err := env.RunInitWith(ctx, wide, InitOverrides{DryRun: true, ReplaceDelta: true})
+	dry, err := env.RunInitWith(ctx, wide, InitOverrides{DryRun: true})
 	if err != nil {
-		t.Fatalf("dry-run init with replace-delta: %v", err)
+		t.Fatalf("dry-run re-init of the emptied schema: %v", err)
 	}
-	if dry.RowsExported != 0 || dry.FilesCreated != 1 {
-		t.Errorf("dry-run planned %d rows / %d files, want 0 rows / 1 zero-row base", dry.RowsExported, dry.FilesCreated)
+	if dry.RowsExported != 0 || dry.FilesCreated != 0 {
+		t.Errorf("dry-run planned %d rows / %d files, want none", dry.RowsExported, dry.FilesCreated)
 	}
-	assertStateUnchanged(t, "empty-schema dry-run (replace-delta)", before, captureState(t, ctx, env, wide))
+	assertStateUnchanged(t, "empty-schema dry-run", before, captureState(t, ctx, env, wide))
 
-	report, err := env.RunInitWith(ctx, wide, InitOverrides{ReplaceDelta: true})
+	report, err := env.RunInit(ctx, wide)
 	if err != nil {
-		t.Fatalf("init with replace-delta over emptied schema: %v", err)
+		t.Fatalf("re-init of the emptied schema: %v", err)
 	}
-	if report.RowsExported != 0 || report.FilesCreated != 1 {
-		t.Errorf("empty swap exported %d rows / %d files, want 0 rows / 1 zero-row base", report.RowsExported, report.FilesCreated)
+	if report.RowsExported != 0 || report.FilesCreated != 0 {
+		t.Errorf("re-init of the emptied schema exported %d rows / %d files, want none", report.RowsExported, report.FilesCreated)
 	}
 	if report.Manifest == nil {
-		t.Fatal("manifest missing after the empty swap")
+		t.Fatal("the emptied schema has no published generation after its re-init")
 	}
-	bases := TierEntries(report.Manifest, "base")
-	if len(bases) != 1 {
-		t.Fatalf("manifest lists %d base entries after the empty swap, want exactly the zero-row base: %+v", len(bases), report.Manifest.Files)
+	if report.Manifest.Kind != "init" || len(report.Manifest.Files) != 0 {
+		t.Fatalf("re-init published a %s generation listing %+v, want an empty init generation", report.Manifest.Kind, report.Manifest.Files)
 	}
-	if bases[0].RowCount != 0 || bases[0].RowIDMin != "" || bases[0].RowIDMax != "" {
-		t.Errorf("zero-row base entry = %+v, want RowCount 0 and no row-id range", bases[0])
-	}
-	if n := countTier(report.Manifest, "delta"); n != 0 {
-		t.Errorf("manifest still lists %d delta entries after the empty swap: %+v", n, report.Manifest.Files)
-	}
-	assertBaseRows(ctx, t, env, report.Manifest, 0)
-	assertS3KeysPresence(ctx, t, env, "after empty swap", deltaKeys, false)
-	// Init never deletes base objects (#416/#203): the superseded set is
-	// unlisted and left for manifest-reconcile --gc.
-	assertS3KeysPresence(ctx, t, env, "after empty swap", oldBaseKeys, true)
+	// Init deletes nothing: the superseded objects are unlisted and left
+	// for garbage collection (#891).
+	assertS3KeysPresence(ctx, t, env, "after the empty re-init", deltaKeys, true)
+	assertS3KeysPresence(ctx, t, env, "after the empty re-init", oldBaseKeys, true)
 
 	if result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100}); result != nil && len(result.Records) != 0 {
 		t.Errorf("federated result has %d rows over an emptied schema, want 0", len(result.Records))
 	}
 
-	// Rows arrive again: the plain init no longer refuses.
+	// Rows arrive again: the next init exports them.
 	more := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 3})
 	if err := env.ApplyEvents(ctx, more...); err != nil {
 		t.Fatalf("apply later creates: %v", err)
 	}
 	third, err := env.RunInit(ctx, wide)
 	if err != nil {
-		t.Fatalf("plain init after the empty swap: %v", err)
+		t.Fatalf("init after the empty re-init: %v", err)
 	}
 	if third.RowsExported != 3 {
-		t.Errorf("init after the empty swap exported %d rows, want 3", third.RowsExported)
+		t.Errorf("init after the empty re-init exported %d rows, want 3", third.RowsExported)
 	}
 	assertBaseRows(ctx, t, env, third.Manifest, 3)
 	if result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100}); result != nil && len(result.Records) != 3 {

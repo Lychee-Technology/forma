@@ -2,12 +2,13 @@ package production
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 )
 
 // stubS3 always succeeds, standing in for the real client.
@@ -50,14 +51,19 @@ func TestFaultInjectingS3MatchesOpAndKey(t *testing.T) {
 	if !strings.Contains(err.Error(), "e2e injected s3 fault") {
 		t.Fatalf("unexpected error text: %v", err)
 	}
-	// manifest.LoadOrCreate answers a confirmed-absent manifest with a fresh
-	// one and would silently continue — an injected fault must never
-	// classify as absent (#464).
-	if manifest.IsNotFound(err) {
-		t.Fatalf("injected error %q must not classify as manifest absent", err)
-	}
 	if f.Injected() != 1 {
 		t.Fatalf("Injected() = %d, want 1", f.Injected())
+	}
+	// A reader treats only a confirmed missing object as ErrObjectNotFound,
+	// and a published generation whose manifest is missing as loss: an
+	// injected fault must never classify as a missing object (#464).
+	g := &FaultInjectingS3{Inner: &stubS3{}, Fault: S3Fault{Op: S3OpGet, KeyContains: "manifest/"}}
+	_, err = (&manifestv2.S3Store{Client: g, Bucket: "b"}).Get(ctx, "p/20/e1/manifest/g1.json")
+	if err == nil || errors.Is(err, manifestv2.ErrObjectNotFound) {
+		t.Fatalf("injected get fault %v must fail and not classify as a missing object", err)
+	}
+	if g.Injected() != 1 {
+		t.Fatalf("get fault Injected() = %d, want 1", g.Injected())
 	}
 }
 

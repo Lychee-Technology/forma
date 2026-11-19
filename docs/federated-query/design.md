@@ -685,9 +685,10 @@ on a read that consumes the column, because DuckDB prunes an unused CAST —
 the same scope as the `changed_at` re-pin. The pinned set is a separate
 `cold-pinned` component of the plan-scope hash next to `cold-missing`, so a
 pinned shape never shares a skeleton with an unpinned one. The pin is a read
-guard, not the fix: the stale generation itself is retired by `cdc-init
---replace-delta` (see `docs/manifest-reconcile.md`), which is what makes the
-scan set single-typed again.
+guard, not the fix: the stale generation itself is retired by a `cdc-init`
+re-run, whose `init` generation lists only its own base export
+(`docs/publication-protocol-v2.md`), which is what makes the scan set
+single-typed again.
 
 **Type guard before the pin (#732).** A pin decided by the same test now runs
 only over objects the declaration can read without changing a value
@@ -717,8 +718,8 @@ carry another type, and the drift would then bind unpinned. That state needs a
 same-key rewrite under an unchanged stamp — a legacy deterministic init key
 overwritten in place, or a manual or old-writer mutation — which no current
 writer performs: since #416 every init batch lands on a write-once key, flush
-and compaction never reuse a key, and re-runs go through `cdc-init
---replace-delta`. Probing attribute columns on every read would give back the
+and compaction never reuse a key, and since #896 every V2 object is written
+once under a fresh key (`If-None-Match: *`). Probing attribute columns on every read would give back the
 cost #256 removed, and binding a stamp to an object version is a manifest
 format change; the offline detector for a stamp that no longer matches its
 object is `manifest-reconcile --verify-stamps`, which re-describes each listed

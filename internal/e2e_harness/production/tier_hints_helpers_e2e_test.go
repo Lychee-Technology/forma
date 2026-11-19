@@ -13,35 +13,16 @@ import (
 )
 
 // The reasons a pgx pass records on its PostgreSQL sources
-// (internal/federated/pgx_report.go): the hot leg, the dirty set of the hot
-// form, and the dirty set of the hot-excluded form.
+// (internal/federated/pgx_report.go): the hot leg, and the strict dirty set
+// its snapshot read and staged for the parquet leg's anti-join. Since #896
+// every pass reads the same strict set: there is no widened hot form.
 const (
-	hotLegPgxReason   = "hot-leg predicate (evaluated in PostgreSQL)"
-	pgxDirtySetReason = "dirty set read in the pass's snapshot and staged for the anti-join"
-	pgxBarrierReason  = "consistency barrier (dirty set read in the pass's snapshot, staged for the anti-join)"
+	hotLegPgxReason  = "hot-leg predicate (evaluated in PostgreSQL)"
+	pgxBarrierReason = "consistency barrier (dirty set read in the pass's snapshot, staged for the anti-join)"
 )
 
 // Shared fixtures and plan/row assertion helpers for the tier-hint contract
 // suites (#184); scenarios live in tier_hints_e2e_test.go.
-
-// seedColdOnly creates n rows and moves them wholesale to base parquet
-// (cdc-init + onboarding change_log cleanup), returning their row IDs.
-func seedColdOnly(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, n int) []uuid.UUID {
-	t.Helper()
-	creates := env.GenerateScript(ScriptSpec{Schema: wide, Creates: n})
-	if err := env.ApplyEvents(ctx, creates...); err != nil {
-		t.Fatalf("apply creates: %v", err)
-	}
-	if _, err := env.RunInit(ctx, wide); err != nil {
-		t.Fatalf("run init: %v", err)
-	}
-	env.MarkOnboarded(ctx, wide)
-	ids := make([]uuid.UUID, 0, n)
-	for _, ev := range creates {
-		ids = append(ids, ev.RowID)
-	}
-	return ids
-}
 
 // assertTitleFilterCount runs a title-equals filter under the given tiers and
 // requires an exact match count.

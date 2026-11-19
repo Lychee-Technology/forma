@@ -45,10 +45,6 @@ type Query struct {
 	// the engine falls back to postgres-only instead of failing the query.
 	// Non-degradable errors (missing schema metadata) still surface.
 	AllowPartialDegradedMode bool `json:"allow_partial_degraded_mode,omitempty"`
-
-	// S3ParquetPathTemplate overrides the Env's default production glob when
-	// non-empty, so tests can prove DuckDB reads the caller-specified path.
-	S3ParquetPathTemplate string `json:"s3_parquet_path_template,omitempty"`
 }
 
 // QueryResult carries the engine-side outcome plus everything diagnostics
@@ -62,13 +58,6 @@ type QueryResult struct {
 	CurrentPage int
 	Plan        *model.ExecutionPlan
 	FQ          *model.FederatedAttributeQuery
-}
-
-// ParquetGlob returns the production-layout parquet path template: one flat
-// directory per schema covering both base (<min>_<max>.parquet) and delta
-// (<uuid>.parquet) files; `*` does not cross `/` so _tmp/ is excluded.
-func (e *Env) ParquetGlob() string {
-	return fmt.Sprintf("s3://%s/%s/{{.SchemaID}}/*.parquet", e.Cluster.Bucket, e.S3Prefix)
 }
 
 // Query translates the spec, executes it through the real federated engine
@@ -107,8 +96,9 @@ func (e *Env) Query(ctx context.Context, q Query) (*QueryResult, error) {
 
 // buildFederatedQuery translates the harness spec into the engine's
 // FederatedAttributeQuery: filters become the public condition tree
-// ("op:value" leaves), sorts become metadata-resolved AttributeOrders, and
-// the DuckDB hint carries the production single-glob parquet template.
+// ("op:value" leaves) and sorts become metadata-resolved AttributeOrders. The
+// parquet tiers are the engine's to resolve, from the publication record in
+// each pass's snapshot.
 func (e *Env) buildFederatedQuery(q Query) (*model.FederatedAttributeQuery, error) {
 	condition, err := buildCondition(q.Filters)
 	if err != nil {
@@ -124,16 +114,6 @@ func (e *Env) buildFederatedQuery(q Query) (*model.FederatedAttributeQuery, erro
 	// service layer sends (#715) — and only a non-empty list counts as the
 	// explicit coverage declaration that overrides the routing cost
 	// heuristics (#468).
-	// An explicit render hint wins over the manifest-driven source (#184 pins
-	// that an explicit S3ParquetPathTemplate directs read_parquet at the
-	// specified location), so the default hint is only supplied when the Env
-	// has no manifest wiring — otherwise the engine's ParquetSource resolves
-	// the authoritative object list (#187).
-	glob := q.S3ParquetPathTemplate
-	if glob == "" && e.CDC.ManifestTemplate == "" {
-		glob = e.ParquetGlob()
-	}
-
 	fq := &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{
 			SchemaID:        q.Schema.ID,
@@ -145,9 +125,6 @@ func (e *Env) buildFederatedQuery(q Query) (*model.FederatedAttributeQuery, erro
 		PreferredTiers: q.PreferredTiers,
 		PreferHot:      q.PreferHot,
 		KeysetCursor:   q.Keyset,
-	}
-	if glob != "" {
-		fq.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: glob}
 	}
 	return fq, nil
 }

@@ -1,6 +1,8 @@
 package federated
 
 import (
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/rowguard"
 	"github.com/lychee-technology/forma/internal/schemalease"
 	"github.com/lychee-technology/forma/internal/uniquekey"
@@ -13,7 +15,8 @@ import (
 // for (#585). The seed row for schema_id=1 is what the federated fixtures
 // expect. The unique-key tables (#651), the row-guard table and the
 // schema-lease table (#633) come from uniquekey, rowguard and schemalease,
-// the sources init-db uses, rather than from another copy.
+// and the Protocol V2 publication tables (#896) from publication, the
+// sources init-db uses, rather than from another copy.
 var federatedDDL = append([]string{
 	`CREATE TABLE IF NOT EXISTS schema_registry (
 		schema_id SMALLINT PRIMARY KEY,
@@ -73,5 +76,5 @@ var federatedDDL = append([]string{
 		PRIMARY KEY (schema_id, row_id, flushed_at)
 	)`,
 	`INSERT INTO schema_registry (schema_id, schema_name) VALUES (1, 'test_entity') ON CONFLICT DO NOTHING`,
-}, append(uniquekey.StatementsFor("entity_main"), rowguard.StatementFor("entity_main"),
-	schemalease.StatementFor("entity_main"))...)
+}, append(append(uniquekey.StatementsFor("entity_main"), rowguard.StatementFor("entity_main"),
+	schemalease.StatementFor("entity_main")), publication.Statements(forma.EnginePostgreSQL, "entity_main")...)...)

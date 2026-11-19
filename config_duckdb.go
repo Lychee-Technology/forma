@@ -106,12 +106,11 @@ func (d DuckDBConfig) ValidateParquetRead() error {
 }
 
 // ValidateManifestPathTemplate applies the manifest template rules to a
-// template supplied to a tool — the cdc-init CLI's --manifest-template (#371
-// review). field names the
-// setting in the returned ConfigError. Every manifest writer that resolves a
-// per-schema path must reject a template that collapses schemas onto one
-// object: for a destructive run such as `cdc-init --replace-delta` a collided
-// template would otherwise purge another schema's delta tier. The whitespace
+// template supplied to a V1 tool — the compactor's and manifest-reconcile's
+// --manifest-template (#371 review). field names the setting in the returned
+// ConfigError. Every V1 manifest writer that resolves a per-schema path must
+// reject a template that collapses schemas onto one object: a collided
+// template would otherwise rewrite another schema's manifest. The whitespace
 // rule comes first: the resolver renders the raw value, so a padded template addresses a different
 // object than the trimmed one an operator reads in the config.
 func ValidateManifestPathTemplate(field, pathTemplate string) error {

@@ -151,8 +151,9 @@ func baselineHotSet(ctx context.Context, t *testing.T, env *Env, schema SchemaRe
 }
 
 // flushAndConsolidate flushes every unflushed row, then rewrites the schema's
-// parquet as base files with a delta purge, so each size is read from the
-// layout compaction leaves rather than from one delta object per flush batch.
+// parquet as base files with a re-init, whose generation lists only its own
+// base export, so each size is read from the layout compaction leaves rather
+// than from one delta object per flush batch.
 func flushAndConsolidate(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
 	t.Helper()
 	for {
@@ -169,7 +170,7 @@ func flushAndConsolidate(ctx context.Context, t *testing.T, env *Env, schema Sch
 	}
 	cfg := env.CDC
 	cfg.TargetFileSizeMB = 128
-	if _, err := env.RunInitWith(ctx, schema, InitOverrides{Config: &cfg, ReplaceDelta: true}); err != nil {
+	if _, err := env.RunInitWith(ctx, schema, InitOverrides{Config: &cfg}); err != nil {
 		t.Fatalf("consolidate parquet into base: %v", err)
 	}
 }

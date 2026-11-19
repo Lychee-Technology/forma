@@ -15,7 +15,7 @@ import (
 //
 // Deterministic orchestration instead of a rerun-until-it-overlaps race:
 //
-//  1. Seed only schema A and start runner1, paused at its first CopyObject
+//  1. Seed only schema A and start runner1, paused at the staging of its first parquet object
 //     (PausingS3). At the pause runner1 has enumerated its dirty schemas —
 //     provably [A] alone, because B is not seeded yet — and sits inside A's
 //     processSchema holding A's advisory lock.
@@ -42,10 +42,10 @@ func TestConcurrentFlushDifferentSchemas(t *testing.T) {
 
 	// Seed ONLY schema A before runner1 starts; B is seeded strictly after
 	// the pause is reached, so runner1's enumeration cannot include it and
-	// the single CopyObject the pause intercepts is A's.
+	// the single parquet staging the pause intercepts is A's.
 	seedRows(ctx, t, env, simple, 3)
 
-	pauser := NewPausingS3(env.Cluster.S3, S3OpCopy)
+	pauser := NewPausingS3OnKey(env.Cluster.S3, S3OpPut, ".parquet")
 	runnerCtx, cancel := context.WithTimeout(ctx, pausedFlushTimeout)
 	// The flush goroutine must not touch t; it reports through done (buffered
 	// so it never leaks even when the test dies before reading it).
@@ -68,7 +68,7 @@ func TestConcurrentFlushDifferentSchemas(t *testing.T) {
 	select {
 	case <-pauser.Reached():
 	case out := <-done:
-		t.Fatalf("runner1 finished before reaching the CopyObject pause: err=%v", out.err)
+		t.Fatalf("runner1 finished before reaching the parquet staging pause: err=%v", out.err)
 	}
 
 	seedRows(ctx, t, env, second, 3)

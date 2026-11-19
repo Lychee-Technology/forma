@@ -17,21 +17,19 @@ func (e *recordingEngine) Query(_ context.Context, _ model.StorageTables, fq *mo
 	return &model.PersistentRecordPage{}, nil
 }
 
-// TestHarnessLayoutEnginePinsPathsAndTiers: the service path's engine pins
-// the harness's base/ and delta/ layout and all three tiers on every call,
-// without touching the service's query.
-func TestHarnessLayoutEnginePinsPathsAndTiers(t *testing.T) {
+// TestAllTiersEnginePinsTiers: the service path's engine declares all three
+// tiers on every call, without touching the service's query. What the
+// parquet tiers hold is the published generation, never a path the
+// benchmark hands the engine.
+func TestAllTiersEnginePinsTiers(t *testing.T) {
 	inner := &recordingEngine{}
-	engine := harnessLayoutEngine{engine: inner, template: "s3://b/p/{{.SchemaID}}/base/*.parquet"}
+	engine := allTiersEngine{engine: inner}
 	fq := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 3}}
 	if _, err := engine.Query(context.Background(), model.StorageTables{}, fq, nil); err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if inner.got == fq || fq.DuckDBHints != nil || fq.PreferredTiers != nil {
+	if inner.got == fq || fq.PreferredTiers != nil {
 		t.Fatalf("expected the service's query left untouched, got %+v", fq)
-	}
-	if inner.got.DuckDBHints == nil || inner.got.DuckDBHints.S3ParquetPathTemplate != engine.template {
-		t.Fatalf("expected the harness template pinned, got %+v", inner.got.DuckDBHints)
 	}
 	if len(inner.got.PreferredTiers) != 3 || inner.got.SchemaID != 3 {
 		t.Fatalf("expected all three tiers on schema 3, got %+v", inner.got)

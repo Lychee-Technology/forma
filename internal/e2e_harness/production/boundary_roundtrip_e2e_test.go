@@ -103,11 +103,13 @@ func TestFederatedReadReturnsStoredMaxInt64(t *testing.T) {
 	if err := env.ApplyEvents(ctx, ev); err != nil {
 		t.Fatalf("apply create: %v", err)
 	}
-	// Base file so the federated query routes to DuckDB; the row stays
-	// unflushed in change_log, so it is served from the hot leg.
+	// Base file so the federated query routes to DuckDB. The init handoff
+	// marks the row flushed, so a later write puts it back in the dirty set,
+	// and it is served from the hot leg.
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
+	mustApplyEvents(ctx, t, env, "dirty the row again", UpdateEvent(wide, ev.RowID, map[string]any{"title": "bigint-ceiling-hot"}))
 	env.ExecSQL(ctx,
 		"UPDATE entity_main SET bigint_01 = $1 WHERE ltbase_schema_id = $2",
 		int64(math.MaxInt64), wide.ID)

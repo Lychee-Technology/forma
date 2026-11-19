@@ -52,7 +52,7 @@ func (e *Env) reconnectAfterRestart(ctx context.Context) error {
 	e.manager = nil
 	e.routedManagers = nil
 	e.postgresManager = nil
-	e.engine = nil
+	e.engine, e.epochPins = nil, nil
 	return nil
 }
 
@@ -70,7 +70,7 @@ func (e *Env) ReopenDuckDB() error {
 	if err := e.startDuckDB(); err != nil {
 		return fmt.Errorf("reopen duckdb client: %w", err)
 	}
-	e.engine = nil
+	e.engine, e.epochPins = nil, nil
 	e.manager = nil
 	e.routedManagers = nil
 	e.postgresManager = nil
@@ -112,7 +112,7 @@ func (e *Env) RestartS3(ctx context.Context) error {
 		return fmt.Errorf("rebuild duckdb client after s3 restart: %w", err)
 	}
 	e.CDC = e.buildCDCConfig()
-	e.engine = nil
+	e.engine, e.epochPins = nil, nil
 	e.manager = nil
 	e.routedManagers = nil
 	e.postgresManager = nil

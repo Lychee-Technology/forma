@@ -57,16 +57,17 @@ func TestEnginePlanCacheServesRepeatedShape(t *testing.T) {
 }
 
 // TestPlanCacheColdMissingRekeyEndToEnd restores #255's e2e poisoning probe,
-// which was structurally vacuous before #345 (no cache in the harness) and
-// stays masked in the manifest-wired evolution test (a flush changes the
-// resolved path list and re-keys the scope hash regardless). Here the Env is
-// glob-read (WithoutManifest): the path component of the scope key is one
-// constant template string across the flush, and both measured queries run
-// with an empty dirty set. Between the cached pre-flush serve and the
-// post-flush read, the ONLY scope-key component that moves is the
-// cold-missing set — which is why the post-flush plan_cache=miss below is
-// this test's load-bearing assertion. The engine-seam twin is
-// federated.TestEngineColdMissingSetRekeysPlanCache.
+// which was structurally vacuous before #345 (no cache in the harness): a
+// skeleton compiled while score is cold-absent must not serve the shape once
+// a flush lands score in parquet. Both measured queries run with an empty
+// dirty set. Since #896 every read scans the published generation, and the
+// flush publishes a new one, so the scope key's path component moves along
+// with the cold-missing set: the post-flush plan_cache=miss below no longer
+// isolates the cold-missing component (before #896 a glob-read Env held the
+// path component constant). The engine-seam twin,
+// federated.TestEngineColdMissingSetRekeysPlanCache, pins that component
+// alone; this test pins the end-to-end miss, the recompile and the hit after
+// it.
 //
 // Why the row count is NOT the instrument: the augmented scan renders as
 //
@@ -75,17 +76,17 @@ func TestEnginePlanCacheServesRepeatedShape(t *testing.T) {
 //
 // Post-flush the `*` also expands a real `score`, so a stale cold-absent
 // skeleton projects that name twice and the pinned DuckDB binds the first
-// (real) occurrence — the stale NULL is shadowed, not honored. Deleting the
-// cold-missing lines from duckPlanScopeParts and re-running this test was
-// verified to fail on the plan_cache note alone, with the post-flush total
-// still 3. So the scope component exists precisely so that correctness never
+// (real) occurrence — the stale NULL is shadowed, not honored. Before #896,
+// deleting the cold-missing lines from duckPlanScopeParts and re-running this
+// test was verified to fail on the plan_cache note alone, with the post-flush
+// total still 3. So the scope component exists precisely so that correctness never
 // rests on that duplicate-name binding order, and only the note observes it.
 func TestPlanCacheColdMissingRekeyEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
 	v1 := writeSimpleSchemaDir(t, coreProps, coreAttrs)
 	v2 := writeSimpleSchemaDir(t, scoreIntProps, scoreIntAttrs)
-	env := NewEnv(t, cluster, WithSchemaDir(v1), WithoutManifest())
+	env := NewEnv(t, cluster, WithSchemaDir(v1))
 	simple := DefaultSchemaFixtures()[0]
 
 	// 5 base rows under v1 (score does not exist), landed as base parquet;
@@ -99,11 +100,11 @@ func TestPlanCacheColdMissingRekeyEndToEnd(t *testing.T) {
 
 	coldTiers := []model.DataTier{model.DataTierWarm, model.DataTierCold}
 
-	// Positive control: the cold set is visible through the glob at all —
+	// Positive control: the cold set is visible at all —
 	// this is what makes the zero-row filter assertions below trustworthy.
 	coldAll := queryTierRestricted(ctx, t, env, Query{
 		Schema: simple, PreferredTiers: coldTiers, Limit: 20,
-	}, 5, "base rows visible via glob read")
+	}, 5, "base rows visible in the init generation")
 	assertUsesDuckDB(t, coldAll)
 
 	coldFilter := Query{

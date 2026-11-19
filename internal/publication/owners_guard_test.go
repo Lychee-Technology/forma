@@ -20,20 +20,26 @@ import (
 const (
 	publicationImport = "github.com/lychee-technology/forma/internal/publication"
 	publicationDir    = "internal/publication"
+	// federatedHarnessPublication is the e2e harness file that registers
+	// and publishes the federated harness's schemas.
+	federatedHarnessPublication = "internal/e2e_harness/federated/publication.go"
 )
 
 // transitions are the identifiers of this package that move a record or
 // write its history, and owners the production packages (by directory) or
 // files allowed to use each of them: registration and the V2 cutover in
 // init-db (cmd/tools/init_db_records.go), and the cdc-flush and cdc-init
-// publication paths (internal/cdcv2). The drop (Reset) and garbage
+// publication paths (internal/cdcv2). The federated e2e harness's
+// publication file stands in for both, registration and publication, over
+// the synthetic parquet the benchmark loads (cmd/benchmark runs it outside
+// any test, so it is not a _test.go file). The drop (Reset) and garbage
 // collection (RaiseHorizon, Retire, Forget) have no production caller yet:
 // a drop tool and #891 add theirs here when they land.
 var transitions = map[string]map[string]bool{
-	"Initialize":             {"cmd/tools/init_db_records.go": true},
+	"Initialize":             {"cmd/tools/init_db_records.go": true, federatedHarnessPublication: true},
 	"InitializeAwaitingInit": {"cmd/tools/init_db_records.go": true},
 	"Activate":               {"cmd/tools/init_db_records.go": true},
-	"Publish":                {"internal/cdcv2": true},
+	"Publish":                {"internal/cdcv2": true, federatedHarnessPublication: true},
 	"HoldLineage":            {"internal/cdcv2": true},
 	"Fence":                  {"internal/cdcv2": true},
 	"Reset":                  {},
@@ -75,7 +81,7 @@ func TestOnlyTheProtocolOwnersMoveAPublicationRecord(t *testing.T) {
 			// init-db's DDL file is not its registration file.
 			"cmd/tools/init_db_publication.go": "package main\n\nimport pub \"" + publicationImport + "\"\n\nvar _ = pub.Statements\nvar _ = pub.Initialize\n",
 			// The registration file may register, and nothing else.
-			"cmd/tools/init_db_records.go": "package main\n\nimport \"" + publicationImport + "\"\n\nvar _ = publication.Activate\nvar _ = publication.Reset\n",
+			"cmd/tools/init_db_records.go":   "package main\n\nimport \"" + publicationImport + "\"\n\nvar _ = publication.Activate\nvar _ = publication.Reset\n",
 			"cmd/tools/init_db_collation.go": "package main\n\nimport . \"" + publicationImport + "\"\n\nvar _ = Statements\n",
 			// The writer publishes, but never spells a table.
 			"internal/cdcv2/planted.go": "package cdcv2\n\nimport \"" + publicationImport + "\"\n\nvar _ = publication.Publish\n\nconst table = \"z_publication\"\n",
