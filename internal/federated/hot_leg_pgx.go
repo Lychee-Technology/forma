@@ -11,7 +11,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma/internal/model"
-	"go.uber.org/zap"
 )
 
 // The seams of the pgx hot leg (design.md §6.1, pgx-hot-leg-plan.md step
@@ -53,8 +52,8 @@ type hotLegSnapshots interface {
 // pass goes through it, so the dirty set, the hot keys and the page's hot
 // rows agree (design.md §6.1, Consistency).
 type hotLegSnapshot interface {
-	// readPublication reads the publication record through r; a published
-	// pass sends it as the snapshot's first statement (pgx_publication.go).
+	// readPublication reads the publication record through r; a pass sends
+	// it as the snapshot's first statement (pgx_publication.go).
 	readPublication(ctx context.Context, r PublicationReader, schemaID int16) (PublicationRecord, error)
 	readChangeLog(ctx context.Context, req ChangeLogSnapshotRequest) (ChangeLogSnapshot, error)
 	queryHotKeys(ctx context.Context, req model.HotKeysQuery) ([]model.HotKey, error)
@@ -172,24 +171,4 @@ func (r *stagedRows) Close() error {
 		r.closeErr = errors.Join(r.Rows.Close(), releaseStagedConn(r.ctx, r.conn))
 	})
 	return r.closeErr
-}
-
-// passCutoffMs is the flush-grace cutoff of a pass (#252): the instant the
-// pass resolved its parquet path set, minus FlushVisibilityGraceMs. A
-// negative margin reads as 0, the exact anchor: the snapshot argument needs a
-// cutoff no later than path resolution, so the widening is never disabled
-// (design.md §6.1). The hot-excluded form reads the strict set and ignores
-// the cutoff.
-func (e *DBFederatedQueryEngine) passCutoffMs(pathsResolvedAtMs int64) int64 {
-	return pathsResolvedAtMs - max(0, e.flushVisibilityGraceMs)
-}
-
-// logNegativeGrace says once, at construction, that the engine reads a
-// negative FlushVisibilityGraceMs as 0.
-func (e *DBFederatedQueryEngine) logNegativeGrace() {
-	if e.flushVisibilityGraceMs >= 0 {
-		return
-	}
-	e.log().Warn("duckdb.flushVisibilityGraceMs is negative, which the federated engine reads as 0: the pass's snapshot needs the flush-grace widening, so it cannot be disabled",
-		zap.Int64("flush_visibility_grace_ms", e.flushVisibilityGraceMs))
 }

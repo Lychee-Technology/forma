@@ -359,8 +359,10 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 			return err
 		}
 	}
-
-	return nil
+	// Every registered schema, not only those of schemaDir, gets its
+	// publication record in this transaction: a new one at registration, an
+	// existing one at the V2 cutover (init_db_records.go).
+	return ensurePublicationRecords(ctx, tx, opts, os.Stdout)
 }
 
 // firstSchemaID is the schema_id init-db gives the first schema it registers.

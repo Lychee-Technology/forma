@@ -42,7 +42,7 @@ func TestPublishedPassWithoutAParquetLegNeedsNoDuckDBAdmission(t *testing.T) {
 				ctx := context.Background()
 				f := newPgxFixture(t, hotRows(5))
 				pub := seed()
-				e, duck, _ := publishedEngine(t, f, pub)
+				e, duck := publishedEngine(t, f, pub)
 				e.breaker = openBreaker()
 				if noClient {
 					e.duck = nil
@@ -83,7 +83,7 @@ func TestPublishedPassUnderAnOpenBreaker(t *testing.T) {
 	t.Run("a publication fault", func(t *testing.T) {
 		f := newPgxFixture(t, tieRunRows())
 		pub := &fakePublication{recErr: &PublicationConsistencyError{SchemaID: parquetOnlySchemaID, Epoch: 2, Generation: 5, Err: errors.New("schema dropped")}}
-		e, duck, _ := publishedEngine(t, f, pub)
+		e, duck := publishedEngine(t, f, pub)
 		e.breaker = openBreaker()
 		rec := recordDegradedFallbacks(e)
 
@@ -96,7 +96,7 @@ func TestPublishedPassUnderAnOpenBreaker(t *testing.T) {
 	t.Run("a generation that lists objects", func(t *testing.T) {
 		f := newPgxFixture(t, tieRunRows())
 		pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
-		e, duck, _ := publishedEngine(t, f, pub)
+		e, duck := publishedEngine(t, f, pub)
 		e.breaker = openBreaker()
 
 		_, _, err := e.ExecuteDuckDBFederatedQuery(context.Background(), tieRunTables, pgxQuery(), 5, 0, nil, nil)
@@ -124,7 +124,7 @@ func TestPublishedPassRefusesAListedAddressDuckDBWouldExpand(t *testing.T) {
 			f := newPgxFixture(t, tieRunRows())
 			f.writeParquet(t, "unlisted.parquet", []pgxRow{{i: 40, createdAt: 900, age: ageOf(99), parquet: true}})
 			pub := publishedOver(filepath.Join(f.dir, "base.parquet"), filepath.Join(f.dir, listed))
-			e, duck, _ := publishedEngine(t, f, pub)
+			e, duck := publishedEngine(t, f, pub)
 			e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
 			rec := recordDegradedFallbacks(e)
 
@@ -159,7 +159,7 @@ func TestPublishedPassPlanReportsStagingOnlyWithAParquetLeg(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newPgxFixture(t, tieRunRows())
-			e, _, _ := publishedEngine(t, f, c.seed(f))
+			e, _ := publishedEngine(t, f, c.seed(f))
 			opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
 			_, _, err := e.ExecuteDuckDBFederatedQuery(context.Background(), tieRunTables, pgxQuery(), 5, 0, nil, opts)
 			require.NoError(t, err)

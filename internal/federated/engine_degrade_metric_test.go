@@ -202,11 +202,11 @@ func TestNoDegradedFallbackMetricWithoutAFallback(t *testing.T) {
 			return err
 		}},
 		{name: "non-degradable failure under degraded mode", wantErr: true, run: func(t *testing.T, rec *degradedFallbackRecorder) error {
-			src := &fakeParquetSource{pathsErr: fmt.Errorf("stamped for another schema: %w", forma.ErrManifestSchemaMismatch)}
+			src := &fakeParquetSource{pathsErr: &PublicationConsistencyError{SchemaID: 7, Epoch: 1, Generation: 3, Err: errors.New("manifest object missing")}}
 			engine := newParquetSourceTestEngine(t, &fakeDuckDBExecutor{}, src)
 			WithMetricEmitter(rec)(engine)
 			_, err := engine.Query(context.Background(), degradedLogTables(), coldTierQuery(), degraded())
-			require.ErrorIs(t, err, forma.ErrManifestSchemaMismatch)
+			require.ErrorIs(t, err, ErrPublicationInconsistent)
 			return err
 		}},
 	}

@@ -2,19 +2,14 @@ package cdc
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
-// mockObjectSizeBytes is the ContentLength every mock HeadObject reports, so
-// tests can assert SizeBytes propagation into manifest entries.
+// mockObjectSizeBytes is the ContentLength every mock HeadObject reports.
 const mockObjectSizeBytes int64 = 42
 
 type errorSchemaRegistry struct{ err error }
@@ -79,22 +74,6 @@ func testAttrCache() forma.SchemaAttributeCache {
 	}
 }
 
-type inMemoryManifestStore struct {
-	data    map[string][]byte
-	etags   map[string]string
-	loadErr error
-	saveErr error
-	saved   int
-	// saveDelay slows Save so tests can order the manifest append against
-	// timestamps sampled around it at millisecond resolution (#252 review P1);
-	// lastSaveDoneMs records when the slowed Save completed.
-	saveDelay      time.Duration
-	lastSaveDoneMs int64
-	// lastSavedPath tracks the most recent saved manifest path for deterministic
-	// retrieval in tests (#256 test coverage).
-	lastSavedPath string
-}
-
 type objectOnlyS3Client struct{}
 
 func (c *objectOnlyS3Client) CopyObject(_ context.Context, _ *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
@@ -106,20 +85,6 @@ func (c *objectOnlyS3Client) DeleteObject(_ context.Context, _ *s3.DeleteObjectI
 }
 
 func (c *objectOnlyS3Client) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
-	return &s3.HeadObjectOutput{ContentLength: aws.Int64(mockObjectSizeBytes)}, nil
-}
-
-type copyFailingS3Client struct{}
-
-func (c *copyFailingS3Client) CopyObject(_ context.Context, _ *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
-	return nil, errors.New("copy failed")
-}
-
-func (c *copyFailingS3Client) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
-	return &s3.DeleteObjectOutput{}, nil
-}
-
-func (c *copyFailingS3Client) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
 	return &s3.HeadObjectOutput{ContentLength: aws.Int64(mockObjectSizeBytes)}, nil
 }
 
@@ -165,68 +130,3 @@ func (c *fullS3ClientMock) GetObject(_ context.Context, _ *s3.GetObjectInput, _ 
 func (c *fullS3ClientMock) PutObject(_ context.Context, _ *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	return &s3.PutObjectOutput{}, nil
 }
-
-func newInMemoryManifestStore() *inMemoryManifestStore {
-	return &inMemoryManifestStore{
-		data:  make(map[string][]byte),
-		etags: make(map[string]string),
-	}
-}
-
-func (s *inMemoryManifestStore) Load(_ context.Context, path string) ([]byte, string, error) {
-	if s.loadErr != nil {
-		return nil, "", s.loadErr
-	}
-	b, ok := s.data[path]
-	if !ok {
-		return nil, "", fmt.Errorf("mem store %s: %w", path, manifest.ErrObjectNotFound)
-	}
-	return append([]byte(nil), b...), s.etags[path], nil
-}
-
-func (s *inMemoryManifestStore) Save(_ context.Context, path string, data []byte, _ string) (string, error) {
-	if s.saveErr != nil {
-		return "", s.saveErr
-	}
-	if s.saveDelay > 0 {
-		time.Sleep(s.saveDelay)
-	}
-	s.lastSaveDoneMs = time.Now().UnixMilli()
-	s.saved++
-	etag := fmt.Sprintf("etag-%d", s.saved)
-	s.data[path] = append([]byte(nil), data...)
-	s.etags[path] = etag
-	s.lastSavedPath = path
-	return etag, nil
-}
-
-// readLastEntry decodes the last saved manifest and returns its final file entry.
-// Used by tests to inspect manifest stamping.
-func (s *inMemoryManifestStore) readLastEntry(t *testing.T) *manifest.FileEntry {
-	t.Helper()
-	if len(s.data) == 0 {
-		t.Fatalf("no manifest was saved")
-	}
-	if s.lastSavedPath == "" {
-		t.Fatalf("lastSavedPath not tracked")
-	}
-	lastData, ok := s.data[s.lastSavedPath]
-	if !ok {
-		t.Fatalf("lastSavedPath %s not in data", s.lastSavedPath)
-	}
-	m, err := manifest.Parse(lastData)
-	if err != nil {
-		t.Fatalf("failed to parse manifest from %s: %v", s.lastSavedPath, err)
-	}
-	if len(m.Files) == 0 {
-		t.Fatalf("manifest has no files")
-	}
-	return &m.Files[len(m.Files)-1]
-}
-
-// duckStandInMark is the flush mark of the executor tests whose change_log
-// is an in-memory DuckDB standing in for PostgreSQL. DuckDB parses no
-// FOR UPDATE ... SKIP LOCKED, so they mark with the engine-neutral statement;
-// they pin the executor's ordering, not the statement. The PostgreSQL mark
-// runs on PostgreSQL in mark_flushed_pg_test.go (#686).
-var duckStandInMark markFlushedFunc = MarkFlushedVersions

@@ -24,8 +24,6 @@ type cdcInitOptions struct {
 	schemaIDFilter       int
 	dryRun               bool
 	autoEstimateRowBytes bool
-	replaceDelta         bool
-	deltaPrefix          string
 }
 
 // parseCDCInitFlags registers, parses and validates the cdc-init flag set.
@@ -71,15 +69,11 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 	shared.s3.register(fs, s3FlagOptions{
 		includePrefix:  true,
 		prefixFlag:     "s3-prefix",
-		prefixDefault:  "base",
-		prefixUsage:    "S3 prefix for base files",
-		bucketUsage:    "S3 bucket for parquet files (required)",
+		prefixDefault:  defaultCDCDataPrefix,
+		prefixUsage:    cdcDataPrefixUsage,
+		bucketUsage:    "S3 bucket for parquet files and manifests (required)",
 		bucketRequired: true,
 	})
-
-	// Manifest settings (optional - enables manifest tracking)
-	fs.StringVar(&shared.manifestPrefix, "manifest-prefix", "", "Manifest prefix in S3 (enables manifest tracking)")
-	fs.StringVar(&shared.manifestTemplate, "manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
 
 	var schemaRegistry schemaRegistryFlags
 	schemaRegistry.register(fs, true)
@@ -90,9 +84,7 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 	fs.IntVar(&shared.estimatedRowBytes, "estimated-row-bytes", 0, "Override row size estimate in bytes (0 = auto from schema)")
 	fs.IntVar(&initOnly.maxBatchSize, "max-batch-size", 10000000, "Maximum batch size to cap memory usage")
 	schemaIDFilter := fs.Int("schema-id", 0, "Specific schema ID to init (0 = all schemas)")
-	dryRun := fs.Bool("dry-run", false, "Dry run mode (no actual export)")
-	replaceDelta := fs.Bool("replace-delta", false, "Purge the schema's delta tier after the base swap commits; without it init refuses while delta objects exist (#371)")
-	deltaPrefix := fs.String("delta-prefix", "delta", "S3 prefix cdc-flush writes delta files under; listed for delta objects the manifest does not mention (empty = manifest only)")
+	dryRun := fs.Bool("dry-run", false, "Dry run mode (no export, no object, no publication, no handoff)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -108,9 +100,6 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 		return nil, err
 	}
 	if err := validateParquetPrefixFlag("s3-prefix", shared.s3.prefix); err != nil {
-		return nil, err
-	}
-	if err := validateParquetPrefixFlag("delta-prefix", *deltaPrefix); err != nil {
 		return nil, err
 	}
 	engine, err := shared.pg.cdcEngine("pg-engine")
@@ -132,8 +121,6 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 		schemaIDFilter:       *schemaIDFilter,
 		dryRun:               *dryRun,
 		autoEstimateRowBytes: autoEstimateRowBytes,
-		replaceDelta:         *replaceDelta,
-		deltaPrefix:          *deltaPrefix,
 	}, nil
 }
 
@@ -153,8 +140,8 @@ func buildCDCInitConfig(shared cdcSharedFlags, initOnly cdcInitOnlyFlags) cdc.CD
 	return cfg.WithDefaults()
 }
 
-// runCDCInit parses cdc-init CLI flags and delegates the actual base-file
-// export to cdc.RunInit (the driver was extracted into internal/cdc, #173).
+// runCDCInit parses cdc-init CLI flags and delegates the re-onboarding (the
+// export, the init generation and its handoff) to cdc.RunInit.
 func runCDCInit(ctx context.Context, args []string) error {
 	opts, err := parseCDCInitFlags(args)
 	if err != nil {
@@ -194,18 +181,16 @@ func runCDCInit(ctx context.Context, args []string) error {
 	logger.Info("starting CDC init",
 		zap.String("bucket", cfg.S3Bucket),
 		zap.String("prefix", cfg.S3Prefix),
-		zap.String("manifest_template", cfg.ManifestTemplate),
+		zap.String("engine", string(cfg.Engine)),
 		zap.Int("target_file_size_mb", cfg.TargetFileSizeMB),
 		zap.Int("estimated_row_bytes", cfg.EstimatedRowBytes),
 		zap.Int("max_batch_size", cfg.MaxBatchSize),
 		zap.Int("fallback_batch_size", cfg.BatchSize),
 		zap.Int("schema_id_filter", opts.schemaIDFilter),
 		zap.Bool("dry_run", opts.dryRun),
-		zap.Bool("auto_estimate_row_bytes", opts.autoEstimateRowBytes),
-		zap.Bool("replace_delta", opts.replaceDelta),
-		zap.String("delta_prefix", opts.deltaPrefix))
+		zap.Bool("auto_estimate_row_bytes", opts.autoEstimateRowBytes))
 
-	if _, err := cdc.RunInit(ctx, cdc.InitOptions{
+	summary, err := cdc.RunInit(ctx, cdc.InitOptions{
 		Config:               cfg,
 		S3Client:             s3Client,
 		SchemaRegistryTable:  opts.registry.table,
@@ -214,12 +199,12 @@ func runCDCInit(ctx context.Context, args []string) error {
 		AutoEstimateRowBytes: opts.autoEstimateRowBytes,
 		Logger:               logger,
 		SchemaRegistry:       registry,
-		ReplaceDelta:         opts.replaceDelta,
-		DeltaPrefix:          opts.deltaPrefix,
-	}); err != nil {
+	})
+	if err != nil {
+		logger.Info("CDC init published before it failed", zap.Any("schemas", summary.Schemas))
 		return fmt.Errorf("CDC init failed: %w", err)
 	}
 
-	logger.Info("CDC init completed")
+	logger.Info("CDC init completed", zap.Any("schemas", summary.Schemas))
 	return nil
 }

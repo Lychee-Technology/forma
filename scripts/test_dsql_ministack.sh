@@ -286,7 +286,7 @@ run_suites() {
 		die "the strict SQL proxy is not reachable: no suite ran, see $artifacts/gate.log"
 	fi
 	run_suite entity 8 -timeout=5m ./internal -run '^TestDSQL(Engine|ClusterProbe)'
-	run_suite cdc 10 -timeout=5m ./internal/cdc -run '^(TestLeaseSchemaLock|TestMarkInChunksRetriesARealConflict|TestDSQLExport)'
+	run_suite cdc 10 -timeout=10m ./internal/cdc -run '^(TestLeaseSchemaLock|TestWired|TestDSQLExport)'
 	run_suite federated 2 -timeout=5m ./internal/federated -run '^TestDSQLHotLeg'
 	run_suite publication 30 -timeout=5m ./internal/publication
 	run_suite cdcv2 50 -timeout=10m ./internal/cdcv2

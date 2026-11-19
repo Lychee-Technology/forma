@@ -77,7 +77,7 @@ keep `records/` and the `sql/` linted from them for inspection.
 A record is one statement with what is known about it:
 
 ```json
-{"kind":"executed","sql":"SELECT ...","engine":"aurora-dsql","mechanism":"pgxmock","unit":"internal-federated-change-log-snapshot-hot-excluded","seq":2,"label":"internal/federated/change_log_snapshot.go:dirtySetQuery"}
+{"kind":"executed","sql":"SELECT ...","engine":"aurora-dsql","mechanism":"pgxmock","unit":"internal-federated-change-log-snapshot","seq":2,"label":"internal/federated/change_log_reads.go:strictDirtySetQuery"}
 ```
 
 | Field | Meaning |

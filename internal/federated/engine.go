@@ -51,26 +51,14 @@ type DBFederatedQueryEngine struct {
 	// production reuse lifecycle (#142 review finding 1). Nil disables plan
 	// caching.
 	planCache *queryplan.Cache
-	// parquetSource resolves manifest-listed parquet paths (#187); nil keeps
-	// the legacy hint-only path resolution. See WithParquetSource.
-	parquetSource ParquetSource
-	// flushVisibilityGraceMs is the #252 clock-skew margin subtracted from
-	// the query's path-resolution timestamp to form the dirty-barrier
-	// cutoff; zero = exact anchor (default). The field keeps the configured
-	// value, and passCutoffMs clamps a negative one to zero: the widening is
-	// never disabled (design.md §6.1), and construction warns once
-	// (logNegativeGrace). Copied from DuckDBConfig.FlushVisibilityGraceMs at
-	// construction.
-	flushVisibilityGraceMs int64
 	// schemaValidator enforces the parquet system-column invariant before
 	// each scan (#189): union_by_name tolerates attribute-column evolution,
 	// so schema corruption must be caught by probing instead of by the
 	// binder. See parquet_schema_validation.go.
 	schemaValidator *parquetSchemaValidator
 	// corruptPaths remembers verification-confirmed corrupt parquet objects
-	// (#251) so resolveParquetPaths can refuse a set listing them without a
-	// scan (#722). TTL-bounded — see corruptParquetCache. Only
-	// source-authored path sets consult it.
+	// (#251) so a pass can refuse a generation listing them without a scan
+	// (#722). TTL-bounded — see corruptParquetCache.
 	corruptPaths *corruptParquetCache
 	// logger is the engine's own operator outlet; zap.NewNop() when unset
 	// (see log(), in engine_options.go beside the option that sets this).
@@ -92,8 +80,8 @@ type DBFederatedQueryEngine struct {
 	pgxPassSlots chan struct{}
 	// publication resolves each pgx pass's parquet source from the
 	// publication record in the pass's snapshot (WithPublicationReader,
-	// pgx_publication.go); nil keeps the path set resolution of
-	// pgx_scan_sources.go. publishedPassDeadline is its R_max.
+	// pgx_publication.go); nil fails every pass as misconfigured.
+	// publishedPassDeadline is its R_max.
 	publication           PublicationReader
 	publishedPassDeadline time.Duration
 	// now is the clock behind every stage timing the DuckDB path reports
@@ -115,24 +103,27 @@ func (e *DBFederatedQueryEngine) clock() func() time.Time {
 
 // NewDBFederatedQueryEngine assembles the engine from its injected seams.
 // duck and breaker may be nil: a nil duck marks DuckDB as unavailable and a
-// nil breaker disables circuit breaking.
+// nil breaker disables circuit breaking. A routed DuckDB pass needs the
+// snapshot pool (WithPgxHotLeg) and the publication reader
+// (WithPublicationReader); without either it fails as misconfigured, which is
+// not degradable. An engine whose configuration leaves DuckDB disabled routes
+// every query to PostgreSQL and needs neither.
 func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, duck DuckDBQueryExecutor, breaker *CircuitBreaker, cfg forma.DuckDBConfig, metadataCache *schemameta.MetadataCache, opts ...EngineOption) *DBFederatedQueryEngine {
 	e := &DBFederatedQueryEngine{
-		pgSource:               pgSource,
-		duck:                   duck,
-		breaker:                breaker,
-		cfg:                    cfg,
-		metadataCache:          metadataCache,
-		projections:            sqlgen.NewProjectionCache(),
-		schemaValidator:        newParquetSchemaValidator(),
-		flushVisibilityGraceMs: cfg.FlushVisibilityGraceMs,
-		corruptPaths:           newCorruptParquetCache(defaultCorruptPathRetention),
-		pgxPassSlots:           newPgxPassSlots(cfg.MaxConnections),
+		pgSource:              pgSource,
+		duck:                  duck,
+		breaker:               breaker,
+		cfg:                   cfg,
+		metadataCache:         metadataCache,
+		projections:           sqlgen.NewProjectionCache(),
+		schemaValidator:       newParquetSchemaValidator(),
+		corruptPaths:          newCorruptParquetCache(defaultCorruptPathRetention),
+		pgxPassSlots:          newPgxPassSlots(cfg.MaxConnections),
+		publishedPassDeadline: DefaultPublishedPassDeadline,
 	}
 	for _, opt := range opts {
 		opt(e)
 	}
-	e.logNegativeGrace()
 	return e
 }
 
@@ -141,11 +132,9 @@ func NewDBFederatedQueryEngine(pgSource PostgresFederatedSource, duck DuckDBQuer
 // schema (schema IDs are always positive), so a request carrying one is a
 // caller invariant violation (an unguarded enumerator or a hand-inserted
 // registry row), not a state of the read surface. It is refused here, before
-// routing, because nothing below classifies it: the manifest source reports
-// it as a plain error (#536), resolveParquetPaths relabels unclassified source
-// failures as ErrFederatedReadFailed, and AllowPartialDegradedMode would then
-// absorb it into a Postgres-only answer — the caller's error served as a
-// hot-only page (PR #537 review). The Postgres leg already rejects the same
+// routing, because nothing below classifies it, and AllowPartialDegradedMode
+// would absorb a failed read of it into a Postgres-only answer — the caller's
+// error served as a hot-only page (PR #537 review). The Postgres leg already rejects the same
 // ID, so the guard makes the two routes agree rather than adding a rule.
 func validateFederatedQueryTarget(fq *model.FederatedAttributeQuery) error {
 	if fq == nil {
@@ -218,7 +207,7 @@ func (e *DBFederatedQueryEngine) Query(ctx context.Context, tables model.Storage
 //
 // DuckDBConfig.QueryTimeout is armed here, once, for the whole of it (#465
 // review). A request can take several passes — the page pass and its
-// publication-race retry (#720) — and the fallback, and a budget
+// retry after R_max — and the fallback, and a budget
 // armed per pass would have let a request spend several budgets in a row,
 // outliving the http.Server write deadline that
 // bootstrap.HTTPServerConfig.Validate sizes on exactly one. Under one shared

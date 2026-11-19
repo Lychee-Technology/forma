@@ -11,11 +11,14 @@
 // the dirty set in, so the generation it scans and the rows it treats as
 // flushed come from one snapshot.
 //
-// Nothing in Forma's writers or readers uses this package yet: it fixes the
-// statements and their semantics, and the #887 children move cdc-flush,
-// cdc-init, the compactor, the federated reader and manifest-reconcile onto
-// it. init-db creates the two tables from Statements (#895) and writes no
-// row; the writers and the reader move onto the record together in #896.
+// init-db creates the two tables from Statements (#895) and, in the
+// registration transaction, each schema's record (Initialize, Activate, and
+// at the V2 cutover InitializeAwaitingInit). cdc-flush and cdc-init publish
+// through internal/cdcv2, and the federated reader reads the record in its
+// pass snapshot through internal/federatedv2 (#896). The compactor (#890) and
+// garbage collection (#891) move onto it next; until then they stay on V1 and
+// must not run against a V2 schema. Only the owners
+// TestOnlyTheProtocolOwnersMoveAPublicationRecord names may move a record.
 //
 // Both tables keep plain rows: no JSONB, arrays, sequences, enums, CHECK
 // constraints or foreign keys, none of which this package relies on Aurora

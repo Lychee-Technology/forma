@@ -21,8 +21,7 @@ const HotLegTransportPgx HotLegTransport = "pgx"
 const retiredHotLegTransportAttach HotLegTransport = "attach"
 
 // ValidateHotLeg rejects a transport other than pgx or empty, and a negative
-// dirty-set cap. Like ValidateManifestRead, validation is independent of
-// Enabled.
+// dirty-set cap. Validation is independent of Enabled.
 func (d DuckDBConfig) ValidateHotLeg() error {
 	switch d.HotLegTransport {
 	case "", HotLegTransportPgx:

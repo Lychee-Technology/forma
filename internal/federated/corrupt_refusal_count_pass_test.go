@@ -59,7 +59,7 @@ func TestEmptyPageRecountConfirmedCorruptionIsNeverQuiet(t *testing.T) {
 			duck := countPassCorruptDuck(retryPass{empty: true})
 			pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
 			e := NewDBFederatedQueryEngine(pg, duck, nil,
-				hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}), withFakeHotLeg(nil))
+				hybridDuckConfig(), testMetadataCacheSchema7(t), withParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}), withFakeHotLeg(nil))
 
 			fq := coldTierQuery()
 			fq.Offset = 50

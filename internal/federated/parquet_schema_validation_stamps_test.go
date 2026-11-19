@@ -317,23 +317,3 @@ func TestValidateNilStampsUnchanged(t *testing.T) {
 		[]string{"s3://b/1/wrong.parquet"}, nil)
 	require.ErrorIs(t, err, ErrFederatedReadFailed, "violations stay loud when no stamp is supplied")
 }
-
-// The glob branch forwards stamps to its expanded matches: a stamped match
-// skips its probe while an unstamped sibling is probed as today (#256).
-func TestValidateGlobMatchesConsumeStamps(t *testing.T) {
-	exec := &scriptedDescribeExecutor{
-		globs: map[string][]string{"1/*.parquet": {"s3://b/1/stamped.parquet", "s3://b/1/plain.parquet"}},
-		cols:  map[string][][2]string{"plain.parquet": buildValidSystemCols()},
-	}
-	v := newParquetSchemaValidator()
-	stamps := map[string]map[string]string{
-		"s3://b/1/stamped.parquet": stampCols(append(buildValidSystemCols(), [2]string{"stamped_col", "INTEGER"})),
-	}
-
-	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/1/*.parquet"}, stamps)
-	require.NoError(t, err)
-	require.Len(t, exec.probes, 2, "the glob listing plus one DESCRIBE for the unstamped match only")
-	require.Contains(t, exec.probes[1], "plain.parquet")
-	require.True(t, complete)
-	require.Contains(t, union.types, "stamped_col")
-}

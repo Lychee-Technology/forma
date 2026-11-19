@@ -186,6 +186,7 @@ func TestNewEntityManagerWithConfig_Unit_ValidatorBuiltBeforeReadSurface(t *test
 
 	config := validatorTestConfig(t, registry)
 	config.DuckDB.Enabled = true
+	config.DuckDB.S3Bucket = "bkt"
 
 	_, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
 

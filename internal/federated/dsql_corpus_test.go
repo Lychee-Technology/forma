@@ -13,25 +13,17 @@ import (
 
 const (
 	labelChangeLogSnapshot = "internal/federated/change_log_snapshot.go:PostgresDirtyIDFetcher.ReadChangeLogSnapshot"
-	labelDirtySetQuery     = "internal/federated/change_log_snapshot.go:dirtySetQuery"
-	labelParquetHistory    = "internal/federated/change_log_reads.go:parquetHistoryQuery"
+	labelDirtySetQuery     = "internal/federated/change_log_reads.go:strictDirtySetQuery"
 )
 
 // TestDSQLCorpusChangeLogSnapshot exports the pgx hot leg's snapshot reads
 // (design.md §6.1): the BEGIN pgx writes for the REPEATABLE READ READ ONLY
-// options, the dirty set of each tier form, the parquet-history probe, and
-// the COMMIT.
+// options, the strict dirty set, and the COMMIT.
 func TestDSQLCorpusChangeLogSnapshot(t *testing.T) {
 	begin, commit := changeLogSnapshotBoundary(t)
-	for name, req := range map[string]ChangeLogSnapshotRequest{
-		"internal-federated-change-log-snapshot-hot": {Tables: snapshotTables, SchemaID: 100, Form: DirtySetHot,
-			GraceCutoffMs: 1_700_000_000_000, ParquetHistory: true},
-		"internal-federated-change-log-snapshot-hot-excluded": {Tables: snapshotTables, SchemaID: 100, Form: DirtySetHotExcluded},
-	} {
-		body := changeLogSnapshotReads(t, req)
-		statements := append(append([]corpus.Statement{begin}, body...), commit)
-		corpus.Export(t, corpus.Unit{Name: name, Engine: forma.EngineAuroraDSQL, Statements: statements})
-	}
+	body := changeLogSnapshotReads(t, ChangeLogSnapshotRequest{Tables: snapshotTables, SchemaID: 100})
+	statements := append(append([]corpus.Statement{begin}, body...), commit)
+	corpus.Export(t, corpus.Unit{Name: "internal-federated-change-log-snapshot", Engine: forma.EngineAuroraDSQL, Statements: statements})
 }
 
 // changeLogSnapshotBoundary records the BEGIN and COMMIT a snapshot read
@@ -62,13 +54,7 @@ func changeLogSnapshotReads(t *testing.T, req ChangeLogSnapshotRequest) []corpus
 	}
 	t.Cleanup(func() { _ = mock.Close(ctx) })
 	mock.ExpectBeginTx(pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	labels := []string{labelDirtySetQuery}
-	_, args := dirtySetQuery(req)
-	mock.ExpectQuery("").WithArgs(anyArgs(len(args))...).WillReturnRows(rowIDRows(uuid.MustParse("00000000-0000-0000-0000-000000000001")))
-	if req.ParquetHistory {
-		labels = append(labels, labelParquetHistory)
-		mock.ExpectQuery("").WithArgs(pgxmock.AnyArg()).WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
-	}
+	mock.ExpectQuery("").WithArgs(pgxmock.AnyArg()).WillReturnRows(rowIDRows(uuid.MustParse("00000000-0000-0000-0000-000000000001")))
 	tx, err := beginReadSnapshot(ctx, mock)
 	if err != nil {
 		t.Fatalf("beginReadSnapshot: %v", err)
@@ -79,13 +65,5 @@ func changeLogSnapshotReads(t *testing.T, req ChangeLogSnapshotRequest) []corpus
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("the snapshot reads sent other statements than recorded: %v", err)
 	}
-	return rec.Take(t, labels...)
-}
-
-func anyArgs(n int) []any {
-	out := make([]any, n)
-	for i := range out {
-		out[i] = pgxmock.AnyArg()
-	}
-	return out
+	return rec.Take(t, labelDirtySetQuery)
 }

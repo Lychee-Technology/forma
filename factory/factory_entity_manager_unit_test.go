@@ -35,6 +35,10 @@ func buildUnitEntityManagerDeps(cache *schemameta.MetadataCache) entityManagerDe
 	deps.newMetadataLoader = func(pool *pgxpool.Pool, schemaTable, schemaDir string) metadataLoader {
 		return &mockMetadataLoader{cache: cache, err: nil}
 	}
+	// A unit test that enables DuckDB pins no epoch and builds no S3 client.
+	deps.newPublicationReader = func(context.Context, publicationReaderSpec) (federated.PublicationReader, error) {
+		return fakeReader{}, nil
+	}
 	return deps
 }
 
@@ -280,6 +284,7 @@ func TestNewEntityManagerWithConfigContext_Unit_PropagatesContextToDuckDBFactory
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 	config.DuckDB.Enabled = true
+	config.DuckDB.S3Bucket = "bkt"
 
 	em, err := newEntityManagerWithConfigContext(ctx, config, nil, deps)
 
@@ -300,9 +305,9 @@ func TestNewEntityManagerWithConfigContext_Unit_DuckDBInitFailureFailsStartup(t 
 	deps.newDuckDBClient = func(context.Context, forma.DuckDBConfig) (*federated.DuckDBClient, error) {
 		return nil, initErr
 	}
-	parquetSourceBuilt := false
-	deps.newParquetSource = func(context.Context, forma.DuckDBConfig) (federated.ParquetSource, error) {
-		parquetSourceBuilt = true
+	readerBuilt := false
+	deps.newPublicationReader = func(context.Context, publicationReaderSpec) (federated.PublicationReader, error) {
+		readerBuilt = true
 		return nil, nil
 	}
 
@@ -314,11 +319,12 @@ func TestNewEntityManagerWithConfigContext_Unit_DuckDBInitFailureFailsStartup(t 
 	}
 	config.Entity.SchemaDirectory = t.TempDir()
 	config.DuckDB.Enabled = true
+	config.DuckDB.S3Bucket = "bkt"
 
 	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)
 
 	assert.Nil(t, em)
 	assert.ErrorIs(t, err, initErr)
 	assert.ErrorContains(t, err, "duckdb")
-	assert.False(t, parquetSourceBuilt, "startup must stop at the duckdb failure")
+	assert.False(t, readerBuilt, "startup must stop at the duckdb failure")
 }

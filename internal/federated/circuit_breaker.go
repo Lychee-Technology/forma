@@ -57,7 +57,7 @@ type CircuitBreaker struct {
 	// reserving the probe, RecordSuccess — and never repeats a state, so
 	// extending an open period, reclaiming a lapsed probe slot and
 	// ReleaseProbe are not transitions. A pass that releases the probe and
-	// the #720 publication-race retry that re-reserves it run in one
+	// the R_max retry that re-reserves it run in one
 	// request; that must not report half-open twice.
 	reported BreakerState
 }

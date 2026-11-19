@@ -2,6 +2,8 @@
 
 This plan builds the design in [design.md §6.1](design.md). The federated pass stops reading PostgreSQL through DuckDB. It reads the dirty set and the hot keys over pgx in one `REPEATABLE READ READ ONLY` snapshot, and DuckDB reads only the parquet tiers. Go merges the two results. Once this lands and #785 is in place, no Forma deployment needs `postgres_scanner`. #631 is then superseded, and #691 and #754 have nothing left to assess.
 
+*Superseded in part (#896).* The pass's parquet source is now the published generation its snapshot reads (`docs/publication-protocol-v2.md`, "Readers"; design.md §4.3.1, §6.1). What this plan records about the V1 path set no longer describes the engine: the frozen inventory of the level-3 glob, the flush-grace cutoff and `FlushVisibilityGraceMs`, the hot form's widened dirty set (every pass reads the strict set), the #720 empty-set probe, the engine-level path hint, `ErrParquetSetInconsistent` and `ErrNoParquetPaths` were all deleted with that path set.
+
 ## Before the first change
 
 Three inputs gate the work. The first two gate the switch of the default path, not the code.

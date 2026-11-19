@@ -2,7 +2,6 @@ package compaction
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -13,13 +12,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// TestManifestPathContract_ConsumersAgreeOnKey pins the #516 contract: a
-// manifest entry's relative path IS the bucket-relative key, verbatim, for
-// every consumer. One leading-slash entry (what cdc.Build*Path emits under an
-// empty prefix, and what the flush then stores both in S3 and in the
-// manifest) must resolve to the same key through the federated read path
-// (QuerySource.Paths), the missing-object probe (QuerySource.MissingIn),
-// manifest-reconcile (cdc.NormalizeObjectKey, which reconcile.normalizeKey
+// TestManifestPathContract_ConsumersAgreeOnKey pins the #516 contract for the
+// V1 consumers that remain until #890 and #891: a manifest entry's relative
+// path IS the bucket-relative key, verbatim. One leading-slash entry (what
+// cdc.Build*Path emits under an empty prefix) must resolve to the same key
+// through manifest-reconcile (cdc.NormalizeObjectKey, which reconcile.normalizeKey
 // delegates to) and compaction (objectURI / bucketRelativeKey). A plain
 // relative key and two own-bucket absolute URIs ride along as controls.
 func TestManifestPathContract_ConsumersAgreeOnKey(t *testing.T) {
@@ -37,36 +34,9 @@ func TestManifestPathContract_ConsumersAgreeOnKey(t *testing.T) {
 		{"s3://bkt//", "/", "s3://bkt//"},
 	}
 
-	files := make([]manifest.FileEntry, 0, len(cases))
-	for _, tc := range cases {
-		files = append(files, manifest.FileEntry{Tier: "delta", Path: tc.path})
-	}
-	payload, err := json.Marshal(&manifest.Manifest{SchemaID: 1, Version: 1, Files: files})
-	require.NoError(t, err)
-
-	var probed []string
-	src := &manifest.QuerySource{
-		Store:    &memManifestStore{data: map[string][]byte{"manifest/1.json": payload}},
-		Resolver: manifest.PathResolver{PathTemplate: "manifest/{{.SchemaID}}.json"},
-		Bucket:   "bkt",
-		Exists: func(_ context.Context, key string) (bool, error) {
-			probed = append(probed, key)
-			return true, nil
-		},
-	}
-	uris, _, err := src.Paths(context.Background(), 1)
-	require.NoError(t, err)
-	_, err = src.MissingIn(context.Background(), uris)
-	require.NoError(t, err)
-	require.Len(t, uris, len(cases))
-	require.Len(t, probed, len(cases))
-
 	c, _ := newVerifyFixture(zap.NewNop())
-	for i, tc := range cases {
+	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
-			require.Equal(t, tc.wantURI, uris[i], "read path (QuerySource.Paths)")
-			require.Equal(t, tc.wantKey, probed[i], "missing-object probe (QuerySource.MissingIn)")
-
 			key, ok := cdc.NormalizeObjectKey("bkt", tc.path)
 			require.True(t, ok)
 			require.Equal(t, tc.wantKey, key, "manifest-reconcile (cdc.NormalizeObjectKey)")

@@ -3,7 +3,6 @@ package internal
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 	"testing"
 
@@ -18,7 +17,7 @@ import (
 
 // Real-PostgreSQL tests of the pgx hot leg's reads (pgx-hot-leg-plan.md
 // step 4): the hot-keys query filters as the PostgreSQL route does, reads
-// only the dirty window, derives each key as the export will, and the page
+// only the strict dirty set, derives each key as the export will, and the page
 // read answers what Get answers, all in one snapshot.
 
 // logChange appends a change_log entry for rowID.
@@ -41,22 +40,21 @@ func (f *dslFixture) inSnapshot(t *testing.T, read func(tx pgx.Tx)) {
 	require.NoError(t, tx.Commit(f.ctx))
 }
 
-func (f *dslFixture) queryHotKeys(t *testing.T, tx pgx.Tx, cond forma.Condition, cutoff int64, columns ...string) []model.HotKey {
+func (f *dslFixture) queryHotKeys(t *testing.T, tx pgx.Tx, cond forma.Condition, columns ...string) []model.HotKey {
 	t.Helper()
 	keys, err := f.repo.QueryHotKeys(f.ctx, tx, model.HotKeysQuery{
-		Tables: f.tables, SchemaID: dslSchemaID, Condition: cond, GraceCutoffMs: cutoff, SortColumns: columns,
+		Tables: f.tables, SchemaID: dslSchemaID, Condition: cond, SortColumns: columns,
 	})
 	require.NoError(t, err, "%+v", cond)
 	return keys
 }
 
-// hotKeyIDs answers the row IDs of the hot keys cond selects at cutoff,
-// sorted.
-func (f *dslFixture) hotKeyIDs(t *testing.T, cond forma.Condition, cutoff int64) []uuid.UUID {
+// hotKeyIDs answers the row IDs of the hot keys cond selects, sorted.
+func (f *dslFixture) hotKeyIDs(t *testing.T, cond forma.Condition) []uuid.UUID {
 	t.Helper()
 	var ids []uuid.UUID
 	f.inSnapshot(t, func(tx pgx.Tx) {
-		for _, k := range f.queryHotKeys(t, tx, cond, cutoff) {
+		for _, k := range f.queryHotKeys(t, tx, cond) {
 			ids = append(ids, k.RowID)
 		}
 	})
@@ -128,49 +126,39 @@ func TestHotKeysQueryRangesMatchThePostgresRoute(t *testing.T) {
 	}
 }
 
-// The hot keys are the live entity_main rows with an entry in the dirty
-// window, flushed_at = 0 OR flushed_at >= cutoff, and ver_ts is the newest
-// entry's changed_at there.
-func TestHotKeysQueryReadsTheDirtyWindow(t *testing.T) {
+// The hot keys are the live entity_main rows with an unflushed entry, the
+// strict dirty set a pass stages, and ver_ts is the newest unflushed entry's
+// changed_at.
+func TestHotKeysQueryReadsTheStrictDirtySet(t *testing.T) {
 	f := newDSLFixture(t, true)
 	unflushed := f.seed(t, map[string]any{"text_01": "x"})
 	f.logChange(t, unflushed, 5, 3)
 	f.logChange(t, unflushed, 0, 10)
 	marked := f.seed(t, map[string]any{"text_01": "x"})
 	f.logChange(t, marked, 100, 7)
-	clean := f.seed(t, map[string]any{"text_01": "y"})
-	f.logChange(t, clean, 50, 4)
+	other := f.seed(t, map[string]any{"text_01": "y"})
+	f.logChange(t, other, 0, 4)
 	f.seed(t, map[string]any{"text_01": "x"}) // never logged
 	deleted := uuid.New()                     // a tombstone: no entity_main row
 	f.logChange(t, deleted, 0, 12)
-
-	require.Equal(t, sortedIDs(unflushed, marked), f.hotKeyIDs(t, nil, 100), "a mark at the cutoff is in the window")
-	require.Equal(t, sortedIDs(unflushed), f.hotKeyIDs(t, nil, 101))
-	require.Equal(t, sortedIDs(unflushed), f.hotKeyIDs(t, nil, math.MaxInt64), "the strict set")
-	require.Equal(t, sortedIDs(unflushed, marked, clean), f.hotKeyIDs(t, nil, 0))
-	require.Equal(t, sortedIDs(unflushed, marked), f.hotKeyIDs(t, kv("code", "equals:x"), 0))
-	require.Equal(t, sortedIDs(clean), f.hotKeyIDs(t, kv("code", "equals:y"), 0))
+	require.Equal(t, sortedIDs(unflushed, other), f.hotKeyIDs(t, nil), "a flushed entry is not in the dirty set")
+	require.Equal(t, sortedIDs(unflushed), f.hotKeyIDs(t, kv("code", "equals:x")))
+	require.Equal(t, sortedIDs(other), f.hotKeyIDs(t, kv("code", "equals:y")))
 
 	f.inSnapshot(t, func(tx pgx.Tx) {
 		verTS := map[uuid.UUID]int64{}
-		for _, k := range f.queryHotKeys(t, tx, nil, 0, "ver_ts") {
+		for _, k := range f.queryHotKeys(t, tx, nil, "ver_ts") {
 			verTS[k.RowID] = k.VerTS
 			require.Equal(t, []any{k.VerTS}, k.Key)
 		}
-		require.Equal(t, map[uuid.UUID]int64{unflushed: 10, marked: 7, clean: 4}, verTS)
-		verTS = map[uuid.UUID]int64{}
-		for _, k := range f.queryHotKeys(t, tx, nil, 60, "ver_ts") {
-			verTS[k.RowID] = k.VerTS
-		}
-		require.Equal(t, map[uuid.UUID]int64{unflushed: 10, marked: 7}, verTS)
+		require.Equal(t, map[uuid.UUID]int64{unflushed: 10, other: 4}, verTS, "ver_ts is the newest unflushed entry's")
 	})
 }
 
-// A row whose newest entry in the window is a tombstone is not a hot key,
-// even where entity_main still holds it, as the attach path's dedup and
-// visibility filter drop it (#856). A tie on changed_at goes to the delete.
-// A tombstone older than the row's newest entry, or outside the window,
-// leaves the row hot.
+// A row whose unflushed entry is a tombstone is not a hot key, even where
+// entity_main still holds it, as the attach path's dedup and visibility
+// filter drop it (#856). A flushed tombstone, older than the row's unflushed
+// entry or newer, leaves the row hot: it is outside the dirty set.
 func TestHotKeysQueryDropsARowWhoseNewestEntryIsATombstone(t *testing.T) {
 	f := newDSLFixture(t, true)
 	logTombstone := func(rowID uuid.UUID, flushedAt, changedAt int64) {
@@ -183,9 +171,6 @@ func TestHotKeysQueryDropsARowWhoseNewestEntryIsATombstone(t *testing.T) {
 	deletedLast := f.seed(t, map[string]any{"text_01": "x"})
 	f.logChange(t, deletedLast, 5, 3)
 	logTombstone(deletedLast, 0, 10)
-	tied := f.seed(t, map[string]any{"text_01": "x"})
-	f.logChange(t, tied, 0, 10)
-	logTombstone(tied, 50, 10)
 	recreated := f.seed(t, map[string]any{"text_01": "x"})
 	logTombstone(recreated, 40, 5)
 	f.logChange(t, recreated, 0, 9)
@@ -193,9 +178,8 @@ func TestHotKeysQueryDropsARowWhoseNewestEntryIsATombstone(t *testing.T) {
 	f.logChange(t, flushedTombstone, 0, 7)
 	logTombstone(flushedTombstone, 20, 8)
 
-	require.Equal(t, sortedIDs(recreated, flushedTombstone), f.hotKeyIDs(t, nil, 30),
-		"the tombstone marked below the cutoff is outside the window")
-	require.Equal(t, sortedIDs(recreated), f.hotKeyIDs(t, nil, 0))
+	require.Equal(t, sortedIDs(recreated, flushedTombstone), f.hotKeyIDs(t, nil),
+		"a flushed tombstone is outside the dirty set")
 }
 
 // Each sort key derives from the stored value as the export will hold it:
@@ -219,7 +203,7 @@ func TestHotKeysQueryDerivesSortKeys(t *testing.T) {
 			columns := []string{"code", "rank", "flag", "flag_text", "due_iso", "owner", "NOTE", "weight", "big", "soft", "day", "ref", "Created_At", "deleted_ts", "ver_ts", "row_id"}
 			keys := map[uuid.UUID][]any{}
 			f.inSnapshot(t, func(tx pgx.Tx) {
-				for _, k := range f.queryHotKeys(t, tx, nil, 0, columns...) {
+				for _, k := range f.queryHotKeys(t, tx, nil, columns...) {
 					keys[k.RowID] = k.Key
 				}
 			})
@@ -285,14 +269,14 @@ func TestReadHotRowsReadsThePassSnapshot(t *testing.T) {
 	}
 
 	f.inSnapshot(t, func(tx pgx.Tx) {
-		require.Len(t, f.queryHotKeys(t, tx, nil, 0), 2)
+		require.Len(t, f.queryHotKeys(t, tx, nil), 2)
 
 		_, err := f.pool.Exec(f.ctx, fmt.Sprintf("UPDATE %s SET text_01 = 'changed' WHERE ltbase_row_id = $1", sanitizeIdentifier(f.tables.EntityMain)), a)
 		require.NoError(t, err)
 		late := f.seed(t, map[string]any{"text_01": "late"})
 		f.logChange(t, late, 0, 2)
 
-		require.Len(t, f.queryHotKeys(t, tx, nil, 0), 2, "a row created after the snapshot is not a hot key")
+		require.Len(t, f.queryHotKeys(t, tx, nil), 2, "a row created after the snapshot is not a hot key")
 		records, err := f.repo.ReadHotRows(f.ctx, tx, f.tables, dslSchemaID, []uuid.UUID{b, a})
 		require.NoError(t, err)
 		require.Equal(t, []*model.PersistentRecord{want[b], want[a]}, records, "Get's reading, in the order asked, at the snapshot")

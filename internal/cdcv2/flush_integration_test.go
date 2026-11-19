@@ -173,7 +173,7 @@ func (f *fixture) recreate(t *testing.T) publication.Record {
 	_, err = f.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE ltbase_schema_id = $1", f.entityMain), schemaID)
 	require.NoError(t, err)
 	f.inTx(t, func(tx *sql.Tx) error {
-		_, err := publication.Activate(context.Background(), publication.SQLTx(tx), f.tables, cur, []string{f.changeLog})
+		_, err := publication.Activate(context.Background(), publication.SQLTx(tx), f.tables, cur, []publication.Residue{{Table: f.changeLog}})
 		return err
 	})
 	return f.record(t)

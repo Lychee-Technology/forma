@@ -28,6 +28,7 @@ func TestNewEntityManagerWithConfig_CloseReleasesDuckDBClient(t *testing.T) {
 	}
 	config := newUnitEntityManagerConfig(t)
 	config.DuckDB.Enabled = true
+	config.DuckDB.S3Bucket = "bkt"
 	config.DuckDB.MaxConnections = 1
 
 	em, err := newEntityManagerWithConfigContext(context.Background(), config, nil, deps)

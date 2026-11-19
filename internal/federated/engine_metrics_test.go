@@ -3,6 +3,7 @@ package federated
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,7 +78,7 @@ func buildMetricsTestEngine(t *testing.T, leg *fakeHotLeg, duck DuckDBQueryExecu
 	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil,
 		hybridDuckConfig(), coldPlanCacheMetadata(t), append([]EngineOption{
 			WithPlanCache(queryplan.NewCache(64)),
-			WithParquetSource(&fakeParquetSource{paths: []string{coldPlanCachePath}}),
+			withParquetSource(&fakeParquetSource{paths: []string{coldPlanCachePath}}),
 			withFakeHotLeg(leg),
 		}, opts...)...)
 	e.schemaValidator.markValidated(coldPlanCachePath, coldPlanCacheFooter(false), nil)
@@ -127,7 +128,7 @@ func TestEngineEmitsQueryMetricsWithoutAnExecutionPlan(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rec := &metricRecorder{}
 			e, duck := newMetricsTestEngine(t, WithMetricEmitter(rec))
-			runColdPlanCacheQueryWith(t, e, duck, "", opts)
+			runColdPlanCacheQueryWith(t, e, duck, opts)
 
 			require.Equal(t, everyFedQuerySeries, rec.names())
 			requireCataloguedEmissions(t, rec)
@@ -230,7 +231,7 @@ func TestEngineLatencyStagesAreDisjoint(t *testing.T) {
 
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true,
 		ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
-	runColdPlanCacheQueryWith(t, e, duck, "", opts)
+	runColdPlanCacheQueryWith(t, e, duck, opts)
 
 	require.Equal(t, 40.0, rec.value(t, "fed_query_latency_histogram", "stage=execution"))
 	require.Equal(t, 25.0, rec.value(t, "fed_query_latency_histogram", "stage=streaming"))
@@ -263,7 +264,7 @@ func TestEnginePgRowCountIsTheDirtySetSize(t *testing.T) {
 
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true,
 		ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
-	runColdPlanCacheQueryWith(t, e, duck, "", opts)
+	runColdPlanCacheQueryWith(t, e, duck, opts)
 
 	require.Equal(t, 3.0, rec.value(t, "fed_query_row_count", "source=pg"))
 	require.Equal(t, 1.0, rec.value(t, "fed_query_row_count", "source=duckdb"))
@@ -282,7 +283,7 @@ func newRetryMetricsEngine(t *testing.T, duck DuckDBQueryExecutor, paths []strin
 	t.Helper()
 	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{},
 		duck, nil,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: paths}), WithMetricEmitter(rec),
+		hybridDuckConfig(), testMetadataCacheSchema7(t), withParquetSource(&fakeParquetSource{paths: paths}), WithMetricEmitter(rec),
 		withFakeHotLeg(nil))
 }
 
@@ -290,29 +291,45 @@ func retryTables() model.StorageTables {
 	return model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
 }
 
+// stallFirstScan blocks the first main scan until its context ends, and
+// answers every later statement as the fake does.
+type stallFirstScan struct {
+	*fakeDuckDBExecutor
+	stalled bool
+}
+
+func (d *stallFirstScan) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
+	if _, drain := answerParquetDrainSQL(sql); !d.stalled && !drain && !strings.HasPrefix(sql, "DESCRIBE ") {
+		d.stalled = true
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return d.fakeDuckDBExecutor.Query(ctx, sql, args...)
+}
+
 // TestEngineRetriedQueryEmitsOneCompleteMetricSet pins the PR #595 review's
 // medium finding: the fed_query_* series describe successful passes, so a
 // query whose first pass is discarded and answered by the retry produces
-// exactly one sample per series, all from the retry. The retry is the #720
-// one: its first pass finds no parquet and answers from the hot leg while a
-// publication races it. Before the fix the dirty-set count and the
-// translation latency were emitted where they were measured, ahead of
-// DuckDB, so the failed pass contributed a second pg and translation sample
-// while the post-scan series were emitted once.
+// exactly one sample per series, all from the retry. The retry is the R_max
+// one: the first pass's scan runs past the pass deadline. Before the fix the
+// dirty-set count and the translation latency were emitted where they were
+// measured, ahead of DuckDB, so the failed pass contributed a second pg and
+// translation sample while the post-scan series were emitted once.
 func TestEngineRetriedQueryEmitsOneCompleteMetricSet(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
 
 	rec := &metricRecorder{}
-	duck := &fakeDuckDBExecutor{globFiles: []string{}, rows: &rowPerScan{singleDuckDBRow{rowID: uuid.New()}}}
+	duck := &stallFirstScan{fakeDuckDBExecutor: &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}}
 	leg := &fakeHotLeg{dirty: []uuid.UUID{uuid.New(), uuid.New()}}
-	leg.afterChangeLog = func() { duck.globFiles = []string{"s3://b/7/delta.parquet"} }
-	e := newEmptyScanTestEngine(t, duck, leg, []string{fallbackGlob}, WithMetricEmitter(rec))
+	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil, hybridDuckConfig(), testMetadataCacheSchema7(t),
+		WithPublicationReader(&fakeParquetSource{paths: []string{retryKeptPathA}}, 50*time.Millisecond),
+		WithMetricEmitter(rec), withFakeHotLeg(leg))
 
 	_, err := e.Query(context.Background(), emptyScanTables, allTierQuery(), nil)
 	require.NoError(t, err)
 	require.Equal(t, 2, leg.begins, "the seam must have run the discarded pass and the retry")
-	require.Equal(t, 1, duck.calls, "the discarded pass found no parquet and ran no statement")
+	require.Equal(t, 1, duck.calls, "the discarded pass's scan never reached the fake")
 
 	require.Equal(t, everyFedQuerySeries, rec.names(),
 		"one logical query answered by the retry is one sample per series")

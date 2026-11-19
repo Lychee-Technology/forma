@@ -16,9 +16,8 @@ import (
 // at once, the number of DuckDB connections that can serve them. A pass
 // waits for its slot before it opens the snapshot, so the passes in flight
 // hold at most that many PostgreSQL connections, and the wait costs nothing
-// the DuckDB pool would not have made the pass wait anyway. Waiting only
-// widens the pass's flush-grace window, whose cutoff was stamped at path
-// resolution, before the wait: rows marked meanwhile stay in the hot leg.
+// the DuckDB pool would not have made the pass wait anyway. Nothing of the
+// pass is resolved before its snapshot, so a wait changes no answer.
 
 // newPgxPassSlots sizes the bound: one slot per DuckDB connection, and at
 // least one, as the DuckDB client opens at least one connection.

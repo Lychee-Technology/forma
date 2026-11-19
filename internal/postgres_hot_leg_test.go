@@ -25,16 +25,15 @@ func hotLegTestRepo(t *testing.T) *DBPersistentRecordRepository {
 
 var hotLegTestTables = model.StorageTables{EntityMain: "entity_main", EAVData: "eav_data", ChangeLog: "change_log"}
 
-// The hot-keys query reads the dirty window as two index ranges, joins the
+// The hot-keys query reads the strict dirty set as one index range, joins the
 // live entity_main rows, filters with the PostgreSQL route's main-anchored
-// rendering after its own two parameters, and projects each sort column's
+// rendering after its own parameter, and projects each sort column's
 // stored value where its key derives from it.
 func TestBuildHotKeysStatement(t *testing.T) {
 	r := hotLegTestRepo(t)
 	stmt, err := r.buildHotKeysStatement(model.HotKeysQuery{
-		Tables:        hotLegTestTables,
-		SchemaID:      7,
-		GraceCutoffMs: 1234,
+		Tables:   hotLegTestTables,
+		SchemaID: 7,
 		Condition: &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: []forma.Condition{
 			&forma.KvCondition{Attr: "code", Value: "gt:B"},
 			&forma.KvCondition{Attr: "note", Value: "equals:x"},
@@ -44,10 +43,9 @@ func TestBuildHotKeysStatement(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, want := range []string{
-		`SELECT row_id, changed_at FROM "change_log" WHERE schema_id = $1 AND flushed_at = 0`,
-		`SELECT row_id, changed_at FROM "change_log" WHERE schema_id = $1 AND flushed_at >= $2`,
+		"FROM \"change_log\"\n    WHERE schema_id = $1 AND flushed_at = 0",
 		`JOIN "entity_main" m ON m.ltbase_schema_id = $1 AND m.ltbase_row_id = w.row_id`,
-		`m."text_01" COLLATE "C" > $3`,
+		`m."text_01" COLLATE "C" > $2`,
 		`m.ltbase_schema_id`,
 		`(SELECT ARRAY_AGG(e.value_numeric) FROM "eav_data" e WHERE e.schema_id = m.ltbase_schema_id AND e.row_id = m.ltbase_row_id AND e.attr_id = 3)`,
 		`(SELECT ARRAY_AGG(e.value_text) FROM "eav_data" e WHERE e.schema_id = m.ltbase_schema_id AND e.row_id = m.ltbase_row_id AND e.attr_id = 2)`,
@@ -57,7 +55,8 @@ func TestBuildHotKeysStatement(t *testing.T) {
 	}
 	require.NotContains(t, stmt.sql, "ORDER BY", "Go orders the hot keys")
 	require.NotContains(t, stmt.sql, "LIMIT")
-	require.Equal(t, []any{int16(7), int64(1234), "B", int16(2), "x"}, stmt.args)
+	require.NotContains(t, stmt.sql, "flushed_at >=", "nothing widens the dirty set")
+	require.Equal(t, []any{int16(7), "B", int16(2), "x"}, stmt.args)
 
 	indexes := make([]int, len(stmt.columns))
 	for i, c := range stmt.columns {
@@ -74,7 +73,7 @@ func TestBuildHotKeysStatementWithoutCondition(t *testing.T) {
 	stmt, err := hotLegTestRepo(t).buildHotKeysStatement(model.HotKeysQuery{Tables: hotLegTestTables, SchemaID: 7})
 	require.NoError(t, err)
 	require.True(t, strings.HasSuffix(stmt.sql, "\nAND (1=1)"), stmt.sql)
-	require.Equal(t, []any{int16(7), int64(0)}, stmt.args)
+	require.Equal(t, []any{int16(7)}, stmt.args)
 	require.Empty(t, stmt.columns)
 }
 

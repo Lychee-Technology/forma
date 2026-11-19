@@ -21,7 +21,12 @@ type CDCConfig struct {
 	// Thresholds
 	MinRecords int   // flush when unflushed rows >= MinRecords
 	MaxAgeMs   int64 // flush when oldest unflushed row age >= MaxAgeMs
-	BatchSize  int   // maximum rows per snapshot
+	// BatchSize is the most unflushed entries one flush selects and
+	// publishes. On PostgreSQL the V2 writer marks the whole batch in one
+	// statement, so it is at most cdcv2.MaxMarkEntries (ValidateFlush); on
+	// Aurora DSQL the batch publishes in generations of at most
+	// cdcv2.DSQLGenerationLimit entries.
+	BatchSize int
 
 	// Postgres connection
 	PGHost     string
@@ -32,9 +37,10 @@ type CDCConfig struct {
 	PGUseIAM   bool
 	PGSSLMode  string
 	// Engine is the database the PG settings reach (#633). It decides the
-	// per-schema lock (NewSchemaLocker) and how the flush mark is sent, so
-	// every flusher, cdc-init and manifest-reconcile of one database must
-	// name the same engine. Empty means PostgreSQL.
+	// per-schema lock (NewSchemaLocker), how the V2 writer marks entries and
+	// how many one publication marks, so every flusher, cdc-init and
+	// manifest-reconcile of one database must name the same engine. Empty
+	// means PostgreSQL.
 	Engine forma.DatabaseEngine
 
 	// DuckDB export options
@@ -47,13 +53,20 @@ type CDCConfig struct {
 	EstimatedRowBytes       int           // rough row size estimate for batch sizing
 	MaxBatchBytes           int64         // optional cap to limit batch size by bytes
 
-	// Init-specific options (cdc-init base file export)
+	// Init-specific options (cdc-init base file export). Each base file is
+	// one export snapshot of the V2 writer (cdcv2.Config.InitBatchSize).
 	TargetFileSizeMB int // target parquet file size in MB (0 = use BatchSize)
 	MaxBatchSize     int // maximum rows per batch to cap memory usage
 
-	// S3
+	// S3. S3Prefix is the data prefix of the V2 object layout
+	// (manifestv2.Layout): cdc-flush and cdc-init stage their parquet objects
+	// under {S3Prefix}/{schema_id}/e{epoch}/{base|delta}/ and their manifests
+	// under {S3Prefix}/{schema_id}/_manifests/, so every writer of one
+	// deployment must name the same prefix. A flush's generation lists the
+	// files of the init before it, and a manifest that lists a key under
+	// another prefix is refused before it is written.
 	S3Bucket          string
-	S3Prefix          string // prefix inside bucket for delta files
+	S3Prefix          string
 	S3Endpoint        string
 	S3Region          string
 	S3UseSSL          bool
@@ -62,20 +75,6 @@ type CDCConfig struct {
 	S3SecretAccessKey string // AWS secret access key; overrides environment variable AWS_SECRET_ACCESS_KEY
 	S3SessionToken    string // AWS session token for temporary credentials (STS/roles); effective only with same-source S3AccessKeyID/S3SecretAccessKey, see ResolveStaticS3Credentials (#329)
 
-	// Manifest (optional - when set, flush updates manifest after export)
-	ManifestPrefix   string // root prefix for manifests in S3
-	ManifestTemplate string // path template, e.g. "manifest/{{.SchemaID}}.json"
-
-	// GlobOnly declares that no reader of this deployment resolves files
-	// from a manifest: every federated read globs the S3 prefix. A flush
-	// with an empty ManifestTemplate requires it (#474). Without a template
-	// the flush cannot list its delta anywhere, and a run that names no
-	// template cannot know where a manifest-driven reader looks (a custom
-	// template's manifest is invisible to it), so the declaration is the
-	// only thing that makes marking a batch flushed without an append safe.
-	// It is rejected together with a ManifestTemplate.
-	GlobOnly bool
-
 	// BeforeExportHook, when non-nil, runs per batch after dirty-ID selection
 	// (the snapshot is already captured) and before the DuckDB export. Test
 	// seam for driving mutations inside the selection->export race window
@@ -83,6 +82,14 @@ type CDCConfig struct {
 	// any side effect. The init backfill fires the same hook per batch
 	// (#462); it has no snapshot clock, so there the hook receives 0.
 	BeforeExportHook func(ctx context.Context, schemaID int16, batchIDs []uuid.UUID, snapshot int64) error
+
+	// PublishFailpoint, when non-nil, is called at every boundary of a
+	// publication the V2 writer passes (internal/cdcv2's Point names, such as
+	// "stage-objects", "begin", "publish", "marks", "commit",
+	// "commit-answer", "handoff" and "fence"). An error it answers fails the
+	// step there, as a crash or a fault would. Test seam for the wired
+	// cdc-flush and cdc-init paths; always nil in production.
+	PublishFailpoint func(ctx context.Context, point string) error
 }
 
 // CompactionConfig controls Base/Delta maintenance.

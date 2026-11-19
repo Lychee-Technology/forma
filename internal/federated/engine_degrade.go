@@ -101,42 +101,32 @@ func (e *DBFederatedQueryEngine) logDegradedFallback(fq *model.FederatedAttribut
 
 // degradableFederatedError reports whether a DuckDB-path failure may be
 // absorbed by the Postgres-only fallback under AllowPartialDegradedMode.
-// Six classes must surface instead: a missing schema metadata cache is a
-// configuration/data-contract error whose masking #151 made loud; manifest
-// inconsistency (#187) exists to make cold-tier loss loud, and a fallback
-// would return exactly the silent-loss answer it prevents; an empty parquet
-// path set (#299) is the same bargain one level earlier — the read surface is
-// misconfigured for a query that asked for warm/cold, so a Postgres-only
-// answer would be silently short precisely where the cold tier was wanted; a
-// manifest stamped for a different schema means the read surface is
-// misaddressed, and a partial answer is the wrong response to a state that can
-// serve another schema's rows under this identity; invalid caller input (e.g.
-// an unrenderable path template) is the caller's error to see, not
-// infrastructure to degrade around; and a live object whose stored type the
-// declaration cannot read losslessly (#732) is a deterministic data-contract
-// refusal that a fallback would hide on every query. A seventh, an expired
-// deadline (#465), is the budget doing its job: the pass was
+// These classes must surface instead: a missing schema metadata cache is a
+// configuration/data-contract error whose masking #151 made loud; a published
+// read whose publication state is inconsistent (ErrPublicationInconsistent:
+// no record, a fail-closed state, a missing or invalid manifest, a lost
+// object) exists to make parquet loss loud (#759), and a fallback would return
+// exactly the silent-loss answer it prevents; invalid caller input is the
+// caller's error to see, not infrastructure to degrade around; and a live
+// object whose stored type the declaration cannot read losslessly (#732) is a
+// deterministic data-contract refusal that a fallback would hide on every
+// query. An expired deadline (#465) is the budget doing its job: the pass was
 // cancelled because it ran too long, and answering from Postgres afterwards
 // would spend more time past a limit that exists to bound latency; a DuckDB
-// that keeps timing out opens the breaker, and *that* rejection degrades. An
-// eighth, a cancelled request, has no caller left to answer: the fallback
-// would run on the same cancelled context, and if it failed its error would
-// replace the cause it was absorbing. Two more belong to the pgx hot leg: a
-// pass whose legs overlap (ErrHotLegNotDisjoint) is an internal
-// inconsistency an operator must see, and an engine built without the hot
-// leg's snapshot pool (WithPgxHotLeg) is a configuration error. A published
-// read whose publication state is inconsistent (ErrPublicationInconsistent)
-// is the V2 form of #187's inconsistency, and stays loud for the same reason,
-// and a published pass that ran past R_max (ErrPassDeadline) is an expired
-// deadline whatever else its chain carries.
+// that keeps timing out opens the breaker, and *that* rejection degrades. A
+// published pass that ran past R_max (ErrPassDeadline) is an expired deadline
+// whatever else its chain carries. A cancelled request has no caller left to
+// answer: the fallback would run on the same cancelled context, and if it
+// failed its error would replace the cause it was absorbing. Two more belong
+// to the pgx pass: a pass whose legs overlap (ErrHotLegNotDisjoint) is an
+// internal inconsistency an operator must see, and an engine built without
+// the hot leg's snapshot pool or the publication reader is a configuration
+// error.
 func degradableFederatedError(err error) bool {
 	return !errors.Is(err, ErrSchemaMetadataCacheRequired) &&
-		!errors.Is(err, ErrParquetSetInconsistent) &&
 		!errors.Is(err, ErrPublicationInconsistent) &&
 		!errors.Is(err, ErrPassDeadline) &&
 		!errors.Is(err, forma.ErrParquetTypeIncompatible) &&
-		!errors.Is(err, ErrNoParquetPaths) &&
-		!errors.Is(err, ErrManifestSchemaMismatch) &&
 		!errors.Is(err, forma.ErrInvalidInput) &&
 		!errors.Is(err, ErrHotLegNotDisjoint) &&
 		!errors.Is(err, errPgxHotLegNotConfigured) &&

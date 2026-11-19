@@ -1,7 +1,7 @@
 package cdc
 
 import (
-	"context"
+	"database/sql"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -10,96 +10,63 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/cdcv2"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
 
-// The checksum seam is built from the run's full client, so a flush context
-// assembled from a manifest-capable client can hash the object it just
-// published (#347).
-func TestNewSchemaFlushContextWiresChecksumSeam(t *testing.T) {
-	full := &hashableFullS3Client{body: []byte("hello parquet")}
+// The constructor wires the run's V2 writer, its object store and the
+// engine's schema lock, and the change_log table falls back to its default.
+func TestNewSchemaFlushContextWiresTheWriter(t *testing.T) {
+	db := &sql.DB{}
+	store := &manifestv2.FSStore{Dir: t.TempDir()}
 
-	flushCtx, err := newSchemaFlushContext(flushContextParams{
-		cfg:     CDCConfig{S3Bucket: "test-bucket", GlobOnly: true},
-		clients: resolvedS3Clients{object: full, full: full},
-		logger:  zap.NewNop(),
+	flushCtx, err := newSchemaFlushContext(flushContextParams{cfg: CDCConfig{S3Bucket: "b"}, db: db, store: store, logger: zap.NewNop()})
+	require.NoError(t, err)
+	require.NotNil(t, flushCtx.writer)
+	require.Same(t, store, flushCtx.store)
+	require.Equal(t, "change_log", flushCtx.tableName)
+	require.IsType(t, advisorySchemaLocker{}, flushCtx.locker)
+
+	custom, err := newSchemaFlushContext(flushContextParams{
+		cfg: CDCConfig{ChangeLogTable: "custom_log", Engine: forma.EngineAuroraDSQL}, db: db, store: store,
 	})
 	require.NoError(t, err)
-
-	require.NotNil(t, flushCtx.checksumObject, "flush context built without the checksum seam")
-	got, err := flushCtx.checksumObject(context.Background(), "cdc/7/delta-file.parquet")
-	require.NoError(t, err)
-	// sha256("hello parquet")
-	require.Equal(t, "sha256:950423965d5b936670f1549c58ce0594b58e1027c2b5e1e2a4f1515b1bc2f1b0", got)
+	require.Equal(t, "custom_log", custom.tableName)
+	require.IsType(t, &leaseSchemaLocker{}, custom.locker)
+	require.NotNil(t, custom.logger, "a nil logger falls back to a no-op one")
 }
 
-// A run whose caller supplied an object-only client has nothing to hash with,
-// so the seam stays nil and entries go unstamped rather than panicking.
-func TestNewSchemaFlushContextLeavesChecksumSeamNilWithoutFullClient(t *testing.T) {
-	object := &objectOnlyS3Client{}
+// A flush context without a store, or with a batch a PostgreSQL mark cannot
+// bind, is refused before any schema is touched.
+func TestNewSchemaFlushContextRefusesWhatTheWriterCannotRun(t *testing.T) {
+	_, err := newSchemaFlushContext(flushContextParams{cfg: CDCConfig{}, db: &sql.DB{}})
+	require.ErrorContains(t, err, "object store")
 
-	flushCtx, err := newSchemaFlushContext(flushContextParams{
-		cfg:     CDCConfig{S3Bucket: "test-bucket", GlobOnly: true},
-		clients: resolvedS3Clients{object: object},
-		logger:  zap.NewNop(),
-	})
-	require.NoError(t, err)
+	store := &manifestv2.FSStore{Dir: t.TempDir()}
+	_, err = newSchemaFlushContext(flushContextParams{cfg: CDCConfig{BatchSize: cdcv2.MaxMarkEntries + 1}, db: &sql.DB{}, store: store})
+	require.ErrorIs(t, err, ErrBatchSizeTooLarge)
 
-	require.Nil(t, flushCtx.checksumObject)
-	require.Same(t, object, flushCtx.s3Client)
+	_, err = newSchemaFlushContext(flushContextParams{cfg: CDCConfig{Engine: "oracle"}, db: &sql.DB{}, store: store})
+	require.Error(t, err, "an unknown engine is refused")
 }
 
-// The manifest store and resolver are the other S3-derived fields the
-// constructor owns; they follow the configured template, and the change_log
-// table name falls back to the default.
-func TestNewSchemaFlushContextWiresManifestStoreAndTableDefault(t *testing.T) {
-	full := &fullS3ClientMock{}
-
-	withManifest, err := newSchemaFlushContext(flushContextParams{
-		cfg: CDCConfig{
-			S3Bucket:         "test-bucket",
-			ManifestPrefix:   "cdc",
-			ManifestTemplate: "manifest/{{.SchemaID}}.json",
-		},
-		clients: resolvedS3Clients{object: full, full: full},
-		logger:  zap.NewNop(),
-	})
-	require.NoError(t, err)
-	require.NotNil(t, withManifest.manifestStore)
-	require.Equal(t, "manifest/{{.SchemaID}}.json", withManifest.manifestResolver.PathTemplate)
-	require.Equal(t, "cdc", withManifest.manifestResolver.Prefix)
-	require.Equal(t, "change_log", withManifest.tableName)
-
-	withoutManifest, err := newSchemaFlushContext(flushContextParams{
-		cfg:     CDCConfig{S3Bucket: "test-bucket", ChangeLogTable: "custom_log", GlobOnly: true},
-		clients: resolvedS3Clients{object: full, full: full},
-		logger:  zap.NewNop(),
-	})
-	require.NoError(t, err)
-	require.Nil(t, withoutManifest.manifestStore)
-	require.Equal(t, "custom_log", withoutManifest.tableName)
-}
-
-// Both flush entrypoints — package-level RunOnce (cmd/tools cdc-flush) and
-// Runner.RunOnce — must assemble their context through newSchemaFlushContext,
-// handing it the resolved client pair. Neither frame has DB and AWS
-// preconditions a unit test can satisfy, so this is what keeps the wiring from
-// existing on one path only: a hand-rolled schemaFlushContext literal at either
-// site, or a params literal that drops the clients, silently unstamps every
-// manifest entry that path writes while the constructor's own tests stay green
-// (#318, #347).
+// Both flush entrypoints, package-level RunOnce (cmd/tools cdc-flush) and
+// Runner.RunOnce, must reach the flush through runFlushPass with the run's
+// object store, and only runFlushPass builds a flush context. Neither frame
+// has DB and AWS preconditions a unit test can satisfy, so this keeps the
+// wiring from existing on one path only: a hand-rolled schemaFlushContext
+// at either site, or a params literal that drops the store, would publish
+// nothing on that path while the constructor's own tests stay green.
 func TestRunOnceFramesBuildFlushContextThroughConstructor(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	require.NoError(t, err)
-
 	fset := token.NewFileSet()
 
-	var literalSites []string
-	var runOnceFrames []string
-	frameBuildsThroughConstructor := map[string]bool{}
-	framePassesClients := map[string]bool{}
-
+	var literalSites, constructorCallers, runOnceFrames []string
+	framePassesStore := map[string]bool{}
 	for _, entry := range entries {
 		path := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
@@ -107,14 +74,15 @@ func TestRunOnceFramesBuildFlushContextThroughConstructor(t *testing.T) {
 		}
 		file, parseErr := parser.ParseFile(fset, path, nil, 0)
 		require.NoError(t, parseErr)
-
 		for _, decl := range file.Decls {
 			fn, isFunc := decl.(*ast.FuncDecl)
 			if !isFunc || fn.Body == nil {
 				continue
 			}
 			frame := fmt.Sprintf("%s:%s", path, fn.Name.Name)
-
+			if fn.Name.Name == "RunOnce" {
+				runOnceFrames = append(runOnceFrames, frame)
+			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				if lit, isLit := n.(*ast.CompositeLit); isLit {
 					if ident, isIdent := lit.Type.(*ast.Ident); isIdent && ident.Name == "schemaFlushContext" {
@@ -125,41 +93,34 @@ func TestRunOnceFramesBuildFlushContextThroughConstructor(t *testing.T) {
 				if !isCall {
 					return true
 				}
-				ident, isIdent := call.Fun.(*ast.Ident)
-				if !isIdent || ident.Name != "newSchemaFlushContext" {
-					return true
+				switch ident, _ := call.Fun.(*ast.Ident); {
+				case ident == nil:
+				case ident.Name == "newSchemaFlushContext":
+					constructorCallers = append(constructorCallers, frame)
+				case ident.Name == "runFlushPass":
+					framePassesStore[frame] = callSetsField(call, "store")
 				}
-				frameBuildsThroughConstructor[frame] = true
-				framePassesClients[frame] = callPassesResolvedClients(call)
 				return true
 			})
-
-			if fn.Name.Name == "RunOnce" {
-				runOnceFrames = append(runOnceFrames, frame)
-			}
 		}
 	}
 
 	require.Len(t, runOnceFrames, 2, "expected exactly two RunOnce frames (package-level and Runner), found %v", runOnceFrames)
 	for _, frame := range runOnceFrames {
-		require.True(t, frameBuildsThroughConstructor[frame],
-			"%s does not build its flush context through newSchemaFlushContext, so the checksum seam is unwired on that path", frame)
-		require.True(t, framePassesClients[frame],
-			"%s calls newSchemaFlushContext without passing the resolved clients, so the checksum seam and manifest store are nil on that path", frame)
+		require.True(t, framePassesStore[frame], "%s must run runFlushPass with the run's object store", frame)
 	}
-
-	require.Len(t, literalSites, 1,
-		"schemaFlushContext must be built only by newSchemaFlushContext; found literals in %v", literalSites)
+	require.Equal(t, []string{"flusher.go:runFlushPass"}, constructorCallers, "only runFlushPass builds a flush context")
+	require.Len(t, literalSites, 1, "schemaFlushContext must be built only by newSchemaFlushContext; found literals in %v", literalSites)
 	require.Contains(t, literalSites[0], "newSchemaFlushContext")
 }
 
-// callPassesResolvedClients reports whether a newSchemaFlushContext call hands
-// over a flushContextParams literal that sets the clients field.
-func callPassesResolvedClients(call *ast.CallExpr) bool {
-	if len(call.Args) != 1 {
+// callSetsField reports whether call's last argument is a composite literal
+// that sets field.
+func callSetsField(call *ast.CallExpr, field string) bool {
+	if len(call.Args) == 0 {
 		return false
 	}
-	lit, ok := call.Args[0].(*ast.CompositeLit)
+	lit, ok := call.Args[len(call.Args)-1].(*ast.CompositeLit)
 	if !ok {
 		return false
 	}
@@ -168,7 +129,7 @@ func callPassesResolvedClients(call *ast.CallExpr) bool {
 		if !isKV {
 			continue
 		}
-		if key, isIdent := kv.Key.(*ast.Ident); isIdent && key.Name == "clients" {
+		if key, isIdent := kv.Key.(*ast.Ident); isIdent && key.Name == field {
 			return true
 		}
 	}

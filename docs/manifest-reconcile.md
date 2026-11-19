@@ -8,8 +8,8 @@ manifest 条目，双向报告差异，并可选修复。它是两条既有故�
 - **#188 compaction 遗留**：rewrite 崩溃留下的 `_tmp/` staging 对象与未列入 manifest 的
   `base-{uuid}.parquet`，以及 manifest 提交后被 splice 出去的 merged source。#461 起
   compactor **有意不再内联删除** merged source：持有 pre-swap 路径集的 in-flight 联邦
-  读还可能懒打开它们，零宽限删除会让该读以不可降级的 `ParquetSetInconsistentError`
-  失败并触发熔断计数。因此**每次** rewrite 都会留下未列入的 source（base/tmp 形态走
+  读还可能懒打开它们，零宽限删除会让该读以不可降级的 manifest 不一致错误失败（V1
+  读路径于 #896 删除；V2 读取方见 `docs/publication-protocol-v2.md`）。因此**每次** rewrite 都会留下未列入的 source（base/tmp 形态走
   `--gc`，delta 形态走 `--repair --gc`），本工具的两阶段 grace 回收是其成文回收机制，
   不再只是崩溃残留的兜底。这些对象的数据已并入 merged base，属于纯垃圾。
 - **#226 swallowed-delete 残留**：flush / cdc-init / compaction 经 `CopyTmpToFinal`
@@ -501,94 +501,12 @@ cdc-init 的 manifest 发布失败（导出成功但 `ReplaceTierFiles` 失败�
 两条路径都依赖 #290 起 cdc-init 与 reconcile 共持的那把 per-schema advisory lock：此锁下
 出现的 init 形态孤儿必非 in-flight init。
 
-## cdc-init 重跑与 delta 层（#371）
+## cdc-init 与 V1 manifest（#896）
 
-`cdc-init` 全量重导出只替换 manifest 的 **base** 层。此前 delta 层原样保留，于是一次
-schema 类型修改（例如 `text`→`list`、`integer`→`text`）之后重跑 cdc-init，新 base 与
-旧类型的 delta 会同时进入同一次 federated 扫描：类型不兼容时 DuckDB 直接报
-Conversion Error；类型可以静默拓宽时（INTEGER 与 VARCHAR 并存）则 `union_by_name`
-绑成 VARCHAR，ORDER BY 悄悄变成字典序。读路径现在对这类列做选择性 `CAST` 重钉
-（见 `docs/federated-query/design.md` 中的 #371 段落）。自 #732 起，重钉之前先逐个
-对象判定类型：会改变取值的对象，或类型族不同的对象（例如 `integer`→`text` 留下的
-INTEGER 旧代），会让整次读取以 `parquet_type_incompatible` 失败（D2，见
-`docs/schema-evolution.md`）。但这些都只是读守卫；把旧代 delta 真正退役的是 cdc-init
-本身：
-
-- **默认拒绝。** 每个 schema 在导出前、在 per-schema advisory lock 之下先盘点 delta 层：
-  manifest 的 delta 条目，加上 `--delta-prefix`（默认 `delta`，与 `cdc-flush --s3-prefix`
-  对齐）下 `{prefix}/{schemaID}/` 直接子键中 delta 形态（`<uuid>.parquet`）的对象。
-  盘点非空且未传 `--replace-delta` 时，该 schema 以 `cdc.ErrDeltaTierPresent` 失败，
-  错误信息给出 manifest 已列 / 未列的数量，其它 schema 照常继续；`--dry-run` 同样
-  报告拒绝。`--delta-prefix ""` 关闭对象列举，只看 manifest。
-- **先换 base，再删 delta。** 传 `--replace-delta` 后，manifest 发布是一次原子 CAS：
-  base 层替换为本次导出的条目，delta 层同时清空（412 重试时重新拼接两层，期间新
-  出现的 delta 条目并入清理集）。**只有 manifest 保存成功之后**才逐个删除清理集中的
-  对象。删除失败会记录 key 并让该 schema 返回带 key 列表的错误，但已发布的 manifest
-  不回滚：读者此时只会看到新 base，残留对象成为未列孤儿，可由下文规则处理。
-  `--dry-run` 只打印 `would delete N delta objects`。
-- **无 live 行的 schema 用一个 0 行 base 完成 swap（#519）。** 所有行都已删除的 schema 没有
-  行可导出，但 manifest 可能仍列着旧类型的 base 与 delta。带 `--replace-delta` 时，这类
-  schema 先导出**一个 0 行的 base 对象**（`{prefix}/{schemaID}/base-<uuid>.parquet`，
-  与 compaction 全墓碑合并写出的形态相同，manifest 条目 `row_count: 0`、无 row-id 范围），
-  再走同一条 CAS 路径发布 swap：base 层替换为仅此一条、delta 层清空，保存成功后再删除
-  清理集中的 delta 对象；`--dry-run` 同样只报告（计 1 个文件、0 行）。manifest **绝不会
-  变成空集**：零条目的 manifest 会让读路径退回按 schema 前缀的 glob 扫描，把未列出的旧
-  base 连同其已被墓碑删除的行一起“复活”。旧 base 对象**只下架、不删除**（与任何重跑一致，
-  #416 起 init 从不删 base），由 `manifest-reconcile --gc` 作为普通未列孤儿回收——manifest
-  仍有一条本前缀内的 base 条目，#463 的空 manifest 防护不会触发，无需 `--allow-empty-manifest-schema`；
-  `--repair` 的晋升守卫（#292）对没有存活行的 schema 一律拒绝晋升，所以这些对象不会被
-  重新列回 manifest。manifest 本身不存在（或没有任何条目）、也没有任何 delta 对象的 schema
-  没有东西可下架，不会为此导出 0 行 base、也不会生成 manifest。不带 `--replace-delta`
-  时行为不变：delta 盘点非空即拒绝，否则不做任何事。
-- **清理集只认命名空间，不认 `tier` 标签。** 可删除的 key 必须是本 schema delta 命名
-  空间里的 delta 形态对象：`{delta-prefix}/{schemaID}/<uuid>.parquet`（`--delta-prefix ""`
-  时前缀部分不限，但 `/{schemaID}/<uuid>.parquet` 尾部仍然必须匹配）。manifest 里标为
-  delta 却指向其它 schema、base 形态 key 的条目，以及 glob 条目或指向其它 bucket 的
-  `s3://` 条目，都属于"清理无法兑现"的条目：不带 `--replace-delta` 时计入拒绝理由，
-  带 `--replace-delta` 时该 schema 在导出前即失败并逐条列出（fail-closed），412 重试
-  重新加载 manifest 时同样检查。删除是不可逆的，标签本身不构成删除的授权。
-- **列举不完整即失败。** `ListObjectsV2` 返回 `IsTruncated` 却不带（或带空的）
-  continuation token，或重复给出已经用过的 token 时，盘点无法跟到末页；此时该 schema 以
-  `cdc.ErrIncompleteObjectListing` 在预检阶段失败，不导出、不发布、不删除。否则一页残缺
-  的列表会被当成完整的 delta 层，`--replace-delta` 只删掉看见的那部分，剩下的旧 delta 成为
-  未列孤儿，被下一次 `--repair` 重新收养。
-- **manifest 身份与模板先校验。** `--manifest-template` 在打开任何连接之前先做读路径
-  同样的双 schema 探测（#300）：渲染不随 schema 变化、渲染为空或 `<no value>` 的模板
-  直接拒绝，否则所有 schema 会落到同一个 manifest 对象，`--replace-delta` 就会清掉别
-  的 schema 的 delta 层。每次加载 manifest（预检、每次发布、412 重新加载）都校验其
-  `schema_id` 与当前 schema 一致，不一致以 `forma.ErrManifestSchemaMismatch` 失败，
-  既不发布也不删除。`schema_id` 为 0 的 manifest 遵循所有消费方共用的同一条规则（#522；
-  Forma 的写入方从未产生过这种对象：该字段自 manifest 包首次提交起就存在，`LoadOrCreate`
-  总会盖章，零戳记只可能来自手工编辑）：其中列有条目时以 `forma.ErrManifestUnstamped`
-  失败，因为双 schema 探测排除不了只在未探测到的 ID 上碰撞的模板，零戳记证明不了这些
-  条目属于谁；没有条目时在内存中盖上当前 schema 的戳记，随后的保存把它落盘，此后每次
-  加载都受校验。模板本身还要先过读路径同样的首尾空白检查：带空白的模板会让 cdc-init 写到一个
-  服务端 `ValidateManifestRead` 拒绝配置的 key 下。
-- **保存结果不明时先确认再清理。** manifest CAS 返回的不是确认的 412（例如连接被重置）
-  时，PUT 可能已经提交。带 `--replace-delta` 的运行会重新加载 manifest：如果 base 层恰好
-  是本次导出的条目集合（#416 之后每个 key 一次性写入，集合相同只能是本次发布）且 delta
-  层为空，则视为 swap 已提交并继续清理——否则旧 delta 对象会变成未列孤儿，被下一次
-  `--repair` 重新收养。重新加载显示 swap 未提交、或重新加载本身失败时，返回错误且不删
-  任何对象，重跑 `cdc-init --replace-delta` 即可（预检会重新盘点这些对象，无论 manifest
-  是否仍列出它们）。
-
-**为什么就地删除，而不是交给 `--gc`。** 重 init 之后新 base 只含 live 行，旧 delta 里
-每个 tombstone 都"未被覆盖"且对应行在 Postgres 已死——这正是上文
-`classifyDeltaOrphan` 判定为"lost delete"并 **append 回 manifest** 的形态。若把旧
-delta 留给 reconcile，下一次 `--repair` 会把它重新列回 manifest，旧类型代再次污染
-读取，且永远到不了 GC。init 形态晋升的两轮收敛依赖这条判定，改分类器不是选项，
-所以清理必须在 swap 之后由 cdc-init 自己完成；同理，未列在 manifest 的 delta 形态
-孤儿也一并删除。
-
-**读者窗口。** 与 compaction（#461）不同，`--replace-delta` 没有 sighting grace：
-在 swap 之前解析了 manifest 的读者可能对已列出的 delta key 撞到一次 missing-object
-失败，下一次查询重新解析 manifest 即自愈。请在低流量窗口执行 `cdc-init --replace-delta`
-——全量重导出本来就该如此。默认拒绝把破坏性步骤挡在误配置路径之外：prefix 或
-template 指错只会让 init 拒绝，不会删任何东西（#463 教训）。
-
-```bash
-# 类型修改后的重跑：先看会拒绝什么 / 会删什么
-forma-tools cdc-init ... --manifest-template 'manifest/{{.SchemaID}}.json' --replace-delta --dry-run
-# 低流量窗口内真正执行：base swap 提交后清空 delta 层
-forma-tools cdc-init ... --manifest-template 'manifest/{{.SchemaID}}.json' --replace-delta
-```
+自 #896 起 `cdc-init` 不再读写 V1 `manifest.json`：它把每个存活行导出到
+`{s3-prefix}/{schema_id}/e{epoch}/base/` 下的一次写入对象，发布一个 `init` 代际
+（`docs/publication-protocol-v2.md`），该代际只列出本次导出的 base 文件，此前的 base 与
+delta 文件全部离开清单，因此不再需要 `--replace-delta`、`--delta-prefix`，也不再导出
+0 行 base 占位对象；导出各行的未刷新条目按导出版本移交（handoff），`change_log` 不会被清空。
+`cdc-flush` 同样只发布 V2 代际。本工具在 #891 前仍只理解 V1 manifest：它把嵌套在
+`e{epoch}/` 下的 V2 对象报告为 `ClassUnknown` 且不删除它们，切换后的部署应按升级步骤停用它。

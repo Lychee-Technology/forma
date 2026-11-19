@@ -14,8 +14,8 @@ const (
 	// one that compaction retired is never looked up again and ages out.
 	defaultValidatedParquetIdleTTL = 30 * time.Minute
 	// defaultValidatedParquetCapacity is the hard entry bound that holds even
-	// inside one TTL window, so a caller-chosen path set (an explicit
-	// S3ParquetPathTemplate) cannot grow the heap without limit.
+	// inside one TTL window, so a stream of generations listing new objects
+	// cannot grow the heap without limit.
 	defaultValidatedParquetCapacity = 8192
 )
 

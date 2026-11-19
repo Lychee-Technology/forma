@@ -220,7 +220,7 @@ func (f *fixture) activate(t *testing.T, cur Record) Record {
 	var out Record
 	require.NoError(t, f.inTx(context.Background(), func(tx Tx) error {
 		var err error
-		out, err = Activate(context.Background(), tx, f.t, cur, []string{f.changeLog})
+		out, err = Activate(context.Background(), tx, f.t, cur, []Residue{{Table: f.changeLog}})
 		return err
 	}))
 	require.Equal(t, out, f.read(t, cur.SchemaID))

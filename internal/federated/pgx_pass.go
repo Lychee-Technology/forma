@@ -10,27 +10,24 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
-// The federated pass (design.md §6.1; pgx-hot-leg-plan.md step 5), the
-// only one since the attach transport was retired (#858):
+// The federated pass (design.md §6.1; docs/publication-protocol-v2.md,
+// "Readers"), all of it under the pass deadline R_max:
 //
-//  1. resolve and freeze the parquet path set, and stamp the cutoff;
-//  2. open a REPEATABLE READ READ ONLY snapshot and read the dirty set and,
-//     in the hot form, the hot keys;
-//  3. sort the hot keys in Go and apply the cursor;
-//  4. stage the dirty set in DuckDB and run the parquet-only statement over
+//  1. open a REPEATABLE READ READ ONLY snapshot and read the schema's
+//     publication record as its first statement (pgx_publication.go);
+//  2. read the strict dirty set and, unless the request excludes the hot
+//     tier, the hot keys of the unflushed entries, in the snapshot;
+//  3. fetch the record's generation's manifest, and run the pre-read checks
+//     over exactly the objects it lists;
+//  4. sort the hot keys in Go and apply the cursor;
+//  5. stage the dirty set in DuckDB and run the parquet-only statement over
 //     the window the page can draw from;
-//  5. merge and cut the page;
-//  6. read the page's hot rows in the same snapshot, and end it.
+//  6. merge and cut the page;
+//  7. read the page's hot rows in the same snapshot, and end it.
 //
-// The hot-excluded form reads the strict dirty set and no hot key, so its
-// page is the parquet window. A schema without parquet (#720) runs no DuckDB
-// statement: the hot leg is the whole answer.
-//
-// A published pass (WithPublicationReader, pgx_publication.go; dormant until
-// #896) resolves nothing before its snapshot. It reads the publication record
-// as the snapshot's first statement, then the strict dirty set and the hot
-// keys of the unflushed entries, fetches the generation's manifest and scans
-// exactly the objects it lists, all under the pass deadline R_max.
+// An UNPUBLISHED record, or a generation that lists no object, runs no DuckDB
+// statement: the hot leg is the whole answer. The hot-excluded form reads no
+// hot key, so its page is the parquet window.
 
 // pgxPass carries one pass's state between its steps.
 type pgxPass struct {
@@ -42,13 +39,13 @@ type pgxPass struct {
 	planCtx *duckDBExecutionPlanContext
 	hasHot  bool
 	order   sortkey.Order
-	src     pgxScanSources
-	// noObjects is settled in the snapshot: the schema has no parquet, and
-	// the pass runs no DuckDB statement.
+	src     scanSources
+	// noObjects is settled in the snapshot: the record is UNPUBLISHED or
+	// its generation lists no object, and the pass runs no DuckDB statement.
 	noObjects bool
-	// record and gen are a published pass's record, read in its snapshot,
-	// and the generation it scans (nil until resolved, and for an
-	// unpublished record).
+	// record and gen are the pass's record, read in its snapshot, and the
+	// generation it scans (nil until resolved, and for an unpublished
+	// record).
 	record PublicationRecord
 	gen    *PublishedGeneration
 	// probe is the breaker's half-open reservation; resolved records that a
@@ -74,13 +71,7 @@ func (p *pgxPass) releaseProbe() {
 // scan is the failed-scan context failDuckDBScan classifies against.
 func (p *pgxPass) scan() scan {
 	p.resolved = true
-	return scan{
-		parquetPaths:    p.src.paths,
-		pathsFromSource: p.src.fromSource,
-		globListed:      p.src.globListed,
-		probe:           p.probe,
-		published:       p.gen,
-	}
+	return scan{parquetPaths: p.src.paths, probe: p.probe, published: p.gen}
 }
 
 // pgxPage is what a pass answered: the page's records in order, the
@@ -92,21 +83,25 @@ type pgxPage struct {
 	outcome pgxOutcome
 }
 
-// streamPgxPass runs one pgx pass for an admitted request and hands the
-// page's records to rowHandler in order. It owns the probe from here on.
+// streamPgxPass runs one pgx pass and hands the page's records to rowHandler
+// in order. The pass meets DuckDB admission only once its generation lists
+// objects to scan (admitPublishedScan), and owns the breaker's probe from
+// then on.
 func (e *DBFederatedQueryEngine) streamPgxPass(
 	ctx context.Context,
 	tables model.StorageTables,
 	q *model.FederatedAttributeQuery,
 	opts *model.FederatedQueryOptions,
 	planCtx *duckDBExecutionPlanContext,
-	probe ProbeToken,
 	rowHandler func(context.Context, *model.PersistentRecord) error,
 ) (int64, error) {
-	p := &pgxPass{e: e, tables: tables, q: q, planCtx: planCtx, probe: probe, hasHot: sqlgen.FederatedQueryHasHot(q)}
+	p := &pgxPass{e: e, tables: tables, q: q, planCtx: planCtx, hasHot: sqlgen.FederatedQueryHasHot(q)}
 	defer p.releaseProbe()
 	if e.hotLeg == nil {
 		return 0, fmt.Errorf("the engine has no snapshot pool for the hot leg (WithPgxHotLeg): %w", errPgxHotLegNotConfigured)
+	}
+	if e.publication == nil {
+		return 0, fmt.Errorf("the engine has no publication reader to resolve the parquet tiers from (WithPublicationReader): %w", errPgxHotLegNotConfigured)
 	}
 	if tables.ChangeLog == "" {
 		return 0, fmt.Errorf("the pgx hot leg reads the dirty set from the change log, and no change log table is configured: %w", errPgxHotLegNotConfigured)
@@ -122,15 +117,6 @@ func (e *DBFederatedQueryEngine) streamPgxPass(
 	cache, _ := e.schemaCacheByID(q.SchemaID)
 	if _, err := e.translateDuckDBQuery(ctx, tables.EAVData, q, cache, map[string]any{}); err != nil {
 		return 0, fmt.Errorf("build the pgx pass over schema %d: %w", q.SchemaID, err)
-	}
-	if !p.published() {
-		src, err := e.resolvePgxScanSources(ctx, tables, q)
-		if err != nil {
-			p.resolved = true
-			return 0, e.failScanSources(ctx, q, probe, err)
-		}
-		p.src = src
-		planCtx.recordEmptyParquetScan(src.emptyCandidate)
 	}
 	release, err := e.acquirePgxPassSlot(ctx)
 	if err != nil {
@@ -171,7 +157,7 @@ func (p *pgxPass) run(ctx context.Context) (pgxPage, error) {
 	return page, p.deadlineFailure(passCtx, err)
 }
 
-// runSnapshot is run's pass, under the pass deadline of a published pass.
+// runSnapshot is run's pass, under the pass deadline.
 func (p *pgxPass) runSnapshot(ctx context.Context) (pgxPage, error) {
 	start := p.planCtx.now()
 	snap, err := p.e.hotLeg.begin(ctx)
@@ -180,10 +166,8 @@ func (p *pgxPass) runSnapshot(ctx context.Context) (pgxPage, error) {
 	}
 	defer snap.rollback(ctx)
 
-	if p.published() {
-		if err := p.readPublication(ctx, snap); err != nil {
-			return pgxPage{}, err
-		}
+	if err := p.readPublication(ctx, snap); err != nil {
+		return pgxPage{}, err
 	}
 	dirty, hot, err := p.readSnapshot(ctx, snap)
 	p.snapshotMs = p.planCtx.millisSince(start)
@@ -212,12 +196,6 @@ func (p *pgxPass) runSnapshot(ctx context.Context) (pgxPage, error) {
 	if err := snap.commit(ctx); err != nil {
 		return pgxPage{}, fmt.Errorf("%w: %w", ErrPostgresReadFailed, err)
 	}
-	if p.noObjects && p.src.emptyCandidate {
-		// A publication between resolution and the snapshot (#720).
-		if err := p.e.confirmNoParquetPublished(ctx, p.q); err != nil {
-			return pgxPage{}, err
-		}
-	}
 	return pgxPage{
 		records: records,
 		total:   int64(len(hot)) + leg.count,
@@ -225,43 +203,24 @@ func (p *pgxPass) runSnapshot(ctx context.Context) (pgxPage, error) {
 	}, nil
 }
 
-// readSnapshot reads the dirty set, settles a set without objects (#720) or
-// resolves a published pass's generation, enforces HotLegMaxDirtyRows, and
-// reads the hot keys, sorted by the page's order and filtered by its cursor.
+// readSnapshot reads the dirty set, resolves the record's generation,
+// enforces HotLegMaxDirtyRows, and reads the hot keys, sorted by the page's
+// order and filtered by its cursor.
 func (p *pgxPass) readSnapshot(ctx context.Context, snap hotLegSnapshot) ([]uuid.UUID, []model.HotKey, error) {
-	// A published pass reads the strict set in either form: nothing widens
-	// its barrier (noGraceCutoffMs).
-	form := DirtySetHotExcluded
-	if p.hasHot && !p.published() {
-		form = DirtySetHot
-	}
-	cl, err := snap.readChangeLog(ctx, ChangeLogSnapshotRequest{
-		Tables:         p.tables,
-		SchemaID:       p.q.SchemaID,
-		Form:           form,
-		GraceCutoffMs:  p.graceCutoffMs(),
-		ParquetHistory: p.src.emptyCandidate,
-	})
+	cl, err := snap.readChangeLog(ctx, ChangeLogSnapshotRequest{Tables: p.tables, SchemaID: p.q.SchemaID})
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the dirty set in the pass's snapshot: %w: %w", ErrPostgresReadFailed, err)
 	}
-	if p.src.emptyCandidate {
-		if err := p.settleEmptyCandidate(ctx, cl.HasParquetHistory); err != nil {
-			return nil, nil, err
-		}
+	if err := p.resolveGeneration(ctx); err != nil {
+		return nil, nil, err
 	}
-	if p.published() {
-		if err := p.resolveGeneration(ctx); err != nil {
-			return nil, nil, err
-		}
-	}
-	// Recorded once the pass knows whether it has a parquet leg: a published
-	// pass without one stages nothing.
-	staged := !(p.published() && p.noObjects)
-	p.planCtx.recordSnapshotDirtySet(p.tables.ChangeLog, p.q.SchemaID, form, p.graceCutoffMs(), len(cl.DirtyIDs), staged)
-	// The cap bounds what the pass stages in DuckDB. A published pass
-	// without a parquet leg stages nothing: an unpublished schema's every
-	// live row is dirty, and the hot leg is its whole answer.
+	// Recorded once the pass knows whether it has a parquet leg: a pass
+	// without one stages nothing.
+	staged := !p.noObjects
+	p.planCtx.recordSnapshotDirtySet(p.tables.ChangeLog, p.q.SchemaID, len(cl.DirtyIDs), staged)
+	// The cap bounds what the pass stages in DuckDB. A pass without a
+	// parquet leg stages nothing: an unpublished schema's every live row is
+	// dirty, and the hot leg is its whole answer.
 	if limit := p.e.cfg.HotLegMaxDirtyRows; limit > 0 && len(cl.DirtyIDs) > limit && staged {
 		return nil, nil, fmt.Errorf("schema %d: the dirty set holds %d rows, past duckdb.hotLegMaxDirtyRows (%d), so the pass does not stage it: %w",
 			p.q.SchemaID, len(cl.DirtyIDs), limit, ErrFederatedReadFailed)
@@ -276,7 +235,7 @@ func (p *pgxPass) readSnapshot(ctx context.Context, snap hotLegSnapshot) ([]uuid
 	return cl.DirtyIDs, hot, nil
 }
 
-// readHotKeys reads the hot keys of the dirty window that match the
+// readHotKeys reads the hot keys of the unflushed entries that match the
 // request's condition, sorts them and applies the cursor.
 func (p *pgxPass) readHotKeys(ctx context.Context, snap hotLegSnapshot) ([]model.HotKey, error) {
 	names := make([]string, len(p.order.Columns))
@@ -284,11 +243,10 @@ func (p *pgxPass) readHotKeys(ctx context.Context, snap hotLegSnapshot) ([]model
 		names[i] = col.Name
 	}
 	keys, err := snap.queryHotKeys(ctx, model.HotKeysQuery{
-		Tables:        p.tables,
-		SchemaID:      p.q.SchemaID,
-		Condition:     p.q.Condition,
-		GraceCutoffMs: p.graceCutoffMs(),
-		SortColumns:   names,
+		Tables:      p.tables,
+		SchemaID:    p.q.SchemaID,
+		Condition:   p.q.Condition,
+		SortColumns: names,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read the hot keys in the pass's snapshot: %w: %w", ErrPostgresReadFailed, err)

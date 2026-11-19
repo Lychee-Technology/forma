@@ -14,9 +14,9 @@ engine. You configure it.
 | --- | --- | --- |
 | Entity writes: `Create`, `Update`, `Delete`, batches, `Tx` (CAS, fences, predicate mutation, upsert, claims, unique keys) | Supported | Supported on the `aurora-dsql` engine (#633). CI runs it on PostgreSQL emulating DSQL. It has not yet run against a cluster |
 | CDC schema lock (`cdc-flush`, `cdc-init`, `manifest-reconcile`) | Supported: a session advisory lock | Supported with `--pg-engine aurora-dsql`: a lease row (#633). CI runs it on PostgreSQL. It has not yet run against a cluster |
-| `cdc-flush`'s flush mark | Supported: one statement a batch | Supported: statements of at most 1,000 rows, each retried on `40001` (#633). Not yet run against a cluster |
+| `cdc-flush`'s flush mark and `cdc-init`'s handoff | Supported: one statement a batch, in the transaction that publishes its generation | Supported: a batch publishes as generations of at most 1,000 entries, each marked in its publication's transaction and sent again with the same token on `40001`; the handoff marks in transactions of at most 1,000 entries (#896, `internal/cdcv2`). Not yet run against a cluster |
 | `forma-tools init-db` | Supported | Not supported: its DDL is not valid on DSQL (#690) |
-| CDC export reads (`cdc-flush`, `cdc-init`) | Supported | Over the run's pgx pool, in one `REPEATABLE READ READ ONLY` transaction per batch with the row ids as a `uuid[]` parameter (#785). They pass in the MiniStack lane (#691). Not yet run against a cluster; whether a 10,000-row batch's read fits DSQL's five-minute transaction limit is unmeasured |
+| CDC export reads (`cdc-flush`, `cdc-init`) | Supported | Over the run's pgx pool with the row ids as a `uuid[]` parameter (#785): a flush export in one `REPEATABLE READ READ ONLY` transaction per object, an init export on the `REPEATABLE READ READ ONLY` snapshot that listed its rows and their versions. They pass in the MiniStack lane (#691). Not yet run against a cluster; whether a 10,000-row batch's read fits DSQL's five-minute transaction limit is unmeasured |
 | Federated queries' hot-tier reads | Supported | Over the engine's pgx pool, in one `REPEATABLE READ READ ONLY` transaction per pass (#858). The statements are in the DSQL lint corpus and pass in the MiniStack lane (#691). Not yet run against a cluster |
 
 ## Choosing the engine
@@ -296,13 +296,16 @@ without the wait. What runs:
   renewal fails and frees the schema. Acquirers racing for a free and for
   an expired lease leave exactly one holder, on READ COMMITTED and
   REPEATABLE READ sessions.
-- `internal/cdc/mark_flushed_dsql_test.go`, the flush mark: statements stay
-  at 1,000 rows or fewer; on a REPEATABLE READ session, a writer's commit
-  fails the mark with `40001`, and the retry marks the rows at their listed
-  version and leaves dirty the row the writer advanced.
+- `internal/cdcv2`, the V2 writer's flush and init publications: generations
+  of at most 1,000 entries with the plain mark on the publication's
+  transaction, resends after `40001`, the lost-commit resolve and the init
+  handoff (#899).
 - `internal/cdc/dsql_export_integration_test.go`, the CDC tools' reads on
-  tables built with DSQL's DDL: `cdc-flush`'s batch selection and delta
-  export, and `cdc-init`'s batches and base export.
+  tables built with DSQL's DDL: `cdc-flush`'s planning reads and delta
+  export, and `cdc-init`'s row count and base export on its export snapshot.
+- `internal/cdc/wired_*_integration_test.go`, `cdc-flush` and `cdc-init` run
+  as the tools run them, through the DuckDB export, the V2 writer and the
+  publication record, with a local directory for the bucket (#896).
 - `internal/federated/pgx_hot_leg_dsql_integration_test.go`, the federated
   hot leg on the same tables: the snapshot's dirty set and parquet-history
   answer, and passes under `HotLegTransport = pgx` that read the hot keys and

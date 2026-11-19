@@ -31,17 +31,18 @@ type duckDBRowsIterator interface {
 
 // ExecuteDuckDBFederatedQuery answers q's page and its exact total through
 // one federated pass (design.md §6.1). The pass requires the engine's
-// snapshot pool (WithPgxHotLeg) and a configured change_log table. It opens a
-// REPEATABLE READ snapshot and reads the dirty set and, unless the request
-// excludes the hot tier, the hot keys from it; stages the dirty set in
-// DuckDB, whose parquet-only statement drops every row_id of it from the
-// frozen parquet objects; merges the hot keys and the parquet window in Go
-// and cuts the page; and reads the page's hot rows in the same snapshot.
-// DuckDB reads no PostgreSQL.
+// snapshot pool (WithPgxHotLeg), its publication reader
+// (WithPublicationReader) and a configured change_log table. It opens a
+// REPEATABLE READ snapshot and reads the schema's publication record, the
+// dirty set and, unless the request excludes the hot tier, the hot keys from
+// it; stages the dirty set in DuckDB, whose parquet-only statement drops every
+// row_id of it from exactly the objects the record's generation lists; merges
+// the hot keys and the parquet window in Go and cuts the page; and reads the
+// page's hot rows in the same snapshot. DuckDB reads no PostgreSQL.
 //
-// An empty parquet scan a publication raced (#720) is retried exactly once,
-// so one call can issue two scans. A read failure attributed to corrupt
-// parquet objects is not retried: it fails with CorruptParquetError (#722),
+// A pass that ran past its deadline, R_max, is retried exactly once on a
+// fresh snapshot, so one call can issue two scans. A read failure attributed
+// to corrupt parquet objects is not retried: it fails with CorruptParquetError (#722),
 // after a per-object verification drain of the failed set — worth knowing
 // when sizing the caller's deadline. The execution plan and the fed_query_*
 // metrics describe only the pass that produced the returned page: the failed
@@ -84,7 +85,7 @@ func (e *DBFederatedQueryEngine) ExecuteDuckDBFederatedQuery(
 }
 
 // executionPlanMark remembers how much of the caller's execution plan predates
-// the first DuckDB pass, so a retry (#720) or the degraded fallback (#639) can
+// the first DuckDB pass, so the R_max retry or the degraded fallback (#639) can
 // drop what a failed pass recorded.
 type executionPlanMark struct {
 	sources int
@@ -150,7 +151,7 @@ func (m executionPlanMark) rewind(opts *model.FederatedQueryOptions) {
 }
 
 // collectDuckDBFederatedQuery is one buffered pass of the streaming path; the
-// fresh slice per pass is what makes the #720 retry safe, and what keeps a
+// fresh slice per pass is what makes the R_max retry safe, and what keeps a
 // pass that fails mid-stream from delivering the rows it already read.
 func (e *DBFederatedQueryEngine) collectDuckDBFederatedQuery(
 	ctx context.Context,
@@ -199,70 +200,32 @@ func (e *DBFederatedQueryEngine) StreamDuckDBFederatedQuery(
 
 	// Initialize execution plan tracking
 	planCtx := newDuckDBExecutionPlanContext(opts, e.clock())
-
-	// A published pass (WithPublicationReader) meets the DuckDB admission
-	// below only once the generation its snapshot reads lists objects
-	// (admitPublishedScan, pgx_publication.go): a pass without a parquet leg
-	// needs no DuckDB, and a publication fault is not DuckDB's to answer for.
-	published := e != nil && e.publication != nil
-	if e == nil || (e.duck == nil && !published) {
+	if e == nil {
 		planCtx.recordClientUnavailable()
 		return 0, fmt.Errorf("duckdb client not available: %w", ErrDuckDBUnavailable)
 	}
 
-	// Reject-before-DuckDB (#185): a non-admitted caller must short-circuit
-	// before ANY DuckDB or S3 work — including the #189 pre-read schema
-	// probes and path resolution, which reach storage. Allow also reserves
-	// the half-open single probe (#246); early-error returns between here
-	// and duck.Query hand it back through the deferred ReleaseProbe below.
-	// breakerAllow reports the transition when this caller is the probe
-	// (#634).
-	var probe ProbeToken
-	if !published {
-		admitted, token := e.breakerAllow(ctx)
-		if !admitted {
-			planCtx.recordClientUnavailable()
-			return 0, fmt.Errorf("%w: %w", errBreakerRejected, ErrDuckDBUnavailable)
-		}
-		probe = token
-	}
-
 	// DuckDBConfig.QueryTimeout bounds one DuckDB pass end to end (#465):
-	// path resolution and schema probes, the snapshot reads, the scan, and
+	// the snapshot reads, the manifest fetch and schema probes, the scan, and
 	// the row streaming below all run under this deadline. duckdb-go v2
 	// interrupts a running query when its context expires, so a slow scan is
 	// genuinely cancelled rather than left running on the single connection.
 	// A zero timeout leaves the caller's context as it is. Query arms the
 	// same budget once for the whole DuckDB-routed request
 	// (queryDuckDBRouted), so under it this deadline is never later than the
-	// request's and a publication-race retry or the degraded fallback shares
-	// the remainder; the arming here is what bounds callers that reach a
-	// pass directly (ExecuteFederatedKeysetQuery, the benchmark harness).
-	// The caller's own deadline (QueryConfig.DefaultTimeout) is the ceiling
-	// over all of it.
+	// request's and a pass-deadline retry or the degraded fallback shares the
+	// remainder; the arming here is what bounds callers that reach a pass
+	// directly (ExecuteFederatedKeysetQuery, the benchmark harness). The
+	// caller's own deadline (QueryConfig.DefaultTimeout) is the ceiling over
+	// all of it.
 	ctx, cancel := withQueryTimeout(ctx, e.cfg.QueryTimeout)
 	defer cancel()
 
-	// Everything between admission and duck.Query can fail without consulting
-	// DuckDB or S3 at all — a misconfigured path set, invalid caller input,
-	// missing schema metadata. Such a caller learned nothing about the
-	// dependency's health, so it must hand the half-open probe slot back
-	// instead of abandoning it: an abandoned reservation rejects the next
-	// caller with the DEGRADABLE ErrDuckDBUnavailable, which under
-	// AllowPartialDegradedMode answers a misconfiguration from Postgres alone
-	// — silently, one request after the same misconfiguration was correctly
-	// loud (#299 review P1). Once duck.Query returns, every path below resolves
-	// the probe through RecordFailure or RecordSuccess.
-	probeResolved := false
-	defer func() {
-		if !probeResolved {
-			e.breaker.ReleaseProbe(probe)
-		}
-	}()
-
-	// The pgx pass resolves the probe itself (pgx_pass.go).
-	probeResolved = true
-	return e.streamPgxPass(ctx, tables, dispatchedQuery(q, limit, offset, attributeOrders), opts, planCtx, probe, rowHandler)
+	// DuckDB admission (a DuckDB client being there, and the breaker) is the
+	// pass's, once the generation its snapshot reads lists objects
+	// (admitPublishedScan, pgx_publication.go): a pass without a parquet leg
+	// needs no DuckDB, and a publication fault is not DuckDB's to answer for.
+	return e.streamPgxPass(ctx, tables, dispatchedQuery(q, limit, offset, attributeOrders), opts, planCtx, rowHandler)
 }
 
 // withQueryTimeout bounds ctx by timeout; a non-positive timeout means no

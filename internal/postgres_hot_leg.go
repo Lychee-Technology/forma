@@ -32,12 +32,12 @@ const (
 	hotKeysRowIDIndex = 0
 	hotKeysVerTSIndex = 1
 	// hotKeysConditionArgIndex is the last placeholder before the condition's
-	// first: $1 is the schema ID, $2 the cutoff.
-	hotKeysConditionArgIndex = 2
+	// first: $1 is the schema ID.
+	hotKeysConditionArgIndex = 1
 )
 
-// hotKeysSQL is the hot-keys query. hot_window is the dirty window in the
-// same two index ranges as the dirty set's read (dirtySetQuery), each a
+// hotKeysSQL is the hot-keys query. hot_window is the strict dirty set the
+// pass stages (federated.strictDirtySetQuery), the unflushed entries, one
 // range of the (schema_id, flushed_at) index init-db builds; a row's ver_ts
 // is the changed_at of its newest entry there, as the parquet leg's dedup
 // ranks versions by changed_at. The join keeps only live rows, since a delete
@@ -51,13 +51,10 @@ const (
 // %[1]s change_log, %[2]s entity_main, %[3]s the sort columns' projections,
 // %[4]s the condition over the alias m.
 const hotKeysSQL = `WITH hot_window AS (
-    SELECT entries.row_id, MAX(entries.changed_at) AS ver_ts
-    FROM (
-        SELECT row_id, changed_at FROM %[1]s WHERE schema_id = $1 AND flushed_at = 0
-        UNION ALL
-        SELECT row_id, changed_at FROM %[1]s WHERE schema_id = $1 AND flushed_at >= $2
-    ) entries
-    GROUP BY entries.row_id
+    SELECT row_id, MAX(changed_at) AS ver_ts
+    FROM %[1]s
+    WHERE schema_id = $1 AND flushed_at = 0
+    GROUP BY row_id
 )
 SELECT m.ltbase_row_id, w.ver_ts%[3]s
 FROM hot_window w
@@ -66,7 +63,7 @@ WHERE NOT EXISTS (
     SELECT 1 FROM %[1]s t
     WHERE t.schema_id = $1 AND t.row_id = w.row_id AND t.changed_at = w.ver_ts
       AND COALESCE(t.deleted_at, 0) <> 0
-      AND (t.flushed_at = 0 OR t.flushed_at >= $2)
+      AND t.flushed_at = 0
 )
 AND (%[4]s)`
 
@@ -93,8 +90,8 @@ type hotKeysStatement struct {
 }
 
 // QueryHotKeys reads the hot keys of req on tx, which must be the pass's
-// snapshot: every entity_main row of the schema with a change_log entry in
-// the dirty window that matches req.Condition, with its row ID, ver_ts and
+// snapshot: every entity_main row of the schema with an unflushed change_log
+// entry that matches req.Condition, with its row ID, ver_ts and
 // one key per sort column, derived as its next export will hold it. The keys
 // come back in no particular order.
 func (r *DBPersistentRecordRepository) QueryHotKeys(ctx context.Context, tx pgx.Tx, req model.HotKeysQuery) ([]model.HotKey, error) {
@@ -161,7 +158,7 @@ func (r *DBPersistentRecordRepository) buildHotKeysStatement(req model.HotKeysQu
 		projections,
 		condition,
 	)
-	args := append([]any{req.SchemaID, req.GraceCutoffMs}, conditionArgs...)
+	args := append([]any{req.SchemaID}, conditionArgs...)
 	return hotKeysStatement{sql: sql, args: args, columns: columns}, nil
 }
 
@@ -171,7 +168,7 @@ func validateHotLegTables(tables model.StorageTables) error {
 		return err
 	}
 	if tables.ChangeLog == "" {
-		return errors.New("change log table name cannot be empty: the hot keys are the rows of the dirty window")
+		return errors.New("change log table name cannot be empty: the hot keys are the rows of the dirty set")
 	}
 	return nil
 }

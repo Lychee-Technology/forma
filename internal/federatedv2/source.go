@@ -3,12 +3,8 @@
 // publication record in a pass's snapshot, refuses a record the reader must
 // fail closed on, and answers the objects the record's generation lists, from
 // its verified manifest. The federated engine calls it through
-// federated.PublicationReader (WithPublicationReader).
-//
-// Nothing outside this package calls it until the writers and the reader move
-// onto the publication record together (#896): the guard in
-// internal/publication (TestOnlyInitDBDDLReachesThePublicationTables) refuses
-// a production import of it from anywhere else.
+// federated.PublicationReader (WithPublicationReader); the factory builds one
+// whenever DuckDB is enabled, with the epoch pins it reads at startup.
 package federatedv2
 
 import (
@@ -41,7 +37,8 @@ type Config struct {
 	// key (manifestv2.Cache).
 	Manifests *manifestv2.Cache
 	// Epochs are the process's epoch pins: each schema's epoch as read when
-	// the process loaded its metadata. A schema without one fails closed.
+	// the process loaded its metadata (LoadEpochPins). A schema without one
+	// fails closed.
 	Epochs map[int16]int64
 	// ObjectURI is how DuckDB addresses a listed key: S3URI for a bucket.
 	ObjectURI func(key string) string

@@ -66,7 +66,7 @@ func newExportPGFixture(t *testing.T, ctx context.Context) exportPGFixture {
 // the export failed with "Postgres binary reader - expected 16 bytes for a
 // value of type UUID, got 2", and same-typed columns would swap silently
 // (#752); the pgx staging must not reintroduce any such swap (#785).
-func TestExportSnapshotToTmp_RealPostgresKeepsEveryColumnInPlace(t *testing.T) {
+func TestExportDelta_RealPostgresKeepsEveryColumnInPlace(t *testing.T) {
 	ctx := context.Background()
 	fx := newExportPGFixture(t, ctx)
 	exp, err := NewDuckExporter(ctx, fx.cfg, "", "", "", zaptest.NewLogger(t))
@@ -74,7 +74,7 @@ func TestExportSnapshotToTmp_RealPostgresKeepsEveryColumnInPlace(t *testing.T) {
 	t.Cleanup(func() { _ = exp.DB.Close() })
 
 	out := filepath.Join(t.TempDir(), "delta.parquet")
-	require.NoError(t, exp.ExportSnapshotToTmp(ctx, fx.cfg, fx.db, out, 7, 9999, []uuid.UUID{fx.rowID}, testAttrCache()))
+	require.NoError(t, exp.ExportDelta(ctx, fx.cfg, fx.db, out, 7, 9999, []uuid.UUID{fx.rowID}, testAttrCache()))
 
 	var (
 		schemaID             int16
@@ -100,7 +100,7 @@ func TestExportSnapshotToTmp_RealPostgresKeepsEveryColumnInPlace(t *testing.T) {
 // The export reads PostgreSQL over pgx (#785): DuckDB attaches no
 // PostgreSQL database and never sees a connection string, and the staged
 // temp tables are gone once the export ends, also when it failed.
-func TestExportSnapshotToTmp_RealPostgresAttachesNothingAndDropsStages(t *testing.T) {
+func TestExportDelta_RealPostgresAttachesNothingAndDropsStages(t *testing.T) {
 	ctx := context.Background()
 	fx := newExportPGFixture(t, ctx)
 	exp, err := NewDuckExporter(ctx, fx.cfg, "", "", "", zaptest.NewLogger(t))
@@ -108,13 +108,13 @@ func TestExportSnapshotToTmp_RealPostgresAttachesNothingAndDropsStages(t *testin
 	t.Cleanup(func() { _ = exp.DB.Close() })
 
 	out := filepath.Join(t.TempDir(), "delta.parquet")
-	require.NoError(t, exp.ExportSnapshotToTmp(ctx, fx.cfg, fx.db, out, 7, 9999, []uuid.UUID{fx.rowID}, testAttrCache()))
+	require.NoError(t, exp.ExportDelta(ctx, fx.cfg, fx.db, out, 7, 9999, []uuid.UUID{fx.rowID}, testAttrCache()))
 	requireNoPostgresInDuckDB(t, exp.DB)
 
 	// A missing EAV table fails the export after the first two stages ran.
 	broken := fx.cfg
 	broken.EAVDataTable = "cdc_export_no_such_schema.eav_data"
-	err = exp.ExportSnapshotToTmp(ctx, broken, fx.db, filepath.Join(t.TempDir(), "x.parquet"), 7, 9999, []uuid.UUID{fx.rowID}, testAttrCache())
+	err = exp.ExportDelta(ctx, broken, fx.db, filepath.Join(t.TempDir(), "x.parquet"), 7, 9999, []uuid.UUID{fx.rowID}, testAttrCache())
 	require.ErrorContains(t, err, "stage e_rows rows")
 	requireNoPostgresInDuckDB(t, exp.DB)
 }

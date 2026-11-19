@@ -33,6 +33,7 @@ func TestNewEntityManagerWithConfig_HotLegValidationBeforeIO(t *testing.T) {
 
 				cfg := forma.DefaultConfig(nil)
 				cfg.DuckDB.Enabled = enabled
+				cfg.DuckDB.S3Bucket = "bkt"
 				cfg.DuckDB.HotLegTransport = tc.transport
 				cfg.DuckDB.HotLegMaxDirtyRows = tc.cap
 				deps := defaultEntityManagerDependencies()

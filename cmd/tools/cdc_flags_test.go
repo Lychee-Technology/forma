@@ -1,8 +1,13 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/cdcv2"
 )
 
 // TestParseCDCFlushFlagsMapsArgsToConfig pins the cdc-flush flag surface: the
@@ -74,8 +79,7 @@ func TestParseCDCFlushFlagsRejectsMissingBucket(t *testing.T) {
 // backfills any field left <= 0 or "" (internal/cdc/config.go).
 //
 // Genuinely pinned here — WithDefaults never touches them, so deleting the
-// flag default turns this test red: S3Prefix, ManifestTemplate, PGHost,
-// PGPort, PGDB.
+// flag default turns this test red: S3Prefix, PGHost, PGPort, PGDB.
 //
 // Shadowed by WithDefaults, which supplies the identical value: MinRecords,
 // MaxAgeMs, BatchSize, PGSSLMode. Deleting those flag defaults leaves this
@@ -99,11 +103,10 @@ func TestParseCDCFlushFlagsUsingDefaults(t *testing.T) {
 	if opts.cfg.BatchSize != 10000 {
 		t.Errorf("BatchSize = %d, want 10000", opts.cfg.BatchSize)
 	}
-	if opts.cfg.S3Prefix != "delta" {
-		t.Errorf("S3Prefix = %q, want %q", opts.cfg.S3Prefix, "delta")
-	}
-	if opts.cfg.ManifestTemplate != "manifest/{{.SchemaID}}.json" {
-		t.Errorf("ManifestTemplate = %q, want %q", opts.cfg.ManifestTemplate, "manifest/{{.SchemaID}}.json")
+	// One data prefix for both writers: a flush generation lists the init's
+	// base objects, which must sit under the flush's layout prefix.
+	if opts.cfg.S3Prefix != "data" {
+		t.Errorf("S3Prefix = %q, want %q", opts.cfg.S3Prefix, "data")
 	}
 	if opts.cfg.PGHost != "localhost" {
 		t.Errorf("PGHost = %q, want %q", opts.cfg.PGHost, "localhost")
@@ -156,8 +159,6 @@ func TestParseCDCInitFlagsMapsArgsToConfig(t *testing.T) {
 		"-max-batch-size=99",
 		"-schema-id=3",
 		"-dry-run",
-		"-replace-delta",
-		"-delta-prefix=my-delta",
 	})
 	if err != nil {
 		t.Fatalf("parse cdc-init flags: %v", err)
@@ -192,12 +193,6 @@ func TestParseCDCInitFlagsMapsArgsToConfig(t *testing.T) {
 	if !opts.dryRun {
 		t.Error("dryRun = false, want true")
 	}
-	if !opts.replaceDelta {
-		t.Error("replaceDelta = false, want true")
-	}
-	if opts.deltaPrefix != "my-delta" {
-		t.Errorf("deltaPrefix = %q, want %q", opts.deltaPrefix, "my-delta")
-	}
 	// -estimated-row-bytes was not passed, so the auto-estimate path stays on.
 	// This flag is derived, not read back from cfg, and dropping the derivation
 	// during the split would be invisible without this assertion.
@@ -220,8 +215,8 @@ func TestParseCDCInitFlagsRequiresSchemaRegistry(t *testing.T) {
 // or "" (internal/cdc/config.go).
 //
 // Genuinely pinned here — WithDefaults never touches them, so deleting the
-// flag default turns this test red: TargetFileSizeMB, S3Prefix,
-// ManifestTemplate, PGHost, PGPort, PGDB.
+// flag default turns this test red: TargetFileSizeMB, S3Prefix, PGHost,
+// PGPort, PGDB.
 //
 // Shadowed by WithDefaults, which supplies the identical value: MaxBatchSize,
 // EntityMainTable, EAVDataTable, PGSSLMode. Deleting those flag defaults
@@ -246,20 +241,9 @@ func TestParseCDCInitFlagsUsingDefaults(t *testing.T) {
 	if opts.cfg.MaxBatchSize != 10000000 {
 		t.Errorf("MaxBatchSize = %d, want 10000000", opts.cfg.MaxBatchSize)
 	}
-	if opts.cfg.S3Prefix != "base" {
-		t.Errorf("S3Prefix = %q, want %q", opts.cfg.S3Prefix, "base")
-	}
-	// The delta-tier flags (#371) are flag-layer only; WithDefaults never
-	// sees them. The default delta prefix matches cdc-flush --s3-prefix, and
-	// the purge is opt-in.
-	if opts.replaceDelta {
-		t.Error("replaceDelta = true, want false by default")
-	}
-	if opts.deltaPrefix != "delta" {
-		t.Errorf("deltaPrefix = %q, want %q", opts.deltaPrefix, "delta")
-	}
-	if opts.cfg.ManifestTemplate != "manifest/{{.SchemaID}}.json" {
-		t.Errorf("ManifestTemplate = %q, want %q", opts.cfg.ManifestTemplate, "manifest/{{.SchemaID}}.json")
+	// The same default as cdc-flush's -s3-prefix (one layout prefix).
+	if opts.cfg.S3Prefix != "data" {
+		t.Errorf("S3Prefix = %q, want %q", opts.cfg.S3Prefix, "data")
 	}
 	if opts.cfg.EntityMainTable != "entity_main" {
 		t.Errorf("EntityMainTable = %q, want %q", opts.cfg.EntityMainTable, "entity_main")
@@ -328,53 +312,42 @@ func TestParseCDCInitFlagsEstimatedRowBytes(t *testing.T) {
 	}
 }
 
-// A --manifest-template that collapses every schema onto one object would
-// append schema A's delta entries into schema B's manifest. cdc-init already
-// probes the template (#518); flush must refuse it before opening Postgres
-// or S3 (#520). An empty template means "manifest tracking off", which a
-// run must declare with -glob-only (#474).
-func TestParseCDCFlushFlagsRejectsCollapsedManifestTemplate(t *testing.T) {
-	for _, tmpl := range []string{"manifest/all.json", "manifest/{{.SchemaId}}.json"} {
-		_, err := parseCDCFlushFlags([]string{"-s3-bucket=b", "-manifest-template=" + tmpl})
-		if err == nil {
-			t.Fatalf("template %q must be rejected", tmpl)
-		}
-		if !strings.Contains(err.Error(), "manifest-template") {
-			t.Errorf("template %q: error %q must name the flag", tmpl, err.Error())
+// The V1 writer flags are gone with no compatibility path (#896): the V2
+// writers publish through the schema's publication record and an immutable
+// manifest under the -s3-prefix layout, so there is no manifest template to
+// name, no glob-only mode to declare and no delta tier to purge at
+// onboarding. The flag parser refuses each by name, so none is silently
+// ignored.
+func TestCDCToolsRefuseTheRemovedV1WriterFlags(t *testing.T) {
+	flushArgs := []string{"-glob-only", "-manifest-template=manifest/{{.SchemaID}}.json", "-manifest-prefix=m"}
+	for _, arg := range flushArgs {
+		_, err := parseCDCFlushFlags([]string{"-s3-bucket=b", arg})
+		if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
+			t.Errorf("cdc-flush %s: err = %v, want the parser's refusal of an undefined flag", arg, err)
 		}
 	}
-	if _, err := parseCDCFlushFlags([]string{"-s3-bucket=b", "-manifest-template=", "-glob-only"}); err != nil {
-		t.Fatalf("empty template with -glob-only disables manifests and must parse: %v", err)
+	initArgs := []string{"-replace-delta", "-delta-prefix=delta", "-manifest-template=manifest/{{.SchemaID}}.json", "-manifest-prefix=m"}
+	for _, arg := range initArgs {
+		_, err := parseCDCInitFlags([]string{"-s3-bucket=b", "-schema-registry-table=t", "-schema-dir=/d", arg})
+		if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
+			t.Errorf("cdc-init %s: err = %v, want the parser's refusal of an undefined flag", arg, err)
+		}
 	}
 }
 
-// #474: a flush that writes no manifest is refused unless the operator
-// declares that no reader uses one. -glob-only clears the default template,
-// and contradicts an explicit one.
-func TestParseCDCFlushFlagsGlobOnly(t *testing.T) {
-	_, err := parseCDCFlushFlags([]string{"-s3-bucket=b", "-manifest-template="})
-	if err == nil || !strings.Contains(err.Error(), "-glob-only") {
-		t.Fatalf("an empty template without -glob-only must be refused naming the flag, got %v", err)
+// A PostgreSQL flush marks its whole batch in one statement, so -batch-size
+// above cdcv2.MaxMarkEntries is refused at parse time, naming the flag; on
+// Aurora DSQL the batch publishes in generations and any size parses.
+func TestParseCDCFlushFlagsRefusesABatchPostgreSQLCannotMark(t *testing.T) {
+	over := fmt.Sprintf("-batch-size=%d", cdcv2.MaxMarkEntries+1)
+	_, err := parseCDCFlushFlags([]string{"-s3-bucket=b", over})
+	if !errors.Is(err, cdc.ErrBatchSizeTooLarge) || !strings.Contains(err.Error(), "-batch-size") {
+		t.Fatalf("err = %v, want ErrBatchSizeTooLarge naming -batch-size", err)
 	}
-
-	opts, err := parseCDCFlushFlags([]string{"-s3-bucket=b", "-glob-only"})
-	if err != nil {
-		t.Fatalf("-glob-only alone must parse: %v", err)
+	if _, err := parseCDCFlushFlags([]string{"-s3-bucket=b", fmt.Sprintf("-batch-size=%d", cdcv2.MaxMarkEntries)}); err != nil {
+		t.Fatalf("the largest PostgreSQL batch must parse: %v", err)
 	}
-	if !opts.cfg.GlobOnly || opts.cfg.ManifestTemplate != "" {
-		t.Errorf("-glob-only: GlobOnly=%v ManifestTemplate=%q, want true and empty", opts.cfg.GlobOnly, opts.cfg.ManifestTemplate)
-	}
-
-	_, err = parseCDCFlushFlags([]string{"-s3-bucket=b", "-glob-only", "-manifest-template=manifest/{{.SchemaID}}.json"})
-	if err == nil || !strings.Contains(err.Error(), "-glob-only") {
-		t.Fatalf("-glob-only with an explicit template must be refused, got %v", err)
-	}
-
-	opts, err = parseCDCFlushFlags([]string{"-s3-bucket=b"})
-	if err != nil {
-		t.Fatalf("defaults must parse: %v", err)
-	}
-	if opts.cfg.GlobOnly || opts.cfg.ManifestTemplate == "" {
-		t.Errorf("defaults: GlobOnly=%v ManifestTemplate=%q, want false and the default template", opts.cfg.GlobOnly, opts.cfg.ManifestTemplate)
+	if _, err := parseCDCFlushFlags([]string{"-s3-bucket=b", over, "-pg-engine=aurora-dsql"}); err != nil {
+		t.Fatalf("a DSQL flush publishes in generations, so any batch must parse: %v", err)
 	}
 }

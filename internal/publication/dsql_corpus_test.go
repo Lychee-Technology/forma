@@ -56,7 +56,7 @@ func TestDSQLCorpus(t *testing.T) {
 	var dropped Record
 	inTx(func(tx Tx) error { dropped, err = Reset(ctx, tx, tb, head); return err })
 	inTx(func(tx Tx) error {
-		_, err := Activate(ctx, tx, tb, dropped, []string{"entity_main_change_log"})
+		_, err := Activate(ctx, tx, tb, dropped, []Residue{{Table: "entity_main_change_log"}})
 		return err
 	})
 	_, err = RaiseHorizon(ctx, DB(db), tb, 100, time.Hour)

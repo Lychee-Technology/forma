@@ -34,9 +34,9 @@ func snapshotTablesFor(t *testing.T, ctx context.Context, pool *pgxpool.Pool) mo
 }
 
 // The pgx hot leg's reads see one snapshot (design.md §6.1): an entry
-// committed, or marked flushed, after the snapshot opened reaches neither
-// the dirty set nor the parquet-history answer read in it, while a new
-// snapshot sees both. The transaction refuses writes.
+// committed, or marked flushed, after the snapshot opened does not change the
+// dirty set read in it, while a new snapshot sees both. The transaction
+// refuses writes.
 func TestChangeLogSnapshotReadsOneSnapshot(t *testing.T) {
 	ctx := context.Background()
 	pool := testdb.Connect(t, ctx)
@@ -46,17 +46,16 @@ func TestChangeLogSnapshotReadsOneSnapshot(t *testing.T) {
 	_, err := pool.Exec(ctx, "INSERT INTO "+cl+" (schema_id, row_id, changed_at) VALUES (100, $1, 1)", first)
 	require.NoError(t, err)
 
-	req := ChangeLogSnapshotRequest{Tables: tables, SchemaID: 100, Form: DirtySetHot, GraceCutoffMs: 1_000, ParquetHistory: true}
+	req := ChangeLogSnapshotRequest{Tables: tables, SchemaID: 100}
 	tx, err := beginReadSnapshot(ctx, pool)
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	before, err := readChangeLogSnapshot(ctx, tx, req)
 	require.NoError(t, err)
 	require.Equal(t, []uuid.UUID{first}, before.DirtyIDs)
-	require.False(t, before.HasParquetHistory, "every entry is unflushed and entity_main is empty")
 
 	// A writer and a flush commit while the snapshot is open: a new row, and
-	// the first row's entry marked below the cutoff, so it leaves the hot set.
+	// the first row's entry marked, so it leaves the dirty set.
 	_, err = pool.Exec(ctx, "INSERT INTO "+cl+" (schema_id, row_id, changed_at) VALUES (100, $1, 2)", second)
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, "UPDATE "+cl+" SET flushed_at = 500 WHERE row_id = $1", first)
@@ -74,5 +73,4 @@ func TestChangeLogSnapshotReadsOneSnapshot(t *testing.T) {
 	after, err := NewPostgresDirtyIDFetcher(pool).ReadChangeLogSnapshot(ctx, req)
 	require.NoError(t, err)
 	require.Equal(t, []uuid.UUID{second}, after.DirtyIDs)
-	require.True(t, after.HasParquetHistory, "the mark is a flushed entry")
 }

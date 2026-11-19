@@ -34,9 +34,14 @@ import (
 // (#645); a read-path retry taxonomy is a separate design, and the redacted
 // body is safe for all of them.
 const (
-	errorClassParquetSetInconsistent = "parquet_set_inconsistent"
-	errorClassNoParquetPaths         = "no_parquet_paths"
-	errorClassManifestSchemaMismatch = "manifest_schema_mismatch"
+	// errorClassPublicationInconsistent marks a federated read of a schema
+	// whose publication state cannot be answered from (#759): no record, a
+	// fail-closed state (AWAITING_INIT, DROPPED, another epoch), a missing
+	// or invalid manifest, or a listed object the store does not hold. It is
+	// the client's one way to tell "this schema cannot be read as published"
+	// from an internal failure; the detail stays on the operator log line.
+	errorClassPublicationInconsistent = "publication_inconsistent"
+	errorClassManifestSchemaMismatch  = "manifest_schema_mismatch"
 	// errorClassParquetTypeIncompatible marks a federated read refused because
 	// a live parquet object stores an attribute in a form its current
 	// declaration cannot read losslessly (#732).
@@ -67,10 +72,8 @@ const (
 // the read-path errors are typed carriers precisely so callers do not have to.
 func errorClass(err error) string {
 	switch {
-	case errors.Is(err, forma.ErrParquetSetInconsistent):
-		return errorClassParquetSetInconsistent
-	case errors.Is(err, forma.ErrNoParquetPaths):
-		return errorClassNoParquetPaths
+	case errors.Is(err, forma.ErrPublicationInconsistent):
+		return errorClassPublicationInconsistent
 	case errors.Is(err, forma.ErrManifestSchemaMismatch):
 		return errorClassManifestSchemaMismatch
 	case errors.Is(err, forma.ErrParquetTypeIncompatible):
@@ -124,14 +127,9 @@ func isBodyReadTimeout(err error) bool {
 // schema IDs are always positive here (see APIResponse.SchemaID), which is what
 // makes the field's omitempty encoding lossless.
 func errorSchemaID(err error) int16 {
-	var inconsistent *forma.ParquetSetInconsistentError
+	var inconsistent *forma.PublicationConsistencyError
 	if errors.As(err, &inconsistent) {
 		return inconsistent.SchemaID
-	}
-
-	var noPaths *forma.NoParquetPathsError
-	if errors.As(err, &noPaths) {
-		return noPaths.SchemaID
 	}
 
 	// RequestedSchemaID, not ManifestSchemaID. The client asked to read the

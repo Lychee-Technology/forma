@@ -1342,9 +1342,17 @@ a lost lease, which a later run can retry, from a configuration or data error
 with `errors.Is` (#768). A flush that finds a schema's lock held by another
 holder skips that schema without an error, so the public API has no
 contention sentinel: only `cdc-init` fails on a contended lock. An S3
-listing that cannot be followed to its end fails `cdc-init` and
-`manifest-reconcile`, never a flush. Both outcomes are reported by those
-tools and are not returned through package `cdc`. A flush whose schema
+listing that cannot be followed to its end fails `manifest-reconcile`, never
+a flush or an init. Both outcomes are reported by those tools and are not
+returned through package `cdc`. A flush of a schema the V2 writer may not
+publish fails for that schema, with an error that matches
+`cdc.ErrNoPublicationRecord` (no record: init-db writes it),
+`cdc.ErrAwaitingInit` (run `cdc-init` for the schema) or
+`cdc.ErrSchemaDropped`, and a flush whose publication `COMMIT` went without
+an answer that neither the writer nor one settling attempt could resolve
+matches `cdc.ErrPublicationUnresolved`. A `--batch-size` above what one
+PostgreSQL mark statement binds is refused before any side effect with
+`cdc.ErrBatchSizeTooLarge` (#896). A flush whose schema
 registry cannot resolve a schema's attribute metadata cache fails before any
 side effect with an error that matches `cdc.ErrSchemaAttrCacheUnavailable`.
 A match alone does not decide whether to retry. When the registry returns
@@ -1494,73 +1502,58 @@ whose entries were hand-deleted from the ledger before #342 — for those files
 the rule remains documentation-only. Full removal workflow:
 [`schema-consistency-migration.md`](./schema-consistency-migration.md#removing-an-attribute-342).
 
-### `ErrParquetSetInconsistent`
+### `ErrPublicationInconsistent`
 
-`forma.ErrParquetSetInconsistent`, carried by
-`forma.ParquetSetInconsistentError{SchemaID, MissingKeys}`, marks a
-federated read whose manifest lists parquet objects that do not exist in
-storage. The manifest is the authoritative record of the schema's cold/warm
-tier, so a listed-but-absent object means that tier **has lost data** — the
-rows in that object are simply gone from the result set.
+`forma.ErrPublicationInconsistent`, carried by
+`forma.PublicationConsistencyError{SchemaID, Epoch, Generation, MissingKeys, Err}`
+(aliased as `federated.PublicationConsistencyError`), marks a federated read
+whose publication state cannot be answered from
+(`docs/publication-protocol-v2.md`, "Readers"; `docs/federated-query/design.md`
+§4.3.1). `Err` is the fault, which the error also matches:
+
+- no record (`publication.ErrNoRecord`), or a record that is `AWAITING_INIT`
+  (`publication.ErrAwaitingInit`), `DROPPED` (`publication.ErrDropped`), a
+  row the read refuses (`publication.ErrRecordInvalid`), or at an epoch the
+  process did not pin (`federatedv2.ErrEpochChanged`, `federatedv2.ErrNotPinned`);
+- a committed manifest that is missing or fails verification
+  (`manifestv2.ConsistencyError`);
+- a listed address DuckDB would expand as a glob
+  (`federated.ErrPublishedPathNotConcrete`);
+- a listed object the store does not hold, with its keys in `MissingKeys`.
 
 - **Plain error, not `ErrInvalidInput`.** Nothing about the request is wrong;
-  persisted data and the metadata indexing it disagree. It is an
-  operator-visible consistency failure, not a user-facing `4xx`.
+  the committed publication metadata, or the objects it lists, cannot be
+  answered from. It is an operator-visible consistency failure, never a `4xx`.
 - **Not degradable.** It surfaces even on a deployment with
-  `duckdb.allowPartialDegradedMode`, unlike the transient DuckDB/S3
-  failures that fall back to Postgres-only. Degrading here would return
-  exactly the silently short answer this classification exists to make loud.
-- **Trigger precondition.** Only reachable when the server resolves parquet
-  paths from the manifest source (`duckdb.manifestTemplate` configured — see
-  `docs/federated-query/design.md` §4.3.1). With an engine-level path hint
-  (no request can set one since #715), or with glob paths, the
-  classification is skipped: a hinted path set whose
-  object is missing still fails the scan, but as a plain
-  `ErrFederatedReadFailed`, while a glob quietly expands to whatever objects
-  survive and returns a shorter result set with no error at all.
-- **Direction of the contract.** Only `manifest ⊆ live objects` is enforced.
-  Extra unlisted objects are tolerated and invisible to reads.
+  `duckdb.allowPartialDegradedMode`: a PostgreSQL-only answer would drop every
+  row the parquet tiers hold, the silently short answer this classification
+  exists to make loud (#759). It is never `ErrFederatedReadFailed`, it is not
+  charged to the DuckDB circuit breaker (it says nothing about DuckDB's
+  health), and it is not retried, so a fresh snapshot cannot hide a loss
+  already found.
+- **Not a failed read.** A record the snapshot could not read is
+  `ErrPostgresReadFailed`, and a manifest the store could not answer is
+  `ErrFederatedReadFailed`; both stay degradable.
 - **Cached corruption does not mask a loss (#251, #722).** While a per-file
-  verification verdict is cached (default 5 minutes), a read whose set lists
-  the corrupt object is refused as `CorruptParquetError` before any scan. The
-  refusal probes the whole listed set first, so a listed object deleted
-  inside that window, the corrupt one or any other, still fails as
-  `ParquetSetInconsistentError` and is not absorbed by the degraded
-  fallback. See `docs/federated-query/design.md` §7.3.
-- **Operator action.** The message names the schema and the missing
-  bucket-relative keys. Run the reconciliation tool to diagnose and repair:
-  see `docs/manifest-reconcile.md`.
+  verification verdict is cached, a read whose generation lists the corrupt
+  object is refused as `CorruptParquetError` before any scan. The refusal
+  probes the whole listed set first, so a listed object deleted inside that
+  window, the corrupt one or any other, still fails with this error.
+- **HTTP.** The `publication_inconsistent` error class, with the schema id
+  (`errorSchemaID`); the body is redacted, so the keys and the fault stay on
+  the operator log line.
+- **Operator action.** The message names the schema, the epoch and the
+  generation, and the lost keys when objects are missing. `AWAITING_INIT` is
+  the specified per-schema outage between the V2 cutover and the schema's V2
+  `cdc-init`: run the init. A schema without a record, or pinned at another
+  epoch, needs its registration (`init-db`) and a restart of the reader. A
+  lost manifest or object is data loss of the published generation; repair is
+  a re-init (#891).
 
-### `ErrNoParquetPaths`
-
-`forma.ErrNoParquetPaths`, carried by
-`forma.NoParquetPathsError{SchemaID, SourceConfigured}`, marks a
-DuckDB-routed federated read whose parquet path set resolved **empty**: no
-engine-level path hint, and either no configured parquet source or a source
-whose manifest lists no files while the fallback glob is disabled (see
-`docs/federated-query/design.md` §4.3.1).
-
-- **Plain error, not `ErrInvalidInput`.** No request names parquet paths
-  since #715, so the read surface — server configuration, or manifest
-  state — is what cannot answer the query. (An engine-level hint that cannot
-  render is invalid input instead; only the test harnesses set one.)
-- **Not degradable.** Like `ErrParquetSetInconsistent`, it surfaces even on a
-  deployment with `duckdb.allowPartialDegradedMode`. Every query that reaches
-  the DuckDB engine wants warm and/or cold data (an engine-level hot-only
-  query short-circuits to Postgres before this point), so a Postgres-only fallback
-  would be silently short precisely where the cold tier was requested.
-- **Why it is not a read failure.** Before #299 the empty set rendered
-  `read_parquet(<no value>)`, and the resulting DuckDB parser error classified
-  as the degradable `ErrFederatedReadFailed` — loud, but indistinguishable
-  from a transient S3 outage to any programmatic discriminator, so degraded
-  mode turned a configuration mistake into a quietly incomplete answer.
-- **Not a normal empty state.** A never-flushed schema resolves the level-3
-  fallback glob, not an empty set; reaching this error means the fallback is
-  disabled too (`duckdb.s3DataPrefix` empty).
-- **Operator action.** The message names the schema and distinguishes the two
-  causes: configure the read surface (`duckdb.manifestTemplate` +
-  `duckdb.s3Bucket`), set `duckdb.s3DataPrefix` to re-enable the fallback
-  glob, or repair the schema's manifest (`docs/manifest-reconcile.md`).
+The V1 read errors `ErrParquetSetInconsistent` (a manifest listing missing
+objects) and `ErrNoParquetPaths` (an empty resolved path set) were deleted with
+the V1 resolution (#896), together with their HTTP classes
+`parquet_set_inconsistent` and `no_parquet_paths`.
 
 ### `ErrManifestSchemaMismatch`
 
@@ -1584,12 +1577,14 @@ being read. It is raised before any path reaches a scan.
   template (a constant path, a `{{.SchemaId}}` typo) but cannot prove
   injectivity over the whole schema domain. This error is the runtime
   enforcement of what that check can only sample.
-- **Where it is enforced.** Every per-schema manifest consumer: the federated
-  read path, `cdc-init` (#518), `cdc-flush`'s delta append, the compactor's
-  manifest load and `manifest-reconcile` (which wraps it in its own
-  `claims schema N, not requested schema M` wording). All four CLI tools also
-  probe `--manifest-template` at flag parsing with the same two-schema check
-  the server applies to `duckdb.manifestTemplate` (#520).
+- **Where it is enforced.** Every per-schema V1 manifest consumer: the
+  federated read path, the compactor's manifest load and `manifest-reconcile`
+  (which wraps it in its own `claims schema N, not requested schema M`
+  wording). Those CLI tools also probe `--manifest-template` at flag parsing
+  with the same two-schema check the server applies to
+  `duckdb.manifestTemplate` (#520). `cdc-flush` and `cdc-init` no longer read
+  or write a V1 manifest (#896): a V2 manifest names its schema, epoch and
+  generation, and its digest is committed in the record.
 - **Zero stamp (#522).** A manifest whose `schema_id` is zero is unstamped
   rather than schema 0 (schema IDs are always positive), and it is not a legacy
   format either: the field has been on the manifest, and set by every Forma
@@ -1740,7 +1735,6 @@ enumerates the sweep, and counts only it.
 | `internal/conditionexpr/parser.go` | malformed `"op:value"`; unknown operator; unparseable date |
 | `internal/httpapi` (`server.go` parse helpers, `handlers.go` wrap sites, `body_limit.go`) | malformed request path; undecodable JSON body; invalid `row_id`; invalid sort parameters; malformed create-payload shape (#360); a request body over the configured cap (`413`, #465); a body net/http could not frame (`400`, `malformed request body`). A body the transport failed to deliver is not caller input and takes the redacted branch (`408` on a read timeout, see "Request limits") |
 | `internal/entity_request_limits.go` (`validateBatchOperation`, `pageOffset`) | a batch carrying more operations than `PerformanceConfig.MaxBatchSize`; a `page` whose offset overflows an `int` (#465); a `page` whose window ends past `QueryConfig.MaxRows` (#598) |
-| `internal/federated/duckdb_query_build.go` (`duckDBParquetPathsForQuery`), `internal/federated/parquet_hint_scope.go` (`validateHintPathScope`) | an engine-level parquet path hint (`model.DuckDBRenderHints.S3ParquetPathTemplate`) that is unrenderable, renders to no usable path, contains a disallowed character, a NUL character or invalid UTF-8 (#771), resolves outside the configured bucket / `s3DataPrefix` scope, or has a forbidden shape — `**`, a wildcard outside the object-name segment, a `_tmp` segment, a trailing `/` (#456, #477) — or any hint at all on an engine whose bucket is empty or whose `s3DataPrefix` carries a glob metacharacter. Since #715 no request carries a hint (the `federated.s3_parquet_path_template` field and its `duckdb.allowCallerParquetPaths` opt-in are gone), so only an in-module engine caller reaches this row. The hint template and the offending rendered path are published; the configured bucket and prefix are operator detail (`WithOperatorDetail`). |
 
 ### A success body that fails to encode (#591)
 
@@ -2074,9 +2068,10 @@ An operator retrieves the detail from the `error_id` the caller quotes.
 #### `schema_id` on a redacted body — a reversed decision
 
 `errorSchemaID` (`internal/httpapi/error_response.go`) resolves the schema with
-`errors.As` against the three typed read-path carriers —
-`ParquetSetInconsistentError.SchemaID`, `NoParquetPathsError.SchemaID`, and
-`ManifestSchemaMismatchError.RequestedSchemaID`. Anything else resolves 0 and
+`errors.As` against the typed read-path carriers —
+`PublicationConsistencyError.SchemaID`,
+`ManifestSchemaMismatchError.RequestedSchemaID` (and its unstamped species),
+and `ParquetTypeIncompatibleError.SchemaID`. Anything else resolves 0 and
 the field is omitted. `errors.As` rather than a type assertion, because the
 carriers reach the boundary wrapped several levels deep.
 
@@ -2255,19 +2250,19 @@ branch of the join still never crosses.
 {
   "success": false,
   "error": "internal read error",
-  "error_class": "parquet_set_inconsistent",
+  "error_class": "publication_inconsistent",
   "error_id": "9f2c1a7e-…",
   "schema_id": 22
 }
 ```
 
-That example is the `parquet_set_inconsistent` shape; the far more frequent one
+That example is the `publication_inconsistent` shape; the far more frequent one
 pairs `"error_class": "internal"` with `"error": "internal error"` and carries
 **no** `schema_id` key at all, because an unclassified chain holds no typed
 carrier to read one from.
 
-Classes: `parquet_set_inconsistent`, `no_parquet_paths`,
-`manifest_schema_mismatch`, `parquet_type_incompatible` (#732), and `internal`
+Classes: `publication_inconsistent` (#759, #896), `manifest_schema_mismatch`,
+`parquet_type_incompatible` (#732), and `internal`
 for everything else. They resolve via `errors.Is`, never message text.
 
 ### Why an allowlist

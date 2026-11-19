@@ -114,8 +114,8 @@ func TestNoEndpointLeaksOperatorDetail(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 				t.Fatalf("body is not valid JSON: %v", err)
 			}
-			if resp.ErrorClass != errorClassParquetSetInconsistent {
-				t.Fatalf("expected class %q, got %q", errorClassParquetSetInconsistent, resp.ErrorClass)
+			if resp.ErrorClass != errorClassPublicationInconsistent {
+				t.Fatalf("expected class %q, got %q", errorClassPublicationInconsistent, resp.ErrorClass)
 			}
 			if _, err := uuid.Parse(resp.ErrorID); err != nil {
 				t.Fatalf("error_id %q is not a UUID: %v", resp.ErrorID, err)
@@ -223,11 +223,9 @@ func TestCreateUnknownSchemaIs404AndVerbatim(t *testing.T) {
 // error_response_test.go guards the disclosure.
 func TestReadPathErrorsClassifyAs5xx(t *testing.T) {
 	errs := map[string]error{
-		"parquet set inconsistent": &forma.ParquetSetInconsistentError{
+		"publication inconsistent": &forma.PublicationConsistencyError{Err: errTestPublicationFault,
 			SchemaID: 22, MissingKeys: []string{"base/k.parquet"},
 		},
-		"no parquet paths configured":  &forma.NoParquetPathsError{SchemaID: 7, SourceConfigured: false},
-		"no parquet paths from source": &forma.NoParquetPathsError{SchemaID: 7, SourceConfigured: true},
 		"manifest schema mismatch": &forma.ManifestSchemaMismatchError{
 			RequestedSchemaID: 1, ManifestSchemaID: 2, Path: "manifests/1.json",
 		},

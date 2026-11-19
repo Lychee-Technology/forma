@@ -71,131 +71,6 @@ func TestDuckDBConfigFromEnv_DuckDBOverridesWin(t *testing.T) {
 	}
 }
 
-// TestDuckDBConfigFromEnv_ManifestFieldsFromSharedVars pins that manifest config
-// fields are wired from shared MANIFEST_* vars when DUCKDB_MANIFEST_* are absent.
-func TestDuckDBConfigFromEnv_ManifestFieldsFromSharedVars(t *testing.T) {
-	t.Setenv("DUCKDB_ENABLED", "true")
-	t.Setenv("MANIFEST_PREFIX", "shared-prefix")
-	t.Setenv("MANIFEST_TEMPLATE", "shared-template")
-
-	got := readDuckDBConfig(t, forma.DuckDBConfig{})
-	if got.ManifestPrefix != "shared-prefix" {
-		t.Fatalf("expected ManifestPrefix from MANIFEST_PREFIX, got %q", got.ManifestPrefix)
-	}
-	if got.ManifestTemplate != "shared-template" {
-		t.Fatalf("expected ManifestTemplate from MANIFEST_TEMPLATE, got %q", got.ManifestTemplate)
-	}
-}
-
-// TestDuckDBConfigFromEnv_DuckDBManifestOverridesWin pins that DUCKDB_MANIFEST_*
-// overrides take precedence over the shared MANIFEST_* vars.
-func TestDuckDBConfigFromEnv_DuckDBManifestOverridesWin(t *testing.T) {
-	t.Setenv("DUCKDB_ENABLED", "1")
-	t.Setenv("MANIFEST_PREFIX", "shared-prefix")
-	t.Setenv("MANIFEST_TEMPLATE", "shared-template")
-	t.Setenv("DUCKDB_MANIFEST_PREFIX", "duck-prefix")
-	t.Setenv("DUCKDB_MANIFEST_TEMPLATE", "duck-template")
-
-	got := readDuckDBConfig(t, forma.DuckDBConfig{})
-	if got.ManifestPrefix != "duck-prefix" {
-		t.Fatalf("expected DUCKDB_MANIFEST_PREFIX override, got %q", got.ManifestPrefix)
-	}
-	if got.ManifestTemplate != "duck-template" {
-		t.Fatalf("expected DUCKDB_MANIFEST_TEMPLATE override, got %q", got.ManifestTemplate)
-	}
-}
-
-// TestDuckDBConfigFromEnv_ManifestOffByDefault pins that setting only
-// DUCKDB_ENABLED does not enable manifest reads (ManifestReadEnabled() == false).
-func TestDuckDBConfigFromEnv_ManifestOffByDefault(t *testing.T) {
-	t.Setenv("DUCKDB_ENABLED", "1")
-
-	got := readDuckDBConfig(t, forma.DuckDBConfig{})
-	if got.ManifestReadEnabled() {
-		t.Fatalf("expected manifest reads disabled by default, got enabled")
-	}
-}
-
-// TestDuckDBConfigFromEnv_SharedPrefixesIgnoredWithoutTemplate is the upgrade
-// safety pin: an existing single-stack deployment exports S3_PREFIX (and maybe
-// MANIFEST_PREFIX) for the CDC tooling and turns DUCKDB_ENABLED on. Adopting
-// those shared names without a manifest template would produce an inert config
-// that ValidateManifestRead rejects, so the server would refuse to boot after
-// upgrading. The shared-name fallbacks are all-or-nothing with the template.
-func TestDuckDBConfigFromEnv_SharedPrefixesIgnoredWithoutTemplate(t *testing.T) {
-	t.Setenv("DUCKDB_ENABLED", "1")
-	t.Setenv("S3_PREFIX", "delta")
-	t.Setenv("MANIFEST_PREFIX", "x")
-
-	got := readDuckDBConfig(t, forma.DuckDBConfig{})
-	if got.S3DataPrefix != "" {
-		t.Fatalf("expected S3DataPrefix ignored without a template, got %q", got.S3DataPrefix)
-	}
-	if got.ManifestPrefix != "" {
-		t.Fatalf("expected ManifestPrefix ignored without a template, got %q", got.ManifestPrefix)
-	}
-	if got.ManifestReadEnabled() {
-		t.Fatalf("expected manifest reads disabled without a template")
-	}
-	if err := got.ValidateManifestRead(); err != nil {
-		t.Fatalf("expected an upgraded single-stack config to still boot, got %v", err)
-	}
-}
-
-// TestDuckDBConfigFromEnv_SharedPrefixesAdoptedWithTemplate pins the other half
-// of the all-or-nothing rule: once a manifest template is in play, the shared
-// prefix names are the single-stack configuration point and are adopted.
-func TestDuckDBConfigFromEnv_SharedPrefixesAdoptedWithTemplate(t *testing.T) {
-	t.Setenv("DUCKDB_ENABLED", "1")
-	t.Setenv("S3_PREFIX", "delta")
-	t.Setenv("MANIFEST_PREFIX", "manifests")
-	t.Setenv("MANIFEST_TEMPLATE", "manifest/{{.SchemaID}}.json")
-
-	got := readDuckDBConfig(t, forma.DuckDBConfig{})
-	if got.S3DataPrefix != "delta" {
-		t.Fatalf("expected S3DataPrefix from S3_PREFIX, got %q", got.S3DataPrefix)
-	}
-	if got.ManifestPrefix != "manifests" {
-		t.Fatalf("expected ManifestPrefix from MANIFEST_PREFIX, got %q", got.ManifestPrefix)
-	}
-	if !got.ManifestReadEnabled() {
-		t.Fatalf("expected manifest reads enabled with a template")
-	}
-}
-
-// TestDuckDBConfigFromEnv_ExplicitPrefixKeptWithoutTemplate pins that the
-// DUCKDB_-prefixed names are always adopted, template or not. The resulting
-// config is inert and the factory rejects it at startup — that is the strict
-// rule working as intended: an operator who typed DUCKDB_S3_PREFIX by hand
-// gets told the template is missing rather than having the value dropped.
-func TestDuckDBConfigFromEnv_ExplicitPrefixKeptWithoutTemplate(t *testing.T) {
-	t.Setenv("DUCKDB_ENABLED", "1")
-	t.Setenv("DUCKDB_S3_PREFIX", "delta")
-
-	got := readDuckDBConfig(t, forma.DuckDBConfig{})
-	if got.S3DataPrefix != "delta" {
-		t.Fatalf("expected explicit DUCKDB_S3_PREFIX kept, got %q", got.S3DataPrefix)
-	}
-	if err := got.ValidateManifestRead(); err == nil {
-		t.Fatalf("expected an explicitly-set inert config to be rejected")
-	}
-}
-
-// TestDuckDBConfigFromEnv_ExplicitManifestPrefixKeptWithoutTemplate mirrors the
-// previous pin for DUCKDB_MANIFEST_PREFIX.
-func TestDuckDBConfigFromEnv_ExplicitManifestPrefixKeptWithoutTemplate(t *testing.T) {
-	t.Setenv("DUCKDB_ENABLED", "1")
-	t.Setenv("DUCKDB_MANIFEST_PREFIX", "manifests")
-
-	got := readDuckDBConfig(t, forma.DuckDBConfig{})
-	if got.ManifestPrefix != "manifests" {
-		t.Fatalf("expected explicit DUCKDB_MANIFEST_PREFIX kept, got %q", got.ManifestPrefix)
-	}
-	if err := got.ValidateManifestRead(); err == nil {
-		t.Fatalf("expected an explicitly-set inert config to be rejected")
-	}
-}
-
 // TestDuckDBConfigFromEnv_AllowPartialDegradedMode pins #715: the degraded
 // fallback is deployment configuration, off unless
 // DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE is set, and turning it on flips the flag.
@@ -327,6 +202,19 @@ func TestBootstrapServer_RejectsAHotLegTransportOtherThanPgx(t *testing.T) {
 				t.Fatalf("expected a ConfigError on duckdb.hotLegTransport, got %v", err)
 			}
 		})
+	}
+}
+
+// TestBootstrapServer_RejectsDuckDBWithoutABucket: with DuckDB on, the
+// federated reader scans the published generations in the bucket, so a
+// server without one fails startup with a ConfigError naming it, before any
+// I/O.
+func TestBootstrapServer_RejectsDuckDBWithoutABucket(t *testing.T) {
+	t.Setenv("DUCKDB_ENABLED", "true")
+	_, err := bootstrapServer(context.Background(), zap.NewNop().Sugar())
+	var configErr *forma.ConfigError
+	if !errors.As(err, &configErr) || configErr.Field != "duckdb.s3Bucket" {
+		t.Fatalf("expected a ConfigError on duckdb.s3Bucket, got %v", err)
 	}
 }
 

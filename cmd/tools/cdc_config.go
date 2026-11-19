@@ -20,9 +20,18 @@ type cdcSharedFlags struct {
 	eavDataTable      string
 	batchSize         int
 	estimatedRowBytes int
-	manifestPrefix    string
-	manifestTemplate  string
 }
+
+// defaultCDCDataPrefix is the -s3-prefix default of both cdc-flush and
+// cdc-init, and the -data-prefix default of the compactor and
+// manifest-reconcile.
+const defaultCDCDataPrefix = "data"
+
+// cdcDataPrefixUsage is the -s3-prefix usage of both CDC writers: they must
+// name the same prefix, since a flush generation lists the init's base
+// objects and a manifest that lists a key under another prefix is refused.
+const cdcDataPrefixUsage = "S3 data prefix of the V2 object layout: parquet objects under {prefix}/{schema_id}/e{epoch}/{base|delta}/, " +
+	"manifests under {prefix}/{schema_id}/_manifests/. cdc-flush and cdc-init of one deployment must name the same prefix"
 
 // sharedConfig returns a CDCConfig holding only the shared block. It does not
 // call WithDefaults: callers add their tool-specific fields first and apply
@@ -49,8 +58,6 @@ func (s cdcSharedFlags) sharedConfig() cdc.CDCConfig {
 		S3Region:                s.s3.region,
 		S3UseSSL:                s.s3.useSSL,
 		S3UsePath:               s.s3.usePath,
-		ManifestPrefix:          s.manifestPrefix,
-		ManifestTemplate:        s.manifestTemplate,
 		EntityMainTable:         s.entityMainTable,
 		EAVDataTable:            s.eavDataTable,
 		BatchSize:               s.batchSize,

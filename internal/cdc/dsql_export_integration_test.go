@@ -16,8 +16,9 @@ import (
 )
 
 // The CDC tools' PostgreSQL reads on the aurora-dsql test target (#691): the
-// batch selection of cdc-flush and cdc-init, and the export's per-batch
-// REPEATABLE READ READ ONLY transaction with its `= ANY($1::uuid[])` row-id
+// run's planning reads of cdc-flush and cdc-init, the delta export's per-batch
+// REPEATABLE READ READ ONLY transaction and the base export's reads on the
+// export snapshot it is handed, each with its `= ANY($1::uuid[])` row-id
 // parameter (#785). FORMA_DSQL_DSN names a cluster, and with
 // FORMA_DSQL_TARGET=ministack MiniStack's strict proxy
 // (docs/dsql-ministack.md). Without either they run on the integration
@@ -130,14 +131,13 @@ func TestDSQLExportFlushReadsOneBatch(t *testing.T) {
 	require.Equal(t, int64(3), count, "the unflushed entries of the schema")
 	require.Equal(t, int64(1111), oldest)
 
-	ids, versions, snapshot, err := SelectBatchRowIDs(ctx, f.db, f.cfg.ChangeLogTable, dsqlExportSchemaID, 10)
-	require.NoError(t, err)
-	require.Equal(t, []uuid.UUID{f.live[0], f.live[1], f.gone}, ids, "listed oldest first")
-	require.Equal(t, map[uuid.UUID]int64{f.live[0]: 1111, f.live[1]: 1112, f.gone: 1113}, versions)
+	// The batch internal/cdcv2's Writer.Flush selects: the unflushed entries,
+	// oldest first; the export's cutoff is the greatest listed version.
+	ids, snapshot := []uuid.UUID{f.live[0], f.live[1], f.gone}, int64(1113)
 
 	exp := f.exporter(t, ctx)
 	out := filepath.Join(t.TempDir(), "delta.parquet")
-	require.NoError(t, exp.ExportSnapshotToTmp(ctx, f.cfg, f.db, out, dsqlExportSchemaID, snapshot, ids, testAttrCache()))
+	require.NoError(t, exp.ExportDelta(ctx, f.cfg, f.db, out, dsqlExportSchemaID, snapshot, ids, testAttrCache()))
 	require.Equal(t, []exportedRow{
 		{rowID: f.live[0], changedAt: 1111, name: liveName("alpha"), flag: liveFlag(true)},
 		{rowID: f.live[1], changedAt: 1112, name: liveName("beta"), flag: liveFlag(false)},
@@ -147,13 +147,14 @@ func TestDSQLExportFlushReadsOneBatch(t *testing.T) {
 
 	// The row-id parameter selects: a batch of one row exports that row.
 	one := filepath.Join(t.TempDir(), "one.parquet")
-	require.NoError(t, exp.ExportSnapshotToTmp(ctx, f.cfg, f.db, one, dsqlExportSchemaID, snapshot, []uuid.UUID{f.live[1]}, testAttrCache()))
+	require.NoError(t, exp.ExportDelta(ctx, f.cfg, f.db, one, dsqlExportSchemaID, snapshot, []uuid.UUID{f.live[1]}, testAttrCache()))
 	require.Equal(t, []exportedRow{{rowID: f.live[1], changedAt: 1112, name: liveName("beta"), flag: liveFlag(false)}}, readExport(t, exp, one))
 }
 
-// cdc-init's reads: the schema's live row count, its keyset batches by row
-// id, and the base export of a batch, which reads entity_main without
-// change_log.
+// cdc-init's reads: the schema's live row count (a dry run's plan), and the
+// base export of a snapshot's rows, which reads entity_main without
+// change_log on the REPEATABLE READ READ ONLY snapshot internal/cdcv2's
+// Writer.Init begins, through database/sql (stageRowsOnTx).
 func TestDSQLExportInitReadsItsBatches(t *testing.T) {
 	ctx := context.Background()
 	f := newDSQLExportFixture(t, ctx)
@@ -163,16 +164,12 @@ func TestDSQLExportInitReadsItsBatches(t *testing.T) {
 	require.Equal(t, int64(3), count)
 
 	want := sortedUUIDs(f.live[0], f.live[1], f.clean)
-	first, err := selectEntityMainBatch(ctx, f.db, f.cfg.EntityMainTable, dsqlExportSchemaID, nil, 2)
-	require.NoError(t, err)
-	require.Equal(t, want[:2], first)
-	rest, err := selectEntityMainBatch(ctx, f.db, f.cfg.EntityMainTable, dsqlExportSchemaID, &first[1], 2)
-	require.NoError(t, err)
-	require.Equal(t, want[2:], rest)
-
 	exp := f.exporter(t, ctx)
 	out := filepath.Join(t.TempDir(), "base.parquet")
-	require.NoError(t, exp.ExportBaseFileToTmp(ctx, f.cfg, f.db, out, dsqlExportSchemaID, want, testAttrCache()))
+	snap, err := f.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = snap.Rollback() })
+	require.NoError(t, exp.ExportBase(ctx, f.cfg, snap, out, dsqlExportSchemaID, want, testAttrCache()))
 	// A base row's changed_at is its ltbase_updated_at (#210).
 	require.Equal(t, []exportedRow{
 		{rowID: f.clean, changedAt: 900, name: liveName("gamma")},

@@ -1,9 +1,7 @@
 package sqlgen
 
 import (
-	"bytes"
 	"fmt"
-	"text/template"
 
 	"github.com/lychee-technology/forma/internal/model"
 
@@ -106,24 +104,4 @@ func ValidateOrderByAttributesForListTypes(orderBy []model.AttributeOrder) error
 		}
 	}
 	return nil
-}
-
-// RenderS3ParquetPath interpolates a simple Go template for parquet path rendering.
-// Example template: "s3://bucket/path/schema_{{.SchemaID}}/data.parquet"
-func RenderS3ParquetPath(tmpl string, schemaID int16) (string, error) {
-	if tmpl == "" {
-		return "", fmt.Errorf("template string is empty")
-	}
-	t, err := template.New("s3path").Parse(tmpl)
-	if err != nil {
-		return "", fmt.Errorf("parse template: %w", err)
-	}
-	data := map[string]any{
-		"SchemaID": schemaID,
-	}
-	var buf bytes.Buffer
-	if err := t.Execute(&buf, data); err != nil {
-		return "", fmt.Errorf("execute template: %w", err)
-	}
-	return buf.String(), nil
 }

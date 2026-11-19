@@ -6,10 +6,11 @@ objects (document, digest, keys, write-once store, verifying cache) are in
 `internal/manifestv2` (#898), and the `cdc-flush` and `cdc-init` publication paths built on
 both are in `internal/cdcv2` (#899). The federated reader's pass resolves its source in its
 snapshot when an engine is built with `federated.WithPublicationReader`, whose only
-implementation is `internal/federatedv2` (#900). Nothing in `cdc-flush`, `cdc-init`, the
-compactor, the federated reader or `manifest-reconcile` uses any of them yet, and no engine
-is built with that option: the other #887 children move those consumers onto them
-([Ownership](#ownership-and-migration)).
+implementation is `internal/federatedv2` (#900). Since #896 `cdc-flush` and `cdc-init`
+publish only through `internal/cdcv2`: `internal/cdc` adapts the DuckDB export into its
+`DeltaStager` and `BaseExporter`. Nothing in the compactor, the federated reader or
+`manifest-reconcile` uses any of them yet, and no engine is built with that option: the
+other #887 children move those consumers onto them ([Ownership](#ownership-and-migration)).
 Behaviour on a real Aurora DSQL cluster has not been checked. #817 tracks that, and
 [Verification](#verification) lists what this contract assumes until then.
 
@@ -484,9 +485,15 @@ horizon is what the orphan rule relies on.
 A listed key that is missing is loss, as under V1's one-directional contract. The read
 fails loudly and classifies, and GC never makes this happen within the retention window.
 
-**As built (#900, dormant until #896).** The pass in `internal/federated` takes these steps
-when its engine has a `PublicationReader`, and resolves nothing before its snapshot. A few
-choices the steps above leave open:
+**As built (#900, wired in #896).** Every pass in `internal/federated` takes these steps,
+and resolves nothing before its snapshot. The factory builds the engine with
+`WithPublicationReader` whenever DuckDB is enabled; an engine without a reader fails every
+pass as misconfigured, non-degradably, rather than answer from the hot leg alone. The epoch
+pins are read once at startup, in one snapshot beside the schema metadata
+(`federatedv2.LoadEpochPins`): a schema without a record gets no pin and fails closed
+(`federatedv2.ErrNotPinned`) until the process restarts, and the metadata is never
+reloaded, so the pins never need to follow a reload. A few choices the steps above leave
+open:
 
 - The dirty set is the strict one (`flushed_at = 0`) in both forms, and the hot keys are
   read over the unflushed entries alone. The flush-grace widening (#252) made up for a path
@@ -959,8 +966,8 @@ the V1 code it replaces:
 | `init-db` table DDL | `Statements` for the configured `entity_main`, in init-db's table transaction. `init-db` creates the tables on PostgreSQL. On Aurora DSQL, #895 covers statement validity only: `make lint-dsql` and the MiniStack strict lane accept the DSQL rendering, but `init-db` cannot execute there, because it has no engine selection and sends its DDL in one transaction, which DSQL rejects. An executable DSQL `init-db` (one DDL statement per transaction, strict-lane fresh init, upgrade and rerun) is #690's. The tables only: nothing inserts, reads or updates them | #895 (DSQL execution: #690) |
 | V2 manifest objects | `internal/manifestv2`: the document and its deterministic bytes and digest, the `flush` and `init` file lists, the object keys, a write-once put (`If-None-Match: *`) on S3 and the same contract on a local directory, and a process-wide cache of manifests verified with `ManifestFiles` and the full-document checks. A missing or refused manifest is a `ConsistencyError`. Nothing in production imports it until #896 | #898 |
 | `init-db` registration, the upgrade cutover | `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock | #896 (writers and reader, built in #899 to #901) |
-| `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path. The publication loop is `internal/cdcv2`'s `Writer.Flush` (#899), behind a `DeltaStager` that writes the parquet; #896 adapts the DuckDB export to it and calls it | #896 (writers and reader, built in #899 to #901) |
-| `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot; #896 adapts the DuckDB export to it and calls it | #896 (writers and reader, built in #899 to #901), closing #760 |
+| `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path. The publication loop is `internal/cdcv2`'s `Writer.Flush` (#899), behind a `DeltaStager` that writes the parquet. #896 adapts the DuckDB export to it (`internal/cdc`'s `deltaStager`: a local scratch file, then a conditional put under a fresh key), calls it with the epoch the run loads from the record, and deletes the V1 append, the #474 probe, both V1 marks, `--glob-only` and the writers' `--manifest-template`/`--manifest-prefix` | #896 (writers and reader, built in #899 to #901) |
+| `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot. #896 adapts the DuckDB export to it (`internal/cdc`'s `baseExporter`, which reads the rows on that snapshot), calls it, settles a lost `COMMIT` once in-process (`ResumeInit`), and deletes the V1 manifest swap, the ambiguous-save confirmation, the delta purge (`--replace-delta`, `--delta-prefix`) and the zero-row placeholder | #896 (writers and reader, built in #899 to #901), closing #760 |
 | compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891 | #890 (compaction) |
 | federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. #900 builds the pass behind `federated.WithPublicationReader` and its source in `internal/federatedv2`, with no caller ([As built](#readers)); #896 loads the epoch pins with the schema metadata, builds the engine with the option, deletes the V1 resolution and rewrites `docs/federated-query/design.md` §6.1 | #896 (writers and reader, built in #899 to #901), carrying #759 |
 | `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire` and `PlanCollection` in the collection order above. Repair becomes re-init. Verification walks retained generations | #891 (GC) |
@@ -1024,7 +1031,9 @@ published schema. Its PR closes #760 alongside #896.
   one. #900 sets its default, `federated.DefaultPublishedPassDeadline`, to 60 s: twice the
   query budget's default, so under the default configuration the query budget expires
   first and `R_max` only bounds a deployment that raised or disabled it. `G` must then be
-  at least 60 s + `C`. Whether #896 exposes `R_max` in the configuration is open.
+  at least 60 s + `C`. #896 does not expose `R_max` in the configuration: the factory
+  passes the default, so `G` has one value to cover. Whether a deployment needs another is
+  open.
 - Whether the DSQL flush should shrink its batch to 1,000 rows, or keep 10,000 and
   publish ten generations per batch. Ten manifests per batch multiply manifest objects
   and history rows, and GC bounds both.

@@ -36,21 +36,6 @@ type DuckDBConfig struct {
 	// tripping. Zero means use the built-in default.
 	CircuitBreakerOpenDuration time.Duration `json:"circuitBreakerOpenDuration"`
 
-	// FlushVisibilityGraceMs is the #252 clock-skew margin for the federated
-	// dirty barrier. Each query anchors its cutoff at the instant it resolved
-	// its parquet path set: rows marked flushed after that instant (their
-	// delta may be missing from the resolved set) stay hot-readable, minus
-	// this margin to absorb CDC-host vs query-host clock skew. Zero (the
-	// default) is the exact anchor — the steady state is never widened; a
-	// positive value hot-serves rows flushed up to that long before the
-	// query. A negative value reads as 0, the exact anchor: the pgx hot
-	// leg's snapshot guarantee needs a cutoff no later than path resolution,
-	// so the widening cannot be disabled (design.md §6.1, *The widening is
-	// never disabled*). Before #858 a negative value disabled the widening on
-	// the attach transport. The hot-excluded form reads the strict set,
-	// whatever this value.
-	FlushVisibilityGraceMs int64 `json:"flushVisibilityGraceMs"`
-
 	// HotLegTransport names how a federated pass reads the hot tier
 	// (design.md §6.1). HotLegTransportPgx, or empty, which means the same, is
 	// the only value: the pass reads the hot tier over the engine's pgx pool
@@ -68,37 +53,13 @@ type DuckDBConfig struct {
 	// alone. Zero, the default, sets no cap.
 	HotLegMaxDirtyRows int `json:"hotLegMaxDirtyRows"`
 
-	// S3Bucket is the bucket holding the lakehouse parquet files and the
-	// manifests that index them. Required whenever ManifestTemplate is set.
+	// S3Bucket is the bucket holding the lakehouse: the parquet objects and
+	// the immutable manifests of every published generation
+	// (docs/publication-protocol-v2.md). The reader takes each schema's
+	// manifest key from its publication record and scans exactly the objects
+	// the manifest lists, as s3://<S3Bucket>/<key>, so it needs no prefix or
+	// path template of its own. Required when Enabled.
 	S3Bucket string `json:"s3Bucket"`
-	// S3DataPrefix mirrors the CDC write side's S3Prefix (the prefix under
-	// which delta/base parquet files are written): the reader's parquet root.
-	// It serves two purposes. First, the legacy glob fallback covering schemas
-	// that have never been flushed and therefore have no manifest object yet.
-	// Empty disables that fallback: a schema without a manifest then resolves
-	// to zero parquet paths, and a DuckDB-routed read of it fails fast with
-	// ErrNoParquetPaths — a non-degradable read-path error naming the schema,
-	// distinct from the transient failures AllowPartialDegradedMode absorbs
-	// (#299). Leave this set unless every schema is known to be manifested.
-	// Second, a non-empty prefix narrows the scope of an engine-level parquet
-	// path hint from the whole bucket to s3://<S3Bucket>/<S3DataPrefix>/
-	// (#477); empty keeps bucket granularity.
-	// The prefix must never contain a glob metacharacter (`*`, `?`, `[`):
-	// the writers store it as a literal S3 key while DuckDB would expand it in
-	// the fallback glob, the manifest URIs and every honored hint, so
-	// ValidateManifestRead rejects it at startup (#527).
-	S3DataPrefix string `json:"s3DataPrefix"`
-	// ManifestPrefix is the root prefix for manifest objects in S3. It must
-	// match the CDC/compaction write side's ManifestPrefix.
-	ManifestPrefix string `json:"manifestPrefix"`
-	// ManifestTemplate is the manifest path template (e.g.
-	// "manifest/{{.SchemaID}}.json") and doubles as the enable gate for
-	// manifest-driven parquet resolution. It must be identical to the write
-	// side's template: a writer-on/reader-off mismatch makes the reader miss
-	// the cold tier entirely and lose those rows silently — no error is
-	// raised, the result set is merely short. Empty (the default) keeps the
-	// pre-existing glob-based read path.
-	ManifestTemplate string `json:"manifestTemplate"`
 
 	// AllowPartialDegradedMode lets a federated query whose DuckDB pass
 	// fails with a degradable error be answered from PostgreSQL alone (the
@@ -113,55 +74,12 @@ type DuckDBConfig struct {
 	Routing RoutingPolicy `json:"routing"` // routing policy for federated queries
 }
 
-// ManifestReadEnabled reports whether manifest-driven parquet path resolution
-// is configured. ManifestTemplate is the single enable gate.
-//
-// The TrimSpace here is defense-in-depth, not normalization: a padded template
-// is rejected outright by ValidateManifestRead (byte parity with the untrimmed
-// write side is the contract), so no validated config ever reaches this method
-// with surrounding whitespace. The trim only guards direct programmatic
-// misuse — a caller that builds a DuckDBConfig by hand and skips validation —
-// where reading a whitespace-only template as "manifest reads are on" would be
-// strictly worse.
-func (d DuckDBConfig) ManifestReadEnabled() bool {
-	return strings.TrimSpace(d.ManifestTemplate) != ""
-}
-
-// validateManifestReadWhitespace rejects any manifest read field carrying
-// leading or trailing whitespace. These four values are shared with the CDC
-// and compaction write side, which never trims them: a padded value — a YAML
-// quoting slip, a trailing newline from a mounted secret — would therefore
-// resolve one object key on the write side and a different one on the read
-// side for the very same configured string, and the mismatch surfaces only as
-// a silently empty cold tier. Rejecting keeps the two sides byte-identical
-// instead of normalizing on one side only.
-//
-// It also closes the whitespace-only ManifestTemplate hole: such a value
-// leaves ManifestReadEnabled() false (reads stay off) while the inert-prefix
-// check below sees a non-empty template, so it escapes both gates.
-func (d DuckDBConfig) validateManifestReadWhitespace() error {
-	fields := []struct {
-		name  string
-		value string
-	}{
-		{"duckdb.s3Bucket", d.S3Bucket},
-		{"duckdb.s3DataPrefix", d.S3DataPrefix},
-		{"duckdb.manifestPrefix", d.ManifestPrefix},
-		{"duckdb.manifestTemplate", d.ManifestTemplate},
-	}
-	for _, field := range fields {
-		if err := rejectPaddedValue(field.name, field.value); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// rejectPaddedValue is the byte-parity rule of validateManifestReadWhitespace
-// for one field, shared with ValidateManifestPathTemplate so the cdc-init CLI
-// and the server reject the same padded template — otherwise the CLI resolves
-// the raw value and publishes under a key the read side refuses to configure
-// (#371 review).
+// rejectPaddedValue rejects a value carrying leading or trailing whitespace.
+// The manifest template and the bucket are shared with tools that never trim
+// them: a padded value (a YAML quoting slip, a trailing newline from a mounted
+// secret) would address one object on one side and another on the other side
+// for the very same configured string. Rejecting keeps both sides
+// byte-identical instead of normalizing on one side only.
 func rejectPaddedValue(field, value string) error {
 	if value != strings.TrimSpace(value) {
 		return &ConfigError{Field: field, Message: "must not have leading or trailing whitespace"}
@@ -169,67 +87,32 @@ func rejectPaddedValue(field, value string) error {
 	return nil
 }
 
-// ValidateManifestRead validates the manifest read surface. It returns a
-// *ConfigError naming the offending field, or nil when the combination is
-// coherent. Validation is independent of Enabled: whether the settings take
-// effect is the factory's gate, but an incoherent combination is always a
-// configuration error.
-func (d DuckDBConfig) ValidateManifestRead() error {
-	// Whitespace is checked first, and independently of the enable gate: a
-	// padded template must report the whitespace it actually has rather than a
-	// downstream consequence of it (a padded template trims to non-empty, so
-	// the gate opens and the bucket/parse checks would speak about the wrong
-	// problem; a whitespace-only one trims to empty and would be reported as an
-	// inert prefix).
-	if err := d.validateManifestReadWhitespace(); err != nil {
+// ValidateParquetRead validates the federated reader's storage settings. It
+// returns a *ConfigError naming the offending field, or nil. A padded bucket
+// is refused whether or not DuckDB is enabled, as a property of the value; an
+// enabled engine needs a bucket, because every published generation it reads
+// is addressed in it.
+func (d DuckDBConfig) ValidateParquetRead() error {
+	if err := rejectPaddedValue("duckdb.s3Bucket", d.S3Bucket); err != nil {
 		return err
 	}
-	// Like whitespace, a glob metacharacter is a property of the value itself,
-	// so it is reported before the enable gate speaks about its consequences.
-	if err := ValidateParquetPrefix("duckdb.s3DataPrefix", d.S3DataPrefix); err != nil {
-		return err
-	}
-
-	if !d.ManifestReadEnabled() {
-		// Manifest fields set without a template would sit inert and read as
-		// "manifest reads are on" to an operator. Reject rather than ignore.
-		if d.ManifestPrefix != "" || d.S3DataPrefix != "" {
-			return &ConfigError{
-				Field:   "duckdb.manifestTemplate",
-				Message: "must be set when duckdb.manifestPrefix or duckdb.s3DataPrefix is configured",
-			}
-		}
-		return nil
-	}
-
-	if strings.TrimSpace(d.S3Bucket) == "" {
+	if d.Enabled && d.S3Bucket == "" {
 		return &ConfigError{
 			Field:   "duckdb.s3Bucket",
-			Message: "must be set when duckdb.manifestTemplate is configured",
+			Message: "must be set when duckdb is enabled: the federated reader scans the published generations in it",
 		}
 	}
-	// Parsed with text/template directly (not internal/manifest) to keep the
-	// public config package free of internal dependencies; the manifest
-	// resolver uses the same parser, so a template accepted here renders there.
-	tmpl, err := template.New("manifest").Parse(d.ManifestTemplate)
-	if err != nil {
-		return &ConfigError{
-			Field:   "duckdb.manifestTemplate",
-			Message: "must be a valid text/template path template: " + err.Error(),
-		}
-	}
-	return probeManifestTemplate("duckdb.manifestTemplate", tmpl)
+	return nil
 }
 
-// ValidateManifestPathTemplate applies the manifest template rules of
-// ValidateManifestRead to a template supplied outside the server config —
-// the cdc-init CLI's --manifest-template (#371 review). field names the
+// ValidateManifestPathTemplate applies the manifest template rules to a
+// template supplied to a tool — the cdc-init CLI's --manifest-template (#371
+// review). field names the
 // setting in the returned ConfigError. Every manifest writer that resolves a
 // per-schema path must reject a template that collapses schemas onto one
 // object: for a destructive run such as `cdc-init --replace-delta` a collided
 // template would otherwise purge another schema's delta tier. The whitespace
-// rule comes first, as in ValidateManifestRead, and for the same reason: the
-// resolver renders the raw value, so a padded template addresses a different
+// rule comes first: the resolver renders the raw value, so a padded template addresses a different
 // object than the trimmed one an operator reads in the config.
 func ValidateManifestPathTemplate(field, pathTemplate string) error {
 	if err := rejectPaddedValue(field, pathTemplate); err != nil {
@@ -360,12 +243,6 @@ func defaultDuckDBConfig() DuckDBConfig {
 		CircuitBreakerOpenDuration:     time.Minute,
 		// The pgx hot leg, the only transport since #858.
 		HotLegTransport: HotLegTransportPgx,
-		// The manifest read surface (S3Bucket / S3DataPrefix / ManifestPrefix /
-		// ManifestTemplate) deliberately defaults to all-zero. The cdc CLI
-		// tools default ManifestTemplate to "manifest/{{.SchemaID}}.json", but
-		// mirroring that here would flip every existing deployment from glob
-		// reads to manifest-driven reads on upgrade. Manifest reads must be
-		// opted into explicitly.
 		Routing: RoutingPolicy{
 			Strategy:          RoutingStrategyHybrid,
 			HotTTL:            5 * time.Minute,
@@ -416,32 +293,27 @@ func (c *Config) validateDuckDBConfig() error {
 	if err := c.DuckDB.ValidateHotLeg(); err != nil {
 		return err
 	}
-	if err := c.DuckDB.ValidateManifestRead(); err != nil {
-		return fmt.Errorf("invalid duckdb manifest read configuration: %w", err)
+	if err := c.DuckDB.ValidateParquetRead(); err != nil {
+		return fmt.Errorf("invalid duckdb parquet read configuration: %w", err)
 	}
 	return nil
 }
 
 // ParquetGlobMetacharacters are the characters DuckDB's read_parquet treats as
 // glob metacharacters in an S3 path (`**` is two of the first). The federated
-// engine uses them to place a path hint's wildcards, and
-// ValidateParquetPrefix refuses them in every parquet prefix (#477, #526
-// review, #527).
+// reader refuses a published generation listing an address that holds one
+// (federated.ErrPublishedPathNotConcrete), and ValidateParquetPrefix refuses
+// them in every writer's parquet prefix (#477, #526 review, #527).
 const ParquetGlobMetacharacters = "*?["
 
 // ValidateParquetPrefix rejects a parquet data prefix carrying any of
-// ParquetGlobMetacharacters (#527). The prefix means two different things on
-// the two sides of the lakehouse: the CDC writers (internal/cdc.BuildDeltaPath,
-// BuildTempPath, BuildBasePath) store it as a literal S3 key, which S3 permits,
-// while the reader hands it to DuckDB's read_parquet — in the level-3 fallback
-// glob, in every manifest URI and in the path-hint scope — where it is
-// expanded. A prefix of `data/*` then scans every sibling directory, and
-// `data/**` recurses into the `_tmp/` staging objects the fallback must never
-// read, with nothing to say why. DuckDB's S3 glob has no documented escape
-// syntax, so the prefix is refused rather than escaped. field names the
-// setting in the returned ConfigError: the server's duckdb.s3DataPrefix calls
-// it from ValidateManifestRead, and the writer tools call it on their prefix
-// flags, so both sides apply one rule in lockstep. An empty prefix passes.
+// ParquetGlobMetacharacters (#527). The CDC writers store the prefix as a
+// literal S3 key, which S3 permits, while the reader hands every listed
+// object's address to DuckDB's read_parquet, which would expand it: a prefix
+// of `data/*` would make every object under it unreadable as listed. DuckDB's
+// S3 glob has no documented escape syntax, so the prefix is refused rather than
+// escaped. field names the setting in the returned ConfigError: the writer
+// tools call it on their prefix flags. An empty prefix passes.
 func ValidateParquetPrefix(field, prefix string) error {
 	if strings.ContainsAny(prefix, ParquetGlobMetacharacters) {
 		return &ConfigError{

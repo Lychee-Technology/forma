@@ -6,81 +6,82 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"go.uber.org/zap"
 )
 
-// InitOptions configures a base-file initialization export run.
-// It mirrors the cdc-init CLI options; the CLI in cmd/tools delegates here.
+// InitOptions configures a cdc-init run. It mirrors the cdc-init CLI
+// options; the CLI in cmd/tools delegates here.
 type InitOptions struct {
-	Config               CDCConfig
-	S3Client             *s3.Client
-	SchemaRegistryTable  string
-	SchemaIDFilter       int
-	DryRun               bool
+	Config CDCConfig
+	// S3Client is the client the base objects and the init manifests are
+	// written through, once each. *s3.Client satisfies it.
+	S3Client            S3Client
+	SchemaRegistryTable string
+	SchemaIDFilter      int
+	DryRun              bool
+	// AutoEstimateRowBytes sizes each base object from the schema's
+	// attributes instead of Config.EstimatedRowBytes (TargetFileSizeMB).
 	AutoEstimateRowBytes bool
 	Logger               *zap.Logger
 	SchemaRegistry       forma.SchemaRegistry
-	// ReplaceDelta lets the run purge the schema's delta tier after its base
-	// swap commits (#371). Without it a schema whose delta tier is non-empty
-	// refuses with ErrDeltaTierPresent: a base-only swap would leave stale
-	// delta generations (possibly with a superseded column type) under the
-	// new base, and every read would fold them.
-	ReplaceDelta bool
-	// DeltaPrefix is the S3 prefix the flusher writes delta files under
-	// (cdc-flush --s3-prefix). It is listed for delta-shaped objects the
-	// manifest does not mention; empty skips the listing.
-	DeltaPrefix string
 }
 
-// InitSummary reports totals across all schemas processed by RunInit.
+// InitSummary reports totals across all schemas processed by RunInit. A dry
+// run counts the rows and objects it would export.
 type InitSummary struct {
 	TotalRowsExported int64
 	TotalFilesCreated int
-	Skipped           []SkippedSchema // schemas the parquet tiers cannot hold (#704)
+	// Schemas lists what each schema's init published and handed off, in run
+	// order.
+	Schemas []SchemaInit
+	Skipped []SkippedSchema // schemas the parquet tiers cannot hold (#704)
+}
+
+// SchemaInit is what one schema's cdc-init published and handed off
+// (cdcv2.InitReport).
+type SchemaInit struct {
+	SchemaID int16
+	// Epoch is the record's epoch the run loaded and pinned, Generation the
+	// init generation it committed (0 for a dry run).
+	Epoch, Generation int64
+	// Rows counts the live rows exported, Files the base objects, Entries the
+	// exported rows that had an unflushed entry (the handoff's candidates),
+	// and Marked those the handoff marked flushed at their export versions.
+	// Unconfirmed counts entries a handoff chunk whose COMMIT went without an
+	// answer may have marked beyond Marked.
+	Rows            int64
+	Files           int
+	Entries, Marked int
+	Unconfirmed     int
+	// HandoffStopped says a later cdc-init or a drop replaced the init's
+	// lineage during the handoff: the entries it had not marked stay dirty
+	// for the next flush.
+	HandoffStopped bool
 }
 
 type initRunContext struct {
 	cfg                  CDCConfig
 	db                   *sql.DB
 	duck                 *DuckExporter
-	s3Client             S3ObjectClient
+	store                manifestv2.Store
 	schemaRegistry       forma.SchemaRegistry
 	attrCaches           map[int16]forma.SchemaAttributeCache
-	manifestStore        manifest.Store
-	manifestResolver     manifest.PathResolver
 	logger               *zap.Logger
 	dryRun               bool
 	autoEstimateRowBytes bool
-	replaceDelta         bool
-	deltaPrefix          string
 	// locker is the run engine's schema lock (nil: the PostgreSQL advisory
-	// lock); initSchemaFn is a test seam (nil→real impl below), mirroring the flusher's processSchemaFn seam.
+	// lock); initSchemaFn is a test seam (nil→initSchema), mirroring the
+	// flusher's processSchemaFn seam.
 	locker       SchemaLocker
-	initSchemaFn func(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error)
-	// describeColumns is a test seam for the write-time footer probe that
-	// stamps manifest entries (#256); nil uses the exporter's DuckDB session.
-	describeColumns func(ctx context.Context, uri string) (map[string]string, error)
-	// checksumObject is the run's content-hash seam (#347); nil skips
-	// stamping. applyInitS3Wiring builds the real one over the run's S3 client.
-	checksumObject func(ctx context.Context, key string) (string, error)
-	// exportBaseFile is a test seam for the DuckDB base-file export (nil uses
-	// the exporter), mirroring the flusher's exportSnapshot seam.
-	exportBaseFile func(ctx context.Context, state *schemaInitState, batch schemaBatchExport) error
-	// listObjectKeys and deleteObject are the delta-tier inventory and purge
-	// seams (#371); nil means no usable S3 client. applyInitS3Wiring builds
-	// the real ones over the run's S3 client.
-	listObjectKeys func(ctx context.Context, prefix string) ([]string, error)
-	deleteObject   func(ctx context.Context, key string) error
+	initSchemaFn func(ctx context.Context, runCtx *initRunContext, schemaID int16) (SchemaInit, error)
 }
 
 // normalizeInitOptions applies the same config defaults as Runner.RunOnce.
-// Without them a zero-value CDCConfig yields BatchSize=0, and the batch
-// query's LIMIT 0 would make RunInit report success after exporting nothing.
+// Without them a zero-value CDCConfig yields BatchSize=0, and every export
+// snapshot would read no row.
 func normalizeInitOptions(opts InitOptions) InitOptions {
 	opts.Config = opts.Config.WithDefaults()
 	if opts.Logger == nil {
@@ -89,27 +90,13 @@ func normalizeInitOptions(opts InitOptions) InitOptions {
 	return opts
 }
 
-type schemaInitState struct {
-	schemaID     int16
-	attrCache    forma.SchemaAttributeCache
-	batchSize    int
-	fileEntries  []manifest.FileEntry
-	rowsExported int64
-	filesCreated int
-	// deltaPurge is the set of bucket-relative delta keys the run deletes
-	// once its manifest swap has committed (#371): the pre-flight inventory
-	// plus any delta entry the publish finds in a reloaded manifest.
-	deltaPurge []string
-}
-
 func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, error) {
 	cfg := opts.Config
-	sslMode := cfg.PGSSLMode
-	if sslMode == "" {
-		sslMode = "require"
+	store, err := newObjectStore(opts.S3Client, cfg.S3Bucket)
+	if err != nil {
+		return nil, fmt.Errorf("resolve the object store: %w", err)
 	}
-	pgConnStr := BuildPGDSN(PGDSNParams{Host: cfg.PGHost, Port: cfg.PGPort, User: cfg.PGUser, Password: cfg.PGPassword, DB: cfg.PGDB, SSLMode: sslMode})
-
+	pgConnStr := BuildPGDSN(PGDSNParams{Host: cfg.PGHost, Port: cfg.PGPort, User: cfg.PGUser, Password: cfg.PGPassword, DB: cfg.PGDB, SSLMode: cfg.PGSSLMode})
 	db, err := sql.Open("pgx", pgConnStr)
 	if err != nil {
 		return nil, fmt.Errorf("open pg: %w", err)
@@ -121,11 +108,9 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 	}
 
 	// DuckDB httpfs credentials follow the same both-halves rule as every
-	// other cdc credential site (#326): with no fully-set static pair the
-	// exporter receives empty strings and DuckDB inherits its own
-	// environment chain. The session token rides the source that supplied the
-	// pair (#329), so it is resolved together with the pair and passed on
-	// rather than looked up again inside the exporter.
+	// other cdc credential site (#326), and the session token rides the
+	// source that supplied the pair (#329). The exports write local scratch
+	// files; the exporter still configures S3 as every tool's does.
 	s3Key, s3Secret, s3Token := ResolveStaticS3Credentials(cfg)
 	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, s3Token, opts.Logger)
 	if err != nil {
@@ -133,21 +118,17 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 		return nil, fmt.Errorf("new duck exporter: %w", err)
 	}
 
-	runCtx := &initRunContext{
+	return &initRunContext{
 		cfg:                  cfg,
 		db:                   db,
 		locker:               locker,
 		duck:                 duck,
+		store:                store,
 		schemaRegistry:       opts.SchemaRegistry,
 		logger:               opts.Logger,
 		dryRun:               opts.DryRun,
 		autoEstimateRowBytes: opts.AutoEstimateRowBytes,
-		replaceDelta:         opts.ReplaceDelta,
-		deltaPrefix:          opts.DeltaPrefix,
-	}
-	applyInitS3Wiring(runCtx, cfg, opts.S3Client)
-
-	return runCtx, nil
+	}, nil
 }
 
 func (c *initRunContext) close() {
@@ -162,22 +143,13 @@ func (c *initRunContext) close() {
 	}
 }
 
-// RunInit performs the initialization export for all or a specific schema:
-// existing non-deleted entity_main rows are batched into base parquet files on
-// S3 and (when a manifest template is configured) recorded in the schema
-// manifest. Extracted from cmd/tools/cdc_init.go (mechanical move, #173).
+// RunInit re-onboards all registered schemas, or the one SchemaIDFilter
+// names, through the V2 writer (internal/cdcv2): for each it exports every
+// live row to base objects, publishes them as an init generation under a new
+// lineage, and hands the exported rows' unflushed entries off at exactly
+// their export versions. It never clears change_log.
 func RunInit(ctx context.Context, opts InitOptions) (InitSummary, error) {
 	opts = normalizeInitOptions(opts)
-
-	// The read path probes the manifest template against two schema IDs so a
-	// template that collapses schemas onto one object cannot boot (#300).
-	// A writer needs the same guard, and init most of all: with ReplaceDelta a
-	// collided template would purge another schema's delta tier (#371 review).
-	if tmpl := opts.Config.ManifestTemplate; tmpl != "" {
-		if err := forma.ValidateManifestPathTemplate("manifest-template", tmpl); err != nil {
-			return InitSummary{}, fmt.Errorf("cdc init pre-flight: %w", err)
-		}
-	}
 
 	runCtx, err := newInitRunContext(ctx, opts)
 	if err != nil {
@@ -220,14 +192,17 @@ func processInitSchemas(ctx context.Context, runCtx *initRunContext, schemaIDs [
 
 	for _, sid := range schemaIDs {
 		schemaID := int16(sid)
-		rowsExported, filesCreated, err := initSchemaUnderLock(ctx, runCtx, schemaID)
+		out, err := initSchemaUnderLock(ctx, runCtx, schemaID)
 		if err != nil {
-			runCtx.logger.Error("failed to init schema", zap.Int16("schema_id", schemaID), zap.Error(err))
+			// A failed schema is not counted as initialized; what its writer
+			// got to is in the error and the log.
+			runCtx.logger.Error("failed to init schema", zap.Int16("schema_id", schemaID), zap.Any("progress", out), zap.Error(err))
 			schemaErrors = append(schemaErrors, fmt.Errorf("schema %d: %w", schemaID, err))
 			continue
 		}
-		summary.TotalRowsExported += rowsExported
-		summary.TotalFilesCreated += filesCreated
+		summary.Schemas = append(summary.Schemas, out)
+		summary.TotalRowsExported += out.Rows
+		summary.TotalFilesCreated += out.Files
 	}
 
 	if len(schemaErrors) > 0 {
@@ -266,121 +241,4 @@ func getSchemaIDsToInit(ctx context.Context, db *sql.DB, schemaRegistryTable str
 		return nil, fmt.Errorf("iterate schema ids: %w", err)
 	}
 	return schemaIDs, nil
-}
-
-// initSchema exports all existing data for a single schema to S3 base files.
-// The delta tier is inventoried first (#371): a non-empty delta tier refuses
-// the schema unless the run may replace it, and with that permission the
-// inventory is purged only after the manifest swap has committed — for a
-// schema with zero live rows that swap publishes one zero-row base object
-// as the whole base tier, never an empty entry set (finishEmptySchema,
-// #519).
-func initSchema(ctx context.Context, runCtx *initRunContext, schemaID int16) (int64, int, error) {
-	inventory, err := preflightDeltaTier(ctx, runCtx, schemaID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("delta tier pre-flight: %w", err)
-	}
-
-	state, err := prepareSchemaInit(ctx, runCtx, schemaID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("prepare schema init: %w", err)
-	}
-	if state == nil {
-		state, err = finishEmptySchema(ctx, runCtx, schemaID, inventory)
-		if err != nil {
-			return 0, 0, fmt.Errorf("init with no live rows: %w", err)
-		}
-		if state == nil {
-			return 0, 0, nil
-		}
-		return state.rowsExported, state.filesCreated, nil
-	}
-	state.deltaPurge = inventory.purgeKeys()
-
-	if err := processSchemaBatches(ctx, runCtx, state); err != nil {
-		return state.rowsExported, state.filesCreated, fmt.Errorf("export schema batches: %w", err)
-	}
-
-	if err := publishAndPurge(ctx, runCtx, state); err != nil {
-		return state.rowsExported, state.filesCreated, fmt.Errorf("publish base and purge delta: %w", err)
-	}
-
-	runCtx.logger.Info("schema init completed",
-		zap.Int16("schema_id", schemaID),
-		zap.Int64("total_rows_exported", state.rowsExported),
-		zap.Int("total_files_created", state.filesCreated))
-
-	return state.rowsExported, state.filesCreated, nil
-}
-
-// publishAndPurge orders the two post-export steps (#371): the manifest
-// swap commits first, and only then are the superseded delta objects
-// deleted. A failed publish therefore deletes nothing — the old manifest
-// still lists the delta, and the export is unreachable garbage on
-// write-once keys — while a failed delete leaves the swap published.
-func publishAndPurge(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
-	if err := updateSchemaManifest(ctx, runCtx, state); err != nil {
-		return fmt.Errorf("swap the schema manifest: %w", err)
-	}
-	return purgeDeltaTier(ctx, runCtx, state)
-}
-
-func prepareSchemaInit(ctx context.Context, runCtx *initRunContext, schemaID int16) (*schemaInitState, error) {
-	runCtx.logger.Info("initializing schema", zap.Int16("schema_id", schemaID))
-
-	totalRows, err := getEntityMainCount(ctx, runCtx.db, runCtx.cfg.EntityMainTable, schemaID)
-	if err != nil {
-		return nil, fmt.Errorf("get row count: %w", err)
-	}
-	if totalRows == 0 {
-		runCtx.logger.Info("no rows to export", zap.Int16("schema_id", schemaID))
-		return nil, nil
-	}
-	runCtx.logger.Info("rows to export", zap.Int16("schema_id", schemaID), zap.Int64("total_rows", totalRows))
-
-	state := &schemaInitState{
-		schemaID: schemaID,
-	}
-	// Cache was resolved and validated by the processInitSchemas pre-flight (#193).
-	state.attrCache = runCtx.attrCaches[schemaID]
-	state.batchSize = resolveInitBatchSize(runCtx, schemaID, state.attrCache)
-	return state, nil
-}
-
-func processSchemaBatches(ctx context.Context, runCtx *initRunContext, state *schemaInitState) error {
-	return iterateSchemaBatches(ctx, runCtx, state, func(rowIDs []uuid.UUID) error {
-		return exportSchemaBatch(ctx, runCtx, state, rowIDs)
-	})
-}
-
-func iterateSchemaBatches(
-	ctx context.Context,
-	runCtx *initRunContext,
-	state *schemaInitState,
-	onBatch func(rowIDs []uuid.UUID) error,
-) error {
-	var after *uuid.UUID
-	for {
-		rowIDs, err := selectEntityMainBatch(ctx, runCtx.db, runCtx.cfg.EntityMainTable, state.schemaID, after, state.batchSize)
-		if err != nil {
-			return fmt.Errorf("select batch: %w", err)
-		}
-		if len(rowIDs) == 0 {
-			return nil
-		}
-
-		// Selection->export test seam, mirroring the flusher's (#182). Init
-		// has no snapshot clock, so the hook receives 0.
-		if hook := runCtx.cfg.BeforeExportHook; hook != nil {
-			if err := hook(ctx, state.schemaID, rowIDs, 0); err != nil {
-				return fmt.Errorf("before-export hook: %w", err)
-			}
-		}
-
-		if err := onBatch(rowIDs); err != nil {
-			return fmt.Errorf("batch of %d rows from %s: %w", len(rowIDs), rowIDs[0], err)
-		}
-		last := rowIDs[len(rowIDs)-1]
-		after = &last
-	}
 }

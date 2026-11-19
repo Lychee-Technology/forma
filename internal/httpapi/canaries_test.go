@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -20,7 +21,7 @@ import (
 // The password one is the real shape: DuckDB's postgres_scan attach failure puts
 // the connection string — password included — into its own prose, verified
 // against duckdb-go v2.5.6 and again on v2.10506.0 (DuckDB 1.5.6, #702). The key
-// one is ParquetSetInconsistentError.MissingKeys.
+// one is PublicationConsistencyError.MissingKeys.
 //
 // The secret canary is built to exhibit both failure modes this PR fixed, because
 // asserting the wrong string makes the whole suite decorative:
@@ -57,7 +58,7 @@ func leaksCanarySecret(s string) bool {
 // engine actually returns: a typed read-path carrier wrapping raw driver text.
 func operatorDetailError() error {
 	return fmt.Errorf("execute duckdb query: %w: %w",
-		&forma.ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{canaryKey}},
+		&forma.PublicationConsistencyError{Err: errTestPublicationFault, SchemaID: 22, MissingKeys: []string{canaryKey}},
 		fmt.Errorf(`IO Error: Unable to connect to Postgres at "host=h port=5432 user=u %s dbname=d"`, canaryPassword))
 }
 
@@ -69,7 +70,11 @@ func operatorDetailError() error {
 // does not exist".
 func driverNotFoundTextError() error {
 	return fmt.Errorf("execute duckdb query: %w: %w",
-		&forma.ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{canaryKey}},
+		&forma.PublicationConsistencyError{Err: errTestPublicationFault, SchemaID: 22, MissingKeys: []string{canaryKey}},
 		fmt.Errorf(`HTTP Error: Unable to connect to URL "https://b.s3.amazonaws.com/%s": 404 (Not Found). `+
 			`Also failed to attach postgres_scan with "host=h user=u %s"`, canaryKey, canaryPassword))
 }
+
+// errTestPublicationFault is the fault a test's PublicationConsistencyError
+// carries: a lost object, the #759 case whose keys must stay out of bodies.
+var errTestPublicationFault = errors.New("the generation lists objects the store does not hold")

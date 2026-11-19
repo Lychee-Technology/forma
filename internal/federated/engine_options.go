@@ -9,9 +9,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// Engine construction options. WithParquetSource lives with the seam it
-// injects (parquet_source.go); the rest collect here so engine.go stays the
-// engine itself.
+// Engine construction options. WithPublicationReader and WithPgxHotLeg live
+// with the seams they inject (pgx_publication.go, hot_leg_pgx.go); the rest
+// collect here so engine.go stays the engine itself.
 
 // EngineOption customizes optional engine collaborators.
 type EngineOption func(*DBFederatedQueryEngine)
@@ -71,8 +71,8 @@ func (e *DBFederatedQueryEngine) log() *zap.Logger {
 const defaultCorruptPathRetention = 5 * time.Minute
 
 // WithCorruptPathRetention overrides how long a verification-confirmed
-// corrupt parquet object stays cached (#251): while it is, path resolution
-// refuses a set that lists it without scanning (#722). The entry always
+// corrupt parquet object stays cached (#251): while it is, a pass refuses a
+// generation that lists it without scanning (#722). The entry always
 // expires — a terminal verdict must never be memoized forever (#326):
 // repair, compaction, or manifest reconcile self-heal only through
 // re-verification. A non-positive d disables the cache — entries expire the
@@ -80,23 +80,4 @@ const defaultCorruptPathRetention = 5 * time.Minute
 // the set again before failing; production callers should keep the default.
 func WithCorruptPathRetention(d time.Duration) EngineOption {
 	return func(e *DBFederatedQueryEngine) { e.corruptPaths = newCorruptParquetCache(d) }
-}
-
-// WithFlushVisibilityGrace overrides the #252 clock-skew margin subtracted
-// from the query's path-resolution timestamp when computing the dirty-barrier
-// cutoff. d == 0 is the exact anchor (the default); d > 0 hardens against
-// cross-host clock skew (flushed_at is stamped on the CDC host, the cutoff on
-// the query host) at the cost of hot-serving rows flushed up to d before the
-// query. d < 0 reads as the exact anchor, because the pass's snapshot needs
-// the widening (design.md §6.1); before #858 it disabled the widening on the
-// attach transport. The engine logs once at construction when d < 0. The
-// hot-excluded form reads the strict set whatever d is.
-func WithFlushVisibilityGrace(d time.Duration) EngineOption {
-	return func(e *DBFederatedQueryEngine) {
-		if d < 0 {
-			e.flushVisibilityGraceMs = -1
-			return
-		}
-		e.flushVisibilityGraceMs = d.Milliseconds()
-	}
 }

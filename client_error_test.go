@@ -84,9 +84,9 @@ func TestWithOperatorDetailWithholdsDetailFromPublication(t *testing.T) {
 }
 
 func TestWithOperatorDetailKeepsDetailInChain(t *testing.T) {
-	sentinelDetail := fmt.Errorf("cause: %w", ErrNoParquetPaths)
+	sentinelDetail := fmt.Errorf("cause: %w", ErrParquetTypeIncompatible)
 	err := WithOperatorDetail(InvalidInputf("bad filter"), sentinelDetail)
-	if !errors.Is(err, ErrNoParquetPaths) {
+	if !errors.Is(err, ErrParquetTypeIncompatible) {
 		t.Fatalf("detail left the chain: errors.Is cannot see it")
 	}
 }

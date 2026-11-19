@@ -108,7 +108,7 @@ func TestPublishedPassFailsClosedOnAPublicationFault(t *testing.T) {
 		t.Run(fault.name, func(t *testing.T) {
 			f := newPgxFixture(t, tieRunRows())
 			pub := fault.seed(t, f)
-			e, _, _ := publishedEngine(t, f, pub)
+			e, _ := publishedEngine(t, f, pub)
 			e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
 			rec := recordDegradedFallbacks(e)
 
@@ -116,7 +116,6 @@ func TestPublishedPassFailsClosedOnAPublicationFault(t *testing.T) {
 			require.Error(t, err, "never an answer without the lost rows")
 			require.ErrorIs(t, err, ErrPublicationInconsistent)
 			require.NotErrorIs(t, err, ErrFederatedReadFailed)
-			require.NotErrorIs(t, err, ErrParquetSetInconsistent)
 			require.False(t, degradableFederatedError(err))
 			var typed *PublicationConsistencyError
 			require.ErrorAs(t, err, &typed)
@@ -156,7 +155,7 @@ func TestPublishedPassTellsAFailedReadFromAPublicationFault(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newPgxFixture(t, tieRunRows())
-			e, duck, _ := publishedEngine(t, f, c.seed(f))
+			e, duck := publishedEngine(t, f, c.seed(f))
 			e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
 			rec := recordDegradedFallbacks(e)
 

@@ -59,7 +59,23 @@ func Reset(ctx context.Context, tx Tx, t Tables, cur Record) (Record, error) {
 // them.
 var ErrResidue = errors.New("dropped schema's rows not purged")
 
-const residueSQL = `SELECT 1 FROM %s WHERE schema_id = $1 LIMIT 1`
+const residueSQL = `SELECT 1 FROM %s WHERE %s = $1 LIMIT 1`
+
+// Residue names a table Activate checks for rows of the dropped schema, and
+// the column that holds a row's schema id there: schema_id (the default, when
+// SchemaIDColumn is empty) in eav_data and change_log, ltbase_schema_id in
+// entity_main.
+type Residue struct {
+	Table          string
+	SchemaIDColumn string
+}
+
+func (r Residue) column() string {
+	if r.SchemaIDColumn == "" {
+		return "schema_id"
+	}
+	return r.SchemaIDColumn
+}
 
 // activateSQL starts the re-registered schema's epoch, UNPUBLISHED, from a
 // DROPPED record.
@@ -75,19 +91,20 @@ const activateSQL = `UPDATE %s SET epoch = epoch + 1, state = '` + string(Unpubl
 // UNPUBLISHED, under a new token. Nothing that read the record before it
 // carries the new epoch, so no reader, writer or handoff of the old schema
 // acts on the new one without reading the record again.
-func Activate(ctx context.Context, tx Tx, t Tables, cur Record, residue []string) (Record, error) {
+func Activate(ctx context.Context, tx Tx, t Tables, cur Record, residue []Residue) (Record, error) {
 	if cur.State != Dropped {
 		return Record{}, fmt.Errorf("activate schema %d: its record is %s, and only a %s one is activated", cur.SchemaID, cur.State, Dropped)
 	}
 	r := tx.runner()
 	for _, table := range residue {
 		var one int
-		err := r.queryRow(ctx, fmt.Sprintf(residueSQL, sqlutil.SanitizeIdentifier(table)), cur.SchemaID).Scan(&one)
+		query := fmt.Sprintf(residueSQL, sqlutil.SanitizeIdentifier(table.Table), sqlutil.SanitizeIdentifier(table.column()))
+		err := r.queryRow(ctx, query, cur.SchemaID).Scan(&one)
 		if err == nil {
-			return Record{}, fmt.Errorf("activate schema %d: rows of epoch %d remain in %s: %w", cur.SchemaID, cur.Epoch, table, ErrResidue)
+			return Record{}, fmt.Errorf("activate schema %d: rows of epoch %d remain in %s: %w", cur.SchemaID, cur.Epoch, table.Table, ErrResidue)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
-			return Record{}, fmt.Errorf("activate schema %d: check %s for its rows: %w", cur.SchemaID, table, err)
+			return Record{}, fmt.Errorf("activate schema %d: check %s for its rows: %w", cur.SchemaID, table.Table, err)
 		}
 	}
 	out := cur

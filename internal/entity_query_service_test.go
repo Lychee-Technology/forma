@@ -322,9 +322,6 @@ func TestEntityManager_QueryUsesFederatedPathWhenEnabled(t *testing.T) {
 	if mockEngine.lastQuery.PreferredTiers != nil || mockEngine.lastQuery.PreferHot {
 		t.Fatalf("expected no tier declaration, got %+v / %v", mockEngine.lastQuery.PreferredTiers, mockEngine.lastQuery.PreferHot)
 	}
-	if mockEngine.lastQuery.DuckDBHints != nil {
-		t.Fatalf("expected no parquet path hint, got %+v", mockEngine.lastQuery.DuckDBHints)
-	}
 	if mockEngine.lastOpts == nil || !mockEngine.lastOpts.AllowPartialDegradedMode || !mockEngine.lastOpts.IncludeExecutionPlan {
 		t.Fatalf("expected the deployment's fallback and the request's plan flag, got %+v", mockEngine.lastOpts)
 	}

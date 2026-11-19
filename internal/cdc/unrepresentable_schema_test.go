@@ -112,9 +112,9 @@ func TestProcessInitSchemas_SkipsASchemaTheParquetTiersCannotHold(t *testing.T) 
 		locker: SchemaLockerFunc(func(ctx context.Context, _ int16) (context.Context, func(), bool, error) {
 			return ctx, func() {}, true, nil
 		}),
-		initSchemaFn: func(_ context.Context, _ *initRunContext, sid int16) (int64, int, error) {
+		initSchemaFn: func(_ context.Context, _ *initRunContext, sid int16) (SchemaInit, error) {
 			initialized = append(initialized, sid)
-			return 1, 1, nil
+			return SchemaInit{SchemaID: sid, Rows: 1, Files: 1}, nil
 		},
 	}
 

@@ -27,40 +27,9 @@ var ErrInvalidInput = errors.New("invalid input")
 // would leave it comparing error text — exactly what the errors.Is/errors.As
 // contract above forbids.
 //
-// Both are plain errors, not ErrInvalidInput: nothing about the request is
-// wrong. They report that the configured read surface, or the manifest state
-// it points at, cannot answer the query. See docs/error-handling.md.
-
-// ErrNoParquetPaths marks a DuckDB-routed federated read whose parquet path set
-// resolved empty: no per-request render hint, and either no configured parquet
-// source or a source whose manifest lists no files while the fallback glob is
-// disabled. Every query that reaches the DuckDB engine wants warm and/or cold
-// data (hot-only requests short-circuit to Postgres first), so an empty set
-// cannot be answered honestly. Not degradable — a Postgres-only fallback would
-// be silently short precisely where the cold tier was requested (#299).
-var ErrNoParquetPaths = errors.New("no parquet paths resolved")
-
-// NoParquetPathsError names the schema whose path set came back empty and which
-// resolution level was in play, because the two states have different remedies:
-// a consulted-but-empty source needs its manifest repaired (or the fallback
-// prefix set), while an absent source needs configuring at all.
-type NoParquetPathsError struct {
-	SchemaID int16
-	// SourceConfigured reports whether a parquet source was consulted and
-	// returned nothing, as opposed to no source existing to consult.
-	SourceConfigured bool
-}
-
-func (e *NoParquetPathsError) Error() string {
-	if e.SourceConfigured {
-		return fmt.Sprintf("schema %d resolved no parquet paths: its manifest lists no files and the fallback glob is disabled; "+
-			"repair the manifest (forma-tools manifest-reconcile) or set duckdb.s3DataPrefix", e.SchemaID)
-	}
-	return fmt.Sprintf("schema %d resolved no parquet paths: no manifest parquet source is configured; "+
-		"set duckdb.manifestTemplate with duckdb.s3Bucket", e.SchemaID)
-}
-
-func (e *NoParquetPathsError) Unwrap() error { return ErrNoParquetPaths }
+// They are plain errors, not ErrInvalidInput: nothing about the request is
+// wrong. They report that the configured read surface, or the publication
+// state it reads, cannot answer the query. See docs/error-handling.md.
 
 // ErrManifestSchemaMismatch marks a manifest object whose recorded schema ID
 // disagrees with the schema being read. A manifest addresses one schema by path
@@ -124,40 +93,51 @@ func (e *ManifestUnstampedError) Unwrap() []error {
 	return []error{ErrManifestUnstamped, ErrManifestSchemaMismatch}
 }
 
-// ErrParquetSetInconsistent marks a federated read whose manifest lists parquet
-// objects that do not exist in storage. The manifest is the authoritative record
-// of the schema's cold/warm tier, so a listed-but-absent object means that tier
-// has lost data. Not degradable: surfacing it even under
-// AllowPartialDegradedMode is the whole point — degrading here would return
-// exactly the silently short answer this classification exists to make loud
-// (#187 scenario 2).
+// ErrPublicationInconsistent marks a federated read of a schema whose
+// publication state cannot be answered from (docs/publication-protocol-v2.md,
+// "Readers"): no publication record, a record that is AWAITING_INIT or
+// DROPPED or at an epoch other than the one the process pinned, a committed
+// manifest that is missing or is not the one PostgreSQL committed, or a listed
+// object the store does not hold. It is a read-path consistency error, never a
+// 4xx. Not degradable: a PostgreSQL-only answer would drop every row the
+// parquet tiers hold, which is the silently short answer this classification
+// exists to make loud (#759).
 //
-// It lives here rather than in internal/federated for the same reason as the two
-// errors above, plus one specific to #301: internal/httpapi must classify it to
-// redact its object keys, and cannot import internal/federated without pulling
-// DuckDB CGO into a pure-Go test build.
-var ErrParquetSetInconsistent = errors.New("parquet set inconsistent with manifest")
+// It lives here rather than in internal/federated, whose error type aliases
+// this one, so that an embedder can match it, and so that internal/httpapi can
+// classify it without importing internal/federated and its DuckDB CGO.
+var ErrPublicationInconsistent = errors.New("publication state inconsistent")
 
-// ParquetSetInconsistentError carries the schema and the missing object keys so
-// the message names the offending state, per the read-path error style.
+// PublicationConsistencyError names the schema, the epoch and the generation
+// of a federated read's publication fault.
 //
-// MissingKeys holds bucket-relative S3 object keys — operator detail that must
-// not cross a public transport. internal/httpapi redacts it from response bodies
-// (#301). That redaction is gated on sentinel evidence, not on the status: this
-// error wraps no client sentinel, so it is redacted whatever status it is
-// classified as — including a 4xx, since DuckDB renders a missing object as
-// "404 (Not Found)". Any new transport owes the same treatment.
-type ParquetSetInconsistentError struct {
-	SchemaID    int16
+// MissingKeys holds the generation's object keys the store does not hold, when
+// that is the fault: operator detail that must not cross a public transport.
+// internal/httpapi keeps it, and the rest of the message, out of response
+// bodies (#301); any new transport owes the same treatment.
+type PublicationConsistencyError struct {
+	SchemaID   int16
+	Epoch      int64
+	Generation int64
+	// MissingKeys lists the generation's objects the store does not hold,
+	// when that is the fault.
 	MissingKeys []string
+	// Err is the fault.
+	Err error
 }
 
-func (e *ParquetSetInconsistentError) Error() string {
-	return fmt.Sprintf("schema %d manifest lists %d parquet object(s) missing from storage: %s",
-		e.SchemaID, len(e.MissingKeys), strings.Join(e.MissingKeys, ", "))
+func (e *PublicationConsistencyError) Error() string {
+	msg := fmt.Sprintf("schema %d epoch %d generation %d: %v", e.SchemaID, e.Epoch, e.Generation, e.Err)
+	if len(e.MissingKeys) > 0 {
+		msg += fmt.Sprintf(": %d listed object(s) missing from storage: %s", len(e.MissingKeys), strings.Join(e.MissingKeys, ", "))
+	}
+	return msg
 }
 
-func (e *ParquetSetInconsistentError) Unwrap() error { return ErrParquetSetInconsistent }
+// Unwrap yields ErrPublicationInconsistent and the fault.
+func (e *PublicationConsistencyError) Unwrap() []error {
+	return []error{ErrPublicationInconsistent, e.Err}
+}
 
 // ErrParquetTypeIncompatible marks a federated read refused because a live
 // parquet object stores an attribute's column in a form the attribute's
@@ -173,7 +153,7 @@ var ErrParquetTypeIncompatible = errors.New("live parquet stores an attribute in
 // ParquetTypeIncompatibleError names the schema, the attribute and its current
 // declaration, the offending object and the evidence, per the read-path error
 // style. Path is a storage location — operator detail that internal/httpapi
-// keeps out of response bodies, like ParquetSetInconsistentError's keys.
+// keeps out of response bodies, like PublicationConsistencyError's keys.
 type ParquetTypeIncompatibleError struct {
 	SchemaID  int16
 	Attribute string

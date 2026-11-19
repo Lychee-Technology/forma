@@ -175,7 +175,7 @@ func TestBreakerCorruptRefusalReportsHalfOpenOnce(t *testing.T) {
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
 	rec := &breakerReportRecorder{breaker: breaker}
 	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, breaker,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}),
+		hybridDuckConfig(), testMetadataCacheSchema7(t), withParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}),
 		WithMetricEmitter(rec), withFakeHotLeg(nil))
 
 	require.Equal(t, BreakerTransition{BreakerClosed, BreakerOpen}, breaker.RecordFailure())

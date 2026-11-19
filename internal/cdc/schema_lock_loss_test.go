@@ -90,9 +90,9 @@ func TestProcessInitSchemas_NamesALostLock(t *testing.T) {
 		logger:         zap.NewNop(),
 		schemaRegistry: stubSchemaRegistry{cache: testAttrCache()},
 		locker:         lostLocker(&released),
-		initSchemaFn: func(ctx context.Context, _ *initRunContext, _ int16) (int64, int, error) {
+		initSchemaFn: func(ctx context.Context, _ *initRunContext, _ int16) (SchemaInit, error) {
 			workCtx = ctx
-			return 0, 0, fmt.Errorf("export snapshot: %w", ctx.Err())
+			return SchemaInit{}, fmt.Errorf("export snapshot: %w", ctx.Err())
 		},
 	}
 
@@ -112,8 +112,8 @@ func TestProcessInitSchemas_NamesALockLostUnderCleanWork(t *testing.T) {
 		logger:         zap.NewNop(),
 		schemaRegistry: stubSchemaRegistry{cache: testAttrCache()},
 		locker:         lostLocker(&released),
-		initSchemaFn: func(context.Context, *initRunContext, int16) (int64, int, error) {
-			return 3, 1, nil
+		initSchemaFn: func(context.Context, *initRunContext, int16) (SchemaInit, error) {
+			return SchemaInit{SchemaID: 7, Rows: 3, Files: 1}, nil
 		},
 	}
 

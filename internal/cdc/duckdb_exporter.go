@@ -101,19 +101,23 @@ func NewDuckExporter(ctx context.Context, cfg CDCConfig, s3AccessKey, s3Secret, 
 	return &DuckExporter{DB: db, Logger: logger}, nil
 }
 
-// ExportSnapshotToTmp exports the batch's unflushed change_log versions, with
-// their main and EAV values, from pg (a pgx database/sql pool) to s3TmpPath,
-// e.g. 's3://bucket/prefix/<schema_id>/_tmp/<tmp_uuid>.parquet'.
-func (e *DuckExporter) ExportSnapshotToTmp(ctx context.Context, cfg CDCConfig, pg *sql.DB, s3TmpPath string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
-	plan, err := buildDeltaExportPlan(stagedTransport, s3TmpPath, cfg, schemaID, snapshotTS, rowIDs, attrCache)
+// ExportDelta exports the batch's unflushed change_log versions at or below
+// snapshotTS, with their main and EAV values, read from pg (a pgx
+// database/sql pool) in one REPEATABLE READ snapshot, to the parquet file
+// dest. cdc-flush writes dest to a local scratch file and stages it under a
+// fresh write-once key afterwards (deltaStager).
+func (e *DuckExporter) ExportDelta(ctx context.Context, cfg CDCConfig, pg *sql.DB, dest string, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) error {
+	plan, err := buildDeltaExportPlan(stagedTransport, dest, cfg, schemaID, snapshotTS, rowIDs, attrCache)
 	if err != nil {
-		return fmt.Errorf("export snapshot to tmp for schema %d: %w", schemaID, err)
+		return fmt.Errorf("export delta of schema %d: %w", schemaID, err)
 	}
-
-	return e.runExport(ctx, cfg, pg, plan, rowIDs, "duckdb export sql", "duckdb copy exec")
+	stage := func(ctx context.Context, duckConn *sql.Conn) (int64, error) {
+		return stagePostgresRows(ctx, pg, duckConn, plan.stages, rowIDs)
+	}
+	return e.runExport(ctx, cfg, plan, rowIDs, stage, "duckdb export sql", "duckdb copy exec")
 }
 
-func buildDeltaExportPlan(transport exportTransport, s3TmpPath string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (exportSQLPlan, error) {
+func buildDeltaExportPlan(transport exportTransport, dest string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (exportSQLPlan, error) {
 	plan, err := buildExportSQLPlan(exportModeSpec{
 		defaultMemoryLimit: "4GB",
 		activeOnly:         false,
@@ -127,18 +131,22 @@ func buildDeltaExportPlan(transport exportTransport, s3TmpPath string, cfg CDCCo
 		// staged change_log column and the raw m.ltbase_deleted_at main
 		// column below stay untouched.
 		deletedAtSelect: "COALESCE(cl.deleted_at, 0) AS deleted_at",
-	}, transport, s3TmpPath, cfg, schemaID, snapshotTS, rowIDs, attrCache)
+	}, transport, dest, cfg, schemaID, snapshotTS, rowIDs, attrCache)
 	if err != nil {
 		return exportSQLPlan{}, fmt.Errorf("build delta export SQL plan: %w", err)
 	}
 	return plan, nil
 }
 
+// stageFunc fills an export's staged temp tables on duckConn from
+// PostgreSQL and answers how many rows it staged.
+type stageFunc func(ctx context.Context, duckConn *sql.Conn) (int64, error)
+
 // runExport runs plan on one pinned DuckDB connection: it creates the
-// staged temp tables, streams the PostgreSQL rows into them, COPYs the
-// projection to Parquet, and drops the tables. No PostgreSQL connection
+// staged temp tables, has stage stream the PostgreSQL rows into them, COPYs
+// the projection to Parquet, and drops the tables. No PostgreSQL connection
 // string or credential enters DuckDB (#785).
-func (e *DuckExporter) runExport(ctx context.Context, cfg CDCConfig, pg *sql.DB, plan exportSQLPlan, rowIDs []uuid.UUID, logMessage, execErrPrefix string) error {
+func (e *DuckExporter) runExport(ctx context.Context, cfg CDCConfig, plan exportSQLPlan, rowIDs []uuid.UUID, stage stageFunc, logMessage, execErrPrefix string) error {
 	logArgs := []any{"sql_preview", plan.copySQL, "rows", len(rowIDs)}
 	for _, stage := range plan.stages {
 		logArgs = append(logArgs, stage.alias+"_query", stage.query)
@@ -162,7 +170,7 @@ func (e *DuckExporter) runExport(ctx context.Context, cfg CDCConfig, pg *sql.DB,
 	defer e.dropStages(ctx, conn, plan.stages)
 
 	started := time.Now()
-	staged, err := stagePostgresRows(ctx2, pg, conn, plan.stages, rowIDs)
+	staged, err := stage(ctx2, conn)
 	if err != nil {
 		return fmt.Errorf("%s: %w", execErrPrefix, err)
 	}
@@ -191,7 +199,7 @@ func (e *DuckExporter) dropStages(ctx context.Context, conn *sql.Conn, stages []
 	}
 }
 
-func buildExportSQLPlan(spec exportModeSpec, transport exportTransport, s3TmpPath string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (exportSQLPlan, error) {
+func buildExportSQLPlan(spec exportModeSpec, transport exportTransport, dest string, cfg CDCConfig, schemaID int16, snapshotTS int64, rowIDs []uuid.UUID, attrCache forma.SchemaAttributeCache) (exportSQLPlan, error) {
 	if len(rowIDs) == 0 && spec.useChangeLog {
 		return exportSQLPlan{}, errors.New("export snapshot: no row ids provided")
 	}
@@ -209,12 +217,11 @@ func buildExportSQLPlan(spec exportModeSpec, transport exportTransport, s3TmpPat
 		return exportSQLPlan{}, fmt.Errorf("build export projection for schema %d: %w", schemaID, err)
 	}
 
-	// A base export with no row ids is a legitimate request (#519): a schema
-	// with zero live rows still needs one zero-row base object carrying the
-	// full projected column set, so its manifest never lists nothing (an
-	// empty manifest sends readers to the legacy glob fallback, see
-	// manifest.QuerySource.Paths). Its reads select no rows; the staged
-	// tables keep every column.
+	// A base export with no row ids still builds: its reads select no rows,
+	// and the staged tables keep every column. cdc-init never asks for one
+	// (an export snapshot with no live row writes no object, and an init of
+	// no rows publishes an empty generation), but the projection does not
+	// depend on the rows.
 	entityMain, eavData := resolveMainAndEAVTableNames(cfg)
 	var stages []exportStage
 	if spec.useChangeLog {
@@ -242,7 +249,7 @@ func buildExportSQLPlan(spec exportModeSpec, transport exportTransport, s3TmpPat
 	return exportSQLPlan{
 		setupSQL: buildStageSetupSQL(opts.memoryLimit, stages),
 		stages:   stages,
-		copySQL:  buildProjectedExportSQL(spec, sources, buildParquetCopyOptions(opts), sqlutil.EscapeLiteral(s3TmpPath), mainSelectCols, projection.eavAgg),
+		copySQL:  buildProjectedExportSQL(spec, sources, buildParquetCopyOptions(opts), sqlutil.EscapeLiteral(dest), mainSelectCols, projection.eavAgg),
 	}, nil
 }
 

@@ -131,12 +131,11 @@ bun run cdc-init -- --dry-run
 
 # Single schema with custom target file size
 bun run cdc-init -- --schema-id 101 --target-file-size-mb 256
-
-# Re-init after `bun run cdc-flush` already wrote delta files (#371): without
-# the flag cdc-init refuses every schema that still has delta objects; with it
-# the base swap commits first, then the schema's delta tier is deleted.
-bun run cdc-init -- --replace-delta
 ```
+
+cdc-init and cdc-flush write under the same data prefix (`S3_PREFIX`). A re-init
+after `bun run cdc-flush` publishes an init generation that lists only its own
+base files, so it needs no extra flag (Protocol V2, #896).
 
 ### CDC Flush
 
@@ -191,12 +190,12 @@ The check locates its sample by paging the federated result at 100 rows per page
 By default the identity check routes through Postgres (hybrid routing serves small pages from the hot tier). The route is the server's, not the request's (#715). To prove the read actually goes through **DuckDB/S3**, start a server whose routing sends every query there, with manifest-driven reads, and pass `--require-duckdb` (or `REQUIRE_DUCKDB=1`):
 
 ```bash
-# server env: DUCKDB_ENABLED=true DUCKDB_ROUTING_STRATEGY=freshness-first DUCKDB_MANIFEST_TEMPLATE='manifest/{{.SchemaID}}.json'
-#             S3_BUCKET=forma-cdc S3_PREFIX=delta S3_ENDPOINT=http://localhost:9000 S3_ACCESS_KEY=... S3_SECRET_KEY=...
+# server env: DUCKDB_ENABLED=true DUCKDB_ROUTING_STRATEGY=freshness-first
+#             S3_BUCKET=forma-cdc S3_ENDPOINT=http://localhost:9000 S3_ACCESS_KEY=... S3_SECRET_KEY=...
 bun run federated-check -- --schema lead --require-duckdb
 ```
 
-The check asks for the execution plan (`include_execution_plan`) and fails unless `execution_plan.routing.used_duckdb` is true. The server resolves the parquet paths from the manifests `cdc-flush` writes. Requires the rows to be flushed first (`cdc-flush`). Any schema works, including `lead`/`visit` with nested dotted attributes (`contact.annualIncome`) — the federated projection folds dotted names to their parquet column aliases (#260).
+The check asks for the execution plan (`include_execution_plan`) and fails unless `execution_plan.routing.used_duckdb` is true. The server scans each schema's published generation, which its publication record names (`docs/publication-protocol-v2.md`). Requires the rows to be flushed first (`cdc-flush`). Any schema works, including `lead`/`visit` with nested dotted attributes (`contact.annualIncome`) — the federated projection folds dotted names to their parquet column aliases (#260).
 
 ### Clean S3 (repeatable runs)
 
@@ -269,25 +268,16 @@ See `.env.example` for all available configuration options:
 | `TOOL_TIMEOUT_MS` | `300000` | Timeout for each CDC tool subprocess (killed on expiry) |
 | `DUCKDB_ENABLED` | `false` | Server: enable the federated DuckDB engine (reads warm/cold S3 parquet) |
 | `DUCKDB_S3_ENDPOINT` | `$S3_ENDPOINT` | Server: S3 endpoint for the DuckDB engine (falls back to `S3_ENDPOINT`) |
-| `DUCKDB_S3_BUCKET` | `$S3_BUCKET` | Server: S3 bucket for DuckDB (falls back to `S3_BUCKET`) |
-| `DUCKDB_S3_PREFIX` | _(unset)_ | Server: S3 data prefix for DuckDB. Falls back to `S3_PREFIX`, but **only when a manifest template is also set** (see below) |
-| `DUCKDB_MANIFEST_PREFIX` | _(unset)_ | Server: manifest prefix for DuckDB. Falls back to `MANIFEST_PREFIX`, but **only when a manifest template is also set** |
-| `DUCKDB_MANIFEST_TEMPLATE` | _(unset)_ | Server: manifest template (switch for manifest-driven reads; fails at startup if set without bucket). Falls back to `MANIFEST_TEMPLATE` |
+| `DUCKDB_S3_BUCKET` | `$S3_BUCKET` | Server: S3 bucket for DuckDB (falls back to `S3_BUCKET`); required with `DUCKDB_ENABLED`. The server reads no prefix or manifest template since #896 |
 | `DUCKDB_ROUTING_STRATEGY` | `hybrid` | Server: the federated engine's routing strategy (`hybrid`, `cost-first` or `freshness-first`). It decides which queries read the parquet tiers through DuckDB; `freshness-first` sends every query there. Any other value fails startup |
 | `DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE` | `false` | Server: answer a query whose DuckDB pass fails degradably from Postgres alone (design §7.2). Costs Postgres load during an S3 outage, never correctness |
 | `DUCKDB_HOT_LEG_TRANSPORT` | `pgx` | Server: how a federated pass reads the hot tier. `pgx` is the only transport; `attach` (retired in #858) or any other value fails startup |
 | `REQUIRE_DUCKDB` | `0` | federated-check / k6: fail unless a DuckDB route is observed |
 
-`MANIFEST_PREFIX` and `MANIFEST_TEMPLATE` are **reserved shared names**, not
-variables this harness or the CDC tooling sets today (the CDC tools take
-`--manifest-prefix` / `--manifest-template` flags); they exist so a future
-single-stack configuration can drive writer and reader from one place. The two
-prefix fallbacks are all-or-nothing with the template: with no template in
-effect, `S3_PREFIX` / `MANIFEST_PREFIX` are ignored rather than adopted,
-because a prefix without a template is an inert configuration the server
-rejects at startup — that rule keeps a plain `DUCKDB_ENABLED=1` upgrade
-bootable on a stack that already exports `S3_PREFIX`. Explicit `DUCKDB_*`
-names bypass the condition and are always adopted.
+The server reads no manifest template, manifest prefix or data prefix since
+#896 (`DUCKDB_MANIFEST_TEMPLATE`, `MANIFEST_TEMPLATE`, `DUCKDB_MANIFEST_PREFIX`,
+`MANIFEST_PREFIX`, `DUCKDB_S3_PREFIX` and `S3_PREFIX` are ignored by it): each
+schema's publication record names the manifest of the generation it reads.
 
 ## Reports
 

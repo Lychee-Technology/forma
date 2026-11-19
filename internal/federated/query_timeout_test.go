@@ -18,6 +18,7 @@ import (
 type budgetBlockedDuckDBExecutor struct {
 	fakeDuckDBExecutor
 	sawDeadline bool
+	deadline    time.Time
 }
 
 func (b *budgetBlockedDuckDBExecutor) Query(ctx context.Context, sql string, args ...any) (duckDBRowsIterator, error) {
@@ -28,7 +29,7 @@ func (b *budgetBlockedDuckDBExecutor) Query(ctx context.Context, sql string, arg
 		return rows, nil
 	}
 	b.calls++
-	_, b.sawDeadline = ctx.Deadline()
+	b.deadline, b.sawDeadline = ctx.Deadline()
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
@@ -67,8 +68,8 @@ func TestQueryTimeoutCancelsTheDuckDBPass(t *testing.T) {
 }
 
 // TestZeroQueryTimeoutLeavesTheCallerContextAlone pins the unset contract: a
-// zero QueryTimeout adds no deadline, so a caller-supplied cancellation is
-// the only bound.
+// zero QueryTimeout adds no deadline of its own, so the only bounds are the
+// caller's cancellation and the pass deadline R_max, far beyond this test.
 func TestZeroQueryTimeoutLeavesTheCallerContextAlone(t *testing.T) {
 	restore := initTestDescriptors()
 	defer restore()
@@ -85,7 +86,8 @@ func TestZeroQueryTimeoutLeavesTheCallerContextAlone(t *testing.T) {
 	_, err := engine.Query(ctx, tables, fq, nil)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, context.Canceled), "want Canceled, got %v", err)
-	require.False(t, duck.sawDeadline, "a zero QueryTimeout must not add a deadline")
+	require.True(t, duck.sawDeadline, "the pass deadline R_max bounds every pass")
+	require.Greater(t, time.Until(duck.deadline), DefaultPublishedPassDeadline/2, "a zero QueryTimeout must not add a deadline below R_max")
 }
 
 // TestCallerCancellationDoesNotDegrade: a request its caller cancelled is not

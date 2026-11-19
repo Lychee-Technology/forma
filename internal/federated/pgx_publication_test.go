@@ -106,14 +106,11 @@ func (c *countingDuck) queryStaged(ctx context.Context, dirty []uuid.UUID, sqlSt
 }
 
 // publishedEngine is the fixture's engine with pub as its publication reader.
-// Its V1 source answers a glob over every file of the fixture, which a
-// published pass never asks for.
-func publishedEngine(t *testing.T, f *pgxFixture, pub PublicationReader, opts ...EngineOption) (*DBFederatedQueryEngine, *countingDuck, *fakeParquetSource) {
+func publishedEngine(t *testing.T, f *pgxFixture, pub PublicationReader, opts ...EngineOption) (*DBFederatedQueryEngine, *countingDuck) {
 	t.Helper()
 	duck := &countingDuck{inner: NewDuckDBClientQueryExecutor(&DuckDBClient{DB: f.db})}
-	v1 := &fakeParquetSource{paths: []string{filepath.Join(f.dir, "*.parquet")}}
-	all := append([]EngineOption{WithParquetSource(v1), WithPublicationReader(pub, 0)}, opts...)
-	return f.engineOver(t, duck, nil, all...), duck, v1
+	all := append([]EngineOption{WithPublicationReader(pub, 0)}, opts...)
+	return f.engineOver(t, duck, nil, all...), duck
 }
 
 func hotRows(n int) []pgxRow {
@@ -133,7 +130,7 @@ func TestPublishedPassOfAnUnpublishedSchemaAnswersFromPostgreSQL(t *testing.T) {
 	ctx := context.Background()
 	f := newPgxFixture(t, hotRows(7))
 	pub := unpublished()
-	e, duck, v1 := publishedEngine(t, f, pub)
+	e, duck := publishedEngine(t, f, pub)
 	e.cfg.HotLegMaxDirtyRows = 2
 
 	order, err := sortkey.OffsetOrder(ageOrders(false))
@@ -144,9 +141,7 @@ func TestPublishedPassOfAnUnpublishedSchemaAnswersFromPostgreSQL(t *testing.T) {
 	require.Equal(t, want[2:6], recordIDs(records))
 	require.Equal(t, int64(7), total)
 	require.Equal(t, []string{"publication", "change_log", "hot_keys", "hot_rows"}, f.leg.statements)
-	require.Equal(t, DirtySetHotExcluded, f.leg.lastChangeLog.Form, "nothing widens a published pass's barrier")
-	require.False(t, f.leg.lastChangeLog.ParquetHistory, "no parquet-history probe")
-	require.Equal(t, int64(noGraceCutoffMs), f.leg.lastHotKeys.GraceCutoffMs, "the hot keys are the unflushed entries'")
+	require.Equal(t, ChangeLogSnapshotRequest{Tables: tieRunTables, SchemaID: parquetOnlySchemaID}, f.leg.lastChangeLog, "the strict dirty set: nothing widens the barrier")
 
 	columns := []model.KeysetColumn{{Attribute: "age", Direction: forma.SortOrderAsc}, {Attribute: "row_id", Direction: forma.SortOrderAsc}}
 	keysetOrder, err := sortkey.KeysetOrder(normalizedCursor(t, e, columns, ageOrders(false)))
@@ -154,7 +149,6 @@ func TestPublishedPassOfAnUnpublishedSchemaAnswersFromPostgreSQL(t *testing.T) {
 	require.Equal(t, f.visibleOrder(t, keysetOrder), walkPgxKeyset(t, e, f, columns, ageOrders(false), []any{int64(-1), uuid.Nil}, 3))
 
 	require.Zero(t, duck.statements(), "no DuckDB statement, no glob listing")
-	require.Zero(t, v1.pathsCalls, "the V1 path set is never resolved")
 	require.Zero(t, pub.resolves+pub.probes, "an unpublished record has no manifest")
 	require.Equal(t, f.leg.begins, pub.reads, "one record read per pass")
 	require.Equal(t, f.leg.begins, f.leg.commits)
@@ -165,7 +159,7 @@ func TestPublishedPassOfAnUnpublishedSchemaAnswersFromPostgreSQL(t *testing.T) {
 func TestPublishedPassOfAnEmptyGenerationRunsNoDuckDB(t *testing.T) {
 	f := newPgxFixture(t, hotRows(3))
 	pub := publishedOver()
-	e, duck, _ := publishedEngine(t, f, pub)
+	e, duck := publishedEngine(t, f, pub)
 	records, total, err := e.ExecuteDuckDBFederatedQuery(context.Background(), tieRunTables, pgxQuery(), 10, 0, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, records, 3)
@@ -181,7 +175,7 @@ func TestPublishedPassScansExactlyTheListedObjects(t *testing.T) {
 	f := newPgxFixture(t, tieRunRows())
 	f.writeParquet(t, "unlisted.parquet", []pgxRow{{i: 40, createdAt: 900, age: ageOf(99), parquet: true}})
 	pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
-	e, duck, v1 := publishedEngine(t, f, pub)
+	e, duck := publishedEngine(t, f, pub)
 
 	order, err := sortkey.OffsetOrder(nil)
 	require.NoError(t, err)
@@ -191,7 +185,6 @@ func TestPublishedPassScansExactlyTheListedObjects(t *testing.T) {
 	require.Equal(t, want, recordIDs(records), "the listed object's rows and the hot rows, the unlisted object's never")
 	require.Equal(t, int64(len(want)), total)
 	require.Positive(t, duck.statements())
-	require.Zero(t, v1.pathsCalls)
 	require.Equal(t, "publication", f.leg.statements[0], "the record is the snapshot's first read")
 	require.Zero(t, pub.probes, "nothing failed, so nothing is probed")
 }
@@ -216,7 +209,7 @@ func (b *blockingScan) queryStaged(ctx context.Context, _ []uuid.UUID, _ string,
 func TestPublishedPassPastItsDeadlineIsAbortedAndRetried(t *testing.T) {
 	f := newPgxFixture(t, tieRunRows())
 	pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
-	e, duck, _ := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
+	e, duck := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
 	scan := &blockingScan{countingDuck: duck, causes: make(chan error, 2)}
 	e.duck = scan
 
@@ -239,7 +232,7 @@ func TestPublishedPassPastItsDeadlineIsAbortedAndRetried(t *testing.T) {
 func TestPublishedPassUnderTheRequestDeadlineIsNotRetried(t *testing.T) {
 	f := newPgxFixture(t, tieRunRows())
 	pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
-	e, duck, _ := publishedEngine(t, f, pub)
+	e, duck := publishedEngine(t, f, pub)
 	scan := &blockingScan{countingDuck: duck, causes: make(chan error, 2)}
 	e.duck = scan
 

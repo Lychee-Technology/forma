@@ -26,8 +26,9 @@ type DomainFinding struct {
 	Evidence  string
 }
 
-// AuditParquetDomain checks every live object in paths (concrete URIs or
-// globs) against the declaration cache: whether each attribute column holds
+// AuditParquetDomain checks every live object in paths (concrete URIs, as a
+// published generation lists them; a glob is not expanded) against the
+// declaration cache: whether each attribute column holds
 // only values the declaration admits (#733).
 //
 // It reads every object's footer and takes no manifest stamps. A stamp lets
@@ -48,8 +49,8 @@ type DomainFinding struct {
 // Every object is also decoded in full (decodeObject), so a corrupt data page
 // is found even under a column its footer settles: the baseline reads every
 // live object once. An object whose footer or data cannot be read is a
-// finding, and a glob whose listing fails is an error: a baseline never
-// blesses what it could not see.
+// finding, and an incomplete footer union with no such object is an error: a
+// baseline never blesses what it could not see.
 //
 // A scan proves the domain, not the meaning: a reinterpretation that keeps
 // the domain (bigint to date, both BIGINT) passes.
@@ -67,7 +68,7 @@ func AuditParquetDomain(
 		findings = append(findings, DomainFinding{Path: path, Evidence: "its columns could not be read"})
 	}
 	if !complete && len(union.unverified) == 0 {
-		return nil, errors.New("a parquet glob could not be listed, so the object set is unknown")
+		return nil, errors.New("the parquet footers could not all be read, so the object set is unknown")
 	}
 	undecoded := make(map[string]bool)
 	for _, f := range union.files {

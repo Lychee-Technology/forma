@@ -35,9 +35,8 @@ const DropStagedDirtyIDsSQL = "DROP TABLE IF EXISTS " + stagedDirtyIDsTableRef
 // a reason:
 //
 //   - dirty_ids is the staged temp table (StagedDirtyIDsTable), not a
-//     change_log scan. The Go side stages whichever set the tier form needs
-//     (the widened set for the hot form, the strict one for the hot-excluded
-//     form), so the template has no HasHot branch and no flush-grace cutoff.
+//     change_log scan. The Go side stages the strict dirty set, which every
+//     tier form reads, so the template has no HasHot branch and no cutoff.
 //   - Every ORDER BY key renders NULLS LAST. Go's comparator places NULL
 //     last in both directions; DuckDB's default does the same, but the
 //     default_null_order setting can change a default, and the two orders

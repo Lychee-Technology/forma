@@ -194,7 +194,7 @@ func TestCachedCorruptRefusalIsBreakerNeutral(t *testing.T) {
 	duck := &retryFakeDuck{passes: []retryPass{{}}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
 	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, breaker,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}), withFakeHotLeg(nil))
+		hybridDuckConfig(), testMetadataCacheSchema7(t), withParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}), withFakeHotLeg(nil))
 	e.corruptPaths.Add([]string{retryCorruptPath1})
 
 	for i := 0; i < 3; i++ {
@@ -204,12 +204,13 @@ func TestCachedCorruptRefusalIsBreakerNeutral(t *testing.T) {
 	require.False(t, breaker.IsOpen(), "threshold 1: a single recorded failure would have opened it")
 }
 
-// TestResolvePgxScanSourcesCachedCorruptClassifiesMissingFirst pins
+// TestResolveScanSourcesCachedCorruptClassifiesMissingFirst pins
 // missing-before-corrupt on the cached refusal (#722 review): a listed object
-// absent from storage, the cached one or any other, is manifest inconsistency
-// and must not be absorbed by the degradable corruption refusal. The probe
-// covers the whole listed set, and a probe that cannot run proves no loss.
-func TestResolvePgxScanSourcesCachedCorruptClassifiesMissingFirst(t *testing.T) {
+// absent from storage, the cached one or any other, is a publication
+// inconsistency and must not be absorbed by the degradable corruption
+// refusal. The probe covers the whole listed set, and a probe that cannot
+// run proves no loss.
+func TestResolveScanSourcesCachedCorruptClassifiesMissingFirst(t *testing.T) {
 	listed := []string{"s3://b/a.parquet", "s3://b/bad.parquet"}
 	for name, missing := range map[string][]string{
 		"another listed object deleted": {"a.parquet"},
@@ -220,8 +221,8 @@ func TestResolvePgxScanSourcesCachedCorruptClassifiesMissingFirst(t *testing.T) 
 			e := newCachedRefusalTestEngine(t, src)
 			e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
 
-			_, err := e.resolvePgxScanSources(context.Background(), corruptTables, exclusionTestQuery())
-			var inconsistent *ParquetSetInconsistentError
+			_, err := e.resolveScanSources(context.Background(), corruptTables, exclusionTestQuery())
+			var inconsistent *PublicationConsistencyError
 			require.ErrorAs(t, err, &inconsistent)
 			require.Equal(t, missing, inconsistent.MissingKeys)
 			require.NotErrorIs(t, err, ErrFederatedReadFailed)
@@ -234,7 +235,7 @@ func TestResolvePgxScanSourcesCachedCorruptClassifiesMissingFirst(t *testing.T) 
 		e := newCachedRefusalTestEngine(t, &fakeParquetSource{paths: listed, missingErr: fmt.Errorf("connection refused")})
 		e.corruptPaths.Add([]string{"s3://b/bad.parquet"})
 
-		_, err := e.resolvePgxScanSources(context.Background(), corruptTables, exclusionTestQuery())
+		_, err := e.resolveScanSources(context.Background(), corruptTables, exclusionTestQuery())
 		var corrupt *CorruptParquetError
 		require.ErrorAs(t, err, &corrupt)
 		require.True(t, degradableFederatedError(err))
@@ -243,9 +244,9 @@ func TestResolvePgxScanSourcesCachedCorruptClassifiesMissingFirst(t *testing.T) 
 
 // TestCachedCorruptRefusalSurfacesAnotherMissingObject pins the #722 review
 // finding at the engine: while A's verdict is cached, a different listed
-// object B deleted from storage is manifest inconsistency. It fails with
-// degraded mode off and on, and it records a breaker failure, as the same
-// loss found by a failed scan would.
+// object B deleted from storage is a publication inconsistency. It fails with
+// degraded mode off and on, and, as the same loss found by a failed scan,
+// it is not charged to the breaker: a lost object says nothing about DuckDB.
 func TestCachedCorruptRefusalSurfacesAnotherMissingObject(t *testing.T) {
 	for _, degraded := range []bool{false, true} {
 		t.Run(fmt.Sprintf("degraded=%v", degraded), func(t *testing.T) {
@@ -260,19 +261,19 @@ func TestCachedCorruptRefusalSurfacesAnotherMissingObject(t *testing.T) {
 				missing: []string{"7/keep-a.parquet"},
 			}
 			e := NewDBFederatedQueryEngine(pg, duck, breaker,
-				hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
+				hybridDuckConfig(), testMetadataCacheSchema7(t), withParquetSource(src), withFakeHotLeg(nil))
 			e.corruptPaths.Add([]string{retryCorruptPath1})
 
 			opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded}
 			_, err := e.Query(context.Background(), corruptTables, coldTierQuery(), opts)
-			var inconsistent *ParquetSetInconsistentError
+			var inconsistent *PublicationConsistencyError
 			require.ErrorAs(t, err, &inconsistent)
 			require.Equal(t, []string{"7/keep-a.parquet"}, inconsistent.MissingKeys)
 			var corrupt *CorruptParquetError
 			require.False(t, errors.As(err, &corrupt), "the cached verdict must not mask the loss")
 			require.Zero(t, pg.queryCalls, "inconsistency is non-degradable")
 			require.Empty(t, duck.mainSQL, "the cached verdict still refuses before the scan")
-			require.True(t, breaker.IsOpen(), "threshold 1: the loss records a breaker failure")
+			require.False(t, breaker.IsOpen(), "threshold 1: the loss records no breaker failure")
 		})
 	}
 }
@@ -284,7 +285,7 @@ type budgetBlockedParquetSource struct {
 	fakeParquetSource
 }
 
-func (s *budgetBlockedParquetSource) MissingIn(ctx context.Context, scanned []string) ([]string, error) {
+func (s *budgetBlockedParquetSource) MissingIn(ctx context.Context, _ PublishedGeneration, scanned []string) ([]string, error) {
 	s.missingCalls++
 	<-ctx.Done()
 	return nil, fmt.Errorf("probe %d parquet objects: %w", len(scanned), ctx.Err())
@@ -311,7 +312,7 @@ func TestMissingObjectProbePreservesTheExpiredBudget(t *testing.T) {
 				cfg := hybridDuckConfig()
 				cfg.QueryTimeout = 50 * time.Millisecond
 				e := NewDBFederatedQueryEngine(pg, duck, nil,
-					cfg, testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
+					cfg, testMetadataCacheSchema7(t), WithPublicationReader(src, 0), withFakeHotLeg(nil))
 				if cached {
 					e.corruptPaths.Add([]string{retryCorruptPath1})
 				}
@@ -337,7 +338,7 @@ type cancellingParquetSource struct {
 	cancel context.CancelFunc
 }
 
-func (s *cancellingParquetSource) MissingIn(ctx context.Context, scanned []string) ([]string, error) {
+func (s *cancellingParquetSource) MissingIn(ctx context.Context, _ PublishedGeneration, scanned []string) ([]string, error) {
 	s.missingCalls++
 	s.cancel()
 	<-ctx.Done()
@@ -364,7 +365,7 @@ func TestMissingObjectProbeCancelledByTheCallerDoesNotDegrade(t *testing.T) {
 					cancel:            cancel,
 				}
 				e := NewDBFederatedQueryEngine(pg, duck, nil,
-					hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
+					hybridDuckConfig(), testMetadataCacheSchema7(t), WithPublicationReader(src, 0), withFakeHotLeg(nil))
 				if cached {
 					e.corruptPaths.Add([]string{retryCorruptPath1})
 				}
@@ -408,7 +409,7 @@ func TestCorruptRefusalDegradesToPostgresOnly(t *testing.T) {
 			}}
 			pg := &fakePostgresFederatedSource{}
 			e := NewDBFederatedQueryEngine(pg, duck, nil,
-				hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}), withFakeHotLeg(nil))
+				hybridDuckConfig(), testMetadataCacheSchema7(t), withParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}), withFakeHotLeg(nil))
 			if cached {
 				e.corruptPaths.Add([]string{retryCorruptPath1})
 			}

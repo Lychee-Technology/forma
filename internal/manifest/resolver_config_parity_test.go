@@ -8,9 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The config surface validates manifest templates (forma.DuckDBConfig
-// ValidateManifestRead) while PathResolver.Resolve is what actually renders
-// them at read time. #300 added an Execute-probe to the validator, which only
+// The tools validate manifest templates (forma.ValidateManifestPathTemplate)
+// while PathResolver.Resolve is what actually renders them. #300 added an Execute-probe to the validator, which only
 // helps if the two agree: the validator probes a map[string]any keyed
 // "SchemaID" because that is exactly what Resolve executes against
 // (resolver.go), and it sets missingkey=error while Resolve does not — making
@@ -34,8 +33,7 @@ func TestManifestTemplate_AcceptedByConfigRendersInResolver(t *testing.T) {
 		t.Run(tmpl, func(t *testing.T) {
 			t.Parallel()
 
-			cfg := forma.DuckDBConfig{S3Bucket: "forma-lake", ManifestTemplate: tmpl}
-			require.NoError(t, cfg.ValidateManifestRead(),
+			require.NoError(t, forma.ValidateManifestPathTemplate("manifest-template", tmpl),
 				"config must accept this template for the parity claim to mean anything")
 
 			// The resolver renders it, varies by schema, and never leaks the
@@ -73,8 +71,7 @@ func TestManifestTemplate_RejectedByConfigWouldMisresolve(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg := forma.DuckDBConfig{S3Bucket: "forma-lake", ManifestTemplate: tt.template}
-			require.Error(t, cfg.ValidateManifestRead(), "config must reject this template")
+			require.Error(t, forma.ValidateManifestPathTemplate("manifest-template", tt.template), "config must reject this template")
 
 			// Resolve does not fail on any of these — that silence is the whole
 			// problem, and why the check has to live in config validation.

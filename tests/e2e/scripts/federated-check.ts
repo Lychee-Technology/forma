@@ -108,9 +108,9 @@ interface ComparisonResult {
  * plan so the route the server took can be reported. The route is the
  * server's: with the default hybrid routing small pages are answered from
  * Postgres, and a server started with DUCKDB_ROUTING_STRATEGY=freshness-first
- * reads every page through DuckDB, its parquet paths resolved from the
- * manifest (DUCKDB_MANIFEST_TEMPLATE). The DuckDB route needs the rows
- * flushed to warm/cold parquet first.
+ * reads every page through DuckDB, scanning each schema's published
+ * generation. The DuckDB route needs the rows flushed to warm/cold parquet
+ * first.
  */
 async function queryFederated(
   schemaName: string,

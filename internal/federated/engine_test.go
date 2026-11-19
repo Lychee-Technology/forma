@@ -54,7 +54,7 @@ const testParquetPath = "s3://b/7/a.parquet"
 // write-once cache keeps each test measuring only the calls it makes itself.
 func withTestParquetPath() EngineOption {
 	return func(e *DBFederatedQueryEngine) {
-		WithParquetSource(&fakeParquetSource{paths: []string{testParquetPath}})(e)
+		withParquetSource(&fakeParquetSource{paths: []string{testParquetPath}})(e)
 		e.schemaValidator.markValidated(testParquetPath,
 			map[string]string{"row_id": "UUID", "changed_at": "BIGINT", "deleted_at": "BIGINT", "ltbase_created_at": "BIGINT"}, nil)
 	}
@@ -245,19 +245,26 @@ func TestNewDuckDBClientQueryExecutorNilClientReturnsNil(t *testing.T) {
 	require.Nil(t, NewDuckDBClientQueryExecutor(&DuckDBClient{}))
 }
 
-func TestDBFederatedQueryEngine_DuckDBUnavailableFailsBeforeTheSnapshot(t *testing.T) {
+// An engine built without a publication reader cannot tell a schema whose
+// rows are all hot from one whose parquet it would drop, so a DuckDB-routed
+// query fails before the snapshot, as misconfiguration, and no degraded
+// fallback answers it.
+func TestDBFederatedQueryEngine_NoPublicationReaderFailsBeforeTheSnapshot(t *testing.T) {
 	leg := &fakeHotLeg{}
-	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, nil, withFakeHotLeg(leg))
+	pg := &fakePostgresFederatedSource{}
+	engine := NewDBFederatedQueryEngine(pg, &fakeDuckDBExecutor{}, nil, forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}}, nil, withFakeHotLeg(leg))
 
-	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
+	opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: true}
 	_, err := engine.Query(context.Background(), model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: 7, Limit: 2000},
 		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierCold},
 	}, opts)
 
-	require.ErrorContains(t, err, "duckdb client not available")
+	require.ErrorIs(t, err, errPgxHotLegNotConfigured)
+	require.ErrorContains(t, err, "WithPublicationReader")
+	require.False(t, degradableFederatedError(err))
 	require.Zero(t, leg.begins)
-	require.Contains(t, opts.ExecutionPlan.Notes, "duckdb client unavailable")
+	require.Zero(t, pg.queryCalls, "misconfiguration is not answered from PostgreSQL")
 }
 
 // TestSchemaProjectionCache pins #142: the second projection build for the

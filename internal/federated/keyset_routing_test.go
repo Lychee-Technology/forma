@@ -291,7 +291,7 @@ func TestQueryWithKeysetCursorDoesNotDegradeToPostgres(t *testing.T) {
 	// %w -> %v mutation in explainDeclinedDegradation a caller still reads the
 	// right words while every downstream sentinel discriminator is gone
 	// (ErrFederatedReadFailed, forma.ErrInvalidInput and its 400,
-	// ErrParquetSetInconsistent and httpapi's key redaction), so prose alone
+	// ErrPublicationInconsistent and httpapi's key redaction), so prose alone
 	// cannot be the contract in a repo that matches with errors.Is.
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
 	require.NotErrorIs(t, err, ErrKeysetUnsupportedOnPostgres,

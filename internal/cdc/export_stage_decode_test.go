@@ -4,6 +4,7 @@ import (
 	"database/sql/driver"
 	"math"
 	"math/big"
+	"strings"
 	"testing"
 
 	duckdb "github.com/duckdb/duckdb-go/v2"
@@ -79,4 +80,35 @@ func TestStageRowDecoder_ValuesAndNulls(t *testing.T) {
 	require.NoError(t, d.targets[4].(*pgtype.Text).Scan(nil))
 	require.NoError(t, d.targets[5].(*pgtype.UUID).Scan(nil))
 	require.Equal(t, []driver.Value{nil, nil, nil, nil, nil, nil}, d.values())
+}
+
+// cdc-init's base export reads through database/sql (stageRowsOnTx), where
+// pgx's stdlib answers double precision as float64 and NUMERIC as its text:
+// Scan decodes the text exactly as the pgx path's ScanNumeric does.
+func TestStagedDouble_ScanTakesTheStdlibValues(t *testing.T) {
+	for name, tc := range map[string]struct {
+		src   any
+		want  float64
+		valid bool
+	}{
+		"null":           {nil, 0, false},
+		"double":         {1.5, 1.5, true},
+		"numeric":        {"-12345.6789", -12345.6789, true},
+		"past 2^53":      {"9007199254740993", 9007199254740992, true},
+		"infinity":       {"Infinity", math.Inf(1), true},
+		"minus infinity": {"-Infinity", math.Inf(-1), true},
+		// pgx's stdlib spells a NUMERIC out in plain digits.
+		"past the range": {"1" + strings.Repeat("0", 400), math.Inf(1), true},
+		"below it":       {"0." + strings.Repeat("0", 399) + "1", 0, true},
+	} {
+		var d stagedDouble
+		require.NoError(t, d.Scan(tc.src), name)
+		require.Equal(t, tc.valid, d.valid, name)
+		require.Equal(t, tc.want, d.value, name)
+	}
+	var d stagedDouble
+	require.NoError(t, d.Scan("NaN"))
+	require.True(t, d.valid && math.IsNaN(d.value))
+	require.ErrorContains(t, d.Scan("not a number"), "scan numeric text")
+	require.ErrorContains(t, d.Scan(int64(1)), "want float64 or numeric text")
 }

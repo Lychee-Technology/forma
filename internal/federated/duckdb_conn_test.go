@@ -12,18 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRenderS3ParquetPath(t *testing.T) {
-	tmpl := "s3://bucket/path/schema_{{.SchemaID}}/data.parquet"
-	got, err := sqlgen.RenderS3ParquetPath(tmpl, 42)
-	if err != nil {
-		t.Fatalf("sqlgen.RenderS3ParquetPath error: %v", err)
-	}
-	want := "s3://bucket/path/schema_42/data.parquet"
-	if got != want {
-		t.Fatalf("unexpected path, got=%s want=%s", got, want)
-	}
-}
-
 func TestGenerateDuckDBWhereClause_SimpleKv(t *testing.T) {
 	q := &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{

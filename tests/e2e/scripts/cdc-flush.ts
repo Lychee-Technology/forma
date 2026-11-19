@@ -117,9 +117,6 @@ async function runCDCFlush(dryRun: boolean): Promise<CDCFlushReport> {
     args.push('--max-batch-bytes', String(config.cdc.maxBatchBytes));
   }
 
-  // Enable manifest tracking
-  args.push('--manifest-template', 'manifest/{{.SchemaID}}.json');
-
   if (dryRun) {
     args.push('--dry-run');
   }
@@ -174,9 +171,11 @@ async function runCDCFlush(dryRun: boolean): Promise<CDCFlushReport> {
 
     // Exit 0 is necessary but not sufficient: validate the actual S3 state.
     // A dry run writes nothing, so skip the object requirement there.
+    // Protocol V2 (#896): the manifest generations live under the data prefix
+    // ({prefix}/{schema_id}/_manifests/), beside the parquet they list.
     const validation = await validateCDCOutput({
       dataPrefix: config.s3.prefix,
-      manifestPrefix: 'manifest',
+      manifestPrefix: config.s3.prefix,
       requireParquet: !dryRun && !flushSkipped,
     });
     if (flushSkipped && validation.parquetCount === 0) {

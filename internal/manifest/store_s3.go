@@ -103,8 +103,7 @@ func isNoSuchKey(err error) bool {
 // may answer by reloading and retrying. Transport errors, timeouts and other
 // API failures are deliberately excluded: after those the put may have
 // landed, and callers must treat the outcome as ambiguous. Shared by the
-// compactor's CAS swap, manifest-reconcile's retried saves, and cdc-init's
-// final publish (#416).
+// compactor's CAS swap and manifest-reconcile's retried saves (#416).
 func IsPreconditionFailed(err error) bool {
 	if err == nil {
 		return false

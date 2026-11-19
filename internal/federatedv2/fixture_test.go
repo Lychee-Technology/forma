@@ -32,7 +32,7 @@ import (
 
 // The integration fixture: PostgreSQL storage and publication tables, a
 // manifest store and parquet objects on local disk, and the federated engine
-// over them as #896 will wire it, with this package's Source as its
+// over them as the factory wires it, with this package's Source as its
 // publication reader. Generations are seeded the way a V2 writer commits
 // them: parquet and manifest staged first, then Publish and the marks in one
 // transaction.

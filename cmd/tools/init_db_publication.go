@@ -16,11 +16,9 @@ import (
 // publication.Statements, the one source the publication package's own
 // suites create them from, rendered for opts.engine.
 //
-// init-db only creates the tables. No Forma code path inserts, reads or
-// updates them yet: registering a schema writes no record, and cdc-flush,
-// cdc-init, the compactor and the federated reader behave as before. The
-// writers and the reader move onto the record together in #896, because a
-// record written while V1 writers still run goes stale.
+// The tables come first in init-db's table transaction; the records of the
+// registered schemas follow in the same transaction
+// (ensurePublicationRecords, init_db_records.go).
 func publicationDDL(opts initDBOptions) []tableDDL {
 	record := sqlutil.SuffixedIdentifier(opts.entityMain, publication.RecordTableSuffix)
 	generation := sqlutil.SuffixedIdentifier(opts.entityMain, publication.GenerationTableSuffix)

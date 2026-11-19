@@ -175,7 +175,7 @@ func TestResetFencesEveryWriterOfTheOldEpoch(t *testing.T) {
 	require.False(t, again, "Initialize leaves a dropped record dropped")
 	require.Equal(t, dropped, f.read(t, 100))
 	require.ErrorIs(t, f.inTx(ctx, func(tx Tx) error {
-		_, err := Activate(ctx, tx, f.t, dropped, []string{f.changeLog})
+		_, err := Activate(ctx, tx, f.t, dropped, []Residue{{Table: f.changeLog}})
 		return err
 	}), ErrResidue, "the id is not registered again while the dropped schema's rows remain")
 

@@ -31,10 +31,6 @@ func TestWriterToolsRejectGlobPrefix(t *testing.T) {
 			_, err := parseCDCInitFlags([]string{"--s3-bucket", "bkt", "--schema-registry-table", "t", "--schema-dir", "d", "--s3-prefix", p})
 			return err
 		}},
-		{"cdc-init", "delta-prefix", func(p string) error {
-			_, err := parseCDCInitFlags([]string{"--s3-bucket", "bkt", "--schema-registry-table", "t", "--schema-dir", "d", "--delta-prefix", p})
-			return err
-		}},
 		{"compactor", "data-prefix", func(p string) error {
 			_, err := parseCompactorFlags([]string{"--schema-id", "7", "--s3-bucket", "bkt", "--data-prefix", p})
 			return err
@@ -42,10 +38,6 @@ func TestWriterToolsRejectGlobPrefix(t *testing.T) {
 		{"manifest-reconcile", "data-prefix", func(p string) error {
 			_, err := parseReconcileFlags([]string{"--s3-bucket", "bkt", "--schema-registry-table", "t", "--data-prefix", p})
 			return err
-		}},
-		{"baseline-schema", "data-prefix", func(p string) error {
-			flags := baselineParquetFlags{s3: s3Flags{bucket: "bkt"}, manifestTemplate: "manifest/{{.SchemaID}}.json", dataPrefix: p}
-			return flags.validate()
 		}},
 	}
 	for _, tc := range parsers {

@@ -68,13 +68,10 @@ type fakeDuckDBExecutor struct {
 	err           error
 	rows          duckDBRowsIterator
 
-	// globFiles, when non-nil, is the expansion every glob probe returns
-	// instead of the default "listing not faked" error. describeCols, when
-	// non-nil, answers DESCRIBE probes per path: the first map key that is a
-	// substring of the probe SQL wins (like scriptedDescribeExecutor).
-	// Both nil — the default — keeps the behavior every other engine-seam
-	// test relies on: fixed system columns, unlistable globs.
-	globFiles    []string
+	// describeCols, when non-nil, answers DESCRIBE probes per path: the
+	// first map key that is a substring of the probe SQL wins (like
+	// scriptedDescribeExecutor). nil, the default, keeps the behavior every
+	// other engine-seam test relies on: fixed system columns.
 	describeCols map[string][][2]string
 }
 
@@ -129,16 +126,6 @@ func (f *fakeDuckDBExecutor) Query(ctx context.Context, sql string, args ...any)
 		return &fakeDescribeRows{cols: [][2]string{
 			{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"}, {"ltbase_created_at", "BIGINT"},
 		}}, nil
-	}
-	if strings.HasPrefix(sql, "SELECT file FROM glob(") {
-		// Glob expansion probe (#189): listing is not faked — inconclusive,
-		// mirroring an unreachable store; the validator defers to the main
-		// read.
-		f.describeCalls++
-		if f.globFiles != nil {
-			return &fakeStringRows{vals: f.globFiles}, nil
-		}
-		return nil, fmt.Errorf("glob listing not faked")
 	}
 	if drained, ok := answerParquetDrainSQL(sql); ok {
 		// Per-file drains (#251 verification, #351 identification) never touch
