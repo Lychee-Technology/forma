@@ -221,6 +221,8 @@ type fakeHotLeg struct {
 	lastChangeLog ChangeLogSnapshotRequest
 	lastHotKeys   *model.HotKeysQuery
 	readRows      [][]uuid.UUID
+	// statements names each read of the open snapshots, in order.
+	statements []string
 }
 
 func (f *fakeHotLeg) begin(context.Context) (hotLegSnapshot, error) {
@@ -231,7 +233,14 @@ func (f *fakeHotLeg) begin(context.Context) (hotLegSnapshot, error) {
 	return f, nil
 }
 
+// readPublication hands the reader no transaction: a fake reader needs none.
+func (f *fakeHotLeg) readPublication(ctx context.Context, r PublicationReader, schemaID int16) (PublicationRecord, error) {
+	f.statements = append(f.statements, "publication")
+	return r.ReadRecord(ctx, nil, schemaID)
+}
+
 func (f *fakeHotLeg) readChangeLog(_ context.Context, req ChangeLogSnapshotRequest) (ChangeLogSnapshot, error) {
+	f.statements = append(f.statements, "change_log")
 	f.lastChangeLog = req
 	if req.ParquetHistory {
 		f.historyChecks++
@@ -246,6 +255,7 @@ func (f *fakeHotLeg) readChangeLog(_ context.Context, req ChangeLogSnapshotReque
 }
 
 func (f *fakeHotLeg) queryHotKeys(_ context.Context, req model.HotKeysQuery) ([]model.HotKey, error) {
+	f.statements = append(f.statements, "hot_keys")
 	f.lastHotKeys = &req
 	if f.hotKeysErr != nil {
 		return nil, f.hotKeysErr
@@ -262,6 +272,7 @@ func (f *fakeHotLeg) queryHotKeys(_ context.Context, req model.HotKeysQuery) ([]
 }
 
 func (f *fakeHotLeg) readHotRows(_ context.Context, _ model.StorageTables, schemaID int16, ids []uuid.UUID) ([]*model.PersistentRecord, error) {
+	f.statements = append(f.statements, "hot_rows")
 	f.readRows = append(f.readRows, ids)
 	out := make([]*model.PersistentRecord, len(ids))
 	for i, id := range ids {

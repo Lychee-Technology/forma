@@ -90,6 +90,12 @@ type DBFederatedQueryEngine struct {
 	// connections that serve them, so they hold at most that many pooled
 	// PostgreSQL connections (pgx_pass_slots.go).
 	pgxPassSlots chan struct{}
+	// publication resolves each pgx pass's parquet source from the
+	// publication record in the pass's snapshot (WithPublicationReader,
+	// pgx_publication.go); nil keeps the path set resolution of
+	// pgx_scan_sources.go. publishedPassDeadline is its R_max.
+	publication           PublicationReader
+	publishedPassDeadline time.Duration
 	// now is the clock behind every stage timing the DuckDB path reports
 	// (execution-plan Timings and the fed_query_latency_histogram stages).
 	// time.Now in production; tests substitute a fake to assert exact stage

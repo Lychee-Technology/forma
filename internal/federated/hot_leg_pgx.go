@@ -53,6 +53,9 @@ type hotLegSnapshots interface {
 // pass goes through it, so the dirty set, the hot keys and the page's hot
 // rows agree (design.md §6.1, Consistency).
 type hotLegSnapshot interface {
+	// readPublication reads the publication record through r; a published
+	// pass sends it as the snapshot's first statement (pgx_publication.go).
+	readPublication(ctx context.Context, r PublicationReader, schemaID int16) (PublicationRecord, error)
 	readChangeLog(ctx context.Context, req ChangeLogSnapshotRequest) (ChangeLogSnapshot, error)
 	queryHotKeys(ctx context.Context, req model.HotKeysQuery) ([]model.HotKey, error)
 	readHotRows(ctx context.Context, tables model.StorageTables, schemaID int16, rowIDs []uuid.UUID) ([]*model.PersistentRecord, error)
@@ -79,6 +82,10 @@ func (s pgxHotLegSnapshots) begin(ctx context.Context) (hotLegSnapshot, error) {
 type pgxHotLegSnapshot struct {
 	tx     pgx.Tx
 	reader HotLegReader
+}
+
+func (s *pgxHotLegSnapshot) readPublication(ctx context.Context, r PublicationReader, schemaID int16) (PublicationRecord, error) {
+	return r.ReadRecord(ctx, s.tx, schemaID)
 }
 
 func (s *pgxHotLegSnapshot) readChangeLog(ctx context.Context, req ChangeLogSnapshotRequest) (ChangeLogSnapshot, error) {

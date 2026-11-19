@@ -21,25 +21,31 @@ const publicationImport = "github.com/lychee-technology/forma/internal/publicati
 
 // The dormant packages are the V2 code nothing in production may call until
 // #896 moves the writers and the reader: internal/manifestv2, which produces
-// and fetches V2 manifest objects (#898), and internal/cdcv2, the cdc-flush
-// and cdc-init publication paths (#899). Each may import this package freely
-// and use the other dormant packages, and no other production file may
-// import any of them.
+// and fetches V2 manifest objects (#898), internal/cdcv2, the cdc-flush
+// and cdc-init publication paths (#899), and internal/federatedv2, the
+// federated reader's source resolved in the pass snapshot (#900). Each may
+// import this package freely and use the other dormant packages, and no other
+// production file may import any of them. internal/federated holds the
+// reader's seam (WithPublicationReader), which stays inert without an
+// implementation, and only internal/federatedv2 has one.
 //
 // The directories are Go packages, not trees: a subpackage of any of them is
 // another package, held to every rule.
 const (
-	manifestV2Import = "github.com/lychee-technology/forma/internal/manifestv2"
-	manifestV2Dir    = "internal/manifestv2"
-	cdcV2Import      = "github.com/lychee-technology/forma/internal/cdcv2"
-	cdcV2Dir         = "internal/cdcv2"
-	publicationDir   = "internal/publication"
+	manifestV2Import  = "github.com/lychee-technology/forma/internal/manifestv2"
+	manifestV2Dir     = "internal/manifestv2"
+	cdcV2Import       = "github.com/lychee-technology/forma/internal/cdcv2"
+	cdcV2Dir          = "internal/cdcv2"
+	federatedV2Import = "github.com/lychee-technology/forma/internal/federatedv2"
+	federatedV2Dir    = "internal/federatedv2"
+	publicationDir    = "internal/publication"
 )
 
 // dormantPackages maps each dormant package's directory to its import path.
 var dormantPackages = map[string]string{
-	manifestV2Dir: manifestV2Import,
-	cdcV2Dir:      cdcV2Import,
+	manifestV2Dir:  manifestV2Import,
+	cdcV2Dir:       cdcV2Import,
+	federatedV2Dir: federatedV2Import,
 }
 
 // ddlConsumers are the production files outside this package allowed to
@@ -64,7 +70,7 @@ var ddlIdentifiers = map[string]bool{
 // #896: a record written while V1 cdc-flush still runs goes stale, and the V2
 // reader would then answer the schema from the hot leg alone, dropping every
 // V1-flushed row. It scans every production file of the module, and applies
-// two rules:
+// three rules:
 //
 //   - The publication rule, to every file outside this package: it refuses an
 //     import of this package outside ddlConsumers and the dormant packages, a
@@ -73,11 +79,16 @@ var ddlIdentifiers = map[string]bool{
 //     literal that spells a publication table name.
 //   - The dormancy rule, to every file outside the dormant packages, this
 //     package's and the ddlConsumers included: it refuses a production
-//     import of internal/manifestv2 or internal/cdcv2, so no binary reaches
-//     either before #896.
+//     import of internal/manifestv2, internal/cdcv2 or internal/federatedv2,
+//     so no binary reaches any of them before #896.
+//   - The reader seam rule, to the same files: it refuses a use of
+//     federated.WithPublicationReader, the engine option that turns on the V2
+//     read path, so no binary builds such an engine with a reader of its own
+//     either. In the engine package itself it refuses every use of the
+//     option but its declaration.
 //
 // Exemptions are by package directory, never by subtree: a subpackage of
-// any of these packages is held to both rules.
+// any of these packages is held to every rule.
 //
 // It is not a guarantee against publication record I/O: an allowlisted file
 // could still build a statement over a name TablesFor returns. What shows that
@@ -129,6 +140,21 @@ func TestOnlyInitDBDDLReachesThePublicationTables(t *testing.T) {
 				"var _ = publication.Publish\nvar _ = manifestv2.PutManifest\n\nconst table = \"z_publication\"\n",
 			// A subpackage of the writer package is another package.
 			"internal/cdcv2/sub/planted.go": "package sub\n\nimport \"" + cdcV2Import + "\"\n\nvar _ = cdcv2.New\n",
+			// A production caller of the dormant reader source: the
+			// factory wiring it into an engine before #896, and turning
+			// the engine's V2 path on with a reader of its own.
+			"factory/planted.go": "package factory\n\nimport (\n\t\"" + federatedV2Import + "\"\n\tfed \"" + federatedImport + "\"\n)\n\n" +
+				"var _ = federatedv2.New\nvar _ = fed.WithPublicationReader\n",
+			// The engine package declares the option and may not use
+			// it: a call of its own, unqualified, turns its V2 path on
+			// with no import to give it away.
+			"internal/federated/planted_seam.go": "package federated\n\n" +
+				"func WithPublicationReader(r any, d int) func() { return nil }\n\n" +
+				"var _ = WithPublicationReader(nil, 0)\n",
+			// The reader source may read records, fetch manifests and
+			// use the engine's seam, but never spell a table.
+			"internal/federatedv2/planted.go": "package federatedv2\n\nimport (\n\t\"" + publicationImport + "\"\n\t\"" + manifestV2Import + "\"\n)\n\n" +
+				"var _ = publication.Read\nvar _ = manifestv2.NewCache\n\nconst table = \"w_publication\"\n",
 		} {
 			file := filepath.Join(dir, filepath.FromSlash(rel))
 			require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
@@ -136,18 +162,22 @@ func TestOnlyInitDBDDLReachesThePublicationTables(t *testing.T) {
 		}
 		files, err := productionFiles(dir)
 		require.NoError(t, err)
-		require.Len(t, files, 11, "the walk scans every production file but tests and hidden directories")
+		require.Len(t, files, 14, "the walk scans every production file but tests and hidden directories")
 		violations, err := publicationViolations(dir, files)
 		require.NoError(t, err)
 		require.Equal(t, []string{
 			"cmd/tools/init_db_collation.go dot-imports " + publicationImport,
 			"cmd/tools/init_db_publication.go uses publication.Publish",
 			"cmd/tools/planted.go imports " + cdcV2Import,
+			"factory/planted.go imports " + federatedV2Import,
+			"factory/planted.go uses federated.WithPublicationReader",
 			"internal/cdc/planted.go imports " + publicationImport,
 			`internal/cdc/planted.go spells a publication table name: "entity_main_publication"`,
 			`internal/cdcv2/planted.go spells a publication table name: "z_publication"`,
 			"internal/cdcv2/sub/planted.go imports " + cdcV2Import,
 			"internal/federated/planted.go imports " + manifestV2Import,
+			"internal/federated/planted_seam.go uses WithPublicationReader",
+			`internal/federatedv2/planted.go spells a publication table name: "w_publication"`,
 			`internal/manifestv2/planted.go spells a publication table name: "x_publication"`,
 			"internal/manifestv2/sub/planted.go imports " + manifestV2Import,
 			"internal/manifestv2/sub/planted.go imports " + publicationImport,
@@ -192,9 +222,8 @@ func productionFiles(root string) ([]string, error) {
 	return files, nil
 }
 
-// publicationViolations answers, sorted, each violation of the dormancy rule
-// and the publication rule (TestOnlyInitDBDDLReachesThePublicationTables)
-// among files.
+// publicationViolations answers, sorted, each violation of the rules of
+// TestOnlyInitDBDDLReachesThePublicationTables among files.
 func publicationViolations(root string, files []string) ([]string, error) {
 	var violations []string
 	fset := token.NewFileSet()
@@ -214,16 +243,87 @@ func publicationViolations(root string, files []string) ([]string, error) {
 	return violations, nil
 }
 
-// fileViolations applies both rules to one file. pkg, the file's directory,
+// fileViolations applies the three rules to one file. pkg, the file's directory,
 // is the package the exemptions name: a subpackage is never exempt.
 func fileViolations(rel string, file *ast.File) []string {
 	pkg := path.Dir(rel)
 	violations := dormancyViolations(rel, pkg, file)
+	violations = append(violations, readerSeamViolations(rel, pkg, file)...)
 	if pkg == publicationDir {
 		return violations // this package may spell and use itself
 	}
 	_, dormant := dormantPackages[pkg]
 	return append(violations, publicationRuleViolations(rel, dormant, file)...)
+}
+
+// federatedImport is the engine package whose WithPublicationReader turns on
+// the V2 read path (#900), and federatedDir its directory.
+const (
+	federatedImport = "github.com/lychee-technology/forma/internal/federated"
+	federatedDir    = "internal/federated"
+)
+
+// readerSeamViolations refuses a production use of
+// federated.WithPublicationReader outside the dormant packages: the option is
+// the only way into the V2 read path, and an engine built with it before #896
+// would answer a schema from a record no V1 writer keeps (the guard's own
+// reason). The engine package declares the option, and is held to the rule
+// too: it would call the option unqualified (engineSeamViolations).
+func readerSeamViolations(rel, pkg string, file *ast.File) []string {
+	if _, dormant := dormantPackages[pkg]; dormant {
+		return nil
+	}
+	if pkg == federatedDir {
+		return engineSeamViolations(rel, file)
+	}
+	name := ""
+	for _, imp := range file.Imports {
+		if p, _ := strconv.Unquote(imp.Path.Value); p == federatedImport {
+			name = "federated"
+			if imp.Name != nil {
+				name = imp.Name.Name
+			}
+		}
+	}
+	if name == "" {
+		return nil
+	}
+	var violations []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "WithPublicationReader" {
+			return true
+		}
+		if x, ok := sel.X.(*ast.Ident); ok && x.Name == name {
+			violations = append(violations, rel+" uses federated.WithPublicationReader")
+		}
+		return true
+	})
+	if name == "." {
+		violations = append(violations, rel+" dot-imports "+federatedImport)
+	}
+	return violations
+}
+
+// engineSeamViolations refuses any use of WithPublicationReader in a file of
+// the engine package but the option's own declaration: the package could
+// otherwise turn its V2 path on for itself, unqualified, with no import for
+// readerSeamViolations to see.
+func engineSeamViolations(rel string, file *ast.File) []string {
+	declared := map[*ast.Ident]bool{}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil {
+			declared[fn.Name] = true
+		}
+	}
+	var violations []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && id.Name == "WithPublicationReader" && !declared[id] {
+			violations = append(violations, rel+" uses WithPublicationReader")
+		}
+		return true
+	})
+	return violations
 }
 
 // dormancyViolations refuses an import of a dormant package from any file

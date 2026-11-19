@@ -162,10 +162,29 @@ func Read(ctx context.Context, q Querier, t Tables, schemaID int16) (Snapshot, e
 	s.State = State(state)
 	s.Lineage = lineage.UUID
 	if err := s.Record.validate(); err != nil {
-		return Snapshot{}, fmt.Errorf("read publication record of schema %d in %s: %w", schemaID, t.Record, err)
+		return Snapshot{}, fmt.Errorf("read publication record of schema %d in %s: %w", schemaID, t.Record, &InvalidRecordError{Record: s.Record, Err: err})
 	}
 	return s, nil
 }
+
+// ErrRecordInvalid marks a record row that was read and that no transition
+// of this package writes. The read succeeded: what it found is the fault, so
+// a reader fails closed on it as it does on ErrNoRecord, and never takes it
+// for a failed read.
+var ErrRecordInvalid = errors.New("publication record invalid")
+
+// InvalidRecordError is the record row Read refused, as read, and why. It
+// matches ErrRecordInvalid.
+type InvalidRecordError struct {
+	Record Record
+	Err    error
+}
+
+func (e *InvalidRecordError) Error() string {
+	return fmt.Sprintf("%v: %v", ErrRecordInvalid, e.Err)
+}
+
+func (e *InvalidRecordError) Unwrap() []error { return []error{ErrRecordInvalid, e.Err} }
 
 // validate refuses a record no transition of this package writes: a reader
 // must not guess what such a row means.

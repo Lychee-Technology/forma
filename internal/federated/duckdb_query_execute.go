@@ -30,6 +30,10 @@ type scan struct {
 	// which no manifest vouches for, so a missing one is not a manifest
 	// inconsistency.
 	globListed bool
+	// published is a published pass's generation (pgx_publication.go):
+	// its listed objects are probed through the publication reader, and a
+	// lost one fails the read as a PublicationConsistencyError.
+	published *PublishedGeneration
 }
 
 // retryablePassFailure reports whether a failed pass earns the one retry,
@@ -41,6 +45,9 @@ func retryablePassFailure(err error) (string, bool) {
 	var raced *parquetPublishedDuringReadError
 	if errors.As(err, &raced) {
 		return "a parquet publication raced the empty scan", true
+	}
+	if errors.Is(err, ErrPassDeadline) {
+		return "the published pass ran past its deadline", true
 	}
 	return "", false
 }
@@ -105,7 +112,19 @@ func (c *duckDBExecutionPlanContext) recordScanOutcome(o duckDBScanOutcome) {
 // and the error names the object(s). Identification decorates — it never
 // caches, never retries, and never changes the classification chain.
 func (e *DBFederatedQueryEngine) failDuckDBScan(ctx context.Context, q *model.FederatedAttributeQuery, sc scan, cause error, op string) error {
-	classified := e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource && !sc.globListed)
+	var classified error
+	if sc.published != nil {
+		// A published generation's objects are probed through the
+		// publication reader, ahead of every other classification; the V1
+		// source vouches for none of them.
+		final, c := e.classifyPublishedReadError(ctx, sc, cause, op)
+		if final != nil {
+			return final
+		}
+		classified = c
+	} else {
+		classified = e.classifyDuckDBReadError(ctx, q, sc.parquetPaths, sc.pathsFromSource && !sc.globListed)
+	}
 	var inconsistent *ParquetSetInconsistentError
 	wrapped := fmt.Errorf("%s: %w: %w", op, classified, cause)
 	if errors.As(classified, &inconsistent) {
