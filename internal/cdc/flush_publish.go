@@ -89,7 +89,9 @@ func (c *schemaFlushContext) publishFlush(ctx context.Context, rec publication.R
 // settleFlush settles, once and on a fresh context, a flush the writer
 // stopped with ErrUnresolved: its COMMIT went without an answer and the
 // writer could not tell whether it landed. A flush found committed is
-// complete, since its marks committed with it.
+// complete, since its marks committed with it: the report counts them from
+// the range the error carries (the marks of each COMMIT that went without an
+// answer), exact when those counted alike and Unconfirmed otherwise.
 func (c *schemaFlushContext) settleFlush(ctx context.Context, rep cdcv2.FlushReport, err error) (cdcv2.FlushReport, error) {
 	var u *cdcv2.UnresolvedError
 	if !errors.As(err, &u) {
@@ -103,6 +105,8 @@ func (c *schemaFlushContext) settleFlush(ctx context.Context, rep cdcv2.FlushRep
 		c.logger.Sugar().Warnw("flush publication found committed after its COMMIT went without an answer",
 			"schema_id", gen.SchemaID, "generation", gen.Generation)
 		rep.Generations = append(rep.Generations, gen)
+		rep.Marked += u.Marked
+		rep.Unconfirmed += u.Unconfirmed
 		return rep, nil
 	}
 	if errors.Is(serr, cdcv2.ErrAbandoned) {
