@@ -16,6 +16,7 @@ engine. You configure it.
 | CDC schema lock (`cdc-flush`, `cdc-init`, `manifest-reconcile`) | Supported: a session advisory lock | Supported with `--pg-engine aurora-dsql`: a lease row (#633). CI runs it on PostgreSQL. It has not yet run against a cluster |
 | `cdc-flush`'s flush mark and `cdc-init`'s handoff | Supported: one statement a batch, in the transaction that publishes its generation | Supported: a batch publishes as generations of at most 1,000 entries, each marked in its publication's transaction and sent again with the same token on `40001`; the handoff marks in transactions of at most 1,000 entries (#896, `internal/cdcv2`). Not yet run against a cluster |
 | `forma-tools init-db` | Supported | Not supported: its DDL is not valid on DSQL (#690) |
+| Protocol V2 publication records (registration, the V2 cutover) | Supported: `init-db` writes them | Not available: only `init-db` writes them, so a DSQL deployment cannot cut over to the V2 writers and reader until #690 ([Operating the CDC tools on DSQL](#operating-the-cdc-tools-on-dsql)). The MiniStack lane writes them in test fixtures only |
 | CDC export reads (`cdc-flush`, `cdc-init`) | Supported | Over the run's pgx pool with the row ids as a `uuid[]` parameter (#785): a flush export in one `REPEATABLE READ READ ONLY` transaction per object, an init export on the `REPEATABLE READ READ ONLY` snapshot that listed its rows and their versions. They pass in the MiniStack lane (#691). Not yet run against a cluster; whether a 10,000-row batch's read fits DSQL's five-minute transaction limit is unmeasured |
 | Federated queries' hot-tier reads | Supported | Over the engine's pgx pool, in one `REPEATABLE READ READ ONLY` transaction per pass (#858). The statements are in the DSQL lint corpus and pass in the MiniStack lane (#691). Not yet run against a cluster |
 
@@ -114,7 +115,7 @@ it creates.
 | A predicate mutation's candidate changed concurrently ([Transactions](transactions.md#predicate-mutation-updatewhere-and-deletewhere)) | Judged again under its lock | The COMMIT fails with `ErrRetryableConflict` |
 | A unique-key race ([Unique keys](unique-keys.md#aurora-dsql)) | The loser gets `ErrUniqueConflict` | `ErrUniqueConflict` or `ErrRetryableConflict` |
 | Crossed writers of two rows | Possible deadlock, `ErrRetryableConflict` | One gets `ErrRetryableConflict`, on DSQL without a deadlock |
-| A write of a row a CDC flush is marking ([The flush mark](#the-flush-mark)) | The mark skips an entry the writer holds and leaves it dirty; a writer that reaches an entry the mark holds waits for that one statement (#686) | One of the two gets `40001`: the mark is sent again, and a writer gets `ErrRetryableConflict` |
+| A write of a row a CDC flush is marking ([The flush publication](#the-flush-publication)) | The mark skips an entry the writer holds and leaves it dirty; a writer that reaches an entry the mark holds waits for that one statement (#686) | One of the two gets `40001`: the mark is sent again, and a writer gets `ErrRetryableConflict` |
 
 The invariants hold on both engines:
 
@@ -163,7 +164,7 @@ more than 30 seconds after that, too late for the holder to reach its
 first renewal, deletes its row and fails.
 
 The table is named after `entity_main`, not `change_log`, because all three
-tools are given `--entity-main-table` and only `cdc-flush` is given
+tools are given `--entity-main-table` and `manifest-reconcile` is not given
 `--change-log-table`. Tools that named the table differently would never
 exclude each other.
 
@@ -174,33 +175,63 @@ resumes. The advisory lock has the same limit: when its pinned connection
 drops, PostgreSQL releases the lock, and the holder works on until its next
 statement fails.
 
-### The flush mark
+### The flush publication
 
-On PostgreSQL the flusher marks a whole batch flushed in one statement. DSQL
-caps a transaction at 3,000 modified rows, and the default flush batch is
-10,000. So on `aurora-dsql` the mark goes out in statements of at most 1,000
-rows, each its own transaction. A statement that loses a conflict with a
-concurrent writer gets `40001` and is sent again, up to five attempts. The
-mark stays exact against the version the flush exported: a row a writer
-advanced in the meantime stays dirty for the next flush (#274). When a
-statement fails for good, the rows the earlier statements marked stay
-marked. They are in the delta the manifest already lists, and the rest stay
-dirty, as after a mark that fails once the delta is appended (#252).
+`cdc-flush` publishes through Protocol V2 (#896,
+[publication-protocol-v2.md](publication-protocol-v2.md)): it stages the
+batch's delta objects and an immutable manifest generation, then commits the
+schema's publication record (`<entity_main>_publication`, compare-and-set)
+and the marks of exactly the entries the generation holds in **one**
+transaction. There is no standalone mark any more: a mark never commits
+without the generation that lists its rows, and a generation never commits
+without its marks.
 
-A mark statement and a writer of one of its `change_log` entries do not wait
-for each other on DSQL. One of the two fails with `40001` instead. When the
-writer loses, its caller gets `ErrRetryableConflict`. On PostgreSQL the mark
-takes its row locks with `SKIP LOCKED` instead (#686): an entry an open writer
-holds stays dirty for the next flush, so the mark never waits on a writer and
-cannot deadlock with one. That syntax is PostgreSQL's alone, so the DSQL mark
-keeps the plain statement above.
+DSQL caps a transaction at 3,000 modified rows, and the default flush batch
+is 10,000. So on `aurora-dsql` a batch publishes as several generations of
+at most 1,000 entries each (`cdcv2.DSQLGenerationLimit`), each its own
+transaction: the record's compare-and-set, its history row and its marks. A
+transaction that loses a conflict gets `40001` and is sent again with the
+same staging, up to five attempts. A `COMMIT` whose answer is lost is
+resolved from the record before anything is resent, and settled once more
+in-process when that cannot tell. When a generation fails for good, the
+generations before it stay committed with their marks, and its own entries
+stay dirty for the next flush. Each mark stays exact against the version the
+flush exported: a row a writer advanced in the meantime stays dirty (#274).
+
+A mark and a writer of one of its `change_log` entries do not wait for each
+other on DSQL. One of the two fails with `40001` instead. When the writer
+loses, its caller gets `ErrRetryableConflict`; when the publication loses, it
+is sent again as above. On PostgreSQL the mark takes its row locks with
+`SKIP LOCKED` instead (#686): an entry an open writer holds stays dirty for
+the next flush. That syntax is PostgreSQL's alone, so the DSQL mark keeps the
+plain statement.
 
 ### Operating the CDC tools on DSQL
 
-- **Tables.** `init-db` cannot run on DSQL yet (#690). Create
+- **Production cutover to Protocol V2 is not available on DSQL yet.** Every
+  V2 writer and the federated reader need each schema's publication record
+  (`<entity_main>_publication`, with `<entity_main>_publication_generation`),
+  and refuse a schema without one: `cdc-flush` and `cdc-init` fail it, and
+  its federated reads fail closed with `publication_inconsistent`. Only
+  `init-db` creates those tables and writes the records, when it registers a
+  schema or runs the V2 cutover, and `init-db` cannot run on DSQL (#690).
+  There is no supported procedure to provision them by hand: the cutover's
+  history check and the record's initial state must run under the schema
+  lock in the registration's transaction, which nothing but `init-db` does.
+  Until #690 gives DSQL a provisioning path, keep a DSQL deployment on the
+  release before #896.
+- **The MiniStack lane is a test fixture, not a deployment procedure.** The
+  suites under `make test-dsql-ministack` create the publication tables from
+  `publication.Statements` and write each test schema's record with
+  `publication.Initialize` directly, to exercise the writers and the reader
+  on DSQL's SQL surface ([dsql-ministack.md](dsql-ministack.md)). They prove
+  the protocol's statements run on DSQL; they do not register schemas, run
+  the cutover's history check or take its lock, and are no substitute for
+  them.
+- **Tables.** Besides the publication tables above, create
   `<entity_main>_row_guard` and `<entity_main>_schema_lease` with the
   statements above, next to the core tables. On PostgreSQL, `init-db`
-  creates both, and they stay empty.
+  creates all of them; the guard and lease tables stay empty.
 - **Engine.** Run all three tools with `--pg-engine aurora-dsql`.
   `cdc-flush --pg-use-iam` implies it.
 - **Authentication.** Only `cdc-flush` has `--pg-use-iam`. Give `cdc-init`
@@ -259,8 +290,8 @@ and a connection to one hour. The guard row counts toward the rows: a `Tx`
 writes each row's guard once, however many of its operations lock the row,
 and counts it against `WithTxMaxPhysicalRows`, whose 3,000 default matches
 DSQL's limit. Atomic batches have no such meter, and the default batch size
-of 1,000 already reaches the limit on DSQL (#692). The CDC flush mark is
-chunked to stay under it. Keep the pool's `ConnMaxLifetime` under an hour.
+of 1,000 already reaches the limit on DSQL (#692). A CDC flush publishes in
+generations of at most 1,000 entries to stay under it. Keep the pool's `ConnMaxLifetime` under an hour.
 The Lambda's default is five minutes.
 
 ## Verification
