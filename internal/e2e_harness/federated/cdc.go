@@ -149,23 +149,29 @@ func (h *FederatedTestHarness) getUnflushedRowIDs(ctx context.Context) ([]unflus
 	return unflushed, nil
 }
 
-// markRowsFlushed marks rows as flushed in the change_log.
+// markRowsFlushed marks rows as flushed in the change_log, in one
+// statement, as the production flush marks a batch (internal/cdcv2): one
+// autocommit UPDATE per row would make the simulated flush, which
+// TestPerformance_CDCFlush times, a measure of one WAL flush per row rather
+// than of a flush.
 func (h *FederatedTestHarness) markRowsFlushed(ctx context.Context, rowIDs []uuid.UUID) (int64, error) {
-	flushedAt := time.Now().UnixMilli()
-	var updated int64
-	for _, id := range rowIDs {
-		res, err := h.PGDB.ExecContext(ctx, `
-				UPDATE change_log SET flushed_at = $1 
-				WHERE schema_id = $2 AND row_id = $3 AND flushed_at = 0
-			`, flushedAt, h.SchemaID, id)
-		if err != nil {
-			return 0, fmt.Errorf("mark row flushed: %w", err)
-		}
-		affected, err := res.RowsAffected()
-		if err != nil {
-			return 0, fmt.Errorf("read rows affected: %w", err)
-		}
-		updated += affected
+	if len(rowIDs) == 0 {
+		return 0, nil
+	}
+	ids := make([]string, len(rowIDs))
+	for i, id := range rowIDs {
+		ids[i] = id.String()
+	}
+	res, err := h.PGDB.ExecContext(ctx, `
+		UPDATE change_log SET flushed_at = $1
+		WHERE schema_id = $2 AND row_id = ANY($3::uuid[]) AND flushed_at = 0
+	`, time.Now().UnixMilli(), h.SchemaID, ids)
+	if err != nil {
+		return 0, fmt.Errorf("mark %d rows of schema %d flushed: %w", len(rowIDs), h.SchemaID, err)
+	}
+	updated, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read rows affected: %w", err)
 	}
 	return updated, nil
 }
