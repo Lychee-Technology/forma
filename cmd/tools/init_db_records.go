@@ -38,14 +38,19 @@ const (
 //     state: without history the schema satisfies the UNPUBLISHED invariant
 //     (Initialize); with it the schema waits for its first V2 cdc-init
 //     (InitializeAwaitingInit). A lock init-db cannot take means a writer
-//     still runs: the schema is skipped, keeps no record (its reads and
-//     writes fail closed on ErrNoRecord), and the next init-db retries it.
+//     still runs: a schema registered before this run is skipped, keeps no
+//     record (its reads and writes fail closed on ErrNoRecord), and the next
+//     init-db retries it.
+//   - A schema whose registry row this transaction inserted (inserted) is
+//     never skipped: its registration commits with its record or not at
+//     all. A lock init-db cannot take for it fails the run, which rolls the
+//     registration back, and the next init-db registers it again.
 //
 // The lock is pg_try_advisory_xact_lock on the key cdc-flush and cdc-init take
 // as a session lock (internal/cdc TrySchemaLock): the two kinds conflict, and
 // the transaction's lock is held until the record commits. init-db runs on
 // PostgreSQL only (#690).
-func ensurePublicationRecords(ctx context.Context, tx pgx.Tx, opts initDBOptions, out io.Writer) error {
+func ensurePublicationRecords(ctx context.Context, tx pgx.Tx, opts initDBOptions, inserted map[int16]bool, out io.Writer) error {
 	if opts.engine.Resolved() == forma.EngineAuroraDSQL {
 		return errors.New("the publication records need the PostgreSQL schema lock, and init-db cannot run on Aurora DSQL yet (#690)")
 	}
@@ -61,7 +66,7 @@ func ensurePublicationRecords(ctx context.Context, tx pgx.Tx, opts initDBOptions
 	tables := publication.TablesFor(opts.entityMain)
 	var skipped []int16
 	for _, id := range ids {
-		step, err := ensurePublicationRecord(ctx, tx, opts, tables, id)
+		step, err := ensurePublicationRecord(ctx, tx, opts, tables, id, inserted[id])
 		if err != nil {
 			return fmt.Errorf("publication record of schema %d: %w", id, err)
 		}
@@ -77,12 +82,19 @@ func ensurePublicationRecords(ctx context.Context, tx pgx.Tx, opts initDBOptions
 	return nil
 }
 
-// ensurePublicationRecord is ensurePublicationRecords' step for one schema.
-func ensurePublicationRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16) (recordStep, error) {
+// ensurePublicationRecord is ensurePublicationRecords' step for one schema;
+// registered says tx inserted its registry row.
+func ensurePublicationRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16, registered bool) (recordStep, error) {
 	snap, err := publication.Read(ctx, publication.PgxTx(tx), tables, id)
 	switch {
 	case errors.Is(err, publication.ErrNoRecord):
-		return cutoverSchema(ctx, tx, opts, tables, id)
+		step, err := cutoverSchema(ctx, tx, opts, tables, id)
+		if step == recordLockBusy && registered {
+			return "", fmt.Errorf("schema %d is registered by this init-db, and its schema lock is held (a cdc-flush, a cdc-init, "+
+				"or another session's advisory lock on (%d, %d)): its registry row cannot commit without its publication record, "+
+				"so the registration is rolled back; run init-db again once the lock is free: %w", id, id, id, errRegistrationLockBusy)
+		}
+		return step, err
 	case err != nil:
 		return "", fmt.Errorf("read: %w", err)
 	case snap.State != publication.Dropped:
@@ -99,6 +111,10 @@ func ensurePublicationRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions,
 	}
 	return recordStep(fmt.Sprintf("%s at epoch %d", recordActivated, activated.Epoch)), nil
 }
+
+// errRegistrationLockBusy reports a schema init-db registered whose schema
+// lock it could not take, which fails the run and rolls the registration back.
+var errRegistrationLockBusy = errors.New("schema lock held at registration")
 
 // tryCutoverLockSQL takes the schema's lock for the rest of the transaction,
 // on the key internal/cdc's TrySchemaLock takes per session.

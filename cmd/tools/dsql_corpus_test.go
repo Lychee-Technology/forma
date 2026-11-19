@@ -93,7 +93,7 @@ func registerSchemasSQL(t *testing.T, schemaTable string) []corpus.Statement {
 		t.Fatalf("begin: %v", err)
 	}
 	var regErr error
-	captureStdStreams(t, func() { regErr = registerSchemas(context.Background(), tx, schemaTable, dir) })
+	captureStdStreams(t, func() { _, regErr = registerSchemas(context.Background(), tx, schemaTable, dir) })
 	if regErr != nil {
 		t.Fatalf("registerSchemas: %v", regErr)
 	}
