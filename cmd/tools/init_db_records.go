@@ -21,6 +21,7 @@ const (
 	recordAwaitingInit recordStep = "initialized AWAITING_INIT"
 	recordActivated    recordStep = "activated"
 	recordLockBusy     recordStep = "skipped: schema lock held"
+	recordRecovered    recordStep = "recovered AWAITING_INIT"
 )
 
 // ensurePublicationRecords gives every registered schema its Protocol V2
@@ -32,8 +33,21 @@ const (
 //   - A schema whose record is DROPPED was registered again under its old id:
 //     Activate checks that no row of the dropped schema remains, then starts
 //     the record's next epoch, UNPUBLISHED.
-//   - A schema without a record is a new registration or one the V2 cutover
-//     has not reached. Under the schema lock every V1 marker (cdc-flush and
+//   - A schema whose registry row this transaction inserted and whose id
+//     already has a record that is not DROPPED belonged to a registration
+//     removed without the drop transition (drop-schema). The new
+//     registration would inherit its epoch, its published generation and its
+//     rows, so the run fails and rolls the registration back.
+//   - A schema without a record whose id has surviving publication history
+//     (rows in the generation table) lost a V2 record. A record at epoch 1
+//     and generation 0 would reuse numbers the history committed, so under
+//     the schema lock the record is recovered at the epoch after every epoch
+//     the history names, with its highest generation as the counter
+//     (publication.InitializeAfterLoss): AWAITING_INIT for a registered
+//     schema, whose next cdc-init replaces its parquet tiers, and, for an id
+//     this transaction registered, DROPPED and then activated as above.
+//   - A schema without a record or history is a new registration or one the
+//     V2 cutover has not reached. Under the schema lock every V1 marker (cdc-flush and
 //     the onboarding handoff) takes, the parquet-history check decides the
 //     state: without history the schema satisfies the UNPUBLISHED invariant
 //     (Initialize); with it the schema waits for its first V2 cdc-init
@@ -88,7 +102,7 @@ func ensurePublicationRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions,
 	snap, err := publication.Read(ctx, publication.PgxTx(tx), tables, id)
 	switch {
 	case errors.Is(err, publication.ErrNoRecord):
-		step, err := cutoverSchema(ctx, tx, opts, tables, id)
+		step, err := writeMissingRecord(ctx, tx, opts, tables, id, registered)
 		if step == recordLockBusy && registered {
 			return "", fmt.Errorf("schema %d is registered by this init-db, and its schema lock is held (a cdc-flush, a cdc-init, "+
 				"or another session's advisory lock on (%d, %d)): its registry row cannot commit without its publication record, "+
@@ -97,20 +111,42 @@ func ensurePublicationRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions,
 		return step, err
 	case err != nil:
 		return "", fmt.Errorf("read: %w", err)
+	case snap.State != publication.Dropped && registered:
+		return "", fmt.Errorf("schema %d is registered by this init-db, but its id already has a %s publication record at epoch %d "+
+			"(generation %d): an earlier registration of the id was removed without retiring its record, and the new schema "+
+			"would inherit its epoch, its published generation and its rows, so the registration is rolled back; "+
+			"run `forma-tools drop-schema --schema-id %d` to retire the record and purge the old rows, then run init-db again: %w",
+			id, snap.State, snap.Epoch, snap.Generation, id, errRegistrationInheritsRecord)
 	case snap.State != publication.Dropped:
 		return recordKept, nil
 	}
-	residue := []publication.Residue{
-		{Table: opts.entityMain, SchemaIDColumn: "ltbase_schema_id"},
-		{Table: opts.eavTable},
-		{Table: opts.changeLog},
-	}
-	activated, err := publication.Activate(ctx, publication.PgxTx(tx), tables, snap.Record, residue)
+	return activateDropped(ctx, tx, opts, tables, snap.Record)
+}
+
+// activateDropped re-registers a dropped id: Activate checks the dropped
+// schema's rows are purged, then starts the record's next epoch.
+func activateDropped(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, rec publication.Record) (recordStep, error) {
+	activated, err := publication.Activate(ctx, publication.PgxTx(tx), tables, rec, schemaResidue(opts))
 	if err != nil {
 		return "", fmt.Errorf("activate the re-registered schema: %w", err)
 	}
 	return recordStep(fmt.Sprintf("%s at epoch %d", recordActivated, activated.Epoch)), nil
 }
+
+// schemaResidue names the tables Activate checks, and drop-schema purges, for
+// a dropped schema's rows.
+func schemaResidue(opts initDBOptions) []publication.Residue {
+	return []publication.Residue{
+		{Table: opts.entityMain, SchemaIDColumn: "ltbase_schema_id"},
+		{Table: opts.eavTable},
+		{Table: opts.changeLog},
+	}
+}
+
+// errRegistrationInheritsRecord reports a schema init-db registered whose id
+// still has a record that is not DROPPED, which fails the run and rolls the
+// registration back.
+var errRegistrationInheritsRecord = errors.New("registration would inherit a record that was never retired")
 
 // errRegistrationLockBusy reports a schema init-db registered whose schema
 // lock it could not take, which fails the run and rolls the registration back.
@@ -120,9 +156,10 @@ var errRegistrationLockBusy = errors.New("schema lock held at registration")
 // on the key internal/cdc's TrySchemaLock takes per session.
 const tryCutoverLockSQL = `SELECT pg_try_advisory_xact_lock($1, $2)`
 
-// cutoverSchema writes the record of a schema that has none, under the
-// schema lock, in the state its parquet history allows.
-func cutoverSchema(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16) (recordStep, error) {
+// writeMissingRecord writes the record of a schema that has none, under the
+// schema lock: recovered at a fresh epoch when its publication history
+// survives, otherwise in the state its V1 parquet history allows.
+func writeMissingRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16, registered bool) (recordStep, error) {
 	var locked bool
 	if err := tx.QueryRow(ctx, tryCutoverLockSQL, int32(id), int32(id)).Scan(&locked); err != nil {
 		return "", fmt.Errorf("take the schema lock: %w", err)
@@ -130,6 +167,45 @@ func cutoverSchema(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables pu
 	if !locked {
 		return recordLockBusy, nil
 	}
+	history, err := publication.ReadHistory(ctx, publication.PgxTx(tx), tables, id)
+	if err != nil {
+		return "", fmt.Errorf("check the publication history: %w", err)
+	}
+	if history.Generations > 0 {
+		return recoverLostRecord(ctx, tx, opts, tables, id, history, registered)
+	}
+	return cutoverSchema(ctx, tx, opts, tables, id)
+}
+
+// recoverLostRecord writes the record of a schema whose record was lost while
+// its publication history survives, at the epoch after the history's and
+// with its highest generation as the counter: AWAITING_INIT for a schema
+// registered before this run, and for an id this run registered, DROPPED and
+// then activated, so the dropped registration's rows are checked as on any
+// re-registration.
+func recoverLostRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16, h publication.History, registered bool) (recordStep, error) {
+	state := publication.AwaitingInit
+	if registered {
+		state = publication.Dropped
+	}
+	rec, wrote, err := publication.InitializeAfterLoss(ctx, publication.PgxTx(tx), tables, id, h, state)
+	if err != nil {
+		return "", fmt.Errorf("recover the lost record: %w", err)
+	}
+	if !wrote {
+		return "", errors.New("another init-db wrote the record concurrently; run init-db again")
+	}
+	if registered {
+		return activateDropped(ctx, tx, opts, tables, rec)
+	}
+	return recordStep(fmt.Sprintf("%s at epoch %d: its record was missing while %d generation(s) through %d at epoch %d survive; "+
+		"run cdc-init for it, then restart the readers", recordRecovered, rec.Epoch, h.Generations, h.MaxGeneration, h.MaxEpoch)), nil
+}
+
+// cutoverSchema writes the record of a schema that has neither a record nor
+// publication history, under the schema lock the caller holds, in the state
+// its parquet history allows.
+func cutoverSchema(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16) (recordStep, error) {
 	var history bool
 	if err := tx.QueryRow(ctx, parquetHistorySQL(opts), id).Scan(&history); err != nil {
 		return "", fmt.Errorf("check the parquet history: %w", err)

@@ -32,17 +32,21 @@ const (
 // publication paths (internal/cdcv2). The federated e2e harness's
 // publication file stands in for both, registration and publication, over
 // the synthetic parquet the benchmark loads (cmd/benchmark runs it outside
-// any test, so it is not a _test.go file). The drop (Reset) and garbage
-// collection (RaiseHorizon, Retire, Forget) have no production caller yet:
-// a drop tool and #891 add theirs here when they land.
+// any test, so it is not a _test.go file). The drop (Reset, and HoldDropped
+// over its purge) is drop-schema's (cmd/tools/drop_schema.go), and the
+// recovery of a lost record (InitializeAfterLoss) init-db's. Garbage
+// collection (RaiseHorizon, Retire, Forget) has no production caller yet:
+// #891 adds its own here when it lands.
 var transitions = map[string]map[string]bool{
 	"Initialize":             {"cmd/tools/init_db_records.go": true, federatedHarnessPublication: true},
 	"InitializeAwaitingInit": {"cmd/tools/init_db_records.go": true},
+	"InitializeAfterLoss":    {"cmd/tools/init_db_records.go": true},
 	"Activate":               {"cmd/tools/init_db_records.go": true},
 	"Publish":                {"internal/cdcv2": true, federatedHarnessPublication: true},
 	"HoldLineage":            {"internal/cdcv2": true},
+	"HoldDropped":            {"cmd/tools/drop_schema.go": true},
 	"Fence":                  {"internal/cdcv2": true},
-	"Reset":                  {},
+	"Reset":                  {"cmd/tools/drop_schema.go": true},
 	"RaiseHorizon":           {},
 	"Retire":                 {},
 	"Forget":                 {},

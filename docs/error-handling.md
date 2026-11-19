@@ -1562,7 +1562,22 @@ whose publication state cannot be answered from
   generation, and the lost keys when objects are missing. `AWAITING_INIT` is
   the specified per-schema outage between the V2 cutover and the schema's V2
   `cdc-init`: run the init. A schema without a record, or pinned at another
-  epoch, needs its registration (`init-db`) and a restart of the reader. A
+  epoch, needs its registration (`init-db`) and a restart of the reader. When
+  the record was lost while the schema's publication history survives (rows
+  in the `<entity_main>_publication_generation` table), `init-db` does not
+  start it over at epoch 1 and generation 0, which would publish a generation
+  number again and fail with SQLSTATE `23505`: under the schema lock it
+  recovers the record at the epoch after every epoch that history names, with
+  the history's highest generation as the counter, `AWAITING_INIT`, and
+  prints `recovered AWAITING_INIT at epoch N`. Then run `cdc-init` for the
+  schema and restart the readers. An id `init-db` registers again while an
+  earlier registration's record that is not `DROPPED` remains is refused, and
+  the registration rolls back: retire the old record with
+  `forma-tools drop-schema --schema-id <id>` first. A record whose identity no
+  transition writes (an epoch below 1, a negative generation, a nil token) is
+  `publication.ErrRecordInvalid` and fails closed like a missing one. A
+  generation listing an address with a `.` or `..` segment, which DuckDB
+  would normalize to another object, is `ErrPublishedPathNotCanonical`. A
   lost manifest or object is data loss of the published generation; repair is
   a re-init (#891). `ErrPublishedObjectUnverifiable` first needs the reader's
   S3 permissions fixed (`s3:ListBucket` on the bucket, `s3:GetObject` on its

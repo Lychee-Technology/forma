@@ -50,38 +50,9 @@ func runInitDB(ctx context.Context, args []string) error {
 		flags.PrintDefaults()
 	}
 
-	// DB_PORT is --db-port's default, so a set but unparsable value is
-	// refused even when the flag would override it (#600). The refusal waits
-	// until after flags.Parse so --help still prints usage; EnvInt returns
-	// 5432 alongside the error to register the flag with.
-	portDefault, portErr := bootstrap.EnvInt("DB_PORT", 5432)
-
 	opts := initDBOptions{}
 	var pg postgresFlags
-	pg.register(flags, postgresFlagOptions{
-		hostFlag:        "db-host",
-		portFlag:        "db-port",
-		userFlag:        "db-user",
-		passwordFlag:    "db-password",
-		databaseFlag:    "db-name",
-		sslModeFlag:     "db-ssl-mode",
-		hostDefault:     bootstrap.Env("DB_HOST", "localhost"),
-		portDefault:     portDefault,
-		userDefault:     bootstrap.Env("DB_USER", "postgres"),
-		passwordDefault: bootstrap.Env("DB_PASSWORD", "postgres"),
-		databaseDefault: bootstrap.Env("DB_NAME", "forma"),
-		sslModeDefault:  bootstrap.Env("DB_SSL_MODE", "disable"),
-		hostUsage:       "database host",
-		portUsage:       "database port",
-		userUsage:       "database user",
-		passwordUsage:   "database password",
-		databaseUsage:   "database name",
-		sslModeUsage:    "database sslmode",
-	})
-	flags.StringVar(&opts.schemaTable, "schema-table", bootstrap.Env("SCHEMA_TABLE", "schema_registry"), "schema registry table name")
-	flags.StringVar(&opts.eavTable, "eav-table", bootstrap.Env("EAV_TABLE", "eav_dev"), "EAV data table name")
-	flags.StringVar(&opts.entityMain, "entity-main-table", bootstrap.Env("ENTITY_MAIN_TABLE", "entity_main_dev"), "Entity main table name")
-	flags.StringVar(&opts.changeLog, "change-log-table", bootstrap.Env("CHANGE_LOG_TABLE", "change_log_dev"), "Change log table name")
+	portErr := registerDatabaseFlags(flags, &opts, &pg)
 	flags.StringVar(&opts.schemaDir, "schema-dir", bootstrap.Env("SCHEMA_DIR", ""), "Directory containing JSON schema files to register (optional)")
 	flags.BoolVar(&opts.skipDeclaredIndexes, "skip-declared-indexes", false, "Do not build the x-forma-indexes indexes the schemas declare (for operators who build them out of band)")
 

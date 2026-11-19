@@ -1168,8 +1168,14 @@ SELECT schema_name FROM schema_registry ORDER BY schema_name;
 
 Compare that list against `ls $SCHEMA_DIR/*.json`. No database column carries the
 schema document — `schema_registry` holds only `schema_id` and `schema_name` —
-so the repair is always on disk: add the missing `<name>.json`, or
-delete the `schema_registry` row if the schema is dead.
+so the repair is always on disk: add the missing `<name>.json`, or, if the
+schema is dead, retire it with `forma-tools drop-schema --schema-name <name>`
+(#896). Do not delete only the `schema_registry` row: the schema's publication
+record, its ledger and its rows stay behind, and the next `init-db` that
+registers the same id refuses to inherit that record. `drop-schema` deletes the
+registry row and the ledger and moves the record to `DROPPED` in one
+transaction, then purges the rows; stop every process that loaded the schema
+first.
 
 The same check covers an unparseable document and a `$ref` that points outside
 `SCHEMA_DIR`; both fail startup with the offending schema named.
