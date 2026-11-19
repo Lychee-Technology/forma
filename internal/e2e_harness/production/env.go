@@ -345,6 +345,9 @@ func (e *Env) buildCDCConfig() cdc.CDCConfig {
 		S3UsePath:         true,
 		S3AccessKeyID:     c.S3AccessKey,
 		S3SecretAccessKey: c.S3SecretKey,
+		// The epochs read before e.Registry loaded (loadRegistry): every run
+		// is given the registry they belong to.
+		RegistryEpochs: e.RegistryEpochs,
 	}
 	return cfg
 }
