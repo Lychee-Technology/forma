@@ -49,9 +49,40 @@ func (c CDCConfig) ValidateFlush() error {
 	if err := cfg.Engine.Validate(); err != nil {
 		return fmt.Errorf("cdc flush database engine %q: %w", cfg.Engine, err)
 	}
+	if err := cfg.validateLayout(); err != nil {
+		return fmt.Errorf("cdc flush: %w", err)
+	}
 	if cfg.Engine.Resolved() != forma.EngineAuroraDSQL && cfg.BatchSize > cdcv2.MaxMarkEntries {
 		return fmt.Errorf("batch size %d: a PostgreSQL flush marks its whole batch in one statement, which binds at most %d entries; lower the batch size: %w",
 			cfg.BatchSize, cdcv2.MaxMarkEntries, ErrBatchSizeTooLarge)
+	}
+	return nil
+}
+
+// ValidateInit refuses an init configuration the V2 writer cannot run, after
+// WithDefaults: an unknown engine, and a data prefix the reader would refuse.
+// RunInit runs it before any AWS, PostgreSQL or DuckDB setup.
+func (c CDCConfig) ValidateInit() error {
+	cfg := c.WithDefaults()
+	if err := cfg.Engine.Validate(); err != nil {
+		return fmt.Errorf("cdc init database engine %q: %w", cfg.Engine, err)
+	}
+	if err := cfg.validateLayout(); err != nil {
+		return fmt.Errorf("cdc init: %w", err)
+	}
+	return nil
+}
+
+// validateLayout refuses an S3Prefix holding a glob metacharacter, as the
+// tools' -s3-prefix flag does (forma.ValidateParquetPrefix). Every object key
+// and manifest key the writer publishes starts with the prefix, and the
+// federated reader refuses a generation listing a path DuckDB would expand
+// (federated.ErrPublishedPathNotConcrete). A writer that staged and
+// committed under such a prefix would mark rows flushed in a generation no
+// read can use, so an embedded caller is refused here, before any staging.
+func (c CDCConfig) validateLayout() error {
+	if err := forma.ValidateParquetPrefix("S3Prefix", c.S3Prefix); err != nil {
+		return fmt.Errorf("data prefix %q: %w", c.S3Prefix, err)
 	}
 	return nil
 }
@@ -93,6 +124,9 @@ func newPublicationWriter(cfg CDCConfig, db *sql.DB, store manifestv2.Store, bat
 		return nil, fmt.Errorf("build the manifest cache: %w", err)
 	}
 	cfg = cfg.WithDefaults()
+	if err := cfg.validateLayout(); err != nil {
+		return nil, fmt.Errorf("build the V2 publication writer: %w", err)
+	}
 	wcfg := cdcv2.Config{
 		DB:            db,
 		Engine:        cfg.Engine,

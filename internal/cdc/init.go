@@ -150,6 +150,11 @@ func (c *initRunContext) close() {
 // their export versions. It never clears change_log.
 func RunInit(ctx context.Context, opts InitOptions) (InitSummary, error) {
 	opts = normalizeInitOptions(opts)
+	// A configuration the writer cannot run is refused before any AWS,
+	// PostgreSQL or DuckDB setup.
+	if err := opts.Config.ValidateInit(); err != nil {
+		return InitSummary{}, fmt.Errorf("cdc init configuration: %w", err)
+	}
 
 	runCtx, err := newInitRunContext(ctx, opts)
 	if err != nil {
