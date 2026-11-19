@@ -164,6 +164,71 @@ func TestAConfirmedLossSurvivesAPassDeadlineDuringTheProbe(t *testing.T) {
 	require.False(t, e.breaker.IsOpen())
 }
 
+// deadlineThenFault blocks the first parquet scan until R_max ends it, and
+// then arms fault, the publication fault the retry meets. A later scan fails
+// at once, with a read error that names no deadline, as failingScan's does.
+type deadlineThenFault struct {
+	*countingDuck
+	fault func(*fakePublication)
+	pub   *fakePublication
+	scans int
+}
+
+func (d *deadlineThenFault) queryStaged(ctx context.Context, _ []uuid.UUID, _ string, _ ...any) (duckDBRowsIterator, error) {
+	d.scans++
+	if d.scans > 1 {
+		return nil, errors.New("IO Error: could not read the object")
+	}
+	<-ctx.Done()
+	d.fault(d.pub)
+	return nil, ctx.Err()
+}
+
+// A first pass whose scan R_max ended, a failed read, and a retry that meets
+// a publication fault: the fault is the request's answer. The first pass's
+// failed-read classification does not reach it, so the typed error is not
+// ErrFederatedReadFailed, nothing degrades, and the breaker hears of neither
+// pass.
+func TestAPublicationFaultTheRetryMeetsIsNotAFailedRead(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fault func(*fakePublication)
+		lost  []string
+	}{
+		{name: "no record", fault: func(pub *fakePublication) {
+			pub.recErr = &PublicationConsistencyError{SchemaID: parquetOnlySchemaID, Epoch: 1, Generation: 4, Err: errors.New("publication record missing")}
+		}},
+		{name: "manifest missing or invalid", fault: func(pub *fakePublication) {
+			pub.genErr = &PublicationConsistencyError{SchemaID: parquetOnlySchemaID, Epoch: 1, Generation: 3, Err: errors.New("manifest object missing")}
+		}},
+		{name: "a listed object missing", lost: []string{"base.parquet"}, fault: func(pub *fakePublication) {
+			pub.missing = []string{"base.parquet"}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPgxFixture(t, tieRunRows())
+			pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
+			e, duck, _ := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
+			e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
+			rec := recordDegradedFallbacks(e)
+			e.duck = &deadlineThenFault{countingDuck: duck, fault: tc.fault, pub: pub}
+
+			_, err := e.Query(context.Background(), tieRunTables, pgxQuery(), &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+			require.ErrorIs(t, err, ErrPublicationInconsistent)
+			var typed *PublicationConsistencyError
+			require.ErrorAs(t, err, &typed)
+			require.Equal(t, tc.lost, typed.MissingKeys)
+			require.NotErrorIs(t, err, ErrFederatedReadFailed, "the first pass's failed read does not reclassify the fault")
+			require.ErrorContains(t, err, "the first pass", "the first pass stays in the message")
+			require.False(t, degradableFederatedError(err))
+			require.Equal(t, 2, f.leg.begins, "the retry read a fresh snapshot")
+			require.Empty(t, rec.take(), "no degraded fallback")
+			require.Empty(t, rec.transitions, "no breaker transition")
+			require.False(t, e.breaker.IsOpen())
+		})
+	}
+}
+
 // ErrPassDeadline is not degradable on its own, without the context error
 // beside it.
 func TestThePassDeadlineIsNotDegradableOnItsOwn(t *testing.T) {

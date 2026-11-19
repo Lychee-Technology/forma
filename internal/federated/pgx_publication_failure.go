@@ -12,7 +12,8 @@ import (
 // never charged to the breaker. A failed read keeps its V1 class. A pass its
 // own deadline, R_max, aborted is retried once on a fresh snapshot, and stays
 // non-degradable whatever the retry meets, unless it had already confirmed a
-// publication fault: that fault is final.
+// publication fault: that fault is final. A publication fault the retry
+// meets is the request's answer, never a failed read.
 
 // errPublishedObjectMissing is the fault of a generation that lists an object
 // the store does not hold: loss, which garbage collection never causes
@@ -68,8 +69,15 @@ func (p *pgxPass) deadlineFailure(passCtx context.Context, err error) error {
 // failed. A retry after a pass deadline keeps the first pass's failure in
 // its chain: the request already spent R_max, so the retry's failure, a
 // breaker rejection included, must not turn the deadline into a degradable
-// error that a Postgres-only fallback would answer.
+// error that a Postgres-only fallback would answer. A retry that met a
+// publication fault is the exception: the consistency error is the answer,
+// non-degradable on its own, and the first pass is text only beside it,
+// since its chain may carry ErrFederatedReadFailed (a scan R_max ended),
+// which must not reclassify the fault.
 func retryFailure(reason string, first, retry error) error {
+	if errors.Is(retry, ErrPublicationInconsistent) {
+		return fmt.Errorf("retry after %s: %w; the first pass: %s", reason, retry, first.Error())
+	}
 	if errors.Is(first, ErrPassDeadline) && !errors.Is(retry, ErrPassDeadline) {
 		return fmt.Errorf("retry after %s: %w; the first pass: %w", reason, retry, first)
 	}

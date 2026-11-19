@@ -533,7 +533,10 @@ choices the steps above leave open:
   is not retried: when the missing-object probe finds a listed key lost and `R_max` then
   stops a probe of another object, the read fails with the
   `PublicationConsistencyError` naming that key, not with `ErrPassDeadline`, so a retry on
-  a fresh snapshot cannot hide a loss already found.
+  a fresh snapshot cannot hide a loss already found. A consistency error the retry meets (an
+  absent record, a missing or invalid manifest, a lost object) is the request's answer: the
+  first pass, whose chain may carry `ErrFederatedReadFailed` from a scan `R_max` ended, is
+  kept beside it as text only, so the fault is never a failed read.
 
 **Invariant R (the scanned generation matches S).** For every row `r`, the answer holds
 `r`'s state as of S.
@@ -914,6 +917,10 @@ in-memory snapshot in `internal/federated`, where a fake reader stages each faul
   `AllowPartialDegradedMode`, with a breaker that opens on its first failure, the deadline
   stays non-degradable whether the retry runs out too or is refused, and whether the deadline
   ends the scan or the missing-object probe.
+  `TestAPublicationFaultTheRetryMeetsIsNotAFailedRead`: after a scan `R_max` ended, a retry
+  that meets an absent record, an invalid manifest or a lost object fails with the typed
+  error, which is not `ErrFederatedReadFailed`, does not degrade and is not charged to the
+  breaker.
 - `TestAGenerationListingAnAddressDuckDBWouldExpandFailsClosed`,
   `TestPublishedPassRefusesAListedAddressDuckDBWouldExpand`: a layout prefix such as
   `da[t]a` passes manifest verification, and its keys would let DuckDB read an unlisted copy;
