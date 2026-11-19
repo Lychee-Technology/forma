@@ -34,6 +34,7 @@ var sharedCDCArgs = []string{
 	"-s3-region", "eu-west-3",
 	"-s3-use-ssl=false",
 	"-s3-use-path",
+	"-change-log-table", "cdc_log",
 	"-entity-main-table", "cdc_main",
 	"-eav-table", "cdc_eav",
 	"-batch-size", "123",
@@ -61,6 +62,7 @@ func wantSharedCDCConfig() cdc.CDCConfig {
 		S3Region:                "eu-west-3",
 		S3UseSSL:                false,
 		S3UsePath:               true,
+		ChangeLogTable:          "cdc_log",
 		EntityMainTable:         "cdc_main",
 		EAVDataTable:            "cdc_eav",
 		BatchSize:               123,
@@ -71,13 +73,12 @@ func wantSharedCDCConfig() cdc.CDCConfig {
 // TestParseCDCFlagsMapSharedBlock pins the whole config each tool builds from
 // the shared block plus its own fields (#445). It compares the full struct, so
 // it also catches a field one tool sets that it did not set before the shared
-// builder: cdc-init still leaves PGUseIAM, ChangeLogTable, MinRecords,
-// MaxAgeMs and MaxBatchBytes to WithDefaults, and cdc-flush leaves
+// builder: cdc-init still leaves PGUseIAM, MinRecords, MaxAgeMs and
+// MaxBatchBytes to WithDefaults, and cdc-flush leaves
 // TargetFileSizeMB unset and MaxBatchSize to WithDefaults.
 func TestParseCDCFlagsMapSharedBlock(t *testing.T) {
 	t.Run("cdc-flush", func(t *testing.T) {
 		opts, err := parseCDCFlushFlags(append(append([]string{}, sharedCDCArgs...),
-			"-change-log-table", "cdc_log",
 			"-min-records", "11",
 			"-max-age-ms", "22",
 			"-max-batch-bytes", "33",
@@ -87,7 +88,6 @@ func TestParseCDCFlagsMapSharedBlock(t *testing.T) {
 			t.Fatalf("parse cdc-flush flags: %v", err)
 		}
 		want := wantSharedCDCConfig()
-		want.ChangeLogTable = "cdc_log"
 		want.MinRecords = 11
 		want.MaxAgeMs = 22
 		want.MaxBatchBytes = 33
@@ -113,7 +113,6 @@ func TestParseCDCFlagsMapSharedBlock(t *testing.T) {
 		want.TargetFileSizeMB = 44
 		want.MaxBatchSize = 55
 		want.Engine = forma.EnginePostgreSQL
-		want.ChangeLogTable = "change_log"
 		want.MinRecords = cdc.DefaultMinRecords
 		want.MaxAgeMs = cdc.DefaultMaxAgeMs
 		want.MaxBatchBytes = cdc.DefaultMaxBatchBytes

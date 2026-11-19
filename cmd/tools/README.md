@@ -232,10 +232,12 @@ schema 没有发布记录时两者都拒绝（记录由 `init-db` 在注册或 V
 - `-s3-prefix`（默认 `data`）：V2 对象布局的数据前缀。parquet 写在 `{prefix}/{schema_id}/e{epoch}/{base|delta}/`，
   manifest 写在 `{prefix}/{schema_id}/_manifests/`。同一部署的 `cdc-flush` 与 `cdc-init` 必须使用同一前缀：
   flush 代际列出其前一个 init 的 base 文件，列出其他前缀下键的 manifest 在写入前就被拒绝。
+- `-change-log-table`（默认 `change_log`）：flush 在其中选取并标记未刷新条目，init 在其中移交导出行的条目。
+  必须是 `init-db` 建的表（`init-db` 的 `-change-log-table`，默认 `change_log_dev`），同一部署的两者必须一致。
 - `-pg-*`、`-pg-engine`（`postgresql` 或 `aurora-dsql`）、`-entity-main-table`、`-eav-table`、`-dry-run`
   （不导出、不写对象、不改记录、不标记）。
 
-`cdc-flush` 选项：`-change-log-table`、`-min-records`、`-max-age-ms`、`-max-batch-bytes`、`-estimated-row-bytes`、
+`cdc-flush` 选项：`-min-records`、`-max-age-ms`、`-max-batch-bytes`、`-estimated-row-bytes`、
 `-batch-size`（默认 10000；PostgreSQL 上整批在一条语句里标记，最多 32766，超出时在解析参数时拒绝；Aurora DSQL
 上一批按最多 1000 条一代分批发布）、`-pg-use-iam`、`-schema-registry-table`/`-schema-dir`。
 

@@ -58,6 +58,7 @@ func parseCDCInitFlags(args []string) (*cdcInitOptions, error) {
 	})
 
 	// Table names
+	fs.StringVar(&shared.changeLogTable, "change-log-table", "change_log", cdcChangeLogTableUsage)
 	fs.StringVar(&shared.entityMainTable, "entity-main-table", "entity_main", "Entity main table name")
 	fs.StringVar(&shared.eavDataTable, "eav-table", "eav_data", "EAV data table name")
 
@@ -172,7 +173,7 @@ func runCDCInit(ctx context.Context, args []string) error {
 		return fmt.Errorf("create schema registry: %w", err)
 	}
 
-	s3Client, err := buildToolS3Client(ctx, cfg.S3Region, cfg.S3Endpoint, cfg.S3UsePath)
+	s3Client, err := toolCDCObjectClientFn(ctx, cfg.S3Region, cfg.S3Endpoint, cfg.S3UsePath)
 	if err != nil {
 		return fmt.Errorf("load AWS config: %w", err)
 	}
@@ -181,6 +182,7 @@ func runCDCInit(ctx context.Context, args []string) error {
 	logger.Info("starting CDC init",
 		zap.String("bucket", cfg.S3Bucket),
 		zap.String("prefix", cfg.S3Prefix),
+		zap.String("change_log_table", cfg.ChangeLogTable),
 		zap.String("engine", string(cfg.Engine)),
 		zap.Int("target_file_size_mb", cfg.TargetFileSizeMB),
 		zap.Int("estimated_row_bytes", cfg.EstimatedRowBytes),

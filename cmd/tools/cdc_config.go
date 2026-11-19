@@ -16,11 +16,20 @@ type cdcSharedFlags struct {
 	password          string
 	duck              duckExportFlags
 	s3                s3Flags
+	changeLogTable    string
 	entityMainTable   string
 	eavDataTable      string
 	batchSize         int
 	estimatedRowBytes int
 }
+
+// cdcChangeLogTableUsage is the -change-log-table usage of both CDC writers:
+// a flush selects and marks the table's unflushed entries, and an init hands
+// the exported rows' entries off in it, so both must name the table init-db
+// created (its -change-log-table, CHANGE_LOG_TABLE, change_log_dev by
+// default).
+const cdcChangeLogTableUsage = "Change log table name: the table init-db created (init-db's --change-log-table; " +
+	"its default is change_log_dev). cdc-flush and cdc-init of one deployment must name the same table"
 
 // defaultCDCDataPrefix is the -s3-prefix default of both cdc-flush and
 // cdc-init, and the -data-prefix default of the compactor and
@@ -58,6 +67,7 @@ func (s cdcSharedFlags) sharedConfig() cdc.CDCConfig {
 		S3Region:                s.s3.region,
 		S3UseSSL:                s.s3.useSSL,
 		S3UsePath:               s.s3.usePath,
+		ChangeLogTable:          s.changeLogTable,
 		EntityMainTable:         s.entityMainTable,
 		EAVDataTable:            s.eavDataTable,
 		BatchSize:               s.batchSize,

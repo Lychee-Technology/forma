@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/bootstrap"
+	"github.com/lychee-technology/forma/internal/cdc"
 	"go.uber.org/zap"
 )
 
@@ -61,6 +62,13 @@ func buildToolS3Client(ctx context.Context, region, endpoint string, usePath boo
 	}
 
 	return s3.NewFromConfig(awsCfg), nil
+}
+
+// toolCDCObjectClientFn builds the client cdc-flush and cdc-init stage their
+// objects and manifests through. It is buildToolS3Client behind a seam, so a
+// test can run either command's whole path against a bucket of its own.
+var toolCDCObjectClientFn = func(ctx context.Context, region, endpoint string, usePath bool) (cdc.S3Client, error) {
+	return buildToolS3Client(ctx, region, endpoint, usePath)
 }
 
 func buildToolSchemaRegistry(

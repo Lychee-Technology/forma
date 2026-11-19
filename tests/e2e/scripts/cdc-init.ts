@@ -119,6 +119,9 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
     '--pg-password', config.pg.password,
     '--pg-db', config.pg.database,
     '--pg-ssl-mode', config.pg.sslMode,
+    // The change log init-db created: the handoff marks the exported rows'
+    // entries in it, as cdc-flush marks its batches.
+    '--change-log-table', config.tables.changeLog,
     '--entity-main-table', config.tables.entityMain,
     '--eav-table', config.tables.eavData,
     '--s3-bucket', config.s3.bucket,

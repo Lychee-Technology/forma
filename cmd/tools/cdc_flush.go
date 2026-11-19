@@ -57,7 +57,7 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	})
 
 	// Change log settings
-	fs.StringVar(&flushOnly.changeLogTable, "change-log-table", "change_log", "Change log table name")
+	fs.StringVar(&shared.changeLogTable, "change-log-table", "change_log", cdcChangeLogTableUsage)
 	fs.StringVar(&shared.entityMainTable, "entity-main-table", "entity_main", "Entity main table name")
 	fs.StringVar(&shared.eavDataTable, "eav-table", "eav_data", "EAV data table name")
 	fs.IntVar(&flushOnly.minRecords, "min-records", 20000, "Minimum records before flush")
@@ -121,17 +121,15 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 // cdcFlushOnlyFlags holds the cdc-flush flag values outside the block it
 // shares with cdc-init (#445).
 type cdcFlushOnlyFlags struct {
-	changeLogTable string
-	minRecords     int
-	maxAgeMs       int64
-	maxBatchBytes  int64
+	minRecords    int
+	maxAgeMs      int64
+	maxBatchBytes int64
 }
 
 // buildCDCConfig constructs a CDC config from parsed flag values: the shared
 // block, then the flush-only fields, then WithDefaults last.
 func buildCDCConfig(shared cdcSharedFlags, flushOnly cdcFlushOnlyFlags) publiccdc.Config {
 	cfg := shared.sharedConfig()
-	cfg.ChangeLogTable = flushOnly.changeLogTable
 	cfg.MinRecords = flushOnly.minRecords
 	cfg.MaxAgeMs = flushOnly.maxAgeMs
 	cfg.MaxBatchBytes = flushOnly.maxBatchBytes
@@ -172,7 +170,7 @@ func runCDCFlush(ctx context.Context, args []string) error {
 		registry = reg
 	}
 
-	s3Client, err := buildToolS3Client(ctx, cfg.S3Region, cfg.S3Endpoint, cfg.S3UsePath)
+	s3Client, err := toolCDCObjectClientFn(ctx, cfg.S3Region, cfg.S3Endpoint, cfg.S3UsePath)
 	if err != nil {
 		return fmt.Errorf("load AWS config: %w", err)
 	}
