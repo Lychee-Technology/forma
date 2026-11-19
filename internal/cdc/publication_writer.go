@@ -167,6 +167,42 @@ func readPublicationRecord(ctx context.Context, db *sql.DB, entityMain string, s
 	return snap.Record, nil
 }
 
+// runEpochs answers the epochs the run's schema metadata belongs to:
+// cfg.RegistryEpochs, or, when the caller supplied none, every record's epoch
+// read now, before the run resolves the schemas' attributes.
+func runEpochs(ctx context.Context, cfg CDCConfig, db *sql.DB) (map[int16]int64, error) {
+	if cfg.RegistryEpochs != nil {
+		return cfg.RegistryEpochs, nil
+	}
+	entityMain := cfg.EntityMainTable
+	if entityMain == "" {
+		entityMain = "entity_main"
+	}
+	epochs, err := publication.Epochs(ctx, publication.DB(db), publication.TablesFor(entityMain))
+	if err != nil {
+		return nil, fmt.Errorf("read the publication epochs the run's schema metadata belongs to: %w", err)
+	}
+	return epochs, nil
+}
+
+// refuseMovedEpoch refuses a schema whose record, read under its schema lock,
+// is not at the epoch read before the run's metadata was loaded: the schema
+// was dropped, or dropped and registered again, since, and the metadata may
+// describe the dropped schema rather than the record's.
+func refuseMovedEpoch(rec publication.Record, epochs map[int16]int64) error {
+	was, ok := epochs[rec.SchemaID]
+	if ok && was == rec.Epoch {
+		return nil
+	}
+	before := "no record"
+	if ok {
+		before = fmt.Sprintf("epoch %d", was)
+	}
+	return fmt.Errorf("schema %d: its record is at epoch %d, and the run's schema metadata was loaded at %s: "+
+		"the schema was dropped or registered again since, so the metadata may be the dropped schema's; "+
+		"load the schema registry again and rerun: %w", rec.SchemaID, rec.Epoch, before, cdcv2.ErrEpochChanged)
+}
+
 // refuseUnflushable refuses a flush of a schema whose record no flush may
 // move, with what the operator does about it. The writer refuses the same
 // states itself; this names them before the run takes the lock or exports.

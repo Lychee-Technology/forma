@@ -36,6 +36,9 @@ func (c *schemaFlushContext) flushUnderLock(ctx context.Context, schemaID int16)
 	if err != nil {
 		return err
 	}
+	if err := refuseMovedEpoch(rec, c.epochs); err != nil {
+		return err
+	}
 	if err := refuseUnflushable(rec); err != nil {
 		return err
 	}

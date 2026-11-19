@@ -1,6 +1,7 @@
 package cdc
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -26,7 +27,7 @@ type flushContextParams struct {
 // package-level RunOnce (cmd/tools cdc-flush) and Runner.RunOnce. It is the
 // one place the run's V2 writer, object store and schema lock are wired, so
 // neither frame can carry a wiring of its own.
-func newSchemaFlushContext(p flushContextParams) (*schemaFlushContext, error) {
+func newSchemaFlushContext(ctx context.Context, p flushContextParams) (*schemaFlushContext, error) {
 	cfg := p.cfg.WithDefaults()
 	if err := cfg.ValidateFlush(); err != nil {
 		return nil, fmt.Errorf("cdc flush configuration: %w", err)
@@ -48,6 +49,12 @@ func newSchemaFlushContext(p flushContextParams) (*schemaFlushContext, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cdc flush: %w", err)
 	}
+	// Read before processSchemas resolves the attributes: a schema whose
+	// record is at another epoch under its lock is refused (refuseMovedEpoch).
+	epochs, err := runEpochs(ctx, cfg, p.db)
+	if err != nil {
+		return nil, fmt.Errorf("cdc flush: %w", err)
+	}
 	return &schemaFlushContext{
 		db:             p.db,
 		duck:           p.duck,
@@ -55,6 +62,7 @@ func newSchemaFlushContext(p flushContextParams) (*schemaFlushContext, error) {
 		writer:         writer,
 		locker:         locker,
 		cfg:            cfg,
+		epochs:         epochs,
 		tableName:      cfg.ChangeLogTable,
 		dryRun:         p.dryRun,
 		logger:         logger,

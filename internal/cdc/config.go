@@ -90,6 +90,19 @@ type CDCConfig struct {
 	// step there, as a crash or a fault would. Test seam for the wired
 	// cdc-flush and cdc-init paths; always nil in production.
 	PublishFailpoint func(ctx context.Context, point string) error
+
+	// RegistryEpochs is the epoch of each schema's publication record as
+	// read before the run's SchemaRegistry loaded the schemas' metadata
+	// (publication.Epochs). Every drop, and every registration of a dropped
+	// id, moves a record to its next epoch, so a writer that finds the record
+	// at another epoch under its schema lock refuses the schema
+	// (cdcv2.ErrEpochChanged) before any export: the metadata it holds may be
+	// the dropped schema's. A schema without an entry is refused the same
+	// way. nil: the run reads them itself at its start, before it resolves
+	// the schemas' attributes, which binds the run to a registry loaded no
+	// earlier; a caller that keeps a registry across runs supplies the
+	// epochs it read before loading it.
+	RegistryEpochs map[int16]int64
 }
 
 // CompactionConfig controls Base/Delta maintenance.

@@ -69,6 +69,7 @@ type initRunContext struct {
 	store                manifestv2.Store
 	schemaRegistry       forma.SchemaRegistry
 	attrCaches           map[int16]forma.SchemaAttributeCache
+	epochs               map[int16]int64 // the epochs the run's metadata belongs to (runEpochs, refuseMovedEpoch)
 	logger               *zap.Logger
 	dryRun               bool
 	autoEstimateRowBytes bool
@@ -118,8 +119,18 @@ func newInitRunContext(ctx context.Context, opts InitOptions) (*initRunContext, 
 		return nil, fmt.Errorf("new duck exporter: %w", err)
 	}
 
+	// Read before processInitSchemas resolves the attributes: a schema whose
+	// record is at another epoch under its lock is refused (refuseMovedEpoch).
+	epochs, err := runEpochs(ctx, cfg, db)
+	if err != nil {
+		_ = duck.DB.Close()
+		_ = db.Close()
+		return nil, fmt.Errorf("cdc init: %w", err)
+	}
+
 	return &initRunContext{
 		cfg:                  cfg,
+		epochs:               epochs,
 		db:                   db,
 		locker:               locker,
 		duck:                 duck,

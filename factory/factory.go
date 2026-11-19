@@ -125,9 +125,12 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		effectiveConfig.Entity.SchemaDirectory,
 	)
 
-	metadataCache, err := loader.LoadMetadata(ctx)
+	// The publication epochs are read before the metadata, so the reader
+	// pins only the epochs the metadata belongs to (bindEpochPins).
+	entityMain := effectiveConfig.Database.TableNames.EntityMain
+	metadataCache, metadataEpochs, err := loadMetadataWithEpochs(ctx, loader, effectiveConfig.DuckDB, snapshotPoolOf(pool), entityMain)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load metadata: %w", err)
+		return nil, err
 	}
 
 	zap.S().Infow("Metadata loaded successfully", "schemaCount", len(metadataCache.ListSchemas()))
@@ -152,7 +155,7 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 
 	duckClient, reader, err := newFederatedReadSurface(ctx, deps, publicationReaderSpec{
 		duck: effectiveConfig.DuckDB, pool: snapshotPoolOf(pool), meta: metadataCache,
-		entityMain: effectiveConfig.Database.TableNames.EntityMain,
+		metadataEpochs: metadataEpochs, entityMain: entityMain,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open the federated read surface: %w", err)

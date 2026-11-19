@@ -13,7 +13,9 @@ import (
 	"github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/federatedv2"
 	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"go.uber.org/zap"
 )
 
 // manifestCacheEntries bounds the process-wide cache of verified manifests:
@@ -59,15 +61,76 @@ type publicationReaderSpec struct {
 	duck forma.DuckDBConfig
 	pool snapshotPool
 	meta *schemameta.MetadataCache
+	// metadataEpochs are the records' epochs as read before meta was loaded
+	// (loadMetadataWithEpochs); nil when they were not read.
+	metadataEpochs map[int16]int64
 	// entityMain names the publication tables (publication.TablesFor).
 	entityMain string
+}
+
+// loadMetadataWithEpochs loads the schema metadata after reading every
+// publication record's epoch, when the federated reader will be built. A
+// drop or a registration of a dropped id moves a record to its next epoch,
+// so a schema whose epoch is the same before the load and when the reader
+// pins it was neither dropped nor registered again in between: the metadata
+// loaded belongs to the pinned epoch (bindEpochPins).
+func loadMetadataWithEpochs(ctx context.Context, loader metadataLoader, duck forma.DuckDBConfig, pool snapshotPool, entityMain string) (*schemameta.MetadataCache, map[int16]int64, error) {
+	var before map[int16]int64
+	if duck.Enabled && pool != nil {
+		var err error
+		if before, err = readPublicationEpochs(ctx, pool, entityMain); err != nil {
+			return nil, nil, err
+		}
+	}
+	meta, err := loader.LoadMetadata(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load metadata: %w", err)
+	}
+	return meta, before, nil
+}
+
+// readPublicationEpochs reads every record's epoch in one REPEATABLE READ
+// READ ONLY snapshot.
+func readPublicationEpochs(ctx context.Context, pool snapshotPool, entityMain string) (map[int16]int64, error) {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("failed to open the snapshot the publication epochs are read in: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	epochs, err := publication.Epochs(ctx, publication.PgxTx(tx), publication.TablesFor(entityMain))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the publication epochs before loading the schema metadata: %w", err)
+	}
+	return epochs, nil
+}
+
+// bindEpochPins keeps the pins whose epoch is the one read before the
+// metadata was loaded. A schema whose record moved in between was dropped,
+// or dropped and registered again, while the metadata loaded: the metadata
+// may be the dropped schema's, so the schema gets no pin and every read of
+// it fails closed (federatedv2.ErrNotPinned) until the process loads its
+// metadata again. nil before keeps every pin.
+func bindEpochPins(pins, before map[int16]int64) map[int16]int64 {
+	if before == nil {
+		return pins
+	}
+	for id, epoch := range pins {
+		if was, ok := before[id]; !ok || was != epoch {
+			zap.S().Warnw("schema's publication record moved while its metadata loaded; its federated reads fail closed until the process restarts",
+				"schema_id", id, "epoch_before_load", was, "epoch_after_load", epoch, "had_record_before_load", ok)
+			delete(pins, id)
+		}
+	}
+	return pins
 }
 
 // newPublicationReader builds the federated reader's Protocol V2 source
 // (docs/publication-protocol-v2.md, "Readers"): a federatedv2.Source over a
 // verifying manifest cache on the configured bucket, with the epoch of every
 // schema the metadata cache holds pinned as of one snapshot read now, beside
-// the metadata. The metadata is loaded once per process, so the pins are too.
+// the metadata, and kept only where the epoch is the one read before the
+// metadata loaded (bindEpochPins). The metadata is loaded once per process,
+// so the pins are too.
 //
 // Every failure is fatal: an engine with DuckDB enabled and no reader fails
 // every federated read, so startup fails instead, naming the cause.
@@ -79,6 +142,7 @@ func newPublicationReader(ctx context.Context, spec publicationReaderSpec) (fede
 	if err != nil {
 		return nil, err
 	}
+	pins = bindEpochPins(pins, spec.metadataEpochs)
 	client, err := newPublicationS3Client(ctx, spec.duck)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build the s3 client of the publication reader: %w", err)

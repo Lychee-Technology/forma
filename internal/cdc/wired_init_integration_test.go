@@ -195,7 +195,7 @@ func TestWiredInitIsAbandonedByAFlushThatCommitsDuringIt(t *testing.T) {
 	f.seed(t, 1, base+100)
 
 	rival := func(ctx context.Context) error {
-		flushCtx, err := newSchemaFlushContext(flushContextParams{
+		flushCtx, err := newSchemaFlushContext(ctx, flushContextParams{
 			cfg: f.cfg, db: f.db, duck: f.duck, store: f.store, logger: f.logger, schemaRegistry: stubSchemaRegistry{cache: testAttrCache()},
 		})
 		if err != nil {

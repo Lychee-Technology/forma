@@ -168,10 +168,11 @@ func runCDCInit(ctx context.Context, args []string) error {
 	}
 	defer pool.Close()
 
-	registry, err := buildToolSchemaRegistry(ctx, pool, opts.registry.table, opts.registry.dir)
+	registry, epochs, err := buildCDCSchemaRegistry(ctx, pool, cfg.EntityMainTable, opts.registry.table, opts.registry.dir)
 	if err != nil {
-		return fmt.Errorf("create schema registry: %w", err)
+		return err
 	}
+	cfg.RegistryEpochs = epochs
 
 	s3Client, err := toolCDCObjectClientFn(ctx, cfg.S3Region, cfg.S3Endpoint, cfg.S3UsePath)
 	if err != nil {

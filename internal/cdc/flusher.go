@@ -111,7 +111,7 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3Client, dryRun bool,
 // runFlushPass builds the run's flush context and flushes every schema with
 // unflushed entries. Both RunOnce frames end here.
 func runFlushPass(ctx context.Context, p flushContextParams) (FlushReport, error) {
-	flushCtx, err := newSchemaFlushContext(p)
+	flushCtx, err := newSchemaFlushContext(ctx, p)
 	if err != nil {
 		return FlushReport{}, fmt.Errorf("prepare flush: %w", err)
 	}
@@ -225,6 +225,10 @@ type schemaFlushContext struct {
 	logger         *zap.Logger
 	schemaRegistry forma.SchemaRegistry
 	attrCaches     map[int16]forma.SchemaAttributeCache
+	// epochs are the record epochs the run's metadata belongs to, read when
+	// the context is built, before processSchemas resolves the attributes
+	// (runEpochs, refuseMovedEpoch).
+	epochs map[int16]int64
 	// locker is the per-schema lock of the run's database engine; nil takes
 	// the PostgreSQL advisory lock.
 	locker SchemaLocker

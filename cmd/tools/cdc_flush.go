@@ -163,11 +163,11 @@ func runCDCFlush(ctx context.Context, args []string) error {
 			return fmt.Errorf("create schema registry pool: %w", err)
 		}
 		defer pool.Close()
-		reg, err := buildToolSchemaRegistry(ctx, pool, opts.registry.table, opts.registry.dir)
+		reg, epochs, err := buildCDCSchemaRegistry(ctx, pool, cfg.EntityMainTable, opts.registry.table, opts.registry.dir)
 		if err != nil {
-			return fmt.Errorf("create schema registry: %w", err)
+			return err
 		}
-		registry = reg
+		registry, cfg.RegistryEpochs = reg, epochs
 	}
 
 	s3Client, err := toolCDCObjectClientFn(ctx, cfg.S3Region, cfg.S3Endpoint, cfg.S3UsePath)

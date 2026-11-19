@@ -1,6 +1,15 @@
 package main
 
-import "github.com/lychee-technology/forma/internal/cdc"
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/publication"
+)
 
 // cdcSharedFlags holds the parsed flag values that cdc-flush and cdc-init map
 // onto CDCConfig identically (#445). Each tool fills it once from its own flag
@@ -73,4 +82,30 @@ func (s cdcSharedFlags) sharedConfig() cdc.CDCConfig {
 		BatchSize:               s.batchSize,
 		EstimatedRowBytes:       s.estimatedRowBytes,
 	}
+}
+
+// buildCDCSchemaRegistry loads the schema registry of a cdc-flush or cdc-init
+// run after reading every publication record's epoch, and answers both. The
+// run refuses a schema whose record it finds at another epoch under its
+// schema lock (cdc.CDCConfig.RegistryEpochs): a drop, or a drop and a
+// registration again, committed after the epochs were read, so the metadata
+// loaded may be the dropped schema's.
+func buildCDCSchemaRegistry(ctx context.Context, pool *pgxpool.Pool, entityMain, table, dir string) (forma.SchemaRegistry, map[int16]int64, error) {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, nil, fmt.Errorf("open the snapshot the publication epochs are read in: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	epochs, err := publication.Epochs(ctx, publication.PgxTx(tx), publication.TablesFor(entityMain))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the publication epochs before loading the schema registry: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("end the snapshot the publication epochs were read in: %w", err)
+	}
+	registry, err := buildToolSchemaRegistry(ctx, pool, table, dir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create schema registry: %w", err)
+	}
+	return registry, epochs, nil
 }

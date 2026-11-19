@@ -142,7 +142,13 @@ compactor, reader, GC) is given that name.
 - *Epoch pin.* A process reads each schema's epoch when it loads the schema's metadata
   and keeps it with them. A reader pass or a writer that later reads a record of another
   epoch fails closed: the schema was dropped, and maybe re-created, since the process
-  loaded what it knows about it.
+  loaded what it knows about it. The pin binds only if it is read *before* the metadata
+  loads and still holds after: a pin read after the load could already be a re-created
+  schema's epoch, paired with the dropped schema's metadata. So the factory reads every
+  record's epoch (`publication.Epochs`) before it loads the metadata and pins a schema only
+  if its epoch is the same when it pins it; `cdc-flush` and `cdc-init` read them before they
+  load the schema registry (`CDCConfig.RegistryEpochs`, or at the run's start before it
+  resolves the attributes) and refuse, under the schema lock, a record at another epoch.
 - *Re-onboarding* an existing schema is a `cdc-init` (a new lineage in the same epoch).
   It never resets, for the same reason: a reset would hide every flushed row.
 

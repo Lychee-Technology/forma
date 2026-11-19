@@ -22,6 +22,9 @@ func initSchema(ctx context.Context, runCtx *initRunContext, schemaID int16) (Sc
 	if err != nil {
 		return SchemaInit{}, err
 	}
+	if err := refuseMovedEpoch(rec, runCtx.epochs); err != nil {
+		return SchemaInit{}, err
+	}
 	if rec.State == publication.Dropped {
 		return SchemaInit{}, fmt.Errorf("schema %d at epoch %d is dropped; it is onboarded again once it is registered again: %w",
 			schemaID, rec.Epoch, publication.ErrDropped)

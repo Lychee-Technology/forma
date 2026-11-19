@@ -314,8 +314,10 @@ func (f *wiredFixture) runInit(t *testing.T, registry forma.SchemaRegistry, dryR
 	}
 	locker, err := NewSchemaLocker(f.db, cfg.Engine, cfg.EntityMainTable)
 	require.NoError(t, err)
+	epochs, err := runEpochs(context.Background(), cfg, f.db)
+	require.NoError(t, err)
 	runCtx := &initRunContext{
-		cfg: cfg, db: f.db, duck: f.duck, store: f.store, schemaRegistry: registry,
+		cfg: cfg, epochs: epochs, db: f.db, duck: f.duck, store: f.store, schemaRegistry: registry,
 		logger: f.logger, dryRun: dryRun, locker: locker,
 	}
 	return processInitSchemas(context.Background(), runCtx, []int64{int64(wiredSchema)})

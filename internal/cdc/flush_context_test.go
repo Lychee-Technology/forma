@@ -1,6 +1,7 @@
 package cdc
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"go/ast"
@@ -17,21 +18,25 @@ import (
 	"go.uber.org/zap"
 )
 
+// noEpochs stands for the record epochs a caller read before loading its
+// registry, so a constructor over a database it cannot reach reads none.
+var noEpochs = map[int16]int64{}
+
 // The constructor wires the run's V2 writer, its object store and the
 // engine's schema lock, and the change_log table falls back to its default.
 func TestNewSchemaFlushContextWiresTheWriter(t *testing.T) {
 	db := &sql.DB{}
 	store := &manifestv2.FSStore{Dir: t.TempDir()}
 
-	flushCtx, err := newSchemaFlushContext(flushContextParams{cfg: CDCConfig{S3Bucket: "b"}, db: db, store: store, logger: zap.NewNop()})
+	flushCtx, err := newSchemaFlushContext(context.Background(), flushContextParams{cfg: CDCConfig{S3Bucket: "b", RegistryEpochs: noEpochs}, db: db, store: store, logger: zap.NewNop()})
 	require.NoError(t, err)
 	require.NotNil(t, flushCtx.writer)
 	require.Same(t, store, flushCtx.store)
 	require.Equal(t, "change_log", flushCtx.tableName)
 	require.IsType(t, advisorySchemaLocker{}, flushCtx.locker)
 
-	custom, err := newSchemaFlushContext(flushContextParams{
-		cfg: CDCConfig{ChangeLogTable: "custom_log", Engine: forma.EngineAuroraDSQL}, db: db, store: store,
+	custom, err := newSchemaFlushContext(context.Background(), flushContextParams{
+		cfg: CDCConfig{ChangeLogTable: "custom_log", Engine: forma.EngineAuroraDSQL, RegistryEpochs: noEpochs}, db: db, store: store,
 	})
 	require.NoError(t, err)
 	require.Equal(t, "custom_log", custom.tableName)
@@ -42,14 +47,14 @@ func TestNewSchemaFlushContextWiresTheWriter(t *testing.T) {
 // A flush context without a store, or with a batch a PostgreSQL mark cannot
 // bind, is refused before any schema is touched.
 func TestNewSchemaFlushContextRefusesWhatTheWriterCannotRun(t *testing.T) {
-	_, err := newSchemaFlushContext(flushContextParams{cfg: CDCConfig{}, db: &sql.DB{}})
+	_, err := newSchemaFlushContext(context.Background(), flushContextParams{cfg: CDCConfig{}, db: &sql.DB{}})
 	require.ErrorContains(t, err, "object store")
 
 	store := &manifestv2.FSStore{Dir: t.TempDir()}
-	_, err = newSchemaFlushContext(flushContextParams{cfg: CDCConfig{BatchSize: cdcv2.MaxMarkEntries + 1}, db: &sql.DB{}, store: store})
+	_, err = newSchemaFlushContext(context.Background(), flushContextParams{cfg: CDCConfig{BatchSize: cdcv2.MaxMarkEntries + 1}, db: &sql.DB{}, store: store})
 	require.ErrorIs(t, err, ErrBatchSizeTooLarge)
 
-	_, err = newSchemaFlushContext(flushContextParams{cfg: CDCConfig{Engine: "oracle"}, db: &sql.DB{}, store: store})
+	_, err = newSchemaFlushContext(context.Background(), flushContextParams{cfg: CDCConfig{Engine: "oracle"}, db: &sql.DB{}, store: store})
 	require.Error(t, err, "an unknown engine is refused")
 }
 
