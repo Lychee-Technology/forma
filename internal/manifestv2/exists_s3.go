@@ -23,7 +23,9 @@ type S3HeadClient interface {
 // *types.NotFound, or an HTTP response error with status 404 for stores whose
 // bodyless HEAD reply the SDK cannot model as NotFound. Every other failure
 // propagates wrapped: a probe that merely failed does not prove the object is
-// gone, and misreading it would fabricate a data-loss report.
+// gone, and misreading it would fabricate a data-loss report. A 403 wraps
+// ErrAccessDenied: without s3:ListBucket on the bucket S3 answers it for a
+// missing key too, so the caller can tell the probe proved nothing either way.
 func S3Exists(client S3HeadClient, bucket string) func(ctx context.Context, key string) (bool, error) {
 	return func(ctx context.Context, key string) (bool, error) {
 		_, err := client.HeadObject(ctx, &s3.HeadObjectInput{
@@ -35,6 +37,9 @@ func S3Exists(client S3HeadClient, bucket string) func(ctx context.Context, key 
 		}
 		if headNotFound(err) {
 			return false, nil
+		}
+		if accessDenied(err) {
+			return false, fmt.Errorf("head object %s/%s: %w: %w", bucket, key, ErrAccessDenied, err)
 		}
 		return false, fmt.Errorf("head object %s/%s: %w", bucket, key, err)
 	}

@@ -14,6 +14,7 @@ import (
 	"maps"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/publication"
@@ -129,6 +130,12 @@ func (s *Source) ResolveGeneration(ctx context.Context, rec federated.Publicatio
 	if errors.As(err, &ce) {
 		return federated.PublishedGeneration{}, inconsistent(r.SchemaID, r.Epoch, r.Generation, err)
 	}
+	if errors.Is(err, manifestv2.ErrAccessDenied) {
+		// A 403 may hide a missing manifest: fail closed, without calling it
+		// one, and without answering from PostgreSQL alone.
+		return federated.PublishedGeneration{}, inconsistent(r.SchemaID, r.Epoch, r.Generation,
+			fmt.Errorf("fetch manifest %s: %w: %w", r.ManifestKey, forma.ErrPublishedObjectUnverifiable, err))
+	}
 	if err != nil {
 		return federated.PublishedGeneration{}, fmt.Errorf("fetch the manifest of schema %d generation %d: %w", r.SchemaID, r.Generation, err)
 	}
@@ -152,7 +159,9 @@ func (s *Source) ResolveGeneration(ctx context.Context, rec federated.Publicatio
 // would prove nothing about the generation. A probe that fails does not stop
 // the others, and does not take back a key another probe found missing: the
 // answer holds every confirmed loss, with the failed probes joined into the
-// error. Once ctx ends, no further probe runs.
+// error. A probe the store refused with access denied wraps
+// forma.ErrPublishedObjectUnverifiable: it proves neither presence nor loss.
+// Once ctx ends, no further probe runs.
 func (s *Source) MissingIn(ctx context.Context, gen federated.PublishedGeneration, scanned []string) ([]string, error) {
 	keys := make(map[string]string, len(gen.Paths))
 	for i, p := range gen.Paths {
@@ -170,6 +179,9 @@ func (s *Source) MissingIn(ctx context.Context, gen federated.PublishedGeneratio
 			break
 		}
 		ok, err := s.exists(ctx, key)
+		if errors.Is(err, manifestv2.ErrAccessDenied) {
+			err = fmt.Errorf("%w: %w", forma.ErrPublishedObjectUnverifiable, err)
+		}
 		if err != nil {
 			failed = append(failed, fmt.Errorf("probe object %s of schema %d generation %d: %w", key, gen.SchemaID, gen.Generation, err))
 			continue

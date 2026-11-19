@@ -108,6 +108,18 @@ func (e *ManifestUnstampedError) Unwrap() []error {
 // classify it without importing internal/federated and its DuckDB CGO.
 var ErrPublicationInconsistent = errors.New("publication state inconsistent")
 
+// ErrPublishedObjectUnverifiable marks a federated read that could not tell
+// whether an object its published generation names exists, the manifest or a
+// listed parquet object: the object store answered access denied. S3 answers
+// HTTP 403, not 404, for a missing key to a principal without s3:ListBucket on
+// the bucket, so the answer is neither proof of loss nor a failed read to
+// degrade around. A *PublicationConsistencyError carries it: the read fails
+// closed (it matches ErrPublicationInconsistent, so it is not degradable and
+// is never charged to the circuit breaker), but it names no missing key. Give
+// the reader's principal s3:ListBucket on the bucket besides s3:GetObject, so
+// that a missing object answers 404 and is reported as the loss it is.
+var ErrPublishedObjectUnverifiable = errors.New("object store denied access to a published object, so whether it exists is unknown")
+
 // PublicationConsistencyError names the schema, the epoch and the generation
 // of a federated read's publication fault.
 //

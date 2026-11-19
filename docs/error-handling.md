@@ -1519,7 +1519,11 @@ whose publication state cannot be answered from
   (`manifestv2.ConsistencyError`);
 - a listed address DuckDB would expand as a glob
   (`federated.ErrPublishedPathNotConcrete`);
-- a listed object the store does not hold, with its keys in `MissingKeys`.
+- a listed object the store does not hold, with its keys in `MissingKeys`;
+- a manifest or listed object the store refused with access denied
+  (`forma.ErrPublishedObjectUnverifiable`, wrapping
+  `manifestv2.ErrAccessDenied`). `MissingKeys` stays empty: see "Access denied
+  is not loss" below.
 
 - **Plain error, not `ErrInvalidInput`.** Nothing about the request is wrong;
   the committed publication metadata, or the objects it lists, cannot be
@@ -1532,8 +1536,20 @@ whose publication state cannot be answered from
   health), and it is not retried, so a fresh snapshot cannot hide a loss
   already found.
 - **Not a failed read.** A record the snapshot could not read is
-  `ErrPostgresReadFailed`, and a manifest the store could not answer is
-  `ErrFederatedReadFailed`; both stay degradable.
+  `ErrPostgresReadFailed`, and a manifest the store could not answer (a
+  timeout, a 5xx, a transport failure) is `ErrFederatedReadFailed`; both stay
+  degradable.
+- **Access denied is not loss, and not a failed read either.** S3 answers
+  `403 AccessDenied`, not `404`, for a missing key to a principal that lacks
+  `s3:ListBucket` on the bucket. So a `403` on the manifest fetch or on the
+  missing-object probe proves neither that the object exists nor that it is
+  lost. The read fails closed with `ErrPublishedObjectUnverifiable` inside this
+  error: it is not answered from PostgreSQL, not charged to the breaker, and it
+  names no missing key. Grant the reader's principal `s3:ListBucket` on the
+  bucket (the bucket ARN, not `bucket/*`) besides `s3:GetObject` on its
+  objects; only then does a missing object answer `404` and get reported as
+  the loss it is (`ErrManifestMissing`, `MissingKeys`). The Lambda role in
+  `infra/components/serverless.go` already has both.
 - **Cached corruption does not mask a loss (#251, #722).** While a per-file
   verification verdict is cached, a read whose generation lists the corrupt
   object is refused as `CorruptParquetError` before any scan. The refusal
@@ -1548,7 +1564,9 @@ whose publication state cannot be answered from
   `cdc-init`: run the init. A schema without a record, or pinned at another
   epoch, needs its registration (`init-db`) and a restart of the reader. A
   lost manifest or object is data loss of the published generation; repair is
-  a re-init (#891).
+  a re-init (#891). `ErrPublishedObjectUnverifiable` first needs the reader's
+  S3 permissions fixed (`s3:ListBucket` on the bucket, `s3:GetObject` on its
+  objects); the next read then tells a present object from a lost one.
 
 The V1 read errors `ErrParquetSetInconsistent` (a manifest listing missing
 objects) and `ErrNoParquetPaths` (an empty resolved path set) were deleted with

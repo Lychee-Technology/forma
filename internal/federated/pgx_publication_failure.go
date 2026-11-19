@@ -131,6 +131,10 @@ func (p *pgxPass) refusePublishedCorrupt(ctx context.Context, corrupt []string) 
 //     confirmed loss is final, a PublicationConsistencyError, even when
 //     other probes failed: a lost object says nothing about DuckDB, and a
 //     failed probe cannot take back a key another found missing.
+//   - A probe the store refused with access denied is final too
+//     (forma.ErrPublishedObjectUnverifiable): S3 answers 403 for a missing
+//     key to a reader without s3:ListBucket, so the read fails closed, never
+//     charged to DuckDB and never degraded, but names no missing key.
 //   - A probe that R_max ended is final as well, as a read it ended.
 //   - A probe the request's deadline or cancellation ended keeps that
 //     context error in the class, so the read stays non-degradable (#465):
@@ -145,6 +149,10 @@ func (e *DBFederatedQueryEngine) classifyPublishedReadError(ctx context.Context,
 	if len(missing) > 0 {
 		e.breaker.ReleaseProbe(sc.probe)
 		return objectsLost(*sc.published, missing, cause, probeErr, op), nil
+	}
+	if errors.Is(probeErr, forma.ErrPublishedObjectUnverifiable) {
+		e.breaker.ReleaseProbe(sc.probe)
+		return objectsUnverifiable(*sc.published, cause, probeErr, op), nil
 	}
 	if passDeadlineExpired(ctx) {
 		e.breaker.ReleaseProbe(sc.probe)
@@ -169,6 +177,16 @@ func objectsLost(gen PublishedGeneration, missing []string, cause, probeErr erro
 	return &PublicationConsistencyError{
 		SchemaID: gen.SchemaID, Epoch: gen.Epoch, Generation: gen.Generation, MissingKeys: missing,
 		Err: fmt.Errorf("%w: %s", errPublishedObjectMissing, fault),
+	}
+}
+
+// objectsUnverifiable is the consistency error of a generation whose listed
+// objects the store refused to say anything about: it fails the read closed
+// without reporting a loss it did not confirm.
+func objectsUnverifiable(gen PublishedGeneration, cause, probeErr error, op string) error {
+	return &PublicationConsistencyError{
+		SchemaID: gen.SchemaID, Epoch: gen.Epoch, Generation: gen.Generation,
+		Err: fmt.Errorf("%s: %s; the missing-object probe: %w", op, cause.Error(), probeErr),
 	}
 }
 

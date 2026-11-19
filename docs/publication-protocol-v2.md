@@ -529,6 +529,12 @@ open:
   no probe. A probe that fails does not stop the others or take back a key another found
   missing, so a confirmed loss is the consistency error even beside a failed probe. A probe
   the request's deadline ends keeps that error, so the read stays non-degradable.
+- S3 answers `403 AccessDenied`, not `404`, for a missing key to a principal without
+  `s3:ListBucket` on the bucket, so a 403 on the manifest fetch or on a probe proves neither
+  presence nor loss. The read fails closed with the consistency error wrapping
+  `forma.ErrPublishedObjectUnverifiable`, naming no lost key, neither degraded nor charged to
+  the breaker. A reader's principal needs `s3:ListBucket` on the bucket besides
+  `s3:GetObject` for a loss to be reported as one.
 - `R_max` is armed at `t0` with `context.WithTimeoutCause`. A pass it ends fails with
   `federated.ErrPassDeadline` and is retried once on a fresh snapshot, as the #720 race was. An
   expired deadline is not degradable (#465): `ErrPassDeadline` is refused by the degraded

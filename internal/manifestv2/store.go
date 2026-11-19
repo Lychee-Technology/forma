@@ -21,6 +21,14 @@ var ErrKeyExists = errors.New("object key already written")
 // ErrObjectNotFound reports a get of a key that holds no object.
 var ErrObjectNotFound = errors.New("object not found")
 
+// ErrAccessDenied reports a get or an existence probe the store refused with
+// access denied (S3: HTTP 403, AccessDenied). It proves neither that the
+// object exists nor that it is missing: S3 answers 403 rather than 404 for a
+// missing key to a principal without s3:ListBucket on the bucket. Only a
+// confirmed not-found is ErrObjectNotFound; a reader that must tell a lost
+// object from a present one needs s3:ListBucket besides s3:GetObject.
+var ErrAccessDenied = errors.New("object store denied access; whether the object exists is unknown")
+
 // Store is a write-once object store: every object is written once and only
 // garbage collection deletes it. S3Store and FSStore share the contract, so
 // unit tests exercise the one the deployment uses.

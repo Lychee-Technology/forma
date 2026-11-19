@@ -11,6 +11,7 @@ import (
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/stretchr/testify/require"
 )
@@ -87,4 +88,47 @@ func TestS3ExistsOtherErrorPropagates(t *testing.T) {
 			require.ErrorContains(t, err, "data/7/e1/base/a.parquet")
 		})
 	}
+}
+
+// A 403 is neither presence nor confirmed loss: without s3:ListBucket on the
+// bucket S3 answers it for a missing key as well as for a key the principal
+// may not read. The probe propagates it as ErrAccessDenied, which no other
+// failure matches, so the reader can fail closed without calling it loss.
+func TestS3ExistsTellsAnAmbiguousAccessDenied(t *testing.T) {
+	for name, injected := range map[string]error{
+		"http403":      headResponseError(http.StatusForbidden),
+		"AccessDenied": &smithy.GenericAPIError{Code: "AccessDenied", Message: "Access Denied"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := &fakeHeadClient{head: func(string) (*s3.HeadObjectOutput, error) { return nil, injected }}
+			ok, err := S3Exists(client, "bkt")(context.Background(), "data/7/e1/base/a.parquet")
+			require.False(t, ok)
+			require.ErrorIs(t, err, ErrAccessDenied)
+			require.ErrorIs(t, err, injected)
+		})
+	}
+	for name, injected := range map[string]error{
+		"http500":   headResponseError(http.StatusInternalServerError),
+		"transport": errors.New("connection refused"),
+	} {
+		t.Run("not "+name, func(t *testing.T) {
+			client := &fakeHeadClient{head: func(string) (*s3.HeadObjectOutput, error) { return nil, injected }}
+			_, err := S3Exists(client, "bkt")(context.Background(), "data/7/e1/base/a.parquet")
+			require.NotErrorIs(t, err, ErrAccessDenied)
+		})
+	}
+}
+
+// S3Store.Get answers a 403 as ErrAccessDenied, never ErrObjectNotFound: a
+// manifest fetch the store refused proves nothing about the manifest.
+func TestS3StoreGetTellsAccessDeniedFromNotFound(t *testing.T) {
+	denied := newFakeS3()
+	denied.getErr = &smithy.GenericAPIError{Code: "AccessDenied", Message: "Access Denied"}
+	_, err := (&S3Store{Client: denied, Bucket: "bkt"}).Get(context.Background(), "data/7/_manifests/m.json")
+	require.ErrorIs(t, err, ErrAccessDenied)
+	require.NotErrorIs(t, err, ErrObjectNotFound)
+
+	_, err = (&S3Store{Client: newFakeS3(), Bucket: "bkt"}).Get(context.Background(), "data/7/_manifests/m.json")
+	require.ErrorIs(t, err, ErrObjectNotFound)
+	require.NotErrorIs(t, err, ErrAccessDenied)
 }
