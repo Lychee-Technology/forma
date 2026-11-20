@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/publication"
+	"github.com/lychee-technology/forma/internal/uniquekey"
 )
 
 // recordStep is what ensurePublicationRecords did for one registered schema.
@@ -141,12 +142,18 @@ func activateDropped(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables 
 }
 
 // schemaResidue names the tables Activate checks, and drop-schema purges, for
-// a dropped schema's rows.
+// a dropped schema's rows: its entity_main, EAV and change_log rows, and the
+// unique-key state derived from them (#651). A key entry left behind would
+// keep reserving a deleted row's value against the re-registered schema, and
+// a build-state row would make its key look built, or, under another
+// declaration, stop the server as an incompatible key.
 func schemaResidue(opts initDBOptions) []publication.Residue {
 	return []publication.Residue{
 		{Table: opts.entityMain, SchemaIDColumn: "ltbase_schema_id"},
 		{Table: opts.eavTable},
 		{Table: opts.changeLog},
+		{Table: uniquekey.KeyTable(opts.entityMain), SchemaIDColumn: "ltbase_schema_id"},
+		{Table: uniquekey.StateTable(opts.entityMain), SchemaIDColumn: "ltbase_schema_id"},
 	}
 }
 

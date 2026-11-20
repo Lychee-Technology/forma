@@ -92,7 +92,7 @@ const activateSQL = `UPDATE %s SET epoch = epoch + 1, state = '` + string(Unpubl
 // Activate re-registers a dropped schema id on tx, the registration
 // transaction that inserts its registry row again: it checks in tx that none
 // of the schema's rows remain in residue (its entity_main, eav_data and
-// change_log tables), then moves the record from DROPPED to the next epoch,
+// change_log tables, and any table of state derived from them), then moves the record from DROPPED to the next epoch,
 // UNPUBLISHED, under a new token. Nothing that read the record before it
 // carries the new epoch, so no reader, writer or handoff of the old schema
 // acts on the new one without reading the record again. As Reset, it raises
