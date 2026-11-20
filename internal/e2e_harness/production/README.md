@@ -217,11 +217,9 @@ from PostgreSQL, with no DuckDB statement, whatever the routing (#720, #896).
   (Update on a deleted row returns `ErrNotFound`, pinned live) — with the
   restore timestamp forced past the tombstone's `changed_at` so the revival
   wins LWW. Scoped to text/numeric attributes (e2e_simple shapes).
-- `RunCompaction`/`RunCompactionWith` skip the calling test until V2
-  compaction lands (#890): a cut-over deployment keeps the V1 compactor
-  stopped, and it cannot run against a V2 schema. The manifest-reconcile
-  scenarios skip the same way until V2 garbage collection (#891,
-  `reconcile_v1.go`).
+- `RunCompaction`/`RunCompactionWith` run one V2 compaction pass (#890), wired
+  as the compactor tool wires it. The manifest-reconcile scenarios skip until
+  V2 garbage collection (#891, `reconcile_v1.go`).
 - `Env.RestartPostgres` (#175) restarts the Postgres container in place
   (docker stop/start, data preserved) and rebinds the pool, CDC config,
   DuckDB client, and lazy engine/manager. Restart tests must own a

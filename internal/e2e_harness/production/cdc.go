@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"testing"
 
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 )
 
 // FlushReport captures the observable effects of one CDC flush pass.
@@ -202,24 +202,16 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 	return report, nil
 }
 
-// compactionSkipReason is why every compaction scenario skips: a cut-over
-// deployment keeps the V1 compactor stopped (docs/publication-protocol-v2.md,
-// "Upgrade" step 1), and it cannot run against a V2 schema.
-const compactionSkipReason = "the V1 compactor does no work against a Protocol V2 schema; " +
-	"compaction scenarios run again on V2 compaction (#890)"
-
-// RunCompaction runs one compaction pass of schema. Until V2 compaction lands
-// (#890) it skips the calling test, naming #890.
+// RunCompaction runs one V2 compaction pass of schema (#890).
 func (e *Env) RunCompaction(ctx context.Context, schema SchemaRef) (compaction.CompactionResult, error) {
-	e.T.Helper()
 	return e.RunCompactionWith(ctx, schema, CompactionOverrides{})
 }
 
 // CompactionOverrides customizes a single compaction pass (#188). Zero-value
 // fields fall back to the defaults RunCompaction uses.
 type CompactionOverrides struct {
-	// S3 replaces the cluster client for both manifest I/O and object
-	// copy/delete work (decorate for ETag-conflict scenarios).
+	// S3 replaces the cluster client for every object and manifest read and
+	// write of the pass (decorate to pause or fault it).
 	S3 cdc.S3FullClient
 	// TargetBaseSizeBytes lowers the byte-precise promotion threshold so
 	// KB-scale delta tiers can promote (0: default 256 MB).
@@ -227,43 +219,63 @@ type CompactionOverrides struct {
 	// DirtyRatioPct tunes the rewrite trigger (0: default 5).
 	DirtyRatioPct int
 	// SkipInputChecksumVerify opts the pass out of the #347 pre-merge
-	// verification of rewrite sources, as the compactor tool's
+	// verification of merge sources, as the compactor tool's
 	// --skip-input-checksum-verify flag does.
 	SkipInputChecksumVerify bool
 }
 
-// RunCompactionWith runs one compaction pass with per-run overrides. Until
-// V2 compaction lands (#890) it skips the calling test, naming #890; it must
-// be called on the test's own goroutine.
-func (e *Env) RunCompactionWith(_ context.Context, schema SchemaRef, _ CompactionOverrides) (compaction.CompactionResult, error) {
-	e.T.Helper()
-	e.SkipUntilV2Compaction()
-	return compaction.CompactionResult{}, fmt.Errorf("compaction of schema %d: no V2 compactor is wired (#890)", schema.ID)
-}
-
-// SkipUntilV2Compaction skips the calling test until V2 compaction lands
-// (#890). A test that runs RunCompaction off its own goroutine calls it
-// first, since a skip only stops the goroutine that calls it.
-func (e *Env) SkipUntilV2Compaction() {
-	e.T.Helper()
-	skipUntilV2Compaction(e.T)
-}
-
-// skipUntilV2Compaction skips t until V2 compaction lands (#890). A subtest
-// that compacts calls it with its own t first: the Env's skip stops the
-// Env's test, which a subtest must not do.
-func skipUntilV2Compaction(t testing.TB) {
-	t.Helper()
-	if v1CompactionStopped {
-		t.Skip(compactionSkipReason)
+// RunCompactionWith runs one V2 compaction pass with per-run overrides, wired
+// as the compactor tool wires it: the publication database of the Env's CDC
+// config, the cluster bucket under the Env's data prefix, a DuckDB merge
+// engine on the CDC config's S3 credentials, and every merge source hashed
+// against its listed digest. It is safe to call off the test goroutine.
+func (e *Env) RunCompactionWith(ctx context.Context, schema SchemaRef, ov CompactionOverrides) (compaction.CompactionResult, error) {
+	var s3Client cdc.S3FullClient = e.Cluster.S3
+	if ov.S3 != nil {
+		s3Client = ov.S3
 	}
-}
+	db, err := cdc.OpenPublicationDB(ctx, e.CDC, e.logger)
+	if err != nil {
+		return compaction.CompactionResult{}, fmt.Errorf("compaction of schema %d: %w", schema.ID, err)
+	}
+	defer func() { _ = db.Close() }()
+	s3Key, s3Secret, s3Token := cdc.ResolveStaticS3Credentials(e.CDC)
+	exporter, err := cdc.NewDuckExporter(ctx, e.CDC, s3Key, s3Secret, s3Token, e.logger)
+	if err != nil {
+		return compaction.CompactionResult{}, fmt.Errorf("open merge duckdb: %w", err)
+	}
+	defer func() { _ = exporter.DB.Close() }()
 
-// v1CompactionStopped is true until V2 compaction (#890) replaces the skip
-// with a real pass. It is a variable, not a constant, so that static analysis
-// does not treat every compaction scenario's code after RunCompaction as
-// unreachable while it skips.
-var v1CompactionStopped = true
+	cfg := cdc.CompactionConfig{
+		SchemaID:                schema.ID,
+		TargetBaseSizeBytes:     ov.TargetBaseSizeBytes,
+		DirtyRatioPct:           ov.DirtyRatioPct,
+		SkipInputChecksumVerify: ov.SkipInputChecksumVerify,
+	}
+	store := &manifestv2.S3Store{Client: s3Client, Bucket: e.Cluster.Bucket}
+	writer, err := compaction.NewWriter(compaction.WriterConfig{
+		DB: db, Engine: e.CDC.Engine, EntityMain: e.CDC.EntityMainTable,
+		Layout: manifestv2.Layout{Prefix: e.S3Prefix}, Store: store, Compaction: cfg,
+	})
+	if err != nil {
+		return compaction.CompactionResult{}, err
+	}
+	compactor := &compaction.Compactor{
+		Logger:       e.logger,
+		Config:       cfg,
+		Writer:       writer,
+		Store:        store,
+		Merger:       &compaction.DuckMerger{DB: exporter.DB, Logger: e.logger},
+		Bucket:       e.Cluster.Bucket,
+		ObjectReader: s3Client,
+		Epoch:        e.RegistryEpochs[schema.ID],
+	}
+	result, err := compactor.RunOnce(ctx)
+	if err != nil {
+		return result, fmt.Errorf("compaction run once (schema %d): %w", schema.ID, err)
+	}
+	return result, nil
+}
 
 // recordInits keeps each schema's latest real cdc-init report.
 func (e *Env) recordInits(inits []cdc.SchemaInit) {

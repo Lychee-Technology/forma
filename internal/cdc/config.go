@@ -108,36 +108,28 @@ type CDCConfig struct {
 
 // CompactionConfig controls Base/Delta maintenance.
 type CompactionConfig struct {
-	SchemaID         int16  // optional filter; 0 means all
-	ManifestPath     string // s3 path or fs path to manifest JSON for the schema
-	TargetBaseSizeMB int    // default 256
+	SchemaID         int16 // the schema to compact (required)
+	TargetBaseSizeMB int   // default 256
 	// TargetBaseSizeBytes is the byte-precise promotion threshold. Zero
 	// derives it from TargetBaseSizeMB; the compactor compares delta-tier
 	// bytes against it directly, so sub-MB tiers are not truncated to 0 MB.
 	TargetBaseSizeBytes int64
-	MaxDeltaSizeMB      int           // default 50
-	DirtyRatioPct       int           // default 5 (rewrite when updated rows/base rows > 5%)
-	RunInterval         time.Duration // scheduler interval when used in a loop
-	TempPrefix          string        // temp path prefix for rewrites
-	MaxParallelFiles    int           // optional parallelism for rewrites
+	MaxDeltaSizeMB      int // default 50
+	DirtyRatioPct       int // default 5 (rewrite when updated rows/base rows > 5%)
 
 	// SkipInputChecksumVerify opts out of the pre-merge verification of
-	// rewrite inputs (#347). The zero value verifies: a rewrite folds its
-	// sources into one new base and splices their entries out of the
-	// manifest (the objects themselves are retained for in-flight readers,
-	// #461), so the gate is the last moment silent corruption is both
-	// detectable and attributable to a named, still-listed object, and that
-	// has to hold for deployments that never set this struct field.
-	// Setting it true trades that detection away to save one GET per stamped
-	// source. It waives hashing only: a source outside the compactor's bucket
-	// is still refused (compaction.ErrForeignSource, #417), because that is a
-	// scope check, not a checksum check.
+	// merge sources (#347). The zero value verifies: a merge folds its
+	// sources into one new base and the published generation stops listing
+	// them, so the gate is the last moment silent corruption is both
+	// detectable and attributable to a listed object, and that has to hold
+	// for deployments that never set this struct field. Setting it true
+	// trades that detection away to save one GET per source.
 	SkipInputChecksumVerify bool
 
-	// Backoff parameters for S3/manifest operations
-	MaxRetries  int           // default 5
-	BaseBackoff time.Duration // default 100ms
-	MaxBackoff  time.Duration // default 10s
+	// MaxRetries bounds how often a compaction that lost its compare-and-set
+	// to a rival compaction or cdc-init reads the head and merges again
+	// (default 5). One that lost to flushes rebases without merging again.
+	MaxRetries int
 }
 
 // ManifestConfig describes where manifests are stored and how to resolve parquet paths.
@@ -162,8 +154,6 @@ const (
 	DefaultMaxDeltaSizeMB          = 50
 	DefaultDirtyRatioPct           = 5
 	DefaultMaxRetries              = 5
-	DefaultBaseBackoffMs           = 100
-	DefaultMaxBackoffMs            = 10000
 	DefaultPGSSLMode               = "require"
 )
 
@@ -233,12 +223,6 @@ func (c CompactionConfig) WithDefaults() CompactionConfig {
 	}
 	if c.MaxRetries <= 0 {
 		c.MaxRetries = DefaultMaxRetries
-	}
-	if c.BaseBackoff <= 0 {
-		c.BaseBackoff = time.Duration(DefaultBaseBackoffMs) * time.Millisecond
-	}
-	if c.MaxBackoff <= 0 {
-		c.MaxBackoff = time.Duration(DefaultMaxBackoffMs) * time.Millisecond
 	}
 	return c
 }

@@ -2,498 +2,138 @@ package compaction
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"io/fs"
+	"os"
 	"testing"
-	"testing/fstest"
-	"time"
 
-	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/cdc"
-	"github.com/lychee-technology/forma/internal/manifest"
-	"github.com/lychee-technology/forma/internal/telemetry"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
+
+	"github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/publication"
 )
 
-// metricRecorder is the per-test forma.MetricEmitter: it keeps every metric
-// the compactor under test emits through its Metrics sink (#423).
-type metricRecorder struct{ events []forma.Metric }
+// TestCompactorPromotesTheDeltaTierIntoOneBaseObject: a delta tier at the
+// target size is merged into one new base object, written once under a
+// fresh key, and published as one compact generation from the generation
+// the pass read. The merge keeps each row's newest version, tombstones
+// included, and the replaced generation and every object it listed stay
+// readable.
+func TestCompactorPromotesTheDeltaTierIntoOneBaseObject(t *testing.T) {
+	f := newV2Fixture(t)
+	f.publish(t, publication.KindFlush, f.object(t, manifestv2.TierDelta, []mergeFixtureRow{{rowA, 100, "0", "a-v1"}, {rowB, 100, "0", "b-v1"}}))
+	input := f.publish(t, publication.KindFlush, f.object(t, manifestv2.TierDelta, []mergeFixtureRow{{rowA, 200, "0", "a-v2"}, {rowB, 300, "300", "NULL"}}))
+	replaced := f.manifest(t, input)
 
-func (r *metricRecorder) EmitMetric(_ context.Context, m forma.Metric) {
-	r.events = append(r.events, m)
+	sink, rec := recordingSink()
+	result, err := f.compactor(t, cdc.CompactionConfig{TargetBaseSizeBytes: 1}, func(c *Compactor) { c.Metrics = sink }).RunOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, PromotionApplied, result.Outcome)
+	require.Equal(t, input.Generation, result.InputGeneration)
+	require.Equal(t, input.Generation+1, result.Generation)
+	require.Equal(t, 2, result.FilesMerged)
+	require.Equal(t, int64(4), result.RowsIn)
+	require.Equal(t, int64(2), result.RowsOut)
+
+	head := f.record(t)
+	require.Equal(t, input.Generation, head.ParentGeneration)
+	require.Equal(t, input.Lineage, head.Lineage)
+	m := f.manifest(t, head)
+	require.Equal(t, publication.KindCompact, m.Kind)
+	require.Equal(t, input.Generation, m.InputGeneration)
+	require.Equal(t, []string{result.NewBaseKey}, m.Keys())
+	require.Equal(t, manifestv2.TierBase, m.Files[0].Tier)
+	require.Equal(t, map[string][2]int64{rowA: {200, 0}, rowB: {300, 300}}, f.rowsOf(t, result.NewBaseKey),
+		"row A's newest version and row B's tombstone")
+	require.Equal(t, "flush,flush,compact", f.kinds(t))
+
+	again := f.manifest(t, input)
+	require.Equal(t, replaced, again, "the replaced generation's manifest is unchanged")
+	for _, file := range again.Files {
+		_, err := os.Stat(f.path(file.Key))
+		require.NoError(t, err, "the replaced generation's %s is still there", file.Key)
+	}
+	names := map[string]int{}
+	for _, e := range rec.events {
+		names[e.Name]++
+	}
+	require.Equal(t, 1, names["compaction_dirty_ratio"])
+	require.Equal(t, 1, names["compaction_rewrite_applied_total"])
 }
 
-// recordingSink returns a sink for a Compactor literal and the recorder
-// behind it.
-func recordingSink() (*telemetry.Sink, *metricRecorder) {
-	rec := &metricRecorder{}
-	return telemetry.NewSink(rec), rec
+// TestCompactorRewritesADirtyBaseWithItsDeltas: past the dirty ratio, every
+// base and delta file is merged into one base object.
+func TestCompactorRewritesADirtyBaseWithItsDeltas(t *testing.T) {
+	f := newV2Fixture(t)
+	f.publish(t, publication.KindInit, f.object(t, manifestv2.TierBase, []mergeFixtureRow{{rowA, 100, "0", "a-v1"}, {rowC, 100, "0", "c-v1"}}))
+	f.publish(t, publication.KindFlush, f.object(t, manifestv2.TierDelta, []mergeFixtureRow{{rowC, 200, "200", "NULL"}}))
+
+	result, err := f.compactor(t, cdc.CompactionConfig{}).RunOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, RewriteApplied, result.Outcome)
+	require.Equal(t, 2, result.FilesMerged)
+	require.InDelta(t, 0.5, result.DirtyRatio, 1e-9)
+	m := f.manifest(t, f.record(t))
+	require.Equal(t, []string{result.NewBaseKey}, m.Keys())
+	require.Equal(t, map[string][2]int64{rowA: {100, 0}, rowC: {200, 200}}, f.rowsOf(t, result.NewBaseKey))
+	require.Equal(t, "init,flush,compact", f.kinds(t))
 }
 
-// mockProvider implements FileProvider for testing
-type mockProvider struct {
-	manifest             *manifest.Manifest
-	etag                 string
-	loadErr              error
-	saveErr              error
-	savedEtag            string
-	skipVersionAdvance   bool
-	skipUpdatedAtAdvance bool
-}
+// TestCompactorPublishesNothingItHasNoReasonOrMeansToMerge: an unpublished
+// schema, a generation below both thresholds, and a merge called for with
+// no merger leave the record as it was.
+func TestCompactorPublishesNothingItHasNoReasonOrMeansToMerge(t *testing.T) {
+	f := newV2Fixture(t)
+	result, err := f.compactor(t, cdc.CompactionConfig{}).RunOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, Noop, result.Outcome, "an unpublished schema has nothing to compact")
 
-func (m *mockProvider) LoadManifest(ctx context.Context, schemaID int16) (*manifest.Manifest, string, error) {
-	if m.loadErr != nil {
-		return nil, "", m.loadErr
-	}
-	if m.manifest == nil {
-		// Mirror the real stores: a missing manifest is a wrapped
-		// manifest.ErrObjectNotFound, never a nil manifest with a nil error.
-		return nil, "", fmt.Errorf("mock manifest for schema %d: %w", schemaID, manifest.ErrObjectNotFound)
-	}
-	return m.manifest, m.etag, nil
-}
-
-func (m *mockProvider) SaveManifest(ctx context.Context, schemaID int16, mani *manifest.Manifest, etag string) (string, error) {
-	if m.saveErr != nil {
-		return "", m.saveErr
-	}
-	if mani != nil {
-		if !m.skipUpdatedAtAdvance {
-			nextUpdatedAtMs := time.Now().UnixMilli()
-			if nextUpdatedAtMs <= mani.UpdatedAtMs {
-				nextUpdatedAtMs = mani.UpdatedAtMs + 1
-			}
-			mani.UpdatedAtMs = nextUpdatedAtMs
-		}
-		if !m.skipVersionAdvance {
-			if mani.Version == 0 {
-				mani.Version = 1
-			} else {
-				mani.Version++
-			}
-		}
-	}
-	m.manifest = mani
-	m.savedEtag = "new-etag"
-	return m.savedEtag, nil
-}
-
-func TestCompactor_RunOnce_RequiresSchemaID(t *testing.T) {
-	logger := zap.NewNop()
-	c := &Compactor{
-		Logger:   logger,
-		Config:   cdc.CompactionConfig{SchemaID: 0},
-		Provider: &mockProvider{},
-	}
-
-	result, err := c.RunOnce(context.Background())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "schema_id required")
-	require.Empty(t, result.Outcome)
-}
-
-func TestCompactor_RunOnce_RequiresProvider(t *testing.T) {
-	logger := zap.NewNop()
-	c := &Compactor{
-		Logger: logger,
-		Config: cdc.CompactionConfig{SchemaID: 1},
-	}
-
-	result, err := c.RunOnce(context.Background())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "file provider is nil")
-	require.Empty(t, result.Outcome)
-}
-
-// A schema that has never been flushed has no manifest object. Driving the
-// real FSStore (not the mock) proves the compactor classifies the store's
-// wrapped manifest.ErrObjectNotFound as "nothing to compact" (#524).
-func TestCompactor_RunOnce_MissingManifestIsNoop(t *testing.T) {
-	provider := NewFSManifestProvider(cdc.ManifestConfig{PathTemplate: "manifest/{{.SchemaID}}.json"}, fstest.MapFS{})
-	c := &Compactor{
-		Logger:   zap.NewNop(),
-		Config:   cdc.CompactionConfig{SchemaID: 1},
-		Provider: provider,
-	}
-
-	result, err := c.RunOnce(context.Background())
+	f.publish(t, publication.KindFlush, f.object(t, manifestv2.TierDelta, []mergeFixtureRow{{rowA, 100, "0", "a-v1"}}))
+	head := f.record(t)
+	result, err = f.compactor(t, cdc.CompactionConfig{}).RunOnce(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, Noop, result.Outcome)
-	require.Equal(t, int16(1), result.SchemaID)
-}
+	require.Equal(t, head.Generation, result.InputGeneration)
+	require.Zero(t, result.Generation)
+	require.Equal(t, head, f.record(t))
 
-// permissionDeniedFS is an fs.FS whose every Open fails with fs.ErrPermission:
-// a load failure the store cannot classify as "confirmed absent".
-type permissionDeniedFS struct{}
-
-func (permissionDeniedFS) Open(name string) (fs.File, error) {
-	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
-}
-
-// Only a CONFIRMED absence is a Noop. Any other load failure over the real
-// store must still fail the run, so an outage never masquerades as "nothing
-// to compact".
-func TestCompactor_RunOnce_UnclassifiedLoadErrorFails(t *testing.T) {
-	provider := NewFSManifestProvider(cdc.ManifestConfig{PathTemplate: "manifest/{{.SchemaID}}.json"}, permissionDeniedFS{})
-	c := &Compactor{
-		Logger:   zap.NewNop(),
-		Config:   cdc.CompactionConfig{SchemaID: 1},
-		Provider: provider,
-	}
-
-	result, err := c.RunOnce(context.Background())
-	require.Error(t, err)
-	require.ErrorIs(t, err, fs.ErrPermission)
-	require.False(t, manifest.IsNotFound(err))
-	require.Contains(t, err.Error(), "load manifest")
-	require.Empty(t, result.Outcome)
-}
-
-func TestCompactor_RunOnce_NoFilesToCompact(t *testing.T) {
-	logger := zap.NewNop()
-	m := &manifest.Manifest{
-		SchemaID:    1,
-		Version:     1,
-		UpdatedAtMs: time.Now().UnixMilli(),
-		Files:       []manifest.FileEntry{},
-	}
-	provider := &mockProvider{manifest: m, etag: "etag-1"}
-
-	c := &Compactor{
-		Logger:   logger,
-		Config:   cdc.CompactionConfig{SchemaID: 1},
-		Provider: provider,
-	}
-
-	result, err := c.RunOnce(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, Noop, result.Outcome)
-}
-
-func TestCompactor_RunOnce_PromotsDeltas(t *testing.T) {
-	logger := zap.NewNop()
-	// Create manifest with enough delta files to trigger promotion
-	// (totalDeltaMB >= targetBaseSizeMB)
-	m := &manifest.Manifest{
-		SchemaID:    1,
-		Version:     1,
-		UpdatedAtMs: time.Now().UnixMilli(),
-		Files: []manifest.FileEntry{
-			{Tier: "delta", Path: "delta1.parquet", SizeBytes: 128 * 1024 * 1024, RowCount: 1000},
-			{Tier: "delta", Path: "delta2.parquet", SizeBytes: 128 * 1024 * 1024, RowCount: 1000},
-		},
-	}
-	provider := &mockProvider{manifest: m, etag: "etag-1"}
-
-	c := &Compactor{
-		Logger: logger,
-		Config: cdc.CompactionConfig{
-			SchemaID:         1,
-			TargetBaseSizeMB: 256, // 256 MB, and we have 256 MB total delta
-		},
-		Provider: provider,
-	}
-
-	result, err := c.RunOnce(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, PromotionApplied, result.Outcome)
-
-	for _, f := range provider.manifest.Files {
-		require.Equal(t, "base", f.Tier)
-	}
-	require.Equal(t, "new-etag", provider.savedEtag)
-	require.Equal(t, int64(2), provider.manifest.Version)
-}
-
-func TestCompactor_RunOnce_PromotesDeltasCaseInsensitiveTier(t *testing.T) {
-	logger := zap.NewNop()
-	// FilterByTier is case-insensitive, so compactor must also promote DELTA entries.
-	m := &manifest.Manifest{
-		SchemaID:    1,
-		Version:     1,
-		UpdatedAtMs: time.Now().UnixMilli(),
-		Files: []manifest.FileEntry{
-			{Tier: "DELTA", Path: "delta_upper.parquet", SizeBytes: 256 * 1024 * 1024, RowCount: 1000},
-		},
-	}
-	provider := &mockProvider{manifest: m, etag: "etag-1"}
-
-	c := &Compactor{
-		Logger: logger,
-		Config: cdc.CompactionConfig{
-			SchemaID:         1,
-			TargetBaseSizeMB: 256,
-		},
-		Provider: provider,
-	}
-
-	result, err := c.RunOnce(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, PromotionApplied, result.Outcome)
-	require.Equal(t, "new-etag", provider.savedEtag)
-	require.Equal(t, int64(2), provider.manifest.Version)
-}
-
-func TestCompactor_RunOnce_PromotesSubMBDeltasWithByteThreshold(t *testing.T) {
-	logger := zap.NewNop()
-	// A KB-scale delta tier truncates to 0 MB, so the MB threshold can never
-	// fire on it; the byte-precise TargetBaseSizeBytes must (#188).
-	m := &manifest.Manifest{
-		SchemaID:    1,
-		Version:     1,
-		UpdatedAtMs: time.Now().UnixMilli(),
-		Files: []manifest.FileEntry{
-			{Tier: "delta", Path: "delta1.parquet", SizeBytes: 4 * 1024, RowCount: 10},
-		},
-	}
-	provider := &mockProvider{manifest: m, etag: "etag-1"}
-
-	c := &Compactor{
-		Logger: logger,
-		Config: cdc.CompactionConfig{
-			SchemaID:            1,
-			TargetBaseSizeBytes: 1024,
-		},
-		Provider: provider,
-	}
-
-	result, err := c.RunOnce(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, PromotionApplied, result.Outcome)
-	require.Equal(t, "base", provider.manifest.Files[0].Tier)
-	require.Equal(t, int64(2), provider.manifest.Version)
-}
-
-func TestCompactionConfig_WithDefaults_DerivesTargetBaseSizeBytes(t *testing.T) {
-	derived := cdc.CompactionConfig{TargetBaseSizeMB: 2}.WithDefaults()
-	require.Equal(t, int64(2)<<20, derived.TargetBaseSizeBytes)
-
-	explicit := cdc.CompactionConfig{TargetBaseSizeBytes: 512}.WithDefaults()
-	require.Equal(t, int64(512), explicit.TargetBaseSizeBytes)
-	require.Equal(t, cdc.DefaultTargetBaseSizeMB, explicit.TargetBaseSizeMB)
-}
-
-func TestCompactor_RunOnce_SaveManifestMissingVersionAdvance(t *testing.T) {
-	logger := zap.NewNop()
-	m := &manifest.Manifest{
-		SchemaID:    1,
-		Version:     1,
-		UpdatedAtMs: time.Now().Add(-time.Minute).UnixMilli(),
-		Files: []manifest.FileEntry{
-			{Tier: "delta", Path: "delta.parquet", SizeBytes: 256 * 1024 * 1024, RowCount: 1000},
-		},
-	}
-	provider := &mockProvider{
-		manifest:           m,
-		etag:               "etag-1",
-		skipVersionAdvance: true,
-	}
-
-	c := &Compactor{
-		Logger: logger,
-		Config: cdc.CompactionConfig{
-			SchemaID:         1,
-			TargetBaseSizeMB: 256,
-		},
-		Provider: provider,
-	}
-
-	result, err := c.RunOnce(context.Background())
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrManifestMetadataContractViolation)
-	require.Contains(t, err.Error(), "version")
-	require.Empty(t, result.Outcome)
-}
-
-func TestCompactor_RunOnce_SaveManifestMissingUpdatedAtAdvance(t *testing.T) {
-	logger := zap.NewNop()
-	m := &manifest.Manifest{
-		SchemaID:    1,
-		Version:     1,
-		UpdatedAtMs: time.Now().Add(-time.Minute).UnixMilli(),
-		Files: []manifest.FileEntry{
-			{Tier: "delta", Path: "delta.parquet", SizeBytes: 256 * 1024 * 1024, RowCount: 1000},
-		},
-	}
-	provider := &mockProvider{
-		manifest:             m,
-		etag:                 "etag-1",
-		skipUpdatedAtAdvance: true,
-	}
-
-	c := &Compactor{
-		Logger: logger,
-		Config: cdc.CompactionConfig{
-			SchemaID:         1,
-			TargetBaseSizeMB: 256,
-		},
-		Provider: provider,
-	}
-
-	result, err := c.RunOnce(context.Background())
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrManifestMetadataContractViolation)
-	require.Contains(t, err.Error(), "updated_at_ms")
-	require.Empty(t, result.Outcome)
-}
-
-func TestCompactor_RunOnce_SaveManifestContractViolationEmitsTelemetry(t *testing.T) {
-	sink, rec := recordingSink()
-
-	logger := zap.NewNop()
-	m := &manifest.Manifest{
-		SchemaID:    1,
-		Version:     1,
-		UpdatedAtMs: time.Now().Add(-time.Minute).UnixMilli(),
-		Files: []manifest.FileEntry{
-			{Tier: "delta", Path: "delta.parquet", SizeBytes: 256 * 1024 * 1024, RowCount: 1000},
-		},
-	}
-	provider := &mockProvider{
-		manifest:           m,
-		etag:               "etag-1",
-		skipVersionAdvance: true,
-	}
-	c := &Compactor{
-		Logger: logger,
-		Config: cdc.CompactionConfig{
-			SchemaID:         1,
-			TargetBaseSizeMB: 256,
-		},
-		Provider: provider,
-		Metrics:  sink,
-	}
-
-	_, err := c.RunOnce(context.Background())
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrManifestMetadataContractViolation)
-	// The pass emits its dirty ratio first; the violation counter is the last
-	// emission before the error returns.
-	require.NotEmpty(t, rec.events)
-	last := rec.events[len(rec.events)-1]
-	require.Equal(t, "compaction_manifest_contract_violation_total", last.Name)
-	require.Equal(t, "1", last.Labels["schema_id"])
-	require.Equal(t, float64(1), last.Value)
-}
-
-// A rewrite-eligible pass on a compactor WITHOUT merge wiring (nil Merger —
-// e.g. a manifest-only invocation) must keep the pre-#188 stub contract:
-// RewritePending, manifest untouched, pending telemetry.
-func TestCompactor_RunOnce_RewriteWithoutMergeWiring_ReportsPending(t *testing.T) {
-	sink, rec := recordingSink()
-
-	logger := zap.NewNop()
-	// Force needsRewrite=true (delta/base rows = 100/1000 = 10% > 5%)
-	// while keeping needsPromotion=false (10MB < 256MB).
-	m := &manifest.Manifest{
-		SchemaID:    1,
-		Version:     1,
-		UpdatedAtMs: time.Now().UnixMilli(),
-		Files: []manifest.FileEntry{
-			{Tier: "base", Path: "base.parquet", SizeBytes: 300 * 1024 * 1024, RowCount: 1000},
-			{Tier: "delta", Path: "delta.parquet", SizeBytes: 10 * 1024 * 1024, RowCount: 100},
-		},
-	}
-	provider := &mockProvider{manifest: m, etag: "etag-1"}
-
-	c := &Compactor{
-		Logger: logger,
-		Config: cdc.CompactionConfig{
-			SchemaID:         1,
-			TargetBaseSizeMB: 256,
-			DirtyRatioPct:    5,
-		},
-		Provider: provider,
-		Metrics:  sink,
-	}
-
-	result, err := c.RunOnce(context.Background())
+	result, err = f.compactor(t, cdc.CompactionConfig{TargetBaseSizeBytes: 1}, func(c *Compactor) { c.Merger = nil }).RunOnce(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, RewritePending, result.Outcome)
-
-	require.Equal(t, "", provider.savedEtag)
-	require.Equal(t, int64(1), provider.manifest.Version)
-
-	require.Equal(t, "base", provider.manifest.Files[0].Tier)
-	require.Equal(t, "delta", provider.manifest.Files[1].Tier)
-
-	require.Len(t, rec.events, 2)
-	require.Equal(t, "compaction_dirty_ratio", rec.events[0].Name)
-	require.Equal(t, forma.MetricKindGauge, rec.events[0].Kind)
-	require.Equal(t, "1", rec.events[0].Labels["schema_id"])
-	require.Equal(t, 0.1, rec.events[0].Value)
-	require.Equal(t, "compaction_rewrite_pending_total", rec.events[1].Name)
-	require.Equal(t, forma.MetricKindCounter, rec.events[1].Kind)
-	require.Equal(t, "1", rec.events[1].Labels["schema_id"])
-	require.Equal(t, float64(1), rec.events[1].Value)
+	require.Equal(t, head, f.record(t))
 }
 
-func TestCompactor_RunOnce_LoadManifestError(t *testing.T) {
-	logger := zap.NewNop()
-	provider := &mockProvider{loadErr: errors.New("load failed")}
+// TestCompactorRefusesASourceWhoseBytesChanged: the #347 gate runs before
+// the merge, so a corrupt source publishes nothing; the opt-out merges it.
+func TestCompactorRefusesASourceWhoseBytesChanged(t *testing.T) {
+	f := newV2Fixture(t)
+	good := f.object(t, manifestv2.TierDelta, []mergeFixtureRow{{rowA, 100, "0", "a-v1"}})
+	f.publish(t, publication.KindFlush, good)
+	other := f.object(t, manifestv2.TierDelta, []mergeFixtureRow{{rowA, 200, "0", "a-v2"}})
+	raw, err := os.ReadFile(f.path(other.Key))
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(f.path(good.Key), 0o644))
+	require.NoError(t, os.WriteFile(f.path(good.Key), raw, 0o644))
+	head := f.record(t)
 
-	c := &Compactor{
-		Logger:   logger,
-		Config:   cdc.CompactionConfig{SchemaID: 1},
-		Provider: provider,
-	}
+	_, err = f.compactor(t, cdc.CompactionConfig{TargetBaseSizeBytes: 1}).RunOnce(context.Background())
+	require.ErrorIs(t, err, ErrSourceChecksumMismatch)
+	require.Equal(t, head, f.record(t))
 
-	_, err := c.RunOnce(context.Background())
+	result, err := f.compactor(t, cdc.CompactionConfig{TargetBaseSizeBytes: 1, SkipInputChecksumVerify: true}).RunOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, PromotionApplied, result.Outcome)
+}
+
+// TestCompactorRefusesWhatTheProtocolForbids: a pass of an AWAITING_INIT
+// schema or of a schema at another epoch than it pinned publishes nothing.
+func TestCompactorRefusesWhatTheProtocolForbids(t *testing.T) {
+	f := newV2Fixture(t)
+	f.publish(t, publication.KindFlush, f.object(t, manifestv2.TierDelta, []mergeFixtureRow{{rowA, 100, "0", "a-v1"}}))
+	head := f.record(t)
+	_, err := f.compactor(t, cdc.CompactionConfig{TargetBaseSizeBytes: 1}, func(c *Compactor) { c.Epoch = head.Epoch + 1 }).RunOnce(context.Background())
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "load manifest")
-}
+	require.Equal(t, head, f.record(t))
 
-func TestCompactor_ComputeDirtyRatio(t *testing.T) {
-	logger := zap.NewNop()
-	c := &Compactor{Logger: logger}
-
-	baseFiles := []manifest.FileEntry{
-		{Tier: "base", RowCount: 1000},
-	}
-	deltaFiles := []manifest.FileEntry{
-		{Tier: "delta", RowCount: 100},
-	}
-
-	ratio := c.computeDirtyRatio(baseFiles, deltaFiles)
-	require.InDelta(t, 0.1, ratio, 0.001) // 100/1000 = 0.1
-}
-
-func TestCompactor_ComputeDirtyRatio_NoBase(t *testing.T) {
-	logger := zap.NewNop()
-	c := &Compactor{Logger: logger}
-
-	baseFiles := []manifest.FileEntry{}
-	deltaFiles := []manifest.FileEntry{
-		{Tier: "delta", RowCount: 100},
-	}
-
-	ratio := c.computeDirtyRatio(baseFiles, deltaFiles)
-	require.Equal(t, 0.0, ratio) // no base = ratio 0
-}
-
-func TestComputeBackoff(t *testing.T) {
-	base := 100 * time.Millisecond
-	max := 10 * time.Second
-
-	// First attempt: ~100ms
-	b0 := computeBackoff(0, base, max)
-	require.GreaterOrEqual(t, b0, 50*time.Millisecond)
-	require.LessOrEqual(t, b0, 150*time.Millisecond)
-
-	// Third attempt: ~400ms
-	b2 := computeBackoff(2, base, max)
-	require.GreaterOrEqual(t, b2, 200*time.Millisecond)
-	require.LessOrEqual(t, b2, 600*time.Millisecond)
-
-	// 10th attempt should be capped at max
-	b10 := computeBackoff(10, base, max)
-	require.LessOrEqual(t, b10, 15*time.Second) // max + jitter
-}
-
-func TestIsRetryable(t *testing.T) {
-	require.True(t, isRetryable(ErrConcurrentModification))
-	require.True(t, isRetryable(errors.Join(ErrConcurrentModification, errors.New("other"))))
-	require.False(t, isRetryable(errors.New("some other error")))
+	_, err = (&Compactor{Config: cdc.CompactionConfig{SchemaID: fixtureSchema}}).RunOnce(context.Background())
+	require.ErrorContains(t, err, "writer")
 }

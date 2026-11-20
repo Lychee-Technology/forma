@@ -139,21 +139,33 @@ func TestOpenMergeEngine_EnvCredentialsReachEngineValidation(t *testing.T) {
 	}
 }
 
-// The compactor rewrites a schema's base from its manifest; a collapsed
-// --manifest-template would rewrite schema B's base from schema A's delta.
-// Refuse it at flag parsing, before any connection (#520).
-func TestParseCompactorFlags_RejectsCollapsedManifestTemplate(t *testing.T) {
-	base := []string{"--schema-id", "7", "--s3-bucket", "bkt"}
-	for _, tmpl := range []string{"manifest/all.json", "manifest/{{.SchemaId}}.json"} {
-		_, err := parseCompactorFlags(append(append([]string{}, base...), "--manifest-template", tmpl))
-		if err == nil {
-			t.Fatalf("template %q must be rejected", tmpl)
-		}
-		if !strings.Contains(err.Error(), "manifest-template") {
-			t.Errorf("template %q: error %q must name the flag", tmpl, err.Error())
+// The V1 compactor's manifest and backoff flags are gone with no
+// compatibility path (#890): the compactor reads the schema's publication
+// record and publishes an immutable manifest under the -data-prefix layout,
+// and a lost compare-and-set rebases or restarts from the head rather than
+// backing off. The parser refuses each by name, so none is silently ignored.
+func TestParseCompactorFlagsRefusesTheRemovedV1Flags(t *testing.T) {
+	for _, arg := range []string{"-manifest-template=manifest/{{.SchemaID}}.json", "-manifest-prefix=m", "-base-backoff-ms=1", "-max-backoff-ms=1"} {
+		_, err := parseCompactorFlags([]string{"--schema-id", "7", "--s3-bucket", "bkt", arg})
+		if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
+			t.Errorf("compactor %s: err = %v, want the parser's refusal of an undefined flag", arg, err)
 		}
 	}
-	if _, err := parseCompactorFlags(append(append([]string{}, base...), "--manifest-template", "")); err != nil {
-		t.Fatalf("empty template falls back to the resolver default and must parse: %v", err)
+}
+
+// The compactor publishes through the schema's record, so it takes the
+// database flags cdc-flush takes, and its engine rule.
+func TestParseCompactorFlagsMapsThePublicationDatabase(t *testing.T) {
+	opts, err := parseCompactorFlags([]string{"--schema-id", "7", "--s3-bucket", "bkt", "--pg-host", "db", "--pg-port", "6543",
+		"--pg-user", "u", "--pg-db", "d", "--pg-ssl-mode", "disable", "--pg-engine", "aurora-dsql", "--entity-main-table", "em", "--data-prefix", "lake"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if opts.db.PGHost != "db" || opts.db.PGPort != 6543 || opts.db.PGUser != "u" || opts.db.PGDB != "d" || opts.db.PGSSLMode != "disable" ||
+		opts.db.Engine != "aurora-dsql" || opts.entityMain != "em" || opts.dataPrefix != "lake" {
+		t.Fatalf("parsed %+v, entity main %q, data prefix %q", opts.db, opts.entityMain, opts.dataPrefix)
+	}
+	if _, err := parseCompactorFlags([]string{"--schema-id", "7", "--s3-bucket", "bkt", "--pg-engine", "oracle"}); err == nil {
+		t.Fatal("an unknown --pg-engine must be refused")
 	}
 }

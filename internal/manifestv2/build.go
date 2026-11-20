@@ -1,6 +1,7 @@
 package manifestv2
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 
@@ -113,6 +114,77 @@ func NewFlush(parent *Manifest, h Header, deltas []File) (Manifest, error) {
 	}
 	return finish(h.manifest(files))
 }
+
+// NewCompact builds a compact generation: its parent's files, less the
+// sources the compaction merged, plus the merge outputs
+// (docs/publication-protocol-v2.md, "What a generation replaces"). parent is
+// the manifest of h's parent generation: the input generation the
+// compaction merged from (h.InputGeneration), or the head it rebased onto
+// over flushes only, which appended files and removed none. So every merged
+// key must still be listed in parent; one that is not was removed or
+// replaced by a writer the compaction may not rebase over, and the build is
+// refused (ErrMergedSourceGone). Outputs are base files under fresh keys. A
+// merge of nothing but rows it folded away leaves no output, and the
+// generation may then be empty. The manifest answered owns its files, as
+// NewFlush's does.
+func NewCompact(parent *Manifest, h Header, merged []string, outputs []File) (Manifest, error) {
+	fail := func(format string, args ...any) (Manifest, error) {
+		return Manifest{}, fmt.Errorf("build compact generation %d of schema %d: %s", h.Generation, h.SchemaID, fmt.Sprintf(format, args...))
+	}
+	switch {
+	case h.Kind != publication.KindCompact:
+		return fail("header is a %s", h.Kind)
+	case parent == nil:
+		return fail("a compaction replaces files of its parent generation %d, whose manifest is not given", h.ParentGeneration)
+	case parent.SchemaID != h.SchemaID || parent.Epoch != h.Epoch || parent.Generation != h.ParentGeneration:
+		return fail("parent manifest is schema %d epoch %d generation %d, the header names schema %d epoch %d generation %d",
+			parent.SchemaID, parent.Epoch, parent.Generation, h.SchemaID, h.Epoch, h.ParentGeneration)
+	case parent.Lineage != h.Lineage:
+		return fail("a compaction keeps its parent's lineage %s, not %s", parent.Lineage, h.Lineage)
+	case h.InputGeneration <= 0 || h.InputGeneration > parent.Generation:
+		return fail("input generation %d is not the parent %d or an earlier generation", h.InputGeneration, parent.Generation)
+	case len(merged) == 0:
+		return fail("a compaction merges at least one source file")
+	}
+	gone := make(map[string]bool, len(merged))
+	for _, key := range merged {
+		if gone[key] {
+			return fail("source %s is named twice", key)
+		}
+		gone[key] = true
+	}
+	files := make([]File, 0, len(parent.Files)-len(merged)+len(outputs))
+	listed := make(map[string]bool, len(parent.Files)+len(outputs))
+	for _, f := range parent.Files {
+		listed[f.Key] = true
+		if !gone[f.Key] {
+			files = append(files, f)
+		}
+	}
+	for key := range gone {
+		if !listed[key] {
+			return Manifest{}, fmt.Errorf("build compact generation %d of schema %d: source %s is not listed by parent generation %d: %w",
+				h.Generation, h.SchemaID, key, parent.Generation, ErrMergedSourceGone)
+		}
+	}
+	for _, o := range outputs {
+		if o.Tier != TierBase {
+			return fail("output %s is %s; a compaction writes %s files only", o.Key, o.Tier, TierBase)
+		}
+		if listed[o.Key] {
+			return fail("output %s is already listed", o.Key)
+		}
+		listed[o.Key] = true
+		files = append(files, o)
+	}
+	return finish(h.manifest(files))
+}
+
+// ErrMergedSourceGone reports a compaction whose parent no longer lists a
+// file it merged. Only a compaction or a cdc-init removes a file, and a
+// compaction never rebases over either (publication.Rebase), so its staging
+// is abandoned.
+var ErrMergedSourceGone = errors.New("a merged source is no longer listed")
 
 // NewInit builds an init generation: the export's base files only. Every
 // delta and earlier base file leaves the inventory. An export of no rows is

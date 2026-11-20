@@ -9,54 +9,41 @@ import (
 	"go.uber.org/zap"
 )
 
-// MergeStats carries what the rewrite orchestration needs to build the new
-// base FileEntry and the CompactionResult counters.
+// MergeStats carries what the compaction needs to describe the merged
+// object in its manifest entry and its result.
 type MergeStats struct {
 	RowsIn     int64  // version rows read across all source files
-	RowsOut    int64  // surviving LWW winners written to the merged file
+	RowsOut    int64  // each row's newest version, tombstones included, written to the merged file
 	RowIDMin   string // "" when the merge produced zero rows
 	RowIDMax   string
 	CreatedMin int64
 	CreatedMax int64
-	// Columns is the merged file's footer schema (name → DuckDB type),
-	// stamped into the manifest entry (#256). Nil when the self-describe
-	// failed; the entry then stays unstamped and reads fall back to probing.
+	// Columns is the merged file's footer schema (name to DuckDB type),
+	// which its manifest entry lists. A V2 entry always lists them.
 	Columns map[string]string
 }
 
-// Merger folds a schema's complete base+delta parquet set into one merged
-// base file at tmpURI. Implementations only stage the tmp object; the
-// compactor owns promotion to the final key, the manifest swap, and source
-// cleanup.
+// Merger folds parquet sources into one merged file at tmpURI, keeping
+// each row's newest version, tombstones included. Implementations only write
+// that file; the compactor stages it under a fresh write-once key and
+// publishes the generation.
 type Merger interface {
 	MergeToTmp(ctx context.Context, sourceURIs []string, tmpURI string) (MergeStats, error)
 }
 
 // DuckMerger implements Merger over a DuckDB connection that already has
-// httpfs and S3 credentials configured — cdc.NewDuckExporter's DB is the
+// httpfs and S3 credentials configured; cdc.NewDuckExporter's DB is the
 // production source of exactly that.
 type DuckMerger struct {
 	DB *sql.DB
 	// CopyOptions overrides the parquet COPY options (defaults to the CDC
 	// exporters' FORMAT PARQUET, V2, ZSTD level 3).
 	CopyOptions string
-	// Logger reports the best-effort manifest stamp probe (#256). Optional —
-	// nil is safe and silences it.
+	// Logger is optional; nil is safe.
 	Logger *zap.Logger
-	// describeColumns is a test seam for the post-merge footer probe that
-	// stamps the manifest entry (#256), mirroring cdc's flush-side seam; nil
-	// uses parquetcheck over this merger's own connection. The probe is the
-	// one step whose failure must be observable without being reproducible
-	// through the connection that just succeeded at everything before it.
+	// describeColumns is a test seam for the post-merge footer read; nil
+	// uses parquetcheck over this merger's own connection.
 	describeColumns func(ctx context.Context, uri string) (map[string]string, error)
-}
-
-// log is the nil-safe accessor for the optional logger.
-func (d *DuckMerger) log() *zap.Logger {
-	if d == nil || d.Logger == nil {
-		return zap.NewNop()
-	}
-	return d.Logger
 }
 
 func (d *DuckMerger) MergeToTmp(ctx context.Context, sourceURIs []string, tmpURI string) (MergeStats, error) {
@@ -67,10 +54,9 @@ func (d *DuckMerger) MergeToTmp(ctx context.Context, sourceURIs []string, tmpURI
 	// The merge runs union_by_name (#189), which would NULL-pad the system
 	// columns of a malformed source: every such row then folds into the
 	// single NULL row_id partition and all but one are silently discarded. If
-	// published, that lossy output would splice the source entries out of the
-	// manifest; although the source bytes remain as unlisted GC candidates,
-	// the manifest read path would no longer consult them. Enforce the export
-	// invariant per source BEFORE any write. An unreadable footer is
+	// published, that lossy output would replace the sources in the next
+	// generation, and readers of it would no longer consult them. Enforce the
+	// export invariant per source BEFORE any write. An unreadable footer is
 	// inconclusive and passes through: the merge itself must read every file
 	// and will fail loudly on it.
 	if err := validateMergeSourceSchemas(ctx, d.DB, sourceURIs); err != nil {
@@ -112,18 +98,15 @@ func (d *DuckMerger) MergeToTmp(ctx context.Context, sourceURIs []string, tmpURI
 	}
 	cols, err := describe(ctx, tmpURI)
 	if err != nil {
-		// Best-effort (#256): an unstamped entry only costs the read path a
-		// footer probe, so this must never fail a merge that already read and
-		// wrote these bytes. It is still worth saying out loud — a DESCRIBE
-		// failing on an object DuckDB just wrote is a signal about the store,
-		// and silently dropping it leaves the resulting probe traffic with no
-		// explanation anywhere.
-		d.log().Warn("failed to describe merged parquet; manifest entry stays unstamped",
-			zap.String("tmp_uri", tmpURI), zap.Error(err))
-		return stats, nil
+		// A V2 manifest entry lists the file's columns and has no
+		// footer-probe fallback, so a merged file that cannot be described
+		// is not staged.
+		return MergeStats{}, fmt.Errorf("read the footer columns of the merged file %s: %w", tmpURI, err)
+	}
+	if len(cols) == 0 && stats.RowsOut > 0 {
+		return MergeStats{}, fmt.Errorf("merged file %s has no column in its footer", tmpURI)
 	}
 	stats.Columns = cols
-
 	return stats, nil
 }
 

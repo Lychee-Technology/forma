@@ -9,16 +9,18 @@ import (
 )
 
 // TestBuildMergeSQL_PinsLWWShape pins the exact fold the merge must share
-// with the federated read path (#188): any drift in the ORDER BY, the
-// tombstone filter, or the deleted_at normalization changes which version
-// survives compaction versus merge-on-read.
+// with the federated read path (#188): any drift in the ORDER BY or the
+// deleted_at normalization changes which version survives compaction versus
+// merge-on-read, and a tombstone filter would drop the deletes a rebased
+// flush relies on (Protocol V2).
 func TestBuildMergeSQL_PinsLWWShape(t *testing.T) {
 	sql, err := buildMergeSQL([]string{"s3://b/p/1/a.parquet", "s3://b/p/1/b.parquet"}, "s3://b/p/1/_tmp/t.parquet", "")
 	require.NoError(t, err)
 
 	require.Contains(t, sql, "PARTITION BY row_id")
 	require.Contains(t, sql, "ORDER BY changed_at DESC, deleted_at DESC NULLS LAST, row_id ASC")
-	require.Contains(t, sql, "WHERE _rn = 1 AND (deleted_at IS NULL OR deleted_at = 0)")
+	require.Contains(t, sql, "WHERE _rn = 1\n")
+	require.NotContains(t, sql, "deleted_at = 0", "a compaction keeps every row's newest version, tombstones included")
 	require.Contains(t, sql, "SELECT * EXCLUDE (_rn) REPLACE (COALESCE(deleted_at, 0) AS deleted_at)")
 	require.Contains(t, sql, "read_parquet(['s3://b/p/1/a.parquet', 's3://b/p/1/b.parquet'], union_by_name=true)")
 	require.Contains(t, sql, "TO 's3://b/p/1/_tmp/t.parquet'")

@@ -76,6 +76,9 @@ type InitReport struct {
 // settles it later and, if the init committed, runs the handoff.
 func (w *Writer) Init(ctx context.Context, schemaID int16, pin int64, exp BaseExporter) (InitReport, error) {
 	var rep InitReport
+	if err := w.needChangeLog("init"); err != nil {
+		return rep, err
+	}
 	cur, err := w.readRecord(ctx, schemaID, pin)
 	if err != nil {
 		return rep, fmt.Errorf("init: %w", err)

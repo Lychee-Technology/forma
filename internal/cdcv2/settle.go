@@ -168,6 +168,9 @@ func (w *Writer) ResumeInit(ctx context.Context, u *UnresolvedError) (InitReport
 	if u.Kind != publication.KindInit {
 		return rep, fmt.Errorf("resume an init of schema %d: the unresolved publication is a %s", u.Cur.SchemaID, u.Kind)
 	}
+	if err := w.needChangeLog("init"); err != nil {
+		return rep, err
+	}
 	gen, err := w.Settle(ctx, u)
 	if err != nil {
 		return rep, fmt.Errorf("resume an init: %w", err)

@@ -28,8 +28,9 @@ const (
 // transitions are the identifiers of this package that move a record or
 // write its history, and owners the production packages (by directory) or
 // files allowed to use each of them: registration and the V2 cutover in
-// init-db (cmd/tools/init_db_records.go), and the cdc-flush and cdc-init
-// publication paths (internal/cdcv2). The federated e2e harness's
+// init-db (cmd/tools/init_db_records.go), and the cdc-flush, cdc-init and
+// compaction publication paths (internal/cdcv2, which the compactor in
+// internal/compaction publishes through). The federated e2e harness's
 // publication file stands in for both, registration and publication, over
 // the synthetic parquet the benchmark loads (cmd/benchmark runs it outside
 // any test, so it is not a _test.go file). The drop (Reset, and HoldDropped

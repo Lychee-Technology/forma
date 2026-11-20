@@ -76,12 +76,10 @@ func TestChecksumChainDetectsSilentDeltaCorruption(t *testing.T) {
 	})
 
 	t.Run("compaction_refuses_the_corrupted_source", func(t *testing.T) {
-		skipUntilV2Compaction(t)
 		assertCompactionRefusesCorruptSource(ctx, t, env, wide, deltaKey)
 	})
 
 	t.Run("compaction_opt_out_proceeds_past_the_gate", func(t *testing.T) {
-		skipUntilV2Compaction(t)
 		assertChecksumOptOutRewrites(ctx, t, env, wide, deltaKey, deltaEntry.Path, pristine)
 	})
 }

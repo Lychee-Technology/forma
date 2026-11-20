@@ -156,12 +156,23 @@ func parquetInventory(inv map[string]s3ObjectStat) map[string]s3ObjectStat {
 	return out
 }
 
-// assertParquetInventoryUnchanged asserts compaction created, deleted and
-// modified no parquet objects (promotion is a manifest-only relabel).
-func assertParquetInventoryUnchanged(t *testing.T, label string, before, after map[string]s3ObjectStat) {
+// assertParquetInventoryGrewBy asserts compaction deleted and modified no
+// parquet object and created exactly the keys in created: a V2 compaction
+// writes its merge output under a fresh key and leaves every source in place
+// for the readers of the generation it replaced (#890).
+func assertParquetInventoryGrewBy(t *testing.T, label string, before, after map[string]s3ObjectStat, created ...string) {
 	t.Helper()
-	if !reflect.DeepEqual(parquetInventory(before), parquetInventory(after)) {
-		t.Errorf("%s: parquet inventory changed:\n before: %v\n after:  %v",
-			label, parquetInventory(before), parquetInventory(after))
+	want := parquetInventory(before)
+	got := parquetInventory(after)
+	for _, key := range created {
+		stat, ok := got[key]
+		if !ok {
+			t.Errorf("%s: created object %s is not in the inventory", label, key)
+			continue
+		}
+		want[key] = stat
+	}
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("%s: parquet inventory changed beyond the created %v:\n before: %v\n after:  %v", label, created, want, got)
 	}
 }

@@ -64,7 +64,8 @@ func canceled() context.Context {
 }
 
 // TestNewChecksAndDefaults: a writer needs its database, store, cache and
-// tables, and a zero field takes its default.
+// entity_main, and a zero field takes its default. The change log is
+// checked by the writers that mark (TestAWriterWithoutAChangeLogOnlyCompacts).
 func TestNewChecksAndDefaults(t *testing.T) {
 	st := &manifestv2.FSStore{Dir: t.TempDir()}
 	cache, err := manifestv2.NewCache(st, 1)
@@ -76,7 +77,6 @@ func TestNewChecksAndDefaults(t *testing.T) {
 		func(c *Config) { c.Store = nil },
 		func(c *Config) { c.Cache = nil },
 		func(c *Config) { c.EntityMain = "" },
-		func(c *Config) { c.ChangeLog = "" },
 	} {
 		cfg := full
 		broken(&cfg)
@@ -160,4 +160,26 @@ func TestMarkedRange(t *testing.T) {
 			require.Equal(t, [2]int{tc.lo, tc.hi}, [2]int{lo, hi})
 		})
 	}
+}
+
+// TestAWriterWithoutAChangeLogOnlyCompacts: a compaction marks nothing, so
+// its writer needs no change log, and the writers that mark refuse to run
+// without one before any statement.
+func TestAWriterWithoutAChangeLogOnlyCompacts(t *testing.T) {
+	store := &manifestv2.FSStore{Dir: t.TempDir()}
+	cache, err := manifestv2.NewCache(store, 4)
+	require.NoError(t, err)
+	db, err := sql.Open("pgx", "postgres://nobody@127.0.0.1:1/none")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	_, err = New(Config{DB: db, Store: store, Cache: cache, ChangeLog: "change_log"})
+	require.ErrorContains(t, err, "entity_main")
+	w, err := New(Config{DB: db, Store: store, Cache: cache, EntityMain: "entity_main"})
+	require.NoError(t, err)
+	_, err = w.Flush(context.Background(), 1, 0, nil)
+	require.ErrorContains(t, err, "change_log")
+	_, err = w.Init(context.Background(), 1, 0, nil)
+	require.ErrorContains(t, err, "change_log")
+	_, err = w.ResumeInit(context.Background(), &UnresolvedError{Kind: publication.KindInit})
+	require.ErrorContains(t, err, "change_log")
 }

@@ -123,9 +123,11 @@ func TestCompactionNoopPaths(t *testing.T) {
 	})
 }
 
-// TestCompactionPromotionEquivalence covers #188 scenario 1: with real
-// SizeBytes metadata and a lowered byte threshold, promotion relabels every
-// delta entry as base without touching any parquet object, and federated
+// TestCompactionPromotionEquivalence covers #188 scenario 1 under Protocol
+// V2: with real SizeBytes metadata and a lowered byte threshold, promotion
+// merges every delta file into one new base object, written once under a
+// fresh key, and the next generation lists it in their place. A V2 key names
+// its tier, so a delta object cannot be relabelled base as V1 did. Federated
 // results are identical before and after. Hot rows are present so the pass
 // provably leaves the hot tier alone; the seed's 2/5 dirty ratio also
 // exceeds the rewrite trigger, pinning promotion precedence within one pass.
@@ -167,21 +169,22 @@ func TestCompactionPromotionEquivalence(t *testing.T) {
 	if got := countTier(mAfter, "delta"); got != 0 {
 		t.Errorf("delta entries after promotion = %d, want 0", got)
 	}
-	if got := countTier(mAfter, "base"); got != baseBefore+deltaBefore {
-		t.Errorf("base entries after promotion = %d, want %d", got, baseBefore+deltaBefore)
+	if got := countTier(mAfter, "base"); got != baseBefore+1 {
+		t.Errorf("base entries after promotion = %d, want %d: the base files kept and one merged from the %d deltas", got, baseBefore+1, deltaBefore)
+	}
+	if result.FilesMerged != deltaBefore {
+		t.Errorf("FilesMerged = %d, want the %d deltas", result.FilesMerged, deltaBefore)
 	}
 	assertNoDuplicateManifestEntries(t, mAfter)
-	// #256: promotion writes no parquet, so it stamps nothing — it must carry
-	// the init/flush stamps through the relabel intact. A relabel that dropped
-	// or rebuilt Columns would silently push every read back onto the probe.
-	assertEntriesStampedToByteTruth(ctx, t, env, "compaction promotion (relabeled base)",
+	// #256: the merged base's entry lists the columns of the object it names.
+	assertEntriesStampedToByteTruth(ctx, t, env, "compaction promotion (merged base)",
 		TierEntries(mAfter, "base"))
 
-	// Promotion is a manifest-only relabel: zero parquet objects created,
-	// deleted, or modified.
-	assertParquetInventoryUnchanged(t, "promotion", invBefore, snapshotS3Inventory(t, ctx, env, env.S3Prefix+"/"))
+	// The pass wrote exactly its merge output, and deleted nothing: the
+	// replaced generation's objects stay for its readers.
+	assertParquetInventoryGrewBy(t, "promotion", invBefore, snapshotS3Inventory(t, ctx, env, env.S3Prefix+"/"), result.NewBaseKey)
 
-	// The relabeled entries still serve reads: the post-compaction query must
+	// The merged base still serves reads: the post-compaction query must
 	// route through DuckDB over the manifest-listed objects.
 	post := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})
 	if post == nil || post.Plan == nil || !post.Plan.Routing.UseDuckDB {
