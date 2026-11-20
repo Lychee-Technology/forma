@@ -50,6 +50,9 @@ type pass struct {
 	// the index of the finding about the row then.
 	byRecord   bool
 	rowFinding int
+	// rowDetail is the row's finding's detail before checkRecordManifest
+	// said what the manifest the record names verifies to.
+	rowDetail string
 	// concurrent counts the findings a diagnosis dropped because the
 	// generation they concern expired while it ran.
 	concurrent int
@@ -240,15 +243,19 @@ func (r *Reconciler) fetchManifests(ctx context.Context, p *pass) error {
 // saw retained, the current one included, may meanwhile have been replaced,
 // retired by one collection and found expired by a later one, which deleted
 // its manifest and the objects only it listed. A missing manifest or object
-// is therefore left out only on evidence that this happened, read after
-// every manifest and object was read: its generation is no longer retained,
-// and, for the snapshot's current generation, the record no longer names
-// it. A generation still retained then was retained throughout, and one the
-// record still names was never replaced, so no collection may delete
-// anything of either (R10-F3): a current row stamped retired outside the
-// protocol, or a missing one, is no such evidence. A missing history row is
-// never such a finding: the snapshot read the record and the history
-// together.
+// is therefore left out only on evidence of that expiry, read after every
+// manifest and object was read: the history's expiry floor (the highest
+// expired generation, checkHistory) has risen from below the generation to
+// at or above it, and the generation's row is no longer retained. A
+// collection deletes nothing of a generation above the floor: it is
+// retained, or its row is missing, which is a finding that stops every
+// collection, and collection forgets no row at or above the floor
+// (keepFloor). So a generation the floor did not reach was not collected,
+// whatever moved meanwhile: a replacement publication alone does not reach
+// it (R11-F2), nor does a row stamped retired outside the protocol, which
+// the snapshot read already (R10-F3). For the snapshot's current generation
+// the record must no longer name it either. A missing history row is never
+// such a finding: the snapshot read the record and the history together.
 func (r *Reconciler) dropConcurrentlyExpired(ctx context.Context, p *pass) error {
 	if !slices.ContainsFunc(p.findings, concurrentlyCaused) {
 		return nil
@@ -261,19 +268,43 @@ func (r *Reconciler) dropConcurrentlyExpired(ctx context.Context, p *pass) error
 	if err != nil {
 		return fmt.Errorf("read the retained generations again: %w", err)
 	}
-	p.findings = slices.DeleteFunc(p.findings, func(f Finding) bool {
-		if !concurrentlyCaused(f) || (f.Current && stillCurrent) {
-			return false
-		}
-		still := slices.ContainsFunc(now, func(g publication.Generation) bool {
-			return g.Generation == f.Generation && g.Epoch == f.Epoch
-		})
-		if !still {
+	expired, err := publication.Expired(ctx, publication.DB(r.DB), r.Tables, p.id, r.Opts.RetentionGrace)
+	if err != nil {
+		return fmt.Errorf("read the expired generations again: %w", err)
+	}
+	before, after := expiryFloor(p.expired), expiryFloor(expired)
+	kept := p.findings[:0]
+	rowFinding, recordManifestLeft := -1, false
+	for i, f := range p.findings {
+		collected := concurrentlyCaused(f) && !(f.Current && stillCurrent) && before < f.Generation && after >= f.Generation &&
+			!slices.ContainsFunc(now, func(g publication.Generation) bool { return g.Generation == f.Generation && g.Epoch == f.Epoch })
+		if collected {
 			p.concurrent++
+			recordManifestLeft = recordManifestLeft || (p.byRecord && f.Current && f.Key == p.record.ManifestKey)
+			continue
 		}
-		return !still
-	})
+		if p.byRecord && i == p.rowFinding {
+			rowFinding = len(kept)
+		}
+		kept = append(kept, f)
+	}
+	p.findings = kept
+	if p.byRecord {
+		p.rowFinding = rowFinding
+		if recordManifestLeft && rowFinding >= 0 {
+			p.findings[rowFinding].Detail = p.rowDetail + "; " + readsCollected
+		}
+	}
 	return nil
+}
+
+// expiryFloor answers the highest expired generation, 0 when none is.
+func expiryFloor(expired []publication.Generation) int64 {
+	var floor int64
+	for _, g := range expired {
+		floor = max(floor, g.Generation)
+	}
+	return floor
 }
 
 // stillCurrent reads the record again and answers whether it still names

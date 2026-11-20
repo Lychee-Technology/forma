@@ -108,22 +108,38 @@ func (r *Reconciler) checkRecord(p *pass) int64 {
 
 // checkRecordManifest checks the manifest the record names, as readers
 // verify it, when the generation's history row is missing or disagrees with
-// the record, and says in the row's finding whether reads succeed. Readers
-// never read the row, so a lost or inconsistent row says nothing about the
-// manifest: its loss is reported on its own (missing_generation of the
-// manifest key, with the re-init that restores reads), beside the row's
-// finding and its own recovery (R10-F3). The row's manifest, when the row
-// names another, is not checked against the record: no reader reads it, and
-// its bytes say nothing about the record's.
+// the record, and says in the row's finding what that check found. It is a
+// check of the manifest only: a manifest that verifies says nothing of the
+// objects it lists, whose loss or corruption the generation's own lost_object
+// and corrupt_object findings report, each with the re-init that restores
+// reads (R11-F3). Readers never read the row, so a lost or inconsistent row
+// says nothing about the manifest: its loss is reported on its own
+// (missing_generation of the manifest key, with the re-init that restores
+// reads), beside the row's finding and its own recovery (R10-F3). The row's
+// manifest, when the row names another, is not checked against the record:
+// no reader reads it, and its bytes say nothing about the record's.
 func (r *Reconciler) checkRecordManifest(p *pass) {
 	cur := p.recordGeneration()
 	r.checkManifest(p, cur, true, true)
-	reads := "the pass could not verify the manifest the record names against it (the generation's other finding says why)"
+	reads := readsUnverified
 	if p.verified[cur.ManifestKey] != nil {
-		reads = "the manifest the record names verifies against it, as readers verify it, so reads succeed"
+		reads = readsManifestVerified
 	}
+	p.rowDetail = p.findings[p.rowFinding].Detail
 	p.findings[p.rowFinding].Detail += "; " + reads
 }
+
+// What the row's finding says of the manifest the record names
+// (checkRecordManifest, dropConcurrentlyExpired).
+const (
+	readsManifestVerified = "the manifest the record names verifies against the record, as readers verify it; " +
+		"this checks the manifest only, not that the objects it lists are available: a lost_object or corrupt_object " +
+		"finding of this generation reports one that is not, and reads then fail closed"
+	readsUnverified = "the manifest the record names did not verify against the record, as readers verify it: " +
+		"the finding of this generation's manifest key says why, and reads fail closed"
+	readsCollected = "the manifest the record names was missing when read, and the generation expired while the " +
+		"diagnosis ran (a finding left out): run the diagnosis again"
+)
 
 // historyRow answers the history row of generation g the snapshot read,
 // retained or expired.

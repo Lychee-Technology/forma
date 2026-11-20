@@ -19,9 +19,9 @@ import (
 // the current history row's digest is changed. The row is still there, so
 // it is reported as history_mismatch, not as the missing row whose recovery
 // takes two publications and an expiry, and the intact manifest is not to
-// be restored to match the row: it verifies against the record, and reads
-// succeed. The publication that replaces the generation writes the row back
-// from the record (R9-F3) and keeps what the row named as displaced
+// be restored to match the row: it verifies against the record. The
+// publication that replaces the generation writes the row back from the
+// record (R9-F3) and keeps what the row named as displaced
 // (R10-F1), so collection resumes once the generation expires, the grace
 // after its retirement, and not at once.
 func TestAHistoryRowThatDisagreesWithTheRecordIsNotAMissingRow(t *testing.T) {
@@ -34,7 +34,7 @@ func TestAHistoryRowThatDisagreesWithTheRecordIsNotAMissingRow(t *testing.T) {
 	require.Equal(t, []FindingKind{HistoryMismatch}, kinds(rep.Findings), "the record's manifest verifies against the record")
 	require.Equal(t, actionHistoryMismatch, rep.Findings[0].Action)
 	require.Contains(t, rep.Findings[0].Detail, "present but disagrees with the record")
-	require.Contains(t, rep.Findings[0].Detail, "verifies against it, as readers verify it, so reads succeed")
+	require.Contains(t, rep.Findings[0].Detail, readsManifestVerified)
 	var out bytes.Buffer
 	Report{Schemas: []SchemaReport{rep}}.Render(&out)
 	for _, step := range []string{
@@ -153,7 +153,7 @@ func TestAnEarlyRetirementStampDoesNotSurviveTheReplacement(t *testing.T) {
 	require.NoError(t, rep.Err)
 	require.Equal(t, []FindingKind{HistoryMismatch}, kinds(rep.Findings), "the present row, not a missing one")
 	require.Equal(t, g2.rec.Generation, rep.Findings[0].Generation)
-	require.Contains(t, rep.Findings[0].Detail, "so reads succeed")
+	require.Contains(t, rep.Findings[0].Detail, readsManifestVerified)
 
 	reader, pinned := f.pin(t)
 	require.Equal(t, g2.rec.Generation, pinned.Generation, "the reader chose N")
@@ -181,7 +181,7 @@ func TestAnEarlyRetirementStampDoesNotSurviveTheReplacement(t *testing.T) {
 // one a losing publication staged for the same generation, while the
 // record names the manifest that committed. The diagnosis checks the
 // record's manifest against the record, as readers do, and not the row's
-// bytes: intact, reads succeed; corrupted, the invalid_manifest names the
+// bytes: intact, the manifest verifies; corrupted, the invalid_manifest names the
 // record's key. A reader pins N through the record, and N+1 replaces every
 // file it lists. The replacement writes N's row back from the record, so
 // the collections that follow keep the manifest and the objects the reader
@@ -202,7 +202,7 @@ func TestAHistoryRowNamingAnotherManifestKeepsTheRecordsInventory(t *testing.T) 
 	rep := f.pass(t, agedOptions(false))
 	require.NoError(t, rep.Err)
 	require.Equal(t, []FindingKind{HistoryMismatch}, kinds(rep.Findings))
-	require.Contains(t, rep.Findings[0].Detail, "so reads succeed")
+	require.Contains(t, rep.Findings[0].Detail, readsManifestVerified)
 	intact, err := f.store.Get(context.Background(), g2.rec.ManifestKey)
 	require.NoError(t, err)
 	f.corrupt(t, g2.rec.ManifestKey)
@@ -211,7 +211,7 @@ func TestAHistoryRowNamingAnotherManifestKeepsTheRecordsInventory(t *testing.T) 
 	require.Equal(t, []FindingKind{HistoryMismatch, InvalidManifest}, kinds(rep.Findings))
 	require.Equal(t, g2.rec.ManifestKey, rep.Findings[1].Key, "the record's manifest, which readers read, not the row's")
 	require.True(t, rep.Findings[1].Current)
-	require.Contains(t, rep.Findings[0].Detail, "could not verify the manifest the record names")
+	require.Contains(t, rep.Findings[0].Detail, readsUnverified)
 	f.store.set(g2.rec.ManifestKey, intact, f.serverMillis(t))
 
 	reader, pinned := f.pin(t)

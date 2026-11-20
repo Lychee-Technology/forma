@@ -55,7 +55,7 @@ func TestAChangedRecordKeepsTheInventoryAReaderPinned(t *testing.T) {
 			rep := f.pass(t, agedOptions(false))
 			require.NoError(t, rep.Err)
 			require.Equal(t, []FindingKind{HistoryMismatch}, kinds(rep.Findings))
-			require.Contains(t, rep.Findings[0].Detail, "so reads succeed", "the changed record names a valid manifest of N")
+			require.Contains(t, rep.Findings[0].Detail, readsManifestVerified, "the changed record names a valid manifest of N")
 
 			remaining := replace(t, f, f.record(t))
 			f.ageStamps(t, time.Hour) // only the displacement keeps N's objects, not their age

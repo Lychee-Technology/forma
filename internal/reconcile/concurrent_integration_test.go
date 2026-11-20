@@ -105,12 +105,14 @@ func TestDiagnosisReportsACurrentLossNoCollectionCaused(t *testing.T) {
 // diagnosis checks what the record publishes independently of the history
 // row of its generation, which readers never read. The row is either
 // stamped retired long ago, outside the protocol, or deleted, and no
-// collection runs. With the manifest intact, the row's finding says reads
-// succeed, and an object the current manifest lists that S3 lost is reported
-// against the current generation. With the manifest deleted too, its loss is
-// reported beside the row's finding, each with its own recovery, and neither
-// is left out as concurrent collection: the record still names the
-// generation, so nothing could have collected it.
+// collection runs. With the manifest intact, the row's finding says the
+// manifest verifies, and only that (R11-F3): an object the current manifest
+// lists that S3 lost is reported against the current generation, with the
+// re-init that restores reads, and nothing in the report says reads
+// succeed. With the manifest deleted too, its loss is reported beside the
+// row's finding, each with its own recovery, and neither is left out as
+// concurrent collection: the record still names the generation, so nothing
+// could have collected it.
 func TestDiagnosisReportsCurrentLossWhateverItsHistoryRow(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -134,10 +136,16 @@ func TestDiagnosisReportsCurrentLossWhateverItsHistoryRow(t *testing.T) {
 			require.Zero(t, rep.ConcurrentlyExpired, "no collection ran")
 			require.Equal(t, []FindingKind{tc.rowKind, LostObject}, kinds(rep.Findings))
 			require.Equal(t, tc.rowAction, rep.Findings[0].Action)
-			require.Contains(t, rep.Findings[0].Detail, "so reads succeed")
+			require.Contains(t, rep.Findings[0].Detail, readsManifestVerified, "the manifest verifies")
+			require.Contains(t, rep.Findings[0].Detail, "the manifest only, not that the objects it lists are available")
 			require.Equal(t, lost, rep.Findings[1].Key)
 			require.True(t, rep.Findings[1].Current)
-			require.Equal(t, actionLostCurrent, rep.Findings[1].Action)
+			require.Equal(t, actionLostCurrent, rep.Findings[1].Action, "but the data it lists is not")
+			require.Contains(t, rep.Findings[1].Action, "reads fail closed")
+			var out bytes.Buffer
+			Report{Schemas: []SchemaReport{rep}}.Render(&out)
+			require.NotContains(t, out.String(), "reads succeed", "no part of the report says the reads succeed")
+			require.NotContains(t, out.String(), "fail closed only if", "nor that only the manifest decides it")
 
 			f.store.remove(g1.rec.ManifestKey)
 			rep = f.pass(t, testOptions(false))
@@ -145,7 +153,7 @@ func TestDiagnosisReportsCurrentLossWhateverItsHistoryRow(t *testing.T) {
 			require.Zero(t, rep.ConcurrentlyExpired, "the record still names the generation: nothing collected it")
 			require.Equal(t, []FindingKind{tc.rowKind, MissingGeneration}, kinds(rep.Findings))
 			require.Equal(t, tc.rowAction, rep.Findings[0].Action, "the row's own recovery")
-			require.Contains(t, rep.Findings[0].Detail, "could not verify the manifest the record names")
+			require.Contains(t, rep.Findings[0].Detail, readsUnverified)
 			manifest := rep.Findings[1]
 			require.Equal(t, g1.rec.ManifestKey, manifest.Key)
 			require.True(t, manifest.Current)
@@ -154,4 +162,78 @@ func TestDiagnosisReportsCurrentLossWhateverItsHistoryRow(t *testing.T) {
 			require.Empty(t, rep.Plan.Objects, "a refused diagnosis plans nothing")
 		})
 	}
+}
+
+// TestDiagnosisReportsALossAReplacementCannotHaveCollected is R11-F2: the
+// diagnosis's snapshot sees generation N current, with its history row and
+// its manifest both missing. While the manifest is read, N+1 publishes, and
+// no collection runs. The record no longer names N, and N has no retained
+// row, yet nothing collected N: its row is above the history's expiry
+// floor, which did not move, and the gap it leaves stops every collection.
+// So the manifest's loss is reported, not left out, and the row's finding
+// points to a finding the report holds.
+func TestDiagnosisReportsALossAReplacementCannotHaveCollected(t *testing.T) {
+	f := newFixture(t)
+	g1 := f.publishInit(t, f.initialized(t), 1)
+	f.exec(t, "DELETE FROM %s WHERE generation = 1", f.tables.Generation)
+	f.store.remove(g1.rec.ManifestKey)
+	fired := false
+	f.store.beforeGet = func(string) {
+		if !fired {
+			fired = true
+			f.publishCompact(t, g1)
+		}
+	}
+
+	rep := f.pass(t, testOptions(false))
+	require.True(t, fired)
+	require.NoError(t, rep.Err)
+	require.Equal(t, g1.rec.Generation, rep.Generation, "the snapshot saw N current")
+	require.Zero(t, rep.ConcurrentlyExpired, "a replacement alone is no evidence that N expired")
+	require.Equal(t, []FindingKind{MissingGeneration, MissingGeneration}, kinds(rep.Findings))
+	require.Equal(t, actionMissingHistory, rep.Findings[0].Action)
+	require.Contains(t, rep.Findings[0].Detail, readsUnverified)
+	require.Equal(t, g1.rec.ManifestKey, rep.Findings[1].Key, "the finding the row's detail points to")
+	require.Equal(t, actionMissingGeneration, rep.Findings[1].Action)
+	require.False(t, rep.Inconclusive())
+}
+
+// TestDiagnosisLeavesOutARecordManifestCollectedBelowTheFloor is R11-F2's
+// other side: the same snapshot, N current with its row missing, but while
+// the diagnosis reads two publications replace N and N+1, a collection
+// retires N+1 and, a grace later, another finds it expired. N+1 is then the
+// history's floor, N lies below it, and that collection deleted N's
+// manifest, which no row names, as an orphan. The floor rose past N while
+// the diagnosis ran, so the manifest's loss is left out, and the row's
+// finding says so rather than pointing to the finding left out.
+func TestDiagnosisLeavesOutARecordManifestCollectedBelowTheFloor(t *testing.T) {
+	f := newFixture(t)
+	g1 := f.publishInit(t, f.initialized(t), 1)
+	f.exec(t, "DELETE FROM %s WHERE generation = 1", f.tables.Generation)
+	fired := false
+	var collected SchemaReport
+	f.store.beforeGet = func(string) {
+		if fired {
+			return
+		}
+		fired = true
+		g2 := f.publishCompact(t, g1)
+		f.publishCompact(t, g2)
+		require.Equal(t, []int64{g2.rec.Generation}, f.pass(t, testOptions(true)).Collected.Retired)
+		f.ageStamps(t, time.Hour)
+		collected = f.pass(t, testOptions(true))
+	}
+
+	rep := f.pass(t, testOptions(false))
+	require.True(t, fired)
+	require.NoError(t, collected.Err)
+	require.Empty(t, collected.Refused)
+	require.Contains(t, collected.Collected.Objects, g1.rec.ManifestKey, "N's manifest was collected as an orphan below the floor")
+	require.NoError(t, rep.Err)
+	require.Equal(t, 1, rep.ConcurrentlyExpired)
+	require.Equal(t, []FindingKind{MissingGeneration}, kinds(rep.Findings), "the row's finding is kept, the manifest's left out")
+	require.Equal(t, actionMissingHistory, rep.Findings[0].Action)
+	require.Contains(t, rep.Findings[0].Detail, readsCollected)
+	require.NotContains(t, rep.Findings[0].Detail, readsUnverified, "no pointer to the finding left out")
+	require.True(t, rep.Inconclusive())
 }
