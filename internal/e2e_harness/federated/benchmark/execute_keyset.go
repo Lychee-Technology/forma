@@ -38,7 +38,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 		pageNumber = 1
 	}
 	tables := benchmarkStorageTables(h)
-	fq := keysetWorkloadQuery(h, workload, schemaID, pageSize)
+	fq := keysetWorkloadQuery(workload, schemaID, pageSize)
 
 	if pageNumber == 1 {
 		// Page 1: keyset with no cursor is equivalent to offset 0.
@@ -72,7 +72,7 @@ func (r *Runner) executeKeysetServiceQuery(ctx context.Context, h *federated.Fed
 // an oversight but was in fact unobservable: tradeTime is generated FROM
 // changed_at and the reader aliased changed_at into created_at, so both
 // orders were the same sequence until #460 separated them.
-func keysetWorkloadQuery(h *federated.FederatedTestHarness, workload WorkloadDefinition, schemaID int16, pageSize int) *model.FederatedAttributeQuery {
+func keysetWorkloadQuery(workload WorkloadDefinition, schemaID int16, pageSize int) *model.FederatedAttributeQuery {
 	fq := &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{
 			SchemaID: schemaID,
@@ -82,11 +82,6 @@ func keysetWorkloadQuery(h *federated.FederatedTestHarness, workload WorkloadDef
 	}
 	if conditions := workload.ResolvedFilterConditions(); len(conditions) > 0 {
 		fq.Condition = conditionForWorkload(workload)
-	}
-	if h.Duck != nil {
-		fq.DuckDBHints = &model.DuckDBRenderHints{
-			S3ParquetPathTemplate: benchmarkS3ParquetPathTemplate(h),
-		}
 	}
 	return fq
 }

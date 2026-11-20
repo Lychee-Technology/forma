@@ -35,7 +35,7 @@ func TestPublishCommitsWhatPutManifestStaged(t *testing.T) {
 		require.NoError(t, err, stmt)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{tables.Record, tables.Generation} {
+		for _, table := range []string{tables.Record, tables.Generation, tables.Epoch} {
 			_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 		}
 	})

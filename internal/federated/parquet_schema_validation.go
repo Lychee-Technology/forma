@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/parquetcheck"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"go.uber.org/zap"
@@ -82,19 +81,16 @@ func (v *parquetSchemaValidator) log() *zap.Logger {
 	return v.logger
 }
 
-// Validate probes each scanned path's parquet schema and fails on a system
-// column that is missing or mistyped. Globs (explicit S3ParquetPathTemplate
-// hints and the legacy manifest fallback) are expanded to their concrete
-// matches first — an unexpanded glob would let a malformed matched file
-// bypass the invariant and vanish silently under union_by_name. Unreadable
-// footers and failed glob listings are inconclusive — byte corruption or
-// storage failure, not schema drift — so Validate itself does not fail on
-// them. A concrete object whose footer could not be read is listed in the
-// union's unverified set: on a manifest-authored path set the read fails
-// closed on it through the same classification a failed scan gets (#732),
-// so a corrupt object still fails as CorruptParquetError (#722) and a missing
-// one still reports as #187 manifest inconsistency. A failed glob listing
-// names no object and keeps deferring to the main read.
+// Validate probes each listed object's parquet schema and fails on a system
+// column that is missing or mistyped. Every path is one concrete object: the
+// pass refuses a generation listing an address DuckDB would expand
+// (ErrPublishedPathNotConcrete) before it gets here. Unreadable footers are
+// inconclusive — byte corruption or storage failure, not schema drift — so
+// Validate itself does not fail on them. An object whose footer could not be
+// read is listed in the union's unverified set, and the read fails closed on
+// it through the same classification a failed scan gets (#732), so a corrupt
+// object still fails as CorruptParquetError (#722) and a missing one still
+// reports as a publication inconsistency (#759).
 //
 // It also returns the union of the probed footers' columns (name → DuckDB
 // type, plus the names seen at more than one type; see columnUnion) and
@@ -138,9 +134,8 @@ func (v *parquetSchemaValidator) log() *zap.Logger {
 // divergence is logged — see warnStampDivergence.
 //
 // Quote-bearing paths used to be skipped (and marked the union incomplete)
-// back when the probes interpolated the path raw; since #456 both
-// globParquetPaths and describeParquetColumns escape it via
-// sqlutil.EscapeLiteral, so a quote, double quote, or semicolon in an object
+// back when the probes interpolated the path raw; since #456
+// describeParquetColumns escapes it via sqlutil.EscapeLiteral, so a quote, double quote, or semicolon in an object
 // key is validated like any other path (#529, the #479 precedent).
 func (v *parquetSchemaValidator) Validate(
 	ctx context.Context, duck DuckDBQueryExecutor, paths []string,
@@ -151,19 +146,6 @@ func (v *parquetSchemaValidator) Validate(
 	}
 	union, complete := newColumnUnion(), true
 	for _, path := range paths {
-		if strings.ContainsAny(path, forma.ParquetGlobMetacharacters) {
-			expanded, err := globParquetPaths(ctx, duck, path)
-			if err != nil {
-				complete = false // inconclusive: defer to the execution-path classifier
-				continue
-			}
-			ok, err := v.validateConcrete(ctx, duck, expanded, &union, stamps)
-			if err != nil {
-				return columnUnion{}, false, err
-			}
-			complete = complete && ok
-			continue
-		}
 		ok, err := v.validateConcrete(ctx, duck, []string{path}, &union, stamps)
 		if err != nil {
 			return columnUnion{}, false, err
@@ -385,29 +367,6 @@ func (v *parquetSchemaValidator) markValidated(path string, cols, stamp map[stri
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.valid.put(path, cols, stamp)
-}
-
-// globParquetPaths expands one glob pattern to its concrete matches via
-// DuckDB's glob() table function (httpfs LIST under s3://).
-func globParquetPaths(ctx context.Context, duck DuckDBQueryExecutor, pattern string) ([]string, error) {
-	rows, err := duck.Query(ctx, fmt.Sprintf("SELECT file FROM glob('%s')", sqlutil.EscapeLiteral(pattern)))
-	if err != nil {
-		return nil, fmt.Errorf("expand parquet glob %s: %w", pattern, err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var paths []string
-	for rows.Next() {
-		var file string
-		if err := rows.Scan(&file); err != nil {
-			return nil, fmt.Errorf("scan glob match for %s: %w", pattern, err)
-		}
-		paths = append(paths, file)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate glob matches for %s: %w", pattern, err)
-	}
-	return paths, nil
 }
 
 // describeParquetColumns reads one parquet object's footer schema and

@@ -3,8 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
-	"encoding/json"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +15,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	_ "github.com/duckdb/duckdb-go/v2"
-	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/publication"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/lychee-technology/forma/internal/testdb"
 	"go.uber.org/zap"
 )
@@ -24,19 +29,16 @@ import (
 // test-dsql-ministack sets it to MiniStack's own S3, beside the DSQL proxy.
 const upgradeS3EndpointEnv = "FORMA_DSQL_S3_ENDPOINT"
 
-const (
-	upgradeS3Region         = "us-east-1"
-	upgradeManifestTemplate = "manifest/{{.SchemaID}}.json"
-)
+const upgradeS3Region = "us-east-1"
 
 // TestLedgerUpgradeBaselineAuditsAParquetTierOnS3 is the runbook's third step
 // with a lakehouse tier: baseline-schema's own tier, from its flags, resolves
-// each schema's live objects through its S3 manifest and decodes them in
-// DuckDB over httpfs. DuckDB never reads PostgreSQL here, so this runs
+// each schema's live objects from its publication record and its published
+// generation's manifest on S3, and decodes them in DuckDB over httpfs. DuckDB never reads PostgreSQL here, so this runs
 // through MiniStack's proxy, which the DuckDB postgres extension cannot
 // read through (#691). A live object holding 12.5 for an integer refuses the
-// baseline for every schema; once the manifest lists a corrected object, the
-// baseline records generation 1 of each.
+// baseline for every schema; once a new generation lists a corrected object
+// instead, the baseline records generation 1 of each.
 func TestLedgerUpgradeBaselineAuditsAParquetTierOnS3(t *testing.T) {
 	endpoint := os.Getenv(upgradeS3EndpointEnv)
 	if endpoint == "" {
@@ -54,23 +56,20 @@ func TestLedgerUpgradeBaselineAuditsAParquetTierOnS3(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "")
 	u := newUpgradeTarget(t)
 	u.addLedger(t)
+	u.addPublication(t)
 	b := newUpgradeBucket(t, u.ctx, endpoint)
 	objects := t.TempDir()
-	b.putObject(t, "data/100/delta-1.parquet", writeUpgradeObject(t, objects, "orders.parquet", "CAST(7 AS SMALLINT) AS qty, 'first' AS note"))
-	b.putObject(t, "data/101/delta-1.parquet", writeUpgradeObject(t, objects, "bad.parquet", "CAST(12.5 AS DOUBLE) AS count"))
-	b.putObject(t, "data/101/delta-2.parquet", writeUpgradeObject(t, objects, "good.parquet", "CAST(41 AS DOUBLE) AS count"))
-	b.putManifest(t, upgradeOrders, "data/100/delta-1.parquet")
-	b.putManifest(t, upgradeVisits, "data/101/delta-1.parquet")
+	b.publish(t, u, upgradeOrders, writeUpgradeObject(t, objects, "orders.parquet", "CAST(7 AS SMALLINT) AS qty, 'first' AS note"))
+	bad := b.publish(t, u, upgradeVisits, writeUpgradeObject(t, objects, "bad.parquet", "CAST(12.5 AS DOUBLE) AS count"))
 
 	flags := baselineParquetFlags{
-		s3:               s3Flags{bucket: b.name, endpoint: endpoint, region: upgradeS3Region, usePath: true},
-		manifestTemplate: upgradeManifestTemplate,
-		duck:             duckExportFlags{duckThreads: 1, duckMemLimit: "1GB", queryTimeout: 5 * time.Minute},
+		s3:   s3Flags{bucket: b.name, endpoint: endpoint, region: upgradeS3Region, usePath: true},
+		duck: duckExportFlags{duckThreads: 1, duckMemLimit: "1GB", queryTimeout: 5 * time.Minute},
 	}
 	if err := flags.validate(); err != nil {
 		t.Fatalf("the tier's flags: %v", err)
 	}
-	tier, closeTier, err := flags.open(u.ctx, zap.NewNop())
+	tier, closeTier, err := flags.open(u.ctx, zap.NewNop(), u.pool, u.tables.EntityMain)
 	if err != nil {
 		t.Fatalf("open the parquet tier: %v", err)
 	}
@@ -81,10 +80,10 @@ func TestLedgerUpgradeBaselineAuditsAParquetTierOnS3(t *testing.T) {
 		t.Fatalf("baseline passed with 12.5 live for an integer:\n%s", out)
 	}
 	mentionsAll(t, "the refusal", out, "schema visits (id 101) attribute count declared integer",
-		fmt.Sprintf("object s3://%s/data/101/delta-1.parquet", b.name), "12.5")
+		fmt.Sprintf("object s3://%s/%s", b.name, bad), "12.5")
 	u.requirePointers(t, 0, 0)
 
-	b.putManifest(t, upgradeVisits, "data/101/delta-2.parquet")
+	b.publish(t, u, upgradeVisits, writeUpgradeObject(t, objects, "good.parquet", "CAST(41 AS DOUBLE) AS count"))
 	out, err = u.baseline(t, false, tier)
 	if err != nil {
 		t.Fatalf("baseline over corrected objects: %v\n%s", err, out)
@@ -140,25 +139,129 @@ func (b *upgradeBucket) putObject(t *testing.T, key, file string) {
 	b.put(t, key, body)
 }
 
-// putManifest makes key the one live object of schemaID, as a CDC flush
-// lists it: a bucket-relative delta entry.
-func (b *upgradeBucket) putManifest(t *testing.T, schemaID int16, key string) {
+// addPublication creates the publication tables of the target's entity_main,
+// rendered for DSQL, each in its own transaction.
+func (u *upgradeTarget) addPublication(t *testing.T) {
 	t.Helper()
-	path, err := manifest.PathResolver{PathTemplate: upgradeManifestTemplate}.Resolve(schemaID)
-	if err != nil {
-		t.Fatalf("resolve the manifest of schema %d: %v", schemaID, err)
+	for _, stmt := range publication.Statements(forma.EngineAuroraDSQL, u.tables.EntityMain) {
+		u.exec(t, stmt)
 	}
-	body, err := json.Marshal(manifest.Manifest{
-		SchemaID: schemaID, Version: 1, UpdatedAtMs: time.Now().UnixMilli(),
-		Files: []manifest.FileEntry{{Tier: "delta", Path: key, RowCount: 1}},
+	tables := publication.TablesFor(u.tables.EntityMain)
+	t.Cleanup(func() {
+		for _, table := range []string{tables.Record, tables.Generation, tables.Epoch} {
+			_, _ = u.pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+table)
+		}
 	})
-	if err != nil {
-		t.Fatalf("encode the manifest of schema %d: %v", schemaID, err)
-	}
-	b.put(t, path, body)
 }
 
-// writeUpgradeObject writes a one-row parquet object in the delta layout,
+// publish makes the parquet object at file the one live object of schemaID,
+// as a cdc-init publishes it: the object at its canonical key, a manifest
+// listing it alone, and the record pointed at that generation. It answers
+// the object's key.
+func (b *upgradeBucket) publish(t *testing.T, u *upgradeTarget, schemaID int16, file string) string {
+	t.Helper()
+	tables := publication.TablesFor(u.tables.EntityMain)
+	store := &manifestv2.S3Store{Client: b.client, Bucket: b.name}
+	layout := manifestv2.Layout{Prefix: "data"}
+	cur := u.publicationRecord(t, tables, schemaID)
+	h, err := manifestv2.Stage(cur, publication.KindInit, uuid.New(), uuid.New())
+	if err != nil {
+		t.Fatalf("stage an init of schema %d: %v", schemaID, err)
+	}
+	key, err := layout.NewParquetKey(schemaID, cur.Epoch, manifestv2.TierBase)
+	if err != nil {
+		t.Fatalf("mint an object key of schema %d: %v", schemaID, err)
+	}
+	b.putObject(t, key, file)
+	m, err := manifestv2.NewInit(h, []manifestv2.File{describeUpgradeObject(t, file, key)})
+	if err != nil {
+		t.Fatalf("build the init manifest of schema %d: %v", schemaID, err)
+	}
+	manifestKey, digest, err := manifestv2.PutManifest(b.ctx, store, layout, m)
+	if err != nil {
+		t.Fatalf("put the init manifest of schema %d: %v", schemaID, err)
+	}
+	tx, err := u.pool.Begin(u.ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(u.ctx) }()
+	var stagedAt int64
+	if err := tx.QueryRow(u.ctx, "SELECT "+sqlgen.ServerTimeMillisSQL).Scan(&stagedAt); err != nil {
+		t.Fatalf("read the server time: %v", err)
+	}
+	if _, err := publication.Publish(u.ctx, publication.PgxTx(tx), tables, cur, publication.Next{
+		Kind: publication.KindInit, Token: h.Token, ManifestKey: manifestKey, ManifestSHA256: digest,
+		Lineage: h.Lineage, StagedAt: stagedAt, StagingBudget: time.Minute,
+	}); err != nil {
+		t.Fatalf("publish the init of schema %d: %v", schemaID, err)
+	}
+	if err := tx.Commit(u.ctx); err != nil {
+		t.Fatalf("commit the init of schema %d: %v", schemaID, err)
+	}
+	return key
+}
+
+// publicationRecord reads schemaID's record, creating it UNPUBLISHED first
+// when the schema has none, as registration does.
+func (u *upgradeTarget) publicationRecord(t *testing.T, tables publication.Tables, schemaID int16) publication.Record {
+	t.Helper()
+	tx, err := u.pool.Begin(u.ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(u.ctx) }()
+	if _, err := publication.Initialize(u.ctx, publication.PgxTx(tx), tables, schemaID); err != nil {
+		t.Fatalf("initialize the record of schema %d: %v", schemaID, err)
+	}
+	snap, err := publication.Read(u.ctx, publication.PgxTx(tx), tables, schemaID)
+	if err != nil {
+		t.Fatalf("read the record of schema %d: %v", schemaID, err)
+	}
+	if err := tx.Commit(u.ctx); err != nil {
+		t.Fatalf("commit the record of schema %d: %v", schemaID, err)
+	}
+	return snap.Record
+}
+
+// describeUpgradeObject answers the manifest entry of the one-row object at
+// file, stored at key.
+func describeUpgradeObject(t *testing.T, file, key string) manifestv2.File {
+	t.Helper()
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	sum := sha256.Sum256(raw)
+	entry := manifestv2.File{Tier: manifestv2.TierBase, Key: key, SizeBytes: int64(len(raw)), SHA256: hex.EncodeToString(sum[:]),
+		RowCount: 1, RowIDMin: upgradeObjectRowID, RowIDMax: upgradeObjectRowID, Columns: map[string]string{}}
+	duck, err := sql.Open("duckdb", "")
+	if err != nil {
+		t.Fatalf("open duckdb: %v", err)
+	}
+	defer duck.Close()
+	rows, err := duck.Query(fmt.Sprintf("SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet('%s'))", file))
+	if err != nil {
+		t.Fatalf("describe %s: %v", file, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, typ string
+		if err := rows.Scan(&name, &typ); err != nil {
+			t.Fatalf("describe %s: %v", file, err)
+		}
+		entry.Columns[name] = typ
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("describe %s: %v", file, err)
+	}
+	return entry
+}
+
+// upgradeObjectRowID is the row ID of every one-row upgrade object.
+var upgradeObjectRowID = uuid.MustParse("00000000-0000-7000-8000-000000000001")
+
+// writeUpgradeObject writes a one-row parquet object in the export layout,
 // with the attribute columns attrs selects, and answers its path.
 func writeUpgradeObject(t *testing.T, dir, name, attrs string) string {
 	t.Helper()
@@ -168,8 +271,8 @@ func writeUpgradeObject(t *testing.T, dir, name, attrs string) string {
 	}
 	defer duck.Close()
 	path := filepath.Join(dir, name)
-	copyStmt := fmt.Sprintf("COPY (SELECT gen_random_uuid() AS row_id, CAST(100 AS BIGINT) AS changed_at, CAST(0 AS BIGINT) AS deleted_at, "+
-		"CAST(50 AS BIGINT) AS ltbase_created_at, %s) TO '%s' (FORMAT PARQUET)", attrs, path)
+	copyStmt := fmt.Sprintf("COPY (SELECT CAST('%s' AS UUID) AS row_id, CAST(100 AS BIGINT) AS changed_at, CAST(0 AS BIGINT) AS deleted_at, "+
+		"CAST(50 AS BIGINT) AS ltbase_created_at, %s) TO '%s' (FORMAT PARQUET)", upgradeObjectRowID, attrs, path)
 	if _, err := duck.Exec(copyStmt); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}

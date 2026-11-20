@@ -144,7 +144,7 @@ func (f *dslFixture) match(t *testing.T, cond forma.Condition) []uuid.UUID {
 	}
 	ids = sortedIDs(ids...)
 	if f.hotKeys {
-		require.Equal(t, ids, f.hotKeyIDs(t, cond, 0), "the hot-keys query selects the PostgreSQL route's rows: %+v", cond)
+		require.Equal(t, ids, f.hotKeyIDs(t, cond), "the hot-keys query selects the PostgreSQL route's rows: %+v", cond)
 	}
 	return ids
 }

@@ -28,15 +28,22 @@ var ErrUnresolved = errors.New("publication outcome unresolved")
 // staged on, Next what it sent, Cause why the writer stopped, and Settle why
 // the settling failed. Handoff is an init's exported entries at the versions
 // its export snapshots listed, what its handoff marks; it is nil for a flush.
+// Marked and Unconfirmed bound what a flush's marks flushed should the
+// publication be found committed: at least Marked entries and at most
+// Marked + Unconfirmed, as FlushReport counts them. The transaction that
+// would have committed is one of those whose COMMIT went without an answer,
+// and each counted its own marks. Both are zero for an init, whose
+// publication carries no marks.
 // It matches ErrUnresolved and Settle's errors, never Cause's: a staging that
 // expired or ran out of attempts while its COMMIT may still land is not
 // ErrAbandoned.
 type UnresolvedError struct {
-	Kind          publication.Kind
-	Cur           publication.Record
-	Next          publication.Next
-	Handoff       []Entry
-	Cause, Settle error
+	Kind                publication.Kind
+	Cur                 publication.Record
+	Next                publication.Next
+	Handoff             []Entry
+	Marked, Unconfirmed int
+	Cause, Settle       error
 }
 
 func (e *UnresolvedError) Error() string {
@@ -121,7 +128,9 @@ func (w *Writer) fence(ctx context.Context, p *pub) (bool, error) {
 }
 
 func unresolved(p *pub, cause, err error) error {
-	return &UnresolvedError{Kind: p.kind, Cur: p.cur, Next: p.next, Handoff: p.handoff, Cause: cause, Settle: err}
+	lo, hi := p.unansweredRange()
+	return &UnresolvedError{Kind: p.kind, Cur: p.cur, Next: p.next, Handoff: p.handoff,
+		Marked: lo, Unconfirmed: hi - lo, Cause: cause, Settle: err}
 }
 
 // Settle settles u, an ErrUnresolved publication, as the writer would have
@@ -133,7 +142,12 @@ func unresolved(p *pub, cause, err error) error {
 // still cannot tell. A flush found committed is complete: its marks committed
 // with it. An init needs its handoff too, which ResumeInit runs.
 func (w *Writer) Settle(ctx context.Context, u *UnresolvedError) (publication.Record, error) {
-	out, err := w.settle(ctx, &pub{kind: u.Kind, cur: u.Cur, next: u.Next, handoff: u.Handoff}, u.Cause)
+	// The settling keeps the mark range u carries: a COMMIT it finds landed is
+	// one of those the range was counted from, and a fresh UnresolvedError
+	// carries it on.
+	p := &pub{kind: u.Kind, cur: u.Cur, next: u.Next, handoff: u.Handoff,
+		unanswered: []int{u.Marked, u.Marked + u.Unconfirmed}}
+	out, err := w.settle(ctx, p, u.Cause)
 	var again *UnresolvedError
 	if err != nil && !errors.As(err, &again) {
 		return publication.Record{}, fmt.Errorf("%s of schema %d staged on generation %d: %w: %w", u.Kind, u.Cur.SchemaID, u.Cur.Generation, ErrAbandoned, err)

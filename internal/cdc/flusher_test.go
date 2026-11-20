@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -18,42 +19,29 @@ func TestRunOnce_RequiresSchemaRegistry(t *testing.T) {
 	require.Contains(t, err.Error(), "schema registry is required")
 }
 
-func TestResolveS3Clients_UsesFallbackWhenCustomClientNotProvided(t *testing.T) {
-	fallback := &fullS3ClientMock{}
-
-	clients, err := resolveS3Clients(nil, fallback, false)
-	require.NoError(t, err)
-	require.Same(t, fallback, clients.object)
-	require.Same(t, fallback, clients.full)
+func TestResolveS3Client_UsesFallbackWhenCallerGaveNone(t *testing.T) {
+	fallback := s3.New(s3.Options{Region: "us-east-1"})
+	require.Same(t, fallback, resolveS3Client(nil, fallback))
+	var typedNil *s3.Client
+	require.Same(t, fallback, resolveS3Client(typedNil, fallback), "an interface holding a nil *s3.Client is no client")
 }
 
-func TestResolveS3Clients_AcceptsObjectOnlyClientWhenFullNotRequired(t *testing.T) {
-	customObjectClient := &objectOnlyS3Client{}
-	fallback := &fullS3ClientMock{}
-
-	clients, err := resolveS3Clients(customObjectClient, fallback, false)
-	require.NoError(t, err)
-	require.Same(t, customObjectClient, clients.object)
-	require.Nil(t, clients.full)
+func TestResolveS3Client_UsesTheCallerClient(t *testing.T) {
+	caller := &fullS3ClientMock{}
+	require.Same(t, caller, resolveS3Client(caller, s3.New(s3.Options{Region: "us-east-1"})))
 }
 
-func TestResolveS3Clients_RejectsObjectOnlyClientWhenFullRequired(t *testing.T) {
-	customObjectClient := &objectOnlyS3Client{}
-	fallback := &fullS3ClientMock{}
-
-	_, err := resolveS3Clients(customObjectClient, fallback, true)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "manifest requires S3FullClient")
-}
-
-func TestResolveS3Clients_UsesCustomFullClientWhenProvided(t *testing.T) {
-	customFullClient := &fullS3ClientMock{}
-	fallback := &fullS3ClientMock{}
-
-	clients, err := resolveS3Clients(customFullClient, fallback, true)
+func TestNewObjectStoreRefusesNoClientOrBucket(t *testing.T) {
+	_, err := newObjectStore(nil, "b")
+	require.ErrorContains(t, err, "s3 client is required")
+	var typedNil *s3.Client
+	_, err = newObjectStore(typedNil, "b")
+	require.ErrorContains(t, err, "s3 client is required")
+	_, err = newObjectStore(&fullS3ClientMock{}, "")
+	require.ErrorContains(t, err, "S3 bucket is required")
+	store, err := newObjectStore(&fullS3ClientMock{}, "b")
 	require.NoError(t, err)
-	require.Same(t, customFullClient, clients.object)
-	require.Same(t, customFullClient, clients.full)
+	require.IsType(t, &manifestv2.S3Store{}, store)
 }
 
 func TestSetupPostgresConnection_UsesIAMToken(t *testing.T) {
@@ -149,24 +137,6 @@ func TestShouldFlush(t *testing.T) {
 			require.Equal(t, tt.want, shouldFlush(tt.cfg, tt.cnt, tt.oldest))
 		})
 	}
-}
-
-func TestMinMaxRowID(t *testing.T) {
-	idOldest := uuid.MustParse("018f05c0-0000-7000-8000-000000000001")
-	idMiddle := uuid.MustParse("018f05c0-0001-7000-8000-000000000001")
-	idNewest := uuid.MustParse("018f05c0-0002-7000-8000-000000000001")
-
-	minID, maxID := minMaxRowID(nil)
-	require.Equal(t, uuid.Nil, minID)
-	require.Equal(t, uuid.Nil, maxID)
-
-	minID, maxID = minMaxRowID([]uuid.UUID{idMiddle})
-	require.Equal(t, idMiddle, minID)
-	require.Equal(t, idMiddle, maxID)
-
-	minID, maxID = minMaxRowID([]uuid.UUID{idMiddle, idNewest, idOldest})
-	require.Equal(t, idOldest, minID)
-	require.Equal(t, idNewest, maxID)
 }
 
 func TestGetUnflushedSchemaIDs(t *testing.T) {
@@ -269,28 +239,6 @@ func TestProcessSchemas_ReturnsNilForNilOrEmptySchemaIDsWithoutProcessing(t *tes
 	})
 }
 
-func TestExecuteFlush_NoSelectedRowIDsReturnsWithoutExportWork(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, db.Close())
-	})
-
-	ctx := context.Background()
-	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id BIGINT, row_id UUID, changed_at BIGINT, flushed_at BIGINT)")
-	require.NoError(t, err)
-
-	flushCtx := &schemaFlushContext{
-		db:        db,
-		cfg:       CDCConfig{BatchSize: 10},
-		tableName: "change_log",
-		logger:    zap.NewNop(),
-	}
-
-	err = flushCtx.executeFlush(ctx, 7)
-	require.NoError(t, err)
-}
-
 func TestProcessSchema_SkipsWhenSchemaLockIsAlreadyHeld(t *testing.T) {
 	db, err := sql.Open("duckdb", ":memory:")
 	require.NoError(t, err)
@@ -319,86 +267,6 @@ func TestProcessSchema_SkipsWhenSchemaLockIsAlreadyHeld(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, lockAttempts)
 	require.Zero(t, unlockCalls)
-}
-
-func TestProcessSchema_ReturnsErrorWhenChangeLogStatsCannotBeRead(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, db.Close())
-	})
-
-	unlockCalls := 0
-	flushCtx := &schemaFlushContext{
-		db:        db,
-		cfg:       CDCConfig{MinRecords: 1, MaxAgeMs: 1000},
-		tableName: "missing_change_log",
-		logger:    zap.NewNop(),
-		locker: SchemaLockerFunc(func(ctx context.Context, _ int16) (context.Context, func(), bool, error) {
-			return ctx, func() { unlockCalls++ }, true, nil
-		}),
-	}
-
-	err = flushCtx.processSchema(context.Background(), 7)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "get changelog stats")
-	require.Equal(t, 1, unlockCalls)
-}
-
-func TestProcessSchema_SkipsWhenNoPendingRowsExist(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, db.Close())
-	})
-
-	ctx := context.Background()
-	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, changed_at BIGINT, flushed_at BIGINT)")
-	require.NoError(t, err)
-
-	unlockCalls := 0
-	flushCtx := &schemaFlushContext{
-		db:        db,
-		cfg:       CDCConfig{MinRecords: 1, MaxAgeMs: 1000},
-		tableName: "change_log",
-		logger:    zap.NewNop(),
-		locker: SchemaLockerFunc(func(ctx context.Context, _ int16) (context.Context, func(), bool, error) {
-			return ctx, func() { unlockCalls++ }, true, nil
-		}),
-	}
-
-	err = flushCtx.processSchema(ctx, 7)
-	require.NoError(t, err)
-	require.Equal(t, 1, unlockCalls)
-}
-
-func TestProcessSchema_SkipsWhenThresholdsAreNotMet(t *testing.T) {
-	db, err := sql.Open("duckdb", ":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, db.Close())
-	})
-
-	ctx := context.Background()
-	_, err = db.ExecContext(ctx, "CREATE TABLE change_log (schema_id SMALLINT, changed_at BIGINT, flushed_at BIGINT)")
-	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, "INSERT INTO change_log VALUES (7, ?, 0)", time.Now().UnixMilli())
-	require.NoError(t, err)
-
-	unlockCalls := 0
-	flushCtx := &schemaFlushContext{
-		db:        db,
-		cfg:       CDCConfig{MinRecords: 10, MaxAgeMs: 1_000_000},
-		tableName: "change_log",
-		logger:    zap.NewNop(),
-		locker: SchemaLockerFunc(func(ctx context.Context, _ int16) (context.Context, func(), bool, error) {
-			return ctx, func() { unlockCalls++ }, true, nil
-		}),
-	}
-
-	err = flushCtx.processSchema(ctx, 7)
-	require.NoError(t, err)
-	require.Equal(t, 1, unlockCalls)
 }
 
 func TestProcessSchemas_AbortsWhenSchemaCacheUnavailable(t *testing.T) {

@@ -62,6 +62,9 @@ func (s *S3Store) Get(ctx context.Context, key string) ([]byte, error) {
 	if err != nil && noSuchKey(err) {
 		return nil, fmt.Errorf("get object %s/%s: %w: %w", s.Bucket, key, ErrObjectNotFound, err)
 	}
+	if err != nil && accessDenied(err) {
+		return nil, fmt.Errorf("get object %s/%s: %w: %w", s.Bucket, key, ErrAccessDenied, err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get object %s/%s: %w", s.Bucket, key, err)
 	}
@@ -80,6 +83,18 @@ func noSuchKey(err error) bool {
 	}
 	var apiErr smithy.APIError
 	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey"
+}
+
+// accessDenied reports a 403: an AccessDenied (or Forbidden) API error, or an
+// HTTP response error with status 403 for a bodyless answer (a HEAD) the SDK
+// cannot model. It is ambiguous about existence (ErrAccessDenied).
+func accessDenied(err error) bool {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "AccessDenied" || apiErr.ErrorCode() == "Forbidden") {
+		return true
+	}
+	var respErr *awshttp.ResponseError
+	return errors.As(err, &respErr) && respErr.HTTPStatusCode() == http.StatusForbidden
 }
 
 // preconditionFailed reports a confirmed 412, the one answer that proves a

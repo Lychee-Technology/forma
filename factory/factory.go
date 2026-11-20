@@ -37,7 +37,9 @@ type entityManagerDependencies struct {
 	collectTables     func(context.Context, queryPool, string) ([]string, error)
 	newMetadataLoader func(*pgxpool.Pool, string, string) metadataLoader
 	newDuckDBClient   func(context.Context, forma.DuckDBConfig) (*federated.DuckDBClient, error)
-	newParquetSource  func(context.Context, forma.DuckDBConfig) (federated.ParquetSource, error)
+	// newPublicationReader builds the federated reader's publication source
+	// (publication_reader.go). It is called only when DuckDB is enabled.
+	newPublicationReader func(context.Context, publicationReaderSpec) (federated.PublicationReader, error)
 }
 
 func defaultEntityManagerDependencies() entityManagerDependencies {
@@ -47,10 +49,11 @@ func defaultEntityManagerDependencies() entityManagerDependencies {
 			return schemameta.NewMetadataLoader(pool, schemaTable, schemaDir)
 		},
 		newDuckDBClient: federated.NewDuckDBClientContext,
-		// A factory test that enables DuckDB + a manifest template and leaves
-		// this default in place hits the real AWS credential chain — call
-		// swapManifestS3Client (parquet_source_test.go) to stay hermetic.
-		newParquetSource: newManifestParquetSource,
+		// A factory test that enables DuckDB and leaves this default in place
+		// pins epochs over its pool and hits the real AWS credential chain:
+		// call swapPublicationS3Client (publication_reader_test.go) to stay
+		// hermetic.
+		newPublicationReader: newPublicationReader,
 	}
 }
 
@@ -122,9 +125,12 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		effectiveConfig.Entity.SchemaDirectory,
 	)
 
-	metadataCache, err := loader.LoadMetadata(ctx)
+	// The publication epochs are read before the metadata, so the reader
+	// pins only the epochs the metadata belongs to (bindEpochPins).
+	entityMain := effectiveConfig.Database.TableNames.EntityMain
+	metadataCache, metadataEpochs, err := loadMetadataWithEpochs(ctx, loader, effectiveConfig.DuckDB, snapshotPoolOf(pool), entityMain)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load metadata: %w", err)
+		return nil, err
 	}
 
 	zap.S().Infow("Metadata loaded successfully", "schemaCount", len(metadataCache.ListSchemas()))
@@ -147,7 +153,10 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 		return nil, fmt.Errorf("failed to verify the schemas' unique keys: %w", err)
 	}
 
-	duckClient, parquetSource, err := newFederatedReadSurface(ctx, effectiveConfig.DuckDB, deps)
+	duckClient, reader, err := newFederatedReadSurface(ctx, deps, publicationReaderSpec{
+		duck: effectiveConfig.DuckDB, pool: snapshotPoolOf(pool), meta: metadataCache,
+		metadataEpochs: metadataEpochs, registryEpochs: effectiveConfig.SchemaRegistryEpochs, entityMain: entityMain,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open the federated read surface: %w", err)
 	}
@@ -155,7 +164,7 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	// The repository enforces the unique keys the check above found built,
 	// for as long as it lives (#651).
 	repository, federatedEngine := newRepositoryAndEngine(
-		pool, metadataCache, effectiveConfig, duckClient, parquetSource, engine, internal.WithUniqueKeyCatalog(guards.uniqueKeys))
+		pool, metadataCache, effectiveConfig, duckClient, reader, engine, internal.WithUniqueKeyCatalog(guards.uniqueKeys))
 	// The DuckDB client has no owner other than the manager being built:
 	// register it so EntityManager.Close releases it (#302). Guarded on nil
 	// because a typed-nil *DuckDBClient boxed into io.Closer would defeat
@@ -206,16 +215,17 @@ func discardDuckClient(duckClient *federated.DuckDBClient) {
 // the repository option of the configured database engine:
 //   - a retired or unknown hot-leg transport must fail rather than silently
 //     selecting pgx, even when an embedder did not call Config.Validate (#858);
-//   - an incoherent manifest read surface must not be discovered halfway
-//     through startup, after the database has already been queried;
+//   - an incoherent parquet read surface (DuckDB on without a bucket) must
+//     not be discovered halfway through startup, after the database has
+//     already been queried;
 //   - the engine decides how writes exclude each other, so an unknown name
 //     fails here rather than falling back to PostgreSQL's locks (#633).
 func validateBeforeIO(cfg *forma.Config) (internal.RepoOption, error) {
 	if err := cfg.DuckDB.ValidateHotLeg(); err != nil {
 		return nil, fmt.Errorf("invalid duckdb hot-leg configuration: %w", err)
 	}
-	if err := cfg.DuckDB.ValidateManifestRead(); err != nil {
-		return nil, fmt.Errorf("invalid duckdb manifest configuration: %w", err)
+	if err := cfg.DuckDB.ValidateParquetRead(); err != nil {
+		return nil, fmt.Errorf("invalid duckdb parquet read configuration: %w", err)
 	}
 	engine, err := internal.WithDatabaseEngine(cfg.Database.Engine)
 	if err != nil {
@@ -245,7 +255,7 @@ func requireCoreTables(cfg *forma.Config, tables []string) error {
 // repository's other construction-time collaborators.
 func newRepositoryAndEngine(
 	pool *pgxpool.Pool, metadataCache *schemameta.MetadataCache, cfg *forma.Config,
-	duckClient *federated.DuckDBClient, parquetSource federated.ParquetSource, repoOpts ...internal.RepoOption,
+	duckClient *federated.DuckDBClient, reader federated.PublicationReader, repoOpts ...internal.RepoOption,
 ) (*internal.DBPersistentRecordRepository, *federated.DBFederatedQueryEngine) {
 	planCache := queryplan.NewCache(4096)
 	warnPgxPoolSizing(pool, cfg.DuckDB)
@@ -274,10 +284,12 @@ func newRepositoryAndEngine(
 		// reads PostgreSQL through them (#858).
 		federated.WithPgxHotLeg(pool, repository),
 	}
-	// Append only a real source, so the manifest-off path stays byte-identical
-	// to the pre-#250 engine construction.
-	if parquetSource != nil {
-		engineOpts = append(engineOpts, federated.WithParquetSource(parquetSource))
+	// Every pass resolves its parquet tiers from the publication record in
+	// its snapshot (docs/publication-protocol-v2.md, "Readers"). The reader
+	// exists exactly when DuckDB is enabled; an engine with DuckDB disabled
+	// routes every query to PostgreSQL and runs no pass.
+	if reader != nil {
+		engineOpts = append(engineOpts, federated.WithPublicationReader(reader, federated.DefaultPublishedPassDeadline))
 	}
 	return repository, federated.NewDBFederatedQueryEngine(
 		repository,
@@ -289,43 +301,48 @@ func newRepositoryAndEngine(
 	)
 }
 
-// newFederatedReadSurface opens the DuckDB client and the manifest parquet source
-// together, because their failure modes are coupled and only make sense as a pair.
+// newFederatedReadSurface opens the DuckDB client and builds the publication
+// reader together, because their failure modes are coupled and only make
+// sense as a pair: with DuckDB disabled it builds neither.
 //
 // Both failures are fatal. With DuckDB enabled every non-transactional Query
 // enters the federated engine (#715), so a client that fails to open would
 // leave the deployment answering every such query with an error, or, under
-// the degraded fallback, quietly moving every scan onto PostgreSQL: startup
-// fails instead, naming the cause. A parquet source that fails to build would
-// silently drop the cold tier. On that path the already-open DuckDB client has
-// no other owner, so its handle and pool are released here rather than leaked
-// for the process lifetime. (*DuckDBClient).Close is nil-receiver safe,
-// covering the DuckDB-off case.
+// the degraded fallback, quietly moving every scan onto PostgreSQL; a reader
+// that fails to build would fail every pass. Startup fails instead, naming the
+// cause. On the reader's failure the already-open DuckDB client has no other
+// owner, so its handle and pool are released here rather than leaked for the
+// process lifetime.
 func newFederatedReadSurface(
 	ctx context.Context,
-	cfg forma.DuckDBConfig,
 	deps entityManagerDependencies,
-) (*federated.DuckDBClient, federated.ParquetSource, error) {
-	var duckClient *federated.DuckDBClient = nil
-	var err error
-
-	if cfg.Enabled {
-		zap.S().Infow("initializing DuckDB client", "dbPath", cfg.DBPath)
-		duckClient, err = deps.newDuckDBClient(ctx, cfg)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize duckdb client (duckdb is enabled): %w", err)
-		}
-		zap.S().Infow("duckdb client initialized")
+	spec publicationReaderSpec,
+) (*federated.DuckDBClient, federated.PublicationReader, error) {
+	if !spec.duck.Enabled {
+		return nil, nil, nil
 	}
-
-	parquetSource, err := deps.newParquetSource(ctx, cfg)
+	zap.S().Infow("initializing DuckDB client", "dbPath", spec.duck.DBPath)
+	duckClient, err := deps.newDuckDBClient(ctx, spec.duck)
 	if err != nil {
-		if closeErr := duckClient.Close(); closeErr != nil {
-			zap.S().Warnw("failed to close duckdb client after parquet source failure", "err", closeErr)
-		}
-		return nil, nil, fmt.Errorf("failed to build manifest parquet source: %w", err)
+		return nil, nil, fmt.Errorf("failed to initialize duckdb client (duckdb is enabled): %w", err)
 	}
-	return duckClient, parquetSource, nil
+	zap.S().Infow("duckdb client initialized")
+
+	reader, err := deps.newPublicationReader(ctx, spec)
+	if err != nil {
+		discardDuckClient(duckClient)
+		return nil, nil, fmt.Errorf("failed to build the publication reader: %w", err)
+	}
+	return duckClient, reader, nil
+}
+
+// snapshotPoolOf answers pool as a snapshotPool, or a nil interface for a nil
+// pool, so a typed nil never passes the reader's nil check.
+func snapshotPoolOf(pool *pgxpool.Pool) snapshotPool {
+	if pool == nil {
+		return nil
+	}
+	return pool
 }
 
 func newDuckDBCircuitBreaker(cfg forma.DuckDBConfig) *federated.CircuitBreaker {

@@ -5,10 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/google/uuid"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"go.uber.org/zap"
 )
@@ -26,129 +24,6 @@ func GetChangeLogStats(ctx context.Context, db *sql.DB, table string, schemaID i
 		return 0, 0, fmt.Errorf("get stats: %w", err)
 	}
 	return cnt, oldest, nil
-}
-
-// SelectBatchRowIDs picks up to batchSize row_ids for flushing, recording
-// each listed row's changed_at version, and returns a snapshot cutoff (ms)
-// for exporting. The snapshot is the MAX of the wall clock and the listed
-// versions: per-row versions are strictly monotonic and may run ahead of the
-// wall clock (#274 GREATEST ordering), so a wall-clock-only cutoff would
-// exclude a clock-ahead row from both export and mark — shipping an empty
-// delta and leaving the row dirty until the clock caught up, indefinitely
-// under sustained lead (review round 2 P1). The versions feed
-// MarkFlushedVersions, which marks exactly what was listed.
-func SelectBatchRowIDs(ctx context.Context, db *sql.DB, table string, schemaID int16, batchSize int) ([]uuid.UUID, map[uuid.UUID]int64, int64, error) {
-	if table == "" {
-		table = "change_log"
-	}
-	if batchSize <= 0 {
-		batchSize = 10000
-	}
-	query := fmt.Sprintf("SELECT row_id, changed_at FROM %s WHERE schema_id = $1 AND flushed_at = 0 ORDER BY changed_at ASC LIMIT $2", sanitizeIdentifier(table))
-	rows, err := db.QueryContext(ctx, query, schemaID, batchSize)
-	if err != nil {
-		return nil, nil, 0, fmt.Errorf("select batch row ids: %w", err)
-	}
-	defer rows.Close()
-
-	var ids []uuid.UUID
-	versions := make(map[uuid.UUID]int64)
-	snapshot := time.Now().UnixMilli()
-	for rows.Next() {
-		var id uuid.UUID
-		var changedAt int64
-		if err := rows.Scan(&id, &changedAt); err != nil {
-			return nil, nil, 0, fmt.Errorf("scan row id: %w", err)
-		}
-		ids = append(ids, id)
-		versions[id] = changedAt
-		if changedAt > snapshot {
-			snapshot = changedAt
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, 0, fmt.Errorf("iterate row ids: %w", err)
-	}
-	return ids, versions, snapshot, nil
-}
-
-// MarkFlushedVersions updates flushed_at for the given rows only where the
-// slot-0 changed_at still EQUALS the version LISTED for that row at batch
-// selection. Exact equality is what keeps export and mark consistent without
-// a global wall-clock cutoff: any slot whose version differs from its
-// listing was concurrently rewritten — advanced by an update/delete, or
-// replaced by a delete→recreate — and its exported copy (if any) no longer
-// matches slot-0, so the row must stay dirty for the next run. (`<=` is NOT
-// safe here: a recreate overwrites the slot, and before #274's create
-// ordering it could even land BELOW a clock-ahead tombstone's listing — a
-// `<=` mark would clear the dirty barrier for a payload no parquet holds.)
-// A clock-ahead listed version matches its own listing and marks normally
-// (review round 2 P1). Returns the row_ids actually marked flushed.
-//
-// This is the Aurora DSQL engine's mark (markFlushedFor). On PostgreSQL it
-// waits at every entry an open writer holds, so the PostgreSQL engine marks
-// with markFlushedSkipLocked instead (#686).
-func MarkFlushedVersions(ctx context.Context, db *sql.DB, table string, schemaID int16, rowIDs []uuid.UUID, versions map[uuid.UUID]int64, flushedAt int64) ([]uuid.UUID, error) {
-	if table == "" {
-		table = "change_log"
-	}
-	if len(rowIDs) == 0 {
-		return nil, nil
-	}
-	valueRows, args, err := listedVersionValues(rowIDs, versions, flushedAt, schemaID)
-	if err != nil {
-		return nil, err
-	}
-	query := fmt.Sprintf(
-		`UPDATE %s cl SET flushed_at = $1
-		 FROM (VALUES %s) AS v(row_id, version)
-		 WHERE cl.schema_id = $2 AND cl.flushed_at = 0
-		   AND cl.row_id = v.row_id AND cl.changed_at = v.version
-		 RETURNING cl.row_id`,
-		sanitizeIdentifier(table),
-		valueRows,
-	)
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("mark flushed by listed versions: %w", err)
-	}
-	return scanMarkedRowIDs(rows)
-}
-
-// listedVersionValues renders the listed (row_id, version) pairs as a VALUES
-// list whose placeholders follow $1 = flushedAt and $2 = schemaID, and
-// answers the list with the statement's arguments.
-func listedVersionValues(rowIDs []uuid.UUID, versions map[uuid.UUID]int64, flushedAt int64, schemaID int16) (string, []any, error) {
-	valueRows := make([]string, 0, len(rowIDs))
-	args := make([]any, 0, len(rowIDs)*2+2)
-	args = append(args, flushedAt, schemaID)
-	for _, id := range rowIDs {
-		version, ok := versions[id]
-		if !ok {
-			return "", nil, fmt.Errorf("mark flushed: row %s has no listed version", id)
-		}
-		valueRows = append(valueRows, fmt.Sprintf("($%d::uuid, $%d::bigint)", len(args)+1, len(args)+2))
-		args = append(args, id, version)
-	}
-	return strings.Join(valueRows, ","), args, nil
-}
-
-// scanMarkedRowIDs reads the row_ids a mark statement returned, and closes
-// rows.
-func scanMarkedRowIDs(rows *sql.Rows) ([]uuid.UUID, error) {
-	defer rows.Close()
-	var updated []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan flushed row id: %w", err)
-		}
-		updated = append(updated, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate flushed row ids: %w", err)
-	}
-	return updated, nil
 }
 
 // CopyTmpToFinal copies a parquet file from tmp key to final key and deletes tmp.

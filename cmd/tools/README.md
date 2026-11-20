@@ -16,10 +16,14 @@ Forma Tools CLI
 --------
 - `generate-attributes`：从 JSON Schema 生成 `<schema>_attributes.json`。
 - `init-db`：创建 schema registry、entity main、EAV 数据表及索引。
+- `drop-schema`：退役一个 schema：在同一事务里删除其注册行与 generation 账本、把发布记录置为下一个 epoch 的 `DROPPED`，再分批清除其行（#896）。
 - `build-unique-keys`：从 schema 的存活行构建 `x-forma-unique-keys` 声明的唯一键（#651）。须先停止所有写入方。
 - `apply-schema`：按 D2 类型规则把修改后的 schema 声明记录为下一个 generation（#733）。
 - `baseline-schema`：审计已存储的 PostgreSQL 与 parquet 数据，为尚无 generation 的 schema 记录第一个 generation（升级步骤，#733）。
 - `migrate-rfc3339`：把已退役的 `iso8601` 编码存储的整秒图像改写为 `rfc3339` 图像（#842）。须先停止所有写入方。
+- `cdc-flush`：把未刷新的 `change_log` 条目导出为 delta parquet，按 Protocol V2 发布不可变的 manifest 代际，
+  并在推进该 schema 发布记录的同一事务里标记这些条目（`docs/publication-protocol-v2.md`）。见下文 `cdc-flush 与 cdc-init`。
+- `cdc-init`：把 schema 的存活行全量导出为 base parquet，发布 `init` 代际，再按导出版本移交其未刷新条目；从不清空 `change_log`。
 - `manifest-reconcile`：比对 S3 parquet 对象与 manifest 条目，报告孤儿/dangling，
   `--repair` 补录 #197 flush 孤儿，`--gc` 清理 #188 compaction 遗留。
   详见 `docs/manifest-reconcile.md`。退出码：0 一致 / 2 有差异 / 1 失败。
@@ -116,9 +120,32 @@ unreferenced，由运维自行删除。详见 `docs/schema-indexes.md`。
 并为本次新注册且有 attributes 文件的 schema 记录 generation 1。没有 attributes 文件的 schema 注册后没有 generation，`init-db` 打印提示，
 待文件就绪后运行 `baseline-schema`。已注册的 schema 不受影响。详见 `docs/schema-evolution.md`。
 
+`init-db` 在注册事务里为每个已注册 schema 写 Protocol V2 发布记录（`docs/publication-protocol-v2.md`）：已有记录保留；
+`DROPPED` 记录在 id 重新注册时激活到下一个 epoch（旧 schema 的行须已清除）；没有记录的 schema 在 schema 锁下按 parquet 历史
+写 `UNPUBLISHED` 或 `AWAITING_INIT`。两种情况会被区别对待（#896）：
+- 本次新注册的 id 已有非 `DROPPED` 的记录：说明之前的注册没有经 `drop-schema` 退役就被删除了。新 schema 会继承旧 epoch、
+  旧的已发布 generation 和旧行，所以 `init-db` 失败并回滚这次注册。先运行 `drop-schema --schema-id <id>`，再运行 `init-db`。
+- 没有记录、但发布 generation 表里仍有该 id 的历史：说明 V2 记录丢失了，而不是未切换的 V1 schema。`init-db` 在 schema 锁下把记录
+  恢复到历史中最大 epoch 的下一个 epoch，以最大 generation 号作为计数器，因此不会重用任何 epoch 或 generation 号：仍注册的 schema
+  恢复为 `AWAITING_INIT`（随后运行 `cdc-init`，再重启读取方），本次新注册的 id 先恢复为 `DROPPED` 再按上条激活。
+
 示例：
 - `go run ./cmd/tools init-db`
 - `go run ./cmd/tools init-db -db-host 127.0.0.1 -db-name forma_dev -entity-main-table entity_main_dev -eav-table eav_dev`
+
+drop-schema
+-----------
+退役一个 schema（`docs/publication-protocol-v2.md` 的 Drop 转换）。先停止所有加载过该 schema 的服务端、`cdc-flush` 与 `cdc-init`。
+选项：数据库与表名选项同 `init-db`；`-schema-name` 或 `-schema-id` 二选一（注册行已被删除时用 `-schema-id`）；
+`-purge-batch`（默认 5000）为每条清除语句删除的行数。
+
+1. 一个事务内：取 schema 锁（`cdc-flush`/`cdc-init` 持有时拒绝），删除注册行与 generation 账本，`Reset` 发布记录到下一个 epoch 的 `DROPPED`。
+   此后读取方对该 schema 失败关闭，写入方的比较交换全部落空。
+2. 分批清除该 schema 在 entity main、EAV 与 `change_log` 中的行。每批先在事务里锁住仍为 `DROPPED` 的记录，所以 id 一旦重新注册，
+   清除即停止，不会删除新 schema 的行。中断后重新运行同一命令即可继续清除。
+
+完成后，`init-db` 以同一 id 重新注册时把记录激活到再下一个 epoch。旧 epoch 的 parquet 对象留待垃圾回收（#891）。
+不要只删除 `schema_registry` 行：发布记录会留下，下一次 `init-db` 拒绝以该 id 重新注册。
 
 apply-schema
 ------------
@@ -154,13 +181,16 @@ schema 的 `entity_main` 行数与版本号之和以及存活的 parquet 对象�
 选项（数据库与表名选项及其环境变量默认值与 `validate-schema-consistency` 相同）：
 - `-schema-dir`（`SCHEMA_DIR`，必填）：部署当前使用的 JSON Schema 目录。
 - `-schema`：只处理这个已注册的 schema。
-- `--no-parquet-tier`：部署没有 lakehouse 层，只审计 PostgreSQL。否则必须给出 `--s3-bucket` 与 `--manifest-template`
-  （与服务端的 DuckDB manifest 配置一致），可选 `--manifest-prefix`（`MANIFEST_PREFIX`）、`--data-prefix`（`S3_PREFIX`）及 S3 与 DuckDB 选项。
+- `--no-parquet-tier`：部署没有 lakehouse 层，只审计 PostgreSQL。否则必须给出 `--s3-bucket`（与服务端的 `DUCKDB_S3_BUCKET` 一致），
+  可选 S3 与 DuckDB 选项。审计的对象集合即联邦读扫描的集合：每个 schema 的发布记录为 `PUBLISHED` 时，其当前 generation 的 manifest
+  列出的对象（`docs/publication-protocol-v2.md`）；没有记录或记录为 `UNPUBLISHED`、`AWAITING_INIT`、`DROPPED` 的 schema 没有 parquet 对象可审计
+  （`AWAITING_INIT` 的 V2 `cdc-init` 从 PostgreSQL 导出，而 PostgreSQL 已被审计）。记录或 manifest 无法读取或无效时拒绝基线。
+  `--manifest-template`、`--manifest-prefix` 与 `--data-prefix` 已随 V1 读路径删除（#896）。
 - `-dry-run`：只报告审计结果，不写入。
 
 示例：
 - `go run ./cmd/tools baseline-schema -schema-dir schemas --no-parquet-tier`
-- `go run ./cmd/tools baseline-schema -schema-dir schemas --s3-bucket my-bucket --manifest-template 'manifest/{{.SchemaID}}.json'`
+- `go run ./cmd/tools baseline-schema -schema-dir schemas --s3-bucket my-bucket`
 
 migrate-rfc3339
 ---------------
@@ -213,3 +243,34 @@ build-unique-keys
 - `go run ./cmd/tools build-unique-keys -schema event_record -key idempotency -schema-dir schemas`
 - `go run ./cmd/tools build-unique-keys -schema event_record -schema-dir schemas`（构建全部键，删除已移除的键）
 - `go run ./cmd/tools build-unique-keys -schema event_record -key idempotency -rebuild -schema-dir schemas`（重建已构建的键）
+
+cdc-flush 与 cdc-init
+---------------------
+两者都只经发布记录发布（#896）：对象先写到本地临时文件，再以条件写（`If-None-Match: *`）写入从未用过的键，
+manifest 代际同样只写一次，然后在一个 PostgreSQL 事务里比较并推进记录（flush 的标记也在该事务内）。
+schema 没有发布记录时两者都拒绝（记录由 `init-db` 在注册或 V2 切换时写入）；记录为 `AWAITING_INIT` 时
+`cdc-flush` 拒绝并提示先运行 `cdc-init`；`DROPPED` 时两者都拒绝。
+
+共同选项：
+- `-s3-bucket`（必填）、`-s3-endpoint`、`-s3-region`、`-s3-use-ssl`、`-s3-use-path`。
+- `-s3-prefix`（默认 `data`）：V2 对象布局的数据前缀。parquet 写在 `{prefix}/{schema_id}/e{epoch}/{base|delta}/`，
+  manifest 写在 `{prefix}/{schema_id}/_manifests/`。同一部署的 `cdc-flush` 与 `cdc-init` 必须使用同一前缀：
+  flush 代际列出其前一个 init 的 base 文件，列出其他前缀下键的 manifest 在写入前就被拒绝。
+- `-change-log-table`（默认 `change_log`）：flush 在其中选取并标记未刷新条目，init 在其中移交导出行的条目。
+  必须是 `init-db` 建的表（`init-db` 的 `-change-log-table`，默认 `change_log_dev`），同一部署的两者必须一致。
+- `-pg-*`、`-pg-engine`（`postgresql` 或 `aurora-dsql`）、`-entity-main-table`、`-eav-table`、`-dry-run`
+  （不导出、不写对象、不改记录、不标记）。
+
+`cdc-flush` 选项：`-min-records`、`-max-age-ms`、`-max-batch-bytes`、`-estimated-row-bytes`、
+`-batch-size`（默认 10000；PostgreSQL 上整批在一条语句里标记，最多 32766，超出时在解析参数时拒绝；Aurora DSQL
+上一批按最多 1000 条一代分批发布）、`-pg-use-iam`、`-schema-registry-table`/`-schema-dir`。
+
+`cdc-init` 选项：`-schema-registry-table`/`-schema-dir`（必填）、`-schema-id`、`-batch-size`、`-target-file-size-mb`、
+`-max-batch-size`、`-estimated-row-bytes`。每个 base 文件是一个导出快照，行数由这些选项决定。
+
+已删除、不保留兼容路径的选项：`cdc-flush` 的 `-glob-only`，两者的 `-manifest-template`、`-manifest-prefix`，
+`cdc-init` 的 `-replace-delta` 与 `-delta-prefix`。传入任何一个都会被参数解析器以未定义的标志拒绝。
+
+发布 `COMMIT` 无应答且写入方无法判定结果时，工具会用新的上下文再结算一次（`Settle` / `ResumeInit`）。仍无法判定时，
+错误给出所暂存的代际、token 与 manifest 键，并说明遗留状态：flush 的标记随其发布一起提交，条目按 `change_log`
+所示保持已刷新或未刷新；init 的移交未运行，其导出条目保持未刷新（安全，下一次 flush 会重新导出）。

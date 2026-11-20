@@ -31,8 +31,8 @@ import (
 // TestPgxHotLegMixedTierTiebreakWalk (the flushed order), the deleted_ts
 // walks, boundaries and offset form in TestDeletedTSKeysetWalk and
 // TestDeletedTSKeysetBoundaries (row_id order and the Go predicate), and the
-// flush race in TestFlushGraceExactAnchorCoversInFlightFlush and
-// TestPgxHotLegRacedFlushWithWideningOff (the raced rows and values).
+// flush race in TestPublishedPassRacingAPublication (the raced rows and
+// values).
 
 // flushedOracle records the requests a test answers on the Env's engine, to
 // ask them again in settle.
@@ -79,7 +79,6 @@ func (o *flushedOracle) query(ctx context.Context, t *testing.T, label string, q
 func (o *flushedOracle) settle(ctx context.Context, t *testing.T) int {
 	t.Helper()
 	mustFlush(ctx, t, o.env)
-	waitWallClockTick(t)
 	hotPages := 0
 	for _, a := range o.asked {
 		if src, ok := planSource(a.res.Plan, hotLegPgxReason); ok && src.ActualRows > 0 {

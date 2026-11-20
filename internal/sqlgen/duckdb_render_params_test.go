@@ -26,16 +26,6 @@ func TestParquetOnlyTemplate_NoResourcePragmas(t *testing.T) {
 	require.NotContains(t, sql, "PRAGMA")
 }
 
-// Test RenderS3ParquetPath templating.
-func TestRenderS3ParquetPath_Render(t *testing.T) {
-	got, err := RenderS3ParquetPath("s3://bucket/schema_{{.SchemaID}}/data.parquet", 42)
-	require.NoError(t, err)
-	require.Equal(t, "s3://bucket/schema_42/data.parquet", got)
-
-	_, err = RenderS3ParquetPath("", 1)
-	require.Error(t, err)
-}
-
 // TestInjectDuckDBTemplateParams_KeysetPositionalPlaceholders pins the #212
 // placeholder contract: the keyset clause uses positional "?" only (never
 // "$n" — see the #161 regression test for why mixing mis-binds), and prefix

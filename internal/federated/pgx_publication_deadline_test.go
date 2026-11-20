@@ -49,7 +49,7 @@ func (f *failingScan) queryStaged(context.Context, []uuid.UUID, string, ...any) 
 func TestAPassDeadlineIsNotChargedToTheBreakerAndNeverDegrades(t *testing.T) {
 	f := newPgxFixture(t, tieRunRows())
 	pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
-	e, duck, _ := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
+	e, duck := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
 	e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
 	rec := recordDegradedFallbacks(e)
 	scan := &blockingScan{countingDuck: duck, causes: make(chan error, 2)}
@@ -75,7 +75,7 @@ func TestAPassDeadlineIsNotChargedToTheBreakerAndNeverDegrades(t *testing.T) {
 func TestARetryRefusedAfterAPassDeadlineKeepsTheDeadline(t *testing.T) {
 	f := newPgxFixture(t, tieRunRows())
 	pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
-	e, duck, _ := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
+	e, duck := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
 	e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
 	rec := recordDegradedFallbacks(e)
 	e.duck = &openingScan{countingDuck: duck, e: e}
@@ -99,7 +99,7 @@ func TestAProbeThatRunsOutOfTimeKeepsTheDeadline(t *testing.T) {
 		f := newPgxFixture(t, tieRunRows())
 		pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
 		pub.probeBlocks = true
-		e, duck, _ := publishedEngine(t, f, pub)
+		e, duck := publishedEngine(t, f, pub)
 		rec := recordDegradedFallbacks(e)
 		e.duck = &failingScan{countingDuck: duck}
 
@@ -118,7 +118,7 @@ func TestAProbeThatRunsOutOfTimeKeepsTheDeadline(t *testing.T) {
 		f := newPgxFixture(t, tieRunRows())
 		pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
 		pub.probeBlocks = true
-		e, duck, _ := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
+		e, duck := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
 		e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
 		rec := recordDegradedFallbacks(e)
 		e.duck = &failingScan{countingDuck: duck}
@@ -144,7 +144,7 @@ func TestAConfirmedLossSurvivesAPassDeadlineDuringTheProbe(t *testing.T) {
 	pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
 	pub.missing = []string{"base.parquet"}
 	pub.probeBlocks = true
-	e, duck, _ := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
+	e, duck := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
 	e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
 	rec := recordDegradedFallbacks(e)
 	e.duck = &failingScan{countingDuck: duck}
@@ -208,7 +208,7 @@ func TestAPublicationFaultTheRetryMeetsIsNotAFailedRead(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPgxFixture(t, tieRunRows())
 			pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
-			e, duck, _ := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
+			e, duck := publishedEngine(t, f, pub, WithPublicationReader(pub, 50*time.Millisecond))
 			e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
 			rec := recordDegradedFallbacks(e)
 			e.duck = &deadlineThenFault{countingDuck: duck, fault: tc.fault, pub: pub}

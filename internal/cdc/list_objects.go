@@ -12,7 +12,7 @@ import (
 
 // S3ListClient is the one-method surface a prefix listing needs. *s3.Client
 // satisfies it, as does every wider client interface that carries
-// ListObjectsV2 (S3InitClient, reconcile's object API, the e2e harness's
+// ListObjectsV2 (reconcile's object API, the e2e harness's
 // cluster client).
 type S3ListClient interface {
 	ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
@@ -21,10 +21,9 @@ type S3ListClient interface {
 // ErrIncompleteObjectListing marks a listing whose pages cannot be followed
 // to the end: a truncated page without a continuation token, or a token the
 // listing has already used. The inventory built on such a listing would be
-// short — cdc-init's --replace-delta purge would delete less than the delta
-// tier holds (#371 review), and manifest-reconcile would under-report
-// orphans and over-report dangling entries while still saying "ok" (#521) —
-// so the listing fails closed instead.
+// short, and manifest-reconcile would under-report orphans and over-report
+// dangling entries while still saying "ok" (#521), so the listing fails
+// closed instead.
 var ErrIncompleteObjectListing = errors.New("object listing incomplete")
 
 // ForEachObject is the shared ListObjectsV2 paginator: it calls fn for every

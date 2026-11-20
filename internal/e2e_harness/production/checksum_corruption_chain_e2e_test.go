@@ -16,7 +16,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/reconcile"
 )
@@ -77,10 +76,12 @@ func TestChecksumChainDetectsSilentDeltaCorruption(t *testing.T) {
 	})
 
 	t.Run("compaction_refuses_the_corrupted_source", func(t *testing.T) {
+		skipUntilV2Compaction(t)
 		assertCompactionRefusesCorruptSource(ctx, t, env, wide, deltaKey)
 	})
 
 	t.Run("compaction_opt_out_proceeds_past_the_gate", func(t *testing.T) {
+		skipUntilV2Compaction(t)
 		assertChecksumOptOutRewrites(ctx, t, env, wide, deltaKey, deltaEntry.Path, pristine)
 	})
 }
@@ -242,9 +243,9 @@ func assertChecksumOptOutRewrites(ctx context.Context, t *testing.T, env *Env,
 func assertEntryChecksumMatchesBytes(ctx context.Context, t *testing.T, env *Env,
 	label string, entry ManifestEntry) {
 	t.Helper()
-	if !strings.HasPrefix(entry.Checksum, cdc.ChecksumSHA256Prefix) {
-		t.Fatalf("%s: manifest entry %s has checksum %q, want a %q-prefixed stamp",
-			label, entry.Path, entry.Checksum, cdc.ChecksumSHA256Prefix)
+	if len(entry.Checksum) != 64 || strings.ToLower(entry.Checksum) != entry.Checksum {
+		t.Fatalf("%s: manifest entry %s has checksum %q, want 64 lowercase hex digits (a V2 manifest's sha256)",
+			label, entry.Path, entry.Checksum)
 	}
 	key := mustManifestKey(t, env, entry.Path)
 	want := localObjectSHA256(fetchObjectBytes(ctx, t, env, key))
@@ -255,12 +256,12 @@ func assertEntryChecksumMatchesBytes(ctx context.Context, t *testing.T, env *Env
 	t.Logf("stamp==bytes: %s — %s (%d bytes)", label, entry.Checksum, entry.SizeBytes)
 }
 
-// localObjectSHA256 recomputes the manifest stamp format independently of
-// cdc.ObjectSHA256, so the assertions above are an oracle rather than a
-// restatement of the production helper.
+// localObjectSHA256 recomputes the manifest stamp format, a V2 manifest
+// file's sha256 as 64 lowercase hex digits, independently of the writer, so
+// the assertions above are an oracle rather than a restatement of it.
 func localObjectSHA256(data []byte) string {
 	sum := sha256.Sum256(data)
-	return cdc.ChecksumSHA256Prefix + hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:])
 }
 
 // fetchObjectBytes reads one object in full through the harness S3 client.

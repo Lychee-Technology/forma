@@ -70,10 +70,13 @@ type SkippedSchema struct {
 	Reason   string
 }
 
-// FlushReport is what a flush run reports besides its error. Skipped does
-// not depend on the run's logger, so a caller with a no-op logger still
-// learns which schemas were not exported.
+// FlushReport is what a flush run reports besides its error. It does not
+// depend on the run's logger, so a caller with a no-op logger still learns
+// what each schema published and which schemas were not exported.
 type FlushReport struct {
+	// Flushed lists what each schema's flush published, in run order, for
+	// the schemas whose writer selected entries or committed a generation.
+	Flushed []SchemaFlush
 	Skipped []SkippedSchema
 }
 

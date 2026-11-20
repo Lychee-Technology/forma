@@ -140,8 +140,8 @@ func TestTypeGuardAdmitsWholeValues(t *testing.T) {
 	env.AssertQueryMatches(ctx, Query{Schema: simple, Filters: []Filter{{Attr: "qty", Op: "gte", Value: "0"}}, Limit: 20})
 }
 
-// A manifest entry without a column stamp is judged from the object's footer:
-// a stale DOUBLE object beside a current BIGINT one is refused by name.
+// A listed object whose footer holds a stale DOUBLE beside a current BIGINT
+// one is refused by name.
 func TestTypeGuardProbesAnUnstampedManifestEntry(t *testing.T) {
 	ctx := context.Background()
 	cluster := SharedCluster(t)
@@ -151,7 +151,7 @@ func TestTypeGuardProbesAnUnstampedManifestEntry(t *testing.T) {
 	requireParquetCols(t, "bigint generation", describeParquetCols(ctx, t, env, current), map[string]string{"qty": "BIGINT"})
 	assertUsesDuckDB(t, env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 20}))
 
-	stale := buildSchemaKeyPrefix(env, simple) + "stale_qty_zzz.parquet"
+	stale := newTestParquetKey(ctx, t, env, simple, "delta")
 	writeParquetViaDuck(ctx, t, env, fmt.Sprintf(
 		"SELECT * REPLACE (gen_random_uuid() AS row_id, CAST(1000.5 AS DOUBLE) AS qty) FROM read_parquet('%s') LIMIT 1",
 		env.ParquetURI(current)), stale)
@@ -186,13 +186,17 @@ func TestTypeGuardDoesNotSkipAnUnreadableObject(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster, WithSchemaDir(writeSimpleSchemaDir(t, qtyProps, qtyAttrs("bigint", true))))
 	simple := DefaultSchemaFixtures()[0]
-	seedQty(ctx, t, env, simple, 1, 2)
+	current := seedQty(ctx, t, env, simple, 1, 2)
 
-	unreadable := buildSchemaKeyPrefix(env, simple) + "unreadable_zzz.parquet"
-	putObjectBytes(ctx, t, env, unreadable, []byte("not a parquet object"))
+	// A V2 manifest lists only an object it could describe, so the object
+	// is listed while readable and its bytes are replaced afterwards.
+	unreadable := newTestParquetKey(ctx, t, env, simple, "delta")
+	writeParquetViaDuck(ctx, t, env, fmt.Sprintf(
+		"SELECT * REPLACE (gen_random_uuid() AS row_id) FROM read_parquet('%s') LIMIT 1", env.ParquetURI(current)), unreadable)
 	if err := env.RegisterParquetInManifest(ctx, simple, unreadable, "delta"); err != nil {
-		t.Fatalf("register unreadable parquet: %v", err)
+		t.Fatalf("register the parquet made unreadable below: %v", err)
 	}
+	putObjectBytes(ctx, t, env, unreadable, []byte("not a parquet object"))
 	_, err := env.Query(ctx, Query{Schema: simple, Limit: 20})
 	if err == nil {
 		t.Fatal("an unreadable live object must fail the read, not be skipped")

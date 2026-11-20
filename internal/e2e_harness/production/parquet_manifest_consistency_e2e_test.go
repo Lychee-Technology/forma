@@ -12,10 +12,11 @@ import (
 	fedengine "github.com/lychee-technology/forma/internal/federated"
 )
 
-// TestManifestConsistency_MissingListedParquet pins #187 scenario 2 as a
-// contract: deleting a manifest-listed parquet object (5 flushed rows vanish
-// from storage while the manifest still lists the file) must classify as
-// ErrParquetSetInconsistent naming the missing key — never silently succeed
+// TestManifestConsistency_MissingListedParquet pins #187 scenario 2 and
+// #759's partial-match case as a contract: deleting an object the published
+// generation lists (5 flushed rows vanish from storage while the manifest
+// still lists the file) must classify as ErrPublicationInconsistent naming
+// the schema, its generation and the missing key — never silently succeed
 // with fewer rows, which is what the flat glob did before manifest-driven
 // reads: the glob expanded to whatever objects survived, so cold-tier data
 // loss was invisible to callers and operators alike.
@@ -42,15 +43,19 @@ func TestManifestConsistency_MissingListedParquet(t *testing.T) {
 	if err == nil {
 		t.Fatal("query silently succeeded with a manifest-listed parquet missing from storage (#187 scenario 2)")
 	}
-	if !errors.Is(err, fedengine.ErrParquetSetInconsistent) {
-		t.Fatalf("missing listed parquet must classify as ErrParquetSetInconsistent, got: %v", err)
+	if !errors.Is(err, fedengine.ErrPublicationInconsistent) {
+		t.Fatalf("missing listed parquet must classify as ErrPublicationInconsistent, got: %v", err)
 	}
-	var typed *fedengine.ParquetSetInconsistentError
+	var typed *fedengine.PublicationConsistencyError
 	if !errors.As(err, &typed) {
-		t.Fatalf("error chain must carry ParquetSetInconsistentError, got: %v", err)
+		t.Fatalf("error chain must carry PublicationConsistencyError, got: %v", err)
 	}
 	if typed.SchemaID != wide.ID {
 		t.Errorf("inconsistency names schema %d, want %d", typed.SchemaID, wide.ID)
+	}
+	if published := loadSchemaManifest(ctx, t, env, wide); typed.Epoch != published.Epoch || typed.Generation != published.Generation {
+		t.Errorf("inconsistency names epoch %d generation %d, want the published epoch %d generation %d",
+			typed.Epoch, typed.Generation, published.Epoch, published.Generation)
 	}
 	if len(typed.MissingKeys) != 1 || typed.MissingKeys[0] != keys[1] {
 		t.Errorf("inconsistency names missing keys %v, want [%s]", typed.MissingKeys, keys[1])
@@ -65,7 +70,7 @@ func TestManifestConsistency_MissingListedParquet(t *testing.T) {
 	if err == nil {
 		t.Fatal("degraded mode re-silenced the manifest inconsistency (#187 scenario 2)")
 	}
-	if !errors.Is(err, fedengine.ErrParquetSetInconsistent) {
+	if !errors.Is(err, fedengine.ErrPublicationInconsistent) {
 		t.Fatalf("degraded-mode error must keep the inconsistency classification, got: %v", err)
 	}
 }

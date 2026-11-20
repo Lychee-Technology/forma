@@ -51,20 +51,9 @@ func coldPlanCacheMetadata(t *testing.T) *schemameta.MetadataCache {
 // plan_cache=miss).
 func runColdPlanCacheQuery(t *testing.T, e *DBFederatedQueryEngine, duck *fakeDuckDBExecutor) (string, []string) {
 	t.Helper()
-	return runColdPlanCacheQueryWithHint(t, e, duck, "")
-}
-
-// runColdPlanCacheQueryWithHint is the same request with an optional explicit
-// S3ParquetPathTemplate hint (which always wins over the parquet source), so
-// the glob variant below can drive the identical query shape over a glob path
-// set.
-func runColdPlanCacheQueryWithHint(
-	t *testing.T, e *DBFederatedQueryEngine, duck *fakeDuckDBExecutor, pathHint string,
-) (string, []string) {
-	t.Helper()
 	opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true,
 		ExecutionPlan: &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}}
-	runColdPlanCacheQueryWith(t, e, duck, pathHint, opts)
+	runColdPlanCacheQueryWith(t, e, duck, opts)
 	return duck.lastSQL, opts.ExecutionPlan.Notes
 }
 
@@ -77,7 +66,7 @@ const coldPlanCacheSchemaID int16 = 7
 // requested), so metric tests can run the same request with and without an
 // execution plan.
 func runColdPlanCacheQueryWith(
-	t *testing.T, e *DBFederatedQueryEngine, duck *fakeDuckDBExecutor, pathHint string, opts *model.FederatedQueryOptions,
+	t *testing.T, e *DBFederatedQueryEngine, duck *fakeDuckDBExecutor, opts *model.FederatedQueryOptions,
 ) {
 	t.Helper()
 	q := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{
@@ -86,9 +75,6 @@ func runColdPlanCacheQueryWith(
 		Limit:     2000,
 	}}
 	q.PreferredTiers = []model.DataTier{model.DataTierHot, model.DataTierCold}
-	if pathHint != "" {
-		q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: pathHint}
-	}
 	tables := model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"}
 
 	duck.rows = &singleDuckDBRow{rowID: uuid.New()}
@@ -117,7 +103,7 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil,
 		hybridDuckConfig(),
 		coldPlanCacheMetadata(t), WithPlanCache(queryplan.NewCache(64)),
-		WithParquetSource(&fakeParquetSource{paths: []string{coldPlanCachePath}}), withFakeHotLeg(nil))
+		withParquetSource(&fakeParquetSource{paths: []string{coldPlanCachePath}}), withFakeHotLeg(nil))
 
 	// Pre-flush: the validator's write-once cache holds the v1 footer, so the
 	// probe never reaches the fake executor and the union is complete.
@@ -153,75 +139,5 @@ func TestEngineColdMissingSetRekeysPlanCache(t *testing.T) {
 	require.NotContains(t, sql3, ", NULL::",
 		"no missing columns: the scan source carries no typed-NULL augmentation at all")
 	require.Contains(t, sql3, sqlgen.ParquetNullRowIDMessage,
-		"the row_id guard renders in every state, augmented or not (#256)")
-}
-
-// coldPlanCacheGlob is a glob path hint: it is the ENTIRE scan-set string the
-// plan-cache scope key sees, and — unlike a concrete manifest listing — it is
-// byte-identical before and after a flush lands a new object. That is what
-// makes it the production-realistic form of the #255 hazard.
-const coldPlanCacheGlob = "s3://b/7/*.parquet"
-
-// coldPlanCacheDescribeRows renders a footer in the DESCRIBE row shape the
-// validator scans. The system columns must be present or parquetcheck fails
-// the invariant before any of this is reached.
-func coldPlanCacheDescribeRows(withScore bool) [][2]string {
-	rows := [][2]string{
-		{"row_id", "UUID"}, {"changed_at", "BIGINT"}, {"deleted_at", "BIGINT"}, {"ltbase_created_at", "BIGINT"},
-		{"age", "INTEGER"},
-	}
-	if withScore {
-		rows = append(rows, [2]string{"score", "INTEGER"})
-	}
-	return rows
-}
-
-// TestEngineColdMissingSetRekeysPlanCacheViaGlobExpansion models the trigger
-// #255 actually fires on in production, which the sibling test above can only
-// stand in for: parquet objects are write-once, so an already-validated
-// footer never changes — the column union grows because the scan set's GLOB
-// EXPANSION GAINED A FILE (the first flush minting a new delta object).
-//
-// The glob string itself — the only path component the plan-cache scope key
-// sees — is byte-identical across both runs, and so are the query shape,
-// tables, limit, offset and fingerprint. Nothing but the cold-missing set can
-// therefore explain the run-2 miss: drop the missing set from
-// duckPlanScopeParts and run 2 becomes a hit that keeps projecting NULL over
-// the freshly flushed column.
-func TestEngineColdMissingSetRekeysPlanCacheViaGlobExpansion(t *testing.T) {
-	restore := initTestDescriptors()
-	defer restore()
-
-	duck := &fakeDuckDBExecutor{
-		globFiles: []string{"s3://b/7/base.parquet"},
-		describeCols: map[string][][2]string{
-			"base.parquet": coldPlanCacheDescribeRows(false),
-		},
-	}
-	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil,
-		hybridDuckConfig(),
-		coldPlanCacheMetadata(t), WithPlanCache(queryplan.NewCache(64)), withFakeHotLeg(nil))
-
-	// Run 1 — pre-flush: the glob expands to the single v1 base object, whose
-	// footer has no `score`.
-	sql1, notes1 := runColdPlanCacheQueryWithHint(t, e, duck, coldPlanCacheGlob)
-	require.Contains(t, sql1, "NULL::DOUBLE AS score",
-		"cold-absent attribute must render as a typed NULL in the scan source")
-	require.Contains(t, notes1, "plan_cache=miss", "first request compiles")
-
-	// The first flush mints a NEW object carrying `score`. The already-probed
-	// base footer is untouched (write-once) and stays served from the
-	// validator's cache; only the expansion changed.
-	duck.globFiles = []string{"s3://b/7/base.parquet", "s3://b/7/delta1.parquet"}
-	duck.describeCols["delta1.parquet"] = coldPlanCacheDescribeRows(true)
-
-	sql2, notes2 := runColdPlanCacheQueryWithHint(t, e, duck, coldPlanCacheGlob)
-	require.Contains(t, notes2, "plan_cache=miss",
-		"the missing set ALONE must re-key the plan cache: the glob path string never changed (#255)")
-	require.NotContains(t, sql2, "NULL::DOUBLE AS score",
-		"post-flush the real column must be scanned, not a cached NULL projection")
-	require.NotContains(t, sql2, ", NULL::",
-		"no missing columns: the scan source carries no typed-NULL augmentation at all")
-	require.Contains(t, sql2, sqlgen.ParquetNullRowIDMessage,
 		"the row_id guard renders in every state, augmented or not (#256)")
 }

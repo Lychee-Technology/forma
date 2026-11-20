@@ -12,6 +12,11 @@ import (
 // but DuckDB's read_parquet would expand (#527).
 var globPrefixes = []string{"data/*", "data/**", "data?", "data[1]", "*"}
 
+// dotSegmentPrefixes are parquet prefixes whose `.` or `..` segment the AWS
+// SDK keeps in the object key while DuckDB normalizes it away (#896), so the
+// reader would address another object than the one the writer stored.
+var dotSegmentPrefixes = []string{"./data", "data/..", "data/../other", "a/./b", ".."}
+
 // TestWriterToolsRejectGlobPrefix pins #527 on the CLI side: every tool that
 // writes, lists or reads parquet under a prefix flag refuses a glob
 // metacharacter at flag parse, before any connection is opened, with the
@@ -31,10 +36,6 @@ func TestWriterToolsRejectGlobPrefix(t *testing.T) {
 			_, err := parseCDCInitFlags([]string{"--s3-bucket", "bkt", "--schema-registry-table", "t", "--schema-dir", "d", "--s3-prefix", p})
 			return err
 		}},
-		{"cdc-init", "delta-prefix", func(p string) error {
-			_, err := parseCDCInitFlags([]string{"--s3-bucket", "bkt", "--schema-registry-table", "t", "--schema-dir", "d", "--delta-prefix", p})
-			return err
-		}},
 		{"compactor", "data-prefix", func(p string) error {
 			_, err := parseCompactorFlags([]string{"--schema-id", "7", "--s3-bucket", "bkt", "--data-prefix", p})
 			return err
@@ -42,10 +43,6 @@ func TestWriterToolsRejectGlobPrefix(t *testing.T) {
 		{"manifest-reconcile", "data-prefix", func(p string) error {
 			_, err := parseReconcileFlags([]string{"--s3-bucket", "bkt", "--schema-registry-table", "t", "--data-prefix", p})
 			return err
-		}},
-		{"baseline-schema", "data-prefix", func(p string) error {
-			flags := baselineParquetFlags{s3: s3Flags{bucket: "bkt"}, manifestTemplate: "manifest/{{.SchemaID}}.json", dataPrefix: p}
-			return flags.validate()
 		}},
 	}
 	for _, tc := range parsers {
@@ -63,7 +60,17 @@ func TestWriterToolsRejectGlobPrefix(t *testing.T) {
 					t.Errorf("--%s %q: error %q must name the flag and the reason", tc.flag, prefix, err.Error())
 				}
 			}
-			for _, prefix := range []string{"", "data", "delta/v2", "base_2026-11"} {
+			for _, prefix := range dotSegmentPrefixes {
+				err := tc.parse(prefix)
+				var configErr *forma.ConfigError
+				if !errors.As(err, &configErr) || configErr.Field != tc.flag {
+					t.Fatalf("--%s %q: want a ConfigError naming the flag, got %T (%v)", tc.flag, prefix, err, err)
+				}
+				if !strings.Contains(err.Error(), "path segment") {
+					t.Errorf("--%s %q: error %q must name the reason", tc.flag, prefix, err.Error())
+				}
+			}
+			for _, prefix := range []string{"", "data", "delta/v2", "base_2026-11", "v1.2/data", ".hidden"} {
 				if err := tc.parse(prefix); err != nil {
 					t.Fatalf("--%s %q must parse: %v", tc.flag, prefix, err)
 				}

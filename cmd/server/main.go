@@ -7,11 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
-
-	"github.com/lychee-technology/forma/internal/schemameta"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
@@ -64,38 +61,27 @@ func main() {
 }
 
 // duckDBConfigFromEnv turns on the federated DuckDB engine when DUCKDB_ENABLED
-// is true, wiring its S3/httpfs and manifest settings from the environment.
-// When disabled it returns base unchanged (DuckDB off — the production default).
+// is true, wiring its S3/httpfs settings and the lakehouse bucket from the
+// environment. When disabled it returns base unchanged (DuckDB off — the
+// production default).
 //
 // Both booleans are strict (#642): a set value that is not a boolean is an
-// *bootstrap.EnvError, returned with base unchanged. Like the engine and
-// manifest names below, DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE is read only when
-// DuckDB is on, and also when DUCKDB_ENABLED itself is refused, since that
-// operator was configuring DuckDB and one boot should name both bad values.
-// It is the §7.2 degraded fallback, off unless set (#715): with it, a
-// degradable DuckDB failure is answered from PostgreSQL alone, which moves
-// the scans of an S3 outage onto PostgreSQL.
-// DUCKDB_QUERY_TIMEOUT_SECONDS is not gated here: it is a limit, read by
-// bootstrap.ApplyLimitsFromEnv whatever DUCKDB_ENABLED holds.
+// *bootstrap.EnvError, returned with base unchanged. Like the engine names
+// below, DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE is read only when DuckDB is on,
+// and also when DUCKDB_ENABLED itself is refused, since that operator was
+// configuring DuckDB and one boot should name both bad values. It is the
+// §7.2 degraded fallback, off unless set (#715): with it, a degradable DuckDB
+// failure is answered from PostgreSQL alone, which moves the scans of an S3
+// outage onto PostgreSQL. DUCKDB_QUERY_TIMEOUT_SECONDS is not gated here: it
+// is a limit, read by bootstrap.ApplyLimitsFromEnv whatever DUCKDB_ENABLED
+// holds.
 //
 // Each field reads its DUCKDB_-prefixed name first, then a shared name reserved
-// as the single-stack configuration point (future CDC runners may read the same
-// names), then the base value. The two prefix fields — S3DataPrefix and
-// ManifestPrefix — deviate: a prefix set without a manifest template is inert
-// and ValidateManifestRead rejects it, so adopting a shared prefix on its own
-// would stop an existing deployment from booting after an upgrade. Therefore:
-//
-//   - DUCKDB_S3_PREFIX / DUCKDB_MANIFEST_PREFIX are always adopted. An
-//     explicitly-named inert value is a misconfiguration the operator should
-//     hear about, so the factory's startup rejection is the intended outcome.
-//   - S3_PREFIX / MANIFEST_PREFIX are adopted only when the effective manifest
-//     template (resolved first, from DUCKDB_MANIFEST_TEMPLATE, then
-//     MANIFEST_TEMPLATE, then base) is non-empty — all-or-nothing with the
-//     template that gives them meaning.
-//
-// S3_BUCKET has no such condition: a bucket alone never makes the config inert.
-// DUCKDB_MANIFEST_TEMPLATE is the switch for manifest-driven reads; if set
-// without a bucket, the server fails at startup (factory fail-fast).
+// as the single-stack configuration point, then the base value. The bucket is
+// required with DuckDB on: the reader takes each schema's manifest from its
+// publication record and scans the objects it lists there
+// (docs/publication-protocol-v2.md), so no prefix or manifest template is
+// read. Without a bucket the server fails at startup (Config.Validate).
 // DUCKDB_HOT_LEG_TRANSPORT names the federated hot leg. pgx is the only one
 // (design.md §6.1); the retired attach value fails startup (#858).
 // DUCKDB_ROUTING_STRATEGY names the engine's routing strategy (hybrid, the
@@ -121,11 +107,6 @@ func duckDBConfigFromEnv(base forma.DuckDBConfig) (forma.DuckDBConfig, error) {
 	base.S3SecretKey = bootstrap.Env("DUCKDB_S3_SECRET_KEY", bootstrap.Env("S3_SECRET_KEY", base.S3SecretKey))
 	base.S3Region = bootstrap.Env("DUCKDB_S3_REGION", "us-east-1")
 	base.S3Bucket = bootstrap.Env("DUCKDB_S3_BUCKET", bootstrap.Env("S3_BUCKET", base.S3Bucket))
-
-	base.ManifestTemplate = bootstrap.Env("DUCKDB_MANIFEST_TEMPLATE", bootstrap.Env("MANIFEST_TEMPLATE", base.ManifestTemplate))
-	manifestOn := strings.TrimSpace(base.ManifestTemplate) != ""
-	base.S3DataPrefix = prefixFromEnv("DUCKDB_S3_PREFIX", "S3_PREFIX", base.S3DataPrefix, manifestOn)
-	base.ManifestPrefix = prefixFromEnv("DUCKDB_MANIFEST_PREFIX", "MANIFEST_PREFIX", base.ManifestPrefix, manifestOn)
 	base.AllowPartialDegradedMode = allowDegraded
 	base.Routing.Strategy = strategy
 	// pgx is the only transport since #858. The variable is still read so
@@ -153,27 +134,14 @@ func routingStrategyFromEnv(baseValue forma.RoutingStrategy) (forma.RoutingStrat
 
 var errUnknownRoutingStrategy = errors.New("unknown routing strategy")
 
-// prefixFromEnv resolves one of the two inert-when-alone prefix fields. The
-// DUCKDB_-prefixed name always wins; the shared name is consulted only when a
-// manifest template is in effect. See duckDBConfigFromEnv for why.
-func prefixFromEnv(duckDBName, sharedName, baseValue string, manifestOn bool) string {
-	if explicit := bootstrap.Env(duckDBName, ""); explicit != "" {
-		return explicit
-	}
-	if manifestOn {
-		return bootstrap.Env(sharedName, baseValue)
-	}
-	return baseValue
-}
-
 func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRuntime, error) {
 	// Get configuration from environment variables
 	schemaDir := bootstrap.Env("SCHEMA_DIR", "")
 	sugar.Infof("schemaDir: %s", schemaDir)
 
 	// Invariant: the whole configuration is resolved and validated before the
-	// server opens any connection. The factory validates the DuckDB manifest
-	// surface too, but only after it has already queried the database, so
+	// server opens any connection. The factory validates the DuckDB parquet
+	// read surface too, but only after it has already queried the database, so
 	// doing it here is what makes the documented "invalid configuration fails
 	// at startup, before any I/O" contract (docs/federated-query/design.md
 	// §4.3.1, README request limits) literally true for the server. Keep this
@@ -196,13 +164,12 @@ func bootstrapServer(ctx context.Context, sugar *zap.SugaredLogger) (*serverRunt
 		return nil, fmt.Errorf("failed to create database pool: %w", err)
 	}
 
-	// Create file-based schema registry from database
-	registry, err := schemameta.NewFileSchemaRegistryContext(startupCtx, pool, dbConfig.TableNames.SchemaRegistry, schemaDir)
-	if err != nil {
+	// Create the file-based schema registry from the database, after reading
+	// the publication epochs it belongs to (forma.Config.SchemaRegistryEpochs).
+	if err := factory.LoadFileSchemaRegistryContext(startupCtx, config, pool, schemaDir); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("failed to create schema registry: %w", err)
+		return nil, err
 	}
-	config.SchemaRegistry = registry
 
 	// Initialize EntityManager with the same pool used by schema registry.
 	manager, err := factory.NewEntityManagerWithConfigContext(startupCtx, config, pool)

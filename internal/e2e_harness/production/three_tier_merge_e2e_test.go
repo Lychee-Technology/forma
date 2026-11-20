@@ -213,9 +213,10 @@ func testDirtyHotShadowsCold(ctx context.Context, t *testing.T, env *Env, wide S
 // testChangedAtBeatsTierLayout supersedes the ConflictingCreatedAndUpdatedAt
 // stub. Three physical copies of every row coexist across the cold tier: v1
 // and v2 in two delta generations plus the base copy of v1 written by
-// cdc-init before the first flush (#371: init refuses over a populated delta
-// tier; since #210 it stamps ltbase_updated_at as the version timestamp, so
-// the base copy ranks exactly at v1's delta). LWW must pick the strictly
+// cdc-init before the first flush (an init generation lists only its own
+// base, so it comes first). The cdc-init handoff marks the exported rows, so
+// v1 reaches delta #1 through a re-write at unchanged values, ranking just
+// after the base copy. LWW must pick the strictly
 // newest changed_at (the update time) — not created_at, tier tags, or file
 // write order: a ranking keyed on created_at would see all three copies tie
 // and could surface v1, and so would a tier-priority ranking.
@@ -224,8 +225,8 @@ func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, w
 	if err := env.ApplyEvents(ctx, creates...); err != nil {
 		t.Fatalf("apply creates: %v", err)
 	}
-	// Init before the first flush (#371: init refuses over a populated delta
-	// tier). The base therefore carries v1, which makes the layout a harder
+	// Init before the first flush: an init generation lists only its own
+	// base. The base therefore carries v1, which makes the layout a harder
 	// case than the former base-of-v2: a tier-priority ranking would now
 	// surface v1 from the base.
 	report, err := env.RunInit(ctx, wide) // base = v1 attrs @ create-time ver_ts (#210)
@@ -235,7 +236,9 @@ func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, w
 	if report.RowsExported != 5 {
 		t.Fatalf("init exported %d rows, want 5", report.RowsExported)
 	}
-	mustFlush(ctx, t, env) // delta #1 = v1 @ create-time ver_ts
+	env.MarkOnboarded(ctx, wide)
+	v1Rewrites := redirtyRows(ctx, t, env, wide, creates)
+	mustFlush(ctx, t, env) // delta #1 = v1 @ re-write ver_ts
 
 	v2 := make([]*Event, 0, len(creates))
 	for i, c := range creates {
@@ -251,9 +254,9 @@ func testChangedAtBeatsTierLayout(ctx context.Context, t *testing.T, env *Env, w
 	// later than the create's at millisecond resolution, so the test fails
 	// fast instead of degrading into an undefined equal-ver_ts tie.
 	for i := range creates {
-		if v2[i].ChangedAt <= creates[i].ChangedAt {
-			t.Fatalf("row %d: v2 changed_at %d not strictly after create changed_at %d",
-				i, v2[i].ChangedAt, creates[i].ChangedAt)
+		if v2[i].ChangedAt <= v1Rewrites[i].ChangedAt {
+			t.Fatalf("row %d: v2 changed_at %d not strictly after v1's re-write changed_at %d",
+				i, v2[i].ChangedAt, v1Rewrites[i].ChangedAt)
 		}
 	}
 	flush2 := mustFlush(ctx, t, env) // delta #2 = v2 @ update-time ver_ts

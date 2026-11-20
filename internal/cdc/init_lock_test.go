@@ -25,9 +25,9 @@ func TestProcessInitSchemas_ContendedLockRecordsErrorAndContinues(t *testing.T) 
 			}
 			return ctx, func() { unlockCalled = append(unlockCalled, sid) }, true, nil
 		}),
-		initSchemaFn: func(_ context.Context, _ *initRunContext, sid int16) (int64, int, error) {
+		initSchemaFn: func(_ context.Context, _ *initRunContext, sid int16) (SchemaInit, error) {
 			initCalled = append(initCalled, sid)
-			return 5, 1, nil
+			return SchemaInit{SchemaID: sid, Rows: 5, Files: 1}, nil
 		},
 	}
 	summary, err := processInitSchemas(context.Background(), runCtx, []int64{7, 8})

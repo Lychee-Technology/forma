@@ -121,7 +121,9 @@ export async function validateCDCOutput(opts: {
   result.manifestCount = manifests.length;
 
   for (const m of manifests) {
-    let parsed: { files?: Array<{ path?: string }> };
+    // A V2 manifest generation names each object by `key` (#896); a V1
+    // manifest (the compactor's) by `path`.
+    let parsed: { files?: Array<{ path?: string; key?: string }> };
     try {
       parsed = JSON.parse(await readObjectText(client, m.key));
     } catch (err) {
@@ -129,9 +131,10 @@ export async function validateCDCOutput(opts: {
       continue;
     }
     for (const f of parsed.files ?? []) {
-      if (!f.path) continue;
-      if (!presentBasenames.has(basename(f.path))) {
-        result.missingFiles.push(`${m.key} -> ${f.path}`);
+      const ref = f.key ?? f.path;
+      if (!ref) continue;
+      if (!presentBasenames.has(basename(ref))) {
+        result.missingFiles.push(`${m.key} -> ${ref}`);
       }
     }
   }

@@ -30,6 +30,7 @@ var initDBLabels = map[string]string{
 	"ensure schema generation attribute table": "internal/schemaledger/ddl.go:attributeDDL",
 	"ensure publication record table":          "internal/publication/ddl.go:recordDDL",
 	"ensure publication generation table":      "internal/publication/ddl.go:generationDDL",
+	"ensure publication epoch table":           "internal/publication/ddl.go:epochDDL",
 	"create numeric index":                     "cmd/tools/init_db.go:eavIndexDDL",
 	"create text index":                        "cmd/tools/init_db.go:eavIndexDDL",
 	"create change log flush index":            "cmd/tools/init_db.go:changeLogFlushIndexDDL",
@@ -93,7 +94,7 @@ func registerSchemasSQL(t *testing.T, schemaTable string) []corpus.Statement {
 		t.Fatalf("begin: %v", err)
 	}
 	var regErr error
-	captureStdStreams(t, func() { regErr = registerSchemas(context.Background(), tx, schemaTable, dir) })
+	captureStdStreams(t, func() { _, regErr = registerSchemas(context.Background(), tx, schemaTable, dir) })
 	if regErr != nil {
 		t.Fatalf("registerSchemas: %v", regErr)
 	}

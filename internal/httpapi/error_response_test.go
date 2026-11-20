@@ -25,16 +25,11 @@ func TestErrorClassResolvesSentinelsThroughWraps(t *testing.T) {
 		want string
 	}{
 		{
-			name: "parquet set inconsistent behind two wraps",
+			name: "publication inconsistent behind two wraps",
 			err: fmt.Errorf("execute duckdb query: %w: %w",
-				&forma.ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{"base/k.parquet"}},
+				&forma.PublicationConsistencyError{Err: errTestPublicationFault, SchemaID: 22, MissingKeys: []string{"base/k.parquet"}},
 				fmt.Errorf("IO Error: driver text")),
-			want: errorClassParquetSetInconsistent,
-		},
-		{
-			name: "no parquet paths",
-			err:  fmt.Errorf("resolve paths: %w", &forma.NoParquetPathsError{SchemaID: 7, SourceConfigured: true}),
-			want: errorClassNoParquetPaths,
+			want: errorClassPublicationInconsistent,
 		},
 		{
 			name: "manifest schema mismatch",
@@ -74,10 +69,9 @@ func TestErrorClassResolvesSentinelsThroughWraps(t *testing.T) {
 // text.
 func TestPublicErrorMessageCarriesNoDetail(t *testing.T) {
 	tests := map[string]string{
-		errorClassParquetSetInconsistent: "internal read error",
-		errorClassNoParquetPaths:         "internal read error",
-		errorClassManifestSchemaMismatch: "internal read error",
-		errorClassInternal:               "internal error",
+		errorClassPublicationInconsistent: "internal read error",
+		errorClassManifestSchemaMismatch:  "internal read error",
+		errorClassInternal:                "internal error",
 	}
 
 	for class, want := range tests {
@@ -126,8 +120,8 @@ func TestRespondErrorRedacts5xxAndLogsFullChain(t *testing.T) {
 	if resp.Error != "internal read error" {
 		t.Fatalf("expected generic message, got %q", resp.Error)
 	}
-	if resp.ErrorClass != errorClassParquetSetInconsistent {
-		t.Fatalf("expected class %q, got %q", errorClassParquetSetInconsistent, resp.ErrorClass)
+	if resp.ErrorClass != errorClassPublicationInconsistent {
+		t.Fatalf("expected class %q, got %q", errorClassPublicationInconsistent, resp.ErrorClass)
 	}
 	if _, err := uuid.Parse(resp.ErrorID); err != nil {
 		t.Fatalf("error_id %q is not a UUID: %v", resp.ErrorID, err)
@@ -162,7 +156,7 @@ func TestRespondErrorRedacts5xxAndLogsFullChain(t *testing.T) {
 	if fields["error_id"] != resp.ErrorID {
 		t.Fatalf("log error_id %v does not match body %q", fields["error_id"], resp.ErrorID)
 	}
-	if fields["error_class"] != errorClassParquetSetInconsistent {
+	if fields["error_class"] != errorClassPublicationInconsistent {
 		t.Fatalf("log error_class = %v", fields["error_class"])
 	}
 	if fields["schema"] != "orders" {
@@ -282,8 +276,8 @@ func TestReadPathDriverErrorIs500AndRedacted(t *testing.T) {
 	if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
 		t.Fatalf("body is not valid JSON: %v", uerr)
 	}
-	if resp.ErrorClass != errorClassParquetSetInconsistent {
-		t.Fatalf("expected class %q, got %q", errorClassParquetSetInconsistent, resp.ErrorClass)
+	if resp.ErrorClass != errorClassPublicationInconsistent {
+		t.Fatalf("expected class %q, got %q", errorClassPublicationInconsistent, resp.ErrorClass)
 	}
 	if _, perr := uuid.Parse(resp.ErrorID); perr != nil {
 		t.Fatalf("error_id %q is not a UUID: %v", resp.ErrorID, perr)

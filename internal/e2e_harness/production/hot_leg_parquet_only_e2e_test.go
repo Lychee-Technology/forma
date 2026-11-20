@@ -5,7 +5,6 @@ package production
 import (
 	"context"
 	"database/sql"
-	"strconv"
 	"testing"
 	"time"
 
@@ -16,7 +15,7 @@ import (
 
 // The parquet leg of the pgx pass (plan step 3, #854), timed beside the
 // engine pass. For each shape the engine just ran, it reads the dirty set
-// the pass read, at the pass's cutoff, over pgx in one snapshot, stages it
+// the pass read, over pgx in one snapshot, stages it
 // through the Appender on a pinned connection of the Env's DuckDB instance,
 // and runs the parquet-only statement over the same parquet objects. The
 // hot leg's own PostgreSQL reads (the hot keys and the page's hot rows) are
@@ -35,7 +34,7 @@ type parquetOnlyTiming struct {
 // and the hot ones are dirty.
 func measureParquetOnly(ctx context.Context, t *testing.T, env *Env, conn *sql.Conn, first *QueryResult) parquetOnlyTiming {
 	t.Helper()
-	cutoff := passCutoff(t, first.Plan)
+	requireDirtySetRead(t, first.Plan)
 	fq := first.FQ
 	// Every measured shape is a first page, whose window is [0, limit)
 	// whatever the hot match count.
@@ -48,7 +47,7 @@ func measureParquetOnly(ctx context.Context, t *testing.T, env *Env, conn *sql.C
 		t.Fatalf("render the parquet-only statement: %v", err)
 	}
 	fetcher := fedengine.NewPostgresDirtyIDFetcher(env.Pool)
-	req := fedengine.ChangeLogSnapshotRequest{Tables: env.Tables, SchemaID: fq.SchemaID, Form: fedengine.DirtySetHot, GraceCutoffMs: cutoff}
+	req := fedengine.ChangeLogSnapshotRequest{Tables: env.Tables, SchemaID: fq.SchemaID}
 
 	var reads, stages, queries []time.Duration
 	var out parquetOnlyTiming
@@ -90,18 +89,11 @@ func measureParquetOnly(ctx context.Context, t *testing.T, env *Env, conn *sql.C
 	return out
 }
 
-// passCutoff returns the flush cutoff the pass read its dirty set at: the
-// second parameter of the hot form's dirty-set query, which its execution
-// plan records.
-func passCutoff(t *testing.T, plan *model.ExecutionPlan) int64 {
+// requireDirtySetRead fails the test unless the pass recorded the strict
+// dirty set its snapshot read, the set the timing rounds read again.
+func requireDirtySetRead(t *testing.T, plan *model.ExecutionPlan) {
 	t.Helper()
-	src, ok := planSource(plan, pgxDirtySetReason)
-	if !ok || len(src.Params) != 2 {
-		t.Fatalf("the plan records no hot-form dirty-set read with its cutoff: %+v", plan.Sources)
+	if src, ok := planSource(plan, pgxBarrierReason); !ok || len(src.Params) != 1 {
+		t.Fatalf("the plan records no dirty-set read of the schema: %+v", plan.Sources)
 	}
-	cutoff, err := strconv.ParseInt(src.Params[1], 10, 64)
-	if err != nil {
-		t.Fatalf("parse the dirty set's cutoff %q: %v", src.Params[1], err)
-	}
-	return cutoff
 }

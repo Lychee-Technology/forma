@@ -201,7 +201,6 @@ func TestUnboundDateHotImagePast2p53Residual(t *testing.T) {
 		t.Fatalf("the CDC export wrote seen=%d for the planted row; the #621 residual is %d", got, int64(dateImageCeiling))
 	}
 	assertCensusFlagsSeen(ctx, t, env, wide, target)
-	waitWallClockTick(t) // past the flush's marks, so the row is read from parquet
 	res, err := federatedWideQuery(ctx, env, wide)
 	if err != nil {
 		t.Fatalf("federated query over the flushed planted row: %v", err)

@@ -8,66 +8,28 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/lychee-technology/forma/internal/model"
-	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
 // The change_log reads of a federated pass (design.md §6.1). A pass reads
-// its dirty set, and when it needs one its parquet-history answer, in one
-// REPEATABLE READ READ ONLY snapshot, and reads the hot keys and the page's
-// hot rows in the same snapshot, so the reads below take the transaction
-// rather than opening their own.
+// its publication record and its dirty set in one REPEATABLE READ READ ONLY
+// snapshot, and reads the hot keys and the page's hot rows in the same
+// snapshot, so the reads below take the transaction rather than opening their
+// own.
 
-// DirtySetForm names the dirty set a federated pass reads, by its tier form
-// (design.md §5, HasHot).
-type DirtySetForm int
-
-const (
-	// DirtySetHotExcluded is the strict set, flushed_at = 0. A pass whose
-	// preferred tiers leave out hot has no hot leg to serve a row the
-	// widening would discard, so it shadows only the unflushed rows.
-	DirtySetHotExcluded DirtySetForm = iota + 1
-	// DirtySetHot is the widened set, flushed_at = 0 OR flushed_at >= the
-	// flush-grace cutoff (#252): the barrier of a pass with a hot leg.
-	DirtySetHot
-)
-
-func (f DirtySetForm) String() string {
-	switch f {
-	case DirtySetHotExcluded:
-		return "hot-excluded"
-	case DirtySetHot:
-		return "hot"
-	}
-	return fmt.Sprintf("DirtySetForm(%d)", int(f))
-}
-
-// ChangeLogSnapshotRequest says what one snapshot reads.
+// ChangeLogSnapshotRequest says what one snapshot reads: the strict dirty set
+// of SchemaID, the row IDs with an unflushed change_log entry. The pass reads
+// its generation in the same snapshot, and that generation holds every row
+// the snapshot shows flushed, so nothing widens the set (#252's flush-grace
+// widening made up for a path set resolved before the snapshot).
 type ChangeLogSnapshotRequest struct {
 	Tables   model.StorageTables
 	SchemaID int16
-	Form     DirtySetForm
-	// GraceCutoffMs is the flush-grace cutoff of the hot form: an entry
-	// marked at or after it counts as dirty. The hot-excluded form ignores
-	// it. The engine never passes a cutoff later than the instant it
-	// resolved its parquet path set (design.md §6.1, *The widening is never
-	// disabled*), but the reader does not police the engine's resolution.
-	GraceCutoffMs int64
-	// ParquetHistory asks for HasParquetHistory from the same snapshot. Only
-	// the #720 empty-scan check needs it, and its entity_main anti-join is
-	// not free, so a pass that does not ask does not pay for it.
-	ParquetHistory bool
 }
 
 // validate reports why r cannot be read, or nil.
 func (r ChangeLogSnapshotRequest) validate() error {
 	if r.Tables.ChangeLog == "" {
 		return errors.New("change log table name cannot be empty")
-	}
-	if r.ParquetHistory && r.Tables.EntityMain == "" {
-		return errors.New("entity main table name cannot be empty when parquet history is read")
-	}
-	if r.Form != DirtySetHotExcluded && r.Form != DirtySetHot {
-		return fmt.Errorf("unknown dirty set form %s", r.Form)
 	}
 	return nil
 }
@@ -76,8 +38,6 @@ func (r ChangeLogSnapshotRequest) validate() error {
 type ChangeLogSnapshot struct {
 	// DirtyIDs holds each dirty row ID once, in no particular order.
 	DirtyIDs []uuid.UUID
-	// HasParquetHistory is queryParquetHistory's answer in the snapshot. It is false when the request did not ask for it.
-	HasParquetHistory bool
 }
 
 // snapshotTxOptions is the snapshot every pgx hot-leg read shares. READ ONLY
@@ -128,40 +88,15 @@ func (f *PostgresDirtyIDFetcher) ReadChangeLogSnapshot(ctx context.Context, req 
 }
 
 // readChangeLogSnapshot reads req on tx, which must be a snapshot from
-// beginReadSnapshot: the dirty set and the parquet-history answer are only
-// consistent with each other, and with the hot keys a later read takes, when
-// they share it.
+// beginReadSnapshot: the dirty set is only consistent with the record and the
+// hot keys the pass reads when they share it.
 func readChangeLogSnapshot(ctx context.Context, tx pgx.Tx, req ChangeLogSnapshotRequest) (ChangeLogSnapshot, error) {
 	if err := req.validate(); err != nil {
 		return ChangeLogSnapshot{}, fmt.Errorf("read change log snapshot of schema %d: %w", req.SchemaID, err)
 	}
-	query, args := dirtySetQuery(req)
-	ids, err := queryRowIDs(ctx, tx, query, args...)
+	ids, err := queryRowIDs(ctx, tx, strictDirtySetQuery(req.Tables.ChangeLog), req.SchemaID)
 	if err != nil {
-		return ChangeLogSnapshot{}, fmt.Errorf("read %s dirty set of schema %d: %w", req.Form, req.SchemaID, err)
+		return ChangeLogSnapshot{}, fmt.Errorf("read the dirty set of schema %d: %w", req.SchemaID, err)
 	}
-	snap := ChangeLogSnapshot{DirtyIDs: ids}
-	if req.ParquetHistory {
-		found, err := queryParquetHistory(ctx, tx, req.Tables, req.SchemaID)
-		if err != nil {
-			return ChangeLogSnapshot{}, err
-		}
-		snap.HasParquetHistory = found
-	}
-	return snap, nil
-}
-
-// dirtySetQuery renders req's dirty set and its arguments. The hot-excluded
-// form is strictDirtySetQuery. The hot form reads the same set and the
-// entries marked at or after the cutoff as two arms of a UNION, so that each
-// arm is one range of the (schema_id, flushed_at) index init-db builds, and
-// the UNION answers a row with entries in both arms once.
-func dirtySetQuery(req ChangeLogSnapshotRequest) (string, []any) {
-	if req.Form == DirtySetHotExcluded {
-		return strictDirtySetQuery(req.Tables.ChangeLog), []any{req.SchemaID}
-	}
-	changeLog := sqlutil.SanitizeIdentifier(req.Tables.ChangeLog)
-	return fmt.Sprintf(`SELECT row_id FROM %[1]s WHERE schema_id = $1 AND flushed_at = 0
-	UNION
-	SELECT row_id FROM %[1]s WHERE schema_id = $1 AND flushed_at >= $2`, changeLog), []any{req.SchemaID, req.GraceCutoffMs}
+	return ChangeLogSnapshot{DirtyIDs: ids}, nil
 }

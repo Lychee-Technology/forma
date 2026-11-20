@@ -44,7 +44,7 @@ func (e *Env) evolveSchema(ctx context.Context, newSchemaDir string, record reco
 	if err := record(ctx, e.Pool, e.Tables.SchemaRegistry, newSchemaDir); err != nil {
 		return fmt.Errorf("record the declaration in %s: %w", newSchemaDir, err)
 	}
-	registry, err := schemameta.NewFileSchemaRegistryContext(ctx, e.Pool, e.Tables.SchemaRegistry, newSchemaDir)
+	registry, epochs, err := e.loadRegistry(ctx, e.Pool, newSchemaDir)
 	if err != nil {
 		return fmt.Errorf("evolve schema registry from %s: %w", newSchemaDir, err)
 	}
@@ -58,10 +58,10 @@ func (e *Env) evolveSchema(ctx context.Context, newSchemaDir string, record reco
 		return fmt.Errorf("evolve schema from %s: %w", newSchemaDir, err)
 	}
 
-	e.Registry = registry
+	e.setRegistry(registry, epochs)
 	e.Metadata = metadata
 	e.opts.schemaDir = newSchemaDir
-	e.engine = nil
+	e.engine, e.epochPins = nil, nil
 	e.manager = nil
 	e.routedManagers = nil
 	e.postgresManager = nil

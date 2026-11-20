@@ -2,6 +2,7 @@ package cdc
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"io"
@@ -140,7 +141,7 @@ func TestRunnerCachedDuckExporterReopensAfterFatalError(t *testing.T) {
 	require.NoError(t, err)
 	_, err = exporter.DB.ExecContext(ctx, "CREATE TABLE instance_marker AS SELECT 1 AS x")
 	require.NoError(t, err)
-	err = exporter.runExport(ctx, cfg, nil, exportSQLPlan{setupSQL: "SELECT 1;", copySQL: fatalStatement}, nil, "duckdb export sql", "duckdb copy exec")
+	err = exporter.runExport(ctx, cfg, exportSQLPlan{setupSQL: "SELECT 1;", copySQL: fatalStatement}, nil, stageNothing, "duckdb export sql", "duckdb copy exec")
 	require.ErrorContains(t, err, "FATAL Error", "the statement that hit the error still fails")
 	release()
 
@@ -152,7 +153,7 @@ func TestRunnerCachedDuckExporterReopensAfterFatalError(t *testing.T) {
 
 	out := filepath.Join(t.TempDir(), "export.csv")
 	exportSQL := fmt.Sprintf("COPY (SELECT 42 AS x) TO '%s' (FORMAT CSV)", out)
-	require.NoError(t, again.runExport(ctx, cfg, nil, exportSQLPlan{setupSQL: "SELECT 1;", copySQL: exportSQL}, nil, "duckdb export sql", "duckdb copy exec"),
+	require.NoError(t, again.runExport(ctx, cfg, exportSQLPlan{setupSQL: "SELECT 1;", copySQL: exportSQL}, nil, stageNothing, "duckdb export sql", "duckdb copy exec"),
 		"the next run exports on a reopened database")
 
 	instances := opened()
@@ -171,3 +172,6 @@ func TestRunnerCachedDuckExporterReopensAfterFatalError(t *testing.T) {
 	require.Equal(t, 1, logs.FilterMessageSnippet("the database was invalidated").Len())
 	require.Equal(t, 1, logs.FilterMessageSnippet("reopened the database").Len())
 }
+
+// stageNothing is an export's staging of a plan with no stage.
+func stageNothing(context.Context, *sql.Conn) (int64, error) { return 0, nil }

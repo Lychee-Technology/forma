@@ -161,31 +161,31 @@ func (r *Runner) Close() error {
 	return nil
 }
 
-// RunOnce performs one flush pass over every schema with unflushed rows. The
-// report lists the schemas it skipped (#704), and is returned alongside a
-// schema's flush error too.
-func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, schemaRegistry forma.SchemaRegistry) (FlushReport, error) {
+// RunOnce performs one flush pass over every schema with unflushed entries,
+// as package-level RunOnce does, on the runner's cached S3 runtime and DuckDB
+// exporter. The report lists what each schema published and the schemas it
+// skipped (#704), and is returned alongside a schema's flush error too.
+func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3Client, dryRun bool, schemaRegistry forma.SchemaRegistry) (FlushReport, error) {
 	if schemaRegistry == nil {
 		return FlushReport{}, fmt.Errorf("schema registry is required for CDC export")
 	}
-	// A manifest configuration the run cannot flush under (#474) is refused
-	// before any AWS, Postgres or DuckDB setup; newSchemaFlushContext checks
-	// it again for every frame that builds a flush context.
-	if err := checkManifestMode(cfg); err != nil {
-		return FlushReport{}, fmt.Errorf("cdc flush manifest configuration: %w", err)
-	}
-
 	cfg = cfg.WithDefaults()
+	// A configuration the writer cannot run is refused before any AWS,
+	// Postgres or DuckDB setup.
+	if err := cfg.ValidateFlush(); err != nil {
+		return FlushReport{}, fmt.Errorf("cdc flush configuration: %w", err)
+	}
+	if _, err := runEpochs(cfg); err != nil {
+		return FlushReport{}, fmt.Errorf("cdc flush configuration: %w", err)
+	}
 
 	s3Runtime, err := r.getOrCreateS3Runtime(ctx, cfg)
 	if err != nil {
 		return FlushReport{}, fmt.Errorf("prepare s3 runtime: %w", err)
 	}
-
-	requireFullS3 := cfg.ManifestTemplate != ""
-	clients, err := resolveS3Clients(s3Client, s3Runtime.client, requireFullS3)
+	store, err := newObjectStore(resolveS3Client(s3Client, s3Runtime.client), cfg.S3Bucket)
 	if err != nil {
-		return FlushReport{}, fmt.Errorf("resolve s3 clients: %w", err)
+		return FlushReport{}, fmt.Errorf("resolve the object store: %w", err)
 	}
 
 	db, _, err := setupPostgresConnection(ctx, cfg, s3Runtime.region, s3Runtime.credProvider, r.logger)
@@ -202,30 +202,12 @@ func (r *Runner) RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectCl
 	}
 	defer releaseDuck()
 
-	flushCtx, err := newSchemaFlushContext(flushContextParams{
-		cfg:            cfg,
-		db:             db,
-		duck:           duck,
-		clients:        clients,
-		dryRun:         dryRun,
-		logger:         r.logger,
-		schemaRegistry: schemaRegistry,
-	})
-	if err != nil {
-		return FlushReport{}, fmt.Errorf("prepare flush: %w", err)
-	}
-
-	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, flushCtx.tableName)
-	if err != nil {
-		return FlushReport{}, fmt.Errorf("list schemas with unflushed rows: %w", err)
-	}
-
-	// Delegate to processSchemas so the Runner path runs the same pre-flight
+	// runFlushPass runs the same pre-flight as package-level RunOnce
 	// (resolve every schema's attribute cache, abort the whole run before any
-	// side effect if one is unresolvable) that populates flushCtx.attrCaches for
-	// executeFlush. Duplicating the loop here silently skipped the pre-flight and
-	// left attrCaches nil, so the exporter hard-errored on every schema (#193).
-	return flushCtx.processSchemas(ctx, schemaIDs)
+	// side effect if one is unresolvable, #193).
+	return runFlushPass(ctx, flushContextParams{
+		cfg: cfg, db: db, duck: duck, store: store, dryRun: dryRun, logger: r.logger, schemaRegistry: schemaRegistry,
+	})
 }
 
 func (r *Runner) getOrCreateS3Runtime(ctx context.Context, cfg CDCConfig) (*cachedS3Runtime, error) {

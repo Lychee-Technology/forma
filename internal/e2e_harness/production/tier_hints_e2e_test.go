@@ -154,7 +154,7 @@ func assertTierMatrixHasHot(ctx context.Context, t *testing.T, env *Env, wide Sc
 	} else if hot.Engine != "postgres" || !hot.PredicatePushdown {
 		t.Errorf("%s: the hot leg must be a PostgreSQL source that evaluates its predicate, got %+v", name, hot)
 	}
-	if dirty, ok := planSource(result.Plan, pgxDirtySetReason); !ok || dirty.Engine != "postgres" {
+	if dirty, ok := planSource(result.Plan, pgxBarrierReason); !ok || dirty.Engine != "postgres" {
 		t.Errorf("%s: hot requested: the plan must record the dirty set read in the snapshot, got %+v", name, dirty)
 	}
 	if !planNotesContain(result.Plan, "physically serves warm+cold") {
@@ -297,7 +297,6 @@ func TestTierHintRouting(t *testing.T) {
 	directPlan := &model.ExecutionPlan{Timings: map[string]int64{}, Notes: []string{}}
 	page, err := env.Engine().Query(ctx, env.Tables, &model.FederatedAttributeQuery{
 		AttributeQuery: model.AttributeQuery{SchemaID: wide.ID, Limit: 100},
-		DuckDBHints:    &model.DuckDBRenderHints{S3ParquetPathTemplate: env.ParquetGlob()},
 	}, &model.FederatedQueryOptions{IncludeExecutionPlan: true, ExecutionPlan: directPlan})
 	if err != nil {
 		t.Fatalf("direct engine query with empty tiers: %v", err)
@@ -307,45 +306,5 @@ func TestTierHintRouting(t *testing.T) {
 	}
 	if !directPlan.Routing.UseDuckDB {
 		t.Errorf("direct empty-tiers query must route to DuckDB, got %+v", directPlan.Routing)
-	}
-}
-
-// TestTierHintCustomParquetGlob (#184 S3 path template): an explicit
-// S3ParquetPathTemplate must direct read_parquet at the specified glob, not
-// the schema's default location. Env B seeds a differently-sized cold
-// population under its own prefix; querying env A with B's glob must return
-// exactly B's rows.
-func TestTierHintCustomParquetGlob(t *testing.T) {
-	cluster := SharedCluster(t)
-	wide := DefaultSchemaFixtures()[1]
-	ctx := context.Background()
-	envA := NewEnv(t, cluster)
-	envB := NewEnv(t, cluster)
-
-	seedColdOnly(ctx, t, envA, wide, 5)
-	bIDs := seedColdOnly(ctx, t, envB, wide, 3)
-
-	warmCold := []model.DataTier{model.DataTierWarm, model.DataTierCold}
-
-	// Baseline: A's default glob serves A's population.
-	baseline := envA.AssertQueryMatches(ctx, Query{Schema: wide, PreferredTiers: warmCold, Limit: 100})
-	if baseline != nil && len(baseline.Records) != 5 {
-		t.Fatalf("baseline: got %d rows, want 5", len(baseline.Records))
-	}
-
-	// Override: A queries with B's glob and must see exactly B's rows.
-	crossed, err := envA.Query(ctx, Query{
-		Schema:                wide,
-		PreferredTiers:        warmCold,
-		S3ParquetPathTemplate: envB.ParquetGlob(),
-		Limit:                 100,
-	})
-	if err != nil {
-		t.Fatalf("cross-glob query: %v", err)
-	}
-	assertRowIDSet(t, "cross-glob", crossed.Records, bIDs)
-	sqlText := duckdbPlanSQL(crossed.Plan)
-	if !strings.Contains(sqlText, envB.S3Prefix) {
-		t.Errorf("cross-glob SQL must read the overridden glob (prefix %s):\n%s", envB.S3Prefix, sqlText)
 	}
 }

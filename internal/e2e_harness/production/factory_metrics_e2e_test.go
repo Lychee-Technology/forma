@@ -110,7 +110,7 @@ func TestFactoryWiring_MetricEmitter(t *testing.T) {
 
 	// The federated engine the factory built shares the same emitter: one
 	// federated query lands its stage latencies and source row counts there.
-	// Flush first so the manifest lists a real object for the cold tier.
+	// Flush first so the published generation lists a real object.
 	mustFlush(ctx, t, env)
 	before := len(rec.events)
 	if _, err := factoryQuery(ctx, loud, wide); err != nil {
@@ -133,12 +133,13 @@ func TestFactoryWiring_MetricEmitter(t *testing.T) {
 	}
 }
 
-// newFactoryManagerWithEmitter builds a manifest-on manager the way a server
-// does, with the embedder's emitter on the config. nil is the unconfigured
-// default.
+// newFactoryManagerWithEmitter builds a manager the way a server does, over
+// the published generations in the cluster bucket, with the embedder's
+// emitter on the config. nil is the unconfigured default.
 func newFactoryManagerWithEmitter(ctx context.Context, t *testing.T, env *Env, emitter forma.MetricEmitter) forma.EntityManager {
 	t.Helper()
 	cfg := forma.DefaultConfig(env.Registry)
+	cfg.SchemaRegistryEpochs = env.RegistryEpochs
 	cfg.Entity.SchemaDirectory = FixtureSchemasDir()
 	cfg.Database.TableNames = forma.TableNames{
 		SchemaRegistry: env.Tables.SchemaRegistry,
@@ -152,9 +153,6 @@ func newFactoryManagerWithEmitter(ctx context.Context, t *testing.T, env *Env, e
 	// the engine's stages (#715: the deployment picks the route).
 	duck.Routing.Strategy = forma.RoutingStrategyFreshnessFirst
 	duck.S3Bucket = env.Cluster.Bucket
-	duck.S3DataPrefix = env.S3Prefix
-	duck.ManifestPrefix = env.CDC.ManifestPrefix
-	duck.ManifestTemplate = env.CDC.ManifestTemplate
 	cfg.DuckDB = duck
 	cfg.Metrics.Emitter = emitter
 

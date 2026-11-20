@@ -1,15 +1,16 @@
 # Parquet publication protocol V2
 
-Status: the contract #888 proposes for EPIC #887. The SQL and its semantics are in
+Status: the contract #888 proposes for EPIC #887, in production since #896 for registration,
+`cdc-flush`, `cdc-init` and the federated reader. The SQL and its semantics are in
 `internal/publication`, with tests on PostgreSQL and on the MiniStack lane. The manifest
 objects (document, digest, keys, write-once store, verifying cache) are in
-`internal/manifestv2` (#898), and the `cdc-flush` and `cdc-init` publication paths built on
-both are in `internal/cdcv2` (#899). The federated reader's pass resolves its source in its
-snapshot when an engine is built with `federated.WithPublicationReader`, whose only
-implementation is `internal/federatedv2` (#900). Nothing in `cdc-flush`, `cdc-init`, the
-compactor, the federated reader or `manifest-reconcile` uses any of them yet, and no engine
-is built with that option: the other #887 children move those consumers onto them
-([Ownership](#ownership-and-migration)).
+`internal/manifestv2` (#898). `cdc-flush` and `cdc-init` publish only through
+`internal/cdcv2` (#899), into which `internal/cdc` adapts the DuckDB export as its
+`DeltaStager` and `BaseExporter`. The factory builds every federated engine with
+`federated.WithPublicationReader` over `internal/federatedv2` (#900), and `init-db` writes
+each registered schema's record and runs the V2 cutover ([Upgrade](#removed-from-v1)). The
+compactor (#890) and `manifest-reconcile` (#891) are still V1: a cut-over deployment keeps
+both stopped (Upgrade step 1) until they move ([Ownership](#ownership-and-migration)).
 Behaviour on a real Aurora DSQL cluster has not been checked. #817 tracks that, and
 [Verification](#verification) lists what this contract assumes until then.
 
@@ -116,9 +117,12 @@ compactor, reader, GC) is given that name.
 **Lifecycle of the row.**
 
 - *Initialize.* The registration transaction that inserts the schema's registry row also
-  inserts the record: epoch 1, `UNPUBLISHED`, generation 0. The insert uses
+  inserts the record: epoch 1, `UNPUBLISHED`, generation 0, and sets the id's lifecycle
+  epoch to 1 ([Lifecycle epoch](#lifecycle-epoch)). The insert uses
   `ON CONFLICT DO NOTHING`, so registering again never resets a schema, and never turns a
-  `DROPPED` or `AWAITING_INIT` record into an unpublished one.
+  `DROPPED` or `AWAITING_INIT` record into an unpublished one. It writes nothing for an id
+  whose lifecycle epoch survives without a record: that id lost its record, epoch 1 is
+  one of its old epochs, and `Initialize` answers `ErrRecordLost`.
 - *An absent record is an error* (`publication.ErrNoRecord`), never "unpublished". A
   reader that took absence for unpublished would answer from the hot tier alone and
   drop every row only the parquet tiers hold.
@@ -126,22 +130,69 @@ compactor, reader, GC) is given that name.
   history from V1 ([Upgrade](#removed-from-v1)). Readers fail closed on it
   (`ErrAwaitingInit`), and the only publication it admits is a `cdc-init`.
 - *Drop.* The transaction that deletes the registry row runs `Reset`: epoch + 1,
-  `DROPPED`, an empty manifest, a NULL lineage, parent 0 and a new token. The row stays.
-  While it is `DROPPED` the schema's `entity_main`, `eav_data` and `change_log` rows are
-  purged in chunks, and nothing reaches them through the record. A reader fails closed
+  `DROPPED`, an empty manifest, a NULL lineage, parent 0 and a new token, and the id's
+  lifecycle epoch raised to the new epoch. The row stays.
+  While it is `DROPPED` the schema's `entity_main`, `eav_data` and `change_log` rows, and
+  the unique-key entries and build state derived from them, are purged in chunks, and
+  nothing reaches them through the record. `forma-tools
+  drop-schema` is this transition (#896): under the schema lock it deletes the registry
+  row and the schema ledger and runs `Reset` in one transaction, then purges in chunks,
+  each holding the record `DROPPED` at its epoch (`HoldDropped`), so a purge stops once
+  the id is activated again. A registry row deleted without it leaves a record that is not
+  `DROPPED`, and `init-db` refuses to register the id again over it. A reader fails closed
   (`ErrDropped`). A publisher that reads the record after the drop stages nothing, and
   `Publish` refuses a `DROPPED` record in any case, so nothing exported from the rows
   being purged is published. A writer or handoff that read the record before the drop
   names the old epoch and token, and misses.
+- *A lost record.* The record row is never deleted, but an operator's statement or a
+  partial restore can remove it. A schema without a record whose lifecycle epoch or
+  generation history survives had a V2 record. A new one at epoch 1 could carry an epoch
+  a running reader or writer still pins, together with the metadata of the registration
+  that held it, and pass its epoch check; a counter at 0 would publish a generation number
+  again. The generation history cannot bound the lost epoch: a drop and a re-registration
+  move the epoch without a generation row, so the history's highest epoch can be any
+  number of epochs behind. `init-db` recovers the record under the schema lock with
+  `InitializeAfterLoss`, at the epoch after the id's lifecycle epoch, which every epoch a
+  record of the id carried is at or below, so no running process pins it, and with the
+  history's highest generation as the counter. A schema still registered is recovered
+  `AWAITING_INIT` when generation history survives (its next `cdc-init` replaces the
+  parquet tiers), and otherwise in the state the cutover's parquet-history check allows;
+  an id the run registers again is recovered `DROPPED`, then activated. The processes that
+  pinned an older epoch fail closed until they restart, as after a drop.
+
+  When the lifecycle epoch is lost too and generation history survives, `InitializeAfterLoss`
+  refuses with `ErrLifecycleLost`, and `init-db` fails: no epoch above the history is known
+  to be free of a stale pin. The recovery is the operator's. Stop every server, Lambda,
+  `cdc-flush` and `cdc-init` that loaded the schema, so that no process holds a pin of it,
+  then write the id's lifecycle epoch at or above the history's highest epoch,
+  `INSERT INTO <entity_main>_publication_epoch (schema_id, epoch, updated_at) VALUES
+  (<id>, <epoch>, 0)`, and run `init-db`: it recovers the record one epoch above. An id
+  whose record, lifecycle epoch and generation history are all lost cannot be told from
+  one that never had a record, and the cutover initializes it at epoch 1; the three
+  tables are one deployment's state and are restored together.
 - *Re-registration.* When the id is registered again, the registration transaction runs
   `Activate` instead of `Initialize`. It checks, in that transaction, that no row of the
   id remains in `entity_main`, `eav_data` or `change_log` (`ErrResidue` otherwise), then
-  moves the record to the next epoch, `UNPUBLISHED`, under a new token. Nothing read
-  before activation carries that epoch.
+  moves the record to the next epoch, `UNPUBLISHED`, under a new token, and raises the
+  id's lifecycle epoch to it. Nothing read before activation carries that epoch.
 - *Epoch pin.* A process reads each schema's epoch when it loads the schema's metadata
   and keeps it with them. A reader pass or a writer that later reads a record of another
   epoch fails closed: the schema was dropped, and maybe re-created, since the process
-  loaded what it knows about it.
+  loaded what it knows about it. The pin binds only if it is read *before* the metadata
+  loads and still holds after: a pin read after the load could already be a re-created
+  schema's epoch, paired with the dropped schema's metadata. Every copy of the metadata
+  a process uses is bound this way, the caller-facing schema registry included: it
+  resolves the schema, its sort attributes and its decoding on every query, and the caller
+  loads it before the factory reads anything. So the server and the Lambda read every
+  record's epoch before they load the registry (`factory.LoadFileSchemaRegistryContext`,
+  which sets `forma.Config.SchemaRegistryEpochs`), the factory reads them again before it
+  loads its own metadata, and it pins a schema only if its epoch is the same in both
+  readings and when it pins it; with DuckDB enabled it refuses to build the reader without
+  `SchemaRegistryEpochs`. `cdc-flush` and `cdc-init` are given the epochs read before
+  their registry loaded (`CDCConfig.RegistryEpochs`, `cdc.ReadRegistryEpochs`), refuse a
+  run without them before any I/O, since an epoch a run reads itself proves nothing about
+  a registry loaded before it, and refuse, under the schema lock, a record at another
+  epoch.
 - *Re-onboarding* an existing schema is a `cdc-init` (a new lineage in the same epoch).
   It never resets, for the same reason: a reset would hide every flushed row.
 
@@ -184,6 +235,27 @@ too (`Retained` and `Expired` answer both): they are what it verifies each manif
 against before it trusts the keys the manifest lists. `superseded_at` marks a generation as replaced, but
 retention never counts from it: it is the replacing transaction's start, and nothing
 bounds how long after its start that transaction commits.
+
+### Lifecycle epoch
+
+```sql
+CREATE TABLE <entity_main>_publication_epoch (
+  schema_id  SMALLINT NOT NULL,  -- PRIMARY KEY
+  epoch      BIGINT   NOT NULL,  -- the highest epoch any record of the id carried
+  updated_at BIGINT   NOT NULL
+)
+```
+
+The id's durable lifecycle identity, kept apart from the record so that it outlives a
+lost record row. Every transition that moves a record's epoch (`Initialize`,
+`InitializeAwaitingInit`, `Reset`, `Activate`, `InitializeAfterLoss`) raises it to the new
+epoch in its own transaction, with an `INSERT … ON CONFLICT DO UPDATE … WHERE epoch <
+new epoch` that must write the row. A transition whose new epoch is not above it fails
+with `ErrEpochReused`, and its transaction does not commit: only a record that went back
+to an older epoch (restored from an older state, or written outside the package) meets
+that, and moving it on would hand a stale process its pinned epoch again. The row is never
+deleted. Readers and writers do not read it; only the lifecycle transitions and
+`ReadHistory` do.
 
 ## Immutable manifest generations
 
@@ -484,9 +556,15 @@ horizon is what the orphan rule relies on.
 A listed key that is missing is loss, as under V1's one-directional contract. The read
 fails loudly and classifies, and GC never makes this happen within the retention window.
 
-**As built (#900, dormant until #896).** The pass in `internal/federated` takes these steps
-when its engine has a `PublicationReader`, and resolves nothing before its snapshot. A few
-choices the steps above leave open:
+**As built (#900, wired in #896).** Every pass in `internal/federated` takes these steps,
+and resolves nothing before its snapshot. The factory builds the engine with
+`WithPublicationReader` whenever DuckDB is enabled; an engine without a reader fails every
+pass as misconfigured, non-degradably, rather than answer from the hot leg alone. The epoch
+pins are read once at startup, in one snapshot beside the schema metadata
+(`federatedv2.LoadEpochPins`): a schema without a record gets no pin and fails closed
+(`federatedv2.ErrNotPinned`) until the process restarts, and the metadata is never
+reloaded, so the pins never need to follow a reload. A few choices the steps above leave
+open:
 
 - The dirty set is the strict one (`flushed_at = 0`) in both forms, and the hot keys are
   read over the unflushed entries alone. The flush-grace widening (#252) made up for a path
@@ -522,6 +600,12 @@ choices the steps above leave open:
   no probe. A probe that fails does not stop the others or take back a key another found
   missing, so a confirmed loss is the consistency error even beside a failed probe. A probe
   the request's deadline ends keeps that error, so the read stays non-degradable.
+- S3 answers `403 AccessDenied`, not `404`, for a missing key to a principal without
+  `s3:ListBucket` on the bucket, so a 403 on the manifest fetch or on a probe proves neither
+  presence nor loss. The read fails closed with the consistency error wrapping
+  `forma.ErrPublishedObjectUnverifiable`, naming no lost key, neither degraded nor charged to
+  the breaker. A reader's principal needs `s3:ListBucket` on the bucket besides
+  `s3:GetObject` for a loss to be reported as one.
 - `R_max` is armed at `t0` with `context.WithTimeoutCause`. A pass it ends fails with
   `federated.ErrPassDeadline` and is retried once on a fresh snapshot, as the #720 race was. An
   expired deadline is not degradable (#465): `ErrPassDeadline` is refused by the degraded
@@ -705,7 +789,7 @@ with an empty plan.
 | Re-init | `PUBLISHED` g, lineage L | as init, new lineage L′ | g+1 | none | the old lineage's handoff stops. Old objects expire after `G` |
 | Compaction | `PUBLISHED` g | CAS → g+1 `compact`, same lineage | g+1 | none | merge outputs + manifest first. Rebase over flushes only |
 | Drop | any but `DROPPED` | `Reset` with the registry delete | e+1, `DROPPED`, no current generation | purged afterwards, in chunks | readers fail closed. Every CAS/hold misses or is refused. Old objects expire after `G` |
-| Re-create | e+1 `DROPPED` | residue check + `Activate` with the registry insert | e+2, `UNPUBLISHED`, new token | — | `ErrResidue` while the id still has rows |
+| Re-create | e+1 `DROPPED` | residue check + `Activate` with the registry insert | e+2, `UNPUBLISHED`, new token | — | `ErrResidue` while the id still has rows, unique-key entries or key build state |
 | Failed publication | g | rolled back | g | unchanged | objects unreferenced. Orphan rule reclaims them |
 | Commit outcome unknown | g | `Resolve` in a new transaction | g or g+1 | with the pointer | `NotCommitted` → resend the same publication, and `Fence` before giving it up. `Lost` → rebase. `Unknown` → abandon, start over from the head |
 | Rollback to an older generation | — | not a transition | — | — | Refused by design: marks committed by later generations would point at missing rows. Re-init rebuilds from PostgreSQL instead |
@@ -787,8 +871,9 @@ writers and their marks out:
 1. Stop every V1 writer: `cdc-flush`, `cdc-init`, the compactor and
    `manifest-reconcile`. Their V2 replacements refuse a schema without a record
    (`ErrNoRecord`), so a V2 writer that starts early does nothing.
-2. For each registered schema, take the schema lock that every V1 marker (`cdc-flush`
-   and the onboarding handoff) takes. In one transaction, run the parquet-history check
+2. Run `init-db` (#896 does the cutover there, `cmd/tools/init_db_records.go`). For each
+   registered schema without a record, it takes the schema lock that every V1 marker
+   (`cdc-flush` and the onboarding handoff) takes. In one transaction, run the parquet-history check
    (today's `parquetHistoryQuery`: a flushed entry, or a live row without an entry) and
    insert the record. With no history the schema satisfies the `UNPUBLISHED` invariant,
    and the insert is `Initialize`. With history it is `InitializeAwaitingInit`. If the
@@ -958,9 +1043,9 @@ the V1 code it replaces:
 | --- | --- | --- |
 | `init-db` table DDL | `Statements` for the configured `entity_main`, in init-db's table transaction. `init-db` creates the tables on PostgreSQL. On Aurora DSQL, #895 covers statement validity only: `make lint-dsql` and the MiniStack strict lane accept the DSQL rendering, but `init-db` cannot execute there, because it has no engine selection and sends its DDL in one transaction, which DSQL rejects. An executable DSQL `init-db` (one DDL statement per transaction, strict-lane fresh init, upgrade and rerun) is #690's. The tables only: nothing inserts, reads or updates them | #895 (DSQL execution: #690) |
 | V2 manifest objects | `internal/manifestv2`: the document and its deterministic bytes and digest, the `flush` and `init` file lists, the object keys, a write-once put (`If-None-Match: *`) on S3 and the same contract on a local directory, and a process-wide cache of manifests verified with `ManifestFiles` and the full-document checks. A missing or refused manifest is a `ConsistencyError`. Nothing in production imports it until #896 | #898 |
-| `init-db` registration, the upgrade cutover | `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock | #896 (writers and reader, built in #899 to #901) |
-| `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path. The publication loop is `internal/cdcv2`'s `Writer.Flush` (#899), behind a `DeltaStager` that writes the parquet; #896 adapts the DuckDB export to it and calls it | #896 (writers and reader, built in #899 to #901) |
-| `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot; #896 adapts the DuckDB export to it and calls it | #896 (writers and reader, built in #899 to #901), closing #760 |
+| `init-db` registration, the upgrade cutover | `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock. #896 does both in one step of that transaction (`ensurePublicationRecords`) for every registered schema: a record is kept, a `DROPPED` one is activated (its residue checked in `entity_main`, `eav_data`, `change_log` and the unique-key entry and build-state tables), and a missing one is written under `pg_try_advisory_xact_lock` on the key `cdc-flush` and `cdc-init` take, `AWAITING_INIT` when the schema has parquet history, `UNPUBLISHED` otherwise. A schema registered before the run whose lock is held keeps no record, is reported, and is retried by the next run. A schema the run registers is never skipped: when its lock is held the run fails and its registry row is rolled back with everything else, so a registration commits with its record or not at all. A schema the run registers whose id still has a record that is not `DROPPED` is refused the same way, and a missing record whose lifecycle epoch survives is recovered after that epoch (`InitializeAfterLoss`) rather than started at epoch 1; one whose lifecycle epoch is lost while its generation history survives fails the run (`ErrLifecycleLost`). The drop (`Reset`, then the purge under `HoldDropped`) is `forma-tools drop-schema` | #896 (writers and reader, built in #899 to #901) |
+| `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path. The publication loop is `internal/cdcv2`'s `Writer.Flush` (#899), behind a `DeltaStager` that writes the parquet. #896 adapts the DuckDB export to it (`internal/cdc`'s `deltaStager`: a local scratch file, then a conditional put under a fresh key), calls it with the epoch the run loads from the record, and deletes the V1 append, the #474 probe, both V1 marks, `--glob-only` and the writers' `--manifest-template`/`--manifest-prefix` | #896 (writers and reader, built in #899 to #901) |
+| `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot. #896 adapts the DuckDB export to it (`internal/cdc`'s `baseExporter`, which reads the rows on that snapshot), calls it, settles a lost `COMMIT` once in-process (`ResumeInit`), and deletes the V1 manifest swap, the ambiguous-save confirmation, the delta purge (`--replace-delta`, `--delta-prefix`) and the zero-row placeholder | #896 (writers and reader, built in #899 to #901), closing #760 |
 | compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891 | #890 (compaction) |
 | federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. #900 builds the pass behind `federated.WithPublicationReader` and its source in `internal/federatedv2`, with no caller ([As built](#readers)); #896 loads the epoch pins with the schema metadata, builds the engine with the option, deletes the V1 resolution and rewrites `docs/federated-query/design.md` §6.1 | #896 (writers and reader, built in #899 to #901), carrying #759 |
 | `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire` and `PlanCollection` in the collection order above. Repair becomes re-init. Verification walks retained generations | #891 (GC) |
@@ -968,35 +1053,29 @@ the V1 code it replaces:
 | live Aurora DSQL behaviour | the assumptions in [Verification](#verification) | #893, under #817 |
 
 Sequencing: #888, then #895, then #896, then #890 (it uses the publication interface
-#896 lands), then #891, then #892. #896 is built in #898 to #901. The parts nothing calls
-land first and stay dormant: #898 the manifest objects, and the flush writer, init and
-reader slices that build on them (#899, #900). The writers and the reader still switch in
-one merge. #889's writer scope is split in two because the
-writers cannot land on `main` ahead of the reader. A V2 flush stages its objects under
-`e{epoch}/`, stops appending to `manifest.json` and marks its rows flushed in the
-transaction of its `Publish`, and today's reader reads neither the record nor `e{epoch}/`,
-so every row such a flush marks would disappear from query answers. Registration and the
-cutover cannot go first either: a record written while V1 `cdc-flush` still runs goes
-stale, because V1 keeps flushing into a schema whose record says `UNPUBLISHED` and the
-cutover only inserts records for schemas that have none, and the V2 reader would then
-answer that schema from the hot leg alone. So #896 moves the writers and the reader in one
-change. Ahead of it land only the table DDL (#895), which nothing reads or writes, and
-code that nothing calls (#898 to #900). Until
-#896, two checks hold that line, and neither alone proves it. A static test in
-`internal/publication` checks imports and literals: outside the package, only init-db's
-DDL step and its collation check may import it, only for `Statements`, `TablesFor` and
-the table-name suffixes, never through a dot import, and no production file may spell a
-publication table name in a string literal. It does not inspect the SQL those files
-build, so an allowlisted file could still assemble a record statement from a name
-`TablesFor` returns. What shows that init-db sends none is the traced SQL of its fresh,
-upgrade and rerun runs in `TestInitDBCreatesThePublicationTablesOnceAndWritesNoRecord`.
-`internal/manifestv2`, `internal/cdcv2` and `internal/federatedv2` may use all of
-`internal/publication`, and the same static test refuses a production import of any of them
-from any file outside the three, so no binary reaches the manifest, the writer or the reader
-code before #896 either. The reader's seam is in `internal/federated`, a production package,
-and stays inert without an implementation: the same test refuses a production use of
-`federated.WithPublicationReader` outside the dormant packages, the engine package's own
-unqualified calls included, so no binary builds an engine that reads the record.
+#896 lands), then #891, then #892. #896 was built in #898 to #901: the manifest objects,
+the flush and init writer and the reader source landed first with no caller (#898 to
+#900), and the production e2e harness routed its V1 stand-ins through helpers (#901).
+#896 then switched registration, the cutover, the writers and the reader in one merge,
+because neither side can land alone. A V2 flush stages its objects under `e{epoch}/`, stops
+appending to `manifest.json` and marks its rows flushed in the transaction of its
+`Publish`, which a V1 reader reads neither of, so every marked row would disappear from its
+answers; a V2 reader fails closed on every schema a V1 writer leaves without a V2
+generation; and a record written while V1 `cdc-flush` still runs goes stale.
+
+Once the consumers moved, a static test in `internal/publication`
+(`TestOnlyTheProtocolOwnersMoveAPublicationRecord`) keeps the record's transitions with
+their owners: outside the package, `Initialize`, `InitializeAwaitingInit` and `Activate`
+only in `cmd/tools/init_db_records.go`, `Publish`, `HoldLineage` and `Fence` only in
+`internal/cdcv2`, and `Reset`, `RaiseHorizon`, `Retire` and `Forget` nowhere yet (a drop
+tool and #891 add theirs). The one other non-test file allowed `Initialize` and
+`Publish` is the federated e2e harness's `publication.go`, which registers the benchmark's
+schemas and publishes its synthetic parquet, which has no PostgreSQL rows for a writer to
+export; `cmd/benchmark` runs it outside any test. Test files are not scanned: the
+production e2e harness writes its fixtures' records and stages fault generations from
+test files. It refuses a dot import of the package and any production string
+literal that spells a publication table name, so every statement over the tables is the
+package's own. Reading a record is free.
 
 **#759 is the reader scope, and lands in #896.** Its original evidence, a zero-match or
 partial-match glob that returns 200 with silently incomplete data, is what the reader
@@ -1024,7 +1103,9 @@ published schema. Its PR closes #760 alongside #896.
   one. #900 sets its default, `federated.DefaultPublishedPassDeadline`, to 60 s: twice the
   query budget's default, so under the default configuration the query budget expires
   first and `R_max` only bounds a deployment that raised or disabled it. `G` must then be
-  at least 60 s + `C`. Whether #896 exposes `R_max` in the configuration is open.
+  at least 60 s + `C`. #896 does not expose `R_max` in the configuration: the factory
+  passes the default, so `G` has one value to cover. Whether a deployment needs another is
+  open.
 - Whether the DSQL flush should shrink its batch to 1,000 rows, or keep 10,000 and
   publish ten generations per batch. Ten manifests per batch multiply manifest objects
   and history rows, and GC bounds both.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/lychee-technology/forma/internal/model"
 
@@ -14,8 +13,7 @@ import (
 )
 
 // SQL construction shared by the parquet leg: the dual clauses and schema
-// projections, the dispatched query, the parquet scan params and scope, and
-// the caller's parquet path hint.
+// projections, the dispatched query, and the parquet scan params and scope.
 
 // translateDuckDBQuery renders q's condition into the dual clauses and writes
 // the schema projections into sqlParams. Its refusals depend only on the query
@@ -87,20 +85,16 @@ func applyParquetScanParams(sqlParams map[string]any, parquetPaths []string, col
 		// renderer adds them to the scan's REPLACE list.
 		sqlParams["ColdPinnedColumns"] = cold.pinned
 	}
-	if cold.noObjects {
-		// No parquet object to read (#720): the renderer replaces the scan
-		// with a relation holding no rows.
-		sqlParams["EmptyParquetScan"] = true
-	}
 }
 
 // parquetScanScopeParts are the scope components of the parquet scan: the
 // parquet scan source and the sort keys render into the skeleton.
 func parquetScanScopeParts(parquetPaths []string, attributeOrders []model.AttributeOrder, cold coldScanSet) []string {
 	var parts []string
-	// The resolved path set (hint or manifest) renders into the skeleton as a
-	// SQL literal, so it must scope the cache key: a changed file set (new
-	// delta flushed, base replaced) recompiles instead of reusing stale paths.
+	// The generation's objects render into the skeleton as SQL literals, so
+	// they must scope the cache key: another generation's object set (a new
+	// delta flushed, a base replaced) recompiles instead of reusing stale
+	// paths.
 	parts = append(parts, parquetPaths...)
 	for _, o := range attributeOrders {
 		parts = append(parts, strconv.Itoa(int(o.AttrID)), o.AttrName, o.ColumnName,
@@ -114,57 +108,5 @@ func parquetScanScopeParts(parquetPaths []string, attributeOrders []model.Attrib
 	for _, pc := range cold.pinned {
 		parts = append(parts, pc.Name, pc.DuckDBType)
 	}
-	if cold.noObjects {
-		// The empty scan source (#720) renders no path, so the path parts
-		// above cannot tell it apart; it is part of the skeleton, so it
-		// scopes the key itself.
-		parts = append(parts, "no-parquet-objects")
-	}
 	return parts
-}
-
-func duckDBParquetPathsForQuery(q *model.FederatedAttributeQuery, cfg forma.DuckDBConfig) ([]string, error) {
-	if q == nil || q.DuckDBHints == nil || q.DuckDBHints.S3ParquetPathTemplate == "" {
-		return nil, nil
-	}
-	// The template is an engine-level hint (model.DuckDBRenderHints): no
-	// request can carry one since #715, which retired the #456 opt-in that
-	// gated the caller-supplied form. The scope check below still applies.
-	tmpl := q.DuckDBHints.S3ParquetPathTemplate
-	rendered, err := sqlgen.RenderS3ParquetPath(tmpl, q.SchemaID)
-	if err != nil {
-		// A hinted template that cannot render is invalid input, not
-		// an absent hint: swallowing it would silently serve the query from a
-		// different path set (the manifest source, or none) than the caller
-		// explicitly requested (#249 review). The template is the caller's own
-		// payload field, so the published message may echo it; text/template's
-		// render prose is operator detail and stays log-only (#313).
-		return nil, forma.WithOperatorDetail(
-			forma.InvalidInputf("render s3 parquet path template %q: the template is not renderable", tmpl), err)
-	}
-	parts := strings.Split(rendered, ",")
-	paths := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			paths = append(paths, trimmed)
-		}
-	}
-	if len(paths) == 0 {
-		// The hint was present (we are past the early return), so an empty
-		// result is a degenerate template — "," or whitespace-only segments —
-		// not an absent hint. Returning zero paths here would let
-		// resolveParquetPaths read it as "no hint" and consult the manifest
-		// source instead, silently answering from a different path set than
-		// the caller explicitly requested. Same rule as an unrenderable
-		// template: explicit hints always win, including when they fail
-		// (#250 PR review).
-		return nil, forma.InvalidInputf("s3 parquet path template %q rendered no usable paths", tmpl)
-	}
-	// #456 layer 2: every rendered path must sit inside the configured bucket
-	// (and, since #477, under S3DataPrefix when one is set, in a shape that
-	// cannot reach _tmp/ staging objects).
-	if err := validateHintPathScope(paths, cfg.S3Bucket, cfg.S3DataPrefix); err != nil {
-		return nil, err
-	}
-	return paths, nil
 }

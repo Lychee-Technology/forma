@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	forma "github.com/lychee-technology/forma"
-	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
 )
 
 func TestRunnerRunSmoke(t *testing.T) {
@@ -124,15 +123,6 @@ func TestQueryRequestForWorkloadCarriesNoRouting(t *testing.T) {
 	pushdown, _ := queryRequestForWorkload(WorkloadDefinition{Name: "pushdown", ExecutionSource: "service", Category: WorkloadCategoryPushdown, TargetSchema: "trade"}, 50)
 	if !pushdown.IncludeExecutionPlan {
 		t.Fatal("expected a pushdown workload to ask for the plan")
-	}
-}
-
-func TestBenchmarkS3ParquetPathTemplateUsesHarnessLocation(t *testing.T) {
-	h := &federated.FederatedTestHarness{S3Bucket: "bucket-a", S3Prefix: "prefix-b"}
-	got := benchmarkS3ParquetPathTemplate(h)
-	want := "s3://bucket-a/prefix-b/{{.SchemaID}}/base/*.parquet, s3://bucket-a/prefix-b/{{.SchemaID}}/delta/*.parquet"
-	if got != want {
-		t.Fatalf("unexpected parquet template: %q", got)
 	}
 }
 

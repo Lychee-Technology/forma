@@ -9,6 +9,8 @@ import (
 
 	"github.com/lychee-technology/forma"
 	internalcdc "github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/cdcv2"
+	"github.com/lychee-technology/forma/internal/publication"
 	"go.uber.org/zap"
 )
 
@@ -33,8 +35,8 @@ func TestRunnerRunOnceRequiresSchemaRegistry(t *testing.T) {
 	}
 }
 
-// emptyRegistry satisfies the registry precondition; the manifest
-// configuration refusals come before any schema is looked up.
+// emptyRegistry satisfies the registry precondition; the configuration
+// refusals come before any schema is looked up.
 type emptyRegistry struct{}
 
 func (emptyRegistry) GetSchemaAttributeCacheByName(string) (int16, forma.SchemaAttributeCache, error) {
@@ -55,20 +57,13 @@ func (emptyRegistry) GetSchemaByID(int16) (string, forma.JSONSchema, error) {
 
 func (emptyRegistry) ListSchemas() []string { return nil }
 
-// #474: a caller outside the module's internal packages must be able to tell
-// the manifest configuration refusals from operational failures with
-// errors.Is, through both public entry points. Neither case needs AWS,
-// Postgres or DuckDB: the configuration is refused before any of them is set
-// up.
-func TestRunOnceManifestConfigurationRefusalsMatchPublicSentinels(t *testing.T) {
-	cases := []struct {
-		name string
-		cfg  Config
-		want error
-	}{
-		{"template-less run without glob-only", Config{}, ErrManifestStoreUnwired},
-		{"glob-only run with a template", Config{GlobOnly: true, ManifestTemplate: "manifest/{{.SchemaID}}.json"}, ErrGlobOnlyWithTemplate},
-	}
+// A caller outside the module's internal packages must be able to tell a
+// configuration the V2 writer cannot run from an operational failure with
+// errors.Is, through both public entry points. A PostgreSQL flush marks its
+// whole batch in one statement, so a batch above cdcv2.MaxMarkEntries is
+// refused before any AWS, Postgres or DuckDB setup; on Aurora DSQL the same
+// batch publishes in generations and passes the check.
+func TestRunOnceRefusesABatchAPostgreSQLMarkCannotBind(t *testing.T) {
 	entrypoints := map[string]func(Config) error{
 		"RunOnce": func(cfg Config) error {
 			_, err := RunOnce(context.Background(), cfg, nil, false, zap.NewNop(), emptyRegistry{})
@@ -81,14 +76,33 @@ func TestRunOnceManifestConfigurationRefusalsMatchPublicSentinels(t *testing.T) 
 			return err
 		},
 	}
-	for _, tc := range cases {
-		for entry, run := range entrypoints {
-			t.Run(tc.name+"/"+entry, func(t *testing.T) {
-				err := run(tc.cfg)
-				if !errors.Is(err, tc.want) {
-					t.Fatalf("errors.Is(%v, %v) = false", err, tc.want)
-				}
-			})
+	for entry, run := range entrypoints {
+		t.Run(entry, func(t *testing.T) {
+			err := run(Config{BatchSize: cdcv2.MaxMarkEntries + 1})
+			if !errors.Is(err, ErrBatchSizeTooLarge) {
+				t.Fatalf("errors.Is(%v, ErrBatchSizeTooLarge) = false", err)
+			}
+		})
+	}
+	if err := (Config{BatchSize: cdcv2.MaxMarkEntries + 1, Engine: forma.EngineAuroraDSQL}).ValidateFlush(); err != nil {
+		t.Fatalf("a DSQL batch publishes in generations of at most %d entries, so any size runs: %v", cdcv2.DSQLGenerationLimit, err)
+	}
+}
+
+// The writer's refusals are the publication package's sentinels, so a
+// scheduler on the public API matches them by value: AWAITING_INIT calls for
+// a cdc-init, a missing record for init-db.
+func TestPublicationSentinelsAreTheWriterValues(t *testing.T) {
+	pairs := map[string][2]error{
+		"no record":     {ErrNoPublicationRecord, publication.ErrNoRecord},
+		"awaiting init": {ErrAwaitingInit, publication.ErrAwaitingInit},
+		"dropped":       {ErrSchemaDropped, publication.ErrDropped},
+		"unresolved":    {ErrPublicationUnresolved, cdcv2.ErrUnresolved},
+		"batch size":    {ErrBatchSizeTooLarge, internalcdc.ErrBatchSizeTooLarge},
+	}
+	for name, p := range pairs {
+		if p[0] != p[1] {
+			t.Fatalf("%s: the public sentinel must be the value the writer returns", name)
 		}
 	}
 }

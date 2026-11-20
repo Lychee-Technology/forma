@@ -32,10 +32,10 @@ func coldTierQuery() *model.FederatedAttributeQuery {
 	}
 }
 
-// newSentinelTestEngine wires a parquet source that resolves one path. These
-// tests classify failures at the DuckDB execute/stream stages, so the query
-// has to get that far: since #299 an empty path set fails at resolution with
-// ErrNoParquetPaths and never reaches the sites under test.
+// newSentinelTestEngine wires a publication reader whose generation lists one
+// object. These tests classify failures at the DuckDB execute/stream stages,
+// so the query has to get that far: a generation that lists none runs no
+// DuckDB statement.
 func newSentinelTestEngine(t *testing.T, duck DuckDBQueryExecutor, breaker *CircuitBreaker) *DBFederatedQueryEngine {
 	t.Helper()
 	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, breaker,
@@ -59,7 +59,7 @@ func TestSentinel_ExecuteFailureIsFederatedReadFailed(t *testing.T) {
 		coldTierQuery(), nil)
 
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
-	require.NotErrorIs(t, err, ErrParquetSetInconsistent)
+	require.NotErrorIs(t, err, ErrPublicationInconsistent)
 	require.NotErrorIs(t, err, ErrDuckDBUnavailable)
 	require.ErrorContains(t, err, "some driver text", "raw driver error must stay in the chain for logs")
 }
@@ -118,34 +118,21 @@ func TestSentinel_BreakerOpenIsDuckDBUnavailable(t *testing.T) {
 	require.Equal(t, 0, duck.calls, "breaker-open must reject before DuckDB executes")
 }
 
-// TestParquetSetInconsistentError_Unwrap pins the typed carrier: errors.Is
-// reaches the sentinel and errors.As surfaces schema + missing keys, so
-// operators (and #187 e2e) can read the offending state from the error.
-func TestParquetSetInconsistentError_Unwrap(t *testing.T) {
-	inner := &ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{"a.parquet", "b.parquet"}}
-	err := fmt.Errorf("execute duckdb query: %w", inner)
+// TestPublicationConsistencyErrorAliasIsIdentical pins that the federated
+// name is an alias of the root type, not a copy: a value built through the
+// federated name is matched by the root sentinel and type, so embedders and
+// internal/httpapi see the errors the engine actually produces.
+func TestPublicationConsistencyErrorAliasIsIdentical(t *testing.T) {
+	err := fmt.Errorf("federated read: %w",
+		&PublicationConsistencyError{SchemaID: 9, Epoch: 1, Generation: 2, MissingKeys: []string{"k.parquet"}, Err: errPublishedObjectMissing})
 
-	require.ErrorIs(t, err, ErrParquetSetInconsistent)
-	var typed *ParquetSetInconsistentError
-	require.True(t, errors.As(err, &typed))
-	require.Equal(t, int16(22), typed.SchemaID)
-	require.Equal(t, []string{"a.parquet", "b.parquet"}, typed.MissingKeys)
-	require.ErrorContains(t, err, "schema 22")
-	require.ErrorContains(t, err, "a.parquet")
-}
+	require.ErrorIs(t, err, forma.ErrPublicationInconsistent)
+	require.ErrorIs(t, err, ErrPublicationInconsistent)
+	require.ErrorIs(t, err, errPublishedObjectMissing)
 
-// TestParquetSetInconsistentAliasIsIdentical pins that the #301 promotion is an
-// alias, not a copy: a value built through the federated name is matched by the
-// root sentinel, so internal/httpapi's classification sees the errors the engine
-// actually produces.
-func TestParquetSetInconsistentAliasIsIdentical(t *testing.T) {
-	err := fmt.Errorf("execute duckdb query: %w",
-		&ParquetSetInconsistentError{SchemaID: 9, MissingKeys: []string{"k.parquet"}})
-
-	require.ErrorIs(t, err, forma.ErrParquetSetInconsistent)
-	require.ErrorIs(t, err, ErrParquetSetInconsistent)
-
-	var typed *forma.ParquetSetInconsistentError
+	var typed *forma.PublicationConsistencyError
 	require.True(t, errors.As(err, &typed))
 	require.Equal(t, int16(9), typed.SchemaID)
+	require.Equal(t, []string{"k.parquet"}, typed.MissingKeys)
+	require.ErrorContains(t, err, "schema 9 epoch 1 generation 2")
 }

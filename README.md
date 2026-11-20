@@ -223,9 +223,12 @@ flowchart LR
 - **Read path.** `Get`, cross-schema search and, on a server without DuckDB, `Query`
   read PostgreSQL, which always holds the complete current state of every live entity.
 - **CDC and the Parquet tiers (optional).** `forma-tools cdc-flush` exports rows whose
-  `change_log` entry is unflushed to Parquet under `/delta/`, records them in an S3
-  manifest, then marks them flushed. `forma-tools compactor` merges delta files into
-  `/base/`. Both run as separate jobs.
+  `change_log` entry is unflushed to write-once Parquet objects, stages an immutable
+  manifest generation that lists them, then moves the schema's publication record to
+  that generation and marks the rows flushed in one PostgreSQL transaction
+  ([publication protocol](docs/publication-protocol-v2.md)). `forma-tools cdc-init`
+  onboards a schema the same way from a full export. `forma-tools compactor` merges
+  delta files into `/base/`. They run as separate jobs.
 - **Federated query (optional).** DuckDB reads the Parquet tiers while Forma reads the
   still-unflushed ("hot") rows from PostgreSQL in one snapshot. Any Parquet row whose
   `row_id` is still unflushed is discarded in favor of the PostgreSQL version; tiers

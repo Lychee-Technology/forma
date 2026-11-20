@@ -53,7 +53,7 @@ func TestRegisterSchemasRecordsGenerationOne(t *testing.T) {
 	}
 	var regErr error
 	stdout, _ := captureStdStreams(t, func() {
-		regErr = registerSchemas(context.Background(), tx, "schema_registry_dev", dir)
+		_, regErr = registerSchemas(context.Background(), tx, "schema_registry_dev", dir)
 	})
 	if regErr != nil {
 		t.Fatalf("registerSchemas: %v", regErr)
@@ -99,7 +99,7 @@ func TestRegisterSchemasRefusesAnInvalidAttributesFile(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	var regErr error
-	captureStdStreams(t, func() { regErr = registerSchemas(context.Background(), tx, "schema_registry_dev", dir) })
+	captureStdStreams(t, func() { _, regErr = registerSchemas(context.Background(), tx, "schema_registry_dev", dir) })
 	if regErr == nil || !strings.Contains(regErr.Error(), "record generation 1 of schema lead") {
 		t.Fatalf("registerSchemas = %v, want the attribute id collision refused", regErr)
 	}

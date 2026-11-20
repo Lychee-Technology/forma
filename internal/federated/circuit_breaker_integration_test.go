@@ -50,10 +50,14 @@ func (s *scriptedDuckDBExecutor) Query(ctx context.Context, sql string, args ...
 	return s.script[idx]()
 }
 
+// The engine admits two passes at once: a pass meets the breaker only once its
+// snapshot has read the generation, inside its pass slot, so a probe holding
+// the only slot would make a concurrent caller wait for it rather than meet
+// the breaker.
 func newBreakerTestEngine(t *testing.T, duck DuckDBQueryExecutor, breaker *CircuitBreaker) *DBFederatedQueryEngine {
 	t.Helper()
 	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, breaker,
-		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
+		forma.DuckDBConfig{Enabled: true, MaxConnections: 2, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
 		testMetadataCacheSchema7(t), withTestParquetPath(), withFakeHotLeg(nil))
 	return engine
 }
@@ -204,55 +208,6 @@ func TestBreakerHalfOpenSingleProbeThroughQueryPath(t *testing.T) {
 	require.Equal(t, int32(2), duck.calls.Load(), "post-probe caller must reach the executor")
 }
 
-// #299 review P1: a pre-execution classified error must not convert into a
-// degradable one for the NEXT caller.
-//
-// Allow() reserves the half-open probe before path resolution runs, so a query
-// that fails at resolution returns without ever calling RecordSuccess or
-// RecordFailure. The reservation then sits occupied until it lapses
-// (openDuration), and every caller in that window is rejected with
-// ErrDuckDBUnavailable — which IS degradable. Under AllowPartialDegradedMode
-// that turns the second request for the SAME zero-path misconfiguration into a
-// silent Postgres-only answer, breaking the contract that a misconfigured read
-// surface always stays loud.
-//
-// Both consecutive requests must therefore report ErrNoParquetPaths, and the
-// Postgres fallback must never be consulted.
-func TestHalfOpenZeroPathStaysLoudForConsecutiveRequests(t *testing.T) {
-	restore := initTestDescriptors()
-	defer restore()
-
-	// A long openDuration makes the point sharply: if the probe reservation is
-	// abandoned rather than released, the second request cannot possibly see a
-	// free slot, so this cannot pass by waiting.
-	breaker := NewCircuitBreaker(1, time.Minute, time.Hour)
-	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
-	pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 5}}
-	engine := NewDBFederatedQueryEngine(pg, duck, breaker,
-		forma.DuckDBConfig{Enabled: true, Routing: forma.RoutingPolicy{Strategy: forma.RoutingStrategyHybrid}},
-		testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: nil}), withFakeHotLeg(nil))
-	fq, tables := breakerTestQuery()
-	opts := func() *model.FederatedQueryOptions {
-		return &model.FederatedQueryOptions{AllowPartialDegradedMode: true}
-	}
-
-	// Trip the threshold-1 breaker, then step into half-open.
-	breaker.RecordFailure()
-	require.True(t, breaker.IsOpen())
-	breaker.openUntil = time.Now().Add(-time.Millisecond)
-
-	for i := 1; i <= 2; i++ {
-		_, err := engine.Query(context.Background(), tables, fq, opts())
-		require.ErrorIsf(t, err, ErrNoParquetPaths,
-			"request %d must report the zero-path misconfiguration", i)
-		require.NotErrorIsf(t, err, ErrDuckDBUnavailable,
-			"request %d was rejected by an abandoned probe reservation instead of re-resolving", i)
-	}
-	require.Equal(t, 0, pg.queryCalls,
-		"degraded mode must never answer a zero-path misconfiguration from Postgres alone")
-	require.Equal(t, 0, duck.calls)
-}
-
 // TestBreakerHalfOpenProbeReleasedOnConfirmedCorruption pins #348 item 3 in
 // unit form (previously only the e2e exercised this trace): an open breaker
 // enters half-open, the probe query hits confirmed per-object corruption —
@@ -278,7 +233,7 @@ func TestBreakerHalfOpenProbeReleasedOnConfirmedCorruption(t *testing.T) {
 	}}
 	breaker := NewCircuitBreaker(1, time.Minute, 50*time.Millisecond)
 	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, breaker,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}), withFakeHotLeg(nil))
+		hybridDuckConfig(), testMetadataCacheSchema7(t), withParquetSource(&fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}), withFakeHotLeg(nil))
 
 	breaker.RecordFailure() // threshold 1: opens
 	require.True(t, breaker.IsOpen())

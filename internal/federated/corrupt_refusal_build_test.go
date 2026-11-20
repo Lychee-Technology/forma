@@ -61,7 +61,7 @@ func runBuildRefusalCase(t *testing.T, tc buildRefusalCase, cached, degraded boo
 	mc := testMetadataCacheSchema7(t)
 	src := &fakeParquetSource{paths: []string{retryKeptPathA, retryCorruptPath1}}
 	e := NewDBFederatedQueryEngine(pg, duck, breaker,
-		hybridDuckConfig(), mc, WithParquetSource(src), withFakeHotLeg(nil))
+		hybridDuckConfig(), mc, withParquetSource(src), withFakeHotLeg(nil))
 	if cached {
 		e.corruptPaths.Add([]string{retryCorruptPath1})
 	}

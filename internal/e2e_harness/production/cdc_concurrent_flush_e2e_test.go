@@ -24,7 +24,7 @@ import (
 //   - export->mark-flushed (the harder window: the parquet already carries
 //     the stale value and only the mark-flushed guard saves the row):
 //     the *AfterSnapshot scenarios hold the flush open with PausingS3 at
-//     CopyObject. The visibility probes assert the dirty hot version shadows
+//     staging of its parquet object. The visibility probes assert the dirty hot version shadows
 //     the exported stale copy (anti-join), and after the retry flush drains
 //     the row, LWW on ver_ts keeps suppressing it.
 //
@@ -58,16 +58,17 @@ type flushOutcome struct {
 	err    error
 }
 
-// runPausedFlush starts one real flush that pauses at its first CopyObject,
+// runPausedFlush starts one real flush that pauses at the staging of its
+// first parquet object (after the batch's export snapshot was taken),
 // invokes mutate on the test goroutine while the flush is suspended, then
 // resumes the flush and returns its outcome. The seeds stay small and no
-// chunking config is set, so the single batch issues exactly one CopyObject
-// and the pause fires deterministically once. The goroutine/cleanup core
-// lives in runFlushPausedOn (cdc_flush_window_e2e_test.go), which #252 also
-// drives with a manifest-PutObject pause point.
+// chunking config is set, so the single batch stages exactly one parquet
+// object and the pause fires deterministically once. The goroutine/cleanup
+// core lives in runFlushPausedOn (cdc_flush_window_e2e_test.go), which #252
+// also drives with a manifest-PutObject pause point.
 func runPausedFlush(ctx context.Context, t *testing.T, env *Env, mutate func()) (*FlushReport, error) {
 	t.Helper()
-	return runFlushPausedOn(ctx, t, env, NewPausingS3(env.Cluster.S3, S3OpCopy), mutate)
+	return runFlushPausedOn(ctx, t, env, NewPausingS3OnKey(env.Cluster.S3, S3OpPut, ".parquet"), mutate)
 }
 
 // runCleanRetry re-runs the flush without any pause and asserts it drains

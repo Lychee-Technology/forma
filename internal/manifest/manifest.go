@@ -168,46 +168,6 @@ func LoadOrCreate(ctx context.Context, st Store, path string, schemaID int16) (*
 	return nil, "", err
 }
 
-// AppendFile adds a FileEntry to the manifest and saves it.
-// Uses optimistic locking via etag to handle concurrent updates. It loads
-// through LoadOrCreateForSchema, so a manifest stamped for another schema —
-// a collided or mis-pointed path template — is refused with
-// forma.ManifestSchemaMismatchError instead of receiving this schema's
-// entry (#520).
-func AppendFile(ctx context.Context, st Store, path string, schemaID int16, entry FileEntry) error {
-	m, etag, err := LoadOrCreateForSchema(ctx, st, path, schemaID)
-	if err != nil {
-		return fmt.Errorf("load manifest: %w", err)
-	}
-	m.Files = append(m.Files, entry)
-	_, err = Save(ctx, st, path, m, etag)
-	if err != nil {
-		return fmt.Errorf("save manifest: %w", err)
-	}
-	return nil
-}
-
-// AppendFiles adds multiple FileEntry items to the manifest and saves it.
-// Uses optimistic locking via etag to handle concurrent updates. Like
-// AppendFile it loads through LoadOrCreateForSchema, so a manifest stamped
-// for another schema is refused with forma.ManifestSchemaMismatchError
-// (#520).
-func AppendFiles(ctx context.Context, st Store, path string, schemaID int16, entries []FileEntry) error {
-	if len(entries) == 0 {
-		return nil
-	}
-	m, etag, err := LoadOrCreateForSchema(ctx, st, path, schemaID)
-	if err != nil {
-		return fmt.Errorf("load manifest: %w", err)
-	}
-	m.Files = append(m.Files, entries...)
-	_, err = Save(ctx, st, path, m, etag)
-	if err != nil {
-		return fmt.Errorf("save manifest: %w", err)
-	}
-	return nil
-}
-
 // SpliceTierFiles replaces every entry of the given tier on the in-memory
 // manifest with the provided entries, preserving other tiers in their
 // original order. Extracted from ReplaceTierFiles so callers that manage
@@ -230,11 +190,10 @@ func SpliceTierFiles(m *Manifest, tier string, entries []FileEntry) {
 // tier replacement a full re-export needs (#176): stale entries from earlier
 // runs and historical duplicates must not survive, and compaction-promoted
 // base entries are replaced too — their S3 objects remain for glob-based
-// readers, and object-level reconciliation is #203. cdc-init's own publish
-// (internal/cdc/init_publish.go) splices base and delta itself so it can
-// retry a confirmed 412 and confirm an ambiguous save; this helper remains
-// for single-tier callers and loads through LoadOrCreateForSchema, so a
-// manifest stamped for another schema is never rewritten under this one.
+// readers, and object-level reconciliation is #203. cdc-init no longer
+// writes a V1 manifest (it publishes a V2 init generation, #896); this helper
+// remains for single-tier callers and loads through LoadOrCreateForSchema, so
+// a manifest stamped for another schema is never rewritten under this one.
 func ReplaceTierFiles(ctx context.Context, st Store, path string, schemaID int16, tier string, entries []FileEntry) error {
 	m, etag, err := LoadOrCreateForSchema(ctx, st, path, schemaID)
 	if err != nil {

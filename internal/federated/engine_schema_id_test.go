@@ -41,7 +41,7 @@ func TestQuery_NonPositiveSchemaIDIsNotDegradable(t *testing.T) {
 			duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
 			pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
 			engine := NewDBFederatedQueryEngine(pg, duck, nil,
-				hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
+				hybridDuckConfig(), testMetadataCacheSchema7(t), withParquetSource(src), withFakeHotLeg(nil))
 			opts := &model.FederatedQueryOptions{AllowPartialDegradedMode: true, IncludeExecutionPlan: true}
 
 			page, err := engine.Query(context.Background(),
@@ -74,7 +74,7 @@ func TestExecuteFederatedKeysetQuery_NonPositiveSchemaIDRefused(t *testing.T) {
 			duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
 			pg := &fakePostgresFederatedSource{}
 			engine := NewDBFederatedQueryEngine(pg, duck, nil,
-				hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
+				hybridDuckConfig(), testMetadataCacheSchema7(t), withParquetSource(src), withFakeHotLeg(nil))
 
 			records, total, err := engine.ExecuteFederatedKeysetQuery(context.Background(),
 				model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},

@@ -162,6 +162,8 @@ func TestFlushReportsAnOutcomeItCannotSettle(t *testing.T) {
 	require.Equal(t, before, unresolved.Cur)
 	require.ErrorIs(t, unresolved.Cause, ErrAttemptsExhausted)
 	require.Nil(t, unresolved.Handoff, "a flush's marks commit with its publication")
+	require.Equal(t, len(dirty), unresolved.Marked, "the unanswered COMMIT's marks counted every selected entry")
+	require.Zero(t, unresolved.Unconfirmed)
 	outcome, err := publication.Resolve(context.Background(), publication.DB(f.db), f.tables, unresolved.Cur, unresolved.Next)
 	require.NoError(t, err)
 	require.Equal(t, publication.NotCommitted, outcome)

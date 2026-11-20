@@ -247,7 +247,18 @@ func (w *Writer) resolve(ctx context.Context, p *pub, cause error) (verdict, pub
 // otherwise: an entry a writer held locked, or a row that moved, between
 // them.
 func (p *pub) markedRange() (lo, hi int) {
-	if !p.resolved || len(p.unanswered) == 0 {
+	if !p.resolved {
+		return p.marked, p.marked
+	}
+	return p.unansweredRange()
+}
+
+// unansweredRange answers the least and the most entries the marks of a
+// transaction of p whose COMMIT went without an answer counted: what p
+// marked if one of them is found committed. With none, it is what the
+// transaction sent last counted.
+func (p *pub) unansweredRange() (lo, hi int) {
+	if len(p.unanswered) == 0 {
 		return p.marked, p.marked
 	}
 	return slices.Min(p.unanswered), slices.Max(p.unanswered)

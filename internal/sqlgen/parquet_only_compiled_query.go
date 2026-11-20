@@ -66,7 +66,7 @@ var parquetOnlyProjectionKeys = []string{"OuterSelect", "S3SourceSelect"}
 
 // CompileParquetOnlyQuery renders the parquet-only skeleton for q's shape.
 // params carries the schema projection and the parquet scan inputs
-// (DuckDBS3Paths or S3_PATHS, the cold column sets, EmptyParquetScan); no
+// (DuckDBS3Paths or S3_PATHS, the cold column sets); no
 // PostgreSQL param is read. dual supplies the
 // DuckDB logical clause; its PostgreSQL clauses are not rendered, because Go
 // serves the hot rows.

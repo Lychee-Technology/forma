@@ -4,10 +4,9 @@
 // digest, the file list of each generation kind, the object keys, a
 // write-once object store and a verifying process-wide cache.
 //
-// Nothing outside this package calls it until the writers and the reader move
-// onto the publication record together (#896): the guard in
-// internal/publication (TestOnlyInitDBDDLReachesThePublicationTables) refuses
-// a production import of it from anywhere else.
+// cdc-flush and cdc-init stage and publish through it (internal/cdcv2), and
+// the federated reader fetches the generation its snapshot's record names
+// through its Cache (internal/federatedv2).
 package manifestv2
 
 import (
@@ -110,6 +109,9 @@ func (m *Manifest) validate() error {
 	if m.Files == nil {
 		return errors.New("files is absent")
 	}
+	if err := m.validateInventory(); err != nil {
+		return err
+	}
 	for i, f := range m.Files {
 		if i > 0 && m.Files[i-1].Key >= f.Key {
 			return fmt.Errorf("files are not sorted by key, or list %q twice", f.Key)
@@ -145,6 +147,19 @@ func (m *Manifest) validateHeader() error {
 		}
 	default:
 		return fmt.Errorf("kind %q is not %s, %s or %s", m.Kind, publication.KindFlush, publication.KindCompact, publication.KindInit)
+	}
+	return nil
+}
+
+// validateInventory refuses a flush generation that lists no file. A flush
+// generation is its parent's files plus the new delta objects that hold the
+// rows it marks flushed (NewFlush), so it is never empty: trusting an empty
+// one would serve the hot leg alone while the rows the flush marked are no
+// longer dirty. An init generation may be empty (an export of no rows); that
+// is the one way the protocol says "the parquet tiers hold nothing".
+func (m *Manifest) validateInventory() error {
+	if m.Kind == publication.KindFlush && len(m.Files) == 0 {
+		return fmt.Errorf("a %s generation lists at least one file: its parent's and its own %s files", publication.KindFlush, TierDelta)
 	}
 	return nil
 }

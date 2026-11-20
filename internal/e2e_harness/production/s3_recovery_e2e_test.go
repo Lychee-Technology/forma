@@ -48,7 +48,7 @@ func TestS3Restart_CleanRecovery(t *testing.T) {
 	if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
 		t.Fatalf("S3 outage must classify as ErrFederatedReadFailed, got: %v", err)
 	}
-	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
+	if errors.Is(err, fedengine.ErrPublicationInconsistent) {
 		t.Errorf("an unreachable store cannot prove loss; must not classify as manifest inconsistency: %v", err)
 	}
 	if !strings.Contains(err.Error(), "duckdb federated query") {

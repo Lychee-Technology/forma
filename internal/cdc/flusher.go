@@ -13,10 +13,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dsql/auth"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	_ "github.com/duckdb/duckdb-go/v2"
-	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/cdcv2"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"go.uber.org/zap"
 )
 
@@ -37,48 +37,58 @@ var generateIAMTokenFn = func(ctx context.Context, endpoint, region string, cred
 	return auth.GenerateDbConnectAuthToken(ctx, endpoint, region, cp)
 }
 
-// S3ObjectClient is a minimal interface for copy + delete + stat used by the CDC flusher.
+// S3ObjectClient is the copy + delete + stat surface of the V1 compactor's
+// tmp->final promotion (CopyTmpToFinal, DeleteObjectKey, HeadObjectSize).
+// cdc-flush and cdc-init write through S3Client instead.
 type S3ObjectClient interface {
 	CopyObject(ctx context.Context, params *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error)
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 	HeadObject(ctx context.Context, params *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
 }
 
-// S3FullClient extends S3ObjectClient with GetObject and PutObject for manifest operations.
+// S3FullClient is S3ObjectClient with GetObject and PutObject: the whole
+// object API of the CDC tools. It satisfies S3Client.
 type S3FullClient interface {
 	S3ObjectClient
 	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 }
 
-// RunOnce performs one full pass over schemas and attempts flush where needed.
-// Caller may provide an S3ObjectClient; when nil, AWS config will be loaded from
-// environment (still respecting cfg.S3Region). Optional schemaRegistry enables
-// schema-aware projections in DuckDB export. The report lists the schemas the
-// run skipped (#704), and is returned alongside a schema's flush error too.
-func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun bool, logger *zap.Logger, schemaRegistry forma.SchemaRegistry) (FlushReport, error) {
+// RunOnce performs one flush pass over every schema with unflushed entries,
+// publishing each schema's batch through the V2 writer (internal/cdcv2): it
+// stages delta objects and an immutable manifest generation, then moves the
+// schema's publication record and marks the batch's entries in one
+// transaction. s3Client is the client the objects and manifests are written
+// through; nil uses one built from the AWS configuration (cfg.S3Region and
+// the ambient chain). schemaRegistry is required: the export is
+// schema-driven. The report lists what each schema published and the
+// schemas the run skipped (#704), and is returned alongside a schema's flush
+// error too.
+func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3Client, dryRun bool, logger *zap.Logger, schemaRegistry forma.SchemaRegistry) (FlushReport, error) {
 	if schemaRegistry == nil {
 		return FlushReport{}, fmt.Errorf("schema registry is required for CDC export")
 	}
-	// A manifest configuration the run cannot flush under (#474) is refused
-	// before any AWS, Postgres or DuckDB setup; newSchemaFlushContext checks
-	// it again for every frame that builds a flush context.
-	if err := checkManifestMode(cfg); err != nil {
-		return FlushReport{}, fmt.Errorf("cdc flush manifest configuration: %w", err)
+	if logger == nil {
+		logger = zap.NewNop()
 	}
-	// Setup AWS credentials and default S3 client.
+	cfg = cfg.WithDefaults()
+	// A configuration the writer cannot run is refused before any AWS,
+	// Postgres or DuckDB setup.
+	if err := cfg.ValidateFlush(); err != nil {
+		return FlushReport{}, fmt.Errorf("cdc flush configuration: %w", err)
+	}
+	if _, err := runEpochs(cfg); err != nil {
+		return FlushReport{}, fmt.Errorf("cdc flush configuration: %w", err)
+	}
 	region, credProvider, defaultS3Client, err := setupAWSClient(ctx, cfg)
 	if err != nil {
 		return FlushReport{}, fmt.Errorf("setup aws client: %w", err)
 	}
-
-	requireFullS3 := cfg.ManifestTemplate != ""
-	clients, err := resolveS3Clients(s3Client, defaultS3Client, requireFullS3)
+	store, err := newObjectStore(resolveS3Client(s3Client, defaultS3Client), cfg.S3Bucket)
 	if err != nil {
-		return FlushReport{}, fmt.Errorf("resolve s3 clients: %w", err)
+		return FlushReport{}, fmt.Errorf("resolve the object store: %w", err)
 	}
 
-	// Setup Postgres connection
 	db, _, err := setupPostgresConnection(ctx, cfg, region, credProvider, logger)
 	if err != nil {
 		return FlushReport{}, fmt.Errorf("setup postgres connection: %w", err)
@@ -86,12 +96,9 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	defer db.Close()
 
 	// DuckDB httpfs credentials follow the same both-halves rule as the SDK
-	// client (#326): with no fully-set static pair NewDuckExporter receives
-	// empty strings and DuckDB inherits its own environment chain, so the SDK
-	// client and httpfs never diverge under a half-set env pair. The session
-	// token rides the source that supplied the pair (#329) — resolved once
-	// here and handed to the exporter, so httpfs signs with the same triple
-	// the SDK client does.
+	// client (#326), and the session token rides the source that supplied the
+	// pair (#329). The exports write local scratch files, but the exporter
+	// configures S3 for the tools that share it.
 	s3Key, s3Secret, s3Token := ResolveStaticS3Credentials(cfg)
 	duck, err := NewDuckExporter(ctx, cfg, s3Key, s3Secret, s3Token, logger)
 	if err != nil {
@@ -99,25 +106,22 @@ func RunOnce(ctx context.Context, cfg CDCConfig, s3Client S3ObjectClient, dryRun
 	}
 	defer duck.DB.Close()
 
-	flushCtx, err := newSchemaFlushContext(flushContextParams{
-		cfg:            cfg,
-		db:             db,
-		duck:           duck,
-		clients:        clients,
-		dryRun:         dryRun,
-		logger:         logger,
-		schemaRegistry: schemaRegistry,
+	return runFlushPass(ctx, flushContextParams{
+		cfg: cfg, db: db, duck: duck, store: store, dryRun: dryRun, logger: logger, schemaRegistry: schemaRegistry,
 	})
+}
+
+// runFlushPass builds the run's flush context and flushes every schema with
+// unflushed entries. Both RunOnce frames end here.
+func runFlushPass(ctx context.Context, p flushContextParams) (FlushReport, error) {
+	flushCtx, err := newSchemaFlushContext(ctx, p)
 	if err != nil {
 		return FlushReport{}, fmt.Errorf("prepare flush: %w", err)
 	}
-
-	// Get schemas with unflushed rows
-	schemaIDs, err := getUnflushedSchemaIDs(ctx, db, flushCtx.tableName)
+	schemaIDs, err := getUnflushedSchemaIDs(ctx, p.db, flushCtx.tableName)
 	if err != nil {
 		return FlushReport{}, fmt.Errorf("list schemas with unflushed rows: %w", err)
 	}
-
 	return flushCtx.processSchemas(ctx, schemaIDs)
 }
 
@@ -214,28 +218,25 @@ func getUnflushedSchemaIDs(ctx context.Context, db *sql.DB, tableName string) ([
 }
 
 type schemaFlushContext struct {
-	db               *sql.DB
-	duck             *DuckExporter
-	s3Client         S3ObjectClient
-	cfg              CDCConfig
-	tableName        string
-	dryRun           bool
-	logger           *zap.Logger
-	schemaRegistry   forma.SchemaRegistry
-	attrCaches       map[int16]forma.SchemaAttributeCache
-	manifestStore    manifest.Store
-	manifestResolver manifest.PathResolver
-	// probeUnwiredManifest is the #474 guard probe, set only when
-	// manifestStore is not.
-	probeUnwiredManifest unwiredManifestProbe
-	// checksumObject is the executor's content-hash seam (#347), resolved once
-	// per run from the full S3 client; nil leaves manifest entries unstamped.
-	checksumObject func(ctx context.Context, key string) (string, error)
+	db             *sql.DB
+	duck           *DuckExporter
+	store          manifestv2.Store
+	writer         *cdcv2.Writer
+	cfg            CDCConfig
+	tableName      string
+	dryRun         bool
+	logger         *zap.Logger
+	schemaRegistry forma.SchemaRegistry
+	attrCaches     map[int16]forma.SchemaAttributeCache
+	// epochs are the record epochs the run's metadata belongs to, read when
+	// the context is built, before processSchemas resolves the attributes
+	// (runEpochs, refuseMovedEpoch).
+	epochs map[int16]int64
 	// locker is the per-schema lock of the run's database engine; nil takes
 	// the PostgreSQL advisory lock.
-	locker          SchemaLocker
-	executeSingle   func(*flushBatchExecutor, []uuid.UUID) error
-	executeInChunks func(*flushBatchExecutor, []uuid.UUID, int) error
+	locker SchemaLocker
+	// flushed collects what each schema published, for the run's report.
+	flushed         []SchemaFlush
 	processSchemaFn func(context.Context, int16) error
 }
 
@@ -265,6 +266,7 @@ func (c *schemaFlushContext) processSchemas(ctx context.Context, schemaIDs []int
 			schemaErrs = append(schemaErrs, fmt.Errorf("schema %d: %w", schemaID, err))
 		}
 	}
+	report.Flushed = c.flushed
 	if len(schemaErrs) > 0 {
 		return report, errors.Join(schemaErrs...)
 	}
@@ -292,37 +294,12 @@ func (c *schemaFlushContext) processSchema(ctx context.Context, schemaID int16) 
 	return WithLockLoss(held, c.flushUnderLock(held, schemaID))
 }
 
-// flushUnderLock is processSchema's work once the schema lock is held, on
-// the lock's held context.
-func (c *schemaFlushContext) flushUnderLock(ctx context.Context, schemaID int16) error {
-	// Check if flush is needed
-	cnt, oldest, err := GetChangeLogStats(ctx, c.db, c.tableName, schemaID)
-	if err != nil {
-		return fmt.Errorf("get changelog stats: %w", err)
-	}
-	if cnt == 0 {
-		c.logger.Sugar().Infow("no unflushed rows", "schema_id", schemaID)
-		return nil
-	}
-
-	if !shouldFlush(c.cfg, cnt, oldest) {
-		c.logger.Sugar().Infow("skip flush: thresholds not met", "schema_id", schemaID, "cnt", cnt, "oldest", oldest)
-		return nil
-	}
-
-	// Execute flush
-	if err := c.executeFlush(ctx, schemaID); err != nil {
-		return fmt.Errorf("execute flush: %w", err)
-	}
-	return nil
-}
-
 // shouldFlush determines if flush thresholds are met. The age trigger is the
 // one place a wall-clock comparison against changed_at survives (#274): a
 // clock-ahead version has negative age until the clock reaches it, so a LONE
 // such row age-triggers only after drift + MaxAgeMs. That delays only the
-// TRIGGER — any run started by the count threshold or by other rows exports
-// and marks clock-ahead rows normally (SelectBatchRowIDs / MarkFlushedVersions).
+// TRIGGER: any run started by the count threshold or by other rows exports
+// and marks clock-ahead rows normally (deltaStager, the writer's exact marks).
 func shouldFlush(cfg CDCConfig, cnt int64, oldest int64) bool {
 	nowMs := time.Now().UnixMilli()
 	if cfg.MinRecords > 0 && cnt >= int64(cfg.MinRecords) {
@@ -332,68 +309,4 @@ func shouldFlush(cfg CDCConfig, cnt int64, oldest int64) bool {
 		return true
 	}
 	return false
-}
-
-// executeFlush performs the actual flush operation.
-func (c *schemaFlushContext) executeFlush(ctx context.Context, schemaID int16) error {
-	ids, versions, snapshot, err := SelectBatchRowIDs(ctx, c.db, c.tableName, schemaID, c.cfg.BatchSize)
-	if err != nil {
-		return fmt.Errorf("select batch row ids: %w", err)
-	}
-	if len(ids) == 0 {
-		c.logger.Sugar().Infow("no rows in batch", "schema_id", schemaID)
-		return nil
-	}
-
-	c.logger.Sugar().Infow("export snapshot", "schema_id", schemaID, "snapshot_ts", snapshot, "rows", len(ids))
-
-	// Cache was resolved and validated by the processSchemas pre-flight (#193).
-	attrCache := c.attrCaches[schemaID]
-
-	executor := &flushBatchExecutor{
-		db:                   c.db,
-		duck:                 c.duck,
-		s3Client:             c.s3Client,
-		cfg:                  c.cfg,
-		tableName:            c.tableName,
-		schemaID:             schemaID,
-		snapshot:             snapshot,
-		versions:             versions,
-		attrCache:            attrCache,
-		registry:             c.schemaRegistry,
-		dryRun:               c.dryRun,
-		logger:               c.logger,
-		manifestStore:        c.manifestStore,
-		manifestResolver:     c.manifestResolver,
-		probeUnwiredManifest: c.probeUnwiredManifest,
-		checksumObject:       c.checksumObject,
-		executeSingle:        c.executeSingle,
-		executeInChunks:      c.executeInChunks,
-	}
-
-	executeInChunks := executor.executeInChunks
-	if executeInChunks == nil {
-		executeInChunks = func(e *flushBatchExecutor, ids []uuid.UUID, max int) error {
-			return executeFlushInChunks(ctx, e, ids, max)
-		}
-	}
-	executeSingle := executor.executeSingle
-	if executeSingle == nil {
-		executeSingle = func(e *flushBatchExecutor, ids []uuid.UUID) error {
-			return executeFlushSingle(ctx, e, ids)
-		}
-	}
-
-	batchIDs := ids
-	maxRows := 0
-	if c.cfg.MaxBatchBytes > 0 && c.cfg.EstimatedRowBytes > 0 {
-		maxRows = int(c.cfg.MaxBatchBytes / int64(c.cfg.EstimatedRowBytes))
-	}
-
-	if maxRows > 0 && len(batchIDs) > maxRows {
-		c.logger.Sugar().Infow("splitting batch to meet byte target", "schema_id", schemaID, "from_rows", len(batchIDs), "chunk_rows", maxRows)
-		return executeInChunks(executor, batchIDs, maxRows)
-	}
-
-	return executeSingle(executor, batchIDs)
 }

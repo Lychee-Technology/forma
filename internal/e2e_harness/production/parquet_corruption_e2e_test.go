@@ -65,7 +65,7 @@ func runParquetFaultScenario(t *testing.T, mutate func([]byte) []byte) {
 	if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
 		t.Fatalf("mutated parquet must classify as ErrFederatedReadFailed, got: %v", err)
 	}
-	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
+	if errors.Is(err, fedengine.ErrPublicationInconsistent) {
 		t.Errorf("object exists in storage; failure must not classify as manifest inconsistency: %v", err)
 	}
 	if !strings.Contains(err.Error(), "duckdb federated query") {
@@ -102,7 +102,7 @@ func TestParquetCorruption_WrongSchemaFile(t *testing.T) {
 		t.Fatalf("precondition: healthy query did not route to duckdb: %+v", healthy.Plan.Routing)
 	}
 
-	wrongKey := buildSchemaKeyPrefix(env, wide) + "wrong_schema_zzz.parquet"
+	wrongKey := newTestParquetKey(ctx, t, env, wide, "delta")
 	writeParquetViaDuck(ctx, t, env, "SELECT 1 AS wrong_col, 'x' AS other_col", wrongKey)
 	if err := env.RegisterParquetInManifest(ctx, wide, wrongKey, "delta"); err != nil {
 		t.Fatalf("register wrong-schema parquet: %v", err)
@@ -117,7 +117,7 @@ func TestParquetCorruption_WrongSchemaFile(t *testing.T) {
 	if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
 		t.Fatalf("wrong-schema parquet must classify as ErrFederatedReadFailed, got: %v", err)
 	}
-	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
+	if errors.Is(err, fedengine.ErrPublicationInconsistent) {
 		t.Errorf("object exists in storage; must not classify as manifest inconsistency: %v", err)
 	}
 
@@ -151,7 +151,7 @@ func TestParquetCorruption_WrongTypeFile(t *testing.T) {
 
 	// Same column names as the real export, poisoned types for the two
 	// columns every projection touches.
-	wrongTypeKey := buildSchemaKeyPrefix(env, wide) + "wrong_type_zzz.parquet"
+	wrongTypeKey := newTestParquetKey(ctx, t, env, wide, "delta")
 	writeParquetViaDuck(ctx, t, env, fmt.Sprintf(
 		"SELECT 'not-a-uuid' AS row_id, 'not-an-epoch' AS changed_at, * EXCLUDE (row_id, changed_at) FROM read_parquet('s3://%s/%s') LIMIT 1",
 		env.Cluster.Bucket, keys[0]), wrongTypeKey)
@@ -168,91 +168,10 @@ func TestParquetCorruption_WrongTypeFile(t *testing.T) {
 	if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
 		t.Fatalf("wrong-type parquet must classify as ErrFederatedReadFailed, got: %v", err)
 	}
-	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
+	if errors.Is(err, fedengine.ErrPublicationInconsistent) {
 		t.Errorf("object exists in storage; must not classify as manifest inconsistency: %v", err)
 	}
 
 	degraded := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20, AllowPartialDegradedMode: true})
-	assertDegradedFallbackPlan(t, degraded)
-}
-
-// TestParquetCorruption_EmptyParquetFile covers #187 scenario 6: a valid
-// 0-row parquet with the correct schema. The production exporter refuses
-// 0-row exports (duckdb_exporter.go fails fast on empty batches), so the
-// file is derived from a real export — WHERE 1=0 keeps the exact column
-// shape. Contract: the empty file contributes nothing, the DuckDB path
-// stays intact, and results from the other tiers are unaffected.
-func TestParquetCorruption_EmptyParquetFile(t *testing.T) {
-	ctx := context.Background()
-	cluster := SharedCluster(t)
-	env := NewEnv(t, cluster)
-	wide := DefaultSchemaFixtures()[1]
-
-	seedTwoTiers(ctx, t, env, wide)
-	keys := schemaParquetKeys(ctx, t, env, wide)
-	if len(keys) != 1 {
-		t.Fatalf("expected exactly one parquet after seedTwoTiers, got %v", keys)
-	}
-
-	emptyKey := buildSchemaKeyPrefix(env, wide) + "empty_zzz.parquet"
-	writeParquetViaDuck(ctx, t, env,
-		fmt.Sprintf("SELECT * FROM read_parquet('s3://%s/%s') WHERE 1=0", env.Cluster.Bucket, keys[0]),
-		emptyKey)
-	if err := env.RegisterParquetInManifest(ctx, wide, emptyKey, "delta"); err != nil {
-		t.Fatalf("register empty parquet: %v", err)
-	}
-
-	result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 20})
-	if result != nil && !result.Plan.Routing.UseDuckDB {
-		t.Errorf("query with an empty parquet in the scan set must keep the DuckDB route: %+v", result.Plan.Routing)
-	}
-}
-
-// TestParquetCorruption_WrongSchemaFile_GlobHint pins the #189-review P1
-// bypass: an explicit S3ParquetPathTemplate hint wins over the manifest
-// source (#184) and renders as a GLOB, so the pre-read validator must
-// enumerate the glob's matches and validate each — an unexpanded glob would
-// read the rogue file with union_by_name and its rows would vanish silently
-// (NULL row_id drops out of the dirty anti-join), never surfacing an error.
-func TestParquetCorruption_WrongSchemaFile_GlobHint(t *testing.T) {
-	ctx := context.Background()
-	cluster := SharedCluster(t)
-	env := NewEnv(t, cluster)
-	wide := DefaultSchemaFixtures()[1]
-
-	seedTwoTiers(ctx, t, env, wide)
-
-	// Positive control: the glob-hinted read is healthy and routes to DuckDB.
-	healthy := env.AssertQueryMatches(ctx, Query{
-		Schema: wide, Limit: 20, S3ParquetPathTemplate: env.ParquetGlob(),
-	})
-	if healthy != nil && !healthy.Plan.Routing.UseDuckDB {
-		t.Fatalf("precondition: glob-hinted query did not route to duckdb: %+v", healthy.Plan.Routing)
-	}
-
-	// The rogue file is NOT manifest-registered: only the hinted glob can
-	// reach it, which is exactly the bypass under test.
-	wrongKey := buildSchemaKeyPrefix(env, wide) + "wrong_schema_glob_zzz.parquet"
-	writeParquetViaDuck(ctx, t, env, "SELECT 1 AS wrong_col, 'x' AS other_col", wrongKey)
-
-	failCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	_, err := env.Query(failCtx, Query{
-		Schema: wide, Limit: 20, S3ParquetPathTemplate: env.ParquetGlob(),
-	})
-	if err == nil {
-		t.Fatal("wrong-schema parquet under a hinted glob silently succeeded (#189 review P1)")
-	}
-	if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
-		t.Fatalf("glob-hinted wrong-schema parquet must classify as ErrFederatedReadFailed, got: %v", err)
-	}
-	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
-		t.Errorf("object exists in storage; must not classify as manifest inconsistency: %v", err)
-	}
-
-	degraded := env.AssertQueryMatches(ctx, Query{
-		Schema: wide, Limit: 20, S3ParquetPathTemplate: env.ParquetGlob(),
-		AllowPartialDegradedMode: true,
-	})
 	assertDegradedFallbackPlan(t, degraded)
 }

@@ -39,16 +39,10 @@ func TestErrorSchemaIDResolvesCarriersThroughWraps(t *testing.T) {
 		want int16
 	}{
 		{
-			name: "parquet set inconsistent",
+			name: "publication inconsistent",
 			err: fmt.Errorf("a: %w", fmt.Errorf("b: %w",
-				&forma.ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{"base/k.parquet"}})),
+				&forma.PublicationConsistencyError{Err: errTestPublicationFault, SchemaID: 22, MissingKeys: []string{"base/k.parquet"}})),
 			want: 22,
-		},
-		{
-			name: "no parquet paths",
-			err: fmt.Errorf("a: %w", fmt.Errorf("b: %w",
-				&forma.NoParquetPathsError{SchemaID: 7, SourceConfigured: true})),
-			want: 7,
 		},
 		{
 			name: "manifest schema mismatch",
@@ -71,7 +65,7 @@ func TestErrorSchemaIDResolvesCarriersThroughWraps(t *testing.T) {
 		{
 			name: "multi-cause chain alongside driver text",
 			err: fmt.Errorf("execute duckdb query: %w: %w",
-				&forma.ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{"base/k.parquet"}},
+				&forma.PublicationConsistencyError{Err: errTestPublicationFault, SchemaID: 22, MissingKeys: []string{"base/k.parquet"}},
 				fmt.Errorf("IO Error: driver text")),
 			want: 22,
 		},
@@ -135,7 +129,7 @@ func TestRedactedBodyCarriesSchemaID(t *testing.T) {
 	defer restore()
 
 	rec := httptest.NewRecorder()
-	// operatorDetailError is the shared fixture: a ParquetSetInconsistentError for
+	// operatorDetailError is the shared fixture: a PublicationConsistencyError for
 	// schema 22 wrapping a password-bearing driver message.
 	respondError(rec, "query failed", operatorDetailError(), "schema", "orders")
 
@@ -150,8 +144,8 @@ func TestRedactedBodyCarriesSchemaID(t *testing.T) {
 	if resp.SchemaID != 22 {
 		t.Fatalf("redacted body schema_id = %d, want 22", resp.SchemaID)
 	}
-	if resp.ErrorClass != errorClassParquetSetInconsistent {
-		t.Fatalf("expected class %q, got %q", errorClassParquetSetInconsistent, resp.ErrorClass)
+	if resp.ErrorClass != errorClassPublicationInconsistent {
+		t.Fatalf("expected class %q, got %q", errorClassPublicationInconsistent, resp.ErrorClass)
 	}
 	if _, err := uuid.Parse(resp.ErrorID); err != nil {
 		t.Fatalf("error_id %q is not a UUID: %v", resp.ErrorID, err)
@@ -231,7 +225,7 @@ func TestRedactedBodyOmitsSchemaIDWithoutACarrier(t *testing.T) {
 // TestPublished4xxBodyCarriesNoSchemaID pins that the schema-id reversal is
 // confined to the redacted branch. A published client error keeps a body of
 // message only: no correlation fields (except error_id when detail is withheld),
-// no schema id — even when the chain deliberately carries a ParquetSetInconsistentError
+// no schema id — even when the chain deliberately carries a PublicationConsistencyError
 // that errorSchemaID *would* resolve, attached as operator detail. The test fails if
 // the field is populated before the disclosure gate instead of after it, and the
 // object-key assertion makes it strictly stronger than its pre-#313 version:
@@ -242,7 +236,7 @@ func TestPublished4xxBodyCarriesNoSchemaID(t *testing.T) {
 	defer restore()
 
 	err := forma.WithOperatorDetail(forma.InvalidInputf("bad filter"),
-		&forma.ParquetSetInconsistentError{SchemaID: 22, MissingKeys: []string{canaryKey}})
+		&forma.PublicationConsistencyError{Err: errTestPublicationFault, SchemaID: 22, MissingKeys: []string{canaryKey}})
 
 	rec := httptest.NewRecorder()
 	respondError(rec, "query failed", err)

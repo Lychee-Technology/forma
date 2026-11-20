@@ -41,7 +41,7 @@ func TestDSQLCorpusHotLegReads(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = mock.Close(ctx) })
 	mock.ExpectBegin()
-	mock.ExpectQuery("").WithArgs(anyArgs(5)...).WillReturnRows(
+	mock.ExpectQuery("").WithArgs(anyArgs(4)...).WillReturnRows(
 		pgxmock.NewRows([]string{"ltbase_row_id", "ver_ts", "text_01", "note", "ltbase_created_at"}).
 			AddRow(corpusRowA, corpusNowMillis, "a", []any{"x"}, corpusPriorVersion))
 	// No row comes back: the page read's scan targets are the whole
@@ -53,9 +53,8 @@ func TestDSQLCorpusHotLegReads(t *testing.T) {
 	}
 
 	keys, err := repo.QueryHotKeys(ctx, tx, model.HotKeysQuery{
-		Tables:        corpusTables,
-		SchemaID:      corpusSchemaID,
-		GraceCutoffMs: corpusNowMillis,
+		Tables:   corpusTables,
+		SchemaID: corpusSchemaID,
 		Condition: &forma.CompositeCondition{Logic: forma.LogicAnd, Conditions: []forma.Condition{
 			&forma.KvCondition{Attr: "code", Value: "gt:B"},
 			&forma.KvCondition{Attr: "note", Value: "equals:x"},

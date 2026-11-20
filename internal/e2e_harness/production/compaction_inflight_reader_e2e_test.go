@@ -4,7 +4,6 @@ package production
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -77,14 +76,12 @@ func TestCompactionRewriteInFlightReaderRetention(t *testing.T) {
 	}
 
 	// Reader-side acceptance, verified empirically through the real engine: a
-	// query still holding the pre-swap path set (pinned via the explicit
-	// path-list hint — same read_parquet scan shape, same DuckDB open path)
-	// must succeed and answer identically to the oracle.
-	held := env.AssertQueryMatches(ctx, Query{
-		Schema:                wide,
-		S3ParquetPathTemplate: strings.Join(preSwapURIs, ","),
-		Limit:                 100,
-	})
+	// query must succeed and answer identically to the oracle. The V1 run
+	// pinned the pre-swap path set through the explicit path-list hint, which
+	// Protocol V2 removed; V2 compaction (#890) pins a pass at the pre-swap
+	// generation instead (Env.PublicationReaderWrap). Until then
+	// RunCompaction skips this test above.
+	held := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})
 	if held == nil || held.Plan == nil || !held.Plan.Routing.UseDuckDB {
 		t.Fatalf("pre-swap path-set query did not route to duckdb")
 	}

@@ -11,17 +11,11 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-// execFakeSource stands in for the manifest-backed ParquetSource on the
-// failure path only: failDuckDBScan never resolves paths (the scan already
-// did), it only asks whether any scanned object is missing from storage.
-type execFakeSource struct{ missing []string }
-
-func (f *execFakeSource) Paths(ctx context.Context, schemaID int16) ([]string, map[string]map[string]string, error) {
-	return nil, nil, nil // unused in these tests
-}
-
-func (f *execFakeSource) MissingIn(ctx context.Context, scanned []string) ([]string, error) {
-	return f.missing, nil
+// publishedScan is a failed scan over paths, the objects a generation of
+// schema 7 lists.
+func publishedScan(paths ...string) scan {
+	gen := &PublishedGeneration{SchemaID: 7, Epoch: fakeSourceEpoch, Generation: fakeSourceGeneration, Paths: paths, Keys: paths}
+	return scan{parquetPaths: paths, published: gen}
 }
 
 // execFailQuery is the minimal query the failure path reads: only the schema
@@ -33,9 +27,9 @@ func execFailQuery(schemaID int16) *model.FederatedAttributeQuery {
 func TestFailDuckDBScanConfirmedCorruptionSkipsBreakerAndFails(t *testing.T) {
 	duck := &verifyFakeDuck{failOpen: map[string]bool{"s3://b/bad.parquet": true}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute) // threshold 1: any RecordFailure opens it
-	e := NewDBFederatedQueryEngine(nil, duck, breaker, forma.DuckDBConfig{}, nil, WithParquetSource(&execFakeSource{}))
+	e := NewDBFederatedQueryEngine(nil, duck, breaker, forma.DuckDBConfig{}, nil, withParquetSource(&fakeParquetSource{}))
 
-	sc := scan{parquetPaths: []string{"s3://b/good.parquet", "s3://b/bad.parquet"}, pathsFromSource: true}
+	sc := publishedScan("s3://b/good.parquet", "s3://b/bad.parquet")
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
 		fmt.Errorf("scan: %w: page corrupt", ErrFederatedReadFailed), "execute duckdb query")
 
@@ -60,32 +54,35 @@ func TestFailDuckDBScanConfirmedCorruptionSkipsBreakerAndFails(t *testing.T) {
 	}
 }
 
-// TestFailDuckDBScanMissingObjectStaysInconsistentAndBreakerWorthy pins the
-// ordering contract the brief marks "do not reorder": MissingIn classification
-// must run BEFORE the corruption probe. The fake makes the scenario physical —
-// an object deleted from storage cannot be opened, so verification WOULD call
-// it corrupt if it ran first. That is what makes this test bite: reorder the
-// two blocks in failDuckDBScan and a manifest-listed-but-deleted object gets
-// cached as corrupt, and so degradable, instead of failing with the
-// non-degradable ErrParquetSetInconsistent #187 scenario 2 exists to raise.
-func TestFailDuckDBScanMissingObjectStaysInconsistentAndBreakerWorthy(t *testing.T) {
+// TestFailDuckDBScanMissingObjectIsAPublicationInconsistency pins the
+// ordering contract: the missing-object probe runs BEFORE the corruption
+// probe. The fake makes the scenario physical: an object deleted from storage
+// cannot be opened, so verification WOULD call it corrupt if it ran first.
+// Reorder the two and a listed-but-deleted object gets cached as corrupt, and
+// so degradable, instead of failing with the non-degradable
+// ErrPublicationInconsistent #759 exists to raise. A lost object says nothing
+// about DuckDB, so the breaker does not hear of it.
+func TestFailDuckDBScanMissingObjectIsAPublicationInconsistency(t *testing.T) {
 	duck := &verifyFakeDuck{failOpen: map[string]bool{"s3://b/7/x.parquet": true}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
-	e := NewDBFederatedQueryEngine(nil, duck, breaker, forma.DuckDBConfig{}, nil, WithParquetSource(&execFakeSource{missing: []string{"7/x.parquet"}}))
+	e := NewDBFederatedQueryEngine(nil, duck, breaker, forma.DuckDBConfig{}, nil, withParquetSource(&fakeParquetSource{missing: []string{"7/x.parquet"}}))
 
-	sc := scan{parquetPaths: []string{"s3://b/7/x.parquet", "s3://b/7/y.parquet"}, pathsFromSource: true}
+	sc := publishedScan("s3://b/7/x.parquet", "s3://b/7/y.parquet")
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
 		fmt.Errorf("scan: %w: no such file", ErrFederatedReadFailed), "execute duckdb query")
 
-	if !errors.Is(err, ErrParquetSetInconsistent) {
-		t.Fatalf("missing listed object must classify as inconsistency, got: %v", err)
+	if !errors.Is(err, ErrPublicationInconsistent) || errors.Is(err, ErrFederatedReadFailed) {
+		t.Fatalf("a missing listed object must classify as a publication inconsistency, never a failed read, got: %v", err)
 	}
 	var corrupt *CorruptParquetError
 	if errors.As(err, &corrupt) {
-		t.Fatal("manifest inconsistency must never be classified as corruption")
+		t.Fatal("a lost object must never be classified as corruption")
 	}
-	if !breaker.IsOpen() {
-		t.Fatal("inconsistency failure must still feed the breaker")
+	if len(duck.queries) != 0 {
+		t.Fatalf("a confirmed loss must not trigger verification probes: %v", duck.queries)
+	}
+	if breaker.IsOpen() {
+		t.Fatal("a lost object is not charged to the breaker")
 	}
 }
 
@@ -97,9 +94,9 @@ func TestFailDuckDBScanMissingObjectStaysInconsistentAndBreakerWorthy(t *testing
 func TestFailDuckDBScanTransientDrainErrorStaysOnFailurePath(t *testing.T) {
 	duck := &verifyFakeDuck{failOpenOnce: map[string]int{"s3://b/flaky.parquet": 1}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
-	e := NewDBFederatedQueryEngine(nil, duck, breaker, forma.DuckDBConfig{}, nil, WithParquetSource(&execFakeSource{}))
+	e := NewDBFederatedQueryEngine(nil, duck, breaker, forma.DuckDBConfig{}, nil, withParquetSource(&fakeParquetSource{}))
 
-	sc := scan{parquetPaths: []string{"s3://b/good.parquet", "s3://b/flaky.parquet"}, pathsFromSource: true}
+	sc := publishedScan("s3://b/good.parquet", "s3://b/flaky.parquet")
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
 		fmt.Errorf("scan: %w: read timeout", ErrFederatedReadFailed), "execute duckdb query")
 
@@ -120,9 +117,9 @@ func TestFailDuckDBScanAllPathsUnreadableIsEngineSickness(t *testing.T) {
 		"s3://b/a.parquet": true, "s3://b/b.parquet": true,
 	}}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute)
-	e := NewDBFederatedQueryEngine(nil, duck, breaker, forma.DuckDBConfig{}, nil, WithParquetSource(&execFakeSource{}))
+	e := NewDBFederatedQueryEngine(nil, duck, breaker, forma.DuckDBConfig{}, nil, withParquetSource(&fakeParquetSource{}))
 
-	sc := scan{parquetPaths: []string{"s3://b/a.parquet", "s3://b/b.parquet"}, pathsFromSource: true}
+	sc := publishedScan("s3://b/a.parquet", "s3://b/b.parquet")
 	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
 		fmt.Errorf("scan: %w: io error", ErrFederatedReadFailed), "execute duckdb query")
 
@@ -140,22 +137,5 @@ func TestFailDuckDBScanAllPathsUnreadableIsEngineSickness(t *testing.T) {
 	}
 	if !breaker.IsOpen() {
 		t.Fatal("store-wide failure must feed the breaker")
-	}
-}
-
-func TestFailDuckDBScanHintPathsNeverVerified(t *testing.T) {
-	duck := &verifyFakeDuck{failOpen: map[string]bool{"s3://b/bad.parquet": true}}
-	e := NewDBFederatedQueryEngine(nil, duck, nil, forma.DuckDBConfig{}, nil, WithParquetSource(&execFakeSource{}))
-
-	sc := scan{parquetPaths: []string{"s3://b/good.parquet", "s3://b/bad.parquet"}, pathsFromSource: false}
-	err := e.failDuckDBScan(context.Background(), execFailQuery(7), sc,
-		fmt.Errorf("scan: %w: page corrupt", ErrFederatedReadFailed), "execute duckdb query")
-
-	var corrupt *CorruptParquetError
-	if errors.As(err, &corrupt) {
-		t.Fatal("operator-pinned hint sets are never verified or cached")
-	}
-	if len(duck.queries) != 0 {
-		t.Fatalf("hint-set failure must not trigger verification probes: %v", duck.queries)
 	}
 }

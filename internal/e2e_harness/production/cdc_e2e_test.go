@@ -4,20 +4,18 @@ package production
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/lychee-technology/forma/internal/cdc"
 )
 
 // TestCDCFlushAndInit verifies the real CDC runner and the extracted
 // cdc.RunInit against the per-test database and S3 prefix: dry-run leaves
-// flushed_at and the manifest untouched, a real flush writes delta parquet
-// under <prefix>/<schemaID>/ and marks rows flushed, an init over that delta
-// tier refuses (#371), and init with ReplaceDelta writes base files plus
-// manifest base entries, empties the delta tier, and deletes its objects.
+// flushed_at and the publication untouched, a real flush writes delta parquet
+// under <prefix>/<schemaID>/ and publishes it with the marks, and a re-init
+// of the published schema publishes an init generation under a new lineage
+// that lists its own base files only. The earlier delta objects stay in S3
+// for garbage collection (#891): no V2 writer deletes an object.
 func TestCDCFlushAndInit(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
@@ -68,32 +66,14 @@ func TestCDCFlushAndInit(t *testing.T) {
 	// object it just published.
 	assertEntriesStampedToByteTruth(ctx, t, env, "cdc flush (delta)", TierEntries(m, "delta"))
 
-	// #371: a re-init over a populated delta tier refuses unless the run may
-	// replace it — a base-only swap would leave the stale generations listed
-	// under the new base. The refusal leaves the manifest and objects alone.
-	if _, err := env.RunInit(ctx, simple); !errors.Is(err, cdc.ErrDeltaTierPresent) {
-		t.Fatalf("init over delta tier: err = %v, want cdc.ErrDeltaTierPresent", err)
-	}
-	manifestsAfterRefusal, err := env.loadManifests(ctx)
-	if err != nil {
-		t.Fatalf("load manifests after refusal: %v", err)
-	}
-	if got := countTier(manifestsAfterRefusal[simple.ID], "delta"); got != countTier(m, "delta") {
-		t.Fatalf("refused init changed the delta tier: %d entries, want %d", got, countTier(m, "delta"))
-	}
 	deltaKeys := make([]string, 0, countTier(m, "delta"))
 	for _, entry := range TierEntries(m, "delta") {
-		key, ok := cdc.NormalizeObjectKey(env.Cluster.Bucket, entry.Path)
-		if !ok {
-			t.Fatalf("delta entry %q is not addressable in the test bucket", entry.Path)
-		}
-		deltaKeys = append(deltaKeys, key)
+		deltaKeys = append(deltaKeys, entry.Path)
 	}
-	assertS3KeysPresence(ctx, t, env, "after refused init", deltaKeys, true)
 
-	initReport, err := env.RunInitWith(ctx, simple, InitOverrides{ReplaceDelta: true})
+	initReport, err := env.RunInit(ctx, simple)
 	if err != nil {
-		t.Fatalf("init with replace-delta: %v", err)
+		t.Fatalf("re-init of the published schema: %v", err)
 	}
 	if initReport.RowsExported != 3 {
 		t.Errorf("init rows exported = %d, want 3", initReport.RowsExported)
@@ -105,7 +85,14 @@ func TestCDCFlushAndInit(t *testing.T) {
 		t.Errorf("init produced no base parquet under %s: %v", deltaPrefix, initReport.NewObjects)
 	}
 	if initReport.Manifest == nil {
-		t.Fatal("init did not update the manifest")
+		t.Fatal("init did not publish a generation")
+	}
+	if initReport.Manifest.Kind != "init" || initReport.Manifest.Lineage == m.Lineage {
+		t.Errorf("re-init published a %s generation in lineage %s, want an init generation in a new lineage (flush's was %s)",
+			initReport.Manifest.Kind, initReport.Manifest.Lineage, m.Lineage)
+	}
+	if n := publishesBetween(m, initReport.Manifest); n != 1 {
+		t.Errorf("re-init published %d generations after the flush's, want 1", n)
 	}
 	if n := countTier(initReport.Manifest, "base"); n == 0 {
 		t.Errorf("manifest has no base entries after init: %+v", initReport.Manifest.Files)
@@ -113,12 +100,12 @@ func TestCDCFlushAndInit(t *testing.T) {
 	// #256: the init writer stamps each base entry the same way.
 	assertEntriesStampedToByteTruth(ctx, t, env, "cdc init (base)",
 		TierEntries(initReport.Manifest, "base"))
-	// #371: the swap emptied the delta tier in the same manifest write, and
-	// the purge that followed removed the objects themselves.
+	// The init generation lists its export alone; the flush's delta objects
+	// are unlisted but stay until garbage collection.
 	if got := countTier(initReport.Manifest, "delta"); got != 0 {
-		t.Errorf("manifest still lists %d delta entries after --replace-delta: %+v", got, initReport.Manifest.Files)
+		t.Errorf("the init generation lists %d delta entries: %+v", got, initReport.Manifest.Files)
 	}
-	assertS3KeysPresence(ctx, t, env, "after replace-delta init", deltaKeys, false)
+	assertS3KeysPresence(ctx, t, env, "after re-init", deltaKeys, true)
 }
 
 // assertS3KeysPresence checks that every key exists (present=true) or is
@@ -142,7 +129,7 @@ func assertS3KeysPresence(ctx context.Context, t *testing.T, env *Env, when stri
 
 func anyKeyMatches(keys []string, prefix, suffix string) bool {
 	for _, k := range keys {
-		if strings.HasPrefix(k, prefix) && strings.HasSuffix(k, suffix) && !strings.Contains(k, "/_tmp/") {
+		if strings.HasPrefix(k, prefix) && strings.HasSuffix(k, suffix) {
 			return true
 		}
 	}

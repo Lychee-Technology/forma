@@ -46,13 +46,16 @@ func TestBoundDateParityAcrossTiers(t *testing.T) {
 		}
 	}
 
-	// Cold tier: base parquet becomes the only source for creates[0:6].
+	// Cold tier: base parquet becomes the only source for creates[0:6]
+	// (and, until the flush below, for creates[6:12] too).
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	env.MarkRowsOnboarded(ctx, wide, rowIDs(creates[0:6]))
+	env.MarkOnboarded(ctx, wide)
 
-	// Warm tier: flush creates[6:12] into a delta file.
+	// Warm tier: flush creates[6:12] into a delta file. The init handoff
+	// marked all twelve, so they are written again at unchanged values first.
+	redirtyRows(ctx, t, env, wide, creates[6:12])
 	if _, err := env.RunFlush(ctx); err != nil {
 		t.Fatalf("flush: %v", err)
 	}

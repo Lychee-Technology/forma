@@ -4,22 +4,25 @@
  * Initializes S3 parquet base files from existing entity_main + eav_data
  * This is used when enabling CDC on an existing Forma deployment
  * 
- * Usage: bun run scripts/cdc-init.ts [--dry-run] [--schema-id <id>] [--target-file-size-mb <mb>] [--replace-delta]
+ * Usage: bun run scripts/cdc-init.ts [--dry-run] [--schema-id <id>] [--target-file-size-mb <mb>]
  * 
  * Options:
  *   --dry-run               Run without actually exporting files
  *   --schema-id <id>        Filter to a specific schema ID (default: all)
  *   --target-file-size-mb   Target parquet file size in MB (default: 256)
- *   --replace-delta         Purge the delta tier after the base swap commits (#371).
- *                           Without it cdc-init refuses schemas that already have
- *                           delta files (i.e. after `bun run cdc-flush`).
+ *
+ * cdc-init publishes an init generation (Protocol V2, #896) under the same
+ * data prefix cdc-flush writes to: the generation lists only its own base
+ * files, so a re-init after `bun run cdc-flush` needs no extra flag.
  */
 
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { config } from '../lib/env';
 import { runTool, redactArgs } from '../lib/proc';
-import { validateCDCOutput, ensureBucket, amzDate, type CDCValidation } from '../lib/s3';
+import { ensureBucket, amzDate } from '../lib/s3';
+import { checkCommittedGeneration, type GenerationCheck } from '../lib/publication';
+import { bucketStore, openDatabase, readPublicationRecords, readRegisteredSchemaIds } from '../lib/publication_io';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -38,7 +41,6 @@ interface CDCInitReport {
     schemaDir: string;
     schemaIdFilter: number;
     dryRun: boolean;
-    replaceDelta: boolean;
   };
   execution: {
     exitCode: number;
@@ -54,10 +56,11 @@ interface CDCInitReport {
     parquetFiles?: string[];
     error?: string;
   };
-  s3Validation?: CDCValidation;
+  /** The generation each initialized schema's record committed, checked. */
+  generations?: GenerationCheck[];
 }
 
-function parseArgs(): { dryRun: boolean; schemaId: number; targetFileSizeMB: number; replaceDelta: boolean } {
+function parseArgs(): { dryRun: boolean; schemaId: number; targetFileSizeMB: number } {
   const args = process.argv.slice(2);
   let schemaId = 0;
   let targetFileSizeMB = 256; // Default: 256MB target file size
@@ -77,11 +80,10 @@ function parseArgs(): { dryRun: boolean; schemaId: number; targetFileSizeMB: num
     dryRun: args.includes('--dry-run'),
     schemaId,
     targetFileSizeMB,
-    replaceDelta: args.includes('--replace-delta'),
   };
 }
 
-async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: number, replaceDelta: boolean): Promise<CDCInitReport> {
+async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: number): Promise<CDCInitReport> {
   const startTime = Date.now();
   
   const report: CDCInitReport = {
@@ -92,14 +94,13 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
       pgDatabase: config.pg.database,
       pgSslMode: config.pg.sslMode,
       s3Bucket: config.s3.bucket,
-      s3Prefix: 'base', // CDC init uses 'base' prefix by default
+      s3Prefix: config.s3.prefix, // one data prefix for cdc-flush and cdc-init
       s3Endpoint: config.s3.endpoint,
       targetFileSizeMB,
       schemaRegistryTable: config.tables.schemaRegistry,
       schemaDir: config.schemaDir,
       schemaIdFilter: schemaId,
       dryRun,
-      replaceDelta,
     },
     execution: {
       exitCode: -1,
@@ -121,10 +122,13 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
     '--pg-password', config.pg.password,
     '--pg-db', config.pg.database,
     '--pg-ssl-mode', config.pg.sslMode,
+    // The change log init-db created: the handoff marks the exported rows'
+    // entries in it, as cdc-flush marks its batches.
+    '--change-log-table', config.tables.changeLog,
     '--entity-main-table', config.tables.entityMain,
     '--eav-table', config.tables.eavData,
     '--s3-bucket', config.s3.bucket,
-    '--s3-prefix', 'base',
+    '--s3-prefix', config.s3.prefix,
     '--s3-endpoint', config.s3.endpoint,
     '--s3-region', 'us-east-1',
     '--s3-use-ssl=' + String(config.s3.useSsl),
@@ -132,21 +136,11 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
     '--target-file-size-mb', String(targetFileSizeMB),
     '--schema-registry-table', config.tables.schemaRegistry,
     '--schema-dir', config.schemaDir,
-    // cdc-flush writes delta under config.s3.prefix; the delta inventory
-    // (#371) has to look there, not under the 'base' prefix above.
-    '--delta-prefix', config.s3.prefix,
   ];
-
-  if (replaceDelta) {
-    args.push('--replace-delta');
-  }
 
   if (schemaId > 0) {
     args.push('--schema-id', String(schemaId));
   }
-
-  // Enable manifest tracking
-  args.push('--manifest-template', 'manifest/{{.SchemaID}}.json');
 
   if (dryRun) {
     args.push('--dry-run');
@@ -195,22 +189,26 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
       return report;
     }
 
-    // Validate the actual base-tier S3 state rather than trusting exit code.
-    // cdc-init writes to the 'base' prefix; a dry run writes nothing.
-    const validation = await validateCDCOutput({
-      dataPrefix: 'base',
-      manifestPrefix: 'manifest',
-      requireParquet: !dryRun,
-    });
-    report.s3Validation = validation;
-    report.result.parquetFiles = validation.parquetKeys;
-    report.result.filesCreated = validation.parquetCount;
-    report.result.schemasProcessed = Object.keys(validation.parquetBySchema).length;
-
-    if (!validation.ok) {
-      report.result.success = false;
-      report.result.error = `S3 validation failed: ${validation.errors.join('; ')}`;
-      return report;
+    // Validate what the run committed rather than trusting the exit code.
+    // Protocol V2 (#896): each initialized schema's record names one
+    // immutable init generation, and only the objects its manifest lists are
+    // published. A zero-row init commits a manifest that lists nothing and
+    // writes no parquet, so the check reads the committed generation, never
+    // a listing of the prefix: the manifest the record names must be there
+    // with the record's digest, and every object it lists must exist. A dry
+    // run commits nothing.
+    if (!dryRun) {
+      const generations = await verifyCommittedGenerations(schemaId);
+      report.generations = generations;
+      report.result.parquetFiles = generations.flatMap((g) => g.files);
+      report.result.filesCreated = report.result.parquetFiles.length;
+      report.result.schemasProcessed = generations.length;
+      const errors = generations.flatMap((g) => g.errors);
+      if (errors.length > 0) {
+        report.result.success = false;
+        report.result.error = `committed generation check failed: ${errors.join('; ')}`;
+        return report;
+      }
     }
 
     report.result.success = true;
@@ -223,8 +221,28 @@ async function runCDCInit(dryRun: boolean, schemaId: number, targetFileSizeMB: n
   return report;
 }
 
+/**
+ * Check the generation each schema's record committed: the schema asked for,
+ * or every registered schema when cdc-init ran over all of them.
+ */
+async function verifyCommittedGenerations(schemaId: number): Promise<GenerationCheck[]> {
+  const sql = openDatabase();
+  try {
+    const records = await readPublicationRecords(sql);
+    const ids = schemaId > 0 ? [schemaId] : await readRegisteredSchemaIds(sql);
+    const store = bucketStore();
+    const checks: GenerationCheck[] = [];
+    for (const id of ids) {
+      checks.push(await checkCommittedGeneration(records.get(id), id, store));
+    }
+    return checks;
+  } finally {
+    await sql.end();
+  }
+}
+
 async function main() {
-  const { dryRun, schemaId, targetFileSizeMB, replaceDelta } = parseArgs();
+  const { dryRun, schemaId, targetFileSizeMB } = parseArgs();
 
   console.log('='.repeat(60));
   console.log('Forma E2E: CDC Init');
@@ -232,17 +250,16 @@ async function main() {
   console.log(`Tools Path: ${config.toolsPath}`);
   console.log(`Postgres: ${config.pg.host}:${config.pg.port}/${config.pg.database}`);
   console.log(`S3 Endpoint: ${config.s3.endpoint}`);
-  console.log(`S3 Bucket: ${config.s3.bucket}/base`);
+  console.log(`S3 Bucket: ${config.s3.bucket}/${config.s3.prefix}`);
   console.log(`Target File Size: ${targetFileSizeMB}MB`);
   console.log(`Schema ID Filter: ${schemaId === 0 ? 'all' : schemaId}`);
   console.log(`Dry Run: ${dryRun}`);
-  console.log(`Replace Delta: ${replaceDelta}`);
   console.log('');
 
   // cdc-init writes base parquet to S3; ensure the bucket exists first.
   await ensureBucket(amzDate(new Date()));
 
-  const report = await runCDCInit(dryRun, schemaId, targetFileSizeMB, replaceDelta);
+  const report = await runCDCInit(dryRun, schemaId, targetFileSizeMB);
 
   console.log('');
   console.log('='.repeat(60));
@@ -262,15 +279,12 @@ async function main() {
     console.log(`Schemas Processed: ${report.result.schemasProcessed}`);
   }
   if (report.result.parquetFiles && report.result.parquetFiles.length > 0) {
-    console.log(`Parquet Files (from S3 listing): ${report.result.parquetFiles.length}`);
+    console.log(`Parquet Files (listed by the committed generations): ${report.result.parquetFiles.length}`);
     report.result.parquetFiles.slice(0, 5).forEach((f) => console.log(`  - ${f}`));
   }
-  if (report.s3Validation) {
-    const v = report.s3Validation;
-    console.log(`S3 Validation: ${v.ok ? 'PASS' : 'FAIL'} — ${v.parquetCount} parquet across ${Object.keys(v.parquetBySchema).length} schema(s), ${v.manifestCount} manifest(s)`);
-    if (v.missingFiles.length > 0) {
-      console.log(`  Missing (manifest-referenced): ${v.missingFiles.slice(0, 5).join(', ')}`);
-    }
+  for (const g of report.generations ?? []) {
+    const what = g.ok ? `PASS: ${g.kind} generation listing ${g.files.length} object(s)` : `FAIL: ${g.errors.join('; ')}`;
+    console.log(`Schema ${g.schemaId} committed generation: ${what}`);
   }
   if (report.result.error) {
     console.log(`Error: ${report.result.error}`);

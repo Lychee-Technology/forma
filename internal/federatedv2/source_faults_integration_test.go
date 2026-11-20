@@ -1,7 +1,9 @@
 package federatedv2
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,12 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/publication"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 // Faults of what PostgreSQL committed and of what the store answers, told
@@ -147,5 +151,75 @@ func TestMissingInKeepsEveryConfirmedLossBesideAFailedProbe(t *testing.T) {
 		missing, err := src.MissingIn(ctx, gen, gen.Paths)
 		require.ErrorIs(t, err, context.Canceled)
 		require.Equal(t, []string{"a"}, missing)
+	})
+}
+
+// publishSealed publishes a generation of kind listing files after the
+// current record, its manifest stored exactly as json.Marshal writes it and
+// committed with its digest: a document PostgreSQL vouches for, that no
+// writer's Encode built, so only the reader's verification can refuse it.
+func publishSealed(t *testing.T, f *fixture, kind publication.Kind, files []manifestv2.File) publication.Record {
+	t.Helper()
+	cur := f.record(t)
+	h, err := manifestv2.Stage(cur, kind, uuid.New(), uuid.New())
+	require.NoError(t, err)
+	raw, err := json.Marshal(manifestv2.Manifest{
+		Format: publication.ManifestFormat, SchemaID: h.SchemaID, Epoch: h.Epoch, Generation: h.Generation,
+		ParentGeneration: h.ParentGeneration, Lineage: h.Lineage, Token: h.Token, Kind: kind, Files: files,
+	})
+	require.NoError(t, err)
+	key := h.Key(f.layout)
+	require.NoError(t, f.store.Put(f.ctx, key, bytes.NewReader(raw)))
+	var stagedAt int64
+	require.NoError(t, f.pool.QueryRow(f.ctx, "SELECT "+sqlgen.ServerTimeMillisSQL).Scan(&stagedAt))
+	tx, err := f.pool.Begin(f.ctx)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(f.ctx) }()
+	next, err := publication.Publish(f.ctx, publication.PgxTx(tx), f.pub, cur, publication.Next{
+		Kind: kind, Token: h.Token, ManifestKey: key, ManifestSHA256: manifestv2.Digest(raw),
+		Lineage: h.Lineage, StagedAt: stagedAt, StagingBudget: time.Minute,
+	})
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit(f.ctx))
+	return next
+}
+
+// A committed flush generation that lists no file is forbidden: a flush marks
+// rows flushed only beside the delta objects that hold them, so serving the
+// hot leg alone would drop them. The read fails closed with the typed,
+// non-degradable error, while an init of no rows, the one empty generation
+// the protocol has, is answered from PostgreSQL without a DuckDB statement.
+func TestAForbiddenEmptyFlushFailsClosedAndAnEmptyInitIsServed(t *testing.T) {
+	t.Run("empty flush", func(t *testing.T) {
+		f := newFixture(t)
+		f.initialize(t, publication.Unpublished)
+		f.write(t, allRows["a"], 100)
+		g := publishSealed(t, f, publication.KindFlush, []manifestv2.File{})
+		breaker := federated.NewCircuitBreaker(1, time.Minute, time.Hour)
+		e := f.engine(t, f.source(t, 1), closedDuckDB(t), breaker)
+
+		_, err := e.Query(f.ctx, f.tables, query(), &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+		require.ErrorIs(t, err, federated.ErrPublicationInconsistent)
+		require.ErrorIs(t, err, publication.ErrManifestInvalid)
+		require.ErrorContains(t, err, "generation lists at least one file")
+		require.NotErrorIs(t, err, federated.ErrFederatedReadFailed)
+		var typed *federated.PublicationConsistencyError
+		require.ErrorAs(t, err, &typed)
+		require.Equal(t, [3]int64{int64(schemaID), 1, g.Generation}, [3]int64{int64(typed.SchemaID), typed.Epoch, typed.Generation})
+		require.False(t, breaker.IsOpen())
+		require.Zero(t, f.probes)
+	})
+	t.Run("empty init", func(t *testing.T) {
+		f := newFixture(t)
+		f.initialize(t, publication.AwaitingInit)
+		f.write(t, allRows["a"], 100)
+		publishSealed(t, f, publication.KindInit, []manifestv2.File{})
+		e := f.engine(t, f.source(t, 1), closedDuckDB(t), nil)
+
+		records, total, err := e.ExecuteDuckDBFederatedQuery(f.ctx, f.tables, query(), 10, 0, nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, rowIDs("a"), ids(records))
+		require.Equal(t, int64(1), total)
+		require.Zero(t, f.probes)
 	})
 }

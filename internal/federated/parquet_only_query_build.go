@@ -17,11 +17,14 @@ import (
 // engine shares with the PostgreSQL route.
 const parquetOnlyPlanKind = "duckdb_federated_parquet_only"
 
-// RenderParquetOnlyStatement resolves q's parquet scan set as a pass does
-// and renders the parquet-only statement for it, with window bound. q's own
-// Limit, Offset and AttributeOrders are the page's. The caller stages the
+// RenderParquetOnlyStatement resolves q's parquet scan set as a pass does,
+// from the publication record and its generation read in a snapshot of its
+// own, and renders the parquet-only statement for it, with window bound. q's
+// own Limit, Offset and AttributeOrders are the page's. The caller stages the
 // dirty set with StageDirtySet on the DuckDB connection it runs the statement
-// on; the statement reads nothing else of PostgreSQL's.
+// on; the statement reads nothing else of PostgreSQL's. A schema whose record
+// is UNPUBLISHED, or whose generation lists no object, has no parquet leg to
+// render, and fails.
 //
 // A pass renders it internally; the production harness calls this to time
 // the parquet leg on its own (#851, TestHotLegLatencyBaseline).
@@ -38,11 +41,36 @@ func (e *DBFederatedQueryEngine) RenderParquetOnlyStatement(
 	if err != nil {
 		return "", nil, fmt.Errorf("render parquet-only statement: validate keyset cursor: %w", err)
 	}
-	src, err := e.resolvePgxScanSources(ctx, tables, q)
+	src, err := e.resolveScanSources(ctx, tables, q)
 	if err != nil {
 		return "", nil, fmt.Errorf("render parquet-only statement for schema %d: %w", q.SchemaID, err)
 	}
 	return e.buildParquetOnlyQuery(ctx, tables, q, q.AttributeOrders, q.Limit, q.Offset, window, src.paths, src.cold)
+}
+
+// resolveScanSources reads q's publication record in a snapshot of its own,
+// and resolves and checks its generation's objects as a pass does.
+func (e *DBFederatedQueryEngine) resolveScanSources(ctx context.Context, tables model.StorageTables, q *model.FederatedAttributeQuery) (scanSources, error) {
+	if e.hotLeg == nil || e.publication == nil {
+		return scanSources{}, fmt.Errorf("the engine has no snapshot pool or publication reader: %w", errPgxHotLegNotConfigured)
+	}
+	p := &pgxPass{e: e, tables: tables, q: q, planCtx: newDuckDBExecutionPlanContext(nil, e.clock())}
+	defer p.releaseProbe()
+	snap, err := e.hotLeg.begin(ctx)
+	if err != nil {
+		return scanSources{}, fmt.Errorf("open a snapshot: %w: %w", ErrPostgresReadFailed, err)
+	}
+	defer snap.rollback(ctx)
+	if err := p.readPublication(ctx, snap); err != nil {
+		return scanSources{}, err
+	}
+	if err := p.resolveGeneration(ctx); err != nil {
+		return scanSources{}, err
+	}
+	if p.noObjects {
+		return scanSources{}, fmt.Errorf("schema %d epoch %d generation %d lists no parquet object to scan", q.SchemaID, p.record.Epoch, p.record.Generation)
+	}
+	return p.src, nil
 }
 
 // buildParquetOnlyQuery renders the parquet leg for one dispatched request

@@ -9,6 +9,7 @@ import (
 
 	"github.com/lychee-technology/forma"
 	publiccdc "github.com/lychee-technology/forma/cdc"
+	"github.com/lychee-technology/forma/internal/cdcv2"
 	"go.uber.org/zap"
 )
 
@@ -56,12 +57,13 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	})
 
 	// Change log settings
-	fs.StringVar(&flushOnly.changeLogTable, "change-log-table", "change_log", "Change log table name")
+	fs.StringVar(&shared.changeLogTable, "change-log-table", "change_log", cdcChangeLogTableUsage)
 	fs.StringVar(&shared.entityMainTable, "entity-main-table", "entity_main", "Entity main table name")
 	fs.StringVar(&shared.eavDataTable, "eav-table", "eav_data", "EAV data table name")
 	fs.IntVar(&flushOnly.minRecords, "min-records", 20000, "Minimum records before flush")
 	fs.Int64Var(&flushOnly.maxAgeMs, "max-age-ms", 3600000, "Maximum age in ms before flush")
-	fs.IntVar(&shared.batchSize, "batch-size", 10000, "Maximum batch size per flush")
+	fs.IntVar(&shared.batchSize, "batch-size", 10000, fmt.Sprintf("Most unflushed entries one flush selects and publishes per schema "+
+		"(PostgreSQL: at most %d, marked in one statement; Aurora DSQL: published in generations of at most %d)", cdcv2.MaxMarkEntries, cdcv2.DSQLGenerationLimit))
 	fs.IntVar(&shared.estimatedRowBytes, "estimated-row-bytes", 0, "Estimated bytes per row for batch sizing (0 to use default)")
 	fs.Int64Var(&flushOnly.maxBatchBytes, "max-batch-bytes", 0, "Max batch size in bytes (0 to use default)")
 
@@ -73,16 +75,11 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	shared.s3.register(fs, s3FlagOptions{
 		includePrefix:  true,
 		prefixFlag:     "s3-prefix",
-		prefixDefault:  "delta",
-		prefixUsage:    "S3 prefix for delta files",
-		bucketUsage:    "S3 bucket for parquet files (required)",
+		prefixDefault:  defaultCDCDataPrefix,
+		prefixUsage:    cdcDataPrefixUsage,
+		bucketUsage:    "S3 bucket for parquet files and manifests (required)",
 		bucketRequired: true,
 	})
-
-	// Manifest settings (optional - enables manifest tracking)
-	fs.StringVar(&shared.manifestPrefix, "manifest-prefix", "", "Manifest prefix in S3 (enables manifest tracking)")
-	fs.StringVar(&shared.manifestTemplate, "manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template (empty disables manifest writes and requires -glob-only)")
-	globOnly := fs.Bool("glob-only", false, "Declare that no reader uses a manifest (every read globs the S3 prefix): flush without manifest writes. Clears the default -manifest-template; a schema whose default-path manifest lists files is still refused")
 
 	var schemaRegistry schemaRegistryFlags
 	schemaRegistry.register(fs, false)
@@ -106,12 +103,6 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	if err := validateParquetPrefixFlag("s3-prefix", shared.s3.prefix); err != nil {
 		return nil, err
 	}
-	if err := validateManifestTemplateFlag(shared.manifestTemplate); err != nil {
-		return nil, err
-	}
-	if err := resolveGlobOnlyFlag(fs, &shared.manifestTemplate, *globOnly); err != nil {
-		return nil, err
-	}
 	engine, err := shared.pg.cdcEngine("pg-engine")
 	if err != nil {
 		return nil, err
@@ -120,47 +111,25 @@ func parseCDCFlushFlags(args []string) (*cdcFlushOptions, error) {
 	shared.password = shared.pg.resolvedPassword("PGPASSWORD")
 	cfg := buildCDCConfig(shared, flushOnly)
 	cfg.Engine = engine
-	cfg.GlobOnly = *globOnly
+	if err := cfg.ValidateFlush(); err != nil {
+		return nil, fmt.Errorf("validate -batch-size and -pg-engine: %w", err)
+	}
 
 	return &cdcFlushOptions{cfg: cfg, pg: shared.pg, registry: schemaRegistry, dryRun: *dryRun}, nil
-}
-
-// resolveGlobOnlyFlag settles the flush's manifest mode (#474). A flush with
-// no template cannot list its delta in any manifest, and cannot see a
-// manifest a reader uses under a custom template, so it runs only when the
-// operator declares -glob-only. That declaration clears the default
-// template; naming a template alongside it is a contradiction.
-func resolveGlobOnlyFlag(fs *flag.FlagSet, manifestTemplate *string, globOnly bool) error {
-	if !globOnly {
-		if *manifestTemplate == "" {
-			return fmt.Errorf("-manifest-template is empty: a flush without manifest writes would hide its batches " +
-				"from any reader that uses a manifest; pass the template the readers use, or -glob-only when no reader uses one")
-		}
-		return nil
-	}
-	templateSet := false
-	fs.Visit(func(f *flag.Flag) { templateSet = templateSet || f.Name == "manifest-template" })
-	if templateSet && *manifestTemplate != "" {
-		return fmt.Errorf("-glob-only contradicts -manifest-template=%q: drop one of them", *manifestTemplate)
-	}
-	*manifestTemplate = ""
-	return nil
 }
 
 // cdcFlushOnlyFlags holds the cdc-flush flag values outside the block it
 // shares with cdc-init (#445).
 type cdcFlushOnlyFlags struct {
-	changeLogTable string
-	minRecords     int
-	maxAgeMs       int64
-	maxBatchBytes  int64
+	minRecords    int
+	maxAgeMs      int64
+	maxBatchBytes int64
 }
 
 // buildCDCConfig constructs a CDC config from parsed flag values: the shared
 // block, then the flush-only fields, then WithDefaults last.
 func buildCDCConfig(shared cdcSharedFlags, flushOnly cdcFlushOnlyFlags) publiccdc.Config {
 	cfg := shared.sharedConfig()
-	cfg.ChangeLogTable = flushOnly.changeLogTable
 	cfg.MinRecords = flushOnly.minRecords
 	cfg.MaxAgeMs = flushOnly.maxAgeMs
 	cfg.MaxBatchBytes = flushOnly.maxBatchBytes
@@ -194,14 +163,14 @@ func runCDCFlush(ctx context.Context, args []string) error {
 			return fmt.Errorf("create schema registry pool: %w", err)
 		}
 		defer pool.Close()
-		reg, err := buildToolSchemaRegistry(ctx, pool, opts.registry.table, opts.registry.dir)
+		reg, epochs, err := buildCDCSchemaRegistry(ctx, pool, cfg.EntityMainTable, opts.registry.table, opts.registry.dir)
 		if err != nil {
-			return fmt.Errorf("create schema registry: %w", err)
+			return err
 		}
-		registry = reg
+		registry, cfg.RegistryEpochs = reg, epochs
 	}
 
-	s3Client, err := buildToolS3Client(ctx, cfg.S3Region, cfg.S3Endpoint, cfg.S3UsePath)
+	s3Client, err := toolCDCObjectClientFn(ctx, cfg.S3Region, cfg.S3Endpoint, cfg.S3UsePath)
 	if err != nil {
 		return fmt.Errorf("load AWS config: %w", err)
 	}
@@ -210,15 +179,17 @@ func runCDCFlush(ctx context.Context, args []string) error {
 	logger.Info("starting CDC flush",
 		zap.String("bucket", cfg.S3Bucket),
 		zap.String("prefix", cfg.S3Prefix),
-		zap.String("manifest_template", cfg.ManifestTemplate),
+		zap.String("engine", string(cfg.Engine)),
+		zap.Int("batch_size", cfg.BatchSize),
 		zap.Bool("dry_run", opts.dryRun))
 
 	report, err := publiccdc.RunOnce(ctx, cfg, s3Client, opts.dryRun, logger, registry)
 	if err != nil {
+		logger.Info("CDC flush published before it failed", zap.Any("flushed_schemas", report.Flushed), zap.Any("skipped_schemas", report.Skipped))
 		return fmt.Errorf("CDC flush failed: %w", err)
 	}
 
 	// A skipped schema is not a failure (#704): the run exits 0 and names it.
-	logger.Info("CDC flush completed", zap.Any("skipped_schemas", report.Skipped))
+	logger.Info("CDC flush completed", zap.Any("flushed_schemas", report.Flushed), zap.Any("skipped_schemas", report.Skipped))
 	return nil
 }

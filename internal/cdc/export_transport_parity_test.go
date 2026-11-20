@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 	"github.com/lychee-technology/forma/internal/testdb"
 	"github.com/stretchr/testify/require"
@@ -42,7 +43,7 @@ func TestExportTransportParity_PgxStagingMatchesPostgresQuery(t *testing.T) {
 			name:     "delta",
 			wantRows: 8,
 			export: func(out string) error {
-				return exp.ExportSnapshotToTmp(ctx, fx.cfg, fx.db, out, paritySchemaID, paritySnapshot, fx.ids, cache)
+				return exp.ExportDelta(ctx, fx.cfg, fx.db, out, paritySchemaID, paritySnapshot, fx.ids, cache)
 			},
 			plan: func(out string) (exportSQLPlan, error) {
 				return buildDeltaExportPlan(legacyPostgresQueryTransport(fx.ids), out, fx.cfg, paritySchemaID, paritySnapshot, fx.ids, cache)
@@ -52,7 +53,7 @@ func TestExportTransportParity_PgxStagingMatchesPostgresQuery(t *testing.T) {
 			name:     "base",
 			wantRows: 6,
 			export: func(out string) error {
-				return exp.ExportBaseFileToTmp(ctx, fx.cfg, fx.db, out, paritySchemaID, baseIDs, cache)
+				return exportBaseInSnapshot(ctx, exp, fx.cfg, fx.db, out, paritySchemaID, baseIDs, cache)
 			},
 			plan: func(out string) (exportSQLPlan, error) {
 				return buildBaseExportPlan(legacyPostgresQueryTransport(baseIDs), out, fx.cfg, paritySchemaID, baseIDs, cache)
@@ -62,7 +63,7 @@ func TestExportTransportParity_PgxStagingMatchesPostgresQuery(t *testing.T) {
 			name:     "empty base",
 			wantRows: 0,
 			export: func(out string) error {
-				return exp.ExportBaseFileToTmp(ctx, fx.cfg, fx.db, out, paritySchemaID, nil, cache)
+				return exportBaseInSnapshot(ctx, exp, fx.cfg, fx.db, out, paritySchemaID, nil, cache)
 			},
 			plan: func(out string) (exportSQLPlan, error) {
 				return buildBaseExportPlan(legacyPostgresQueryTransport(nil), out, fx.cfg, paritySchemaID, nil, cache)
@@ -169,4 +170,16 @@ func requireParityCoverage(t *testing.T, db *sql.DB, path string, ids []uuid.UUI
 	require.NoError(t, db.QueryRow(`SELECT count(active_i), count(active_t), count(active_d), count(born) FROM `+src).
 		Scan(&boolInt, &boolText, &boolDefault, &isoDates))
 	require.Equal(t, []int{3, 3, 3, 2}, []int{boolInt, boolText, boolDefault, isoDates}, "non-NULL bool encodings and parsed rfc3339 dates")
+}
+
+// exportBaseInSnapshot runs the base export as cdc-init does: on a
+// REPEATABLE READ READ ONLY snapshot of db, read through database/sql
+// (stageRowsOnTx), which the exporter neither commits nor rolls back.
+func exportBaseInSnapshot(ctx context.Context, exp *DuckExporter, cfg CDCConfig, db *sql.DB, out string, schemaID int16, rowIDs []uuid.UUID, cache forma.SchemaAttributeCache) error {
+	snap, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("begin the export snapshot: %w", err)
+	}
+	defer func() { _ = snap.Rollback() }()
+	return exp.ExportBase(ctx, cfg, snap, out, schemaID, rowIDs, cache)
 }

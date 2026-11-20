@@ -309,14 +309,12 @@ jobs:
           S3_ENDPOINT: http://localhost:9000
           S3_ACCESS_KEY: minio
           S3_SECRET_KEY: minio_password
-          # Manifest-driven reads (#302): the flush step below writes
-          # manifests (cdc-flush passes --manifest-template); these vars make
-          # the server resolve parquet paths from them, the only source of
-          # parquet paths since #715. S3_BUCKET/S3_PREFIX mirror the tests/e2e
-          # defaults (forma-cdc / delta) the writers use.
-          DUCKDB_MANIFEST_TEMPLATE: "manifest/{{.SchemaID}}.json"
+          # The reader scans each schema's published generation, which its
+          # publication record names (docs/publication-protocol-v2.md), in
+          # the bucket the writers publish to: S3_BUCKET mirrors the
+          # tests/e2e default (forma-cdc). No prefix or manifest template is
+          # read since #896.
           S3_BUCKET: forma-cdc
-          S3_PREFIX: delta
         # Two servers over the same database (#715: the deployment, not the
         # request, picks the route). :8080 keeps the default hybrid routing,
         # which answers small pages from Postgres; :8081 routes every query

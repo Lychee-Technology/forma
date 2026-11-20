@@ -97,6 +97,30 @@ func (d *stagedDouble) ScanNumeric(n pgtype.Numeric) error {
 	return nil
 }
 
+// Scan implements sql.Scanner for a stage read through database/sql, the
+// export snapshot cdc-init hands its exporter (stageRowsOnTx). pgx's stdlib
+// answers a double precision column as float64 and a NUMERIC one as its
+// text, which is decoded as a pgtype.Numeric so that it converts exactly as
+// ScanNumeric does. pgx's own scan of the flush export prefers
+// ScanFloat64/ScanNumeric and never calls Scan.
+func (d *stagedDouble) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		d.value, d.valid = 0, false
+		return nil
+	case float64:
+		d.value, d.valid = v, true
+		return nil
+	case string:
+		var n pgtype.Numeric
+		if err := n.Scan(v); err != nil {
+			return fmt.Errorf("scan numeric text %q: %w", v, err)
+		}
+		return d.ScanNumeric(n)
+	}
+	return fmt.Errorf("scan %T into a staged DOUBLE: want float64 or numeric text", src)
+}
+
 // numericToDouble is numutil.NumericToDouble, which the hot leg's sort keys
 // share (sortkey): a hot key must compare as this export will write it.
 func numericToDouble(n pgtype.Numeric) (float64, error) {

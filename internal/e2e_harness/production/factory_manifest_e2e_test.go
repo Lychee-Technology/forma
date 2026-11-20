@@ -7,15 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/factory"
-	fedengine "github.com/lychee-technology/forma/internal/federated"
-	"github.com/lychee-technology/forma/internal/model"
 )
 
 // factorySeedRows is the seeded row count; every phase reads the same set.
@@ -23,14 +20,16 @@ const factorySeedRows = 8
 
 // TestFactoryWiring_ManifestDrivenReads is the ONLY coverage proving that
 // factory.NewEntityManagerWithConfigContext actually reaches the engine with
-// federated.WithParquetSource (#250): the composition root's one-line
-// `engineOpts = append(engineOpts, federated.WithParquetSource(...))` is
-// deliberately not unit-covered, so if it were dropped, only this test fails.
+// federated.WithPublicationReader over the Protocol V2 reader (#250, #896):
+// the composition root's wiring is deliberately not unit-covered end to end,
+// so if it were dropped, only this test fails. An engine without a reader
+// fails every pass as misconfigured, so Phase 1 dies at once.
 //
 // Everything here goes through the PUBLIC surface — a config struct, the
 // factory, and forma.EntityManager.Query — never Env.Engine()/Env.Query(),
 // which assemble the engine themselves and would pass with the factory line
-// removed.
+// removed. The factory pins each schema's epoch at construction, so the
+// managers are built after provisioning wrote the records.
 //
 // The phases share one Env and run in order; each depends on the state the
 // previous one left behind. The managers' deployments route every query
@@ -41,32 +40,35 @@ func TestFactoryWiring_ManifestDrivenReads(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
 	simple := DefaultSchemaFixtures()[0]
+	wide := DefaultSchemaFixtures()[1]
 
-	// Phase 0 — seed and cold-ify: flush every row to parquet, then drop the
-	// change_log entries so the hot tier contributes nothing. Any row the
+	// Phase 0 — seed and cold-ify: flush every row to parquet; the flush
+	// marks every entry, so the hot tier contributes nothing. Any row the
 	// later phases see can only have come from a parquet scan.
 	creates := env.GenerateScript(ScriptSpec{Schema: simple, Creates: factorySeedRows})
 	mustApplyEvents(ctx, t, env, "factory-path seed", creates...)
 	mustFlush(ctx, t, env)
 	env.RetireAllFlushed(ctx)
+	// e2e_wide stays never published: its rows are hot only.
+	hot := env.GenerateScript(ScriptSpec{Schema: wide, Creates: 3})
+	mustApplyEvents(ctx, t, env, "never-published seed", hot...)
 
 	keys := schemaParquetKeys(ctx, t, env, simple)
 	if len(keys) == 0 {
 		t.Fatalf("seed produced no parquet objects for schema %s", simple.Name)
 	}
 
-	manager := newFactoryManager(ctx, t, env, true, false)
-	degraded := newFactoryManager(ctx, t, env, true, true)
-	ghostKey := fmt.Sprintf("%s/%d/zz_ghost_never_written.parquet", env.S3Prefix, simple.ID)
+	manager := newFactoryManager(ctx, t, env, false)
+	degraded := newFactoryManager(ctx, t, env, true)
 
 	t.Run("Phase1_ManifestListedRead", func(t *testing.T) {
 		factoryPhaseManifestRead(ctx, t, env, manager, simple)
 	})
 	t.Run("Phase2_InconsistencyClassificationThroughPublicAPI", func(t *testing.T) {
-		factoryPhaseInconsistency(ctx, t, env, manager, degraded, simple, ghostKey)
+		factoryPhaseInconsistency(ctx, t, env, manager, degraded, simple, keys[0])
 	})
-	t.Run("Phase3_NegativeControlManifestOff", func(t *testing.T) {
-		factoryPhaseManifestOff(ctx, t, env, simple, keys)
+	t.Run("Phase3_NeverPublishedSchemaAnswersFromPostgres", func(t *testing.T) {
+		factoryPhaseNeverPublished(ctx, t, manager, wide, len(hot))
 	})
 }
 
@@ -74,14 +76,13 @@ func TestFactoryWiring_ManifestDrivenReads(t *testing.T) {
 // factory-built manager returns every flushed row.
 //
 // The garbage object PUT below is the manifest-vs-glob discriminator. It sits
-// inside the schema's data prefix, so the legacy glob
-// (s3://bucket/{prefix}/{schemaID}/*.parquet) expands onto it and the scan
-// fails on its unparsable bytes — the #189 pre-read validator treats an
-// unreadable footer as inconclusive and defers, and the read path has no
-// ignore_errors, so the failure surfaces at scan time (characterized by
-// TestManifestConsistency_OneGoodOneBadFile). Manifest-driven reads never see
-// it: it is not listed. A green Phase 1 therefore proves the scan set came
-// from the manifest, not from a glob.
+// under the schema's current epoch, in the V2 key shape a flush writes, so a
+// glob over the schema's prefix would expand onto it and the scan would fail
+// on its unparsable bytes — the read path has no ignore_errors, so the
+// failure would surface at scan time (characterized by
+// TestManifestConsistency_OneGoodOneBadFile). The V2 reader never sees it: no
+// generation lists it. A green Phase 1 therefore proves the scan set came from
+// the published generation, not from a listing.
 //
 // CAVEAT for future maintainers: this assertion depends on the read path NOT
 // tolerating unreadable objects. If parquet reads are ever softened (scan-level
@@ -90,43 +91,42 @@ func TestFactoryWiring_ManifestDrivenReads(t *testing.T) {
 // a plain smoke test — replace it rather than let it rot.
 func factoryPhaseManifestRead(ctx context.Context, t *testing.T, env *Env, manager forma.EntityManager, schema SchemaRef) {
 	t.Helper()
-	putGarbageObject(ctx, t, env, fmt.Sprintf("%s/%d/zz_unlisted.parquet", env.S3Prefix, schema.ID))
+	putGarbageObject(ctx, t, env, newTestParquetKey(ctx, t, env, schema, "delta"))
 
 	res, err := factoryQuery(ctx, manager, schema)
 	if err != nil {
 		t.Fatalf("factory-path federated query: %v", err)
 	}
 	if len(res.Data) != factorySeedRows {
-		t.Fatalf("factory-path query returned %d rows, want %d: the factory's parquet source did not reach the engine",
+		t.Fatalf("factory-path query returned %d rows, want %d: the factory's publication reader did not reach the engine",
 			len(res.Data), factorySeedRows)
 	}
 	assertFactoryUsedDuckDB(t, res)
 }
 
-// factoryPhaseInconsistency is Phase 2 (#250): with a ghost key listed in the
-// manifest but never written, the manifest inconsistency must classify all
-// the way out through the public EntityManager.Query error — sentinel, typed
-// error, schema and missing key intact.
+// factoryPhaseInconsistency is Phase 2 (#250, #759): with an object the
+// published generation lists missing from storage, the inconsistency must
+// classify all the way out through the public EntityManager.Query error —
+// sentinel, typed error, schema and missing key intact — matched through the
+// public package, which is all an embedder building its manager via the
+// factory can import.
 //
-// The ghost key is state-equivalent to deleting keys[0] (manifest lists a key
-// storage does not have) but non-destructive, so the phases after it still
-// have their objects. Either vector exercises the same classification path.
-//
-// Together with Phase 1 this is what dies if federated.WithParquetSource is
-// dropped from the factory: with no source the engine resolves an empty path
-// set, so the read never reaches the manifest-listed objects and the
-// classification is unreachable (verified by mutation — the engine then fails
-// the way Phase 3's manifest-off control does). Phase 3 keeps passing under
-// that mutation, which is what makes this phase the discriminator rather than
-// a generic smoke test.
-func factoryPhaseInconsistency(ctx context.Context, t *testing.T, env *Env, manager, degradedManager forma.EntityManager, schema SchemaRef, ghostKey string) {
+// The listed object is a one-row copy of a seeded one under a fresh key,
+// published and then deleted: state-equivalent to deleting a flushed object,
+// but non-destructive, so the seeded objects stay readable.
+func factoryPhaseInconsistency(ctx context.Context, t *testing.T, env *Env, manager, degradedManager forma.EntityManager, schema SchemaRef, seeded string) {
 	t.Helper()
+	ghostKey := newTestParquetKey(ctx, t, env, schema, "delta")
+	writeParquetViaDuck(ctx, t, env, fmt.Sprintf(
+		"SELECT * REPLACE (gen_random_uuid() AS row_id) FROM read_parquet('%s') LIMIT 1", env.ParquetURI(seeded)), ghostKey)
 	if err := env.RegisterParquetInManifest(ctx, schema, ghostKey, "delta"); err != nil {
-		t.Fatalf("register ghost key in manifest: %v", err)
+		t.Fatalf("list the ghost object in a generation: %v", err)
 	}
+	deleteObject(ctx, t, env, ghostKey)
+
 	res, err := factoryQuery(ctx, manager, schema)
 	if err == nil {
-		t.Fatalf("hint-less query silently succeeded with %d rows while the manifest lists a key storage does not have",
+		t.Fatalf("query silently succeeded with %d rows while the generation lists a key storage does not have",
 			len(res.Data))
 	}
 	assertFactoryInconsistency(t, err, schema, ghostKey)
@@ -136,103 +136,48 @@ func factoryPhaseInconsistency(ctx context.Context, t *testing.T, env *Env, mana
 	// would hide exactly the state the classification exists to report.
 	degraded, err := factoryQuery(ctx, degradedManager, schema)
 	if err == nil {
-		t.Fatalf("degraded mode re-silenced the manifest inconsistency (%d rows returned)", len(degraded.Data))
+		t.Fatalf("degraded mode re-silenced the publication inconsistency (%d rows returned)", len(degraded.Data))
 	}
 	assertFactoryInconsistency(t, err, schema, ghostKey)
 }
 
-// factoryPhaseManifestOff is Phase 3, the negative control: a second manager
-// built from the same config with the manifest read surface cleared gets no
-// parquet source at all, so the inconsistent manifest of Phase 2 is
-// invisible to it. Its outcome must NOT carry the inconsistency
-// classification — that proves Phase 2's error came from the new factory
-// wiring rather than from ambient environment damage.
-//
-// The whole surface is cleared, not just ManifestTemplate: ValidateManifestRead
-// rejects a ManifestPrefix/S3DataPrefix set without a template, so "manifest
-// off" is all-or-nothing by construction.
-//
-// Three assertions, in increasing strength:
-//
-//  1. The query fails with ErrNoParquetPaths (#299). With no source nothing
-//     authors a path set, and since #299 that is its own non-degradable
-//     classification rather than the degradable read failure a
-//     `read_parquet(<no value>)` parser error used to produce.
-//  2. That failure is not the Phase 2 classification, and degraded mode does
-//     not absorb it.
-//  3. The engine, pointed at the seeded objects through its path hint, reads
-//     every seeded row. This is what gives the control discriminating power:
-//     it proves the objects are healthy, so Phase 2's error can only have
-//     come from the manifest wiring — not from a broken environment that
-//     would fail every query regardless. No request can carry the hint since
-//     #715, so the control reads through the Env's engine.
-func factoryPhaseManifestOff(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, keys []string) {
+// factoryPhaseNeverPublished is Phase 3 (#720, #896): a schema whose record
+// is UNPUBLISHED answers its live rows from PostgreSQL through the
+// factory-built manager, with no DuckDB statement, although the deployment
+// routes every query to DuckDB.
+func factoryPhaseNeverPublished(ctx context.Context, t *testing.T, manager forma.EntityManager, schema SchemaRef, want int) {
 	t.Helper()
-	manager := newFactoryManager(ctx, t, env, false, false)
-
-	_, err := factoryQuery(ctx, manager, schema)
-	if err == nil {
-		t.Fatal("manifest-off query succeeded: with no parquet source there is no path set to scan")
-	}
-	// Matched through the PUBLIC package, not internal/federated: an embedder
-	// building its manager via factory.NewEntityManagerWithConfig* cannot import
-	// an internal package, so a sentinel only reachable there would leave them
-	// comparing error text. Asserting the public name here is what proves the
-	// discriminator #299 promised is actually usable (review P2).
-	if !errors.Is(err, forma.ErrNoParquetPaths) {
-		t.Fatalf("manifest-off query must classify as forma.ErrNoParquetPaths (#299), got: %v", err)
-	}
-	var noPaths *forma.NoParquetPathsError
-	if !errors.As(err, &noPaths) {
-		t.Fatalf("error must carry the public detail type, got: %v", err)
-	}
-	if noPaths.SchemaID != schema.ID {
-		t.Fatalf("detail names schema %d, want %d", noPaths.SchemaID, schema.ID)
-	}
-	if noPaths.SourceConfigured {
-		t.Fatal("manifest reads are off here, so no source was consulted; the remedy differs and the flag must say so")
-	}
-	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
-		t.Fatalf("manifest-off manager reported a manifest inconsistency; Phase 2's classification is environment noise, not wiring: %v", err)
-	}
-	if errors.Is(err, fedengine.ErrFederatedReadFailed) {
-		t.Fatalf("an unresolvable path set must not look like a transient read failure — that conflation is the #299 bug: %v", err)
-	}
-
-	// Non-degradable: a Postgres-only answer here would silently omit the cold
-	// tier the request asked for.
-	if _, derr := factoryQuery(ctx, newFactoryManager(ctx, t, env, false, true), schema); derr == nil {
-		t.Fatal("degraded mode absorbed the empty path set; a misconfigured read surface must stay loud (#299)")
-	} else if !errors.Is(derr, forma.ErrNoParquetPaths) {
-		t.Fatalf("degraded-mode failure lost its classification: %v", derr)
-	}
-
-	// Positive control: the objects are fine and the engine reads them when
-	// told where to look.
-	uris := make([]string, 0, len(keys))
-	for _, key := range keys {
-		uris = append(uris, fmt.Sprintf("s3://%s/%s", env.Cluster.Bucket, key))
-	}
-	res, err := env.Query(ctx, Query{Schema: schema, Limit: 20, S3ParquetPathTemplate: strings.Join(uris, ","),
-		PreferredTiers: []model.DataTier{model.DataTierHot, model.DataTierWarm, model.DataTierCold}})
+	res, err := factoryQuery(ctx, manager, schema)
 	if err != nil {
-		t.Fatalf("the engine could not read the seeded objects even with an explicit hint, so Phase 2 proves nothing about wiring: %v", err)
+		t.Fatalf("query of a never-published schema: %v", err)
 	}
-	if len(res.Records) != factorySeedRows {
-		t.Fatalf("hinted query returned %d rows, want %d", len(res.Records), factorySeedRows)
+	if len(res.Data) != want {
+		t.Fatalf("never-published schema answered %d rows, want its %d live rows", len(res.Data), want)
 	}
-	if !res.Plan.Routing.UseDuckDB {
-		t.Fatalf("hinted query did not route through DuckDB: %+v", res.Plan.Routing)
+	if res.ExecutionPlan == nil {
+		t.Fatal("the request asked for the execution plan but none was returned")
+	}
+	for _, src := range res.ExecutionPlan.Sources {
+		if src.Engine == "duckdb" {
+			t.Errorf("a never-published schema ran a DuckDB statement: %+v", src)
+		}
 	}
 }
 
 // newFactoryManager builds an EntityManager exactly the way a server does:
-// a forma.Config plus the factory composition root. manifestOn toggles the
-// manifest read surface and degraded the deployment's degraded fallback; the
-// routing strategy sends every query through DuckDB.
-func newFactoryManager(ctx context.Context, t *testing.T, env *Env, manifestOn, degraded bool) forma.EntityManager {
+// a forma.Config plus the factory composition root, reading the published
+// generations in the cluster bucket. degraded toggles the deployment's
+// degraded fallback; the routing strategy sends every query through DuckDB.
+func newFactoryManager(ctx context.Context, t *testing.T, env *Env, degraded bool) forma.EntityManager {
 	t.Helper()
+	return buildFactoryManager(ctx, t, env, factoryConfig(env, degraded), degraded)
+}
+
+// factoryConfig is the deployment configuration newFactoryManager builds
+// with: the Env's registry, loaded at the Env's registry epochs.
+func factoryConfig(env *Env, degraded bool) *forma.Config {
 	cfg := forma.DefaultConfig(env.Registry)
+	cfg.SchemaRegistryEpochs = env.RegistryEpochs
 	cfg.Entity.SchemaDirectory = FixtureSchemasDir()
 	cfg.Database.TableNames = forma.TableNames{
 		SchemaRegistry: env.Tables.SchemaRegistry,
@@ -248,21 +193,22 @@ func newFactoryManager(ctx context.Context, t *testing.T, env *Env, manifestOn, 
 	duck.MaxConnections = 1
 	duck.Routing.Strategy = forma.RoutingStrategyFreshnessFirst
 	duck.AllowPartialDegradedMode = degraded
-	if manifestOn {
-		duck.S3Bucket = env.Cluster.Bucket
-		duck.S3DataPrefix = env.S3Prefix
-		duck.ManifestPrefix = env.CDC.ManifestPrefix
-		duck.ManifestTemplate = env.CDC.ManifestTemplate
-	}
+	duck.S3Bucket = env.Cluster.Bucket
 	cfg.DuckDB = duck
+	return cfg
+}
 
+// buildFactoryManager builds the manager of cfg with the factory and closes
+// it when the test ends.
+func buildFactoryManager(ctx context.Context, t *testing.T, env *Env, cfg *forma.Config, degraded bool) forma.EntityManager {
+	t.Helper()
 	manager, err := factory.NewEntityManagerWithConfigContext(ctx, cfg, env.Pool)
 	if err != nil {
-		t.Fatalf("build entity manager via factory (manifest=%t): %v", manifestOn, err)
+		t.Fatalf("build entity manager via factory (degraded=%t): %v", degraded, err)
 	}
 	t.Cleanup(func() {
 		if err := manager.Close(); err != nil {
-			t.Errorf("close factory-built manager (manifest=%t): %v", manifestOn, err)
+			t.Errorf("close factory-built manager (degraded=%t): %v", degraded, err)
 		}
 	})
 	return manager
@@ -295,16 +241,17 @@ func assertFactoryUsedDuckDB(t *testing.T, res *forma.QueryResult) {
 	}
 }
 
-// assertFactoryInconsistency pins the full classification surface: sentinel,
-// typed error, offending schema, and the missing key by name.
+// assertFactoryInconsistency pins the full classification surface, through
+// the public package: sentinel, typed error, offending schema, and the
+// missing key by name.
 func assertFactoryInconsistency(t *testing.T, err error, schema SchemaRef, missingKey string) {
 	t.Helper()
-	if !errors.Is(err, fedengine.ErrParquetSetInconsistent) {
-		t.Fatalf("error must classify as ErrParquetSetInconsistent, got: %v", err)
+	if !errors.Is(err, forma.ErrPublicationInconsistent) {
+		t.Fatalf("error must classify as forma.ErrPublicationInconsistent, got: %v", err)
 	}
-	var typed *fedengine.ParquetSetInconsistentError
+	var typed *forma.PublicationConsistencyError
 	if !errors.As(err, &typed) {
-		t.Fatalf("error chain must carry *ParquetSetInconsistentError, got: %v", err)
+		t.Fatalf("error chain must carry *forma.PublicationConsistencyError, got: %v", err)
 	}
 	if typed.SchemaID != schema.ID {
 		t.Errorf("inconsistency names schema %d, want %d", typed.SchemaID, schema.ID)
@@ -321,7 +268,7 @@ func assertFactoryInconsistency(t *testing.T, err error, schema SchemaRef, missi
 	}
 }
 
-// putGarbageObject writes an unreadable ".parquet" object that no manifest
+// putGarbageObject writes an unreadable ".parquet" object that no generation
 // lists: the bait a glob-based read would swallow.
 func putGarbageObject(ctx context.Context, t *testing.T, env *Env, key string) {
 	t.Helper()

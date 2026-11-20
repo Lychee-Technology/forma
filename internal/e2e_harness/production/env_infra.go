@@ -4,9 +4,42 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	forma "github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/schemameta"
 )
+
+// loadRegistry loads the schema registry over schemaDir on pool after
+// reading every publication record's epoch, the order a server and a CDC
+// tool follow (forma.Config.SchemaRegistryEpochs, cdc.CDCConfig.
+// RegistryEpochs). The epochs bind what the registry describes to the epochs
+// it was loaded at: a writer or a factory-built reader refuses a schema whose
+// record moved since.
+func (e *Env) loadRegistry(ctx context.Context, pool *pgxpool.Pool, schemaDir string) (forma.SchemaRegistry, map[int16]int64, error) {
+	var epochs map[int16]int64
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		epochs, err = publication.Epochs(ctx, publication.PgxTx(tx), publication.TablesFor(e.Tables.EntityMain))
+		return err
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the publication epochs before loading the schema registry: %w", err)
+	}
+	registry, err := schemameta.NewFileSchemaRegistryContext(ctx, pool, e.Tables.SchemaRegistry, schemaDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	return registry, epochs, nil
+}
+
+// setRegistry makes registry, loaded at epochs, the Env's: every CDC run
+// and factory-built manager after it uses both.
+func (e *Env) setRegistry(registry forma.SchemaRegistry, epochs map[int16]int64) {
+	e.Registry, e.RegistryEpochs = registry, epochs
+	e.CDC.RegistryEpochs = epochs
+}
 
 // Infrastructure lifecycle verbs: restart/halt/resume of the per-test
 // server-bound handles. Pure move from env.go (#249 review, 500-line limit).
@@ -36,11 +69,11 @@ func (e *Env) reconnectAfterRestart(ctx context.Context) error {
 		return fmt.Errorf("reconnect test database after restart: %w", err)
 	}
 	e.Pool = pool
-	registry, err := schemameta.NewFileSchemaRegistryContext(ctx, pool, e.Tables.SchemaRegistry, e.schemaDir())
+	registry, epochs, err := e.loadRegistry(ctx, pool, e.schemaDir())
 	if err != nil {
 		return fmt.Errorf("rebuild schema registry after restart: %w", err)
 	}
-	e.Registry = registry
+	e.setRegistry(registry, epochs)
 
 	if e.Duck != nil {
 		_ = e.Duck.Close()
@@ -52,7 +85,7 @@ func (e *Env) reconnectAfterRestart(ctx context.Context) error {
 	e.manager = nil
 	e.routedManagers = nil
 	e.postgresManager = nil
-	e.engine = nil
+	e.engine, e.epochPins = nil, nil
 	return nil
 }
 
@@ -70,7 +103,7 @@ func (e *Env) ReopenDuckDB() error {
 	if err := e.startDuckDB(); err != nil {
 		return fmt.Errorf("reopen duckdb client: %w", err)
 	}
-	e.engine = nil
+	e.engine, e.epochPins = nil, nil
 	e.manager = nil
 	e.routedManagers = nil
 	e.postgresManager = nil
@@ -112,7 +145,7 @@ func (e *Env) RestartS3(ctx context.Context) error {
 		return fmt.Errorf("rebuild duckdb client after s3 restart: %w", err)
 	}
 	e.CDC = e.buildCDCConfig()
-	e.engine = nil
+	e.engine, e.epochPins = nil, nil
 	e.manager = nil
 	e.routedManagers = nil
 	e.postgresManager = nil

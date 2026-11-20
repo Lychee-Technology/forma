@@ -25,7 +25,8 @@ type pgxOutcome struct {
 }
 
 // report emits the pass's metrics and completes its execution plan. A pass
-// that ran no DuckDB statement (#720) has no translation, execution or
+// that ran no DuckDB statement (an UNPUBLISHED record, or a generation that
+// lists no object) has no translation, execution or
 // streaming stage and no duckdb row count, so those samples are not emitted.
 func (p *pgxPass) report(ctx context.Context, o pgxOutcome) {
 	m := p.e.metrics
@@ -74,33 +75,22 @@ func (p *pgxPass) recordPlan(o pgxOutcome) {
 	plan.Timings["total"] = c.millisSince(c.startTotal)
 }
 
-// recordSnapshotDirtySet records the dirty set the snapshot read: the
-// widened set of the hot form at the pass's cutoff, or the strict set of the
-// hot-excluded form, which the parquet leg anti-joins against. staged is
-// false for a published pass without a parquet leg, which stages nothing
-// and runs no DuckDB statement; a V1 pass always reports it staged.
-func (c *duckDBExecutionPlanContext) recordSnapshotDirtySet(changeLog string, schemaID int16, form DirtySetForm, cutoffMs int64, n int, staged bool) {
+// recordSnapshotDirtySet records the strict dirty set the snapshot read,
+// which the parquet leg anti-joins against. staged is false for a pass
+// without a parquet leg, which stages nothing and runs no DuckDB statement.
+func (c *duckDBExecutionPlanContext) recordSnapshotDirtySet(changeLog string, schemaID int16, n int, staged bool) {
 	if c.opts == nil || !c.opts.IncludeExecutionPlan || c.opts.ExecutionPlan == nil {
 		return
 	}
-	query, args := dirtySetQuery(ChangeLogSnapshotRequest{
-		Tables:        model.StorageTables{ChangeLog: changeLog},
-		SchemaID:      schemaID,
-		Form:          form,
-		GraceCutoffMs: cutoffMs,
-	})
-	reason := "dirty set read in the pass's snapshot and staged for the anti-join"
-	switch {
-	case !staged:
+	reason := "consistency barrier (dirty set read in the pass's snapshot, staged for the anti-join)"
+	if !staged {
 		reason = dirtySetUnstagedReason
-	case form == DirtySetHotExcluded:
-		reason = "consistency barrier (dirty set read in the pass's snapshot, staged for the anti-join)"
 	}
 	c.opts.ExecutionPlan.Sources = append(c.opts.ExecutionPlan.Sources, model.DataSourcePlan{
 		Tier:        model.DataTierHot,
 		Engine:      "postgres",
-		SQL:         query,
-		Params:      formatPlanParams(args),
+		SQL:         strictDirtySetQuery(changeLog),
+		Params:      formatPlanParams([]any{schemaID}),
 		RowEstimate: int64(n),
 		Reason:      reason,
 	})

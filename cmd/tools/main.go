@@ -73,6 +73,7 @@ func toolCommands() []toolCommand {
 	return []toolCommand{
 		{name: "generate-attributes", run: runGenerateAttributes},
 		{name: "init-db", run: runInitDB},
+		{name: "drop-schema", run: runDropSchema},
 		{name: "apply-schema", run: runApplySchema},
 		{name: "baseline-schema", run: runBaselineSchema},
 		{name: "migrate-rfc3339", run: runMigrateRFC3339},
@@ -92,6 +93,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "Commands:")
 	fmt.Fprintln(out, "  generate-attributes   Generate <schema>_attributes.json from a JSON schema file")
 	fmt.Fprintln(out, "  init-db               Create PostgreSQL tables and indexes for Forma")
+	fmt.Fprintln(out, "  drop-schema           Retire a schema: drop its registration and publication record, then purge its rows")
 	fmt.Fprintln(out, "  apply-schema          Record edited schema declarations as new generations when the type rules allow them")
 	fmt.Fprintln(out, "  baseline-schema       Audit stored data and record the first generation of schemas that have none (upgrade step)")
 	fmt.Fprintln(out, "  migrate-rfc3339       Rewrite the whole-second images of the retired iso8601 encoding (stop every writer first)")

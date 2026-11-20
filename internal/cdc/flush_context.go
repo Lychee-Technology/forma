@@ -3,47 +3,13 @@ package cdc
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/lychee-technology/forma"
-	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"go.uber.org/zap"
 )
-
-// resolvedS3Clients is the run's S3 client pair. The two travel as one value so
-// a caller cannot carry the object client forward while dropping the full
-// client every S3-derived flush-context field is built from — the manifest
-// store and the content-checksum seam (#347).
-type resolvedS3Clients struct {
-	object S3ObjectClient
-	full   S3FullClient
-}
-
-// resolveS3Clients picks the run's client pair: the caller's client when it
-// provided one, the ambient default otherwise. requireFull rejects an
-// object-only caller client when the run needs manifest access.
-func resolveS3Clients(
-	provided S3ObjectClient,
-	fallback S3FullClient,
-	requireFull bool,
-) (resolvedS3Clients, error) {
-	if provided == nil {
-		if fallback == nil {
-			return resolvedS3Clients{}, fmt.Errorf("s3 client is required")
-		}
-		return resolvedS3Clients{object: fallback, full: fallback}, nil
-	}
-
-	fullClient, ok := provided.(S3FullClient)
-	if !ok {
-		if requireFull {
-			return resolvedS3Clients{}, fmt.Errorf("manifest requires S3FullClient when custom s3 client is provided")
-		}
-		return resolvedS3Clients{object: provided}, nil
-	}
-
-	return resolvedS3Clients{object: provided, full: fullClient}, nil
-}
 
 // flushContextParams carries the per-run values both RunOnce frames resolve
 // before a flush context can be built.
@@ -51,84 +17,56 @@ type flushContextParams struct {
 	cfg            CDCConfig
 	db             *sql.DB
 	duck           *DuckExporter
-	clients        resolvedS3Clients
+	store          manifestv2.Store
 	dryRun         bool
 	logger         *zap.Logger
 	schemaRegistry forma.SchemaRegistry
 }
 
-// newSchemaFlushContext assembles the flush context both entrypoints run —
-// package-level RunOnce (cmd/tools cdc-flush) and Runner.RunOnce. It is the one
-// place the S3-derived fields are wired, so a field that exists only here, like
-// the content-checksum seam (#347), cannot be live on one path and silently
-// absent on the other; both frames are a single call to this function and carry
-// no wiring of their own.
-func newSchemaFlushContext(p flushContextParams) (*schemaFlushContext, error) {
-	tableName := p.cfg.ChangeLogTable
-	if tableName == "" {
-		tableName = "change_log"
+// newSchemaFlushContext assembles the flush context both entrypoints run:
+// package-level RunOnce (cmd/tools cdc-flush) and Runner.RunOnce. It is the
+// one place the run's V2 writer, object store and schema lock are wired, so
+// neither frame can carry a wiring of its own.
+func newSchemaFlushContext(ctx context.Context, p flushContextParams) (*schemaFlushContext, error) {
+	cfg := p.cfg.WithDefaults()
+	if err := cfg.ValidateFlush(); err != nil {
+		return nil, fmt.Errorf("cdc flush configuration: %w", err)
 	}
-	if err := checkManifestMode(p.cfg); err != nil {
-		return nil, fmt.Errorf("cdc flush manifest configuration: %w", err)
+	if p.store == nil {
+		return nil, errors.New("cdc flush needs an object store to stage its generations in")
+	}
+	logger := p.logger
+	if logger == nil {
+		logger = zap.NewNop()
 	}
 	// The schema lock follows the configured engine (#633); an unknown one
 	// fails the run here, before any schema is touched.
-	locker, err := NewSchemaLocker(p.db, p.cfg.Engine, p.cfg.EntityMainTable)
+	locker, err := NewSchemaLocker(p.db, cfg.Engine, cfg.EntityMainTable)
 	if err != nil {
 		return nil, fmt.Errorf("cdc flush schema lock: %w", err)
 	}
-
-	flushCtx := &schemaFlushContext{
+	writer, err := newPublicationWriter(cfg, p.db, p.store, cfg.BatchSize, 0)
+	if err != nil {
+		return nil, fmt.Errorf("cdc flush: %w", err)
+	}
+	// The epochs the caller read before loading the run's registry: a schema
+	// whose record is at another epoch under its lock is refused
+	// (refuseMovedEpoch).
+	epochs, err := runEpochs(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("cdc flush: %w", err)
+	}
+	return &schemaFlushContext{
 		db:             p.db,
-		locker:         locker,
 		duck:           p.duck,
-		s3Client:       p.clients.object,
-		cfg:            p.cfg,
-		tableName:      tableName,
+		store:          p.store,
+		writer:         writer,
+		locker:         locker,
+		cfg:            cfg,
+		epochs:         epochs,
+		tableName:      cfg.ChangeLogTable,
 		dryRun:         p.dryRun,
-		logger:         p.logger,
+		logger:         logger,
 		schemaRegistry: p.schemaRegistry,
-		checksumObject: newChecksumSeam(p.clients.full, p.cfg.S3Bucket),
-	}
-
-	if p.cfg.ManifestTemplate == "" {
-		// A declared glob-only run (checkManifestMode) has no store to
-		// append to: the probe still refuses a batch whose schema has a
-		// default-path manifest listing files, which contradicts the
-		// declaration (#474).
-		var probeStore manifest.Store
-		if usableFullClient(p.clients.full) {
-			probeStore = &manifest.S3Store{Client: p.clients.full, Bucket: p.cfg.S3Bucket}
-		}
-		flushCtx.probeUnwiredManifest = newUnwiredManifestProbe(p.cfg.ManifestPrefix, probeStore, p.clients.object, p.cfg.S3Bucket)
-	} else {
-		flushCtx.manifestStore = &manifest.S3Store{
-			Client: p.clients.full,
-			Bucket: p.cfg.S3Bucket,
-		}
-		flushCtx.manifestResolver = manifest.PathResolver{
-			Prefix:       p.cfg.ManifestPrefix,
-			PathTemplate: p.cfg.ManifestTemplate,
-		}
-	}
-
-	return flushCtx, nil
-}
-
-// newChecksumSeam builds the executor's manifest content-hash seam over the
-// resolved full S3 client (#347). It returns a literal nil closure when no
-// usable client exists, so the executor's `checksumObject == nil` gate stays
-// honest and entries simply go unstamped.
-//
-// The nil judgment happens here, on the concrete client, rather than inside the
-// executor: resolveS3Clients hands back an S3FullClient interface, and an
-// interface holding a typed-nil pointer passes `!= nil` and would panic on the
-// first GetObject (#302).
-func newChecksumSeam(client S3FullClient, bucket string) func(ctx context.Context, key string) (string, error) {
-	if !usableFullClient(client) {
-		return nil
-	}
-	return func(ctx context.Context, key string) (string, error) {
-		return ObjectSHA256(ctx, client, bucket, key)
-	}
+	}, nil
 }

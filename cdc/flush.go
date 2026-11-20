@@ -2,46 +2,80 @@ package cdc
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/lychee-technology/forma"
 	internalcdc "github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/cdcv2"
+	"github.com/lychee-technology/forma/internal/publication"
 	"go.uber.org/zap"
 )
 
 // Config controls change_log flushing and export behavior.
 type Config = internalcdc.CDCConfig
 
-// S3ObjectClient is the minimal S3 interface required by the flush path.
-type S3ObjectClient = internalcdc.S3ObjectClient
+// S3Client is the object API a flush writes through: every parquet object
+// and manifest generation is written once with a conditional put
+// (If-None-Match: *), and a flush gets its parent manifest. *s3.Client
+// satisfies it.
+type S3Client = internalcdc.S3Client
 
-// S3FullClient extends S3ObjectClient with manifest read/write operations.
-type S3FullClient = internalcdc.S3FullClient
-
-// FlushReport is what a flush pass reports besides its error: the schemas it
-// left unexported because the parquet tiers cannot hold them (#704). It does
-// not depend on the logger, so a runner built with NewFlushRunner(nil) still
-// sees every skip.
+// FlushReport is what a flush pass reports besides its error: what each
+// schema published (Flushed) and the schemas it left unexported because the
+// parquet tiers cannot hold them (#704). It does not depend on the logger, so
+// a runner built with NewFlushRunner(nil) still sees all of it.
 type FlushReport = internalcdc.FlushReport
+
+// SchemaFlush is what one schema's flush published: the immutable manifest
+// generations it committed through the schema's publication record, and the
+// change_log entries it marked flushed in the same transactions.
+type SchemaFlush = internalcdc.SchemaFlush
 
 // SkippedSchema is one schema a flush pass did not export, and why. Its
 // change_log rows stay unflushed, and federated reads of it are answered
 // from PostgreSQL. Skipping it does not fail the pass.
 type SkippedSchema = internalcdc.SkippedSchema
 
-// ErrManifestStoreUnwired matches a flush refused because it names no
-// ManifestTemplate, so it cannot list its delta in a manifest, while a
-// manifest-driven reader may depend on one (#474): either the run does not
-// declare GlobOnly, or it does and the schema's manifest at the default
-// location lists files. It is a configuration error, not a transient one:
-// retrying the same configuration is refused again, and the refused rows stay
-// in the hot tier. It is the same value internal/cdc returns, so errors.Is
-// matches the errors RunOnce returns.
-var ErrManifestStoreUnwired = internalcdc.ErrManifestStoreUnwired
+// ErrNoPublicationRecord matches a flush of a schema that has no publication
+// record. init-db writes the record when it registers a schema or runs the V2
+// cutover; until then nothing of the schema is flushed. It is a deployment
+// fault, not a transient one.
+var ErrNoPublicationRecord = publication.ErrNoRecord
 
-// ErrGlobOnlyWithTemplate matches a flush configuration that declares
-// GlobOnly and also names a ManifestTemplate. Like ErrManifestStoreUnwired it
-// is a configuration error that RunOnce returns before any side effect.
-var ErrGlobOnlyWithTemplate = internalcdc.ErrGlobOnlyWithTemplate
+// ErrAwaitingInit matches a flush of a schema the V2 cutover left awaiting
+// its first cdc-init: only a cdc-init publishes its first V2 generation. Run
+// cdc-init for the schema; its rows stay unflushed until then.
+var ErrAwaitingInit = publication.ErrAwaitingInit
+
+// ErrSchemaDropped matches a flush of a dropped schema whose id is not
+// registered again yet.
+var ErrSchemaDropped = publication.ErrDropped
+
+// ErrPublicationUnresolved matches a flush whose publication COMMIT went
+// without an answer and whose outcome neither the writer nor one settling
+// attempt could tell. Its marks commit with it, so its entries are flushed or
+// dirty as change_log says, and the next flush exports what is still dirty.
+var ErrPublicationUnresolved = cdcv2.ErrUnresolved
+
+// ErrBatchSizeTooLarge matches a flush configuration whose batch a
+// PostgreSQL flush cannot mark in one statement (more than
+// cdcv2.MaxMarkEntries entries). RunOnce returns it before any side effect.
+var ErrBatchSizeTooLarge = internalcdc.ErrBatchSizeTooLarge
+
+// ErrRegistryEpochsRequired refuses a flush whose Config carries no
+// RegistryEpochs, before any I/O. Read them with ReadRegistryEpochs before
+// loading the schema registry the flush is given.
+var ErrRegistryEpochsRequired = internalcdc.ErrRegistryEpochsRequired
+
+// ReadRegistryEpochs reads every schema's publication epoch on db, for
+// Config.RegistryEpochs. Call it before loading the schema registry a flush
+// is given, and again whenever that registry is loaded again: a flush refuses
+// a schema whose record is at another epoch under its schema lock, since the
+// registry may describe the schema it was before a drop. entityMain names the
+// publication tables ("entity_main" when empty).
+func ReadRegistryEpochs(ctx context.Context, db *sql.DB, entityMain string) (map[int16]int64, error) {
+	return internalcdc.ReadRegistryEpochs(ctx, db, entityMain)
+}
 
 // ErrSchemaLockLost matches a flush whose per-schema lock ended before its
 // work did: under the aurora-dsql engine, a lease the run could not renew in
@@ -112,7 +146,7 @@ func (r *FlushRunner) Close() error {
 func (r *FlushRunner) RunOnce(
 	ctx context.Context,
 	cfg Config,
-	s3Client S3ObjectClient,
+	s3Client S3Client,
 	dryRun bool,
 	schemaRegistry forma.SchemaRegistry,
 ) (FlushReport, error) {
@@ -123,11 +157,15 @@ func (r *FlushRunner) RunOnce(
 }
 
 // RunOnce performs one full CDC flush pass across all schemas with unflushed
-// rows. The report is returned alongside a schema's flush error too.
+// rows: for each it stages delta objects and an immutable manifest
+// generation, then commits the schema's publication record and the marks of
+// the flushed entries in one transaction. s3Client nil uses a client built
+// from the AWS configuration. The report is returned alongside a schema's
+// flush error too.
 func RunOnce(
 	ctx context.Context,
 	cfg Config,
-	s3Client S3ObjectClient,
+	s3Client S3Client,
 	dryRun bool,
 	logger *zap.Logger,
 	schemaRegistry forma.SchemaRegistry,

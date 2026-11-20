@@ -85,6 +85,9 @@ func TestVerifyRefusesBytesPostgreSQLDidNotCommit(t *testing.T) {
 		"an unknown file field": func() ([]byte, Ref) {
 			return reseal(t, raw, ref, func(d map[string]any) { firstFile(d)["checksum"] = "x" })
 		},
+		"a forbidden-empty flush": func() ([]byte, Ref) {
+			return reseal(t, raw, ref, func(d map[string]any) { d["files"] = []any{} })
+		},
 		"a file without a key": func() ([]byte, Ref) {
 			return reseal(t, raw, ref, func(d map[string]any) { firstFile(d)["key"] = "" })
 		},
@@ -210,4 +213,24 @@ func TestVerifyChecksLineageAndKindWhenTheReferenceNamesThem(t *testing.T) {
 
 	_, err = RecordRef(publication.Record{SchemaID: 100, Epoch: 1, State: publication.Unpublished})
 	require.ErrorIs(t, err, errNotPublished)
+}
+
+// A flush publishes its marked rows in at least one new delta object, so a
+// committed flush manifest that lists no file is refused as invalid however
+// well it is sealed, and Encode refuses to write one. An init of no
+// rows is the one empty generation the protocol has, and it verifies.
+func TestVerifyEnforcesTheFlushInventoryButAcceptsAnEmptyInit(t *testing.T) {
+	empty := testManifest(t)
+	empty.Files = []File{}
+	_, _, err := empty.Encode()
+	require.ErrorContains(t, err, "generation lists at least one file")
+
+	init := testManifest(t)
+	init.Kind = publication.KindInit
+	init.Files = []File{}
+	raw, ref := encoded(t, init)
+	m, err := Verify(raw, ref)
+	require.NoError(t, err)
+	require.Empty(t, m.Files)
+	require.Equal(t, publication.KindInit, m.Kind)
 }

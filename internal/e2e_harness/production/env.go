@@ -2,6 +2,7 @@ package production
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"math/rand"
@@ -37,17 +38,21 @@ type Env struct {
 	Pool     *pgxpool.Pool
 	Tables   model.StorageTables
 	Registry forma.SchemaRegistry
-	Metadata *schemameta.MetadataCache
-	Duck     *fedengine.DuckDBClient
-	DuckCfg  forma.DuckDBConfig
-	S3Prefix string
-	CDC      cdc.CDCConfig
+	// RegistryEpochs are the publication epochs read before Registry loaded
+	// (loadRegistry); CDC runs and factory-built managers are given them.
+	RegistryEpochs map[int16]int64
+	Metadata       *schemameta.MetadataCache
+	Duck           *fedengine.DuckDBClient
+	DuckCfg        forma.DuckDBConfig
+	S3Prefix       string
+	CDC            cdc.CDCConfig
 
-	// ParquetSourceWrap, when set before the Env's first query, decorates the
-	// manifest-driven parquet source the engine is built with — the seam for
-	// observing/pausing path resolution mid-query (#252). Mirrors the DuckCfg
-	// mutate-before-first-use pattern; nil leaves the source untouched.
-	ParquetSourceWrap func(fedengine.ParquetSource) fedengine.ParquetSource
+	// PublicationReaderWrap, when set before the Env's first query, decorates
+	// the Protocol V2 publication reader the engine is built with — the seam
+	// for observing or pausing a pass between its record read and its
+	// generation's resolution. Same mutate-before-first-use pattern; nil
+	// leaves the reader untouched.
+	PublicationReaderWrap func(fedengine.PublicationReader) fedengine.PublicationReader
 	// HotLegReaderWrap, when set before the Env's first query, decorates the
 	// pgx hot leg's reader of the hot keys and the page's hot rows — the seam
 	// for running a writer inside a pgx pass, after its snapshot is taken and
@@ -76,6 +81,12 @@ type Env struct {
 	rng            *rand.Rand
 	genOrdinal     int
 	provisionErr   error
+	// inits is the report of each schema's latest real cdc-init (RunInit),
+	// whose handoff the onboarding helpers of handoff.go check.
+	inits map[int16]cdc.SchemaInit
+	// epochPins are the publication epochs the Env's engines are built with
+	// (publicationReader), loaded once per modeled process.
+	epochPins map[int16]int64
 
 	// postgresManager memoizes PostgresEntityManager's manager.
 	postgresManager forma.EntityManager
@@ -95,7 +106,6 @@ type envOptions struct {
 	breakerFailures int
 	breakerCooldown time.Duration
 	routing         forma.RoutingStrategy
-	withoutManifest bool
 	metricEmitter   forma.MetricEmitter
 }
 
@@ -161,12 +171,6 @@ func WithRoutingStrategy(strategy forma.RoutingStrategy) EnvOption {
 	return func(o *envOptions) { o.routing = strategy }
 }
 
-// WithoutManifest disables manifest tracking (the explicit opt-out; by
-// default the Env wires a manifest template so flushes update the manifest).
-func WithoutManifest() EnvOption {
-	return func(o *envOptions) { o.withoutManifest = true }
-}
-
 // NewEnv provisions a per-test environment on the shared cluster and
 // registers cleanup. Cleanup registration order matters (LIFO): resource
 // teardown is registered first so the artifact dump (registered second, in
@@ -214,6 +218,16 @@ func NewEnv(t *testing.T, c *Cluster, opts ...EnvOption) *Env {
 	return e
 }
 
+// initializePublicationRecords writes the UNPUBLISHED publication record of
+// each of refs in one transaction, as init-db's registration does
+// (cmd/tools/init_db_records.go). Writing a record is a transition only
+// init-db may make in production (internal/publication's owners guard scans
+// every non-test file), so the harness's test files install it
+// (publication_records_test.go); a build without them fails provisioning.
+var initializePublicationRecords = func(context.Context, *pgxpool.Pool, string, []SchemaRef) error {
+	return errors.New("no publication record initializer is installed (publication_records_test.go)")
+}
+
 // provision creates the database, tables, fixture schemas, metadata caches,
 // DuckDB client, and CDC config.
 func (e *Env) provision(ctx context.Context) error {
@@ -236,16 +250,22 @@ func (e *Env) provision(ctx context.Context) error {
 	if err := RegisterSchemas(ctx, pool, DefaultSchemaFixtures()...); err != nil {
 		return err
 	}
+	// init-db writes each schema's publication record in the registry
+	// transaction; a new schema starts UNPUBLISHED and reads hot-only
+	// (docs/publication-protocol-v2.md, "Lifecycle of the row").
+	if err := initializePublicationRecords(ctx, pool, e.Tables.EntityMain, DefaultSchemaFixtures()); err != nil {
+		return fmt.Errorf("initialize the fixtures' publication records: %w", err)
+	}
 	// init-db records generation 1 of each schema it registers (#733).
 	if err := ledgertest.Seed(ctx, pool, e.Tables.SchemaRegistry, schemaDir); err != nil {
 		return fmt.Errorf("record the fixtures' generation: %w", err)
 	}
 
-	registry, err := schemameta.NewFileSchemaRegistryContext(ctx, pool, e.Tables.SchemaRegistry, schemaDir)
+	registry, epochs, err := e.loadRegistry(ctx, pool, schemaDir)
 	if err != nil {
 		return fmt.Errorf("build schema registry: %w", err)
 	}
-	e.Registry = registry
+	e.setRegistry(registry, epochs)
 	if err := applyDeclaredIndexes(ctx, pool, e.Tables.EntityMain, registry); err != nil {
 		return fmt.Errorf("provision database %s: %w", e.DBName, err)
 	}
@@ -286,11 +306,8 @@ func (e *Env) startDuckDB() error {
 		MaxConnections: e.opts.duckMaxConns,
 		MaxParallelism: e.opts.duckThreads,
 		QueryTimeout:   60 * time.Second,
-		// The production harness drives federated reads through the
-		// engine-level S3ParquetPathTemplate hint, scoped to the cluster
-		// bucket (#456, #477). Setting S3Bucket without ManifestTemplate stays
-		// inert for manifest reads (ManifestReadEnabled gates on the template
-		// only).
+		// The publication reader fetches manifests from, and DuckDB reads
+		// the objects they list in, the cluster bucket.
 		S3Bucket: c.Bucket,
 	}
 	e.DuckCfg.Routing.Strategy = e.opts.routing
@@ -328,14 +345,9 @@ func (e *Env) buildCDCConfig() cdc.CDCConfig {
 		S3UsePath:         true,
 		S3AccessKeyID:     c.S3AccessKey,
 		S3SecretAccessKey: c.S3SecretKey,
-	}
-	if e.opts.withoutManifest {
-		// A template-less flush must declare that no reader uses a
-		// manifest (#474); this Env's reads glob.
-		cfg.GlobOnly = true
-	} else {
-		cfg.ManifestPrefix = e.S3Prefix
-		cfg.ManifestTemplate = "manifest/{{.SchemaID}}.json"
+		// The epochs read before e.Registry loaded (loadRegistry): every run
+		// is given the registry they belong to.
+		RegistryEpochs: e.RegistryEpochs,
 	}
 	return cfg
 }
@@ -358,10 +370,10 @@ func (e *Env) redactedPGDSN() string {
 const redactedPassword = "REDACTED"
 
 // ParquetURI renders a bucket-relative object key as the s3:// URI DuckDB
-// reads. The key is used verbatim, leading slash included: a relative manifest
-// path is the object key byte for byte, and under an empty data prefix that
-// key is /1/<uuid>.parquet (docs/federated-query/design.md §4.3.1, #516).
-// Trimming the slash would name a sibling key the writer never produced.
+// reads. The key is used verbatim, leading slash included: a manifest lists
+// the object key byte for byte, and under an empty data prefix that key starts
+// with "/" (manifestv2.Layout). Trimming the slash would name a sibling key
+// the writer never produced.
 func (e *Env) ParquetURI(key string) string {
 	return fmt.Sprintf("s3://%s/%s", e.Cluster.Bucket, key)
 }

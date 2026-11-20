@@ -334,14 +334,15 @@ old process convert a bound column's value instead:
   EAV-only `smallint`/`integer` exports at storage width, DOUBLE
   (`castEAVValue`), so such a run converts nothing.
 
-**Implemented (#733):** no value a CDC run read after an apply leaves its
-`_tmp` key. After each batch's export and before its copy to the
-final key, `cdc-flush` and `cdc-init` read the active generation again. If it
-differs from the generation the run started under, the run stops with an
-error before that batch's copy, manifest change or mark. Its rows stay dirty
-for a run on the new declaration, and the `_tmp` object is left to
-`manifest-reconcile --gc`. Batches copied earlier passed the same read, so
-they hold only values written before the apply, which the new type admits. Any new generation
+**Implemented (#733):** no value a CDC run read after an apply becomes
+publishable. After each object's export to its local scratch file and before
+it is staged under its write-once key, `cdc-flush` and `cdc-init` read the
+active generation again. If it differs from the generation the run started
+under, the run stops with an error before that object is staged, before any
+manifest generation is published and before any mark (#896). Its rows stay
+dirty for a run on the new declaration. Objects staged earlier passed the same
+read, so they hold only values written before the apply, which the new type
+admits. Any new generation
 stops a run, including one that only adds an attribute. Each run also checks
 the active generation at its start, so a long-lived process (the CDC runner, a
 warm Lambda) does not begin a run on a superseded declaration. Pinned by
@@ -494,11 +495,13 @@ start on that release, with the `SCHEMA_DIR` the deployment runs today:
    reports what the baseline would refuse, so the data can be corrected
    before the outage.
 3. **Baseline.** Run `baseline-schema` with the deployment's `-schema-dir`
-   and either `--s3-bucket` and `--manifest-template` (the server's DuckDB
-   manifest settings) or `--no-parquet-tier` when there is no lakehouse tier.
+   and either `--s3-bucket` (the server's `DUCKDB_S3_BUCKET`) or
+   `--no-parquet-tier` when there is no lakehouse tier.
    It audits Postgres with the width, `numeric` and storage-domain censuses,
    and decodes every live parquet object in full and checks it with a domain
-   scan. It refuses, recording nothing, when stored data contradicts the
+   scan. The live objects are the ones a federated read scans: each schema's
+   published generation (`docs/publication-protocol-v2.md`); a schema whose
+   record is not `PUBLISHED` has none. It refuses, recording nothing, when stored data contradicts the
    declaration or cannot be read. Correct the data or the declaration and
    run it again; converting stored values is a migration (#730). `--dry-run`
    reports the audit without recording. On DSQL, pass the IAM token as the

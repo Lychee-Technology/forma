@@ -42,7 +42,7 @@ func TestPublishedPassWithoutAParquetLegNeedsNoDuckDBAdmission(t *testing.T) {
 				ctx := context.Background()
 				f := newPgxFixture(t, hotRows(5))
 				pub := seed()
-				e, duck, _ := publishedEngine(t, f, pub)
+				e, duck := publishedEngine(t, f, pub)
 				e.breaker = openBreaker()
 				if noClient {
 					e.duck = nil
@@ -83,7 +83,7 @@ func TestPublishedPassUnderAnOpenBreaker(t *testing.T) {
 	t.Run("a publication fault", func(t *testing.T) {
 		f := newPgxFixture(t, tieRunRows())
 		pub := &fakePublication{recErr: &PublicationConsistencyError{SchemaID: parquetOnlySchemaID, Epoch: 2, Generation: 5, Err: errors.New("schema dropped")}}
-		e, duck, _ := publishedEngine(t, f, pub)
+		e, duck := publishedEngine(t, f, pub)
 		e.breaker = openBreaker()
 		rec := recordDegradedFallbacks(e)
 
@@ -96,7 +96,7 @@ func TestPublishedPassUnderAnOpenBreaker(t *testing.T) {
 	t.Run("a generation that lists objects", func(t *testing.T) {
 		f := newPgxFixture(t, tieRunRows())
 		pub := publishedOver(filepath.Join(f.dir, "base.parquet"))
-		e, duck, _ := publishedEngine(t, f, pub)
+		e, duck := publishedEngine(t, f, pub)
 		e.breaker = openBreaker()
 
 		_, _, err := e.ExecuteDuckDBFederatedQuery(context.Background(), tieRunTables, pgxQuery(), 5, 0, nil, nil)
@@ -124,7 +124,7 @@ func TestPublishedPassRefusesAListedAddressDuckDBWouldExpand(t *testing.T) {
 			f := newPgxFixture(t, tieRunRows())
 			f.writeParquet(t, "unlisted.parquet", []pgxRow{{i: 40, createdAt: 900, age: ageOf(99), parquet: true}})
 			pub := publishedOver(filepath.Join(f.dir, "base.parquet"), filepath.Join(f.dir, listed))
-			e, duck, _ := publishedEngine(t, f, pub)
+			e, duck := publishedEngine(t, f, pub)
 			e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
 			rec := recordDegradedFallbacks(e)
 
@@ -139,6 +139,42 @@ func TestPublishedPassRefusesAListedAddressDuckDBWouldExpand(t *testing.T) {
 			require.Zero(t, pub.probes)
 			require.Empty(t, rec.take())
 			require.Empty(t, rec.transitions)
+		})
+	}
+}
+
+// A listed address with a `.` or `..` segment names, as the writer stored
+// it, another object than the one DuckDB would address after normalizing the
+// path. The pass refuses the generation with the typed error before any
+// DuckDB statement: nothing is read or probed, nothing degrades, and the
+// breaker hears nothing.
+func TestPublishedPassRefusesAListedAddressDuckDBWouldNormalize(t *testing.T) {
+	for name, listed := range map[string]string{
+		"dot":        "./base.parquet",
+		"dot dot":    "sub/../base.parquet",
+		"s3 dot dot": "s3://bucket/data/../1/e1/base/x.parquet",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newPgxFixture(t, tieRunRows())
+			path := listed
+			if !strings.HasPrefix(listed, "s3://") {
+				path = f.dir + "/" + listed
+			}
+			pub := publishedOver(path)
+			e, duck := publishedEngine(t, f, pub)
+			e.breaker = NewCircuitBreaker(1, time.Minute, time.Hour)
+			rec := recordDegradedFallbacks(e)
+
+			_, err := e.Query(context.Background(), tieRunTables, pgxQuery(), &model.FederatedQueryOptions{AllowPartialDegradedMode: true})
+			require.ErrorIs(t, err, ErrPublicationInconsistent)
+			require.ErrorIs(t, err, ErrPublishedPathNotCanonical)
+			require.NotErrorIs(t, err, ErrFederatedReadFailed)
+			require.ErrorContains(t, err, listed)
+			require.Zero(t, duck.statements(), "no listing and no read")
+			require.Zero(t, pub.probes)
+			require.Empty(t, rec.take())
+			require.Empty(t, rec.transitions)
+			require.False(t, e.breaker.IsOpen())
 		})
 	}
 }
@@ -159,7 +195,7 @@ func TestPublishedPassPlanReportsStagingOnlyWithAParquetLeg(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newPgxFixture(t, tieRunRows())
-			e, _, _ := publishedEngine(t, f, c.seed(f))
+			e, _ := publishedEngine(t, f, c.seed(f))
 			opts := &model.FederatedQueryOptions{IncludeExecutionPlan: true}
 			_, _, err := e.ExecuteDuckDBFederatedQuery(context.Background(), tieRunTables, pgxQuery(), 5, 0, nil, opts)
 			require.NoError(t, err)

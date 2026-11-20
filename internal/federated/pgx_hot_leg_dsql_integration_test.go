@@ -21,8 +21,7 @@ import (
 )
 
 // The pgx hot leg's PostgreSQL reads on the aurora-dsql test target (#691):
-// the snapshot's dirty set in both forms and its parquet-history answer, the
-// hot-keys query and the page read, each through a federated pass under
+// the snapshot's dirty set, the hot-keys query and the page read, each through a federated pass under
 // HotLegTransport = pgx, with the parquet leg on a local file. FORMA_DSQL_DSN
 // names a cluster, and with FORMA_DSQL_TARGET=ministack MiniStack's strict
 // proxy (docs/dsql-ministack.md). Without either they run on the integration
@@ -50,8 +49,8 @@ type dsqlHotLegEntry struct {
 
 func (r dsqlHotLegRow) id() uuid.UUID { return parquetOnlyRowID(r.i) }
 
-// dsqlHotLegRows covers every case a pass tells apart. now places the
-// recently flushed row's mark after the flush-grace cutoff.
+// dsqlHotLegRows covers every case a pass tells apart. now is the recently
+// flushed row's mark.
 func dsqlHotLegRows(now int64) map[string]dsqlHotLegRow {
 	flushed := []dsqlHotLegEntry{{flushedAt: 1, changedAt: 100}}
 	return map[string]dsqlHotLegRow{
@@ -66,7 +65,8 @@ func dsqlHotLegRows(now int64) map[string]dsqlHotLegRow {
 			entries: []dsqlHotLegEntry{{flushedAt: 1, changedAt: 100}, {changedAt: 300, deleted: true}}},
 		// Written and never flushed.
 		"new": {i: 5, name: "n5", tag: "dev", age: 32, main: true, entries: []dsqlHotLegEntry{{changedAt: 400}}},
-		// Marked within the flush grace: the hot form's widening serves it hot.
+		// Flushed just now: the generation holds it, and nothing widens the
+		// dirty set, so it is served from parquet.
 		"recent": {i: 6, name: "r6", tag: "ops", age: 35, parquet: true, main: true,
 			entries: []dsqlHotLegEntry{{flushedAt: now, changedAt: 500}}},
 	}
@@ -150,10 +150,11 @@ func (f *dsqlHotLegFixture) writeParquet(t *testing.T) string {
 	return path
 }
 
-// isHot reports whether a pass's hot form serves r from PostgreSQL.
+// isHot reports whether a pass serves r from PostgreSQL: r has an unflushed
+// entry.
 func (f *dsqlHotLegFixture) isHot(r dsqlHotLegRow) bool {
 	for _, e := range r.entries {
-		if e.flushedAt == 0 || e.flushedAt == f.now {
+		if e.flushedAt == 0 {
 			return true
 		}
 	}
@@ -178,28 +179,18 @@ func (f *dsqlHotLegFixture) engine(t *testing.T) *DBFederatedQueryEngine {
 	repo := internal.NewDBPersistentRecordRepository(f.pool, meta, engine)
 	cfg := pgxDuckConfig()
 	require.Equal(t, forma.HotLegTransportPgx, cfg.HotLegTransport)
-	// The grace puts "recent"'s mark after the pass's cutoff.
-	cfg.FlushVisibilityGraceMs = time.Minute.Milliseconds()
 	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, NewDuckDBClientQueryExecutor(&DuckDBClient{DB: f.duck}), nil,
-		cfg, meta, WithParquetSource(&fakeParquetSource{paths: []string{f.path}}), WithPgxHotLeg(f.pool, repo))
+		cfg, meta, withParquetSource(&fakeParquetSource{paths: []string{f.path}}), WithPgxHotLeg(f.pool, repo))
 }
 
-// The snapshot reads: the hot form widens the strict set by the rows marked
-// at or after the cutoff, and the flushed entries are parquet history.
+// The snapshot reads the strict dirty set: the rows with an unflushed entry.
 func TestDSQLHotLegSnapshotReadsTheDirtySet(t *testing.T) {
 	f := newDSQLHotLegFixture(t)
-	fetcher := NewPostgresDirtyIDFetcher(f.pool)
-	read := func(form DirtySetForm) ChangeLogSnapshot {
-		t.Helper()
-		snap, err := fetcher.ReadChangeLogSnapshot(f.ctx, ChangeLogSnapshotRequest{
-			Tables: f.tables, SchemaID: parquetOnlySchemaID, Form: form, GraceCutoffMs: f.now - 1_000, ParquetHistory: true,
-		})
-		require.NoError(t, err)
-		require.True(t, snap.HasParquetHistory, "the schema has flushed entries")
-		return snap
-	}
-	require.ElementsMatch(t, f.ids("updated", "deleted", "new"), read(DirtySetHotExcluded).DirtyIDs)
-	require.ElementsMatch(t, f.ids("updated", "deleted", "new", "recent"), read(DirtySetHot).DirtyIDs)
+	snap, err := NewPostgresDirtyIDFetcher(f.pool).ReadChangeLogSnapshot(f.ctx, ChangeLogSnapshotRequest{
+		Tables: f.tables, SchemaID: parquetOnlySchemaID,
+	})
+	require.NoError(t, err)
+	require.ElementsMatch(t, f.ids("updated", "deleted", "new"), snap.DirtyIDs)
 }
 
 // A pass answers every live row once, the dirty ones as the snapshot holds

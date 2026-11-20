@@ -201,39 +201,11 @@ func TestPgxPassHotExcludedFormReadsTheStrictSet(t *testing.T) {
 	q.PreferredTiers = []model.DataTier{model.DataTierWarm, model.DataTierCold}
 	records, total, err := e.ExecuteDuckDBFederatedQuery(context.Background(), tieRunTables, q, 20, 0, nil, nil)
 	require.NoError(t, err)
-	require.Equal(t, DirtySetHotExcluded, f.leg.lastChangeLog.Form)
+	require.Equal(t, ChangeLogSnapshotRequest{Tables: tieRunTables, SchemaID: parquetOnlySchemaID}, f.leg.lastChangeLog)
 	require.Nil(t, f.leg.lastHotKeys, "a hot-excluded pass has no hot leg")
 	want := []uuid.UUID{parquetOnlyRowID(10), parquetOnlyRowID(11), parquetOnlyRowID(5), parquetOnlyRowID(6), parquetOnlyRowID(8), parquetOnlyRowID(1)}
 	require.Equal(t, want, recordIDs(records))
 	require.Equal(t, int64(len(want)), total)
-}
-
-// The cutoff (#252, design.md §6.1): a negative grace, from the config or
-// from WithFlushVisibilityGrace, reads as 0, so the cutoff is the
-// path-resolution instant and the widening is never disabled.
-func TestPgxPassCutoffNeverDisablesTheWidening(t *testing.T) {
-	const resolvedAt = int64(1_700_000_000_000)
-	build := func(grace int64) *DBFederatedQueryEngine {
-		cfg := hybridDuckConfig()
-		cfg.FlushVisibilityGraceMs = grace
-		return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil, cfg, nil)
-	}
-	require.Equal(t, resolvedAt, build(-1).passCutoffMs(resolvedAt))
-	require.Equal(t, resolvedAt-250, build(250).passCutoffMs(resolvedAt), "a positive margin applies")
-	withOption := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, nil, nil,
-		forma.DuckDBConfig{}, nil, WithFlushVisibilityGrace(-time.Second))
-	require.Equal(t, resolvedAt, withOption.passCutoffMs(resolvedAt))
-
-	// The pass's snapshot reads the widened set at that cutoff.
-	f := newPgxFixture(t, tieRunRows())
-	e := f.engine(t, []string{f.dir + "/base.parquet"})
-	e.flushVisibilityGraceMs = -1
-	clock := &fakeClock{t: time.UnixMilli(resolvedAt)}
-	e.now = clock.now
-	_, _, err := e.ExecuteDuckDBFederatedQuery(context.Background(), tieRunTables, pgxQuery(), 5, 0, nil, nil)
-	require.NoError(t, err)
-	require.Equal(t, DirtySetHot, f.leg.lastChangeLog.Form)
-	require.Equal(t, resolvedAt, f.leg.lastChangeLog.GraceCutoffMs)
 }
 
 // Past HotLegMaxDirtyRows the pass fails as a degradable read failure before

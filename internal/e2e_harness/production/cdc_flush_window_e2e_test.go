@@ -8,26 +8,20 @@ import (
 	"testing"
 )
 
-// TestFlushManifestWindowVisibility pins issue #252: a federated query landing
-// between a flush's mark-flushed and its manifest-append must still see the
-// batch's rows. Under the pre-#252 ordering (copy -> mark -> append) the batch
-// was transiently invisible in every tier: the rows had left the hot tier
-// (flushed_at != 0 excludes them from the dirty set and the hot leg) while the delta
-// was not yet listed in the manifest the reader resolves paths from.
+// TestFlushManifestWindowVisibility pins issue #252 on Protocol V2: a
+// federated query landing while a flush has staged its objects and its
+// manifest, but not yet committed the generation and its marks, must still
+// see the batch's rows from the hot tier. Under V1 the batch could be
+// transiently invisible in every tier; under V2 nothing a reader sees moves
+// before the commit that publishes the generation and marks the rows.
 //
-// The probe needs a NON-EMPTY manifest: a never-flushed schema falls back to
-// the legacy glob (QuerySource.Fallback), which sees the copied final object
-// regardless of manifest state — the window only exists for manifest-driven
-// reads. So generation 1 flushes cleanly first, then generation 2's flush is
-// held open at its manifest PutObject while the query probes the window.
+// Generation 1 flushes cleanly first, so the reader resolves a published
+// generation, then generation 2's flush is held open at its manifest
+// PutObject while the query probes the window.
 func TestFlushManifestWindowVisibility(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t))
-	// A configured #252 clock-skew margin could also serve the window (see
-	// cdc_flush_grace_e2e_test.go); disable the read-side widening so this
-	// test pins the write-side ordering fix in isolation.
-	env.DuckCfg.FlushVisibilityGraceMs = -1
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
 
 	gen1 := buildOpenCreates(wide, 4)
@@ -57,7 +51,7 @@ func TestFlushManifestWindowVisibility(t *testing.T) {
 
 	// Hold the flush open at its manifest PutObject. The reader must keep
 	// seeing all 8 rows through the whole pipeline, including this window.
-	pauser := NewPausingS3OnKey(env.Cluster.S3, S3OpPut, "manifest/")
+	pauser := NewPausingS3OnKey(env.Cluster.S3, S3OpPut, "/_manifests/")
 	report, err := runFlushPausedOn(ctx, t, env, pauser, func() {
 		// The probe bypasses the oracle helper on purpose: the red signal is
 		// a crisp row count, not an artifact-dumping diff. It must route to

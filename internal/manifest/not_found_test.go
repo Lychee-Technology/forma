@@ -153,19 +153,6 @@ func TestLoadOrCreate_NoSuchBucketSurfaces(t *testing.T) {
 	require.Equal(t, "NoSuchBucket", apiErr.ErrorCode())
 }
 
-func TestQuerySource_StoreFailureDoesNotFallBackToGlob(t *testing.T) {
-	store := &S3Store{Client: &failingGetClient{getErr: noSuchBucketErr()}, Bucket: "bkt"}
-	src := testQuerySource(store)
-	src.Fallback = func(schemaID int16) string { return fmt.Sprintf("s3://bkt/p/%d/*.parquet", schemaID) }
-
-	paths, _, err := src.Paths(context.Background(), 7)
-	require.Error(t, err, "a failed manifest load must fail the read, not take the glob")
-	require.Nil(t, paths)
-	var apiErr smithy.APIError
-	require.ErrorAs(t, err, &apiErr)
-	require.Equal(t, "NoSuchBucket", apiErr.ErrorCode())
-}
-
 func TestFSStoreLoad_MissingFileIsNotFound(t *testing.T) {
 	store := &FSStore{Root: fstest.MapFS{}}
 

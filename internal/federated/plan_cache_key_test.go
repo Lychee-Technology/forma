@@ -34,7 +34,7 @@ func newPlanKeyEngine(mc *schemameta.MetadataCache, withCache bool) *planKeyEngi
 		opts = append(opts, WithPlanCache(pe.cache))
 	}
 	pe.e = NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, pe.duck, nil,
-		hybridDuckConfig(), mc, append(opts, withFakeHotLeg(nil))...)
+		hybridDuckConfig(), mc, append(opts, withFakeHotLeg(nil), withParquetSource(&fakeParquetSource{paths: []string{"s3://b/bench/100/base.parquet"}}))...)
 	return pe
 }
 
@@ -44,7 +44,6 @@ func (pe *planKeyEngine) run(t *testing.T, cond forma.Condition) planKeyRender {
 	pe.duck.lastSQL, pe.duck.lastArgs = "", nil
 	q := &model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 100, Limit: 25, Condition: cond}}
 	q.PreferredTiers = []model.DataTier{model.DataTierHot, model.DataTierCold}
-	q.DuckDBHints = &model.DuckDBRenderHints{S3ParquetPathTemplate: "s3://b/bench/{schema_id}/base.parquet"}
 	tables := model.StorageTables{EntityMain: "entity_main_b", EAVData: "eav_b", ChangeLog: "cl_b"}
 	_, _, err := pe.e.ExecuteDuckDBFederatedQuery(t.Context(), tables, q, 25, 0, nil, nil)
 	if err != nil {

@@ -46,7 +46,7 @@ func TestParquetPermission_BadCredentials(t *testing.T) {
 	if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
 		t.Fatalf("credential rejection must classify as ErrFederatedReadFailed, got: %v", err)
 	}
-	if errors.Is(err, fedengine.ErrParquetSetInconsistent) {
+	if errors.Is(err, fedengine.ErrPublicationInconsistent) {
 		t.Errorf("objects exist; credential rejection must not classify as manifest inconsistency: %v", err)
 	}
 

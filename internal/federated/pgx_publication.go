@@ -4,26 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/lychee-technology/forma"
 )
 
-// The Protocol V2 source of a pgx pass (docs/publication-protocol-v2.md,
-// "Readers"). An engine built WithPublicationReader resolves what its parquet
-// leg scans inside the pass's snapshot: the publication record is the
-// snapshot's first statement, so the generation the pass scans and the dirty
-// set it discards come from one snapshot (Invariant R). No glob is listed, no
-// manifest.json is read, and the flush-grace widening (#252) and the
-// parquet-history probe (#720) have nothing left to make up for.
-//
-// The seam is dormant until #896: no production caller passes
-// WithPublicationReader, so every engine resolves its path set as before
-// (pgx_scan_sources.go). Its implementation lives in internal/federatedv2,
-// which the guard in internal/publication keeps out of every binary.
+// The parquet source of a pgx pass (docs/publication-protocol-v2.md,
+// "Readers"). Every pass resolves what its parquet leg scans inside its
+// snapshot, through the engine's PublicationReader: the publication record is
+// the snapshot's first statement, so the generation the pass scans and the
+// dirty set it discards come from one snapshot (Invariant R). No glob is
+// listed, and the dirty set is the strict one: a generation read in the
+// snapshot holds every row the snapshot shows flushed, so nothing widens the
+// barrier. The reader's implementation is internal/federatedv2's Source,
+// which the factory wires whenever DuckDB is enabled.
 
 // DefaultPublishedPassDeadline is R_max, the pass deadline of a published read
 // when WithPublicationReader is given none. Garbage collection keeps a
@@ -34,8 +31,9 @@ import (
 // bounds a deployment that raised or disabled it.
 const DefaultPublishedPassDeadline = 60 * time.Second
 
-// PublicationReader resolves a published pass's parquet source. Its
-// implementation is internal/federatedv2's Source.
+// PublicationReader resolves a pass's parquet source. Its implementation is
+// internal/federatedv2's Source. An engine without one fails every pass as
+// misconfigured, before it reads anything.
 type PublicationReader interface {
 	// ReadRecord reads schemaID's publication record on tx, the pass's
 	// REPEATABLE READ snapshot, as the snapshot's first statement. A record
@@ -91,7 +89,9 @@ type PublishedGeneration struct {
 // WithPublicationReader makes every pgx pass of the engine resolve its
 // parquet source from the publication record in its snapshot (Protocol V2),
 // under a pass deadline of deadline, or DefaultPublishedPassDeadline when it
-// is not positive. Nothing passes it before #896.
+// is not positive. A pass of an engine built without it fails as
+// misconfigured, non-degradably: without the record no pass can tell a
+// schema whose rows are all hot from one whose parquet it would drop.
 func WithPublicationReader(r PublicationReader, deadline time.Duration) EngineOption {
 	return func(e *DBFederatedQueryEngine) {
 		if r == nil {
@@ -105,65 +105,26 @@ func WithPublicationReader(r PublicationReader, deadline time.Duration) EngineOp
 }
 
 // ErrPublicationInconsistent marks a published read whose publication state
-// cannot be answered from: no record, a record that is AWAITING_INIT or
-// DROPPED or at an epoch the process did not pin, a manifest that is missing
-// or is not the one PostgreSQL committed, or a listed object the store does
-// not hold. It is a read-path consistency error, never a 4xx: it is not
-// degradable, since a PostgreSQL-only answer would drop every row the parquet
-// tiers hold, it is never charged to the circuit breaker, which measures
-// DuckDB's health, and it is never ErrFederatedReadFailed.
-var ErrPublicationInconsistent = errors.New("publication state inconsistent")
+// cannot be answered from. It is forma.ErrPublicationInconsistent, defined in
+// the root package so that embedders and internal/httpapi can match it: no
+// record, a record that is AWAITING_INIT or DROPPED or at an epoch the process
+// did not pin, a manifest that is missing or is not the one PostgreSQL
+// committed, or a listed object the store does not hold. It is a read-path
+// consistency error, never a 4xx: it is not degradable, since a
+// PostgreSQL-only answer would drop every row the parquet tiers hold, it is
+// never charged to the circuit breaker, which measures DuckDB's health, and it
+// is never ErrFederatedReadFailed.
+var ErrPublicationInconsistent = forma.ErrPublicationInconsistent
 
 // PublicationConsistencyError names the schema, the epoch and the generation
-// of a published read's consistency failure. MissingKeys are storage keys,
-// operator detail that the HTTP boundary keeps out of response bodies with
-// every internal-class error.
-type PublicationConsistencyError struct {
-	SchemaID   int16
-	Epoch      int64
-	Generation int64
-	// MissingKeys lists the generation's objects the store does not hold,
-	// when that is the fault.
-	MissingKeys []string
-	// Err is the fault.
-	Err error
-}
+// of a published read's consistency failure (forma.PublicationConsistencyError).
+// MissingKeys are storage keys, operator detail that the HTTP boundary keeps
+// out of response bodies.
+type PublicationConsistencyError = forma.PublicationConsistencyError
 
-func (e *PublicationConsistencyError) Error() string {
-	msg := fmt.Sprintf("schema %d epoch %d generation %d: %v", e.SchemaID, e.Epoch, e.Generation, e.Err)
-	if len(e.MissingKeys) > 0 {
-		msg += fmt.Sprintf(": %d listed object(s) missing from storage: %s", len(e.MissingKeys), strings.Join(e.MissingKeys, ", "))
-	}
-	return msg
-}
-
-func (e *PublicationConsistencyError) Unwrap() []error {
-	return []error{ErrPublicationInconsistent, e.Err}
-}
-
-// noGraceCutoffMs is a published pass's dirty-window cutoff: no entry is
-// marked at or after it, so the hot keys' window is the unflushed entries
-// alone. The generation is read in the snapshot, so a row marked flushed in it
-// is in the generation, and nothing widens the barrier.
-const noGraceCutoffMs = math.MaxInt64
-
-// published reports whether the pass resolves its source from the record.
-func (p *pgxPass) published() bool { return p.e.publication != nil }
-
-// graceCutoffMs is the cutoff of the pass's dirty window.
-func (p *pgxPass) graceCutoffMs() int64 {
-	if p.published() {
-		return noGraceCutoffMs
-	}
-	return p.src.graceCutoffMs
-}
-
-// armDeadline bounds a published pass by R_max from t0, before its snapshot
-// begins. The cancel is the caller's to defer.
+// armDeadline bounds a pass by R_max from t0, before its snapshot begins.
+// The cancel is the caller's to defer.
 func (p *pgxPass) armDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
-	if !p.published() {
-		return ctx, func() {}
-	}
 	return context.WithTimeoutCause(ctx, p.e.publishedPassDeadline, ErrPassDeadline)
 }
 
@@ -208,7 +169,7 @@ func (p *pgxPass) resolveGeneration(ctx context.Context) error {
 	if err := p.admitPublishedScan(ctx); err != nil {
 		return err
 	}
-	p.src = pgxScanSources{scanSources: scanSources{paths: gen.Paths, fromSource: true, graceCutoffMs: noGraceCutoffMs}}
+	p.src = scanSources{paths: gen.Paths}
 	return p.checkPublishedObjects(ctx)
 }
 
@@ -220,29 +181,45 @@ func (p *pgxPass) resolveGeneration(ctx context.Context) error {
 // before any DuckDB work, as a PublicationConsistencyError.
 var ErrPublishedPathNotConcrete = errors.New("the generation lists an object whose address DuckDB would expand as a glob")
 
+// ErrPublishedPathNotCanonical is the fault of a generation that lists an
+// object whose address holds a `.` or `..` segment (forma.HasDotPathSegment).
+// The writer stored the object under the key as spelled, while DuckDB
+// normalizes the segment away and would address another object. The pass
+// refuses the generation before any DuckDB work, as a
+// PublicationConsistencyError: the committed inventory is not what a read can
+// address, and a PostgreSQL-only answer would drop its rows.
+var ErrPublishedPathNotCanonical = errors.New("the generation lists an object whose address DuckDB would normalize to another object")
+
 // refuseGlobPaths refuses a generation that lists an address DuckDB would
-// expand: every listed object must reach DuckDB as one concrete object.
+// not read as written: every listed object must reach DuckDB as one concrete
+// object, under the key the writer stored it at.
 func refuseGlobPaths(gen PublishedGeneration) error {
-	var globs []string
+	var globs, dotted []string
 	for _, path := range gen.Paths {
-		if strings.ContainsAny(path, forma.ParquetGlobMetacharacters) {
+		switch {
+		case strings.ContainsAny(path, forma.ParquetGlobMetacharacters):
 			globs = append(globs, path)
+		case forma.HasDotPathSegment(path):
+			dotted = append(dotted, path)
 		}
 	}
-	if len(globs) == 0 {
+	var err error
+	switch {
+	case len(globs) > 0:
+		err = fmt.Errorf("%w: %s", ErrPublishedPathNotConcrete, strings.Join(globs, ", "))
+	case len(dotted) > 0:
+		err = fmt.Errorf("%w: %s", ErrPublishedPathNotCanonical, strings.Join(dotted, ", "))
+	default:
 		return nil
 	}
 	return &PublicationConsistencyError{
-		SchemaID: gen.SchemaID, Epoch: gen.Epoch, Generation: gen.Generation,
-		Err: fmt.Errorf("%w: %s", ErrPublishedPathNotConcrete, strings.Join(globs, ", ")),
+		SchemaID: gen.SchemaID, Epoch: gen.Epoch, Generation: gen.Generation, Err: err,
 	}
 }
 
-// admitPublishedScan applies to a published pass the DuckDB admission a V1
-// pass meets on entry (StreamDuckDBFederatedQuery): DuckDB must be there,
-// and the breaker must admit the scan, reserving its half-open probe. A
-// published pass meets it only here, once its snapshot's generation lists
-// objects to scan. A pass without a parquet leg, unpublished or over an
+// admitPublishedScan is a pass's DuckDB admission: DuckDB must be there,
+// and the breaker must admit the scan, reserving its half-open probe. A pass
+// meets it only here, once its snapshot's generation lists objects to scan. A pass without a parquet leg, unpublished or over an
 // empty generation, needs no DuckDB, so DuckDB's health never refuses it,
 // and a record the pass must fail closed on is refused before admission can
 // answer for it with a degradable rejection.
@@ -260,9 +237,9 @@ func (p *pgxPass) admitPublishedScan(ctx context.Context) error {
 	return nil
 }
 
-// checkPublishedObjects runs the pre-read checks the V1 resolution runs
-// (resolvePgxScanSources): the objects cached as corrupt (#722), then the
-// schema and type checks (#189, #732), with the manifest's columns as stamps.
+// checkPublishedObjects runs the pre-read checks over the generation's
+// objects: the objects cached as corrupt (#722), then the schema and type
+// checks (#189, #732), with the manifest's columns as stamps.
 func (p *pgxPass) checkPublishedObjects(ctx context.Context) error {
 	e := p.e
 	if corrupt := e.corruptPaths.Cached(p.gen.Paths); len(corrupt) > 0 {
@@ -271,7 +248,7 @@ func (p *pgxPass) checkPublishedObjects(ctx context.Context) error {
 	if isBenchmarkSchemaID(p.q.SchemaID) {
 		return nil
 	}
-	cold, err := e.validateScanSet(ctx, p.q.SchemaID, p.gen.Paths, true, p.gen.Columns)
+	cold, err := e.validateScanSet(ctx, p.q.SchemaID, p.gen.Paths, p.gen.Columns)
 	var unverified *unverifiedParquetError
 	if errors.As(err, &unverified) {
 		return e.failDuckDBScan(ctx, p.q, p.scan(), err, "pre-read parquet type verification")

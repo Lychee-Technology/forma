@@ -94,19 +94,29 @@ func (r Record) Readable() error {
 }
 
 // insertSQL writes a record that does not exist yet, at epoch 1 and
-// generation 0, in the state $3. A record that exists is left alone, so
-// running registration again never resets a schema.
-const insertSQL = `INSERT INTO %s (schema_id, epoch, state, generation, parent_generation,
+// generation 0, in the state $3, for an id that never had a lifecycle epoch
+// (the epoch table %[2]s). A record that exists is left alone, so running
+// registration again never resets a schema, and so is an id whose record was
+// lost: epoch 1 is one of its old epochs.
+const insertSQL = `INSERT INTO %[1]s (schema_id, epoch, state, generation, parent_generation,
 		manifest_key, manifest_sha256, lineage, cas_token, updated_at, gc_horizon)
-	VALUES ($1, 1, $3, 0, 0, '', '', NULL, $2, ` + sqlgen.ServerTimeMillisSQL + `, 0)
+	SELECT $1, 1, $3, 0, 0, '', '', NULL, $2::uuid, ` + sqlgen.ServerTimeMillisSQL + `, 0
+	WHERE NOT EXISTS (SELECT 1 FROM %[2]s WHERE schema_id = $1)
 	ON CONFLICT (schema_id) DO NOTHING`
+
+// insertedSQL tells, after insertSQL wrote nothing, whether the record exists
+// and the id's lifecycle epoch, 0 when it has none.
+const insertedSQL = `SELECT EXISTS (SELECT 1 FROM %[1]s WHERE schema_id = $1),
+	COALESCE((SELECT epoch FROM %[2]s WHERE schema_id = $1), 0)`
 
 // Initialize writes a newly registered schema's record, unpublished, on tx,
 // the registration transaction that inserts the schema's registry row, and
 // answers whether it wrote one. A record that exists is left as it is: a
 // DROPPED one stays dropped until Activate. Registration and the V2 cutover
 // are the only places a record is created: an existing schema whose record
-// is missing stays missing (ErrNoRecord).
+// is missing stays missing (ErrNoRecord). An id whose record is missing while
+// its lifecycle epoch survives lost its record: Initialize refuses it with
+// ErrRecordLost, and init-db recovers it (InitializeAfterLoss).
 func Initialize(ctx context.Context, tx Tx, t Tables, schemaID int16) (bool, error) {
 	return insertRecord(ctx, tx, t, schemaID, Unpublished)
 }
@@ -119,12 +129,34 @@ func InitializeAwaitingInit(ctx context.Context, tx Tx, t Tables, schemaID int16
 	return insertRecord(ctx, tx, t, schemaID, AwaitingInit)
 }
 
+// ErrRecordLost reports a schema id without a record whose lifecycle epoch
+// survives: it had a record, and a new one at epoch 1 would carry an epoch a
+// running process may still pin. init-db recovers it above that epoch
+// (InitializeAfterLoss).
+var ErrRecordLost = errors.New("publication record lost")
+
 func insertRecord(ctx context.Context, tx Tx, t Tables, schemaID int16, state State) (bool, error) {
-	n, err := tx.runner().exec(ctx, fmt.Sprintf(insertSQL, t.Record), schemaID, uuid.New(), string(state))
+	r := tx.runner()
+	n, err := r.exec(ctx, fmt.Sprintf(insertSQL, t.Record, t.Epoch), schemaID, uuid.New(), string(state))
 	if err != nil {
 		return false, fmt.Errorf("initialize %s publication record of schema %d in %s: %w", state, schemaID, t.Record, err)
 	}
-	return n == 1, nil
+	if n == 1 {
+		if err := raiseEpoch(ctx, r, t, schemaID, 1); err != nil {
+			return false, fmt.Errorf("initialize %s publication record of schema %d: %w", state, schemaID, err)
+		}
+		return true, nil
+	}
+	var exists bool
+	var epoch int64
+	if err := r.queryRow(ctx, fmt.Sprintf(insertedSQL, t.Record, t.Epoch), schemaID).Scan(&exists, &epoch); err != nil {
+		return false, fmt.Errorf("initialize %s publication record of schema %d: read what holds its place: %w", state, schemaID, err)
+	}
+	if !exists && epoch > 0 {
+		return false, fmt.Errorf("initialize %s publication record of schema %d: its record is missing while its lifecycle epoch %d "+
+			"in %s survives: %w", state, schemaID, epoch, t.Epoch, ErrRecordLost)
+	}
+	return false, nil
 }
 
 const recordColumns = `schema_id, epoch, state, generation, parent_generation,
@@ -187,8 +219,36 @@ func (e *InvalidRecordError) Error() string {
 func (e *InvalidRecordError) Unwrap() []error { return []error{ErrRecordInvalid, e.Err} }
 
 // validate refuses a record no transition of this package writes: a reader
-// must not guess what such a row means.
+// must not guess what such a row means. Its identity first: every record is
+// created at epoch 1 (or, recovered, above its id's lifecycle epoch) with a
+// fresh token, and every transition moves the epoch up, the generation
+// counter up or not at all, and writes a fresh token, so
+// a non-positive epoch, a negative counter or horizon, or a nil token is a
+// row nobody wrote through the protocol, whatever its state.
 func (r Record) validate() error {
+	if err := r.validateIdentity(); err != nil {
+		return err
+	}
+	return r.validateShape()
+}
+
+// validateIdentity refuses identity values no transition emits.
+func (r Record) validateIdentity() error {
+	switch {
+	case r.Epoch < 1:
+		return fmt.Errorf("record of schema %d is at epoch %d; every record starts at epoch 1 and epochs only grow", r.SchemaID, r.Epoch)
+	case r.Generation < 0 || r.ParentGeneration < 0:
+		return fmt.Errorf("record of schema %d names generation %d with parent %d; generation numbers start at 1 and the counter at 0", r.SchemaID, r.Generation, r.ParentGeneration)
+	case r.Token == uuid.Nil:
+		return fmt.Errorf("record of schema %d at epoch %d has the nil token; every transition writes a fresh one", r.SchemaID, r.Epoch)
+	case r.Horizon < 0:
+		return fmt.Errorf("record of schema %d at epoch %d has the negative horizon %d", r.SchemaID, r.Epoch, r.Horizon)
+	}
+	return nil
+}
+
+// validateShape refuses the fields a record's state does not allow.
+func (r Record) validateShape() error {
 	switch r.State {
 	case Unpublished, AwaitingInit, Dropped:
 		if r.ManifestKey != "" || r.ManifestSHA256 != "" || r.Lineage != uuid.Nil || r.ParentGeneration != 0 {
@@ -197,6 +257,9 @@ func (r Record) validate() error {
 	case Published:
 		if r.Generation <= 0 || r.ManifestKey == "" || r.ManifestSHA256 == "" || r.Lineage == uuid.Nil {
 			return fmt.Errorf("record of schema %d is %s at generation %d with manifest %q, lineage %s; a published record names a positive generation, its manifest, digest and lineage", r.SchemaID, r.State, r.Generation, r.ManifestKey, r.Lineage)
+		}
+		if r.ParentGeneration >= r.Generation {
+			return fmt.Errorf("record of schema %d is %s at generation %d with parent %d; a generation's parent precedes it", r.SchemaID, r.State, r.Generation, r.ParentGeneration)
 		}
 	default:
 		return fmt.Errorf("record of schema %d has state %q, want %s, %s, %s or %s", r.SchemaID, r.State, Unpublished, Published, AwaitingInit, Dropped)

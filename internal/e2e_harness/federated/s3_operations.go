@@ -25,16 +25,8 @@ func (h *FederatedTestHarness) WriteParquet(ctx context.Context, tier, filename 
 		return fmt.Errorf("S3 is disabled (simulated failure)")
 	}
 
-	// Build CSV content for DuckDB conversion
-	csvPath := filepath.Join(h.tmpDir, "temp.csv")
-	parquetPath := filepath.Join(h.tmpDir, filename)
-
-	if err := h.writeRecordsToCSV(csvPath, records); err != nil {
-		return fmt.Errorf("write csv: %w", err)
-	}
-
-	// Use DuckDB to convert CSV to Parquet
-	if err := h.convertCSVToParquet(ctx, csvPath, parquetPath); err != nil {
+	parquetPath, err := h.writeLocalParquet(ctx, filename, records)
+	if err != nil {
 		return err
 	}
 
@@ -46,6 +38,21 @@ func (h *FederatedTestHarness) WriteParquet(ctx context.Context, tier, filename 
 
 	h.flushedFiles = append(h.flushedFiles, s3Key)
 	return nil
+}
+
+// writeLocalParquet writes records to the parquet file filename in the
+// harness's scratch directory, through a CSV that DuckDB converts, and
+// answers its path.
+func (h *FederatedTestHarness) writeLocalParquet(ctx context.Context, filename string, records []TestRecord) (string, error) {
+	csvPath := filepath.Join(h.tmpDir, "temp.csv")
+	parquetPath := filepath.Join(h.tmpDir, filename)
+	if err := h.writeRecordsToCSV(csvPath, records); err != nil {
+		return "", fmt.Errorf("write csv: %w", err)
+	}
+	if err := h.convertCSVToParquet(ctx, csvPath, parquetPath); err != nil {
+		return "", err
+	}
+	return parquetPath, nil
 }
 
 // convertCSVToParquet uses DuckDB to convert a CSV file to Parquet format.
@@ -256,22 +263,24 @@ type s3PrefixClient interface {
 	DeleteObject(ctx context.Context, params *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
 }
 
-// deleteS3Prefix deletes all objects under a prefix, across every listing
-// page, so a cleanup between cases cannot leave later-page objects behind
-// for the next case to see (#521).
-func (h *FederatedTestHarness) deleteS3Prefix(ctx context.Context, prefix string) error {
-	return deleteAllUnderPrefix(ctx, h.s3Client, h.S3Bucket, prefix)
-}
-
 // deleteAllUnderPrefix lists the whole prefix first, then deletes each key.
 // The listing fails closed through the shared paginator; individual delete
 // failures stay best-effort, as the cleanup callers expect.
 func deleteAllUnderPrefix(ctx context.Context, client s3PrefixClient, bucket, prefix string) error {
+	return deleteAllUnderPrefixExcept(ctx, client, bucket, prefix, nil)
+}
+
+// deleteAllUnderPrefixExcept is deleteAllUnderPrefix keeping the keys in
+// keep.
+func deleteAllUnderPrefixExcept(ctx context.Context, client s3PrefixClient, bucket, prefix string, keep map[string]bool) error {
 	keys, err := cdc.ListObjectKeys(ctx, client, bucket, prefix)
 	if err != nil {
 		return fmt.Errorf("list objects to delete in bucket %s: %w", bucket, err)
 	}
 	for _, key := range keys {
+		if keep[key] {
+			continue
+		}
 		_, _ = client.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(key),

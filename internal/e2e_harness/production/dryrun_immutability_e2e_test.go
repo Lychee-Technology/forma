@@ -4,12 +4,9 @@ package production
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"testing"
-
-	"github.com/lychee-technology/forma/internal/cdc"
 )
 
 // TestDryRunImmutability proves cdc-flush --dry-run and cdc-init --dry-run
@@ -174,26 +171,19 @@ func testFlushDryRunMutatesNothing(t *testing.T, ctx context.Context, env *Env, 
 func testInitDryRunMutatesNothing(t *testing.T, ctx context.Context, env *Env, schema SchemaRef) {
 	before := captureState(t, ctx, env, schema)
 
-	// #371: the seed left a delta tier behind, so a dry run without the
-	// purge permission refuses exactly like a real run would — and refusing
-	// mutates nothing either.
-	if _, err := env.RunInitWith(ctx, schema, InitOverrides{DryRun: true}); !errors.Is(err, cdc.ErrDeltaTierPresent) {
-		t.Fatalf("dry-run init over delta tier: err = %v, want cdc.ErrDeltaTierPresent", err)
-	}
-	assertStateUnchanged(t, "init dry-run (refused)", before, captureState(t, ctx, env, schema))
-
-	// With the permission the dry run plans the export and the purge and
-	// still touches nothing: no objects, no manifest, no deletes.
-	report, err := env.RunInitWith(ctx, schema, InitOverrides{DryRun: true, ReplaceDelta: true})
+	// The seed left a delta tier behind; a V2 init replaces it with its own
+	// generation (no purge flag, no refusal), and a dry run plans the export
+	// and still touches nothing: no objects, no generation, no handoff.
+	report, err := env.RunInitWith(ctx, schema, InitOverrides{DryRun: true})
 	if err != nil {
-		t.Fatalf("dry-run init with replace-delta: %v", err)
+		t.Fatalf("dry-run init: %v", err)
 	}
 	if report.RowsExported == 0 {
 		t.Fatal("positive control: dry-run init planned zero rows")
 	}
 
 	after := captureState(t, ctx, env, schema)
-	assertStateUnchanged(t, "init dry-run (replace-delta)", before, after)
+	assertStateUnchanged(t, "init dry-run", before, after)
 }
 
 // testRealFlushAfterDryRunsFlushes is the suite-level positive control: the

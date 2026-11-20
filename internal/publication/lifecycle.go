@@ -27,7 +27,9 @@ const resetSQL = `UPDATE %s SET epoch = epoch + 1, state = '` + string(Dropped) 
 // purged without a reader or a writer seeing them; Activate then refuses to
 // re-register the id while any remain (docs/publication-protocol-v2.md,
 // "Lifecycle of the row"). Every writer staged under cur's epoch fails its
-// compare-and-set, whatever generation it expected.
+// compare-and-set, whatever generation it expected. The id's lifecycle epoch
+// is raised to the new epoch in tx (raiseEpoch), which refuses an epoch a
+// record of the id carried before.
 func Reset(ctx context.Context, tx Tx, t Tables, cur Record) (Record, error) {
 	if cur.State == Dropped {
 		return Record{}, fmt.Errorf("reset schema %d at epoch %d: %w", cur.SchemaID, cur.Epoch, ErrDropped)
@@ -41,6 +43,9 @@ func Reset(ctx context.Context, tx Tx, t Tables, cur Record) (Record, error) {
 		return Record{}, fmt.Errorf("reset schema %d from epoch %d token %s: %w", cur.SchemaID, cur.Epoch, cur.Token, ErrRecordMoved)
 	}
 	if err != nil {
+		return Record{}, fmt.Errorf("reset schema %d from epoch %d: %w", cur.SchemaID, cur.Epoch, err)
+	}
+	if err := raiseEpoch(ctx, r, t, cur.SchemaID, out.Epoch); err != nil {
 		return Record{}, fmt.Errorf("reset schema %d from epoch %d: %w", cur.SchemaID, cur.Epoch, err)
 	}
 	if cur.State == Published {
@@ -59,7 +64,23 @@ func Reset(ctx context.Context, tx Tx, t Tables, cur Record) (Record, error) {
 // them.
 var ErrResidue = errors.New("dropped schema's rows not purged")
 
-const residueSQL = `SELECT 1 FROM %s WHERE schema_id = $1 LIMIT 1`
+const residueSQL = `SELECT 1 FROM %s WHERE %s = $1 LIMIT 1`
+
+// Residue names a table Activate checks for rows of the dropped schema, and
+// the column that holds a row's schema id there: schema_id (the default, when
+// SchemaIDColumn is empty) in eav_data and change_log, ltbase_schema_id in
+// entity_main.
+type Residue struct {
+	Table          string
+	SchemaIDColumn string
+}
+
+func (r Residue) column() string {
+	if r.SchemaIDColumn == "" {
+		return "schema_id"
+	}
+	return r.SchemaIDColumn
+}
 
 // activateSQL starts the re-registered schema's epoch, UNPUBLISHED, from a
 // DROPPED record.
@@ -71,23 +92,25 @@ const activateSQL = `UPDATE %s SET epoch = epoch + 1, state = '` + string(Unpubl
 // Activate re-registers a dropped schema id on tx, the registration
 // transaction that inserts its registry row again: it checks in tx that none
 // of the schema's rows remain in residue (its entity_main, eav_data and
-// change_log tables), then moves the record from DROPPED to the next epoch,
+// change_log tables, and any table of state derived from them), then moves the record from DROPPED to the next epoch,
 // UNPUBLISHED, under a new token. Nothing that read the record before it
 // carries the new epoch, so no reader, writer or handoff of the old schema
-// acts on the new one without reading the record again.
-func Activate(ctx context.Context, tx Tx, t Tables, cur Record, residue []string) (Record, error) {
+// acts on the new one without reading the record again. As Reset, it raises
+// the id's lifecycle epoch to the new epoch in tx.
+func Activate(ctx context.Context, tx Tx, t Tables, cur Record, residue []Residue) (Record, error) {
 	if cur.State != Dropped {
 		return Record{}, fmt.Errorf("activate schema %d: its record is %s, and only a %s one is activated", cur.SchemaID, cur.State, Dropped)
 	}
 	r := tx.runner()
 	for _, table := range residue {
 		var one int
-		err := r.queryRow(ctx, fmt.Sprintf(residueSQL, sqlutil.SanitizeIdentifier(table)), cur.SchemaID).Scan(&one)
+		query := fmt.Sprintf(residueSQL, sqlutil.SanitizeIdentifier(table.Table), sqlutil.SanitizeIdentifier(table.column()))
+		err := r.queryRow(ctx, query, cur.SchemaID).Scan(&one)
 		if err == nil {
-			return Record{}, fmt.Errorf("activate schema %d: rows of epoch %d remain in %s: %w", cur.SchemaID, cur.Epoch, table, ErrResidue)
+			return Record{}, fmt.Errorf("activate schema %d: rows of epoch %d remain in %s: %w", cur.SchemaID, cur.Epoch, table.Table, ErrResidue)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
-			return Record{}, fmt.Errorf("activate schema %d: check %s for its rows: %w", cur.SchemaID, table, err)
+			return Record{}, fmt.Errorf("activate schema %d: check %s for its rows: %w", cur.SchemaID, table.Table, err)
 		}
 	}
 	out := cur
@@ -98,6 +121,9 @@ func Activate(ctx context.Context, tx Tx, t Tables, cur Record, residue []string
 		return Record{}, fmt.Errorf("activate schema %d from epoch %d token %s: %w", cur.SchemaID, cur.Epoch, cur.Token, ErrRecordMoved)
 	}
 	if err != nil {
+		return Record{}, fmt.Errorf("activate schema %d from epoch %d: %w", cur.SchemaID, cur.Epoch, err)
+	}
+	if err := raiseEpoch(ctx, r, t, cur.SchemaID, out.Epoch); err != nil {
 		return Record{}, fmt.Errorf("activate schema %d from epoch %d: %w", cur.SchemaID, cur.Epoch, err)
 	}
 	out.State = Unpublished

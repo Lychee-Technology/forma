@@ -60,11 +60,12 @@ func TestNeverFlushedSchemaAnswersOnDuckDB(t *testing.T) {
 	transitions.expect(t, "first flush")
 }
 
-// TestLostManifestOverFlushedRowsStillFails pins the other side of #720: a
-// confirmed-absent manifest and an empty fallback glob are also what a lost
-// manifest looks like. When the schema has flushed rows, which the hot leg
-// does not serve, the read must keep failing instead of answering from the
-// unflushed rows alone.
+// TestLostManifestOverFlushedRowsStillFails pins the other side of #720:
+// once a flush published, the record names a generation, so a lost manifest
+// is never read as "nothing published". The schema has flushed rows, which
+// the hot leg does not serve, so the read must keep failing — as a typed,
+// non-degradable publication inconsistency (#759, #896) — instead of
+// answering from the unflushed rows alone.
 func TestLostManifestOverFlushedRowsStillFails(t *testing.T) {
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t))
@@ -89,7 +90,7 @@ func TestLostManifestOverFlushedRowsStillFails(t *testing.T) {
 		t.Fatalf("query answered %d rows with the flushed rows' manifest and objects gone; want a read failure",
 			len(res.Records))
 	}
-	if !errors.Is(err, fedengine.ErrFederatedReadFailed) {
-		t.Fatalf("lost manifest over flushed rows: got %v, want ErrFederatedReadFailed", err)
+	if !errors.Is(err, fedengine.ErrPublicationInconsistent) || errors.Is(err, fedengine.ErrFederatedReadFailed) {
+		t.Fatalf("lost manifest over flushed rows: got %v, want ErrPublicationInconsistent and not the degradable ErrFederatedReadFailed", err)
 	}
 }

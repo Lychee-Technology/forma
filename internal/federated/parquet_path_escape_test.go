@@ -16,7 +16,7 @@ func (c *captureDuckExecutor) Query(ctx context.Context, sql string, args ...any
 	return &verifyFakeRows{rowsLeft: 0}, nil
 }
 
-// TestExecutorParquetSitesEscapeQuotes pins #456 for the four executor-driven
+// TestExecutorParquetSitesEscapeQuotes pins #456 for the three executor-driven
 // render sites: a path bearing a single quote must appear doubled in the SQL,
 // never as a raw quote that could terminate the literal.
 func TestExecutorParquetSitesEscapeQuotes(t *testing.T) {
@@ -29,7 +29,6 @@ func TestExecutorParquetSitesEscapeQuotes(t *testing.T) {
 	}{
 		{"drainParquet", func(d DuckDBQueryExecutor) { _ = drainParquet(ctx, d, evil) }},
 		{"drainGuardedParquet", func(d DuckDBQueryExecutor) { _ = drainGuardedParquet(ctx, d, evil) }},
-		{"globParquetPaths", func(d DuckDBQueryExecutor) { _, _ = globParquetPaths(ctx, d, evil) }},
 		{"describeParquetColumns", func(d DuckDBQueryExecutor) { _, _ = describeParquetColumns(ctx, d, evil) }},
 	}
 	for _, tc := range cases {

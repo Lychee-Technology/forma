@@ -8,35 +8,32 @@ import (
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/bootstrap"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/federated"
-	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/federatedv2"
+	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/publication"
 	"go.uber.org/zap"
 )
 
 // baselineParquetFlags names the object set baseline-schema audits: the one
-// the federated read scans, so the flags mirror the server's DuckDB manifest
-// settings. --no-parquet-tier is explicit, so a forgotten bucket is an error
-// rather than a baseline that skipped the lakehouse tier.
+// the federated read scans, each schema's published generation
+// (docs/publication-protocol-v2.md), so the flags name the server's bucket.
+// --no-parquet-tier is explicit, so a forgotten bucket is an error rather than
+// a baseline that skipped the lakehouse tier.
 type baselineParquetFlags struct {
-	none             bool
-	s3               s3Flags
-	manifestPrefix   string
-	manifestTemplate string
-	dataPrefix       string
-	duck             duckExportFlags
+	none bool
+	s3   s3Flags
+	duck duckExportFlags
 }
 
 func (f *baselineParquetFlags) register(fs *flag.FlagSet) {
 	fs.BoolVar(&f.none, "no-parquet-tier", false, "The deployment has no lakehouse tier: audit PostgreSQL only")
-	f.s3.register(fs, s3FlagOptions{bucketUsage: "S3 bucket of the parquet objects and manifests (required unless --no-parquet-tier)"})
-	fs.StringVar(&f.manifestPrefix, "manifest-prefix", bootstrap.Env("MANIFEST_PREFIX", ""), "Manifest prefix in S3 (the server's DUCKDB_MANIFEST_PREFIX)")
-	fs.StringVar(&f.manifestTemplate, "manifest-template", bootstrap.Env("MANIFEST_TEMPLATE", ""),
-		"Manifest path template (the server's DUCKDB_MANIFEST_TEMPLATE; required unless --no-parquet-tier)")
-	fs.StringVar(&f.dataPrefix, "data-prefix", bootstrap.Env("S3_PREFIX", ""),
-		"Parquet prefix of the fallback glob a schema with no manifest entries is read through (the server's DUCKDB_S3_PREFIX)")
+	f.s3.register(fs, s3FlagOptions{bucketUsage: "S3 bucket of the published parquet objects and manifests, the server's DUCKDB_S3_BUCKET (required unless --no-parquet-tier)"})
 	f.duck.register(fs, duckExportFlagOptions{memLimitDefault: "4GB", queryTimeout: 30 * time.Minute})
 }
 
@@ -44,20 +41,18 @@ func (f baselineParquetFlags) validate() error {
 	if f.none {
 		return nil
 	}
-	if f.s3.bucket == "" || f.manifestTemplate == "" {
-		return errors.New("--s3-bucket and --manifest-template are required to audit the parquet objects; " +
+	if f.s3.bucket == "" {
+		return errors.New("--s3-bucket is required to audit the parquet objects; " +
 			"pass --no-parquet-tier when the deployment has no lakehouse tier")
 	}
-	if err := validateParquetPrefixFlag("data-prefix", f.dataPrefix); err != nil {
-		return err
-	}
-	return validateManifestTemplateFlag(f.manifestTemplate)
+	return nil
 }
 
-// open builds the parquet tier: the manifest source the read resolves its
-// object set from, and a DuckDB session with the S3 credentials the CDC
-// tools use. The returned close releases the DuckDB pool.
-func (f baselineParquetFlags) open(ctx context.Context, logger *zap.Logger) (*parquetTier, func(), error) {
+// open builds the parquet tier: each schema's published objects, read from
+// its publication record on pool and its generation's manifest in the
+// bucket, and a DuckDB session with the S3 credentials the CDC tools use. The
+// returned close releases the DuckDB pool.
+func (f baselineParquetFlags) open(ctx context.Context, logger *zap.Logger, pool *pgxpool.Pool, entityMain string) (*parquetTier, func(), error) {
 	if f.none {
 		return nil, func() {}, nil
 	}
@@ -65,9 +60,6 @@ func (f baselineParquetFlags) open(ctx context.Context, logger *zap.Logger) (*pa
 	if err != nil {
 		return nil, nil, fmt.Errorf("build the s3 client: %w", err)
 	}
-	source := manifest.NewS3QuerySource(s3Client, manifest.S3QuerySourceConfig{
-		Bucket: f.s3.bucket, ManifestPrefix: f.manifestPrefix, ManifestTemplate: f.manifestTemplate, DataPrefix: f.dataPrefix,
-	})
 	duckCfg := cdc.CDCConfig{
 		DuckDBPath: f.duck.duckDBPath, DuckThreads: f.duck.duckThreads, DuckMemLimit: f.duck.duckMemLimit,
 		QueryTimeout: f.duck.queryTimeout, S3Bucket: f.s3.bucket, S3Endpoint: f.s3.endpoint,
@@ -79,18 +71,63 @@ func (f baselineParquetFlags) open(ctx context.Context, logger *zap.Logger) (*pa
 		return nil, nil, fmt.Errorf("open duckdb: %w", err)
 	}
 	tier := &parquetTier{
-		objects: func(ctx context.Context, schemaID int16) ([]string, error) {
-			paths, _, err := source.Paths(ctx, schemaID)
-			if err != nil {
-				return nil, fmt.Errorf("read the manifest of schema id %d: %w", schemaID, err)
-			}
-			return paths, nil
-		},
+		objects: publishedObjects(pool, publication.TablesFor(entityMain), &manifestv2.S3Store{Client: s3Client, Bucket: f.s3.bucket}, f.s3.bucket),
 		audit: func(ctx context.Context, _ int16, paths []string, cache forma.SchemaAttributeCache) ([]federated.DomainFinding, error) {
 			return federated.AuditParquetDomain(ctx, exporter.DB, paths, cache)
 		},
 	}
 	return tier, func() { _ = exporter.DB.Close() }, nil
+}
+
+// publishedObjects answers, for a schema, the objects a federated read of it
+// scans: its PUBLISHED record's generation's, as s3:// URIs the way the reader
+// addresses them. A schema without a record, or whose record is UNPUBLISHED,
+// AWAITING_INIT or DROPPED, has none: the reader scans no parquet for it, and
+// the V2 cdc-init that publishes an AWAITING_INIT schema exports PostgreSQL's
+// rows, which the baseline audits. A record or manifest that cannot be read,
+// or that is invalid, refuses the baseline.
+func publishedObjects(pool *pgxpool.Pool, tables publication.Tables, store manifestv2.Store, bucket string) func(context.Context, int16) ([]string, error) {
+	uri := federatedv2.S3URI(bucket)
+	return func(ctx context.Context, schemaID int16) ([]string, error) {
+		rec, err := readPublicationRecord(ctx, pool, tables, schemaID)
+		if errors.Is(err, publication.ErrNoRecord) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if rec.State != publication.Published {
+			return nil, nil
+		}
+		ref, err := manifestv2.RecordRef(rec)
+		if err != nil {
+			return nil, fmt.Errorf("reference the manifest of schema id %d generation %d: %w", schemaID, rec.Generation, err)
+		}
+		m, err := manifestv2.Fetch(ctx, store, ref)
+		if err != nil {
+			return nil, fmt.Errorf("read the manifest of schema id %d generation %d: %w", schemaID, rec.Generation, err)
+		}
+		paths := make([]string, 0, len(m.Files))
+		for _, file := range m.Files {
+			paths = append(paths, uri(file.Key))
+		}
+		return paths, nil
+	}
+}
+
+// readPublicationRecord reads schemaID's publication record in a read-only
+// snapshot of its own.
+func readPublicationRecord(ctx context.Context, pool *pgxpool.Pool, tables publication.Tables, schemaID int16) (publication.Record, error) {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return publication.Record{}, fmt.Errorf("open a snapshot to read the publication record of schema id %d: %w", schemaID, err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	snap, err := publication.Read(ctx, publication.PgxTx(tx), tables, schemaID)
+	if err != nil {
+		return publication.Record{}, fmt.Errorf("read the publication record of schema id %d: %w", schemaID, err)
+	}
+	return snap.Record, nil
 }
 
 // runBaselineSchema seeds the first generation of registered schemas that
@@ -99,7 +136,7 @@ func runBaselineSchema(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("baseline-schema", flag.ContinueOnError)
 	flags.SetOutput(os.Stdout)
 	flags.Usage = func() {
-		fmt.Println("Usage: forma-tools baseline-schema --schema-dir <dir> (--no-parquet-tier | --s3-bucket <b> --manifest-template <t>) [options]")
+		fmt.Println("Usage: forma-tools baseline-schema --schema-dir <dir> (--no-parquet-tier | --s3-bucket <b>) [options]")
 		fmt.Println("")
 		fmt.Println("Records generation 1 of each registered schema with no active generation, after auditing its")
 		fmt.Println("stored PostgreSQL and parquet data against the declaration in --schema-dir. Any stored value the")
@@ -144,12 +181,6 @@ func runBaseline(ctx context.Context, pg *postgresFlags, parquet baselineParquet
 		return fmt.Errorf("build logger: %w", err)
 	}
 	defer func() { _ = logger.Sync() }()
-	tier, closeTier, err := parquet.open(ctx, logger)
-	if err != nil {
-		return err
-	}
-	defer closeTier()
-	opts.parquet = tier
 	pool, err := buildToolPostgresPool(ctx, pg.databaseConfig("DB_PASSWORD", toolPostgresPoolSettings{
 		maxConnections: 2,
 		timeout:        30 * time.Second,
@@ -158,5 +189,11 @@ func runBaseline(ctx context.Context, pg *postgresFlags, parquet baselineParquet
 		return fmt.Errorf("create connection pool: %w", err)
 	}
 	defer pool.Close()
+	tier, closeTier, err := parquet.open(ctx, logger, pool, opts.tables.EntityMain)
+	if err != nil {
+		return err
+	}
+	defer closeTier()
+	opts.parquet = tier
 	return baselineSchemas(ctx, pool, opts, os.Stdout)
 }

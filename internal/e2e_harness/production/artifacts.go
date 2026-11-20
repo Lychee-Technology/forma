@@ -3,8 +3,8 @@ package production
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
@@ -128,7 +128,6 @@ func (e *Env) dumpRunInfo(ctx context.Context, dir string) error {
 		"s3_bucket":    e.Cluster.Bucket,
 		"s3_prefix":    e.S3Prefix,
 		"s3_endpoint":  e.Cluster.S3Endpoint,
-		"parquet_glob": e.ParquetGlob(),
 		"git_sha":      gitSHA(ctx),
 		"dumped_at":    time.Now().UTC().Format(time.RFC3339),
 	}
@@ -208,29 +207,31 @@ func (e *Env) dumpS3Listing(ctx context.Context, dir string) error {
 	return writeJSONArtifact(dir, "s3_listing.json", listing)
 }
 
-// dumpManifests stores the raw (unparsed) manifest bytes per schema.
+// dumpManifests stores, per fixture schema, its publication record and the
+// raw (unparsed) bytes of the manifest the record names, if any.
 func (e *Env) dumpManifests(ctx context.Context, dir string) error {
-	if e.CDC.ManifestTemplate == "" {
-		return nil
+	if e.Pool == nil {
+		return nil // the database was not provisioned; there is no record.
 	}
-	for _, ref := range DefaultSchemaFixtures() {
-		key, err := e.manifestKey(ref.ID)
-		if err != nil {
-			return fmt.Errorf("dump manifest: %w", err)
+	records, err := e.readRecords(ctx, fixtureSchemaIDs())
+	if err != nil {
+		return fmt.Errorf("dump publication records: %w", err)
+	}
+	if err := writeJSONArtifact(dir, "publication_records.json", records); err != nil {
+		return err
+	}
+	for _, rec := range records {
+		if rec.ManifestKey == "" {
+			continue // the schema has published no generation
 		}
-		out, err := e.Cluster.S3.GetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(e.Cluster.Bucket),
-			Key:    aws.String(key),
-		})
-		if err != nil {
-			continue // schema has no manifest yet
+		data, err := e.manifestStore().Get(ctx, rec.ManifestKey)
+		if errors.Is(err, manifestv2.ErrObjectNotFound) {
+			continue // a test staged its loss; publication_records.json names it
 		}
-		data, err := io.ReadAll(out.Body)
-		_ = out.Body.Close()
 		if err != nil {
-			return fmt.Errorf("read manifest %s: %w", key, err)
+			return fmt.Errorf("read manifest %s: %w", rec.ManifestKey, err)
 		}
-		name := fmt.Sprintf("manifest_%d.json", ref.ID)
+		name := fmt.Sprintf("manifest_%d.json", rec.SchemaID)
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", name, err)
 		}

@@ -52,7 +52,7 @@ func newFixture(t *testing.T) *fixture {
 		require.NoError(t, err, stmt)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{f.t.Record, f.t.Generation, f.changeLog} {
+		for _, table := range []string{f.t.Record, f.t.Generation, f.t.Epoch, f.changeLog} {
 			_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 		}
 	})
@@ -220,7 +220,7 @@ func (f *fixture) activate(t *testing.T, cur Record) Record {
 	var out Record
 	require.NoError(t, f.inTx(context.Background(), func(tx Tx) error {
 		var err error
-		out, err = Activate(context.Background(), tx, f.t, cur, []string{f.changeLog})
+		out, err = Activate(context.Background(), tx, f.t, cur, []Residue{{Table: f.changeLog}})
 		return err
 	}))
 	require.Equal(t, out, f.read(t, cur.SchemaID))

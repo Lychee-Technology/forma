@@ -50,38 +50,9 @@ func runInitDB(ctx context.Context, args []string) error {
 		flags.PrintDefaults()
 	}
 
-	// DB_PORT is --db-port's default, so a set but unparsable value is
-	// refused even when the flag would override it (#600). The refusal waits
-	// until after flags.Parse so --help still prints usage; EnvInt returns
-	// 5432 alongside the error to register the flag with.
-	portDefault, portErr := bootstrap.EnvInt("DB_PORT", 5432)
-
 	opts := initDBOptions{}
 	var pg postgresFlags
-	pg.register(flags, postgresFlagOptions{
-		hostFlag:        "db-host",
-		portFlag:        "db-port",
-		userFlag:        "db-user",
-		passwordFlag:    "db-password",
-		databaseFlag:    "db-name",
-		sslModeFlag:     "db-ssl-mode",
-		hostDefault:     bootstrap.Env("DB_HOST", "localhost"),
-		portDefault:     portDefault,
-		userDefault:     bootstrap.Env("DB_USER", "postgres"),
-		passwordDefault: bootstrap.Env("DB_PASSWORD", "postgres"),
-		databaseDefault: bootstrap.Env("DB_NAME", "forma"),
-		sslModeDefault:  bootstrap.Env("DB_SSL_MODE", "disable"),
-		hostUsage:       "database host",
-		portUsage:       "database port",
-		userUsage:       "database user",
-		passwordUsage:   "database password",
-		databaseUsage:   "database name",
-		sslModeUsage:    "database sslmode",
-	})
-	flags.StringVar(&opts.schemaTable, "schema-table", bootstrap.Env("SCHEMA_TABLE", "schema_registry"), "schema registry table name")
-	flags.StringVar(&opts.eavTable, "eav-table", bootstrap.Env("EAV_TABLE", "eav_dev"), "EAV data table name")
-	flags.StringVar(&opts.entityMain, "entity-main-table", bootstrap.Env("ENTITY_MAIN_TABLE", "entity_main_dev"), "Entity main table name")
-	flags.StringVar(&opts.changeLog, "change-log-table", bootstrap.Env("CHANGE_LOG_TABLE", "change_log_dev"), "Change log table name")
+	portErr := registerDatabaseFlags(flags, &opts, &pg)
 	flags.StringVar(&opts.schemaDir, "schema-dir", bootstrap.Env("SCHEMA_DIR", ""), "Directory containing JSON schema files to register (optional)")
 	flags.BoolVar(&opts.skipDeclaredIndexes, "skip-declared-indexes", false, "Do not build the x-forma-indexes indexes the schemas declare (for operators who build them out of band)")
 
@@ -354,13 +325,17 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 	}
 
 	// Register schemas from schema directory if provided
+	var inserted map[int16]bool
 	if opts.schemaDir != "" {
-		if err := registerSchemas(ctx, tx, opts.schemaTable, opts.schemaDir); err != nil {
+		var err error
+		if inserted, err = registerSchemas(ctx, tx, opts.schemaTable, opts.schemaDir); err != nil {
 			return err
 		}
 	}
-
-	return nil
+	// Every registered schema, not only those of schemaDir, gets its
+	// publication record in this transaction: a new one at registration, an
+	// existing one at the V2 cutover (init_db_records.go).
+	return ensurePublicationRecords(ctx, tx, opts, inserted, os.Stdout)
 }
 
 // firstSchemaID is the schema_id init-db gives the first schema it registers.
@@ -370,24 +345,24 @@ const firstSchemaID = 100
 // registry table. A name already registered keeps its schema_id, which keys
 // its entity rows and the parquet files written under it; a new name gets an
 // id from newSchemaIDs, so re-running init-db after adding a schema file
-// succeeds (#643).
-func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir string) error {
+// succeeds (#643). It answers the ids whose registry rows it inserted in tx.
+func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir string) (map[int16]bool, error) {
 	schemaNames, err := schemameta.ListInitDBSchemaNames(schemaDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(schemaNames) == 0 {
 		fmt.Printf("No schema files found, dir: %s\n", schemaDir)
-		return nil
+		return nil, nil
 	}
 
 	registered, err := loadRegisteredSchemaIDs(ctx, tx, schemaTable)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	newIDs, err := newSchemaIDs(schemaNames, registered)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// ON CONFLICT absorbs a concurrent init-db registering the same name
@@ -396,21 +371,21 @@ func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir stri
 		`INSERT INTO %s (schema_name, schema_id) VALUES ($1, $2) ON CONFLICT (schema_name) DO NOTHING`,
 		quoteIdentifier(schemaTable),
 	)
+	inserted := map[int16]bool{}
 	for _, schemaName := range schemaNames {
 		schemaID, isNew := newIDs[schemaName]
-		inserted := false
 		if isNew {
 			result, err := tx.Exec(ctx, insertSQL, schemaName, schemaID)
 			if err != nil {
-				return fmt.Errorf("insert schema %s: %w", schemaName, err)
+				return nil, fmt.Errorf("insert schema %s: %w", schemaName, err)
 			}
-			inserted = result.RowsAffected() > 0
+			inserted[schemaID] = result.RowsAffected() > 0
 		}
 
-		if inserted {
+		if inserted[schemaID] {
 			fmt.Printf("Registered schema, name: %s, id: %d\n", schemaName, schemaID)
 			if err := recordFirstGeneration(ctx, tx, schemaTable, schemaDir, schemaName, schemaID); err != nil {
-				return err
+				return nil, err
 			}
 		} else {
 			fmt.Printf("Schema already exists, schema name: %s\n", schemaName)
@@ -418,7 +393,7 @@ func registerSchemas(ctx context.Context, tx pgx.Tx, schemaTable, schemaDir stri
 	}
 
 	fmt.Printf("Registered schemas from directory, count: %d, dir: %s\n", len(schemaNames), schemaDir)
-	return nil
+	return inserted, nil
 }
 
 // loadRegisteredSchemaIDs reads the registry table's schema_name -> schema_id

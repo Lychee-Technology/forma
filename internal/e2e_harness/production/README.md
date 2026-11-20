@@ -6,7 +6,9 @@ testcontainers — the official MinIO docker image is archived — plus
 in-process DuckDB), real writes through
 `internal.NewEntityManager`, the real CDC flusher (`internal/cdc`), the real
 federated engine (`internal/federated`), real schema metadata from fixture
-JSON, and an S3-backed manifest. Every query result is checked against an
+JSON, and Protocol V2 publication (`docs/publication-protocol-v2.md`): a
+publication record per schema in PostgreSQL naming an immutable manifest
+generation in S3. Every query result is checked against an
 **independent oracle** that never consults the engine.
 
 Run it:
@@ -81,7 +83,18 @@ needs schema IDs beyond the fixtures can register its own via
 
 Options: `WithSeed`, `WithSchemaDir`, `WithFlushThresholds` (#179),
 `WithDuckMemoryMB`, `WithBreaker` (#185), `WithDuckMaxConnections`,
-`WithRoutingStrategy`, `WithoutManifest`, `WithMetricEmitter` (#634).
+`WithRoutingStrategy`, `WithMetricEmitter` (#634).
+
+Provisioning registers the fixture schemas the way `init-db` does, including
+each schema's `UNPUBLISHED` publication record (#896). Writing a record is a
+transition only `init-db` may make in production, and `internal/publication`'s
+owners guard scans every non-test file, so the record initializer lives in a
+test file (`publication_records_test.go`) that `provision` calls through a
+hook. The engine is assembled like the factory's: the V2 publication reader
+(`internal/federatedv2`) with every fixture schema's epoch pinned when the
+engine is built. `PublicationReaderWrap` decorates that reader before the
+first query, which is how a test pauses a pass between its record read and
+the rest of it (`published_pass_race_e2e_test.go`).
 
 ## Fixture schemas (`schemas/`)
 
@@ -117,10 +130,8 @@ where it used to store the rounded image). `forma.ValueTypeList` does **not** ro
 rejection contract live, with the end-to-end acceptance path written as a
 skipped subtest — blocked by #204.
 
-Note: the DuckDB federated path requires at least one parquet file per
-schema (`read_parquet` errors on an empty glob) — matching production,
-where cdc-init bootstraps base files before federated reads. Use
-`PreferHot: true` for queries before the first flush/init.
+Note: a schema that has never published (`UNPUBLISHED`) answers every query
+from PostgreSQL, with no DuckDB statement, whatever the routing (#720, #896).
 
 ## Events, CDC, queries
 
@@ -132,9 +143,9 @@ where cdc-init bootstraps base files before federated reads. Use
 - `GenerateScript` is seed-deterministic; repeated calls continue one
   stream so ordinal-encoded values stay unique per Env.
 - `RunFlush`/`RunFlushDry` wrap `cdc.Runner.RunOnce`; reports capture
-  unflushed counts, new S3 objects, and parsed manifests. Note the
-  mainline dry-run still writes parquet objects — it skips `flushed_at`
-  marking and manifest updates (#180).
+  unflushed counts, new S3 objects, the published generation of every
+  published fixture schema, and the runner's own per-schema report. A dry
+  run writes no object, marks nothing and publishes nothing (#180).
 - `RunFlushWith(FlushOverrides{S3, Config, DryRun})` runs one flush pass
   with per-run overrides and reports observable state *even when the run
   fails* (report is non-nil unless the pre-run capture fails), so
@@ -143,15 +154,13 @@ where cdc-init bootstraps base files before federated reads. Use
   client that fails calls matching an `S3Fault{Op, KeyContains,
   SkipMatches}` — to break exactly one step of the flush pipeline and pin
   the failure matrix (#179).
-- `RunInit` wraps `cdc.RunInit` (base file export + manifest base entries).
-  Base keys are deterministic (`<prefix>/<id>/<minRowID>_<maxRowID>.parquet`),
-  and init replaces the manifest's base tier with each run's output, so
-  reruns neither duplicate entries nor leave stale ranges — obsolete S3
-  objects remain (glob+LWW keeps queries exact; reconciliation is #203)
-  (#176). Init never touches
-  `change_log`: backfilled rows stay hot until the operator clears the log
-  (onboarding contract, see `TestInitBaseOnlyParity`) or the next flush
-  re-exports them into delta (`TestInitFlushOverlapWithoutLogCleanup`).
+- `RunInit` wraps `cdc.RunInit`: the V2 `cdc-init` exports the schema's live
+  rows to base objects under fresh keys, publishes an `init` generation that
+  lists only them (every earlier base and delta leaves the inventory), and
+  hands the exported rows' entries off by marking them flushed at their
+  export versions. It deletes no object: superseded ones stay on S3, unlisted,
+  for garbage collection (#891). The harness keeps each schema's latest init
+  report, which the onboarding helpers below check.
 - `Env.EntityManager()` is the public API on a deployment that runs DuckDB:
   every non-transactional `Query` enters the federated engine, and the Env's
   routing strategy (`WithRoutingStrategy`) decides whether it reads DuckDB
@@ -177,37 +186,42 @@ where cdc-init bootstraps base files before federated reads. Use
 - `Query`/`AssertQueryMatches` translate one spec for both engine and
   oracle. Filters use the public `"op:value"` condition forms (bool values
   are `"1"`/`"0"`; dates accept ISO strings or epoch millis).
-- `ExecSQL` is the escape hatch for failure-state injection (#179/#181).
-  Clearing `change_log` goes through the helpers of `handoff.go` instead,
-  named for what the test means: `MarkOnboarded`/`MarkRowsOnboarded`/
-  `MarkAllOnboarded` stand in for the onboarding handoff after `RunInit`,
-  `RetireFlushed`/`RetireAllFlushed` drop the entries a flush already
-  exported. E2E scenarios do not import `internal/manifest`: they read the
-  published files through `manifest_access.go` (`Manifest`, `ManifestEntry`,
-  `TierEntries`, `loadSchemaManifest`), compare publications through
-  `publication_state.go` (`publishesBetween`, `compactionPublishesSince`,
-  `snapshotPublication`/`publicationChanges`) and stage inventory faults
-  through `publication_faults.go` (`unpublishFiles`,
-  `poisonManifestChecksum`, `restampBaseColumns`). They never read the V1
-  manifest's version, ETag or bytes, nor save a manifest themselves. Two
-  untagged unit tests of the harness's own manifest wrappers,
-  `faults_test.go` and `manifest_load_gate_test.go`, are explicitly exempt
-  and import the package. `TestE2ETestsReachV1StandInsOnlyThroughHelpers`
-  keeps these rules, so Protocol V2 (#896) changes those helper bodies
-  rather than the tests (#901). The guard is syntactic: it catches a
-  `change_log` delete in a literal (quoted or schema-qualified) and one that
-  takes `Tables.ChangeLog` as its target through `+` or `Sprintf`, not SQL
+- `ExecSQL` is the escape hatch for failure-state injection (#179/#181). No
+  helper clears `change_log`: Protocol V2 never does, and the tools take rows
+  out of the dirty set themselves. The helpers of `handoff.go` only check that
+  they did, named for what the test means: `MarkOnboarded`/
+  `MarkRowsOnboarded`/`MarkAllOnboarded` require the latest `RunInit`'s
+  handoff to have marked every entry it exported, and
+  `RetireFlushed`/`RetireAllFlushed` require a flush to have left no unflushed
+  entry. E2E scenarios read the published inventory through
+  `manifest_access.go` (`Manifest`, `ManifestEntry`, `TierEntries`,
+  `loadSchemaManifest`: a view of the generation the record names, from its
+  verified manifest), compare publications through `publication_state.go`
+  (`publishesBetween`, `snapshotPublication`/`publicationChanges`, over the
+  record) and stage inventory faults through `publication_faults_test.go`
+  (`unpublishFiles`, `poisonManifestChecksum`, `restampBaseColumns`,
+  `RegisterParquetInManifest`, `RunInitKeepingDelta`), each of which commits
+  a test-made generation through the record's compare-and-set, since
+  generations are immutable. A fabricated object must have a V2 key of the
+  schema's epoch (`newTestParquetKey`). Only those helper files and the
+  untagged unit tests of the harness's inventory reader and S3 fault
+  decorator (`manifest_load_gate_test.go`, `faults_test.go`) import
+  `internal/manifestv2` or `internal/publication`, and no test imports the
+  V1 `internal/manifest`; `TestE2ETestsReachPublicationOnlyThroughHelpers`
+  keeps these rules (#901, #896). It is syntactic: it catches a `change_log`
+  delete in a literal (quoted or schema-qualified) and one that takes
+  `Tables.ChangeLog` as its target through `+` or `Sprintf`, not SQL
   assembled any other way at run time.
 - `InjectRestore` (#175) re-materializes a hard-deleted row under its
   original row_id at the storage layer — production has no restore API
   (Update on a deleted row returns `ErrNotFound`, pinned live) — with the
   restore timestamp forced past the tombstone's `changed_at` so the revival
   wins LWW. Scoped to text/numeric attributes (e2e_simple shapes).
-- `RunCompaction` wraps the real compactor (`compaction.Compactor.RunOnce`)
-  over the Env's manifest. Today's compactor is manifest-level only: the
-  dirty-ratio rewrite is unimplemented (reports `RewritePending`, manifest
-  untouched) and promotion needs ≥1 MB of delta — the lifecycle suite pins
-  that contract as a tripwire for #188.
+- `RunCompaction`/`RunCompactionWith` skip the calling test until V2
+  compaction lands (#890): a cut-over deployment keeps the V1 compactor
+  stopped, and it cannot run against a V2 schema. The manifest-reconcile
+  scenarios skip the same way until V2 garbage collection (#891,
+  `reconcile_v1.go`).
 - `Env.RestartPostgres` (#175) restarts the Postgres container in place
   (docker stop/start, data preserved) and rebinds the pool, CDC config,
   DuckDB client, and lazy engine/manager. Restart tests must own a
@@ -259,7 +273,8 @@ SQL in `query_<n>.json` has its connection-string password redacted.
 | `events.json` | full event log incl. read-back timestamps |
 | `change_log.json` | `SELECT * FROM change_log ORDER BY schema_id,row_id,flushed_at` |
 | `s3_listing.json` | key/size/etag/last-modified under the prefix |
-| `manifest_<id>.json` | raw manifest bytes per schema |
+| `publication_records.json` | each fixture schema's publication record |
+| `manifest_<id>.json` | raw bytes of the manifest each published record names |
 | `parquet/<key>.{schema,sample}.json` | DuckDB `DESCRIBE` + up to 20 sampled rows |
 | `query_<n>.json` | Query spec, FederatedAttributeQuery, full plan (SQL + params + routing + timings), row IDs |
 | `diff.json` | expected-vs-actual totals, missing/extra/misordered rows, attribute mismatches |
@@ -286,5 +301,5 @@ SQL in `query_<n>.json` has its connection-string password redacted.
 | #181 failure injection | `ExecSQL` |
 | #185 degraded mode & circuit breaker | `WithBreaker`, `Query.AllowPartialDegradedMode`, `Cluster.HaltS3`, `Env.ReopenDuckDB` |
 | #186 multi-schema isolation | `e2e_simple`/`e2e_second` + `FaultInjectingS3`/`PausingS3` (`multi_schema_isolation_e2e_test.go`, `concurrent_flush_multi_schema_e2e_test.go`) |
-| #250 factory/server manifest wiring | `forma.DefaultConfig` + `factory.NewEntityManagerWithConfigContext` over `Env.Pool`/`Tables`/`Registry`/`DuckCfg`/`CDC` + `RegisterParquetInManifest` (`factory_manifest_e2e_test.go`) |
+| #250/#896 factory/server publication-reader wiring | `forma.DefaultConfig` + `factory.NewEntityManagerWithConfigContext` over `Env.Pool`/`Tables`/`Registry`/`DuckCfg` + `RegisterParquetInManifest` (`factory_manifest_e2e_test.go`) |
 | #647 declared indexes | `e2e_outbox` + `declaredindex` (`declared_index_explain_e2e_test.go`, `declared_index_build_e2e_test.go`) |

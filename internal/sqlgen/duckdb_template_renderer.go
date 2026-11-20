@@ -12,9 +12,9 @@ import (
 // is unbound. The template renders FROM {{.S3_SCAN_SOURCE}} with no guard of
 // its own, so an absent binding used to reach DuckDB as the literal
 // "<no value>" — a parser error that classified as a degradable read failure,
-// indistinguishable from a transient S3 outage (#299). The engine now rejects
-// an empty resolved path set before it gets here (ErrNoParquetPaths); this
-// keeps the bad render unreachable from every other caller too, the same way
+// indistinguishable from a transient S3 outage (#299). The engine runs no
+// parquet leg for a generation that lists no object; this keeps the bad
+// render unreachable from every other caller too, the same way
 // requireParquetOnlyProjection keeps the retired toy-projection hole (#222)
 // closed.
 // It checks S3_SCAN_SOURCE rather than S3_PATHS because that is what the
@@ -27,7 +27,7 @@ func requireS3Paths(params map[string]any) error {
 	}
 	return fmt.Errorf("advanced DuckDB template render is missing S3_SCAN_SOURCE " +
 		"(derived from S3_PATHS); resolve a non-empty parquet path set first " +
-		"(render hint or manifest source) — an unbound value renders a " +
+		"(the published generation's objects) — an unbound value renders a " +
 		"FROM <no value> parser error (#299, #255)")
 }
 
@@ -73,13 +73,9 @@ func injectDuckDBTemplateParams(params map[string]any, q *model.FederatedAttribu
 	// column set (#255) and the cold-pinned set (#371). Derived here, the
 	// single point every render flows through, so no two renders of one
 	// path set can disagree.
-	// EmptyParquetScan (#720) replaces the read with a relation holding no
-	// rows, for a schema the engine has shown has no parquet to read.
 	if _, ok := params["S3_SCAN_SOURCE"]; !ok {
-		missing, _ := params["ColdMissingColumns"].([]ScanColumn)
-		if empty, _ := params["EmptyParquetScan"].(bool); empty {
-			params["S3_SCAN_SOURCE"] = BuildEmptyParquetScanSource(missing)
-		} else if pathsSQL, ok := params["S3_PATHS"].(string); ok && pathsSQL != "" {
+		if pathsSQL, ok := params["S3_PATHS"].(string); ok && pathsSQL != "" {
+			missing, _ := params["ColdMissingColumns"].([]ScanColumn)
 			pinned, _ := params["ColdPinnedColumns"].([]ScanColumn)
 			params["S3_SCAN_SOURCE"] = BuildParquetScanSource(pathsSQL, missing, pinned)
 		}

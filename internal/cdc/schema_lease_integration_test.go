@@ -348,3 +348,19 @@ func raceAcquirers(t *testing.T, db *sql.DB, table string, n int) []func() {
 	require.Empty(t, errs, "a lost race must answer ok false, not an error")
 	return releases
 }
+
+// waitForLockWaiter returns once one of db's sessions, which leaseTarget names,
+// waits on a lock, or after five seconds.
+func waitForLockWaiter(t *testing.T, db *sql.DB) {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int
+		err := db.QueryRow(`SELECT count(*) FROM pg_stat_activity
+			WHERE application_name = current_setting('application_name') AND wait_event_type = 'Lock'`).Scan(&waiting)
+		if err == nil && waiting > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Log("no session waited on a lock within five seconds")
+}

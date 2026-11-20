@@ -75,7 +75,6 @@ func TestAuditParquetDomainPassesAdmittedObjects(t *testing.T) {
 	whole := writeQtyObject(t, duck, dir, "whole.parquet", "DOUBLE", "7", "-2147483648", "NULL")
 	narrow := writeQtyObject(t, duck, dir, "narrow.parquet", "SMALLINT", "7")
 	require.Empty(t, auditQty(t, duck, eavInteger, whole, narrow))
-	require.Empty(t, auditQty(t, duck, eavInteger, filepath.Join(dir, "*.parquet")), "a glob audits each object it matches")
 
 	// The edges of the storage domains: ±2^53 for a bigint's float64 image,
 	// the full int64 range in a bigint_* column, any finite number under

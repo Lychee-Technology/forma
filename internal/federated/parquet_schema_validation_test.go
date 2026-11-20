@@ -143,7 +143,7 @@ func TestParquetSchemaValidator_MissingSystemColumnFailsClassified(t *testing.T)
 	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/wrong.parquet"}, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
-	require.NotErrorIs(t, err, ErrParquetSetInconsistent)
+	require.NotErrorIs(t, err, ErrPublicationInconsistent)
 	require.Contains(t, err.Error(), "wrong.parquet")
 	require.Contains(t, err.Error(), "row_id")
 }
@@ -179,39 +179,6 @@ func TestParquetSchemaValidator_UnreadableFooterIsInconclusive(t *testing.T) {
 	require.Len(t, duck.probes, 2)
 }
 
-func TestParquetSchemaValidator_GlobExpandsAndValidatesMatches(t *testing.T) {
-	// A glob (explicit hint or manifest fallback) must not bypass the
-	// invariant: matches are enumerated and validated like listed paths
-	// (#189 review P1 — a malformed file under a hinted glob would
-	// otherwise vanish silently under union_by_name).
-	duck := &scriptedDescribeExecutor{
-		globs: map[string][]string{"1/*.parquet": {"s3://b/1/good.parquet", "s3://b/1/wrong.parquet"}},
-		cols: map[string][][2]string{
-			"good.parquet":  buildValidSystemCols(),
-			"wrong.parquet": {{"wrong_col", "INTEGER"}},
-		},
-	}
-	v := newParquetSchemaValidator()
-
-	_, _, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"}, nil)
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrFederatedReadFailed)
-	require.Contains(t, err.Error(), "wrong.parquet")
-}
-
-func TestParquetSchemaValidator_UnlistableGlobIsInconclusive(t *testing.T) {
-	duck := &scriptedDescribeExecutor{failPaths: map[string]bool{"1/*.parquet": true}}
-	v := newParquetSchemaValidator()
-
-	union, complete, err := v.Validate(context.Background(), duck, []string{"s3://b/1/*.parquet"}, nil)
-	require.NoError(t, err)
-	require.Len(t, duck.probes, 1, "the glob listing attempt is the only probe")
-	require.False(t, complete,
-		"a failed listing leaves the footer union unknown: it must not be reported complete, "+
-			"or #255 would augment columns the unlisted files may actually carry")
-	require.Empty(t, union.types, "nothing was probed, so nothing contributes to the union")
-}
-
 func TestParquetSchemaValidator_NilCollaboratorsAreNoops(t *testing.T) {
 	duck := &scriptedDescribeExecutor{}
 	var nilValidator *parquetSchemaValidator
@@ -242,7 +209,7 @@ func TestParquetSchemaValidator_ViolationSurfacesThroughEngineQuery(t *testing.T
 
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrFederatedReadFailed)
-	require.NotErrorIs(t, err, ErrParquetSetInconsistent)
+	require.NotErrorIs(t, err, ErrPublicationInconsistent)
 	require.Equal(t, 0, duck.inner.calls, "the main scan must not run over a schema-violating object")
 }
 
@@ -272,8 +239,9 @@ func TestBenchmarkSchemaIDsSkipSchemaValidation(t *testing.T) {
 
 func TestBreakerOpenRejectsBeforeSchemaProbes(t *testing.T) {
 	// #185 reject-before-DuckDB extends to the #189 pre-read probes: an open
-	// breaker must short-circuit before path resolution and any DESCRIBE
-	// reaches storage (#189 review P2).
+	// breaker must short-circuit before any DESCRIBE reaches storage (#189
+	// review P2). The pass reads its record and its generation's manifest
+	// first: admission waits for a generation that lists objects.
 	restore := initTestDescriptors()
 	defer restore()
 
@@ -284,7 +252,7 @@ func TestBreakerOpenRejectsBeforeSchemaProbes(t *testing.T) {
 	src := &fakeParquetSource{paths: []string{"s3://b/1/a.parquet"}}
 	duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{}}
 	engine := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, breaker,
-		hybridDuckConfig(), testMetadataCacheSchema7(t), WithParquetSource(src), withFakeHotLeg(nil))
+		hybridDuckConfig(), testMetadataCacheSchema7(t), withParquetSource(src), withFakeHotLeg(nil))
 
 	_, err := engine.Query(context.Background(),
 		model.StorageTables{EntityMain: "main", EAVData: "eav", ChangeLog: "change_log"},
@@ -293,7 +261,7 @@ func TestBreakerOpenRejectsBeforeSchemaProbes(t *testing.T) {
 	require.ErrorContains(t, err, "circuit breaker open")
 	require.Equal(t, 0, duck.describeCalls, "open breaker must reject before schema probes reach storage")
 	require.Equal(t, 0, duck.calls, "open breaker must reject before the main scan")
-	require.Equal(t, 0, src.pathsCalls, "open breaker must reject before path resolution")
+	require.Equal(t, 1, src.pathsCalls, "the generation is resolved before admission")
 }
 
 // #255: Validate reports the union of footer columns and whether it is
@@ -349,24 +317,6 @@ func TestValidateProbesQuoteBearingPath(t *testing.T) {
 	require.Len(t, exec.probes, 2, "one DESCRIBE per path")
 	require.Contains(t, exec.probes[1], "read_parquet('"+escaped+"')", "the quote must render doubled")
 	require.NotContains(t, exec.probes[1], "'"+quoted+"'", "the quote must never render raw")
-}
-
-// The glob branch feeds validateConcrete with whatever the listing returns,
-// so a quote-bearing match must be probed there too (#529).
-func TestValidateProbesQuoteBearingGlobMatch(t *testing.T) {
-	const quoted = "s3://b/1/it's.parquet"
-	escaped := sqlutil.EscapeLiteral(quoted)
-	exec := &scriptedDescribeExecutor{
-		cols:  map[string][][2]string{escaped: append(buildValidSystemCols(), [2]string{"score", "INTEGER"})},
-		globs: map[string][]string{"1/*.parquet": {quoted}},
-	}
-	v := newParquetSchemaValidator()
-	union, complete, err := v.Validate(context.Background(), exec, []string{"s3://b/1/*.parquet"}, nil)
-	require.NoError(t, err)
-	require.True(t, complete)
-	require.Contains(t, union.types, "score")
-	require.Len(t, exec.probes, 2, "the glob listing plus one DESCRIBE")
-	require.Contains(t, exec.probes[1], "read_parquet('"+escaped+"')")
 }
 
 // A cache hit must contribute its stored columns without a second probe.

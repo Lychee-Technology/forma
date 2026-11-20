@@ -125,7 +125,7 @@ func TestRegisterSchemasAddsNewSchemaToExistingRegistry(t *testing.T) {
 	}
 	var regErr error
 	stdout, _ := captureStdStreams(t, func() {
-		regErr = registerSchemas(context.Background(), tx, "schema_registry_dev", dir)
+		_, regErr = registerSchemas(context.Background(), tx, "schema_registry_dev", dir)
 	})
 	if regErr != nil {
 		t.Fatalf("registerSchemas: %v", regErr)

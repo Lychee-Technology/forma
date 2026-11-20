@@ -106,7 +106,8 @@ func newInitDBTarget(t *testing.T) *initDBTarget {
 			sqlutil.SuffixedIdentifier(tg.opts.schemaTable, schemaledger.GenerationTableSuffix),
 			sqlutil.SuffixedIdentifier(tg.opts.schemaTable, schemaledger.AttributeTableSuffix),
 			sqlutil.SuffixedIdentifier(tg.opts.entityMain, publication.RecordTableSuffix),
-			sqlutil.SuffixedIdentifier(tg.opts.entityMain, publication.GenerationTableSuffix)} {
+			sqlutil.SuffixedIdentifier(tg.opts.entityMain, publication.GenerationTableSuffix),
+			sqlutil.SuffixedIdentifier(tg.opts.entityMain, publication.EpochTableSuffix)} {
 			if _, err := pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+quoteIdentifier(table)); err != nil {
 				t.Logf("drop %s: %v", table, err)
 			}

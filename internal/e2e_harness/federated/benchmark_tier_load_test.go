@@ -9,6 +9,7 @@ import (
 
 	federated "github.com/lychee-technology/forma/internal/e2e_harness/federated"
 	bench "github.com/lychee-technology/forma/internal/e2e_harness/federated/benchmark"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,12 +38,29 @@ func TestBenchmarkTierLoad_SmallDataset(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, bench.LoadTieredDataset(ctx, h, tiered))
 
-	baseFiles, err := h.ListParquetFiles(ctx, "base")
+	// The trade schema's base and delta rows are published: its current
+	// generation lists a base and a delta object, together holding every
+	// parquet row the split put there (#896).
+	files, err := h.PublishedFiles(ctx, bench.SchemaIDTrade)
 	require.NoError(t, err)
-	deltaFiles, err := h.ListParquetFiles(ctx, "delta")
-	require.NoError(t, err)
-	require.NotEmpty(t, baseFiles)
-	require.NotEmpty(t, deltaFiles)
+	rows := map[manifestv2.Tier]int64{}
+	for _, f := range files {
+		rows[f.Tier] += f.RowCount
+	}
+	var baseTrade, deltaTrade int
+	for _, r := range tiered.Base {
+		if r.SchemaID == bench.SchemaIDTrade {
+			baseTrade++
+		}
+	}
+	for _, r := range tiered.Delta {
+		if r.SchemaID == bench.SchemaIDTrade {
+			deltaTrade++
+		}
+	}
+	require.Len(t, files, 2)
+	require.Equal(t, int64(baseTrade), rows[manifestv2.TierBase])
+	require.Equal(t, int64(deltaTrade), rows[manifestv2.TierDelta])
 	require.Greater(t, h.CountUnflushedRecords(ctx), 0)
 	if tiered.Summary.DeletedInHot > 0 {
 		var deletedHot int

@@ -100,8 +100,8 @@ func (f *pgxFixture) writeParquet(t *testing.T, name string, rows []pgxRow) stri
 	return path
 }
 
-// engine builds a pgx engine over the fixture whose parquet source answers
-// paths.
+// engine builds a pgx engine over the fixture whose publication reader
+// publishes a generation listing paths.
 func (f *pgxFixture) engine(t *testing.T, paths []string, opts ...EngineOption) *DBFederatedQueryEngine {
 	t.Helper()
 	return f.engineOver(t, NewDuckDBClientQueryExecutor(&DuckDBClient{DB: f.db}), paths, opts...)
@@ -115,7 +115,7 @@ func (f *pgxFixture) engineOver(t *testing.T, duck DuckDBQueryExecutor, paths []
 	if meta == nil {
 		meta = parquetOnlyMetadata(t)
 	}
-	all := append([]EngineOption{WithParquetSource(&fakeParquetSource{paths: paths})}, opts...)
+	all := append([]EngineOption{withParquetSource(&fakeParquetSource{paths: paths})}, opts...)
 	e := NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil, cfg, meta, all...)
 	e.hotLeg = f.leg
 	return e
@@ -207,7 +207,6 @@ type fakeHotLeg struct {
 	t       *testing.T
 	dirty   []uuid.UUID
 	records map[uuid.UUID]pgxRow
-	history bool
 
 	beginErr, changeLogErr, hotKeysErr error
 	// afterChangeLog runs once the dirty set is read: the seam for a
@@ -215,12 +214,9 @@ type fakeHotLeg struct {
 	afterChangeLog func()
 
 	begins, commits, rollbacks int
-	// historyChecks counts the change_log reads that asked for
-	// HasParquetHistory (#720).
-	historyChecks int
-	lastChangeLog ChangeLogSnapshotRequest
-	lastHotKeys   *model.HotKeysQuery
-	readRows      [][]uuid.UUID
+	lastChangeLog              ChangeLogSnapshotRequest
+	lastHotKeys                *model.HotKeysQuery
+	readRows                   [][]uuid.UUID
 	// statements names each read of the open snapshots, in order.
 	statements []string
 }
@@ -242,16 +238,13 @@ func (f *fakeHotLeg) readPublication(ctx context.Context, r PublicationReader, s
 func (f *fakeHotLeg) readChangeLog(_ context.Context, req ChangeLogSnapshotRequest) (ChangeLogSnapshot, error) {
 	f.statements = append(f.statements, "change_log")
 	f.lastChangeLog = req
-	if req.ParquetHistory {
-		f.historyChecks++
-	}
 	if f.changeLogErr != nil {
 		return ChangeLogSnapshot{}, f.changeLogErr
 	}
 	if f.afterChangeLog != nil {
 		defer f.afterChangeLog()
 	}
-	return ChangeLogSnapshot{DirtyIDs: f.dirty, HasParquetHistory: req.ParquetHistory && f.history}, nil
+	return ChangeLogSnapshot{DirtyIDs: f.dirty}, nil
 }
 
 func (f *fakeHotLeg) queryHotKeys(_ context.Context, req model.HotKeysQuery) ([]model.HotKey, error) {

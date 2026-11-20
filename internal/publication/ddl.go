@@ -11,13 +11,16 @@
 // the dirty set in, so the generation it scans and the rows it treats as
 // flushed come from one snapshot.
 //
-// Nothing in Forma's writers or readers uses this package yet: it fixes the
-// statements and their semantics, and the #887 children move cdc-flush,
-// cdc-init, the compactor, the federated reader and manifest-reconcile onto
-// it. init-db creates the two tables from Statements (#895) and writes no
-// row; the writers and the reader move onto the record together in #896.
+// init-db creates the three tables from Statements (#895) and, in the
+// registration transaction, each schema's record (Initialize, Activate, and
+// at the V2 cutover InitializeAwaitingInit). cdc-flush and cdc-init publish
+// through internal/cdcv2, and the federated reader reads the record in its
+// pass snapshot through internal/federatedv2 (#896). The compactor (#890) and
+// garbage collection (#891) move onto it next; until then they stay on V1 and
+// must not run against a V2 schema. Only the owners
+// TestOnlyTheProtocolOwnersMoveAPublicationRecord names may move a record.
 //
-// Both tables keep plain rows: no JSONB, arrays, sequences, enums, CHECK
+// The tables keep plain rows: no JSONB, arrays, sequences, enums, CHECK
 // constraints or foreign keys, none of which this package relies on Aurora
 // DSQL to support. Times are epoch milliseconds on the database clock.
 package publication
@@ -30,19 +33,20 @@ import (
 	"github.com/lychee-technology/forma/internal/textcollation"
 )
 
-// Table suffixes name both tables after the entity_main table, like the
+// Table suffixes name the tables after the entity_main table, like the
 // schema-lease table: cdc-flush, cdc-init, the compactor and the reader are
 // all given entity_main, so naming the tables after it lets every holder
 // find the same rows.
 const (
 	RecordTableSuffix     = "_publication"
 	GenerationTableSuffix = "_publication_generation"
+	EpochTableSuffix      = "_publication_epoch"
 )
 
-// Tables names the record and generation tables of one deployment, each
-// sanitized for a statement.
+// Tables names the record, generation and epoch tables of one deployment,
+// each sanitized for a statement.
 type Tables struct {
-	Record, Generation string
+	Record, Generation, Epoch string
 }
 
 // TablesFor names the publication tables of entityMain. A schema-qualified
@@ -52,6 +56,7 @@ func TablesFor(entityMain string) Tables {
 	return Tables{
 		Record:     sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, RecordTableSuffix)),
 		Generation: sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, GenerationTableSuffix)),
+		Epoch:      sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, EpochTableSuffix)),
 	}
 }
 
@@ -114,6 +119,22 @@ const generationDDL = `CREATE TABLE IF NOT EXISTS %s (
 		PRIMARY KEY (schema_id, generation)
 	)`
 
+// epochDDL is the durable lifecycle identity of each schema id, kept apart
+// from the record so that it outlives a lost record row: epoch is the highest
+// lifecycle epoch any record of the id has carried. Every transition that
+// moves a record's epoch (Initialize, InitializeAwaitingInit, Reset,
+// Activate, InitializeAfterLoss) raises it to the new epoch in its own
+// transaction, and refuses to commit unless the new epoch is above it, so it
+// only grows and no record is ever written at an epoch a record of the id
+// carried before. A lost record is recovered above it (recovery.go): no
+// process can hold a pin on that epoch. The row is never deleted.
+const epochDDL = `CREATE TABLE IF NOT EXISTS %s (
+		schema_id  SMALLINT NOT NULL,
+		epoch      BIGINT   NOT NULL,
+		updated_at BIGINT   NOT NULL,
+		PRIMARY KEY (schema_id)
+	)`
+
 // Statements answers the publication tables' DDL for entityMain on engine,
 // one statement each with no secondary index, so each is one DDL transaction
 // on Aurora DSQL too. Text columns are COLLATE "C" on PostgreSQL and plain
@@ -123,5 +144,6 @@ func Statements(engine forma.DatabaseEngine, entityMain string) []string {
 	return []string{
 		textcollation.ForEngine(engine, fmt.Sprintf(recordDDL, t.Record)),
 		textcollation.ForEngine(engine, fmt.Sprintf(generationDDL, t.Generation)),
+		textcollation.ForEngine(engine, fmt.Sprintf(epochDDL, t.Epoch)),
 	}
 }

@@ -19,13 +19,9 @@ import (
 //
 // Both slices are sorted by column name so the rendered SQL and the
 // plan-cache scope key are deterministic.
-//
-// noObjects (#720) marks a read with no parquet object to scan: the scan
-// source renders as a relation with no rows, and every attribute is missing.
 type coldScanSet struct {
-	missing   []sqlgen.ScanColumn
-	pinned    []sqlgen.ScanColumn
-	noObjects bool
+	missing []sqlgen.ScanColumn
+	pinned  []sqlgen.ScanColumn
 }
 
 func (s coldScanSet) empty() bool {

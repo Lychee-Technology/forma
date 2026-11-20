@@ -10,9 +10,12 @@
 //     schemavalidate.Validator over the Env's schema directory so fixture
 //     payloads face the same JSON Schema enforcement production applies (#314)
 //   - real CDC: RunFlush wraps cdc.Runner.RunOnce and RunInit wraps
-//     cdc.RunInit (delta/base parquet export + S3 manifest)
+//     cdc.RunInit (delta/base parquet export, published as a Protocol V2
+//     generation: an immutable S3 manifest named by the schema's PostgreSQL
+//     publication record)
 //   - real reads: Query assembles internal/federated.DBFederatedQueryEngine
-//     over the per-test Postgres database and S3 prefix
+//     with the V2 publication reader over the per-test Postgres database and
+//     S3 prefix
 //   - independent oracle: ExpectedStateFromEvents folds the event log into
 //     expected query results without consulting the engine
 //
@@ -23,7 +26,7 @@
 //
 // Diagnostics: on failure (or KEEP_E2E_ENV=1) DumpArtifacts writes a
 // run-specific directory with the event log, change_log snapshot, S3
-// listing, raw manifests, parquet schema+samples, generated SQL/params/
+// listing, publication records and their manifests, parquet schema+samples, generated SQL/params/
 // execution plans, and expected-vs-actual diffs.
 //
 // Consumer map (planned follow-up issues):
@@ -38,7 +41,8 @@
 //	#246 breaker single-probe      -> WithBreaker, Duck.Close, ReopenDuckDB
 //	#186 multi-schema isolation    -> schemas/e2e_simple + e2e_second, per-test DB
 //	#260 nested dotted attributes  -> schemas/e2e_nested, nested_attrs_e2e_test.go
-//	#252 flush-window visibility   -> runFlushPausedOn, PausingS3 on manifest PUT, DuckCfg.FlushVisibilityGraceMs
+//	#252 flush-window visibility   -> runFlushPausedOn, PausingS3 on manifest PUT
+//	#896 pass/publication races    -> Env.PublicationReaderWrap, Env.HotLegReaderWrap
 //
 // Environment variables: KEEP_E2E_ENV, E2E_SEED, E2E_ARTIFACTS_DIR,
 // E2E_VERBOSE, and PRODUCTION_E2E_EXTERNAL_* (see README.md).

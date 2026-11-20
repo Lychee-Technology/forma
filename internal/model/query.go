@@ -21,23 +21,12 @@ type FederatedAttributeQuery struct {
 	// the default all-tier form and the configured routing strategy.
 	PreferredTiers []DataTier
 	PreferHot      bool
-	DuckDBHints    *DuckDBRenderHints
 	KeysetCursor   *KeysetCursor
 	// ParquetUnrepresentable says why the parquet tiers cannot hold the
 	// schema's rows (#704), or is empty. Set, it routes the query to
 	// PostgreSQL alone. The service sets it from the schema registry's
 	// cache, since the engine's metadata cache carries no array ancestry.
 	ParquetUnrepresentable string
-}
-
-// DuckDBRenderHints are engine-level render hints. S3ParquetPathTemplate
-// pins the parquet objects a pass reads instead of the manifest or the
-// fallback glob; only direct engine callers (the e2e harnesses) set it. No
-// request can: parquet paths come from deployment configuration and the
-// manifest (#715).
-type DuckDBRenderHints struct {
-	S3ParquetPathTemplate string
-	TimeEncodingHint      string
 }
 
 type FederatedQueryOptions struct {

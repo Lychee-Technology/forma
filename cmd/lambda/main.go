@@ -10,8 +10,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/lychee-technology/forma/internal/schemameta"
-
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -51,7 +49,6 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 	if err != nil {
 		return nil, err
 	}
-	tableNames := formaConfig.Database.TableNames
 
 	startupTimeout := dbConfig.Timeout
 	if startupTimeout <= 0 {
@@ -74,12 +71,11 @@ func bootstrapLambda(ctx context.Context, sugar *zap.SugaredLogger) (*lambdaRunt
 		return nil, fmt.Errorf("failed to create database pool: %w", err)
 	}
 
-	// Create file-based schema registry from database
-	registry, err := schemameta.NewFileSchemaRegistryContext(startupCtx, dbPool, tableNames.SchemaRegistry, schemaDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create schema registry: %w", err)
+	// Create the file-based schema registry from the database, after reading
+	// the publication epochs it belongs to (forma.Config.SchemaRegistryEpochs).
+	if err := factory.LoadFileSchemaRegistryContext(startupCtx, formaConfig, dbPool, schemaDir); err != nil {
+		return nil, err
 	}
-	formaConfig.SchemaRegistry = registry
 
 	// Initialize EntityManager using factory. Deliberately never Closed (#302):
 	// the manager is process-lifetime — bootstrapLambda runs once per execution

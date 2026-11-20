@@ -32,7 +32,7 @@ import (
 
 // The integration fixture: PostgreSQL storage and publication tables, a
 // manifest store and parquet objects on local disk, and the federated engine
-// over them as #896 will wire it, with this package's Source as its
+// over them as the factory wires it, with this package's Source as its
 // publication reader. Generations are seeded the way a V2 writer commits
 // them: parquet and manifest staged first, then Publish and the marks in one
 // transaction.
@@ -78,7 +78,7 @@ func newFixture(t *testing.T) *fixture {
 		require.NoError(t, err, stmt)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{f.pub.Record, f.pub.Generation} {
+		for _, table := range []string{f.pub.Record, f.pub.Generation, f.pub.Epoch} {
 			_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+table)
 		}
 	})

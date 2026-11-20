@@ -160,11 +160,14 @@ func TestInitThenIncrementalFlush(t *testing.T) {
 	})
 }
 
-// TestInitFlushOverlapWithoutLogCleanup (#176 scenario 2 variant): nothing
-// enforces the onboarding cleanup. If the operator skips it, the first flush
-// re-exports every backfilled row into delta at the same version, and
-// merge-on-read must still dedupe to an exact count.
-func TestInitFlushOverlapWithoutLogCleanup(t *testing.T) {
+// TestInitHandoffLeavesTheFirstFlushNothingToReexport (#176 scenario 2
+// variant, #760): under V1 nothing enforced the onboarding cleanup, and a
+// first flush after cdc-init re-exported every backfilled row into delta at
+// the same version. The V2 handoff marks the exported entries in the
+// transactions that hold the init's lineage, so the first flush finds nothing
+// dirty, writes nothing and publishes nothing, and the federated result holds
+// each row exactly once, from base.
+func TestInitHandoffLeavesTheFirstFlushNothingToReexport(t *testing.T) {
 	cluster := SharedCluster(t)
 	env := NewEnv(t, cluster)
 	ctx := context.Background()
@@ -181,28 +184,31 @@ func TestInitFlushOverlapWithoutLogCleanup(t *testing.T) {
 	if report.RowsExported != 15 {
 		t.Fatalf("init exported %d rows, want 15", report.RowsExported)
 	}
+	env.MarkOnboarded(ctx, wide)
+	before := snapshotPublication(t, ctx, env, wide)
 
-	// No change_log cleanup: the flush re-exports all 15 rows into delta.
 	flush, err := env.RunFlush(ctx)
 	if err != nil {
 		t.Fatalf("flush: %v", err)
 	}
-	if flush.UnflushedAfter != 0 {
-		t.Fatalf("flush left %d unflushed rows", flush.UnflushedAfter)
+	if flush.UnflushedBefore != 0 || len(flush.NewObjects) != 0 {
+		t.Fatalf("the first flush after the handoff found %d dirty rows and wrote %v, want nothing",
+			flush.UnflushedBefore, flush.NewObjects)
 	}
-	var deltaRows int64
-	for _, f := range TierEntries(flush.Manifests[wide.ID], "delta") {
-		deltaRows += parquetRowCount(ctx, t, env, f.Path)
+	changes, err := publicationChanges(before, snapshotPublication(t, ctx, env, wide))
+	if err != nil {
+		t.Fatalf("compare publications: %v", err)
 	}
-	if deltaRows != 15 {
-		t.Fatalf("delta tier holds %d rows, want 15 (full re-export of the backfilled set)", deltaRows)
+	if len(changes) != 0 {
+		t.Fatalf("the first flush after the handoff published: %v", changes)
+	}
+	if n := countTier(flush.Manifests[wide.ID], "delta"); n != 0 {
+		t.Fatalf("delta tier lists %d objects after the handoff, want none", n)
 	}
 	assertBaseRows(ctx, t, env, flush.Manifests[wide.ID], 15)
 
-	// Same 15 rows in base AND delta at identical versions: the federated
-	// result must contain each exactly once.
 	result := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})
 	if result != nil && len(result.Records) != 15 {
-		t.Fatalf("federated result has %d rows, want 15 (base/delta overlap must dedupe)", len(result.Records))
+		t.Fatalf("federated result has %d rows, want 15", len(result.Records))
 	}
 }

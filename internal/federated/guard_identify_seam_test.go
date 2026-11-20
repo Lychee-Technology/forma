@@ -66,9 +66,9 @@ func (d *guardSeamFakeDuck) guardedDrains() []string {
 // newGuardSeamEngine mirrors newParquetSourceTestEngine but forwards extra
 // engine options, which the degraded-mode log test needs (WithLogger is the
 // only logger setter).
-func newGuardSeamEngine(t *testing.T, duck DuckDBQueryExecutor, src ParquetSource, opts ...EngineOption) *DBFederatedQueryEngine {
+func newGuardSeamEngine(t *testing.T, duck DuckDBQueryExecutor, src *fakeParquetSource, opts ...EngineOption) *DBFederatedQueryEngine {
 	t.Helper()
-	all := append([]EngineOption{WithParquetSource(src)}, opts...)
+	all := append([]EngineOption{withParquetSource(src)}, opts...)
 	return NewDBFederatedQueryEngine(&fakePostgresFederatedSource{}, duck, nil,
 		hybridDuckConfig(), testMetadataCacheSchema7(t), append(all, withFakeHotLeg(nil))...)
 }
@@ -149,8 +149,8 @@ func TestGuardIdentificationLogsUnderDegradedMode(t *testing.T) {
 }
 
 // TestMissingObjectClassificationWinsOverIdentification pins the ordering: a
-// manifest-listed object missing from storage is #187 scenario 2 —
-// non-degradable inconsistency. It must win, and identification must not run
+// listed object missing from storage is a publication inconsistency (#759),
+// non-degradable. It must win, and identification must not run
 // at all: its drains would spend failing round trips on a store already known
 // inconsistent, and a missing object fails the guarded drain too, so it would
 // be misattributed as a schema violation.
@@ -167,29 +167,12 @@ func TestMissingObjectClassificationWinsOverIdentification(t *testing.T) {
 
 	_, err := e.Query(context.Background(), guardSeamTables(), coldTierQuery(), nil)
 
-	require.ErrorIs(t, err, ErrParquetSetInconsistent)
+	require.ErrorIs(t, err, ErrPublicationInconsistent)
 	var viol *ParquetGuardViolationError
 	require.False(t, errors.As(err, &viol),
 		"an inconsistency classification must not be decorated with guard identification")
 	require.Empty(t, duck.guardedDrains(),
 		"no guarded identification drains after an inconsistency classification")
-}
-
-// TestGuardIdentificationSkippedForHintAuthoredSet pins the gating that
-// mirrors confirmCorruptPaths: a caller-pinned hint set names objects no
-// manifest vouches for, so identification never probes them.
-func TestGuardIdentificationSkippedForHintAuthoredSet(t *testing.T) {
-	duck := &guardSeamFakeDuck{rogue: guardRoguePath}
-	e := NewDBFederatedQueryEngine(nil, duck, nil, hybridDuckConfig(), nil, WithParquetSource(&fakeParquetSource{}), withFakeHotLeg(nil))
-
-	sc := scan{parquetPaths: []string{guardHealthyPath, guardRoguePath}, pathsFromSource: false}
-	err := e.failDuckDBScan(context.Background(),
-		&model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7}}, sc,
-		fmt.Errorf("scan: %w: guard fired", ErrFederatedReadFailed), "execute duckdb query")
-
-	var viol *ParquetGuardViolationError
-	require.False(t, errors.As(err, &viol))
-	require.Empty(t, duck.drainSQL, "hint-authored sets must not be probed at all")
 }
 
 // TestGuardViolationStillFeedsTheBreaker pins the half of the classification
@@ -206,9 +189,9 @@ func TestGuardIdentificationSkippedForHintAuthoredSet(t *testing.T) {
 func TestGuardViolationStillFeedsTheBreaker(t *testing.T) {
 	duck := &guardSeamFakeDuck{rogue: guardRoguePath}
 	breaker := NewCircuitBreaker(1, time.Minute, time.Minute) // threshold 1: one RecordFailure opens it
-	e := NewDBFederatedQueryEngine(nil, duck, breaker, hybridDuckConfig(), nil, WithParquetSource(&fakeParquetSource{}), withFakeHotLeg(nil))
+	e := NewDBFederatedQueryEngine(nil, duck, breaker, hybridDuckConfig(), nil, withParquetSource(&fakeParquetSource{}), withFakeHotLeg(nil))
 
-	sc := scan{parquetPaths: []string{guardHealthyPath, guardRoguePath}, pathsFromSource: true}
+	sc := publishedScan(guardHealthyPath, guardRoguePath)
 	err := e.failDuckDBScan(context.Background(),
 		&model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7}}, sc,
 		fmt.Errorf("scan: %w: guard fired", ErrFederatedReadFailed), "execute duckdb query")
@@ -227,9 +210,9 @@ func TestGuardViolationStillFeedsTheBreaker(t *testing.T) {
 // what an operator needs.
 func TestGuardIdentificationRunsForSinglePathSet(t *testing.T) {
 	duck := &guardSeamFakeDuck{rogue: guardRoguePath}
-	e := NewDBFederatedQueryEngine(nil, duck, nil, hybridDuckConfig(), nil, WithParquetSource(&fakeParquetSource{}), withFakeHotLeg(nil))
+	e := NewDBFederatedQueryEngine(nil, duck, nil, hybridDuckConfig(), nil, withParquetSource(&fakeParquetSource{}), withFakeHotLeg(nil))
 
-	sc := scan{parquetPaths: []string{guardRoguePath}, pathsFromSource: true}
+	sc := publishedScan(guardRoguePath)
 	err := e.failDuckDBScan(context.Background(),
 		&model.FederatedAttributeQuery{AttributeQuery: model.AttributeQuery{SchemaID: 7}}, sc,
 		fmt.Errorf("scan: %w: guard fired", ErrFederatedReadFailed), "execute duckdb query")

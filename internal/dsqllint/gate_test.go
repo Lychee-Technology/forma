@@ -114,9 +114,7 @@ func (f gateFixture) write(t *testing.T, rel, text string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(text), 0o755); err != nil {
-		t.Fatalf("write %s: %v", rel, err)
-	}
+	writeExecutable(t, path, text)
 }
 
 func (f gateFixture) remove(t *testing.T, rel string) {

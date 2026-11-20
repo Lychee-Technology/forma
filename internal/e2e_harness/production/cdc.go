@@ -5,20 +5,25 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"testing"
 
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
-	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // FlushReport captures the observable effects of one CDC flush pass.
 type FlushReport struct {
-	DryRun          bool
-	NewObjects      []string
-	Manifests       map[int16]*manifest.Manifest
+	DryRun     bool
+	NewObjects []string
+	// Manifests is the published generation of every fixture schema whose
+	// record is PUBLISHED after the run (loadManifests).
+	Manifests       map[int16]*Manifest
 	UnflushedBefore int64
 	UnflushedAfter  int64
+	// Flushed is the runner's own report of what each schema's flush
+	// published: the generations it committed and the entries it marked.
+	Flushed []cdc.SchemaFlush
 	// Skipped is the runner's own report of schemas it did not export (#704).
 	Skipped []cdc.SkippedSchema
 }
@@ -28,7 +33,12 @@ type InitReport struct {
 	RowsExported int64
 	FilesCreated int
 	NewObjects   []string
-	Manifest     *manifest.Manifest
+	// Manifest is the schema's published generation after the run, nil
+	// while its record is UNPUBLISHED.
+	Manifest *Manifest
+	// Schemas is the run's own report of what each schema's init published
+	// and handed off.
+	Schemas []cdc.SchemaInit
 	// Skipped is the run's own report of schemas it did not export (#704).
 	Skipped []cdc.SkippedSchema
 }
@@ -40,8 +50,7 @@ func (e *Env) RunFlush(ctx context.Context) (*FlushReport, error) {
 }
 
 // RunFlushDry runs the flusher in dry-run mode (#180): a dry run mutates
-// nothing — no S3 objects (tmp or final), no flushed_at changes, and no
-// manifest updates. TestDryRunImmutability pins all three surfaces.
+// nothing — no S3 objects, no flushed_at changes, and no publication. TestDryRunImmutability pins all three surfaces.
 func (e *Env) RunFlushDry(ctx context.Context) (*FlushReport, error) {
 	return e.runFlush(ctx, true)
 }
@@ -49,8 +58,8 @@ func (e *Env) RunFlushDry(ctx context.Context) (*FlushReport, error) {
 // FlushOverrides customizes a single flush pass for failure-injection tests
 // (#179). Zero-value fields fall back to the Env defaults RunFlush uses.
 type FlushOverrides struct {
-	S3     cdc.S3FullClient // nil: e.Cluster.S3
-	Config *cdc.CDCConfig   // nil: e.CDC
+	S3     cdc.S3Client   // nil: e.Cluster.S3
+	Config *cdc.CDCConfig // nil: e.CDC
 	DryRun bool
 	// Registry is the run's schema registry (nil: e.Registry), for a test
 	// that acts between the run's start and its batches (#733).
@@ -83,7 +92,10 @@ func (e *Env) RunFlushWith(ctx context.Context, ov FlushOverrides) (*FlushReport
 	if ov.Config != nil {
 		cfg = *ov.Config
 	}
-	var s3Client cdc.S3FullClient = e.Cluster.S3
+	if cfg.RegistryEpochs == nil {
+		cfg.RegistryEpochs = e.RegistryEpochs
+	}
+	var s3Client cdc.S3Client = e.Cluster.S3
 	if ov.S3 != nil {
 		s3Client = ov.S3
 	}
@@ -99,7 +111,7 @@ func (e *Env) RunFlushWith(ctx context.Context, ov FlushOverrides) (*FlushReport
 		runErr = fmt.Errorf("cdc run once (dry=%t): %w", ov.DryRun, runErr)
 	}
 
-	report := &FlushReport{DryRun: ov.DryRun, UnflushedBefore: before, Skipped: runReport.Skipped}
+	report := &FlushReport{DryRun: ov.DryRun, UnflushedBefore: before, Flushed: runReport.Flushed, Skipped: runReport.Skipped}
 	if report.UnflushedAfter, err = e.countUnflushed(ctx); err != nil {
 		return report, errors.Join(runErr, err)
 	}
@@ -125,19 +137,18 @@ func (e *Env) RunInit(ctx context.Context, schema SchemaRef) (*InitReport, error
 type InitOverrides struct {
 	Config *cdc.CDCConfig // nil: e.CDC
 	DryRun bool
-	// ReplaceDelta opts the run into purging the schema's delta tier after
-	// the base swap (#371). Without it a schema with delta objects refuses
-	// with cdc.ErrDeltaTierPresent, exactly as the CLI does.
-	ReplaceDelta bool
 	// AllSchemas runs init over every registered schema, as cdc-init does
 	// without --schema-id, instead of the one schema named.
 	AllSchemas bool
 }
 
-// RunInitWith executes one real init pass with per-run overrides. In dry-run
-// mode the mainline still counts the batches it skips, so the report's
-// RowsExported/FilesCreated carry the planned work — callers use them as the
-// positive control that the dry run had something to skip.
+// RunInitWith executes one real init pass with per-run overrides: the V2
+// cdc-init publishes an init generation and hands the exported rows' entries
+// off at their export versions. In dry-run mode the mainline still counts the
+// batches it skips, so the report's RowsExported/FilesCreated carry the
+// planned work — callers use them as the positive control that the dry run
+// had something to skip. A real run's per-schema reports are kept for the
+// onboarding checks of handoff.go.
 func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverrides) (*InitReport, error) {
 	keysBefore, err := e.listS3Keys(ctx)
 	if err != nil {
@@ -147,6 +158,9 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 	cfg := e.CDC
 	if ov.Config != nil {
 		cfg = *ov.Config
+	}
+	if cfg.RegistryEpochs == nil {
+		cfg.RegistryEpochs = e.RegistryEpochs
 	}
 	schemaIDFilter := int(schema.ID)
 	if ov.AllSchemas {
@@ -161,13 +175,12 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 		AutoEstimateRowBytes: true,
 		Logger:               e.logger,
 		SchemaRegistry:       e.Registry,
-		ReplaceDelta:         ov.ReplaceDelta,
-		// The harness keeps delta and base under one data prefix (they only
-		// differ by filename shape), so the delta inventory lists it.
-		DeltaPrefix: e.S3Prefix,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("cdc init schema %d (dry=%t, replace_delta=%t): %w", schema.ID, ov.DryRun, ov.ReplaceDelta, err)
+		return nil, fmt.Errorf("cdc init schema %d (dry=%t): %w", schema.ID, ov.DryRun, err)
+	}
+	if !ov.DryRun {
+		e.recordInits(summary.Schemas)
 	}
 
 	keysAfter, err := e.listS3Keys(ctx)
@@ -178,6 +191,7 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 		RowsExported: summary.TotalRowsExported,
 		FilesCreated: summary.TotalFilesCreated,
 		NewObjects:   diffKeys(keysBefore, keysAfter),
+		Schemas:      summary.Schemas,
 		Skipped:      summary.Skipped,
 	}
 	manifests, err := e.loadManifests(ctx)
@@ -188,11 +202,16 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 	return report, nil
 }
 
-// RunCompaction executes the real compactor (compaction.Compactor.RunOnce)
-// against the Env's manifest for one schema and returns its typed result.
-// Reads are manifest-driven (engine.go wires manifest.QuerySource), so a
-// compaction pass that mutates the manifest is directly query-observable.
+// compactionSkipReason is why every compaction scenario skips: a cut-over
+// deployment keeps the V1 compactor stopped (docs/publication-protocol-v2.md,
+// "Upgrade" step 1), and it cannot run against a V2 schema.
+const compactionSkipReason = "the V1 compactor does no work against a Protocol V2 schema; " +
+	"compaction scenarios run again on V2 compaction (#890)"
+
+// RunCompaction runs one compaction pass of schema. Until V2 compaction lands
+// (#890) it skips the calling test, naming #890.
 func (e *Env) RunCompaction(ctx context.Context, schema SchemaRef) (compaction.CompactionResult, error) {
+	e.T.Helper()
 	return e.RunCompactionWith(ctx, schema, CompactionOverrides{})
 }
 
@@ -208,87 +227,52 @@ type CompactionOverrides struct {
 	// DirtyRatioPct tunes the rewrite trigger (0: default 5).
 	DirtyRatioPct int
 	// SkipInputChecksumVerify opts the pass out of the #347 pre-merge
-	// verification of rewrite sources, exactly as the compactor tool's
-	// --skip-input-checksum-verify flag does. The zero value verifies, so
-	// every other harness scenario keeps the fail-closed default.
+	// verification of rewrite sources, as the compactor tool's
+	// --skip-input-checksum-verify flag does.
 	SkipInputChecksumVerify bool
 }
 
-// RunCompactionWith executes one real compaction pass with per-run overrides,
-// wiring the full compactor: manifest provider, merge engine and S3 object
-// client over the chosen S3 client. The merge engine is built the way the
-// production tool builds it — a cdc.NewDuckExporter DuckDB with the Env's S3
-// httpfs config — so the rewrite's parquet traffic takes the production path
-// (and, like the flush export, bypasses any injected S3 decorator).
-func (e *Env) RunCompactionWith(ctx context.Context, schema SchemaRef, ov CompactionOverrides) (compaction.CompactionResult, error) {
-	if e.CDC.ManifestTemplate == "" {
-		return compaction.CompactionResult{}, fmt.Errorf("compaction requires a manifest (Env built WithoutManifest)")
-	}
-	var s3Client cdc.S3FullClient = e.Cluster.S3
-	if ov.S3 != nil {
-		s3Client = ov.S3
-	}
-	provider := compaction.NewS3ManifestProvider(cdc.ManifestConfig{
-		Bucket:       e.Cluster.Bucket,
-		Prefix:       e.CDC.ManifestPrefix,
-		PathTemplate: e.CDC.ManifestTemplate,
-	}, s3Client)
-
-	s3Key, s3Secret, s3Token := cdc.ResolveStaticS3Credentials(e.CDC)
-	exporter, err := cdc.NewDuckExporter(ctx, e.CDC, s3Key, s3Secret, s3Token, e.logger)
-	if err != nil {
-		return compaction.CompactionResult{}, fmt.Errorf("open merge duckdb: %w", err)
-	}
-	defer func() { _ = exporter.DB.Close() }()
-
-	compactor := &compaction.Compactor{
-		Logger: e.logger,
-		Config: cdc.CompactionConfig{
-			SchemaID:                schema.ID,
-			TargetBaseSizeBytes:     ov.TargetBaseSizeBytes,
-			DirtyRatioPct:           ov.DirtyRatioPct,
-			SkipInputChecksumVerify: ov.SkipInputChecksumVerify,
-		},
-		Provider: provider,
-		Merger:   &compaction.DuckMerger{DB: exporter.DB, Logger: e.logger},
-		S3:       s3Client,
-		// S3FullClient carries GetObject, so the harness stamps merged base
-		// entries exactly as the production tool does (#347). An injected
-		// decorator (ov.S3) reads through the same seam: a fault that fails
-		// GetObject leaves the entry unstamped rather than failing the pass.
-		ObjectReader: s3Client,
-		Bucket:       e.Cluster.Bucket,
-		DataPrefix:   e.S3Prefix,
-		Resolver: manifest.PathResolver{
-			Prefix:       e.CDC.ManifestPrefix,
-			PathTemplate: e.CDC.ManifestTemplate,
-		},
-	}
-	result, err := compactor.RunOnce(ctx)
-	if err != nil {
-		return result, fmt.Errorf("compaction run once (schema %d): %w", schema.ID, err)
-	}
-	return result, nil
+// RunCompactionWith runs one compaction pass with per-run overrides. Until
+// V2 compaction lands (#890) it skips the calling test, naming #890; it must
+// be called on the test's own goroutine.
+func (e *Env) RunCompactionWith(_ context.Context, schema SchemaRef, _ CompactionOverrides) (compaction.CompactionResult, error) {
+	e.T.Helper()
+	e.SkipUntilV2Compaction()
+	return compaction.CompactionResult{}, fmt.Errorf("compaction of schema %d: no V2 compactor is wired (#890)", schema.ID)
 }
 
-// RegisterParquetInManifest appends one parquet object to the schema's
-// manifest so manifest-driven reads can see a file the production exporter
-// would never write (e.g. a fabricated wrong-schema or 0-row parquet, #187).
-// The entry carries only tier and path — the read path consumes nothing else.
-func (e *Env) RegisterParquetInManifest(ctx context.Context, schema SchemaRef, key, tier string) error {
-	if e.CDC.ManifestTemplate == "" {
-		return fmt.Errorf("register parquet in manifest: Env built WithoutManifest")
+// SkipUntilV2Compaction skips the calling test until V2 compaction lands
+// (#890). A test that runs RunCompaction off its own goroutine calls it
+// first, since a skip only stops the goroutine that calls it.
+func (e *Env) SkipUntilV2Compaction() {
+	e.T.Helper()
+	skipUntilV2Compaction(e.T)
+}
+
+// skipUntilV2Compaction skips t until V2 compaction lands (#890). A subtest
+// that compacts calls it with its own t first: the Env's skip stops the
+// Env's test, which a subtest must not do.
+func skipUntilV2Compaction(t testing.TB) {
+	t.Helper()
+	if v1CompactionStopped {
+		t.Skip(compactionSkipReason)
 	}
-	store := &manifest.S3Store{Client: e.Cluster.S3, Bucket: e.Cluster.Bucket}
-	resolver := manifest.PathResolver{Prefix: e.CDC.ManifestPrefix, PathTemplate: e.CDC.ManifestTemplate}
-	path, err := resolver.Resolve(schema.ID)
-	if err != nil {
-		return fmt.Errorf("resolve manifest path for schema %d: %w", schema.ID, err)
+}
+
+// v1CompactionStopped is true until V2 compaction (#890) replaces the skip
+// with a real pass. It is a variable, not a constant, so that static analysis
+// does not treat every compaction scenario's code after RunCompaction as
+// unreachable while it skips.
+var v1CompactionStopped = true
+
+// recordInits keeps each schema's latest real cdc-init report.
+func (e *Env) recordInits(inits []cdc.SchemaInit) {
+	if e.inits == nil {
+		e.inits = make(map[int16]cdc.SchemaInit)
 	}
-	if err := manifest.AppendFile(ctx, store, path, schema.ID, manifest.FileEntry{Tier: tier, Path: key}); err != nil {
-		return fmt.Errorf("append parquet %s to schema %d manifest: %w", key, schema.ID, err)
+	for _, in := range inits {
+		e.inits[in.SchemaID] = in
 	}
-	return nil
 }
 
 // countUnflushed counts change_log rows with flushed_at = 0 across all
@@ -300,40 +284,6 @@ func (e *Env) countUnflushed(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("count unflushed change_log rows: %w", err)
 	}
 	return count, nil
-}
-
-// loadManifests fetches and parses the manifest of every fixture schema that
-// has one. A CONFIRMED missing manifest (manifest.IsNotFound) is simply absent
-// from the map; any other store failure surfaces (#464).
-func (e *Env) loadManifests(ctx context.Context) (map[int16]*manifest.Manifest, error) {
-	if e.CDC.ManifestTemplate == "" {
-		return make(map[int16]*manifest.Manifest), nil
-	}
-	store, resolver := e.manifestAccess()
-	return loadManifestsFrom(ctx, store, resolver)
-}
-
-// loadManifestsFrom is loadManifests against an explicit store and resolver.
-// Only manifest.ErrObjectNotFound may be treated as "no manifest yet": a
-// bucket, permission or transport failure must not read as an empty map, or
-// every assertion built on the map silently loses coverage.
-func loadManifestsFrom(ctx context.Context, store manifest.Store, resolver manifest.PathResolver) (map[int16]*manifest.Manifest, error) {
-	manifests := make(map[int16]*manifest.Manifest)
-	for _, ref := range DefaultSchemaFixtures() {
-		path, err := resolver.Resolve(ref.ID)
-		if err != nil {
-			return nil, fmt.Errorf("resolve manifest path for schema %d: %w", ref.ID, err)
-		}
-		m, _, err := manifest.Load(ctx, store, path)
-		if manifest.IsNotFound(err) {
-			continue // confirmed absent: no manifest yet for this schema
-		}
-		if err != nil {
-			return nil, fmt.Errorf("load manifest for schema %d at %s: %w", ref.ID, path, err)
-		}
-		manifests[ref.ID] = m
-	}
-	return manifests, nil
 }
 
 // diffKeys returns keys present in after but not in before, sorted.

@@ -1,6 +1,15 @@
 package main
 
-import "github.com/lychee-technology/forma/internal/cdc"
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/publication"
+)
 
 // cdcSharedFlags holds the parsed flag values that cdc-flush and cdc-init map
 // onto CDCConfig identically (#445). Each tool fills it once from its own flag
@@ -16,13 +25,31 @@ type cdcSharedFlags struct {
 	password          string
 	duck              duckExportFlags
 	s3                s3Flags
+	changeLogTable    string
 	entityMainTable   string
 	eavDataTable      string
 	batchSize         int
 	estimatedRowBytes int
-	manifestPrefix    string
-	manifestTemplate  string
 }
+
+// cdcChangeLogTableUsage is the -change-log-table usage of both CDC writers:
+// a flush selects and marks the table's unflushed entries, and an init hands
+// the exported rows' entries off in it, so both must name the table init-db
+// created (its -change-log-table, CHANGE_LOG_TABLE, change_log_dev by
+// default).
+const cdcChangeLogTableUsage = "Change log table name: the table init-db created (init-db's --change-log-table; " +
+	"its default is change_log_dev). cdc-flush and cdc-init of one deployment must name the same table"
+
+// defaultCDCDataPrefix is the -s3-prefix default of both cdc-flush and
+// cdc-init, and the -data-prefix default of the compactor and
+// manifest-reconcile.
+const defaultCDCDataPrefix = "data"
+
+// cdcDataPrefixUsage is the -s3-prefix usage of both CDC writers: they must
+// name the same prefix, since a flush generation lists the init's base
+// objects and a manifest that lists a key under another prefix is refused.
+const cdcDataPrefixUsage = "S3 data prefix of the V2 object layout: parquet objects under {prefix}/{schema_id}/e{epoch}/{base|delta}/, " +
+	"manifests under {prefix}/{schema_id}/_manifests/. cdc-flush and cdc-init of one deployment must name the same prefix"
 
 // sharedConfig returns a CDCConfig holding only the shared block. It does not
 // call WithDefaults: callers add their tool-specific fields first and apply
@@ -49,11 +76,36 @@ func (s cdcSharedFlags) sharedConfig() cdc.CDCConfig {
 		S3Region:                s.s3.region,
 		S3UseSSL:                s.s3.useSSL,
 		S3UsePath:               s.s3.usePath,
-		ManifestPrefix:          s.manifestPrefix,
-		ManifestTemplate:        s.manifestTemplate,
+		ChangeLogTable:          s.changeLogTable,
 		EntityMainTable:         s.entityMainTable,
 		EAVDataTable:            s.eavDataTable,
 		BatchSize:               s.batchSize,
 		EstimatedRowBytes:       s.estimatedRowBytes,
 	}
+}
+
+// buildCDCSchemaRegistry loads the schema registry of a cdc-flush or cdc-init
+// run after reading every publication record's epoch, and answers both. The
+// run refuses a schema whose record it finds at another epoch under its
+// schema lock (cdc.CDCConfig.RegistryEpochs): a drop, or a drop and a
+// registration again, committed after the epochs were read, so the metadata
+// loaded may be the dropped schema's.
+func buildCDCSchemaRegistry(ctx context.Context, pool *pgxpool.Pool, entityMain, table, dir string) (forma.SchemaRegistry, map[int16]int64, error) {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, nil, fmt.Errorf("open the snapshot the publication epochs are read in: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	epochs, err := publication.Epochs(ctx, publication.PgxTx(tx), publication.TablesFor(entityMain))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the publication epochs before loading the schema registry: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("end the snapshot the publication epochs were read in: %w", err)
+	}
+	registry, err := buildToolSchemaRegistry(ctx, pool, table, dir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create schema registry: %w", err)
+	}
+	return registry, epochs, nil
 }
