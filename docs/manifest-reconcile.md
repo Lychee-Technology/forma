@@ -152,8 +152,10 @@ only it lists. So every pass, the diagnosis's plan included, deletes nothing for
 a schema whose lifecycle epoch moved less than G ago. The epoch row's
 `updated_at` is that fence: every drop, registration and recovery stamps it,
 and the recovery stamps it with the database clock after it found the record
-missing, so after the snapshot of every reader of the lost record. Such a
-reader is done R_max + C after its snapshot, within G. The report says
+missing, so after the snapshot of every reader of the lost record. No later
+stamp lowers it: a drop or registration whose transaction began before the
+loss keeps the recovery's later stamp. Such a reader is done R_max + C after
+its snapshot, within G. The report says
 `garbage collection refused: the schema's lifecycle epoch moved at …` with the
 time it resumes; it is not a finding, and needs no action. A drop or a
 registration delays collection by the same G, which costs storage only.

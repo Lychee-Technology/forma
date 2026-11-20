@@ -29,10 +29,19 @@ var ErrEpochReused = errors.New("publication epoch already used by the schema id
 var ErrLifecycleLost = errors.New("publication record and lifecycle epoch both lost")
 
 // raiseEpochSQL raises schema $1's lifecycle epoch to $2. It writes nothing
-// when the id's lifecycle epoch is $2 or above already.
+// when the id's lifecycle epoch is $2 or above already. The row's updated_at,
+// the lifecycle fence (ReadLifecycleFence), never goes back: the
+// transition's stamp is its transaction's start time, which can be older
+// than a recovery's stamp (stampRecovery) that the row carries already. A
+// transaction that began before a loss can, under READ COMMITTED, read the
+// record recovered after it and move it on; stamping its start time then
+// would end the recovery's fence early, and a collection would delete the
+// objects of a head the loss took the history row of while a reader pinned
+// to it still scans them.
 const raiseEpochSQL = `INSERT INTO %s AS e (schema_id, epoch, updated_at)
 	VALUES ($1, $2, ` + sqlgen.ServerTimeMillisSQL + `)
-	ON CONFLICT (schema_id) DO UPDATE SET epoch = EXCLUDED.epoch, updated_at = EXCLUDED.updated_at
+	ON CONFLICT (schema_id) DO UPDATE SET epoch = EXCLUDED.epoch,
+		updated_at = GREATEST(e.updated_at, EXCLUDED.updated_at)
 	WHERE e.epoch < EXCLUDED.epoch`
 
 // raiseEpoch records, on r, that schemaID's record now carries epoch, in the
@@ -54,6 +63,7 @@ func raiseEpoch(ctx context.Context, r runner, t Tables, schemaID int16, epoch i
 // LifecycleFence is when a schema id's lifecycle epoch last moved: its epoch
 // row's updated_at, which every transition that moves a record's epoch
 // stamps, and a lost-record recovery stamps after the loss (stampRecovery).
+// No stamp lowers it (raiseEpochSQL, stampRecoverySQL).
 type LifecycleFence struct {
 	// Present says the id has a lifecycle epoch row.
 	Present bool

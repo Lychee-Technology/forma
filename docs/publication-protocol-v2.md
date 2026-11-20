@@ -272,7 +272,10 @@ deleted. Readers and writers do not read it; only the lifecycle transitions,
 `ReadHistory` and the collector do. `updated_at` is the collector's lifecycle fence: every
 transition stamps it with its transaction's time, a lost-record recovery again with the
 clock after it found the record missing, and garbage collection deletes nothing for the
-schema until it is G old ("A lost record"). A record without the row is a
+schema until it is G old ("A lost record"). No stamp lowers it (`GREATEST`): a transition
+whose transaction began before a loss can read the record recovered after it under READ
+COMMITTED and move it on, and its older start time would otherwise end the recovery's
+fence early. A record without the row is a
 `missing_lifecycle_epoch` finding, and collection stays refused.
 
 ## Immutable manifest generations

@@ -201,3 +201,79 @@ func TestARecordWithoutItsLifecycleEpochStopsTheCollection(t *testing.T) {
 	require.Empty(t, rep.Collected.Manifests)
 	require.Subset(t, f.store.keys(), f.keysOf(g1), "the expired generation is kept")
 }
+
+// TestALaterTransitionKeepsTheRecoveryFence is R5-F1: a transition whose
+// transaction began before the loss, more than a grace before the recovery,
+// reads the recovered record under READ COMMITTED and moves it on (a drop).
+// Its stamp is its transaction's start, older than the recovery's: the
+// lifecycle fence must not go back to it, or a collection inside the pinned
+// reader's window would take the unrecorded head's manifest and objects.
+func TestALaterTransitionKeepsTheRecoveryFence(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	g1 := f.publishInit(t, f.initialized(t), 2)
+	head := f.publish(t, f.stageFlush(t, g1, 1))
+	rep := f.pass(t, testOptions(true))
+	require.NoError(t, rep.Err)
+	require.Equal(t, []int64{g1.rec.Generation}, rep.Collected.Retired)
+	waitOutGrace() // N-1 expires: it is the history's floor, below N
+
+	reader, err := f.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	require.NoError(t, err)
+	defer func() { _ = reader.Rollback() }()
+	pinned, err := publication.Read(ctx, publication.SQLTx(reader), f.tables, testSchema)
+	require.NoError(t, err)
+	require.Equal(t, head.rec.Generation, pinned.Generation, "the reader pinned generation N")
+
+	drop, err := f.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	require.NoError(t, err)
+	defer func() { _ = drop.Rollback() }()
+	var began int64
+	require.NoError(t, drop.QueryRowContext(ctx, "SELECT "+sqlgen.ServerTimeMillisSQL).Scan(&began))
+
+	f.exec(t, "DELETE FROM %s", f.tables.Record)
+	f.exec(t, "DELETE FROM %s WHERE generation = 2", f.tables.Generation)
+	waitOutGrace() // the drop's transaction began more than a grace before the recovery
+	require.NoError(t, f.inTx(t, func(tx publication.Tx) error {
+		h, err := publication.ReadHistory(ctx, tx, f.tables, testSchema)
+		if err != nil {
+			return err
+		}
+		_, wrote, err := publication.InitializeAfterLoss(ctx, tx, f.tables, testSchema, h, publication.AwaitingInit)
+		require.True(t, wrote)
+		return err
+	}))
+	stamped, err := publication.ReadLifecycleFence(ctx, publication.DB(f.db), f.tables, testSchema, time.Hour)
+	require.NoError(t, err)
+	require.Greater(t, stamped.MovedAt, began+testOptions(true).RetentionGrace.Milliseconds())
+
+	q := publication.SQLTx(drop)
+	recovered, err := publication.Read(ctx, q, f.tables, testSchema)
+	require.NoError(t, err, "READ COMMITTED reads the record recovered after the transaction began")
+	_, err = publication.Reset(ctx, q, f.tables, recovered.Record)
+	require.NoError(t, err)
+	require.NoError(t, drop.Commit())
+
+	fence, err := publication.ReadLifecycleFence(ctx, publication.DB(f.db), f.tables, testSchema, time.Hour)
+	require.NoError(t, err)
+	require.Equal(t, stamped.MovedAt, fence.MovedAt, "the drop keeps the recovery's later stamp, not its start %d", began)
+
+	rep = f.pass(t, testOptions(true))
+	require.NoError(t, rep.Err)
+	require.Contains(t, rep.Refused, "lifecycle epoch")
+	require.Empty(t, rep.Collected.Objects)
+	require.Empty(t, rep.Collected.Manifests)
+	require.Empty(t, rep.Collected.Forgotten)
+	ref, err := manifestv2.RecordRef(pinned.Record)
+	require.NoError(t, err)
+	raw, err := f.store.Get(ctx, pinned.ManifestKey)
+	require.NoError(t, err, "the pinned generation's manifest is still there")
+	m, err := manifestv2.Verify(raw, ref)
+	require.NoError(t, err)
+	for _, key := range m.Keys() {
+		ok, err := f.store.Exists(ctx, key)
+		require.NoError(t, err)
+		require.True(t, ok, "the pinned generation's object %s is still there", key)
+	}
+	require.NoError(t, reader.Commit())
+}

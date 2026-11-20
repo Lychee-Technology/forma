@@ -132,7 +132,8 @@ const supersedeLostSQL = `UPDATE %s SET superseded_at = ` + sqlgen.ServerTimeMil
 
 // stampRecoverySQL stamps the id's lifecycle epoch row with the database's
 // clock at the statement, never lowering it. Not the transaction's start time
-// (sqlgen.ServerTimeMillisSQL), which raiseEpoch stamps: the transaction may
+// (sqlgen.ServerTimeMillisSQL), which raiseEpoch stamps (never lowering it
+// either, so a later transition keeps this fence): the transaction may
 // have begun before the loss committed, and a reader may have read the lost
 // record after that start.
 const stampRecoverySQL = `UPDATE %s SET updated_at = GREATEST(updated_at,
