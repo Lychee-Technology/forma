@@ -109,6 +109,12 @@ func (w *Writer) compactRound(ctx context.Context, schemaID int16, pin int64, st
 	case publication.Dropped:
 		return fmt.Errorf("compact schema %d at epoch %d: %w", schemaID, cur.Epoch, publication.ErrDropped)
 	}
+	// A merge's outputs are keyed under w's layout, and a full rewrite
+	// replaces every file of the generation: under another prefix than the
+	// published one it would move the inventory away from the flush writers.
+	if err := w.cfg.Layout.Holds(cur.ManifestKey); err != nil {
+		return fmt.Errorf("compact schema %d generation %d: %w", schemaID, cur.Generation, err)
+	}
 	input, err := w.manifest(ctx, cur)
 	if err != nil {
 		return fmt.Errorf("compact schema %d: %w", schemaID, err)
@@ -166,6 +172,9 @@ func (w *Writer) manifest(ctx context.Context, rec publication.Record) (*manifes
 // input is the generation the compaction merged from; head is that
 // generation, or a head the compaction rebased onto over flushes only.
 func (w *Writer) stageCompactManifest(ctx context.Context, head publication.Record, input int64, staging CompactStaging, stagedAt int64) (publication.Next, error) {
+	if err := w.cfg.Layout.Holds(head.ManifestKey); err != nil {
+		return publication.Next{}, fmt.Errorf("rebuild the compaction over generation %d: %w", head.Generation, err)
+	}
 	parent, err := w.manifest(ctx, head)
 	if err != nil {
 		return publication.Next{}, err

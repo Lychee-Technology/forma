@@ -306,3 +306,37 @@ func mustRef(t *testing.T, rec publication.Record) manifestv2.Ref {
 	require.NoError(t, err)
 	return ref
 }
+
+// TestCompactUnderAnotherPrefixCannotMoveTheInventory pins R1-F2 of #907: a
+// full rewrite replaces every file of the generation, so a compactor
+// configured with another prefix than the published one would commit an
+// internally consistent manifest under its own prefix, and the next flush,
+// configured with the published prefix, would be refused. The compaction is
+// refused before it stages anything, the record is left as it was, and a
+// flush under the published prefix still commits.
+func TestCompactUnderAnotherPrefixCannotMoveTheInventory(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	twoFlushes(t, f)
+	before := f.record(t)
+
+	st := &compactStager{f: f}
+	for _, prefix := range []string{"elsewhere", "data/sub"} {
+		w := f.writer(t, func(c *Config) { c.Layout = manifestv2.Layout{Prefix: prefix} })
+		rep, err := w.Compact(ctx, schemaID, 0, st)
+		require.ErrorIs(t, err, manifestv2.ErrForeignPrefix, "prefix %q", prefix)
+		require.False(t, rep.Committed)
+	}
+	require.Zero(t, st.calls, "nothing is merged or staged under the foreign prefix")
+	require.Equal(t, before, f.record(t), "the pointer does not move")
+
+	w := f.writer(t, func(c *Config) { c.Layout = manifestv2.Layout{Prefix: "data//"} })
+	rep, err := w.Compact(ctx, schemaID, 0, &compactStager{f: f})
+	require.NoError(t, err, "the published prefix in another spelling is the same prefix")
+	require.True(t, rep.Committed)
+
+	f.insert(t, 1)
+	_, err = f.writer(t).Flush(ctx, schemaID, 1, &stager{f: f})
+	require.NoError(t, err, "a flush under the published prefix still commits")
+	f.checkInvariants(t)
+}
