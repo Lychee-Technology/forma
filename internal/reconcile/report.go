@@ -19,9 +19,12 @@ const (
 	// AwaitingInit: the V2 cutover left the schema for a cdc-init.
 	AwaitingInit FindingKind = "awaiting_init"
 	// MissingGeneration: the record names a committed generation whose
-	// manifest object is not in S3, or whose history row is gone or names
-	// another manifest.
+	// manifest object is not in S3, or that has no history row.
 	MissingGeneration FindingKind = "missing_generation"
+	// HistoryMismatch: the record's generation has a history row, but the
+	// row disagrees with the record: one of the two was restored or written
+	// outside the protocol.
+	HistoryMismatch FindingKind = "history_mismatch"
 	// HistoryGap: the generation history has no row for a generation
 	// number a reader could still hold: one above the highest expired row
 	// and at or below the record's counter.
@@ -67,8 +70,8 @@ const (
 // nothing.
 func (k FindingKind) blocking() bool {
 	switch k {
-	case UnboundStorage, NoRecord, RecordInvalid, MissingLifecycleEpoch, StaleLifecycleEpoch, MissingGeneration, HistoryGap, MissingRetainedManifest, InvalidManifest,
-		ForeignManifest:
+	case UnboundStorage, NoRecord, RecordInvalid, MissingLifecycleEpoch, StaleLifecycleEpoch, MissingGeneration, HistoryMismatch,
+		HistoryGap, MissingRetainedManifest, InvalidManifest, ForeignManifest:
 		return true
 	}
 	return false

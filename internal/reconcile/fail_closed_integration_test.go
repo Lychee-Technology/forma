@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,7 +67,15 @@ func TestCollectorFailsClosed(t *testing.T) {
 		{"the record's parent generation is not its manifest's", func(t *testing.T, f *fixture, _ generation) *Reconciler {
 			f.exec(t, "UPDATE %s SET parent_generation = 1", f.tables.Record)
 			return nil
-		}, MissingGeneration, 3, true},
+		}, HistoryMismatch, 3, true},
+		{"the current generation's history row names another digest", func(t *testing.T, f *fixture, _ generation) *Reconciler {
+			f.exec(t, "UPDATE %s SET manifest_sha256 = '"+strings.Repeat("0", 64)+"' WHERE generation = 3", f.tables.Generation)
+			return nil
+		}, HistoryMismatch, 3, true},
+		{"the current generation's history row is stamped superseded", func(t *testing.T, f *fixture, _ generation) *Reconciler {
+			f.exec(t, "UPDATE %s SET superseded_at = 1 WHERE generation = 3", f.tables.Generation)
+			return nil
+		}, HistoryMismatch, 3, true},
 		{"the record's lineage is not its manifest's", func(t *testing.T, f *fixture, _ generation) *Reconciler {
 			f.exec(t, "UPDATE %s SET lineage = '"+uuid.NewString()+"'", f.tables.Record)
 			return nil

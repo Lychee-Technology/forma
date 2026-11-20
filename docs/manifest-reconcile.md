@@ -136,7 +136,7 @@ A pass deletes nothing at all for a schema when it cannot prove what readers
 may scan: a run target that is not the bound storage, a missing or invalid record,
 a record without its lifecycle epoch row or with one at another epoch, a lifecycle
 epoch that moved less than G ago (below), a published record whose history row is
-missing or names another manifest or parent, a gap in the generation history
+missing or disagrees with it, a gap in the generation history
 (below), a retained manifest that is missing, any manifest that fails
 verification (retained or expired, and the current one also against the record,
 as readers verify it), or a manifest key the configured prefix does not build. A
@@ -280,7 +280,8 @@ safe action. Any finding makes the run exit 2.
 | `missing_lifecycle_epoch` | The schema has a record but no lifecycle epoch row, so nothing shows when it was last recovered. | refused | Write the row back at the record's epoch, stamped with the database time: `INSERT INTO <entity_main>_publication_epoch (schema_id, epoch, updated_at) VALUES (<id>, <epoch>, <now in epoch ms>)`. Collection resumes G after the stamp. |
 | `lifecycle_epoch_mismatch` | The lifecycle epoch row names another epoch than the record: one of them was restored or written outside the protocol, and the row's stamp does not show when the record was last recovered. | refused | Row below the record: write it back at the record's epoch with the database time, `UPDATE <entity_main>_publication_epoch SET epoch = <epoch>, updated_at = <now in epoch ms> WHERE schema_id = <id>`, never a backup copy; collection resumes G after the stamp. Row above the record: the record went back, so treat it as `record_invalid`. |
 | `awaiting_init` | The V2 cutover left the schema for its first `cdc-init`. Readers fail closed. | runs | Run `cdc-init` for the schema. |
-| `missing_generation` | The record names a generation whose manifest object is missing, or whose history row is missing or names another manifest. | refused | A lost or mismatched manifest: re-initialize with `cdc-init`; collection resumes once the lost generation expires. A lost history row: do not restore it from a backup (see "Lost history rows" below). Collection stays refused until a generation above the unrecorded one expires, which takes two publications: the next one (a flush, a compaction or a `cdc-init`) supersedes the unrecorded generation, which is then a `missing_history` finding; a later publication supersedes the next one's generation, a pass retires it, and G passes. A single re-init followed by G is not enough. |
+| `missing_generation` | The record names a generation whose manifest object is missing, or that has no history row. | refused | A lost manifest: re-initialize with `cdc-init`; collection resumes once the lost generation expires. A lost history row: do not restore it from a backup (see "Lost history rows" below). Collection stays refused until a generation above the unrecorded one expires, which takes two publications: the next one (a flush, a compaction or a `cdc-init`) supersedes the unrecorded generation, which is then a `missing_history` finding; a later publication supersedes the next one's generation, a pass retires it, and G passes. A single re-init followed by G is not enough. |
+| `history_mismatch` | The record's generation has a history row, but the row disagrees with the record (epoch, parent generation, manifest key, digest or token), or carries a `superseded_at` or `retired_at` while the generation is current. | refused | Not a lost row, and not the lost row's recovery (see "A history row that disagrees with the record" below). Rewrite neither the row nor the record, and restore neither from a backup. Reads follow the record: only if the manifest fails against the record (an `invalid_manifest` finding of the generation says so) do they fail, and a re-init restores them. The action says whether collection can resume: if the row's manifest verifies against the row, once a later publication replaces the generation; otherwise leave collection refused, since no publication or expiry clears it. |
 | `missing_history` | The history has no row for a generation number above the highest expired row and at or below the record's counter. | refused | Do not restore the rows from a backup (see "Lost history rows" below). Collection resumes by itself once a generation above the gap expires: a later publication (a `cdc-init` included) supersedes it, a pass retires it, and G passes. |
 | `missing_retained_manifest` | A superseded generation inside its grace has no manifest. | refused | None for new reads. Collection resumes once the generation expires. |
 | `invalid_manifest` | A manifest's bytes are not the ones PostgreSQL committed: corruption or a writer bug. | refused | Restore the object from a versioned or backed-up copy whose SHA-256 is the history row's `manifest_sha256`. For the current generation, a re-init restores reads. |
@@ -306,6 +307,38 @@ forever. Nothing the tool can check proves that a backup row carries the exact
 generation identity and the retirement state the protocol would have given it,
 so the documented recovery is the publication-and-expiry sequence in the table
 above: no step of it writes a history row by hand.
+
+**A history row that disagrees with the record** (`history_mismatch`). The row
+of the record's generation is there, so this is not a lost row: it never becomes
+a `missing_history` gap, and the two-publication recovery above does not apply.
+One of the two rows was restored from a backup or written outside the protocol,
+since every publication writes them in one transaction. Do not rewrite either to
+make them agree, and do not restore the manifest object to match the row: the
+pass cannot prove which of them is the committed state.
+
+- *Current reads* follow the record, which readers verify the manifest
+  against. If the manifest verifies against the record, reads succeed and need
+  nothing. If it does not (an `invalid_manifest` finding of the same generation
+  says so in its detail), reads fail closed, and a re-init with `cdc-init`
+  restores them.
+- *Garbage collection* is a separate question. A re-init, or any later
+  publication, makes another generation current, but the disagreeing row stays
+  in the history, and every pass verifies the manifest it names against it,
+  retained or expired. The finding's action says which case applies:
+  - The manifest verifies against the row, and the row carries no retention
+    stamp (for example only the record's parent generation, or only the row's
+    `superseded_at`, is wrong). Collection resumes once a later publication
+    replaces the generation. The row then keeps the generation's objects until
+    a pass retires it and G passes, like any superseded generation. The
+    collector never retires the current generation's row, even when it carries
+    a `superseded_at`, so its grace cannot run while readers still choose it.
+  - Otherwise (for example the row's digest or manifest key is not the
+    object's, or the row was stamped retired while it was current), the
+    manifest never verifies against the row. No publication and no expiry
+    clears the refusal: the expired row is reported `invalid_manifest` on every
+    pass. Leave garbage collection refused for the schema, and do not run
+    `--gc` for it until the cause is known. A refusal deletes nothing; garbage
+    only accumulates.
 
 **An invalid record.** Do not restore the row from a backup. A backup's
 pointer from the same epoch can still pass every reader check and name an

@@ -17,7 +17,7 @@ import (
 // writer stages, and every object a retained generation lists that S3
 // confirms missing or, under VerifyChecksums, holds other bytes.
 func (r *Reconciler) inspect(ctx context.Context, p *pass) error {
-	p.verified = map[string]*manifestv2.Manifest{}
+	p.verified, p.mismatch = map[string]*manifestv2.Manifest{}, -1
 	if r.storageFault != nil {
 		p.findings = append(p.findings, *r.storageFault)
 	}
@@ -29,6 +29,7 @@ func (r *Reconciler) inspect(ctx context.Context, p *pass) error {
 	for _, g := range p.expired {
 		r.checkManifest(p, g, false, false)
 	}
+	p.settleMismatch()
 	for _, o := range p.listed {
 		if !r.Layout.Owns(p.id, o.Key) {
 			p.findings = append(p.findings, Finding{Kind: UnrecognizedObject, Key: o.Key,
@@ -49,7 +50,10 @@ func (r *Reconciler) inspect(ctx context.Context, p *pass) error {
 // lifecycle epoch row is missing or at another epoch, and checks that a
 // published record's generation has its history row naming the same
 // manifest: without it nothing protects the current generation's objects.
-// It answers the current generation number, 0 when there is none.
+// A missing row (missing_generation) and a present row that disagrees with
+// the record (history_mismatch) are told apart: the first leaves a gap a
+// later expiry closes, the second stays in the history. It answers the
+// current generation number, 0 when there is none.
 func (r *Reconciler) checkRecord(p *pass) int64 {
 	if p.record == nil {
 		return 0
@@ -67,25 +71,47 @@ func (r *Reconciler) checkRecord(p *pass) int64 {
 	}
 	cur := publication.Generation{Generation: rec.Generation, Epoch: rec.Epoch, ManifestKey: rec.ManifestKey}
 	i := slices.IndexFunc(p.retained, func(g publication.Generation) bool { return g.Generation == rec.Generation })
-	detail := ""
-	switch {
-	case i < 0:
-		detail = "the generation history has no row for the record's generation"
-	case p.retained[i].Epoch != rec.Epoch || p.retained[i].ManifestKey != rec.ManifestKey ||
-		p.retained[i].ManifestSHA256 != rec.ManifestSHA256 || p.retained[i].Token != rec.Token ||
-		p.retained[i].ParentGeneration != rec.ParentGeneration || p.retained[i].SupersededAt != 0:
-		row := p.retained[i]
-		detail = fmt.Sprintf("the generation's history row names epoch %d, parent generation %d, manifest %s, digest %s and token %s, "+
-			"superseded at %d; the record names epoch %d, parent generation %d, manifest %s, digest %s and token %s",
-			row.Epoch, row.ParentGeneration, row.ManifestKey, row.ManifestSHA256, row.Token, row.SupersededAt,
-			rec.Epoch, rec.ParentGeneration, rec.ManifestKey, rec.ManifestSHA256, rec.Token)
-	default:
+	if i < 0 {
+		f := generationFinding(MissingGeneration, cur, true, "the generation history has no row for the record's generation")
+		f.Action = actionMissingHistory
+		p.findings = append(p.findings, f)
 		return rec.Generation
 	}
-	f := generationFinding(MissingGeneration, cur, true, detail)
-	f.Action = actionMissingHistory
-	p.findings = append(p.findings, f)
+	row := p.retained[i]
+	if row.Epoch == rec.Epoch && row.ManifestKey == rec.ManifestKey && row.ManifestSHA256 == rec.ManifestSHA256 &&
+		row.Token == rec.Token && row.ParentGeneration == rec.ParentGeneration && row.SupersededAt == 0 && row.RetiredAt == 0 {
+		return rec.Generation
+	}
+	p.mismatch = len(p.findings)
+	p.findings = append(p.findings, generationFinding(HistoryMismatch, cur, true, fmt.Sprintf(
+		"the generation's history row is present but disagrees with the record: the row names epoch %d, parent generation %d, "+
+			"manifest %s, digest %s and token %s, superseded at %d and retired at %d; the record names epoch %d, parent generation %d, "+
+			"manifest %s, digest %s and token %s",
+		row.Epoch, row.ParentGeneration, row.ManifestKey, row.ManifestSHA256, row.Token, row.SupersededAt, row.RetiredAt,
+		rec.Epoch, rec.ParentGeneration, rec.ManifestKey, rec.ManifestSHA256, rec.Token)))
 	return rec.Generation
+}
+
+// settleMismatch picks the action of the history_mismatch finding once the
+// row's manifest was checked. The row stays in the history after a later
+// publication replaces the generation, and every pass verifies the manifest
+// it names against it, retained or expired, so whether collection can ever
+// resume depends on whether that verification passes. It passes only when
+// the row agrees with the manifest object and carries no retention stamp
+// written while the generation was current; then the row expires like any
+// other once a later publication replaces the generation. Otherwise
+// collection stays refused, and no expiry clears it.
+func (p *pass) settleMismatch() {
+	if p.mismatch < 0 {
+		return
+	}
+	f := &p.findings[p.mismatch]
+	row := p.retained[slices.IndexFunc(p.retained, func(g publication.Generation) bool { return g.Generation == f.Generation })]
+	if p.rowVerifies && row.RetiredAt == 0 {
+		f.Action = actionHistoryMismatchReplace
+		return
+	}
+	f.Action = actionHistoryMismatchRefuse
 }
 
 // checkLifecycle reports a lifecycle epoch row that cannot fence the record:
@@ -182,14 +208,56 @@ func (r *Reconciler) checkManifest(p *pass, g publication.Generation, retained, 
 		return
 	}
 	m, err := manifestv2.Verify(raw, manifestv2.GenerationRef(p.id, g))
-	if err == nil && current {
-		err = verifyAgainstRecord(raw, p.record.Record)
+	if !current {
+		if err != nil {
+			p.findings = append(p.findings, generationFinding(InvalidManifest, g, false, err.Error()))
+			return
+		}
+		p.verified[g.ManifestKey] = m
+		return
+	}
+	recErr := verifyAgainstRecord(raw, p.record.Record)
+	if p.mismatch >= 0 {
+		p.checkMismatchedManifest(g, err, recErr)
+		if err != nil || recErr != nil {
+			return
+		}
+	} else if err == nil {
+		err = recErr
 	}
 	if err != nil {
-		p.findings = append(p.findings, generationFinding(InvalidManifest, g, current, err.Error()))
+		p.findings = append(p.findings, generationFinding(InvalidManifest, g, true, err.Error()))
 		return
 	}
 	p.verified[g.ManifestKey] = m
+}
+
+// checkMismatchedManifest checks the manifest the current generation's
+// history row names when the row disagrees with the record. Readers verify
+// the record, never the row, so the object is not restored to match the
+// row: whether reads work is what the check against the record says, and
+// the row's own check decides only whether collection can resume
+// (settleMismatch).
+func (p *pass) checkMismatchedManifest(g publication.Generation, rowErr, recErr error) {
+	p.rowVerifies = rowErr == nil
+	if rowErr == nil && recErr == nil {
+		return
+	}
+	reads := "it verifies against the record, as readers verify it, so reads succeed"
+	switch {
+	case g.ManifestKey != p.record.ManifestKey:
+		reads = fmt.Sprintf("the record names manifest %s, which no history row names and this pass does not read: "+
+			"a reader's check of it tells whether reads succeed", p.record.ManifestKey)
+	case recErr != nil:
+		reads = recErr.Error()
+	}
+	row := "it verifies against the history row"
+	if rowErr != nil {
+		row = fmt.Sprintf("against the history row, which disagrees with the record: %v", rowErr)
+	}
+	f := generationFinding(InvalidManifest, g, true, fmt.Sprintf("%s; %s", row, reads))
+	f.Action = actionMismatchedManifest
+	p.findings = append(p.findings, f)
 }
 
 // verifyAgainstRecord runs the reader's own check of the current manifest,

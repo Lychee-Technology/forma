@@ -34,6 +34,12 @@ type pass struct {
 	// check against its history row.
 	verified map[string]*manifestv2.Manifest
 	findings []Finding
+	// mismatch is the index in findings of the record's generation's
+	// history_mismatch finding, -1 without one; rowVerifies says whether
+	// the manifest that row names verified against the row
+	// (settleMismatch).
+	mismatch    int
+	rowVerifies bool
 	// concurrent counts the findings a diagnosis dropped because the
 	// generation they concern expired while it ran.
 	concurrent int
@@ -163,7 +169,7 @@ func (r *Reconciler) snapshot(ctx context.Context, p *pass) error {
 func (r *Reconciler) retire(ctx context.Context, p *pass) ([]int64, error) {
 	var retired []int64
 	for _, g := range p.retained {
-		if g.SupersededAt == 0 || g.RetiredAt != 0 {
+		if g.SupersededAt == 0 || g.RetiredAt != 0 || p.isCurrent(g) {
 			continue
 		}
 		ok, err := publication.Retire(ctx, publication.DB(r.DB), r.Tables, p.id, g.Generation)
@@ -175,6 +181,15 @@ func (r *Reconciler) retire(ctx context.Context, p *pass) ([]int64, error) {
 		}
 	}
 	return retired, nil
+}
+
+// isCurrent answers whether g is the generation the record publishes. Its
+// row is never retired, even when it carries a superseded_at no transition
+// wrote (a history_mismatch finding): retention would run while readers
+// still choose the generation, and the row could expire as soon as a later
+// publication replaces it.
+func (p *pass) isCurrent(g publication.Generation) bool {
+	return p.record != nil && p.record.State == publication.Published && g.Generation == p.record.Generation
 }
 
 // fetchManifests reads the manifest of every retained and expired

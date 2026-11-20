@@ -51,6 +51,26 @@ const (
 		"reported as missing_history; a later one must supersede that publication's generation in turn, a pass retire it, " +
 		"and the retention grace pass. Waiting the retention grace after a single publication or re-init is not enough: " +
 		"nothing names the unrecorded generation's objects, and only an expired generation above it proves no reader still holds it"
+	historyMismatch = "the record's generation has a history row, but the row disagrees with the record: one of the two was " +
+		"restored from a backup or written outside the protocol. Do not rewrite either to make them agree, and do not restore " +
+		"the row from a backup (docs/manifest-reconcile.md, \"A history row that disagrees with the record\"). Current reads " +
+		"follow the record: they fail closed only if the manifest does not verify against the record (an invalid_manifest " +
+		"finding of this generation says so), and then re-initializing with cdc-init restores them. A re-init does not by " +
+		"itself resume garbage collection: the row stays in the history once a later publication replaces the generation, " +
+		"and every pass, retained or expired, verifies the manifest the row names against the row. "
+	actionHistoryMismatchReplace = historyMismatch + "Here that manifest verifies against the row, and the row carries no " +
+		"retention stamp, so garbage collection resumes once a later publication (a flush, a compaction or a cdc-init) " +
+		"replaces the generation; the row then keeps the generation's objects until a pass retires it and the retention " +
+		"grace passes, as for any superseded generation. It deletes nothing for the schema until then"
+	actionHistoryMismatchRefuse = historyMismatch + "Here that manifest does not verify against the row, or the row was stamped " +
+		"retired while it was current, so no publication and no expiry clears the refusal, and a row that expired early " +
+		"would let a pass delete what readers pinned to the generation still scan. Leave garbage collection refused for the " +
+		"schema: do not run it with --gc until the cause is known, and do not expect expiry to resume it. A refusal deletes " +
+		"nothing; garbage only accumulates"
+	actionMismatchedManifest = "do not restore the object to match the generation's history row, which disagrees with the " +
+		"record (the history_mismatch finding of this generation): readers verify the manifest against the record. Only if " +
+		"the detail says it fails against the record do current reads fail closed, and then re-initializing with " +
+		"cdc-init restores them. Garbage collection stays refused as the history_mismatch finding says"
 	actionHistoryGap = "do not restore the generation history rows from a backup, whose copy of a row may carry a " +
 		"superseded_at of 0 that nothing supersedes again (docs/manifest-reconcile.md, \"Lost history rows\"); garbage " +
 		"collection resumes by itself once a generation above the gap expires (a later publication, a cdc-init included, " +
@@ -59,7 +79,9 @@ const (
 		"for the schema until this generation expires, the retention grace after it was retired"
 	actionInvalidManifest = "restore the object from a versioned or backed-up copy whose SHA-256 is the history row's " +
 		"manifest_sha256; for the current generation, re-initializing with cdc-init restores reads. Garbage " +
-		"collection deletes nothing for the schema until the object verifies"
+		"collection deletes nothing for the schema until the object verifies. If an earlier pass reported a " +
+		"history_mismatch for this generation, the row, not the object, is what disagrees: restore nothing, and leave " +
+		"garbage collection refused as that finding says"
 	actionForeignManifest = "run manifest-reconcile with the --data-prefix the writers publish under; garbage collection " +
 		"deletes nothing for the schema under this prefix"
 	actionLostCurrent = "re-initialize the schema with cdc-init: reads fail closed while the current generation lists " +
