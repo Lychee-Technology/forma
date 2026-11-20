@@ -60,11 +60,14 @@ func TestDiagnosisLeavesOutACurrentGenerationCollectedBesideIt(t *testing.T) {
 			require.Empty(t, rep.Findings, "what the collection deleted is not reported as loss")
 			require.Equal(t, tc.left, rep.ConcurrentlyExpired)
 			require.Contains(t, rep.Refused, "run the diagnosis again")
-			require.False(t, rep.Residual())
+			require.True(t, rep.Inconclusive())
+			require.True(t, rep.Residual(), "an inconclusive diagnosis is not clean")
 			var out bytes.Buffer
 			Report{Schemas: []SchemaReport{rep}}.Render(&out)
 			require.NotContains(t, out.String(), "cdc-init", "no re-init is recommended")
 			require.Contains(t, out.String(), "finding(s) left out: the generation they concerned expired while the diagnosis ran")
+			require.Contains(t, out.String(), "inconclusive (run the diagnosis again)")
+			require.NotContains(t, out.String(), ": clean (")
 		})
 	}
 }

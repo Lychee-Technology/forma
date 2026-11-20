@@ -50,9 +50,11 @@ runs longer than G can see it replaced, retired by one collection and
 collected by a later one. A missing manifest or object, of the current
 generation or a superseded one, is therefore reported only if its generation
 is still retained when the history is read again, after every manifest and
-object was read; the report counts the findings it left out and refuses to
-show a plan from its stale snapshot. A missing history row is always reported:
-the snapshot read it with the record.
+object was read; the report counts the findings it left out, refuses to
+show a plan from its stale snapshot, and marks the schema `inconclusive`: the
+diagnosis established neither that the missing keys were collected nor that
+they were lost, so the run exits 2 and the diagnosis must be run again. A
+missing history row is always reported: the snapshot read it with the record.
 
 **`--gc`.** The collector, in the protocol's collection order
 ([Garbage collection](publication-protocol-v2.md#garbage-collection-and-reader-lifetime)):
@@ -218,8 +220,9 @@ The run visits every schema in the registry and every schema with a record, so
 a dropped schema is still collected and a registered schema without a record is
 reported.
 
-Exit codes: 0 when every schema is clean, 2 when any schema has a finding or a
-collection skipped it because its lock was held, 1 when a pass failed (a database or S3 call,
+Exit codes: 0 when every schema is clean, 2 when any schema has a finding, a
+collection skipped it because its lock was held, or its diagnosis was
+inconclusive because a collection beside it expired what it found missing, 1 when a pass failed (a database or S3 call,
 a listing that could not be followed to its end, a lost lease). Garbage awaiting
 collection is not a finding.
 

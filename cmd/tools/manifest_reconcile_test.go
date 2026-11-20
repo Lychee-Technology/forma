@@ -200,6 +200,13 @@ func TestReconcileExitError_ToolFailureBeatsDiscrepancy(t *testing.T) {
 	require.True(t, errors.As(err, &ec))
 	require.Equal(t, 2, ec.ExitCode())
 
+	// A diagnosis that left findings out because their generation expired
+	// beside it established neither loss nor collection: it is not clean.
+	inconclusive := reconcile.SchemaReport{SchemaID: 1, ConcurrentlyExpired: 2, Refused: "run the diagnosis again"}
+	err = reconcileExitError(reconcile.Report{Schemas: []reconcile.SchemaReport{inconclusive}})
+	require.True(t, errors.As(err, &ec), "an inconclusive diagnosis is a discrepancy, not a tool failure")
+	require.Equal(t, 2, ec.ExitCode())
+
 	clean := reconcile.SchemaReport{SchemaID: 1, Plan: publication.Plan{Objects: []string{"garbage"}}}
 	require.NoError(t, reconcileExitError(reconcile.Report{Schemas: []reconcile.SchemaReport{clean}}),
 		"garbage awaiting collection is not a discrepancy")

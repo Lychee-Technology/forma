@@ -241,8 +241,9 @@ func newReconciler(opts *reconcileOptions, objects reconcile.ObjectStore, db *sq
 
 // reconcileExitError maps a rendered report to the process outcome:
 // per-schema tool failures are a plain error (exit 1), since monitoring must
-// not mistake an S3 outage for data inconsistency, while findings and
-// skipped schemas exit 2 via discrepancyError, and a clean run exits 0.
+// not mistake an S3 outage for data inconsistency, while findings, skipped
+// schemas and inconclusive diagnoses exit 2 via discrepancyError, and a clean
+// run exits 0.
 func reconcileExitError(report reconcile.Report) error {
 	var failed []string
 	residual := 0

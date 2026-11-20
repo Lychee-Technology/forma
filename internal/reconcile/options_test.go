@@ -74,6 +74,11 @@ func TestReportResidualAndRender(t *testing.T) {
 	require.True(t, SchemaReport{Skipped: true}.Residual())
 	require.True(t, SchemaReport{Err: errors.New("boom")}.Residual())
 	require.True(t, SchemaReport{Findings: []Finding{{Kind: UnrecognizedObject}}}.Residual())
+	inconclusive := SchemaReport{SchemaID: 6, State: publication.Published, Epoch: 2, Generation: 5,
+		ConcurrentlyExpired: 1, Refused: "a collection ran beside the diagnosis"}
+	require.True(t, inconclusive.Inconclusive())
+	require.True(t, inconclusive.Residual(), "a diagnosis that left findings out is not clean")
+	require.False(t, clean.Inconclusive())
 
 	collected := clean
 	collected.SchemaID = 2
@@ -84,7 +89,7 @@ func TestReportResidualAndRender(t *testing.T) {
 	refused := SchemaReport{SchemaID: 3, Refused: "no_record: x",
 		Findings: []Finding{recordFinding(NoRecord, publication.ErrNoRecord)}}
 	var out bytes.Buffer
-	Report{Schemas: []SchemaReport{clean, collected, refused, {SchemaID: 4, Skipped: true}, partial}}.Render(&out)
+	Report{Schemas: []SchemaReport{clean, collected, refused, {SchemaID: 4, Skipped: true}, partial, inconclusive}}.Render(&out)
 	text := out.String()
 	for _, want := range []string{
 		"schema 1: clean (PUBLISHED, epoch 2, generation 5)",
@@ -98,12 +103,14 @@ func TestReportResidualAndRender(t *testing.T) {
 		"action: run init-db",
 		"garbage collection refused: no_record: x",
 		"schema 4: skipped",
+		"schema 6: inconclusive (run the diagnosis again) (PUBLISHED, epoch 2, generation 5)",
+		"1 finding(s) left out",
 	} {
 		require.Contains(t, text, want)
 	}
 	block := text[strings.Index(text, "schema 3:"):strings.Index(text, "schema 4:")]
 	require.NotContains(t, block, "garbage collection would delete", "a refused pass plans no deletes")
-	block = text[strings.Index(text, "schema 5:"):]
+	block = text[strings.Index(text, "schema 5:"):strings.Index(text, "schema 6:")]
 	for _, want := range []string{
 		"garbage collection deleted 1 of 2 planned objects and 0 of 1 planned manifests, and forgot generations [] of [2] planned",
 		"deleted object: p",

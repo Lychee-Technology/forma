@@ -170,10 +170,13 @@ func TestDiagnosisLeavesOutWhatAConcurrentCollectionDeleted(t *testing.T) {
 	require.Empty(t, rep.Findings, "the diagnosis does not report what the collection deleted as loss")
 	require.Equal(t, 2, rep.ConcurrentlyExpired)
 	require.Contains(t, rep.Refused, "run the diagnosis again", "the snapshot's plan is stale, and says so")
-	require.False(t, rep.Residual(), "a collection beside the diagnosis needs no operator")
+	require.True(t, rep.Inconclusive())
+	require.True(t, rep.Residual(), "the diagnosis established neither loss nor collection: it is not clean")
 	var out bytes.Buffer
 	Report{Schemas: []SchemaReport{rep}}.Render(&out)
 	require.Contains(t, out.String(), "2 finding(s) left out")
+	require.Contains(t, out.String(), "inconclusive (run the diagnosis again)")
+	require.NotContains(t, out.String(), ": clean (")
 }
 
 // TestCollectionAfterALostRecordRetiresTheFormerHead runs the documented

@@ -135,10 +135,19 @@ type SchemaReport struct {
 }
 
 // Residual answers whether the schema needs an operator: a finding, a
-// failure, or a lock another holder kept. Garbage awaiting collection is
-// not residual: collecting it is the collector's routine work.
+// failure, a lock another holder kept, or a diagnosis left inconclusive.
+// Garbage awaiting collection is not residual: collecting it is the
+// collector's routine work.
 func (s SchemaReport) Residual() bool {
-	return s.Skipped || s.Err != nil || len(s.Findings) > 0
+	return s.Skipped || s.Err != nil || len(s.Findings) > 0 || s.Inconclusive()
+}
+
+// Inconclusive answers whether the diagnosis left findings out because their
+// generation expired while it ran. It then established neither that what it
+// found missing was collected nor that it was lost, so the schema is not
+// clean: like a skipped schema, it needs another run.
+func (s SchemaReport) Inconclusive() bool {
+	return s.ConcurrentlyExpired > 0
 }
 
 // Report is one run over the schemas.
@@ -160,8 +169,11 @@ func (s SchemaReport) render(w io.Writer) {
 		return
 	}
 	verdict := "clean"
-	if s.Residual() {
+	switch {
+	case s.Err != nil || len(s.Findings) > 0:
 		verdict = "needs attention"
+	case s.Inconclusive():
+		verdict = "inconclusive (run the diagnosis again)"
 	}
 	state := string(s.State)
 	if state == "" {
