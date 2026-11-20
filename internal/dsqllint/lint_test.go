@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/lychee-technology/forma/internal/sizeguard"
@@ -167,10 +168,21 @@ func fakeTool(t *testing.T, stdout string, code int) (tool, argsFile string) {
 		"cat '" + out + "'\n" +
 		"exit " + string(rune('0'+code)) + "\n"
 	tool = filepath.Join(dir, "dsql-lint")
-	if err := os.WriteFile(tool, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tool: %v", err)
-	}
+	writeExecutable(t, tool, script)
 	return tool, argsFile
+}
+
+// writeExecutable writes a file the test will exec. It holds syscall.ForkLock
+// for writing while the file is open: a parallel test that forks in that window
+// would otherwise inherit the write descriptor until its child execs, and the
+// exec of this file then fails with ETXTBSY ("text file busy", golang/go#22315).
+func writeExecutable(t *testing.T, path, text string) {
+	t.Helper()
+	syscall.ForkLock.Lock()
+	defer syscall.ForkLock.Unlock()
+	if err := os.WriteFile(path, []byte(text), 0o755); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
 }
 
 // TestRunLintIsLintOnlyAndHonoursExitCodes captures the tool's argv: the gate
@@ -204,9 +216,7 @@ func TestEnsureToolVerifiesTheOverrideVersion(t *testing.T) {
 		t.Fatalf("EnsureTool(override) = %q, %v", got, err)
 	}
 	wrong := filepath.Join(t.TempDir(), "dsql-lint")
-	if err := os.WriteFile(wrong, []byte("#!/bin/sh\necho 'dsql-lint 0.0.1'\n"), 0o755); err != nil {
-		t.Fatalf("write wrong tool: %v", err)
-	}
+	writeExecutable(t, wrong, "#!/bin/sh\necho 'dsql-lint 0.0.1'\n")
 	if _, err := EnsureTool(context.Background(), t.TempDir(), wrong); err == nil || !strings.Contains(err.Error(), "the gate pins") {
 		t.Fatalf("a dsql-lint of another version must be refused, got %v", err)
 	}
