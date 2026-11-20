@@ -294,10 +294,15 @@ follows no redirect`, and is not retried. Under `--gc` that fails the pass
 (exit 1) at the step it reached: no object is deleted elsewhere, and since a
 step starts only after the one before it succeeded, no history row is
 forgotten; the next pass plans from what is left. A redirected read is a
-failure too, never a missing object. If a run fails so, the endpoint the
-writers and the binding name is not the one that serves the bucket: find out
-why before collecting, and never work around it by following the redirect's
-target with `--s3-endpoint` unless the writers publish there too.
+failure too, never a missing object. The error names the request's method,
+its URL without the query, and the redirect's status, never the redirect's
+`Location`: a Location can carry a credential (a signed URL's query, a
+user-info password), so it reaches neither the report nor a log. Read it from
+the server or gateway's own log when you need it. If a run fails so, the
+endpoint the writers and the binding name is not the one that serves the
+bucket: find out why before collecting, and never work around it by following
+the redirect's target with `--s3-endpoint` unless the writers publish there
+too.
 
 It creates the table if needed (as its own DDL statement, as Aurora DSQL
 requires), writes the binding unless one exists, and exits. A binding to

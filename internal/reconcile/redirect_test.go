@@ -5,6 +5,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -76,4 +80,71 @@ func TestAPassFollowsNoRedirect(t *testing.T) {
 	raw, err := objects.Get(ctx, "data/7/k")
 	require.NoError(t, err)
 	require.True(t, bytes.Equal([]byte("x"), raw))
+}
+
+// TestARefusedRedirectNamesNoLocation is R13-F2: a redirect's Location can
+// carry a credential, a signed URL's query or a user-info password, which
+// URL.Redacted does not mask, and http.Client would put it whole into the
+// *url.Error it answers. The error a refused redirect surfaces names the
+// request's method and its URL without query, and none of the Location,
+// whichever method was redirected and whether the Location is absolute or
+// relative. It is still ErrRedirectRefused, the request is sent once (the
+// SDK's retryer does not resend it), and no redirected request is sent.
+func TestARefusedRedirectNamesNoLocation(t *testing.T) {
+	ctx := context.Background()
+	const secret = "dummy-signature-R13F2"
+	var reached, served atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(other.Close)
+	locations := []string{
+		strings.Replace(other.URL, "http://", "http://user:"+secret+"@", 1) + "/lake/data/7/k?X-Amz-Signature=" + secret,
+		"/elsewhere/data/7/k?X-Amz-Credential=" + secret + "#" + secret,
+	}
+	for _, location := range locations {
+		bound := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			served.Add(1)
+			w.Header().Set("Location", location)
+			w.WriteHeader(http.StatusTemporaryRedirect)
+		}))
+		t.Cleanup(bound.Close)
+		objects, err := NewS3Objects(sdkClient(bound.URL), "lake")
+		require.NoError(t, err)
+		calls := map[string]func() error{
+			http.MethodDelete: func() error { return objects.Delete(ctx, "data/7/k") },
+			http.MethodGet:    func() error { _, err := objects.Get(ctx, "data/7/k"); return err },
+			http.MethodHead:   func() error { _, err := objects.Exists(ctx, "data/7/k"); return err },
+			"LIST":            func() error { _, err := objects.List(ctx, "data/7/"); return err },
+		}
+		for name, call := range calls {
+			served.Store(0)
+			err := call()
+			require.ErrorIs(t, err, ErrRedirectRefused, name)
+			require.NotContains(t, err.Error(), secret, "%s: the surfaced error names no part of the Location", name)
+			require.NotContains(t, err.Error(), "elsewhere", name)
+			require.NotContains(t, err.Error(), other.URL[len("http://"):], name)
+			require.Contains(t, err.Error(), bound.URL+"/lake", name)
+			require.EqualValues(t, 1, served.Load(), "%s: a refused redirect is not retried", name)
+			var uerr *url.Error
+			require.False(t, errors.As(err, &uerr), "%s: no *url.Error carries the Location", name)
+		}
+	}
+	require.Zero(t, reached.Load(), "no redirected request was sent")
+}
+
+// TestARedirectReachingTheClientIsRefusedToo: should a redirect reach the
+// http.Client behind the transport, its CheckRedirect refuses it with the
+// same error, which names no part of the Location either.
+func TestARedirectReachingTheClientIsRefusedToo(t *testing.T) {
+	via, err := http.NewRequest(http.MethodDelete, "https://s3.example/lake/data/7/k?x-id=DeleteObject", nil)
+	require.NoError(t, err)
+	next, err := http.NewRequest(http.MethodDelete, "https://u:pw-secret@other.example/k?sig=secret", nil)
+	require.NoError(t, err)
+	next.Response = &http.Response{StatusCode: http.StatusPermanentRedirect}
+	err = refuseRedirect(next, []*http.Request{via})
+	require.ErrorIs(t, err, ErrRedirectRefused)
+	require.Equal(t, "DELETE https://s3.example/lake/data/7/k answered 308 with a redirect (its Location is not shown, since it may carry a credential): "+
+		ErrRedirectRefused.Error(), err.Error())
 }

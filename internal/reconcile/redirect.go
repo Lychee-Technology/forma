@@ -3,7 +3,9 @@ package reconcile
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -20,21 +22,80 @@ var ErrRedirectRefused = errors.New("the S3 request was redirected, and manifest
 // the request's method and body, so a DELETE the bound server redirects
 // would reach the redirect's target, and the SDK would report the target's
 // answer as the delete's.
+//
+// Its transport (refuseRedirects) turns every redirect into an error before
+// http.Client reads the Location, so http.Client never parses, follows or
+// reports it. A Location can carry a credential (a signed URL's query, a
+// user-info password), and http.Client would put it whole into the
+// *url.Error it answers, which URL.Redacted would not mask (R13-F2).
 type boundHTTPClient struct{ c *http.Client }
 
-// Do sends r. Its error is http.Client's *url.Error, which names the
-// method and the URL already, and which the SDK's retryer classifies.
-func (b boundHTTPClient) Do(r *http.Request) (*http.Response, error) { return b.c.Do(r) }
+// Do sends r. A refused redirect answers its *redirectError alone, not the
+// *url.Error http.Client wraps it in: that names the URL too, query
+// included. Every other error is http.Client's.
+func (b boundHTTPClient) Do(r *http.Request) (*http.Response, error) {
+	resp, err := b.c.Do(r)
+	var refused *redirectError
+	if err != nil && errors.As(err, &refused) {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, refused
+	}
+	return resp, err
+}
 
-// refuseRedirect is the CheckRedirect of a boundHTTPClient: every redirect
-// fails the request before the redirected one is sent.
+// refuseRedirects is the transport of a boundHTTPClient. A response that
+// http.Client would follow (a 301, 302, 303, 307 or 308 with a Location) is
+// closed and answered as a *redirectError, which names neither the Location
+// nor the request's query.
+type refuseRedirects struct{ next http.RoundTripper }
+
+func (t refuseRedirects) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := t.next.RoundTrip(r)
+	if err != nil || !isRedirect(resp) {
+		return resp, err
+	}
+	_, _ = io.CopyN(io.Discard, resp.Body, 2<<10)
+	_ = resp.Body.Close()
+	return nil, newRedirectError(r, resp.StatusCode)
+}
+
+// isRedirect answers whether http.Client would follow resp.
+func isRedirect(resp *http.Response) bool {
+	switch resp.StatusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return resp.Header.Get("Location") != ""
+	}
+	return false
+}
+
+// refuseRedirect is the CheckRedirect of a boundHTTPClient, behind its
+// transport: should a redirect reach http.Client all the same, it fails
+// the request before the redirected one is sent.
 func refuseRedirect(next *http.Request, via []*http.Request) error {
 	status := 0
 	if next.Response != nil {
 		status = next.Response.StatusCode
 	}
-	return &redirectError{msg: fmt.Sprintf("%s %s answered %d with a redirect to %s",
-		via[0].Method, via[len(via)-1].URL.Redacted(), status, next.URL.Redacted())}
+	return newRedirectError(via[len(via)-1], status)
+}
+
+// newRedirectError answers the refusal of r's redirect. It names r's
+// method and its URL without user-info, query or fragment, and never the
+// redirect's Location.
+func newRedirectError(r *http.Request, status int) *redirectError {
+	return &redirectError{msg: fmt.Sprintf("%s %s answered %d with a redirect (its Location is not shown, since it may carry a credential)",
+		r.Method, safeURL(r.URL), status)}
+}
+
+// safeURL answers u's scheme, host and path only.
+func safeURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, RawPath: u.RawPath}).String()
 }
 
 // redirectError is a refused redirect. It is ErrRedirectRefused, and the
@@ -45,6 +106,17 @@ type redirectError struct{ msg string }
 func (e *redirectError) Error() string        { return e.msg + ": " + ErrRedirectRefused.Error() }
 func (e *redirectError) Unwrap() error        { return ErrRedirectRefused }
 func (e *redirectError) RetryableError() bool { return false }
+
+// bound answers a boundHTTPClient configured as c that sends through rt
+// (http.DefaultTransport when nil).
+func bound(rt http.RoundTripper, c http.Client) boundHTTPClient {
+	if rt == nil {
+		rt = http.DefaultTransport
+	}
+	c.Transport = refuseRedirects{next: rt}
+	c.CheckRedirect = refuseRedirect
+	return boundHTTPClient{&c}
+}
 
 // withoutRedirects answers an HTTP client that sends as h does and follows
 // no redirect. h is the client an *s3.Client sends through: the SDK's
@@ -57,13 +129,11 @@ func withoutRedirects(h s3.HTTPClient) (boundHTTPClient, error) {
 		return c, nil
 	case nil:
 		b := awshttp.NewBuildableClient()
-		return boundHTTPClient{&http.Client{Transport: b.GetTransport(), Timeout: b.GetTimeout(), CheckRedirect: refuseRedirect}}, nil
+		return bound(b.GetTransport(), http.Client{Timeout: b.GetTimeout()}), nil
 	case *awshttp.BuildableClient:
-		return boundHTTPClient{&http.Client{Transport: c.GetTransport(), Timeout: c.GetTimeout(), CheckRedirect: refuseRedirect}}, nil
+		return bound(c.GetTransport(), http.Client{Timeout: c.GetTimeout()}), nil
 	case *http.Client:
-		cp := *c
-		cp.CheckRedirect = refuseRedirect
-		return boundHTTPClient{&cp}, nil
+		return bound(c.Transport, *c), nil
 	}
 	return boundHTTPClient{}, fmt.Errorf("an S3 client sending through an HTTP client of type %T, which may follow redirects: %w",
 		h, errUnknownDestination)
