@@ -144,7 +144,8 @@ The procedure:
            'schema_registry', 'schema_registry_generation', 'schema_registry_generation_attr',
            'entity_main', 'entity_main_unique_key', 'entity_main_unique_key_state',
            'entity_main_row_guard', 'entity_main_schema_lease', 'entity_main_publication',
-           'entity_main_publication_generation', 'eav_data', 'change_log']) AS t)
+           'entity_main_publication_generation', 'entity_main_publication_epoch',
+           'eav_data', 'change_log']) AS t)
      AND a.attnum > 0 AND NOT a.attisdropped
      AND NOT (c.collname = 'C' AND n.nspname = 'pg_catalog')
    ORDER BY 1, a.attnum;

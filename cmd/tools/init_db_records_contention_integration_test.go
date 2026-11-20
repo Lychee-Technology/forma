@@ -56,9 +56,7 @@ func TestInitDBRegistrationCommitsWithItsRecordOrNotAtAll(t *testing.T) {
 	if out, err := tg.run(t); err != nil {
 		t.Fatalf("init-db: %v\n%s", err, out)
 	}
-	if _, err := tg.pool.Exec(context.Background(), "DELETE FROM "+publication.TablesFor(tg.opts.entityMain).Record); err != nil {
-		t.Fatalf("empty the record table: %v", err)
-	}
+	tg.emptyPublicationRecords(t)
 	tg.writeSchema(t, "orders", map[string]string{"title": "text_01"}, nil)
 	const ordersID int16 = 102
 	holder := holdSchemaLocks(t, tg, 100, ordersID)

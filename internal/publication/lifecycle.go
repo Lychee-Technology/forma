@@ -27,7 +27,9 @@ const resetSQL = `UPDATE %s SET epoch = epoch + 1, state = '` + string(Dropped) 
 // purged without a reader or a writer seeing them; Activate then refuses to
 // re-register the id while any remain (docs/publication-protocol-v2.md,
 // "Lifecycle of the row"). Every writer staged under cur's epoch fails its
-// compare-and-set, whatever generation it expected.
+// compare-and-set, whatever generation it expected. The id's lifecycle epoch
+// is raised to the new epoch in tx (raiseEpoch), which refuses an epoch a
+// record of the id carried before.
 func Reset(ctx context.Context, tx Tx, t Tables, cur Record) (Record, error) {
 	if cur.State == Dropped {
 		return Record{}, fmt.Errorf("reset schema %d at epoch %d: %w", cur.SchemaID, cur.Epoch, ErrDropped)
@@ -41,6 +43,9 @@ func Reset(ctx context.Context, tx Tx, t Tables, cur Record) (Record, error) {
 		return Record{}, fmt.Errorf("reset schema %d from epoch %d token %s: %w", cur.SchemaID, cur.Epoch, cur.Token, ErrRecordMoved)
 	}
 	if err != nil {
+		return Record{}, fmt.Errorf("reset schema %d from epoch %d: %w", cur.SchemaID, cur.Epoch, err)
+	}
+	if err := raiseEpoch(ctx, r, t, cur.SchemaID, out.Epoch); err != nil {
 		return Record{}, fmt.Errorf("reset schema %d from epoch %d: %w", cur.SchemaID, cur.Epoch, err)
 	}
 	if cur.State == Published {
@@ -90,7 +95,8 @@ const activateSQL = `UPDATE %s SET epoch = epoch + 1, state = '` + string(Unpubl
 // change_log tables), then moves the record from DROPPED to the next epoch,
 // UNPUBLISHED, under a new token. Nothing that read the record before it
 // carries the new epoch, so no reader, writer or handoff of the old schema
-// acts on the new one without reading the record again.
+// acts on the new one without reading the record again. As Reset, it raises
+// the id's lifecycle epoch to the new epoch in tx.
 func Activate(ctx context.Context, tx Tx, t Tables, cur Record, residue []Residue) (Record, error) {
 	if cur.State != Dropped {
 		return Record{}, fmt.Errorf("activate schema %d: its record is %s, and only a %s one is activated", cur.SchemaID, cur.State, Dropped)
@@ -115,6 +121,9 @@ func Activate(ctx context.Context, tx Tx, t Tables, cur Record, residue []Residu
 		return Record{}, fmt.Errorf("activate schema %d from epoch %d token %s: %w", cur.SchemaID, cur.Epoch, cur.Token, ErrRecordMoved)
 	}
 	if err != nil {
+		return Record{}, fmt.Errorf("activate schema %d from epoch %d: %w", cur.SchemaID, cur.Epoch, err)
+	}
+	if err := raiseEpoch(ctx, r, t, cur.SchemaID, out.Epoch); err != nil {
 		return Record{}, fmt.Errorf("activate schema %d from epoch %d: %w", cur.SchemaID, cur.Epoch, err)
 	}
 	out.State = Unpublished

@@ -21,7 +21,7 @@ const (
 	recordAwaitingInit recordStep = "initialized AWAITING_INIT"
 	recordActivated    recordStep = "activated"
 	recordLockBusy     recordStep = "skipped: schema lock held"
-	recordRecovered    recordStep = "recovered AWAITING_INIT"
+	recordRecovered    recordStep = "recovered"
 )
 
 // ensurePublicationRecords gives every registered schema its Protocol V2
@@ -38,14 +38,21 @@ const (
 //     removed without the drop transition (drop-schema). The new
 //     registration would inherit its epoch, its published generation and its
 //     rows, so the run fails and rolls the registration back.
-//   - A schema without a record whose id has surviving publication history
-//     (rows in the generation table) lost a V2 record. A record at epoch 1
-//     and generation 0 would reuse numbers the history committed, so under
-//     the schema lock the record is recovered at the epoch after every epoch
-//     the history names, with its highest generation as the counter
+//   - A schema without a record whose id has a lifecycle epoch or
+//     generation history (rows in the publication epoch or generation table)
+//     lost a V2 record. A record at epoch 1 and generation 0 could carry an
+//     epoch a running process still pins and would reuse numbers the history
+//     committed, so under the schema lock the record is recovered after the
+//     id's lifecycle epoch, the highest epoch any record of it carried, with
+//     the history's highest generation as the counter
 //     (publication.InitializeAfterLoss): AWAITING_INIT for a registered
-//     schema, whose next cdc-init replaces its parquet tiers, and, for an id
-//     this transaction registered, DROPPED and then activated as above.
+//     schema with generation history, whose next cdc-init replaces its
+//     parquet tiers; for one without, the state its parquet history allows,
+//     as at the cutover; and, for an id this transaction registered, DROPPED
+//     and then activated as above. An id whose generation history survives
+//     but whose lifecycle epoch is lost too fails the run: no epoch can be
+//     shown free of a running process's pin, and the operator establishes
+//     one (docs/publication-protocol-v2.md, "A lost record").
 //   - A schema without a record or history is a new registration or one the
 //     V2 cutover has not reached. Under the schema lock every V1 marker (cdc-flush and
 //     the onboarding handoff) takes, the parquet-history check decides the
@@ -157,8 +164,8 @@ var errRegistrationLockBusy = errors.New("schema lock held at registration")
 const tryCutoverLockSQL = `SELECT pg_try_advisory_xact_lock($1, $2)`
 
 // writeMissingRecord writes the record of a schema that has none, under the
-// schema lock: recovered at a fresh epoch when its publication history
-// survives, otherwise in the state its V1 parquet history allows.
+// schema lock: recovered after its lifecycle epoch when it had a record
+// before, otherwise in the state its V1 parquet history allows.
 func writeMissingRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16, registered bool) (recordStep, error) {
 	var locked bool
 	if err := tx.QueryRow(ctx, tryCutoverLockSQL, int32(id), int32(id)).Scan(&locked); err != nil {
@@ -171,24 +178,30 @@ func writeMissingRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, tabl
 	if err != nil {
 		return "", fmt.Errorf("check the publication history: %w", err)
 	}
-	if history.Generations > 0 {
+	if history.Lost() {
 		return recoverLostRecord(ctx, tx, opts, tables, id, history, registered)
 	}
 	return cutoverSchema(ctx, tx, opts, tables, id)
 }
 
-// recoverLostRecord writes the record of a schema whose record was lost while
-// its publication history survives, at the epoch after the history's and
-// with its highest generation as the counter: AWAITING_INIT for a schema
-// registered before this run, and for an id this run registered, DROPPED and
-// then activated, so the dropped registration's rows are checked as on any
-// re-registration.
+// recoverLostRecord writes the record of a schema whose record was lost,
+// after its lifecycle epoch and with its history's highest generation as the
+// counter: for a schema registered before this run, AWAITING_INIT when
+// generation history survives and otherwise the state its parquet history
+// allows; for an id this run registered, DROPPED and then activated, so the
+// dropped registration's rows are checked as on any re-registration.
 func recoverLostRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16, h publication.History, registered bool) (recordStep, error) {
-	state := publication.AwaitingInit
-	if registered {
-		state = publication.Dropped
+	state, err := lostRecordState(ctx, tx, opts, id, h, registered)
+	if err != nil {
+		return "", err
 	}
 	rec, wrote, err := publication.InitializeAfterLoss(ctx, publication.PgxTx(tx), tables, id, h, state)
+	if errors.Is(err, publication.ErrLifecycleLost) {
+		return "", fmt.Errorf("schema %d's record and its lifecycle epoch in %s are both missing while %d generation(s) through epoch %d "+
+			"survive, so init-db cannot pick an epoch no running server, cdc-flush or cdc-init still pins: stop every one of them, "+
+			"establish the id's lifecycle epoch as docs/publication-protocol-v2.md (\"A lost record\") describes, then run init-db again: %w",
+			id, tables.Epoch, h.Generations, h.MaxEpoch, err)
+	}
 	if err != nil {
 		return "", fmt.Errorf("recover the lost record: %w", err)
 	}
@@ -198,17 +211,38 @@ func recoverLostRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, table
 	if registered {
 		return activateDropped(ctx, tx, opts, tables, rec)
 	}
-	return recordStep(fmt.Sprintf("%s at epoch %d: its record was missing while %d generation(s) through %d at epoch %d survive; "+
-		"run cdc-init for it, then restart the readers", recordRecovered, rec.Epoch, h.Generations, h.MaxGeneration, h.MaxEpoch)), nil
+	return recordStep(fmt.Sprintf("%s %s at epoch %d: its record was missing while its lifecycle epoch %d and %d generation(s) "+
+		"through %d survive; restart every server, cdc-flush and cdc-init that loaded it, and run cdc-init for it if it awaits one",
+		recordRecovered, rec.State, rec.Epoch, h.Epoch, h.Generations, h.MaxGeneration)), nil
+}
+
+// lostRecordState is the state a lost record is recovered in: DROPPED for an
+// id this run registered, AWAITING_INIT for a schema whose generation history
+// survives, and otherwise what its parquet history allows.
+func lostRecordState(ctx context.Context, tx pgx.Tx, opts initDBOptions, id int16, h publication.History, registered bool) (publication.State, error) {
+	switch {
+	case registered:
+		return publication.Dropped, nil
+	case h.Generations > 0:
+		return publication.AwaitingInit, nil
+	}
+	history, err := hasParquetHistory(ctx, tx, opts, id)
+	if err != nil {
+		return "", err
+	}
+	if history {
+		return publication.AwaitingInit, nil
+	}
+	return publication.Unpublished, nil
 }
 
 // cutoverSchema writes the record of a schema that has neither a record nor
 // publication history, under the schema lock the caller holds, in the state
 // its parquet history allows.
 func cutoverSchema(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16) (recordStep, error) {
-	var history bool
-	if err := tx.QueryRow(ctx, parquetHistorySQL(opts), id).Scan(&history); err != nil {
-		return "", fmt.Errorf("check the parquet history: %w", err)
+	history, err := hasParquetHistory(ctx, tx, opts, id)
+	if err != nil {
+		return "", err
 	}
 	initialize, step := publication.Initialize, recordUnpublished
 	if history {
@@ -224,6 +258,15 @@ func cutoverSchema(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables pu
 		return "", errors.New("another init-db wrote the record concurrently; run init-db again")
 	}
 	return step, nil
+}
+
+// hasParquetHistory answers parquetHistorySQL for schema id on tx.
+func hasParquetHistory(ctx context.Context, tx pgx.Tx, opts initDBOptions, id int16) (bool, error) {
+	var history bool
+	if err := tx.QueryRow(ctx, parquetHistorySQL(opts), id).Scan(&history); err != nil {
+		return false, fmt.Errorf("check the parquet history: %w", err)
+	}
+	return history, nil
 }
 
 // parquetHistorySQL answers whether schema $1 has parquet history from V1: a

@@ -210,7 +210,8 @@ plain statement.
 
 - **Production cutover to Protocol V2 is not available on DSQL yet.** Every
   V2 writer and the federated reader need each schema's publication record
-  (`<entity_main>_publication`, with `<entity_main>_publication_generation`),
+  (`<entity_main>_publication`, with `<entity_main>_publication_generation`
+  and `<entity_main>_publication_epoch`),
   and refuse a schema without one: `cdc-flush` and `cdc-init` fail it, and
   its federated reads fail closed with `publication_inconsistent`. Only
   `init-db` creates those tables and writes the records, when it registers a

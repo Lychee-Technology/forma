@@ -59,6 +59,19 @@ func requireStates(t *testing.T, when string, got map[string]publication.Record,
 	}
 }
 
+// emptyPublicationRecords empties the record and epoch tables: the state of
+// a deployment from before V2, which never had a record. Emptying the record
+// table alone is a lost record, which init-db recovers instead.
+func (tg *initDBTarget) emptyPublicationRecords(t *testing.T) {
+	t.Helper()
+	tables := publication.TablesFor(tg.opts.entityMain)
+	for _, table := range []string{tables.Record, tables.Epoch} {
+		if _, err := tg.pool.Exec(context.Background(), "DELETE FROM "+table); err != nil {
+			t.Fatalf("empty %s: %v", table, err)
+		}
+	}
+}
+
 // exec runs a statement of the test's own on the target's tables.
 func (tg *initDBTarget) exec(t *testing.T, format string, args ...any) {
 	t.Helper()
@@ -94,10 +107,7 @@ func TestInitDBWritesTheRecordsRegistrationAndTheCutoverOwe(t *testing.T) {
 
 	// A deployment from before V2: its schemas carry V1 history, and its
 	// publication tables are empty.
-	tables := publication.TablesFor(tg.opts.entityMain)
-	if _, err := tg.pool.Exec(context.Background(), "DELETE FROM "+tables.Record); err != nil {
-		t.Fatalf("empty the record table: %v", err)
-	}
+	tg.emptyPublicationRecords(t)
 	tg.insertRow(t, 100, 1700000000000) // outbox_message: a flushed entry
 	tg.insertRow(t, 100, 0)
 	tg.insertRow(t, 101, -1) // timer: a row the V1 onboarding handoff cleared
@@ -130,9 +140,7 @@ func TestInitDBCutoverSkipsASchemaWhoseLockIsHeld(t *testing.T) {
 	if out, err := tg.run(t); err != nil {
 		t.Fatalf("init-db: %v\n%s", err, out)
 	}
-	if _, err := tg.pool.Exec(context.Background(), "DELETE FROM "+publication.TablesFor(tg.opts.entityMain).Record); err != nil {
-		t.Fatalf("empty the record table: %v", err)
-	}
+	tg.emptyPublicationRecords(t)
 	ctx := context.Background()
 	writer, err := tg.pool.Acquire(ctx)
 	if err != nil {

@@ -41,6 +41,7 @@ func ownedTableRoles(opts initDBOptions) []ownedTable {
 		{"the attribute ledger table", "--schema-table", ledger.Attribute},
 		{publicationRecordRole, "--entity-main-table", pub.Record},
 		{publicationGenerationRole, "--entity-main-table", pub.Generation},
+		{publicationEpochRole, "--entity-main-table", pub.Epoch},
 	}
 }
 

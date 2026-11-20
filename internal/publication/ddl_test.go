@@ -13,8 +13,10 @@ import (
 // TestTablesForFollowsEntityMain pins the table names: suffixed to the
 // entity_main table every holder is given, qualifier kept.
 func TestTablesForFollowsEntityMain(t *testing.T) {
-	require.Equal(t, Tables{Record: `"entity_main_publication"`, Generation: `"entity_main_publication_generation"`}, TablesFor("entity_main"))
-	require.Equal(t, Tables{Record: `"app"."em_publication"`, Generation: `"app"."em_publication_generation"`}, TablesFor("app.em"))
+	require.Equal(t, Tables{Record: `"entity_main_publication"`, Generation: `"entity_main_publication_generation"`,
+		Epoch: `"entity_main_publication_epoch"`}, TablesFor("entity_main"))
+	require.Equal(t, Tables{Record: `"app"."em_publication"`, Generation: `"app"."em_publication_generation"`,
+		Epoch: `"app"."em_publication_epoch"`}, TablesFor("app.em"))
 }
 
 // TestStatementsUseOnlyPlainRows pins the DSQL-safe shape of the DDL: one
@@ -26,7 +28,7 @@ func TestStatementsUseOnlyPlainRows(t *testing.T) {
 		require.Nil(t, textcollation.DDLDrift(s), "every text column is COLLATE \"C\" on PostgreSQL: %s", s)
 	}
 	stmts := Statements(forma.EngineAuroraDSQL, "entity_main")
-	require.Len(t, stmts, 2)
+	require.Len(t, stmts, 3)
 	for _, s := range stmts {
 		require.NotContains(t, s, "COLLATE", "DSQL refuses a COLLATE clause")
 		require.True(t, strings.HasPrefix(s, "CREATE TABLE IF NOT EXISTS "), s)

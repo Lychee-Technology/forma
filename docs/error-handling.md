@@ -1563,14 +1563,21 @@ whose publication state cannot be answered from
   the specified per-schema outage between the V2 cutover and the schema's V2
   `cdc-init`: run the init. A schema without a record, or pinned at another
   epoch, needs its registration (`init-db`) and a restart of the reader. When
-  the record was lost while the schema's publication history survives (rows
-  in the `<entity_main>_publication_generation` table), `init-db` does not
-  start it over at epoch 1 and generation 0, which would publish a generation
-  number again and fail with SQLSTATE `23505`: under the schema lock it
-  recovers the record at the epoch after every epoch that history names, with
-  the history's highest generation as the counter, `AWAITING_INIT`, and
-  prints `recovered AWAITING_INIT at epoch N`. Then run `cdc-init` for the
-  schema and restart the readers. An id `init-db` registers again while an
+  the record was lost while the id's lifecycle epoch survives (its row in the
+  `<entity_main>_publication_epoch` table), `init-db` does not start it over
+  at epoch 1 and generation 0: epoch 1, or any epoch up to the lost record's,
+  may still be pinned by a running server or writer that loaded the schema's
+  metadata at it, and a counter at 0 would publish a generation number again
+  and fail with SQLSTATE `23505`. Under the schema lock it recovers the record
+  at the epoch after the id's lifecycle epoch, with the generation history's
+  highest number as the counter: `AWAITING_INIT` when generation history
+  survives, otherwise the state the schema's rows allow, and prints
+  `recovered <STATE> at epoch N`. Then restart every server, `cdc-flush` and
+  `cdc-init` that loaded the schema, and run `cdc-init` for an `AWAITING_INIT`
+  schema. When the lifecycle epoch is lost too while generation history
+  survives, `init-db` fails with `publication.ErrLifecycleLost`: no epoch can
+  be shown free of a stale pin. Follow "A lost record" in
+  [publication-protocol-v2.md](publication-protocol-v2.md). An id `init-db` registers again while an
   earlier registration's record that is not `DROPPED` remains is refused, and
   the registration rolls back: retire the old record with
   `forma-tools drop-schema --schema-id <id>` first. A record whose identity no

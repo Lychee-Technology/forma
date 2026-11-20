@@ -16,7 +16,7 @@ import (
 )
 
 // TestDSQLCorpus exports the publication contract's statements for the DSQL
-// lint gate (#740): the two tables' DDL, and every statement the transitions,
+// lint gate (#740): the three tables' DDL, and every statement the transitions,
 // the reader's read, the commit-outcome check and its fence, and the
 // collector send, in the order a writer's life sends them. Each transition
 // runs in a transaction, as its Tx parameter demands.
@@ -37,6 +37,13 @@ func TestDSQLCorpus(t *testing.T) {
 		require.NoError(t, tx.Commit())
 	}
 	inTx(func(tx Tx) error { _, err := Initialize(ctx, tx, tb, 100); return err })
+	inTx(func(tx Tx) error { _, err := Initialize(ctx, tx, tb, 100); return err })
+	_, err = ReadHistory(ctx, DB(db), tb, 100)
+	require.NoError(t, err)
+	inTx(func(tx Tx) error {
+		_, _, err := InitializeAfterLoss(ctx, tx, tb, 100, History{Epoch: 3, Generations: 1, MaxEpoch: 1, MaxGeneration: 3}, AwaitingInit)
+		return err
+	})
 	_, err = Read(ctx, DB(db), tb, 100)
 	require.NoError(t, err)
 	next := Next{Kind: KindFlush, Token: uuid.New(), ManifestKey: "k2", ManifestSHA256: strings.Repeat("2", 64), Lineage: cur.Lineage, StagedAt: 1, StagingBudget: time.Minute}
@@ -75,9 +82,16 @@ func TestDSQLCorpus(t *testing.T) {
 	statements := []corpus.Statement{
 		corpus.Rendered("internal/publication/ddl.go:recordDDL", ddl[0]),
 		corpus.Rendered("internal/publication/ddl.go:generationDDL", ddl[1]),
+		corpus.Rendered("internal/publication/ddl.go:epochDDL", ddl[2]),
 	}
 	statements = append(statements, rec.Take(t,
 		"internal/publication/record.go:Initialize",
+		"internal/publication/lifecycle_epoch.go:raiseEpoch",
+		"internal/publication/record.go:Initialize",
+		"internal/publication/record.go:Initialize",
+		"internal/publication/recovery.go:ReadHistory",
+		"internal/publication/recovery.go:InitializeAfterLoss",
+		"internal/publication/lifecycle_epoch.go:raiseEpoch",
 		"internal/publication/record.go:Read",
 		"internal/publication/publish.go:Publish",
 		"internal/publication/publish.go:Publish",
@@ -87,9 +101,11 @@ func TestDSQLCorpus(t *testing.T) {
 		"internal/publication/lifecycle.go:Resolve",
 		"internal/publication/lifecycle.go:Fence",
 		"internal/publication/lifecycle.go:Reset",
+		"internal/publication/lifecycle_epoch.go:raiseEpoch",
 		"internal/publication/lifecycle.go:Reset",
 		"internal/publication/lifecycle.go:Activate",
 		"internal/publication/lifecycle.go:Activate",
+		"internal/publication/lifecycle_epoch.go:raiseEpoch",
 		"internal/publication/retention.go:RaiseHorizon",
 		"internal/publication/retention.go:Retire",
 		"internal/publication/retention.go:Retained",
@@ -116,6 +132,16 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(sqlmock.NewRows([]string{"exists", "epoch"}).AddRow(true, 1))
+	mock.ExpectCommit()
+	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(sqlmock.NewRows([]string{"epoch", "count", "max_epoch", "max_generation"}).AddRow(3, 1, 1, 3))
+	mock.ExpectBegin()
+	mock.ExpectExec("").WithArgs(anyArgs(5)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(recordRow())
 	mock.ExpectBegin()
@@ -133,10 +159,12 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("").WithArgs(anyArgs(4)...).WillReturnRows(epochRow(2))
 	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectBegin()
 	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(sqlmock.NewRows([]string{"one"}))
 	mock.ExpectQuery("").WithArgs(anyArgs(4)...).WillReturnRows(epochRow(3))
+	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(sqlmock.NewRows([]string{"gc_horizon"}).AddRow(5))
 	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))

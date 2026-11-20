@@ -117,9 +117,12 @@ compactor, reader, GC) is given that name.
 **Lifecycle of the row.**
 
 - *Initialize.* The registration transaction that inserts the schema's registry row also
-  inserts the record: epoch 1, `UNPUBLISHED`, generation 0. The insert uses
+  inserts the record: epoch 1, `UNPUBLISHED`, generation 0, and sets the id's lifecycle
+  epoch to 1 ([Lifecycle epoch](#lifecycle-epoch)). The insert uses
   `ON CONFLICT DO NOTHING`, so registering again never resets a schema, and never turns a
-  `DROPPED` or `AWAITING_INIT` record into an unpublished one.
+  `DROPPED` or `AWAITING_INIT` record into an unpublished one. It writes nothing for an id
+  whose lifecycle epoch survives without a record: that id lost its record, epoch 1 is
+  one of its old epochs, and `Initialize` answers `ErrRecordLost`.
 - *An absent record is an error* (`publication.ErrNoRecord`), never "unpublished". A
   reader that took absence for unpublished would answer from the hot tier alone and
   drop every row only the parquet tiers hold.
@@ -127,7 +130,8 @@ compactor, reader, GC) is given that name.
   history from V1 ([Upgrade](#removed-from-v1)). Readers fail closed on it
   (`ErrAwaitingInit`), and the only publication it admits is a `cdc-init`.
 - *Drop.* The transaction that deletes the registry row runs `Reset`: epoch + 1,
-  `DROPPED`, an empty manifest, a NULL lineage, parent 0 and a new token. The row stays.
+  `DROPPED`, an empty manifest, a NULL lineage, parent 0 and a new token, and the id's
+  lifecycle epoch raised to the new epoch. The row stays.
   While it is `DROPPED` the schema's `entity_main`, `eav_data` and `change_log` rows are
   purged in chunks, and nothing reaches them through the record. `forma-tools
   drop-schema` is this transition (#896): under the schema lock it deletes the registry
@@ -139,17 +143,37 @@ compactor, reader, GC) is given that name.
   `Publish` refuses a `DROPPED` record in any case, so nothing exported from the rows
   being purged is published. A writer or handoff that read the record before the drop
   names the old epoch and token, and misses.
-- *A lost record.* A schema without a record whose generation history survives had a V2
-  record; a new one at epoch 1 and generation 0 would publish a generation number again.
-  `init-db` recovers it under the schema lock with `InitializeAfterLoss`: at the epoch
-  after every epoch the history names, with its highest generation as the counter,
-  `AWAITING_INIT` for a registered schema (its next `cdc-init` replaces the parquet
-  tiers), or `DROPPED`, then `Activate`, for an id the run registers again.
+- *A lost record.* The record row is never deleted, but an operator's statement or a
+  partial restore can remove it. A schema without a record whose lifecycle epoch or
+  generation history survives had a V2 record. A new one at epoch 1 could carry an epoch
+  a running reader or writer still pins, together with the metadata of the registration
+  that held it, and pass its epoch check; a counter at 0 would publish a generation number
+  again. The generation history cannot bound the lost epoch: a drop and a re-registration
+  move the epoch without a generation row, so the history's highest epoch can be any
+  number of epochs behind. `init-db` recovers the record under the schema lock with
+  `InitializeAfterLoss`, at the epoch after the id's lifecycle epoch, which every epoch a
+  record of the id carried is at or below, so no running process pins it, and with the
+  history's highest generation as the counter. A schema still registered is recovered
+  `AWAITING_INIT` when generation history survives (its next `cdc-init` replaces the
+  parquet tiers), and otherwise in the state the cutover's parquet-history check allows;
+  an id the run registers again is recovered `DROPPED`, then activated. The processes that
+  pinned an older epoch fail closed until they restart, as after a drop.
+
+  When the lifecycle epoch is lost too and generation history survives, `InitializeAfterLoss`
+  refuses with `ErrLifecycleLost`, and `init-db` fails: no epoch above the history is known
+  to be free of a stale pin. The recovery is the operator's. Stop every server, Lambda,
+  `cdc-flush` and `cdc-init` that loaded the schema, so that no process holds a pin of it,
+  then write the id's lifecycle epoch at or above the history's highest epoch,
+  `INSERT INTO <entity_main>_publication_epoch (schema_id, epoch, updated_at) VALUES
+  (<id>, <epoch>, 0)`, and run `init-db`: it recovers the record one epoch above. An id
+  whose record, lifecycle epoch and generation history are all lost cannot be told from
+  one that never had a record, and the cutover initializes it at epoch 1; the three
+  tables are one deployment's state and are restored together.
 - *Re-registration.* When the id is registered again, the registration transaction runs
   `Activate` instead of `Initialize`. It checks, in that transaction, that no row of the
   id remains in `entity_main`, `eav_data` or `change_log` (`ErrResidue` otherwise), then
-  moves the record to the next epoch, `UNPUBLISHED`, under a new token. Nothing read
-  before activation carries that epoch.
+  moves the record to the next epoch, `UNPUBLISHED`, under a new token, and raises the
+  id's lifecycle epoch to it. Nothing read before activation carries that epoch.
 - *Epoch pin.* A process reads each schema's epoch when it loads the schema's metadata
   and keeps it with them. A reader pass or a writer that later reads a record of another
   epoch fails closed: the schema was dropped, and maybe re-created, since the process
@@ -210,6 +234,27 @@ too (`Retained` and `Expired` answer both): they are what it verifies each manif
 against before it trusts the keys the manifest lists. `superseded_at` marks a generation as replaced, but
 retention never counts from it: it is the replacing transaction's start, and nothing
 bounds how long after its start that transaction commits.
+
+### Lifecycle epoch
+
+```sql
+CREATE TABLE <entity_main>_publication_epoch (
+  schema_id  SMALLINT NOT NULL,  -- PRIMARY KEY
+  epoch      BIGINT   NOT NULL,  -- the highest epoch any record of the id carried
+  updated_at BIGINT   NOT NULL
+)
+```
+
+The id's durable lifecycle identity, kept apart from the record so that it outlives a
+lost record row. Every transition that moves a record's epoch (`Initialize`,
+`InitializeAwaitingInit`, `Reset`, `Activate`, `InitializeAfterLoss`) raises it to the new
+epoch in its own transaction, with an `INSERT … ON CONFLICT DO UPDATE … WHERE epoch <
+new epoch` that must write the row. A transition whose new epoch is not above it fails
+with `ErrEpochReused`, and its transaction does not commit: only a record that went back
+to an older epoch (restored from an older state, or written outside the package) meets
+that, and moving it on would hand a stale process its pinned epoch again. The row is never
+deleted. Readers and writers do not read it; only the lifecycle transitions and
+`ReadHistory` do.
 
 ## Immutable manifest generations
 
@@ -997,7 +1042,7 @@ the V1 code it replaces:
 | --- | --- | --- |
 | `init-db` table DDL | `Statements` for the configured `entity_main`, in init-db's table transaction. `init-db` creates the tables on PostgreSQL. On Aurora DSQL, #895 covers statement validity only: `make lint-dsql` and the MiniStack strict lane accept the DSQL rendering, but `init-db` cannot execute there, because it has no engine selection and sends its DDL in one transaction, which DSQL rejects. An executable DSQL `init-db` (one DDL statement per transaction, strict-lane fresh init, upgrade and rerun) is #690's. The tables only: nothing inserts, reads or updates them | #895 (DSQL execution: #690) |
 | V2 manifest objects | `internal/manifestv2`: the document and its deterministic bytes and digest, the `flush` and `init` file lists, the object keys, a write-once put (`If-None-Match: *`) on S3 and the same contract on a local directory, and a process-wide cache of manifests verified with `ManifestFiles` and the full-document checks. A missing or refused manifest is a `ConsistencyError`. Nothing in production imports it until #896 | #898 |
-| `init-db` registration, the upgrade cutover | `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock. #896 does both in one step of that transaction (`ensurePublicationRecords`) for every registered schema: a record is kept, a `DROPPED` one is activated (its residue checked in `entity_main`, `eav_data` and `change_log`), and a missing one is written under `pg_try_advisory_xact_lock` on the key `cdc-flush` and `cdc-init` take, `AWAITING_INIT` when the schema has parquet history, `UNPUBLISHED` otherwise. A schema registered before the run whose lock is held keeps no record, is reported, and is retried by the next run. A schema the run registers is never skipped: when its lock is held the run fails and its registry row is rolled back with everything else, so a registration commits with its record or not at all. A schema the run registers whose id still has a record that is not `DROPPED` is refused the same way, and a missing record with surviving generation history is recovered (`InitializeAfterLoss`) rather than started at epoch 1. The drop (`Reset`, then the purge under `HoldDropped`) is `forma-tools drop-schema` | #896 (writers and reader, built in #899 to #901) |
+| `init-db` registration, the upgrade cutover | `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock. #896 does both in one step of that transaction (`ensurePublicationRecords`) for every registered schema: a record is kept, a `DROPPED` one is activated (its residue checked in `entity_main`, `eav_data` and `change_log`), and a missing one is written under `pg_try_advisory_xact_lock` on the key `cdc-flush` and `cdc-init` take, `AWAITING_INIT` when the schema has parquet history, `UNPUBLISHED` otherwise. A schema registered before the run whose lock is held keeps no record, is reported, and is retried by the next run. A schema the run registers is never skipped: when its lock is held the run fails and its registry row is rolled back with everything else, so a registration commits with its record or not at all. A schema the run registers whose id still has a record that is not `DROPPED` is refused the same way, and a missing record whose lifecycle epoch survives is recovered after that epoch (`InitializeAfterLoss`) rather than started at epoch 1; one whose lifecycle epoch is lost while its generation history survives fails the run (`ErrLifecycleLost`). The drop (`Reset`, then the purge under `HoldDropped`) is `forma-tools drop-schema` | #896 (writers and reader, built in #899 to #901) |
 | `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path. The publication loop is `internal/cdcv2`'s `Writer.Flush` (#899), behind a `DeltaStager` that writes the parquet. #896 adapts the DuckDB export to it (`internal/cdc`'s `deltaStager`: a local scratch file, then a conditional put under a fresh key), calls it with the epoch the run loads from the record, and deletes the V1 append, the #474 probe, both V1 marks, `--glob-only` and the writers' `--manifest-template`/`--manifest-prefix` | #896 (writers and reader, built in #899 to #901) |
 | `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot. #896 adapts the DuckDB export to it (`internal/cdc`'s `baseExporter`, which reads the rows on that snapshot), calls it, settles a lost `COMMIT` once in-process (`ResumeInit`), and deletes the V1 manifest swap, the ambiguous-save confirmation, the delta purge (`--replace-delta`, `--delta-prefix`) and the zero-row placeholder | #896 (writers and reader, built in #899 to #901), closing #760 |
 | compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891 | #890 (compaction) |

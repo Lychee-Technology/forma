@@ -10,31 +10,41 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
-// History is what the generation table still holds of a schema's committed
-// generations: how many rows, and the highest epoch and generation number
-// they carry. A record names a generation number only after its history row
-// committed in the same transaction, so a schema whose record is missing
-// while History counts rows had a V2 record once and lost it: a record
-// written for it at epoch 1 and generation 0 would reuse an epoch and a
-// generation number it already committed.
+// History is what survives of a schema id's lifecycle apart from its record:
+// the id's lifecycle epoch (the epoch table, epochDDL), and how many rows the
+// generation table holds of its committed generations, with the highest
+// epoch and generation number they carry. An id that has a lifecycle epoch or
+// history rows but no record had a V2 record once and lost it: a record
+// written for it at epoch 1 and generation 0 would carry an epoch a running
+// process may still pin, and reuse generation numbers it committed.
 type History struct {
+	// Epoch is the id's lifecycle epoch: the highest epoch any record of it
+	// carried, 0 when it has none.
+	Epoch         int64
 	Generations   int64
 	MaxEpoch      int64
 	MaxGeneration int64
 }
 
-// historySQL reads the schema's surviving history.
-const historySQL = `SELECT COUNT(*), COALESCE(MAX(epoch), 0), COALESCE(MAX(generation), 0)
-	FROM %s WHERE schema_id = $1`
+// Lost answers whether h says the id had a record: its lifecycle epoch or
+// generation history survives.
+func (h History) Lost() bool {
+	return h.Epoch > 0 || h.Generations > 0
+}
 
-// ReadHistory answers what the generation table holds of schemaID's
-// committed generations, on q.
+// historySQL reads the schema's surviving history and lifecycle epoch.
+const historySQL = `SELECT COALESCE((SELECT epoch FROM %[2]s WHERE schema_id = $1), 0),
+	COUNT(*), COALESCE(MAX(epoch), 0), COALESCE(MAX(generation), 0)
+	FROM %[1]s WHERE schema_id = $1`
+
+// ReadHistory answers what the generation and epoch tables hold of
+// schemaID's lifecycle, on q.
 func ReadHistory(ctx context.Context, q Querier, t Tables, schemaID int16) (History, error) {
 	var h History
-	err := q.runner().queryRow(ctx, fmt.Sprintf(historySQL, t.Generation), schemaID).
-		Scan(&h.Generations, &h.MaxEpoch, &h.MaxGeneration)
+	err := q.runner().queryRow(ctx, fmt.Sprintf(historySQL, t.Generation, t.Epoch), schemaID).
+		Scan(&h.Epoch, &h.Generations, &h.MaxEpoch, &h.MaxGeneration)
 	if err != nil {
-		return History{}, fmt.Errorf("read the publication history of schema %d in %s: %w", schemaID, t.Generation, err)
+		return History{}, fmt.Errorf("read the publication history of schema %d in %s and %s: %w", schemaID, t.Generation, t.Epoch, err)
 	}
 	return h, nil
 }
@@ -48,32 +58,53 @@ const recoverSQL = `INSERT INTO %s (schema_id, epoch, state, generation, parent_
 	ON CONFLICT (schema_id) DO NOTHING`
 
 // InitializeAfterLoss writes, on tx, the record of a schema whose record is
-// missing while its history h survives (h.Generations > 0): at the epoch
-// after every epoch h names and with h's highest generation number as its
-// allocation counter, so no epoch the surviving history names and no
-// generation number it committed is used again. state is AwaitingInit for a
-// registered schema, whose parquet tiers the next cdc-init replaces, or
-// Dropped for an id whose old registration is gone, which Activate then
-// re-registers after its residue check. It answers the record written and
-// whether it wrote one; a record that exists is left as it is.
+// missing while its lifecycle epoch survives (h.Epoch > 0): at the epoch
+// after the id's lifecycle epoch, and after every epoch its generation
+// history names, with the history's highest generation number as its
+// allocation counter. Every epoch a record of the id carried is at or below
+// its lifecycle epoch, since every transition that moved a record's epoch
+// raised it in the same transaction, so no process holds a pin on the
+// recovered epoch: a reader or writer pinned to an epoch of the lost record,
+// or of any registration before it, fails closed on the recovered record,
+// and on every later one, since epochs only grow. No generation number the
+// surviving history committed is used again either.
 //
-// The epoch is a floor, not the lost record's own: a drop and re-activation
-// after the last publication moved the lost record's epoch without leaving
-// history. Every writer that staged under that epoch fails its
-// compare-and-set against the recovered record's other token in any case.
+// state is AwaitingInit for a registered schema with generation history,
+// whose parquet tiers the next cdc-init replaces; Unpublished for a
+// registered schema without any, whose rows the caller found to satisfy the
+// UNPUBLISHED invariant; or Dropped for an id whose old registration is gone,
+// which Activate then re-registers after its residue check. It answers the
+// record written and whether it wrote one; a record that exists is left as it
+// is.
+//
+// It refuses, with ErrLifecycleLost, an id whose lifecycle epoch is lost as
+// well (h.Epoch == 0): the history's highest epoch is only a floor, since a
+// drop and a re-registration move the epoch without a generation row, and a
+// record recovered above that floor could carry an epoch a running process
+// still pins. The operator establishes the id's lifecycle epoch first.
 func InitializeAfterLoss(ctx context.Context, tx Tx, t Tables, schemaID int16, h History, state State) (Record, bool, error) {
-	if h.Generations <= 0 {
-		return Record{}, false, fmt.Errorf("recover the record of schema %d: no surviving history; a schema without history is initialized at epoch 1", schemaID)
+	if h.Epoch <= 0 {
+		return Record{}, false, fmt.Errorf("recover the record of schema %d: its lifecycle epoch is missing from %s too, "+
+			"and its %d surviving generation(s) through epoch %d do not bound the epochs a drop or re-registration took since: %w",
+			schemaID, t.Epoch, h.Generations, h.MaxEpoch, ErrLifecycleLost)
 	}
-	if state != AwaitingInit && state != Dropped {
-		return Record{}, false, fmt.Errorf("recover the record of schema %d as %s: a lost record is recovered %s or %s only", schemaID, state, AwaitingInit, Dropped)
+	if state != AwaitingInit && state != Unpublished && state != Dropped {
+		return Record{}, false, fmt.Errorf("recover the record of schema %d as %s: a lost record is recovered %s, %s or %s only",
+			schemaID, state, AwaitingInit, Unpublished, Dropped)
 	}
-	rec := Record{SchemaID: schemaID, Epoch: h.MaxEpoch + 1, State: state, Generation: h.MaxGeneration, Token: uuid.New()}
-	n, err := tx.runner().exec(ctx, fmt.Sprintf(recoverSQL, t.Record), schemaID, rec.Epoch, rec.Generation, string(state), rec.Token)
+	rec := Record{SchemaID: schemaID, Epoch: max(h.Epoch, h.MaxEpoch) + 1, State: state, Generation: h.MaxGeneration, Token: uuid.New()}
+	r := tx.runner()
+	n, err := r.exec(ctx, fmt.Sprintf(recoverSQL, t.Record), schemaID, rec.Epoch, rec.Generation, string(state), rec.Token)
 	if err != nil {
 		return Record{}, false, fmt.Errorf("recover the %s record of schema %d at epoch %d in %s: %w", state, schemaID, rec.Epoch, t.Record, err)
 	}
-	return rec, n == 1, nil
+	if n != 1 {
+		return Record{}, false, nil
+	}
+	if err := raiseEpoch(ctx, r, t, schemaID, rec.Epoch); err != nil {
+		return Record{}, false, fmt.Errorf("recover the %s record of schema %d: %w", state, schemaID, err)
+	}
+	return rec, true, nil
 }
 
 // holdDroppedSQL locks a dropped record while it is still DROPPED at the

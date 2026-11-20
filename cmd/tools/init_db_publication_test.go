@@ -10,8 +10,8 @@ import (
 	"github.com/lychee-technology/forma/internal/publication"
 )
 
-// wantPublicationDDL is the golden text of the publication record and
-// generation tables (#895), issued after the ledger. Independent literals,
+// wantPublicationDDL is the golden text of the publication record,
+// generation and epoch tables (#895), issued after the ledger. Independent literals,
 // like the rest of wantDDLStatements: never rebuild them from the builders.
 func wantPublicationDDL() []string {
 	return []string{
@@ -44,6 +44,12 @@ func wantPublicationDDL() []string {
 		retired_at        BIGINT   NOT NULL DEFAULT 0,
 		PRIMARY KEY (schema_id, generation)
 	)`,
+		`CREATE TABLE IF NOT EXISTS "entity_main_publication_epoch" (
+		schema_id  SMALLINT NOT NULL,
+		epoch      BIGINT   NOT NULL,
+		updated_at BIGINT   NOT NULL,
+		PRIMARY KEY (schema_id)
+	)`,
 	}
 }
 
@@ -72,6 +78,7 @@ func TestPublicationDDLAnnouncements(t *testing.T) {
 	want := []tableDDL{
 		{announce: "Created publication record table: app.entity_main_publication\n", failure: "ensure publication record table"},
 		{announce: "Created publication generation table: app.entity_main_publication_generation\n", failure: "ensure publication generation table"},
+		{announce: "Created publication epoch table: app.entity_main_publication_epoch\n", failure: "ensure publication epoch table"},
 	}
 	if len(ddl) != len(want) {
 		t.Fatalf("publicationDDL returned %d statements, want %d", len(ddl), len(want))
@@ -133,6 +140,11 @@ func TestPublicationTableCollision(t *testing.T) {
 		"the EAV table is the generation table": {
 			set: func(o *initDBOptions) { o.eavTable = "entity_main_publication_generation" },
 			want: []string{`"entity_main_publication_generation" is the publication generation table`,
+				"the EAV table, which --eav-table names"},
+		},
+		"the EAV table is the epoch table": {
+			set: func(o *initDBOptions) { o.eavTable = "entity_main_publication_epoch" },
+			want: []string{`"entity_main_publication_epoch" is the publication epoch table`,
 				"the EAV table, which --eav-table names"},
 		},
 		"the registry's generation ledger is the generation table": {
