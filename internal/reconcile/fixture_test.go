@@ -390,6 +390,11 @@ func (f *fixture) pass(t *testing.T, opts Options) SchemaReport {
 // waitOutGrace sleeps past the test grace and margin.
 func waitOutGrace() { time.Sleep(400 * time.Millisecond) }
 
+// waitOutListingPrecision sleeps past the listing's precision
+// (publication.LastModifiedPrecision) and the test grace and margin, so an
+// object written before it is below the next pass's orphan cutoff.
+func waitOutListingPrecision() { time.Sleep(publication.LastModifiedPrecision + 300*time.Millisecond) }
+
 type fixedSchemas []int16
 
 func (s fixedSchemas) SchemaIDs(context.Context) ([]int16, error) { return s, nil }

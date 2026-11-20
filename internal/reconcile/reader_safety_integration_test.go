@@ -133,7 +133,7 @@ func TestCollectorDeletesOnlyOrphansBelowItsHorizon(t *testing.T) {
 	f.store.set("data/70/e1/base/"+uuid.Must(uuid.NewV7()).String()+".parquet", []byte("x"), old)
 
 	fenced := f.stageFlush(t, g1, 1)
-	time.Sleep(200 * time.Millisecond) // past the orphan age and the clock margin
+	waitOutListingPrecision() // past the orphan age, the clock margin and the listing's precision
 	opts := testOptions(true)
 	opts.OrphanAge = 100 * time.Millisecond
 	rep := f.pass(t, opts)

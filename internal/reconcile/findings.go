@@ -6,14 +6,21 @@ import (
 
 // The safe operator action of each finding (docs/manifest-reconcile.md,
 // "Findings and recovery"). None of them rebuilds a manifest or an object
-// from what S3 still holds: under V2 the recovery of lost publication state
-// is a re-init, which exports every live row from PostgreSQL and publishes
-// it as a new generation.
+// from what S3 still holds, and none installs an older copy of the record:
+// under V2 the recovery of a lost manifest or object is a re-init, which
+// exports every live row from PostgreSQL and publishes it as a new
+// generation, and that of a lost or invalid record is init-db's recovery at
+// a fresh epoch, then a re-init.
 const (
 	actionNoRecord = "run init-db, which recovers a lost record under the schema lock at a fresh epoch " +
 		"(docs/publication-protocol-v2.md, \"A lost record\"); garbage collection deletes nothing for the schema until it has one"
-	actionRecordInvalid = "restore the record row from a backup: no transition writes this row, readers and writers fail closed on it, " +
-		"and garbage collection deletes nothing for the schema meanwhile"
+	actionRecordInvalid = "recover the record at a fresh epoch, never from a backup copy of the row: an older pointer of the same " +
+		"epoch can still verify and name an intact manifest while newer flush marks stay committed, and readers would " +
+		"then return old values or a deleted row. Readers, writers and garbage collection fail closed on the invalid row " +
+		"meanwhile. Delete the schema's row of the publication record table, run init-db, which recovers " +
+		"the record under the schema lock one epoch above the id's lifecycle epoch, AWAITING_INIT while generation history " +
+		"survives, then run cdc-init, which publishes every live row from PostgreSQL (docs/manifest-reconcile.md, " +
+		"\"An invalid record\"); garbage collection resumes the retention grace after the recovery"
 	actionMissingLifecycle = "write the id's row of the publication epoch table back at the record's epoch, with updated_at " +
 		"the database time in epoch milliseconds (docs/manifest-reconcile.md, \"Findings and recovery\"); garbage collection " +
 		"deletes nothing for the schema until it has one, and then for the retention grace after its stamp"

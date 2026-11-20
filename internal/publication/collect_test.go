@@ -30,8 +30,8 @@ func collection(t *testing.T) Collection {
 	c.Listed = []Object{
 		{Key: "m1", LastModified: 1}, {Key: "m2", LastModified: 1}, {Key: "m3", LastModified: 1},
 		{Key: "only1", LastModified: 1}, {Key: "shared", LastModified: 1}, {Key: "only2", LastModified: 1},
-		{Key: "orphan", LastModified: 8_999},
-		{Key: "staged", LastModified: 9_000},
+		{Key: "orphan", LastModified: 7_999},
+		{Key: "staged", LastModified: 8_000},
 	}
 	return c
 }
@@ -64,7 +64,8 @@ func digest(raw []byte) string {
 // retained generation's manifest object and every key it lists. The current
 // manifest m3, old and listed in no files list, is kept; so is an object an
 // expired generation shares with a retained one. An orphan goes only once its
-// LastModified plus the clock margin is before the horizon.
+// LastModified plus the listing's precision and the clock margin is before
+// the horizon.
 func TestPlanCollectionProtectsRetainedManifests(t *testing.T) {
 	plan, err := PlanCollection(collection(t))
 	require.NoError(t, err)
@@ -73,6 +74,23 @@ func TestPlanCollectionProtectsRetainedManifests(t *testing.T) {
 		Manifests: []string{"m1"},
 		Forget:    []int64{1},
 	}, plan)
+}
+
+// TestOrphanCutoffCoversTheListingsPrecision is R6-F2: S3 lists
+// LastModified truncated to the second, and a clock margin under a
+// millisecond still counts. With the horizon at 10.500 a writer can stage at
+// 10.600, which a compare-and-set accepts, and upload at 10.700, which lists
+// as 10.000: that object is kept. One whose listed second ends before the
+// horizon less the margin was staged at or below the horizon, and goes.
+func TestOrphanCutoffCoversTheListingsPrecision(t *testing.T) {
+	require.Equal(t, int64(9_499), OrphanCutoff(10_500, time.Nanosecond))
+	require.Equal(t, int64(9_499), OrphanCutoff(10_500, time.Millisecond))
+	require.Equal(t, int64(9_498), OrphanCutoff(10_500, time.Millisecond+time.Nanosecond))
+	c := Collection{SchemaID: 100, Horizon: 10_500, ClockMargin: time.Nanosecond, Manifests: map[string][]byte{},
+		Listed: []Object{{Key: "staged-at-10.600", LastModified: 10_000}, {Key: "staged-before-9.500", LastModified: 8_000}}}
+	plan, err := PlanCollection(c)
+	require.NoError(t, err)
+	require.Equal(t, []string{"staged-before-9.500"}, plan.Objects)
 }
 
 // TestPlanCollectionRecoversAfterDeletingAnExpiredManifest replays the pass

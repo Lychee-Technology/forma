@@ -16,8 +16,9 @@ var errPlanTouchesProtected = errors.New("the collection plan deletes a protecte
 // summarize fills rep from p and plans the collection (steps 5 to 7) when
 // nothing stops it. A blocking finding stops it, and so does a pass without
 // a record, one inside the retention grace after the schema's lifecycle
-// epoch moved (publication.ReadLifecycleFence), or a diagnosis a collection
-// ran beside.
+// epoch moved (publication.ReadLifecycleFence), a diagnosis a collection
+// ran beside, or a plan that deletes from S3 when nothing binds the bucket
+// and prefix to the schema (unbound).
 func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 	if p.record != nil {
 		rep.State, rep.Epoch = p.record.State, p.record.Epoch
@@ -67,6 +68,10 @@ func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 		rep.Refused = err.Error()
 		return
 	}
+	if refused := r.unbound(p, plan); refused != "" {
+		rep.Refused = refused
+		return
+	}
 	plan.Forget = keepFloor(plan.Forget)
 	rep.Plan = plan
 	rep.PendingOrphans = r.pendingOrphans(p, owned)
@@ -82,6 +87,27 @@ func keepFloor(forget []int64) []int64 {
 		return forget
 	}
 	return forget[:len(forget)-1]
+}
+
+// unbound refuses a plan that deletes from S3 when no manifest of the
+// schema's generation history verified in the bucket under the layout's
+// prefix (#463). Such a manifest's bytes match the digest this database
+// committed, which binds the bucket and prefix to this deployment's schema;
+// the key layout alone does not, and every V2 deployment builds the same keys
+// for a schema id. Without one (an UNPUBLISHED schema, or one whose every
+// manifest was collected) a collector pointed at another deployment's bucket
+// or prefix would delete that deployment's live objects as old orphans. It
+// answers why, empty when the plan may run.
+func (r *Reconciler) unbound(p *pass, plan publication.Plan) string {
+	if len(p.verified) > 0 || len(plan.Objects)+len(plan.Manifests) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("no manifest of the schema's generation history is in the bucket under prefix %q (the schema has "+
+		"published no generation, or every manifest it published was collected), so nothing proves the listed keys are "+
+		"this deployment's rather than another's that builds the same keys for schema %d; the %d object(s) and %d "+
+		"manifest(s) the plan would delete are kept until a generation of the schema publishes. Before removing any "+
+		"by hand, check that --s3-bucket and --data-prefix are the writers'",
+		r.Layout.Prefix, p.id, len(plan.Objects), len(plan.Manifests))
 }
 
 // guardPlan refuses a plan that deletes the record's manifest, a retained
@@ -106,8 +132,8 @@ func (r *Reconciler) guardPlan(p *pass, plan publication.Plan) error {
 }
 
 // pendingOrphans counts the V2 objects no generation names that are not
-// yet below the horizon less the clock margin: a publication staging them
-// may still commit.
+// yet below the orphan cutoff (publication.OrphanCutoff): a publication
+// staging them may still commit.
 func (r *Reconciler) pendingOrphans(p *pass, owned []publication.Object) int {
 	named := map[string]bool{}
 	for _, g := range append(append([]publication.Generation{}, p.retained...), p.expired...) {
@@ -119,7 +145,7 @@ func (r *Reconciler) pendingOrphans(p *pass, owned []publication.Object) int {
 		}
 	}
 	n := 0
-	before := p.horizon - r.Opts.ClockMargin.Milliseconds()
+	before := publication.OrphanCutoff(p.horizon, r.Opts.ClockMargin)
 	for _, o := range owned {
 		if !named[o.Key] && o.LastModified >= before {
 			n++

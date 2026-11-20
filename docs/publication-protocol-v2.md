@@ -729,10 +729,14 @@ a `G` below `R_max` (60 s) + `C`, a `C` of zero, and an `A` below `W` (1 h) + `C
   `REPEATABLE READ` and on DSQL, one of the two fails with `40001`. The raise does not
   change the token, so a publication that loses that race resends unchanged. Once H has
   committed, every publication is either committed and visible to the snapshot the pass
-  reads next, or still to commit and therefore refused unless its `staged_at > H`. A
-  staged object with `LastModified + C < H` was staged by a writer with
-  `staged_at ≤ LastModified + C < H`, which can never commit. A pass whose raise does
-  not commit deletes no orphan. `TestRaiseHorizonFencesAStagedPublication` and
+  reads next, or still to commit and therefore refused unless its `staged_at > H`. S3
+  keeps `LastModified` in whole seconds and lists it truncated, so an object was created
+  before `LastModified + P`, with P = 1 s (`LastModifiedPrecision`). A staged object
+  with `LastModified + P + C < H`, C rounded up to the millisecond (`OrphanCutoff`), was
+  staged by a writer with `staged_at < LastModified + P + C < H`, which can never commit.
+  Without P, a horizon at 10.500 and a writer that stages at 10.600 and uploads at
+  10.700, listed as 10.000, would lose staging its compare-and-set still accepts. A pass
+  whose raise does not commit deletes no orphan. `TestRaiseHorizonFencesAStagedPublication` and
   `TestRaiseHorizonWaitsOutAPublicationInFlight` pin both orders.
 
 **Collection order.** Each step repeats safely after a crash. `PlanCollection` computes
@@ -769,8 +773,12 @@ steps 5 to 7 from what steps 1 to 4 read.
    generation's manifest or is an orphan. Protected means it is a retained generation's
    manifest object or a key that manifest lists. An orphan is named by no history row,
    either as a manifest key or through a manifest that exists, and has
-   `LastModified + C < H`. An old current manifest is a manifest object, not a file, and
-   stays protected however old it is.
+   `LastModified + P + C < H`. An old current manifest is a manifest object, not a file,
+   and stays protected however old it is. The collector (#891) deletes from S3 only once
+   a manifest of the schema's history, retained or expired, is in the bucket under its
+   prefix and verifies against its row's digest: that binds the bucket and prefix to the
+   database, which the key layout alone does not (#463), so a schema without one (an
+   `UNPUBLISHED` schema, or one whose every manifest was collected) has its old keys kept.
 6. When step 5 has finished, delete the expired generations' manifest objects. An
    expired manifest goes only after the objects it alone listed. So if the next pass
    finds an expired manifest missing, its exclusive objects are already gone. That pass
@@ -1052,6 +1060,11 @@ generations published with `Publish` and objects in a fault-injecting store:
   older than the horizon; a staging the horizon fenced is deleted and its publication
   refused; staging above the horizon is kept and commits; a V1 or foreign key is never
   deleted.
+- `TestCollectorKeepsStagingItsListingRoundsBelowTheHorizon`: staging whose whole-second
+  `LastModified` lists below a horizon just under its `staged_at` is kept, and commits.
+- `TestCollectorKeepsAnotherDeploymentsObjectsForAnUnpublishedSchema`: an `UNPUBLISHED`
+  schema pointed at another deployment's old, layout-shaped keys deletes none of them, in
+  the diagnosis's plan or in a collection, until its own first generation is in the bucket.
 - `TestCollectorFailsClosed`, `TestCollectorFailsOnAManifestReadItCannotTrust`: a missing or
   invalid record, a missing current manifest or history row, a corrupt current or expired
   manifest, a missing retained manifest, a run under another data prefix, and a refused

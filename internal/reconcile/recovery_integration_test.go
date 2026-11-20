@@ -63,7 +63,7 @@ func TestMissingCurrentHistoryRecoveryTakesTwoPublications(t *testing.T) {
 
 	f.publish(t, f.stageFlush(t, reinit, 1))
 	refused([]int64{reinit.rec.Generation}) // the re-init's generation is retired, not expired
-	waitOutGrace()
+	waitOutListingPrecision()               // past the grace, and the unrecorded generation's keys below the orphan cutoff
 
 	rep = f.pass(t, testOptions(true))
 	require.NoError(t, rep.Err)
@@ -91,7 +91,9 @@ func TestLostRecordRecoveryFencesAReaderOfAnUnrecordedHead(t *testing.T) {
 	rep := f.pass(t, testOptions(true))
 	require.NoError(t, rep.Err)
 	require.Equal(t, []int64{g1.rec.Generation}, rep.Collected.Retired)
-	waitOutGrace() // N-1 expires: it is the history's floor, below N
+	// N-1 expires as the history's floor below N, and N's keys fall below
+	// the orphan cutoff: only the fence keeps them once N's row is lost.
+	waitOutListingPrecision()
 
 	reader, err := f.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	require.NoError(t, err)
@@ -140,7 +142,7 @@ func TestLostRecordRecoveryFencesAReaderOfAnUnrecordedHead(t *testing.T) {
 	}
 	require.NoError(t, reader.Commit())
 
-	waitOutGrace()
+	waitOutListingPrecision() // past the fence's grace, and the unrecorded head's keys below the orphan cutoff
 	rep = f.pass(t, testOptions(true))
 	require.NoError(t, rep.Err)
 	require.Empty(t, rep.Refused)
@@ -208,32 +210,40 @@ func TestARecordWithoutItsLifecycleEpochStopsTheCollection(t *testing.T) {
 // Its stamp is its transaction's start, older than the recovery's: the
 // lifecycle fence must not go back to it, or a collection inside the pinned
 // reader's window would take the unrecorded head's manifest and objects.
+// The drop's transaction is aged first (R6-F4), and the head's keys with it
+// past the orphan cutoff; only then does the reader pin N, and the loss, the
+// recovery, the drop and the collection all run while the reader is still
+// inside its deadline, which the protocol promises to protect.
 func TestALaterTransitionKeepsTheRecoveryFence(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
+	opts := testOptions(true)
 	g1 := f.publishInit(t, f.initialized(t), 2)
 	head := f.publish(t, f.stageFlush(t, g1, 1))
-	rep := f.pass(t, testOptions(true))
+	rep := f.pass(t, opts)
 	require.NoError(t, rep.Err)
 	require.Equal(t, []int64{g1.rec.Generation}, rep.Collected.Retired)
-	waitOutGrace() // N-1 expires: it is the history's floor, below N
-
-	reader, err := f.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
-	require.NoError(t, err)
-	defer func() { _ = reader.Rollback() }()
-	pinned, err := publication.Read(ctx, publication.SQLTx(reader), f.tables, testSchema)
-	require.NoError(t, err)
-	require.Equal(t, head.rec.Generation, pinned.Generation, "the reader pinned generation N")
 
 	drop, err := f.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	require.NoError(t, err)
 	defer func() { _ = drop.Rollback() }()
 	var began int64
 	require.NoError(t, drop.QueryRowContext(ctx, "SELECT "+sqlgen.ServerTimeMillisSQL).Scan(&began))
+	// The drop's transaction ages past the grace before the recovery, N-1
+	// expires as the history's floor below N, and N's keys fall below the
+	// orphan cutoff: only the fence keeps them once N's row is lost.
+	waitOutListingPrecision()
+
+	reader, err := f.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	require.NoError(t, err)
+	defer func() { _ = reader.Rollback() }()
+	pinned, err := publication.Read(ctx, publication.SQLTx(reader), f.tables, testSchema)
+	require.NoError(t, err)
+	pinnedAt := time.Now()
+	require.Equal(t, head.rec.Generation, pinned.Generation, "the reader pinned generation N")
 
 	f.exec(t, "DELETE FROM %s", f.tables.Record)
 	f.exec(t, "DELETE FROM %s WHERE generation = 2", f.tables.Generation)
-	waitOutGrace() // the drop's transaction began more than a grace before the recovery
 	require.NoError(t, f.inTx(t, func(tx publication.Tx) error {
 		h, err := publication.ReadHistory(ctx, tx, f.tables, testSchema)
 		if err != nil {
@@ -245,7 +255,7 @@ func TestALaterTransitionKeepsTheRecoveryFence(t *testing.T) {
 	}))
 	stamped, err := publication.ReadLifecycleFence(ctx, publication.DB(f.db), f.tables, testSchema, time.Hour)
 	require.NoError(t, err)
-	require.Greater(t, stamped.MovedAt, began+testOptions(true).RetentionGrace.Milliseconds())
+	require.Greater(t, stamped.MovedAt, began+opts.RetentionGrace.Milliseconds())
 
 	q := publication.SQLTx(drop)
 	recovered, err := publication.Read(ctx, q, f.tables, testSchema)
@@ -258,7 +268,7 @@ func TestALaterTransitionKeepsTheRecoveryFence(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, stamped.MovedAt, fence.MovedAt, "the drop keeps the recovery's later stamp, not its start %d", began)
 
-	rep = f.pass(t, testOptions(true))
+	rep = f.pass(t, opts)
 	require.NoError(t, rep.Err)
 	require.Contains(t, rep.Refused, "lifecycle epoch")
 	require.Empty(t, rep.Collected.Objects)
@@ -275,5 +285,53 @@ func TestALaterTransitionKeepsTheRecoveryFence(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, ok, "the pinned generation's object %s is still there", key)
 	}
+	require.Less(t, time.Since(pinnedAt), opts.ReaderDeadline,
+		"the loss, the recovery, the drop and the collection ran while the reader was inside its deadline")
 	require.NoError(t, reader.Commit())
+}
+
+// TestAnInvalidRecordRecoversAtAFreshEpoch is R6-F3: the action for an
+// invalid record never installs an older pointer. Following it, the row is
+// deleted and init-db's recovery writes the record one epoch above the
+// lifecycle epoch, AWAITING_INIT, so no stale pointer is served: a writer
+// that staged over the former head misses, and the re-init publishes at the
+// fresh epoch while collection waits out the recovery's grace.
+func TestAnInvalidRecordRecoversAtAFreshEpoch(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	g1 := f.publishInit(t, f.initialized(t), 1)
+	head := f.publish(t, f.stageFlush(t, g1, 1))
+	stale := f.stageFlush(t, head, 1)
+	f.exec(t, "UPDATE %s SET generation = -1", f.tables.Record)
+
+	rep := f.pass(t, testOptions(false))
+	require.NoError(t, rep.Err)
+	require.Equal(t, []FindingKind{RecordInvalid}, kinds(rep.Findings))
+	require.Equal(t, actionRecordInvalid, rep.Findings[0].Action)
+	require.Contains(t, rep.Findings[0].Action, "never from a backup copy of the row")
+
+	f.exec(t, "DELETE FROM %s", f.tables.Record)
+	require.NoError(t, f.inTx(t, func(tx publication.Tx) error {
+		h, err := publication.ReadHistory(ctx, tx, f.tables, testSchema)
+		if err != nil {
+			return err
+		}
+		_, wrote, err := publication.InitializeAfterLoss(ctx, tx, f.tables, testSchema, h, publication.AwaitingInit)
+		require.True(t, wrote)
+		return err
+	}))
+	recovered := f.record(t)
+	require.Equal(t, publication.AwaitingInit, recovered.State, "readers fail closed until the re-init publishes")
+	require.Greater(t, recovered.Epoch, head.rec.Epoch, "the recovery takes a fresh epoch")
+	require.Equal(t, head.rec.Generation, recovered.Generation, "no generation number is used again")
+	_, err := f.commit(t, stale)
+	require.Error(t, err, "a writer that staged over the former head never publishes")
+
+	reinit := f.publishInit(t, recovered, 1)
+	require.Equal(t, recovered.Epoch, reinit.rec.Epoch)
+	rep = f.pass(t, testOptions(true))
+	require.NoError(t, rep.Err)
+	require.Empty(t, rep.Findings)
+	require.Contains(t, rep.Refused, "lifecycle epoch", "collection waits out the recovery's grace")
+	require.Equal(t, []int64{g1.rec.Generation, head.rec.Generation}, rep.Collected.Retired)
 }

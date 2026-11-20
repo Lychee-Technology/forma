@@ -40,6 +40,27 @@ type Collection struct {
 	ClockMargin time.Duration
 }
 
+// LastModifiedPrecision is how much earlier than an object's creation the
+// LastModified a listing answers for it can be. S3 keeps LastModified in
+// whole seconds and lists it truncated, so an object written at 12.700 lists
+// as 12.000.
+const LastModifiedPrecision = time.Second
+
+// OrphanCutoff answers the LastModified, in epoch milliseconds, that an
+// object no generation names must be below for its publication to be fenced
+// by horizon. The object was created before its LastModified plus
+// LastModifiedPrecision, its writer's staged_at is no later than that plus
+// the clock margin, rounded up to the millisecond so that a margin under one
+// counts in full, and a compare-and-set refuses every staged_at at or below
+// the horizon.
+func OrphanCutoff(horizon int64, margin time.Duration) int64 {
+	ms := margin.Milliseconds()
+	if margin%time.Millisecond > 0 {
+		ms++
+	}
+	return horizon - ms - LastModifiedPrecision.Milliseconds()
+}
+
 // Plan is one pass's deletes in the order they run: every key in Objects,
 // then every key in Manifests, then Forget of every generation in Forget.
 // Each step starts only once the one before it has finished, so a crash at
@@ -71,8 +92,9 @@ type Plan struct {
 //     its account.
 //   - An object no history row names, whether as a manifest or through a
 //     manifest that exists, is an orphan. It is deleted once its
-//     LastModified plus the clock margin is before the horizon: its staging
-//     began before the horizon, so its publication can never commit.
+//     LastModified is below OrphanCutoff: its staging began before the
+//     horizon, whatever the listing's precision and the clocks' drift, so
+//     its publication can never commit.
 func PlanCollection(c Collection) (Plan, error) {
 	protected := map[string]bool{}
 	for _, g := range c.Retained {
@@ -104,7 +126,7 @@ func PlanCollection(c Collection) (Plan, error) {
 		manifests[g.ManifestKey] = true
 		p.Forget = append(p.Forget, g.Generation)
 	}
-	before := c.Horizon - c.ClockMargin.Milliseconds()
+	before := OrphanCutoff(c.Horizon, c.ClockMargin)
 	for _, o := range c.Listed {
 		switch {
 		case protected[o.Key]:

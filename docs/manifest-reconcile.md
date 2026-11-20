@@ -72,7 +72,8 @@ missing history row is always reported: the snapshot read it with the record.
    full check (digest, identity, wire form, and every listed key under the
    schema and epoch).
 5. Delete every object that is listed only by expired generations, or that no
-   generation names and was staged before the horizon less `--clock-margin`.
+   generation names and was staged before the horizon: its `LastModified` plus
+   S3's one-second precision plus `--clock-margin` is before the horizon.
 6. Once every such delete succeeded, delete the expired manifests.
 7. Once those succeeded, forget the expired history rows, all but the highest,
    which stays as the history's floor (see "What is deleted, and what never is").
@@ -110,16 +111,33 @@ and `{prefix}/{id}/e{epoch}/{base|delta}/{uuidv7}.parquet`), and of those only:
 - an object listed only by expired generations, and an expired generation's
   manifest;
 - an object no generation names, retained or expired, whose `LastModified` plus
-  `--clock-margin` is before the horizon. Its staging began before the horizon,
-  so its publication can never commit.
+  one second plus `--clock-margin` (rounded up to the millisecond) is before the
+  horizon. S3 keeps `LastModified` in whole seconds and lists it truncated, so
+  an object written at 12.700 lists as 12.000; the second covers that, and the
+  margin the drift between S3's clock and the database's. Its staging began
+  before the horizon, so its publication can never commit.
+
+And it deletes any of them only once a manifest of the schema's generation
+history, retained or expired, is in the bucket under `--data-prefix` and
+verifies against the digest PostgreSQL committed for it. Every V2 deployment
+builds the same keys for a schema id, so the key layout alone cannot tell this
+deployment's objects from another's (#463). A collector pointed at another
+deployment's bucket or prefix finds a published schema's current manifest
+missing (`missing_generation`) or foreign (`foreign_manifest`), and refuses. A
+schema with no manifest to find, an `UNPUBLISHED` one or one whose every
+manifest was collected, has nothing that binds the bucket to it, so the pass
+refuses to delete from S3 for it (`garbage collection refused: no manifest of
+the schema's generation history is in the bucket …`) and keeps its old keys
+until a generation of the schema publishes. That refusal is not a finding. Check
+that `--s3-bucket` and `--data-prefix` are the writers' before removing any of
+those keys by hand.
 
 It never deletes:
 
 - the current generation's manifest or an object it lists, however old;
 - a superseded generation's manifest or objects before the retention grace
   after its retirement has passed;
-- staging newer than the horizon less the clock margin, which may still
-  commit;
+- staging not yet below that cutoff, which may still commit;
 - any key that is not V2-shaped for the schema: V1 leftovers (`manifest.json`,
   `{id}/{uuid}.parquet`, `_tmp/`), another tool's files, another layout's keys.
   These are reported as `unrecognized_object`.
@@ -165,7 +183,7 @@ registration delays collection by the same G, which costs storage only.
 | Flag | Parameter | Default | Rule |
 | --- | --- | --- | --- |
 | `--retention-grace` | G | 15m | At least the reader's pass deadline R_max (60s, `federated.DefaultPublishedPassDeadline`) plus C. A smaller value is refused, and so is a C whose sum with R_max does not fit a duration. |
-| `--clock-margin` | C | 1m | Positive. Covers the drift between the readers' clocks, the database clock and S3's `LastModified`. |
+| `--clock-margin` | C | 1m | Positive. Covers the drift between the readers' clocks, the database clock and S3's `LastModified`; S3's whole-second precision is added on top of it, and a margin under a millisecond counts as one. |
 | `--orphan-age` | A | 2h | At least the writers' staging budget W (1h, `cdcv2.DefaultStagingBudget`) plus C. Any value is safe; a smaller one would refuse publications still inside their budget, so it is refused. A C whose sum with W does not fit a duration is refused before any connection opens. |
 
 A reader that chose generation N finishes or aborts within R_max of its
@@ -189,7 +207,7 @@ safe action. Any finding makes the run exit 2.
 | Finding | Meaning | Collection | Action |
 | --- | --- | --- | --- |
 | `no_record` | The schema is registered but has no publication record. Readers and writers fail closed. | refused | Run `init-db`: it recovers a lost record at a fresh epoch. |
-| `record_invalid` | The record row is one no transition writes. | refused | Restore the row from a backup. |
+| `record_invalid` | The record row is one no transition writes. Readers, writers and the collector fail closed on it. | refused | Recover at a fresh epoch: delete the row, run `init-db`, then `cdc-init` (see "An invalid record" below). Never restore an older copy of the row. |
 | `missing_lifecycle_epoch` | The schema has a record but no lifecycle epoch row, so nothing shows when it was last recovered. | refused | Write the row back at the record's epoch, stamped with the database time: `INSERT INTO <entity_main>_publication_epoch (schema_id, epoch, updated_at) VALUES (<id>, <epoch>, <now in epoch ms>)`. Collection resumes G after the stamp. |
 | `awaiting_init` | The V2 cutover left the schema for its first `cdc-init`. Readers fail closed. | runs | Run `cdc-init` for the schema. |
 | `missing_generation` | The record names a generation whose manifest object is missing, or whose history row is missing or names another manifest. | refused | A lost or mismatched manifest: re-initialize with `cdc-init`; collection resumes once the lost generation expires. A lost history row: restore it from a backup. Otherwise collection stays refused until a generation above the unrecorded one expires, which takes two publications: the next one (a flush, a compaction or a `cdc-init`) supersedes the unrecorded generation, which is then a `missing_history` finding; a later publication supersedes the next one's generation, a pass retires it, and G passes. A single re-init followed by G is not enough. |
@@ -208,6 +226,34 @@ deleted row without its tombstone, serves wrong answers without any error.
 A re-init cannot do that: it exports every live row at its current version and
 replaces the parquet tiers.
 
+**An invalid record.** Do not restore the row from a backup. A backup's
+pointer from the same epoch can still pass every reader check and name an
+intact manifest whose digest verifies, while the flush marks of every later
+generation stay committed in PostgreSQL: readers would then treat rows as
+flushed into a generation they do not scan, and silently answer old values or a
+deleted row. Nothing in PostgreSQL or S3 proves a backup copy is the exact
+committed state. Recover at a fresh epoch instead, which never serves the
+invalid row or any older pointer:
+
+1. Leave the invalid row in place while you prepare. Readers, writers and the
+   collector fail closed on it, so nothing reads, publishes or deletes for the
+   schema meanwhile.
+2. Delete it: `DELETE FROM <entity_main>_publication WHERE schema_id = <id>`.
+   Readers and writers keep failing closed, now on a missing record.
+3. Run `init-db`. It recovers the missing record under the schema lock, one
+   epoch above the id's lifecycle epoch, `AWAITING_INIT` while generation
+   history survives, with the history's highest generation as its counter
+   ([A lost record](publication-protocol-v2.md)). Every process that pinned the
+   old epoch misses, a writer that staged over the former head included. If
+   the lifecycle epoch row is missing too, `init-db` refuses; follow the
+   protocol doc's procedure for that case first.
+4. Run `cdc-init` for the schema. It exports every live row from PostgreSQL at
+   its current version into the fresh epoch's first generation, and readers
+   resume.
+
+The recovery stamps the lifecycle fence, so collection stays refused for G, and
+then retires and collects the old epoch's generations as below.
+
 A lost record recovered by `init-db` supersedes the generation it named, in the
 recovery's transaction; the next collection retires it, and it expires and is
 collected a grace later, as any superseded generation. Collection stays refused
@@ -216,8 +262,9 @@ row was lost too finishes before anything it lists can be deleted.
 
 A `DROPPED` schema keeps its record. Its generations were superseded by the
 drop, and expire and are collected like any other's. An `UNPUBLISHED` schema
-needs no action; a failed first flush may have left staging, which is
-collected once it is below the horizon.
+needs no action. A failed first flush may have left staging, which is kept
+until the schema's first generation publishes: until then no manifest binds the
+bucket to the schema, and it is collected by the first pass after that.
 
 ## Running it
 
