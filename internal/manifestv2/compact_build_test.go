@@ -88,3 +88,30 @@ func TestNewCompactReplacesExactlyTheMergedSources(t *testing.T) {
 	_, err = NewCompact(&parent, h, []string{testFile(t, TierDelta, 5).Key}, []File{out})
 	require.ErrorIs(t, err, ErrMergedSourceGone, "a source the parent no longer lists")
 }
+
+// TestNewCompactRefusesUnknownSourcesWithoutPanicking pins R1-F3 of #907:
+// more merged keys than the parent lists plus the outputs, none of them or
+// only some listed, are refused as gone, never a panic sizing the
+// replacement inventory.
+func TestNewCompactRefusesUnknownSourcesWithoutPanicking(t *testing.T) {
+	parent := testManifest(t)
+	parent.Files = sortedFiles(parent.Files)
+	base, out := testFile(t, TierBase, 1), testFile(t, TierBase, 9)
+	h := Header{SchemaID: 100, Epoch: 1, Generation: 8, ParentGeneration: 7, Lineage: testLineage,
+		Token: uuid.New(), Kind: publication.KindCompact, InputGeneration: 7}
+	var err error
+	unknown := make([]string, 0, len(parent.Files)+3)
+	for i := range len(parent.Files) + 3 {
+		unknown = append(unknown, testFile(t, TierDelta, byte(20+i)).Key)
+	}
+	for _, outs := range [][]File{nil, {out}} {
+		require.NotPanics(t, func() {
+			_, err = NewCompact(&parent, h, unknown, outs)
+		})
+		require.ErrorIs(t, err, ErrMergedSourceGone, "%d outputs", len(outs))
+		require.NotPanics(t, func() {
+			_, err = NewCompact(&parent, h, append([]string{base.Key}, unknown...), outs)
+		})
+		require.ErrorIs(t, err, ErrMergedSourceGone, "%d outputs, one source listed", len(outs))
+	}
+}

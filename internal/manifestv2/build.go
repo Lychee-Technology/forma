@@ -153,18 +153,22 @@ func NewCompact(parent *Manifest, h Header, merged []string, outputs []File) (Ma
 		}
 		gone[key] = true
 	}
-	files := make([]File, 0, len(parent.Files)-len(merged)+len(outputs))
 	listed := make(map[string]bool, len(parent.Files)+len(outputs))
 	for _, f := range parent.Files {
 		listed[f.Key] = true
-		if !gone[f.Key] {
-			files = append(files, f)
-		}
 	}
+	// Membership first: only once every merged key is listed is
+	// len(parent.Files)-len(merged) a count of the files that stay.
 	for key := range gone {
 		if !listed[key] {
 			return Manifest{}, fmt.Errorf("build compact generation %d of schema %d: source %s is not listed by parent generation %d: %w",
 				h.Generation, h.SchemaID, key, parent.Generation, ErrMergedSourceGone)
+		}
+	}
+	files := make([]File, 0, len(parent.Files)-len(merged)+len(outputs))
+	for _, f := range parent.Files {
+		if !gone[f.Key] {
+			files = append(files, f)
 		}
 	}
 	for _, o := range outputs {
