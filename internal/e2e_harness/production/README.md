@@ -199,7 +199,7 @@ from PostgreSQL, with no DuckDB statement, whatever the routing (#720, #896).
   verified manifest), compare publications through `publication_state.go`
   (`publishesBetween`, `snapshotPublication`/`publicationChanges`, over the
   record) and stage inventory faults through `publication_faults_test.go`
-  (`unpublishFiles`, `poisonManifestChecksum`, `restampBaseColumns`,
+  (`poisonManifestChecksum`, `restampBaseColumns`,
   `RegisterParquetInManifest`, `RunInitKeepingDelta`), each of which commits
   a test-made generation through the record's compare-and-set, since
   generations are immutable. A fabricated object must have a V2 key of the
@@ -218,8 +218,9 @@ from PostgreSQL, with no DuckDB statement, whatever the routing (#720, #896).
   restore timestamp forced past the tombstone's `changed_at` so the revival
   wins LWW. Scoped to text/numeric attributes (e2e_simple shapes).
 - `RunCompaction`/`RunCompactionWith` run one V2 compaction pass (#890), wired
-  as the compactor tool wires it. The manifest-reconcile scenarios skip until
-  V2 garbage collection (#891, `reconcile_v1.go`).
+  as the compactor tool wires it. `Env.reconciler` (`reconcile.go`) wires
+  manifest-reconcile's V2 diagnosis and collector (#891) the same way, under
+  time parameters short enough to wait out a retention grace.
 - `Env.RestartPostgres` (#175) restarts the Postgres container in place
   (docker stop/start, data preserved) and rebinds the pool, CDC config,
   DuckDB client, and lazy engine/manager. Restart tests must own a

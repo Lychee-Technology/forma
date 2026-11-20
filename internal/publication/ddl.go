@@ -15,9 +15,10 @@
 // registration transaction, each schema's record (Initialize, Activate, and
 // at the V2 cutover InitializeAwaitingInit). cdc-flush and cdc-init publish
 // through internal/cdcv2, and the federated reader reads the record in its
-// pass snapshot through internal/federatedv2 (#896). The compactor (#890) and
-// garbage collection (#891) move onto it next; until then they stay on V1 and
-// must not run against a V2 schema. Only the owners
+// pass snapshot through internal/federatedv2 (#896). The compactor publishes
+// through internal/cdcv2 too (#890), and garbage collection, manifest-
+// reconcile's collector, retires and collects generations through
+// internal/reconcile (#891). Only the owners
 // TestOnlyTheProtocolOwnersMoveAPublicationRecord names may move a record.
 //
 // The tables keep plain rows: no JSONB, arrays, sequences, enums, CHECK

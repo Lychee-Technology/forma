@@ -1,512 +1,196 @@
-# manifest-reconcile — S3 对象与 manifest 对账工具（#203）
-
-`forma-tools manifest-reconcile` 逐 schema 比对 S3 上的 parquet 对象与该 schema 的
-manifest 条目，双向报告差异，并可选修复。它是两条既有故障路径的官方恢复工具：
-
-- **#197 flush 孤儿**：delta flush 导出成功、行已标记 `flushed_at != 0`，但 manifest
-  append 失败。文件在最终 key 上、数据只存在于该文件，重跑 flush 不会补录。
-- **#188 compaction 遗留**：rewrite 崩溃留下的 `_tmp/` staging 对象与未列入 manifest 的
-  `base-{uuid}.parquet`，以及 manifest 提交后被 splice 出去的 merged source。#461 起
-  compactor **有意不再内联删除** merged source：持有 pre-swap 路径集的 in-flight 联邦
-  读还可能懒打开它们，零宽限删除会让该读以不可降级的 manifest 不一致错误失败（V1
-  读路径于 #896 删除；V2 读取方见 `docs/publication-protocol-v2.md`）。因此**每次** rewrite 都会留下未列入的 source（base/tmp 形态走
-  `--gc`，delta 形态走 `--repair --gc`），本工具的两阶段 grace 回收是其成文回收机制，
-  不再只是崩溃残留的兜底。这些对象的数据已并入 merged base，属于纯垃圾。
-- **#226 swallowed-delete 残留**：flush / cdc-init / compaction 经 `CopyTmpToFinal`
-  提升成功后，对 `_tmp/` staging 对象的 DeleteObject 失败被有意吞掉（提升已成功，
-  流程不应失败）。CopyObject 或导出失败时 #226 已在带内当场自愈（best-effort 删除
-  自己的 tmp），因此只有这条 post-copy delete 失败路径会留下 `_tmp/` 残留；本工具的
-  `--gc` 两阶段删除即其成文回收机制。回收不在单次运行内完成：首次 `--gc` 只记录目击，
-  须后续运行在双时钟都超过 grace 后才删除——因此回收有上界的前提是周期性调度 `--gc`
-  （以周期 P 调度时上界 ≈ grace + 2P，默认 grace 15 分钟）；不调度则残留无界存留
-  （对正确性不可见：不进 manifest、生产 glob 不跨 `/`）。
-
-## 差异分类
-
-按文件名形态把「S3 存在、manifest 未列」的对象分为四类：
-
-| 类别 | 形态 | 来源 | 处置 |
-|------|------|------|------|
-| delta 孤儿 | `{prefix}/{schemaID}/{uuid}.parquet` | flush 的 manifest-append 失败（#252 起 append 先于 mark-flushed：行留 dirty、重试自愈覆盖，孤儿通常判为可 GC 残留；#252 前为 #197 丢失数据形态）或 #461 起每次 rewrite 保留的 merged source | `--repair` 经守卫判定后补录或转残留（见下） |
-| merged base 孤儿 | `base-{uuid}.parquet` | #188 崩溃 / #461 起每次 rewrite 保留的 merged source | `--gc` 两阶段删除（见下） |
-| init base 孤儿 | `{min}_{max}_{uuid}.parquet`（#416 起 write-once；旧版 `{min}_{max}.parquet` 仍被识别） | cdc-init 导出 | `--repair` 下先经晋升守卫（三重证明，见下）整组判定：证明通过则整组补录进 manifest base 层；证明不通过（或未开 `--repair`）保持 GC 候选，走 `--gc` 两阶段删除（见下）。#290 起 cdc-init 与 reconcile 持同一把 per-schema advisory lock，故此锁下的 init 形态孤儿必非 in-flight init——只可能是发布失败的 manifest 或被后续 init 取代的旧文件（#416 起 init 重跑铸造新键，旧文件原样留在 S3 而不再被原地覆盖） |
-| `_tmp` 孤儿 | `{prefix}/{schemaID}/_tmp/*` | staging 残留（#188 崩溃 / #226 swallowed-delete） | `--gc` 两阶段删除（见下） |
-
-形态匹配是严格的：`base-` 后缀与 `{min}_{max}[_{uuid}]` 的每一段都必须是合法 UUID，否则归
-unknown（只报告，永不删除）。
-
-另报告两类只读发现：
-
-- **dangling**：manifest 条目指向的对象已不存在（经二次确认：重载 manifest 后条目仍在
-  且逐 key 探测仍缺席才判定，规避与无锁 compactor 的竞态假阳性）。移除条目会让数据从
-  读路径消失，本工具**不**自动删除，保持人工处置。
-- **unverifiable**：指向其他 bucket、带 glob、或不在本次 list 前缀下的条目——本次列举
-  无法证明其缺席，只做信息展示。
-
-无法识别形态的 `.parquet`（unknown）只报告，永不 repair / GC。
-
-## `--repair` 的安全守卫（防墓碑复活）
-
-一个 delta 形态孤儿有两种截然相反的身份：数据仅存于该文件的丢失形态（#197；#252 把
-flush 改为 append 先于 mark 后，新产生的 append-失败孤儿其行仍 dirty、会被重试自愈覆盖，
-从而落入下面的残留分支——丢失形态只剩历史遗留与极端交错）或 #188 中删除失败的 merged
-source（数据已并入 merged base，其中墓碑行在合并时被物理丢弃——**补录会让已删除的行
-复活**）。工具用两级探测区分：
-
-1. **覆盖探测**（DuckDB 反连接）：孤儿中有哪些 row_id 不出现在任何 manifest 已列文件里；
-2. **活性探测**（Postgres `entity_main`，`--entity-main-table`）：这些未覆盖行是否仍存活。
-
-覆盖判定是**版本感知**的：孤儿中某行只有当某个已列文件携带同 row_id 且
-`changed_at >=` 该版本时才算被覆盖（反连接取 `>=`，同戳已列版本计为覆盖；#274 之后
-同戳活/活平局是值相同副本、胜者不指定）——因此「同
-row_id 的更新丢失」（孤儿携带比所有已列文件更新的版本）会被正确判为未覆盖，而不是
-被 row_id 级比较误判成可删残留。活性判定对齐 cdc-init 的导出口径：行存在于
-entity_main 且 `ltbase_deleted_at IS NULL`。
-
-逐未覆盖行裁决（取该行未覆盖版本中最新者）：
-
-- **活版本 + PG 存活** → #197 丢失数据，须补录；
-- **墓碑 + PG 已删除** → 丢失的删除标记：它缺席时更老的已列版本正在读路径上复活，
-  补录恢复删除语义；
-- **活版本 + PG 已删除** → 复活风险：该行墓碑赢了合并后被物理丢弃，补录会复活它；
-- **墓碑 + PG 存活** → 与实体状态矛盾，永不自动处理。
-
-文件级裁决：存在须补录行且无风险/矛盾行 → 补录（元数据从 parquet 内容重算，幂等，
-绝不重复已有 Path）；无未覆盖行或仅有复活风险行 → 判定为合并残留（报告列在
-`delta leftover`），在 `--repair --gc` 同时开启时按下述两阶段删除；混杂 → 拒绝自动
-补录与自动删除，留人工处置（保持非零退出码）。
-
-补录条目的 #347 内容校验和是 **best-effort**：领养时对该对象做一次全量 GET 取 SHA-256
-盖在条目上（因此这里祝福的是**领养那一刻**存储里的字节）；GET 失败只打一条
-`failed to checksum adopted orphan; entry stays unstamped` 的 WARN，条目照常补录为无校验和，
-绝不因此放弃这次恢复。成本是每个被补录对象**至多**一次全量 GET——只作用于孤儿，不是全清单扫描；
-重算出的条目（含校验和）跨 ETag 重试复用，因此冲突重试不会重读同一批字节。反过来，冲突重载后
-被改判的孤儿（重载后已在册、或被新增条目覆盖而改判为合并残留）会留下一次已付但没用上的 GET。
-
-## `--repair` 的 init 形态晋升守卫（#292）
-
-cdc-init 是一次全量重导出，因此**一组完整的 init 输出本身就是 base 层的规范清单**——正是
-发布失败时本该写下的那份 manifest。`--repair` 因此可以把 init 形态孤儿整组补录回 manifest
-base 层（`SpliceTierFiles`：整个 base 层被这组条目替换，其他 tier 条目原样保留），但只在
-能证明这么做无损时才做。
-
-晋升在 delta 孤儿补录**之前**执行，跑在同一把 per-schema advisory lock 下；manifest 写入
-仍走 ETag 乐观并发（compactor 不持这把锁），冲突后重载 manifest 并**重新验证**依赖在册清单
-的那两个证明（下面的 2、3），因为重载后的 base / delta 条目可能已经变了。
-
-语义是 **all-or-nothing**：整组晋升，或整组拒绝——不存在只补录其中几个文件。
-
-### 三重证明
-
-**1. 覆盖验证**（证明这组文件确实是一次完整 init 导出，只看 parquet 内容与 Postgres 计数）
-
-- schema 当前**没有存活行** → 拒绝（此时 init 形态孤儿必然已被取代）；
-- 逐文件重算 parquet 统计；统计读不到 → 拒绝；
-- 文件名 `{min}_{max}[_{uuid}]` 与重算出的 row_id 区间**不一致** → 拒绝（元数据永不取自文件名，
-  该检查只是为了让"看起来像 init 形态"的外来/截断文件进不了 base 层）；
-- 任意两文件的 `[min, max]` 区间**重叠** → 拒绝：一次导出的批次互不相交，重叠说明这组
-  文件混了多代 init，晋升会把重复行版本塞进 base 层；
-- 文件含 **tombstone 行** → 拒绝（cdc-init 只导出存活行，含墓碑说明这不是 init 输出）。
-  判定口径是逐 row_id 取**最新版本**（`arg_max`）看它是否为墓碑；真实 cdc-init 输出里每行
-  只有一个版本，故与"文件中出现过任何墓碑行"等价；
-- **计数恒等式**：Σ 每文件（distinct row_id 数 − 在 PG 中已死的行数）== `entity_main`
-  存活行数（`--entity-main-table`，口径 `ltbase_schema_id = ? AND ltbase_deleted_at IS NULL`，
-  与 cdc-init 的导出口径、与分子分母同一定义）。区间互不相交保证各文件的 row_id 集合互不
-  相交，因此逐文件计数可以直接相加；不相等 → 拒绝（部分导出绝不能替换整个 base 层）。
-
-条目元数据（行数、row_id / created_at 区间、大小）全部从 parquet 内容与对象本身重算。
-#256 的列集印章是 best-effort 探测：探不到只是条目不带印章（读侧回落到探测），不阻塞晋升。
-#347 的内容校验和同样是 best-effort，且与列集印章彼此独立：晋升时对每个对象做一次全量 GET
-取 SHA-256，失败只打一条 `failed to checksum promoted orphan; entry stays unstamped` 的 WARN，
-该条目发布为无校验和（被 `--verify-checksums` 计入未覆盖），既不影响它的兄弟条目，也不阻塞晋升。
-两种盖章都排在**三重证明全部通过之后**（上面的覆盖验证，加下面的复活守卫与驱逐安全），
-且跨 ETag 重试只做一次：被任一证明拒绝的晋升一次全量 GET 也不付，重试也不会重读同一批字节。
-
-**2. 复活守卫**（证明晋升不会让已删除的行复活）
-
-覆盖计数只是"不计入"死行，说明不了它们的去向。可达的故障场景是：某行在 init 导出失败**之后**
-被删除，其墓碑 delta 已 flush 并被 compaction 合并丢弃（合并后的 base 不保留墓碑行），
-change_log 也已标记 flushed（热层不再遮蔽），而 init 文件里仍留着该行的**旧的活版本**——
-覆盖验证会过，驱逐安全也会过，晋升却把删除撤销了。
-
-因此对每个含死行的文件，用**仍在册的非 base 条目（幸存 delta）**做版本反连接：只要某个死行
-的活版本没有任何幸存 delta 覆盖 → 拒绝。晋升集自身及其兄弟文件不参与遮蔽（它们正是被审查的
-对象，算进去会让检查空洞地通过），被驱逐的 base 条目也不参与（它们即将离场，splice 之后遮蔽
-不了任何东西）。没有死行时该守卫零额外查询。
-
-**3. 驱逐安全**（证明整体替换 base 层不丢版本）
-
-整组晋升会驱逐 base 层当前**全部**在册条目。对每个被驱逐的 base 条目做版本反连接，遮蔽集 =
-晋升集 ∪ 幸存 delta 条目；只要存在未被覆盖的行版本 → 拒绝。这挡住的是 compaction 竞态：
-init 发布失败后 compaction 又合并出的 `base-{uuid}` 可能携带比孤儿集**更新**的版本，整体
-替换会让这些版本变成孤儿、读路径回退到旧值（它们的 change_log 已标记 flushed，热层不会遮蔽）。
-**被驱逐的 base 条目**路径无法在本 bucket 解析（跨 bucket / 带 glob）→ 直接拒绝整体替换：
-无法验证即不放行。无法解析的**非 base 条目**同样被保守地剔出遮蔽集（读不到的文件绝不能算作
-提供覆盖）——这只会让证明更难通过，不会放宽它；而且自时间栅栏起，这类条目本身也会拒绝整组晋升
-（见下文方向二：定不了年就不放行）。
-
-版本反连接之前还有一道**双向对象时间栅栏**：被驱逐的 base 条目必须能在本轮列举中定年，且对象
-时间**严格早于**晋升集；**幸存的非 base 条目**同样要过栅栏——要么对象时间严格早于晋升集，要么
-版本区间严格高于晋升集。它补上的正是反连接看不见的那一面（同戳不同值），见下文
-《同毫秒平局与时间栅栏》。
-
-保守拒绝是可接受的代价——兜底恢复手段始终是重跑 cdc-init 从 `entity_main` 全量重建 base 层。
-
-### 并发写与快照说明
-
-覆盖恒等式的两侧（`LiveRowCount` 与逐文件 `MissingLiveRows`）**不在同一个 PG 快照上取值，
-也不需要**：任何并发插入 / 删除 / 复活让两侧偏斜的结果都是**不等**，也就是拒绝（保守方向）。
-唯一能"意外通过"的形态是快照之后新插入的行——它们既不在 parquet 里也不在计数里，由
-`change_log` → 热层遮蔽，与 cdc-init 自身分批导出（`LIMIT`/`OFFSET`，同样不是单一快照）
-所依赖的一致性契约**完全相同**。普通实体写入不持这把 advisory lock，本工具也不假设存在写屏障。
-
-### 同毫秒平局与时间栅栏
-
-全系统以 `changed_at`（毫秒）为版本；同戳视为同版本。#274 之后两个导出器都把活行编码为
-`deleted_at = 0`，读路径的同戳活/活冷层平局**没有任何判别键**——胜者不指定，任意一侧副本
-都可能被服务。这之所以安全，是因为写侧同时保证了**行内版本严格递增**（#274：更新以
-`GREATEST($now, ltbase_updated_at + 1)` 计算有效版本、RETURNING 回填 change_log 同事务同值；
-删除的墓碑戳严格晚于被删行的版本）——同一行的两次串行写入即使落在同一毫秒、即使跨越失败
-init 的快照边界，也不可能同戳，同戳活/活副本必然值相同。因此残余危险收窄为**排序修复之前
-写入的存量对象**仍可能携带值分歧的同戳副本：晋升守卫对两个方向各设一道栅栏，把这类
-旧时代（或无法核验的）平局挡在发布之外。
-
-以下两个方向描述的分歧同戳副本都只能由**排序修复之前**的写入产生（修复后的写入落在 T+1，
-根本不会同戳），但这类存量对象在被 compaction 归并前持续在册，栅栏因此保留：
-
-**方向一：被驱逐的 base 条目。** 驱逐证明的反连接谓词是 `changed_at >= changed_at`，即**同戳
-算作被覆盖**，而反连接看不见值。某行在失败 init 的快照读**之后**、同一毫秒内被写入一个**不同的
-值**（pre-#274 写入），该写入的 delta 又已被 compaction 折进某个在册 base 条目，此时同戳"覆盖"
-成立，整体替换后读路径可能把可见值回退到 init 快照那一侧（胜者不指定，且可能随扫描翻覆）。
-
-**方向二：幸存的非 base 条目。** 即使 manifest 里**根本没有 base 条目**（方向一无事可查、覆盖
-恒等式也照常成立），危险依旧存在：某个在册 delta 携带 `R=new@T`（pre-#274 的快照后同毫秒写入，
-在失败的 init 释放锁之后才 flush），而 init 集里是 `R=old@T`。晋升把 `old` 发布成 base，读路径的
-同戳活/活平局胜者不指定，读结果可能回退到 `old`（且逐次扫描可能翻覆），任何探针都看不见。
-（幸存**墓碑** `R@T` 不在此风险内：`deleted_ts DESC` 让墓碑 `T > 0` 稳赢被晋升的活版本 `0`，
-删除保持生效——危险仅限值分歧的活副本。）
-
-改用严格 `>` **不可行**：跨代际未变更的行本就同戳，严格不等式会让任何非空 base 层都无法晋升。
-两个方向因此都改由**对象时间栅栏**关闭：
-
-1. **被驱逐的 base 条目**必须**严格早于**晋升集（`postdates the init export`，取 `>=` 即拒绝）。
-   cdc-init 全程持 per-schema advisory lock，而 flusher 也需要这把锁，因此任何"init 快照读之后
-   的写入"所在的 delta 只可能在失败的 init **释放锁之后**才落盘——晚于该 init 写下的每一个对象。
-   折进了这种 delta 的 base 条目，其对象 `LastModified` 必然更晚。对**严格更早**的条目，
-   `>=` 覆盖语义是**可靠**的：这种对象只可能含锁前的写入，而对锁前写入而言，同一 row_id 上的
-   同戳就意味着**同一次 PG 写**（`changed_at` 即该行的 `ltbase_updated_at` 印章，同印章即同一次
-   盖章）⇒ **同值**，驱逐它不丢任何东西。
-2. **幸存的非 base 条目**（注意：是**全部**在册非 base 条目，不只是参与遮蔽探测的那些——探测不到
-   的条目 splice 之后照样在册、照样参与读路径平局）必须满足以下**任一**条件，否则拒绝：
-   - **对象时间严格早于晋升集**：同上，锁前内容，同戳即同值，平局无害；
-   - **版本区间严格高于晋升集**：条目的 `created_min` > 晋升集各文件 `created_max` 的最大值
-     （且 > 0）。严格更高的区间与任何 init 行都平不了局，该条目在 LWW 里是正当胜出。这正是
-     "丢失删除两轮收敛"的形态——被修复补录回来的墓碑 delta 必然晚于失败的 init，若采用"一律
-     拒绝晚于 init 的幸存条目"的粗暴规则，该序列将永远无法收敛。
-
-     该分支信任幸存条目自身的 `created_min` 元数据。这是针对**系统写入者时序**的安全论证，
-     不是防篡改论证；元数据与字节不符的检测是 `--verify-stamps` 的职责。
-
-栅栏跑在版本反连接**之前**（纯算术，更便宜）。**无法定年**的条目一律拒绝，而不是放行去做反连接：
-本轮列举中查不到的在册 base 条目（例如并发 compaction 在本轮列举之后才提交，
-`absent from this run's object listing`）；以及**无法定年的幸存非 base 条目**——路径带 glob、
-跨 bucket，或 key 不在本轮列举里（`cannot be dated against the init export`）。注意这是一次
-**收紧**：这类不可解析的非 base 条目此前只是被保守剔出遮蔽集、并不阻塞晋升，现在直接拒绝整组晋升。
-
-**秒粒度残留已闭合**：S3 `LastModified` 为秒级粒度，因此两道栅栏都要求**严格早于**而非"不晚于"
-——与最后一个 init 对象同一秒内完成的 flush+compaction 不再有可乘之机。代价是秒边界上的**保守
-假拒绝**（对象恰好落在同一秒的合法条目会被拒），兜底手段一如既往：重跑 cdc-init。
-
-### 拒绝与晋升的表现
-
-- **拒绝**：报表打印一行 `init promotion refused: <reason>`（all-or-nothing，一条原因覆盖
-  整组）；这组文件保持普通 GC 候选，`--repair --gc` 同跑时按两阶段删除处理。退出码取决于
-  这些文件**本轮是否被删除**：未删除（只读、只 `--repair`、或目击尚未满 grace）时它们仍是
-  残余差异 → 退出 `2`；`--repair --gc` 同跑且本轮真的删除了它们时，它们已被计为"已处置"，
-  在无其他差异的情况下退出 `0`——但报表**照常打印那行 `init promotion refused:`**，不要把
-  退出 0 读作"没发生过拒绝"。
-- **晋升**：报表逐 key 打印 `promoted base-init`，这些文件成为 base 层在册条目，本轮不再是
-  GC 候选（其目击状态也会被剪除，日后若再次未列出则宽限时钟重新起算）。被替换掉的**旧 base
-  条目对应的对象**随即变成未列出对象；晋升本身不删除任何对象。这些对象在后续运行中按形态处理：
-  `base-{uuid}` 形态直接进 `--gc` 两阶段删除候选；init 形态的旧文件会在下一次 `--repair`
-  运行中重新经过晋升守卫，但**时间栅栏保证该重评估必然是拒绝**——旧代际的对象时间早于已在册的
-  新 base 条目，而栅栏要求被驱逐条目严格早于晋升集，故更老的一代永远无法驱逐更新的 base。
-  代际乒乓（新旧两代互相晋升、互相驱逐）因此不可能发生，这些旧文件的归宿是确定的：落回
-  `--gc` 两阶段删除候选。
-
-### 运维注意事项：探测失败也表现为"拒绝"
-
-parquet 统计读不到、DuckDB / S3 访问失败、Postgres 查询出错，这些**探测类故障**不会让工具
-退出 1，而是与"证明不成立"一样表现为一次拒绝（原因文本里带着底层错误）。后果是：`--repair --gc`
-同跑时，这组 init 文件仍会照常进入 GC 的两阶段流程（本次只记录目击；若故障持续到目击满
-grace，后续运行就会删除它们）。
-
-因此看到 `init promotion refused:` 且原因属于探测失败（`unreadable parquet stats` /
-`live-row count unavailable` / `enumerate rows of` / `check live rows of` /
-`cannot prove ...` 之类）时，**先修复故障源、重跑确认拒绝原因
-是真的"无法证明完整"而不是"暂时探不到"，再开 `--gc`**。删除本身仍然是安全的（重跑 cdc-init
-即可重建），但会白白丢掉一次可以零成本晋升的机会。
-
-## `--gc` 的两阶段删除（unlisted 时长语义）
-
-#188 follow-up 要求「对象解除列出超过最大查询时长后才删除」。对象的 LastModified
-无法表达该时长（一个很老的 source 可能刚刚被 compactor splice 出 manifest），因此
-工具在 manifest 旁持久化目击状态（`<manifest path>.gc-state`，同 ETag 乐观并发）：
-
-1. 第一次观察到某候选对象未被列出 → 只记录 first-unlisted 时间戳，不删除；
-2. 后续运行中，当「已观察的未列出时长」与「对象年龄」**都**超过 `--gc-grace` 时才
-   删除；重新回到 manifest 的 key 会从状态中剪除，宽限时钟重新起算。
-
-状态丢失/写入失败只会让下次运行重新记录（推迟删除，绝不提前）；状态读取失败拒绝
-删除并按工具故障退出。
-
-运维口径：单次手工运行对新候选只记录目击、不删除；只有周期性调度 `--gc` 才有回收
-上界——泄漏发生后最迟一个周期内被目击，目击满 grace 后的下一次运行删除，故以周期
-P 调度时上界 ≈ grace + 2P。
-混用"带 --gc 与不带 --gc"的运行方式时，早先运行留下的目击记录可能在文件短暂重新列入清单期间未被清理，建议保持一致的 --repair --gc 运行方式以让目击清理正常工作。
-
-## `--gc` 的空/外来 manifest 防护（#463 / #481）
-
-`ResolverManifestStore.Load` 对解析不到的 manifest 采用 LoadOrCreate 语义（解析为空
-manifest）。因此当 `--manifest-prefix`/`--manifest-template` 指错位置而 `--data-prefix`
-仍然匹配时，每个 schema 的 manifest 都解析为空，所有 base 层对象都会被判为孤儿——
-两阶段宽限只是延迟，cron 的下一轮就会不可逆地删光整个 base 层。
-
-防护规则：某 schema 在存储中有 ≥1 个 base/merged 对象、而 manifest 解析出 0 个条目时，
-`--gc` 对该 schema 直接失败（计入 schema Err，进程退出码 1），拒绝把这一签名当成
-大规模孤儿。拒绝信息引用与报告一致的清点数字（对象数、manifest 条目数、各类孤儿数）。
-同一轮 `--repair` 成功完成 init 晋升的 schema 不触发防护（晋升刚刚发布了该 schema 的
-manifest，证明解析路径有效）；被**拒绝**的 init 晋升集合自 #463 起默认不再是 GC 候选
-（manifest 仍为空，正是被防护的签名），沿用 #290 回收行为需显式放行。
-
-确认某个 schema 的 manifest 确实为空（而不是模板指错）后，可用
-`--allow-empty-manifest-schema <id>`（可重复/逗号分隔，需与 `--gc` 同用）逐 schema 放行。
-刻意不提供全局开关：一次模板指错会同时清空所有 schema 的 manifest，全局放行恰好放过
-防护要拦的事故。
-
-#481 将防护从「manifest 条目数为 0」收紧为真正的不变量：**本轮加载的 manifest 没有任何
-条目落在该 schema 的数据前缀内**（in-prefix = 0）。因此固定文件模板（`--manifest-template`
-漏掉 `{{.SchemaID}}`）、跨 schema/跨环境指错、或条目全部指向另一个 bucket 的「非空但外来」
-manifest 同样被拒绝。拒绝信息同时引用原始条目数与 in-prefix 条目数（与报告的
-`M manifest entries resolved (K in schema prefix)` 一致），便于区分「manifest 为空」与
-「manifest 外来」。**外来签名不可用 `--allow-empty-manifest-schema` 放行**——它意味着模板
-或 bucket 配置错误，而非合法的空 manifest；修复方式是校正 `--manifest-prefix`/
-`--manifest-template`/`--s3-bucket` 使之与写入端一致。
-
-另外，`ResolverManifestStore.Load` 自 #481 起校验加载到的 manifest 的 `schema_id`（经由所有
-消费方共用的 `manifest.LoadOrCreateForSchema`，#520）：与请求 schema 不一致时按工具故障失败
-（计入 schema Err，退出码 1，先于任何分类），固定文件模板在加载阶段即被拦截。`schema_id`
-为 0 且列有条目的 manifest 自 #522 起同样对任何 schema 拒绝加载（以
-`forma.ErrManifestUnstamped` 失败，它同时也匹配 `forma.ErrManifestSchemaMismatch`）：Forma
-的写入方从未产生过零戳记（该字段自 manifest 包首次提交起就存在，`LoadOrCreate` 总会盖章），
-零戳记只可能来自手工制作或手工编辑的对象，证明不了其中条目属于谁；而双 schema 探测
-（#300）排除不了只在未探测到的 ID 上碰撞的模板，零戳记正是该检查的盲区。带 `--repair` 的
-运行因此不会把孤儿拼接到一个归属未证实的 manifest 下。没有条目的零戳记 manifest 照常加载，
-在内存中盖上当前 schema 的戳记，下一次保存把它落盘。修复方式是确认对象归属后在对象上补写
-`schema_id`（错误信息即如此指示）。
-
-排查手段：不带 `--repair`/`--gc` 的只读巡检即为 dry-run——报告对每个 schema 打印
-`inventory: N objects in storage, M manifest entries resolved (K in schema prefix); orphan candidates: ...`，
-「N 个对象、0 条 manifest 条目」即模板指错的典型签名；「M > 0 而 in-prefix 为 0」则是
-#481 的外来 manifest 签名。
-
-## `--verify-stamps`：#256 戳记的离线字节真值核查
-
-#256 给每个 manifest 条目盖上 parquet footer 的列集印章（`FileEntry.columns`，列名 →
-DuckDB 类型）。读路径信任通过系统列不变量的印章并**跳过 footer 探测**——这正是 #256 的
-优化。代价是一条信任边界：若某个已列出对象的**字节**被带外改写，而条目上的印章依旧
-"形状合法"，读路径看不见这次改写。`--verify-stamps` 就是这条边界的离线字节真值核查。
-
-**比对什么。** 逐个已列出条目 `DESCRIBE` 其真实对象，把 footer 的**完整列名 → 类型映射**
-与条目印章做全量相等比较。这比读路径的 scan guard 严格得多：scan guard 只覆盖
-`row_id`/`changed_at` 的存在性与 `changed_at`/`deleted_at` 的类型，而这里任何一列的
-增删改型都会被发现。
-
-**能抓到什么。** 典型的三类带外改写：
-
-- **缺列**：对象不再携带 `deleted_at`。读侧 `union_by_name` 会用兄弟对象的 schema 把它
-  NULL 填充，而 #274 之前的存量 delta 对象本来就把活行的 `deleted_at` 写成 NULL、且在被
-  compaction 归并前持续可读，两者在扫描层无法区分，所以这条通道**只有**本核查看得见
-  （扫描层 presence guard 的扩展以存量对象退役为门，见 #365）；
-- **改型**：`row_id` 从 UUID 变成 VARCHAR。`row_id` 的守卫刻意不带类型（#147），大小写不同
-  的同一 UUID 拼写会被当作两行分区；
-- **属性列漂移**：印章少报了对象实际携带的属性列，导致列并集偏短、NULL 别名与真实列相撞。
-
-**跳过规则。** 三类条目不比对，也不因此报差异：
-
-- 无印章的**历史条目**（`columns` 为空）：#256 不做回填，读侧对它们照常懒探测，没有可比对象；
-- **未被证明存在的 dangling 候选**：dangling 复核本就逐个探测候选对象的存在性，因此候选分成三种
-  归宿——**已确认 dangling**（对象确实没了，背后没有字节可探，差异本身已在报告里）、**并发被
-  splice 出去**（复核根本没探，字节是否可达未知，探它可能撞上被并发删除的对象而误升级成 exit 1）、
-  以及**探到了、对象活着**（陈旧列举导致的假 dangling）。前两种跳过，**第三种照常比对**：这轮
-  已经证明它的字节可达，再跳过就是白白丢覆盖率；
-- **无法解析的路径**（unverifiable，含 glob）：同样已在报告里。
-
-**退出语义。** 发现分歧 → 计入残余差异 → 退出码 **2**（报告里逐条打印
-`stamp divergence: <key>: column "x" stamp "A" vs footer "B"`，缺失的一侧渲染为
-`(absent)`）；探测本身失败（S3 不可达、DuckDB 出错）→ 与 dangling 复核同一条规则，
-算**工具故障**退出 **1**，绝不伪装成"字节不一致"的判决。
-
-**与 `--repair` 的顺序耦合。** 验证跑在晋升/修复**之前**（先验证后变更），因此
-`--verify-stamps` 的探测失败会在晋升/修复之前让该 schema 以 exit 1 终止——与 `--repair`
-同跑时，一次与待修复文件无关的探测失败也会挡下本轮晋升，修复故障源后重跑即可。
-
-**处置。** 分歧不是自动可修的：工具不会拿 footer 去覆写印章，因为无法判断是印章错了
-还是字节被换了。运维应先查这个 key 的改写来源；确认对象本身正确后，用一次重写
-（compaction / 重跑 cdc-init）把条目连同印章一并重新发布。
-
-**运维建议。** 这是一次全量 footer 探测（每个已列出条目一次 `DESCRIBE`），比只读巡检
-贵得多，因此默认关闭。建议低频周期运行（例如每日一次），以及在**怀疑发生过带外改写**
-之后（手工改过桶、做过跨桶/跨环境恢复、外部作业写过数据前缀）立即跑一次。
-
-## `--verify-checksums`：#347 内容校验和的离线字节完整性扫描
-
-#347 在写侧给每个 manifest 条目盖上对象内容的 SHA-256（`FileEntry.checksum`，
-格式 `sha256:<hex>`）。`--verify-checksums` 逐条目重新 GET 对象的**全部字节**、重算
-摘要、与条目上的印章比对。
-
-**与 `--verify-stamps` 的关系：形状 vs 字节。** 两者是同一条信任边界上下相邻的两层：
-
-- **印章证明 footer 的形状**——有哪些列、各是什么类型。`--verify-stamps` 做的是形状核查；
-- **校验和证明字节本身**。一次**保持列集不变**的改写——用不同值重新编码、截断某个 row
-  group、从错误代际的备份恢复成同名对象——能通过读路径与 `--verify-stamps` 的**每一道**
-  形状检查，然后被静默地解码成错误答案，全链路无任何报错。
-
-这条静默 mis-decode 通道的检测器只有两个：compaction 的输入闸门（#347），以及本扫描。
-闸门只在**真正消费某个源文件的那一次 rewrite** 上看到它——长期不被 compaction 触及的
-base 对象（以及压根不再参与合并的历史对象）不在其覆盖内。**本扫描是这些对象唯一的检测器**，
-也因此是 #347 的兜底 scrub。这条 mis-decode 通道本身（含 spike 证据）、以及两个检测器合起来
-仍未覆盖的残余窗口（查询时读取不做校验、上传窗口不在覆盖内），记在
-`docs/federated-query/design.md` §7.3。
-
-**跳过规则。** 与 `--verify-stamps` 同一条阶梯，同一条"探测失败是工具故障、不是判决"的规则：
-
-- **无校验和的条目**（`checksum` 为空）：字段存在性即格式版本信号（与 #256 的 `columns`
-  同一条约定），没有可比对象。这类条目**被计数并上报**（见下）；
-- **未被证明存在的 dangling 候选**：与 `--verify-stamps` 完全一致——已确认 dangling 与并发被
-  splice 出去的两种跳过，探到了、对象活着的第三种照常比对；
-- **无法解析的路径 / 不在本 schema 数据前缀下的条目**（unverifiable，含 glob）：同样已在报告里。
-
-**覆盖率可观测性。** 报表会打印本轮因无印章而跳过的条目数——干净行并入 #463 清点数
-括号，形如 `schema 7: clean (1 objects, 1 manifest entries; 3 unstamped entries skipped)`，
-非干净时作为单独一行。它**不影响退出码**
-（缺覆盖不是差异），但读"一致"这个结论时必须带上它：对一批基本没盖章的条目扫出"一致"，
-这个结论的含金量远低于对已盖章条目扫出的"一致"。
-
-这个计数有**两种**成因，运维必须分辨：
-
-- **存量条目**：印章不做回填，存量对象在被 compaction 重写、或被重跑的 cdc-init 取代之前
-  始终无印章。这条成因下计数是**存量退役进度**的直接读数，随合并推进单调走低；
-- **盖章失败**：五条盖章路径——写侧三条（flush / cdc-init / compaction rewrite）加上本工具
-  自己创建条目的两条（`--repair` 领养 delta 孤儿、#292 init 孤儿晋升进 base 层）——**全部**是
-  **best-effort**：哈希失败只打一条 WARN、条目照常发布为无印章，绝不因此让导出或这次修复失败。
-  这条成因下计数在一个早已完成存量退役的集群上**不降反升**，说明正在丢覆盖，须查对应
-  导出器（或本工具上一轮）日志里的 `failed to checksum` 告警，而不是等它自己好转
-  （这个串精确命中上述五条盖章路径；用更宽的 `entry stays unstamped` 会连带捞出 #256
-  列集印章那四条 `failed to describe ...` 告警）。
-
-**退出语义。** 与 `--verify-stamps` 完全对齐：发现分歧 → 计入残余差异 → 退出码 **2**
-（报告里逐条打印 `checksum divergence: <key>: checksum stamp <stamped> vs bytes <actual>`）；
-GET 本身失败（S3 不可达、连接中断）→ 算**工具故障**退出 **1**，绝不伪装成"字节被改写"的判决。
-
-**成本画像。** 每个**已盖章**条目一次**全量 GET**——不是读 footer，是把对象整个下载下来做流式
-哈希。这是本工具里最贵的一次巡检：代价与所有已盖章条目的字节数成正比（delta 与 base 层
-均包含，base 层通常主导），且产生等量的 S3 出流量。
-（相比之下 `--verify-stamps` 只做 footer 探测；`--repair` 除统计查询外只对**孤儿**做全量 GET，
-从不读在册清单里的对象，且同一对象至多读一次：补录条目跨 ETag 重试复用，晋升的盖章排在三重证明
-之后、且只在首次通过证明的那一轮做。因此**被拒绝的晋升一次 GET 也不付**；会白付的只剩 ETag
-冲突重载后被改判的情形——重载后已在册或改判为合并残留的 delta 孤儿、以及首轮过了证明但重载后
-被拒绝的晋升集，它们已付的 GET 没有用上。）与 `--verify-stamps`
-不同的是，本扫描**不需要 DuckDB 会话**：它直接用 S3 客户端读原始字节，因此不受 DuckDB
-内存/线程配置影响。
-
-**建议节奏：与 compaction 配对。** compaction 的输入闸门只覆盖被消费的源文件，所以本扫描
-的价值集中在"compaction 之外的长尾"。建议：
-
-- 按**远低于 `--verify-stamps` 的频率**周期运行（例如每周或每月一次，视已盖章条目体量与出流量
-  预算而定），刻意与 compaction 周期错开——刚被 compaction 重写过的对象其印章是新盖的，
-  重复扫描收益最低；
-- **怀疑发生过带外改写之后**（手工改过桶、做过跨桶/跨环境恢复、外部作业写过数据前缀、
-  存储侧做过迁移或修复）立即跑一次全量；
-- 与 `--verify-stamps` **同跑**是合理的（两层一次跑完），但要清楚成本由本扫描主导。
-
-**处置。** 与印章分歧同理，分歧不是自动可修的：工具不会拿字节去覆写印章，因为无法判断是
-印章错了还是字节被换了。运维应先查这个 key 的改写来源；确认对象**本身**正确后，用一次重写
-（compaction / 重跑 cdc-init）把条目连同印章一并重新发布。确认对象**已损坏**时，
-该对象携带的数据已不可信——恢复手段是从备份还原该对象，或重跑 cdc-init 从 `entity_main`
-全量重建 base 层。
-
-## 用法
+# manifest-reconcile: diagnosis and garbage collection under Protocol V2
+
+`forma-tools manifest-reconcile` checks each schema's parquet publication and,
+with `--gc`, deletes what no reader can still scan. Since #891 it works on
+Protocol V2 ([`publication-protocol-v2.md`](publication-protocol-v2.md)): the
+schema's publication record in PostgreSQL, the generation history, and the
+immutable manifest objects those name. It reads no V1 `manifest.json`, and it
+has no repair.
+
+## Why it changed
+
+Under V1 a schema's inventory was one mutable `manifest.json`, so the tool
+diffed an S3 listing against it and repaired what looked missing: it re-adopted
+unlisted delta objects and promoted unlisted init exports, behind coverage and
+liveness probes that had to tell lost data from compaction leftovers, and a
+mis-pointed manifest template made the whole base tier look orphaned (#463).
+
+Under V2 none of that inference is needed or safe:
+
+- An object no committed generation lists is staging that never committed, or
+  a generation's leftovers. It is never lost data, so there is nothing to adopt.
+- What readers may scan is exact: the current generation and every superseded
+  one still inside its retention grace. Nothing has to be guessed from object
+  names.
+- A manifest or an object a committed generation lists cannot be rebuilt from
+  what S3 still holds without trusting it blindly. The recovery is a re-init
+  (`cdc-init`), which exports every live row from PostgreSQL into a new
+  generation.
+
+Compaction (#890) deletes nothing when it publishes, so every compaction leaves
+the replaced generation and its objects behind for this tool to collect.
+
+## Modes
+
+**Diagnosis (default).** Read-only on PostgreSQL and S3. For each schema it
+reports the record's state, epoch and generation, every finding below, and the
+plan a collection would run against the record's current horizon. Run it as
+the periodic health check.
+
+**`--gc`.** The collector, in the protocol's collection order
+([Garbage collection](publication-protocol-v2.md#garbage-collection-and-reader-lifetime)):
+
+1. Raise the record's `gc_horizon` to the database clock minus `--orphan-age`.
+   The raise writes the record row, so it waits for a publication in flight and
+   is ordered with it; no publication staged at or before the horizon commits
+   afterwards.
+2. List the objects under `{data-prefix}/{schema_id}/`.
+3. In one read-only snapshot, read the record, the retained generations and the
+   expired ones. After the snapshot ends, stamp `retired_at` on every superseded
+   generation not yet retired. Those expire a grace later, in a later pass.
+4. Fetch every retained and expired manifest and verify it with the reader's
+   full check (digest, identity, wire form, and every listed key under the
+   schema and epoch).
+5. Delete every object that is listed only by expired generations, or that no
+   generation names and was staged before the horizon less `--clock-margin`.
+6. Once every such delete succeeded, delete the expired manifests.
+7. Once those succeeded, forget the expired history rows.
+
+A pass that fails at any step leaves a state the next pass plans from again: an
+expired manifest still present lists its objects again, and one already deleted
+leaves only its row to forget. Re-running is always safe.
+
+Every pass takes the schema lock `cdc-flush` and `cdc-init` take, and skips a
+schema whose lock is held. The lock is for liveness only: the horizon and the
+retention grace are what make a delete safe, so a lost lease or a compactor
+running outside the lock cannot make the collector delete something a reader or
+a writer still needs.
+
+**`--verify-checksums`.** Adds a full GET of every object a retained generation
+lists and compares its SHA-256 and size with the manifest's. It is the only
+check of an object's bytes at rest besides compaction's pre-merge gate (#347).
+
+`--repair` is refused. `--manifest-template`, `--manifest-prefix`,
+`--allow-empty-manifest-schema`, `--gc-grace`, `--etag-retries` and
+`--verify-stamps` are gone: V2 has no mutable manifest to locate, no template
+to mis-point, and the manifest's `columns` are covered by its digest and the
+object's by `--verify-checksums`.
+
+## What is deleted, and what never is
+
+A collection deletes only keys a V2 writer stages under the configured
+`--data-prefix` for the schema (`{prefix}/{id}/_manifests/e{epoch}/g…-{token}.json`
+and `{prefix}/{id}/e{epoch}/{base|delta}/{uuidv7}.parquet`), and of those only:
+
+- an object listed only by expired generations, and an expired generation's
+  manifest;
+- an object no generation names, retained or expired, whose `LastModified` plus
+  `--clock-margin` is before the horizon. Its staging began before the horizon,
+  so its publication can never commit.
+
+It never deletes:
+
+- the current generation's manifest or an object it lists, however old;
+- a superseded generation's manifest or objects before the retention grace
+  after its retirement has passed;
+- staging newer than the horizon less the clock margin, which may still
+  commit;
+- any key that is not V2-shaped for the schema: V1 leftovers (`manifest.json`,
+  `{id}/{uuid}.parquet`, `_tmp/`), another tool's files, another layout's keys.
+  These are reported as `unrecognized_object`.
+
+A pass deletes nothing at all for a schema when it cannot prove what readers
+may scan: a missing or invalid record, a published record whose history row is
+missing or names another manifest, a retained manifest that is missing, any
+manifest that fails verification (retained or expired), or a manifest key the
+configured prefix does not build. A manifest read that S3 refuses (403) or that
+fails is a tool failure, never a missing manifest.
+
+## Retention
+
+| Flag | Parameter | Default | Rule |
+| --- | --- | --- | --- |
+| `--retention-grace` | G | 15m | At least the reader's pass deadline R_max (60s, `federated.DefaultPublishedPassDeadline`) plus C. A smaller value is refused. |
+| `--clock-margin` | C | 1m | Positive. Covers the drift between the readers' clocks, the database clock and S3's `LastModified`. |
+| `--orphan-age` | A | 2h | At least the writers' staging budget W (1h, `cdcv2.DefaultStagingBudget`) plus C. Any value is safe; a smaller one would refuse publications still inside their budget, so it is refused. |
+
+A reader that chose generation N finishes or aborts within R_max of its
+snapshot. N's replacement committed after that snapshot, and the collector
+stamps `retired_at` in a transaction that begins after it saw that commit, so
+N's objects outlive every reader of N by at least G − R_max − C ≥ 0. The
+federated reader enforces R_max on every pass (`federated.ErrPassDeadline`). A
+deployment that raises the reader's deadline must raise `--retention-grace`
+with it.
+
+Generation history and old objects therefore cost storage for G after the next
+pass that follows their replacement. Running `--gc` every P minutes collects a
+replaced generation within about G + 2P.
+
+## Findings and recovery
+
+Each finding names the schema, the epoch and generation it concerns (and
+whether that is the current one), the object key where there is one, and the
+safe action. Any finding makes the run exit 2.
+
+| Finding | Meaning | Collection | Action |
+| --- | --- | --- | --- |
+| `no_record` | The schema is registered but has no publication record. Readers and writers fail closed. | refused | Run `init-db`: it recovers a lost record at a fresh epoch. |
+| `record_invalid` | The record row is one no transition writes. | refused | Restore the row from a backup. |
+| `awaiting_init` | The V2 cutover left the schema for its first `cdc-init`. Readers fail closed. | runs | Run `cdc-init` for the schema. |
+| `missing_generation` | The record names a generation whose manifest object is missing, or whose history row is missing or names another manifest. | refused | Re-initialize with `cdc-init`. A lost manifest: collection resumes once the lost generation expires. A lost history row: restore it, or re-init and run `--gc` no sooner than G after the init commits, because nothing protected the unrecorded generation's objects. |
+| `missing_retained_manifest` | A superseded generation inside its grace has no manifest. | refused | None for new reads. Collection resumes once the generation expires. |
+| `invalid_manifest` | A manifest's bytes are not the ones PostgreSQL committed: corruption or a writer bug. | refused | Restore the object from a versioned or backed-up copy whose SHA-256 is the history row's `manifest_sha256`. For the current generation, a re-init restores reads. |
+| `foreign_manifest` | A generation's manifest is not under `--data-prefix`. | refused | Run with the prefix the writers publish under. |
+| `lost_object` | A retained generation lists an object S3 confirms missing (a 404 on a probe, never a failed call). | runs | Current generation: re-initialize with `cdc-init`; reads fail closed until then. Superseded only: none for new reads; it expires. |
+| `corrupt_object` | `--verify-checksums` found other bytes than the manifest lists. | runs | Current generation: re-initialize with `cdc-init` (compaction refuses the object as a source). Otherwise it expires. |
+| `unrecognized_object` | A key under the schema's prefix that no V2 writer stages. | runs | Remove it by hand once you know what wrote it. |
+
+Never repair a schema by editing its record, writing a manifest by hand, or
+publishing a generation over objects found in S3. A generation's marks commit
+with it, so a rebuilt inventory that lacks a row's newest version, or holds a
+deleted row without its tombstone, serves wrong answers without any error.
+A re-init cannot do that: it exports every live row at its current version and
+replaces the parquet tiers.
+
+A `DROPPED` schema keeps its record. Its generations were superseded by the
+drop, and expire and are collected like any other's. An `UNPUBLISHED` schema
+needs no action; a failed first flush may have left staging, which is
+collected once it is below the horizon.
+
+## Running it
 
 ```bash
-# 只读巡检（可周期运行；退出码 0=一致，2=有差异，1=工具故障）
-forma-tools manifest-reconcile \
-  --s3-bucket my-bucket --data-prefix data \
-  --schema-registry-table schema_registry \
-  --pg-host ... --pg-db forma
+# Read-only health check of every schema (registered or with a record).
+forma-tools manifest-reconcile --s3-bucket B --schema-registry-table schema_registry
 
-# 修复 #197 孤儿（经守卫判定），并晋升可证明完整的 init 形态孤儿集（#292）
-forma-tools manifest-reconcile ... --repair
+# Collect garbage, on a schedule.
+forma-tools manifest-reconcile --s3-bucket B --schema-registry-table schema_registry --gc
 
-# 清理 #188 遗留：merged base / _tmp / 已判定的 delta 残留
-forma-tools manifest-reconcile ... --repair --gc --gc-grace 15m
-
-# #256 印章的离线字节真值核查（全量 footer 探测，低频运行）
-forma-tools manifest-reconcile ... --verify-stamps
-
-# #347 内容校验和的字节完整性扫描（每个已盖章条目一次全量 GET，最低频运行）
-forma-tools manifest-reconcile ... --verify-checksums
-
-# 确认某 schema 的 manifest 确实为空后，逐 schema 放行 #463 空 manifest 防护
-# （只放行「条目为 0」的空签名；#481 非空外来 manifest 不可放行，需修正模板/bucket 配置）
-forma-tools manifest-reconcile ... --gc --allow-empty-manifest-schema 7
-# 多个 schema：重复旗标或逗号分隔（等价写法）
-forma-tools manifest-reconcile ... --gc --allow-empty-manifest-schema 7,9 --allow-empty-manifest-schema 11
+# One schema, with a byte scrub.
+forma-tools manifest-reconcile --s3-bucket B --schema-registry-table schema_registry --schema-id 7 --verify-checksums
 ```
 
-要点：
+`--data-prefix` and `--entity-main-table` must be the writers' (`cdc-flush`
+and `cdc-init`'s `--s3-prefix`, and the `entity_main` the publication tables
+and the schema lock are named after). The database flags are the compactor's,
+including `--pg-engine` and `--pg-use-iam`.
 
-- **`--data-prefix` 必须与 flusher/compactor 的数据前缀一致**（cdc-flush 的
-  `--s3-prefix`、compactor 的 `--data-prefix`）。前缀不一致时列举落空，所有 manifest
-  条目会被误报为 unverifiable/dangling、所有对象被误报为孤儿。
-- 工具需要 Postgres：逐 schema 取与 flusher/cdc-init 同款 advisory lock
-  （`pg_try_advisory_lock(schemaID, schemaID)`，钉在单一连接上；`--pg-engine aurora-dsql`
-  下改为 `<entity_main>_schema_lease` 表中的租约，见
-  [Aurora DSQL](aurora-dsql.md#the-cdc-schema-lock)），消除与 flusher 的
-  list/load 竞态；拿不到锁的 schema 跳过并计入差异退出码。#290 起 cdc-init 也持这把锁，
-  故此锁下的 init 形态孤儿必非 in-flight init：`--repair` 下先经晋升守卫判定（#292），
-  未晋升者纳入 `--gc` 候选。compactor 仍不持这把锁，
-  故 manifest 写入另有 ETag 条件写保护（不存在的 manifest 用 If-None-Match
-  条件创建，绝不覆写并发新建的 manifest），dangling 判定做二次确认。
-- `--schema-id` 指向未注册 schema 时直接报错退出 1（而不是空跑报「一致」）。
-- `--gc-grace` 必须为正（默认 15m）。
-- `--data-prefix` 允许为空（对象 key 形如 `/7/{uuid}.parquet`，与 cdc path builder
-  一致，比较时不做任何前导斜杠归一化）。
-- 退出码：`0` 一致；`2` 存在残余差异（含跳过的 schema、拒绝自动处理的混杂文件、
-  记录目击但尚未过宽限期的残留、`--verify-stamps` 发现的印章分歧、`--verify-checksums`
-  发现的校验和分歧）；`1` 工具自身失败（含任一 schema 的 list/load/lock/租约丢失/dangling 复核/
-  GC 状态读取/印章 footer 探测/校验和 GET 失败——不会伪装成「有差异」）。
-  `--verify-checksums` 因无印章而跳过的条目数只作为覆盖率信息打印，**不影响退出码**。
+The run visits every schema in the registry and every schema with a record, so
+a dropped schema is still collected and a registered schema without a record is
+reported.
 
-## init 形态晋升（#292）
+Exit codes: 0 when every schema is clean, 2 when any schema has a finding or was
+skipped because its lock was held, 1 when a pass failed (a database or S3 call,
+a listing that could not be followed to its end, a lost lease). Garbage awaiting
+collection is not a finding.
 
-cdc-init 的 manifest 发布失败（导出成功但 `ReplaceTierFiles` 失败）留下的 init 形态孤儿
-现在有两条恢复路径：
+The collector's principal needs `s3:ListBucket`, `s3:GetObject` and
+`s3:DeleteObject` on the bucket. Without `s3:ListBucket`, S3 answers 403 for a
+missing key, which the tool reports as a failure rather than a loss.
 
-- `--repair`：经上述三重证明（覆盖验证 / 复活守卫 / 驱逐安全）后整组晋升进 manifest
-  base 层，等价于补上那次失败的发布，数据无需重新导出；
-- 证明不通过或未开 `--repair`：这组文件保持 GC 候选，由 `--gc` 两阶段删除（#290），
-  删除后重跑 cdc-init 从 `entity_main` 重新导出。
+## Not verified
 
-两条路径都依赖 #290 起 cdc-init 与 reconcile 共持的那把 per-schema advisory lock：此锁下
-出现的 init 形态孤儿必非 in-flight init。
-
-## cdc-init 与 V1 manifest（#896）
-
-自 #896 起 `cdc-init` 不再读写 V1 `manifest.json`：它把每个存活行导出到
-`{s3-prefix}/{schema_id}/e{epoch}/base/` 下的一次写入对象，发布一个 `init` 代际
-（`docs/publication-protocol-v2.md`），该代际只列出本次导出的 base 文件，此前的 base 与
-delta 文件全部离开清单，因此不再需要 `--replace-delta`、`--delta-prefix`，也不再导出
-0 行 base 占位对象；导出各行的未刷新条目按导出版本移交（handoff），`change_log` 不会被清空。
-`cdc-flush` 同样只发布 V2 代际。本工具在 #891 前仍只理解 V1 manifest：它把嵌套在
-`e{epoch}/` 下的 V2 对象报告为 `ClassUnknown` 且不删除它们，切换后的部署应按升级步骤停用它。
+On Aurora DSQL the collector relies on two assumptions #817 tracks: that
+`RaiseHorizon` and a publication, which write the same row, never both commit
+unordered, and that `Retire`'s `now()` is no earlier than every commit a
+snapshot that ended before it saw.

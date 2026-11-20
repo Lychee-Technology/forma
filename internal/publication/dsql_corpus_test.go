@@ -76,6 +76,8 @@ func TestDSQLCorpus(t *testing.T) {
 	require.NoError(t, err)
 	_, err = Forget(ctx, DB(db), tb, 100, 3, time.Hour)
 	require.NoError(t, err)
+	_, err = SchemaIDs(ctx, DB(db), tb)
+	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet(), "the publication contract sent other statements than recorded")
 
 	ddl := Statements(forma.EngineAuroraDSQL, "entity_main")
@@ -111,6 +113,7 @@ func TestDSQLCorpus(t *testing.T) {
 		"internal/publication/retention.go:Retained",
 		"internal/publication/retention.go:Expired",
 		"internal/publication/retention.go:Forget",
+		"internal/publication/retention.go:SchemaIDs",
 	)...)
 	corpus.Export(t, corpus.Unit{Name: "internal-publication", Engine: forma.EngineAuroraDSQL, Statements: statements})
 }
@@ -171,6 +174,7 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(genRows())
 	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(genRows())
 	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"schema_id"}).AddRow(100))
 }
 
 func anyArgs(n int) []driver.Value {

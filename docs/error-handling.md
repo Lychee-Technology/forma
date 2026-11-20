@@ -1342,8 +1342,8 @@ a lost lease, which a later run can retry, from a configuration or data error
 with `errors.Is` (#768). A flush that finds a schema's lock held by another
 holder skips that schema without an error, so the public API has no
 contention sentinel: only `cdc-init` fails on a contended lock. An S3
-listing that cannot be followed to its end fails `manifest-reconcile`, never
-a flush or an init. Both outcomes are reported by those tools and are not
+listing that cannot be followed to its end fails `manifest-reconcile`'s pass
+of the schema, which then deletes nothing, never a flush or an init. Both outcomes are reported by those tools and are not
 returned through package `cdc`. A flush of a schema the V2 writer may not
 publish fails for that schema, with an error that matches
 `cdc.ErrNoPublicationRecord` (no record: init-db writes it),
@@ -1602,18 +1602,21 @@ the V1 resolution (#896), together with their HTTP classes
 marks a **V1** manifest object whose recorded `schema_id` disagrees with the
 schema being read. It is raised before any path reaches a scan.
 
-**Scope since #896 and #890.** Only the remaining V1 tool raises it:
-`manifest-reconcile`, which a cut-over deployment keeps stopped until garbage
-collection (#891) replaces it. The compactor publishes V2 compact generations
-since #890 and reads no V1 manifest; its `--manifest-template` flag is gone,
-and the parser refuses it. The server and the federated read path no longer
-read a V1 manifest, and
+**Scope since #891.** No Forma tool or read path raises it any more.
+`manifest-reconcile`, the last V1 manifest consumer, reads the V2 generation
+history since #891 and takes no `--manifest-template`; the compactor
+publishes V2 compact generations since #890 and refuses the flag too. The
+server and the federated read path no longer read a V1 manifest, and
 `duckdb.manifestTemplate` is no longer a server setting. A V2 read resolves
 the manifest the publication record names, verified against its committed
 digest and identity: a manifest that names another schema, epoch or
 generation fails as `ErrPublicationInconsistent` (wrapping
 `publication.ErrManifestInvalid`), whose HTTP class is
-`publication_inconsistent`, not this one.
+`publication_inconsistent`, not this one, and `manifest-reconcile` reports it
+as an `invalid_manifest` finding. The sentinel and its carrier stay in the
+public API, and the V1 manifest package that raises them
+(`internal/manifest`) stays in the tree, but nothing in Forma calls it; the
+rules below describe that package.
 
 - **Why it is loud rather than a short read.** A manifest addresses one schema
   by path convention alone. Nothing downstream re-checks it: the parquet scan
@@ -1623,18 +1626,8 @@ generation fails as `ErrPublicationInconsistent` (wrapping
   another schema's rows under this schema's identity.
 - **Not a degradable read.** Cross-schema contamination is the opposite of a
   partial answer, so a V1 tool fails on it rather than work around it.
-- **Relationship to flag validation.** `manifest-reconcile` probes
-  `--manifest-template` at flag parsing against two schema IDs
-  (`forma.ValidateManifestPathTemplate`, #520), which catches a collapsed
-  template (a constant path, a `{{.SchemaId}}` typo) but cannot prove
-  injectivity over the whole schema domain. This error is the runtime
-  enforcement of what that check can only sample.
-- **Where it is enforced.** The one V1 manifest consumer left,
-  `manifest-reconcile`, which wraps it in its own `claims schema N, not
-  requested schema M` wording. `cdc-flush`, `cdc-init` and the federated
-  reader (#896) and the compactor (#890) no longer read or write a V1
-  manifest: a V2 manifest names its schema, epoch and generation, and its
-  digest is committed in the record.
+- **Where it is enforced.** `manifest.VerifySchemaStamp`, in the V1 manifest
+  package, which no Forma tool calls since #891.
 - **Zero stamp (#522).** A manifest whose `schema_id` is zero is unstamped
   rather than schema 0 (schema IDs are always positive), and it is not a legacy
   format either: the field has been on the manifest, and set by every Forma
@@ -1662,17 +1655,13 @@ generation fails as `ErrPublicationInconsistent` (wrapping
   (`Query`, `ExecuteFederatedKeysetQuery`, PR #537 review), the same `schema
   id must be positive` invariant the OLTP repository enforces.
 - **Where the zero-stamp rule is enforced.** The same single site,
-  `manifest.VerifySchemaStamp`, reached through `LoadOrCreateForSchema` by
-  `manifest-reconcile`.
-- **Operator action.** The message names both schema IDs and the manifest key.
-  Fix `manifest-reconcile`'s `--manifest-template` so each schema resolves a
-  distinct object, then repair the affected manifests
-  (`docs/manifest-reconcile.md`). The compactor takes no manifest template
-  since #890: a compactor run that passes one fails at flag parsing, and the
-  remedy is to drop the flag, not to fix the template.
+  `manifest.VerifySchemaStamp`, reached through `LoadOrCreateForSchema`.
+- **Operator action.** A Forma deployment does not meet this error. Its V2
+  counterpart is `manifest-reconcile`'s `invalid_manifest` finding, whose
+  recovery `docs/manifest-reconcile.md` gives.
 - **HTTP.** The `manifest_schema_mismatch` class stays in
-  `internal/httpapi`'s classification for an embedder that surfaces the V1
-  tool's error. The server's own reads raise `publication_inconsistent`.
+  `internal/httpapi`'s classification for an embedder that surfaces the
+  error. The server's own reads raise `publication_inconsistent`.
 
 ## Public HTTP error surface
 

@@ -21,7 +21,7 @@ import (
 // Scanned shapes (fmt.Sprintf format string literals) in internal/federated,
 // internal/sqlgen, internal/parquetcheck, and internal/compaction (#478):
 //   - contains `read_parquet('%s'`  (drainParquet, describeParquetColumns,
-//     parquetcheck.Describe, compaction.UncoveredRows, buildMergeStatsSQL)
+//     parquetcheck.Describe, buildMergeStatsSQL)
 //   - contains `glob('%s'`          (globParquetPaths)
 //   - equals   `'%s'`               (formatDuckDBPathList, drainGuardedParquet
 //     via BuildParquetScanSource, compaction's per-URI list quoting)

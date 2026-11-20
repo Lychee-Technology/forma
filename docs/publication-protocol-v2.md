@@ -9,9 +9,9 @@ objects (document, digest, keys, write-once store, verifying cache) are in
 `DeltaStager` and `BaseExporter`. The factory builds every federated engine with
 `federated.WithPublicationReader` over `internal/federatedv2` (#900), and `init-db` writes
 each registered schema's record and runs the V2 cutover ([Upgrade](#removed-from-v1)). The
-compactor publishes compact generations through `internal/cdcv2` too (#890).
-`manifest-reconcile` (#891) is still V1: a cut-over deployment keeps it stopped (Upgrade
-step 1) until it moves ([Ownership](#ownership-and-migration)).
+compactor publishes compact generations through `internal/cdcv2` too (#890), and
+`manifest-reconcile` is the collector and the read-only diagnosis over the record and the
+generation history (#891, `internal/reconcile`, [`manifest-reconcile.md`](manifest-reconcile.md)).
 Behaviour on a real Aurora DSQL cluster has not been checked. #817 tracks that, and
 [Verification](#verification) lists what this contract assumes until then.
 
@@ -681,9 +681,10 @@ compare-and-set may commit long after its start and after any deadline, and both
 `superseded_at` and `committed_at` record its start. So no rule below assumes a
 transaction commits within a bound of its start.
 
-Proposed defaults are for the child issues to fix. The two rules below hold for any
-values with `G ≥ R_max + C`. `A ≥ W + C` keeps the horizon from fencing a writer that
-is inside its budget, and any `A` is safe.
+The two rules below hold for any values with `G ≥ R_max + C`. `A ≥ W + C` keeps the
+horizon from fencing a writer that is inside its budget, and any `A` is safe. As built
+(#891), `manifest-reconcile` defaults to `G` = 15 min, `C` = 1 min and `A` = 2 h, refuses
+a `G` below `R_max` (60 s) + `C`, a `C` of zero, and an `A` below `W` (1 h) + `C`.
 
 - **Retention from the retire stamp.** A collector that sees a generation superseded in
   a snapshot ends that snapshot, then runs `Retire` in a new transaction. `Retire` stamps
@@ -774,6 +775,16 @@ manifest of another generation, token, epoch or schema sealed with a matching di
 unknown format, a missing `files` or key, and bytes that do not parse. Each would drop a
 retained key from protection or list an in-flight staged object, and each stops the pass
 with an empty plan.
+
+**As built (#891).** `manifest-reconcile --gc` runs these steps per schema under the schema
+lock (`internal/reconcile`); without `--gc` it runs steps 2 to 4 read-only and reports the
+plan against the record's horizon. Beyond `PlanCollection` it refuses a pass whose
+published record has no history row naming the same manifest (the current generation's
+objects would be protected by nothing), any manifest that fails the reader's full check
+(`manifestv2.Verify`) or whose key the configured layout does not build for the schema,
+and a manifest read that fails or is refused. It deletes only keys the layout builds for
+the schema, never a V1 or foreign key under its prefix. It enumerates the record table as
+well as the registry, so a dropped schema's generations are collected.
 
 ## State transitions
 
@@ -994,6 +1005,32 @@ same two checks after every test:
 checksum gate) end to end on the integration PostgreSQL with DuckDB merges of real parquet,
 and the production e2e harness runs every compaction scenario on V2.
 
+The collector (#891) is tested in `internal/reconcile` on the integration PostgreSQL, over
+generations published with `Publish` and objects in a fault-injecting store:
+
+- `TestAReaderPinnedToAGenerationCompletesWhileTheNextPublishesAndGCRuns`: a reader holding
+  generation N in its snapshot fetches N's manifest and every object it lists after N+1
+  published and two collections ran; only a collection after the grace deletes what N
+  alone listed.
+- `TestCollectorWaitsOutAPublicationInFlight`, `TestCollectorDeletesOnlyOrphansBelowItsHorizon`:
+  the raise waits for a publication holding the record row, whose objects stay although
+  older than the horizon; a staging the horizon fenced is deleted and its publication
+  refused; staging above the horizon is kept and commits; a V1 or foreign key is never
+  deleted.
+- `TestCollectorFailsClosed`, `TestCollectorFailsOnAManifestReadItCannotTrust`: a missing or
+  invalid record, a missing current manifest or history row, a corrupt current or expired
+  manifest, a missing retained manifest, a run under another data prefix, and a refused
+  manifest read each delete and forget nothing, and name epoch, generation and action.
+- `TestCollectionCrashAndRetryAreIdempotent`: a delete failing at step 5 or 6 leaves every
+  row; the retry ends where an uninterrupted pass ends, and a third pass has nothing left.
+- `TestDiagnosisIsReadOnly`, `TestDiagnosisReportsLossWithItsIdentityAndAction`,
+  `TestVerifyChecksumsReportsAnObjectWithOtherBytes`,
+  `TestADroppedSchemasGenerationsExpireAndAreCollected`.
+
+The production e2e harness runs the collector against its object store after a real
+compaction, while a pass holds the replaced generation, and through the loss of an object
+and a manifest and the re-init that recovers them.
+
 The reader (#900) is tested in `internal/federatedv2` on the integration PostgreSQL, over
 records, history rows and manifests committed as a V2 writer commits them, and against an
 in-memory snapshot in `internal/federated`, where a fake reader stages each fault:
@@ -1070,7 +1107,7 @@ the V1 code it replaces:
 | `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot. #896 adapts the DuckDB export to it (`internal/cdc`'s `baseExporter`, which reads the rows on that snapshot), calls it, settles a lost `COMMIT` once in-process (`ResumeInit`), and deletes the V1 manifest swap, the ambiguous-save confirmation, the delta purge (`--replace-delta`, `--delta-prefix`) and the zero-row placeholder | #896 (writers and reader, built in #899 to #901), closing #760 |
 | compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891. As built: `internal/cdcv2`'s `Writer.Compact` publishes behind a `CompactStager`, which `internal/compaction` implements; the merge keeps every row's newest version, tombstones included, and a promotion merges the delta files into a new base object, since a V2 key names its tier. The V1 `FileProvider`, `--manifest-template`/`--manifest-prefix` and the ETag retry loop are deleted | #890 (compaction) |
 | federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. #900 builds the pass behind `federated.WithPublicationReader` and its source in `internal/federatedv2`, with no caller ([As built](#readers)); #896 loads the epoch pins with the schema metadata, builds the engine with the option, deletes the V1 resolution and rewrites `docs/federated-query/design.md` §6.1 | #896 (writers and reader, built in #899 to #901), carrying #759 |
-| `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire` and `PlanCollection` in the collection order above. Repair becomes re-init. Verification walks retained generations | #891 (GC) |
+| `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire` and `PlanCollection` in the collection order above. Repair becomes re-init. Verification walks retained generations. As built: `internal/reconcile` replaces the V1 package; `--repair` is refused and the V1 flags are gone; the default run is a read-only diagnosis whose findings name schema, epoch, generation and the operator's action | #891 (GC) |
 | fault matrix, operator docs, EPIC evidence | crash injection at every staging, publish and commit boundary; a guard that fails if `QuerySource.Fallback`, the level-3 glob or a glob-only flag returns | #892 |
 | live Aurora DSQL behaviour | the assumptions in [Verification](#verification) | #893, under #817 |
 
@@ -1089,8 +1126,8 @@ Once the consumers moved, a static test in `internal/publication`
 (`TestOnlyTheProtocolOwnersMoveAPublicationRecord`) keeps the record's transitions with
 their owners: outside the package, `Initialize`, `InitializeAwaitingInit` and `Activate`
 only in `cmd/tools/init_db_records.go`, `Publish`, `HoldLineage` and `Fence` only in
-`internal/cdcv2`, and `Reset`, `RaiseHorizon`, `Retire` and `Forget` nowhere yet (a drop
-tool and #891 add theirs). The one other non-test file allowed `Initialize` and
+`internal/cdcv2`, `Reset` and `HoldDropped` only in `cmd/tools/drop_schema.go`, and
+`RaiseHorizon`, `Retire` and `Forget` only in `internal/reconcile` (#891). The one other non-test file allowed `Initialize` and
 `Publish` is the federated e2e harness's `publication.go`, which registers the benchmark's
 schemas and publishes its synthetic parquet, which has no PostgreSQL rows for a writer to
 export; `cmd/benchmark` runs it outside any test. Test files are not scanned: the
@@ -1119,7 +1156,8 @@ published schema. Its PR closes #760 alongside #896.
 
 ## Open questions
 
-- Values for `T_pub`, `W`, `C`, `G` and `A`. `W` must cover the longest staging, which is a
+- Values for `T_pub` and `W`, and whether the defaults #891 gave `C`, `G` and `A` suit
+  production ([Garbage collection](#garbage-collection-and-reader-lifetime)). `W` must cover the longest staging, which is a
   `cdc-init` export. `R_max` is a setting of its own, not the federated query timeout,
   because `DuckDBConfig.QueryTimeout` may be zero (no bound) and garbage collection needs
   one. #900 sets its default, `federated.DefaultPublishedPassDeadline`, to 60 s: twice the

@@ -28,7 +28,7 @@ engine. You configure it.
 | `cmd/server` | `DB_ENGINE` |
 | `cmd/lambda` | `DSQL_ENDPOINT` opens the IAM-authenticated DSQL pool and selects `aurora-dsql`. The pool signs a fresh IAM token for each connection it opens, so a warm environment keeps connecting after the cold start's token expires. A `DB_ENGINE` that names another engine beside it fails the cold start |
 | `forma-tools validate-schema-consistency` | `--db-engine` (default `DB_ENGINE`), still validated; nothing uses it since #729 retired `-requeue-stale-width-exports` |
-| `forma-tools cdc-flush`, `cdc-init`, `manifest-reconcile` | `--pg-engine` (default `postgresql`). `cdc-flush --pg-use-iam` authenticates to DSQL, so it implies `aurora-dsql` and refuses another engine beside it |
+| `forma-tools cdc-flush`, `cdc-init`, `compactor`, `manifest-reconcile` | `--pg-engine` (default `postgresql`). `--pg-use-iam` (`cdc-flush`, the compactor and `manifest-reconcile`) authenticates to DSQL, so it implies `aurora-dsql` and refuses another engine beside it |
 
 An unknown name fails `Config.Validate` and the factory before any
 connection is used. Falling back to PostgreSQL's locks on another database
@@ -235,9 +235,9 @@ plain statement.
   creates all of them; the guard and lease tables stay empty.
 - **Engine.** Run all three tools with `--pg-engine aurora-dsql`.
   `cdc-flush --pg-use-iam` implies it.
-- **Authentication.** Only `cdc-flush` has `--pg-use-iam`. Give `cdc-init`
-  and `manifest-reconcile` an IAM token as the password (`--pg-password` or
-  `PGPASSWORD`), from `aws dsql generate-db-connect-admin-auth-token`. DSQL
+- **Authentication.** `cdc-flush`, the compactor and `manifest-reconcile`
+  have `--pg-use-iam`. Give `cdc-init` an IAM token as the password
+  (`--pg-password` or `PGPASSWORD`), from `aws dsql generate-db-connect-admin-auth-token`. DSQL
   checks a token only when a connection opens, and it closes a connection
   after an hour. A run that outlives its token cannot reconnect, so give
   the token an `--expires-in` that covers the run. When renewals cannot get
@@ -266,9 +266,10 @@ plain statement.
   before then run unlocked.
 - **"schema lock lost".** The run stopped because it found another holder
   in its row, or could not renew for 45 seconds. The schema fails even when
-  its remaining steps reported no error: a step the tool logs and skips,
-  such as a reconcile probe or a `--gc` delete, may have been skipped
-  because the loss cancelled it. So `manifest-reconcile` exits 1, not 2.
+  its remaining steps reported no error: a step the loss cancelled, such
+  as a `--gc` delete, may not have run. So `manifest-reconcile` exits 1, not
+  2. The loss never makes a collection unsafe: the horizon and the retention
+  grace, not the lease, decide what it may delete.
   Re-run it. A flush or init cut short leaves what one that fails at the
   same point leaves.
 - **"too late to reach its first renewal".** The database took more

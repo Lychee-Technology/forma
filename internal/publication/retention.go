@@ -144,3 +144,30 @@ func generations(ctx context.Context, q Querier, query string, schemaID int16, g
 	}
 	return out, nil
 }
+
+// schemaIDsSQL reads the id of every record, whatever its state.
+const schemaIDsSQL = `SELECT schema_id FROM %s ORDER BY schema_id`
+
+// SchemaIDs answers the schema id of every record the record table holds,
+// in order. A dropped schema keeps its record, and its generations still
+// expire and are collected, so a collector enumerates the records and not
+// only the registered schemas.
+func SchemaIDs(ctx context.Context, q Querier, t Tables) ([]int16, error) {
+	rows, err := q.runner().query(ctx, fmt.Sprintf(schemaIDsSQL, t.Record))
+	if err != nil {
+		return nil, fmt.Errorf("read the schema ids of %s: %w", t.Record, err)
+	}
+	defer rows.Close()
+	var ids []int16
+	for rows.Next() {
+		var id int16
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan a schema id of %s: %w", t.Record, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the schema ids of %s: %w", t.Record, err)
+	}
+	return ids, nil
+}

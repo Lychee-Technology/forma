@@ -3,188 +3,210 @@ package reconcile
 import (
 	"fmt"
 	"io"
+
+	"github.com/lychee-technology/forma/internal/publication"
 )
 
-// SchemaReport is one schema's reconcile outcome. Key slices hold
-// bucket-relative keys except Unverifiable, which preserves the manifest
-// path verbatim (the raw path is what the operator must inspect).
-type SchemaReport struct {
-	SchemaID     int16
-	Skipped      bool // schema lock not acquired; nothing inspected
-	DeltaOrphans []string
-	BaseOrphans  []string
-	TmpOrphans   []string
-	Unknown      []string // unrecognized shapes; reported, never repaired or deleted
-	Dangling     []string // manifest entries with no live object; removal stays manual
-	Unverifiable []string // manifest paths this listing cannot prove absent
-	// ObjectsSeen counts this schema's classified parquet objects in
-	// storage; ManifestEntries counts its manifest's file entries as
-	// loaded (#463). Together they distinguish "the manifest genuinely
-	// lists nothing" from "the manifest failed to resolve" — N objects
-	// against 0 entries is the mis-pointed-template signature --gc refuses.
-	ObjectsSeen     int
-	ManifestEntries int
-	// ManifestEntriesInPrefix counts the loaded entries that normalize into
-	// this schema's data prefix (#481) — the raw/in-prefix pair
-	// distinguishes "manifest empty" from "manifest foreign": N objects
-	// against raw>0/in-prefix=0 is the foreign-manifest signature --gc
-	// refuses.
-	ManifestEntriesInPrefix int
-	Repaired                []string // delta orphans appended to the manifest (--repair)
-	// DeltaLeftovers are delta orphans the repair guard classified as
-	// compaction leftovers (no uncovered rows, or every uncovered row
-	// deleted in Postgres): never appended, GC-eligible under --gc.
-	DeltaLeftovers []string
-	Deleted        []string // leftover/merged-base/tmp orphans removed (--gc)
-	// PromotedBase are init-shaped base orphans promoted into the manifest
-	// base tier after the coverage + eviction-safety proof (--repair, #292).
-	PromotedBase []string
-	// InitPromotionRefusal explains why an init-shaped orphan set was NOT
-	// promoted. Promotion is all-or-nothing over the set, so one reason
-	// covers every file; empty when promotion succeeded or never ran. The
-	// refused files stay ordinary GC candidates.
-	InitPromotionRefusal string
-	// StampDivergences are listed entries whose stamp no longer matches the
-	// object footer (--verify-stamps); each is a byte-truth breach requiring
-	// operator action — restamp via rewrite, or investigate the overwrite.
-	StampDivergences []string
-	// ChecksumDivergences are listed entries whose object bytes no longer hash
-	// to the entry's #347 content stamp (--verify-checksums): silent
-	// corruption, actionable exactly like a stamp divergence.
-	ChecksumDivergences []string
-	// SkippedUnstamped counts entries --verify-checksums could not cover
-	// because they carry no checksum — either legacy (never backfilled) or a
-	// best-effort write-side hash that failed. It is coverage observability,
-	// not a discrepancy: it never affects the exit code, but a "clean"
-	// verdict over mostly-unstamped entries means far less than a clean
-	// verdict over stamped ones.
-	SkippedUnstamped int
-	Err              error // per-schema failure; other schemas still reconcile
+// FindingKind names what a pass found wrong with a schema's publication.
+type FindingKind string
+
+const (
+	// NoRecord: the schema has no publication record. Readers and writers
+	// fail closed, and nothing tells the collector what readers may scan.
+	NoRecord FindingKind = "no_record"
+	// RecordInvalid: the record row is one no transition writes.
+	RecordInvalid FindingKind = "record_invalid"
+	// AwaitingInit: the V2 cutover left the schema for a cdc-init.
+	AwaitingInit FindingKind = "awaiting_init"
+	// MissingGeneration: the record names a committed generation whose
+	// manifest object is not in S3, or whose history row is gone or names
+	// another manifest.
+	MissingGeneration FindingKind = "missing_generation"
+	// MissingRetainedManifest: a superseded generation readers may still
+	// scan has no manifest object.
+	MissingRetainedManifest FindingKind = "missing_retained_manifest"
+	// InvalidManifest: a manifest object's bytes are not the manifest
+	// PostgreSQL committed.
+	InvalidManifest FindingKind = "invalid_manifest"
+	// ForeignManifest: a generation's manifest key is not one the pass's
+	// layout builds for the schema: the pass runs under another data
+	// prefix than the writers publish under.
+	ForeignManifest FindingKind = "foreign_manifest"
+	// LostObject: a retained generation lists an object S3 confirmed
+	// missing.
+	LostObject FindingKind = "lost_object"
+	// CorruptObject: a listed object's bytes do not hash to the digest, or
+	// do not have the size, its manifest lists.
+	CorruptObject FindingKind = "corrupt_object"
+	// UnrecognizedObject: an object under the schema's prefix whose key no
+	// V2 writer stages. Garbage collection never deletes it.
+	UnrecognizedObject FindingKind = "unrecognized_object"
+)
+
+// blocking answers whether a finding of kind k stops garbage collection: a
+// pass that cannot prove which objects readers may still scan deletes
+// nothing.
+func (k FindingKind) blocking() bool {
+	switch k {
+	case NoRecord, RecordInvalid, MissingGeneration, MissingRetainedManifest, InvalidManifest, ForeignManifest:
+		return true
+	}
+	return false
 }
 
-// Report is a full reconcile run across schemas.
+// Finding is one thing a pass found wrong, with the identity it concerns
+// and what the operator does about it.
+type Finding struct {
+	Kind FindingKind
+	// Epoch and Generation name the generation the finding concerns, 0
+	// when it concerns none (a record fault, an unrecognized object).
+	Epoch      int64
+	Generation int64
+	// Current says the generation is the one the record names.
+	Current bool
+	// Key is the object the finding concerns, if any.
+	Key    string
+	Detail string
+	// Action is the safe operator action.
+	Action string
+}
+
+// Collected is what a garbage-collection pass did.
+type Collected struct {
+	// Retired are the superseded generations the pass stamped retired_at
+	// on; they expire the retention grace later.
+	Retired []int64
+	// Objects and Manifests are the keys deleted, Forgotten the history
+	// rows deleted, in that order.
+	Objects   []string
+	Manifests []string
+	Forgotten []int64
+}
+
+// SchemaReport is one schema's outcome.
+type SchemaReport struct {
+	SchemaID int16
+	// Skipped: another holder had the schema lock, and nothing was read.
+	Skipped bool
+	// State, Epoch and Generation are the record's, State empty when no
+	// record was read.
+	State      publication.State
+	Epoch      int64
+	Generation int64
+	// Horizon is the collector's fence the plan was made against: the one
+	// the pass raised under --gc, the record's otherwise.
+	Horizon int64
+	// Retained and Expired count the generations readers may still scan
+	// and those past their grace.
+	Retained int
+	Expired  int
+	// Listed counts the objects under the schema's prefix.
+	Listed int
+	// PendingOrphans counts unreferenced V2 objects not yet below the
+	// horizon: staging of a publication that may still commit, or garbage
+	// a later pass collects once the horizon passes it.
+	PendingOrphans int
+	// Plan is what garbage collection deletes (under --gc) or would delete
+	// against Horizon (without it). Empty when the pass refused.
+	Plan publication.Plan
+	// Refused says why garbage collection deletes nothing for the schema,
+	// empty when nothing stops it.
+	Refused string
+	// Collected is nil unless the pass ran garbage collection.
+	Collected *Collected
+	Findings  []Finding
+	// Err is a failure of the pass itself (a store or database call); the
+	// other schemas still run.
+	Err error
+}
+
+// Residual answers whether the schema needs an operator: a finding, a
+// failure, or a lock another holder kept. Garbage awaiting collection is
+// not residual: collecting it is the collector's routine work.
+func (s SchemaReport) Residual() bool {
+	return s.Skipped || s.Err != nil || len(s.Findings) > 0
+}
+
+// Report is one run over the schemas.
 type Report struct {
 	Schemas []SchemaReport
 }
 
-// HasResidualDiscrepancies reports whether anything actionable is left after
-// repair and GC: orphans not repaired, promoted, or deleted, dangling entries, skipped
-// schemas, unknown shapes, stamp divergences (--verify-stamps), checksum
-// divergences (--verify-checksums), or per-schema failures. Unverifiable paths
-// are informational — they cannot be proven inconsistent from this run, and so
-// is the unstamped-entry count, which reports missing coverage rather than a
-// discrepancy.
-func (r Report) HasResidualDiscrepancies() bool {
-	for _, s := range r.Schemas {
-		if s.Residual() {
-			return true
-		}
-	}
-	return false
-}
-
-// Residual reports whether this schema still has actionable discrepancies
-// after repair and GC.
-func (s SchemaReport) Residual() bool {
-	if s.Skipped || s.Err != nil {
-		return true
-	}
-	// Stamp and checksum divergences are actionable but are not orphan keys,
-	// so they can never be "resolved" by the repair/GC bookkeeping below.
-	if len(s.Dangling) > 0 || len(s.Unknown) > 0 ||
-		len(s.StampDivergences) > 0 || len(s.ChecksumDivergences) > 0 {
-		return true
-	}
-	resolved := make(map[string]struct{}, len(s.Repaired)+len(s.Deleted)+len(s.PromotedBase))
-	for _, k := range s.Repaired {
-		resolved[k] = struct{}{}
-	}
-	for _, k := range s.Deleted {
-		resolved[k] = struct{}{}
-	}
-	for _, k := range s.PromotedBase {
-		resolved[k] = struct{}{}
-	}
-	for _, orphans := range [][]string{s.DeltaOrphans, s.BaseOrphans, s.TmpOrphans} {
-		for _, k := range orphans {
-			if _, ok := resolved[k]; !ok {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// Render writes the human-readable report: exact keys per class per schema.
+// Render writes the report for an operator: one block per schema, each
+// finding with its identity and action.
 func (r Report) Render(w io.Writer) {
 	for _, s := range r.Schemas {
-		if s.Skipped {
-			fmt.Fprintf(w, "schema %d: skipped (schema lock not acquired)\n", s.SchemaID)
-			continue
-		}
-		if s.clean() {
-			// A clean verdict still reports the inventory and any coverage
-			// gap: "clean" over entries the scrub could not check is a
-			// weaker statement.
-			parenthetical := fmt.Sprintf("%d objects, %d manifest entries", s.ObjectsSeen, s.ManifestEntries)
-			if note := s.unstampedNote(); note != "" {
-				parenthetical += "; " + note
-			}
-			fmt.Fprintf(w, "schema %d: clean (%s)\n", s.SchemaID, parenthetical)
-			continue
-		}
-		fmt.Fprintf(w, "schema %d:\n", s.SchemaID)
-		fmt.Fprintf(w, "  inventory: %d objects in storage, %d manifest entries resolved (%d in schema prefix); orphan candidates: delta=%d base=%d tmp=%d unknown=%d\n",
-			s.ObjectsSeen, s.ManifestEntries, s.ManifestEntriesInPrefix, len(s.DeltaOrphans), len(s.BaseOrphans), len(s.TmpOrphans), len(s.Unknown))
-		renderKeys(w, "delta orphan", s.DeltaOrphans)
-		renderKeys(w, "delta leftover (gc-eligible)", s.DeltaLeftovers)
-		renderKeys(w, "base orphan", s.BaseOrphans)
-		renderKeys(w, "tmp orphan", s.TmpOrphans)
-		renderKeys(w, "unknown shape", s.Unknown)
-		renderKeys(w, "dangling entry", s.Dangling)
-		renderKeys(w, "unverifiable entry", s.Unverifiable)
-		renderKeys(w, "stamp divergence", s.StampDivergences)
-		renderKeys(w, "checksum divergence", s.ChecksumDivergences)
-		renderKeys(w, "repaired", s.Repaired)
-		renderKeys(w, "promoted base-init", s.PromotedBase)
-		if s.InitPromotionRefusal != "" {
-			fmt.Fprintf(w, "  init promotion refused: %s\n", s.InitPromotionRefusal)
-		}
-		renderKeys(w, "deleted", s.Deleted)
-		if note := s.unstampedNote(); note != "" {
-			fmt.Fprintf(w, "  %s\n", note)
-		}
-		if s.Err != nil {
-			fmt.Fprintf(w, "  error: %v\n", s.Err)
-		}
+		s.render(w)
 	}
 }
 
-func (s SchemaReport) clean() bool {
-	return len(s.DeltaOrphans)+len(s.DeltaLeftovers)+len(s.BaseOrphans)+
-		len(s.TmpOrphans)+len(s.Unknown)+len(s.Dangling)+len(s.Unverifiable)+
-		len(s.Repaired)+len(s.PromotedBase)+len(s.Deleted)+
-		len(s.StampDivergences)+len(s.ChecksumDivergences) == 0 &&
-		s.Err == nil && s.InitPromotionRefusal == ""
-}
-
-// unstampedNote renders the --verify-checksums coverage gap, empty when the
-// scrub had nothing it could not cover. It is deliberately not part of
-// clean(): missing coverage is a caveat on the verdict, never a discrepancy
-// that changes it.
-func (s SchemaReport) unstampedNote() string {
-	switch s.SkippedUnstamped {
-	case 0:
-		return ""
-	case 1:
-		return "1 unstamped entry skipped"
-	default:
-		return fmt.Sprintf("%d unstamped entries skipped", s.SkippedUnstamped)
+func (s SchemaReport) render(w io.Writer) {
+	if s.Skipped {
+		fmt.Fprintf(w, "schema %d: skipped (schema lock held by another holder)\n", s.SchemaID)
+		return
+	}
+	verdict := "clean"
+	if s.Residual() {
+		verdict = "needs attention"
+	}
+	state := string(s.State)
+	if state == "" {
+		state = "no record read"
+	}
+	fmt.Fprintf(w, "schema %d: %s (%s, epoch %d, generation %d)\n", s.SchemaID, verdict, state, s.Epoch, s.Generation)
+	fmt.Fprintf(w, "  generations: %d retained, %d expired; objects: %d listed, %d unreferenced inside the horizon %d\n",
+		s.Retained, s.Expired, s.Listed, s.PendingOrphans, s.Horizon)
+	for _, f := range s.Findings {
+		fmt.Fprintf(w, "  %s: %s\n", f.Kind, f.describe())
+		fmt.Fprintf(w, "    action: %s\n", f.Action)
+	}
+	if s.Refused != "" {
+		fmt.Fprintf(w, "  garbage collection refused: %s\n", s.Refused)
+	}
+	verb := "would delete"
+	if s.Collected != nil {
+		verb = "deleted"
+	}
+	if s.Collected != nil && len(s.Collected.Retired) > 0 {
+		fmt.Fprintf(w, "  retired generations: %v\n", s.Collected.Retired)
+	}
+	if s.Refused == "" {
+		fmt.Fprintf(w, "  garbage collection %s %d objects, %d manifests, and forgets generations %v\n",
+			verb, len(s.Plan.Objects), len(s.Plan.Manifests), s.Plan.Forget)
+	}
+	if s.Collected != nil {
+		for _, k := range s.Collected.Objects {
+			fmt.Fprintf(w, "  deleted object: %s\n", k)
+		}
+		for _, k := range s.Collected.Manifests {
+			fmt.Fprintf(w, "  deleted manifest: %s\n", k)
+		}
+	}
+	if s.Err != nil {
+		fmt.Fprintf(w, "  error: %v\n", s.Err)
 	}
 }
 
-func renderKeys(w io.Writer, label string, keys []string) {
-	for _, k := range keys {
-		fmt.Fprintf(w, "  %s: %s\n", label, k)
+func (f Finding) describe() string {
+	out := ""
+	if f.Generation != 0 {
+		which := "superseded"
+		if f.Current {
+			which = "current"
+		}
+		out = fmt.Sprintf("epoch %d generation %d (%s)", f.Epoch, f.Generation, which)
 	}
+	if f.Key != "" {
+		if out != "" {
+			out += ", "
+		}
+		out += "key " + f.Key
+	}
+	if f.Detail != "" {
+		if out != "" {
+			out += ": "
+		}
+		out += f.Detail
+	}
+	return out
 }

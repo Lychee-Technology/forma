@@ -213,23 +213,6 @@ func (f *duckExportFlags) register(fs *flag.FlagSet, opts duckExportFlagOptions)
 	fs.IntVar(&f.parquetCompressionLevel, "parquet-compression-level", 3, "Parquet compression level")
 }
 
-// validateManifestTemplateFlag runs the read path's two-probe manifest
-// template check (#300) on a V1 manifest tool's --manifest-template (the
-// compactor, manifest-reconcile and baseline-schema), so a constant path, a
-// {{.SchemaId}} typo or a printf verb is a flag error before any connection
-// is opened (#518, #520). An empty template is left alone:
-// manifest.PathResolver substitutes its default. cdc-flush and cdc-init take
-// no template: their V2 manifests live under the -s3-prefix layout.
-func validateManifestTemplateFlag(tmpl string) error {
-	if tmpl == "" {
-		return nil
-	}
-	if err := forma.ValidateManifestPathTemplate("manifest-template", tmpl); err != nil {
-		return fmt.Errorf("validate --manifest-template: %w", err)
-	}
-	return nil
-}
-
 // validateParquetPrefixFlag applies the server's duckdb.s3DataPrefix rule to
 // a tool's parquet prefix flag (#527): a glob metacharacter is a flag error
 // before any connection is opened. The writers store the prefix as a literal

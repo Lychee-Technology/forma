@@ -7,17 +7,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.uber.org/zap"
 
-	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/cdc"
-	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/cdcv2"
+	"github.com/lychee-technology/forma/internal/federated"
+	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/reconcile"
 )
 
@@ -34,58 +33,33 @@ func (e *discrepancyError) Error() string {
 
 func (e *discrepancyError) ExitCode() int { return 2 }
 
-// schemaIDList collects the repeatable --allow-empty-manifest-schema values;
-// each occurrence is one schema ID (comma-separated also accepted).
-type schemaIDList []int16
+// errRepairRemoved refuses --repair. Under Protocol V2 an object no
+// generation lists is staging that never committed or garbage, never lost
+// data, so there is nothing to adopt; and a lost manifest or object of a
+// committed generation cannot be rebuilt from S3. The recovery is a re-init.
+var errRepairRemoved = errors.New("--repair is removed under Protocol V2: an unlisted object is uncommitted staging or garbage, " +
+	"never lost data, and a lost manifest or object cannot be rebuilt from S3; re-initialize the schema with cdc-init instead " +
+	"(docs/manifest-reconcile.md)")
 
-func (s *schemaIDList) String() string {
-	parts := make([]string, 0, len(*s))
-	for _, id := range *s {
-		parts = append(parts, strconv.Itoa(int(id)))
-	}
-	return strings.Join(parts, ",")
-}
-
-func (s *schemaIDList) Set(v string) error {
-	for _, part := range strings.Split(v, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		id, err := strconv.ParseInt(part, 10, 16)
-		if err != nil {
-			return fmt.Errorf("invalid schema id %q: %w", part, err)
-		}
-		if id <= 0 {
-			// Registry schema IDs are positive; 0/negative would parse but
-			// silently waive nothing — fail the typo fast instead.
-			return fmt.Errorf("invalid schema id %q: must be a positive schema ID", part)
-		}
-		*s = append(*s, int16(id))
-	}
-	return nil
-}
+// Defaults of the protocol's time parameters (docs/manifest-reconcile.md,
+// "Retention"). The grace must cover the reader's pass deadline plus the
+// clock margin, and the orphan age the writers' staging budget plus it.
+const (
+	defaultRetentionGrace = 15 * time.Minute
+	defaultClockMargin    = time.Minute
+	defaultOrphanAge      = 2 * time.Hour
+)
 
 // reconcileOptions carries the parsed manifest-reconcile flag values.
 type reconcileOptions struct {
-	s3              s3Flags
-	pg              postgresFlags
-	manifest        cdc.ManifestConfig
-	dataPrefix      string
-	entityMainTable string
-	registryTable   string
-	schemaID        int
-	repair          bool
-	gc              bool
-	// allowEmptyManifestSchemas waives the #463 empty-manifest GC guard for
-	// exactly these schema IDs (never globally).
-	allowEmptyManifestSchemas []int16
-	verifyStamps              bool
-	verifyChecksums           bool
-	gcGrace                   time.Duration
-	etagRetries               int
-	engine                    forma.DatabaseEngine
-	duck                      duckExportFlags
+	s3            s3Flags
+	pg            postgresFlags
+	db            cdc.CDCConfig // the publication database the records live on
+	dataPrefix    string
+	entityMain    string
+	registryTable string
+	schemaID      int16
+	run           reconcile.Options
 }
 
 // parseReconcileFlags parses and validates the subcommand flags. A nil
@@ -96,49 +70,35 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 
 	opts := &reconcileOptions{}
 	opts.s3.register(fs, s3FlagOptions{
-		bucketUsage:    "S3 bucket for parquet/manifest files (required)",
+		bucketUsage:    "S3 bucket of the schemas' parquet objects and manifests (required)",
 		bucketRequired: true,
 	})
 	opts.pg.register(fs, postgresFlagOptions{
-		hostFlag:        "pg-host",
-		portFlag:        "pg-port",
-		userFlag:        "pg-user",
-		passwordFlag:    "pg-password",
-		databaseFlag:    "pg-db",
-		sslModeFlag:     "pg-ssl-mode",
-		hostDefault:     "localhost",
-		portDefault:     5432,
-		userDefault:     "postgres",
-		databaseDefault: "forma",
-		sslModeDefault:  "require",
-		hostUsage:       "PostgreSQL host",
-		portUsage:       "PostgreSQL port",
-		userUsage:       "PostgreSQL user",
-		passwordUsage:   "PostgreSQL password (or set PGPASSWORD env)",
-		databaseUsage:   "PostgreSQL database",
-		sslModeUsage:    "PostgreSQL sslmode",
-		engineFlag:      "pg-engine",
+		hostFlag: "pg-host", portFlag: "pg-port", userFlag: "pg-user", passwordFlag: "pg-password",
+		databaseFlag: "pg-db", sslModeFlag: "pg-ssl-mode",
+		hostDefault: "localhost", portDefault: 5432, userDefault: "postgres", databaseDefault: "forma", sslModeDefault: "require",
+		hostUsage: "PostgreSQL host of the publication records", portUsage: "PostgreSQL port",
+		userUsage: "PostgreSQL user", passwordUsage: "PostgreSQL password (or set PGPASSWORD env)",
+		databaseUsage: "PostgreSQL database", sslModeUsage: "PostgreSQL sslmode",
+		includeUseIAM: true, useIAMFlag: "pg-use-iam", useIAMUsage: "Use IAM authentication for PostgreSQL",
+		engineFlag: "pg-engine",
 	})
-
-	// Must match the prefix the flusher/init exported under (cdc-flush
-	// --s3-prefix / compactor --data-prefix): listing a different prefix
-	// reports every real file as dangling and every listed key as orphaned.
-	dataPrefix := fs.String("data-prefix", "data", "Data prefix for parquet files (must match the flusher's prefix)")
-	entityMainTable := fs.String("entity-main-table", "entity_main", "Entity main table (repair guard's liveness check)")
-	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3 (must match the writers' manifest prefix: a mis-pointed value resolves every manifest empty, classifying the whole base tier as orphaned — --gc refuses that signature, #463)")
-	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template (must match the writers' template — same #463 hazard as --manifest-prefix)")
+	dataPrefix := fs.String("data-prefix", defaultCDCDataPrefix, "S3 data prefix of the V2 object layout: cdc-flush and cdc-init's -s3-prefix")
+	fs.StringVar(&opts.entityMain, "entity-main-table", "entity_main",
+		"Entity main table name; the publication tables and the schema lock are named after it")
 	registryTable := fs.String("schema-registry-table", "", "Schema registry table for schema enumeration (required)")
-	schemaID := fs.Int("schema-id", 0, "Reconcile only this schema (0 = all registered schemas)")
-	repair := fs.Bool("repair", false, "Append manifest entries for delta-shaped orphans and promote complete init-shaped base orphan sets (coverage + eviction-safety verified)")
-	gc := fs.Bool("gc", false, "Delete base-shaped and _tmp orphans older than the grace period")
-	var allowEmptyManifest schemaIDList
-	fs.Var(&allowEmptyManifest, "allow-empty-manifest-schema",
-		"Schema ID whose EMPTY manifest is operator-confirmed legitimate: --gc then accepts zero manifest entries for that schema instead of refusing (#463). Repeatable / comma-separable; deliberately schema-explicit — there is no global override. Does NOT waive a non-empty manifest with zero entries in the schema's data prefix (#481 foreign manifest): that signature always refuses")
-	verifyStamps := fs.Bool("verify-stamps", false, "Compare every listed entry's column stamp against the parquet footer (byte-truth check for the #256 stamp trust)")
-	verifyChecksums := fs.Bool("verify-checksums", false, "Re-hash every checksum-stamped object and compare with the manifest stamp (#347 byte-integrity scrub; one full GET per stamped entry)")
-	gcGrace := fs.Duration("gc-grace", 15*time.Minute, "Minimum object age before --gc may delete it")
-	etagRetries := fs.Int("etag-retries", 3, "Manifest save retries on optimistic-concurrency conflict")
-	opts.duck.register(fs, duckExportFlagOptions{memLimitDefault: "4GB", queryTimeout: 5 * time.Minute})
+	schemaID := fs.Int("schema-id", 0, "Reconcile only this schema (0 = every registered schema and every schema with a record)")
+	gc := fs.Bool("gc", false, "Collect garbage: raise the horizon, retire superseded generations, delete what no reader can still scan. "+
+		"Without it the run is a read-only diagnosis that reports what a collection would delete")
+	repair := fs.Bool("repair", false, "Removed under Protocol V2; refused. Re-initialize with cdc-init instead")
+	fs.BoolVar(&opts.run.VerifyChecksums, "verify-checksums", false,
+		"Hash every object a retained generation lists and compare it with its manifest's sha256 and size (one full GET per object)")
+	fs.DurationVar(&opts.run.RetentionGrace, "retention-grace", defaultRetentionGrace,
+		"G: how long a superseded generation stays after a pass retired it; at least the reader's pass deadline plus --clock-margin")
+	fs.DurationVar(&opts.run.ClockMargin, "clock-margin", defaultClockMargin,
+		"C: drift allowed between the readers' clocks, the database clock and S3's LastModified")
+	fs.DurationVar(&opts.run.OrphanAge, "orphan-age", defaultOrphanAge,
+		"A: how far behind the database clock the collector raises its horizon; at least the writers' staging budget plus --clock-margin")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -146,48 +106,58 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 		}
 		return nil, err
 	}
+	if *repair {
+		return nil, errRepairRemoved
+	}
 	if err := opts.s3.validate(true); err != nil {
 		return nil, fmt.Errorf("validate s3 flags: %w", err)
 	}
 	if *registryTable == "" {
 		return nil, fmt.Errorf("--schema-registry-table is required")
 	}
-
-	if *gc && *gcGrace <= 0 {
-		return nil, fmt.Errorf("--gc-grace must be positive; a zero grace would delete a live compaction's staging objects")
-	}
-	if len(allowEmptyManifest) > 0 && !*gc {
-		return nil, fmt.Errorf("--allow-empty-manifest-schema only modifies --gc's empty-manifest guard; pass it together with --gc")
+	if *schemaID < 0 || *schemaID > 32767 {
+		return nil, fmt.Errorf("--schema-id %d is not a schema id", *schemaID)
 	}
 	if err := validateParquetPrefixFlag("data-prefix", *dataPrefix); err != nil {
-		return nil, err
-	}
-	if err := validateManifestTemplateFlag(*manifestTemplate); err != nil {
 		return nil, err
 	}
 	engine, err := opts.pg.cdcEngine("pg-engine")
 	if err != nil {
 		return nil, err
 	}
-	opts.engine = engine
-
-	opts.manifest = cdc.ManifestConfig{
-		Bucket:       opts.s3.bucket,
-		Prefix:       *manifestPrefix,
-		PathTemplate: *manifestTemplate,
+	opts.run.GC = *gc
+	opts.run.ReaderDeadline = federated.DefaultPublishedPassDeadline
+	if err := validateReconcileTimes(opts.run); err != nil {
+		return nil, err
+	}
+	opts.db = cdc.CDCConfig{
+		PGHost: opts.pg.host, PGPort: opts.pg.port, PGUser: opts.pg.user,
+		PGPassword: opts.pg.resolvedPassword("PGPASSWORD"), PGDB: opts.pg.database, PGSSLMode: opts.pg.sslMode,
+		PGUseIAM: opts.pg.useIAM, Engine: engine,
+		S3Region: opts.s3.region, S3Endpoint: opts.s3.endpoint, S3UsePath: opts.s3.usePath,
 	}
 	opts.dataPrefix = *dataPrefix
-	opts.entityMainTable = *entityMainTable
 	opts.registryTable = *registryTable
-	opts.schemaID = *schemaID
-	opts.repair = *repair
-	opts.gc = *gc
-	opts.allowEmptyManifestSchemas = allowEmptyManifest
-	opts.verifyStamps = *verifyStamps
-	opts.verifyChecksums = *verifyChecksums
-	opts.gcGrace = *gcGrace
-	opts.etagRetries = *etagRetries
+	opts.schemaID = int16(*schemaID)
 	return opts, nil
+}
+
+// validateReconcileTimes refuses time parameters under which a reader could
+// lose an object it scans (reconcile.Options.Validate), a clock margin of
+// zero, which trusts S3's and the database's clocks to agree exactly, and an
+// orphan age that would fence writers still inside their staging budget.
+func validateReconcileTimes(o reconcile.Options) error {
+	if o.ClockMargin <= 0 {
+		return fmt.Errorf("--clock-margin %s must be positive: it covers the drift between S3's LastModified and the database clock", o.ClockMargin)
+	}
+	if err := o.Validate(); err != nil {
+		return fmt.Errorf("validate --retention-grace, --clock-margin and --orphan-age: %w", err)
+	}
+	if floor := cdcv2.DefaultStagingBudget + o.ClockMargin; o.OrphanAge < floor {
+		return fmt.Errorf("--orphan-age %s is below the writers' staging budget %s plus --clock-margin: the horizon would refuse publications still inside their budget",
+			o.OrphanAge, cdcv2.DefaultStagingBudget)
+	}
+	return nil
 }
 
 var runManifestReconcileFn = runManifestReconcile
@@ -200,55 +170,29 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 	if opts == nil { // help requested
 		return nil
 	}
-
 	logger, err := buildToolLogger(false)
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
 	}
 	defer func() { _ = logger.Sync() }()
 
-	db, err := buildToolSQLDB(opts.pg)
+	db, err := openReconcileDBFn(ctx, opts.db, logger)
 	if err != nil {
-		return fmt.Errorf("open postgres: %w", err)
+		return fmt.Errorf("open the publication database: %w", err)
 	}
 	defer func() { _ = db.Close() }()
-
 	s3Client, err := buildToolS3Client(ctx, opts.s3.region, opts.s3.endpoint, opts.s3.usePath)
 	if err != nil {
 		return fmt.Errorf("load AWS config: %w", err)
 	}
-
-	r, err := newReconciler(opts, s3Client, db, logger)
+	r, err := newReconciler(opts, &reconcile.S3Objects{Client: s3Client, Bucket: opts.s3.bucket}, db, logger)
 	if err != nil {
 		return fmt.Errorf("build reconciler: %w", err)
 	}
-
-	// Both the repair guards and --verify-stamps read parquet through the
-	// DuckDB stats engine; only repair needs the Postgres liveness surface,
-	// so LiveRows stays under its own gate to keep the "may be nil unless
-	// Opts.Repair" contract on the field honest. --verify-checksums needs
-	// neither: it hashes raw bytes straight off the S3 client, so it costs no
-	// DuckDB session at all.
-	if opts.repair || opts.verifyStamps {
-		exporter, err := openReconcileStatsEngine(ctx, opts, logger)
-		if err != nil {
-			return fmt.Errorf("build stats engine: %w", err)
-		}
-		defer func() { _ = exporter.DB.Close() }()
-		r.Stats = &reconcile.DuckStatsReader{DB: exporter.DB, Bucket: opts.s3.bucket}
-	}
-	if opts.repair {
-		r.LiveRows = &reconcile.PGLiveRows{DB: db, Table: opts.entityMainTable}
-	}
-
 	logger.Info("starting manifest reconcile",
-		zap.String("bucket", opts.s3.bucket),
-		zap.String("data_prefix", opts.dataPrefix),
-		zap.Bool("repair", opts.repair),
-		zap.Bool("gc", opts.gc),
-		zap.Bool("verify_stamps", opts.verifyStamps),
-		zap.Bool("verify_checksums", opts.verifyChecksums))
-
+		zap.String("bucket", opts.s3.bucket), zap.String("data_prefix", opts.dataPrefix),
+		zap.Bool("gc", opts.run.GC), zap.Bool("verify_checksums", opts.run.VerifyChecksums),
+		zap.Duration("retention_grace", opts.run.RetentionGrace), zap.Duration("orphan_age", opts.run.OrphanAge))
 	report, err := r.Run(ctx)
 	if err != nil {
 		return fmt.Errorf("reconcile failed: %w", err)
@@ -257,52 +201,38 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 	return reconcileExitError(report)
 }
 
+// openReconcileDBFn opens the publication database as cdc-flush and the
+// compactor open theirs; tests replace it.
+var openReconcileDBFn = func(ctx context.Context, cfg cdc.CDCConfig, logger *zap.Logger) (*sql.DB, error) {
+	return cdc.OpenPublicationDB(ctx, cfg, logger)
+}
+
 // newReconciler assembles the Reconciler from parsed flags and the opened
-// clients. It is a separate function so the flag → behavior wiring is
-// unit-testable without Postgres or S3: everything below is pure
-// construction, and a dropped assignment here is otherwise invisible until
-// production (Objects in particular — verifyChecksums would then answer a
-// configuration error instead of scrubbing, and --repair would silently
-// publish its adopted and promoted entries unstamped).
-func newReconciler(opts *reconcileOptions, s3Client *s3.Client, db *sql.DB, logger *zap.Logger) (*reconcile.Reconciler, error) {
-	// The lock the flusher and cdc-init of the same engine take (#633).
-	locker, err := cdc.NewSchemaLocker(db, opts.engine, opts.entityMainTable)
+// clients, so the flag-to-behaviour wiring is testable without PostgreSQL or
+// S3.
+func newReconciler(opts *reconcileOptions, objects reconcile.ObjectStore, db *sql.DB, logger *zap.Logger) (*reconcile.Reconciler, error) {
+	// The lock cdc-flush and cdc-init of the same engine take (#633).
+	locker, err := cdc.NewSchemaLocker(db, opts.db.Engine, opts.entityMain)
 	if err != nil {
 		return nil, fmt.Errorf("manifest-reconcile schema lock: %w", err)
 	}
-	objectStore := &reconcile.S3ObjectStore{Client: s3Client, Bucket: opts.s3.bucket}
-	manifestStore := &manifest.S3Store{Client: s3Client, Bucket: opts.manifest.Bucket}
-	resolver := manifest.PathResolver{Prefix: opts.manifest.Prefix, PathTemplate: opts.manifest.PathTemplate}
+	tables := publication.TablesFor(opts.entityMain)
 	return &reconcile.Reconciler{
-		Lister:    objectStore,
-		Deleter:   objectStore,
-		Objects:   s3Client, // raw byte reads: the #347 checksum scrub and repair/promotion stamping
-		Manifests: &reconcile.ResolverManifestStore{Store: manifestStore, Resolver: resolver},
-		GCStates:  &reconcile.ManifestGCStateStore{Store: manifestStore, Resolver: resolver},
-		Locker:    locker,
-		Schemas: &reconcile.RegistrySchemaEnumerator{
-			DB: db, Table: opts.registryTable, SchemaIDFilter: opts.schemaID,
-		},
-		Now:        time.Now,
-		Bucket:     opts.s3.bucket,
-		DataPrefix: opts.dataPrefix,
-		Logger:     logger,
-		Opts: reconcile.Options{
-			Repair:                    opts.repair,
-			GC:                        opts.gc,
-			GCGrace:                   opts.gcGrace,
-			VerifyStamps:              opts.verifyStamps,
-			VerifyChecksums:           opts.verifyChecksums,
-			MaxETagRetries:            opts.etagRetries,
-			AllowEmptyManifestSchemas: opts.allowEmptyManifestSchemas,
-		},
+		DB:      db,
+		Tables:  tables,
+		Layout:  manifestv2.Layout{Prefix: opts.dataPrefix},
+		Objects: objects,
+		Locker:  locker,
+		Schemas: &reconcile.Schemas{DB: db, Registry: opts.registryTable, Tables: tables, Only: opts.schemaID},
+		Logger:  logger,
+		Opts:    opts.run,
 	}, nil
 }
 
 // reconcileExitError maps a rendered report to the process outcome:
-// per-schema tool failures are a plain error (exit 1) — monitoring must not
-// mistake an S3 outage for data inconsistency — while pure residual
-// discrepancies exit 2 via discrepancyError, and a clean run exits 0.
+// per-schema tool failures are a plain error (exit 1), since monitoring must
+// not mistake an S3 outage for data inconsistency, while findings and
+// skipped schemas exit 2 via discrepancyError, and a clean run exits 0.
 func reconcileExitError(report reconcile.Report) error {
 	var failed []string
 	residual := 0
@@ -322,60 +252,4 @@ func reconcileExitError(report reconcile.Report) error {
 		return &discrepancyError{count: residual}
 	}
 	return nil
-}
-
-// openReconcileStatsEngine builds the CDC DuckDB exporter the repair path
-// reads parquet stats through — the same httpfs+credentials wiring the
-// compactor's merge engine uses. The pool is pinned to one connection: the
-// exporter's S3 session settings apply per connection, and a second pooled
-// connection would read s3:// without credentials (#285).
-//
-// Credentials come from the same shared rule the merge engine uses,
-// cdc.ResolveStaticS3Credentials (#329). See the WARNING on openMergeEngine
-// for the deliberate narrowing that rule implies: chain-only credential
-// sources no longer reach the DuckDB httpfs session.
-func openReconcileStatsEngine(ctx context.Context, opts *reconcileOptions, logger *zap.Logger) (*cdc.DuckExporter, error) {
-	duckCfg := cdc.CDCConfig{
-		DuckDBPath:              opts.duck.duckDBPath,
-		DuckThreads:             opts.duck.duckThreads,
-		DuckMemLimit:            opts.duck.duckMemLimit,
-		QueryTimeout:            opts.duck.queryTimeout,
-		ParquetCompression:      opts.duck.parquetCompression,
-		ParquetCompressionLevel: opts.duck.parquetCompressionLevel,
-		S3Bucket:                opts.s3.bucket,
-		S3Endpoint:              opts.s3.endpoint,
-		S3Region:                opts.s3.region,
-		S3UseSSL:                opts.s3.useSSL,
-		S3UsePath:               opts.s3.usePath,
-	}
-	key, secret, token := cdc.ResolveStaticS3Credentials(duckCfg)
-	if key == "" {
-		logger.Warn("no static S3 credentials resolved for the DuckDB engine; httpfs will read s3:// unsigned (#329)")
-	}
-	exporter, err := cdc.NewDuckExporter(ctx, duckCfg, key, secret, token, logger)
-	if err != nil {
-		return nil, fmt.Errorf("open stats duckdb: %w", err)
-	}
-	return exporter, nil
-}
-
-// buildToolSQLDB opens a database/sql handle (pgx driver) for
-// manifest-reconcile. On the PostgreSQL engine its schema lock is a session
-// advisory lock that pins one connection, which pgxpool does not expose; on
-// Aurora DSQL it is a lease row and needs no session (cdc.NewSchemaLocker).
-// Values are quoted so passwords with spaces or quotes survive the DSN.
-func buildToolSQLDB(pg postgresFlags) (*sql.DB, error) {
-	connStr := cdc.BuildPGDSN(cdc.PGDSNParams{
-		Host:     pg.host,
-		Port:     pg.port,
-		User:     pg.user,
-		Password: pg.resolvedPassword("PGPASSWORD"),
-		DB:       pg.database,
-		SSLMode:  pg.sslMode,
-	})
-	db, err := sql.Open("pgx", connStr)
-	if err != nil {
-		return nil, fmt.Errorf("open pg: %w", err)
-	}
-	return db, nil
 }

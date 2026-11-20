@@ -127,3 +127,31 @@ func TestLayoutHoldsOnlyManifestsUnderItsCanonicalPrefix(t *testing.T) {
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrForeignPrefix, "an unreadable key is not a prefix verdict")
 }
+
+func TestLayoutOwnsOnlyTheKeysItBuildsForTheSchema(t *testing.T) {
+	l := Layout{Prefix: "data/"}
+	id := uuid.MustParse("0190a000-0000-7000-8000-000000000001")
+	require.Equal(t, "data/1/", l.SchemaPrefix(1), "schema 1's prefix ends in a slash, so it does not list schema 10")
+	require.Equal(t, "/7/", Layout{}.SchemaPrefix(7))
+
+	for _, key := range []string{
+		l.ManifestKey(1, 2, 3, testToken),
+		l.ParquetKey(1, 2, TierBase, id),
+		l.ParquetKey(1, 9, TierDelta, id),
+	} {
+		require.True(t, l.Owns(1, key), key)
+		require.True(t, Layout{Prefix: "data"}.Owns(1, key), "the canonical prefix decides: %s", key)
+	}
+	for _, key := range []string{
+		l.ManifestKey(10, 2, 3, testToken),                        // another schema
+		Layout{Prefix: "other"}.ParquetKey(1, 2, TierBase, id),    // another prefix
+		Layout{Prefix: "data/x"}.ParquetKey(1, 2, TierBase, id),   // a deeper prefix
+		"data/1/" + id.String() + ".parquet",                      // a V1 delta key
+		"data/1/_tmp/" + id.String() + ".parquet",                 // a V1 staging key
+		"data/1/manifest.json",                                    // a V1 manifest
+		"data/1/e2/base/" + uuid.NewString() + ".parquet",         // not a version 7 UUID
+		"data/1/_manifests/e2/g3-" + testToken.String() + ".json", // not zero-padded
+	} {
+		require.False(t, l.Owns(1, key), key)
+	}
+}

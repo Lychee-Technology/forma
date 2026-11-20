@@ -347,8 +347,9 @@ stops a run, including one that only adds an attribute. Each run also checks
 the active generation at its start, so a long-lived process (the CDC runner, a
 warm Lambda) does not begin a run on a superseded declaration. Pinned by
 `TestCDCFlushStopsABatchExportedAcrossAnApply` and
-`TestCDCInitStopsABatchExportedAcrossAnApply`, which also run
-`manifest-reconcile --repair` over the stranded object and find it unlisted.
+`TestCDCInitStopsABatchExportedAcrossAnApply`. Under Protocol V2 the stranded
+object is staging no generation lists, which `manifest-reconcile --gc` collects
+once it is below the horizon (#891); nothing re-adopts it.
 
 Two placements are not enough:
 
@@ -360,10 +361,11 @@ Two placements are not enough:
   copy a later run exports has the same `(row_id, ver_ts)`, and the federated
   dedup cannot order the two. A read at selection as well only saves a wasted
   export.
-- **Before the manifest append only.** An object at a final key is
-  repairable. `manifest-reconcile --repair` appends a delta object whose rows
-  are live in Postgres and not covered by a listed file, which is exactly a
-  stopped run's object. A `_tmp` object is never repaired, only collected.
+- **Before the manifest append only.** Under V1 an object at a final key was
+  repairable: `manifest-reconcile --repair` appended a delta object whose rows
+  were live in Postgres and not covered by a listed file, which is exactly a
+  stopped run's object. V2 has no repair (#891): an object no generation lists
+  is only ever collected.
 
 The read needs no fence, on DSQL included. A process that can write a value
 only the new declaration admits passed the start-up check, so it started after
@@ -482,8 +484,8 @@ start on that release, with the `SCHEMA_DIR` the deployment runs today:
    Lambda function and embedder of the old release that writes, and every
    `cdc-flush` and `cdc-init` run. A Lambda function cold-starts on its next
    invocation, so disable its triggers or set its reserved concurrency to
-   zero. Pause the compactor and do not run `manifest-reconcile --repair`,
-   so the live object set stays the one the baseline audits. Everything
+   zero. Pause the compactor and `manifest-reconcile --gc`, so the live
+   object set stays the one the baseline audits. Everything
    stays stopped until step 4 starts the enforcing release in its place.
    The old release has no gate: a process of it that writes during the
    baseline or after it can store a value the baseline never audited, and

@@ -76,8 +76,8 @@ func TestCDCToolsWirePGEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse manifest-reconcile flags: %v", err)
 	}
-	if reconcile.engine != forma.EngineAuroraDSQL {
-		t.Errorf("manifest-reconcile engine = %q, want aurora-dsql", reconcile.engine)
+	if reconcile.db.Engine != forma.EngineAuroraDSQL {
+		t.Errorf("manifest-reconcile engine = %q, want aurora-dsql", reconcile.db.Engine)
 	}
 
 	_, err = parseCDCFlushFlags([]string{"-s3-bucket=b", "-pg-engine=oracle"})

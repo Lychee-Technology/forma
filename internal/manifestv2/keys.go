@@ -93,6 +93,27 @@ func (l Layout) NewParquetKey(schemaID int16, epoch int64, tier Tier) (string, e
 	return l.ParquetKey(schemaID, epoch, tier, id), nil
 }
 
+// SchemaPrefix is the prefix every key l builds for schemaID starts with,
+// ending in "/" so that schema 1's prefix is not a prefix of schema 10's.
+// Garbage collection lists a schema's objects under it.
+func (l Layout) SchemaPrefix(schemaID int16) string {
+	return fmt.Sprintf("%s/%d/", l.root(), schemaID)
+}
+
+// Owns answers whether key is a manifest key or a parquet key that l builds
+// for schemaID: under l's canonical prefix, and spelled exactly as
+// ManifestKey or ParquetKey spell it. Every V2 writer stages under such a
+// key, so garbage collection deletes nothing else under a schema's prefix: a
+// V1 object, an operator's file or another layout's key is reported and
+// left alone.
+func (l Layout) Owns(schemaID int16, key string) bool {
+	if m, err := parseManifestKey(key); err == nil {
+		return m.schemaID == schemaID && m.layout.root() == l.root()
+	}
+	p, err := parseParquetKey(key)
+	return err == nil && p.schemaID == schemaID && p.layout.root() == l.root()
+}
+
 // manifestKeyParts is what a manifest key spells.
 type manifestKeyParts struct {
 	layout     Layout

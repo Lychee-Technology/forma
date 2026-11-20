@@ -52,10 +52,6 @@ type ManifestEntry struct {
 	RowCount           int64
 	Checksum           string
 	Columns            map[string]string
-	// CreatedMin and CreatedMax are always 0: a V2 manifest records no
-	// creation range. They stay for the V1 manifest-reconcile scenarios,
-	// which skip until #891.
-	CreatedMin, CreatedMax int64
 }
 
 // TierEntries returns the entries m lists on tier ("base" or "delta").
