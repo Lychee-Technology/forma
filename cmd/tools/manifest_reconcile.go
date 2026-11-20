@@ -98,8 +98,9 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	gc := fs.Bool("gc", false, "Collect garbage: raise the horizon, retire superseded generations, delete what no reader can still scan. "+
 		"Without it the run is a read-only diagnosis that reports what a collection would delete")
 	fs.BoolVar(&opts.bindStorage, "bind-storage", false,
-		"Bind this database's deployment to the S3 endpoint the run's client uses (--s3-endpoint, or the AWS SDK's "+
-			"endpoint configuration such as AWS_ENDPOINT_URL_S3 without it, or the region's AWS endpoint), --s3-bucket and "+
+		"Bind this database's deployment to the URL the run's client sends the bucket's requests to (--s3-endpoint, or the "+
+			"AWS SDK's endpoint configuration such as AWS_ENDPOINT_URL_S3 without it, or the region's AWS endpoint, with the "+
+			"addressing --s3-use-path chooses), --s3-bucket and "+
 			"--data-prefix, the target its writers publish into, and exit. Garbage collection deletes nothing under any other target. Run it once, with the writers' own values and environment; "+
 			"an existing binding to another target is kept and the run fails")
 	repair := fs.Bool("repair", false, "Removed under Protocol V2; refused. Re-initialize with cdc-init instead")
@@ -261,11 +262,12 @@ func newReconciler(opts *reconcileOptions, objects reconcile.ObjectStore, db *sq
 }
 
 // buildReconcileObjects builds the S3 client the run lists, reads and
-// deletes through, and records in opts the endpoint that client sends its
-// requests to (reconcile.ClientEndpoint): the one the run is bound by and
-// checked against, which the SDK may take from the environment
-// (AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, a profile's endpoint_url) when
-// --s3-endpoint is not given.
+// deletes through, and records in opts the URL that client sends the
+// bucket's requests to (reconcile.ClientEndpoint): the one the run is bound
+// by and checked against. The SDK may take its endpoint from the
+// environment (AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, a profile's
+// endpoint_url) when --s3-endpoint is not given, and --s3-use-path changes
+// the bucket's addressing at a given --s3-endpoint.
 func buildReconcileObjects(ctx context.Context, opts *reconcileOptions) (*reconcile.S3Objects, error) {
 	client, err := buildToolS3Client(ctx, opts.s3.region, opts.s3.endpoint, opts.s3.usePath)
 	if err != nil {

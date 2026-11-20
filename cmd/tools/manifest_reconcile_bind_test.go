@@ -6,10 +6,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	smithyendpoints "github.com/aws/smithy-go/endpoints"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -48,14 +52,65 @@ func reconcileRun(t *testing.T, args ...string) (*reconcileOptions, *reconcile.S
 }
 
 // TestNewReconciler_WiresTheStorageTarget: the run's storage target, which
-// it deletes in only when it is the deployment's bound one, is the
-// endpoint its S3 client sends requests to, the bucket and the data prefix
-// (R7-F1, R8-F1).
+// it deletes in only when it is the deployment's bound one, is the URL its
+// S3 client sends the bucket's requests to, the bucket and the data prefix
+// (R7-F1, R8-F1, R9-F1).
 func TestNewReconciler_WiresTheStorageTarget(t *testing.T) {
 	isolateAWSConfig(t)
-	_, objects, r := reconcileRun(t, "--s3-endpoint", "http://rustfs:9000", "--data-prefix", "lake")
-	require.Equal(t, publication.StorageTarget{Endpoint: "http://rustfs:9000", Bucket: "bkt", Prefix: "lake"}, r.Storage)
+	_, objects, r := reconcileRun(t, "--s3-endpoint", "http://rustfs:9000", "--s3-use-path", "--data-prefix", "lake")
+	require.Equal(t, publication.StorageTarget{Endpoint: "http://rustfs:9000/bkt", Bucket: "bkt", Prefix: "lake"}, r.Storage)
 	require.Same(t, objects, r.Objects, "the run lists and deletes through the client its endpoint was told from")
+}
+
+// TestReconcileTargetIncludesTheAddressing is R9-F1: with the same
+// endpoint, bucket and prefix, --s3-use-path alone moves the client's LIST
+// and DELETE from the endpoint's host, the bucket in the path, to a host
+// named after the bucket, which a gateway can route to another backend.
+// The run's target follows, so the two runs are not each other's target.
+func TestReconcileTargetIncludesTheAddressing(t *testing.T) {
+	isolateAWSConfig(t)
+	_, _, path := reconcileRun(t, "--s3-endpoint", "https://s3.storage.example", "--s3-bucket", "lake", "--s3-use-path")
+	_, _, virtual := reconcileRun(t, "--s3-endpoint", "https://s3.storage.example", "--s3-bucket", "lake")
+	require.Equal(t, "https://s3.storage.example/lake", path.Storage.Endpoint)
+	require.Equal(t, "https://lake.s3.storage.example", virtual.Storage.Endpoint)
+	require.False(t, path.Storage.Same(virtual.Storage), "the addressing alone makes another target")
+}
+
+// TestClientEndpointIsWhereTheClientSendsListAndDelete checks
+// reconcile.ClientEndpoint against the requests the client really builds:
+// a transport records the URL of a LIST and of a DELETE, for either
+// addressing, at a custom endpoint and at AWS.
+func TestClientEndpointIsWhereTheClientSendsListAndDelete(t *testing.T) {
+	isolateAWSConfig(t)
+	for _, o := range []s3.Options{
+		{Region: "us-east-1", BaseEndpoint: aws.String("https://s3.storage.example"), UsePathStyle: true},
+		{Region: "us-east-1", BaseEndpoint: aws.String("https://s3.storage.example")},
+		{Region: "eu-west-1"},
+		{Region: "eu-west-1", UsePathStyle: true},
+	} {
+		rec := &recordingTransport{}
+		o.HTTPClient = rec
+		o.Credentials = aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+			return aws.Credentials{AccessKeyID: "test", SecretAccessKey: "test"}, nil
+		})
+		o.Retryer = aws.NopRetryer{}
+		c := s3.New(o)
+		endpoint, err := reconcile.ClientEndpoint(context.Background(), c, "lake")
+		require.NoError(t, err)
+		_, _ = c.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{Bucket: aws.String("lake"), Prefix: aws.String("data/7/")})
+		_, _ = c.DeleteObject(context.Background(), &s3.DeleteObjectInput{Bucket: aws.String("lake"), Key: aws.String("data/7/k")})
+		require.Len(t, rec.urls, 2, "only the LIST and the DELETE reached the transport, nothing of ClientEndpoint's: %s", endpoint)
+		require.Equal(t, endpoint, rec.urls[0].Scheme+"://"+rec.urls[0].Host+strings.TrimSuffix(rec.urls[0].Path, "/"), "the LIST")
+		require.Equal(t, endpoint+"/data/7/k", rec.urls[1].Scheme+"://"+rec.urls[1].Host+rec.urls[1].Path, "the DELETE")
+	}
+}
+
+// recordingTransport records the URL of every request and sends none.
+type recordingTransport struct{ urls []url.URL }
+
+func (r *recordingTransport) Do(req *http.Request) (*http.Response, error) {
+	r.urls = append(r.urls, *req.URL)
+	return nil, errors.New("recorded, not sent")
 }
 
 // TestReconcileTargetIsTheEndpointTheClientUses is R8-F1: with the flags
@@ -67,9 +122,9 @@ func TestNewReconciler_WiresTheStorageTarget(t *testing.T) {
 func TestReconcileTargetIsTheEndpointTheClientUses(t *testing.T) {
 	isolateAWSConfig(t)
 	_, _, plain := reconcileRun(t)
-	require.Equal(t, publication.StorageTarget{Endpoint: "https://s3.us-east-1.amazonaws.com", Bucket: "bkt", Prefix: "data"}, plain.Storage)
+	require.Equal(t, publication.StorageTarget{Endpoint: "https://bkt.s3.us-east-1.amazonaws.com", Bucket: "bkt", Prefix: "data"}, plain.Storage)
 	_, _, china := reconcileRun(t, "--s3-region", "cn-north-1")
-	require.Equal(t, "https://s3.cn-north-1.amazonaws.com.cn", china.Storage.Endpoint, "another partition is another target")
+	require.Equal(t, "https://bkt.s3.cn-north-1.amazonaws.com.cn", china.Storage.Endpoint, "another partition is another target")
 
 	for _, v := range []string{"AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL"} {
 		t.Run(v, func(t *testing.T) {
@@ -78,12 +133,12 @@ func TestReconcileTargetIsTheEndpointTheClientUses(t *testing.T) {
 			require.Empty(t, opts.s3.endpoint, "the flag is unchanged")
 			endpoint, err := objects.Endpoint(context.Background())
 			require.NoError(t, err)
-			require.Equal(t, "http://elsewhere.example:9000", endpoint, "the SDK sends the client's requests to the override")
+			require.Equal(t, "http://bkt.elsewhere.example:9000", endpoint, "the SDK sends the client's requests to the override")
 			require.Equal(t, endpoint, redirected.Storage.Endpoint)
 			require.False(t, redirected.Storage.Same(plain.Storage), "the redirected run is not the plain run's target")
 
-			_, _, flagged := reconcileRun(t, "--s3-endpoint", "http://rustfs:9000")
-			require.Equal(t, "http://rustfs:9000", flagged.Storage.Endpoint, "--s3-endpoint wins over the environment")
+			_, _, flagged := reconcileRun(t, "--s3-endpoint", "http://rustfs:9000", "--s3-use-path")
+			require.Equal(t, "http://rustfs:9000/bkt", flagged.Storage.Endpoint, "--s3-endpoint wins over the environment")
 		})
 	}
 }
@@ -96,7 +151,7 @@ func TestS3ObjectsEndpointRefusesAClientItCannotName(t *testing.T) {
 	_, err := (&reconcile.S3Objects{Bucket: "bkt"}).Endpoint(context.Background())
 	require.ErrorContains(t, err, "destination cannot be told")
 	custom := s3.New(s3.Options{Region: "us-east-1", EndpointResolverV2: customResolver{}})
-	_, err = reconcile.ClientEndpoint(context.Background(), custom)
+	_, err = reconcile.ClientEndpoint(context.Background(), custom, "bkt")
 	require.ErrorContains(t, err, "destination cannot be told")
 }
 
@@ -141,7 +196,7 @@ func TestBindReconcileStorage(t *testing.T) {
 
 	out, err := bind("writers", "data")
 	require.NoError(t, err)
-	require.Contains(t, out, `bucket "writers", data prefix "data", at https://s3.us-east-1.amazonaws.com`)
+	require.Contains(t, out, `bucket "writers", data prefix "data", at https://writers.s3.us-east-1.amazonaws.com`)
 	_, err = bind("writers", "data/")
 	require.NoError(t, err, "the same target, spelled with a trailing slash")
 	_, err = bind("copy", "data")
@@ -153,5 +208,5 @@ func TestBindReconcileStorage(t *testing.T) {
 	b, ok, err := publication.ReadStorage(ctx, publication.DB(db), publication.TablesFor(entityMain))
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, publication.StorageTarget{Endpoint: "https://s3.us-east-1.amazonaws.com", Bucket: "writers", Prefix: "data"}, b.Target)
+	require.Equal(t, publication.StorageTarget{Endpoint: "https://writers.s3.us-east-1.amazonaws.com", Bucket: "writers", Prefix: "data"}, b.Target)
 }

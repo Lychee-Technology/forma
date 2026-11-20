@@ -121,9 +121,10 @@ type Reconciler struct {
 	Schemas SchemaEnumerator
 	Logger  *zap.Logger
 	Opts    Options
-	// Storage is the target this run lists and deletes in: the endpoint
-	// Objects's client sends its requests to, which a run whose Objects is
-	// a Destination checks, its bucket, and Layout's prefix. A run deletes
+	// Storage is the target this run lists and deletes in: the URL
+	// Objects's client sends the bucket's requests to, addressing included,
+	// which a run whose Objects is a Destination checks, its bucket, and
+	// Layout's prefix. A run deletes
 	// nothing unless it is the target the deployment is bound to
 	// (publication.BindStorage, checkStorage).
 	Storage publication.StorageTarget

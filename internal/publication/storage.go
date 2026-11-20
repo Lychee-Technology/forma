@@ -15,8 +15,9 @@ import (
 )
 
 // StorageTarget is where a deployment's writers stage their objects and
-// manifests: the S3 endpoint (empty for the AWS default), the bucket and
-// the data prefix of the V2 layout. The record and the history name keys,
+// manifests: the URL their S3 client sends the bucket's requests to, which
+// carries the endpoint and the bucket's addressing (path-style or
+// virtual-hosted), the bucket, and the data prefix of the V2 layout. The record and the history name keys,
 // never a bucket, and every V2 deployment builds the same keys for a schema
 // id, so neither they nor a manifest's bytes, which a copy of the bucket
 // carries as well, tell which bucket is this database's.

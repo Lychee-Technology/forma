@@ -29,15 +29,17 @@ const (
 		"recovery\"); garbage collection deletes nothing for the schema until the row names the record's epoch, and then for " +
 		"the retention grace after its stamp"
 	actionRecordBehindLifecycle = "treat the record as invalid: " + actionRecordInvalid
-	actionUnboundStorage        = "confirm that the S3 endpoint the run's client uses (--s3-endpoint, or without it the AWS SDK's " +
-		"endpoint configuration such as AWS_ENDPOINT_URL_S3, or --s3-region's AWS endpoint), --s3-bucket and --data-prefix are " +
-		"those this database's writers (cdc-flush, cdc-init, the compactor) publish into, taken from their own configuration " +
-		"and environment, then run manifest-reconcile --bind-storage with them once (docs/manifest-reconcile.md, \"Storage " +
-		"binding\"); garbage collection deletes and forgets nothing until the run's target is the bound one"
-	actionRebindStorage = "run manifest-reconcile so that its client uses the bound endpoint, with the bound --s3-bucket and " +
-		"--data-prefix: give the bound --s3-endpoint, and clear an endpoint override (AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, " +
-		"a profile's endpoint_url) the writers do not use. If the writers really moved to this target, delete the row of the " +
-		"storage binding table by hand and bind again (docs/manifest-reconcile.md, \"Storage binding\"); garbage collection " +
+	actionUnboundStorage        = "confirm that the URL the run's client sends the bucket's requests to (--s3-endpoint, or without " +
+		"it the AWS SDK's endpoint configuration such as AWS_ENDPOINT_URL_S3, or --s3-region's AWS endpoint, addressed " +
+		"path-style under --s3-use-path), --s3-bucket and --data-prefix are those this database's writers (cdc-flush, " +
+		"cdc-init, the compactor) publish into, taken from their own configuration and environment, then run " +
+		"manifest-reconcile --bind-storage with them once (docs/manifest-reconcile.md, \"Storage binding\"); garbage " +
+		"collection deletes and forgets nothing until the run's target is the bound one"
+	actionRebindStorage = "run manifest-reconcile so that its client sends the bucket's requests to the bound URL, with the " +
+		"bound --s3-bucket and --data-prefix: give the bound --s3-endpoint, give --s3-use-path exactly when the bound URL " +
+		"has the bucket as its path, and clear an endpoint override (AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, a profile's " +
+		"endpoint_url) the writers do not use. If the writers really moved to this target, delete the row of the storage " +
+		"binding table by hand and bind again (docs/manifest-reconcile.md, \"Storage binding\"); garbage collection " +
 		"deletes and forgets nothing under another target"
 	actionAwaitingInit      = "run cdc-init for the schema: readers fail closed until its first V2 generation publishes"
 	actionMissingGeneration = "re-initialize the schema with cdc-init, which publishes a new generation from PostgreSQL " +

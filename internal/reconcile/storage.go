@@ -20,9 +20,10 @@ import (
 // statement, kept in PostgreSQL apart from anything a bucket holds, of the
 // target the writers publish into; a run configured with any other endpoint,
 // bucket or prefix deletes and forgets nothing. The endpoint compared is
-// the one the run's object store sends its requests to when the store can
-// tell (Destination), so an environment that redirects the client while
-// the run's flags stay the same does not pass for the bound target.
+// the URL the run's object store sends the bucket's requests to when the
+// store can tell (Destination), so neither an environment that redirects
+// the client while the run's flags stay the same nor another addressing of
+// the same bucket at the same endpoint passes for the bound target.
 func (r *Reconciler) checkStorage(ctx context.Context) (*Finding, error) {
 	layout := publication.StorageTarget{Endpoint: r.Storage.Endpoint, Bucket: r.Storage.Bucket, Prefix: r.Layout.Prefix}
 	if !layout.Same(r.Storage) {

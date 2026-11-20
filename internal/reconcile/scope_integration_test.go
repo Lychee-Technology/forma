@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
@@ -235,17 +237,48 @@ type destinedStore struct {
 
 func (s destinedStore) Endpoint(context.Context) (string, error) { return s.endpoint, nil }
 
-// TestCollectorDeletesNothingWhenItsClientIsRedirected is R8-F1: the
-// deployment is bound to the AWS endpoint, and a run with the same bucket
-// and prefix, so unchanged flags, has a client that an environment override
-// (AWS_ENDPOINT_URL_S3) sends to another service. The run's target is the
-// endpoint that client uses, so neither the diagnosis's plan nor the
-// collection deletes or forgets anything; a run that claims the bound
-// endpoint while its store sends requests elsewhere fails; and with the
-// client at the bound endpoint, the same state is collected.
+// clientEndpoint answers where an S3 client with options o sends the
+// requests for the fixture's bucket (ClientEndpoint).
+func clientEndpoint(t *testing.T, f *fixture, o s3.Options) string {
+	t.Helper()
+	endpoint, err := ClientEndpoint(context.Background(), s3.New(o), f.target().Bucket)
+	require.NoError(t, err)
+	return endpoint
+}
+
+// TestCollectorDeletesNothingWhenItsClientIsRedirected: the deployment is
+// bound to where its writers' client sends the bucket's requests, and a run
+// with the same bucket and prefix, so unchanged flags, has a client sent
+// elsewhere. R8-F1: an environment override (AWS_ENDPOINT_URL_S3) sends a
+// client bound to the AWS endpoint to another service. R9-F1: at the same
+// custom endpoint, only the addressing changes, from path-style (the
+// endpoint's host, the bucket in the path) to virtual-hosted (a host named
+// after the bucket), which a gateway can route to another backend. The
+// run's target is where its client sends the requests, so neither the
+// diagnosis's plan nor the collection deletes or forgets anything; a run
+// that claims the bound target while its store sends requests elsewhere
+// fails; and with the client at the bound target, the same state is
+// collected.
 func TestCollectorDeletesNothingWhenItsClientIsRedirected(t *testing.T) {
-	const bound, redirected = "https://s3.us-east-1.amazonaws.com", "http://elsewhere.example:9000"
+	for name, clients := range map[string][2]s3.Options{
+		"endpoint override": {{Region: "us-east-1"}, {Region: "us-east-1", BaseEndpoint: aws.String("http://elsewhere.example:9000")}},
+		"addressing": {
+			{Region: "us-east-1", BaseEndpoint: aws.String("https://s3.storage.example"), UsePathStyle: true},
+			{Region: "us-east-1", BaseEndpoint: aws.String("https://s3.storage.example")},
+		},
+	} {
+		t.Run(name, func(t *testing.T) { requireRedirectedRunCollectsNothing(t, clients[0], clients[1]) })
+	}
+}
+
+// requireRedirectedRunCollectsNothing binds the deployment to where a
+// client of options writers sends the bucket's requests, and runs passes
+// through a store whose client, of options run, sends them elsewhere.
+func requireRedirectedRunCollectsNothing(t *testing.T, writers, run s3.Options) {
+	t.Helper()
 	f := newFixture(t)
+	bound, redirected := clientEndpoint(t, f, writers), clientEndpoint(t, f, run)
+	require.NotEqual(t, bound, redirected)
 	ctx := context.Background()
 	g3 := collectable(t, f)
 	f.exec(t, "DELETE FROM %s", f.tables.Storage)
@@ -257,7 +290,7 @@ func TestCollectorDeletesNothingWhenItsClientIsRedirected(t *testing.T) {
 	expired, err := publication.Expired(ctx, publication.DB(f.db), f.tables, testSchema, testOptions(true).RetentionGrace)
 	require.NoError(t, err)
 	require.Len(t, expired, 2, "generations 1 and 2 are past the grace: a collection would forget one")
-	run := func(gc bool, client, claimed string) (SchemaReport, error) {
+	pass := func(gc bool, client, claimed string) (SchemaReport, error) {
 		r := f.reconciler(testOptions(gc))
 		r.Objects = destinedStore{memStore: f.store, endpoint: client}
 		r.Storage = publication.StorageTarget{Endpoint: claimed, Bucket: target.Bucket, Prefix: target.Prefix}
@@ -269,7 +302,7 @@ func TestCollectorDeletesNothingWhenItsClientIsRedirected(t *testing.T) {
 	}
 
 	for _, gc := range []bool{false, true} {
-		rep, err := run(gc, redirected, redirected)
+		rep, err := pass(gc, redirected, redirected)
 		require.NoError(t, err)
 		require.NoError(t, rep.Err)
 		require.Equal(t, []FindingKind{UnboundStorage}, kinds(rep.Findings), "gc=%v", gc)
@@ -286,7 +319,7 @@ func TestCollectorDeletesNothingWhenItsClientIsRedirected(t *testing.T) {
 		}
 		require.Equal(t, before, f.store.keys(), "nothing is deleted, gc=%v", gc)
 
-		_, err = run(gc, redirected, bound)
+		_, err = pass(gc, redirected, bound)
 		require.ErrorContains(t, err, "does not name the endpoint", "a target the store's client does not use, gc=%v", gc)
 		require.Equal(t, before, f.store.keys(), "nothing is deleted, gc=%v", gc)
 	}
@@ -294,7 +327,7 @@ func TestCollectorDeletesNothingWhenItsClientIsRedirected(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, expired, after, "no history row is forgotten")
 
-	rep, err := run(true, bound+"/", bound)
+	rep, err := pass(true, bound+"/", bound)
 	require.NoError(t, err)
 	require.NoError(t, rep.Err)
 	require.Empty(t, rep.Findings)
