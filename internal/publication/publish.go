@@ -25,6 +25,15 @@ var ErrRecordMoved = errors.New("publication record moved")
 // not commit them (docs/publication-protocol-v2.md, "Garbage collection").
 var ErrStagingExpired = errors.New("publication staging expired")
 
+// ErrHistoryInconsistent reports that the current generation's history row is
+// missing, already stamped superseded/retired, or disagrees with the
+// publication record on epoch, parent, manifest, digest, lineage or token.
+// Replacing the head anyway would erase or prematurely expire reader
+// protection for an inventory a reader may still scan, so the transition fails
+// closed and rolls back. Recovery is fresh-epoch recovery (delete the record
+// row, run init-db, then cdc-init).
+var ErrHistoryInconsistent = errors.New("publication generation history disagrees with record")
+
 // Conflict reports whether err is a lost compare-and-set race, in either of
 // the forms the engines answer it with.
 func Conflict(err error) bool {
@@ -106,9 +115,33 @@ const casSQL = `UPDATE %s SET state = '` + string(Published) + `',
 	  AND $9 >= ` + sqlgen.ServerTimeMillisSQL + ` - $10 AND $9 > gc_horizon
 	RETURNING generation, parent_generation, updated_at`
 
-// supersedeSQL stamps the generation a transition replaces.
+// supersedeSQL stamps the generation a transition replaces only when its
+// history row matches the replaced record on every identity field and carries
+// neither a superseded_at nor a retired_at stamp.
 const supersedeSQL = `UPDATE %s SET superseded_at = ` + sqlgen.ServerTimeMillisSQL + `
-	WHERE schema_id = $1 AND generation = $2 AND superseded_at = 0`
+	WHERE schema_id = $1 AND generation = $2
+	  AND epoch = $3 AND parent_generation = $4
+	  AND manifest_key = $5 AND manifest_sha256 = $6
+	  AND lineage = $7 AND cas_token = $8
+	  AND superseded_at = 0 AND retired_at = 0`
+
+// supersede marks cur's history row superseded on r and requires exactly one
+// matching row. A missing row, an early stamp or any identity disagreement
+// fails closed with ErrHistoryInconsistent so the transaction rolls back and
+// neither inventory loses reader protection.
+func supersede(ctx context.Context, r runner, t Tables, cur Record) error {
+	n, err := r.exec(ctx, fmt.Sprintf(supersedeSQL, t.Generation),
+		cur.SchemaID, cur.Generation, cur.Epoch, cur.ParentGeneration,
+		cur.ManifestKey, cur.ManifestSHA256, cur.Lineage, cur.Token)
+	if err != nil {
+		return fmt.Errorf("supersede schema %d generation %d: %w", cur.SchemaID, cur.Generation, err)
+	}
+	if n != 1 {
+		return fmt.Errorf("supersede schema %d generation %d (epoch %d, manifest %s): expected 1 matching unsuperseded history row, updated %d: %w",
+			cur.SchemaID, cur.Generation, cur.Epoch, cur.ManifestKey, n, ErrHistoryInconsistent)
+	}
+	return nil
+}
 
 const insertGenerationSQL = `INSERT INTO %s (schema_id, generation, epoch, kind, parent_generation,
 		manifest_key, manifest_sha256, lineage, cas_token, committed_at)
@@ -145,8 +178,8 @@ func Publish(ctx context.Context, tx Tx, t Tables, cur Record, next Next) (Recor
 	out.ManifestKey, out.ManifestSHA256 = next.ManifestKey, next.ManifestSHA256
 	out.Lineage, out.Token = next.Lineage, next.Token
 	if cur.State == Published {
-		if _, err := r.exec(ctx, fmt.Sprintf(supersedeSQL, t.Generation), cur.SchemaID, cur.Generation); err != nil {
-			return Record{}, fmt.Errorf("supersede schema %d generation %d: %w", cur.SchemaID, cur.Generation, err)
+		if err := supersede(ctx, r, t, cur); err != nil {
+			return Record{}, err
 		}
 	}
 	if _, err := r.exec(ctx, fmt.Sprintf(insertGenerationSQL, t.Generation),

@@ -127,3 +127,21 @@ func TestLayoutHoldsOnlyManifestsUnderItsCanonicalPrefix(t *testing.T) {
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrForeignPrefix, "an unreadable key is not a prefix verdict")
 }
+
+func TestLayoutSchemaPrefixAndOwns(t *testing.T) {
+	l := Layout{Prefix: "data/"}
+	require.Equal(t, "data/100/", l.SchemaPrefix(100))
+
+	manifestKey := l.ManifestKey(100, 2, 7, testToken)
+	parquetKey, err := l.NewParquetKey(100, 2, TierBase)
+	require.NoError(t, err)
+
+	require.True(t, l.Owns(100, manifestKey))
+	require.True(t, l.Owns(100, parquetKey))
+	require.False(t, l.Owns(101, manifestKey), "other schema")
+	require.False(t, l.Owns(101, parquetKey), "other schema")
+	require.False(t, Layout{Prefix: "other"}.Owns(100, manifestKey), "other prefix")
+	require.False(t, l.Owns(100, "data/100/manifest.json"), "V1 manifest")
+	require.False(t, l.Owns(100, "data/100/_tmp/abc.parquet"), "V1 tmp object")
+	require.False(t, l.Owns(100, "data/100/e2/base/not-a-uuid.parquet"), "malformed key")
+}

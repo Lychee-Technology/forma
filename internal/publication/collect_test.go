@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"testing"
 	"time"
 
@@ -30,8 +31,10 @@ func collection(t *testing.T) Collection {
 	c.Listed = []Object{
 		{Key: "m1", LastModified: 1}, {Key: "m2", LastModified: 1}, {Key: "m3", LastModified: 1},
 		{Key: "only1", LastModified: 1}, {Key: "shared", LastModified: 1}, {Key: "only2", LastModified: 1},
-		{Key: "orphan", LastModified: 8_999},
-		{Key: "staged", LastModified: 9_000},
+		// Horizon=10_000, ClockMargin=1s, LastModifiedPrecision=1s => cutoff=8_000.
+		{Key: "orphan", LastModified: 7_999},
+		{Key: "staged_at_cutoff", LastModified: 8_000},
+		{Key: "staged", LastModified: 8_999},
 	}
 	return c
 }
@@ -197,4 +200,28 @@ func TestPlanCollectionStopsOnAnInvalidManifest(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestOrphanCutoffPrecisionAndOverflow(t *testing.T) {
+	require.Equal(t, int64(8_000), OrphanCutoff(10_000, time.Second))
+	require.Equal(t, int64(7_999), OrphanCutoff(10_000, time.Second+time.Nanosecond), "sub-ms margin rounds up")
+	require.Equal(t, int64(8_999), OrphanCutoff(10_000, time.Nanosecond), "1ns margin rounds up to 1ms plus 1s precision")
+	require.Equal(t, int64(math.MinInt64), OrphanCutoff(10_000, -time.Second))
+	require.Equal(t, int64(math.MinInt64), OrphanCutoff(math.MinInt64+500, time.Second))
+}
+
+func TestPlanCollectionRejectsNegativeMarginAndKeepsUnknownAge(t *testing.T) {
+	c := collection(t)
+	c.ClockMargin = -time.Millisecond
+	_, err := PlanCollection(c)
+	require.Error(t, err)
+
+	c = collection(t)
+	c.Listed = append(c.Listed,
+		Object{Key: "zero_ts", LastModified: 0},
+		Object{Key: "neg_ts", LastModified: -62135596800000},
+	)
+	plan, err := PlanCollection(c)
+	require.NoError(t, err)
+	require.Equal(t, []string{"only1", "orphan"}, plan.Objects, "objects with missing or non-positive LastModified are never deleted as orphans")
 }

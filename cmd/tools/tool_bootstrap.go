@@ -54,14 +54,12 @@ func buildToolS3Client(ctx context.Context, region, endpoint string, usePath boo
 		return nil, err
 	}
 
-	if endpoint != "" {
-		return s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+	return s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		if endpoint != "" {
 			o.BaseEndpoint = &endpoint
-			o.UsePathStyle = usePath
-		}), nil
-	}
-
-	return s3.NewFromConfig(awsCfg), nil
+		}
+		o.UsePathStyle = usePath
+	}), nil
 }
 
 // toolCDCObjectClientFn builds the client cdc-flush and cdc-init stage their

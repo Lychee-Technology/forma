@@ -101,11 +101,23 @@ func InitializeAfterLoss(ctx context.Context, tx Tx, t Tables, schemaID int16, h
 	if n != 1 {
 		return Record{}, false, nil
 	}
-	if err := raiseEpoch(ctx, r, t, schemaID, rec.Epoch); err != nil {
+	if err := raiseEpochAfterLoss(ctx, r, t, schemaID, rec.Epoch); err != nil {
 		return Record{}, false, fmt.Errorf("recover the %s record of schema %d: %w", state, schemaID, err)
+	}
+	if _, err := r.exec(ctx, fmt.Sprintf(supersedeLostSQL, t.Generation), schemaID); err != nil {
+		return Record{}, false, fmt.Errorf("supersede the former head of schema %d after loss: %w", schemaID, err)
 	}
 	return rec, true, nil
 }
+
+// supersedeLostSQL stamps every generation of the schema that nothing
+// superseded: the former head the lost record named, which the recovered
+// record does not name. Without it no later transition would ever supersede
+// that row and GC would retain it forever. Clearing retired_at discards any
+// bogus stamp on an unsuperseded row so GC retires it only after seeing the
+// recovery committed.
+const supersedeLostSQL = `UPDATE %s SET superseded_at = ` + sqlgen.ServerTimeMillisSQL + `, retired_at = 0
+	WHERE schema_id = $1 AND superseded_at = 0`
 
 // holdDroppedSQL locks a dropped record while it is still DROPPED at the
 // epoch. FOR UPDATE, as holdSQL, so an Activate waits for the holder.

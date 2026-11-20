@@ -235,9 +235,14 @@ func (f *fixture) forget(t *testing.T, generation int64) {
 	ok, err := Retire(ctx, DB(f.db), f.t, 100, generation)
 	require.NoError(t, err)
 	require.True(t, ok, "generation %d is superseded and not yet retired", generation)
-	ok, err = Forget(ctx, DB(f.db), f.t, 100, generation, 0)
+	var forgot bool
+	err = f.inTx(ctx, func(tx Tx) error {
+		var ferr error
+		forgot, ferr = Forget(ctx, tx, f.t, 100, generation, 0)
+		return ferr
+	})
 	require.NoError(t, err)
-	require.True(t, ok, "generation %d is retired, so a zero grace expires it", generation)
+	require.True(t, forgot, "generation %d is retired, so a zero grace expires it", generation)
 }
 
 // write inserts n unflushed entries and answers them with their versions.

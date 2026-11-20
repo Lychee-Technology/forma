@@ -41,12 +41,13 @@ const (
 	RecordTableSuffix     = "_publication"
 	GenerationTableSuffix = "_publication_generation"
 	EpochTableSuffix      = "_publication_epoch"
+	StorageTableSuffix    = "_publication_storage"
 )
 
-// Tables names the record, generation and epoch tables of one deployment,
-// each sanitized for a statement.
+// Tables names the record, generation, epoch and storage-binding tables of one
+// deployment, each sanitized for a statement.
 type Tables struct {
-	Record, Generation, Epoch string
+	Record, Generation, Epoch, Storage string
 }
 
 // TablesFor names the publication tables of entityMain. A schema-qualified
@@ -57,6 +58,7 @@ func TablesFor(entityMain string) Tables {
 		Record:     sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, RecordTableSuffix)),
 		Generation: sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, GenerationTableSuffix)),
 		Epoch:      sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, EpochTableSuffix)),
+		Storage:    sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, StorageTableSuffix)),
 	}
 }
 
@@ -129,11 +131,23 @@ const generationDDL = `CREATE TABLE IF NOT EXISTS %s (
 // carried before. A lost record is recovered above it (recovery.go): no
 // process can hold a pin on that epoch. The row is never deleted.
 const epochDDL = `CREATE TABLE IF NOT EXISTS %s (
-		schema_id  SMALLINT NOT NULL,
-		epoch      BIGINT   NOT NULL,
-		updated_at BIGINT   NOT NULL,
+		schema_id            SMALLINT NOT NULL,
+		epoch                BIGINT   NOT NULL,
+		updated_at           BIGINT   NOT NULL,
+		forgotten_generation BIGINT,
+		recovery_epoch       BIGINT,
+		recovery_retired_at  BIGINT,
 		PRIMARY KEY (schema_id)
 	)`
+
+// Upgrade statements for existing _publication_epoch tables created before
+// forgotten_generation, recovery_epoch and recovery_retired_at existed.
+// Nullable BIGINT columns keep each ALTER metadata-only and DSQL-safe.
+const (
+	epochForgottenDDL       = `ALTER TABLE %s ADD COLUMN IF NOT EXISTS forgotten_generation BIGINT`
+	epochRecoveryEpochDDL   = `ALTER TABLE %s ADD COLUMN IF NOT EXISTS recovery_epoch BIGINT`
+	epochRecoveryRetiredDDL = `ALTER TABLE %s ADD COLUMN IF NOT EXISTS recovery_retired_at BIGINT`
+)
 
 // Statements answers the publication tables' DDL for entityMain on engine,
 // one statement each with no secondary index, so each is one DDL transaction
@@ -145,5 +159,8 @@ func Statements(engine forma.DatabaseEngine, entityMain string) []string {
 		textcollation.ForEngine(engine, fmt.Sprintf(recordDDL, t.Record)),
 		textcollation.ForEngine(engine, fmt.Sprintf(generationDDL, t.Generation)),
 		textcollation.ForEngine(engine, fmt.Sprintf(epochDDL, t.Epoch)),
+		fmt.Sprintf(epochForgottenDDL, t.Epoch),
+		fmt.Sprintf(epochRecoveryEpochDDL, t.Epoch),
+		fmt.Sprintf(epochRecoveryRetiredDDL, t.Epoch),
 	}
 }

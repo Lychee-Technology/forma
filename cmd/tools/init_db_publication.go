@@ -40,6 +40,18 @@ func publicationDDL(opts initDBOptions) []tableDDL {
 			announce:  fmt.Sprintf("Created publication epoch table: %s\n", epoch),
 			failure:   "ensure publication epoch table",
 		},
+		{
+			statement: stmts[3],
+			failure:   "ensure publication epoch forgotten_generation column",
+		},
+		{
+			statement: stmts[4],
+			failure:   "ensure publication epoch recovery_epoch column",
+		},
+		{
+			statement: stmts[5],
+			failure:   "ensure publication epoch recovery_retired_at column",
+		},
 	}
 }
 

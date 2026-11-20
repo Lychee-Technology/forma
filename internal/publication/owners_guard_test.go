@@ -50,7 +50,9 @@ var transitions = map[string]map[string]bool{
 	"Reset":                  {"cmd/tools/drop_schema.go": true},
 	"RaiseHorizon":           {},
 	"Retire":                 {},
+	"RetireRecovery":         {},
 	"Forget":                 {},
+	"BindStorage":            {},
 }
 
 // TestOnlyTheProtocolOwnersMoveAPublicationRecord is a static check over
