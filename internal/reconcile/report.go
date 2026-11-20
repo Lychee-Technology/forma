@@ -51,8 +51,9 @@ const (
 	// them was restored or written outside the protocol, and the row's
 	// stamp does not fence the record's last recovery.
 	StaleLifecycleEpoch FindingKind = "lifecycle_epoch_mismatch"
-	// UnboundStorage: the run's endpoint, bucket and prefix are not the
-	// storage target the deployment is bound to, or it is bound to none.
+	// UnboundStorage: the endpoint the run's client sends its requests to,
+	// its bucket and its prefix are not the storage target the deployment
+	// is bound to, or it is bound to none.
 	// Nothing a bucket holds proves it is the writers' (a copy verifies as
 	// well), so garbage collection deletes nothing there.
 	UnboundStorage FindingKind = "storage_not_bound"

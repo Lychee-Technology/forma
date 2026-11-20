@@ -50,8 +50,14 @@ func (e *Env) reconciler(t *testing.T, schema SchemaRef, opts reconcile.Options)
 	}
 	tables := publication.TablesFor(e.CDC.EntityMainTable)
 	// The operator's one-time binding (manifest-reconcile --bind-storage):
-	// the Env's writers publish into its bucket under its data prefix.
-	target := publication.StorageTarget{Bucket: e.Cluster.Bucket, Prefix: e.manifestLayout().Prefix}
+	// the Env's writers publish into its bucket under its data prefix, at
+	// the endpoint its S3 client sends requests to.
+	objects := &reconcile.S3Objects{Client: e.Cluster.S3, Bucket: e.Cluster.Bucket}
+	endpoint, err := objects.Endpoint(t.Context())
+	if err != nil {
+		t.Fatalf("tell the S3 endpoint for manifest-reconcile: %v", err)
+	}
+	target := publication.StorageTarget{Endpoint: endpoint, Bucket: e.Cluster.Bucket, Prefix: e.manifestLayout().Prefix}
 	if _, err := db.Exec(publication.StorageStatement(e.CDC.Engine, e.CDC.EntityMainTable)); err != nil {
 		t.Fatalf("create the storage binding table for manifest-reconcile: %v", err)
 	}
@@ -62,7 +68,7 @@ func (e *Env) reconciler(t *testing.T, schema SchemaRef, opts reconcile.Options)
 		DB:      db,
 		Tables:  tables,
 		Layout:  e.manifestLayout(),
-		Objects: &reconcile.S3Objects{Client: e.Cluster.S3, Bucket: e.Cluster.Bucket},
+		Objects: objects,
 		Locker:  locker,
 		Schemas: &reconcile.Schemas{DB: db, Registry: e.Tables.SchemaRegistry, Tables: tables, Only: schema.ID},
 		Logger:  e.logger,

@@ -64,6 +64,9 @@ type reconcileOptions struct {
 	// bindStorage binds the deployment to the configured storage target
 	// and runs nothing else.
 	bindStorage bool
+	// endpoint is the endpoint the run's S3 client sends its requests to,
+	// set once the client is built (buildReconcileObjects).
+	endpoint string
 }
 
 // parseReconcileFlags parses and validates the subcommand flags. A nil
@@ -95,8 +98,9 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	gc := fs.Bool("gc", false, "Collect garbage: raise the horizon, retire superseded generations, delete what no reader can still scan. "+
 		"Without it the run is a read-only diagnosis that reports what a collection would delete")
 	fs.BoolVar(&opts.bindStorage, "bind-storage", false,
-		"Bind this database's deployment to --s3-endpoint, --s3-bucket and --data-prefix, the target its writers publish into, "+
-			"and exit. Garbage collection deletes nothing under any other target. Run it once, with the writers' own values; "+
+		"Bind this database's deployment to the S3 endpoint the run's client uses (--s3-endpoint, or the AWS SDK's "+
+			"endpoint configuration such as AWS_ENDPOINT_URL_S3 without it, or the region's AWS endpoint), --s3-bucket and "+
+			"--data-prefix, the target its writers publish into, and exit. Garbage collection deletes nothing under any other target. Run it once, with the writers' own values and environment; "+
 			"an existing binding to another target is kept and the run fails")
 	repair := fs.Bool("repair", false, "Removed under Protocol V2; refused. Re-initialize with cdc-init instead")
 	fs.BoolVar(&opts.run.VerifyChecksums, "verify-checksums", false,
@@ -191,6 +195,12 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 	}
 	defer func() { _ = logger.Sync() }()
 
+	// The client is built before the database opens so that a client whose
+	// destination cannot be told fails before any connection.
+	objects, err := buildReconcileObjects(ctx, opts)
+	if err != nil {
+		return err
+	}
 	db, err := openReconcileDBFn(ctx, opts.db, logger)
 	if err != nil {
 		return fmt.Errorf("open the publication database: %w", err)
@@ -199,16 +209,12 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 	if opts.bindStorage {
 		return bindReconcileStorage(ctx, db, opts, os.Stdout)
 	}
-	s3Client, err := buildToolS3Client(ctx, opts.s3.region, opts.s3.endpoint, opts.s3.usePath)
-	if err != nil {
-		return fmt.Errorf("load AWS config: %w", err)
-	}
-	r, err := newReconciler(opts, &reconcile.S3Objects{Client: s3Client, Bucket: opts.s3.bucket}, db, logger)
+	r, err := newReconciler(opts, objects, db, logger)
 	if err != nil {
 		return fmt.Errorf("build reconciler: %w", err)
 	}
 	logger.Info("starting manifest reconcile",
-		zap.String("bucket", opts.s3.bucket), zap.String("data_prefix", opts.dataPrefix),
+		zap.String("endpoint", opts.endpoint), zap.String("bucket", opts.s3.bucket), zap.String("data_prefix", opts.dataPrefix),
 		zap.Bool("gc", opts.run.GC), zap.Bool("verify_checksums", opts.run.VerifyChecksums),
 		zap.Duration("retention_grace", opts.run.RetentionGrace), zap.Duration("orphan_age", opts.run.OrphanAge))
 	report, err := r.Run(ctx)
@@ -254,9 +260,31 @@ func newReconciler(opts *reconcileOptions, objects reconcile.ObjectStore, db *sq
 	return r, nil
 }
 
-// storageTarget is the target the run lists and deletes in.
+// buildReconcileObjects builds the S3 client the run lists, reads and
+// deletes through, and records in opts the endpoint that client sends its
+// requests to (reconcile.ClientEndpoint): the one the run is bound by and
+// checked against, which the SDK may take from the environment
+// (AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, a profile's endpoint_url) when
+// --s3-endpoint is not given.
+func buildReconcileObjects(ctx context.Context, opts *reconcileOptions) (*reconcile.S3Objects, error) {
+	client, err := buildToolS3Client(ctx, opts.s3.region, opts.s3.endpoint, opts.s3.usePath)
+	if err != nil {
+		return nil, fmt.Errorf("load AWS config: %w", err)
+	}
+	objects := &reconcile.S3Objects{Client: client, Bucket: opts.s3.bucket}
+	endpoint, err := objects.Endpoint(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("tell the S3 endpoint the run sends its requests to: %w", err)
+	}
+	opts.endpoint = endpoint
+	return objects, nil
+}
+
+// storageTarget is the target the run lists and deletes in: the endpoint
+// its S3 client sends requests to (buildReconcileObjects), not the
+// --s3-endpoint flag, which an empty value leaves to the environment.
 func (o *reconcileOptions) storageTarget() publication.StorageTarget {
-	return publication.StorageTarget{Endpoint: o.s3.endpoint, Bucket: o.s3.bucket, Prefix: o.dataPrefix}
+	return publication.StorageTarget{Endpoint: o.endpoint, Bucket: o.s3.bucket, Prefix: o.dataPrefix}
 }
 
 // errStorageBoundElsewhere refuses --bind-storage on a deployment bound to

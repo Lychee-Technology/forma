@@ -29,13 +29,16 @@ const (
 		"recovery\"); garbage collection deletes nothing for the schema until the row names the record's epoch, and then for " +
 		"the retention grace after its stamp"
 	actionRecordBehindLifecycle = "treat the record as invalid: " + actionRecordInvalid
-	actionUnboundStorage        = "confirm that --s3-endpoint, --s3-bucket and --data-prefix are those this database's writers " +
-		"(cdc-flush, cdc-init, the compactor) publish into, taken from their own configuration, then run manifest-reconcile " +
-		"--bind-storage with them once (docs/manifest-reconcile.md, \"Storage binding\"); garbage collection deletes and " +
-		"forgets nothing until the run's target is the bound one"
-	actionRebindStorage = "run manifest-reconcile with the bound --s3-endpoint, --s3-bucket and --data-prefix. If the writers " +
-		"really moved to this target, delete the row of the storage binding table by hand and bind again " +
-		"(docs/manifest-reconcile.md, \"Storage binding\"); garbage collection deletes and forgets nothing under another target"
+	actionUnboundStorage        = "confirm that the S3 endpoint the run's client uses (--s3-endpoint, or without it the AWS SDK's " +
+		"endpoint configuration such as AWS_ENDPOINT_URL_S3, or --s3-region's AWS endpoint), --s3-bucket and --data-prefix are " +
+		"those this database's writers (cdc-flush, cdc-init, the compactor) publish into, taken from their own configuration " +
+		"and environment, then run manifest-reconcile --bind-storage with them once (docs/manifest-reconcile.md, \"Storage " +
+		"binding\"); garbage collection deletes and forgets nothing until the run's target is the bound one"
+	actionRebindStorage = "run manifest-reconcile so that its client uses the bound endpoint, with the bound --s3-bucket and " +
+		"--data-prefix: give the bound --s3-endpoint, and clear an endpoint override (AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, " +
+		"a profile's endpoint_url) the writers do not use. If the writers really moved to this target, delete the row of the " +
+		"storage binding table by hand and bind again (docs/manifest-reconcile.md, \"Storage binding\"); garbage collection " +
+		"deletes and forgets nothing under another target"
 	actionAwaitingInit      = "run cdc-init for the schema: readers fail closed until its first V2 generation publishes"
 	actionMissingGeneration = "re-initialize the schema with cdc-init, which publishes a new generation from PostgreSQL " +
 		"(the lost manifest cannot be rebuilt from S3); garbage collection deletes nothing for the schema until " +

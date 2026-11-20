@@ -225,3 +225,79 @@ func TestARunWhoseTargetIsNotItsLayoutFails(t *testing.T) {
 	_, err := r.Run(context.Background())
 	require.ErrorContains(t, err, "is not under its layout's prefix")
 }
+
+// destinedStore is a memStore that tells where its requests go, as an
+// S3Objects tells from its client (Destination).
+type destinedStore struct {
+	*memStore
+	endpoint string
+}
+
+func (s destinedStore) Endpoint(context.Context) (string, error) { return s.endpoint, nil }
+
+// TestCollectorDeletesNothingWhenItsClientIsRedirected is R8-F1: the
+// deployment is bound to the AWS endpoint, and a run with the same bucket
+// and prefix, so unchanged flags, has a client that an environment override
+// (AWS_ENDPOINT_URL_S3) sends to another service. The run's target is the
+// endpoint that client uses, so neither the diagnosis's plan nor the
+// collection deletes or forgets anything; a run that claims the bound
+// endpoint while its store sends requests elsewhere fails; and with the
+// client at the bound endpoint, the same state is collected.
+func TestCollectorDeletesNothingWhenItsClientIsRedirected(t *testing.T) {
+	const bound, redirected = "https://s3.us-east-1.amazonaws.com", "http://elsewhere.example:9000"
+	f := newFixture(t)
+	ctx := context.Background()
+	g3 := collectable(t, f)
+	f.exec(t, "DELETE FROM %s", f.tables.Storage)
+	target := f.target()
+	target.Endpoint = bound
+	_, err := publication.BindStorage(ctx, publication.DB(f.db), f.tables, target)
+	require.NoError(t, err)
+	before := f.store.keys()
+	expired, err := publication.Expired(ctx, publication.DB(f.db), f.tables, testSchema, testOptions(true).RetentionGrace)
+	require.NoError(t, err)
+	require.Len(t, expired, 2, "generations 1 and 2 are past the grace: a collection would forget one")
+	run := func(gc bool, client, claimed string) (SchemaReport, error) {
+		r := f.reconciler(testOptions(gc))
+		r.Objects = destinedStore{memStore: f.store, endpoint: client}
+		r.Storage = publication.StorageTarget{Endpoint: claimed, Bucket: target.Bucket, Prefix: target.Prefix}
+		report, err := r.Run(ctx)
+		if err != nil {
+			return SchemaReport{}, err
+		}
+		return report.Schemas[0], nil
+	}
+
+	for _, gc := range []bool{false, true} {
+		rep, err := run(gc, redirected, redirected)
+		require.NoError(t, err)
+		require.NoError(t, rep.Err)
+		require.Equal(t, []FindingKind{UnboundStorage}, kinds(rep.Findings), "gc=%v", gc)
+		require.Equal(t, actionRebindStorage, rep.Findings[0].Action)
+		require.Contains(t, rep.Findings[0].Detail, bound)
+		require.Contains(t, rep.Findings[0].Detail, redirected)
+		require.Empty(t, rep.Plan.Objects, "gc=%v", gc)
+		require.Empty(t, rep.Plan.Manifests, "gc=%v", gc)
+		require.Empty(t, rep.Plan.Forget, "gc=%v", gc)
+		if gc {
+			require.Empty(t, rep.Collected.Objects)
+			require.Empty(t, rep.Collected.Manifests)
+			require.Empty(t, rep.Collected.Forgotten)
+		}
+		require.Equal(t, before, f.store.keys(), "nothing is deleted, gc=%v", gc)
+
+		_, err = run(gc, redirected, bound)
+		require.ErrorContains(t, err, "does not name the endpoint", "a target the store's client does not use, gc=%v", gc)
+		require.Equal(t, before, f.store.keys(), "nothing is deleted, gc=%v", gc)
+	}
+	after, err := publication.Expired(ctx, publication.DB(f.db), f.tables, testSchema, testOptions(true).RetentionGrace)
+	require.NoError(t, err)
+	require.Equal(t, expired, after, "no history row is forgotten")
+
+	rep, err := run(true, bound+"/", bound)
+	require.NoError(t, err)
+	require.NoError(t, rep.Err)
+	require.Empty(t, rep.Findings)
+	require.Equal(t, []int64{1}, rep.Collected.Forgotten, "at the bound endpoint the collection runs")
+	require.Equal(t, f.keysOf(g3), f.store.keys())
+}

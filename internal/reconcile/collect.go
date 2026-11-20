@@ -17,8 +17,8 @@ var errPlanTouchesProtected = errors.New("the collection plan deletes a protecte
 // nothing stops it. A blocking finding stops it, and so does a pass without
 // a record, one inside the retention grace after the schema's lifecycle
 // epoch moved (publication.ReadLifecycleFence), a diagnosis a collection
-// ran beside, or a plan that deletes from S3 when nothing binds the bucket
-// and prefix to the schema (unbound).
+// ran beside, or a plan that deletes from S3 when the schema has nothing of
+// its own in the bucket (unbound).
 func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 	if p.record != nil {
 		rep.State, rep.Epoch = p.record.State, p.record.Epoch
@@ -91,13 +91,18 @@ func keepFloor(forget []int64) []int64 {
 
 // unbound refuses a plan that deletes from S3 when no manifest of the
 // schema's generation history verified in the bucket under the layout's
-// prefix (#463). Such a manifest's bytes match the digest this database
-// committed, which binds the bucket and prefix to this deployment's schema;
-// the key layout alone does not, and every V2 deployment builds the same keys
-// for a schema id. Without one (an UNPUBLISHED schema, or one whose every
-// manifest was collected) a collector pointed at another deployment's bucket
-// or prefix would delete that deployment's live objects as old orphans. It
-// answers why, empty when the plan may run.
+// prefix (#463). It is a second guard behind the storage binding
+// (checkStorage), never a proof of which bucket this is: a verified
+// manifest shows only that the bucket holds this database's committed
+// inventory, and a copy of the bucket holds that too, so only the binding,
+// compared with the endpoint the run's client uses, the bucket and the
+// prefix, tells the writers' storage from a copy. What the guard adds is
+// for a schema with nothing of its own in the bucket (an UNPUBLISHED
+// schema, or one whose every manifest was collected): every V2 deployment
+// builds the same keys for a schema id, so every key under the prefix could
+// be another deployment's live object, and such a plan is kept until a
+// generation of the schema publishes. It answers why, empty when the plan
+// may run.
 func (r *Reconciler) unbound(p *pass, plan publication.Plan) string {
 	if len(p.verified) > 0 || len(plan.Objects)+len(plan.Manifests) == 0 {
 		return ""
@@ -106,7 +111,7 @@ func (r *Reconciler) unbound(p *pass, plan publication.Plan) string {
 		"published no generation, or every manifest it published was collected), so nothing proves the listed keys are "+
 		"this deployment's rather than another's that builds the same keys for schema %d; the %d object(s) and %d "+
 		"manifest(s) the plan would delete are kept until a generation of the schema publishes. Before removing any "+
-		"by hand, check that --s3-bucket and --data-prefix are the writers'",
+		"by hand, check that the run's S3 endpoint, --s3-bucket and --data-prefix are the writers'",
 		r.Layout.Prefix, p.id, len(plan.Objects), len(plan.Manifests))
 }
 

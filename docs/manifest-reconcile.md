@@ -189,16 +189,32 @@ while this database still names N. A collector of this database misdirected to
 the copy would verify N, and N+1's manifest and the objects only it lists would
 look like old orphans to it.
 
-So the deployment is bound to one storage target, the S3 endpoint (`--s3-endpoint`,
-empty for AWS), the bucket and the data prefix, in the
-`<entity_main>_publication_storage` table. Nothing in a bucket can bind it. The
-binding is the operator's statement of where the writers publish, made once:
+So the deployment is bound to one storage target, the S3 endpoint, the bucket
+and the data prefix, in the `<entity_main>_publication_storage` table. Nothing
+in a bucket can bind it. The binding is the operator's statement of where the
+writers publish, made once:
 
 ```bash
-# With the writers' own --s3-endpoint, --s3-bucket and --data-prefix (cdc-flush's
-# and cdc-init's -s3-prefix), copied from their configuration.
+# With the writers' own --s3-endpoint, --s3-region, --s3-bucket and --data-prefix
+# (cdc-flush's and cdc-init's -s3-prefix), copied from their configuration, and
+# in an environment that resolves the S3 endpoint as theirs does.
 forma-tools manifest-reconcile --s3-bucket B --data-prefix data --schema-registry-table schema_registry --bind-storage
 ```
+
+The endpoint bound and compared is the one the run's S3 client sends its
+requests to, not the `--s3-endpoint` flag. Without the flag, the AWS SDK takes
+an endpoint from its configuration (`AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`,
+a profile's `endpoint_url` or `services` section), so a run whose flags are
+unchanged can still be sent to another service holding a bucket of the same
+name. The run therefore resolves the endpoint from the client it lists and
+deletes through: `--s3-endpoint` when given, otherwise the SDK's configured
+endpoint, otherwise the AWS endpoint of `--s3-region` (for example
+`https://s3.us-east-1.amazonaws.com`), which names the partition a bucket name
+is unique in. FIPS, dual-stack and accelerated endpoints reach the same bucket
+and are not part of it. `--bind-storage` prints the target it bound, endpoint
+included; a run whose resolved endpoint differs reports `storage_not_bound`
+and deletes nothing. A client whose endpoint a custom resolver chooses cannot be
+named by a binding, and the run fails (exit 1) before it connects.
 
 It creates the table if needed (as its own DDL statement, as Aurora DSQL
 requires), writes the binding unless one exists, and exits. A binding to
@@ -210,9 +226,9 @@ generations but deletes and forgets nothing, and the diagnosis shows no plan.
 If the writers really moved to another target, delete the table's row by hand
 once they publish there, and bind again.
 
-The binding proves only that the run is configured with the target the
+The binding proves only that the run's client is sent to the target the
 operator declared. It cannot catch a binding made with the wrong values, so take
-them from the writers' configuration, not from the collector's.
+them from the writers' configuration and environment, not from the collector's.
 
 The verified-manifest check remains as a second guard. A collector bound and
 pointed at the wrong prefix finds a published schema's current manifest missing
@@ -260,7 +276,7 @@ safe action. Any finding makes the run exit 2.
 | --- | --- | --- | --- |
 | `no_record` | The schema is registered but has no publication record. Readers and writers fail closed. | refused | Run `init-db`: it recovers a lost record at a fresh epoch. |
 | `record_invalid` | The record row is one no transition writes. Readers, writers and the collector fail closed on it. | refused | Recover at a fresh epoch: delete the row, run `init-db`, then `cdc-init` (see "An invalid record" below). Never restore an older copy of the row. |
-| `storage_not_bound` | The run's `--s3-endpoint`, `--s3-bucket` and `--data-prefix` are not the deployment's bound storage target, or it has none (see "Storage binding"). | refused | Not bound: run `--bind-storage` once with the writers' values. Bound elsewhere: run with the bound values; if the writers moved, delete the binding row by hand and bind again. |
+| `storage_not_bound` | The S3 endpoint the run's client uses (from `--s3-endpoint`, the SDK's endpoint configuration or `--s3-region`), its `--s3-bucket` and its `--data-prefix` are not the deployment's bound storage target, or it has none (see "Storage binding"). | refused | Not bound: run `--bind-storage` once with the writers' values and environment. Bound elsewhere: run with the bound values, and clear an endpoint override (`AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, a profile's `endpoint_url`) the writers do not use; if the writers moved, delete the binding row by hand and bind again. |
 | `missing_lifecycle_epoch` | The schema has a record but no lifecycle epoch row, so nothing shows when it was last recovered. | refused | Write the row back at the record's epoch, stamped with the database time: `INSERT INTO <entity_main>_publication_epoch (schema_id, epoch, updated_at) VALUES (<id>, <epoch>, <now in epoch ms>)`. Collection resumes G after the stamp. |
 | `lifecycle_epoch_mismatch` | The lifecycle epoch row names another epoch than the record: one of them was restored or written outside the protocol, and the row's stamp does not show when the record was last recovered. | refused | Row below the record: write it back at the record's epoch with the database time, `UPDATE <entity_main>_publication_epoch SET epoch = <epoch>, updated_at = <now in epoch ms> WHERE schema_id = <id>`, never a backup copy; collection resumes G after the stamp. Row above the record: the record went back, so treat it as `record_invalid`. |
 | `awaiting_init` | The V2 cutover left the schema for its first `cdc-init`. Readers fail closed. | runs | Run `cdc-init` for the schema. |
