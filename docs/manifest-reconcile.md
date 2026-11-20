@@ -142,7 +142,11 @@ only the current generation committed wrongly is reported although an older
 entry for the same key matches. It is the only
 check of an object's bytes at rest besides compaction's pre-merge gate (#347):
 the federated reader does not hash the objects it scans, so a corrupt object is
-found here or by compaction, and may never fail a read.
+found here or by compaction, and may never fail a read. An object is reported
+lost here only when its GET answered `NoSuchKey` and a HEAD then confirms it
+missing; a GET that failed any other way, a refused redirect included, fails
+the pass (exit 1) whatever a later HEAD answers, so a `--gc` pass deletes and
+forgets nothing after it (R14-F1).
 
 `--repair` is refused. `--manifest-template`, `--manifest-prefix`,
 `--allow-empty-manifest-schema`, `--gc-grace`, `--etag-retries` and
@@ -299,7 +303,11 @@ follows no redirect`, and is not retried. Under `--gc` that fails the pass
 (exit 1) at the step it reached: no object is deleted elsewhere, and since a
 step starts only after the one before it succeeded, no history row is
 forgotten; the next pass plans from what is left. A redirected read is a
-failure too, never a missing object. The error names the request's method,
+failure too, never a missing object, even when a HEAD of the same key then
+answers 404 (R14-F1). The refusal waits for none of the redirect's body: the
+response is closed as soon as its headers are in, so a server that sends the
+headers and stalls the body cannot hold the pass or the schema's lock
+(R14-F2). The error names the request's method,
 its URL without the query, and the redirect's status, never the redirect's
 `Location`: a Location can carry a credential (a signed URL's query, a
 user-info password), so it reaches neither the report nor a log. Read it from

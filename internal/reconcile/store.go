@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifestv2"
@@ -38,7 +39,8 @@ type ObjectStore interface {
 	// confirmed not-found.
 	Exists(ctx context.Context, key string) (bool, error)
 	// Hash answers the SHA-256 of an object's bytes, as 64 lowercase hex
-	// digits, and how many bytes it read.
+	// digits, and how many bytes it read. A key that holds no object is
+	// manifestv2.ErrObjectNotFound, as for Get.
 	Hash(ctx context.Context, key string) (string, int64, error)
 	// Delete deletes an object. Deleting a key that holds none succeeds,
 	// so a pass repeated after a crash deletes again harmlessly.
@@ -102,9 +104,15 @@ func (s *S3Objects) Exists(ctx context.Context, key string) (bool, error) {
 	return ok, nil
 }
 
-// Hash streams the object through SHA-256.
+// Hash streams the object through SHA-256. Only a NoSuchKey answer is
+// manifestv2.ErrObjectNotFound, as for Get: a refused redirect
+// (ErrRedirectRefused), a 403 or a failed call proves nothing about the
+// object.
 func (s *S3Objects) Hash(ctx context.Context, key string) (string, int64, error) {
 	out, err := s.Client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(s.Bucket), Key: aws.String(key)})
+	if err != nil && noSuchKey(err) {
+		return "", 0, fmt.Errorf("get object %s/%s to hash it: %w: %w", s.Bucket, key, manifestv2.ErrObjectNotFound, err)
+	}
 	if err != nil {
 		return "", 0, fmt.Errorf("get object %s/%s to hash it: %w", s.Bucket, key, err)
 	}
@@ -127,6 +135,17 @@ func (s *S3Objects) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("delete object %s/%s: %w", s.Bucket, key, err)
 	}
 	return nil
+}
+
+// noSuchKey reports S3's answer for a GET of a key that holds no object. A
+// missing bucket is a 404 too, and is not one.
+func noSuchKey(err error) bool {
+	var missing *types.NoSuchKey
+	if errors.As(err, &missing) {
+		return true
+	}
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchKey"
 }
 
 var _ ObjectStore = (*S3Objects)(nil)

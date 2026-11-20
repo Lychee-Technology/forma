@@ -206,6 +206,8 @@ func TestS3ObjectsTellsAMissingObjectFromAnUnreadableOne(t *testing.T) {
 	require.False(t, ok)
 	_, err = s.Get(ctx, "data/1/zz")
 	require.ErrorIs(t, err, manifestv2.ErrObjectNotFound)
+	_, _, err = s.Hash(ctx, "data/1/zz")
+	require.ErrorIs(t, err, manifestv2.ErrObjectNotFound, "a hash finds a missing object as a read does")
 	require.NoError(t, s.Delete(ctx, "data/1/a"))
 	require.Equal(t, []string{"data/1/a"}, client.deleted)
 
@@ -213,6 +215,9 @@ func TestS3ObjectsTellsAMissingObjectFromAnUnreadableOne(t *testing.T) {
 	_, err = s.Get(ctx, "data/1/a")
 	require.Error(t, err)
 	require.NotErrorIs(t, err, manifestv2.ErrObjectNotFound, "a failed read is never a missing object")
+	_, _, err = s.Hash(ctx, "data/1/a")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, manifestv2.ErrObjectNotFound, "nor a failed hash")
 
 	client.truncated = true
 	_, err = s.List(ctx, "data/1/")

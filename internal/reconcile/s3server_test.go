@@ -25,18 +25,26 @@ import (
 // calls an S3Objects makes: ListObjectsV2, GetObject, HeadObject and
 // DeleteObject. redirect, when it answers a URL for a request, answers the
 // request with a 307 to it instead, as a misconfigured gateway or a hostile
-// server would.
+// server would. missing, when it answers true for a request that is not
+// redirected, answers it with a 404 as for a key that holds no object.
 type s3Server struct {
 	store    *memStore
 	bucket   string
 	mu       sync.Mutex
 	redirect func(r *http.Request) string
+	missing  func(r *http.Request) bool
 }
 
 func (s *s3Server) setRedirect(fn func(r *http.Request) string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.redirect = fn
+}
+
+func (s *s3Server) setMissing(fn func(r *http.Request) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.missing = fn
 }
 
 type listResult struct {
@@ -56,7 +64,7 @@ type listObject struct {
 
 func (s *s3Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	redirect := s.redirect
+	redirect, missing := s.redirect, s.missing
 	s.mu.Unlock()
 	if redirect != nil {
 		if to := redirect(r); to != "" {
@@ -67,6 +75,8 @@ func (s *s3Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/"+s.bucket), "/")
 	ctx := r.Context()
 	switch {
+	case key != "" && missing != nil && missing(r):
+		notFound(w, r)
 	case r.Method == http.MethodGet && key == "":
 		listed, _ := s.store.List(ctx, r.URL.Query().Get("prefix"))
 		res := listResult{Name: s.bucket, Prefix: r.URL.Query().Get("prefix"), KeyCount: len(listed)}
@@ -80,11 +90,7 @@ func (s *s3Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet, r.Method == http.MethodHead:
 		raw, err := s.store.Get(ctx, key)
 		if errors.Is(err, manifestv2.ErrObjectNotFound) {
-			w.Header().Set("Content-Type", "application/xml")
-			w.WriteHeader(http.StatusNotFound)
-			if r.Method == http.MethodGet {
-				_, _ = io.WriteString(w, `<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>`)
-			}
+			notFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Length", fmt.Sprint(len(raw)))
@@ -99,6 +105,16 @@ func (s *s3Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+// notFound answers r as S3 answers a request for a key that holds no
+// object.
+func notFound(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusNotFound)
+	if r.Method == http.MethodGet {
+		_, _ = io.WriteString(w, `<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>`)
 	}
 }
 

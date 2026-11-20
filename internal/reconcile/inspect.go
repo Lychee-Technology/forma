@@ -3,6 +3,7 @@ package reconcile
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -352,7 +353,7 @@ type listing struct {
 // against each generation, the current one included, whose entry its bytes
 // do not match, and an entry only the current generation committed wrongly
 // is caught although an older entry matches. An object a hash finds gone is
-// probed, and reported lost against its newest lister.
+// probed, and reported lost against its newest lister (hashedGone).
 func (r *Reconciler) verifyChecksums(ctx context.Context, p *pass, current int64, lost map[string]bool) error {
 	byKey := map[string][]listing{}
 	for _, g := range p.inspected() {
@@ -370,13 +371,13 @@ func (r *Reconciler) verifyChecksums(ctx context.Context, p *pass, current int64
 		entries := byKey[key]
 		sum, size, err := r.Objects.Hash(ctx, key)
 		if err != nil {
-			newest := entries[len(entries)-1].g // generations ascend
-			if ok, perr := r.Objects.Exists(ctx, key); perr == nil && !ok {
-				p.findings = append(p.findings, objectFinding(LostObject, newest, newest.Generation == current, key,
-					"a retained generation lists the object and S3 confirms it missing"))
+			gone, err := r.hashedGone(ctx, p, key, entries, current, err)
+			if err != nil {
+				return err
+			}
+			if gone {
 				continue
 			}
-			return fmt.Errorf("schema %d: hash %s, which generation %d lists: %w", p.id, key, newest.Generation, err)
 		}
 		for _, e := range entries {
 			if sum == e.file.SHA256 && size == e.file.SizeBytes {
@@ -390,4 +391,26 @@ func (r *Reconciler) verifyChecksums(ctx context.Context, p *pass, current int64
 		}
 	}
 	return nil
+}
+
+// hashedGone handles the failed hash of key, which entries list: it answers
+// true, having reported the object lost against its newest lister, only
+// when the hash found no object there (manifestv2.ErrObjectNotFound) and a
+// probe confirms it missing. Every other failure is the pass's: a refused
+// redirect (ErrRedirectRefused), a 403 or a failed call proves nothing
+// about the object, and a probe that answers 404 afterwards does not make
+// it a loss, which would let a collection run on (R14-F1).
+func (r *Reconciler) hashedGone(ctx context.Context, p *pass, key string, entries []listing, current int64, err error) (bool, error) {
+	newest := entries[len(entries)-1].g // generations ascend
+	failed := fmt.Errorf("schema %d: hash %s, which generation %d lists: %w", p.id, key, newest.Generation, err)
+	if !errors.Is(err, manifestv2.ErrObjectNotFound) {
+		return false, failed
+	}
+	ok, perr := r.Objects.Exists(ctx, key)
+	if perr != nil || ok {
+		return false, failed
+	}
+	p.findings = append(p.findings, objectFinding(LostObject, newest, newest.Generation == current, key,
+		"a retained generation lists the object and S3 confirms it missing"))
+	return true, nil
 }
