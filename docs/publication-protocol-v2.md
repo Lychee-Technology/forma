@@ -754,8 +754,35 @@ steps 5 to 7 from what steps 1 to 4 read.
    finds an expired manifest missing, its exclusive objects are already gone. That pass
    forgets the row and deletes nothing on its account. An object it should have taken
    but somehow still exists is an orphan, decided by the horizon.
-7. When step 6 has finished, `Forget` each expired history row. A row that outlives a
-   crash makes the next pass repeat the deletes instead of leaking them.
+7. When step 6 has finished, `Forget` each expired history row in its own transaction,
+   atomically deleting the expired row and advancing `forgotten_generation` on
+   `_publication_epoch` (`GREATEST(forgotten_generation, g)`). A row that outlives a
+   crash makes the next pass repeat the deletes instead of leaking them, and once
+   forgotten the durable `forgotten_generation` floor proves history completeness
+   without keeping a dummy expired row forever.
+
+**Write-path history consistency and fresh-epoch recovery.** `Publish` and `Reset`
+verify that the current generation's history row matches every field of the record
+(`epoch`, `parent_generation`, `manifest_key`, `manifest_sha256`, `lineage`,
+`cas_token`) and still carries `superseded_at = 0 AND retired_at = 0`. If out-of-band
+database damage broke or deleted that row, `Publish` and `Reset` fail closed with
+`publication.ErrHistoryInconsistent` and roll back rather than overwriting history.
+Recovery uses fresh-epoch recovery (`DELETE` record row -> `init-db`
+`InitializeAfterLoss` -> `cdc-init`): `InitializeAfterLoss` allocates a fresh epoch
+above `_publication_epoch.epoch`, supersedes the surviving head row with
+`retired_at = 0`, and arms a monotonic post-commit recovery fence
+(`recovery_epoch = rec.Epoch, recovery_retired_at = 0`). The first `--gc` pass
+stamps `recovery_retired_at = now()` (`RetireRecovery`) and deletes nothing until the
+full retention grace `G` elapses after that stamp, protecting any reader pinned
+before recovery even if a concurrent `Reset` or `Publish` runs next.
+
+**Storage binding (`_publication_storage`).** Before `--gc` deletes anything, the
+deployment must be bound once via `manifest-reconcile --bind-storage` to the exact
+S3 destination its client sends `LIST` and `DELETE` requests to (bucket URL, bucket
+name, and data prefix). `manifest-reconcile` refuses HTTP 3xx redirects and rejects
+ambiguous custom-endpoint paths (repeated slashes, trailing slashes on non-root
+paths, dot segments, escaped paths) so destructive requests can never reach another
+bucket or tenant route.
 
 A writer can never commit a reference to an object GC deleted:
 
@@ -1070,7 +1097,7 @@ the V1 code it replaces:
 | `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot. #896 adapts the DuckDB export to it (`internal/cdc`'s `baseExporter`, which reads the rows on that snapshot), calls it, settles a lost `COMMIT` once in-process (`ResumeInit`), and deletes the V1 manifest swap, the ambiguous-save confirmation, the delta purge (`--replace-delta`, `--delta-prefix`) and the zero-row placeholder | #896 (writers and reader, built in #899 to #901), closing #760 |
 | compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891. As built: `internal/cdcv2`'s `Writer.Compact` publishes behind a `CompactStager`, which `internal/compaction` implements; the merge keeps every row's newest version, tombstones included, and a promotion merges the delta files into a new base object, since a V2 key names its tier. The V1 `FileProvider`, `--manifest-template`/`--manifest-prefix` and the ETag retry loop are deleted | #890 (compaction) |
 | federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. #900 builds the pass behind `federated.WithPublicationReader` and its source in `internal/federatedv2`, with no caller ([As built](#readers)); #896 loads the epoch pins with the schema metadata, builds the engine with the option, deletes the V1 resolution and rewrites `docs/federated-query/design.md` §6.1 | #896 (writers and reader, built in #899 to #901), carrying #759 |
-| `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire` and `PlanCollection` in the collection order above. Repair becomes re-init. Verification walks retained generations | #891 (GC) |
+| `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire`, `RetireRecovery`, `Forget`, `BindStorage`, and `PlanCollection` in the collection order above (`internal/reconcile`, `cmd/tools/manifest_reconcile.go`). Repair is removed (re-init with `cdc-init`). Lock-free diagnosis verifies retained and expired manifests and checks completeness above `forgotten_generation`. Verification walks retained generations (`--verify-checksums`) | #891 (GC) |
 | fault matrix, operator docs, EPIC evidence | crash injection at every staging, publish and commit boundary; a guard that fails if `QuerySource.Fallback`, the level-3 glob or a glob-only flag returns | #892 |
 | live Aurora DSQL behaviour | the assumptions in [Verification](#verification) | #893, under #817 |
 
@@ -1087,17 +1114,18 @@ generation; and a record written while V1 `cdc-flush` still runs goes stale.
 
 Once the consumers moved, a static test in `internal/publication`
 (`TestOnlyTheProtocolOwnersMoveAPublicationRecord`) keeps the record's transitions with
-their owners: outside the package, `Initialize`, `InitializeAwaitingInit` and `Activate`
-only in `cmd/tools/init_db_records.go`, `Publish`, `HoldLineage` and `Fence` only in
-`internal/cdcv2`, and `Reset`, `RaiseHorizon`, `Retire` and `Forget` nowhere yet (a drop
-tool and #891 add theirs). The one other non-test file allowed `Initialize` and
-`Publish` is the federated e2e harness's `publication.go`, which registers the benchmark's
-schemas and publishes its synthetic parquet, which has no PostgreSQL rows for a writer to
-export; `cmd/benchmark` runs it outside any test. Test files are not scanned: the
-production e2e harness writes its fixtures' records and stages fault generations from
-test files. It refuses a dot import of the package and any production string
-literal that spells a publication table name, so every statement over the tables is the
-package's own. Reading a record is free.
+their owners: outside the package, `Initialize`, `InitializeAwaitingInit`, `InitializeAfterLoss`
+and `Activate` only in `cmd/tools/init_db_records.go`, `Publish`, `HoldLineage` and `Fence`
+only in `internal/cdcv2`, `Reset` and `HoldDropped` only in `cmd/tools/drop_schema.go`,
+`RaiseHorizon`, `Retire`, `RetireRecovery` and `Forget` only in `internal/reconcile`, and
+`BindStorage` only in `cmd/tools/manifest_reconcile.go`. The one other non-test file allowed
+`Initialize` and `Publish` is the federated e2e harness's `publication.go`, which registers
+the benchmark's schemas and publishes its synthetic parquet, which has no PostgreSQL rows
+for a writer to export; `cmd/benchmark` runs it outside any test. Test files are not scanned:
+the production e2e harness writes its fixtures' records and stages fault generations from
+test files. It refuses a dot import of the package and any production string literal that
+spells a publication table name, so every statement over the tables is the package's own.
+Reading a record is free.
 
 **#759 is the reader scope, and lands in #896.** Its original evidence, a zero-match or
 partial-match glob that returns 200 with silently incomplete data, is what the reader

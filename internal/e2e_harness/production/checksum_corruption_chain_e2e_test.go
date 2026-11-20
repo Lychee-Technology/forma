@@ -85,58 +85,30 @@ func TestChecksumChainDetectsSilentDeltaCorruption(t *testing.T) {
 }
 
 // assertScrubReportsOnlyDivergence runs `manifest-reconcile --verify-checksums`
-// over the schema and requires exactly one finding — naming the corrupted key
-// and quoting the stamp its bytes no longer match — with a discrepant
-// (non-zero-exit) verdict. Zero unstamped skips is the coverage control: it
-// proves the clean entries were actually hashed rather than passed over, so
-// "one divergence" is a complete answer and not a partial one.
+// over the schema and requires exactly one finding: a corrupt object naming
+// the corrupted key, against the current generation, quoting the digest its
+// bytes no longer match, with the re-init action.
 func assertScrubReportsOnlyDivergence(ctx context.Context, t *testing.T, env *Env,
 	schema SchemaRef, corruptKey, stamped string) {
 	t.Helper()
-	r, cleanup := newReconcileHarness(t, ctx, env, schema,
-		reconcile.Options{VerifyChecksums: true, MaxETagRetries: 3}, false)
-	defer cleanup()
-
-	report, err := r.Run(ctx)
-	if err != nil {
-		t.Fatalf("reconcile --verify-checksums run: %v", err)
+	opts := reconcileOptions(false)
+	opts.VerifyChecksums = true
+	s := runReconcile(ctx, t, env, schema, opts)
+	if len(s.Findings) != 1 || s.Findings[0].Kind != reconcile.CorruptObject {
+		t.Fatalf("findings %+v, want exactly one corrupt object naming %s", s.Findings, corruptKey)
 	}
-	if len(report.Schemas) != 1 {
-		t.Fatalf("expected 1 schema report, got %d", len(report.Schemas))
+	f := s.Findings[0]
+	if f.Key != corruptKey || !f.Current {
+		t.Errorf("finding %+v does not name corrupted key %s of current generation", f, corruptKey)
 	}
-	s := report.Schemas[0]
-	if s.Err != nil {
-		t.Fatalf("scrub reported a schema failure instead of a corruption verdict: %v", s.Err)
+	if !strings.Contains(f.Detail, stamped) {
+		t.Errorf("finding detail %q does not quote manifest stamp %s", f.Detail, stamped)
 	}
-	if len(s.ChecksumDivergences) != 1 {
-		t.Fatalf("checksum divergences = %v, want exactly one naming %s", s.ChecksumDivergences, corruptKey)
+	if !strings.Contains(f.Action, "cdc-init") {
+		t.Errorf("finding action %q does not recommend cdc-init", f.Action)
 	}
-	divergence := s.ChecksumDivergences[0]
-	if !strings.Contains(divergence, corruptKey) {
-		t.Errorf("divergence %q does not name the corrupted key %s", divergence, corruptKey)
-	}
-	if !strings.Contains(divergence, stamped) {
-		t.Errorf("divergence %q does not quote the manifest stamp %s", divergence, stamped)
-	}
-	if s.SkippedUnstamped != 0 {
-		t.Errorf("scrub skipped %d unstamped entries; the clean verdict on the rest is not full coverage",
-			s.SkippedUnstamped)
-	}
-	// Every other class Residual() counts must be empty, so the residual
-	// verdict below is attributable to the checksum divergence by assertion
-	// rather than by construction: any of these would raise it on its own.
-	// (Residual's remaining two inputs, Skipped and Err, are already excluded
-	// above — a skipped or failed schema could not have produced the single
-	// divergence just asserted.)
-	if len(s.DeltaOrphans) != 0 || len(s.BaseOrphans) != 0 || len(s.TmpOrphans) != 0 ||
-		len(s.Unknown) != 0 || len(s.Dangling) != 0 || len(s.StampDivergences) != 0 {
-		t.Fatalf("scrub found other discrepancies, so the residual verdict is not the checksum's:"+
-			" delta orphans %v, base orphans %v, tmp orphans %v, unknown %v, dangling %v,"+
-			" stamp divergences %v",
-			s.DeltaOrphans, s.BaseOrphans, s.TmpOrphans, s.Unknown, s.Dangling, s.StampDivergences)
-	}
-	if !report.HasResidualDiscrepancies() {
-		t.Error("a checksum divergence must make the run discrepant (non-zero exit)")
+	if !s.Residual() {
+		t.Error("corrupt object finding must make schema report residual (non-zero exit)")
 	}
 }
 
@@ -320,13 +292,12 @@ func soleTierEntry(t *testing.T, m *Manifest, tier string) ManifestEntry {
 	return found[0]
 }
 
-// mustManifestKey resolves a manifest path to a bucket-relative key, failing
-// on a path this bucket's client cannot address.
+// mustManifestKey returns the bucket-relative key a V2 manifest entry names,
+// failing on a URI, which no V2 manifest lists.
 func mustManifestKey(t *testing.T, env *Env, path string) string {
 	t.Helper()
-	key, ok := normalizedManifestKey(env, path)
-	if !ok {
-		t.Fatalf("manifest path %s does not resolve to a key in bucket %s", path, env.Cluster.Bucket)
+	if strings.HasPrefix(path, "s3://") {
+		t.Fatalf("manifest path %s is a URI, not a key in bucket %s", path, env.Cluster.Bucket)
 	}
-	return key
+	return path
 }

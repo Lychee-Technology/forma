@@ -92,26 +92,6 @@ func TestOpenMergeEngine_DoesNotConsultCredentialChain(t *testing.T) {
 	}
 }
 
-// TestOpenReconcileStatsEngine_DoesNotConsultCredentialChain holds the
-// reconcile stats engine to the same rule as the merge engine, so the two
-// DuckDB constructors in cmd/tools cannot drift apart again.
-func TestOpenReconcileStatsEngine_DoesNotConsultCredentialChain(t *testing.T) {
-	called := false
-	stubToolAWSChainLoader(t, &called)
-	setStaticS3Env(t)
-
-	opts := &reconcileOptions{s3: s3Flags{region: "us-east-1"}}
-	exporter, err := openReconcileStatsEngine(context.Background(), opts, zap.NewNop())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer func() { _ = exporter.DB.Close() }()
-
-	if called {
-		t.Fatal("reconcile stats engine must not load the AWS default credential chain (#329)")
-	}
-}
-
 // TestOpenMergeEngine_EnvCredentialsReachEngineValidation is the positive
 // counterpart to the chain assertions above: those alone stay green if the
 // cdc.ResolveStaticS3Credentials call is deleted and empty strings are passed

@@ -3,57 +3,163 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/cdcv2"
+	"github.com/lychee-technology/forma/internal/federated"
+	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/reconcile"
 )
 
-// TestNewReconciler_WiresVerificationPasses pins the flag → Reconciler wiring
-// the flag parser alone cannot prove: --verify-checksums must reach Opts AND
-// the byte reader must be attached, or the scrub answers a configuration
-// error at run time instead of scrubbing.
-func TestNewReconciler_WiresVerificationPasses(t *testing.T) {
-	client := &s3.Client{}
-	logger := zap.NewNop()
+var reconcileBase = []string{"--s3-bucket", "bkt", "--schema-registry-table", "schema_registry"}
 
-	off, err := newReconciler(&reconcileOptions{}, client, nil, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if off.Opts.VerifyChecksums || off.Opts.VerifyStamps {
-		t.Fatalf("verification must stay off when the flags are not set: %+v", off.Opts)
-	}
+func reconcileArgs(extra ...string) []string {
+	return append(append([]string{}, reconcileBase...), extra...)
+}
 
-	on, err := newReconciler(&reconcileOptions{
-		verifyChecksums: true,
-		verifyStamps:    true,
-		etagRetries:     3,
-	}, client, nil, logger)
-	if err != nil {
-		t.Fatal(err)
+func TestParseReconcileFlags_Defaults(t *testing.T) {
+	opts, err := parseReconcileFlags(reconcileBase)
+	require.NoError(t, err)
+	require.Equal(t, "data", opts.dataPrefix)
+	require.Equal(t, "entity_main", opts.entityMain)
+	require.Zero(t, opts.schemaID, "0 visits every schema")
+	require.Equal(t, reconcile.Options{
+		RetentionGrace: 15 * time.Minute, ReaderDeadline: federated.DefaultPublishedPassDeadline,
+		ClockMargin: time.Minute, OrphanAge: 2 * time.Hour,
+	}, opts.run, "a run is the read-only diagnosis unless --gc is given")
+	require.NoError(t, opts.run.Validate(), "the defaults keep a reader safe")
+	require.GreaterOrEqual(t, opts.run.OrphanAge, cdcv2.DefaultStagingBudget+opts.run.ClockMargin)
+}
+
+func TestParseReconcileFlags_RequiredAndModes(t *testing.T) {
+	_, err := parseReconcileFlags([]string{"--schema-registry-table", "t"})
+	require.Error(t, err, "missing --s3-bucket")
+	_, err = parseReconcileFlags([]string{"--s3-bucket", "bkt"})
+	require.ErrorContains(t, err, "--schema-registry-table is required")
+
+	opts, err := parseReconcileFlags(reconcileArgs("--schema-id", "7", "--gc", "--verify-checksums",
+		"--retention-grace", "5m", "--clock-margin", "30s", "--orphan-age", "3h",
+		"--entity-main-table", "em", "--data-prefix", "lake/", "--pg-engine", "aurora-dsql"))
+	require.NoError(t, err)
+	require.Equal(t, int16(7), opts.schemaID)
+	require.True(t, opts.run.GC)
+	require.True(t, opts.run.VerifyChecksums)
+	require.Equal(t, [3]time.Duration{5 * time.Minute, 30 * time.Second, 3 * time.Hour},
+		[3]time.Duration{opts.run.RetentionGrace, opts.run.ClockMargin, opts.run.OrphanAge})
+	require.Equal(t, "em", opts.entityMain)
+	require.Equal(t, "lake/", opts.dataPrefix)
+	require.Equal(t, forma.EngineAuroraDSQL, opts.db.Engine)
+
+	opts, err = parseReconcileFlags([]string{"--help"})
+	require.NoError(t, err)
+	require.Nil(t, opts, "help answers no options")
+}
+
+// TestParseReconcileFlags_RefusesUnsafeTimes: a grace that does not cover
+// the reader's pass deadline plus the clock margin could delete an object a
+// reader still scans; a zero clock margin trusts two clocks to agree; an
+// orphan age below the writers' staging budget fences writers inside it.
+func TestParseReconcileFlags_RefusesUnsafeTimes(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--retention-grace", "60s"}, "retention grace"},
+		{[]string{"--retention-grace", "2m", "--clock-margin", "61s"}, "retention grace"},
+		{[]string{"--clock-margin", "0s"}, "--clock-margin"},
+		{[]string{"--orphan-age", "1h"}, "--orphan-age"},
+		{[]string{"--schema-id", "40000"}, "--schema-id"},
+	} {
+		_, err := parseReconcileFlags(reconcileArgs(tc.args...))
+		require.ErrorContains(t, err, tc.want, "%v", tc.args)
 	}
-	if !on.Opts.VerifyChecksums {
-		t.Fatal("--verify-checksums must reach reconcile.Options")
+	_, err := parseReconcileFlags(reconcileArgs("--retention-grace", "60s"))
+	require.ErrorIs(t, err, reconcile.ErrRetentionUnsafe)
+}
+
+// TestManifestReconcileRefusesOverflowingTimesBeforeConnecting: a floor
+// whose sum wraps a Duration would let a zero grace or orphan age pass. The
+// flags are refused before any database connection opens.
+func TestManifestReconcileRefusesOverflowingTimesBeforeConnecting(t *testing.T) {
+	old := openReconcileDBFn
+	defer func() { openReconcileDBFn = old }()
+	openReconcileDBFn = func(context.Context, cdc.CDCConfig, *zap.Logger) (*sql.DB, error) {
+		t.Fatal("the flags were accepted and a database connection was opened")
+		return nil, nil
 	}
-	if !on.Opts.VerifyStamps {
-		t.Fatal("--verify-stamps must reach reconcile.Options")
+	maxNS := fmt.Sprintf("%dns", int64(math.MaxInt64))
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--gc", "--retention-grace=0s", "--clock-margin=" + maxNS, "--orphan-age=1ns"}, "overflows"},
+		// R_max + C fits, the staging budget + C does not.
+		{[]string{"--gc", "--retention-grace=" + maxNS, "--clock-margin=" + fmt.Sprintf("%dns", int64(math.MaxInt64-2*time.Minute)), "--orphan-age=1ns"},
+			"--clock-margin"},
+	} {
+		err := runManifestReconcile(context.Background(), reconcileArgs(tc.args...))
+		require.ErrorContains(t, err, tc.want, "%v", tc.args)
 	}
-	if on.Objects == nil {
-		t.Fatal("the scrub's byte reader must be wired, else verifyChecksums fails as misconfigured")
+	_, err := parseReconcileFlags(reconcileArgs("--retention-grace=0s", "--clock-margin="+maxNS, "--orphan-age=1ns"))
+	require.ErrorIs(t, err, reconcile.ErrRetentionUnsafe)
+}
+
+// TestParseReconcileFlags_RefusesRepair: under V2 there is nothing to adopt,
+// and the recovery of a lost generation is a re-init.
+func TestParseReconcileFlags_RefusesRepair(t *testing.T) {
+	_, err := parseReconcileFlags(reconcileArgs("--repair"))
+	require.ErrorIs(t, err, errRepairRemoved)
+	require.ErrorContains(t, err, "cdc-init")
+	for _, removed := range []string{"--manifest-template", "--manifest-prefix", "--allow-empty-manifest-schema", "--gc-grace", "--etag-retries"} {
+		_, err := parseReconcileFlags(reconcileArgs(removed, "x"))
+		require.ErrorContains(t, err, "flag provided but not defined", removed)
 	}
+	_, err = parseReconcileFlags(reconcileArgs("--verify-stamps"))
+	require.ErrorContains(t, err, "flag provided but not defined")
+}
+
+// TestNewReconciler_WiresTheFlags pins the flag-to-Reconciler wiring: the
+// tables and the lock named after --entity-main-table, the layout of
+// --data-prefix, the schema filter and the options.
+func TestNewReconciler_WiresTheFlags(t *testing.T) {
+	opts, err := parseReconcileFlags(reconcileArgs("--schema-id", "9", "--gc", "--entity-main-table", "em", "--data-prefix", "lake"))
+	require.NoError(t, err)
+	db := &sql.DB{}
+	objects := &reconcile.S3Objects{Bucket: "bkt"}
+	r, err := newReconciler(opts, objects, db, zap.NewNop())
+	require.NoError(t, err)
+	require.Same(t, db, r.DB)
+	require.Equal(t, publication.TablesFor("em"), r.Tables)
+	require.Equal(t, manifestv2.Layout{Prefix: "lake"}, r.Layout)
+	require.Same(t, objects, r.Objects)
+	require.NotNil(t, r.Locker)
+	require.Equal(t, &reconcile.Schemas{DB: db, Registry: "schema_registry", Tables: publication.TablesFor("em"), Only: 9}, r.Schemas)
+	require.Equal(t, opts.run, r.Opts)
+	require.True(t, r.Opts.GC)
+
+	opts, err = parseReconcileFlags(reconcileArgs("--pg-engine", "aurora-dsql"))
+	require.NoError(t, err)
+	r, err = newReconciler(opts, objects, db, zap.NewNop())
+	require.NoError(t, err)
+	require.Nil(t, r.Locker, "the diagnosis takes no lock: on Aurora DSQL it is a lease row write")
 }
 
 func TestRunToolMain_ManifestReconcileExitCodes(t *testing.T) {
 	old := runManifestReconcileFn
 	defer func() { runManifestReconcileFn = old }()
-
-	tests := []struct {
+	for _, tt := range []struct {
 		name     string
 		err      error
 		wantCode int
@@ -61,206 +167,47 @@ func TestRunToolMain_ManifestReconcileExitCodes(t *testing.T) {
 		{"clean run", nil, 0},
 		{"discrepancies found", &discrepancyError{count: 3}, 2},
 		{"tool failure", errors.New("s3 unavailable"), 1},
-	}
-	for _, tt := range tests {
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			runManifestReconcileFn = func(ctx context.Context, args []string) error {
-				return tt.err
-			}
+			runManifestReconcileFn = func(ctx context.Context, args []string) error { return tt.err }
 			var out bytes.Buffer
 			code := runToolMain(context.Background(), []string{"manifest-reconcile"}, &out)
-			if code != tt.wantCode {
-				t.Fatalf("exit code = %d, want %d (output %q)", code, tt.wantCode, out.String())
+			require.Equal(t, tt.wantCode, code, out.String())
+			if tt.wantCode == 2 {
+				require.NotContains(t, out.String(), "manifest-reconcile:", "the report is already rendered")
 			}
 		})
 	}
 }
 
-func TestRunToolMain_DiscrepancyExitPrintsNoErrorLine(t *testing.T) {
-	old := runManifestReconcileFn
-	defer func() { runManifestReconcileFn = old }()
-	runManifestReconcileFn = func(ctx context.Context, args []string) error {
-		return &discrepancyError{count: 2}
-	}
-
-	var out bytes.Buffer
-	code := runToolMain(context.Background(), []string{"manifest-reconcile"}, &out)
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
-	}
-	if strings.Contains(out.String(), "manifest-reconcile:") {
-		t.Fatalf("discrepancy exit must not print an error line (report already rendered), got %q", out.String())
-	}
-}
-
+// TestReconcileExitError_ToolFailureBeatsDiscrepancy: a per-schema tool
+// failure (S3 outage, lock error) exits 1, never folded into the exit-2
+// signal monitoring reads as an inconsistency.
 func TestReconcileExitError_ToolFailureBeatsDiscrepancy(t *testing.T) {
-	// Per-schema tool failures (S3 outage, lock error) must exit 1, not be
-	// folded into the exit-2 "discrepancies found" signal monitoring treats
-	// as data inconsistency.
-	failed := reconcile.Report{Schemas: []reconcile.SchemaReport{
+	finding := []reconcile.Finding{{Kind: reconcile.LostObject}}
+	err := reconcileExitError(reconcile.Report{Schemas: []reconcile.SchemaReport{
 		{SchemaID: 1, Err: errors.New("s3 unavailable")},
-		{SchemaID: 2, Dangling: []string{"data/2/x.parquet"}},
-	}}
-	err := reconcileExitError(failed)
-	if err == nil {
-		t.Fatal("schema errors must surface as a tool failure")
-	}
+		{SchemaID: 2, Findings: finding},
+	}})
+	require.Error(t, err)
 	var ec interface{ ExitCode() int }
-	if errors.As(err, &ec) {
-		t.Fatalf("tool failure must be a plain error (exit 1), got exit code %d", ec.ExitCode())
-	}
+	require.False(t, errors.As(err, &ec), "a tool failure is a plain error")
+	require.True(t, strings.Contains(err.Error(), "schema 1"))
 
-	residual := reconcile.Report{Schemas: []reconcile.SchemaReport{
-		{SchemaID: 1, Dangling: []string{"data/1/x.parquet"}},
-		{SchemaID: 2, Skipped: true},
-	}}
-	err = reconcileExitError(residual)
-	if !errors.As(err, &ec) || ec.ExitCode() != 2 {
-		t.Fatalf("residual discrepancies must exit 2, got %v", err)
-	}
+	err = reconcileExitError(reconcile.Report{Schemas: []reconcile.SchemaReport{
+		{SchemaID: 1, Findings: finding}, {SchemaID: 2, Skipped: true},
+	}})
+	require.True(t, errors.As(err, &ec))
+	require.Equal(t, 2, ec.ExitCode())
 
-	if err := reconcileExitError(reconcile.Report{Schemas: []reconcile.SchemaReport{{SchemaID: 1}}}); err != nil {
-		t.Fatalf("clean report must exit 0, got %v", err)
-	}
-}
+	// A diagnosis that left findings out because their generation expired
+	// beside it established neither loss nor collection: it is not clean.
+	inconclusive := reconcile.SchemaReport{SchemaID: 1, ConcurrentlyExpired: 2, Refused: "run the diagnosis again"}
+	err = reconcileExitError(reconcile.Report{Schemas: []reconcile.SchemaReport{inconclusive}})
+	require.True(t, errors.As(err, &ec), "an inconclusive diagnosis is a discrepancy, not a tool failure")
+	require.Equal(t, 2, ec.ExitCode())
 
-func TestParseReconcileFlags_Defaults(t *testing.T) {
-	opts, err := parseReconcileFlags([]string{
-		"--s3-bucket", "bkt",
-		"--schema-registry-table", "schema_registry",
-	})
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if opts.dataPrefix != "data" {
-		t.Fatalf("dataPrefix = %q, want data", opts.dataPrefix)
-	}
-	if opts.manifest.PathTemplate != "manifest/{{.SchemaID}}.json" {
-		t.Fatalf("manifest template = %q", opts.manifest.PathTemplate)
-	}
-	if opts.manifest.Bucket != "bkt" {
-		t.Fatalf("manifest bucket = %q, want bkt", opts.manifest.Bucket)
-	}
-	if opts.gcGrace != 15*time.Minute {
-		t.Fatalf("gcGrace = %v, want 15m", opts.gcGrace)
-	}
-	if opts.etagRetries != 3 {
-		t.Fatalf("etagRetries = %d, want 3", opts.etagRetries)
-	}
-	if opts.repair || opts.gc || opts.verifyStamps || opts.verifyChecksums {
-		t.Fatalf("repair/gc/verify-stamps/verify-checksums must default to false")
-	}
-	if opts.schemaID != 0 {
-		t.Fatalf("schemaID = %d, want 0 (all schemas)", opts.schemaID)
-	}
-}
-
-func TestParseReconcileFlags_RequiredAndModes(t *testing.T) {
-	if _, err := parseReconcileFlags([]string{"--schema-registry-table", "t"}); err == nil {
-		t.Fatal("missing --s3-bucket must error")
-	}
-	if _, err := parseReconcileFlags([]string{"--s3-bucket", "bkt"}); err == nil {
-		t.Fatal("missing --schema-registry-table must error")
-	}
-
-	opts, err := parseReconcileFlags([]string{
-		"--s3-bucket", "bkt",
-		"--schema-registry-table", "t",
-		"--schema-id", "7",
-		"--repair", "--gc", "--gc-grace", "1m", "--verify-stamps", "--verify-checksums",
-	})
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if !opts.repair || !opts.gc || opts.gcGrace != time.Minute || opts.schemaID != 7 {
-		t.Fatalf("mode flags not parsed: %+v", opts)
-	}
-	if !opts.verifyStamps {
-		t.Fatalf("--verify-stamps not parsed: %+v", opts)
-	}
-	if !opts.verifyChecksums {
-		t.Fatalf("--verify-checksums not parsed: %+v", opts)
-	}
-
-	opts, err = parseReconcileFlags([]string{"--help"})
-	if err != nil {
-		t.Fatalf("help must not error, got %v", err)
-	}
-	if opts != nil {
-		t.Fatal("help must return nil options")
-	}
-}
-
-func TestParseReconcileFlags_AllowEmptyManifestSchema(t *testing.T) {
-	opts, err := parseReconcileFlags([]string{
-		"--s3-bucket", "bkt", "--schema-registry-table", "t", "--gc",
-		"--allow-empty-manifest-schema", "7",
-		"--allow-empty-manifest-schema", "9,11",
-	})
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(opts.allowEmptyManifestSchemas) != 3 ||
-		opts.allowEmptyManifestSchemas[0] != 7 ||
-		opts.allowEmptyManifestSchemas[1] != 9 ||
-		opts.allowEmptyManifestSchemas[2] != 11 {
-		t.Fatalf("allowEmptyManifestSchemas = %v, want [7 9 11]", opts.allowEmptyManifestSchemas)
-	}
-
-	// The allowance only modifies --gc's guard; accepting it without --gc
-	// would silently arm a future deletion the operator never reviewed.
-	if _, err := parseReconcileFlags([]string{
-		"--s3-bucket", "bkt", "--schema-registry-table", "t",
-		"--allow-empty-manifest-schema", "7",
-	}); err == nil {
-		t.Fatal("--allow-empty-manifest-schema without --gc must error")
-	}
-
-	if _, err := parseReconcileFlags([]string{
-		"--s3-bucket", "bkt", "--schema-registry-table", "t", "--gc",
-		"--allow-empty-manifest-schema", "abc",
-	}); err == nil {
-		t.Fatal("non-numeric schema id must error")
-	}
-
-	// Registry schema IDs are positive (--schema-id treats 0 as "all"), so
-	// 0 or a negative value can never match a real schema: the allowance
-	// would parse yet silently waive nothing. Fail the typo fast instead.
-	for _, bad := range []string{"0", "-7"} {
-		if _, err := parseReconcileFlags([]string{
-			"--s3-bucket", "bkt", "--schema-registry-table", "t", "--gc",
-			"--allow-empty-manifest-schema", bad,
-		}); err == nil {
-			t.Fatalf("non-positive schema id %q must error", bad)
-		}
-	}
-}
-
-func TestNewReconciler_WiresEmptyManifestAllowance(t *testing.T) {
-	r, err := newReconciler(&reconcileOptions{allowEmptyManifestSchemas: []int16{7, 9}}, &s3.Client{}, nil, zap.NewNop())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(r.Opts.AllowEmptyManifestSchemas) != 2 || r.Opts.AllowEmptyManifestSchemas[0] != 7 || r.Opts.AllowEmptyManifestSchemas[1] != 9 {
-		t.Fatalf("AllowEmptyManifestSchemas = %v, want [7 9]", r.Opts.AllowEmptyManifestSchemas)
-	}
-}
-
-// manifest-reconcile already fails a schema whose manifest is stamped for
-// another schema (#481); a collapsed --manifest-template is now refused at
-// flag parsing too, before Postgres or S3 is opened (#520).
-func TestParseReconcileFlags_RejectsCollapsedManifestTemplate(t *testing.T) {
-	base := []string{"--s3-bucket", "bkt", "--schema-registry-table", "t"}
-	for _, tmpl := range []string{"manifest/all.json", "manifest/{{.SchemaId}}.json"} {
-		_, err := parseReconcileFlags(append(append([]string{}, base...), "--manifest-template", tmpl))
-		if err == nil {
-			t.Fatalf("template %q must be rejected", tmpl)
-		}
-		if !strings.Contains(err.Error(), "manifest-template") {
-			t.Errorf("template %q: error %q must name the flag", tmpl, err.Error())
-		}
-	}
-	if _, err := parseReconcileFlags(append(append([]string{}, base...), "--manifest-template", "")); err != nil {
-		t.Fatalf("empty template falls back to the resolver default and must parse: %v", err)
-	}
+	clean := reconcile.SchemaReport{SchemaID: 1, Plan: publication.Plan{Objects: []string{"garbage"}}}
+	require.NoError(t, reconcileExitError(reconcile.Report{Schemas: []reconcile.SchemaReport{clean}}),
+		"garbage awaiting collection is not a discrepancy")
 }
