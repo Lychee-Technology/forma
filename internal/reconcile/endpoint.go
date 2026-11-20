@@ -49,7 +49,7 @@ func (s *S3Objects) Endpoint(ctx context.Context) (string, error) {
 // and fails.
 func ClientEndpoint(ctx context.Context, c *s3.Client) (string, error) {
 	o := c.Options()
-	if o.EndpointResolver != nil {
+	if o.EndpointResolver != nil { //nolint:staticcheck // SA1019: a deprecated resolver can still be set, and must be refused
 		return "", fmt.Errorf("a client with a custom EndpointResolver: %w", errUnknownDestination)
 	}
 	if reflect.TypeOf(o.EndpointResolverV2) != reflect.TypeOf(s3.NewDefaultEndpointResolverV2()) {
