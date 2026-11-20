@@ -11,12 +11,16 @@ import (
 )
 
 // inspect checks what the pass read (step 4's checks) and records a finding
-// for every fault: the record's state, the current generation's history
+// for every fault: a run target that is not the deployment's bound storage
+// (checkStorage), the record's state, the current generation's history
 // row, each manifest against its row, the keys under the prefix no V2
 // writer stages, and every object a retained generation lists that S3
 // confirms missing or, under VerifyChecksums, holds other bytes.
 func (r *Reconciler) inspect(ctx context.Context, p *pass) error {
 	p.verified = map[string]*manifestv2.Manifest{}
+	if r.storageFault != nil {
+		p.findings = append(p.findings, *r.storageFault)
+	}
 	current := r.checkRecord(p)
 	r.checkHistory(p)
 	for _, g := range p.retained {

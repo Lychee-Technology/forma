@@ -80,6 +80,10 @@ func TestDSQLCorpus(t *testing.T) {
 	require.NoError(t, err)
 	_, err = ReadLifecycleFence(ctx, DB(db), tb, 100, time.Hour)
 	require.NoError(t, err)
+	_, err = BindStorage(ctx, DB(db), tb, StorageTarget{Bucket: "bucket", Prefix: "data"})
+	require.NoError(t, err)
+	_, _, err = ReadStorage(ctx, DB(db), tb)
+	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet(), "the publication contract sent other statements than recorded")
 
 	ddl := Statements(forma.EngineAuroraDSQL, "entity_main")
@@ -87,40 +91,48 @@ func TestDSQLCorpus(t *testing.T) {
 		corpus.Rendered("internal/publication/ddl.go:recordDDL", ddl[0]),
 		corpus.Rendered("internal/publication/ddl.go:generationDDL", ddl[1]),
 		corpus.Rendered("internal/publication/ddl.go:epochDDL", ddl[2]),
+		corpus.Rendered("internal/publication/storage.go:storageDDL", StorageStatement(forma.EngineAuroraDSQL, "entity_main")),
 	}
-	statements = append(statements, rec.Take(t,
-		"internal/publication/record.go:Initialize",
-		"internal/publication/lifecycle_epoch.go:raiseEpoch",
-		"internal/publication/record.go:Initialize",
-		"internal/publication/record.go:Initialize",
-		"internal/publication/recovery.go:ReadHistory",
-		"internal/publication/recovery.go:InitializeAfterLoss",
-		"internal/publication/lifecycle_epoch.go:raiseEpoch",
-		"internal/publication/recovery.go:stampRecovery",
-		"internal/publication/recovery.go:InitializeAfterLoss",
-		"internal/publication/record.go:Read",
-		"internal/publication/publish.go:Publish",
-		"internal/publication/publish.go:Publish",
-		"internal/publication/publish.go:Publish",
-		"internal/publication/lifecycle.go:HoldLineage",
-		"internal/publication/rebase.go:KindsSince",
-		"internal/publication/lifecycle.go:Resolve",
-		"internal/publication/lifecycle.go:Fence",
-		"internal/publication/lifecycle.go:Reset",
-		"internal/publication/lifecycle_epoch.go:raiseEpoch",
-		"internal/publication/lifecycle.go:Reset",
-		"internal/publication/lifecycle.go:Activate",
-		"internal/publication/lifecycle.go:Activate",
-		"internal/publication/lifecycle_epoch.go:raiseEpoch",
-		"internal/publication/retention.go:RaiseHorizon",
-		"internal/publication/retention.go:Retire",
-		"internal/publication/retention.go:Retained",
-		"internal/publication/retention.go:Expired",
-		"internal/publication/retention.go:Forget",
-		"internal/publication/retention.go:SchemaIDs",
-		"internal/publication/lifecycle_epoch.go:ReadLifecycleFence",
-	)...)
+	statements = append(statements, rec.Take(t, contractLabels...)...)
 	corpus.Export(t, corpus.Unit{Name: "internal-publication", Engine: forma.EngineAuroraDSQL, Statements: statements})
+}
+
+// contractLabels are the origins of the statements TestDSQLCorpus sends,
+// in order.
+var contractLabels = []string{
+	"internal/publication/record.go:Initialize",
+	"internal/publication/lifecycle_epoch.go:raiseEpoch",
+	"internal/publication/record.go:Initialize",
+	"internal/publication/record.go:Initialize",
+	"internal/publication/recovery.go:ReadHistory",
+	"internal/publication/recovery.go:InitializeAfterLoss",
+	"internal/publication/lifecycle_epoch.go:raiseEpoch",
+	"internal/publication/recovery.go:stampRecovery",
+	"internal/publication/recovery.go:InitializeAfterLoss",
+	"internal/publication/record.go:Read",
+	"internal/publication/publish.go:Publish",
+	"internal/publication/publish.go:Publish",
+	"internal/publication/publish.go:Publish",
+	"internal/publication/lifecycle.go:HoldLineage",
+	"internal/publication/rebase.go:KindsSince",
+	"internal/publication/lifecycle.go:Resolve",
+	"internal/publication/lifecycle.go:Fence",
+	"internal/publication/lifecycle.go:Reset",
+	"internal/publication/lifecycle_epoch.go:raiseEpoch",
+	"internal/publication/lifecycle.go:Reset",
+	"internal/publication/lifecycle.go:Activate",
+	"internal/publication/lifecycle.go:Activate",
+	"internal/publication/lifecycle_epoch.go:raiseEpoch",
+	"internal/publication/retention.go:RaiseHorizon",
+	"internal/publication/retention.go:Retire",
+	"internal/publication/retention.go:Retained",
+	"internal/publication/retention.go:Expired",
+	"internal/publication/retention.go:Forget",
+	"internal/publication/retention.go:SchemaIDs",
+	"internal/publication/lifecycle_epoch.go:ReadLifecycleFence",
+	"internal/publication/storage.go:BindStorage",
+	"internal/publication/storage.go:BindStorage",
+	"internal/publication/storage.go:ReadStorage",
 }
 
 // expectTheContract answers, in order, every statement TestDSQLCorpus sends
@@ -182,7 +194,14 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(genRows())
 	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"schema_id"}).AddRow(100))
-	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(sqlmock.NewRows([]string{"updated_at", "inside"}).AddRow(4, false))
+	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(sqlmock.NewRows([]string{"epoch", "updated_at", "inside"}).AddRow(3, 4, false))
+	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("").WillReturnRows(storageRow())
+	mock.ExpectQuery("").WillReturnRows(storageRow())
+}
+
+func storageRow() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"endpoint", "bucket", "data_prefix", "bound_at"}).AddRow("", "bucket", "data", 6)
 }
 
 func anyArgs(n int) []driver.Value {

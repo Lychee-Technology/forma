@@ -51,6 +51,11 @@ const (
 	// them was restored or written outside the protocol, and the row's
 	// stamp does not fence the record's last recovery.
 	StaleLifecycleEpoch FindingKind = "lifecycle_epoch_mismatch"
+	// UnboundStorage: the run's endpoint, bucket and prefix are not the
+	// storage target the deployment is bound to, or it is bound to none.
+	// Nothing a bucket holds proves it is the writers' (a copy verifies as
+	// well), so garbage collection deletes nothing there.
+	UnboundStorage FindingKind = "storage_not_bound"
 	// UnrecognizedObject: an object under the schema's prefix whose key no
 	// V2 writer stages. Garbage collection never deletes it.
 	UnrecognizedObject FindingKind = "unrecognized_object"
@@ -61,7 +66,7 @@ const (
 // nothing.
 func (k FindingKind) blocking() bool {
 	switch k {
-	case NoRecord, RecordInvalid, MissingLifecycleEpoch, StaleLifecycleEpoch, MissingGeneration, HistoryGap, MissingRetainedManifest, InvalidManifest,
+	case UnboundStorage, NoRecord, RecordInvalid, MissingLifecycleEpoch, StaleLifecycleEpoch, MissingGeneration, HistoryGap, MissingRetainedManifest, InvalidManifest,
 		ForeignManifest:
 		return true
 	}

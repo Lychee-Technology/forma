@@ -121,6 +121,15 @@ type Reconciler struct {
 	Schemas SchemaEnumerator
 	Logger  *zap.Logger
 	Opts    Options
+	// Storage is the target this run lists and deletes in: Objects's
+	// endpoint and bucket, and Layout's prefix. A run deletes nothing
+	// unless it is the target the deployment is bound to
+	// (publication.BindStorage, checkStorage).
+	Storage publication.StorageTarget
+
+	// storageFault is the finding every schema of the run carries when
+	// Storage is not the bound target, nil when it is.
+	storageFault *Finding
 }
 
 // Run visits every schema: a collection under the schema's lock, a
@@ -134,6 +143,11 @@ func (r *Reconciler) Run(ctx context.Context) (Report, error) {
 	if r.Opts.GC && r.Locker == nil {
 		return Report{}, errors.New("manifest-reconcile --gc needs the schema lock cdc-flush and cdc-init take")
 	}
+	fault, err := r.checkStorage(ctx)
+	if err != nil {
+		return Report{}, err
+	}
+	r.storageFault = fault
 	ids, err := r.Schemas.SchemaIDs(ctx)
 	if err != nil {
 		return Report{}, fmt.Errorf("enumerate schemas: %w", err)

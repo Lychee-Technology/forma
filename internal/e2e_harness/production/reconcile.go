@@ -33,7 +33,8 @@ const reconcileGrace = 2500 * time.Millisecond
 // manifest-reconcile tool does: the S3 bucket, a database/sql handle on the
 // Env's database, the schema lock cdc-flush and cdc-init take, the
 // publication tables named after the Env's entity_main and its data prefix,
-// restricted to schema. The handle closes when the test ends.
+// restricted to schema, bound to the Env's bucket and prefix. The handle
+// closes when the test ends.
 func (e *Env) reconciler(t *testing.T, schema SchemaRef, opts reconcile.Options) *reconcile.Reconciler {
 	t.Helper()
 	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
@@ -48,6 +49,15 @@ func (e *Env) reconciler(t *testing.T, schema SchemaRef, opts reconcile.Options)
 		t.Fatalf("schema lock for manifest-reconcile: %v", err)
 	}
 	tables := publication.TablesFor(e.CDC.EntityMainTable)
+	// The operator's one-time binding (manifest-reconcile --bind-storage):
+	// the Env's writers publish into its bucket under its data prefix.
+	target := publication.StorageTarget{Bucket: e.Cluster.Bucket, Prefix: e.manifestLayout().Prefix}
+	if _, err := db.Exec(publication.StorageStatement(e.CDC.Engine, e.CDC.EntityMainTable)); err != nil {
+		t.Fatalf("create the storage binding table for manifest-reconcile: %v", err)
+	}
+	if b, err := publication.BindStorage(t.Context(), publication.DB(db), tables, target); err != nil || !b.Target.Same(target) {
+		t.Fatalf("bind the storage for manifest-reconcile to %s: binding %s, %v", target, b.Target, err)
+	}
 	return &reconcile.Reconciler{
 		DB:      db,
 		Tables:  tables,
@@ -57,5 +67,6 @@ func (e *Env) reconciler(t *testing.T, schema SchemaRef, opts reconcile.Options)
 		Schemas: &reconcile.Schemas{DB: db, Registry: e.Tables.SchemaRegistry, Tables: tables, Only: schema.ID},
 		Logger:  e.logger,
 		Opts:    opts,
+		Storage: target,
 	}
 }

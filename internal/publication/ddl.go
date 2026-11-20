@@ -42,12 +42,14 @@ const (
 	RecordTableSuffix     = "_publication"
 	GenerationTableSuffix = "_publication_generation"
 	EpochTableSuffix      = "_publication_epoch"
+	StorageTableSuffix    = "_publication_storage"
 )
 
 // Tables names the record, generation and epoch tables of one deployment,
-// each sanitized for a statement.
+// and its storage binding table (storage.go), each sanitized for a
+// statement.
 type Tables struct {
-	Record, Generation, Epoch string
+	Record, Generation, Epoch, Storage string
 }
 
 // TablesFor names the publication tables of entityMain. A schema-qualified
@@ -58,6 +60,7 @@ func TablesFor(entityMain string) Tables {
 		Record:     sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, RecordTableSuffix)),
 		Generation: sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, GenerationTableSuffix)),
 		Epoch:      sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, EpochTableSuffix)),
+		Storage:    sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, StorageTableSuffix)),
 	}
 }
 

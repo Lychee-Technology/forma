@@ -26,7 +26,9 @@ Forma Tools CLI
 - `cdc-init`：把 schema 的存活行全量导出为 base parquet，发布 `init` 代际，再按导出版本移交其未刷新条目；从不清空 `change_log`。
 - `manifest-reconcile`：按 Protocol V2 只读诊断每个 schema 的发布记录、代际历史与 manifest，
   报告丢失的代际与对象（含 schema、epoch、generation 与安全的处置方式）；`--gc` 按回收顺序
-  回收过期代际与水位线之下的孤儿对象（#891）。不再有 `--repair`：恢复方式是 `cdc-init` 重新初始化。
+  回收过期代际与水位线之下的孤儿对象（#891）。`--gc` 只在部署绑定的存储目标（endpoint、bucket、
+  data prefix）下删除：首次运行前用写入方自己的配置执行一次 `--bind-storage`。
+  不再有 `--repair`：恢复方式是 `cdc-init` 重新初始化。
   详见 `docs/manifest-reconcile.md`。退出码：0 一致 / 2 有发现 / 1 失败。
 - `validate-schema-consistency`：升级前校验 schema 元数据与 EAV 存储的一致性，
   使用与服务端相同的元数据加载路径。检查项包括：

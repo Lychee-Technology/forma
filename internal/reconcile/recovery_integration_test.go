@@ -34,7 +34,8 @@ func TestMissingCurrentHistoryRecoveryTakesTwoPublications(t *testing.T) {
 	var out bytes.Buffer
 	Report{Schemas: []SchemaReport{rep}}.Render(&out)
 	for _, step := range []string{
-		"restore the generation history row from a backup",
+		"do not restore the generation history row from a backup",
+		"carries superseded_at 0",
 		"takes two publications",
 		"then reported as missing_history",
 		"a later one must supersede that publication's generation in turn, a pass retire it, and the retention grace pass",

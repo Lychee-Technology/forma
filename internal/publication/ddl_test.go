@@ -14,9 +14,9 @@ import (
 // entity_main table every holder is given, qualifier kept.
 func TestTablesForFollowsEntityMain(t *testing.T) {
 	require.Equal(t, Tables{Record: `"entity_main_publication"`, Generation: `"entity_main_publication_generation"`,
-		Epoch: `"entity_main_publication_epoch"`}, TablesFor("entity_main"))
+		Epoch: `"entity_main_publication_epoch"`, Storage: `"entity_main_publication_storage"`}, TablesFor("entity_main"))
 	require.Equal(t, Tables{Record: `"app"."em_publication"`, Generation: `"app"."em_publication_generation"`,
-		Epoch: `"app"."em_publication_epoch"`}, TablesFor("app.em"))
+		Epoch: `"app"."em_publication_epoch"`, Storage: `"app"."em_publication_storage"`}, TablesFor("app.em"))
 }
 
 // TestStatementsUseOnlyPlainRows pins the DSQL-safe shape of the DDL: one
@@ -29,6 +29,8 @@ func TestStatementsUseOnlyPlainRows(t *testing.T) {
 	}
 	stmts := Statements(forma.EngineAuroraDSQL, "entity_main")
 	require.Len(t, stmts, 3)
+	stmts = append(stmts, StorageStatement(forma.EngineAuroraDSQL, "entity_main"))
+	require.Nil(t, textcollation.DDLDrift(StorageStatement(forma.EnginePostgreSQL, "entity_main")))
 	for _, s := range stmts {
 		require.NotContains(t, s, "COLLATE", "DSQL refuses a COLLATE clause")
 		require.True(t, strings.HasPrefix(s, "CREATE TABLE IF NOT EXISTS "), s)

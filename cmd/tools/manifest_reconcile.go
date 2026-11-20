@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -60,6 +61,9 @@ type reconcileOptions struct {
 	registryTable string
 	schemaID      int16
 	run           reconcile.Options
+	// bindStorage binds the deployment to the configured storage target
+	// and runs nothing else.
+	bindStorage bool
 }
 
 // parseReconcileFlags parses and validates the subcommand flags. A nil
@@ -90,6 +94,10 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	schemaID := fs.Int("schema-id", 0, "Reconcile only this schema (0 = every registered schema and every schema with a record)")
 	gc := fs.Bool("gc", false, "Collect garbage: raise the horizon, retire superseded generations, delete what no reader can still scan. "+
 		"Without it the run is a read-only diagnosis that reports what a collection would delete")
+	fs.BoolVar(&opts.bindStorage, "bind-storage", false,
+		"Bind this database's deployment to --s3-endpoint, --s3-bucket and --data-prefix, the target its writers publish into, "+
+			"and exit. Garbage collection deletes nothing under any other target. Run it once, with the writers' own values; "+
+			"an existing binding to another target is kept and the run fails")
 	repair := fs.Bool("repair", false, "Removed under Protocol V2; refused. Re-initialize with cdc-init instead")
 	fs.BoolVar(&opts.run.VerifyChecksums, "verify-checksums", false,
 		"Hash every object a retained generation lists and compare it with its manifest's sha256 and size (one full GET per object)")
@@ -108,6 +116,9 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 	}
 	if *repair {
 		return nil, errRepairRemoved
+	}
+	if opts.bindStorage && *gc {
+		return nil, errors.New("--bind-storage binds and exits; run --gc separately")
 	}
 	if err := opts.s3.validate(true); err != nil {
 		return nil, fmt.Errorf("validate s3 flags: %w", err)
@@ -185,6 +196,9 @@ func runManifestReconcile(ctx context.Context, args []string) error {
 		return fmt.Errorf("open the publication database: %w", err)
 	}
 	defer func() { _ = db.Close() }()
+	if opts.bindStorage {
+		return bindReconcileStorage(ctx, db, opts, os.Stdout)
+	}
 	s3Client, err := buildToolS3Client(ctx, opts.s3.region, opts.s3.endpoint, opts.s3.usePath)
 	if err != nil {
 		return fmt.Errorf("load AWS config: %w", err)
@@ -224,6 +238,7 @@ func newReconciler(opts *reconcileOptions, objects reconcile.ObjectStore, db *sq
 		Schemas: &reconcile.Schemas{DB: db, Registry: opts.registryTable, Tables: tables, Only: opts.schemaID},
 		Logger:  logger,
 		Opts:    opts.run,
+		Storage: opts.storageTarget(),
 	}
 	if !opts.run.GC {
 		// The diagnosis takes no lock: on Aurora DSQL the lock is a lease
@@ -237,6 +252,41 @@ func newReconciler(opts *reconcileOptions, objects reconcile.ObjectStore, db *sq
 	}
 	r.Locker = locker
 	return r, nil
+}
+
+// storageTarget is the target the run lists and deletes in.
+func (o *reconcileOptions) storageTarget() publication.StorageTarget {
+	return publication.StorageTarget{Endpoint: o.s3.endpoint, Bucket: o.s3.bucket, Prefix: o.dataPrefix}
+}
+
+// errStorageBoundElsewhere refuses --bind-storage on a deployment bound to
+// another target: only an operator who deleted the binding row rebinds it.
+var errStorageBoundElsewhere = errors.New("the deployment is bound to another storage target")
+
+// bindReconcileStorage creates the storage binding table and binds the
+// deployment to the configured target, unless it is bound already; a
+// binding to another target is kept and fails the run. The DDL is its own
+// statement, as Aurora DSQL needs.
+func bindReconcileStorage(ctx context.Context, db *sql.DB, opts *reconcileOptions, out io.Writer) error {
+	tables := publication.TablesFor(opts.entityMain)
+	if _, err := db.ExecContext(ctx, publication.StorageStatement(opts.db.Engine, opts.entityMain)); err != nil {
+		return fmt.Errorf("create the storage binding table %s: %w", tables.Storage, err)
+	}
+	want := opts.storageTarget()
+	b, err := publication.BindStorage(ctx, publication.DB(db), tables, want)
+	if err != nil {
+		return fmt.Errorf("bind the deployment's storage: %w", err)
+	}
+	if !b.Target.Same(want) {
+		return fmt.Errorf("bind the deployment's storage to %s: it is bound to %s since %d; delete the row of %s by hand "+
+			"only once the writers publish into the new target (docs/manifest-reconcile.md, \"Storage binding\"): %w",
+			want, b.Target, b.BoundAt, tables.Storage, errStorageBoundElsewhere)
+	}
+	_, err = fmt.Fprintf(out, "the deployment is bound to %s since %d\n", b.Target, b.BoundAt)
+	if err != nil {
+		return fmt.Errorf("write the binding: %w", err)
+	}
+	return nil
 }
 
 // reconcileExitError maps a rendered report to the process outcome:

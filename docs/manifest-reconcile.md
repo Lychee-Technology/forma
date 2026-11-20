@@ -117,20 +117,10 @@ and `{prefix}/{id}/e{epoch}/{base|delta}/{uuidv7}.parquet`), and of those only:
   margin the drift between S3's clock and the database's. Its staging began
   before the horizon, so its publication can never commit.
 
-And it deletes any of them only once a manifest of the schema's generation
-history, retained or expired, is in the bucket under `--data-prefix` and
-verifies against the digest PostgreSQL committed for it. Every V2 deployment
-builds the same keys for a schema id, so the key layout alone cannot tell this
-deployment's objects from another's (#463). A collector pointed at another
-deployment's bucket or prefix finds a published schema's current manifest
-missing (`missing_generation`) or foreign (`foreign_manifest`), and refuses. A
-schema with no manifest to find, an `UNPUBLISHED` one or one whose every
-manifest was collected, has nothing that binds the bucket to it, so the pass
-refuses to delete from S3 for it (`garbage collection refused: no manifest of
-the schema's generation history is in the bucket …`) and keeps its old keys
-until a generation of the schema publishes. That refusal is not a finding. Check
-that `--s3-bucket` and `--data-prefix` are the writers' before removing any of
-those keys by hand.
+And it deletes or forgets any of them only under the storage target the
+deployment is bound to (see "Storage binding"), and only once a manifest of the schema's
+generation history, retained or expired, is in the bucket under `--data-prefix`
+and verifies against the digest PostgreSQL committed for it.
 
 It never deletes:
 
@@ -143,8 +133,9 @@ It never deletes:
   These are reported as `unrecognized_object`.
 
 A pass deletes nothing at all for a schema when it cannot prove what readers
-may scan: a missing or invalid record, a record without its lifecycle epoch row,
-a lifecycle epoch that moved less than G ago (below), a published record whose history row is
+may scan: a run target that is not the bound storage, a missing or invalid record,
+a record without its lifecycle epoch row or with one at another epoch, a lifecycle
+epoch that moved less than G ago (below), a published record whose history row is
 missing or names another manifest or parent, a gap in the generation history
 (below), a retained manifest that is missing, any manifest that fails
 verification (retained or expired, and the current one also against the record,
@@ -173,10 +164,64 @@ and the recovery stamps it with the database clock after it found the record
 missing, so after the snapshot of every reader of the lost record. No later
 stamp lowers it: a drop or registration whose transaction began before the
 loss keeps the recovery's later stamp. Such a reader is done R_max + C after
-its snapshot, within G. The report says
+its snapshot, within G.
+
+The stamp fences the record only when the epoch row names the record's epoch.
+Every transition writes the two in one transaction, so they differ only when one
+was restored or written outside the protocol. A restore that puts back the epoch
+row's copy from before a recovery would put back the old epoch with a stamp long
+past G, while the recovered record, one epoch above, is younger than G. So a row
+at another epoch than the record's is a `lifecycle_epoch_mismatch` finding, and
+the pass deletes nothing. The report says
 `garbage collection refused: the schema's lifecycle epoch moved at …` with the
 time it resumes; it is not a finding, and needs no action. A drop or a
 registration delays collection by the same G, which costs storage only.
+
+## Storage binding
+
+Every V2 deployment builds the same keys for a schema id, so the key layout
+alone cannot tell this deployment's objects from another's (#463). Nor can a
+manifest that verifies: it proves the bucket holds this database's committed
+inventory, not that it is the bucket this database's writers publish into. A
+copy of the bucket holds the same manifests. Suppose generation N is copied into
+a second bucket, and the deployment using that bucket publishes N+1 into it
+while this database still names N. A collector of this database misdirected to
+the copy would verify N, and N+1's manifest and the objects only it lists would
+look like old orphans to it.
+
+So the deployment is bound to one storage target, the S3 endpoint (`--s3-endpoint`,
+empty for AWS), the bucket and the data prefix, in the
+`<entity_main>_publication_storage` table. Nothing in a bucket can bind it. The
+binding is the operator's statement of where the writers publish, made once:
+
+```bash
+# With the writers' own --s3-endpoint, --s3-bucket and --data-prefix (cdc-flush's
+# and cdc-init's -s3-prefix), copied from their configuration.
+forma-tools manifest-reconcile --s3-bucket B --data-prefix data --schema-registry-table schema_registry --bind-storage
+```
+
+It creates the table if needed (as its own DDL statement, as Aurora DSQL
+requires), writes the binding unless one exists, and exits. A binding to
+another target is kept and the run fails. A trailing slash on the endpoint or
+the prefix names the same target. Every run reads the binding, and a run whose
+target is not the bound one, or a deployment with no binding, reports
+`storage_not_bound` for every schema: the collection retires superseded
+generations but deletes and forgets nothing, and the diagnosis shows no plan.
+If the writers really moved to another target, delete the table's row by hand
+once they publish there, and bind again.
+
+The binding proves only that the run is configured with the target the
+operator declared. It cannot catch a binding made with the wrong values, so take
+them from the writers' configuration, not from the collector's.
+
+The verified-manifest check remains as a second guard. A collector bound and
+pointed at the wrong prefix finds a published schema's current manifest missing
+(`missing_generation`) or foreign (`foreign_manifest`), and refuses. A schema
+with no manifest to find, an `UNPUBLISHED` one or one whose every manifest was
+collected, has nothing in the bucket that matches its history, so the pass
+refuses to delete from S3 for it (`garbage collection refused: no manifest of
+the schema's generation history is in the bucket …`) and keeps its old keys
+until a generation of the schema publishes. That refusal is not a finding.
 
 ## Retention
 
@@ -185,6 +230,13 @@ registration delays collection by the same G, which costs storage only.
 | `--retention-grace` | G | 15m | At least the reader's pass deadline R_max (60s, `federated.DefaultPublishedPassDeadline`) plus C. A smaller value is refused, and so is a C whose sum with R_max does not fit a duration. |
 | `--clock-margin` | C | 1m | Positive. Covers the drift between the readers' clocks, the database clock and S3's `LastModified`; S3's whole-second precision is added on top of it, and a margin under a millisecond counts as one. |
 | `--orphan-age` | A | 2h | At least the writers' staging budget W (1h, `cdcv2.DefaultStagingBudget`) plus C. Any value is safe; a smaller one would refuse publications still inside their budget, so it is refused. A C whose sum with W does not fit a duration is refused before any connection opens. |
+
+G is compared in full. Every statement that asks whether a stamp is at least G
+old subtracts G rounded up to the millisecond, plus one millisecond, from the
+database time. The stamps (`retired_at`, the epoch row's `updated_at`) and the
+database time are each truncated to the millisecond, so a stamp s records an
+event before s + 1 ms. Compared against G truncated, the smallest accepted grace
+(60 s + 1 ns) would have ended after as little as 59.999 s.
 
 A reader that chose generation N finishes or aborts within R_max of its
 snapshot. N's replacement committed after that snapshot, and the collector
@@ -208,10 +260,12 @@ safe action. Any finding makes the run exit 2.
 | --- | --- | --- | --- |
 | `no_record` | The schema is registered but has no publication record. Readers and writers fail closed. | refused | Run `init-db`: it recovers a lost record at a fresh epoch. |
 | `record_invalid` | The record row is one no transition writes. Readers, writers and the collector fail closed on it. | refused | Recover at a fresh epoch: delete the row, run `init-db`, then `cdc-init` (see "An invalid record" below). Never restore an older copy of the row. |
+| `storage_not_bound` | The run's `--s3-endpoint`, `--s3-bucket` and `--data-prefix` are not the deployment's bound storage target, or it has none (see "Storage binding"). | refused | Not bound: run `--bind-storage` once with the writers' values. Bound elsewhere: run with the bound values; if the writers moved, delete the binding row by hand and bind again. |
 | `missing_lifecycle_epoch` | The schema has a record but no lifecycle epoch row, so nothing shows when it was last recovered. | refused | Write the row back at the record's epoch, stamped with the database time: `INSERT INTO <entity_main>_publication_epoch (schema_id, epoch, updated_at) VALUES (<id>, <epoch>, <now in epoch ms>)`. Collection resumes G after the stamp. |
+| `lifecycle_epoch_mismatch` | The lifecycle epoch row names another epoch than the record: one of them was restored or written outside the protocol, and the row's stamp does not show when the record was last recovered. | refused | Row below the record: write it back at the record's epoch with the database time, `UPDATE <entity_main>_publication_epoch SET epoch = <epoch>, updated_at = <now in epoch ms> WHERE schema_id = <id>`, never a backup copy; collection resumes G after the stamp. Row above the record: the record went back, so treat it as `record_invalid`. |
 | `awaiting_init` | The V2 cutover left the schema for its first `cdc-init`. Readers fail closed. | runs | Run `cdc-init` for the schema. |
-| `missing_generation` | The record names a generation whose manifest object is missing, or whose history row is missing or names another manifest. | refused | A lost or mismatched manifest: re-initialize with `cdc-init`; collection resumes once the lost generation expires. A lost history row: restore it from a backup. Otherwise collection stays refused until a generation above the unrecorded one expires, which takes two publications: the next one (a flush, a compaction or a `cdc-init`) supersedes the unrecorded generation, which is then a `missing_history` finding; a later publication supersedes the next one's generation, a pass retires it, and G passes. A single re-init followed by G is not enough. |
-| `missing_history` | The history has no row for a generation number above the highest expired row and at or below the record's counter. | refused | Restore the rows from a backup. Otherwise collection resumes by itself once a generation above the gap expires: a later publication (a `cdc-init` included) supersedes it, a pass retires it, and G passes. |
+| `missing_generation` | The record names a generation whose manifest object is missing, or whose history row is missing or names another manifest. | refused | A lost or mismatched manifest: re-initialize with `cdc-init`; collection resumes once the lost generation expires. A lost history row: do not restore it from a backup (see "Lost history rows" below). Collection stays refused until a generation above the unrecorded one expires, which takes two publications: the next one (a flush, a compaction or a `cdc-init`) supersedes the unrecorded generation, which is then a `missing_history` finding; a later publication supersedes the next one's generation, a pass retires it, and G passes. A single re-init followed by G is not enough. |
+| `missing_history` | The history has no row for a generation number above the highest expired row and at or below the record's counter. | refused | Do not restore the rows from a backup (see "Lost history rows" below). Collection resumes by itself once a generation above the gap expires: a later publication (a `cdc-init` included) supersedes it, a pass retires it, and G passes. |
 | `missing_retained_manifest` | A superseded generation inside its grace has no manifest. | refused | None for new reads. Collection resumes once the generation expires. |
 | `invalid_manifest` | A manifest's bytes are not the ones PostgreSQL committed: corruption or a writer bug. | refused | Restore the object from a versioned or backed-up copy whose SHA-256 is the history row's `manifest_sha256`. For the current generation, a re-init restores reads. |
 | `foreign_manifest` | A generation's manifest is not under `--data-prefix`. | refused | Run with the prefix the writers publish under. |
@@ -225,6 +279,17 @@ with it, so a rebuilt inventory that lacks a row's newest version, or holds a
 deleted row without its tombstone, serves wrong answers without any error.
 A re-init cannot do that: it exports every live row at its current version and
 replaces the parquet tiers.
+
+**Lost history rows.** Do not restore a lost generation history row from a
+backup. Suppose N's row is lost and N+1 publishes before the restore. N+1's
+publication already ran the update that supersedes N, and it matched no row. A
+backup taken while N was current restores N with `superseded_at = 0`, and no
+later publication supersedes N again. The collector never retires it, so it is
+retained forever, and if its manifest is gone too, collection stays refused
+forever. Nothing the tool can check proves that a backup row carries the exact
+generation identity and the retirement state the protocol would have given it,
+so the documented recovery is the publication-and-expiry sequence in the table
+above: no step of it writes a history row by hand.
 
 **An invalid record.** Do not restore the row from a backup. A backup's
 pointer from the same epoch can still pass every reader check and name an
@@ -279,6 +344,10 @@ forma-tools manifest-reconcile --s3-bucket B --schema-registry-table schema_regi
 forma-tools manifest-reconcile --s3-bucket B --schema-registry-table schema_registry --schema-id 7 --verify-checksums
 ```
 
+Bind the deployment's storage once before the first run (see "Storage
+binding"); until then every schema reports `storage_not_bound` and nothing is
+deleted.
+
 `--data-prefix` and `--entity-main-table` must be the writers' (`cdc-flush`
 and `cdc-init`'s `--s3-prefix`, and the `entity_main` the publication tables
 and the schema lock are named after). The database flags are the compactor's,
@@ -300,7 +369,9 @@ a pass that failed part way left for the next one.
 
 The collector's principal needs `s3:ListBucket`, `s3:GetObject` and
 `s3:DeleteObject` on the bucket; the diagnosis's, `s3:ListBucket` and
-`s3:GetObject`, and `SELECT` on the publication tables and the registry. Without `s3:ListBucket`, S3 answers 403 for a
+`s3:GetObject`, and `SELECT` on the publication tables, the storage binding
+table and the registry. `--bind-storage` needs `CREATE` on the schema (for the
+table, once) and `INSERT` on the table, and no S3 access. Without `s3:ListBucket`, S3 answers 403 for a
 missing key, which the tool reports as a failure rather than a loss.
 
 ## Not verified

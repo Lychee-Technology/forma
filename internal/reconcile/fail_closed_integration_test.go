@@ -84,8 +84,11 @@ func TestCollectorFailsClosed(t *testing.T) {
 			other := manifestv2.Layout{Prefix: "other"}
 			f.store.set(other.ParquetKey(testSchema, 1, manifestv2.TierBase, uuid.Must(uuid.NewV7())), []byte("x"),
 				f.serverMillis(t)-time.Hour.Milliseconds())
+			// Bound, wrongly, to that prefix: the binding cannot catch the
+			// wrong values, and the verified-manifest check is the second guard.
+			f.exec(t, "UPDATE %s SET data_prefix = 'other'", f.tables.Storage)
 			r := f.reconciler(testOptions(true))
-			r.Layout = other
+			r.Layout, r.Storage.Prefix = other, other.Prefix
 			return r
 		}, ForeignManifest, 3, true},
 	} {

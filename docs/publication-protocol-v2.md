@@ -774,11 +774,17 @@ steps 5 to 7 from what steps 1 to 4 read.
    manifest object or a key that manifest lists. An orphan is named by no history row,
    either as a manifest key or through a manifest that exists, and has
    `LastModified + P + C < H`. An old current manifest is a manifest object, not a file,
-   and stays protected however old it is. The collector (#891) deletes from S3 only once
-   a manifest of the schema's history, retained or expired, is in the bucket under its
-   prefix and verifies against its row's digest: that binds the bucket and prefix to the
-   database, which the key layout alone does not (#463), so a schema without one (an
-   `UNPUBLISHED` schema, or one whose every manifest was collected) has its old keys kept.
+   and stays protected however old it is. The collector (#891) deletes from S3 only
+   under the storage target (endpoint, bucket, prefix) the deployment is bound to in
+   PostgreSQL (`<entity_main>_publication_storage`, written once by `manifest-reconcile
+   --bind-storage`). Nothing a bucket holds proves it is the writers' bucket: the key
+   layout is every deployment's (#463), and a copy of the bucket holds manifests that
+   verify against this database's digests as well as the original does. It also deletes
+   only once a manifest of the schema's history, retained or expired, is in the bucket
+   under its prefix and verifies against its row's digest. That proves the bucket holds
+   this database's committed inventory, not that it is the writers' bucket, so a schema
+   without one (an `UNPUBLISHED` schema, or one whose every manifest was collected) has
+   its old keys kept as well.
 6. When step 5 has finished, delete the expired generations' manifest objects. An
    expired manifest goes only after the objects it alone listed. So if the next pass
    finds an expired manifest missing, its exclusive objects are already gone. That pass

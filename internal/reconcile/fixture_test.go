@@ -178,11 +178,21 @@ func newFixture(t *testing.T) *fixture {
 		require.NoError(t, err, stmt)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{f.tables.Record, f.tables.Generation, f.tables.Epoch} {
+		for _, table := range []string{f.tables.Record, f.tables.Generation, f.tables.Epoch, f.tables.Storage} {
 			_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 		}
 	})
+	_, err = db.Exec(publication.StorageStatement(forma.EnginePostgreSQL, entityMain))
+	require.NoError(t, err)
+	_, err = publication.BindStorage(context.Background(), publication.DB(db), f.tables, f.target())
+	require.NoError(t, err)
 	return f
+}
+
+// target is the storage the fixture's deployment is bound to: its bucket
+// under the layout's prefix.
+func (f *fixture) target() publication.StorageTarget {
+	return publication.StorageTarget{Bucket: "writers-bucket", Prefix: f.layout.Prefix}
 }
 
 func (f *fixture) serverMillis(t *testing.T) int64 {
@@ -375,6 +385,7 @@ func (f *fixture) reconciler(opts Options) *Reconciler {
 		}),
 		Schemas: fixedSchemas{testSchema},
 		Opts:    opts,
+		Storage: f.target(),
 	}
 }
 

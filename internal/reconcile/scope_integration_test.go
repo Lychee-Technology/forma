@@ -123,3 +123,105 @@ func (f *fixture) waitIntoASecond(t *testing.T) {
 	}
 	t.Fatal("the database clock never reached 100 to 500 ms into a second")
 }
+
+// TestCollectorDeletesNothingInACopyOfTheWritersBucket is R7-F1: generation
+// N is copied into a second bucket, and the deployment using that bucket
+// then publishes N+1 into it while this database still names N. A collector
+// of this database misdirected to the copy verifies the copied N against
+// the digest PostgreSQL committed, so no manifest finding stops it, and
+// N+1's manifest and the object only it lists are old keys of the layout no
+// generation of this history names. The copy is not the target the
+// deployment is bound to, so neither the diagnosis's plan nor the
+// collection deletes or forgets anything there; pointed at the writers'
+// bucket, the same database collects as usual.
+func TestCollectorDeletesNothingInACopyOfTheWritersBucket(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	g1 := f.publishInit(t, f.initialized(t), 1)
+	old := f.serverMillis(t) - time.Hour.Milliseconds()
+	copied := newMemStore(f.store.now)
+	for _, key := range f.store.keys() {
+		raw, err := f.store.Get(ctx, key)
+		require.NoError(t, err)
+		copied.set(key, raw, old)
+	}
+	live := []string{ // the other deployment's N+1, unique to the copy
+		f.layout.ManifestKey(testSchema, g1.rec.Epoch, g1.rec.Generation+1, uuid.New()),
+		f.layout.ParquetKey(testSchema, g1.rec.Epoch, manifestv2.TierDelta, uuid.Must(uuid.NewV7())),
+	}
+	for _, key := range live {
+		copied.set(key, []byte("the other deployment's live generation"), old)
+	}
+	before := copied.keys()
+
+	for _, gc := range []bool{false, true} {
+		r := f.reconciler(testOptions(gc))
+		r.Objects, r.Storage = copied, publication.StorageTarget{Bucket: "copy-bucket", Prefix: f.layout.Prefix}
+		report, err := r.Run(ctx)
+		require.NoError(t, err)
+		rep := report.Schemas[0]
+		require.NoError(t, rep.Err)
+		require.Equal(t, []FindingKind{UnboundStorage}, kinds(rep.Findings), "the copied N verifies: only the binding stops the pass, gc=%v", gc)
+		require.Equal(t, actionRebindStorage, rep.Findings[0].Action)
+		require.Contains(t, rep.Findings[0].Detail, `"writers-bucket"`)
+		require.Contains(t, rep.Findings[0].Detail, `"copy-bucket"`)
+		require.NotEmpty(t, rep.Refused, "gc=%v", gc)
+		require.Empty(t, rep.Plan.Objects, "gc=%v", gc)
+		require.Empty(t, rep.Plan.Manifests, "gc=%v", gc)
+		require.Empty(t, rep.Plan.Forget, "gc=%v", gc)
+		if gc {
+			require.Empty(t, rep.Collected.Objects)
+			require.Empty(t, rep.Collected.Manifests)
+			require.Empty(t, rep.Collected.Forgotten)
+		}
+		require.Equal(t, before, copied.keys(), "nothing is deleted in the copy, gc=%v", gc)
+	}
+
+	f.store.set(live[1], []byte("an orphan in the writers' own bucket"), old)
+	rep := f.pass(t, testOptions(true))
+	require.NoError(t, rep.Err)
+	require.Empty(t, rep.Findings)
+	require.Equal(t, []string{live[1]}, rep.Collected.Objects, "under the bound target the collection runs")
+}
+
+// TestAnUnboundDeploymentDeletesNothing: without a storage binding nothing
+// binds the bucket, so the pass reports it with the binding's action and
+// deletes nothing; BindStorage keeps the first binding, and a later one to
+// another target does not replace it.
+func TestAnUnboundDeploymentDeletesNothing(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.publishInit(t, f.initialized(t), 1)
+	orphan := f.layout.ParquetKey(testSchema, 1, manifestv2.TierDelta, uuid.Must(uuid.NewV7()))
+	f.store.set(orphan, []byte("old staging"), f.serverMillis(t)-time.Hour.Milliseconds())
+	f.exec(t, "DELETE FROM %s", f.tables.Storage)
+	before := f.store.keys()
+
+	rep := f.pass(t, testOptions(true))
+	require.NoError(t, rep.Err)
+	require.Equal(t, []FindingKind{UnboundStorage}, kinds(rep.Findings))
+	require.Equal(t, actionUnboundStorage, rep.Findings[0].Action)
+	require.Empty(t, rep.Collected.Objects)
+	require.Equal(t, before, f.store.keys())
+
+	b, err := publication.BindStorage(ctx, publication.DB(f.db), f.tables, publication.StorageTarget{Bucket: "writers-bucket", Prefix: "data/"})
+	require.NoError(t, err)
+	require.True(t, b.Target.Same(f.target()), "a trailing slash names the same prefix")
+	b, err = publication.BindStorage(ctx, publication.DB(f.db), f.tables, publication.StorageTarget{Bucket: "copy-bucket", Prefix: "data"})
+	require.NoError(t, err)
+	require.True(t, b.Target.Same(f.target()), "a later binding does not replace the first")
+	rep = f.pass(t, testOptions(true))
+	require.NoError(t, rep.Err)
+	require.Empty(t, rep.Findings)
+	require.Equal(t, []string{orphan}, rep.Collected.Objects)
+}
+
+// TestARunWhoseTargetIsNotItsLayoutFails: the storage target a run checks
+// against the binding must be the prefix it lists and deletes under.
+func TestARunWhoseTargetIsNotItsLayoutFails(t *testing.T) {
+	f := newFixture(t)
+	r := f.reconciler(testOptions(true))
+	r.Layout = manifestv2.Layout{Prefix: "other"}
+	_, err := r.Run(context.Background())
+	require.ErrorContains(t, err, "is not under its layout's prefix")
+}
