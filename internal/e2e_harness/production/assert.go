@@ -62,6 +62,14 @@ func (e *Env) AssertQueryMatches(ctx context.Context, q Query) *QueryResult {
 		e.failWithArtifacts(ctx, fmt.Sprintf("engine query failed: %v", err))
 		return nil
 	}
+	return e.AssertResultMatches(ctx, q, actual)
+}
+
+// AssertResultMatches compares actual, a result of q the caller ran through
+// the engine itself (a query held across a publication, say), with the
+// oracle, as AssertQueryMatches does.
+func (e *Env) AssertResultMatches(ctx context.Context, q Query, actual *QueryResult) *QueryResult {
+	e.T.Helper()
 	state, err := e.ExpectedState(q.Schema)
 	if err != nil {
 		e.T.Fatalf("build oracle state: %v", err)

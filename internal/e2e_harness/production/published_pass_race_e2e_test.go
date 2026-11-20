@@ -27,6 +27,10 @@ type pausingPublicationReader struct {
 	release     chan struct{}
 	reachOnce   sync.Once
 	releaseOnce sync.Once
+
+	mu sync.Mutex
+	// resolved are the generations ResolveGeneration answered while armed.
+	resolved []fedengine.PublishedGeneration
 }
 
 func newPausingPublicationReader() *pausingPublicationReader {
@@ -62,6 +66,25 @@ func (p *pausingPublicationReader) ReadRecord(ctx context.Context, tx pgx.Tx, sc
 		}
 	}
 	return rec, err
+}
+
+// ResolveGeneration records, while armed, the generation the engine's pass
+// scans: exactly the objects it answers.
+func (p *pausingPublicationReader) ResolveGeneration(ctx context.Context, rec fedengine.PublicationRecord) (fedengine.PublishedGeneration, error) {
+	gen, err := p.PublicationReader.ResolveGeneration(ctx, rec)
+	if err == nil && p.armed.Load() {
+		p.mu.Lock()
+		p.resolved = append(p.resolved, gen)
+		p.mu.Unlock()
+	}
+	return gen, err
+}
+
+// Resolved answers the generations resolved while armed, in order.
+func (p *pausingPublicationReader) Resolved() []fedengine.PublishedGeneration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]fedengine.PublishedGeneration(nil), p.resolved...)
 }
 
 // A flush that publishes while a pass over a published schema is in flight,
