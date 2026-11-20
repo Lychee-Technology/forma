@@ -75,17 +75,23 @@ func buildMergeSQL(sourceURIs []string, tmpURI, copyOptions string) (string, err
 		copyOptions = defaultMergeCopyOptions
 	}
 
+	// The rank is filtered with QUALIFY and never named: a generated column
+	// alias (the former _rn) shares the namespace of the payload columns, and
+	// an attribute exported under that name made DuckDB bind the filter and
+	// the EXCLUDE to the attribute instead of the rank, dropping every row
+	// and the attribute with it. The inner SELECT * ranks over the raw
+	// deleted_at, as the reader does; only the outer one normalizes it.
 	return fmt.Sprintf(`COPY (
-  SELECT * EXCLUDE (_rn) REPLACE (COALESCE(deleted_at, 0) AS deleted_at)
+  SELECT * REPLACE (COALESCE(deleted_at, 0) AS deleted_at)
   FROM (
-    SELECT *, ROW_NUMBER() OVER (
+    SELECT *
+    FROM read_parquet([%s], union_by_name=true)
+    QUALIFY ROW_NUMBER() OVER (
       PARTITION BY row_id
       ORDER BY %s
-    ) AS _rn
-    FROM read_parquet([%s], union_by_name=true)
+    ) = 1
   )
-  WHERE _rn = 1
-) TO '%s' (%s)`, mergeLWWOrderBy, strings.Join(quoted, ", "), sqlutil.EscapeLiteral(tmpURI), copyOptions), nil
+) TO '%s' (%s)`, strings.Join(quoted, ", "), mergeLWWOrderBy, sqlutil.EscapeLiteral(tmpURI), copyOptions), nil
 }
 
 // buildMergeRowsInSQL counts the raw version rows across the source files

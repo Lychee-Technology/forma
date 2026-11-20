@@ -107,6 +107,13 @@ func (s *stager) merge(ctx context.Context, req cdcv2.CompactRequest, sources []
 	s.stats = stats
 	staging := cdcv2.CompactStaging{Merged: merged}
 	if stats.RowsOut == 0 {
+		// A fold keeps one version of every row it reads, so sources that
+		// declare rows cannot merge to nothing: refuse rather than publish
+		// their removal with no replacement.
+		if declared := rowsOf(sources); declared > 0 || stats.RowsIn > 0 {
+			return cdcv2.CompactStaging{}, fmt.Errorf("merge of %d sources of schema %d generation %d read %d rows (%d declared) and wrote none; refusing to stage the removal of rows the inventory lists",
+				len(sources), req.SchemaID, req.Input.Generation, stats.RowsIn, declared)
+		}
 		// Every source held no row: there is nothing to list in their place.
 		return staging, nil
 	}
@@ -188,6 +195,14 @@ func byTier(files []manifestv2.File) (base, delta []manifestv2.File) {
 	return base, delta
 }
 
+func rowsOf(files []manifestv2.File) int64 {
+	var n int64
+	for _, f := range files {
+		n += f.RowCount
+	}
+	return n
+}
+
 func sizeOf(files []manifestv2.File) int64 {
 	var n int64
 	for _, f := range files {
@@ -199,13 +214,7 @@ func sizeOf(files []manifestv2.File) int64 {
 // dirtyRatio estimates the share of base rows the deltas update: delta rows
 // over base rows, 0 without a base row.
 func dirtyRatio(base, delta []manifestv2.File) float64 {
-	var baseRows, deltaRows int64
-	for _, f := range base {
-		baseRows += f.RowCount
-	}
-	for _, f := range delta {
-		deltaRows += f.RowCount
-	}
+	baseRows, deltaRows := rowsOf(base), rowsOf(delta)
 	if baseRows == 0 {
 		return 0
 	}

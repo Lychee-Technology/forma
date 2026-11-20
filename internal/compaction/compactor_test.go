@@ -137,3 +137,26 @@ func TestCompactorRefusesWhatTheProtocolForbids(t *testing.T) {
 	_, err = (&Compactor{Config: cdc.CompactionConfig{SchemaID: fixtureSchema}}).RunOnce(context.Background())
 	require.ErrorContains(t, err, "writer")
 }
+
+// emptyMerger is a Merger whose merge writes no row, whatever it reads: the
+// outcome R1-F1 of #907 produced when a payload column captured the rank.
+type emptyMerger struct{ rowsIn int64 }
+
+func (m emptyMerger) MergeToTmp(context.Context, []string, string) (MergeStats, error) {
+	return MergeStats{RowsIn: m.rowsIn}, nil
+}
+
+// TestCompactorRefusesAnEmptyMergeOfListedRows: sources whose entries declare
+// rows cannot merge to nothing, so a merge that wrote none is refused rather
+// than published as the removal of every source with no replacement.
+func TestCompactorRefusesAnEmptyMergeOfListedRows(t *testing.T) {
+	f := newV2Fixture(t)
+	f.publish(t, publication.KindFlush, f.object(t, manifestv2.TierDelta, []mergeFixtureRow{{rowA, 100, "0", "a-v1"}, {rowB, 100, "0", "b-v1"}}))
+	head := f.record(t)
+	for _, rowsIn := range []int64{0, 2} {
+		result, err := f.compactor(t, cdc.CompactionConfig{TargetBaseSizeBytes: 1}, func(c *Compactor) { c.Merger = emptyMerger{rowsIn: rowsIn} }).RunOnce(context.Background())
+		require.ErrorContains(t, err, "wrote none", "rows in %d", rowsIn)
+		require.Zero(t, result.Generation)
+		require.Equal(t, head, f.record(t), "the record is left as it was")
+	}
+}

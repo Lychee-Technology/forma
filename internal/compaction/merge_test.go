@@ -343,3 +343,56 @@ func TestDuckMerger_CarriesRetiredReservedNameColumnsThrough(t *testing.T) {
 	require.Equal(t, "stale-v2", createdAt, "the retired Created_At column is carried through verbatim")
 	require.Equal(t, "stale-v2", rowIDAttr, "and so is the deduplicated Row_Id_1")
 }
+
+// TestDuckMerger_PayloadColumnNamedLikeTheRankSurvives pins R1-F1 of #907: an
+// attribute exported as _rn, the name the merge once gave its rank, captured
+// the rank's filter and EXCLUDE, so three versions of two rows merged to zero
+// rows and staging then dropped every merged source. The rank is unnamed now:
+// both winners survive with their payload, the _rn attribute included.
+func TestDuckMerger_PayloadColumnNamedLikeTheRankSurvives(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	require.NoError(t, err)
+	defer db.Close()
+
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "rank_named_attribute.parquet")
+	tmpPath := filepath.Join(dir, "merged.parquet")
+	_, err = db.Exec(fmt.Sprintf(`COPY (
+  SELECT CAST('%s' AS UUID) AS row_id, CAST(100 AS BIGINT) AS changed_at, CAST(0 AS BIGINT) AS deleted_at,
+    CAST(50 AS BIGINT) AS ltbase_created_at, 'a-v1' AS title, CAST(7 AS BIGINT) AS _rn
+  UNION ALL
+  SELECT CAST('%s' AS UUID), CAST(200 AS BIGINT), CAST(0 AS BIGINT), CAST(50 AS BIGINT), 'a-v2', CAST(8 AS BIGINT)
+  UNION ALL
+  SELECT CAST('%s' AS UUID), CAST(100 AS BIGINT), CAST(0 AS BIGINT), CAST(50 AS BIGINT), 'b-v1', CAST(9 AS BIGINT)
+) TO '%s' (FORMAT PARQUET)`, rowA, rowA, rowB, sqlutil.EscapeLiteral(srcPath)))
+	require.NoError(t, err)
+
+	merger := &DuckMerger{DB: db}
+	stats, err := merger.MergeToTmp(context.Background(), []string{srcPath}, tmpPath)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), stats.RowsIn)
+	require.Equal(t, int64(2), stats.RowsOut, "both winners must survive a payload column named _rn")
+	require.Contains(t, stats.Columns, "_rn", "the _rn attribute is a payload column and must be kept")
+
+	type mergedRow struct {
+		changedAt int64
+		title     string
+		rn        int64
+	}
+	got := map[string]mergedRow{}
+	rows, err := db.Query(fmt.Sprintf(
+		"SELECT CAST(row_id AS VARCHAR), changed_at, title, _rn FROM read_parquet('%s')", sqlutil.EscapeLiteral(tmpPath)))
+	require.NoError(t, err)
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var r mergedRow
+		require.NoError(t, rows.Scan(&id, &r.changedAt, &r.title, &r.rn))
+		got[id] = r
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, map[string]mergedRow{
+		rowA: {changedAt: 200, title: "a-v2", rn: 8},
+		rowB: {changedAt: 100, title: "b-v1", rn: 9},
+	}, got)
+}
