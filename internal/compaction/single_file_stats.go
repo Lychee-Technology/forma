@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/lychee-technology/forma/internal/manifest"
 )
 
 // SingleFileStats recomputes one parquet file's manifest metadata (row
@@ -30,12 +32,12 @@ func SingleFileStats(ctx context.Context, db *sql.DB, uri string) (MergeStats, e
 
 // IsConcurrentModification reports whether err is a confirmed HTTP 412
 // conditional-put rejection — the only save failure that proves the write
-// did not commit. Exported for callers outside this package (the
-// manifest-reconcile tool) that save manifests under an etag without going
-// through the compactor's saveManifestChecked.
+// did not commit. The V1 manifest-reconcile tool saves V1 manifests under an
+// etag and classifies its conflicts with it until garbage collection (#891)
+// replaces it; the compactor no longer saves a mutable manifest.
 func IsConcurrentModification(err error) bool {
 	if err == nil {
 		return false
 	}
-	return isPreconditionFailed(err)
+	return manifest.IsPreconditionFailed(err)
 }

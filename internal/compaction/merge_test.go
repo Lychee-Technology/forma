@@ -61,9 +61,10 @@ const (
 // TestDuckMerger_MergeToTmp runs the real merge SQL on in-memory DuckDB over
 // local parquet fixtures shaped like pre-#274 production exports: base rows
 // carry deleted_at=0 (init exporter's COALESCE), live LEGACY delta rows carry
-// NULL, and tombstones carry the delete timestamp. Pins the #188 fold
-// behaviors: newest-version wins, tombstones drop, and survivors are
-// normalized to deleted_at=0 with changed_at carried verbatim (#210). The
+// NULL, and tombstones carry the delete timestamp. Pins the fold: the newest
+// version wins, a newest tombstone is kept as the row's version (Protocol
+// V2: a compaction keeps tombstones), and live survivors are normalized to
+// deleted_at=0 with changed_at carried verbatim (#210). The
 // rowD tie is a LEGACY-vintage characterization: 0-vs-NULL still resolves
 // base-wins under NULLS LAST, which keeps the merge deterministic over old
 // delta objects. Post-#274 both live encodings are 0 and the tie winner is
@@ -87,7 +88,7 @@ func TestDuckMerger_MergeToTmp(t *testing.T) {
 	})
 	writeParquetFixture(t, db, deltaPath, []mergeFixtureRow{
 		{rowA, 200, "NULL", "a-v2"},    // newer live version wins
-		{rowB, 300, "300", "NULL"},     // tombstone: row B must vanish
+		{rowB, 300, "300", "NULL"},     // tombstone: kept as row B's newest version
 		{rowD, 150, "NULL", "d-delta"}, // equal-ver_ts tie: base copy must win
 	})
 
@@ -96,11 +97,11 @@ func TestDuckMerger_MergeToTmp(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, int64(7), stats.RowsIn)
-	require.Equal(t, int64(3), stats.RowsOut)
+	require.Equal(t, int64(4), stats.RowsOut)
 	require.Equal(t, rowA, stats.RowIDMin)
 	require.Equal(t, rowD, stats.RowIDMax)
 	require.Equal(t, int64(100), stats.CreatedMin)
-	require.Equal(t, int64(200), stats.CreatedMax)
+	require.Equal(t, int64(300), stats.CreatedMax)
 
 	type mergedRow struct {
 		changedAt, deletedAt int64
@@ -112,16 +113,18 @@ func TestDuckMerger_MergeToTmp(t *testing.T) {
 	require.NoError(t, err)
 	defer rows.Close()
 	for rows.Next() {
-		var id, title string
+		var id string
+		var title sql.NullString
 		var r mergedRow
 		require.NoError(t, rows.Scan(&id, &r.changedAt, &r.deletedAt, &title))
-		r.title = title
+		r.title = title.String
 		got[id] = r
 	}
 	require.NoError(t, rows.Err())
 
 	require.Equal(t, map[string]mergedRow{
 		rowA: {changedAt: 200, deletedAt: 0, title: "a-v2"},   // winner verbatim, NULL normalized to 0
+		rowB: {changedAt: 300, deletedAt: 300},                // the tombstone, kept
 		rowC: {changedAt: 100, deletedAt: 0, title: "c-v1"},   // untouched base row
 		rowD: {changedAt: 150, deletedAt: 0, title: "d-base"}, // tie: base-wins preserved
 	}, got)
@@ -168,9 +171,9 @@ func TestDuckMerger_EqualVertsIdenticalZeroEncodedCopies(t *testing.T) {
 	require.Equal(t, "same-value", title, "whichever copy won, the served value must be the shared one")
 }
 
-// TestDuckMerger_AllTombstones pins the schema-empties-out edge: the merge
-// writes a zero-row parquet and the stats come back as zeros, so the caller
-// still records a (RowCount=0) manifest entry.
+// TestDuckMerger_AllTombstones pins a merge whose every row ends deleted:
+// each row's tombstone is its newest version and is kept, so a flush that
+// rebases over the compaction with an older live copy cannot resurrect it.
 func TestDuckMerger_AllTombstones(t *testing.T) {
 	db, err := sql.Open("duckdb", "")
 	require.NoError(t, err)
@@ -187,19 +190,32 @@ func TestDuckMerger_AllTombstones(t *testing.T) {
 	merger := &DuckMerger{DB: db}
 	stats, err := merger.MergeToTmp(context.Background(), []string{basePath, deltaPath}, tmpPath)
 	require.NoError(t, err)
-	// Verify basic stats; Columns will be populated by DescribeColumns
 	require.Equal(t, int64(2), stats.RowsIn)
-	require.Equal(t, int64(0), stats.RowsOut)
-	require.Equal(t, "", stats.RowIDMin)
-	require.Equal(t, "", stats.RowIDMax)
-	require.Equal(t, int64(0), stats.CreatedMin)
-	require.Equal(t, int64(0), stats.CreatedMax)
-	// Columns should be populated even for zero-row merges
-	require.NotNil(t, stats.Columns)
+	require.Equal(t, int64(1), stats.RowsOut)
+	require.Equal(t, rowA, stats.RowIDMin)
+	require.NoError(t, parquetcheck.Check("merged", stats.Columns))
 
-	var n int
-	require.NoError(t, db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM read_parquet('%s')", tmpPath)).Scan(&n))
-	require.Zero(t, n)
+	var changedAt, deletedAt int64
+	require.NoError(t, db.QueryRow(fmt.Sprintf("SELECT changed_at, deleted_at FROM read_parquet('%s')", tmpPath)).Scan(&changedAt, &deletedAt))
+	require.Equal(t, int64(200), changedAt)
+	require.Equal(t, int64(200), deletedAt)
+}
+
+// TestDuckMerger_FailsWhenItCannotDescribeTheMergedFile: a V2 manifest entry
+// lists its file's columns, with no footer-probe fallback, so a merged file
+// whose footer cannot be read is not handed on.
+func TestDuckMerger_FailsWhenItCannotDescribeTheMergedFile(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	require.NoError(t, err)
+	defer db.Close()
+	dir := t.TempDir()
+	src := filepath.Join(dir, "base.parquet")
+	writeParquetFixture(t, db, src, []mergeFixtureRow{{rowA, 100, "0", "a-v1"}})
+	merger := &DuckMerger{DB: db, describeColumns: func(context.Context, string) (map[string]string, error) {
+		return nil, fmt.Errorf("footer unreadable")
+	}}
+	_, err = merger.MergeToTmp(context.Background(), []string{src}, filepath.Join(dir, "merged.parquet"))
+	require.ErrorContains(t, err, "footer unreadable")
 }
 
 func TestDuckMerger_RequiresDB(t *testing.T) {
@@ -273,13 +289,13 @@ func TestDuckMerger_QuoteBearingSourceAndTarget(t *testing.T) {
 	stats, err := merger.MergeToTmp(context.Background(), []string{basePath, deltaPath}, tmpPath)
 	require.NoError(t, err, "a quote-bearing source and target render escaped and must merge")
 	require.Equal(t, int64(4), stats.RowsIn)
-	require.Equal(t, int64(1), stats.RowsOut)
+	require.Equal(t, int64(2), stats.RowsOut, "row A's newest version and row B's tombstone")
 	require.Equal(t, rowA, stats.RowIDMin)
-	require.Equal(t, rowA, stats.RowIDMax)
+	require.Equal(t, rowB, stats.RowIDMax)
 
 	var title string
 	err = db.QueryRow(fmt.Sprintf(
-		"SELECT title FROM read_parquet('%s')", sqlutil.EscapeLiteral(tmpPath))).Scan(&title)
+		"SELECT title FROM read_parquet('%s') WHERE deleted_at = 0", sqlutil.EscapeLiteral(tmpPath))).Scan(&title)
 	require.NoError(t, err)
 	require.Equal(t, "a-v2", title)
 }
@@ -326,4 +342,57 @@ func TestDuckMerger_CarriesRetiredReservedNameColumnsThrough(t *testing.T) {
 	require.Equal(t, "a-v2", title)
 	require.Equal(t, "stale-v2", createdAt, "the retired Created_At column is carried through verbatim")
 	require.Equal(t, "stale-v2", rowIDAttr, "and so is the deduplicated Row_Id_1")
+}
+
+// TestDuckMerger_PayloadColumnNamedLikeTheRankSurvives pins R1-F1 of #907: an
+// attribute exported as _rn, the name the merge once gave its rank, captured
+// the rank's filter and EXCLUDE, so three versions of two rows merged to zero
+// rows and staging then dropped every merged source. The rank is unnamed now:
+// both winners survive with their payload, the _rn attribute included.
+func TestDuckMerger_PayloadColumnNamedLikeTheRankSurvives(t *testing.T) {
+	db, err := sql.Open("duckdb", "")
+	require.NoError(t, err)
+	defer db.Close()
+
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "rank_named_attribute.parquet")
+	tmpPath := filepath.Join(dir, "merged.parquet")
+	_, err = db.Exec(fmt.Sprintf(`COPY (
+  SELECT CAST('%s' AS UUID) AS row_id, CAST(100 AS BIGINT) AS changed_at, CAST(0 AS BIGINT) AS deleted_at,
+    CAST(50 AS BIGINT) AS ltbase_created_at, 'a-v1' AS title, CAST(7 AS BIGINT) AS _rn
+  UNION ALL
+  SELECT CAST('%s' AS UUID), CAST(200 AS BIGINT), CAST(0 AS BIGINT), CAST(50 AS BIGINT), 'a-v2', CAST(8 AS BIGINT)
+  UNION ALL
+  SELECT CAST('%s' AS UUID), CAST(100 AS BIGINT), CAST(0 AS BIGINT), CAST(50 AS BIGINT), 'b-v1', CAST(9 AS BIGINT)
+) TO '%s' (FORMAT PARQUET)`, rowA, rowA, rowB, sqlutil.EscapeLiteral(srcPath)))
+	require.NoError(t, err)
+
+	merger := &DuckMerger{DB: db}
+	stats, err := merger.MergeToTmp(context.Background(), []string{srcPath}, tmpPath)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), stats.RowsIn)
+	require.Equal(t, int64(2), stats.RowsOut, "both winners must survive a payload column named _rn")
+	require.Contains(t, stats.Columns, "_rn", "the _rn attribute is a payload column and must be kept")
+
+	type mergedRow struct {
+		changedAt int64
+		title     string
+		rn        int64
+	}
+	got := map[string]mergedRow{}
+	rows, err := db.Query(fmt.Sprintf(
+		"SELECT CAST(row_id AS VARCHAR), changed_at, title, _rn FROM read_parquet('%s')", sqlutil.EscapeLiteral(tmpPath)))
+	require.NoError(t, err)
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var r mergedRow
+		require.NoError(t, rows.Scan(&id, &r.changedAt, &r.title, &r.rn))
+		got[id] = r
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, map[string]mergedRow{
+		rowA: {changedAt: 200, title: "a-v2", rn: 8},
+		rowB: {changedAt: 100, title: "b-v1", rn: 9},
+	}, got)
 }

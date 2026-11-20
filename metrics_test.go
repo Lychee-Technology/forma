@@ -55,6 +55,9 @@ var retiredMetricNames = []string{
 	// #596: a dirty-set-over-result ratio standing in for a Postgres scan
 	// count Forma does not observe.
 	"fed_query_pushdown_efficiency",
+	// #890: a V1 SaveManifest that succeeded without advancing the
+	// manifest's metadata; a V2 compaction publishes by compare-and-set.
+	"compaction_manifest_contract_violation_total",
 }
 
 // TestRetiredMetricNamesStayOutOfTheCatalogue is the other half of the

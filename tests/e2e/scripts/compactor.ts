@@ -23,8 +23,6 @@ interface CompactorReport {
   config: {
     s3Bucket: string;
     s3Endpoint: string;
-    manifestPrefix: string;
-    manifestTemplate: string;
     targetBaseSizeMB: number;
     maxDeltaSizeMB: number;
     dirtyRatioPct: number;
@@ -91,9 +89,16 @@ async function runCompactorForSchema(schemaId: number, reportConfig: CompactorRe
     '--s3-bucket', config.s3.bucket,
     '--s3-endpoint', config.s3.endpoint,
     '--s3-region', 'us-east-1',
+    '--s3-use-ssl=' + String(config.s3.useSsl),
     '--s3-use-path=' + String(config.s3.usePath),
-    '--manifest-prefix', reportConfig.manifestPrefix,
-    '--manifest-template', reportConfig.manifestTemplate,
+    // Protocol V2 (#890): the compactor reads the schema's publication record
+    // and publishes the next generation through it.
+    '--pg-host', config.pg.host,
+    '--pg-port', String(config.pg.port),
+    '--pg-user', config.pg.user,
+    '--pg-db', config.pg.database,
+    '--pg-ssl-mode', config.pg.sslMode,
+    '--entity-main-table', config.tables.entityMain,
     '--target-base-size-mb', String(reportConfig.targetBaseSizeMB),
     '--max-delta-size-mb', String(reportConfig.maxDeltaSizeMB),
     '--dirty-ratio-pct', String(reportConfig.dirtyRatioPct),
@@ -109,12 +114,13 @@ async function runCompactorForSchema(schemaId: number, reportConfig: CompactorRe
       AWS_ACCESS_KEY_ID: config.s3.accessKey,
       AWS_SECRET_ACCESS_KEY: config.s3.secretKey,
       AWS_REGION: 'us-east-1',
+      PGPASSWORD: config.pg.password,
     };
 
     const res = await runTool(config.toolsPath, args, {
       env,
       timeoutMs: config.toolTimeoutMs,
-      redactValues: [config.s3.secretKey, config.s3.accessKey],
+      redactValues: [config.pg.password, config.s3.secretKey, config.s3.accessKey],
     });
 
     result.exitCode = res.exitCode;
@@ -133,12 +139,12 @@ async function runCompactorForSchema(schemaId: number, reportConfig: CompactorRe
       return result;
     }
 
-    // Compaction merges delta into base, so file counts may shrink; the
-    // invariant that must hold is manifest consistency — every parquet the
-    // manifest still references must exist on S3.
+    // A compaction writes a merged base object and a manifest generation
+    // under the data prefix and deletes nothing; the invariant that must hold
+    // is that every parquet a manifest references exists on S3.
     const validation = await validateCDCOutput({
-      dataPrefix: '',
-      manifestPrefix: 'manifest',
+      dataPrefix: reportConfig.dataPrefix,
+      manifestPrefix: reportConfig.dataPrefix,
       requireParquet: true,
     });
     result.s3Validation = validation;
@@ -180,12 +186,10 @@ async function main() {
   const reportConfig: CompactorReport['config'] = {
     s3Bucket: config.s3.bucket,
     s3Endpoint: config.s3.endpoint,
-    manifestPrefix: '', // Root of bucket
-    manifestTemplate: 'manifest/{{.SchemaID}}.json',
     targetBaseSizeMB: 256,
     maxDeltaSizeMB: 50,
     dirtyRatioPct: 5,
-    dataPrefix: 'data',
+    dataPrefix: config.s3.prefix,
   };
 
   const report: CompactorReport = {

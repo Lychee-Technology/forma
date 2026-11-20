@@ -163,8 +163,9 @@ func scanMergedEvoRow(ctx context.Context, t *testing.T, env *Env, path string, 
 
 // assertMergedBaseUnion pins #257 criterion (b): the merged base's physical
 // schema is the monotonic column union with widened types, and its rows are
-// exactly the LWW winners — cross-generation folds are ROW-level (a v2
-// winner carries old_col NULL; values do not column-merge).
+// exactly each row's newest version, the deleted row's tombstone included
+// (Protocol V2 keeps tombstones, #890) — cross-generation folds are ROW-level
+// (a v2 winner carries old_col NULL; values do not column-merge).
 func assertMergedBaseUnion(ctx context.Context, t *testing.T, env *Env, key string, seed *evolutionSeed) {
 	t.Helper()
 	requireParquetCols(t, "merged base", describeParquetCols(ctx, t, env, key), map[string]string{
@@ -184,11 +185,11 @@ func assertMergedBaseUnion(ctx context.Context, t *testing.T, env *Env, key stri
 		 FROM read_parquet('%s')`, path)).Scan(&total, &tombstones, &nullDeleted); err != nil {
 		t.Fatalf("scan merged base %s: %v", key, err)
 	}
-	if total != 8 { // 5 base − 1 deleted + 4 v2 creates
-		t.Errorf("merged base holds %d rows, want 8 LWW winners", total)
+	if total != 9 { // 5 base − 1 deleted + 4 v2 creates, + the deleted row's tombstone
+		t.Errorf("merged base holds %d rows, want 8 LWW winners and 1 tombstone", total)
 	}
-	if tombstones != 0 || nullDeleted != 0 {
-		t.Errorf("merged base holds %d tombstones, %d NULL deleted_at, want 0/0 (dropped and normalized)", tombstones, nullDeleted)
+	if tombstones != 1 || nullDeleted != 0 {
+		t.Errorf("merged base holds %d tombstones, %d NULL deleted_at, want 1/0 (kept and normalized)", tombstones, nullDeleted)
 	}
 
 	// v2 winners over v1 rows: fractional score, new_col set, old_col NULL.
@@ -225,9 +226,15 @@ func assertMergedBaseUnion(ctx context.Context, t *testing.T, env *Env, key stri
 		}
 	}
 
-	// The deleted v1 row is physically absent.
-	if n, _, _, _ := scanMergedEvoRow(ctx, t, env, path, seed.deleted.RowID); n != 0 {
-		t.Errorf("deleted row survives the merged base (%d rows), want physically gone", n)
+	// The deleted v1 row is its tombstone alone.
+	var n, live int
+	if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
+		`SELECT COUNT(*), COUNT(*) FILTER (WHERE deleted_at = 0) FROM read_parquet('%s') WHERE CAST(row_id AS VARCHAR) = ?`, path),
+		seed.deleted.RowID.String()).Scan(&n, &live); err != nil {
+		t.Fatalf("scan merged base for the deleted row: %v", err)
+	}
+	if n != 1 || live != 0 {
+		t.Errorf("deleted row: merged base holds %d versions, %d live; want its tombstone alone", n, live)
 	}
 }
 
@@ -332,8 +339,8 @@ func TestCompactionMixedGenerationEquivalence(t *testing.T) {
 	if result.RowsIn != 12 { // 5 base + delta(2 updates + 1 tombstone + 4 creates)
 		t.Errorf("RowsIn = %d, want 12", result.RowsIn)
 	}
-	if result.RowsOut != 8 { // 5 − 1 deleted + 4 created
-		t.Errorf("RowsOut = %d, want 8", result.RowsOut)
+	if result.RowsOut != 9 { // 5 − 1 deleted + 4 created, + the tombstone
+		t.Errorf("RowsOut = %d, want 9", result.RowsOut)
 	}
 	if result.NewBaseKey == "" {
 		t.Fatal("RewriteApplied result carries no NewBaseKey")
@@ -378,11 +385,11 @@ func verifyPostCompactionEvolution(ctx context.Context, t *testing.T, env *Env, 
 	if second.Outcome != compaction.RewriteApplied {
 		t.Fatalf("second pass outcome = %s (dirty ratio %.2f), want %s (union-typed base must be re-mergeable)", second.Outcome, second.DirtyRatio, compaction.RewriteApplied)
 	}
-	if second.RowsIn != 13 { // 8 merged base + delta(1 update + 1 create + 3 ex-hot)
-		t.Errorf("second-merge RowsIn = %d, want 13", second.RowsIn)
+	if second.RowsIn != 14 { // 9 merged base (1 tombstone) + delta(1 update + 1 create + 3 ex-hot)
+		t.Errorf("second-merge RowsIn = %d, want 14", second.RowsIn)
 	}
-	if second.RowsOut != 12 {
-		t.Errorf("second-merge RowsOut = %d, want 12", second.RowsOut)
+	if second.RowsOut != 13 { // 12 live rows + the kept tombstone
+		t.Errorf("second-merge RowsOut = %d, want 13", second.RowsOut)
 	}
 
 	// Monotonic healing: the second merge output keeps the union shape.

@@ -310,3 +310,23 @@ func shouldFlush(cfg CDCConfig, cnt int64, oldest int64) bool {
 	}
 	return false
 }
+
+// OpenPublicationDB opens the PostgreSQL or Aurora DSQL pool a V2 writer
+// outside cdc-flush and cdc-init (the compactor) publishes through, exactly
+// as cdc-flush opens its own: cfg's PG* fields, and an IAM token from the
+// AWS credentials cfg resolves when PGUseIAM is set.
+func OpenPublicationDB(ctx context.Context, cfg CDCConfig, logger *zap.Logger) (*sql.DB, error) {
+	region, credProvider := cfg.S3Region, aws.CredentialsProvider(nil)
+	if cfg.PGUseIAM {
+		r, creds, _, err := setupAWSClient(ctx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("resolve the AWS credentials of the IAM database token: %w", err)
+		}
+		region, credProvider = r, creds
+	}
+	db, _, err := setupPostgresConnection(ctx, cfg, region, credProvider, logger)
+	if err != nil {
+		return nil, fmt.Errorf("open the publication database: %w", err)
+	}
+	return db, nil
+}

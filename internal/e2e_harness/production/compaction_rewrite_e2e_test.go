@@ -13,13 +13,15 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 )
 
-// assertRewrittenBase asserts the merged base parquet holds exactly the LWW
-// winners: one live row per surviving entity with the winning version's
-// changed_at carried verbatim (#210: no re-stamping) and, when the winning
-// event pins a title, the winning payload; zero rows for physically removed
-// entities; zero tombstones; and deleted_at normalized to 0 on every survivor
-// (#274: 0 is the canonical live encoding on every cold tier).
-func assertRewrittenBase(ctx context.Context, t *testing.T, env *Env, key string, winners map[uuid.UUID]*Event, absent []uuid.UUID) {
+// assertRewrittenBase asserts the merged base parquet holds exactly each
+// merged row's newest version: one live row per surviving entity with the
+// winning version's changed_at carried verbatim (#210: no re-stamping) and,
+// when the winning event pins a title, the winning payload; exactly one
+// tombstone per deleted entity, which Protocol V2 keeps so that a flush
+// rebased over the compaction cannot resurrect it (#890); and deleted_at
+// normalized to 0 on every live survivor (#274: 0 is the canonical live
+// encoding on every cold tier).
+func assertRewrittenBase(ctx context.Context, t *testing.T, env *Env, key string, winners map[uuid.UUID]*Event, deleted []uuid.UUID) {
 	t.Helper()
 	path := env.ParquetURI(key)
 
@@ -31,11 +33,11 @@ func assertRewrittenBase(ctx context.Context, t *testing.T, env *Env, key string
 		 FROM read_parquet('%s')`, path)).Scan(&total, &tombstones, &nullDeleted); err != nil {
 		t.Fatalf("scan rewritten base %s: %v", key, err)
 	}
-	if total != len(winners) {
-		t.Errorf("rewritten base holds %d rows, want %d LWW winners", total, len(winners))
+	if total != len(winners)+len(deleted) {
+		t.Errorf("rewritten base holds %d rows, want %d LWW winners and %d tombstones", total, len(winners), len(deleted))
 	}
-	if tombstones != 0 {
-		t.Errorf("rewritten base holds %d tombstone rows, want 0 (rewrite must drop them)", tombstones)
+	if tombstones != len(deleted) {
+		t.Errorf("rewritten base holds %d tombstone rows, want %d (a compaction keeps each deleted row's tombstone)", tombstones, len(deleted))
 	}
 	if nullDeleted != 0 {
 		t.Errorf("rewritten base holds %d rows with deleted_at NULL, want 0 (normalized to 0)", nullDeleted)
@@ -47,12 +49,12 @@ func assertRewrittenBase(ctx context.Context, t *testing.T, env *Env, key string
 		var title sql.NullString
 		if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
 			`SELECT COUNT(*), MAX(changed_at), MAX("title")
-			 FROM read_parquet('%s') WHERE CAST(row_id AS VARCHAR) = ?`, path),
+			 FROM read_parquet('%s') WHERE CAST(row_id AS VARCHAR) = ? AND deleted_at = 0`, path),
 			rowID.String()).Scan(&n, &changedAt, &title); err != nil {
 			t.Fatalf("scan rewritten base row %s: %v", rowID, err)
 		}
 		if n != 1 {
-			t.Errorf("rewritten base holds %d versions of row %s, want exactly 1", n, rowID)
+			t.Errorf("rewritten base holds %d live versions of row %s, want exactly 1", n, rowID)
 			continue
 		}
 		if !changedAt.Valid || changedAt.Int64 != ev.ChangedAt {
@@ -66,15 +68,15 @@ func assertRewrittenBase(ctx context.Context, t *testing.T, env *Env, key string
 			}
 		}
 	}
-	for _, rowID := range absent {
-		var n int
+	for _, rowID := range deleted {
+		var n, live int
 		if err := env.Duck.DB.QueryRowContext(ctx, fmt.Sprintf(
-			`SELECT COUNT(*) FROM read_parquet('%s') WHERE CAST(row_id AS VARCHAR) = ?`, path),
-			rowID.String()).Scan(&n); err != nil {
-			t.Fatalf("scan rewritten base for absent row %s: %v", rowID, err)
+			`SELECT COUNT(*), COUNT(*) FILTER (WHERE deleted_at = 0) FROM read_parquet('%s') WHERE CAST(row_id AS VARCHAR) = ?`, path),
+			rowID.String()).Scan(&n, &live); err != nil {
+			t.Fatalf("scan rewritten base for deleted row %s: %v", rowID, err)
 		}
-		if n != 0 {
-			t.Errorf("deleted row %s survives in rewritten base (%d rows), want physically gone", rowID, n)
+		if n != 1 || live != 0 {
+			t.Errorf("deleted row %s: rewritten base holds %d versions, %d live; want its tombstone alone", rowID, n, live)
 		}
 	}
 }
@@ -122,9 +124,10 @@ func recordListedKeys(ctx context.Context, t *testing.T, env *Env, schema Schema
 
 // TestCompactionRewriteEquivalence covers #188 scenario 2 with hot rows
 // present: a dirty-ratio-eligible schema (2 updates + 1 delete over 5 base
-// rows) must be rewritten into a single new base parquet holding exactly the
-// LWW winners, with the merged source objects spliced out of the manifest but
-// retained in S3 for the in-flight-reader window (#461), bit-for-bit
+// rows) must be rewritten into a single new base parquet holding exactly each
+// row's newest version (the deleted row's tombstone included), with the merged
+// source objects left out of the next generation but retained in S3 for the
+// readers of the generation it replaced (#461, #890), bit-for-bit
 // identical federated results, an untouched hot tier, and a Noop second pass
 // (idempotency).
 func TestCompactionRewriteEquivalence(t *testing.T) {
@@ -175,8 +178,8 @@ func TestCompactionRewriteEquivalence(t *testing.T) {
 	if result.RowsIn != 8 { // 5 base + 2 updates + 1 tombstone
 		t.Errorf("RowsIn = %d, want 8", result.RowsIn)
 	}
-	if result.RowsOut != 4 { // 5 created - 1 deleted
-		t.Errorf("RowsOut = %d, want 4", result.RowsOut)
+	if result.RowsOut != 5 { // 4 live winners + the deleted row's tombstone
+		t.Errorf("RowsOut = %d, want 5", result.RowsOut)
 	}
 	if result.NewBaseKey == "" {
 		t.Fatal("RewriteApplied result carries no NewBaseKey")
@@ -229,11 +232,13 @@ func TestCompactionRewriteEquivalence(t *testing.T) {
 	assertStateUnchanged(t, "rewrite-idempotency", state, captureState(t, ctx, env, wide))
 }
 
-// TestCompactionRewriteMultiVersionLWW covers the multi-delta fold: three
-// copies of one row (an equal-ver_ts base/delta pair from the create→flush→
-// init seed, #183/#210, plus a newer update delta) must collapse to the
-// single newest version, and the untouched row's tied pair must dedup to one
-// row. RowsIn counts every copy; RowsOut counts entities.
+// TestCompactionRewriteMultiVersionLWW covers the base/delta fold: a row's
+// base copy from cdc-init and a newer update delta must collapse to the
+// single newest version, and the untouched row keeps its one copy. Under
+// Protocol V2 the init's handoff marks the rows it exported, so the flush
+// after it exports nothing and the V1 seed's equal-ver_ts base/delta pair
+// (#183/#210) no longer arises. RowsIn counts every copy; RowsOut counts
+// entities.
 func TestCompactionRewriteMultiVersionLWW(t *testing.T) {
 	cluster := SharedCluster(t)
 	ctx := context.Background()
@@ -244,19 +249,18 @@ func TestCompactionRewriteMultiVersionLWW(t *testing.T) {
 	if err := env.ApplyEvents(ctx, creates...); err != nil {
 		t.Fatalf("apply creates: %v", err)
 	}
-	// Init exports base copies of v1, then the flush writes the same versions
-	// as delta: an equal-ver_ts base-vs-delta pair per row (#210 seed shape).
-	// Init runs first because since #371 it refuses over a populated delta.
+	// Init exports base copies of v1 and hands their entries off, so the
+	// flush that follows has nothing of them to export.
 	if _, err := env.RunInit(ctx, wide); err != nil {
 		t.Fatalf("run init: %v", err)
 	}
-	mustFlush(ctx, t, env) // delta #1: v1 of both rows
+	mustFlush(ctx, t, env)
 
 	update := UpdateEvent(wide, creates[0].RowID, map[string]any{"title": "multi-version-v2"})
 	if err := env.ApplyEvents(ctx, update); err != nil {
 		t.Fatalf("apply update: %v", err)
 	}
-	mustFlush(ctx, t, env) // delta #2: v2 of row 0
+	mustFlush(ctx, t, env) // the delta: v2 of row 0
 
 	everListed := map[string]bool{}
 	recordListedKeys(ctx, t, env, wide, everListed)
@@ -265,8 +269,8 @@ func TestCompactionRewriteMultiVersionLWW(t *testing.T) {
 	if result.Outcome != compaction.RewriteApplied {
 		t.Fatalf("outcome = %s (dirty ratio %.2f), want %s", result.Outcome, result.DirtyRatio, compaction.RewriteApplied)
 	}
-	if result.RowsIn != 5 { // 2 base copies + 2 delta-v1 copies + 1 delta-v2
-		t.Errorf("RowsIn = %d, want 5", result.RowsIn)
+	if result.RowsIn != 3 { // 2 base copies + 1 delta-v2
+		t.Errorf("RowsIn = %d, want 3", result.RowsIn)
 	}
 	if result.RowsOut != 2 {
 		t.Errorf("RowsOut = %d, want 2 (one row per entity)", result.RowsOut)
@@ -278,18 +282,18 @@ func TestCompactionRewriteMultiVersionLWW(t *testing.T) {
 	}
 	assertRewrittenBase(ctx, t, env, result.NewBaseKey, winners, nil)
 	assertManifestMatchesInventory(ctx, t, env, wide, everListed)
-	// #256: the merge writer stamps the new base entry from a DESCRIBE of the
-	// tmp object it merged into; tmp→final is a byte-identical copy, so the
-	// stamp must equal a DESCRIBE of the published object.
+	// #256: the merge writer lists the new base's columns from a DESCRIBE of
+	// the file it merged into, and stages exactly those bytes, so the entry
+	// must equal a DESCRIBE of the published object.
 	assertEntriesStampedToByteTruth(ctx, t, env, "compaction rewrite (merged base)",
 		TierEntries(loadSchemaManifest(ctx, t, env, wide), "base"))
 }
 
 // TestCompactionRewriteAllTombstones covers the schema-empties-out edge:
-// deleting every base row and rewriting must produce a zero-row base parquet
-// that STAYS listed in the manifest — with zero entries the manifest-driven
-// read source falls back to the legacy glob (manifest.QuerySource), which
-// would resurrect any leftover object — and queries must return nothing.
+// deleting every base row and rewriting produces a base object of their
+// tombstones alone, which the next generation lists: a compaction keeps every
+// merged row's newest version, tombstones included, so that a flush rebased
+// over it cannot resurrect a deleted row (#890). Queries return nothing.
 func TestCompactionRewriteAllTombstones(t *testing.T) {
 	cluster := SharedCluster(t)
 	ctx := context.Background()
@@ -313,22 +317,21 @@ func TestCompactionRewriteAllTombstones(t *testing.T) {
 	if result.Outcome != compaction.RewriteApplied {
 		t.Fatalf("outcome = %s (dirty ratio %.2f), want %s", result.Outcome, result.DirtyRatio, compaction.RewriteApplied)
 	}
-	if result.RowsOut != 0 {
-		t.Errorf("RowsOut = %d, want 0 (everything tombstoned)", result.RowsOut)
+	if result.RowsOut != 2 {
+		t.Errorf("RowsOut = %d, want 2 (both rows' tombstones)", result.RowsOut)
 	}
 
 	m := loadSchemaManifest(ctx, t, env, wide)
 	if got := countTier(m, "base"); got != 1 {
-		t.Errorf("base entries = %d, want the zero-row base still listed (glob-fallback guard)", got)
+		t.Errorf("base entries = %d, want the merged tombstones' base listed", got)
 	}
 	if got := countTier(m, "delta"); got != 0 {
 		t.Errorf("delta entries = %d, want 0", got)
 	}
 	assertRewrittenBase(ctx, t, env, result.NewBaseKey, nil, []uuid.UUID{creates[0].RowID, creates[1].RowID})
 	assertManifestMatchesInventory(ctx, t, env, wide, everListed)
-	// #256 edge: a zero-row merged base still describes to a full column set,
-	// so it must still carry a byte-truth stamp rather than fall back to nil.
-	assertEntriesStampedToByteTruth(ctx, t, env, "compaction rewrite (zero-row merged base)",
+	// #256: a base of tombstones alone still lists its full column set.
+	assertEntriesStampedToByteTruth(ctx, t, env, "compaction rewrite (tombstone-only merged base)",
 		TierEntries(m, "base"))
 
 	empty := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 10})
@@ -339,10 +342,11 @@ func TestCompactionRewriteAllTombstones(t *testing.T) {
 
 // TestCompactionFullLifecycleEquivalence covers #188 scenario 6 and replaces
 // the #175 tripwire (assertCompactionPreservesDeletion): seed → flush →
-// delete → flush → compact → query. The deleted entity must be PHYSICALLY
-// absent from the rewritten base — not merely tombstone-shadowed — and stay
-// invisible under every tier-preference hint, inheriting the
-// deletion-invisibility half of #175's success criteria.
+// delete → flush → compact → query. The rewritten base keeps the deleted
+// entity's tombstone alone, no live copy of it (Protocol V2 keeps
+// tombstones, #890), and the entity stays invisible under every
+// tier-preference hint, inheriting the deletion-invisibility half of #175's
+// success criteria.
 func TestCompactionFullLifecycleEquivalence(t *testing.T) {
 	cluster := SharedCluster(t)
 	ctx := context.Background()

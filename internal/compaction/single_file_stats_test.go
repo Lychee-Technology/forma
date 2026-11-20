@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/aws/smithy-go"
 	"path/filepath"
 	"testing"
 
@@ -45,3 +46,14 @@ func TestIsConcurrentModification(t *testing.T) {
 	require.False(t, IsConcurrentModification(errors.New("network timeout")))
 	require.False(t, IsConcurrentModification(nil))
 }
+
+var errRewriteTestConflict = &conflictErr{}
+
+// conflictErr implements smithy.APIError with code PreconditionFailed, the
+// confirmed-412 shape S3 returns for a stale If-Match.
+type conflictErr struct{}
+
+func (*conflictErr) Error() string                 { return "api error PreconditionFailed (test)" }
+func (*conflictErr) ErrorCode() string             { return "PreconditionFailed" }
+func (*conflictErr) ErrorMessage() string          { return "precondition failed (test)" }
+func (*conflictErr) ErrorFault() smithy.ErrorFault { return smithy.FaultClient }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/publication"
 )
 
@@ -296,6 +297,12 @@ func (w *Writer) rebase(ctx context.Context, p *pub) error {
 		return w.refused(p, err)
 	}
 	next, err := p.build(ctx, head.Record)
+	if errors.Is(err, manifestv2.ErrMergedSourceGone) {
+		// The rules above admit a compaction over flushes only, which
+		// remove no file, so this is a defence: a compaction whose sources
+		// left the inventory can never commit them away.
+		return fmt.Errorf("%s of schema %d staged on generation %d: %w: %w", p.kind, p.cur.SchemaID, p.cur.Generation, ErrAbandoned, err)
+	}
 	if err != nil {
 		return fmt.Errorf("restage the %s of schema %d onto generation %d: %w", p.kind, p.cur.SchemaID, head.Generation, err)
 	}

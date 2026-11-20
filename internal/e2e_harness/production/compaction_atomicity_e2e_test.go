@@ -11,20 +11,20 @@ import (
 	"github.com/lychee-technology/forma/internal/compaction"
 )
 
-// TestCompactionManifestAtomicity covers #188 scenario 5 with a REAL ETag
-// conflict (the spike confirmed rustfs rejects a stale If-Match with 412):
-// the compactor's manifest save is held open by PausingS3 while a concurrent
-// real flush appends a new delta and advances the manifest; on resume the
-// stale conditional put must fail, and the retry must recompute the merge
-// from the fresh manifest. No entries may be lost — the concurrently flushed
-// rows end up folded into the final base — and the version advances
-// monotonically past the concurrent writer's.
+// TestCompactionManifestAtomicity covers #188 scenario 5 under Protocol V2
+// (#890): the compactor is held at the write-once put of its staged manifest
+// by PausingS3 while a concurrent real flush publishes a new delta and marks
+// its rows. On resume the compactor's compare-and-set against the generation
+// it read misses, and since a flush only appended files it rebases: it stages
+// a new manifest from the flush's generation under a fresh token, listing its
+// merged base in place of the sources and keeping the flush's delta. Nothing
+// is lost, nothing is merged twice, and the compaction commits exactly one
+// generation, past the flush's.
 func TestCompactionManifestAtomicity(t *testing.T) {
 	cluster := SharedCluster(t)
 	ctx := context.Background()
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
 	env := NewEnv(t, cluster)
-	env.SkipUntilV2Compaction() // the compaction below runs off the test goroutine
 
 	creates := seedCompactionBase(ctx, t, env, wide, 5)
 	update := UpdateEvent(wide, creates[0].RowID, map[string]any{"title": "atomicity-v2"})
@@ -32,13 +32,14 @@ func TestCompactionManifestAtomicity(t *testing.T) {
 		t.Fatalf("apply update: %v", err)
 	}
 	mustFlush(ctx, t, env) // dirty ratio 1/5 = 20% > 5%: rewrite-eligible
+	input := loadSchemaManifest(ctx, t, env, wide)
 
 	everListed := map[string]bool{}
 	recordListedKeys(ctx, t, env, wide, everListed)
 
-	// Pause the compactor exactly at its manifest save; the rewrite's parquet
-	// staging traffic (DuckDB httpfs + CopyObject) does not match.
-	pauser := NewPausingS3OnKey(cluster.S3, S3OpPut, "manifest/")
+	// Pause the compactor exactly at its manifest staging, after its merge
+	// output is staged and before its publication transaction.
+	pauser := NewPausingS3OnKey(cluster.S3, S3OpPut, "/_manifests/")
 	t.Cleanup(pauser.Resume)
 
 	type outcome struct {
@@ -54,13 +55,13 @@ func TestCompactionManifestAtomicity(t *testing.T) {
 	select {
 	case <-pauser.Reached():
 	case o := <-done:
-		t.Fatalf("compaction finished without touching the manifest save (outcome=%s err=%v)", o.result.Outcome, o.err)
+		t.Fatalf("compaction finished without staging its manifest (outcome=%s err=%v)", o.result.Outcome, o.err)
 	case <-time.After(2 * time.Minute):
-		t.Fatal("compaction never reached the manifest save")
+		t.Fatal("compaction never reached its manifest staging")
 	}
 
-	// Concurrent writer: a real flush through the UNDECORATED client appends
-	// a new delta entry and bumps the manifest ETag under the paused save.
+	// Concurrent writer: a real flush through the UNDECORATED client
+	// publishes a generation on top of the one the compactor read.
 	concurrent := UpdateEvent(wide, creates[1].RowID, map[string]any{"title": "atomicity-concurrent-v2"})
 	if err := env.ApplyEvents(ctx, concurrent); err != nil {
 		t.Fatalf("apply concurrent update: %v", err)
@@ -72,23 +73,26 @@ func TestCompactionManifestAtomicity(t *testing.T) {
 	pauser.Resume()
 	o := <-done
 	if o.err != nil {
-		t.Fatalf("compaction with concurrent manifest writer: %v", o.err)
+		t.Fatalf("compaction with a concurrent flush: %v", o.err)
 	}
 	if o.result.Outcome != compaction.RewriteApplied {
-		t.Fatalf("outcome = %s (dirty ratio %.2f), want %s after conflict retry", o.result.Outcome, o.result.DirtyRatio, compaction.RewriteApplied)
+		t.Fatalf("outcome = %s (dirty ratio %.2f), want %s after the rebase", o.result.Outcome, o.result.DirtyRatio, compaction.RewriteApplied)
 	}
-	// Monotonicity past the concurrent writer proves the stale first attempt
-	// did not clobber it (If-Match held) and the commit happened after.
-	if n := compactionPublishesSince(mid, o.result); n <= 0 {
-		t.Errorf("compaction committed %d publishes past the concurrent flush's, want at least one", n)
+	if o.result.Rebases != 1 || o.result.Restarts != 0 {
+		t.Errorf("rebases = %d, restarts = %d; want one rebase over the flush and no second merge", o.result.Rebases, o.result.Restarts)
+	}
+	if o.result.InputGeneration != input.Generation {
+		t.Errorf("input generation = %d, want %d, the generation the merge read", o.result.InputGeneration, input.Generation)
+	}
+	if n := compactionPublishesSince(mid, o.result); n != 1 {
+		t.Errorf("compaction committed %d publishes past the concurrent flush's, want exactly one", n)
 	}
 
-	// No lost entries: the retry recomputed from the fresh manifest, so the
-	// concurrently flushed delta is folded into the final base — its payload
-	// must be the winning version physically present in the new base file.
+	// The merge holds what the input generation held; the concurrent
+	// update stays in the flush's delta, which the compact generation lists.
 	winners := map[uuid.UUID]*Event{
 		creates[0].RowID: update,
-		creates[1].RowID: concurrent,
+		creates[1].RowID: creates[1],
 		creates[2].RowID: creates[2],
 		creates[3].RowID: creates[3],
 		creates[4].RowID: creates[4],
@@ -96,13 +100,16 @@ func TestCompactionManifestAtomicity(t *testing.T) {
 	assertRewrittenBase(ctx, t, env, o.result.NewBaseKey, winners, nil)
 
 	m := loadSchemaManifest(ctx, t, env, wide)
-	if got := countTier(m, "delta"); got != 0 {
-		t.Errorf("delta entries after conflict retry = %d, want 0 (concurrent delta folded)", got)
+	if got := countTier(m, "delta"); got != 1 {
+		t.Errorf("delta entries after the rebase = %d, want the concurrent flush's 1", got)
+	}
+	if got := countTier(m, "base"); got != 1 {
+		t.Errorf("base entries after the rebase = %d, want the merged base alone", got)
 	}
 	assertNoDuplicateManifestEntries(t, m)
-	// The failed first attempt's staged base was never listed, so it must not
-	// linger (the confirmed-412 cleanup); the retry's retired sources are in
-	// everListed and may (#461: must be able to) survive unlisted.
+	// The rebase reused its staged merge output, so no never-listed parquet
+	// lingers; the merged sources are in everListed and stay for the readers
+	// of the generations they were listed in.
 	assertManifestMatchesInventory(ctx, t, env, wide, everListed)
 
 	// Full result equivalence: engine vs oracle, which knows both updates.

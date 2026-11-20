@@ -9,8 +9,9 @@ objects (document, digest, keys, write-once store, verifying cache) are in
 `DeltaStager` and `BaseExporter`. The factory builds every federated engine with
 `federated.WithPublicationReader` over `internal/federatedv2` (#900), and `init-db` writes
 each registered schema's record and runs the V2 cutover ([Upgrade](#removed-from-v1)). The
-compactor (#890) and `manifest-reconcile` (#891) are still V1: a cut-over deployment keeps
-both stopped (Upgrade step 1) until they move ([Ownership](#ownership-and-migration)).
+compactor publishes compact generations through `internal/cdcv2` too (#890).
+`manifest-reconcile` (#891) is still V1: a cut-over deployment keeps it stopped (Upgrade
+step 1) until it moves ([Ownership](#ownership-and-migration)).
 Behaviour on a real Aurora DSQL cluster has not been checked. #817 tracks that, and
 [Verification](#verification) lists what this contract assumes until then.
 
@@ -972,6 +973,27 @@ the one its row names:
   content read is exported at the listed version and stays dirty at the new one), a fully
   shadowed export that stays recorded, re-initialization, and an empty export.
 
+The compaction writer (#890) is tested in `internal/cdcv2` on the same targets, with the
+same two checks after every test:
+
+- `TestCompactPublishesOneGenerationFromItsInput`: one compact generation whose parent and
+  `input_generation` are the generation read, holding each row's newest version, tombstones
+  included, while the replaced generation's manifest and every object it lists stay readable.
+- `TestCompactRebasesOverAFlush`, `TestCompactStagedBeforeACompactionOrAnInitStartsOver`,
+  `TestCompactStagedBeforeADropNeverCommits`: the compaction row of the rebase table with real
+  racing transactions; a refused rebase reads the head and merges again within its restart
+  budget, or reports `ErrAbandoned` with the record as the rival left it.
+- `TestAFlushStagedBeforeACompactionCannotResurrectADeletedRow`: the sequence the tombstone
+  rule exists for. A stale flush rebases over a flush that published a deletion and a
+  compaction that merged it, and the row stays deleted.
+- `TestCompactFaultAtEveryBoundaryLeavesOnlyOrphans`, `TestCompactResolvesACommitWithoutAnAnswer`:
+  a fault in the merge, at staging, `BEGIN`, the compare-and-set or `COMMIT` changes nothing
+  visible, and a lost `COMMIT` answer is resent with the same token or found committed.
+
+`internal/compaction` runs the policy (promotion, dirty-ratio rewrite, the #347 source
+checksum gate) end to end on the integration PostgreSQL with DuckDB merges of real parquet,
+and the production e2e harness runs every compaction scenario on V2.
+
 The reader (#900) is tested in `internal/federatedv2` on the integration PostgreSQL, over
 records, history rows and manifests committed as a V2 writer commits them, and against an
 in-memory snapshot in `internal/federated`, where a fake reader stages each fault:
@@ -1046,7 +1068,7 @@ the V1 code it replaces:
 | `init-db` registration, the upgrade cutover | `Initialize`, or `Activate` for a dropped id, in `registerSchemas`' pgx transaction (`PgxTx`). The cutover's history check and `InitializeAwaitingInit` under the schema lock. #896 does both in one step of that transaction (`ensurePublicationRecords`) for every registered schema: a record is kept, a `DROPPED` one is activated (its residue checked in `entity_main`, `eav_data`, `change_log` and the unique-key entry and build-state tables), and a missing one is written under `pg_try_advisory_xact_lock` on the key `cdc-flush` and `cdc-init` take, `AWAITING_INIT` when the schema has parquet history, `UNPUBLISHED` otherwise. A schema registered before the run whose lock is held keeps no record, is reported, and is retried by the next run. A schema the run registers is never skipped: when its lock is held the run fails and its registry row is rolled back with everything else, so a registration commits with its record or not at all. A schema the run registers whose id still has a record that is not `DROPPED` is refused the same way, and a missing record whose lifecycle epoch survives is recovered after that epoch (`InitializeAfterLoss`) rather than started at epoch 1; one whose lifecycle epoch is lost while its generation history survives fails the run (`ErrLifecycleLost`). The drop (`Reset`, then the purge under `HoldDropped`) is `forma-tools drop-schema` | #896 (writers and reader, built in #899 to #901) |
 | `cdc-flush` (`flush_batch.go`, `manifest.go`, `flush_manifest_guard.go`, `mark_flushed_dsql.go`) | stage, then `Publish` + marks in one transaction. DSQL generations of ≤ 1,000 entries. `Resolve` on a lost commit. Removes `--glob-only` and the manifest-disabled publication path. The publication loop is `internal/cdcv2`'s `Writer.Flush` (#899), behind a `DeltaStager` that writes the parquet. #896 adapts the DuckDB export to it (`internal/cdc`'s `deltaStager`: a local scratch file, then a conditional put under a fresh key), calls it with the epoch the run loads from the record, and deletes the V1 append, the #474 probe, both V1 marks, `--glob-only` and the writers' `--manifest-template`/`--manifest-prefix` | #896 (writers and reader, built in #899 to #901) |
 | `cdc-init` (`init_publish.go`, export batches) | export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot. #896 adapts the DuckDB export to it (`internal/cdc`'s `baseExporter`, which reads the rows on that snapshot), calls it, settles a lost `COMMIT` once in-process (`ResumeInit`), and deletes the V1 manifest swap, the ambiguous-save confirmation, the delta purge (`--replace-delta`, `--delta-prefix`) and the zero-row placeholder | #896 (writers and reader, built in #899 to #901), closing #760 |
-| compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891 | #890 (compaction) |
+| compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891. As built: `internal/cdcv2`'s `Writer.Compact` publishes behind a `CompactStager`, which `internal/compaction` implements; the merge keeps every row's newest version, tombstones included, and a promotion merges the delta files into a new base object, since a V2 key names its tier. The V1 `FileProvider`, `--manifest-template`/`--manifest-prefix` and the ETag retry loop are deleted | #890 (compaction) |
 | federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. #900 builds the pass behind `federated.WithPublicationReader` and its source in `internal/federatedv2`, with no caller ([As built](#readers)); #896 loads the epoch pins with the schema metadata, builds the engine with the option, deletes the V1 resolution and rewrites `docs/federated-query/design.md` §6.1 | #896 (writers and reader, built in #899 to #901), carrying #759 |
 | `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire` and `PlanCollection` in the collection order above. Repair becomes re-init. Verification walks retained generations | #891 (GC) |
 | fault matrix, operator docs, EPIC evidence | crash injection at every staging, publish and commit boundary; a guard that fails if `QuerySource.Fallback`, the level-3 glob or a glob-only flag returns | #892 |

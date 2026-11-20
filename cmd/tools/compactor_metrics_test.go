@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,22 +14,27 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
-	"github.com/lychee-technology/forma/internal/bootstrap"
-	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/google/uuid"
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/bootstrap"
+	"github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/publication"
+	"github.com/lychee-technology/forma/internal/testdb"
 )
 
 // serveManifest stands in for the bucket: it answers the path-style GET for
 // one manifest object and fails the test on any other request, so a pass that
 // stops being a no-op is caught here rather than against a store that cannot
 // answer it.
-func serveManifest(t *testing.T, path string, m manifest.Manifest) (endpoint string, gets *atomic.Int32) {
+func serveManifest(t *testing.T, path string, body []byte) (endpoint string, gets *atomic.Int32) {
 	t.Helper()
-	body, err := json.Marshal(m)
-	if err != nil {
-		t.Fatalf("marshal manifest: %v", err)
-	}
 	gets = &atomic.Int32{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != path {
@@ -37,33 +44,82 @@ func serveManifest(t *testing.T, path string, m manifest.Manifest) (endpoint str
 		}
 		gets.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("ETag", `"v1"`)
 		_, _ = w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL, gets
 }
 
-// serveNoopPass stands in for a bucket holding schema 7's manifest and returns
-// the compactor flags for one pass over it. A quarter of the base's rows sit
-// in delta, under the 50% rewrite threshold the flags set, so the pass is a
-// no-op that still emits compaction_dirty_ratio.
+// serveNoopPass publishes schema 7's generation on the integration
+// PostgreSQL (skipping when it is absent locally) and serves its manifest: a
+// base file of 100 rows and a delta of 25, a dirty ratio of 0.25 under the
+// 50% threshold and a delta tier far below the target size, so the pass
+// reads the record and the manifest, emits the ratio and publishes nothing.
 func serveNoopPass(t *testing.T) (args []string, gets *atomic.Int32) {
 	t.Helper()
-	endpoint, gets := serveManifest(t, "/bkt/manifest/7.json", manifest.Manifest{
-		SchemaID: 7,
-		Version:  1,
-		Files: []manifest.FileEntry{
-			{Tier: "base", Path: "s3://bkt/data/7/base/a.parquet", RowIDMin: "a", RowIDMax: "b", SizeBytes: 4096, RowCount: 100},
-			{Tier: "delta", Path: "s3://bkt/data/7/delta/b.parquet", RowIDMin: "c", RowIDMax: "d", SizeBytes: 1024, RowCount: 25},
-		},
+	ctx := context.Background()
+	testdb.Connect(t, ctx)
+	db, err := sql.Open("pgx", testdb.ResolveDSN())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	entityMain := fmt.Sprintf("compactor_tool_%d", time.Now().UnixNano())
+	tables := publication.TablesFor(entityMain)
+	for _, stmt := range publication.Statements(forma.EnginePostgreSQL, entityMain) {
+		_, err := db.Exec(stmt)
+		require.NoError(t, err, stmt)
+	}
+	t.Cleanup(func() {
+		for _, table := range []string{tables.Record, tables.Generation, tables.Epoch} {
+			_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
+		}
 	})
+	tx, err := db.Begin()
+	require.NoError(t, err)
+	_, err = publication.Initialize(ctx, publication.SQLTx(tx), tables, 7)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+	snap, err := publication.Read(ctx, publication.DB(db), tables, 7)
+	require.NoError(t, err)
+
+	layout := manifestv2.Layout{Prefix: "data"}
+	h, err := manifestv2.Stage(snap.Record, publication.KindFlush, uuid.New(), uuid.New())
+	require.NoError(t, err)
+	file := func(tier manifestv2.Tier, rows, size int64) manifestv2.File {
+		key, err := layout.NewParquetKey(7, h.Epoch, tier)
+		require.NoError(t, err)
+		return manifestv2.File{Tier: tier, Key: key, SizeBytes: size, SHA256: manifestv2.Digest([]byte(key)), RowCount: rows,
+			RowIDMin: uuid.MustParse("0190a000-0000-7000-8000-000000000001"), RowIDMax: uuid.MustParse("0190a000-0000-7000-8000-000000000002"),
+			Columns: map[string]string{"row_id": "UUID"}}
+	}
+	m := manifestv2.Manifest{Format: publication.ManifestFormat, SchemaID: 7, Epoch: h.Epoch, Generation: h.Generation,
+		Lineage: h.Lineage, Token: h.Token, Kind: publication.KindFlush,
+		Files: []manifestv2.File{file(manifestv2.TierBase, 100, 4096), file(manifestv2.TierDelta, 25, 1024)}}
+	body, digest, err := m.Encode()
+	require.NoError(t, err)
+	var stagedAt int64
+	require.NoError(t, db.QueryRow("SELECT floor(extract(epoch from now()) * 1000)::bigint").Scan(&stagedAt))
+	tx, err = db.Begin()
+	require.NoError(t, err)
+	_, err = publication.Publish(ctx, publication.SQLTx(tx), tables, snap.Record, publication.Next{
+		Kind: publication.KindFlush, Token: h.Token, ManifestKey: h.Key(layout), ManifestSHA256: digest,
+		Lineage: h.Lineage, StagedAt: stagedAt, StagingBudget: time.Minute,
+	})
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit())
+
+	old := openCompactorDBFn
+	t.Cleanup(func() { openCompactorDBFn = old })
+	openCompactorDBFn = func(context.Context, cdc.CDCConfig, *zap.Logger) (*sql.DB, error) {
+		return sql.Open("pgx", testdb.ResolveDSN())
+	}
+	endpoint, gets := serveManifest(t, "/bkt/"+h.Key(layout), body)
 	return []string{
 		"--schema-id", "7",
 		"--s3-bucket", "bkt",
 		"--s3-endpoint", endpoint,
 		"--s3-use-path=true",
 		"--s3-use-ssl=false",
+		"--entity-main-table", entityMain,
 		"--dirty-ratio-pct", "50",
 	}, gets
 }

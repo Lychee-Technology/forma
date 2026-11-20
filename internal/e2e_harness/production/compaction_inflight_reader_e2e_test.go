@@ -4,21 +4,28 @@ package production
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/compaction"
+	fedengine "github.com/lychee-technology/forma/internal/federated"
 )
 
-// TestCompactionRewriteInFlightReaderRetention is #461's regression: a
-// federated reader that resolved its parquet path set from the PRE-swap
-// manifest must keep working after the compactor commits the swap. The
-// compactor therefore retains the merged sources (unlisted, reclaimed by
-// manifest-reconcile --gc past its grace); this test holds the pre-swap path
-// set across a real rewrite publish and proves the scan still answers
-// correctly. Before the fix the inline post-commit delete made this exact
-// read fail with the non-degradable, breaker-worthy
-// ParquetSetInconsistentError.
+// TestCompactionRewriteInFlightReaderRetention is #461's regression under
+// Protocol V2 (#890): a federated pass whose snapshot read the record at the
+// pre-compaction generation must keep working after the compaction commits
+// the next one. The pass is held right after its record read
+// (pausingPublicationReader) while a real rewrite publishes; on release it
+// resolves the replaced generation and scans exactly the objects it lists,
+// which the compactor never deletes (their retirement is #891's). The held
+// read answers the oracle's rows and values, and the next read answers them
+// from the compact generation.
+//
+// No query runs between the flush that publishes the pre-compaction
+// generation and the held pass, so the engine's manifest cache does not hold
+// that generation when the pass resolves it after the publish; the test also
+// fetches its manifest from the store afresh once the compaction committed.
 //
 // #461's impact had two halves: the failed read, and the breaker-open event
 // it fed, which disables the DuckDB route for every query. The Env therefore
@@ -31,6 +38,9 @@ func TestCompactionRewriteInFlightReaderRetention(t *testing.T) {
 	wide := DefaultSchemaFixtures()[1] // e2e_wide
 	transitions := &breakerTransitions{}
 	env := NewEnv(t, cluster, WithBreaker(1, time.Minute), WithMetricEmitter(transitions))
+	// Installed before any event: seeding assembles the engine.
+	pauser := newPausingPublicationReader()
+	pauser.install(env)
 
 	creates := seedCompactionBase(ctx, t, env, wide, 5)
 	update := UpdateEvent(wide, creates[0].RowID, map[string]any{"title": "inflight-v2"})
@@ -39,22 +49,17 @@ func TestCompactionRewriteInFlightReaderRetention(t *testing.T) {
 	}
 	mustFlush(ctx, t, env) // dirty ratio 1/5 = 20% > 5%: rewrite-eligible
 
-	// The in-flight reader's snapshot: the path set resolved from the
-	// pre-swap manifest, exactly what resolveScanSources would be holding
-	// while the compactor publishes.
 	preSwap := loadSchemaManifest(ctx, t, env, wide)
-	preSwapKeys := make([]string, 0, len(preSwap.Files))
-	preSwapURIs := make([]string, 0, len(preSwap.Files))
-	for _, f := range preSwap.Files {
-		preSwapKeys = append(preSwapKeys, f.Path)
-		preSwapURIs = append(preSwapURIs, env.ParquetURI(f.Path))
-	}
-	if len(preSwapURIs) < 2 {
-		t.Fatalf("pre-swap manifest lists %d files, want at least base+delta", len(preSwapURIs))
+	preSwapKeys := sortedGenerationKeys(preSwap)
+	if len(preSwapKeys) < 2 {
+		t.Fatalf("pre-swap generation lists %d files, want at least base+delta", len(preSwapKeys))
 	}
 
-	// The compactor publishes: the manifest swap commits and the sources are
-	// spliced out.
+	q := Query{Schema: wide, Limit: 100}
+	held := holdQueryAfterRecordRead(ctx, t, env, pauser, q)
+
+	// The compactor publishes the next generation while the pass holds the
+	// pre-swap one.
 	result, err := env.RunCompaction(ctx, wide)
 	if err != nil {
 		t.Fatalf("compaction: %v", err)
@@ -62,48 +67,146 @@ func TestCompactionRewriteInFlightReaderRetention(t *testing.T) {
 	if result.Outcome != compaction.RewriteApplied {
 		t.Fatalf("outcome = %s (dirty ratio %.2f), want %s", result.Outcome, result.DirtyRatio, compaction.RewriteApplied)
 	}
-
-	// Writer-side acceptance: every pre-swap source object survives the
-	// publish — the zero-grace inline delete was the bug.
-	after := map[string]bool{}
-	for _, k := range schemaParquetKeys(ctx, t, env, wide) {
-		after[k] = true
+	if n := compactionPublishesSince(preSwap, result); n != 1 {
+		t.Fatalf("compaction committed %d publishes since the pass's generation, want one", n)
 	}
-	for _, k := range preSwapKeys {
-		if !after[k] {
-			t.Errorf("pre-swap source %s was deleted at publish; an in-flight reader holding the old path set would fail ParquetSetInconsistent", k)
-		}
-	}
+	requireReplacedGenerationRetained(ctx, t, env, wide, preSwap)
 
-	// Reader-side acceptance, verified empirically through the real engine: a
-	// query must succeed and answer identically to the oracle. The V1 run
-	// pinned the pre-swap path set through the explicit path-list hint, which
-	// Protocol V2 removed; V2 compaction (#890) pins a pass at the pre-swap
-	// generation instead (Env.PublicationReaderWrap). Until then
-	// RunCompaction skips this test above.
-	held := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})
-	if held == nil || held.Plan == nil || !held.Plan.Routing.UseDuckDB {
-		t.Fatalf("pre-swap path-set query did not route to duckdb")
+	// Reader-side acceptance: the held pass resolves and scans the replaced
+	// generation and answers the oracle's rows and values.
+	res := held.release(t)
+	requireResolvedGeneration(t, pauser.Resolved(), preSwap)
+	if !res.Plan.Routing.UseDuckDB {
+		t.Fatalf("in-flight query did not take the federated pass: %+v", res.Plan.Routing)
 	}
+	env.AssertResultMatches(ctx, q, res)
 
-	// Breaker neutrality (#499): the held-path read recorded no failure.
-	// With threshold 1 a single RecordFailure would have opened the breaker
-	// and emitted an "open" transition; a success on a closed breaker emits
+	// Breaker neutrality (#499): the held read recorded no failure. With
+	// threshold 1 a single RecordFailure would have opened the breaker and
+	// emitted an "open" transition; a success on a closed breaker emits
 	// nothing, so the expected transition list is empty.
 	breaker := env.Breaker()
 	if breaker == nil {
 		t.Fatal("env has no circuit breaker; breaker neutrality would pass vacuously")
 	}
 	if breaker.IsOpen() {
-		t.Fatal("circuit breaker is open after the pre-swap path-set query; the in-flight read fed it a failure")
+		t.Fatal("circuit breaker is open after the in-flight query; it fed the breaker a failure")
 	}
-	transitions.expect(t, "pre-swap path-set query")
+	transitions.expect(t, "in-flight query")
 
-	// The DuckDB route stays available: a follow-up manifest-driven read of
-	// the post-swap set is admitted and routes to DuckDB.
-	post := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})
+	// The next pass reads the compact generation and routes to DuckDB.
+	post := env.AssertQueryMatches(ctx, q)
 	if post == nil || post.Plan == nil || !post.Plan.Routing.UseDuckDB {
-		t.Fatalf("post-swap manifest query did not route to duckdb")
+		t.Fatalf("post-swap query did not route to duckdb")
 	}
-	transitions.expect(t, "post-swap manifest query")
+	if gens := pauser.Resolved(); len(gens) < 2 || gens[len(gens)-1].Generation != result.Generation {
+		t.Fatalf("post-swap query resolved %+v, want the compact generation %d last", gens, result.Generation)
+	}
+	transitions.expect(t, "post-swap query")
+}
+
+// heldQuery is a query whose pass waits right after its record read.
+type heldQuery struct {
+	pauser *pausingPublicationReader
+	done   chan heldOutcome
+}
+
+type heldOutcome struct {
+	res *QueryResult
+	err error
+}
+
+// holdQueryAfterRecordRead starts q and returns once its pass has read the
+// record and is held there.
+func holdQueryAfterRecordRead(ctx context.Context, t *testing.T, env *Env, pauser *pausingPublicationReader, q Query) *heldQuery {
+	t.Helper()
+	qctx, cancel := context.WithTimeout(ctx, pausedFlushTimeout)
+	h := &heldQuery{pauser: pauser, done: make(chan heldOutcome, 1)}
+	finished := make(chan struct{})
+	pauser.armed.Store(true)
+	go func() {
+		defer close(finished)
+		res, err := env.Query(qctx, q)
+		h.done <- heldOutcome{res: res, err: err}
+	}()
+	t.Cleanup(func() {
+		pauser.Release()
+		cancel()
+		<-finished
+	})
+	select {
+	case <-pauser.Reached():
+	case out := <-h.done:
+		t.Fatalf("query finished before pausing after its record read: err=%v", out.err)
+	}
+	return h
+}
+
+// release lets the held pass go on and answers its result.
+func (h *heldQuery) release(t *testing.T) *QueryResult {
+	t.Helper()
+	h.pauser.Release()
+	out := <-h.done
+	if out.err != nil {
+		t.Fatalf("in-flight query across the compaction: %v", out.err)
+	}
+	return out.res
+}
+
+// requireReplacedGenerationRetained checks, after the compaction committed,
+// that every object the replaced generation lists is still in the bucket and
+// that its manifest is still fetchable from the store, verified, listing
+// them: what the held pass resolves when it goes on.
+func requireReplacedGenerationRetained(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, replaced *Manifest) {
+	t.Helper()
+	want := sortedGenerationKeys(replaced)
+	after := map[string]bool{}
+	for _, k := range schemaParquetKeys(ctx, t, env, schema) {
+		after[k] = true
+	}
+	for _, k := range want {
+		if !after[k] {
+			t.Errorf("pre-swap source %s was deleted at publish; the in-flight pass of its generation would lose it", k)
+		}
+	}
+	keys, err := env.fetchGenerationKeys(ctx, replaced)
+	if err != nil {
+		t.Fatalf("the replaced generation's manifest is no longer fetchable after the compaction: %v", err)
+	}
+	slices.Sort(keys)
+	if !slices.Equal(keys, want) {
+		t.Fatalf("the replaced generation's manifest lists %v after the compaction, want %v", keys, want)
+	}
+}
+
+// requireResolvedGeneration checks that the held pass, the only armed one
+// so far, resolved the replaced generation and was handed exactly its
+// objects to scan.
+func requireResolvedGeneration(t *testing.T, resolved []fedengine.PublishedGeneration, replaced *Manifest) {
+	t.Helper()
+	if len(resolved) == 0 {
+		t.Fatal("the held pass resolved no generation")
+	}
+	want := sortedGenerationKeys(replaced)
+	for _, gen := range resolved {
+		if gen.Epoch != replaced.Epoch || gen.Generation != replaced.Generation {
+			t.Fatalf("the held pass resolved epoch %d generation %d, want the replaced epoch %d generation %d",
+				gen.Epoch, gen.Generation, replaced.Epoch, replaced.Generation)
+		}
+		keys := slices.Clone(gen.Keys)
+		slices.Sort(keys)
+		if !slices.Equal(keys, want) {
+			t.Fatalf("the held pass scans %v, want the replaced generation's %v", keys, want)
+		}
+	}
+}
+
+// sortedGenerationKeys answers the object keys m lists, sorted.
+func sortedGenerationKeys(m *Manifest) []string {
+	keys := make([]string, 0, len(m.Files))
+	for _, f := range m.Files {
+		keys = append(keys, f.Path)
+	}
+	slices.Sort(keys)
+	return keys
 }

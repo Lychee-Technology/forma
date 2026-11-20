@@ -66,6 +66,9 @@ type FlushReport struct {
 // at most Config.Restarts times; the generations committed before stay.
 func (w *Writer) Flush(ctx context.Context, schemaID int16, pin int64, st DeltaStager) (FlushReport, error) {
 	var rep FlushReport
+	if err := w.needChangeLog("flush"); err != nil {
+		return rep, err
+	}
 	for {
 		err := w.flushRound(ctx, schemaID, pin, st, &rep)
 		if err == nil || !errors.Is(err, ErrAbandoned) || rep.Restarts >= w.cfg.Restarts {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/lychee-technology/forma/internal/bootstrap"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/telemetry"
 	"go.uber.org/zap"
 )
@@ -19,8 +21,10 @@ import (
 // compactorOptions carries the parsed compactor flag values.
 type compactorOptions struct {
 	s3         s3Flags
+	pg         postgresFlags
 	compact    cdc.CompactionConfig
-	manifest   cdc.ManifestConfig
+	db         cdc.CDCConfig // the publication database the record lives on
+	entityMain string
 	dataPrefix string
 	duck       duckExportFlags
 }
@@ -34,32 +38,37 @@ func parseCompactorFlags(args []string) (*compactorOptions, error) {
 	opts := &compactorOptions{}
 	schemaID := fs.Int("schema-id", 0, "Schema ID to compact (required)")
 	opts.s3.register(fs, s3FlagOptions{
-		bucketUsage:    "S3 bucket for parquet/manifest files (required)",
+		bucketUsage:    "S3 bucket of the schema's parquet objects and manifests (required)",
 		bucketRequired: true,
 	})
+	opts.pg.register(fs, postgresFlagOptions{
+		hostFlag: "pg-host", portFlag: "pg-port", userFlag: "pg-user", passwordFlag: "pg-password",
+		databaseFlag: "pg-db", sslModeFlag: "pg-ssl-mode",
+		hostDefault: "localhost", portDefault: 5432, userDefault: "postgres", databaseDefault: "forma", sslModeDefault: "require",
+		hostUsage: "PostgreSQL host of the schema's publication record", portUsage: "PostgreSQL port",
+		userUsage: "PostgreSQL user", passwordUsage: "PostgreSQL password (or set PGPASSWORD env)",
+		databaseUsage: "PostgreSQL database", sslModeUsage: "PostgreSQL sslmode",
+		includeUseIAM: true, useIAMFlag: "pg-use-iam", useIAMUsage: "Use IAM authentication for PostgreSQL",
+		engineFlag: "pg-engine",
+	})
+	fs.StringVar(&opts.entityMain, "entity-main-table", "entity_main",
+		"Entity main table name; the publication record's tables are named after it")
 
-	manifestPrefix := fs.String("manifest-prefix", "", "Manifest prefix in S3")
-	manifestTemplate := fs.String("manifest-template", "manifest/{{.SchemaID}}.json", "Manifest path template")
-
-	targetBaseSizeMB := fs.Int("target-base-size-mb", 256, "Target base file size in MB")
+	targetBaseSizeMB := fs.Int("target-base-size-mb", 256, "Delta tier size in MB at which its files are merged into one base object")
 	maxDeltaSizeMB := fs.Int("max-delta-size-mb", 50, "Maximum delta size in MB")
-	dirtyRatioPct := fs.Int("dirty-ratio-pct", 5, "Dirty ratio percentage threshold")
+	dirtyRatioPct := fs.Int("dirty-ratio-pct", 5, "Dirty ratio percentage (delta rows over base rows) past which every file is merged")
 
 	skipInputChecksumVerify := fs.Bool("skip-input-checksum-verify", false,
-		"Skip the #347 pre-merge integrity gate on rewrite inputs. Verification is on by default; "+
-			"use this flag only to unwedge compaction when a stamped source is known-corrupt and the "+
-			"corruption has been triaged. It waives hashing only: a source outside the compactor's "+
-			"bucket is still refused (#417)")
+		"Skip the #347 pre-merge integrity gate, which hashes every merge source against the sha256 its manifest lists. "+
+			"Verification is on by default; use this flag only to unwedge compaction when a source is known-corrupt and the "+
+			"corruption has been triaged")
 
-	maxRetries := fs.Int("max-retries", 5, "Maximum retry attempts")
-	baseBackoffMs := fs.Int("base-backoff-ms", 100, "Base backoff in milliseconds")
-	maxBackoffMs := fs.Int("max-backoff-ms", 10000, "Maximum backoff in milliseconds")
+	maxRetries := fs.Int("max-retries", 5, "How often a compaction that lost to a rival compaction or cdc-init reads the head and merges again")
 
-	dataPrefix := fs.String("data-prefix", "data", "Data prefix for parquet files")
+	dataPrefix := fs.String("data-prefix", defaultCDCDataPrefix, "S3 data prefix of the V2 object layout: cdc-flush and cdc-init's -s3-prefix")
 
-	// Merge engine (dirty-ratio rewrite, #188): DuckDB reads the schema's
-	// parquet set via httpfs, so it needs the same S3 wiring the CDC
-	// exporters use.
+	// Merge engine: DuckDB reads the schema's parquet objects via httpfs,
+	// so it needs the same S3 wiring the CDC exporters use.
 	opts.duck.register(fs, duckExportFlagOptions{memLimitDefault: "4GB", queryTimeout: 5 * time.Minute})
 
 	if err := fs.Parse(args); err != nil {
@@ -77,7 +86,8 @@ func parseCompactorFlags(args []string) (*compactorOptions, error) {
 	if err := validateParquetPrefixFlag("data-prefix", *dataPrefix); err != nil {
 		return nil, err
 	}
-	if err := validateManifestTemplateFlag(*manifestTemplate); err != nil {
+	engine, err := opts.pg.cdcEngine("pg-engine")
+	if err != nil {
 		return nil, err
 	}
 
@@ -88,13 +98,12 @@ func parseCompactorFlags(args []string) (*compactorOptions, error) {
 		DirtyRatioPct:           *dirtyRatioPct,
 		SkipInputChecksumVerify: *skipInputChecksumVerify,
 		MaxRetries:              *maxRetries,
-		BaseBackoff:             time.Duration(*baseBackoffMs) * time.Millisecond,
-		MaxBackoff:              time.Duration(*maxBackoffMs) * time.Millisecond,
 	}.WithDefaults()
-	opts.manifest = cdc.ManifestConfig{
-		Bucket:       opts.s3.bucket,
-		Prefix:       *manifestPrefix,
-		PathTemplate: *manifestTemplate,
+	opts.db = cdc.CDCConfig{
+		PGHost: opts.pg.host, PGPort: opts.pg.port, PGUser: opts.pg.user,
+		PGPassword: opts.pg.resolvedPassword("PGPASSWORD"), PGDB: opts.pg.database, PGSSLMode: opts.pg.sslMode,
+		PGUseIAM: opts.pg.useIAM, Engine: engine,
+		S3Region: opts.s3.region, S3Endpoint: opts.s3.endpoint, S3UsePath: opts.s3.usePath,
 	}
 	opts.dataPrefix = *dataPrefix
 	return opts, nil
@@ -149,32 +158,33 @@ func openMergeEngine(ctx context.Context, opts *compactorOptions, logger *zap.Lo
 }
 
 func logCompactionResult(logger *zap.Logger, result compaction.CompactionResult) {
+	fields := []zap.Field{
+		zap.Int16("schema_id", result.SchemaID),
+		zap.String("outcome", string(result.Outcome)),
+		zap.Int64("epoch", result.Epoch),
+		zap.Int64("input_generation", result.InputGeneration),
+		zap.Float64("dirty_ratio", result.DirtyRatio),
+	}
 	switch result.Outcome {
-	case compaction.PromotionApplied:
-		logger.Info("compaction completed",
-			zap.Int16("schema_id", result.SchemaID),
-			zap.Int64("version", result.Version),
-			zap.Float64("dirty_ratio", result.DirtyRatio))
-	case compaction.RewriteApplied:
-		logger.Info("compaction rewrite completed",
-			zap.Int16("schema_id", result.SchemaID),
-			zap.Int64("version", result.Version),
-			zap.Float64("dirty_ratio", result.DirtyRatio),
+	case compaction.PromotionApplied, compaction.RewriteApplied:
+		logger.Info("compaction completed", append(fields,
+			zap.Int64("generation", result.Generation),
 			zap.Int("files_merged", result.FilesMerged),
 			zap.Int64("rows_in", result.RowsIn),
 			zap.Int64("rows_out", result.RowsOut),
-			zap.String("new_base_key", result.NewBaseKey))
+			zap.String("new_base_key", result.NewBaseKey))...)
 	case compaction.RewritePending:
-		logger.Warn("compaction deferred: rewrite pending",
-			zap.Int16("schema_id", result.SchemaID),
-			zap.Float64("dirty_ratio", result.DirtyRatio),
+		logger.Warn("compaction deferred: merge pending", append(fields,
 			zap.Int64("base_mb", result.BaseMB),
-			zap.Int64("delta_mb", result.DeltaMB))
+			zap.Int64("delta_mb", result.DeltaMB))...)
 	default:
-		logger.Info("compaction completed",
-			zap.Int16("schema_id", result.SchemaID),
-			zap.String("outcome", string(result.Outcome)))
+		logger.Info("compaction completed", fields...)
 	}
+}
+
+// openCompactorDBFn opens the publication database; tests replace it.
+var openCompactorDBFn = func(ctx context.Context, cfg cdc.CDCConfig, logger *zap.Logger) (*sql.DB, error) {
+	return cdc.OpenPublicationDB(ctx, cfg, logger)
 }
 
 // runCompactor gives the pass stdout for its metric lines (#594). The
@@ -215,22 +225,35 @@ func runCompactorOut(ctx context.Context, args []string, metricsOut io.Writer) e
 		return fmt.Errorf("load AWS config: %w", err)
 	}
 
+	db, err := openCompactorDBFn(ctx, opts.db, logger)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
 	exporter, err := openMergeEngine(ctx, opts, logger)
 	if err != nil {
 		return fmt.Errorf("build merge engine: %w", err)
 	}
 	defer func() { _ = exporter.DB.Close() }()
 
+	store := &manifestv2.S3Store{Client: s3Client, Bucket: opts.s3.bucket}
+	writer, err := compaction.NewWriter(compaction.WriterConfig{
+		DB: db, Engine: opts.db.Engine, EntityMain: opts.entityMain,
+		Layout: manifestv2.Layout{Prefix: opts.dataPrefix}, Store: store, Compaction: opts.compact,
+	})
+	if err != nil {
+		return err
+	}
 	c := &compaction.Compactor{
-		Logger:     logger,
-		Config:     opts.compact,
-		Provider:   compaction.NewS3ManifestProvider(opts.manifest, s3Client),
-		Merger:     &compaction.DuckMerger{DB: exporter.DB, Logger: logger},
-		S3:         s3Client,
-		Bucket:     opts.s3.bucket,
-		DataPrefix: opts.dataPrefix,
+		Logger: logger,
+		Config: opts.compact,
+		Writer: writer,
+		Store:  store,
+		Merger: &compaction.DuckMerger{DB: exporter.DB, Logger: logger},
+		Bucket: opts.s3.bucket,
 		// The same concrete *s3.Client, read back through its GetObject: it
-		// stamps the merged base's content hash into the manifest entry (#347).
+		// hashes every merge source against its listed sha256 (#347).
 		ObjectReader: s3Client,
 		// Nil unless METRICS_STDOUT is on, and a nil sink emits nothing (#594).
 		Metrics: telemetry.NewSink(emitter),

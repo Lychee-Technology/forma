@@ -1,6 +1,7 @@
 package manifestv2
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -54,6 +55,26 @@ func (l Layout) root() string { return strings.TrimRight(l.Prefix, "/") }
 // the same object.
 func (l Layout) ManifestKey(schemaID int16, epoch, generation int64, token uuid.UUID) string {
 	return fmt.Sprintf("%s/%d/%s/e%d/g%020d-%s.json", l.root(), schemaID, manifestsDir, epoch, generation, token)
+}
+
+// ErrForeignPrefix marks a generation published under another prefix than
+// the writer's layout. A manifest lists files under one prefix only, so a
+// writer that replaced every file of such a generation would move the
+// schema's inventory to its own prefix, and every writer configured with the
+// published one would then be refused.
+var ErrForeignPrefix = errors.New("generation is published under another prefix than the writer's layout")
+
+// Holds checks that manifestKey, a published generation's manifest key, is
+// under l's canonical prefix, and answers ErrForeignPrefix if it is not.
+func (l Layout) Holds(manifestKey string) error {
+	k, err := parseManifestKey(manifestKey)
+	if err != nil {
+		return fmt.Errorf("read the prefix of the published manifest: %w", err)
+	}
+	if k.layout.root() != l.root() {
+		return fmt.Errorf("manifest %s is under prefix %q, the writer's layout is %q: %w", manifestKey, k.layout.root(), l.root(), ErrForeignPrefix)
+	}
+	return nil
 }
 
 // ParquetKey is the key of a parquet object of the tier, named by id, which

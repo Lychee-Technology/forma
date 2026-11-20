@@ -109,3 +109,21 @@ func TestEveryKeyALayoutBuildsReadsBackToItsCanonicalPrefix(t *testing.T) {
 		require.Error(t, err, bad)
 	}
 }
+
+// TestLayoutHoldsOnlyManifestsUnderItsCanonicalPrefix: a layout holds a
+// published manifest key under its prefix in any spelling of it, and refuses
+// one under another prefix, a parent or a child of it included, with
+// ErrForeignPrefix.
+func TestLayoutHoldsOnlyManifestsUnderItsCanonicalPrefix(t *testing.T) {
+	key := Layout{Prefix: "data"}.ManifestKey(100, 3, 7, testToken)
+	for _, l := range []Layout{{Prefix: "data"}, {Prefix: "data/"}, {Prefix: "data//"}} {
+		require.NoError(t, l.Holds(key), "prefix %q", l.Prefix)
+	}
+	for _, l := range []Layout{{}, {Prefix: "other"}, {Prefix: "data/sub"}, {Prefix: "x/data"}} {
+		require.ErrorIs(t, l.Holds(key), ErrForeignPrefix, "prefix %q", l.Prefix)
+	}
+	require.NoError(t, Layout{}.Holds(Layout{}.ManifestKey(100, 3, 7, testToken)), "the empty prefix holds its own keys")
+	err := Layout{Prefix: "data"}.Holds("data/100/not-a-manifest.json")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrForeignPrefix, "an unreadable key is not a prefix verdict")
+}

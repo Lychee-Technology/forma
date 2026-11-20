@@ -7,136 +7,41 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma/internal/cdc"
-	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"go.uber.org/zap"
 )
 
-// ErrSourceChecksumMismatch marks a rewrite input whose bytes no longer hash
-// to its manifest stamp. The rewrite must NOT proceed: runRewrite merges the
-// sources into the new base and splices them out of the manifest, so this
-// gate is the last moment silent corruption (#347) is both detectable and
-// attributable to a manifest-listed object. The source bytes may remain as
-// unlisted GC candidates, but the read path will no longer consult that
-// named entry after the rewrite. Probe failures never map to this error — a
-// failed GET is transient infrastructure, not a corruption verdict.
+// ErrSourceChecksumMismatch marks a merge source whose bytes no longer hash
+// to the digest its manifest entry lists. The merge must NOT proceed: it
+// folds the sources into a new base and the published generation stops
+// listing them, so this gate is the last moment silent corruption (#347) is
+// both detectable and attributable to a listed object. Probe failures never
+// map to this error: a failed GET is transient infrastructure, not a
+// corruption verdict.
 var ErrSourceChecksumMismatch = errors.New("compaction source checksum mismatch")
 
-// ErrForeignSource marks a rewrite source whose manifest path names a bucket
-// other than the compactor's own (#417 ruling: cross-bucket manifest paths
-// are not a supported compaction input). The compactor cannot verify, stat or
-// delete such an object through its own client, yet MergeToTmp would fold its
-// bytes into a new base in this bucket and spliceManifest would drop its
-// listed name — an unverified relocation across a bucket boundary past a
-// fail-closed gate. Terminal for the pass, exactly like a checksum mismatch:
-// the fix is to correct the manifest, not to retry.
-var ErrForeignSource = errors.New("compaction source outside compactor bucket")
-
-// verifyRewriteInputs is the fail-closed gate runRewrite runs before anything
-// is merged: past it the sources are folded into one object and spliced out
-// of the manifest, so a corrupt input would be laundered into the new base
-// and lose its listed name — the retained bytes (#461) are unlisted orphans
-// on a GC countdown, not a named copy anyone would consult (#347). A source in
-// another bucket is refused first (#417): objectURI would hand it to DuckDB
-// verbatim, but nothing downstream could verify, stat or delete it. Returns
-// the first refusal; both gates log the offending source at ERROR themselves.
-func (c *Compactor) verifyRewriteInputs(ctx context.Context, schemaID int16, sources []manifest.FileEntry) error {
-	if err := c.rejectForeignSources(schemaID, sources); err != nil {
-		return err
-	}
-	if err := c.verifySourceChecksums(ctx, schemaID, sources); err != nil {
-		return err
-	}
-	return nil
-}
-
-// rejectForeignSources refuses a rewrite whose sources include a path outside
-// the compactor's bucket. It is a scope check, not a checksum check, so it
-// runs regardless of SkipInputChecksumVerify or ObjectReader and applies to
-// unstamped entries too. Logs the refused source at ERROR before returning.
-func (c *Compactor) rejectForeignSources(schemaID int16, sources []manifest.FileEntry) error {
-	for _, f := range sources {
-		if _, ok := c.bucketRelativeKey(f.Path); ok {
-			continue
-		}
-		c.Logger.Error("rewrite source lies outside the compactor bucket; refusing to merge (#417)",
-			zap.Int16("schema_id", schemaID), zap.String("path", f.Path), zap.String("bucket", c.Bucket))
-		return fmt.Errorf("rewrite source %q for schema %d is outside bucket %s: %w",
-			f.Path, schemaID, c.Bucket, ErrForeignSource)
-	}
-	return nil
-}
-
-// verifySourceChecksums re-hashes every stamped rewrite source and compares
-// against the manifest stamp. Unstamped (legacy) entries are skipped — field
-// presence is the format version signal. A stamped source outside the
-// compactor's bucket cannot be hashed and is refused (ErrForeignSource).
-// Disabled when the config opts out or no ObjectReader is wired. Every
-// refusal is logged at ERROR here, so a standalone caller needs no log of
-// its own.
-func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, sources []manifest.FileEntry) error {
-	if c.Config.SkipInputChecksumVerify || c.ObjectReader == nil {
+// verifySourceChecksums re-hashes every merge source and compares it with
+// the sha256 its manifest entry lists. Every V2 entry lists one, so every
+// source is checked. Disabled when skip is set or no ObjectReader is wired.
+// A refusal is logged at ERROR here.
+func (c *Compactor) verifySourceChecksums(ctx context.Context, schemaID int16, sources []manifestv2.File, skip bool) error {
+	if skip || c.ObjectReader == nil {
 		return nil
 	}
 	for _, f := range sources {
-		if f.Checksum == "" {
-			continue // legacy unstamped entry: nothing to compare against
-		}
-		key, ok := c.bucketRelativeKey(f.Path)
-		if !ok {
-			// Unreachable through this compactor's client: a stamped source
-			// that cannot be hashed must not merge. runRewrite refuses such
-			// paths earlier via rejectForeignSources; this keeps the gate
-			// fail-closed on its own (#417).
-			c.Logger.Error("stamped rewrite source lies outside the compactor bucket; cannot hash it, refusing to merge (#417)",
-				zap.Int16("schema_id", schemaID), zap.String("path", f.Path), zap.String("bucket", c.Bucket))
-			return fmt.Errorf("verify rewrite source %q for schema %d: outside bucket %s: %w",
-				f.Path, schemaID, c.Bucket, ErrForeignSource)
-		}
-		actual, err := cdc.ObjectSHA256(ctx, c.ObjectReader, c.Bucket, key)
+		sum, err := cdc.ObjectSHA256(ctx, c.ObjectReader, c.Bucket, f.Key)
 		if err != nil {
-			return fmt.Errorf("verify rewrite source %q for schema %d: %w", f.Path, schemaID, err)
+			return fmt.Errorf("verify merge source %s of schema %d: %w", f.Key, schemaID, err)
 		}
-		if actual != f.Checksum {
+		actual := strings.TrimPrefix(sum, "sha256:")
+		if actual != f.SHA256 {
 			c.Metrics.EmitParquetChecksumMismatch(ctx, schemaID)
-			c.Logger.Error("rewrite source failed checksum verification; refusing to merge",
-				zap.Int16("schema_id", schemaID), zap.String("key", f.Path),
-				zap.String("stamped", f.Checksum), zap.String("actual", actual))
-			return fmt.Errorf("rewrite source %q for schema %d: stamped %s, bytes hash to %s: %w",
-				f.Path, schemaID, f.Checksum, actual, ErrSourceChecksumMismatch)
+			c.log().Error("merge source failed checksum verification; refusing to merge",
+				zap.Int16("schema_id", schemaID), zap.String("key", f.Key),
+				zap.String("listed", f.SHA256), zap.String("actual", actual))
+			return fmt.Errorf("merge source %s of schema %d: listed %s, bytes hash to %s: %w",
+				f.Key, schemaID, f.SHA256, actual, ErrSourceChecksumMismatch)
 		}
 	}
 	return nil
-}
-
-// bucketRelativeKey resolves a manifest path to a key inside the compactor's
-// bucket, reporting false for an absolute URI naming a different bucket and
-// for a path that resolves to no key at all ("", "/", "s3://<bucket>/"): an
-// empty key names nothing the compactor could merge, hash or delete, so it is
-// out of scope like a foreign one rather than passed on to fail downstream
-// (the refusal quotes the path so "" stays legible in the error). A bare
-// relative "/" counts as empty: no writer mints it, and it is the one
-// relative shape that carries no object name after the slash. The refusal is
-// relative-only: the own-bucket URI s3://<bucket>// passes through as key
-// "/", the object every other consumer resolves it to (#516 review).
-// It is the single path rule shared by the rewrite gates and deleteObjects,
-// and it follows the manifest path contract every other consumer applies
-// (#516; manifest.QuerySource.MissingIn, cdc.NormalizeObjectKey for
-// manifest-reconcile): a relative path IS the bucket-relative key, verbatim
-// — a leading slash is part of the key, not a separator to trim — and an
-// own-bucket URI keeps its key verbatim too (s3://bkt//x names key "/x").
-// That is exactly the object objectURI hands DuckDB, so the gate never hashes
-// one key while the merge reads another. The prefix match is exact, so
-// s3://bktX/ never passes as bkt.
-func (c *Compactor) bucketRelativeKey(path string) (string, bool) {
-	if strings.HasPrefix(path, "s3://") {
-		key, found := strings.CutPrefix(path, "s3://"+c.Bucket+"/")
-		if !found || key == "" {
-			return "", false
-		}
-		return key, true
-	}
-	if path == "" || path == "/" {
-		return "", false
-	}
-	return path, true
 }

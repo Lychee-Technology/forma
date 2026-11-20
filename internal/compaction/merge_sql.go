@@ -47,13 +47,15 @@ func validateMergeURI(uri string) error {
 	return nil
 }
 
-// buildMergeSQL renders the full-schema LWW merge: every source file's
-// versions are folded per row_id with the read path's exact ordering, rn=1
-// survivors drop tombstones entirely (safe ONLY because the source set is
-// the schema's complete base+delta inventory — a partial merge could
-// resurrect a row via an unmerged older version), and survivor deleted_at is
-// normalized to 0, the canonical live encoding on every cold tier (#274).
-// All remaining columns — changed_at above all (#210) — pass through
+// buildMergeSQL renders the LWW merge: every source file's versions are
+// folded per row_id with the read path's exact ordering, and each row's
+// rn=1 survivor is kept, tombstones included. A compaction may merge any
+// subset of a generation's files (a promotion merges the deltas alone), and
+// a flush staged before it may rebase over it with an older copy of a row
+// deleted since (docs/publication-protocol-v2.md, "Rebase"): only the kept
+// tombstone keeps that copy from resurrecting the row. Survivor deleted_at is
+// normalized from NULL to 0, the canonical live encoding on every cold tier
+// (#274). All remaining columns, changed_at above all (#210), pass through
 // verbatim.
 func buildMergeSQL(sourceURIs []string, tmpURI, copyOptions string) (string, error) {
 	if len(sourceURIs) == 0 {
@@ -73,17 +75,23 @@ func buildMergeSQL(sourceURIs []string, tmpURI, copyOptions string) (string, err
 		copyOptions = defaultMergeCopyOptions
 	}
 
+	// The rank is filtered with QUALIFY and never named: a generated column
+	// alias (the former _rn) shares the namespace of the payload columns, and
+	// an attribute exported under that name made DuckDB bind the filter and
+	// the EXCLUDE to the attribute instead of the rank, dropping every row
+	// and the attribute with it. The inner SELECT * ranks over the raw
+	// deleted_at, as the reader does; only the outer one normalizes it.
 	return fmt.Sprintf(`COPY (
-  SELECT * EXCLUDE (_rn) REPLACE (COALESCE(deleted_at, 0) AS deleted_at)
+  SELECT * REPLACE (COALESCE(deleted_at, 0) AS deleted_at)
   FROM (
-    SELECT *, ROW_NUMBER() OVER (
+    SELECT *
+    FROM read_parquet([%s], union_by_name=true)
+    QUALIFY ROW_NUMBER() OVER (
       PARTITION BY row_id
       ORDER BY %s
-    ) AS _rn
-    FROM read_parquet([%s], union_by_name=true)
+    ) = 1
   )
-  WHERE _rn = 1 AND (deleted_at IS NULL OR deleted_at = 0)
-) TO '%s' (%s)`, mergeLWWOrderBy, strings.Join(quoted, ", "), sqlutil.EscapeLiteral(tmpURI), copyOptions), nil
+) TO '%s' (%s)`, strings.Join(quoted, ", "), mergeLWWOrderBy, sqlutil.EscapeLiteral(tmpURI), copyOptions), nil
 }
 
 // buildMergeRowsInSQL counts the raw version rows across the source files
@@ -102,11 +110,9 @@ func buildMergeRowsInSQL(sourceURIs []string) (string, error) {
 	return fmt.Sprintf("SELECT COUNT(*) FROM read_parquet([%s], union_by_name=true)", strings.Join(quoted, ", ")), nil
 }
 
-// buildMergeStatsSQL computes the merged file's manifest metadata. COALESCEs
-// cover the zero-row merge of an all-tombstone schema: the entry is still
-// written (RowCount=0) so the manifest never empties out — zero entries
-// would send manifest-driven reads to the legacy glob fallback
-// (internal/manifest/query_source.go), resurrecting undeleted leftovers.
+// buildMergeStatsSQL computes the merged file's manifest metadata. The
+// COALESCEs cover a merge of sources that held no row, whose output the
+// compactor does not stage.
 func buildMergeStatsSQL(tmpURI string) (string, error) {
 	if err := validateMergeURI(tmpURI); err != nil {
 		return "", fmt.Errorf("stats target: %w", err)

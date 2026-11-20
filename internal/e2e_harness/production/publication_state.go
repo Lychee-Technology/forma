@@ -31,20 +31,17 @@ func publishesBetween(before, after *Manifest) int64 {
 }
 
 // compactionPublishesSince answers how many times the schema published
-// between the observation before and the publish the compaction pass that
-// answered result committed. Until V2 compaction lands (#890) RunCompaction
-// skips before answering a result, so nothing reaches this; the V1
-// compactor's result names no V2 generation, so it refuses to count rather
-// than compare unrelated numbers.
+// between the observation before and the compact generation the pass that
+// answered result committed: 0 when it committed none.
 func compactionPublishesSince(before *Manifest, result compaction.CompactionResult) int64 {
-	if v1CompactionStopped {
-		panic(fmt.Sprintf("compactionPublishesSince: compaction of schema %d answered %s without a V2 generation; %s",
-			before.SchemaID, result.Outcome, compactionSkipReason))
+	if result.Generation == 0 {
+		return 0
 	}
-	// #890 replaces this body with the count of generations between before
-	// and the one its V2 compaction result names, and clears
-	// v1CompactionStopped.
-	return -1
+	if before.Epoch != result.Epoch {
+		panic(fmt.Sprintf("compactionPublishesSince: schema %d observed at epoch %d, compacted at epoch %d; generations of different epochs do not compare",
+			before.SchemaID, before.Epoch, result.Epoch))
+	}
+	return result.Generation - before.Generation
 }
 
 // publicationSnapshot is one schema's publication exactly as a no-write check

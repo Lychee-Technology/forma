@@ -1,22 +1,22 @@
-// Package cdcv2 is the writer half of Protocol V2 for cdc-flush and cdc-init
-// (docs/publication-protocol-v2.md, "The commit boundary" and "Writers"): it
-// stages parquet objects and an immutable manifest (internal/manifestv2)
-// before any transaction, then moves the schema's publication record
-// (internal/publication) with compare-and-set and, in the same PostgreSQL
-// transaction, marks the change_log entries the generation holds. A cdc-init
-// publishes an init generation under a new lineage with no marks, then hands
-// its exported entries off in transactions fenced on that lineage.
+// Package cdcv2 is the writer half of Protocol V2 for cdc-flush, cdc-init
+// and the compactor (docs/publication-protocol-v2.md, "The commit boundary"
+// and "Writers"): it stages parquet objects and an immutable manifest
+// (internal/manifestv2) before any transaction, then moves the schema's
+// publication record (internal/publication) with compare-and-set and, in the
+// same PostgreSQL transaction, marks the change_log entries the generation
+// holds. A cdc-init publishes an init generation under a new lineage with no
+// marks, then hands its exported entries off in transactions fenced on that
+// lineage. A compaction publishes a compact generation, which replaces the
+// files it merged and marks nothing.
 //
-// Nothing in production calls it until the writers and the reader move onto
-// the record together (#896): the guard in internal/publication
-// (TestOnlyInitDBDDLReachesThePublicationTables) refuses a production import
-// of this package from anywhere else. V1 cdc-flush and cdc-init keep running
-// unchanged and no record is written in production.
+// It is the one production package that moves a publication record by
+// publishing (TestOnlyTheProtocolOwnersMoveAPublicationRecord in
+// internal/publication).
 //
-// What turns rows into parquet is the caller's: a DeltaStager for a flush and
-// a BaseExporter for an init. They write fresh write-once keys of the layout
-// and answer the manifest entries; this package owns everything from the
-// record read to the last handoff commit.
+// What turns rows into parquet is the caller's: a DeltaStager for a flush, a
+// BaseExporter for an init and a CompactStager for a compaction. They write
+// fresh write-once keys of the layout and answer the manifest entries; this
+// package owns everything from the record read to the last handoff commit.
 package cdcv2
 
 import (
@@ -97,7 +97,10 @@ type Config struct {
 	// EntityMain names entity_main; the publication tables are named after
 	// it (publication.TablesFor), and cdc-init exports its live rows.
 	EntityMain string
-	ChangeLog  string
+	// ChangeLog names the change log a flush selects and marks, and an init
+	// hands off in. A writer that only compacts marks nothing and may leave
+	// it empty; Flush, Init and ResumeInit refuse to run without it.
+	ChangeLog string
 	// Layout builds the object keys, Store holds them write-once, and Cache
 	// answers the verified parent manifest a flush appends to.
 	Layout manifestv2.Layout
@@ -139,8 +142,8 @@ func New(cfg Config) (*Writer, error) {
 		return nil, errors.New("a V2 writer needs a database")
 	case cfg.Store == nil || cfg.Cache == nil:
 		return nil, errors.New("a V2 writer needs a manifest store and a manifest cache")
-	case cfg.EntityMain == "" || cfg.ChangeLog == "":
-		return nil, errors.New("a V2 writer needs the entity_main and change_log table names")
+	case cfg.EntityMain == "":
+		return nil, errors.New("a V2 writer needs the entity_main table name")
 	}
 	cfg.PublishTimeout = orDefault(cfg.PublishTimeout, DefaultPublishTimeout)
 	cfg.StagingBudget = orDefault(cfg.StagingBudget, DefaultStagingBudget)
@@ -198,6 +201,14 @@ func (w *Writer) now(ctx context.Context, q interface {
 		return 0, fmt.Errorf("read the database clock: %w", err)
 	}
 	return ms, nil
+}
+
+// needChangeLog refuses op on a writer configured without a change log.
+func (w *Writer) needChangeLog(op string) error {
+	if w.cfg.ChangeLog == "" {
+		return fmt.Errorf("a V2 %s needs the change_log table name", op)
+	}
+	return nil
 }
 
 // fail runs the failpoint at p, if one is set.

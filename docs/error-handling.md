@@ -1602,10 +1602,12 @@ the V1 resolution (#896), together with their HTTP classes
 marks a **V1** manifest object whose recorded `schema_id` disagrees with the
 schema being read. It is raised before any path reaches a scan.
 
-**Scope since #896.** Only the remaining V1 tools raise it: the compactor's
-manifest load and `manifest-reconcile`, which a cut-over deployment keeps
-stopped until V2 compaction (#890) and garbage collection (#891) replace them.
-The server and the federated read path no longer read a V1 manifest, and
+**Scope since #896 and #890.** Only the remaining V1 tool raises it:
+`manifest-reconcile`, which a cut-over deployment keeps stopped until garbage
+collection (#891) replaces it. The compactor publishes V2 compact generations
+since #890 and reads no V1 manifest; its `--manifest-template` flag is gone,
+and the parser refuses it. The server and the federated read path no longer
+read a V1 manifest, and
 `duckdb.manifestTemplate` is no longer a server setting. A V2 read resolves
 the manifest the publication record names, verified against its committed
 digest and identity: a manifest that names another schema, epoch or
@@ -1621,18 +1623,18 @@ generation fails as `ErrPublicationInconsistent` (wrapping
   another schema's rows under this schema's identity.
 - **Not a degradable read.** Cross-schema contamination is the opposite of a
   partial answer, so a V1 tool fails on it rather than work around it.
-- **Relationship to flag validation.** The compactor and `manifest-reconcile`
-  probe `--manifest-template` at flag parsing against two schema IDs
+- **Relationship to flag validation.** `manifest-reconcile` probes
+  `--manifest-template` at flag parsing against two schema IDs
   (`forma.ValidateManifestPathTemplate`, #520), which catches a collapsed
   template (a constant path, a `{{.SchemaId}}` typo) but cannot prove
   injectivity over the whole schema domain. This error is the runtime
   enforcement of what that check can only sample.
-- **Where it is enforced.** The two V1 manifest consumers left: the
-  compactor's manifest load and `manifest-reconcile` (which wraps it in its
-  own `claims schema N, not requested schema M` wording). `cdc-flush`,
-  `cdc-init` and the federated reader no longer read or write a V1 manifest
-  (#896): a V2 manifest names its schema, epoch and generation, and its digest
-  is committed in the record.
+- **Where it is enforced.** The one V1 manifest consumer left,
+  `manifest-reconcile`, which wraps it in its own `claims schema N, not
+  requested schema M` wording. `cdc-flush`, `cdc-init` and the federated
+  reader (#896) and the compactor (#890) no longer read or write a V1
+  manifest: a V2 manifest names its schema, epoch and generation, and its
+  digest is committed in the record.
 - **Zero stamp (#522).** A manifest whose `schema_id` is zero is unstamped
   rather than schema 0 (schema IDs are always positive), and it is not a legacy
   format either: the field has been on the manifest, and set by every Forma
@@ -1661,12 +1663,15 @@ generation fails as `ErrPublicationInconsistent` (wrapping
   id must be positive` invariant the OLTP repository enforces.
 - **Where the zero-stamp rule is enforced.** The same single site,
   `manifest.VerifySchemaStamp`, reached through `LoadOrCreateForSchema` by
-  `manifest-reconcile`, and directly by the compactor's manifest load.
+  `manifest-reconcile`.
 - **Operator action.** The message names both schema IDs and the manifest key.
-  Fix the tool's `--manifest-template` so each schema resolves a distinct
-  object, then repair the affected manifests (`docs/manifest-reconcile.md`).
+  Fix `manifest-reconcile`'s `--manifest-template` so each schema resolves a
+  distinct object, then repair the affected manifests
+  (`docs/manifest-reconcile.md`). The compactor takes no manifest template
+  since #890: a compactor run that passes one fails at flag parsing, and the
+  remedy is to drop the flag, not to fix the template.
 - **HTTP.** The `manifest_schema_mismatch` class stays in
-  `internal/httpapi`'s classification for an embedder that surfaces a V1
+  `internal/httpapi`'s classification for an embedder that surfaces the V1
   tool's error. The server's own reads raise `publication_inconsistent`.
 
 ## Public HTTP error surface

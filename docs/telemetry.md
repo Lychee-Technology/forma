@@ -64,7 +64,6 @@ a fixed enumeration.
 | `fed_query_row_count` | counter | count | `source` (`pg`, `duckdb`, `hot`) | federated query engine |
 | `duckdb_circuit_breaker_transition_total` | counter | count | `state` (`open`, `half_open`, `closed`) | federated query engine (#634) |
 | `federated_degraded_fallback_total` | counter | count | `cause` (`breaker_rejected`, `duckdb_unavailable`, `corrupt_parquet`, `scan_guard_violation`, `read_failed`, `postgres_read_failed`, `other`), `outcome` (`served`, `failed`) | federated query engine (#714) |
-| `compaction_manifest_contract_violation_total` | counter | count | `schema_id` | compactor |
 | `compaction_dirty_ratio` | gauge | ratio | `schema_id` | compactor |
 | `compaction_rewrite_pending_total` | counter | count | `schema_id` | compactor |
 | `parquet_checksum_mismatch_total` | counter | count | `schema_id` | compactor (#347) |
@@ -196,6 +195,7 @@ stops receiving samples.
 
 | Name | Retired by | Why |
 |------|------------|-----|
+| `compaction_manifest_contract_violation_total` (counter, count, `schema_id`) | #890 | It counted V1 compaction passes whose `SaveManifest` succeeded without advancing the manifest's metadata. The V2 compactor publishes each generation with an exact compare-and-set on the schema's publication record, which either commits the generation or fails the pass, so the event it counted cannot occur and nothing emits it. |
 | `fed_query_pushdown_efficiency` (gauge, ratio, `schema_id`) | #596 | It was the dirty-set size over the final matching row count, a stand-in for a Postgres-rows-scanned ratio Forma did not observe: the hot leg then ran inside DuckDB, which exposes the scans' row counts only through per-query profiling. Its numerator is still emitted as `fed_query_row_count{source="pg"}`. |
 
 ## The demo binaries
@@ -216,7 +216,7 @@ Each line has a stable shape:
 
 On Lambda the lines land in the function's log group like any other stdout.
 
-`cmd/tools compactor` is the only producer of the five compactor metrics, so
+`cmd/tools compactor` is the only producer of the four compactor metrics, so
 it reads the same variable (#594): a cron- or job-driven run whose output
 reaches a log group reports them with no collector. Every pass that loads the
 schema's manifest emits at least `compaction_dirty_ratio`. A pass that finds
@@ -224,6 +224,17 @@ no manifest emits nothing, and neither does one that fails before the
 manifest is loaded, so the gauge is not a heartbeat: a run that printed none
 either had no manifest to read (exit code 0) or failed before reading it
 (non-zero).
+
+`compaction_rewrite_applied_total` counts committed dirty-ratio rewrites
+only, passes that merged every base and delta file into a new base object,
+and `compaction_rewrite_pending_total` counts passes whose dirty ratio called
+for such a rewrite while the compactor had no merge wiring. A delta
+promotion, which takes precedence when the delta tier reaches the target base
+size, is counted by neither, committed or not. Since #890 a promotion also
+merges into a new base object, because a V2 key names its tier, but the two
+series keep the meaning their names promise; a pass reports a promotion
+through its `promotion_applied` outcome and its `compaction published` log
+line.
 
 The subcommand's logs go to stderr, and so does a failed run's
 `compactor: <error>` text (#643), so stdout carries the metric lines and

@@ -115,13 +115,6 @@ var metricCatalogue = []MetricDescriptor{
 		Help:   "PostgreSQL-only degraded fallbacks attempted under AllowPartialDegradedMode (#714), one per attempt. cause is the class of the failure that triggered the fallback: breaker_rejected, duckdb_unavailable, corrupt_parquet, scan_guard_violation, read_failed, postgres_read_failed or other. outcome is served when the PostgreSQL-only read answered the request and failed when that read failed.",
 	},
 	{
-		Name:   "compaction_manifest_contract_violation_total",
-		Kind:   MetricKindCounter,
-		Unit:   MetricUnitCount,
-		Labels: []string{"schema_id"},
-		Help:   "Compaction passes where SaveManifest succeeded without advancing manifest metadata.",
-	},
-	{
 		Name:   "compaction_dirty_ratio",
 		Kind:   MetricKindGauge,
 		Unit:   MetricUnitRatio,
@@ -133,7 +126,7 @@ var metricCatalogue = []MetricDescriptor{
 		Kind:   MetricKindCounter,
 		Unit:   MetricUnitCount,
 		Labels: []string{"schema_id"},
-		Help:   "Compaction passes that needed a dirty-ratio rewrite but could not apply one yet.",
+		Help:   "Compaction passes that needed a dirty-ratio rewrite but could not apply one yet. A pass that called for a delta promotion instead is not counted.",
 	},
 	{
 		Name:   "parquet_checksum_mismatch_total",
@@ -147,7 +140,7 @@ var metricCatalogue = []MetricDescriptor{
 		Kind:   MetricKindCounter,
 		Unit:   MetricUnitCount,
 		Labels: []string{"schema_id"},
-		Help:   "Committed dirty-ratio rewrites (#188).",
+		Help:   "Committed dirty-ratio rewrites (#188). A committed delta promotion is not counted.",
 	},
 	{
 		Name:   "entity_report_only_validation_violation_total",

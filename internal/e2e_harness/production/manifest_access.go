@@ -30,11 +30,12 @@ import (
 type Manifest struct {
 	SchemaID int16
 	Epoch    int64
-	// Generation is the committed generation's number in its epoch.
-	Generation int64
-	Kind       publication.Kind
-	Lineage    uuid.UUID
-	Token      uuid.UUID
+	// Generation is the committed generation's number in its epoch, and
+	// ParentGeneration the one it replaced (0 for the first).
+	Generation, ParentGeneration int64
+	Kind                         publication.Kind
+	Lineage                      uuid.UUID
+	Token                        uuid.UUID
 	// Key and SHA256 name the manifest object, as the record committed them.
 	Key, SHA256 string
 	Files       []ManifestEntry
@@ -159,7 +160,7 @@ func manifestView(ctx context.Context, store manifestv2.Store, rec publication.R
 		return nil, fmt.Errorf("fetch schema %d's generation %d manifest %s: %w", rec.SchemaID, rec.Generation, rec.ManifestKey, err)
 	}
 	m := &Manifest{
-		SchemaID: rec.SchemaID, Epoch: rec.Epoch, Generation: rec.Generation, Kind: doc.Kind,
+		SchemaID: rec.SchemaID, Epoch: rec.Epoch, Generation: rec.Generation, ParentGeneration: rec.ParentGeneration, Kind: doc.Kind,
 		Lineage: rec.Lineage, Token: rec.Token, Key: rec.ManifestKey, SHA256: rec.ManifestSHA256,
 		Files: make([]ManifestEntry, 0, len(doc.Files)),
 	}
@@ -172,6 +173,23 @@ func manifestView(ctx context.Context, store manifestv2.Store, rec publication.R
 		})
 	}
 	return m, nil
+}
+
+// fetchGenerationKeys fetches the manifest of m's generation from the store
+// afresh, past any reader's cache, verifies it against the identity and
+// digest its record committed, and answers the keys it lists. A generation
+// the record no longer names stays fetchable until garbage collection
+// retires it (#891).
+func (e *Env) fetchGenerationKeys(ctx context.Context, m *Manifest) ([]string, error) {
+	ref := manifestv2.Ref{
+		SchemaID: m.SchemaID, Epoch: m.Epoch, Generation: m.Generation, ParentGeneration: m.ParentGeneration,
+		Token: m.Token, Lineage: m.Lineage, Kind: m.Kind, ManifestKey: m.Key, ManifestSHA256: m.SHA256,
+	}
+	doc, err := manifestv2.Fetch(ctx, e.manifestStore(), ref)
+	if err != nil {
+		return nil, fmt.Errorf("fetch schema %d's generation %d manifest %s: %w", m.SchemaID, m.Generation, m.Key, err)
+	}
+	return doc.Keys(), nil
 }
 
 // manifestStore is the write-once store the Env's manifests live in.
