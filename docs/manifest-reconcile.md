@@ -94,8 +94,10 @@ fail closed until a re-init (R11-F3).
 4. Fetch every retained and expired manifest and verify it with the reader's
    full check (digest, identity, wire form, and every listed key under the
    schema and epoch). Fetch the manifest of every displaced inventory whose
-   replaced generation's row expired, and verify it against the digest and
-   token the displacement kept.
+   replaced generation's row expired, and verify it with the same full check
+   against the identity, digest and token the displacement kept: its keys are
+   deleted whatever their age, so a key of another epoch must never pass
+   (R12-F1).
 5. Delete every object that is listed only by expired generations or expired
    displaced inventories, or that no generation names and was staged before
    the horizon: its `LastModified` plus S3's one-second precision plus
@@ -353,7 +355,7 @@ safe action. Any finding makes the run exit 2.
 | `history_mismatch` | The record's generation has a history row, but the row disagrees with the record (epoch, parent generation, manifest key, digest or token), or carries a `superseded_at` or `retired_at` while the generation is current. A row stamped retired is reported so even when its stamp is past the grace. | refused | Not a lost row, and not the lost row's recovery (see "A history row that disagrees with the record" below). Rewrite neither the row nor the record, and restore neither from a backup. Reads follow the record: the detail says whether the manifest the record names verifies against it, which covers the manifest only; if it does not, a `missing_generation` or `invalid_manifest` finding of the record's manifest says why, and if an object it lists is missing or corrupt, a `lost_object` or `corrupt_object` finding of the generation says so. Either way reads fail closed, and a re-init restores them. Either side may be the one that changed, so the next publication writes the row back from the record and keeps the row's inventory as displaced: collection stays refused until that generation's row expires (a pass retires it after seeing the replacement committed, and G passes), and then resumes unless the record's manifest still fails against the row. One replacement does not by itself make an immediate collection safe. |
 | `missing_history` | The history has no row for a generation number above the highest expired row and at or below the record's counter. | refused | Do not restore the rows from a backup (see "Lost history rows" below). Collection resumes by itself once a generation above the gap expires: a later publication (a `cdc-init` included) supersedes it, a pass retires it, and G passes. |
 | `missing_retained_manifest` | A superseded generation inside its grace has no manifest. | refused | None for new reads. Collection resumes once the generation expires. |
-| `invalid_manifest` | A manifest's bytes are not the ones PostgreSQL committed: corruption or a writer bug. | refused | Restore the object from a versioned or backed-up copy whose SHA-256 is the history row's `manifest_sha256`. For the current generation, a re-init restores reads. |
+| `invalid_manifest` | A manifest's bytes are not the ones PostgreSQL committed: corruption or a writer bug. For a displaced inventory, its manifest fails the reader's full check against the displacement, a key of another epoch included. | refused | Restore the object from a versioned or backed-up copy whose SHA-256 is the history row's `manifest_sha256`. For the current generation, a re-init restores reads. For a displaced inventory whose bytes match the displacement's digest, delete the displacement's row by hand instead (see "A history row that disagrees with the record" below). |
 | `foreign_manifest` | A generation's manifest is not under `--data-prefix`. | refused | Run with the prefix the writers publish under. |
 | `lost_object` | A retained generation lists an object S3 confirms missing (a 404 on a probe, never a failed call). | runs | Current generation: re-initialize with `cdc-init`; reads fail closed until then. Superseded only: none for new reads; it expires. |
 | `corrupt_object` | `--verify-checksums` found other bytes than the manifest lists. | runs | Current generation: re-initialize with `cdc-init` (compaction refuses the object as a source). Otherwise it expires. |
@@ -433,8 +435,21 @@ make them agree, and do not restore a manifest object to match the row.
   that the keys are this deployment's. A pass that fails before the end
   leaves the displacement, and the next pass verifies its manifest again and
   deletes the rest, so the cleanup is retried until it finishes, whatever is
-  left of the schema in the bucket. A displaced manifest that fails
-  verification refuses the pass, as an invalid expired manifest does. One
+  left of the schema in the bucket. A displaced manifest that fails the
+  reader's full check (its digest, identity and wire form, every listed key of
+  the displacement's schema and epoch with the tier its entry names, and the
+  layout's prefix) is an `invalid_manifest` finding, or `foreign_manifest` for
+  a key outside the layout: the pass deletes and forgets nothing, and the
+  schema is reported as needing attention. The digest alone is not enough: a
+  manifest whose bytes match it can still list a staged object of the epoch a
+  drop moved to, far above the orphan cutoff, and the displaced inventory's
+  keys are deleted whatever their age. If the detail reports another SHA-256
+  than the displacement's, restore the object from a copy with that digest.
+  Otherwise the displacement does not prove which keys are its inventory:
+  delete its row of `<entity_main>_publication_displaced` by hand. The
+  replaced generation's row has expired, so no reader scans it, and its
+  manifest and the objects only it listed are then orphans, deleted only once
+  they are older than the orphan cutoff. Never delete a key it lists by hand. One
   replacement therefore does not by itself make an immediate collection safe:
   collection resumes a full grace after the first pass that follows the
   replacement.

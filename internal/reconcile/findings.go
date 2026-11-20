@@ -79,6 +79,16 @@ const (
 		"collection deletes nothing for the schema until the object verifies. If an earlier pass reported a " +
 		"history_mismatch for this generation, the row, not the object, may be what disagrees: restore nothing, and leave " +
 		"garbage collection refused"
+	actionInvalidDisplaced = "garbage collection deletes and forgets nothing for the schema while the displacement names " +
+		"this manifest: the keys a displaced manifest lists are deleted whatever their age, so one that is not its own " +
+		"epoch's inventory could name a staged object no horizon fences yet. The replaced generation's row has expired, so " +
+		"no reader scans the inventory. If the detail reports a SHA-256 other than the displacement's manifest_sha256, " +
+		"restore the object from a versioned or backed-up copy whose SHA-256 is that digest. Otherwise the displacement, or " +
+		"the history row it was taken from, was written outside the protocol and does not prove which keys are the " +
+		"inventory's: delete the generation's row of the publication displaced inventory table by hand " +
+		"(docs/manifest-reconcile.md, \"A history row that disagrees with the record\"). Its manifest and the objects only " +
+		"it listed are then orphans, deleted only once they are older than the orphan cutoff, which no publication still " +
+		"in flight staged. Never delete a key the manifest lists by hand"
 	actionForeignManifest = "run manifest-reconcile with the --data-prefix the writers publish under; garbage collection " +
 		"deletes nothing for the schema under this prefix"
 	actionLostCurrent = "re-initialize the schema with cdc-init: reads fail closed while the current generation lists " +

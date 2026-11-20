@@ -1,7 +1,9 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/publication"
 )
 
@@ -171,4 +174,79 @@ func (f *fixture) ageRetirements(t *testing.T, d time.Duration) {
 	_, err := f.db.Exec(fmt.Sprintf("UPDATE %s SET retired_at = retired_at - $1 WHERE schema_id = $2 AND retired_at <> 0",
 		f.tables.Generation), d.Milliseconds(), testSchema)
 	require.NoError(t, err)
+}
+
+// TestADisplacedManifestNamingAnotherEpochDeletesNothing is R12-F1: the
+// R11-F1 drop, but the displaced manifest, whose digest the displacement
+// row was rewritten to match, also lists an object of the epoch the drop
+// moved to, staged by a publication that may still commit and far above
+// the orphan cutoff. Its digest and identity pass the collector's own check
+// (publication.ManifestFiles); the reader's full check refuses a listed key
+// of another epoch. Once N's row expired, every pass reports the displaced
+// manifest as invalid_manifest, deletes nothing, forgets nothing and is not
+// clean, so the staged object survives.
+func TestADisplacedManifestNamingAnotherEpochDeletesNothing(t *testing.T) {
+	f := newFixture(t)
+	opts := Options{GC: true, RetentionGrace: time.Minute, ReaderDeadline: 50 * time.Second,
+		ClockMargin: 50 * time.Millisecond, OrphanAge: 2 * time.Hour}
+	g1 := f.publishInit(t, f.initialized(t), 1)
+	won, lost := f.stageFlush(t, g1, 1), f.stageFlush(t, g1, 1)
+	g2 := f.publish(t, won)
+	_, err := f.db.Exec(fmt.Sprintf("UPDATE %s SET manifest_key = $1, manifest_sha256 = $2, cas_token = $3 WHERE schema_id = $4",
+		f.tables.Record), lost.next.ManifestKey, lost.next.ManifestSHA256, lost.next.Token, testSchema)
+	require.NoError(t, err)
+	require.NoError(t, f.inTx(t, func(tx publication.Tx) error {
+		_, err := publication.Reset(context.Background(), tx, f.tables, f.record(t))
+		return err
+	}))
+	f.ageLifecycle(t, time.Hour)
+	dropped := f.record(t)
+	require.Greater(t, dropped.Epoch, g2.rec.Epoch)
+	staged := f.file(t, dropped.Epoch, manifestv2.TierBase) // a publication at the new epoch, in flight
+
+	raw, err := f.store.Get(context.Background(), g2.rec.ManifestKey)
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(raw, &doc))
+	doc["files"] = append(doc["files"].([]any), map[string]any{"key": staged.Key})
+	forged, err := json.Marshal(doc)
+	require.NoError(t, err)
+	f.store.set(g2.rec.ManifestKey, forged, f.serverMillis(t))
+	_, err = f.db.Exec(fmt.Sprintf("UPDATE %s SET manifest_sha256 = $1 WHERE schema_id = $2 AND manifest_key = $3", f.tables.Displaced),
+		manifestv2.Digest(forged), testSchema, g2.rec.ManifestKey)
+	require.NoError(t, err)
+	displaced, err := publication.Displaced(context.Background(), publication.DB(f.db), f.tables, testSchema)
+	require.NoError(t, err)
+	require.Len(t, displaced, 1)
+	files, err := publication.ManifestFiles(forged, testSchema, displaced[0].Inventory())
+	require.NoError(t, err, "the digest and identity pass the collector's own check")
+	require.Contains(t, files, staged.Key)
+
+	rep := f.pass(t, opts)
+	require.NoError(t, rep.Err)
+	require.Contains(t, rep.Refused, g2.rec.ManifestKey, "the displaced inventory is live inside the grace")
+	f.ageRetirements(t, time.Hour) // N's row expired; the staged object is still young
+	before := f.store.keys()
+	for pass := range 2 {
+		rep := f.pass(t, opts)
+		require.NoError(t, rep.Err, "pass %d", pass)
+		require.Equal(t, []FindingKind{InvalidManifest}, kinds(rep.Findings), "pass %d", pass)
+		require.Equal(t, g2.rec.ManifestKey, rep.Findings[0].Key)
+		require.Equal(t, actionInvalidDisplaced, rep.Findings[0].Action)
+		require.Contains(t, rep.Findings[0].Detail, "does not verify against the displacement")
+		require.Contains(t, rep.Refused, string(InvalidManifest))
+		require.Empty(t, rep.Collected.Objects, "pass %d", pass)
+		require.Empty(t, rep.Collected.Manifests, "pass %d", pass)
+		require.Empty(t, rep.Collected.Forgotten, "pass %d", pass)
+		require.True(t, rep.Residual(), "invalid displaced evidence is not clean")
+		var out bytes.Buffer
+		Report{Schemas: []SchemaReport{rep}}.Render(&out)
+		require.Contains(t, out.String(), "needs attention")
+		require.NotContains(t, out.String(), ": clean (")
+	}
+	require.Equal(t, before, f.store.keys(), "nothing is deleted")
+	require.Contains(t, f.store.keys(), staged.Key, "the other epoch's staged object survives")
+	displaced, err = publication.Displaced(context.Background(), publication.DB(f.db), f.tables, testSchema)
+	require.NoError(t, err)
+	require.Len(t, displaced, 1, "the displacement is not forgotten")
 }

@@ -77,6 +77,27 @@ func GenerationRef(schemaID int16, g publication.Generation) Ref {
 	}
 }
 
+// VerifyDisplaced verifies raw, the stored bytes of a displaced inventory's
+// manifest (publication.Displacement.Inventory), with every check Verify
+// runs on a generation's manifest: the digest and identity the displacement
+// kept, the wire form, every listed key spelling the displacement's schema
+// and epoch with the tier its entry names, and the manifest key and every
+// listed key under one prefix. A displacement keeps no parent generation
+// and no kind, so only those two are taken from the document; the digest
+// the displacement kept already binds them. A collector trusts a key a
+// displaced manifest lists only once it passes (R12-F1): the keys are
+// deleted whatever their age, so a manifest that names a key of another
+// epoch would delete a staged object no horizon has fenced yet.
+func VerifyDisplaced(raw []byte, schemaID int16, g publication.Generation) (*Manifest, error) {
+	var head struct {
+		ParentGeneration int64 `json:"parent_generation"`
+	}
+	_ = json.Unmarshal(raw, &head) // Verify refuses a document that does not decode
+	ref := GenerationRef(schemaID, g)
+	ref.ParentGeneration, ref.Kind = head.ParentGeneration, ""
+	return Verify(raw, ref)
+}
+
 func (r Ref) fail(err error) error {
 	return &ConsistencyError{SchemaID: r.SchemaID, Epoch: r.Epoch, Generation: r.Generation, ManifestKey: r.ManifestKey, Err: err}
 }

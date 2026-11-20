@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/publication"
 )
 
@@ -71,21 +72,40 @@ func (p *pass) retiredDisplacements() []publication.Generation {
 	return out
 }
 
-// checkDisplaced verifies the manifest of every retired displacement
-// against it (publication.ManifestFiles: digest and identity, the
-// collector's check) and keeps the keys it lists. One that fails is not
-// trusted, and the plan, which verifies it again, refuses the pass; one
-// missing was deleted by an earlier pass after the objects only it listed.
+// checkDisplaced verifies the manifest of every retired displacement with
+// the reader's full check (manifestv2.VerifyDisplaced: the digest and
+// identity the displacement kept, the wire form, and every listed key
+// spelling the displacement's schema and epoch under the manifest's own
+// prefix, which must be the layout's), and keeps the keys it lists. A
+// collection deletes those keys whatever their age, so one that fails is a
+// finding that stops every collection, invalid_manifest or
+// foreign_manifest, as an expired generation's would be: the digest alone
+// does not keep it from naming a staged object of another epoch, which no
+// horizon has fenced yet (R12-F1). One missing was deleted by an earlier
+// pass after the objects only it listed.
 func (r *Reconciler) checkDisplaced(p *pass) {
 	p.displacedFiles = map[string][]string{}
 	for _, g := range p.retiredDisplacements() {
-		raw, ok := p.raw[g.ManifestKey]
-		if !ok || !r.Layout.Owns(p.id, g.ManifestKey) {
+		if !r.Layout.Owns(p.id, g.ManifestKey) {
+			f := generationFinding(ForeignManifest, g, false, fmt.Sprintf("the displaced inventory generation %d's history row "+
+				"named is not a manifest key the layout of prefix %q builds for schema %d", g.Generation, r.Layout.Prefix, p.id))
+			f.Action = actionInvalidDisplaced
+			p.findings = append(p.findings, f)
 			continue
 		}
-		if files, err := publication.ManifestFiles(raw, p.id, g); err == nil {
-			p.displacedFiles[g.ManifestKey] = files
+		raw, ok := p.raw[g.ManifestKey]
+		if !ok {
+			continue
 		}
+		m, err := manifestv2.VerifyDisplaced(raw, p.id, g)
+		if err != nil {
+			f := generationFinding(InvalidManifest, g, false, fmt.Sprintf("the manifest of the displaced inventory generation %d's "+
+				"history row named does not verify against the displacement: %v", g.Generation, err))
+			f.Action = actionInvalidDisplaced
+			p.findings = append(p.findings, f)
+			continue
+		}
+		p.displacedFiles[g.ManifestKey] = m.Keys()
 	}
 }
 

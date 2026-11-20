@@ -104,7 +104,12 @@ type Plan struct {
 //     deleted whatever their age, and the manifest is deleted after them.
 //     It is the evidence that names them: once the displacement is
 //     forgotten, nothing would tell its objects from another deployment's
-//     (R11-F1). It forgets no history row.
+//     (R11-F1). It forgets no history row. ManifestFiles checks the digest
+//     and the identity, not that each key is the displacement's schema and
+//     epoch: the caller gives only displacements whose manifests passed the
+//     reader's full check (manifestv2.VerifyDisplaced), and refuses a pass
+//     with one that did not, since a key of another epoch is deleted here
+//     whatever its age (R12-F1).
 //   - An object no history row names, whether as a manifest or through a
 //     manifest that exists, is an orphan. It is deleted once its
 //     LastModified is below OrphanCutoff: its staging began before the

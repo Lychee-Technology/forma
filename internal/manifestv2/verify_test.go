@@ -234,3 +234,32 @@ func TestVerifyEnforcesTheFlushInventoryButAcceptsAnEmptyInit(t *testing.T) {
 	require.Empty(t, m.Files)
 	require.Equal(t, publication.KindInit, m.Kind)
 }
+
+// TestVerifyDisplacedRunsTheReadersFullCheck is R12-F1: a displaced
+// inventory keeps no parent and no kind, so VerifyDisplaced takes those from
+// the document, and refuses everything else Verify refuses. A listed key of
+// another epoch passes publication.ManifestFiles, which checks the digest
+// and the identity, and is refused here.
+func TestVerifyDisplacedRunsTheReadersFullCheck(t *testing.T) {
+	raw, ref := encoded(t, testManifest(t))
+	inventory := func(r Ref) publication.Generation {
+		return publication.Generation{Generation: r.Generation, Epoch: r.Epoch, ManifestKey: r.ManifestKey,
+			ManifestSHA256: r.ManifestSHA256, Token: r.Token}
+	}
+	m, err := VerifyDisplaced(raw, ref.SchemaID, inventory(ref))
+	require.NoError(t, err, "a valid manifest verifies without the parent and kind the displacement lacks")
+	require.Equal(t, testManifest(t).Generation, m.Generation)
+
+	other := testLayout.ParquetKey(100, 2, TierBase, uuid.MustParse("0190a000-0000-7000-8000-0000000000ff"))
+	forged, fref := reseal(t, raw, ref, func(d map[string]any) { firstFile(d)["key"] = other })
+	_, err = publication.ManifestFiles(forged, fref.SchemaID, inventory(fref))
+	require.NoError(t, err, "the digest and identity alone pass")
+	_, err = VerifyDisplaced(forged, fref.SchemaID, inventory(fref))
+	requireInvalid(t, err, Ref{SchemaID: fref.SchemaID, Epoch: fref.Epoch, Generation: fref.Generation, ManifestKey: fref.ManifestKey})
+	require.ErrorContains(t, err, "epoch 2")
+
+	wrong := inventory(ref)
+	wrong.Token = uuid.New()
+	_, err = VerifyDisplaced(raw, ref.SchemaID, wrong)
+	require.ErrorIs(t, err, publication.ErrManifestInvalid, "another token than the displacement kept")
+}

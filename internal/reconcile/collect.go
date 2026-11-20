@@ -13,6 +13,12 @@ import (
 // fault in either from reaching S3.
 var errPlanTouchesProtected = errors.New("the collection plan deletes a protected key")
 
+// errPlanUnverified reports a plan that would delete, for a manifest's sake,
+// an object no manifest the pass verified lists. PlanCollection plans one
+// only from a manifest the pass reports invalid; the check keeps a fault in
+// either from reaching S3.
+var errPlanUnverified = errors.New("the collection plan deletes a key no verified manifest lists")
+
 // summarize fills rep from p and plans the collection (steps 5 to 7) when
 // nothing stops it. A blocking finding stops it, and so does a pass without
 // a record, a diagnosis a collection ran beside, a live displaced inventory
@@ -126,8 +132,13 @@ func (r *Reconciler) unbound(p *pass, plan publication.Plan) string {
 }
 
 // guardPlan refuses a plan that deletes the record's manifest, a retained
-// generation's manifest or an object a retained generation lists, or a key
-// the layout does not build for the schema.
+// generation's manifest or an object a retained generation lists, a key the
+// layout does not build for the schema, or an object not yet below the
+// orphan cutoff that no manifest the pass verified with the reader's full
+// check lists (p.verified, p.displacedFiles). Those checks hold every listed
+// key to its manifest's schema and epoch, which PlanCollection's own
+// (publication.ManifestFiles) does not, so a manifest that names another
+// epoch's staged object never has it deleted for its age alone (R12-F1).
 func (r *Reconciler) guardPlan(p *pass, plan publication.Plan) error {
 	protected := map[string]bool{p.record.ManifestKey: p.record.ManifestKey != ""}
 	for _, g := range p.retained {
@@ -141,6 +152,28 @@ func (r *Reconciler) guardPlan(p *pass, plan publication.Plan) error {
 	for _, key := range append(append([]string{}, plan.Objects...), plan.Manifests...) {
 		if protected[key] || !r.Layout.Owns(p.id, key) {
 			return fmt.Errorf("schema %d: %s: %w", p.id, key, errPlanTouchesProtected)
+		}
+	}
+	verified := map[string]bool{}
+	for _, m := range p.verified {
+		for _, f := range m.Files {
+			verified[f.Key] = true
+		}
+	}
+	for _, files := range p.displacedFiles {
+		for _, key := range files {
+			verified[key] = true
+		}
+	}
+	young := map[string]bool{}
+	before := publication.OrphanCutoff(p.horizon, r.Opts.ClockMargin)
+	for _, o := range p.listed {
+		young[o.Key] = o.LastModified >= before
+	}
+	for _, key := range plan.Objects {
+		if young[key] && !verified[key] {
+			return fmt.Errorf("schema %d: %s is not below the orphan cutoff and no verified manifest lists it: %w",
+				p.id, key, errPlanUnverified)
 		}
 	}
 	return nil
