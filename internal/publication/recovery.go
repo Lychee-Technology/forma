@@ -69,7 +69,12 @@ const recoverSQL = `INSERT INTO %s (schema_id, epoch, state, generation, parent_
 // and on every later one, since epochs only grow. No generation number the
 // surviving history committed is used again either. The generation the lost
 // record named is superseded in tx (supersedeLostSQL), so that garbage
-// collection retires it once it sees the recovery committed.
+// collection retires it once it sees the recovery committed. The id's
+// lifecycle epoch row is stamped with a time after the loss (stampRecovery):
+// the lost record's head may have lost its history row too, and then nothing
+// names the objects a reader pinned to it still scans, so garbage collection
+// deletes nothing for the schema until the retention grace after that stamp
+// (ReadLifecycleFence).
 //
 // state is AwaitingInit for a registered schema with generation history,
 // whose parquet tiers the next cdc-init replaces; Unpublished for a
@@ -106,6 +111,9 @@ func InitializeAfterLoss(ctx context.Context, tx Tx, t Tables, schemaID int16, h
 	if err := raiseEpoch(ctx, r, t, schemaID, rec.Epoch); err != nil {
 		return Record{}, false, fmt.Errorf("recover the %s record of schema %d: %w", state, schemaID, err)
 	}
+	if err := stampRecovery(ctx, r, t, schemaID); err != nil {
+		return Record{}, false, fmt.Errorf("recover the %s record of schema %d: %w", state, schemaID, err)
+	}
 	if _, err := r.exec(ctx, fmt.Sprintf(supersedeLostSQL, t.Generation), schemaID); err != nil {
 		return Record{}, false, fmt.Errorf("supersede the generation the lost record of schema %d named: %w", schemaID, err)
 	}
@@ -121,6 +129,32 @@ func InitializeAfterLoss(ctx context.Context, tx Tx, t Tables, schemaID int16, h
 // committed, and retires the generation only after that, as any other.
 const supersedeLostSQL = `UPDATE %s SET superseded_at = ` + sqlgen.ServerTimeMillisSQL + `
 	WHERE schema_id = $1 AND superseded_at = 0`
+
+// stampRecoverySQL stamps the id's lifecycle epoch row with the database's
+// clock at the statement, never lowering it. Not the transaction's start time
+// (sqlgen.ServerTimeMillisSQL), which raiseEpoch stamps: the transaction may
+// have begun before the loss committed, and a reader may have read the lost
+// record after that start.
+const stampRecoverySQL = `UPDATE %s SET updated_at = GREATEST(updated_at,
+		floor(extract(epoch from clock_timestamp()) * 1000)::bigint)
+	WHERE schema_id = $1`
+
+// stampRecovery stamps, on r, the lifecycle fence of a recovery that wrote
+// schemaID's record. It runs after the statement that wrote the record found
+// none: that statement waited for, and saw committed, the loss of the record
+// row, so the stamp is later than the snapshot of every reader that read the
+// lost record. Such a reader finishes within R_max + C of its snapshot, inside
+// the retention grace G that garbage collection waits after the stamp.
+func stampRecovery(ctx context.Context, r runner, t Tables, schemaID int16) error {
+	n, err := r.exec(ctx, fmt.Sprintf(stampRecoverySQL, t.Epoch), schemaID)
+	if err != nil {
+		return fmt.Errorf("stamp the recovery on the lifecycle epoch of schema %d in %s: %w", schemaID, t.Epoch, err)
+	}
+	if n != 1 {
+		return fmt.Errorf("stamp the recovery on the lifecycle epoch of schema %d in %s: the row is missing", schemaID, t.Epoch)
+	}
+	return nil
+}
 
 // holdDroppedSQL locks a dropped record while it is still DROPPED at the
 // epoch. FOR UPDATE, as holdSQL, so an Activate waits for the holder.

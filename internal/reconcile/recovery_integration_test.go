@@ -2,9 +2,16 @@ package reconcile
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/publication"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 // TestMissingCurrentHistoryRecoveryTakesTwoPublications runs the documented
@@ -65,4 +72,132 @@ func TestMissingCurrentHistoryRecoveryTakesTwoPublications(t *testing.T) {
 	require.Subset(t, rep.Collected.Objects, f.keysOf(g1), "the unrecorded generation's manifest and objects are collected")
 	require.Equal(t, []string{reinit.rec.ManifestKey}, rep.Collected.Manifests)
 	require.Empty(t, rep.Collected.Forgotten, "the expired re-init row stays as the history's floor")
+}
+
+// TestLostRecordRecoveryFencesAReaderOfAnUnrecordedHead is R4-F1: a reader
+// pins generation N, then both the record and N's history row are lost. The
+// documented recovery (init-db's ReadHistory and InitializeAfterLoss)
+// rebuilds the counter from the surviving N-1, so the history shows no gap,
+// and nothing names N's manifest or the objects it lists. A collection right
+// after the recovery, inside the reader's safety window, must delete none of
+// them: the recovery's lifecycle fence refuses it, in the diagnosis's plan
+// too. Once the reader is done and the retention grace after the recovery
+// has passed, the collection resumes and collects them.
+func TestLostRecordRecoveryFencesAReaderOfAnUnrecordedHead(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	g1 := f.publishInit(t, f.initialized(t), 2)
+	head := f.publish(t, f.stageFlush(t, g1, 1))
+	rep := f.pass(t, testOptions(true))
+	require.NoError(t, rep.Err)
+	require.Equal(t, []int64{g1.rec.Generation}, rep.Collected.Retired)
+	waitOutGrace() // N-1 expires: it is the history's floor, below N
+
+	reader, err := f.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	require.NoError(t, err)
+	defer func() { _ = reader.Rollback() }()
+	pinned, err := publication.Read(ctx, publication.SQLTx(reader), f.tables, testSchema)
+	require.NoError(t, err)
+	require.Equal(t, head.rec.Generation, pinned.Generation, "the reader pinned generation N")
+
+	f.exec(t, "DELETE FROM %s", f.tables.Record)
+	f.exec(t, "DELETE FROM %s WHERE generation = 2", f.tables.Generation)
+	require.NoError(t, f.inTx(t, func(tx publication.Tx) error {
+		h, err := publication.ReadHistory(ctx, tx, f.tables, testSchema)
+		if err != nil {
+			return err
+		}
+		_, wrote, err := publication.InitializeAfterLoss(ctx, tx, f.tables, testSchema, h, publication.AwaitingInit)
+		require.True(t, wrote)
+		return err
+	}))
+	recovered := f.record(t)
+	require.Equal(t, g1.rec.Generation, recovered.Generation, "the counter is rebuilt from the surviving N-1")
+
+	for _, gc := range []bool{false, true} {
+		rep := f.pass(t, testOptions(gc))
+		require.NoError(t, rep.Err)
+		require.Equal(t, []FindingKind{AwaitingInit}, kinds(rep.Findings), "the history shows no gap above the rebuilt counter")
+		require.Contains(t, rep.Refused, "lifecycle epoch", "gc=%v", gc)
+		require.Empty(t, rep.Plan.Objects, "gc=%v", gc)
+		require.Empty(t, rep.Plan.Manifests, "gc=%v", gc)
+		if gc {
+			require.Empty(t, rep.Collected.Objects)
+			require.Empty(t, rep.Collected.Manifests)
+			require.Empty(t, rep.Collected.Forgotten)
+		}
+	}
+	ref, err := manifestv2.RecordRef(pinned.Record)
+	require.NoError(t, err)
+	raw, err := f.store.Get(ctx, pinned.ManifestKey)
+	require.NoError(t, err, "the pinned generation's manifest is still there")
+	m, err := manifestv2.Verify(raw, ref)
+	require.NoError(t, err)
+	for _, key := range m.Keys() {
+		ok, err := f.store.Exists(ctx, key)
+		require.NoError(t, err)
+		require.True(t, ok, "the pinned generation's object %s is still there", key)
+	}
+	require.NoError(t, reader.Commit())
+
+	waitOutGrace()
+	rep = f.pass(t, testOptions(true))
+	require.NoError(t, rep.Err)
+	require.Empty(t, rep.Refused)
+	require.Subset(t, rep.Collected.Objects, f.keysOf(head), "the unrecorded head's manifest and objects are collected once the fence passed")
+	require.Empty(t, f.store.keys(), "nothing names any object the schema staged before the loss")
+}
+
+// TestRecoveryStampsItsFenceAfterTheLoss: the recovery's transaction may
+// have begun before the loss committed, and a reader may have read the lost
+// record in between. The lifecycle fence is stamped after the statement that
+// found the record missing, so it is later than the loss, and later than the
+// transaction's own start, which the other transitions stamp.
+func TestRecoveryStampsItsFenceAfterTheLoss(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.publishInit(t, f.initialized(t), 1)
+	tx, err := f.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	var began int64
+	require.NoError(t, tx.QueryRowContext(ctx, "SELECT "+sqlgen.ServerTimeMillisSQL).Scan(&began))
+	time.Sleep(50 * time.Millisecond)
+	f.exec(t, "DELETE FROM %s", f.tables.Record)
+	lost := f.serverMillis(t)
+	require.Greater(t, lost, began)
+	q := publication.SQLTx(tx)
+	h, err := publication.ReadHistory(ctx, q, f.tables, testSchema)
+	require.NoError(t, err)
+	_, wrote, err := publication.InitializeAfterLoss(ctx, q, f.tables, testSchema, h, publication.AwaitingInit)
+	require.NoError(t, err)
+	require.True(t, wrote)
+	require.NoError(t, tx.Commit())
+
+	fence, err := publication.ReadLifecycleFence(ctx, publication.DB(f.db), f.tables, testSchema, time.Hour)
+	require.NoError(t, err)
+	require.True(t, fence.Present)
+	require.True(t, fence.Inside)
+	require.GreaterOrEqual(t, fence.MovedAt, lost, "the fence is stamped after the loss, not at the transaction's start %d", began)
+}
+
+// TestARecordWithoutItsLifecycleEpochStopsTheCollection: a record whose
+// lifecycle epoch row is gone gives no proof of when it was last recovered,
+// so the pass reports it with its action and deletes nothing.
+func TestARecordWithoutItsLifecycleEpochStopsTheCollection(t *testing.T) {
+	f := newFixture(t)
+	g1 := f.publishInit(t, f.initialized(t), 1)
+	f.publishCompact(t, g1)
+	require.NoError(t, f.pass(t, testOptions(true)).Err) // retires g1
+	waitOutGrace()
+	f.exec(t, "DELETE FROM %s", f.tables.Epoch)
+
+	rep := f.pass(t, testOptions(true))
+	require.NoError(t, rep.Err)
+	require.Equal(t, []FindingKind{MissingLifecycleEpoch}, kinds(rep.Findings))
+	require.Equal(t, actionMissingLifecycle, rep.Findings[0].Action)
+	require.Contains(t, rep.Refused, string(MissingLifecycleEpoch))
+	require.Empty(t, rep.Collected.Objects)
+	require.Empty(t, rep.Collected.Manifests)
+	require.Subset(t, f.store.keys(), f.keysOf(g1), "the expired generation is kept")
 }

@@ -41,7 +41,8 @@ func (r *Reconciler) inspect(ctx context.Context, p *pass) error {
 	return nil
 }
 
-// checkRecord reports a record a reader fails closed on, and checks that a
+// checkRecord reports a record a reader fails closed on, or one without its
+// lifecycle epoch row, and checks that a
 // published record's generation has its history row naming the same
 // manifest: without it nothing protects the current generation's objects.
 // It answers the current generation number, 0 when there is none.
@@ -50,6 +51,11 @@ func (r *Reconciler) checkRecord(p *pass) int64 {
 		return 0
 	}
 	rec := p.record.Record
+	if !p.lifecycle.Present {
+		p.findings = append(p.findings, Finding{Kind: MissingLifecycleEpoch, Epoch: rec.Epoch, Action: actionMissingLifecycle,
+			Detail: "the record has no lifecycle epoch row, which every transition that moves its epoch writes and " +
+				"a lost record's recovery stamps: nothing shows when the schema was last recovered"})
+	}
 	switch rec.State {
 	case publication.AwaitingInit:
 		p.findings = append(p.findings, Finding{Kind: AwaitingInit, Epoch: rec.Epoch,

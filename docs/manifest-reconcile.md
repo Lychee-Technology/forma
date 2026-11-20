@@ -64,8 +64,9 @@ missing history row is always reported: the snapshot read it with the record.
    is ordered with it; no publication staged at or before the horizon commits
    afterwards.
 2. List the objects under `{data-prefix}/{schema_id}/`.
-3. In one read-only snapshot, read the record, the retained generations and the
-   expired ones. After the snapshot ends, stamp `retired_at` on every superseded
+3. In one read-only snapshot, read the record, the retained generations, the
+   expired ones and the schema's lifecycle fence (when its lifecycle epoch last
+   moved; see "What is deleted, and what never is"). After the snapshot ends, stamp `retired_at` on every superseded
    generation not yet retired. Those expire a grace later, in a later pass.
 4. Fetch every retained and expired manifest and verify it with the reader's
    full check (digest, identity, wire form, and every listed key under the
@@ -124,7 +125,8 @@ It never deletes:
   These are reported as `unrecognized_object`.
 
 A pass deletes nothing at all for a schema when it cannot prove what readers
-may scan: a missing or invalid record, a published record whose history row is
+may scan: a missing or invalid record, a record without its lifecycle epoch row,
+a lifecycle epoch that moved less than G ago (below), a published record whose history row is
 missing or names another manifest or parent, a gap in the generation history
 (below), a retained manifest that is missing, any manifest that fails
 verification (retained or expired, and the current one also against the record,
@@ -141,6 +143,20 @@ manifest and objects deleted) as the history's floor, and requires a row for
 every number above it up to the counter. A number without one is a
 `missing_history` finding: a reader may still hold that generation, and nothing
 names what it lists.
+
+A lost record's recovery cannot keep that proof by itself. A reader may have
+pinned the lost record's head generation N, and N's history row may be lost
+with the record: the recovery then rebuilds the counter from the surviving
+N−1, the history shows no gap, and nothing names N's manifest or the objects
+only it lists. So every pass, the diagnosis's plan included, deletes nothing for
+a schema whose lifecycle epoch moved less than G ago. The epoch row's
+`updated_at` is that fence: every drop, registration and recovery stamps it,
+and the recovery stamps it with the database clock after it found the record
+missing, so after the snapshot of every reader of the lost record. Such a
+reader is done R_max + C after its snapshot, within G. The report says
+`garbage collection refused: the schema's lifecycle epoch moved at …` with the
+time it resumes; it is not a finding, and needs no action. A drop or a
+registration delays collection by the same G, which costs storage only.
 
 ## Retention
 
@@ -172,6 +188,7 @@ safe action. Any finding makes the run exit 2.
 | --- | --- | --- | --- |
 | `no_record` | The schema is registered but has no publication record. Readers and writers fail closed. | refused | Run `init-db`: it recovers a lost record at a fresh epoch. |
 | `record_invalid` | The record row is one no transition writes. | refused | Restore the row from a backup. |
+| `missing_lifecycle_epoch` | The schema has a record but no lifecycle epoch row, so nothing shows when it was last recovered. | refused | Write the row back at the record's epoch, stamped with the database time: `INSERT INTO <entity_main>_publication_epoch (schema_id, epoch, updated_at) VALUES (<id>, <epoch>, <now in epoch ms>)`. Collection resumes G after the stamp. |
 | `awaiting_init` | The V2 cutover left the schema for its first `cdc-init`. Readers fail closed. | runs | Run `cdc-init` for the schema. |
 | `missing_generation` | The record names a generation whose manifest object is missing, or whose history row is missing or names another manifest. | refused | A lost or mismatched manifest: re-initialize with `cdc-init`; collection resumes once the lost generation expires. A lost history row: restore it from a backup. Otherwise collection stays refused until a generation above the unrecorded one expires, which takes two publications: the next one (a flush, a compaction or a `cdc-init`) supersedes the unrecorded generation, which is then a `missing_history` finding; a later publication supersedes the next one's generation, a pass retires it, and G passes. A single re-init followed by G is not enough. |
 | `missing_history` | The history has no row for a generation number above the highest expired row and at or below the record's counter. | refused | Restore the rows from a backup. Otherwise collection resumes by itself once a generation above the gap expires: a later publication (a `cdc-init` included) supersedes it, a pass retires it, and G passes. |
@@ -191,7 +208,9 @@ replaces the parquet tiers.
 
 A lost record recovered by `init-db` supersedes the generation it named, in the
 recovery's transaction; the next collection retires it, and it expires and is
-collected a grace later, as any superseded generation.
+collected a grace later, as any superseded generation. Collection stays refused
+for G after the recovery in any case, so a reader of a lost head whose history
+row was lost too finishes before anything it lists can be deleted.
 
 A `DROPPED` schema keeps its record. Its generations were superseded by the
 drop, and expire and are collected like any other's. An `UNPUBLISHED` schema

@@ -14,6 +14,9 @@ const (
 		"(docs/publication-protocol-v2.md, \"A lost record\"); garbage collection deletes nothing for the schema until it has one"
 	actionRecordInvalid = "restore the record row from a backup: no transition writes this row, readers and writers fail closed on it, " +
 		"and garbage collection deletes nothing for the schema meanwhile"
+	actionMissingLifecycle = "write the id's row of the publication epoch table back at the record's epoch, with updated_at " +
+		"the database time in epoch milliseconds (docs/manifest-reconcile.md, \"Findings and recovery\"); garbage collection " +
+		"deletes nothing for the schema until it has one, and then for the retention grace after its stamp"
 	actionAwaitingInit      = "run cdc-init for the schema: readers fail closed until its first V2 generation publishes"
 	actionMissingGeneration = "re-initialize the schema with cdc-init, which publishes a new generation from PostgreSQL " +
 		"(the lost manifest cannot be rebuilt from S3); garbage collection deletes nothing for the schema until " +

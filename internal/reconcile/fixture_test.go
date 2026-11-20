@@ -211,13 +211,19 @@ func (f *fixture) record(t *testing.T) publication.Record {
 	return s.Record
 }
 
-// initialized writes the schema's UNPUBLISHED record.
+// initialized writes the schema's UNPUBLISHED record, registered an hour
+// ago: its lifecycle epoch row's stamp is moved back past the grace, as a
+// collection meets every schema but one registered, dropped or recovered
+// within the grace, which it refuses (TestLostRecordRecoveryFencesAReaderOfAnUnrecordedHead).
 func (f *fixture) initialized(t *testing.T) publication.Record {
 	t.Helper()
 	require.NoError(t, f.inTx(t, func(tx publication.Tx) error {
 		_, err := publication.Initialize(context.Background(), tx, f.tables, testSchema)
 		return err
 	}))
+	_, err := f.db.Exec(fmt.Sprintf("UPDATE %s SET updated_at = updated_at - $1 WHERE schema_id = $2", f.tables.Epoch),
+		time.Hour.Milliseconds(), testSchema)
+	require.NoError(t, err)
 	return f.record(t)
 }
 

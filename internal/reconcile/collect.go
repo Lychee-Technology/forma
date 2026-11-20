@@ -15,7 +15,9 @@ var errPlanTouchesProtected = errors.New("the collection plan deletes a protecte
 
 // summarize fills rep from p and plans the collection (steps 5 to 7) when
 // nothing stops it. A blocking finding stops it, and so does a pass without
-// a horizon, which can prove no orphan's publication fenced.
+// a record, one inside the retention grace after the schema's lifecycle
+// epoch moved (publication.ReadLifecycleFence), or a diagnosis a collection
+// ran beside.
 func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 	if p.record != nil {
 		rep.State, rep.Epoch = p.record.State, p.record.Epoch
@@ -39,6 +41,13 @@ func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 		rep.Refused = fmt.Sprintf("a collection ran beside the diagnosis and deleted what generations of its snapshot listed "+
 			"(%d finding(s) left out), so the diagnosis's snapshot no longer plans what a collection would delete; "+
 			"run the diagnosis again for the plan", p.concurrent)
+		return
+	}
+	if p.lifecycle.Inside {
+		rep.Refused = fmt.Sprintf("the schema's lifecycle epoch moved at %d (a lost record's recovery, a drop or a registration), "+
+			"less than the retention grace %s ago: a recovery cannot tell whether the lost record's generation lost its history row "+
+			"too, and then nothing names the objects a reader pinned to it still scans; collection resumes once the grace has passed, at %d",
+			p.lifecycle.MovedAt, r.Opts.RetentionGrace, p.lifecycle.MovedAt+r.Opts.RetentionGrace.Milliseconds())
 		return
 	}
 	var owned []publication.Object

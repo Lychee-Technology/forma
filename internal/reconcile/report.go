@@ -42,6 +42,10 @@ const (
 	// CorruptObject: a listed object's bytes do not hash to the digest, or
 	// do not have the size, its manifest lists.
 	CorruptObject FindingKind = "corrupt_object"
+	// MissingLifecycleEpoch: the schema has a record but no lifecycle
+	// epoch row, so nothing tells when its last lost-record recovery was,
+	// and a reader may still hold a generation no history row names.
+	MissingLifecycleEpoch FindingKind = "missing_lifecycle_epoch"
 	// UnrecognizedObject: an object under the schema's prefix whose key no
 	// V2 writer stages. Garbage collection never deletes it.
 	UnrecognizedObject FindingKind = "unrecognized_object"
@@ -52,7 +56,8 @@ const (
 // nothing.
 func (k FindingKind) blocking() bool {
 	switch k {
-	case NoRecord, RecordInvalid, MissingGeneration, HistoryGap, MissingRetainedManifest, InvalidManifest, ForeignManifest:
+	case NoRecord, RecordInvalid, MissingLifecycleEpoch, MissingGeneration, HistoryGap, MissingRetainedManifest, InvalidManifest,
+		ForeignManifest:
 		return true
 	}
 	return false

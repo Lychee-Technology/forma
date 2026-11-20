@@ -164,7 +164,15 @@ compactor, reader, GC) is given that name.
   transaction: no later transition would, since the next `cdc-init` publishes from a
   record without a current generation, so without the stamp no collector would ever
   retire it. A collector retires it only once it sees the recovery committed, and keeps
-  it for the full grace after that, as any other superseded generation.
+  it for the full grace after that, as any other superseded generation. The recovery
+  cannot tell whether that generation's history row survived: when it is lost too, the
+  counter is rebuilt from the generation before it, the history shows no gap, and no row
+  names the objects a reader pinned to it still scans. So the recovery also stamps the
+  id's lifecycle epoch row's `updated_at` with the database clock at a statement after
+  the one that found the record missing (`stampRecovery`), which is later than the
+  snapshot of every reader of the lost record, and a collector deletes nothing for the
+  schema while that stamp is less than G old (`ReadLifecycleFence`, read in its
+  snapshot). Every reader of the lost record is done R_max + C after its snapshot.
 
   When the lifecycle epoch is lost too and generation history survives, `InitializeAfterLoss`
   refuses with `ErrLifecycleLost`, and `init-db` fails: no epoch above the history is known
@@ -260,8 +268,12 @@ new epoch` that must write the row. A transition whose new epoch is not above it
 with `ErrEpochReused`, and its transaction does not commit: only a record that went back
 to an older epoch (restored from an older state, or written outside the package) meets
 that, and moving it on would hand a stale process its pinned epoch again. The row is never
-deleted. Readers and writers do not read it; only the lifecycle transitions and
-`ReadHistory` do.
+deleted. Readers and writers do not read it; only the lifecycle transitions,
+`ReadHistory` and the collector do. `updated_at` is the collector's lifecycle fence: every
+transition stamps it with its transaction's time, a lost-record recovery again with the
+clock after it found the record missing, and garbage collection deletes nothing for the
+schema until it is G old ("A lost record"). A record without the row is a
+`missing_lifecycle_epoch` finding, and collection stays refused.
 
 ## Immutable manifest generations
 
@@ -725,9 +737,10 @@ steps 5 to 7 from what steps 1 to 4 read.
 
 1. `RaiseHorizon`, committed. Its answer is H.
 2. List the objects under the schema's prefix.
-3. In one snapshot, read `Retained(G)` and `Expired(G)`, then end the snapshot. Run
-   `Retire` for every retained generation that is superseded and not yet retired. Those
-   generations expire in a later pass.
+3. In one snapshot, read `Retained(G)`, `Expired(G)` and `ReadLifecycleFence(G)`, then
+   end the snapshot. Run `Retire` for every retained generation that is superseded and
+   not yet retired. Those generations expire in a later pass. A fence inside G, or a
+   missing epoch row, stops the pass before step 5 ("A lost record").
 4. Get the manifest of every retained and expired generation, and verify each one that
    exists before reading its `files` (`ManifestFiles`): the SHA-256 of the stored bytes
    must equal the history row's `manifest_sha256`, the bytes must be one JSON object of

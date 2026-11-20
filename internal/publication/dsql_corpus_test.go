@@ -78,6 +78,8 @@ func TestDSQLCorpus(t *testing.T) {
 	require.NoError(t, err)
 	_, err = SchemaIDs(ctx, DB(db), tb)
 	require.NoError(t, err)
+	_, err = ReadLifecycleFence(ctx, DB(db), tb, 100, time.Hour)
+	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet(), "the publication contract sent other statements than recorded")
 
 	ddl := Statements(forma.EngineAuroraDSQL, "entity_main")
@@ -94,6 +96,7 @@ func TestDSQLCorpus(t *testing.T) {
 		"internal/publication/recovery.go:ReadHistory",
 		"internal/publication/recovery.go:InitializeAfterLoss",
 		"internal/publication/lifecycle_epoch.go:raiseEpoch",
+		"internal/publication/recovery.go:stampRecovery",
 		"internal/publication/recovery.go:InitializeAfterLoss",
 		"internal/publication/record.go:Read",
 		"internal/publication/publish.go:Publish",
@@ -115,6 +118,7 @@ func TestDSQLCorpus(t *testing.T) {
 		"internal/publication/retention.go:Expired",
 		"internal/publication/retention.go:Forget",
 		"internal/publication/retention.go:SchemaIDs",
+		"internal/publication/lifecycle_epoch.go:ReadLifecycleFence",
 	)...)
 	corpus.Export(t, corpus.Unit{Name: "internal-publication", Engine: forma.EngineAuroraDSQL, Statements: statements})
 }
@@ -147,6 +151,7 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectExec("").WithArgs(anyArgs(5)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("").WithArgs(anyArgs(1)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(1)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(recordRow())
 	mock.ExpectBegin()
@@ -177,6 +182,7 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(genRows())
 	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"schema_id"}).AddRow(100))
+	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(sqlmock.NewRows([]string{"updated_at", "inside"}).AddRow(4, false))
 }
 
 func anyArgs(n int) []driver.Value {
