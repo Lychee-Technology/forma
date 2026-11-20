@@ -48,14 +48,25 @@ lost. A collection can delete a generation's manifest and objects once it
 finds that generation expired, after the diagnosis's snapshot saw it retained.
 That holds for the generation the snapshot saw current too: a diagnosis that
 runs longer than G can see it replaced, retired by one collection and
-collected by a later one. A missing manifest or object, of the current
-generation or a superseded one, is therefore reported only if its generation
-is still retained when the history is read again, after every manifest and
-object was read; the report counts the findings it left out, refuses to
-show a plan from its stale snapshot, and marks the schema `inconclusive`: the
-diagnosis established neither that the missing keys were collected nor that
-they were lost, so the run exits 2 and the diagnosis must be run again. A
-missing history row is always reported: the snapshot read it with the record.
+collected by a later one. A missing manifest or object is therefore left
+out only on evidence that this happened, read after every manifest and object
+was read: its generation is no longer retained when the history is read again
+and, for the generation the snapshot saw current, the record no longer names
+it either. A generation the record still names was never replaced, so no
+collection could delete anything of it, and its loss is reported whatever its
+history row says (a row stamped retired outside the protocol, or none). The
+report counts the findings it left out, refuses to show a plan from its stale
+snapshot, and marks the schema `inconclusive`: the diagnosis established
+neither that the missing keys were collected nor that they were lost, so the
+run exits 2 and the diagnosis must be run again. A missing history row is
+always reported: the snapshot read it with the record.
+
+The current generation is checked as the record names it, which is what
+readers verify and scan, whether or not its history row is there or agrees
+with the record. A missing or disagreeing row is one finding, with the row's
+recovery; a missing or invalid manifest, or a lost object, of the record's
+generation is another, with the re-init that restores reads. The row's
+finding says whether the record's manifest verifies, so reads succeed.
 
 **`--gc`.** The collector, in the protocol's collection order
 ([Garbage collection](publication-protocol-v2.md#garbage-collection-and-reader-lifetime)):
@@ -321,7 +332,7 @@ safe action. Any finding makes the run exit 2.
 | `missing_lifecycle_epoch` | The schema has a record but no lifecycle epoch row, so nothing shows when it was last recovered. | refused | Write the row back at the record's epoch, stamped with the database time: `INSERT INTO <entity_main>_publication_epoch (schema_id, epoch, updated_at) VALUES (<id>, <epoch>, <now in epoch ms>)`. Collection resumes G after the stamp. |
 | `lifecycle_epoch_mismatch` | The lifecycle epoch row names another epoch than the record: one of them was restored or written outside the protocol, and the row's stamp does not show when the record was last recovered. | refused | Row below the record: write it back at the record's epoch with the database time, `UPDATE <entity_main>_publication_epoch SET epoch = <epoch>, updated_at = <now in epoch ms> WHERE schema_id = <id>`, never a backup copy; collection resumes G after the stamp. Row above the record: the record went back, so treat it as `record_invalid`. |
 | `awaiting_init` | The V2 cutover left the schema for its first `cdc-init`. Readers fail closed. | runs | Run `cdc-init` for the schema. |
-| `missing_generation` | The record names a generation whose manifest object is missing, or that has no history row. | refused | A lost manifest: re-initialize with `cdc-init`; collection resumes once the lost generation expires. A lost history row: do not restore it from a backup (see "Lost history rows" below). Collection stays refused until a generation above the unrecorded one expires, which takes two publications: the next one (a flush, a compaction or a `cdc-init`) supersedes the unrecorded generation, which is then a `missing_history` finding; a later publication supersedes the next one's generation, a pass retires it, and G passes. A single re-init followed by G is not enough. |
+| `missing_generation` | The record names a generation whose manifest object is missing, or that has no history row. The two are separate findings, and both appear when both are lost: the record's manifest is checked whether or not its row is there. | refused | A lost manifest: re-initialize with `cdc-init`; collection resumes once the lost generation expires. A lost history row: do not restore it from a backup (see "Lost history rows" below). Collection stays refused until a generation above the unrecorded one expires, which takes two publications: the next one (a flush, a compaction or a `cdc-init`) supersedes the unrecorded generation, which is then a `missing_history` finding; a later publication supersedes the next one's generation, a pass retires it, and G passes. A single re-init followed by G is not enough. |
 | `history_mismatch` | The record's generation has a history row, but the row disagrees with the record (epoch, parent generation, manifest key, digest or token), or carries a `superseded_at` or `retired_at` while the generation is current. A row stamped retired is reported so even when its stamp is past the grace. | refused | Not a lost row, and not the lost row's recovery (see "A history row that disagrees with the record" below). Rewrite neither the row nor the record, and restore neither from a backup. Reads follow the record: the detail says whether the manifest the record names verifies against it; if not, a `missing_generation` or `invalid_manifest` finding of the record's manifest says why, and a re-init restores reads. Either side may be the one that changed, so the next publication writes the row back from the record and keeps the row's inventory as displaced: collection stays refused until that generation's row expires (a pass retires it after seeing the replacement committed, and G passes), and then resumes unless the record's manifest still fails against the row. One replacement does not by itself make an immediate collection safe. |
 | `missing_history` | The history has no row for a generation number above the highest expired row and at or below the record's counter. | refused | Do not restore the rows from a backup (see "Lost history rows" below). Collection resumes by itself once a generation above the gap expires: a later publication (a `cdc-init` included) supersedes it, a pass retires it, and G passes. |
 | `missing_retained_manifest` | A superseded generation inside its grace has no manifest. | refused | None for new reads. Collection resumes once the generation expires. |

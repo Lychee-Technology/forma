@@ -169,8 +169,8 @@ func (r *Reconciler) Run(ctx context.Context) (Report, error) {
 // write on Aurora DSQL (a lease row), and the diagnosis needs none: it reads
 // the listing before the snapshot, so an object a publication committed
 // meanwhile is probed rather than called lost, and a finding a concurrent
-// collection could have caused is checked again against the history before
-// it is reported (dropConcurrentlyExpired).
+// collection could have caused is checked again against the history and the
+// record before it is left out (dropConcurrentlyExpired).
 func (r *Reconciler) diagnose(ctx context.Context, id int16) SchemaReport {
 	rep := r.schema(ctx, id)
 	r.log(rep)

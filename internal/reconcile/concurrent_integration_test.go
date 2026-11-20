@@ -3,8 +3,11 @@ package reconcile
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
 // TestDiagnosisLeavesOutACurrentGenerationCollectedBesideIt: the generation
@@ -96,4 +99,59 @@ func TestDiagnosisReportsACurrentLossNoCollectionCaused(t *testing.T) {
 	require.True(t, rep.Findings[0].Current)
 	require.Equal(t, g1.rec.Generation, rep.Findings[0].Generation)
 	require.Zero(t, rep.ConcurrentlyExpired)
+}
+
+// TestDiagnosisReportsCurrentLossWhateverItsHistoryRow is R10-F3: the
+// diagnosis checks what the record publishes independently of the history
+// row of its generation, which readers never read. The row is either
+// stamped retired long ago, outside the protocol, or deleted, and no
+// collection runs. With the manifest intact, the row's finding says reads
+// succeed, and an object the current manifest lists that S3 lost is reported
+// against the current generation. With the manifest deleted too, its loss is
+// reported beside the row's finding, each with its own recovery, and neither
+// is left out as concurrent collection: the record still names the
+// generation, so nothing could have collected it.
+func TestDiagnosisReportsCurrentLossWhateverItsHistoryRow(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		damage    string
+		rowKind   FindingKind
+		rowAction string
+	}{
+		{"row stamped retired", "UPDATE %s SET retired_at = " + sqlgen.ServerTimeMillisSQL + " WHERE generation = 1", HistoryMismatch, actionHistoryMismatch},
+		{"row deleted", "DELETE FROM %s WHERE generation = 1", MissingGeneration, actionMissingHistory},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			g1 := f.publishInit(t, f.initialized(t), 2)
+			f.exec(t, tc.damage, f.tables.Generation)
+			f.ageStamps(t, 2*time.Hour) // a retired_at stamped so is past the grace
+			lost := g1.manifest.Keys()[0]
+			f.store.remove(lost)
+
+			rep := f.pass(t, testOptions(false))
+			require.NoError(t, rep.Err)
+			require.Zero(t, rep.ConcurrentlyExpired, "no collection ran")
+			require.Equal(t, []FindingKind{tc.rowKind, LostObject}, kinds(rep.Findings))
+			require.Equal(t, tc.rowAction, rep.Findings[0].Action)
+			require.Contains(t, rep.Findings[0].Detail, "so reads succeed")
+			require.Equal(t, lost, rep.Findings[1].Key)
+			require.True(t, rep.Findings[1].Current)
+			require.Equal(t, actionLostCurrent, rep.Findings[1].Action)
+
+			f.store.remove(g1.rec.ManifestKey)
+			rep = f.pass(t, testOptions(false))
+			require.NoError(t, rep.Err)
+			require.Zero(t, rep.ConcurrentlyExpired, "the record still names the generation: nothing collected it")
+			require.Equal(t, []FindingKind{tc.rowKind, MissingGeneration}, kinds(rep.Findings))
+			require.Equal(t, tc.rowAction, rep.Findings[0].Action, "the row's own recovery")
+			require.Contains(t, rep.Findings[0].Detail, "could not verify the manifest the record names")
+			manifest := rep.Findings[1]
+			require.Equal(t, g1.rec.ManifestKey, manifest.Key)
+			require.True(t, manifest.Current)
+			require.Equal(t, "the manifest object is missing", manifest.Detail)
+			require.Equal(t, actionMissingGeneration, manifest.Action, "the manifest's loss has the re-init as its recovery")
+			require.Empty(t, rep.Plan.Objects, "a refused diagnosis plans nothing")
+		})
+	}
 }

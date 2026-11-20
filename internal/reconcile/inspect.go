@@ -25,18 +25,18 @@ func (r *Reconciler) inspect(ctx context.Context, p *pass) error {
 	current := r.checkRecord(p)
 	r.checkHistory(p)
 	for _, g := range p.retained {
-		if p.mismatch && g.Generation == current {
+		if p.byRecord && g.Generation == current {
 			continue // checked as the record names it, below
 		}
 		r.checkManifest(p, g, true, g.Generation == current)
 	}
 	for _, g := range p.expired {
-		if p.mismatch && g.Generation == current {
+		if p.byRecord && g.Generation == current {
 			continue
 		}
 		r.checkManifest(p, g, false, false)
 	}
-	if p.mismatch {
+	if p.byRecord {
 		r.checkRecordManifest(p)
 	}
 	for _, o := range p.listed {
@@ -85,6 +85,7 @@ func (r *Reconciler) checkRecord(p *pass) int64 {
 	if !ok {
 		f := generationFinding(MissingGeneration, cur, true, "the generation history has no row for the record's generation")
 		f.Action = actionMissingHistory
+		p.byRecord, p.rowFinding = true, len(p.findings)
 		p.findings = append(p.findings, f)
 		return rec.Generation
 	}
@@ -92,7 +93,7 @@ func (r *Reconciler) checkRecord(p *pass) int64 {
 		row.Token == rec.Token && row.ParentGeneration == rec.ParentGeneration && row.SupersededAt == 0 && row.RetiredAt == 0 {
 		return rec.Generation
 	}
-	p.mismatch = true
+	p.byRecord, p.rowFinding = true, len(p.findings)
 	f := generationFinding(HistoryMismatch, cur, true, fmt.Sprintf(
 		"the generation's history row is present but disagrees with the record: the row names epoch %d, parent generation %d, "+
 			"manifest %s, digest %s and token %s, superseded at %d and retired at %d; the record names epoch %d, parent generation %d, "+
@@ -105,19 +106,22 @@ func (r *Reconciler) checkRecord(p *pass) int64 {
 }
 
 // checkRecordManifest checks the manifest the record names, as readers
-// verify it, when the generation's history row disagrees with the record,
-// and says in the history_mismatch finding whether reads succeed. The row's
-// manifest is not checked against the record: it may be another object,
-// which no reader reads, and its bytes say nothing about the record's.
+// verify it, when the generation's history row is missing or disagrees with
+// the record, and says in the row's finding whether reads succeed. Readers
+// never read the row, so a lost or inconsistent row says nothing about the
+// manifest: its loss is reported on its own (missing_generation of the
+// manifest key, with the re-init that restores reads), beside the row's
+// finding and its own recovery (R10-F3). The row's manifest, when the row
+// names another, is not checked against the record: no reader reads it, and
+// its bytes say nothing about the record's.
 func (r *Reconciler) checkRecordManifest(p *pass) {
 	cur := p.recordGeneration()
 	r.checkManifest(p, cur, true, true)
-	i := slices.IndexFunc(p.findings, func(f Finding) bool { return f.Kind == HistoryMismatch })
 	reads := "the pass could not verify the manifest the record names against it (the generation's other finding says why)"
 	if p.verified[cur.ManifestKey] != nil {
 		reads = "the manifest the record names verifies against it, as readers verify it, so reads succeed"
 	}
-	p.findings[i].Detail += "; " + reads
+	p.findings[p.rowFinding].Detail += "; " + reads
 }
 
 // historyRow answers the history row of generation g the snapshot read,
@@ -143,11 +147,11 @@ func (p *pass) recordGeneration() publication.Generation {
 
 // inspected answers the retained generations as a reader may scan them: the
 // current generation as the record names it, in place of its history row
-// when that disagrees with the record (history_mismatch). Readers verify
-// the record's manifest, so its objects are the current generation's, and
-// the row's manifest is no reader's.
+// when that disagrees with the record (history_mismatch), or added when the
+// row is missing. Readers verify the record's manifest, so its objects are
+// the current generation's, and the row's manifest is no reader's.
 func (p *pass) inspected() []publication.Generation {
-	if !p.mismatch {
+	if !p.byRecord {
 		return p.retained
 	}
 	cur := p.recordGeneration()

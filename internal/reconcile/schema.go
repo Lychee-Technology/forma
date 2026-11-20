@@ -38,10 +38,14 @@ type pass struct {
 	// check against its history row.
 	verified map[string]*manifestv2.Manifest
 	findings []Finding
-	// mismatch says the record's generation has a history row that
-	// disagrees with the record (history_mismatch): the pass then checks
-	// the generation as the record names it (inspected), not its row.
-	mismatch bool
+	// byRecord says the record's generation has no history row
+	// (missing_generation) or one that disagrees with the record
+	// (history_mismatch): the pass then checks the generation as the record
+	// names it (inspected), not its row, since readers verify and scan what
+	// the record names whatever the history holds (R10-F3). rowFinding is
+	// the index of the finding about the row then.
+	byRecord   bool
+	rowFinding int
 	// concurrent counts the findings a diagnosis dropped because the
 	// generation they concern expired while it ran.
 	concurrent int
@@ -230,21 +234,29 @@ func (r *Reconciler) fetchManifests(ctx context.Context, p *pass) error {
 // saw retained, the current one included, may meanwhile have been replaced,
 // retired by one collection and found expired by a later one, which deleted
 // its manifest and the objects only it listed. A missing manifest or object
-// is therefore reported only if its generation is still retained when the
-// history is read again, after every manifest and object was read: a
-// generation still retained then was retained throughout, and no collection
-// deleted anything of it. A missing history row is never such a finding: the
-// snapshot read the record and the history together.
+// is therefore left out only on evidence that this happened, read after
+// every manifest and object was read: its generation is no longer retained,
+// and, for the snapshot's current generation, the record no longer names
+// it. A generation still retained then was retained throughout, and one the
+// record still names was never replaced, so no collection may delete
+// anything of either (R10-F3): a current row stamped retired outside the
+// protocol, or a missing one, is no such evidence. A missing history row is
+// never such a finding: the snapshot read the record and the history
+// together.
 func (r *Reconciler) dropConcurrentlyExpired(ctx context.Context, p *pass) error {
 	if !slices.ContainsFunc(p.findings, concurrentlyCaused) {
 		return nil
+	}
+	stillCurrent, err := r.stillCurrent(ctx, p)
+	if err != nil {
+		return err
 	}
 	now, err := publication.Retained(ctx, publication.DB(r.DB), r.Tables, p.id, r.Opts.RetentionGrace)
 	if err != nil {
 		return fmt.Errorf("read the retained generations again: %w", err)
 	}
 	p.findings = slices.DeleteFunc(p.findings, func(f Finding) bool {
-		if !concurrentlyCaused(f) {
+		if !concurrentlyCaused(f) || (f.Current && stillCurrent) {
 			return false
 		}
 		still := slices.ContainsFunc(now, func(g publication.Generation) bool {
@@ -256,6 +268,24 @@ func (r *Reconciler) dropConcurrentlyExpired(ctx context.Context, p *pass) error
 		return !still
 	})
 	return nil
+}
+
+// stillCurrent reads the record again and answers whether it still names
+// the generation the snapshot's record published. A record now missing or
+// invalid is no evidence that the generation moved, and answers true.
+func (r *Reconciler) stillCurrent(ctx context.Context, p *pass) (bool, error) {
+	if p.record == nil || p.record.State != publication.Published {
+		return false, nil
+	}
+	s, err := publication.Read(ctx, publication.DB(r.DB), r.Tables, p.id)
+	switch {
+	case errors.Is(err, publication.ErrNoRecord), errors.Is(err, publication.ErrRecordInvalid):
+		return true, nil
+	case err != nil:
+		return false, fmt.Errorf("read the record again: %w", err)
+	}
+	rec := p.record.Record
+	return s.State == publication.Published && s.Epoch == rec.Epoch && s.Generation == rec.Generation && s.Token == rec.Token, nil
 }
 
 // concurrentlyCaused answers whether a collection running beside the pass
