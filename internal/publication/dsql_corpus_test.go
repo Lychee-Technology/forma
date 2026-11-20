@@ -111,7 +111,7 @@ var contractLabels = []string{
 	"internal/publication/recovery.go:InitializeAfterLoss",
 	"internal/publication/record.go:Read",
 	"internal/publication/publish.go:Publish",
-	"internal/publication/publish.go:Publish",
+	"internal/publication/publish.go:supersede",
 	"internal/publication/publish.go:Publish",
 	"internal/publication/lifecycle.go:HoldLineage",
 	"internal/publication/rebase.go:KindsSince",
@@ -119,7 +119,7 @@ var contractLabels = []string{
 	"internal/publication/lifecycle.go:Fence",
 	"internal/publication/lifecycle.go:Reset",
 	"internal/publication/lifecycle_epoch.go:raiseEpoch",
-	"internal/publication/lifecycle.go:Reset",
+	"internal/publication/publish.go:supersede",
 	"internal/publication/lifecycle.go:Activate",
 	"internal/publication/lifecycle.go:Activate",
 	"internal/publication/lifecycle_epoch.go:raiseEpoch",
@@ -168,7 +168,7 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(recordRow())
 	mock.ExpectBegin()
 	mock.ExpectQuery("").WithArgs(anyArgs(10)...).WillReturnRows(sqlmock.NewRows([]string{"generation", "parent_generation", "updated_at"}).AddRow(4, 3, 3))
-	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(8)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("").WithArgs(anyArgs(10)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("").WithArgs(anyArgs(3)...).WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(4))
 	mock.ExpectCommit()
@@ -181,7 +181,7 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("").WithArgs(anyArgs(4)...).WillReturnRows(epochRow(2))
 	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(8)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectBegin()
 	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(sqlmock.NewRows([]string{"one"}))

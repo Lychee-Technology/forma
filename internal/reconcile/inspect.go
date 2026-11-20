@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -17,19 +18,27 @@ import (
 // writer stages, and every object a retained generation lists that S3
 // confirms missing or, under VerifyChecksums, holds other bytes.
 func (r *Reconciler) inspect(ctx context.Context, p *pass) error {
-	p.verified, p.mismatch = map[string]*manifestv2.Manifest{}, -1
+	p.verified = map[string]*manifestv2.Manifest{}
 	if r.storageFault != nil {
 		p.findings = append(p.findings, *r.storageFault)
 	}
 	current := r.checkRecord(p)
 	r.checkHistory(p)
 	for _, g := range p.retained {
+		if p.mismatch && g.Generation == current {
+			continue // checked as the record names it, below
+		}
 		r.checkManifest(p, g, true, g.Generation == current)
 	}
 	for _, g := range p.expired {
+		if p.mismatch && g.Generation == current {
+			continue
+		}
 		r.checkManifest(p, g, false, false)
 	}
-	p.settleMismatch()
+	if p.mismatch {
+		r.checkRecordManifest(p)
+	}
 	for _, o := range p.listed {
 		if !r.Layout.Owns(p.id, o.Key) {
 			p.findings = append(p.findings, Finding{Kind: UnrecognizedObject, Key: o.Key,
@@ -52,7 +61,9 @@ func (r *Reconciler) inspect(ctx context.Context, p *pass) error {
 // manifest: without it nothing protects the current generation's objects.
 // A missing row (missing_generation) and a present row that disagrees with
 // the record (history_mismatch) are told apart: the first leaves a gap a
-// later expiry closes, the second stays in the history. It answers the
+// later expiry closes, the second stays in the history. A present row is
+// looked for among the expired ones too: a retired_at on the current
+// generation is never a retirement, however old (R9-F2). It answers the
 // current generation number, 0 when there is none.
 func (r *Reconciler) checkRecord(p *pass) int64 {
 	if p.record == nil {
@@ -69,49 +80,81 @@ func (r *Reconciler) checkRecord(p *pass) int64 {
 	default:
 		return 0
 	}
-	cur := publication.Generation{Generation: rec.Generation, Epoch: rec.Epoch, ManifestKey: rec.ManifestKey}
-	i := slices.IndexFunc(p.retained, func(g publication.Generation) bool { return g.Generation == rec.Generation })
-	if i < 0 {
+	cur := p.recordGeneration()
+	row, ok := p.historyRow(rec.Generation)
+	if !ok {
 		f := generationFinding(MissingGeneration, cur, true, "the generation history has no row for the record's generation")
 		f.Action = actionMissingHistory
 		p.findings = append(p.findings, f)
 		return rec.Generation
 	}
-	row := p.retained[i]
 	if row.Epoch == rec.Epoch && row.ManifestKey == rec.ManifestKey && row.ManifestSHA256 == rec.ManifestSHA256 &&
 		row.Token == rec.Token && row.ParentGeneration == rec.ParentGeneration && row.SupersededAt == 0 && row.RetiredAt == 0 {
 		return rec.Generation
 	}
-	p.mismatch = len(p.findings)
-	p.findings = append(p.findings, generationFinding(HistoryMismatch, cur, true, fmt.Sprintf(
+	p.mismatch = true
+	f := generationFinding(HistoryMismatch, cur, true, fmt.Sprintf(
 		"the generation's history row is present but disagrees with the record: the row names epoch %d, parent generation %d, "+
 			"manifest %s, digest %s and token %s, superseded at %d and retired at %d; the record names epoch %d, parent generation %d, "+
 			"manifest %s, digest %s and token %s",
 		row.Epoch, row.ParentGeneration, row.ManifestKey, row.ManifestSHA256, row.Token, row.SupersededAt, row.RetiredAt,
-		rec.Epoch, rec.ParentGeneration, rec.ManifestKey, rec.ManifestSHA256, rec.Token)))
+		rec.Epoch, rec.ParentGeneration, rec.ManifestKey, rec.ManifestSHA256, rec.Token))
+	f.Action = actionHistoryMismatch
+	p.findings = append(p.findings, f)
 	return rec.Generation
 }
 
-// settleMismatch picks the action of the history_mismatch finding once the
-// row's manifest was checked. The row stays in the history after a later
-// publication replaces the generation, and every pass verifies the manifest
-// it names against it, retained or expired, so whether collection can ever
-// resume depends on whether that verification passes. It passes only when
-// the row agrees with the manifest object and carries no retention stamp
-// written while the generation was current; then the row expires like any
-// other once a later publication replaces the generation. Otherwise
-// collection stays refused, and no expiry clears it.
-func (p *pass) settleMismatch() {
-	if p.mismatch < 0 {
-		return
+// checkRecordManifest checks the manifest the record names, as readers
+// verify it, when the generation's history row disagrees with the record,
+// and says in the history_mismatch finding whether reads succeed. The row's
+// manifest is not checked against the record: it may be another object,
+// which no reader reads, and its bytes say nothing about the record's.
+func (r *Reconciler) checkRecordManifest(p *pass) {
+	cur := p.recordGeneration()
+	r.checkManifest(p, cur, true, true)
+	i := slices.IndexFunc(p.findings, func(f Finding) bool { return f.Kind == HistoryMismatch })
+	reads := "the pass could not verify the manifest the record names against it (the generation's other finding says why)"
+	if p.verified[cur.ManifestKey] != nil {
+		reads = "the manifest the record names verifies against it, as readers verify it, so reads succeed"
 	}
-	f := &p.findings[p.mismatch]
-	row := p.retained[slices.IndexFunc(p.retained, func(g publication.Generation) bool { return g.Generation == f.Generation })]
-	if p.rowVerifies && row.RetiredAt == 0 {
-		f.Action = actionHistoryMismatchReplace
-		return
+	p.findings[i].Detail += "; " + reads
+}
+
+// historyRow answers the history row of generation g the snapshot read,
+// retained or expired.
+func (p *pass) historyRow(g int64) (publication.Generation, bool) {
+	for _, rows := range [][]publication.Generation{p.retained, p.expired} {
+		if i := slices.IndexFunc(rows, func(row publication.Generation) bool { return row.Generation == g }); i >= 0 {
+			return rows[i], true
+		}
 	}
-	f.Action = actionHistoryMismatchRefuse
+	return publication.Generation{}, false
+}
+
+// recordGeneration answers the published record's generation as the record
+// names it, which is what readers verify and scan. It carries no kind,
+// which only a history row names, and stamps neither superseded_at nor
+// retired_at.
+func (p *pass) recordGeneration() publication.Generation {
+	rec := p.record.Record
+	return publication.Generation{Generation: rec.Generation, Epoch: rec.Epoch, ParentGeneration: rec.ParentGeneration,
+		ManifestKey: rec.ManifestKey, ManifestSHA256: rec.ManifestSHA256, Token: rec.Token}
+}
+
+// inspected answers the retained generations as a reader may scan them: the
+// current generation as the record names it, in place of its history row
+// when that disagrees with the record (history_mismatch). Readers verify
+// the record's manifest, so its objects are the current generation's, and
+// the row's manifest is no reader's.
+func (p *pass) inspected() []publication.Generation {
+	if !p.mismatch {
+		return p.retained
+	}
+	cur := p.recordGeneration()
+	out := slices.DeleteFunc(slices.Clone(p.retained), func(g publication.Generation) bool { return g.Generation == cur.Generation })
+	out = append(out, cur)
+	slices.SortFunc(out, func(a, b publication.Generation) int { return cmp.Compare(a.Generation, b.Generation) })
+	return out
 }
 
 // checkLifecycle reports a lifecycle epoch row that cannot fence the record:
@@ -208,56 +251,14 @@ func (r *Reconciler) checkManifest(p *pass, g publication.Generation, retained, 
 		return
 	}
 	m, err := manifestv2.Verify(raw, manifestv2.GenerationRef(p.id, g))
-	if !current {
-		if err != nil {
-			p.findings = append(p.findings, generationFinding(InvalidManifest, g, false, err.Error()))
-			return
-		}
-		p.verified[g.ManifestKey] = m
-		return
-	}
-	recErr := verifyAgainstRecord(raw, p.record.Record)
-	if p.mismatch >= 0 {
-		p.checkMismatchedManifest(g, err, recErr)
-		if err != nil || recErr != nil {
-			return
-		}
-	} else if err == nil {
-		err = recErr
+	if current && err == nil {
+		err = verifyAgainstRecord(raw, p.record.Record)
 	}
 	if err != nil {
-		p.findings = append(p.findings, generationFinding(InvalidManifest, g, true, err.Error()))
+		p.findings = append(p.findings, generationFinding(InvalidManifest, g, current, err.Error()))
 		return
 	}
 	p.verified[g.ManifestKey] = m
-}
-
-// checkMismatchedManifest checks the manifest the current generation's
-// history row names when the row disagrees with the record. Readers verify
-// the record, never the row, so the object is not restored to match the
-// row: whether reads work is what the check against the record says, and
-// the row's own check decides only whether collection can resume
-// (settleMismatch).
-func (p *pass) checkMismatchedManifest(g publication.Generation, rowErr, recErr error) {
-	p.rowVerifies = rowErr == nil
-	if rowErr == nil && recErr == nil {
-		return
-	}
-	reads := "it verifies against the record, as readers verify it, so reads succeed"
-	switch {
-	case g.ManifestKey != p.record.ManifestKey:
-		reads = fmt.Sprintf("the record names manifest %s, which no history row names and this pass does not read: "+
-			"a reader's check of it tells whether reads succeed", p.record.ManifestKey)
-	case recErr != nil:
-		reads = recErr.Error()
-	}
-	row := "it verifies against the history row"
-	if rowErr != nil {
-		row = fmt.Sprintf("against the history row, which disagrees with the record: %v", rowErr)
-	}
-	f := generationFinding(InvalidManifest, g, true, fmt.Sprintf("%s; %s", row, reads))
-	f.Action = actionMismatchedManifest
-	p.findings = append(p.findings, f)
 }
 
 // verifyAgainstRecord runs the reader's own check of the current manifest,
@@ -286,7 +287,7 @@ func (r *Reconciler) probeLost(ctx context.Context, p *pass, current int64) (map
 		listed[o.Key] = true
 	}
 	listers := map[string]publication.Generation{}
-	for _, g := range p.retained {
+	for _, g := range p.inspected() {
 		m := p.verified[g.ManifestKey]
 		if m == nil {
 			continue
@@ -329,7 +330,7 @@ type listing struct {
 // probed, and reported lost against its newest lister.
 func (r *Reconciler) verifyChecksums(ctx context.Context, p *pass, current int64, lost map[string]bool) error {
 	byKey := map[string][]listing{}
-	for _, g := range p.retained {
+	for _, g := range p.inspected() {
 		m := p.verified[g.ManifestKey]
 		if m == nil {
 			continue

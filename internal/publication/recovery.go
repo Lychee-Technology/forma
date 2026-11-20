@@ -126,8 +126,10 @@ func InitializeAfterLoss(ctx context.Context, tx Tx, t Tables, schemaID int16, h
 // generation (the next cdc-init publishes from a record with no current
 // generation), and no collector would retire it. The stamp commits with the
 // recovered record, so a collector that sees it has seen the recovery
-// committed, and retires the generation only after that, as any other.
-const supersedeLostSQL = `UPDATE %s SET superseded_at = ` + sqlgen.ServerTimeMillisSQL + `
+// committed, and retires the generation only after that, as any other. A
+// retired_at on a row nothing superseded was never a retirement, and is
+// cleared (supersede).
+const supersedeLostSQL = `UPDATE %s SET superseded_at = ` + sqlgen.ServerTimeMillisSQL + `, retired_at = 0
 	WHERE schema_id = $1 AND superseded_at = 0`
 
 // stampRecoverySQL stamps the id's lifecycle epoch row with the database's

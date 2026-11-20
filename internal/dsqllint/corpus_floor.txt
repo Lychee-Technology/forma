@@ -69,9 +69,10 @@ internal/publication/ddl.go:generationDDL 1
 internal/publication/ddl.go:recordDDL 1
 internal/publication/lifecycle.go:Activate 2
 internal/publication/lifecycle.go:HoldLineage 1
-internal/publication/lifecycle.go:Reset 2
+internal/publication/lifecycle.go:Reset 1
 internal/publication/lifecycle.go:Resolve 1
 internal/publication/publish.go:Publish 3
+internal/publication/publish.go:supersede 3
 internal/publication/rebase.go:KindsSince 1
 internal/publication/record.go:Initialize 1
 internal/publication/record.go:Read 1

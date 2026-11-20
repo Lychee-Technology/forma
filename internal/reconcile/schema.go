@@ -34,12 +34,10 @@ type pass struct {
 	// check against its history row.
 	verified map[string]*manifestv2.Manifest
 	findings []Finding
-	// mismatch is the index in findings of the record's generation's
-	// history_mismatch finding, -1 without one; rowVerifies says whether
-	// the manifest that row names verified against the row
-	// (settleMismatch).
-	mismatch    int
-	rowVerifies bool
+	// mismatch says the record's generation has a history row that
+	// disagrees with the record (history_mismatch): the pass then checks
+	// the generation as the record names it (inspected), not its row.
+	mismatch bool
 	// concurrent counts the findings a diagnosis dropped because the
 	// generation they concern expired while it ran.
 	concurrent int
@@ -193,11 +191,17 @@ func (p *pass) isCurrent(g publication.Generation) bool {
 }
 
 // fetchManifests reads the manifest of every retained and expired
-// generation (step 4's reads). Only a confirmed not-found counts as missing: a refused or
-// failed read fails the pass, which then deletes nothing.
+// generation, and the one the published record names, which readers read
+// even when no history row names it (step 4's reads). Only a confirmed
+// not-found counts as missing: a refused or failed read fails the pass,
+// which then deletes nothing.
 func (r *Reconciler) fetchManifests(ctx context.Context, p *pass) error {
 	p.raw = map[string][]byte{}
-	for _, g := range append(append([]publication.Generation{}, p.retained...), p.expired...) {
+	gens := append(append([]publication.Generation{}, p.retained...), p.expired...)
+	if p.record != nil && p.record.State == publication.Published {
+		gens = append(gens, p.recordGeneration())
+	}
+	for _, g := range gens {
 		if _, seen := p.raw[g.ManifestKey]; seen {
 			continue
 		}

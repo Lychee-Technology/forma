@@ -242,7 +242,15 @@ CREATE TABLE <entity_main>_publication_generation (
 ```
 
 The publication transaction inserts the new generation's row and stamps the replaced
-generation's `superseded_at`. A reset stamps it too. Within one epoch, generations are
+generation's `superseded_at`. A reset stamps it too. Both write the replaced row back from
+the record they replace (epoch, parent, manifest key, digest, lineage, token) and clear its
+`retired_at`. Readers choose a generation through the record alone, so the row of a
+replaced generation must name what they obtained from the record. A row restored or
+written outside the protocol could otherwise name another valid manifest of the same
+generation, or carry a retirement stamp written while the generation was current, and the
+manifest readers still scan would be collected as an orphan, or expire, as soon as the
+generation is replaced (#891, `history_mismatch` in docs/manifest-reconcile.md). The kind
+is kept: the record carries none. Within one epoch, generations are
 consecutive. Rebase decisions read `kind` (`KindsSince`), retention reads `retired_at`,
 and `Resolve` reads `cas_token`. The collector reads `manifest_sha256` and `cas_token`
 too (`Retained` and `Expired` answer both): they are what it verifies each manifest
@@ -344,7 +352,8 @@ BEGIN;
    WHERE schema_id = $1 AND epoch = $2 AND generation = $3 AND cas_token = $4
      AND $staged_at >= now_ms - $budget AND $staged_at > gc_horizon
    RETURNING generation;                                              -- 0 rows: stop, ROLLBACK
-  UPDATE publication_generation SET superseded_at = now_ms WHERE ... -- the replaced generation
+  UPDATE publication_generation SET superseded_at = now_ms, retired_at = 0,
+         <identity from the replaced record> WHERE ...                -- the replaced generation
   INSERT INTO publication_generation (...);                           -- the new generation
   <flush mark of the generation's rows at their listed versions>      -- same transaction
 COMMIT;
@@ -775,7 +784,8 @@ steps 5 to 7 from what steps 1 to 4 read.
    either as a manifest key or through a manifest that exists, and has
    `LastModified + P + C < H`. An old current manifest is a manifest object, not a file,
    and stays protected however old it is. The collector (#891) deletes from S3 only
-   under the storage target (endpoint, bucket, prefix) the deployment is bound to in
+   under the storage target (the URL the client sends the bucket's requests to,
+   addressing included, the bucket and the prefix) the deployment is bound to in
    PostgreSQL (`<entity_main>_publication_storage`, written once by `manifest-reconcile
    --bind-storage`). Nothing a bucket holds proves it is the writers' bucket: the key
    layout is every deployment's (#463), and a copy of the bucket holds manifests that

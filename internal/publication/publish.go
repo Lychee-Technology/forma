@@ -106,9 +106,34 @@ const casSQL = `UPDATE %s SET state = '` + string(Published) + `',
 	  AND $9 >= ` + sqlgen.ServerTimeMillisSQL + ` - $10 AND $9 > gc_horizon
 	RETURNING generation, parent_generation, updated_at`
 
-// supersedeSQL stamps the generation a transition replaces.
-const supersedeSQL = `UPDATE %s SET superseded_at = ` + sqlgen.ServerTimeMillisSQL + `
-	WHERE schema_id = $1 AND generation = $2 AND superseded_at = 0`
+// supersedeSQL stamps the generation a transition replaces, and writes its
+// history row back from the record the transition replaces (supersede).
+const supersedeSQL = `UPDATE %s SET superseded_at = ` + sqlgen.ServerTimeMillisSQL + `, retired_at = 0,
+		epoch = $3, parent_generation = $4, manifest_key = $5, manifest_sha256 = $6, lineage = $7, cas_token = $8
+	WHERE schema_id = $1 AND generation = $2`
+
+// supersede stamps cur's generation superseded on r, in the transaction
+// that replaces it, and makes its history row name what readers obtained
+// from cur: the epoch, parent, manifest key, digest, lineage and token cur
+// holds. The row is what keeps the generation's manifest and objects after
+// the replacement, while readers that chose cur still scan them, and only
+// the record says what they chose. A row that disagreed with the record
+// (restored, or written outside the protocol) could otherwise name another
+// manifest that verifies against the row and keep it, while the manifest
+// readers verified against the record became an orphan. The stamps are
+// written anew: a retired_at already on the current generation was never a
+// retirement (Retire stamps one only after the replacement is seen
+// committed, and this one is not committed yet), and carried forward it
+// would let the generation expire as soon as it is replaced. A transaction
+// that finds no row (a lost history row) changes nothing, and the next
+// collection reports the gap.
+func supersede(ctx context.Context, r runner, t Tables, cur Record) error {
+	if _, err := r.exec(ctx, fmt.Sprintf(supersedeSQL, t.Generation), cur.SchemaID, cur.Generation,
+		cur.Epoch, cur.ParentGeneration, cur.ManifestKey, cur.ManifestSHA256, cur.Lineage, cur.Token); err != nil {
+		return fmt.Errorf("supersede schema %d generation %d: %w", cur.SchemaID, cur.Generation, err)
+	}
+	return nil
+}
 
 const insertGenerationSQL = `INSERT INTO %s (schema_id, generation, epoch, kind, parent_generation,
 		manifest_key, manifest_sha256, lineage, cas_token, committed_at)
@@ -145,8 +170,8 @@ func Publish(ctx context.Context, tx Tx, t Tables, cur Record, next Next) (Recor
 	out.ManifestKey, out.ManifestSHA256 = next.ManifestKey, next.ManifestSHA256
 	out.Lineage, out.Token = next.Lineage, next.Token
 	if cur.State == Published {
-		if _, err := r.exec(ctx, fmt.Sprintf(supersedeSQL, t.Generation), cur.SchemaID, cur.Generation); err != nil {
-			return Record{}, fmt.Errorf("supersede schema %d generation %d: %w", cur.SchemaID, cur.Generation, err)
+		if err := supersede(ctx, r, t, cur); err != nil {
+			return Record{}, err
 		}
 	}
 	if _, err := r.exec(ctx, fmt.Sprintf(insertGenerationSQL, t.Generation),
