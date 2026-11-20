@@ -193,12 +193,15 @@ func (r *Reconciler) fetchManifests(ctx context.Context, p *pass) error {
 }
 
 // dropConcurrentlyExpired keeps a lock-free diagnosis from reporting what a
-// collection running beside it did: a collector whose snapshot came after
-// the diagnosis's may have found a superseded generation expired and deleted
-// its manifest and the objects only it listed. Such a finding is reported
-// only if the generation is still retained when it is read again, after the
-// manifests and objects were read; a current generation's manifest and
-// objects no collection deletes, so its findings always stand.
+// collection running beside it did. A generation the diagnosis's snapshot
+// saw retained, the current one included, may meanwhile have been replaced,
+// retired by one collection and found expired by a later one, which deleted
+// its manifest and the objects only it listed. A missing manifest or object
+// is therefore reported only if its generation is still retained when the
+// history is read again, after every manifest and object was read: a
+// generation still retained then was retained throughout, and no collection
+// deleted anything of it. A missing history row is never such a finding: the
+// snapshot read the record and the history together.
 func (r *Reconciler) dropConcurrentlyExpired(ctx context.Context, p *pass) error {
 	if !slices.ContainsFunc(p.findings, concurrentlyCaused) {
 		return nil
@@ -223,8 +226,8 @@ func (r *Reconciler) dropConcurrentlyExpired(ctx context.Context, p *pass) error
 }
 
 // concurrentlyCaused answers whether a collection running beside the pass
-// could have caused f: a missing manifest or object of a superseded
-// generation.
+// could have caused f: a missing manifest or object of a generation, current
+// or superseded in the snapshot, that may have expired since.
 func concurrentlyCaused(f Finding) bool {
-	return !f.Current && f.Generation != 0 && (f.Kind == MissingRetainedManifest || f.Kind == LostObject)
+	return f.absent && f.Generation != 0
 }

@@ -36,8 +36,9 @@ func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 		return
 	}
 	if p.concurrent > 0 {
-		rep.Refused = fmt.Sprintf("a collection ran beside the diagnosis and deleted what %d superseded generation(s) listed, "+
-			"so the diagnosis's snapshot no longer plans what a collection would delete; run the diagnosis again for the plan", p.concurrent)
+		rep.Refused = fmt.Sprintf("a collection ran beside the diagnosis and deleted what generations of its snapshot listed "+
+			"(%d finding(s) left out), so the diagnosis's snapshot no longer plans what a collection would delete; "+
+			"run the diagnosis again for the plan", p.concurrent)
 		return
 	}
 	var owned []publication.Object

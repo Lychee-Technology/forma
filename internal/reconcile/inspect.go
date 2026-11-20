@@ -139,10 +139,10 @@ func (r *Reconciler) checkManifest(p *pass, g publication.Generation, retained, 
 	raw, ok := p.raw[g.ManifestKey]
 	switch {
 	case !ok && current:
-		p.findings = append(p.findings, generationFinding(MissingGeneration, g, true, "the manifest object is missing"))
+		p.findings = append(p.findings, absentManifest(MissingGeneration, g, true))
 		return
 	case !ok && retained:
-		p.findings = append(p.findings, generationFinding(MissingRetainedManifest, g, false, "the manifest object is missing"))
+		p.findings = append(p.findings, absentManifest(MissingRetainedManifest, g, false))
 		return
 	case !ok:
 		return

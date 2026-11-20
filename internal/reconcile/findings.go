@@ -64,8 +64,16 @@ func generationFinding(kind FindingKind, g publication.Generation, current bool,
 	return f
 }
 
+// absentManifest is the finding of g's manifest object confirmed missing.
+func absentManifest(kind FindingKind, g publication.Generation, current bool) Finding {
+	f := generationFinding(kind, g, current, "the manifest object is missing")
+	f.absent = true
+	return f
+}
+
 func objectFinding(kind FindingKind, g publication.Generation, current bool, key, detail string) Finding {
-	f := Finding{Kind: kind, Epoch: g.Epoch, Generation: g.Generation, Current: current, Key: key, Detail: detail}
+	f := Finding{Kind: kind, Epoch: g.Epoch, Generation: g.Generation, Current: current, Key: key, Detail: detail,
+		absent: kind == LostObject}
 	switch {
 	case kind == CorruptObject:
 		f.Action = actionCorrupt

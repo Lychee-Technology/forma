@@ -43,11 +43,16 @@ would delete. Run it as the periodic health check.
 Without the lock a publication or a collection can run beside it. A publication
 is harmless: the listing comes before the snapshot, and a listed key the
 snapshot's generations name but the listing lacks is probed before it is called
-lost. A collection can delete a superseded generation's manifest and objects
-once it finds that generation expired, after the diagnosis's snapshot saw it
-retained. A missing manifest or object of a superseded generation is therefore
-reported only if that generation is still retained when the history is read
-again; the report counts the findings it left out.
+lost. A collection can delete a generation's manifest and objects once it
+finds that generation expired, after the diagnosis's snapshot saw it retained.
+That holds for the generation the snapshot saw current too: a diagnosis that
+runs longer than G can see it replaced, retired by one collection and
+collected by a later one. A missing manifest or object, of the current
+generation or a superseded one, is therefore reported only if its generation
+is still retained when the history is read again, after every manifest and
+object was read; the report counts the findings it left out and refuses to
+show a plan from its stale snapshot. A missing history row is always reported:
+the snapshot read it with the record.
 
 **`--gc`.** The collector, in the protocol's collection order
 ([Garbage collection](publication-protocol-v2.md#garbage-collection-and-reader-lifetime)):

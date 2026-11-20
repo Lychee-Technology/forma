@@ -48,7 +48,9 @@ type memStore struct {
 	getErr map[string]error
 	// beforeGet, when set, runs before each Get, outside the store's lock.
 	beforeGet func(key string)
-	deletes   []string
+	// beforeHash, when set, runs before each Hash, outside the store's lock.
+	beforeHash func(key string)
+	deletes    []string
 }
 
 func newMemStore(now func() int64) *memStore {
@@ -120,6 +122,9 @@ func (m *memStore) Exists(_ context.Context, key string) (bool, error) {
 }
 
 func (m *memStore) Hash(_ context.Context, key string) (string, int64, error) {
+	if m.beforeHash != nil {
+		m.beforeHash(key)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o, ok := m.objects[key]

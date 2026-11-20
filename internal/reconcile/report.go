@@ -73,6 +73,11 @@ type Finding struct {
 	Detail string
 	// Action is the safe operator action.
 	Action string
+	// absent says the finding is a manifest or an object S3 confirmed
+	// missing: what a collection deletes once the generation expires, so
+	// a lock-free diagnosis checks the generation again before it reports
+	// one (dropConcurrentlyExpired).
+	absent bool
 }
 
 // Collected is what a garbage-collection pass did.
@@ -111,8 +116,9 @@ type SchemaReport struct {
 	// a later pass collects once the horizon passes it.
 	PendingOrphans int
 	// ConcurrentlyExpired counts the findings a diagnosis left out because
-	// the superseded generation they concerned expired while it ran: a
-	// collection beside it may have deleted its manifest or objects.
+	// the generation they concerned, current or superseded in its
+	// snapshot, expired while it ran: a collection beside it may have
+	// deleted its manifest or objects.
 	ConcurrentlyExpired int
 	// Plan is what garbage collection deletes (under --gc) or would delete
 	// against Horizon (without it). Empty when the pass refused.
@@ -169,8 +175,8 @@ func (s SchemaReport) render(w io.Writer) {
 		fmt.Fprintf(w, "    action: %s\n", f.Action)
 	}
 	if s.ConcurrentlyExpired > 0 {
-		fmt.Fprintf(w, "  %d finding(s) left out: the superseded generation they concerned expired while the diagnosis ran, "+
-			"and a collection may have deleted what it listed\n", s.ConcurrentlyExpired)
+		fmt.Fprintf(w, "  %d finding(s) left out: the generation they concerned expired while the diagnosis ran "+
+			"(replaced, retired and past the retention grace), and a collection may have deleted what it listed\n", s.ConcurrentlyExpired)
 	}
 	if s.Refused != "" {
 		fmt.Fprintf(w, "  garbage collection refused: %s\n", s.Refused)
