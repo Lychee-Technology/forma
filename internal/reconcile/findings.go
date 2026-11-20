@@ -18,9 +18,12 @@ const (
 	actionMissingGeneration = "re-initialize the schema with cdc-init, which publishes a new generation from PostgreSQL " +
 		"(the lost manifest cannot be rebuilt from S3); garbage collection deletes nothing for the schema until " +
 		"the lost generation expires, the retention grace after a pass retires it"
-	actionMissingHistory = "restore the generation history row from a backup, or re-initialize the schema with cdc-init and run " +
-		"garbage collection no sooner than the retention grace after that init commits: without its row the current " +
-		"generation's objects are protected by nothing, so garbage collection deletes nothing for the schema meanwhile"
+	actionMissingHistory = "restore the generation history row from a backup. Otherwise garbage collection deletes nothing " +
+		"for the schema until a generation above this one expires, which takes two publications: the next one (a flush, " +
+		"a compaction or a cdc-init) supersedes this generation, which is then reported as missing_history; a later one " +
+		"must supersede that publication's generation in turn, a pass retire it, and the retention grace pass. Waiting " +
+		"the retention grace after a single publication or re-init is not enough: nothing names the unrecorded " +
+		"generation's objects, and only an expired generation above it proves no reader still holds it"
 	actionHistoryGap = "restore the generation history rows from a backup; otherwise garbage collection resumes by itself " +
 		"once a generation above the gap expires (a later publication, a cdc-init included, supersedes it, a pass retires it, " +
 		"and the retention grace passes), and deletes nothing for the schema until then"
