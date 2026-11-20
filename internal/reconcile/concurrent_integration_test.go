@@ -147,6 +147,28 @@ func TestDiagnosisReportsCurrentLossWhateverItsHistoryRow(t *testing.T) {
 			require.NotContains(t, out.String(), "reads succeed", "no part of the report says the reads succeed")
 			require.NotContains(t, out.String(), "fail closed only if", "nor that only the manifest decides it")
 
+			// R12-F3: an object with other bytes is no loss. Readers do not
+			// hash it, so the report says reads may return incorrect results
+			// or fail with a scan error, never that they fail closed.
+			corrupt := g1.manifest.Keys()[1]
+			f.corrupt(t, corrupt)
+			opts := testOptions(false)
+			opts.VerifyChecksums = true
+			rep = f.pass(t, opts)
+			require.NoError(t, rep.Err)
+			require.Equal(t, []FindingKind{tc.rowKind, LostObject, CorruptObject}, kinds(rep.Findings))
+			require.Contains(t, rep.Findings[0].Detail, "a corrupt_object finding reports one whose bytes are not those the manifest lists")
+			bad := rep.Findings[2]
+			require.Equal(t, corrupt, bad.Key)
+			require.True(t, bad.Current)
+			require.Equal(t, actionCorrupt, bad.Action)
+			for _, text := range []string{bad.Detail, bad.Action} {
+				require.Contains(t, text, "incorrect results")
+				require.Contains(t, text, "scan error")
+				require.NotContains(t, text, "fail closed", "a corrupt object is not a fail-closed read")
+			}
+			require.Contains(t, bad.Action, "re-initialize the schema with cdc-init")
+
 			f.store.remove(g1.rec.ManifestKey)
 			rep = f.pass(t, testOptions(false))
 			require.NoError(t, rep.Err)
@@ -236,4 +258,46 @@ func TestDiagnosisLeavesOutARecordManifestCollectedBelowTheFloor(t *testing.T) {
 	require.Contains(t, rep.Findings[0].Detail, readsCollected)
 	require.NotContains(t, rep.Findings[0].Detail, readsUnverified, "no pointer to the finding left out")
 	require.True(t, rep.Inconclusive())
+}
+
+// TestDiagnosisKeepsItsUncertaintyWhenNoCollectionRan is R12-F2: the
+// recheck's evidence is an expiry, not a delete. A superseded generation,
+// already retired, lost its manifest before the diagnosis; while the
+// diagnosis reads, the retention grace passes and no collection runs. The
+// generation expired, so the finding is left out as the expiry-floor check
+// says, but nothing in the report claims that a collection ran or deleted
+// anything: the refusal and the left-out line both say a collection may
+// have deleted it, or it was missing before, and ask for another run.
+func TestDiagnosisKeepsItsUncertaintyWhenNoCollectionRan(t *testing.T) {
+	f := newFixture(t)
+	g1 := f.publishInit(t, f.initialized(t), 1)
+	f.publishCompact(t, g1)
+	retire := f.pass(t, agedOptions(true))
+	require.NoError(t, retire.Err)
+	require.Equal(t, []int64{g1.rec.Generation}, retire.Collected.Retired)
+	require.Empty(t, retire.Collected.Manifests, "the retiring pass collects nothing of the retained generation")
+	f.store.remove(g1.rec.ManifestKey) // lost before the diagnosis, by no collection
+	fired := false
+	f.store.beforeGet = func(string) {
+		if !fired {
+			fired = true
+			f.ageStamps(t, time.Hour) // the grace passes; nothing is deleted
+		}
+	}
+
+	rep := f.pass(t, agedOptions(false))
+	require.True(t, fired)
+	require.NoError(t, rep.Err)
+	require.Empty(t, rep.Findings)
+	require.Equal(t, 1, rep.ConcurrentlyExpired)
+	require.True(t, rep.Inconclusive())
+	require.Contains(t, rep.Refused, "a collection may have deleted what they listed, or none ran")
+	require.Contains(t, rep.Refused, "run the diagnosis again")
+	var out bytes.Buffer
+	Report{Schemas: []SchemaReport{rep}}.Render(&out)
+	text := out.String()
+	require.Contains(t, text, "inconclusive (run the diagnosis again)")
+	require.Contains(t, text, "a collection may have deleted what it listed, or none ran and it was missing before")
+	require.NotContains(t, text, "collection ran beside", "no collection is reported as observed")
+	require.NotContains(t, text, "and deleted", "no delete is reported as observed")
 }

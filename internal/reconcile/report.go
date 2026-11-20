@@ -137,7 +137,8 @@ type SchemaReport struct {
 	// ConcurrentlyExpired counts the findings a diagnosis left out because
 	// the generation they concerned, current or superseded in its
 	// snapshot, expired while it ran: a collection beside it may have
-	// deleted its manifest or objects.
+	// deleted its manifest or objects, or none ran and they were missing
+	// before. The diagnosis observed no delete, so it tells neither apart.
 	ConcurrentlyExpired int
 	// Plan is what garbage collection deletes (under --gc) or would delete
 	// against Horizon (without it). Empty when the pass refused.
@@ -207,7 +208,8 @@ func (s SchemaReport) render(w io.Writer) {
 	}
 	if s.ConcurrentlyExpired > 0 {
 		fmt.Fprintf(w, "  %d finding(s) left out: the generation they concerned expired while the diagnosis ran "+
-			"(replaced, retired and past the retention grace), and a collection may have deleted what it listed\n", s.ConcurrentlyExpired)
+			"(replaced, retired and past the retention grace): a collection may have deleted what it listed, or none ran and it "+
+			"was missing before; the diagnosis cannot tell which, so run it again\n", s.ConcurrentlyExpired)
 	}
 	if s.Refused != "" {
 		fmt.Fprintf(w, "  garbage collection refused: %s\n", s.Refused)

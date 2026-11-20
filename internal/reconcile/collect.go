@@ -21,7 +21,8 @@ var errPlanUnverified = errors.New("the collection plan deletes a key no verifie
 
 // summarize fills rep from p and plans the collection (steps 5 to 7) when
 // nothing stops it. A blocking finding stops it, and so does a pass without
-// a record, a diagnosis a collection ran beside, a live displaced inventory
+// a record, a diagnosis that left out findings of a generation that expired
+// while it ran (dropConcurrentlyExpired), a live displaced inventory
 // (liveDisplacements), one inside the retention grace after the schema's
 // lifecycle epoch moved (publication.ReadLifecycleFence), or a plan that
 // deletes from S3 when the schema has nothing of its own in the bucket
@@ -46,9 +47,10 @@ func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 		return
 	}
 	if p.concurrent > 0 {
-		rep.Refused = fmt.Sprintf("a collection ran beside the diagnosis and deleted what generations of its snapshot listed "+
-			"(%d finding(s) left out), so the diagnosis's snapshot no longer plans what a collection would delete; "+
-			"run the diagnosis again for the plan", p.concurrent)
+		rep.Refused = fmt.Sprintf("generations the diagnosis's snapshot saw retained expired while it ran (%d finding(s) left "+
+			"out): a collection may have deleted what they listed, or none ran and what was missing was missing before, "+
+			"which the diagnosis cannot tell apart, and its snapshot no longer plans what a collection would delete; "+
+			"run the diagnosis again", p.concurrent)
 		return
 	}
 	if live := p.liveDisplacements(); len(live) > 0 {

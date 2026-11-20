@@ -59,8 +59,10 @@ const (
 		"them agree, do not restore the row from a backup, and do not restore a manifest object to match the row " +
 		"(docs/manifest-reconcile.md, \"A history row that disagrees with the record\"). Readers follow the record: they fail " +
 		"closed if the manifest the record names is missing or does not verify against it (a missing_generation or " +
-		"invalid_manifest finding of this generation says so), or if an object it lists is missing or corrupt (a lost_object " +
-		"or corrupt_object finding of this generation), and then re-initializing with cdc-init restores them. A reader " +
+		"invalid_manifest finding of this generation says so), or if an object it lists is missing (a lost_object finding " +
+		"of this generation). They do not check an object's bytes against the manifest, so an object whose bytes differ " +
+		"(a corrupt_object finding of this generation) may make reads return incorrect results or fail with a scan error. " +
+		"In each case re-initializing with cdc-init restores them. A reader " +
 		"that chose the generation before the record changed may still scan the inventory the row names, so neither is dropped: " +
 		"the publication that replaces the generation (a flush, a compaction, a cdc-init or a drop) writes the row back from the " +
 		"record it replaces, clears its stamps, and keeps the inventory the row named as displaced. Garbage collection deletes " +
@@ -95,8 +97,11 @@ const (
 		"a missing object, and the object cannot be recovered from its manifest"
 	actionLostSuperseded = "no action for new reads, which scan the current generation; a read still pinned to this " +
 		"generation fails closed, and the generation expires the retention grace after it was retired"
-	actionCorrupt = "re-initialize the schema with cdc-init if the current generation lists the object (compaction " +
-		"refuses it as a merge source, #347); otherwise it leaves with its generation's expiry"
+	actionCorrupt = "treat it as an integrity fault: readers do not check an object's bytes against its manifest, so a " +
+		"read that scans it may return incorrect results without an error, or fail with a scan error. If the current " +
+		"generation lists the object, re-initialize the schema with cdc-init, which publishes a new generation from " +
+		"PostgreSQL (compaction refuses the object as a merge source, #347); otherwise only a read still pinned to this " +
+		"generation scans it, and it leaves with its generation's expiry"
 	actionUnrecognized = "garbage collection never deletes a key no V2 writer stages (a V1 leftover, or another " +
 		"tool's object); remove it by hand once you know what wrote it"
 )

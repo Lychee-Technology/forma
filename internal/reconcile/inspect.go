@@ -112,7 +112,8 @@ func (r *Reconciler) checkRecord(p *pass) int64 {
 // check of the manifest only: a manifest that verifies says nothing of the
 // objects it lists, whose loss or corruption the generation's own lost_object
 // and corrupt_object findings report, each with the re-init that restores
-// reads (R11-F3). Readers never read the row, so a lost or inconsistent row
+// reads (R11-F3). Only a loss makes reads fail closed: readers do not hash
+// an object against its manifest, so a corrupt one may be read (R12-F3). Readers never read the row, so a lost or inconsistent row
 // says nothing about the manifest: its loss is reported on its own
 // (missing_generation of the manifest key, with the re-init that restores
 // reads), beside the row's finding and its own recovery (R10-F3). The row's
@@ -133,12 +134,15 @@ func (r *Reconciler) checkRecordManifest(p *pass) {
 // (checkRecordManifest, dropConcurrentlyExpired).
 const (
 	readsManifestVerified = "the manifest the record names verifies against the record, as readers verify it; " +
-		"this checks the manifest only, not that the objects it lists are available: a lost_object or corrupt_object " +
-		"finding of this generation reports one that is not, and reads then fail closed"
+		"this checks the manifest only, not that the objects it lists are available or intact: a lost_object finding " +
+		"of this generation reports one that is missing, and reads then fail closed; a corrupt_object finding reports " +
+		"one whose bytes are not those the manifest lists, which readers do not check, so reads may then return " +
+		"incorrect results or fail with a scan error"
 	readsUnverified = "the manifest the record names did not verify against the record, as readers verify it: " +
 		"the finding of this generation's manifest key says why, and reads fail closed"
 	readsCollected = "the manifest the record names was missing when read, and the generation expired while the " +
-		"diagnosis ran (a finding left out): run the diagnosis again"
+		"diagnosis ran (a finding left out): a collection may have deleted it, or it was missing before; run the " +
+		"diagnosis again"
 )
 
 // historyRow answers the history row of generation g the snapshot read,
@@ -379,7 +383,9 @@ func (r *Reconciler) verifyChecksums(ctx context.Context, p *pass, current int64
 				continue
 			}
 			p.findings = append(p.findings, objectFinding(CorruptObject, e.g, e.g.Generation == current, key,
-				fmt.Sprintf("generation %d's manifest lists SHA-256 %s and %d bytes, the object has SHA-256 %s and %d bytes",
+				fmt.Sprintf("generation %d's manifest lists SHA-256 %s and %d bytes, the object has SHA-256 %s and %d bytes: "+
+					"an integrity fault, which readers do not detect, since they do not hash an object against its manifest, "+
+					"so a read of the generation may return incorrect results or fail with a scan error",
 					e.g.Generation, e.file.SHA256, e.file.SizeBytes, sum, size)))
 		}
 	}
