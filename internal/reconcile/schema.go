@@ -27,6 +27,10 @@ type pass struct {
 	// lifecycle is when the id's lifecycle epoch last moved, read in the
 	// snapshot: a pass inside the grace after it deletes nothing.
 	lifecycle publication.LifecycleFence
+	// displaced are the inventories replaced generations' history rows
+	// named when they disagreed with the record, read in the snapshot: a
+	// pass deletes nothing while one is live (liveDisplacements).
+	displaced []publication.Displacement
 	// raw holds the stored bytes of every manifest the store answered, by
 	// key; a retained or expired manifest key it lacks is missing.
 	raw map[string][]byte
@@ -123,8 +127,9 @@ func (r *Reconciler) read(ctx context.Context, id int16) (*pass, error) {
 	return p, nil
 }
 
-// snapshot reads the record, the retained and expired generations and the
-// lifecycle fence in one read-only REPEATABLE READ snapshot, and ends it.
+// snapshot reads the record, the retained and expired generations, the
+// lifecycle fence and the displaced inventories in one read-only REPEATABLE
+// READ snapshot, and ends it.
 func (r *Reconciler) snapshot(ctx context.Context, p *pass) error {
 	tx, err := r.DB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
@@ -153,6 +158,9 @@ func (r *Reconciler) snapshot(ctx context.Context, p *pass) error {
 	}
 	if p.lifecycle, err = publication.ReadLifecycleFence(ctx, q, r.Tables, p.id, r.Opts.RetentionGrace); err != nil {
 		return fmt.Errorf("read the lifecycle fence in the collector's snapshot: %w", err)
+	}
+	if p.displaced, err = publication.Displaced(ctx, q, r.Tables, p.id); err != nil {
+		return fmt.Errorf("read the displaced inventories in the collector's snapshot: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("end the collector's snapshot: %w", err)

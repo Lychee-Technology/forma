@@ -52,7 +52,7 @@ func newFixture(t *testing.T) *fixture {
 		require.NoError(t, err, stmt)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{f.t.Record, f.t.Generation, f.t.Epoch, f.changeLog} {
+		for _, table := range []string{f.t.Record, f.t.Generation, f.t.Epoch, f.t.Displaced, f.changeLog} {
 			_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 		}
 	})

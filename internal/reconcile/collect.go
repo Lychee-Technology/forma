@@ -15,10 +15,11 @@ var errPlanTouchesProtected = errors.New("the collection plan deletes a protecte
 
 // summarize fills rep from p and plans the collection (steps 5 to 7) when
 // nothing stops it. A blocking finding stops it, and so does a pass without
-// a record, one inside the retention grace after the schema's lifecycle
-// epoch moved (publication.ReadLifecycleFence), a diagnosis a collection
-// ran beside, or a plan that deletes from S3 when the schema has nothing of
-// its own in the bucket (unbound).
+// a record, a diagnosis a collection ran beside, a live displaced inventory
+// (liveDisplacements), one inside the retention grace after the schema's
+// lifecycle epoch moved (publication.ReadLifecycleFence), or a plan that
+// deletes from S3 when the schema has nothing of its own in the bucket
+// (unbound).
 func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 	if p.record != nil {
 		rep.State, rep.Epoch = p.record.State, p.record.Epoch
@@ -42,6 +43,10 @@ func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 		rep.Refused = fmt.Sprintf("a collection ran beside the diagnosis and deleted what generations of its snapshot listed "+
 			"(%d finding(s) left out), so the diagnosis's snapshot no longer plans what a collection would delete; "+
 			"run the diagnosis again for the plan", p.concurrent)
+		return
+	}
+	if live := p.liveDisplacements(); len(live) > 0 {
+		rep.Refused = displacementRefusal(live, r.Opts.RetentionGrace)
 		return
 	}
 	if p.lifecycle.Inside {
@@ -161,7 +166,7 @@ func (r *Reconciler) pendingOrphans(p *pass, owned []publication.Object) int {
 
 // collect runs the plan in the collection order: every object (step 5),
 // then every expired manifest (step 6), then Forget of every expired row
-// (step 7). A step starts only once every delete of the one before it
+// (step 7), and last the displaced inventories no longer live. A step starts only once every delete of the one before it
 // succeeded, so after a crash or a failed delete the next pass plans the
 // rest from what is left: an expired manifest still there lists its objects
 // again, and one already gone leaves its row to be forgotten.
@@ -181,7 +186,7 @@ func (r *Reconciler) collect(ctx context.Context, p *pass, plan publication.Plan
 			done.Forgotten = append(done.Forgotten, g)
 		}
 	}
-	return nil
+	return r.forgetDisplacements(ctx, p)
 }
 
 // deleteAll deletes every key, and fails once all were tried if any delete

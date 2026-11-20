@@ -14,9 +14,11 @@ import (
 // entity_main table every holder is given, qualifier kept.
 func TestTablesForFollowsEntityMain(t *testing.T) {
 	require.Equal(t, Tables{Record: `"entity_main_publication"`, Generation: `"entity_main_publication_generation"`,
-		Epoch: `"entity_main_publication_epoch"`, Storage: `"entity_main_publication_storage"`}, TablesFor("entity_main"))
+		Epoch: `"entity_main_publication_epoch"`, Storage: `"entity_main_publication_storage"`,
+		Displaced: `"entity_main_publication_displaced"`}, TablesFor("entity_main"))
 	require.Equal(t, Tables{Record: `"app"."em_publication"`, Generation: `"app"."em_publication_generation"`,
-		Epoch: `"app"."em_publication_epoch"`, Storage: `"app"."em_publication_storage"`}, TablesFor("app.em"))
+		Epoch: `"app"."em_publication_epoch"`, Storage: `"app"."em_publication_storage"`,
+		Displaced: `"app"."em_publication_displaced"`}, TablesFor("app.em"))
 }
 
 // TestStatementsUseOnlyPlainRows pins the DSQL-safe shape of the DDL: one
@@ -28,7 +30,7 @@ func TestStatementsUseOnlyPlainRows(t *testing.T) {
 		require.Nil(t, textcollation.DDLDrift(s), "every text column is COLLATE \"C\" on PostgreSQL: %s", s)
 	}
 	stmts := Statements(forma.EngineAuroraDSQL, "entity_main")
-	require.Len(t, stmts, 3)
+	require.Len(t, stmts, 4)
 	stmts = append(stmts, StorageStatement(forma.EngineAuroraDSQL, "entity_main"))
 	require.Nil(t, textcollation.DDLDrift(StorageStatement(forma.EnginePostgreSQL, "entity_main")))
 	for _, s := range stmts {

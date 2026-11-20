@@ -20,13 +20,13 @@ type publicationTableState struct {
 	rows   int64
 }
 
-// publicationTables reads the state of the target's three publication tables.
+// publicationTables reads the state of the target's publication tables init-db creates.
 func (tg *initDBTarget) publicationTables(t *testing.T) map[string]publicationTableState {
 	t.Helper()
 	ctx := context.Background()
 	tables := publication.TablesFor(tg.opts.entityMain)
 	states := map[string]publicationTableState{}
-	for _, table := range []string{tables.Record, tables.Generation, tables.Epoch} {
+	for _, table := range []string{tables.Record, tables.Generation, tables.Epoch, tables.Displaced} {
 		var st publicationTableState
 		if err := tg.pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL, COALESCE((SELECT relfilenode::oid::int8 FROM pg_class WHERE oid = to_regclass($1)), 0)`,
 			table).Scan(&st.exists, &st.node); err != nil {

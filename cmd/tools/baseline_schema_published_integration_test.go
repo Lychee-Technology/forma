@@ -30,7 +30,7 @@ func TestBaselinePublishedObjectsAreTheGenerationsListedObjects(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{tables.Record, tables.Generation, tables.Epoch} {
+		for _, table := range []string{tables.Record, tables.Generation, tables.Epoch, tables.Displaced} {
 			_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+table)
 		}
 	})

@@ -54,16 +54,18 @@ const (
 		"and the retention grace pass. Waiting the retention grace after a single publication or re-init is not enough: " +
 		"nothing names the unrecorded generation's objects, and only an expired generation above it proves no reader still holds it"
 	actionHistoryMismatch = "the record's generation has a history row, but the row disagrees with the record: one of the two " +
-		"was restored from a backup or written outside the protocol. Do not rewrite either to make them agree, do not restore " +
-		"the row from a backup, and do not restore a manifest object to match the row (docs/manifest-reconcile.md, \"A history " +
-		"row that disagrees with the record\"). Readers follow the record: they fail closed only if the manifest the record " +
-		"names is missing or does not verify against it (a missing_generation or invalid_manifest finding of this generation " +
-		"says so), and then re-initializing with cdc-init restores them. The publication that replaces the generation (a " +
-		"flush, a compaction, a cdc-init or a drop) writes the row back from the record it replaces and clears its stamps, " +
-		"so the row then keeps what readers obtained from the record until a pass retires it and the retention grace " +
-		"passes. Garbage collection deletes nothing for the schema until that publication commits; it resumes then unless " +
-		"the record's manifest, now named by the row, still fails to verify against it, which an invalid_manifest finding " +
-		"of the generation reports. A manifest whose kind is not the row's fails so too"
+		"was restored from a backup or written outside the protocol, and nothing shows which. Do not rewrite either to make " +
+		"them agree, do not restore the row from a backup, and do not restore a manifest object to match the row " +
+		"(docs/manifest-reconcile.md, \"A history row that disagrees with the record\"). Readers follow the record: they fail " +
+		"closed only if the manifest the record names is missing or does not verify against it (a missing_generation or " +
+		"invalid_manifest finding of this generation says so), and then re-initializing with cdc-init restores them. A reader " +
+		"that chose the generation before the record changed may still scan the inventory the row names, so neither is dropped: " +
+		"the publication that replaces the generation (a flush, a compaction, a cdc-init or a drop) writes the row back from the " +
+		"record it replaces, clears its stamps, and keeps the inventory the row named as displaced. Garbage collection deletes " +
+		"nothing for the schema until that generation's row expires: the replacement must commit, a later pass retire the row " +
+		"after seeing it committed, and the retention grace pass. One replacement does not by itself make an immediate " +
+		"collection safe. Collection resumes then unless the record's manifest, now named by the row, still fails to verify " +
+		"against it, which an invalid_manifest finding of the generation reports. A manifest whose kind is not the row's fails so too"
 	actionHistoryGap = "do not restore the generation history rows from a backup, whose copy of a row may carry a " +
 		"superseded_at of 0 that nothing supersedes again (docs/manifest-reconcile.md, \"Lost history rows\"); garbage " +
 		"collection resumes by itself once a generation above the gap expires (a later publication, a cdc-init included, " +

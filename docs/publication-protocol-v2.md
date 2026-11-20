@@ -250,7 +250,17 @@ written outside the protocol could otherwise name another valid manifest of the 
 generation, or carry a retirement stamp written while the generation was current, and the
 manifest readers still scan would be collected as an orphan, or expire, as soon as the
 generation is replaced (#891, `history_mismatch` in docs/manifest-reconcile.md). The kind
-is kept: the record carries none. Within one epoch, generations are
+is kept: the record carries none. Writing the row back cannot tell which side changed,
+though: a record changed after readers chose the generation through it leaves those
+readers on the manifest the row names. So when the row names another epoch, manifest key,
+digest or token than the record, the same transaction first keeps the row's identity in
+`<entity_main>_publication_displaced` (schema_id, generation, epoch, manifest_key,
+manifest_sha256, cas_token, displaced_at; one row per displaced manifest, created by
+`init-db`). A collector deletes and forgets nothing for the schema while the replaced
+generation's row is retained, which it is for a full grace after a collector retired it,
+after seeing the replacement committed. Then no reader that chose the generation under
+either inventory is left, and the displaced inventory is an orphan (R10-F1). Within one
+epoch, generations are
 consecutive. Rebase decisions read `kind` (`KindsSince`), retention reads `retired_at`,
 and `Resolve` reads `cas_token`. The collector reads `manifest_sha256` and `cas_token`
 too (`Retained` and `Expired` answer both): they are what it verifies each manifest
@@ -352,6 +362,8 @@ BEGIN;
    WHERE schema_id = $1 AND epoch = $2 AND generation = $3 AND cas_token = $4
      AND $staged_at >= now_ms - $budget AND $staged_at > gc_horizon
    RETURNING generation;                                              -- 0 rows: stop, ROLLBACK
+  SELECT <identity> FROM publication_generation WHERE ... FOR UPDATE -- the replaced row
+  INSERT INTO publication_displaced (...)  -- only when the row's identity is not the record's
   UPDATE publication_generation SET superseded_at = now_ms, retired_at = 0,
          <identity from the replaced record> WHERE ...                -- the replaced generation
   INSERT INTO publication_generation (...);                           -- the new generation
@@ -359,7 +371,7 @@ BEGIN;
 COMMIT;
 ```
 
-`publication.Publish` runs the first three statements, and the caller sends the marks on
+`publication.Publish` runs every statement but the marks, and the caller sends the marks on
 the same transaction. `Publish`, `Reset`, `Activate`, `HoldLineage` and both
 `Initialize` functions take a `publication.Tx`, which only `SQLTx` (a `database/sql`
 transaction) and `PgxTx` (a pgx transaction, for init-db and the other pgx callers)
@@ -753,10 +765,13 @@ steps 5 to 7 from what steps 1 to 4 read.
 
 1. `RaiseHorizon`, committed. Its answer is H.
 2. List the objects under the schema's prefix.
-3. In one snapshot, read `Retained(G)`, `Expired(G)` and `ReadLifecycleFence(G)`, then
-   end the snapshot. Run `Retire` for every retained generation that is superseded and
-   not yet retired. Those generations expire in a later pass. A fence inside G, or a
-   missing epoch row, stops the pass before step 5 ("A lost record").
+3. In one snapshot, read `Retained(G)`, `Expired(G)`, `ReadLifecycleFence(G)` and
+   `Displaced`, then end the snapshot. Run `Retire` for every retained generation that is
+   superseded and not yet retired. Those generations expire in a later pass. A fence
+   inside G, or a missing epoch row, stops the pass before step 5 ("A lost record"), and
+   so does a displaced inventory whose replaced generation is still retained ("Generation
+   history"). Once that generation expired, the pass forgets the displacement after step 7
+   (`ForgetDisplaced`).
 4. Get the manifest of every retained and expired generation, and verify each one that
    exists before reading its `files` (`ManifestFiles`): the SHA-256 of the stored bytes
    must equal the history row's `manifest_sha256`, the bytes must be one JSON object of

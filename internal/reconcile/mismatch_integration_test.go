@@ -21,8 +21,9 @@ import (
 // takes two publications and an expiry, and the intact manifest is not to
 // be restored to match the row: it verifies against the record, and reads
 // succeed. The publication that replaces the generation writes the row back
-// from the record (R9-F3), so one publication resumes collection, and the
-// generation is kept for the grace after its retirement like any other.
+// from the record (R9-F3) and keeps what the row named as displaced
+// (R10-F1), so collection resumes once the generation expires, the grace
+// after its retirement, and not at once.
 func TestAHistoryRowThatDisagreesWithTheRecordIsNotAMissingRow(t *testing.T) {
 	f := newFixture(t)
 	g1 := f.publishInit(t, f.initialized(t), 1)
@@ -40,7 +41,8 @@ func TestAHistoryRowThatDisagreesWithTheRecordIsNotAMissingRow(t *testing.T) {
 		"history_mismatch",
 		"Do not rewrite either to make them agree, do not restore the row from a backup",
 		"re-initializing with cdc-init restores them",
-		"writes the row back from the record it replaces and clears its stamps",
+		"writes the row back from the record it replaces, clears its stamps, and keeps the inventory the row named as displaced",
+		"One replacement does not by itself make an immediate collection safe",
 	} {
 		require.Contains(t, out.String(), step)
 	}
@@ -50,6 +52,7 @@ func TestAHistoryRowThatDisagreesWithTheRecordIsNotAMissingRow(t *testing.T) {
 	rep = f.pass(t, testOptions(true))
 	require.NoError(t, rep.Err)
 	require.Empty(t, rep.Findings, "the replacement wrote the row back from the record")
+	require.Contains(t, rep.Refused, "disagreed with the record", "the row's other digest is kept as displaced until N expires")
 	require.Equal(t, []int64{g1.rec.Generation}, rep.Collected.Retired)
 	require.Empty(t, rep.Collected.Objects)
 	require.Subset(t, f.store.keys(), f.keysOf(g1), "kept for the grace after its retirement")
@@ -182,8 +185,10 @@ func TestAnEarlyRetirementStampDoesNotSurviveTheReplacement(t *testing.T) {
 // record's key. A reader pins N through the record, and N+1 replaces every
 // file it lists. The replacement writes N's row back from the record, so
 // the collections that follow keep the manifest and the objects the reader
-// scans, and collect the losing publication's staging, which no reader
-// ever chose.
+// scans. They keep the losing publication's staging too (R10-F1): nothing
+// shows that the row, and not the record, was what changed, so the row's
+// inventory is kept as a displacement until N's row expires, and only then
+// is it collected, with N.
 func TestAHistoryRowNamingAnotherManifestKeepsTheRecordsInventory(t *testing.T) {
 	f := newFixture(t)
 	opts := agedOptions(true)
@@ -217,15 +222,19 @@ func TestAHistoryRowNamingAnotherManifestKeepsTheRecordsInventory(t *testing.T) 
 		rep := f.pass(t, opts)
 		require.NoError(t, rep.Err)
 		require.Empty(t, rep.Findings, "pass %d", pass)
-		if pass == 0 {
-			require.ElementsMatch(t, f.stagedKeys(lost, g1), rep.Collected.Objects, "only the losing staging is collected")
-		} else {
-			require.Empty(t, rep.Collected.Objects, "pass %d", pass)
-		}
+		require.Contains(t, rep.Refused, lost.next.ManifestKey, "pass %d keeps the row's inventory as displaced", pass)
+		require.Empty(t, rep.Collected.Objects, "pass %d", pass)
 		require.Empty(t, rep.Collected.Manifests, "pass %d", pass)
 		f.requireOrphansEligible(t, rep, opts, f.keysOf(g2))
 	}
 	f.requireReadable(t, pinned)
-	require.Subset(t, f.store.keys(), append(f.keysOf(g2), f.keysOf(g3)...))
+	require.Subset(t, f.store.keys(), append(append(f.keysOf(g2), f.keysOf(g3)...), f.stagedKeys(lost, g1)...))
 	require.NoError(t, reader.Commit())
+
+	f.ageStamps(t, time.Hour)
+	rep = f.pass(t, opts)
+	require.NoError(t, rep.Err)
+	require.Empty(t, rep.Refused, "N's row expired")
+	require.Subset(t, rep.Collected.Objects, f.stagedKeys(lost, g1), "the losing staging is collected with N")
+	require.Equal(t, f.keysOf(g3), f.store.keys())
 }

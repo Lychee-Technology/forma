@@ -57,7 +57,7 @@ func newWiredEngine(t *testing.T) *wiredEngine {
 		require.NoError(t, err, stmt)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{w.pub.Record, w.pub.Generation, w.pub.Epoch} {
+		for _, table := range []string{w.pub.Record, w.pub.Generation, w.pub.Epoch, w.pub.Displaced} {
 			_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+table)
 		}
 	})

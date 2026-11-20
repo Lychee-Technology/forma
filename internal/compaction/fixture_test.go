@@ -55,7 +55,7 @@ func newV2Fixture(t *testing.T) *v2Fixture {
 		require.NoError(t, err, stmt)
 	}
 	t.Cleanup(func() {
-		for _, table := range []string{f.tables.Record, f.tables.Generation, f.tables.Epoch} {
+		for _, table := range []string{f.tables.Record, f.tables.Generation, f.tables.Epoch, f.tables.Displaced} {
 			_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 		}
 	})

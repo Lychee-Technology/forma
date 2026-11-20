@@ -11,7 +11,8 @@
 // the dirty set in, so the generation it scans and the rows it treats as
 // flushed come from one snapshot.
 //
-// init-db creates the three tables from Statements (#895) and, in the
+// init-db creates the four tables from Statements (#895, the displaced
+// inventories of #891) and, in the
 // registration transaction, each schema's record (Initialize, Activate, and
 // at the V2 cutover InitializeAwaitingInit). cdc-flush and cdc-init publish
 // through internal/cdcv2, and the federated reader reads the record in its
@@ -43,13 +44,14 @@ const (
 	GenerationTableSuffix = "_publication_generation"
 	EpochTableSuffix      = "_publication_epoch"
 	StorageTableSuffix    = "_publication_storage"
+	DisplacedTableSuffix  = "_publication_displaced"
 )
 
-// Tables names the record, generation and epoch tables of one deployment,
-// and its storage binding table (storage.go), each sanitized for a
-// statement.
+// Tables names the record, generation, epoch and displaced-inventory
+// tables of one deployment, and its storage binding table (storage.go),
+// each sanitized for a statement.
 type Tables struct {
-	Record, Generation, Epoch, Storage string
+	Record, Generation, Epoch, Storage, Displaced string
 }
 
 // TablesFor names the publication tables of entityMain. A schema-qualified
@@ -61,6 +63,7 @@ func TablesFor(entityMain string) Tables {
 		Generation: sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, GenerationTableSuffix)),
 		Epoch:      sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, EpochTableSuffix)),
 		Storage:    sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, StorageTableSuffix)),
+		Displaced:  sqlutil.SanitizeIdentifier(sqlutil.SuffixedIdentifier(entityMain, DisplacedTableSuffix)),
 	}
 }
 
@@ -139,7 +142,9 @@ const epochDDL = `CREATE TABLE IF NOT EXISTS %s (
 		PRIMARY KEY (schema_id)
 	)`
 
-// Statements answers the publication tables' DDL for entityMain on engine,
+// Statements answers the publication tables' DDL for entityMain on engine
+// (the record, the generation history, the lifecycle epoch and the displaced
+// inventories, displaced.go),
 // one statement each with no secondary index, so each is one DDL transaction
 // on Aurora DSQL too. Text columns are COLLATE "C" on PostgreSQL and plain
 // TEXT on DSQL, whose collation is C and which refuses the clause (#816).
@@ -149,5 +154,6 @@ func Statements(engine forma.DatabaseEngine, entityMain string) []string {
 		textcollation.ForEngine(engine, fmt.Sprintf(recordDDL, t.Record)),
 		textcollation.ForEngine(engine, fmt.Sprintf(generationDDL, t.Generation)),
 		textcollation.ForEngine(engine, fmt.Sprintf(epochDDL, t.Epoch)),
+		textcollation.ForEngine(engine, fmt.Sprintf(displacedDDL, t.Displaced)),
 	}
 }

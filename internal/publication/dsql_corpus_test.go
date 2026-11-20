@@ -16,7 +16,7 @@ import (
 )
 
 // TestDSQLCorpus exports the publication contract's statements for the DSQL
-// lint gate (#740): the three tables' DDL, and every statement the transitions,
+// lint gate (#740): the four tables' DDL, and every statement the transitions,
 // the reader's read, the commit-outcome check and its fence, and the
 // collector send, in the order a writer's life sends them. Each transition
 // runs in a transaction, as its Tx parameter demands.
@@ -84,6 +84,10 @@ func TestDSQLCorpus(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = ReadStorage(ctx, DB(db), tb)
 	require.NoError(t, err)
+	_, err = Displaced(ctx, DB(db), tb, 100)
+	require.NoError(t, err)
+	_, err = ForgetDisplaced(ctx, DB(db), tb, 100, 4, time.Hour)
+	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet(), "the publication contract sent other statements than recorded")
 
 	ddl := Statements(forma.EngineAuroraDSQL, "entity_main")
@@ -91,6 +95,7 @@ func TestDSQLCorpus(t *testing.T) {
 		corpus.Rendered("internal/publication/ddl.go:recordDDL", ddl[0]),
 		corpus.Rendered("internal/publication/ddl.go:generationDDL", ddl[1]),
 		corpus.Rendered("internal/publication/ddl.go:epochDDL", ddl[2]),
+		corpus.Rendered("internal/publication/displaced.go:displacedDDL", ddl[3]),
 		corpus.Rendered("internal/publication/storage.go:storageDDL", StorageStatement(forma.EngineAuroraDSQL, "entity_main")),
 	}
 	statements = append(statements, rec.Take(t, contractLabels...)...)
@@ -111,6 +116,7 @@ var contractLabels = []string{
 	"internal/publication/recovery.go:InitializeAfterLoss",
 	"internal/publication/record.go:Read",
 	"internal/publication/publish.go:Publish",
+	"internal/publication/displaced.go:displace",
 	"internal/publication/publish.go:supersede",
 	"internal/publication/publish.go:Publish",
 	"internal/publication/lifecycle.go:HoldLineage",
@@ -119,6 +125,8 @@ var contractLabels = []string{
 	"internal/publication/lifecycle.go:Fence",
 	"internal/publication/lifecycle.go:Reset",
 	"internal/publication/lifecycle_epoch.go:raiseEpoch",
+	"internal/publication/displaced.go:displace",
+	"internal/publication/displaced.go:displace",
 	"internal/publication/publish.go:supersede",
 	"internal/publication/lifecycle.go:Activate",
 	"internal/publication/lifecycle.go:Activate",
@@ -133,6 +141,8 @@ var contractLabels = []string{
 	"internal/publication/storage.go:BindStorage",
 	"internal/publication/storage.go:BindStorage",
 	"internal/publication/storage.go:ReadStorage",
+	"internal/publication/displaced.go:Displaced",
+	"internal/publication/displaced.go:ForgetDisplaced",
 }
 
 // expectTheContract answers, in order, every statement TestDSQLCorpus sends
@@ -168,6 +178,7 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(recordRow())
 	mock.ExpectBegin()
 	mock.ExpectQuery("").WithArgs(anyArgs(10)...).WillReturnRows(sqlmock.NewRows([]string{"generation", "parent_generation", "updated_at"}).AddRow(4, 3, 3))
+	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(historyRow(cur.Epoch, cur.ManifestKey, cur.ManifestSHA256, cur.Token))
 	mock.ExpectExec("").WithArgs(anyArgs(8)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("").WithArgs(anyArgs(10)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("").WithArgs(anyArgs(3)...).WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(4))
@@ -181,6 +192,8 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("").WithArgs(anyArgs(4)...).WillReturnRows(epochRow(2))
 	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(historyRow(cur.Epoch, "elsewhere", cur.ManifestSHA256, cur.Token))
+	mock.ExpectExec("").WithArgs(anyArgs(6)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("").WithArgs(anyArgs(8)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectBegin()
@@ -198,6 +211,14 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("").WillReturnRows(storageRow())
 	mock.ExpectQuery("").WillReturnRows(storageRow())
+	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(sqlmock.NewRows([]string{"generation", "epoch", "manifest_key", "manifest_sha256", "cas_token", "displaced_at"}).
+		AddRow(4, 1, "elsewhere", "s", uuid.NewString(), 7))
+	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
+// historyRow is the replaced generation's history row supersede reads.
+func historyRow(epoch int64, key, digest string, token uuid.UUID) *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"epoch", "manifest_key", "manifest_sha256", "cas_token"}).AddRow(epoch, key, digest, token.String())
 }
 
 func storageRow() *sqlmock.Rows {

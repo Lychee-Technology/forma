@@ -116,18 +116,23 @@ const supersedeSQL = `UPDATE %s SET superseded_at = ` + sqlgen.ServerTimeMillisS
 // that replaces it, and makes its history row name what readers obtained
 // from cur: the epoch, parent, manifest key, digest, lineage and token cur
 // holds. The row is what keeps the generation's manifest and objects after
-// the replacement, while readers that chose cur still scan them, and only
-// the record says what they chose. A row that disagreed with the record
-// (restored, or written outside the protocol) could otherwise name another
-// manifest that verifies against the row and keep it, while the manifest
-// readers verified against the record became an orphan. The stamps are
-// written anew: a retired_at already on the current generation was never a
-// retirement (Retire stamps one only after the replacement is seen
-// committed, and this one is not committed yet), and carried forward it
-// would let the generation expire as soon as it is replaced. A transaction
-// that finds no row (a lost history row) changes nothing, and the next
-// collection reports the gap.
+// the replacement, while readers that chose cur still scan them. A row that
+// disagrees with the record (restored, or written outside the protocol)
+// leaves open which of the two readers chose: the record may have been
+// changed after readers chose the generation through it, or the row after
+// it was written. Neither inventory is dropped (R10-F1): displace first
+// keeps the one the row names, and the row is then written back from the
+// record, so a collector deletes nothing for the schema until the row
+// expires (Displacement). The stamps are written anew: a retired_at already
+// on the current generation was never a retirement (Retire stamps one only
+// after the replacement is seen committed, and this one is not committed
+// yet), and carried forward it would let the generation expire as soon as
+// it is replaced. A transaction that finds no row (a lost history row)
+// changes nothing, and the next collection reports the gap.
 func supersede(ctx context.Context, r runner, t Tables, cur Record) error {
+	if err := displace(ctx, r, t, cur); err != nil {
+		return fmt.Errorf("supersede schema %d generation %d: %w", cur.SchemaID, cur.Generation, err)
+	}
 	if _, err := r.exec(ctx, fmt.Sprintf(supersedeSQL, t.Generation), cur.SchemaID, cur.Generation,
 		cur.Epoch, cur.ParentGeneration, cur.ManifestKey, cur.ManifestSHA256, cur.Lineage, cur.Token); err != nil {
 		return fmt.Errorf("supersede schema %d generation %d: %w", cur.SchemaID, cur.Generation, err)
@@ -144,9 +149,10 @@ const insertGenerationSQL = `INSERT INTO %s (schema_id, generation, epoch, kind,
 // writer that lost the race learns it before it marks anything: the caller
 // marks the generation's change_log entries on the same tx only after Publish
 // returns, and commits or rolls back tx itself. Rolled back, the transaction
-// leaves neither the pointer nor a mark. It modifies at most three rows
-// besides the marks: the record, the replaced generation's row and the new
-// one's.
+// leaves neither the pointer nor a mark. It modifies at most four rows
+// besides the marks: the record, the replaced generation's row, the new
+// one's, and a displaced inventory when the replaced row disagreed with the
+// record (supersede).
 func Publish(ctx context.Context, tx Tx, t Tables, cur Record, next Next) (Record, error) {
 	if err := next.validate(cur); err != nil {
 		return Record{}, fmt.Errorf("publish schema %d generation after %d: %w", cur.SchemaID, cur.Generation, err)

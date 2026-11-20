@@ -272,7 +272,7 @@ func (f *fixture) readOnlyDB(t *testing.T) *sql.DB {
 		_, _ = f.db.Exec("DROP OWNED BY " + role)
 		_, _ = f.db.Exec("DROP ROLE IF EXISTS " + role)
 	})
-	for _, table := range []string{f.tables.Record, f.tables.Generation, f.tables.Epoch, f.tables.Storage} {
+	for _, table := range []string{f.tables.Record, f.tables.Generation, f.tables.Epoch, f.tables.Storage, f.tables.Displaced} {
 		_, err := f.db.Exec(fmt.Sprintf("GRANT SELECT ON %s TO %s", table, role))
 		require.NoError(t, err)
 	}

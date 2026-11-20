@@ -34,7 +34,8 @@ the replaced generation and its objects behind for this tool to collect.
 
 **Diagnosis (default).** Read-only on PostgreSQL and S3, and lock-free: it takes
 no schema lock, which on Aurora DSQL is a lease row it would write, so a
-principal that may only `SELECT` the publication tables and the registry can run
+principal that may only `SELECT` the publication tables (the displaced inventories
+included) and the registry can run
 it, and it never blocks a writer. For each schema it reports the record's state,
 epoch and generation, every finding below, and the plan a collection would run
 against the record's current horizon, with every object and manifest key it
@@ -296,7 +297,7 @@ safe action. Any finding makes the run exit 2.
 | `lifecycle_epoch_mismatch` | The lifecycle epoch row names another epoch than the record: one of them was restored or written outside the protocol, and the row's stamp does not show when the record was last recovered. | refused | Row below the record: write it back at the record's epoch with the database time, `UPDATE <entity_main>_publication_epoch SET epoch = <epoch>, updated_at = <now in epoch ms> WHERE schema_id = <id>`, never a backup copy; collection resumes G after the stamp. Row above the record: the record went back, so treat it as `record_invalid`. |
 | `awaiting_init` | The V2 cutover left the schema for its first `cdc-init`. Readers fail closed. | runs | Run `cdc-init` for the schema. |
 | `missing_generation` | The record names a generation whose manifest object is missing, or that has no history row. | refused | A lost manifest: re-initialize with `cdc-init`; collection resumes once the lost generation expires. A lost history row: do not restore it from a backup (see "Lost history rows" below). Collection stays refused until a generation above the unrecorded one expires, which takes two publications: the next one (a flush, a compaction or a `cdc-init`) supersedes the unrecorded generation, which is then a `missing_history` finding; a later publication supersedes the next one's generation, a pass retires it, and G passes. A single re-init followed by G is not enough. |
-| `history_mismatch` | The record's generation has a history row, but the row disagrees with the record (epoch, parent generation, manifest key, digest or token), or carries a `superseded_at` or `retired_at` while the generation is current. A row stamped retired is reported so even when its stamp is past the grace. | refused | Not a lost row, and not the lost row's recovery (see "A history row that disagrees with the record" below). Rewrite neither the row nor the record, and restore neither from a backup. Reads follow the record: the detail says whether the manifest the record names verifies against it; if not, a `missing_generation` or `invalid_manifest` finding of the record's manifest says why, and a re-init restores reads. The next publication writes the row back from the record and collection resumes then, unless the record's manifest still fails against the row. |
+| `history_mismatch` | The record's generation has a history row, but the row disagrees with the record (epoch, parent generation, manifest key, digest or token), or carries a `superseded_at` or `retired_at` while the generation is current. A row stamped retired is reported so even when its stamp is past the grace. | refused | Not a lost row, and not the lost row's recovery (see "A history row that disagrees with the record" below). Rewrite neither the row nor the record, and restore neither from a backup. Reads follow the record: the detail says whether the manifest the record names verifies against it; if not, a `missing_generation` or `invalid_manifest` finding of the record's manifest says why, and a re-init restores reads. Either side may be the one that changed, so the next publication writes the row back from the record and keeps the row's inventory as displaced: collection stays refused until that generation's row expires (a pass retires it after seeing the replacement committed, and G passes), and then resumes unless the record's manifest still fails against the row. One replacement does not by itself make an immediate collection safe. |
 | `missing_history` | The history has no row for a generation number above the highest expired row and at or below the record's counter. | refused | Do not restore the rows from a backup (see "Lost history rows" below). Collection resumes by itself once a generation above the gap expires: a later publication (a `cdc-init` included) supersedes it, a pass retires it, and G passes. |
 | `missing_retained_manifest` | A superseded generation inside its grace has no manifest. | refused | None for new reads. Collection resumes once the generation expires. |
 | `invalid_manifest` | A manifest's bytes are not the ones PostgreSQL committed: corruption or a writer bug. | refused | Restore the object from a versioned or backed-up copy whose SHA-256 is the history row's `manifest_sha256`. For the current generation, a re-init restores reads. |
@@ -338,28 +339,44 @@ make them agree, and do not restore a manifest object to match the row.
   not, a `missing_generation` or `invalid_manifest` finding of the record's
   manifest key says why, reads fail closed, and a re-init with `cdc-init`
   restores them.
-- *Garbage collection* stays refused while the generation is current. A row
-  whose manifest verifies against the row proves nothing about what readers
-  scan: it can name another valid manifest of the same generation, one a
-  publication that lost the race staged, while readers scan the record's. Kept
-  as it is, that row would protect the other manifest once the generation is
-  replaced, and the manifest readers chose would be collected as an orphan
-  while they still scan it. A `retired_at` on the current generation is no
-  retirement either: carried past the replacement, it would expire the
-  generation at once. So the transition that replaces the generation (a flush,
-  a compaction, a `cdc-init` or a drop) writes the replaced generation's row
-  back from the record it replaces: epoch, parent, manifest key, digest,
-  lineage and token. It stamps `superseded_at` with its own start and clears
-  `retired_at`. The row then names what readers obtained from the record, and
-  keeps it until a pass retires the row, after seeing the replacement
-  committed, and G passes, as for any superseded generation. Collection
-  resumes with that publication. If the record's manifest itself does not
-  verify against the record, the row now names a manifest that fails, and an
-  `invalid_manifest` finding keeps collection refused. So does a row whose kind
-  is not the manifest's kind, since the record carries no kind to write back.
-  The collector never retires the current generation's row, even when it
-  carries a `superseded_at`, so its grace cannot run while readers still choose
-  it.
+- *Garbage collection* stays refused while the generation is current, and
+  for a full grace after it is replaced. Nothing in PostgreSQL or S3 shows
+  which of the two was changed. If the row was, it can name another valid
+  manifest of the same generation, one a publication that lost the race
+  staged, while readers scan the record's. If the record was, a reader that
+  chose the generation before the change scans the manifest the row names,
+  and readers that chose it after scan the record's. Either inventory may be
+  pinned, so neither may become an orphan while a reader of the generation
+  can still be inside its pass deadline. A `retired_at` on the current
+  generation is no retirement either: carried past the replacement, it would
+  expire the generation at once.
+
+  So the transition that replaces the generation (a flush, a compaction, a
+  `cdc-init` or a drop) writes the replaced generation's row back from the
+  record it replaces: epoch, parent, manifest key, digest, lineage and token.
+  It stamps `superseded_at` with its own start and clears `retired_at`. When
+  the row named another epoch, manifest key, digest or token, the same
+  transaction first keeps what the row named in
+  `<entity_main>_publication_displaced` (a displaced inventory). The row then
+  keeps the record's inventory until a pass retires it, after seeing the
+  replacement committed, and G passes, as for any superseded generation. While
+  the row is retained, every pass refuses to delete or forget anything for the
+  schema, and says so ("garbage collection refused: a replaced generation's
+  history row disagreed with the record ..."), whatever the age of the objects:
+  the displaced manifest is in no history row, so its objects would otherwise
+  be orphans, and the objects it shares with an expired generation would be
+  that generation's alone. Once the row has expired, no reader that chose the
+  generation under either inventory is left, the displaced inventory is
+  collected as orphans, and the pass forgets the displacement. One replacement
+  therefore does not by itself make an immediate collection safe: collection
+  resumes a full grace after the first pass that follows the replacement.
+
+  If the record's manifest itself does not verify against the record, the row
+  now names a manifest that fails, and an `invalid_manifest` finding keeps
+  collection refused. So does a row whose kind is not the manifest's kind,
+  since the record carries no kind to write back. The collector never retires
+  the current generation's row, even when it carries a `superseded_at`, so its
+  grace cannot run while readers still choose it.
 
 **An invalid record.** Do not restore the row from a backup. A backup's
 pointer from the same epoch can still pass every reader check and name an

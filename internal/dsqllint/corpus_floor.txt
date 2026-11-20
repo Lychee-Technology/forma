@@ -67,6 +67,10 @@ internal/postgres_persistent_repository_unique_keys.go:heldUniqueKeys 1
 internal/postgres_persistent_repository_unique_keys.go:uniqueKeyOwner 1
 internal/publication/ddl.go:generationDDL 1
 internal/publication/ddl.go:recordDDL 1
+internal/publication/displaced.go:Displaced 1
+internal/publication/displaced.go:ForgetDisplaced 1
+internal/publication/displaced.go:displace 3
+internal/publication/displaced.go:displacedDDL 1
 internal/publication/lifecycle.go:Activate 2
 internal/publication/lifecycle.go:HoldLineage 1
 internal/publication/lifecycle.go:Reset 1
