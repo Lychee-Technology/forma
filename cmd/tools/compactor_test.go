@@ -163,7 +163,10 @@ func TestParseCompactorFlagsMapsThePublicationDatabase(t *testing.T) {
 	}
 	if opts.db.PGHost != "db" || opts.db.PGPort != 6543 || opts.db.PGUser != "u" || opts.db.PGDB != "d" || opts.db.PGSSLMode != "disable" ||
 		opts.db.Engine != "aurora-dsql" || opts.entityMain != "em" || opts.dataPrefix != "lake" {
-		t.Fatalf("parsed %+v, entity main %q, data prefix %q", opts.db, opts.entityMain, opts.dataPrefix)
+		// Only the checked fields: the database config also holds the
+		// resolved password, which the parser may inherit from PGPASSWORD.
+		t.Fatalf("parsed host %q port %d user %q db %q ssl mode %q engine %q, entity main %q, data prefix %q",
+			opts.db.PGHost, opts.db.PGPort, opts.db.PGUser, opts.db.PGDB, opts.db.PGSSLMode, opts.db.Engine, opts.entityMain, opts.dataPrefix)
 	}
 	if _, err := parseCompactorFlags([]string{"--schema-id", "7", "--s3-bucket", "bkt", "--pg-engine", "oracle"}); err == nil {
 		t.Fatal("an unknown --pg-engine must be refused")
