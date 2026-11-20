@@ -52,7 +52,10 @@ func (e *Env) reconciler(t *testing.T, schema SchemaRef, opts reconcile.Options)
 	// The operator's one-time binding (manifest-reconcile --bind-storage):
 	// the Env's writers publish into its bucket under its data prefix, at
 	// the endpoint its S3 client sends requests to.
-	objects := &reconcile.S3Objects{Client: e.Cluster.S3, Bucket: e.Cluster.Bucket}
+	objects, err := reconcile.NewS3Objects(e.Cluster.S3, e.Cluster.Bucket)
+	if err != nil {
+		t.Fatalf("build the S3 client for manifest-reconcile: %v", err)
+	}
 	endpoint, err := objects.Endpoint(t.Context())
 	if err != nil {
 		t.Fatalf("tell the S3 endpoint for manifest-reconcile: %v", err)

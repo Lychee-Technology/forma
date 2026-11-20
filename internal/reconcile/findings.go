@@ -36,8 +36,9 @@ const (
 		"manifest-reconcile --bind-storage with them once (docs/manifest-reconcile.md, \"Storage binding\"); garbage " +
 		"collection deletes and forgets nothing until the run's target is the bound one"
 	actionRebindStorage = "run manifest-reconcile so that its client sends the bucket's requests to the bound URL, with the " +
-		"bound --s3-bucket and --data-prefix: give the bound --s3-endpoint, give --s3-use-path exactly when the bound URL " +
-		"has the bucket as its path, and clear an endpoint override (AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, a profile's " +
+		"bound --s3-bucket and --data-prefix: give the writers' base --s3-endpoint (never the bound bucket URL itself, to " +
+		"which a path-style client would add the bucket again), give --s3-use-path exactly when the bound URL has the bucket " +
+		"as its path, and clear an endpoint override (AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, a profile's " +
 		"endpoint_url) the writers do not use. If the writers really moved to this target, delete the row of the storage " +
 		"binding table by hand and bind again (docs/manifest-reconcile.md, \"Storage binding\"); garbage collection " +
 		"deletes and forgets nothing under another target"

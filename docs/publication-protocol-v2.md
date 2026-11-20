@@ -804,7 +804,9 @@ steps 5 to 7 from what steps 1 to 4 read.
    PostgreSQL (`<entity_main>_publication_storage`, written once by `manifest-reconcile
    --bind-storage`). Nothing a bucket holds proves it is the writers' bucket: the key
    layout is every deployment's (#463), and a copy of the bucket holds manifests that
-   verify against this database's digests as well as the original does. It also deletes
+   verify against this database's digests as well as the original does. Its requests
+   follow no redirect: the binding names the URL a request is built for, and a redirect
+   would carry a DELETE to a route it never named (R10-F2). It also deletes
    only once a manifest of the schema's history, retained or expired, is in the bucket
    under its prefix and verifies against its row's digest. That proves the bucket holds
    this database's committed inventory, not that it is the writers' bucket, so a schema

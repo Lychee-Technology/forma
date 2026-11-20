@@ -267,13 +267,18 @@ func newReconciler(opts *reconcileOptions, objects reconcile.ObjectStore, db *sq
 // by and checked against. The SDK may take its endpoint from the
 // environment (AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, a profile's
 // endpoint_url) when --s3-endpoint is not given, and --s3-use-path changes
-// the bucket's addressing at a given --s3-endpoint.
+// the bucket's addressing at a given --s3-endpoint. The client follows no
+// redirect (reconcile.NewS3Objects), so no request reaches a route other
+// than that URL.
 func buildReconcileObjects(ctx context.Context, opts *reconcileOptions) (*reconcile.S3Objects, error) {
 	client, err := buildToolS3Client(ctx, opts.s3.region, opts.s3.endpoint, opts.s3.usePath)
 	if err != nil {
 		return nil, fmt.Errorf("load AWS config: %w", err)
 	}
-	objects := &reconcile.S3Objects{Client: client, Bucket: opts.s3.bucket}
+	objects, err := reconcile.NewS3Objects(client, opts.s3.bucket)
+	if err != nil {
+		return nil, fmt.Errorf("build the S3 client the run lists and deletes through: %w", err)
+	}
 	endpoint, err := objects.Endpoint(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("tell the S3 endpoint the run sends its requests to: %w", err)

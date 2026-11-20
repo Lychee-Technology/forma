@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -143,13 +145,48 @@ func TestReconcileTargetIsTheEndpointTheClientUses(t *testing.T) {
 	}
 }
 
+// TestReconcileObjectsFollowNoRedirect is R10-F2 at the run's wiring: the
+// store buildReconcileObjects answers, which the run is bound by and
+// deletes through, refuses a redirect instead of following it. The bound
+// server redirects a DELETE with a 307, which the SDK's own client would
+// send on to the other server with the same method; here the delete fails
+// and nothing reaches the other server.
+func TestReconcileObjectsFollowNoRedirect(t *testing.T) {
+	isolateAWSConfig(t)
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	var reached atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(other.Close)
+	bound := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+r.URL.RequestURI(), http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(bound.Close)
+
+	_, objects, r := reconcileRun(t, "--s3-endpoint", bound.URL, "--s3-use-path")
+	require.Equal(t, bound.URL+"/bkt", r.Storage.Endpoint, "the run is bound by the URL its requests are built for")
+	err := objects.Delete(context.Background(), "data/7/k")
+	require.ErrorIs(t, err, reconcile.ErrRedirectRefused)
+	_, err = objects.List(context.Background(), "data/7/")
+	require.ErrorIs(t, err, reconcile.ErrRedirectRefused)
+	require.Zero(t, reached.Load(), "no request reached the other server")
+}
+
 // TestS3ObjectsEndpointRefusesAClientItCannotName: a client that is not an
-// *s3.Client, or one whose endpoint a resolver of the caller's chooses,
-// cannot tell where its requests go, and a run through it fails.
+// *s3.Client, one that may follow a redirect (not built by
+// reconcile.NewS3Objects), or one whose endpoint a resolver of the caller's
+// chooses, cannot tell where its requests go, and a run through it fails.
 func TestS3ObjectsEndpointRefusesAClientItCannotName(t *testing.T) {
 	isolateAWSConfig(t)
 	_, err := (&reconcile.S3Objects{Bucket: "bkt"}).Endpoint(context.Background())
 	require.ErrorContains(t, err, "destination cannot be told")
+	following := s3.New(s3.Options{Region: "us-east-1"})
+	_, err = (&reconcile.S3Objects{Client: following, Bucket: "bkt"}).Endpoint(context.Background())
+	require.ErrorContains(t, err, "may follow a redirect")
 	custom := s3.New(s3.Options{Region: "us-east-1", EndpointResolverV2: customResolver{}})
 	_, err = reconcile.ClientEndpoint(context.Background(), custom, "bkt")
 	require.ErrorContains(t, err, "destination cannot be told")

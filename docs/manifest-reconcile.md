@@ -227,10 +227,35 @@ bucket's URL from them. Two things decide that URL besides the bucket:
   `https://lake.s3.us-east-1.amazonaws.com`. The tools apply `--s3-use-path`
   only together with `--s3-endpoint`.
 
-`--bind-storage` prints the target it bound, URL included. A run whose client
-sends the bucket's requests anywhere else reports `storage_not_bound` and
-deletes nothing. A client whose endpoint a custom resolver chooses cannot be
-named by a binding, and the run fails (exit 1) before it connects.
+`--bind-storage` prints the target it bound, URL included. That URL is the
+bucket's, an output to compare, never an input: do not pass it back as
+`--s3-endpoint`. Run every `manifest-reconcile` with the writers' own base
+endpoint (`--s3-endpoint`, or none where they have none) and their addressing
+(`--s3-use-path` exactly when they use it), and the client builds the same
+bucket URL. Given the printed URL as its base endpoint, a path-style client
+would add the bucket a second time (`https://s3.storage.example/lake/lake`)
+and report `storage_not_bound`. A run whose client sends the bucket's requests
+anywhere else reports `storage_not_bound` and deletes nothing. A client whose
+endpoint a custom resolver chooses cannot be named by a binding, and the run
+fails (exit 1) before it connects.
+
+**Redirects are refused.** The binding names the URL a request is built for,
+and that is all it can name: the AWS SDK's own HTTP client follows a 307 or
+308 with the request's method, so a server at the bound URL (a gateway, a
+proxy, or a hostile endpoint) could send a DELETE on to another route, and the
+SDK would report that route's answer as the delete's. So every request a
+`manifest-reconcile` run sends, LIST, GET, HEAD and DELETE alike, goes through
+an HTTP client that follows no redirect (`reconcile.NewS3Objects`), and only a
+store built that way tells the reconciler its destination. A redirected
+request fails with `the S3 request was redirected, and manifest-reconcile
+follows no redirect`, and is not retried. Under `--gc` that fails the pass
+(exit 1) at the step it reached: no object is deleted elsewhere, and since a
+step starts only after the one before it succeeded, no history row is
+forgotten; the next pass plans from what is left. A redirected read is a
+failure too, never a missing object. If a run fails so, the endpoint the
+writers and the binding name is not the one that serves the bucket: find out
+why before collecting, and never work around it by following the redirect's
+target with `--s3-endpoint` unless the writers publish there too.
 
 It creates the table if needed (as its own DDL statement, as Aurora DSQL
 requires), writes the binding unless one exists, and exits. A binding to
@@ -292,7 +317,7 @@ safe action. Any finding makes the run exit 2.
 | --- | --- | --- | --- |
 | `no_record` | The schema is registered but has no publication record. Readers and writers fail closed. | refused | Run `init-db`: it recovers a lost record at a fresh epoch. |
 | `record_invalid` | The record row is one no transition writes. Readers, writers and the collector fail closed on it. | refused | Recover at a fresh epoch: delete the row, run `init-db`, then `cdc-init` (see "An invalid record" below). Never restore an older copy of the row. |
-| `storage_not_bound` | The URL the run's client sends the bucket's requests to (from `--s3-endpoint`, the SDK's endpoint configuration or `--s3-region`, and `--s3-use-path`), its `--s3-bucket` and its `--data-prefix` are not the deployment's bound storage target, or it has none (see "Storage binding"). | refused | Not bound: run `--bind-storage` once with the writers' values and environment. Bound elsewhere: run with the bound values, `--s3-use-path` included, and clear an endpoint override (`AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, a profile's `endpoint_url`) the writers do not use; if the writers moved, delete the binding row by hand and bind again. |
+| `storage_not_bound` | The URL the run's client sends the bucket's requests to (from `--s3-endpoint`, the SDK's endpoint configuration or `--s3-region`, and `--s3-use-path`), its `--s3-bucket` and its `--data-prefix` are not the deployment's bound storage target, or it has none (see "Storage binding"). | refused | Not bound: run `--bind-storage` once with the writers' values and environment. Bound elsewhere: run with the writers' base `--s3-endpoint` and `--s3-use-path`, which build the bound URL (never the printed bucket URL as `--s3-endpoint`), and clear an endpoint override (`AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, a profile's `endpoint_url`) the writers do not use; if the writers moved, delete the binding row by hand and bind again. |
 | `missing_lifecycle_epoch` | The schema has a record but no lifecycle epoch row, so nothing shows when it was last recovered. | refused | Write the row back at the record's epoch, stamped with the database time: `INSERT INTO <entity_main>_publication_epoch (schema_id, epoch, updated_at) VALUES (<id>, <epoch>, <now in epoch ms>)`. Collection resumes G after the stamp. |
 | `lifecycle_epoch_mismatch` | The lifecycle epoch row names another epoch than the record: one of them was restored or written outside the protocol, and the row's stamp does not show when the record was last recovered. | refused | Row below the record: write it back at the record's epoch with the database time, `UPDATE <entity_main>_publication_epoch SET epoch = <epoch>, updated_at = <now in epoch ms> WHERE schema_id = <id>`, never a backup copy; collection resumes G after the stamp. Row above the record: the record went back, so treat it as `record_invalid`. |
 | `awaiting_init` | The V2 cutover left the schema for its first `cdc-init`. Readers fail closed. | runs | Run `cdc-init` for the schema. |

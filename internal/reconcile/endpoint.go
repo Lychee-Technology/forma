@@ -29,11 +29,18 @@ type Destination interface {
 
 // Endpoint answers the URL the store's client sends the requests for its
 // bucket to (ClientEndpoint). A client that is not an *s3.Client cannot
-// tell, and fails.
+// tell, and fails. So does one that may follow a redirect (R10-F2): the URL
+// answered here is only the first hop of a request, and the binding would
+// not constrain where a redirected DELETE lands. Build the store with
+// NewS3Objects.
 func (s *S3Objects) Endpoint(ctx context.Context) (string, error) {
 	c, ok := s.Client.(*s3.Client)
 	if !ok {
 		return "", fmt.Errorf("an S3 client of type %T: %w", s.Client, errUnknownDestination)
+	}
+	if !followsNoRedirect(c) {
+		return "", fmt.Errorf("an S3 client that may follow a redirect to a route the binding does not name (build it with NewS3Objects): %w",
+			errUnknownDestination)
 	}
 	return ClientEndpoint(ctx, c, s.Bucket)
 }
