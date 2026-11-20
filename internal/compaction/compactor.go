@@ -18,6 +18,7 @@ import (
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/cdcv2"
 	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/telemetry"
 	"go.uber.org/zap"
 )
@@ -160,9 +161,26 @@ func (c *Compactor) settle(ctx context.Context, rep cdcv2.CompactReport, err err
 		rep.Committed, rep.Generation = true, gen
 		return rep, nil
 	}
-	return rep, fmt.Errorf("the compaction staged generation %d of schema %d with token %s, and whether its COMMIT landed "+
-		"is unknown; the record names that token if it did, and the next pass merges from whatever the record names: %w",
-		u.Cur.Generation+1, u.Cur.SchemaID, u.Next.Token, serr)
+	return rep, c.settleError(u, serr)
+}
+
+// settleError describes a compaction that settling did not find committed.
+// A fence that proved it can never land is final. Otherwise the COMMIT may
+// still have landed, and the current record cannot tell: a flush may have
+// replaced the compaction's generation since, and its token is then on the
+// record. Only the generation history keeps the compaction's token at its
+// number, which is what publication.Resolve reads.
+func (c *Compactor) settleError(u *cdcv2.UnresolvedError, serr error) error {
+	gen := u.Cur.Generation + 1
+	if errors.Is(serr, cdcv2.ErrAbandoned) {
+		return fmt.Errorf("the compaction staged generation %d of schema %d with token %s, and settling it proved it can never "+
+			"commit: nothing it staged is listed, and the next pass merges from the head: %w", gen, u.Cur.SchemaID, u.Next.Token, serr)
+	}
+	return fmt.Errorf("the compaction staged generation %d of schema %d with token %s, and whether its COMMIT landed is still "+
+		"unresolved, and the current record does not tell: a flush committed after a landed compaction puts its own token there. "+
+		"It landed exactly when the %s history row of schema %d generation %d carries that token (what publication.Resolve reads). "+
+		"Either way nothing is lost: its staged objects must stay until garbage collection, and the next pass merges from the head: %w",
+		gen, u.Cur.SchemaID, u.Next.Token, "<entity main table>"+publication.GenerationTableSuffix, u.Cur.SchemaID, gen, serr)
 }
 
 // objectURI addresses key for the merge engine.
