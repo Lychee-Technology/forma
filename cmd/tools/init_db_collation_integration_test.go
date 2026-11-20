@@ -65,6 +65,7 @@ func (tg *initDBTarget) wantTextColumns() map[string][]string {
 		ledger.Attribute:  {"attr_name", "value_type", "items_type", "column_name", "encoding"},
 		pub.Record:        {"state", "manifest_key", "manifest_sha256"},
 		pub.Generation:    {"kind", "manifest_key", "manifest_sha256"},
+		pub.Displaced:     {"manifest_key", "manifest_sha256"},
 	}
 }
 
