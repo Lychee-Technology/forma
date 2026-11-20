@@ -43,7 +43,10 @@ const displacedDDL = `CREATE TABLE IF NOT EXISTS %s (
 // replacement committed and the retention grace passed, garbage collection
 // deletes nothing for the schema (internal/reconcile). After that no reader
 // that chose the generation, under either inventory, is still inside its
-// pass deadline, and what only the displaced inventory lists is an orphan.
+// pass deadline: a collector then deletes what only the displaced inventory
+// lists and its manifest, as it does an expired generation's
+// (Collection.Displaced), and forgets the displacement only after that, so
+// that a pass that stops before then finds the inventory named again.
 type Displacement struct {
 	Generation     int64
 	Epoch          int64
@@ -74,6 +77,14 @@ const (
 	  AND NOT EXISTS (SELECT 1 FROM %s g WHERE g.schema_id = $1 AND g.generation = $2
 	    AND (g.retired_at = 0 OR g.retired_at > ` + sqlgen.ServerTimeMillisSQL + ` - $3))`
 )
+
+// Inventory answers the displaced inventory as the generation its history
+// row named: what a collector verifies its manifest against
+// (ManifestFiles) before it trusts a key the manifest lists.
+func (d Displacement) Inventory() Generation {
+	return Generation{Generation: d.Generation, Epoch: d.Epoch, ManifestKey: d.ManifestKey,
+		ManifestSHA256: d.ManifestSHA256, Token: d.Token}
+}
 
 // displace records, on r, the inventory cur's generation's history row
 // names when it is not the one cur names: another epoch, manifest key,
@@ -126,7 +137,9 @@ func Displaced(ctx context.Context, q Querier, t Tables, schemaID int16) ([]Disp
 
 // ForgetDisplaced deletes generation's displacements once its history row
 // is no longer retained under grace (Retained), and answers how many it
-// deleted: none while the row is retained.
+// deleted: none while the row is retained. A collector runs it only after
+// it deleted the displaced manifest and the objects only it listed: the
+// displacement is what names them.
 func ForgetDisplaced(ctx context.Context, q Querier, t Tables, schemaID int16, generation int64, grace time.Duration) (int64, error) {
 	n, err := q.runner().exec(ctx, fmt.Sprintf(forgetDisplacedSQL, t.Displaced, t.Generation), schemaID, generation, GraceMillis(grace))
 	if err != nil {

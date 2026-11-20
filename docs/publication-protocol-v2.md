@@ -259,7 +259,11 @@ manifest_sha256, cas_token, displaced_at; one row per displaced manifest, create
 `init-db`). A collector deletes and forgets nothing for the schema while the replaced
 generation's row is retained, which it is for a full grace after a collector retired it,
 after seeing the replacement committed. Then no reader that chose the generation under
-either inventory is left, and the displaced inventory is an orphan (R10-F1). Within one
+either inventory is left (R10-F1), and the collector collects the displaced inventory as an
+expired generation's: it verifies its manifest against the displacement's digest and
+token, deletes the objects only it lists whatever their age and then the manifest, and
+forgets the displacement only after that, so that a drop, which leaves no later manifest,
+still finishes its collection (R11-F1). Within one
 epoch, generations are
 consecutive. Rebase decisions read `kind` (`KindsSince`), retention reads `retired_at`,
 and `Resolve` reads `cas_token`. The collector reads `manifest_sha256` and `cas_token`
@@ -770,7 +774,10 @@ steps 5 to 7 from what steps 1 to 4 read.
    superseded and not yet retired. Those generations expire in a later pass. A fence
    inside G, or a missing epoch row, stops the pass before step 5 ("A lost record"), and
    so does a displaced inventory whose replaced generation is still retained ("Generation
-   history"). Once that generation expired, the pass forgets the displacement after step 7
+   history"). Once that generation expired, the displaced inventory is collected with the
+   expired generations (`Collection.Displaced`: its manifest is verified against the
+   displacement in step 4, the objects only it lists are deleted in step 5 and the
+   manifest in step 6), and the pass forgets the displacement after step 7
    (`ForgetDisplaced`).
 4. Get the manifest of every retained and expired generation, and verify each one that
    exists before reading its `files` (`ManifestFiles`): the SHA-256 of the stored bytes

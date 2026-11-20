@@ -37,7 +37,11 @@ type pass struct {
 	// verified holds every present manifest that passed the reader's full
 	// check against its history row.
 	verified map[string]*manifestv2.Manifest
-	findings []Finding
+	// displacedFiles holds the keys every retired displacement's present
+	// manifest lists, by manifest key, once it verified against the
+	// displacement (checkDisplaced).
+	displacedFiles map[string][]string
+	findings       []Finding
 	// byRecord says the record's generation has no history row
 	// (missing_generation) or one that disagrees with the record
 	// (history_mismatch): the pass then checks the generation as the record
@@ -203,8 +207,9 @@ func (p *pass) isCurrent(g publication.Generation) bool {
 }
 
 // fetchManifests reads the manifest of every retained and expired
-// generation, and the one the published record names, which readers read
-// even when no history row names it (step 4's reads). Only a confirmed
+// generation, the one the published record names, which readers read even
+// when no history row names it, and every retired displacement's (step 4's
+// reads). Only a confirmed
 // not-found counts as missing: a refused or failed read fails the pass,
 // which then deletes nothing.
 func (r *Reconciler) fetchManifests(ctx context.Context, p *pass) error {
@@ -213,6 +218,7 @@ func (r *Reconciler) fetchManifests(ctx context.Context, p *pass) error {
 	if p.record != nil && p.record.State == publication.Published {
 		gens = append(gens, p.recordGeneration())
 	}
+	gens = append(gens, p.retiredDisplacements()...)
 	for _, g := range gens {
 		if _, seen := p.raw[g.ManifestKey]; seen {
 			continue

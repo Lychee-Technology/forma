@@ -64,7 +64,7 @@ func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 	}
 	plan, err := publication.PlanCollection(publication.Collection{
 		SchemaID: p.id, Horizon: p.horizon, Listed: owned, Retained: p.retained, Expired: p.expired,
-		Manifests: p.raw, ClockMargin: r.Opts.ClockMargin,
+		Displaced: p.retiredDisplacements(), Manifests: p.raw, ClockMargin: r.Opts.ClockMargin,
 	})
 	if err == nil {
 		err = r.guardPlan(p, plan)
@@ -101,7 +101,12 @@ func keepFloor(forget []int64) []int64 {
 // manifest shows only that the bucket holds this database's committed
 // inventory, and a copy of the bucket holds that too, so only the binding,
 // compared with the endpoint the run's client uses, the bucket and the
-// prefix, tells the writers' storage from a copy. What the guard adds is
+// prefix, tells the writers' storage from a copy. A retired displaced
+// inventory's manifest that verified against its displacement counts as
+// such a manifest (checkDisplaced): the displacement keeps the digest a
+// history row committed, and it is forgotten only after that manifest is
+// deleted, so a drop that left nothing else of the schema in the bucket
+// still finishes its collection (R11-F1). What the guard adds is
 // for a schema with nothing of its own in the bucket (an UNPUBLISHED
 // schema, or one whose every manifest was collected): every V2 deployment
 // builds the same keys for a schema id, so every key under the prefix could
@@ -109,7 +114,7 @@ func keepFloor(forget []int64) []int64 {
 // generation of the schema publishes. It answers why, empty when the plan
 // may run.
 func (r *Reconciler) unbound(p *pass, plan publication.Plan) string {
-	if len(p.verified) > 0 || len(plan.Objects)+len(plan.Manifests) == 0 {
+	if len(p.verified)+len(p.displacedFiles) > 0 || len(plan.Objects)+len(plan.Manifests) == 0 {
 		return ""
 	}
 	return fmt.Sprintf("no manifest of the schema's generation history is in the bucket under prefix %q (the schema has "+
@@ -146,6 +151,12 @@ func (r *Reconciler) guardPlan(p *pass, plan publication.Plan) error {
 // staging them may still commit.
 func (r *Reconciler) pendingOrphans(p *pass, owned []publication.Object) int {
 	named := map[string]bool{}
+	for key, files := range p.displacedFiles {
+		named[key] = true
+		for _, f := range files {
+			named[f] = true
+		}
+	}
 	for _, g := range append(append([]publication.Generation{}, p.retained...), p.expired...) {
 		named[g.ManifestKey] = true
 		if m := p.verified[g.ManifestKey]; m != nil {
@@ -166,7 +177,8 @@ func (r *Reconciler) pendingOrphans(p *pass, owned []publication.Object) int {
 
 // collect runs the plan in the collection order: every object (step 5),
 // then every expired manifest (step 6), then Forget of every expired row
-// (step 7), and last the displaced inventories no longer live. A step starts only once every delete of the one before it
+// (step 7), and last the displaced inventories no longer live, whose
+// manifests and objects the earlier steps deleted. A step starts only once every delete of the one before it
 // succeeded, so after a crash or a failed delete the next pass plans the
 // rest from what is left: an expired manifest still there lists its objects
 // again, and one already gone leaves its row to be forgotten.

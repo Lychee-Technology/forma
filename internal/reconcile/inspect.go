@@ -39,6 +39,7 @@ func (r *Reconciler) inspect(ctx context.Context, p *pass) error {
 	if p.byRecord {
 		r.checkRecordManifest(p)
 	}
+	r.checkDisplaced(p)
 	for _, o := range p.listed {
 		if !r.Layout.Owns(p.id, o.Key) {
 			p.findings = append(p.findings, Finding{Kind: UnrecognizedObject, Key: o.Key,

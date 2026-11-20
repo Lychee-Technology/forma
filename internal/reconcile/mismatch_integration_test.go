@@ -235,6 +235,6 @@ func TestAHistoryRowNamingAnotherManifestKeepsTheRecordsInventory(t *testing.T) 
 	rep = f.pass(t, opts)
 	require.NoError(t, rep.Err)
 	require.Empty(t, rep.Refused, "N's row expired")
-	require.Subset(t, rep.Collected.Objects, f.stagedKeys(lost, g1), "the losing staging is collected with N")
+	require.Subset(t, append(rep.Collected.Objects, rep.Collected.Manifests...), f.stagedKeys(lost, g1), "the losing staging is collected with N")
 	require.Equal(t, f.keysOf(g3), f.store.keys())
 }

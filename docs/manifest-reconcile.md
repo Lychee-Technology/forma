@@ -82,17 +82,23 @@ finding says whether the record's manifest verifies, so reads succeed.
    generation not yet retired. Those expire a grace later, in a later pass.
 4. Fetch every retained and expired manifest and verify it with the reader's
    full check (digest, identity, wire form, and every listed key under the
-   schema and epoch).
-5. Delete every object that is listed only by expired generations, or that no
-   generation names and was staged before the horizon: its `LastModified` plus
-   S3's one-second precision plus `--clock-margin` is before the horizon.
-6. Once every such delete succeeded, delete the expired manifests.
+   schema and epoch). Fetch the manifest of every displaced inventory whose
+   replaced generation's row expired, and verify it against the digest and
+   token the displacement kept.
+5. Delete every object that is listed only by expired generations or expired
+   displaced inventories, or that no generation names and was staged before
+   the horizon: its `LastModified` plus S3's one-second precision plus
+   `--clock-margin` is before the horizon.
+6. Once every such delete succeeded, delete the expired manifests and the
+   expired displaced manifests.
 7. Once those succeeded, forget the expired history rows, all but the highest,
-   which stays as the history's floor (see "What is deleted, and what never is").
+   which stays as the history's floor (see "What is deleted, and what never is"),
+   and then the expired displacements.
 
 A pass that fails at any step leaves a state the next pass plans from again: an
 expired manifest still present lists its objects again, and one already deleted
-leaves only its row to forget. Re-running is always safe.
+leaves only its row to forget; a displacement is forgotten only once its manifest
+is deleted, so it names its inventory again. Re-running is always safe.
 
 Every collection takes the schema lock `cdc-flush` and `cdc-init` take, and
 skips a schema whose lock is held. The lock is for liveness only: the horizon and the
@@ -402,10 +408,23 @@ make them agree, and do not restore a manifest object to match the row.
   the displaced manifest is in no history row, so its objects would otherwise
   be orphans, and the objects it shares with an expired generation would be
   that generation's alone. Once the row has expired, no reader that chose the
-  generation under either inventory is left, the displaced inventory is
-  collected as orphans, and the pass forgets the displacement. One replacement
-  therefore does not by itself make an immediate collection safe: collection
-  resumes a full grace after the first pass that follows the replacement.
+  generation under either inventory is left, and the displaced inventory is
+  collected as an expired generation's is (R11-F1). Its manifest is verified
+  against the digest and token the displacement kept; the objects only it
+  lists are deleted with the expired generations' in step 5, whatever their
+  age, never one a retained generation lists; the manifest is deleted in step
+  6; and the pass forgets the displacement only after every delete succeeded.
+  It does not wait for `--orphan-age`, which is usually longer than G (2h
+  against 15m by default): after a drop the expired generations' manifests are
+  deleted in that same pass, and the displacement is then the only evidence
+  that the keys are this deployment's. A pass that fails before the end
+  leaves the displacement, and the next pass verifies its manifest again and
+  deletes the rest, so the cleanup is retried until it finishes, whatever is
+  left of the schema in the bucket. A displaced manifest that fails
+  verification refuses the pass, as an invalid expired manifest does. One
+  replacement therefore does not by itself make an immediate collection safe:
+  collection resumes a full grace after the first pass that follows the
+  replacement.
 
   If the record's manifest itself does not verify against the record, the row
   now names a manifest that fails, and an `invalid_manifest` finding keeps

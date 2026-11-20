@@ -38,6 +38,57 @@ func (p *pass) liveDisplacements() []publication.Displacement {
 	})
 }
 
+// retiredDisplacements answers, as the generations their rows named, the
+// displaced inventories no reader can still scan (those liveDisplacements
+// leaves out), one per manifest key, but for a manifest key a history row
+// or the record names too: a manifest key spells its generation's token and
+// the object is written once, so its bytes are the row's or the record's
+// to verify and protect, and a displacement that kept the same key with
+// another digest names no other inventory. A collection deletes what only they
+// list and then their manifests, whatever the objects' age, as it does an
+// expired generation's (publication.Collection.Displaced), and forgets them
+// only after that: the displacement is the evidence that names the
+// inventory, and the replaced generation's own manifest may be gone, as
+// after a drop, so that nothing else proves the keys are this deployment's
+// (R11-F1).
+func (p *pass) retiredDisplacements() []publication.Generation {
+	live := p.liveDisplacements()
+	seen := map[string]bool{}
+	for _, g := range append(append([]publication.Generation{}, p.retained...), p.expired...) {
+		seen[g.ManifestKey] = true
+	}
+	if p.record != nil && p.record.ManifestKey != "" {
+		seen[p.record.ManifestKey] = true
+	}
+	var out []publication.Generation
+	for _, d := range p.displaced {
+		if seen[d.ManifestKey] || slices.ContainsFunc(live, func(l publication.Displacement) bool { return l.Generation == d.Generation }) {
+			continue
+		}
+		seen[d.ManifestKey] = true
+		out = append(out, d.Inventory())
+	}
+	return out
+}
+
+// checkDisplaced verifies the manifest of every retired displacement
+// against it (publication.ManifestFiles: digest and identity, the
+// collector's check) and keeps the keys it lists. One that fails is not
+// trusted, and the plan, which verifies it again, refuses the pass; one
+// missing was deleted by an earlier pass after the objects only it listed.
+func (r *Reconciler) checkDisplaced(p *pass) {
+	p.displacedFiles = map[string][]string{}
+	for _, g := range p.retiredDisplacements() {
+		raw, ok := p.raw[g.ManifestKey]
+		if !ok || !r.Layout.Owns(p.id, g.ManifestKey) {
+			continue
+		}
+		if files, err := publication.ManifestFiles(raw, p.id, g); err == nil {
+			p.displacedFiles[g.ManifestKey] = files
+		}
+	}
+}
+
 // displacementRefusal says why a pass with live displacements deletes
 // nothing, and when it resumes.
 func displacementRefusal(live []publication.Displacement, grace time.Duration) string {
@@ -53,7 +104,10 @@ func displacementRefusal(live []publication.Displacement, grace time.Duration) s
 }
 
 // forgetDisplacements deletes, after a collection ran its plan, the
-// displaced inventories of generations the pass found no longer live. Each
+// displaced inventories of generations the pass found no longer live. It
+// runs only once every delete of the plan succeeded, the displaced
+// manifests and the objects only they listed included, so a pass that
+// stops before then finds them named again and deletes the rest. Each
 // delete checks again that the generation's row is not retained
 // (publication.ForgetDisplaced), so a displacement is never forgotten while
 // it is live.

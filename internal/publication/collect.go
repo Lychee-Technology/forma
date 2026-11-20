@@ -29,8 +29,16 @@ type Collection struct {
 	Listed   []Object
 	Retained []Generation
 	Expired  []Generation
-	// Manifests maps the manifest key of each retained or expired generation
-	// to the manifest object's stored bytes, exactly as S3 answered them. A
+	// Displaced are the inventories replaced generations' history rows
+	// named before the replacing transition wrote them back from the
+	// record (Displacement), each as the generation its row then named,
+	// once no reader can still scan it: the replaced generation's row is
+	// no longer retained. Each is collected as an expired generation is,
+	// its objects then its manifest, except that it has no history row to
+	// forget: its displacement is forgotten after its manifest is deleted.
+	Displaced []Generation
+	// Manifests maps the manifest key of each retained, expired or
+	// displaced generation to the manifest object's stored bytes, exactly as S3 answered them. A
 	// manifest key Manifests lacks is a manifest object S3 does not have.
 	// PlanCollection verifies every present one (ManifestFiles) before it
 	// reads a key it lists.
@@ -90,6 +98,13 @@ type Plan struct {
 //     So a missing expired manifest means a pass already deleted its
 //     unprotected objects: the row is forgotten, and no object is deleted on
 //     its account.
+//   - A displaced inventory no reader can still scan is collected as an
+//     expired generation's: its manifest, once verified against the
+//     displacement (one that fails stops the pass), lists objects that are
+//     deleted whatever their age, and the manifest is deleted after them.
+//     It is the evidence that names them: once the displacement is
+//     forgotten, nothing would tell its objects from another deployment's
+//     (R11-F1). It forgets no history row.
 //   - An object no history row names, whether as a manifest or through a
 //     manifest that exists, is an orphan. It is deleted once its
 //     LastModified is below OrphanCutoff: its staging began before the
@@ -125,6 +140,20 @@ func PlanCollection(c Collection) (Plan, error) {
 		}
 		manifests[g.ManifestKey] = true
 		p.Forget = append(p.Forget, g.Generation)
+	}
+	for _, g := range c.Displaced {
+		manifests[g.ManifestKey] = true
+		raw, ok := c.Manifests[g.ManifestKey]
+		if !ok {
+			continue
+		}
+		files, err := ManifestFiles(raw, c.SchemaID, g)
+		if err != nil {
+			return Plan{}, fmt.Errorf("displaced inventory of generation %d of epoch %d: %w", g.Generation, g.Epoch, err)
+		}
+		for _, key := range files {
+			listed[key] = true
+		}
 	}
 	before := OrphanCutoff(c.Horizon, c.ClockMargin)
 	for _, o := range c.Listed {

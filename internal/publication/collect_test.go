@@ -216,3 +216,29 @@ func TestPlanCollectionStopsOnAnInvalidManifest(t *testing.T) {
 		}
 	}
 }
+
+// TestPlanCollectionCollectsARetiredDisplacedInventory is R11-F1: a
+// displaced inventory no reader can still scan is collected as an expired
+// generation's, its objects whatever their age, but never one a retained
+// generation lists, and it forgets no history row. Its manifest must verify
+// against the displacement before a key it lists is trusted.
+func TestPlanCollectionCollectsARetiredDisplacedInventory(t *testing.T) {
+	c := collection(t)
+	d := Generation{Generation: 1, Epoch: 1, ManifestKey: "d1", Token: uuid.New()}
+	raw := encode(t, manifestFields(c.SchemaID, d, "onlyd", "shared", "only2"))
+	d.ManifestSHA256 = digest(raw)
+	c.Manifests["d1"] = raw
+	c.Displaced = []Generation{d}
+	c.Listed = append(c.Listed, Object{Key: "d1", LastModified: 9_999}, Object{Key: "onlyd", LastModified: 9_999})
+	plan, err := PlanCollection(c)
+	require.NoError(t, err)
+	require.Equal(t, Plan{
+		Objects:   []string{"only1", "onlyd", "orphan"},
+		Manifests: []string{"d1", "m1"},
+		Forget:    []int64{1},
+	}, plan)
+
+	c.Manifests["d1"] = append(raw, ' ')
+	_, err = PlanCollection(c)
+	require.ErrorIs(t, err, ErrManifestInvalid, "a displaced manifest that fails verification stops the pass")
+}
