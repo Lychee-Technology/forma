@@ -3,7 +3,6 @@ package reconcile
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 
@@ -49,6 +48,14 @@ func (b boundHTTPClient) Do(r *http.Request) (*http.Response, error) {
 // http.Client would follow (a 301, 302, 303, 307 or 308 with a Location) is
 // closed and answered as a *redirectError, which names neither the Location
 // nor the request's query.
+//
+// The body is closed unread, once the headers are in. Reading even a few
+// bytes of it first, to let the transport reuse the connection, bounds the
+// bytes and not the time: a server that sends a redirect's headers and
+// stalls its body would hold the pass, and the schema's lock, until its
+// context ends, the client's timeout being unset by default (R14-F2).
+// Closing an unread body closes the connection instead, which costs one
+// reconnect on a pass that is failing anyway.
 type refuseRedirects struct{ next http.RoundTripper }
 
 func (t refuseRedirects) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -56,8 +63,9 @@ func (t refuseRedirects) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err != nil || !isRedirect(resp) {
 		return resp, err
 	}
-	_, _ = io.CopyN(io.Discard, resp.Body, 2<<10)
-	_ = resp.Body.Close()
+	if resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	return nil, newRedirectError(r, resp.StatusCode)
 }
 
@@ -73,7 +81,9 @@ func isRedirect(resp *http.Response) bool {
 
 // refuseRedirect is the CheckRedirect of a boundHTTPClient, behind its
 // transport: should a redirect reach http.Client all the same, it fails
-// the request before the redirected one is sent.
+// the request before the redirected one is sent. The transport answers
+// every response http.Client would follow, so none should: http.Client
+// reads up to 2 KiB of a redirect's body before it reports this refusal.
 func refuseRedirect(next *http.Request, via []*http.Request) error {
 	status := 0
 	if next.Response != nil {

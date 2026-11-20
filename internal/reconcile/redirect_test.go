@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -131,6 +133,60 @@ func TestARefusedRedirectNamesNoLocation(t *testing.T) {
 			require.False(t, errors.As(err, &uerr), "%s: no *url.Error carries the Location", name)
 		}
 	}
+	require.Zero(t, reached.Load(), "no redirected request was sent")
+}
+
+// TestARedirectWithAStalledBodyIsRefusedPromptly is R14-F2: the bound
+// server sends a redirect's headers, and a few bytes of a body it says is
+// longer, flushes them and sends no more. A refusal that waited for body
+// bytes, even a bounded number, would hold the pass, and the schema's lock,
+// until its context ended, since the HTTP client's timeout is unset by
+// default. Every call is refused at once, with ErrRedirectRefused, the
+// connection is closed rather than left waiting, and no redirected request
+// is sent.
+func TestARedirectWithAStalledBodyIsRefusedPromptly(t *testing.T) {
+	var reached, closed atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(other.Close)
+	release := make(chan struct{})
+	bound := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", other.URL+r.URL.RequestURI())
+		w.Header().Set("Content-Length", "65536")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+		_, _ = io.WriteString(w, "<Error>")
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+			closed.Add(1)
+		case <-release:
+		}
+	}))
+	t.Cleanup(bound.Close)
+	t.Cleanup(func() { close(release) }) // runs first: no handler outlives the test
+	objects, err := NewS3Objects(sdkClient(bound.URL), "lake")
+	require.NoError(t, err)
+
+	calls := map[string]func(context.Context) error{
+		http.MethodDelete: func(ctx context.Context) error { return objects.Delete(ctx, "data/7/k") },
+		http.MethodGet:    func(ctx context.Context) error { _, err := objects.Get(ctx, "data/7/k"); return err },
+		"hash":            func(ctx context.Context) error { _, _, err := objects.Hash(ctx, "data/7/k"); return err },
+		"LIST":            func(ctx context.Context) error { _, err := objects.List(ctx, "data/7/"); return err },
+	}
+	for name, call := range calls {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		start := time.Now()
+		err := call(ctx)
+		elapsed := time.Since(start)
+		cancel()
+		require.ErrorIs(t, err, ErrRedirectRefused, name)
+		require.NotErrorIs(t, err, context.DeadlineExceeded, name)
+		require.Less(t, elapsed, 5*time.Second, "%s: the refusal waits for no body byte", name)
+	}
+	require.Eventually(t, func() bool { return closed.Load() == int32(len(calls)) }, 5*time.Second, 10*time.Millisecond,
+		"each stalled response's connection is closed by the refusal")
 	require.Zero(t, reached.Load(), "no redirected request was sent")
 }
 
