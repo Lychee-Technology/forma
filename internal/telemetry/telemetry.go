@@ -113,13 +113,6 @@ func (s *Sink) EmitDegradedFallback(ctx context.Context, cause, outcome string) 
 	s.emit(ctx, "federated_degraded_fallback_total", map[string]string{"cause": cause, "outcome": outcome}, 1)
 }
 
-// EmitCompactionManifestContractViolation records a contract violation event when
-// compaction detects SaveManifest succeeded without metadata advancement.
-// name: "compaction_manifest_contract_violation_total" with label {"schema_id": "<id>"}
-func (s *Sink) EmitCompactionManifestContractViolation(ctx context.Context, schemaID int16) {
-	s.emit(ctx, "compaction_manifest_contract_violation_total", schemaLabels(schemaID), 1)
-}
-
 // EmitCompactionDirtyRatio records the evaluated dirty ratio for a compaction pass.
 // name: "compaction_dirty_ratio" with label {"schema_id": "<id>"}
 func (s *Sink) EmitCompactionDirtyRatio(ctx context.Context, schemaID int16, ratio float64) {

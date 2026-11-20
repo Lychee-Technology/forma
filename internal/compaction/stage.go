@@ -63,7 +63,10 @@ func (s *stager) StageCompaction(ctx context.Context, req cdcv2.CompactRequest) 
 	}
 	if s.c.Merger == nil {
 		s.outcome = RewritePending
-		s.c.Metrics.EmitCompactionRewritePending(ctx, req.SchemaID)
+		if !promote {
+			// The series counts dirty-ratio rewrites only (docs/telemetry.md).
+			s.c.Metrics.EmitCompactionRewritePending(ctx, req.SchemaID)
+		}
 		s.c.log().Warn("compaction needed but the compactor has no merge wiring; publishing nothing",
 			zap.Int16("schema_id", req.SchemaID), zap.Float64("dirty_ratio", s.dirtyRatio),
 			zap.Int64("base_mb", s.baseMB), zap.Int64("delta_mb", s.deltaMB))

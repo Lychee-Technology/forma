@@ -10,6 +10,7 @@ import (
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/publication"
+	"github.com/lychee-technology/forma/internal/telemetry"
 )
 
 // TestCompactorPromotesTheDeltaTierIntoOneBaseObject: a delta tier at the
@@ -57,7 +58,7 @@ func TestCompactorPromotesTheDeltaTierIntoOneBaseObject(t *testing.T) {
 		names[e.Name]++
 	}
 	require.Equal(t, 1, names["compaction_dirty_ratio"])
-	require.Equal(t, 1, names["compaction_rewrite_applied_total"])
+	require.Zero(t, names["compaction_rewrite_applied_total"], "a promotion is not a dirty-ratio rewrite")
 }
 
 // TestCompactorRewritesADirtyBaseWithItsDeltas: past the dirty ratio, every
@@ -67,9 +68,11 @@ func TestCompactorRewritesADirtyBaseWithItsDeltas(t *testing.T) {
 	f.publish(t, publication.KindInit, f.object(t, manifestv2.TierBase, []mergeFixtureRow{{rowA, 100, "0", "a-v1"}, {rowC, 100, "0", "c-v1"}}))
 	f.publish(t, publication.KindFlush, f.object(t, manifestv2.TierDelta, []mergeFixtureRow{{rowC, 200, "200", "NULL"}}))
 
-	result, err := f.compactor(t, cdc.CompactionConfig{}).RunOnce(context.Background())
+	sink, rec := recordingSink()
+	result, err := f.compactor(t, cdc.CompactionConfig{}, func(c *Compactor) { c.Metrics = sink }).RunOnce(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, RewriteApplied, result.Outcome)
+	require.Equal(t, 1, countMetric(rec, "compaction_rewrite_applied_total"))
 	require.Equal(t, 2, result.FilesMerged)
 	require.InDelta(t, 0.5, result.DirtyRatio, 1e-9)
 	m := f.manifest(t, f.record(t))
@@ -100,6 +103,42 @@ func TestCompactorPublishesNothingItHasNoReasonOrMeansToMerge(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, RewritePending, result.Outcome)
 	require.Equal(t, head, f.record(t))
+}
+
+// TestCompactorCountsOnlyRewritesAsPending pins R1-F7 of #907:
+// compaction_rewrite_pending_total keeps its catalogued meaning, a dirty-ratio
+// rewrite called for with no merge wiring. A promotion called for without
+// one is reported as RewritePending but not counted.
+func TestCompactorCountsOnlyRewritesAsPending(t *testing.T) {
+	f := newV2Fixture(t)
+	f.publish(t, publication.KindInit, f.object(t, manifestv2.TierBase, []mergeFixtureRow{{rowA, 100, "0", "a-v1"}, {rowC, 100, "0", "c-v1"}}))
+	f.publish(t, publication.KindFlush, f.object(t, manifestv2.TierDelta, []mergeFixtureRow{{rowC, 200, "200", "NULL"}}))
+	noMerger := func(sink *telemetry.Sink) func(*Compactor) {
+		return func(c *Compactor) { c.Merger, c.Metrics = nil, sink }
+	}
+
+	sink, rec := recordingSink()
+	result, err := f.compactor(t, cdc.CompactionConfig{TargetBaseSizeBytes: 1}, noMerger(sink)).RunOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, RewritePending, result.Outcome)
+	require.Zero(t, countMetric(rec, "compaction_rewrite_pending_total"), "a promotion is not a pending rewrite")
+
+	sink, rec = recordingSink()
+	result, err = f.compactor(t, cdc.CompactionConfig{}, noMerger(sink)).RunOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, RewritePending, result.Outcome)
+	require.Equal(t, 1, countMetric(rec, "compaction_rewrite_pending_total"))
+	require.Zero(t, countMetric(rec, "compaction_rewrite_applied_total"))
+}
+
+func countMetric(rec *metricRecorder, name string) int {
+	n := 0
+	for _, e := range rec.events {
+		if e.Name == name {
+			n++
+		}
+	}
+	return n
 }
 
 // TestCompactorRefusesASourceWhoseBytesChanged: the #347 gate runs before

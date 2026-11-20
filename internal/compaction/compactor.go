@@ -129,7 +129,11 @@ func (c *Compactor) RunOnce(ctx context.Context) (CompactionResult, error) {
 		}
 		return result, nil
 	}
-	c.Metrics.EmitCompactionRewriteApplied(ctx, schemaID)
+	if result.Outcome == RewriteApplied {
+		// The series counts dirty-ratio rewrites only, never a promotion
+		// (docs/telemetry.md).
+		c.Metrics.EmitCompactionRewriteApplied(ctx, schemaID)
+	}
 	c.log().Info("compaction published",
 		zap.Int16("schema_id", schemaID),
 		zap.String("outcome", string(result.Outcome)),

@@ -34,8 +34,6 @@ var helperCalls = []helperCall{
 		"duckdb_circuit_breaker_transition_total", map[string]string{"state": "half_open"}, 1},
 	{"EmitDegradedFallback", func(ctx context.Context, s *Sink) { s.EmitDegradedFallback(ctx, "breaker_rejected", "served") },
 		"federated_degraded_fallback_total", map[string]string{"cause": "breaker_rejected", "outcome": "served"}, 1},
-	{"EmitCompactionManifestContractViolation", func(ctx context.Context, s *Sink) { s.EmitCompactionManifestContractViolation(ctx, 4) },
-		"compaction_manifest_contract_violation_total", map[string]string{"schema_id": "4"}, 1},
 	{"EmitCompactionDirtyRatio", func(ctx context.Context, s *Sink) { s.EmitCompactionDirtyRatio(ctx, 5, 0.5) },
 		"compaction_dirty_ratio", map[string]string{"schema_id": "5"}, 0.5},
 	{"EmitCompactionRewritePending", func(ctx context.Context, s *Sink) { s.EmitCompactionRewritePending(ctx, 6) },
