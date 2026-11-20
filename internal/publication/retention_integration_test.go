@@ -36,6 +36,7 @@ func TestRetentionKeepsSupersededGenerationsForTheGrace(t *testing.T) {
 	ok, err := Retire(ctx, DB(f.db), f.t, 100, 1)
 	require.NoError(t, err)
 	require.False(t, ok, "a generation is retired once: a later pass does not push its time back")
+	time.Sleep(2 * StampPrecision) // past the stamps' precision, which even a zero grace waits out (GraceMillis)
 
 	require.Equal(t, []int64{1, 2, 3}, numbers(mustRetained(t, f, time.Hour)))
 	ok, err = Forget(ctx, DB(f.db), f.t, 100, 1, time.Hour)

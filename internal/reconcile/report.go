@@ -46,6 +46,11 @@ const (
 	// epoch row, so nothing tells when its last lost-record recovery was,
 	// and a reader may still hold a generation no history row names.
 	MissingLifecycleEpoch FindingKind = "missing_lifecycle_epoch"
+	// StaleLifecycleEpoch: the lifecycle epoch row names another epoch
+	// than the record. Every transition writes the two together, so one of
+	// them was restored or written outside the protocol, and the row's
+	// stamp does not fence the record's last recovery.
+	StaleLifecycleEpoch FindingKind = "lifecycle_epoch_mismatch"
 	// UnrecognizedObject: an object under the schema's prefix whose key no
 	// V2 writer stages. Garbage collection never deletes it.
 	UnrecognizedObject FindingKind = "unrecognized_object"
@@ -56,7 +61,7 @@ const (
 // nothing.
 func (k FindingKind) blocking() bool {
 	switch k {
-	case NoRecord, RecordInvalid, MissingLifecycleEpoch, MissingGeneration, HistoryGap, MissingRetainedManifest, InvalidManifest,
+	case NoRecord, RecordInvalid, MissingLifecycleEpoch, StaleLifecycleEpoch, MissingGeneration, HistoryGap, MissingRetainedManifest, InvalidManifest,
 		ForeignManifest:
 		return true
 	}

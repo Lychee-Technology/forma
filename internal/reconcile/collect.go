@@ -48,7 +48,7 @@ func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 		rep.Refused = fmt.Sprintf("the schema's lifecycle epoch moved at %d (a lost record's recovery, a drop or a registration), "+
 			"less than the retention grace %s ago: a recovery cannot tell whether the lost record's generation lost its history row "+
 			"too, and then nothing names the objects a reader pinned to it still scans; collection resumes once the grace has passed, at %d",
-			p.lifecycle.MovedAt, r.Opts.RetentionGrace, p.lifecycle.MovedAt+r.Opts.RetentionGrace.Milliseconds())
+			p.lifecycle.MovedAt, r.Opts.RetentionGrace, p.lifecycle.MovedAt+publication.GraceMillis(r.Opts.RetentionGrace))
 		return
 	}
 	var owned []publication.Object

@@ -38,7 +38,8 @@ type Generation struct {
 // transaction's start, and nothing bounds how long after its start that
 // transaction commits, so a reader may choose the generation in a snapshot
 // taken long after superseded_at. grace is the reader's pass deadline plus a
-// clock margin.
+// clock margin, and every statement compares against it in full
+// (GraceMillis), never truncated to the millisecond.
 const (
 	generationColumns = `generation, epoch, kind, parent_generation, manifest_key, manifest_sha256, cas_token, superseded_at, retired_at`
 	retainedSQL       = `SELECT ` + generationColumns + ` FROM %s
@@ -59,6 +60,30 @@ const (
 	WHERE schema_id = $1
 	RETURNING gc_horizon`
 )
+
+// StampPrecision is how much later than the event it records a stamp of
+// sqlgen.ServerTimeMillisSQL, or of the statement clock stampRecoverySQL
+// reads, can be: both are truncated to the millisecond, so an event at
+// 12.0007 s is stamped 12000 ms.
+const StampPrecision = time.Millisecond
+
+// GraceMillis answers grace as the milliseconds a statement subtracts from
+// the database time to find a stamp at least grace old: grace rounded up to
+// the millisecond, plus StampPrecision. Both roundings would otherwise end a
+// grace early. Truncated, a grace of 60 s and 1 ns compares as 60000 ms; and
+// a stamp s and a database time n, each truncated, put the event the stamp
+// records anywhere before s + 1 ms and the real time anywhere at or after
+// n, so s <= n - g proves only that more than g - 1 ms passed. With g as
+// answered here, a row a statement finds past the grace was stamped by an
+// event more than ceil(grace) and so at least grace before the database
+// time. grace must not be negative (Options.Validate refuses one).
+func GraceMillis(grace time.Duration) int64 {
+	ms := int64(grace / time.Millisecond)
+	if grace%time.Millisecond > 0 {
+		ms++
+	}
+	return ms + StampPrecision.Milliseconds()
+}
 
 // RaiseHorizon is a collector pass's first step: it raises the record's
 // horizon to the database time minus orphanAge, never lowering it, and
@@ -116,7 +141,7 @@ func Expired(ctx context.Context, q Querier, t Tables, schemaID int16, grace tim
 // so a collector that crashes repeats the deletes instead of leaking them. It
 // answers false for a row that is gone or not expired.
 func Forget(ctx context.Context, q Querier, t Tables, schemaID int16, generation int64, grace time.Duration) (bool, error) {
-	n, err := q.runner().exec(ctx, fmt.Sprintf(forgetSQL, t.Generation), schemaID, generation, grace.Milliseconds())
+	n, err := q.runner().exec(ctx, fmt.Sprintf(forgetSQL, t.Generation), schemaID, generation, GraceMillis(grace))
 	if err != nil {
 		return false, fmt.Errorf("forget schema %d generation %d: %w", schemaID, generation, err)
 	}
@@ -124,7 +149,7 @@ func Forget(ctx context.Context, q Querier, t Tables, schemaID int16, generation
 }
 
 func generations(ctx context.Context, q Querier, query string, schemaID int16, grace time.Duration) ([]Generation, error) {
-	rows, err := q.runner().query(ctx, query, schemaID, grace.Milliseconds())
+	rows, err := q.runner().query(ctx, query, schemaID, GraceMillis(grace))
 	if err != nil {
 		return nil, fmt.Errorf("read schema %d generations: %w", schemaID, err)
 	}

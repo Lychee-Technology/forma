@@ -24,8 +24,13 @@ const (
 	actionMissingLifecycle = "write the id's row of the publication epoch table back at the record's epoch, with updated_at " +
 		"the database time in epoch milliseconds (docs/manifest-reconcile.md, \"Findings and recovery\"); garbage collection " +
 		"deletes nothing for the schema until it has one, and then for the retention grace after its stamp"
-	actionAwaitingInit      = "run cdc-init for the schema: readers fail closed until its first V2 generation publishes"
-	actionMissingGeneration = "re-initialize the schema with cdc-init, which publishes a new generation from PostgreSQL " +
+	actionStaleLifecycle = "write the id's row of the publication epoch table back at the record's epoch, with updated_at " +
+		"the database time in epoch milliseconds, never a backup copy of the row (docs/manifest-reconcile.md, \"Findings and " +
+		"recovery\"); garbage collection deletes nothing for the schema until the row names the record's epoch, and then for " +
+		"the retention grace after its stamp"
+	actionRecordBehindLifecycle = "treat the record as invalid: " + actionRecordInvalid
+	actionAwaitingInit          = "run cdc-init for the schema: readers fail closed until its first V2 generation publishes"
+	actionMissingGeneration     = "re-initialize the schema with cdc-init, which publishes a new generation from PostgreSQL " +
 		"(the lost manifest cannot be rebuilt from S3); garbage collection deletes nothing for the schema until " +
 		"the lost generation expires, the retention grace after a pass retires it"
 	actionMissingHistory = "restore the generation history row from a backup. Otherwise garbage collection deletes nothing " +

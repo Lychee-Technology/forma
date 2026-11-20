@@ -64,32 +64,43 @@ func raiseEpoch(ctx context.Context, r runner, t Tables, schemaID int16, epoch i
 // row's updated_at, which every transition that moves a record's epoch
 // stamps, and a lost-record recovery stamps after the loss (stampRecovery).
 // No stamp lowers it (raiseEpochSQL, stampRecoverySQL).
+//
+// The stamp is evidence about the record only when the row's epoch is the
+// record's: every transition writes both in one transaction, so they are
+// equal unless one of them was restored or written outside this package. A
+// lifecycle row restored from before a lost-record recovery carries the old
+// epoch and its old stamp, which says nothing about when the recovery ran,
+// and a collector deletes nothing on it (internal/reconcile).
 type LifecycleFence struct {
 	// Present says the id has a lifecycle epoch row.
 	Present bool
+	// Epoch is the row's epoch, the one the stamp belongs to.
+	Epoch int64
 	// MovedAt is the row's updated_at, epoch milliseconds on the database
 	// clock.
 	MovedAt int64
-	// Inside says MovedAt is less than the grace before the database time.
+	// Inside says MovedAt is less than the grace before the database time,
+	// compared in full (GraceMillis).
 	Inside bool
 }
 
-// lifecycleFenceSQL reads the epoch row's updated_at and whether it is
-// inside the grace $2.
-const lifecycleFenceSQL = `SELECT updated_at, updated_at > ` + sqlgen.ServerTimeMillisSQL + ` - $2
+// lifecycleFenceSQL reads the epoch row's epoch and updated_at, and whether
+// the stamp is inside the grace $2 (GraceMillis).
+const lifecycleFenceSQL = `SELECT epoch, updated_at, updated_at > ` + sqlgen.ServerTimeMillisSQL + ` - $2
 	FROM %s WHERE schema_id = $1`
 
-// ReadLifecycleFence answers, on q, when schemaID's lifecycle epoch last
-// moved, and whether that was less than grace ago. A garbage collector reads
-// it in the snapshot it reads the record and the history in, and deletes
-// nothing while it is inside the grace: a lost record's recovery cannot tell
-// whether the lost head's history row was lost too, and then no row names the
+// ReadLifecycleFence answers, on q, the epoch of schemaID's lifecycle epoch
+// row, when it last moved, and whether that was less than grace ago. A
+// garbage collector reads it in the snapshot it reads the record and the
+// history in, and deletes nothing while it is inside the grace, nor when its
+// epoch is not the record's: a lost record's recovery cannot tell whether
+// the lost head's history row was lost too, and then no row names the
 // objects a reader pinned to that head still scans (docs/publication-
 // protocol-v2.md, "A lost record"). An id without the row answers Present
 // false.
 func ReadLifecycleFence(ctx context.Context, q Querier, t Tables, schemaID int16, grace time.Duration) (LifecycleFence, error) {
 	var f LifecycleFence
-	err := q.runner().queryRow(ctx, fmt.Sprintf(lifecycleFenceSQL, t.Epoch), schemaID, grace.Milliseconds()).Scan(&f.MovedAt, &f.Inside)
+	err := q.runner().queryRow(ctx, fmt.Sprintf(lifecycleFenceSQL, t.Epoch), schemaID, GraceMillis(grace)).Scan(&f.Epoch, &f.MovedAt, &f.Inside)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LifecycleFence{}, nil
 	}

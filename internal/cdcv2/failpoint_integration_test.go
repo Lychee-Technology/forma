@@ -443,6 +443,7 @@ func (f *fixture) forget(t *testing.T, generation int64) {
 	ok, err := publication.Retire(ctx, publication.DB(f.db), f.tables, schemaID, generation)
 	require.NoError(t, err)
 	require.True(t, ok, "generation %d is superseded", generation)
+	time.Sleep(2 * publication.StampPrecision) // a zero grace still waits out the stamp's precision
 	ok, err = publication.Forget(ctx, publication.DB(f.db), f.tables, schemaID, generation, 0)
 	require.NoError(t, err)
 	require.True(t, ok, "generation %d is retired", generation)

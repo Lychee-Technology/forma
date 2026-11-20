@@ -41,8 +41,8 @@ func (r *Reconciler) inspect(ctx context.Context, p *pass) error {
 	return nil
 }
 
-// checkRecord reports a record a reader fails closed on, or one without its
-// lifecycle epoch row, and checks that a
+// checkRecord reports a record a reader fails closed on, or one whose
+// lifecycle epoch row is missing or at another epoch, and checks that a
 // published record's generation has its history row naming the same
 // manifest: without it nothing protects the current generation's objects.
 // It answers the current generation number, 0 when there is none.
@@ -51,11 +51,7 @@ func (r *Reconciler) checkRecord(p *pass) int64 {
 		return 0
 	}
 	rec := p.record.Record
-	if !p.lifecycle.Present {
-		p.findings = append(p.findings, Finding{Kind: MissingLifecycleEpoch, Epoch: rec.Epoch, Action: actionMissingLifecycle,
-			Detail: "the record has no lifecycle epoch row, which every transition that moves its epoch writes and " +
-				"a lost record's recovery stamps: nothing shows when the schema was last recovered"})
-	}
+	r.checkLifecycle(p, rec)
 	switch rec.State {
 	case publication.AwaitingInit:
 		p.findings = append(p.findings, Finding{Kind: AwaitingInit, Epoch: rec.Epoch,
@@ -86,6 +82,34 @@ func (r *Reconciler) checkRecord(p *pass) int64 {
 	f.Action = actionMissingHistory
 	p.findings = append(p.findings, f)
 	return rec.Generation
+}
+
+// checkLifecycle reports a lifecycle epoch row that cannot fence the record:
+// one that is missing, or one whose epoch is not the record's. Every
+// transition writes the record's epoch and the row in one transaction, so
+// the two differ only when one of them was restored or written outside the
+// protocol, and then the row's stamp is not the record's: a lifecycle row
+// restored from before a lost-record recovery carries the old epoch and a
+// stamp long past the grace, while the recovered record, one epoch above,
+// is younger than it, and the lost head's history row may be gone too.
+func (r *Reconciler) checkLifecycle(p *pass, rec publication.Record) {
+	l := p.lifecycle
+	switch {
+	case !l.Present:
+		p.findings = append(p.findings, Finding{Kind: MissingLifecycleEpoch, Epoch: rec.Epoch, Action: actionMissingLifecycle,
+			Detail: "the record has no lifecycle epoch row, which every transition that moves its epoch writes and " +
+				"a lost record's recovery stamps: nothing shows when the schema was last recovered"})
+	case l.Epoch < rec.Epoch:
+		p.findings = append(p.findings, Finding{Kind: StaleLifecycleEpoch, Epoch: rec.Epoch, Action: actionStaleLifecycle,
+			Detail: fmt.Sprintf("the lifecycle epoch row names epoch %d, stamped at %d, below the record's epoch %d, which every "+
+				"transition raises the row to in the transaction that moves the record: the row was restored or written outside "+
+				"the protocol, and its stamp does not show when the record's epoch, or a lost-record recovery, last moved", l.Epoch, l.MovedAt, rec.Epoch)})
+	case l.Epoch > rec.Epoch:
+		p.findings = append(p.findings, Finding{Kind: StaleLifecycleEpoch, Epoch: rec.Epoch, Action: actionRecordBehindLifecycle,
+			Detail: fmt.Sprintf("the lifecycle epoch row names epoch %d, above the record's epoch %d: a record of the id carried "+
+				"epoch %d before, so the record row went back (restored from an older copy, or written outside the protocol), and "+
+				"neither its pointer nor the row's stamp %d can be trusted", l.Epoch, rec.Epoch, l.Epoch, l.MovedAt)})
+	}
 }
 
 // checkHistory proves that the history holds a row for every generation a
