@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -218,18 +219,12 @@ func TestPlanCollectionStopsOnAnInvalidManifest(t *testing.T) {
 }
 
 // TestPlanCollectionCollectsARetiredDisplacedInventory is R11-F1: a
-// displaced inventory no reader can still scan is collected as an expired
-// generation's, its objects whatever their age, but never one a retained
-// generation lists, and it forgets no history row. Its manifest must verify
-// against the displacement before a key it lists is trusted.
+// displaced inventory no reader can still scan is collected, its objects
+// then its manifest, but never an object a retained generation lists, and it
+// forgets no history row. Its manifest must verify against the displacement
+// before a key it lists is trusted.
 func TestPlanCollectionCollectsARetiredDisplacedInventory(t *testing.T) {
-	c := collection(t)
-	d := Generation{Generation: 1, Epoch: 1, ManifestKey: "d1", Token: uuid.New()}
-	raw := encode(t, manifestFields(c.SchemaID, d, "onlyd", "shared", "only2"))
-	d.ManifestSHA256 = digest(raw)
-	c.Manifests["d1"] = raw
-	c.Displaced = []Generation{d}
-	c.Listed = append(c.Listed, Object{Key: "d1", LastModified: 9_999}, Object{Key: "onlyd", LastModified: 9_999})
+	c, raw := displacedCollection(t, 1)
 	plan, err := PlanCollection(c)
 	require.NoError(t, err)
 	require.Equal(t, Plan{
@@ -241,4 +236,68 @@ func TestPlanCollectionCollectsARetiredDisplacedInventory(t *testing.T) {
 	c.Manifests["d1"] = append(raw, ' ')
 	_, err = PlanCollection(c)
 	require.ErrorIs(t, err, ErrManifestInvalid, "a displaced manifest that fails verification stops the pass")
+}
+
+// TestPlanCollectionDefersWhatOnlyADisplacedInventoryNames is R13-F1: a
+// displaced manifest that verifies proves which keys the displaced row
+// named, not that a publication can no longer commit one, so an object only
+// it lists is deleted only once it is below the orphan cutoff, as an orphan
+// is. Until then it is deferred, and so is the manifest, which is the
+// evidence a later pass deletes it by: the displacement is kept with it.
+// An object an expired generation's verified manifest lists too, or one a
+// retained generation protects, defers nothing. A young displaced manifest
+// is deferred itself, while the old objects only it lists are deleted.
+func TestPlanCollectionDefersWhatOnlyADisplacedInventoryNames(t *testing.T) {
+	c, _ := displacedCollection(t, 1)
+	c.Listed = append(c.Listed, Object{Key: "young", LastModified: 8_000})
+	c.Manifests["d1"] = encode(t, manifestFields(c.SchemaID, c.Displaced[0], "onlyd", "shared", "only2", "young", "staged"))
+	c.Displaced[0].ManifestSHA256 = digest(c.Manifests["d1"])
+	plan, err := PlanCollection(c)
+	require.NoError(t, err)
+	require.Equal(t, Plan{
+		Objects:   []string{"only1", "onlyd", "orphan"},
+		Manifests: []string{"m1"},
+		Forget:    []int64{1},
+		Deferred:  []string{"d1", "staged", "young"},
+	}, plan, "the young objects only it lists are no orphans yet, and its manifest stays")
+
+	c.Manifests["m1"] = encode(t, manifestFields(c.SchemaID, c.Expired[0], "only1", "shared", "young", "staged"))
+	c.Expired[0].ManifestSHA256 = digest(c.Manifests["m1"])
+	plan, err = PlanCollection(c)
+	require.NoError(t, err)
+	require.Equal(t, Plan{
+		Objects:   []string{"only1", "onlyd", "orphan", "staged", "young"},
+		Manifests: []string{"d1", "m1"},
+		Forget:    []int64{1},
+	}, plan, "an expired generation's verified manifest is the proof the displaced one is not")
+
+	c, _ = displacedCollection(t, 8_000)
+	plan, err = PlanCollection(c)
+	require.NoError(t, err)
+	require.Equal(t, Plan{
+		Objects:   []string{"only1", "orphan"},
+		Manifests: []string{"m1"},
+		Forget:    []int64{1},
+		Deferred:  []string{"d1", "onlyd"},
+	}, plan, "a young displaced manifest and its young object are kept")
+
+	c, _ = displacedCollection(t, 1)
+	c.Listed = slices.DeleteFunc(c.Listed, func(o Object) bool { return o.Key == "d1" })
+	plan, err = PlanCollection(c)
+	require.NoError(t, err)
+	require.Equal(t, []string{"d1"}, plan.Deferred, "a displaced manifest the listing did not answer is not deleted, and stays the evidence")
+}
+
+// displacedCollection is collection with the displaced inventory d1 of
+// generation 1, listing onlyd, shared and only2, its manifest and onlyd
+// listed at lastModified.
+func displacedCollection(t *testing.T, lastModified int64) (Collection, []byte) {
+	c := collection(t)
+	d := Generation{Generation: 1, Epoch: 1, ManifestKey: "d1", Token: uuid.New()}
+	raw := encode(t, manifestFields(c.SchemaID, d, "onlyd", "shared", "only2"))
+	d.ManifestSHA256 = digest(raw)
+	c.Manifests["d1"] = raw
+	c.Displaced = []Generation{d}
+	c.Listed = append(c.Listed, Object{Key: "d1", LastModified: lastModified}, Object{Key: "onlyd", LastModified: lastModified})
+	return c, raw
 }

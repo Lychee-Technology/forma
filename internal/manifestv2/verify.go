@@ -85,9 +85,12 @@ func GenerationRef(schemaID int16, g publication.Generation) Ref {
 // listed key under one prefix. A displacement keeps no parent generation
 // and no kind, so only those two are taken from the document; the digest
 // the displacement kept already binds them. A collector trusts a key a
-// displaced manifest lists only once it passes (R12-F1): the keys are
-// deleted whatever their age, so a manifest that names a key of another
-// epoch would delete a staged object no horizon has fenced yet.
+// displaced manifest lists only once it passes (R12-F1): the manifest is
+// the evidence that names the keys, so one that names a key of another
+// epoch is not the inventory it claims. Passing proves no more than that:
+// a key of the same epoch can still be a publication's staging that may
+// commit, so the collector deletes what only a displaced manifest lists
+// only under the horizon's fence (R13-F1).
 func VerifyDisplaced(raw []byte, schemaID int16, g publication.Generation) (*Manifest, error) {
 	var head struct {
 		ParentGeneration int64 `json:"parent_generation"`

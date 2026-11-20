@@ -44,9 +44,11 @@ const displacedDDL = `CREATE TABLE IF NOT EXISTS %s (
 // deletes nothing for the schema (internal/reconcile). After that no reader
 // that chose the generation, under either inventory, is still inside its
 // pass deadline: a collector then deletes what only the displaced inventory
-// lists and its manifest, as it does an expired generation's
-// (Collection.Displaced), and forgets the displacement only after that, so
-// that a pass that stops before then finds the inventory named again.
+// lists and its manifest (Collection.Displaced), each only once it is below
+// the orphan cutoff, since the inventory proves which keys the row named
+// and not that no publication can still commit one (Plan.Deferred), and
+// forgets the displacement only after that, so that a pass that stops
+// before then finds the inventory named again.
 type Displacement struct {
 	Generation     int64
 	Epoch          int64

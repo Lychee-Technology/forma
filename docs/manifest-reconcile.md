@@ -105,18 +105,23 @@ an error, or fail with a scan error. A re-init restores correct reads too
    full check (digest, identity, wire form, and every listed key under the
    schema and epoch). Fetch the manifest of every displaced inventory whose
    replaced generation's row expired, and verify it with the same full check
-   against the identity, digest and token the displacement kept: its keys are
-   deleted whatever their age, so a key of another epoch must never pass
-   (R12-F1).
-5. Delete every object that is listed only by expired generations or expired
-   displaced inventories, or that no generation names and was staged before
-   the horizon: its `LastModified` plus S3's one-second precision plus
-   `--clock-margin` is before the horizon.
-6. Once every such delete succeeded, delete the expired manifests and the
-   expired displaced manifests.
+   against the identity, digest and token the displacement kept: it is the
+   evidence that names the keys only it lists, so a key of another epoch must
+   never pass (R12-F1).
+5. Delete every object that is listed only by expired generations, or that no
+   history manifest names and was staged before the horizon: its
+   `LastModified` plus S3's one-second precision plus `--clock-margin` is
+   before the horizon. An object only an expired displaced inventory lists is
+   deleted under the same horizon rule, never for being listed: a verified
+   displaced manifest is no proof that no publication can still commit it
+   (R13-F1). Until then it is kept, and so are the manifest and the
+   displacement.
+6. Once every such delete succeeded, delete the expired manifests, and the
+   expired displaced manifests that are, with every object only they list,
+   before the horizon.
 7. Once those succeeded, forget the expired history rows, all but the highest,
    which stays as the history's floor (see "What is deleted, and what never is"),
-   and then the expired displacements.
+   and then the expired displacements whose manifests were deleted or are gone.
 
 A pass that fails at any step leaves a state the next pass plans from again: an
 expired manifest still present lists its objects again, and one already deleted
@@ -443,26 +448,39 @@ make them agree, and do not restore a manifest object to match the row.
   be orphans, and the objects it shares with an expired generation would be
   that generation's alone. Once the row has expired, no reader that chose the
   generation under either inventory is left, and the displaced inventory is
-  collected as an expired generation's is (R11-F1). Its manifest is verified
-  against the digest and token the displacement kept; the objects only it
-  lists are deleted with the expired generations' in step 5, whatever their
-  age, never one a retained generation lists; the manifest is deleted in step
-  6; and the pass forgets the displacement only after every delete succeeded.
-  It does not wait for `--orphan-age`, which is usually longer than G (2h
-  against 15m by default): after a drop the expired generations' manifests are
-  deleted in that same pass, and the displacement is then the only evidence
-  that the keys are this deployment's. A pass that fails before the end
-  leaves the displacement, and the next pass verifies its manifest again and
-  deletes the rest, so the cleanup is retried until it finishes, whatever is
-  left of the schema in the bucket. A displaced manifest that fails the
+  collected (R11-F1). Its manifest is verified against the digest and token
+  the displacement kept. Verification and a publication fence are different
+  proofs, though. A manifest that verifies proves which keys the displaced row
+  named, and that they are this schema's and epoch's; it does not prove that
+  no publication can still commit one of them. The row was written outside the
+  protocol, and a Parquet key spells the schema, epoch and tier, not the
+  attempt that staged it, so a displaced manifest whose bytes match its digest
+  can list a fully formed entry of an object a compaction of the new head
+  staged in the same epoch and may still commit (R13-F1). Only the horizon
+  proves that: an object staged before it can never be committed. So an
+  object only the displaced inventory lists is deleted in step 5 only once it
+  is below the orphan cutoff, as an orphan is, never one a retained generation
+  lists; the manifest is deleted in step 6 only once it and every object only
+  it lists are below the cutoff; and the pass forgets the displacement only
+  after that. Until then the report lists them as `kept:` keys, and the pass
+  keeps the manifest and the displacement as the evidence that names them.
+  This matters after a drop: `--orphan-age` is usually longer than G (2h
+  against 15m by default), the expired generations' manifests are deleted
+  first, and the displacement is then the only evidence that the keys are
+  this deployment's. Should a publication commit a kept object, the object is
+  then protected as its generation's, and the displaced manifest is collected
+  without it. A pass that fails before the end leaves the displacement, and
+  the next pass verifies its manifest again and deletes the rest, so the
+  cleanup is retried until it finishes, whatever is left of the schema in the
+  bucket. A displaced manifest that fails the
   reader's full check (its digest, identity and wire form, every listed key of
   the displacement's schema and epoch with the tier its entry names, and the
   layout's prefix) is an `invalid_manifest` finding, or `foreign_manifest` for
   a key outside the layout: the pass deletes and forgets nothing, and the
   schema is reported as needing attention. The digest alone is not enough: a
   manifest whose bytes match it can still list a staged object of the epoch a
-  drop moved to, far above the orphan cutoff, and the displaced inventory's
-  keys are deleted whatever their age. If the detail reports another SHA-256
+  drop moved to, and the displacement is the evidence the pass deletes the
+  keys only it lists by. If the detail reports another SHA-256
   than the displacement's, restore the object from a copy with that digest.
   Otherwise the displacement does not prove which keys are its inventory:
   delete its row of `<entity_main>_publication_displaced` by hand. The

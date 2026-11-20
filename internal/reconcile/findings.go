@@ -82,8 +82,8 @@ const (
 		"history_mismatch for this generation, the row, not the object, may be what disagrees: restore nothing, and leave " +
 		"garbage collection refused"
 	actionInvalidDisplaced = "garbage collection deletes and forgets nothing for the schema while the displacement names " +
-		"this manifest: the keys a displaced manifest lists are deleted whatever their age, so one that is not its own " +
-		"epoch's inventory could name a staged object no horizon fences yet. The replaced generation's row has expired, so " +
+		"this manifest: a displaced manifest is the evidence that names the keys only it lists, so one that is not its own " +
+		"epoch's inventory cannot be trusted to name them. The replaced generation's row has expired, so " +
 		"no reader scans the inventory. If the detail reports a SHA-256 other than the displacement's manifest_sha256, " +
 		"restore the object from a versioned or backed-up copy whose SHA-256 is that digest. Otherwise the displacement, or " +
 		"the history row it was taken from, was written outside the protocol and does not prove which keys are the " +

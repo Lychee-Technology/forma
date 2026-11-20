@@ -135,12 +135,18 @@ func (r *Reconciler) unbound(p *pass, plan publication.Plan) string {
 
 // guardPlan refuses a plan that deletes the record's manifest, a retained
 // generation's manifest or an object a retained generation lists, a key the
-// layout does not build for the schema, or an object not yet below the
-// orphan cutoff that no manifest the pass verified with the reader's full
-// check lists (p.verified, p.displacedFiles). Those checks hold every listed
-// key to its manifest's schema and epoch, which PlanCollection's own
+// layout does not build for the schema, an object not yet below the orphan
+// cutoff that no history manifest the pass verified with the reader's full
+// check lists (p.verified), or a manifest not yet below the cutoff that is
+// not an expired generation's. Those checks hold every listed key to its
+// manifest's schema and epoch, which PlanCollection's own
 // (publication.ManifestFiles) does not, so a manifest that names another
 // epoch's staged object never has it deleted for its age alone (R12-F1).
+// A displaced manifest is no such proof even when it verifies: it shows
+// which keys a row written outside the protocol named, not that a
+// publication can no longer commit one of them, so what only it names is
+// deleted only below the cutoff, where the horizon fences every
+// publication that staged it (R13-F1).
 func (r *Reconciler) guardPlan(p *pass, plan publication.Plan) error {
 	protected := map[string]bool{p.record.ManifestKey: p.record.ManifestKey != ""}
 	for _, g := range p.retained {
@@ -156,16 +162,14 @@ func (r *Reconciler) guardPlan(p *pass, plan publication.Plan) error {
 			return fmt.Errorf("schema %d: %s: %w", p.id, key, errPlanTouchesProtected)
 		}
 	}
-	verified := map[string]bool{}
+	verified, expired := map[string]bool{}, map[string]bool{}
 	for _, m := range p.verified {
 		for _, f := range m.Files {
 			verified[f.Key] = true
 		}
 	}
-	for _, files := range p.displacedFiles {
-		for _, key := range files {
-			verified[key] = true
-		}
+	for _, g := range p.expired {
+		expired[g.ManifestKey] = true
 	}
 	young := map[string]bool{}
 	before := publication.OrphanCutoff(p.horizon, r.Opts.ClockMargin)
@@ -174,7 +178,13 @@ func (r *Reconciler) guardPlan(p *pass, plan publication.Plan) error {
 	}
 	for _, key := range plan.Objects {
 		if young[key] && !verified[key] {
-			return fmt.Errorf("schema %d: %s is not below the orphan cutoff and no verified manifest lists it: %w",
+			return fmt.Errorf("schema %d: %s is not below the orphan cutoff and no verified history manifest lists it: %w",
+				p.id, key, errPlanUnverified)
+		}
+	}
+	for _, key := range plan.Manifests {
+		if young[key] && !expired[key] {
+			return fmt.Errorf("schema %d: manifest %s is not below the orphan cutoff and is no expired generation's: %w",
 				p.id, key, errPlanUnverified)
 		}
 	}
@@ -183,15 +193,11 @@ func (r *Reconciler) guardPlan(p *pass, plan publication.Plan) error {
 
 // pendingOrphans counts the V2 objects no generation names that are not
 // yet below the orphan cutoff (publication.OrphanCutoff): a publication
-// staging them may still commit.
+// staging them may still commit. What only a displaced inventory names
+// counts too, since that is no proof that no publication can commit it
+// (publication.Plan.Deferred).
 func (r *Reconciler) pendingOrphans(p *pass, owned []publication.Object) int {
 	named := map[string]bool{}
-	for key, files := range p.displacedFiles {
-		named[key] = true
-		for _, f := range files {
-			named[f] = true
-		}
-	}
 	for _, g := range append(append([]publication.Generation{}, p.retained...), p.expired...) {
 		named[g.ManifestKey] = true
 		if m := p.verified[g.ManifestKey]; m != nil {
@@ -213,7 +219,8 @@ func (r *Reconciler) pendingOrphans(p *pass, owned []publication.Object) int {
 // collect runs the plan in the collection order: every object (step 5),
 // then every expired manifest (step 6), then Forget of every expired row
 // (step 7), and last the displaced inventories no longer live, whose
-// manifests and objects the earlier steps deleted. A step starts only once every delete of the one before it
+// manifests and objects the earlier steps deleted, but for one the plan
+// deferred (publication.Plan.Deferred). A step starts only once every delete of the one before it
 // succeeded, so after a crash or a failed delete the next pass plans the
 // rest from what is left: an expired manifest still there lists its objects
 // again, and one already gone leaves its row to be forgotten.
@@ -233,7 +240,7 @@ func (r *Reconciler) collect(ctx context.Context, p *pass, plan publication.Plan
 			done.Forgotten = append(done.Forgotten, g)
 		}
 	}
-	return r.forgetDisplacements(ctx, p)
+	return r.forgetDisplacements(ctx, p, plan)
 }
 
 // deleteAll deletes every key, and fails once all were tried if any delete

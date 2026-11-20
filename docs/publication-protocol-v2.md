@@ -259,11 +259,16 @@ manifest_sha256, cas_token, displaced_at; one row per displaced manifest, create
 `init-db`). A collector deletes and forgets nothing for the schema while the replaced
 generation's row is retained, which it is for a full grace after a collector retired it,
 after seeing the replacement committed. Then no reader that chose the generation under
-either inventory is left (R10-F1), and the collector collects the displaced inventory as an
-expired generation's: it verifies its manifest against the displacement's digest and
-token, deletes the objects only it lists whatever their age and then the manifest, and
-forgets the displacement only after that, so that a drop, which leaves no later manifest,
-still finishes its collection (R11-F1). Within one
+either inventory is left (R10-F1), and the collector collects the displaced inventory: it
+verifies its manifest against the displacement's digest and token, deletes the objects only
+it lists and then the manifest, and forgets the displacement only after that, so that a
+drop, which leaves no later manifest, still finishes its collection (R11-F1). A verified
+displaced manifest proves which keys the row named, not that no publication can still
+commit one: a Parquet key spells the schema, epoch and tier, not the staging attempt, so it
+can list an object a same-epoch publication staged and may still commit. So what only it
+names is deleted only once it is below the orphan cutoff of the pass's horizon, the
+publication fence, and the manifest and the displacement are kept until then
+(`Plan.Deferred`, R13-F1). Within one
 epoch, generations are
 consecutive. Rebase decisions read `kind` (`KindsSince`), retention reads `retired_at`,
 and `Resolve` reads `cas_token`. The collector reads `manifest_sha256` and `cas_token`
@@ -776,9 +781,10 @@ steps 5 to 7 from what steps 1 to 4 read.
    so does a displaced inventory whose replaced generation is still retained ("Generation
    history"). Once that generation expired, the displaced inventory is collected with the
    expired generations (`Collection.Displaced`: its manifest is verified against the
-   displacement in step 4, the objects only it lists are deleted in step 5 and the
-   manifest in step 6), and the pass forgets the displacement after step 7
-   (`ForgetDisplaced`).
+   displacement in step 4, the objects only it lists are deleted in step 5 once they are
+   below the orphan cutoff and the manifest in step 6 once it and they are), and the pass
+   forgets the displacement after step 7 (`ForgetDisplaced`), unless the plan deferred its
+   manifest (`Plan.Deferred`).
 4. Get the manifest of every retained and expired generation, and verify each one that
    exists before reading its `files` (`ManifestFiles`): the SHA-256 of the stored bytes
    must equal the history row's `manifest_sha256`, the bytes must be one JSON object of

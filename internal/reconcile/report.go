@@ -130,9 +130,10 @@ type SchemaReport struct {
 	Expired  int
 	// Listed counts the objects under the schema's prefix.
 	Listed int
-	// PendingOrphans counts unreferenced V2 objects not yet below the
-	// horizon: staging of a publication that may still commit, or garbage
-	// a later pass collects once the horizon passes it.
+	// PendingOrphans counts V2 objects no history manifest names (only a
+	// displaced inventory, or nothing) not yet below the horizon: staging
+	// of a publication that may still commit, or garbage a later pass
+	// collects once the horizon passes it.
 	PendingOrphans int
 	// ConcurrentlyExpired counts the findings a diagnosis left out because
 	// the generation they concerned, current or superseded in its
@@ -223,6 +224,13 @@ func (s SchemaReport) render(w io.Writer) {
 		s.renderPlan(w)
 	default:
 		s.renderCollected(w)
+	}
+	if s.Refused == "" && len(s.Plan.Deferred) > 0 {
+		fmt.Fprintf(w, "  kept until below the orphan cutoff: %d key(s) only a displaced inventory names, which a publication "+
+			"may still commit; the displacement is kept, and a later pass deletes them\n", len(s.Plan.Deferred))
+		for _, k := range s.Plan.Deferred {
+			fmt.Fprintf(w, "  kept: %s\n", k)
+		}
 	}
 	if s.Err != nil {
 		fmt.Fprintf(w, "  error: %v\n", s.Err)

@@ -46,12 +46,14 @@ func (p *pass) liveDisplacements() []publication.Displacement {
 // the object is written once, so its bytes are the row's or the record's
 // to verify and protect, and a displacement that kept the same key with
 // another digest names no other inventory. A collection deletes what only they
-// list and then their manifests, whatever the objects' age, as it does an
-// expired generation's (publication.Collection.Displaced), and forgets them
-// only after that: the displacement is the evidence that names the
-// inventory, and the replaced generation's own manifest may be gone, as
-// after a drop, so that nothing else proves the keys are this deployment's
-// (R11-F1).
+// list once it is below the orphan cutoff, and then their manifests
+// (publication.Collection.Displaced), and forgets them only after that: the
+// displacement is the evidence that names the inventory, and the replaced
+// generation's own manifest may be gone, as after a drop, so that nothing
+// else proves the keys are this deployment's (R11-F1). A verified displaced
+// manifest is no proof that a publication can no longer commit a key it
+// lists, so its age is: a pass defers what is not yet below the cutoff, and
+// keeps the displacement with it (R13-F1).
 func (p *pass) retiredDisplacements() []publication.Generation {
 	live := p.liveDisplacements()
 	seen := map[string]bool{}
@@ -76,13 +78,15 @@ func (p *pass) retiredDisplacements() []publication.Generation {
 // the reader's full check (manifestv2.VerifyDisplaced: the digest and
 // identity the displacement kept, the wire form, and every listed key
 // spelling the displacement's schema and epoch under the manifest's own
-// prefix, which must be the layout's), and keeps the keys it lists. A
-// collection deletes those keys whatever their age, so one that fails is a
-// finding that stops every collection, invalid_manifest or
+// prefix, which must be the layout's), and keeps the keys it lists. One
+// that fails is a finding that stops every collection, invalid_manifest or
 // foreign_manifest, as an expired generation's would be: the digest alone
-// does not keep it from naming a staged object of another epoch, which no
-// horizon has fenced yet (R12-F1). One missing was deleted by an earlier
-// pass after the objects only it listed.
+// does not keep it from naming a staged object of another epoch (R12-F1).
+// One that passes proves which keys the displaced row named and that they
+// are this schema's and epoch's, and nothing more: a fully formed entry of
+// the same epoch can still be a publication's staging that may commit, so
+// the keys it lists are deleted only below the orphan cutoff (R13-F1). One
+// missing was deleted by an earlier pass after the objects only it listed.
 func (r *Reconciler) checkDisplaced(p *pass) {
 	p.displacedFiles = map[string][]string{}
 	for _, g := range p.retiredDisplacements() {
@@ -127,13 +131,23 @@ func displacementRefusal(live []publication.Displacement, grace time.Duration) s
 // displaced inventories of generations the pass found no longer live. It
 // runs only once every delete of the plan succeeded, the displaced
 // manifests and the objects only they listed included, so a pass that
-// stops before then finds them named again and deletes the rest. Each
-// delete checks again that the generation's row is not retained
+// stops before then finds them named again and deletes the rest. It keeps
+// every displacement of a generation one of whose displaced manifests the
+// plan deferred, since it or an object only it lists is not yet below the
+// orphan cutoff: that manifest is the evidence a later pass deletes them by
+// once the horizon fences them, a drop's included, which leaves nothing
+// else of the schema to verify in the bucket (R13-F1). Each delete checks
+// again that the generation's row is not retained
 // (publication.ForgetDisplaced), so a displacement is never forgotten while
 // it is live.
-func (r *Reconciler) forgetDisplacements(ctx context.Context, p *pass) error {
+func (r *Reconciler) forgetDisplacements(ctx context.Context, p *pass, plan publication.Plan) error {
 	live := p.liveDisplacements()
 	done := map[int64]bool{}
+	for _, d := range p.displaced {
+		if slices.Contains(plan.Deferred, d.ManifestKey) {
+			done[d.Generation] = true
+		}
+	}
 	for _, d := range p.displaced {
 		if done[d.Generation] || slices.ContainsFunc(live, func(l publication.Displacement) bool { return l.Generation == d.Generation }) {
 			continue
