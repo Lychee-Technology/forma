@@ -159,7 +159,12 @@ compactor, reader, GC) is given that name.
   `AWAITING_INIT` when generation history survives (its next `cdc-init` replaces the
   parquet tiers), and otherwise in the state the cutover's parquet-history check allows;
   an id the run registers again is recovered `DROPPED`, then activated. The processes that
-  pinned an older epoch fail closed until they restart, as after a drop.
+  pinned an older epoch fail closed until they restart, as after a drop. The recovery
+  stamps `superseded_at` on the generation the lost record named, in the same
+  transaction: no later transition would, since the next `cdc-init` publishes from a
+  record without a current generation, so without the stamp no collector would ever
+  retire it. A collector retires it only once it sees the recovery committed, and keeps
+  it for the full grace after that, as any other superseded generation.
 
   When the lifecycle epoch is lost too and generation history survives, `InitializeAfterLoss`
   refuses with `ErrLifecycleLost`, and `init-db` fails: no epoch above the history is known
@@ -755,8 +760,22 @@ steps 5 to 7 from what steps 1 to 4 read.
    finds an expired manifest missing, its exclusive objects are already gone. That pass
    forgets the row and deletes nothing on its account. An object it should have taken
    but somehow still exists is an orphan, decided by the horizon.
-7. When step 6 has finished, `Forget` each expired history row. A row that outlives a
-   crash makes the next pass repeat the deletes instead of leaking them.
+7. When step 6 has finished, `Forget` each expired history row but the highest. A row
+   that outlives a crash makes the next pass repeat the deletes instead of leaking them.
+   The highest expired row stays, its manifest and exclusive objects deleted, as the
+   history's floor (below).
+
+Before step 5 the pass also proves that the history holds a row for every generation a
+reader could still hold. Every committed generation takes the next number of the record's
+counter, so the rows a pass may not miss are every number above the highest expired row
+(the floor) and up to the counter. A generation below an expired row is past every
+reader, whether its row was forgotten or lost: it was replaced before that row's
+generation committed, and that row was retired, after its own replacement was seen
+committed, at least G ago. A number in the range without a row stops the pass, which
+deletes nothing: a reader may still hold that generation, and nothing names what its
+manifest lists. `Publish` does not require its supersede to match a row, so a lost
+superseded row does not stop the next publication; the gap resolves when a generation
+above it expires.
 
 A writer can never commit a reference to an object GC deleted:
 

@@ -63,6 +63,14 @@ func TestCollectorFailsClosed(t *testing.T) {
 			f.corrupt(t, g3.rec.ManifestKey)
 			return nil
 		}, InvalidManifest, 3, true},
+		{"the record's parent generation is not its manifest's", func(t *testing.T, f *fixture, _ generation) *Reconciler {
+			f.exec(t, "UPDATE %s SET parent_generation = 1", f.tables.Record)
+			return nil
+		}, MissingGeneration, 3, true},
+		{"the record's lineage is not its manifest's", func(t *testing.T, f *fixture, _ generation) *Reconciler {
+			f.exec(t, "UPDATE %s SET lineage = '"+uuid.NewString()+"'", f.tables.Record)
+			return nil
+		}, InvalidManifest, 3, true},
 		{"an expired generation's manifest is corrupt", func(t *testing.T, f *fixture, _ generation) *Reconciler {
 			f.corrupt(t, f.manifestKeyOf(t, 1))
 			return nil
@@ -163,7 +171,7 @@ func TestCollectionCrashAndRetryAreIdempotent(t *testing.T) {
 			f.store.failDelete = nil
 			rep = f.pass(t, testOptions(true))
 			require.NoError(t, rep.Err)
-			require.Equal(t, []int64{1, 2}, rep.Collected.Forgotten)
+			require.Equal(t, []int64{1}, rep.Collected.Forgotten, "generation 2's row stays as the history's floor")
 			require.Equal(t, f.keysOf(g3), f.store.keys())
 
 			rep = f.pass(t, testOptions(true))

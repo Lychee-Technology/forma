@@ -67,7 +67,9 @@ const recoverSQL = `INSERT INTO %s (schema_id, epoch, state, generation, parent_
 // recovered epoch: a reader or writer pinned to an epoch of the lost record,
 // or of any registration before it, fails closed on the recovered record,
 // and on every later one, since epochs only grow. No generation number the
-// surviving history committed is used again either.
+// surviving history committed is used again either. The generation the lost
+// record named is superseded in tx (supersedeLostSQL), so that garbage
+// collection retires it once it sees the recovery committed.
 //
 // state is AwaitingInit for a registered schema with generation history,
 // whose parquet tiers the next cdc-init replaces; Unpublished for a
@@ -104,8 +106,21 @@ func InitializeAfterLoss(ctx context.Context, tx Tx, t Tables, schemaID int16, h
 	if err := raiseEpoch(ctx, r, t, schemaID, rec.Epoch); err != nil {
 		return Record{}, false, fmt.Errorf("recover the %s record of schema %d: %w", state, schemaID, err)
 	}
+	if _, err := r.exec(ctx, fmt.Sprintf(supersedeLostSQL, t.Generation), schemaID); err != nil {
+		return Record{}, false, fmt.Errorf("supersede the generation the lost record of schema %d named: %w", schemaID, err)
+	}
 	return rec, true, nil
 }
+
+// supersedeLostSQL stamps every generation of the schema that nothing
+// superseded: the one the lost record named as current, which the recovered
+// record does not name. Without it no transition would ever supersede that
+// generation (the next cdc-init publishes from a record with no current
+// generation), and no collector would retire it. The stamp commits with the
+// recovered record, so a collector that sees it has seen the recovery
+// committed, and retires the generation only after that, as any other.
+const supersedeLostSQL = `UPDATE %s SET superseded_at = ` + sqlgen.ServerTimeMillisSQL + `
+	WHERE schema_id = $1 AND superseded_at = 0`
 
 // holdDroppedSQL locks a dropped record while it is still DROPPED at the
 // epoch. FOR UPDATE, as holdSQL, so an Activate waits for the holder.

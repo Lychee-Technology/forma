@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -44,8 +45,10 @@ type memStore struct {
 	// for.
 	failDelete func(key string) error
 	// getErr fails a Get of the key with the error.
-	getErr  map[string]error
-	deletes []string
+	getErr map[string]error
+	// beforeGet, when set, runs before each Get, outside the store's lock.
+	beforeGet func(key string)
+	deletes   []string
 }
 
 func newMemStore(now func() int64) *memStore {
@@ -94,6 +97,9 @@ func (m *memStore) List(_ context.Context, prefix string) ([]publication.Object,
 }
 
 func (m *memStore) Get(_ context.Context, key string) ([]byte, error) {
+	if m.beforeGet != nil {
+		m.beforeGet(key)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.getErr[key]; err != nil {
@@ -341,12 +347,19 @@ func testOptions(gc bool) Options {
 	}
 }
 
-// reconciler answers a Reconciler over the fixture that always takes the
-// schema lock.
+// errDiagnosisLocked fails a diagnosis that takes the schema lock, which on
+// Aurora DSQL writes a lease row.
+var errDiagnosisLocked = errors.New("the read-only diagnosis took the schema lock")
+
+// reconciler answers a Reconciler over the fixture whose collection always
+// takes the schema lock, and whose diagnosis fails if it asks for it.
 func (f *fixture) reconciler(opts Options) *Reconciler {
 	return &Reconciler{
 		DB: f.db, Tables: f.tables, Layout: f.layout, Objects: f.store,
 		Locker: cdc.SchemaLockerFunc(func(ctx context.Context, _ int16) (context.Context, func(), bool, error) {
+			if !opts.GC {
+				return nil, nil, false, errDiagnosisLocked
+			}
 			return ctx, func() {}, true, nil
 		}),
 		Schemas: fixedSchemas{testSchema},

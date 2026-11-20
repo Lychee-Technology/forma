@@ -17,6 +17,10 @@ import (
 	"github.com/lychee-technology/forma/internal/publication"
 )
 
+// ErrUnknownAge reports an object listed without a usable LastModified. A
+// pass that meets one fails: the horizon cannot prove its publication fenced.
+var ErrUnknownAge = errors.New("object age unknown")
+
 // ObjectStore is what a pass reads and deletes in the bucket. A key it is
 // asked for and that holds no object is manifestv2.ErrObjectNotFound, and
 // only then: a refused or failed call (manifestv2.ErrAccessDenied among
@@ -24,7 +28,9 @@ import (
 // rather than call the object missing.
 type ObjectStore interface {
 	// List answers every object under prefix, with its LastModified as
-	// epoch milliseconds. A listing it cannot follow to the end fails.
+	// epoch milliseconds. A listing it cannot follow to the end fails, and
+	// so does one that answers an object without a LastModified
+	// (ErrUnknownAge).
 	List(ctx context.Context, prefix string) ([]publication.Object, error)
 	// Get answers an object's bytes.
 	Get(ctx context.Context, key string) ([]byte, error)
@@ -56,11 +62,18 @@ type S3Objects struct {
 // List pages through cdc.ForEachObject, which fails a listing it cannot
 // follow to the end instead of answering the part it saw (#521): a short
 // listing would hide objects a retained generation lists and report them
-// lost.
+// lost. It also fails on an object listed without a usable LastModified:
+// aws.ToTime of a missing one is the zero time, which would make any key,
+// fresh staging included, look older than every horizon.
 func (s *S3Objects) List(ctx context.Context, prefix string) ([]publication.Object, error) {
 	var out []publication.Object
 	err := cdc.ForEachObject(ctx, s.Client, s.Bucket, prefix, func(o types.Object) error {
-		out = append(out, publication.Object{Key: aws.ToString(o.Key), LastModified: aws.ToTime(o.LastModified).UnixMilli()})
+		key := aws.ToString(o.Key)
+		if o.LastModified == nil || o.LastModified.UnixMilli() <= 0 {
+			return fmt.Errorf("object %s was listed without a usable LastModified (%v): its age, and so whether its publication can still commit, is unknown: %w",
+				key, o.LastModified, ErrUnknownAge)
+		}
+		out = append(out, publication.Object{Key: key, LastModified: o.LastModified.UnixMilli()})
 		return nil
 	})
 	if err != nil {

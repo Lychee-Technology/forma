@@ -32,10 +32,22 @@ the replaced generation and its objects behind for this tool to collect.
 
 ## Modes
 
-**Diagnosis (default).** Read-only on PostgreSQL and S3. For each schema it
-reports the record's state, epoch and generation, every finding below, and the
-plan a collection would run against the record's current horizon. Run it as
-the periodic health check.
+**Diagnosis (default).** Read-only on PostgreSQL and S3, and lock-free: it takes
+no schema lock, which on Aurora DSQL is a lease row it would write, so a
+principal that may only `SELECT` the publication tables and the registry can run
+it, and it never blocks a writer. For each schema it reports the record's state,
+epoch and generation, every finding below, and the plan a collection would run
+against the record's current horizon, with every object and manifest key it
+would delete. Run it as the periodic health check.
+
+Without the lock a publication or a collection can run beside it. A publication
+is harmless: the listing comes before the snapshot, and a listed key the
+snapshot's generations name but the listing lacks is probed before it is called
+lost. A collection can delete a superseded generation's manifest and objects
+once it finds that generation expired, after the diagnosis's snapshot saw it
+retained. A missing manifest or object of a superseded generation is therefore
+reported only if that generation is still retained when the history is read
+again; the report counts the findings it left out.
 
 **`--gc`.** The collector, in the protocol's collection order
 ([Garbage collection](publication-protocol-v2.md#garbage-collection-and-reader-lifetime)):
@@ -54,20 +66,25 @@ the periodic health check.
 5. Delete every object that is listed only by expired generations, or that no
    generation names and was staged before the horizon less `--clock-margin`.
 6. Once every such delete succeeded, delete the expired manifests.
-7. Once those succeeded, forget the expired history rows.
+7. Once those succeeded, forget the expired history rows, all but the highest,
+   which stays as the history's floor (see "What is deleted, and what never is").
 
 A pass that fails at any step leaves a state the next pass plans from again: an
 expired manifest still present lists its objects again, and one already deleted
 leaves only its row to forget. Re-running is always safe.
 
-Every pass takes the schema lock `cdc-flush` and `cdc-init` take, and skips a
-schema whose lock is held. The lock is for liveness only: the horizon and the
+Every collection takes the schema lock `cdc-flush` and `cdc-init` take, and
+skips a schema whose lock is held. The lock is for liveness only: the horizon and the
 retention grace are what make a delete safe, so a lost lease or a compactor
 running outside the lock cannot make the collector delete something a reader or
 a writer still needs.
 
 **`--verify-checksums`.** Adds a full GET of every object a retained generation
-lists and compares its SHA-256 and size with the manifest's. It is the only
+lists, once per key, and compares its SHA-256 and size with every retained
+entry that names the key. A shared base object that went bad is reported
+against each generation that lists it, the current one included, and an entry
+only the current generation committed wrongly is reported although an older
+entry for the same key matches. It is the only
 check of an object's bytes at rest besides compaction's pre-merge gate (#347).
 
 `--repair` is refused. `--manifest-template`, `--manifest-prefix`,
@@ -101,18 +118,30 @@ It never deletes:
 
 A pass deletes nothing at all for a schema when it cannot prove what readers
 may scan: a missing or invalid record, a published record whose history row is
-missing or names another manifest, a retained manifest that is missing, any
-manifest that fails verification (retained or expired), or a manifest key the
-configured prefix does not build. A manifest read that S3 refuses (403) or that
-fails is a tool failure, never a missing manifest.
+missing or names another manifest or parent, a gap in the generation history
+(below), a retained manifest that is missing, any manifest that fails
+verification (retained or expired, and the current one also against the record,
+as readers verify it), or a manifest key the configured prefix does not build. A
+manifest read that S3 refuses (403) or that fails is a tool failure, never a
+missing manifest, and so is a listing that answers an object without a
+`LastModified`: an object of unknown age is never taken to be older than the
+horizon.
+
+Every committed generation takes the next number of the record's counter. A
+generation below the highest expired one is past every reader, whether its row
+was forgotten or lost, so the collection keeps that highest expired row (its
+manifest and objects deleted) as the history's floor, and requires a row for
+every number above it up to the counter. A number without one is a
+`missing_history` finding: a reader may still hold that generation, and nothing
+names what it lists.
 
 ## Retention
 
 | Flag | Parameter | Default | Rule |
 | --- | --- | --- | --- |
-| `--retention-grace` | G | 15m | At least the reader's pass deadline R_max (60s, `federated.DefaultPublishedPassDeadline`) plus C. A smaller value is refused. |
+| `--retention-grace` | G | 15m | At least the reader's pass deadline R_max (60s, `federated.DefaultPublishedPassDeadline`) plus C. A smaller value is refused, and so is a C whose sum with R_max does not fit a duration. |
 | `--clock-margin` | C | 1m | Positive. Covers the drift between the readers' clocks, the database clock and S3's `LastModified`. |
-| `--orphan-age` | A | 2h | At least the writers' staging budget W (1h, `cdcv2.DefaultStagingBudget`) plus C. Any value is safe; a smaller one would refuse publications still inside their budget, so it is refused. |
+| `--orphan-age` | A | 2h | At least the writers' staging budget W (1h, `cdcv2.DefaultStagingBudget`) plus C. Any value is safe; a smaller one would refuse publications still inside their budget, so it is refused. A C whose sum with W does not fit a duration is refused before any connection opens. |
 
 A reader that chose generation N finishes or aborts within R_max of its
 snapshot. N's replacement committed after that snapshot, and the collector
@@ -138,6 +167,7 @@ safe action. Any finding makes the run exit 2.
 | `record_invalid` | The record row is one no transition writes. | refused | Restore the row from a backup. |
 | `awaiting_init` | The V2 cutover left the schema for its first `cdc-init`. Readers fail closed. | runs | Run `cdc-init` for the schema. |
 | `missing_generation` | The record names a generation whose manifest object is missing, or whose history row is missing or names another manifest. | refused | Re-initialize with `cdc-init`. A lost manifest: collection resumes once the lost generation expires. A lost history row: restore it, or re-init and run `--gc` no sooner than G after the init commits, because nothing protected the unrecorded generation's objects. |
+| `missing_history` | The history has no row for a generation number above the highest expired row and at or below the record's counter. | refused | Restore the rows from a backup. Otherwise collection resumes by itself once a generation above the gap expires: a later publication (a `cdc-init` included) supersedes it, a pass retires it, and G passes. |
 | `missing_retained_manifest` | A superseded generation inside its grace has no manifest. | refused | None for new reads. Collection resumes once the generation expires. |
 | `invalid_manifest` | A manifest's bytes are not the ones PostgreSQL committed: corruption or a writer bug. | refused | Restore the object from a versioned or backed-up copy whose SHA-256 is the history row's `manifest_sha256`. For the current generation, a re-init restores reads. |
 | `foreign_manifest` | A generation's manifest is not under `--data-prefix`. | refused | Run with the prefix the writers publish under. |
@@ -151,6 +181,10 @@ with it, so a rebuilt inventory that lacks a row's newest version, or holds a
 deleted row without its tombstone, serves wrong answers without any error.
 A re-init cannot do that: it exports every live row at its current version and
 replaces the parquet tiers.
+
+A lost record recovered by `init-db` supersedes the generation it named, in the
+recovery's transaction; the next collection retires it, and it expires and is
+collected a grace later, as any superseded generation.
 
 A `DROPPED` schema keeps its record. Its generations were superseded by the
 drop, and expire and are collected like any other's. An `UNPUBLISHED` schema
@@ -179,13 +213,18 @@ The run visits every schema in the registry and every schema with a record, so
 a dropped schema is still collected and a registered schema without a record is
 reported.
 
-Exit codes: 0 when every schema is clean, 2 when any schema has a finding or was
-skipped because its lock was held, 1 when a pass failed (a database or S3 call,
+Exit codes: 0 when every schema is clean, 2 when any schema has a finding or a
+collection skipped it because its lock was held, 1 when a pass failed (a database or S3 call,
 a listing that could not be followed to its end, a lost lease). Garbage awaiting
 collection is not a finding.
 
+Under `--gc` the report lists every key deleted and every row forgotten, from
+what the pass did rather than from its plan, and says how many planned deletes
+a pass that failed part way left for the next one.
+
 The collector's principal needs `s3:ListBucket`, `s3:GetObject` and
-`s3:DeleteObject` on the bucket. Without `s3:ListBucket`, S3 answers 403 for a
+`s3:DeleteObject` on the bucket; the diagnosis's, `s3:ListBucket` and
+`s3:GetObject`, and `SELECT` on the publication tables and the registry. Without `s3:ListBucket`, S3 answers 403 for a
 missing key, which the tool reports as a failure rather than a loss.
 
 ## Not verified

@@ -59,9 +59,11 @@ func TestAReaderPinnedToAGenerationCompletesWhileTheNextPublishesAndGCRuns(t *te
 	waitOutGrace()
 	rep := f.pass(t, testOptions(true))
 	require.NoError(t, rep.Err)
-	require.Equal(t, []int64{1, 2}, rep.Collected.Forgotten)
+	require.Equal(t, []int64{1}, rep.Collected.Forgotten, "N's row stays as the history's floor")
 	require.Equal(t, f.keysOf(g3), f.store.keys(), "only N+1's manifest and objects remain")
-	require.Equal(t, 1, f.pass(t, testOptions(false)).Retained, "the history holds N+1 alone")
+	diag := f.pass(t, testOptions(false))
+	require.Equal(t, [2]int{1, 1}, [2]int{diag.Retained, diag.Expired}, "the history holds N+1 and N's row as its floor")
+	require.Empty(t, diag.Findings)
 }
 
 // TestCollectorWaitsOutAPublicationInFlight raises the horizon while a
@@ -175,6 +177,11 @@ func TestADroppedSchemasGenerationsExpireAndAreCollected(t *testing.T) {
 	waitOutGrace()
 	rep = f.pass(t, testOptions(true))
 	require.NoError(t, rep.Err)
-	require.Equal(t, []int64{1}, rep.Collected.Forgotten)
+	require.Empty(t, rep.Collected.Forgotten, "the only expired row stays as the history's floor")
+	require.Len(t, rep.Collected.Manifests, 1)
 	require.Empty(t, f.store.keys())
+	rep = f.pass(t, testOptions(true))
+	require.NoError(t, rep.Err)
+	require.Empty(t, rep.Findings, "the floor proves the history complete")
+	require.Empty(t, rep.Plan.Objects)
 }

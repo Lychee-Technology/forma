@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/publication"
@@ -30,6 +31,9 @@ type pass struct {
 	// check against its history row.
 	verified map[string]*manifestv2.Manifest
 	findings []Finding
+	// concurrent counts the findings a diagnosis dropped because the
+	// generation they concern expired while it ran.
+	concurrent int
 }
 
 // schema runs one schema's pass on ctx, which holds the schema's lock.
@@ -58,6 +62,12 @@ func (r *Reconciler) schema(ctx context.Context, id int16) SchemaReport {
 	if err := r.inspect(ctx, p); err != nil {
 		rep.Err = err
 		return rep
+	}
+	if !r.Opts.GC {
+		if err := r.dropConcurrentlyExpired(ctx, p); err != nil {
+			rep.Err = fmt.Errorf("schema %d: %w", id, err)
+			return rep
+		}
 	}
 	r.summarize(p, &rep)
 	if !r.Opts.GC || rep.Refused != "" {
@@ -88,6 +98,13 @@ func (r *Reconciler) read(ctx context.Context, id int16) (*pass, error) {
 	listed, err := r.Objects.List(ctx, r.Layout.SchemaPrefix(id))
 	if err != nil {
 		return nil, fmt.Errorf("schema %d: list its objects under %s: %w", id, r.Layout.SchemaPrefix(id), err)
+	}
+	for _, o := range listed {
+		// Any ObjectStore, not only S3Objects: an unknown age is never
+		// evidence that an object is older than the horizon.
+		if o.LastModified <= 0 {
+			return nil, fmt.Errorf("schema %d: object %s was listed with LastModified %d: %w", id, o.Key, o.LastModified, ErrUnknownAge)
+		}
 	}
 	p.listed = listed
 	if err := r.snapshot(ctx, p); err != nil {
@@ -173,4 +190,41 @@ func (r *Reconciler) fetchManifests(ctx context.Context, p *pass) error {
 		p.raw[g.ManifestKey] = raw
 	}
 	return nil
+}
+
+// dropConcurrentlyExpired keeps a lock-free diagnosis from reporting what a
+// collection running beside it did: a collector whose snapshot came after
+// the diagnosis's may have found a superseded generation expired and deleted
+// its manifest and the objects only it listed. Such a finding is reported
+// only if the generation is still retained when it is read again, after the
+// manifests and objects were read; a current generation's manifest and
+// objects no collection deletes, so its findings always stand.
+func (r *Reconciler) dropConcurrentlyExpired(ctx context.Context, p *pass) error {
+	if !slices.ContainsFunc(p.findings, concurrentlyCaused) {
+		return nil
+	}
+	now, err := publication.Retained(ctx, publication.DB(r.DB), r.Tables, p.id, r.Opts.RetentionGrace)
+	if err != nil {
+		return fmt.Errorf("read the retained generations again: %w", err)
+	}
+	p.findings = slices.DeleteFunc(p.findings, func(f Finding) bool {
+		if !concurrentlyCaused(f) {
+			return false
+		}
+		still := slices.ContainsFunc(now, func(g publication.Generation) bool {
+			return g.Generation == f.Generation && g.Epoch == f.Epoch
+		})
+		if !still {
+			p.concurrent++
+		}
+		return !still
+	})
+	return nil
+}
+
+// concurrentlyCaused answers whether a collection running beside the pass
+// could have caused f: a missing manifest or object of a superseded
+// generation.
+func concurrentlyCaused(f Finding) bool {
+	return !f.Current && f.Generation != 0 && (f.Kind == MissingRetainedManifest || f.Kind == LostObject)
 }

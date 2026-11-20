@@ -18,6 +18,7 @@ import (
 func (r *Reconciler) inspect(ctx context.Context, p *pass) error {
 	p.verified = map[string]*manifestv2.Manifest{}
 	current := r.checkRecord(p)
+	r.checkHistory(p)
 	for _, g := range p.retained {
 		r.checkManifest(p, g, true, g.Generation == current)
 	}
@@ -65,9 +66,13 @@ func (r *Reconciler) checkRecord(p *pass) int64 {
 	case i < 0:
 		detail = "the generation history has no row for the record's generation"
 	case p.retained[i].Epoch != rec.Epoch || p.retained[i].ManifestKey != rec.ManifestKey ||
-		p.retained[i].ManifestSHA256 != rec.ManifestSHA256 || p.retained[i].Token != rec.Token || p.retained[i].SupersededAt != 0:
-		detail = fmt.Sprintf("the generation's history row names epoch %d, manifest %s, digest %s and token %s, superseded at %d",
-			p.retained[i].Epoch, p.retained[i].ManifestKey, p.retained[i].ManifestSHA256, p.retained[i].Token, p.retained[i].SupersededAt)
+		p.retained[i].ManifestSHA256 != rec.ManifestSHA256 || p.retained[i].Token != rec.Token ||
+		p.retained[i].ParentGeneration != rec.ParentGeneration || p.retained[i].SupersededAt != 0:
+		row := p.retained[i]
+		detail = fmt.Sprintf("the generation's history row names epoch %d, parent generation %d, manifest %s, digest %s and token %s, "+
+			"superseded at %d; the record names epoch %d, parent generation %d, manifest %s, digest %s and token %s",
+			row.Epoch, row.ParentGeneration, row.ManifestKey, row.ManifestSHA256, row.Token, row.SupersededAt,
+			rec.Epoch, rec.ParentGeneration, rec.ManifestKey, rec.ManifestSHA256, rec.Token)
 	default:
 		return rec.Generation
 	}
@@ -75,6 +80,49 @@ func (r *Reconciler) checkRecord(p *pass) int64 {
 	f.Action = actionMissingHistory
 	p.findings = append(p.findings, f)
 	return rec.Generation
+}
+
+// checkHistory proves that the history holds a row for every generation a
+// reader could still hold, so that no key is called an orphan because the
+// row of the generation that lists it was lost. Generation numbers come
+// from the record's counter, one per committed generation, so the rows a
+// pass may not miss are every number from just above the highest expired
+// row (the floor) up to the counter. Every generation below an expired row
+// is past every reader: it was replaced before that row's generation
+// committed, and that row was retired, after its own replacement was seen
+// committed, at least the retention grace ago. Collection keeps the highest
+// expired row for this reason (keepFloor). A number in the range without a
+// row cannot be told from a forgotten one, and stops the collection.
+func (r *Reconciler) checkHistory(p *pass) {
+	if p.record == nil {
+		return
+	}
+	var floor int64
+	for _, g := range p.expired {
+		floor = max(floor, g.Generation)
+	}
+	top := p.record.Generation
+	if p.record.State == publication.Published {
+		top-- // checkRecord reports the current generation's own row
+	}
+	next := floor + 1
+	report := func(last int64) {
+		if last < next {
+			return
+		}
+		p.findings = append(p.findings, Finding{Kind: HistoryGap, Generation: next, Action: actionHistoryGap,
+			Detail: fmt.Sprintf("the generation history has no row for generations %d through %d, above the highest expired generation %d "+
+				"and at or below the record's counter %d: a reader may still hold one of them, and nothing names the objects it lists",
+				next, last, floor, p.record.Generation)})
+	}
+	for _, g := range p.retained { // ascending
+		if g.Generation < next || g.Generation > top {
+			continue
+		}
+		report(g.Generation - 1)
+		next = g.Generation + 1
+	}
+	report(top)
 }
 
 // checkManifest verifies g's manifest with the reader's full check
@@ -100,11 +148,29 @@ func (r *Reconciler) checkManifest(p *pass, g publication.Generation, retained, 
 		return
 	}
 	m, err := manifestv2.Verify(raw, manifestv2.GenerationRef(p.id, g))
+	if err == nil && current {
+		err = verifyAgainstRecord(raw, p.record.Record)
+	}
 	if err != nil {
 		p.findings = append(p.findings, generationFinding(InvalidManifest, g, current, err.Error()))
 		return
 	}
 	p.verified[g.ManifestKey] = m
+}
+
+// verifyAgainstRecord runs the reader's own check of the current manifest,
+// against the record (manifestv2.RecordRef): the history row carries no
+// lineage, and a record whose parent or lineage differs from its manifest's
+// fails every reader even when the row verifies.
+func verifyAgainstRecord(raw []byte, rec publication.Record) error {
+	ref, err := manifestv2.RecordRef(rec)
+	if err != nil {
+		return fmt.Errorf("the record cannot be read as a reader reads it: %w", err)
+	}
+	if _, err := manifestv2.Verify(raw, ref); err != nil {
+		return fmt.Errorf("the manifest does not verify against the record, as readers verify it: %w", err)
+	}
+	return nil
 }
 
 // probeLost answers the keys retained generations list that S3 confirms
@@ -146,30 +212,51 @@ func (r *Reconciler) probeLost(ctx context.Context, p *pass, current int64) (map
 	return lost, nil
 }
 
+// listing is one retained generation's manifest entry for a key.
+type listing struct {
+	g    publication.Generation
+	file manifestv2.File
+}
+
 // verifyChecksums hashes every object a retained generation lists, except
-// those already found lost, and reports one whose bytes do not have the
-// digest and size its manifest lists.
+// those already found lost, once per key, and checks the result against
+// every retained entry that names the key: a shared base object is reported
+// against each generation, the current one included, whose entry its bytes
+// do not match, and an entry only the current generation committed wrongly
+// is caught although an older entry matches. An object a hash finds gone is
+// probed, and reported lost against its newest lister.
 func (r *Reconciler) verifyChecksums(ctx context.Context, p *pass, current int64, lost map[string]bool) error {
-	seen := map[string]bool{}
+	byKey := map[string][]listing{}
 	for _, g := range p.retained {
 		m := p.verified[g.ManifestKey]
 		if m == nil {
 			continue
 		}
 		for _, f := range m.Files {
-			if seen[f.Key] || lost[f.Key] {
+			if !lost[f.Key] {
+				byKey[f.Key] = append(byKey[f.Key], listing{g: g, file: f})
+			}
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(byKey)) {
+		entries := byKey[key]
+		sum, size, err := r.Objects.Hash(ctx, key)
+		if err != nil {
+			newest := entries[len(entries)-1].g // generations ascend
+			if ok, perr := r.Objects.Exists(ctx, key); perr == nil && !ok {
+				p.findings = append(p.findings, objectFinding(LostObject, newest, newest.Generation == current, key,
+					"a retained generation lists the object and S3 confirms it missing"))
 				continue
 			}
-			seen[f.Key] = true
-			sum, size, err := r.Objects.Hash(ctx, f.Key)
-			if err != nil {
-				return fmt.Errorf("schema %d: hash %s, which generation %d lists: %w", p.id, f.Key, g.Generation, err)
-			}
-			if sum == f.SHA256 && size == f.SizeBytes {
+			return fmt.Errorf("schema %d: hash %s, which generation %d lists: %w", p.id, key, newest.Generation, err)
+		}
+		for _, e := range entries {
+			if sum == e.file.SHA256 && size == e.file.SizeBytes {
 				continue
 			}
-			p.findings = append(p.findings, objectFinding(CorruptObject, g, g.Generation == current, f.Key,
-				fmt.Sprintf("the manifest lists SHA-256 %s and %d bytes, the object has SHA-256 %s and %d bytes", f.SHA256, f.SizeBytes, sum, size)))
+			p.findings = append(p.findings, objectFinding(CorruptObject, e.g, e.g.Generation == current, key,
+				fmt.Sprintf("generation %d's manifest lists SHA-256 %s and %d bytes, the object has SHA-256 %s and %d bytes",
+					e.g.Generation, e.file.SHA256, e.file.SizeBytes, sum, size)))
 		}
 	}
 	return nil

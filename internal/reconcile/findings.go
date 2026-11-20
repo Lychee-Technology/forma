@@ -21,6 +21,9 @@ const (
 	actionMissingHistory = "restore the generation history row from a backup, or re-initialize the schema with cdc-init and run " +
 		"garbage collection no sooner than the retention grace after that init commits: without its row the current " +
 		"generation's objects are protected by nothing, so garbage collection deletes nothing for the schema meanwhile"
+	actionHistoryGap = "restore the generation history rows from a backup; otherwise garbage collection resumes by itself " +
+		"once a generation above the gap expires (a later publication, a cdc-init included, supersedes it, a pass retires it, " +
+		"and the retention grace passes), and deletes nothing for the schema until then"
 	actionMissingRetained = "no action for new reads, which scan the current generation; garbage collection deletes nothing " +
 		"for the schema until this generation expires, the retention grace after it was retired"
 	actionInvalidManifest = "restore the object from a versioned or backed-up copy whose SHA-256 is the history row's " +

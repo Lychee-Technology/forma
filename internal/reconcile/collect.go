@@ -24,7 +24,7 @@ func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 		}
 	}
 	rep.Horizon, rep.Retained, rep.Expired, rep.Listed = p.horizon, len(p.retained), len(p.expired), len(p.listed)
-	rep.Findings = p.findings
+	rep.Findings, rep.ConcurrentlyExpired = p.findings, p.concurrent
 	for _, f := range p.findings {
 		if f.Kind.blocking() {
 			rep.Refused = fmt.Sprintf("%s: %s", f.Kind, f.describe())
@@ -33,6 +33,11 @@ func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 	}
 	if p.record == nil {
 		rep.Refused = fmt.Sprintf("no usable record: %v", p.recordErr)
+		return
+	}
+	if p.concurrent > 0 {
+		rep.Refused = fmt.Sprintf("a collection ran beside the diagnosis and deleted what %d superseded generation(s) listed, "+
+			"so the diagnosis's snapshot no longer plans what a collection would delete; run the diagnosis again for the plan", p.concurrent)
 		return
 	}
 	var owned []publication.Object
@@ -52,8 +57,21 @@ func (r *Reconciler) summarize(p *pass, rep *SchemaReport) {
 		rep.Refused = err.Error()
 		return
 	}
+	plan.Forget = keepFloor(plan.Forget)
 	rep.Plan = plan
 	rep.PendingOrphans = r.pendingOrphans(p, owned)
+}
+
+// keepFloor keeps the highest expired generation's row out of the rows a
+// pass forgets (forget is sorted ascending). Its manifest and the objects
+// only it lists are still deleted; the row stays as the history's floor,
+// below which every generation is past every reader (checkHistory), and is
+// forgotten once a higher generation expires and takes its place.
+func keepFloor(forget []int64) []int64 {
+	if len(forget) == 0 {
+		return forget
+	}
+	return forget[:len(forget)-1]
 }
 
 // guardPlan refuses a plan that deletes the record's manifest, a retained

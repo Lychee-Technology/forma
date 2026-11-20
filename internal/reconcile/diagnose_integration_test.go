@@ -27,7 +27,7 @@ func TestDiagnosisIsReadOnly(t *testing.T) {
 		require.Nil(t, rep.Collected, "a diagnosis collects nothing")
 		require.Empty(t, rep.Findings)
 		require.Equal(t, rec.Horizon, rep.Horizon, "the plan is made against the record's horizon")
-		require.Equal(t, []int64{1, 2}, rep.Plan.Forget)
+		require.Equal(t, []int64{1}, rep.Plan.Forget, "generation 2's row stays as the history's floor")
 		require.Len(t, rep.Plan.Manifests, 2)
 		plan = rep.Plan
 	}

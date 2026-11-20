@@ -9,7 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/lychee-technology/forma/internal/compaction"
+	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/reconcile"
 )
 
@@ -122,8 +125,9 @@ func TestManifestReconcile_GCCollectsTheGenerationsACompactionReplaced(t *testin
 	if len(second.Findings) != 0 {
 		t.Fatalf("the collection found %+v", second.Findings)
 	}
-	if !slices.Contains(second.Collected.Forgotten, preSwap.Generation) {
-		t.Fatalf("the collection forgot %v, want the replaced generation %d among them", second.Collected.Forgotten, preSwap.Generation)
+	if slices.Contains(second.Collected.Forgotten, preSwap.Generation) || !slices.Contains(second.Collected.Manifests, preSwap.Key) {
+		t.Fatalf("the collection forgot %v and deleted manifests %v: want the replaced generation %d's manifest deleted and its row kept as the history's floor",
+			second.Collected.Forgotten, second.Collected.Manifests, preSwap.Generation)
 	}
 	want := append(sortedGenerationKeys(post), post.Key)
 	slices.Sort(want)
@@ -195,4 +199,86 @@ func TestManifestReconcile_ReportsLossAndRecoversThroughAReinit(t *testing.T) {
 		t.Fatalf("after the recovery the schema holds %v, want the init generation's %v", got, want)
 	}
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100})
+}
+
+// TestManifestReconcile_RecoveryAndCollectionKeepDeletesAndNewestVersions is
+// the V2 resurrection regression of the recovery path: the init generation's
+// base holds live copies of a row later deleted and of a row later updated
+// twice, the current generation's manifest is lost, and the schema recovers
+// through a cdc-init and two collections that delete every generation before
+// it, the stale base included. The federated reader, checked against the
+// oracle under every tier preference, never answers the deleted row and
+// answers the updated row at its newest version: after the recovery, and
+// after a delete and an update published over the recovered generation.
+func TestManifestReconcile_RecoveryAndCollectionKeepDeletesAndNewestVersions(t *testing.T) {
+	cluster := SharedCluster(t)
+	env := NewEnv(t, cluster)
+	ctx := context.Background()
+	wide := DefaultSchemaFixtures()[1]
+	creates := seedCompactionBase(ctx, t, env, wide, 5)
+	deleted, updated := creates[1].RowID, creates[2].RowID
+	apply := func(events ...*Event) {
+		t.Helper()
+		if err := env.ApplyEvents(ctx, events...); err != nil {
+			t.Fatalf("apply events: %v", err)
+		}
+	}
+	apply(UpdateEvent(wide, updated, map[string]any{"title": "recovery-v1"}))
+	mustFlush(ctx, t, env)
+	apply(DeleteEvent(wide, deleted), UpdateEvent(wide, updated, map[string]any{"title": "recovery-v2"}))
+	mustFlush(ctx, t, env)
+	lostGen := loadSchemaManifest(ctx, t, env, wide)
+	deleteObject(ctx, t, env, lostGen.Key)
+
+	if _, err := env.RunInit(ctx, wide); err != nil {
+		t.Fatalf("re-init: %v", err)
+	}
+	reinit := loadSchemaManifest(ctx, t, env, wide)
+	assertRecoveredReads(ctx, t, env, wide, deleted, updated)
+
+	runReconcile(ctx, t, env, wide, reconcileOptions(true)) // retires every generation before the re-init
+	time.Sleep(reconcileGrace)
+	rep := runReconcile(ctx, t, env, wide, reconcileOptions(true))
+	if rep.Refused != "" || len(rep.Findings) != 0 {
+		t.Fatalf("the collection after the recovery is refused (%q) or finds %+v", rep.Refused, rep.Findings)
+	}
+	if len(rep.Collected.Objects) == 0 {
+		t.Fatal("the collection deleted no object of the generations the re-init replaced, the stale base included")
+	}
+	want := append(sortedGenerationKeys(reinit), reinit.Key)
+	slices.Sort(want)
+	if got := schemaObjectKeys(ctx, t, env, wide); !slices.Equal(got, want) {
+		t.Fatalf("after the collection the schema holds %v, want the init generation's %v", got, want)
+	}
+	assertRecoveredReads(ctx, t, env, wide, deleted, updated)
+
+	apply(DeleteEvent(wide, creates[3].RowID), UpdateEvent(wide, updated, map[string]any{"title": "recovery-v3"}))
+	mustFlush(ctx, t, env)
+	assertRecoveredReads(ctx, t, env, wide, deleted, updated)
+	if res := env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 100}); res != nil && containsRow(res, creates[3].RowID) {
+		t.Fatalf("a row deleted over the recovered generation is answered")
+	}
+}
+
+// assertRecoveredReads checks the federated reader against the oracle under
+// every tier preference, and that it never answers the deleted row and does
+// answer the updated one (whose newest version the oracle comparison pins).
+func assertRecoveredReads(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, deleted, updated uuid.UUID) {
+	t.Helper()
+	for _, tiers := range [][]model.DataTier{nil, {model.DataTierCold}, {model.DataTierWarm, model.DataTierCold}} {
+		res := env.AssertQueryMatches(ctx, Query{Schema: schema, PreferredTiers: tiers, Limit: 100})
+		if res == nil {
+			return
+		}
+		if containsRow(res, deleted) {
+			t.Fatalf("tiers %v: the deleted row %s is answered", tiers, deleted)
+		}
+		if !containsRow(res, updated) {
+			t.Fatalf("tiers %v: the updated row %s is missing", tiers, updated)
+		}
+	}
+}
+
+func containsRow(res *QueryResult, rowID uuid.UUID) bool {
+	return slices.ContainsFunc(res.Records, func(r *model.PersistentRecord) bool { return r.RowID == rowID })
 }

@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/cdcv2"
 	"github.com/lychee-technology/forma/internal/federated"
 	"github.com/lychee-technology/forma/internal/manifestv2"
@@ -86,6 +89,33 @@ func TestParseReconcileFlags_RefusesUnsafeTimes(t *testing.T) {
 	require.ErrorIs(t, err, reconcile.ErrRetentionUnsafe)
 }
 
+// TestManifestReconcileRefusesOverflowingTimesBeforeConnecting: a floor
+// whose sum wraps a Duration would let a zero grace or orphan age pass. The
+// flags are refused before any database connection opens.
+func TestManifestReconcileRefusesOverflowingTimesBeforeConnecting(t *testing.T) {
+	old := openReconcileDBFn
+	defer func() { openReconcileDBFn = old }()
+	openReconcileDBFn = func(context.Context, cdc.CDCConfig, *zap.Logger) (*sql.DB, error) {
+		t.Fatal("the flags were accepted and a database connection was opened")
+		return nil, nil
+	}
+	maxNS := fmt.Sprintf("%dns", int64(math.MaxInt64))
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--gc", "--retention-grace=0s", "--clock-margin=" + maxNS, "--orphan-age=1ns"}, "overflows"},
+		// R_max + C fits, the staging budget + C does not.
+		{[]string{"--gc", "--retention-grace=" + maxNS, "--clock-margin=" + fmt.Sprintf("%dns", int64(math.MaxInt64-2*time.Minute)), "--orphan-age=1ns"},
+			"--clock-margin"},
+	} {
+		err := runManifestReconcile(context.Background(), reconcileArgs(tc.args...))
+		require.ErrorContains(t, err, tc.want, "%v", tc.args)
+	}
+	_, err := parseReconcileFlags(reconcileArgs("--retention-grace=0s", "--clock-margin="+maxNS, "--orphan-age=1ns"))
+	require.ErrorIs(t, err, reconcile.ErrRetentionUnsafe)
+}
+
 // TestParseReconcileFlags_RefusesRepair: under V2 there is nothing to adopt,
 // and the recovery of a lost generation is a re-init.
 func TestParseReconcileFlags_RefusesRepair(t *testing.T) {
@@ -118,6 +148,12 @@ func TestNewReconciler_WiresTheFlags(t *testing.T) {
 	require.Equal(t, &reconcile.Schemas{DB: db, Registry: "schema_registry", Tables: publication.TablesFor("em"), Only: 9}, r.Schemas)
 	require.Equal(t, opts.run, r.Opts)
 	require.True(t, r.Opts.GC)
+
+	opts, err = parseReconcileFlags(reconcileArgs("--pg-engine", "aurora-dsql"))
+	require.NoError(t, err)
+	r, err = newReconciler(opts, objects, db, zap.NewNop())
+	require.NoError(t, err)
+	require.Nil(t, r.Locker, "the diagnosis takes no lock: on Aurora DSQL it is a lease row write")
 }
 
 func TestRunToolMain_ManifestReconcileExitCodes(t *testing.T) {

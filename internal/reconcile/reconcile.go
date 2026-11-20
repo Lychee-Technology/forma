@@ -8,7 +8,8 @@
 // objects under its prefix, then, in one snapshot, its record and its
 // retained and expired generations, then every manifest those generations
 // name, each verified against its history row before a key it lists is
-// trusted. The diagnosis writes nothing, to PostgreSQL or S3. The collector
+// trusted. The diagnosis writes nothing, to PostgreSQL or S3, and takes no
+// schema lock, which on Aurora DSQL is a lease row it would write. The collector
 // raises the record's horizon before it lists, retires the superseded
 // generations it saw after that snapshot ended, and deletes exactly what
 // publication.PlanCollection plans, step by step, so that a crash at any
@@ -25,6 +26,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"go.uber.org/zap"
@@ -64,20 +66,38 @@ type Options struct {
 }
 
 // Validate refuses options under which a reader could lose an object it
-// scans: G must be at least R_max + C (the retention rule's premise).
+// scans: G must be at least R_max + C (the retention rule's premise). The
+// floor is summed without overflow: a sum that does not fit a Duration is
+// refused, never wrapped below G.
 func (o Options) Validate() error {
 	switch {
 	case o.ReaderDeadline <= 0:
 		return fmt.Errorf("reader pass deadline %s must be positive: %w", o.ReaderDeadline, ErrRetentionUnsafe)
 	case o.ClockMargin < 0:
 		return fmt.Errorf("clock margin %s must not be negative", o.ClockMargin)
-	case o.RetentionGrace < o.ReaderDeadline+o.ClockMargin:
-		return fmt.Errorf("retention grace %s is below the reader pass deadline %s plus the clock margin %s: %w",
-			o.RetentionGrace, o.ReaderDeadline, o.ClockMargin, ErrRetentionUnsafe)
 	case o.OrphanAge <= 0:
 		return fmt.Errorf("orphan age %s must be positive: a horizon at the database clock would refuse every publication in flight", o.OrphanAge)
 	}
+	floor, ok := AddDurations(o.ReaderDeadline, o.ClockMargin)
+	if !ok {
+		return fmt.Errorf("the reader pass deadline %s plus the clock margin %s overflows a duration: %w",
+			o.ReaderDeadline, o.ClockMargin, ErrRetentionUnsafe)
+	}
+	if o.RetentionGrace < floor {
+		return fmt.Errorf("retention grace %s is below the reader pass deadline %s plus the clock margin %s: %w",
+			o.RetentionGrace, o.ReaderDeadline, o.ClockMargin, ErrRetentionUnsafe)
+	}
 	return nil
+}
+
+// AddDurations answers a + b for non-negative a and b, and false when the
+// sum does not fit a Duration: a floor that wrapped negative would let any
+// value pass.
+func AddDurations(a, b time.Duration) (time.Duration, bool) {
+	if a < 0 || b < 0 || a > math.MaxInt64-b {
+		return 0, false
+	}
+	return a + b, true
 }
 
 // SchemaEnumerator answers the schemas a run visits.
@@ -93,21 +113,26 @@ type Reconciler struct {
 	Tables  publication.Tables
 	Layout  manifestv2.Layout
 	Objects ObjectStore
-	// Locker is the schema lock cdc-flush and cdc-init take. It keeps a
-	// pass apart from them for liveness only: safety comes from the
-	// horizon and the retention grace.
+	// Locker is the schema lock cdc-flush and cdc-init take. A collection
+	// takes it, to keep apart from them for liveness only: safety comes
+	// from the horizon and the retention grace. A diagnosis never takes it
+	// (it is a write on Aurora DSQL), and needs none.
 	Locker  cdc.SchemaLocker
 	Schemas SchemaEnumerator
 	Logger  *zap.Logger
 	Opts    Options
 }
 
-// Run visits every schema under its lock. A schema whose pass fails reports
-// the failure in its SchemaReport, and the others still run; only options
-// that fail Validate or an enumeration that fails stop the run.
+// Run visits every schema: a collection under the schema's lock, a
+// diagnosis without it. A schema whose pass fails reports the failure in its
+// SchemaReport, and the others still run; only options that fail Validate or
+// an enumeration that fails stop the run.
 func (r *Reconciler) Run(ctx context.Context) (Report, error) {
 	if err := r.Opts.Validate(); err != nil {
 		return Report{}, fmt.Errorf("manifest-reconcile options: %w", err)
+	}
+	if r.Opts.GC && r.Locker == nil {
+		return Report{}, errors.New("manifest-reconcile --gc needs the schema lock cdc-flush and cdc-init take")
 	}
 	ids, err := r.Schemas.SchemaIDs(ctx)
 	if err != nil {
@@ -115,9 +140,25 @@ func (r *Reconciler) Run(ctx context.Context) (Report, error) {
 	}
 	var report Report
 	for _, id := range ids {
+		if !r.Opts.GC {
+			report.Schemas = append(report.Schemas, r.diagnose(ctx, id))
+			continue
+		}
 		report.Schemas = append(report.Schemas, r.underLock(ctx, id))
 	}
 	return report, nil
+}
+
+// diagnose runs the read-only pass without the schema lock. The lock is a
+// write on Aurora DSQL (a lease row), and the diagnosis needs none: it reads
+// the listing before the snapshot, so an object a publication committed
+// meanwhile is probed rather than called lost, and a finding a concurrent
+// collection could have caused is checked again against the history before
+// it is reported (dropConcurrentlyExpired).
+func (r *Reconciler) diagnose(ctx context.Context, id int16) SchemaReport {
+	rep := r.schema(ctx, id)
+	r.log(rep)
+	return rep
 }
 
 func (r *Reconciler) underLock(ctx context.Context, id int16) SchemaReport {

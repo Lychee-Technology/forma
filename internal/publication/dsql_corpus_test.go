@@ -94,6 +94,7 @@ func TestDSQLCorpus(t *testing.T) {
 		"internal/publication/recovery.go:ReadHistory",
 		"internal/publication/recovery.go:InitializeAfterLoss",
 		"internal/publication/lifecycle_epoch.go:raiseEpoch",
+		"internal/publication/recovery.go:InitializeAfterLoss",
 		"internal/publication/record.go:Read",
 		"internal/publication/publish.go:Publish",
 		"internal/publication/publish.go:Publish",
@@ -145,6 +146,7 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectBegin()
 	mock.ExpectExec("").WithArgs(anyArgs(5)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(1)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(recordRow())
 	mock.ExpectBegin()

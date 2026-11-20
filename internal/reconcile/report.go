@@ -22,6 +22,10 @@ const (
 	// manifest object is not in S3, or whose history row is gone or names
 	// another manifest.
 	MissingGeneration FindingKind = "missing_generation"
+	// HistoryGap: the generation history has no row for a generation
+	// number a reader could still hold: one above the highest expired row
+	// and at or below the record's counter.
+	HistoryGap FindingKind = "missing_history"
 	// MissingRetainedManifest: a superseded generation readers may still
 	// scan has no manifest object.
 	MissingRetainedManifest FindingKind = "missing_retained_manifest"
@@ -48,7 +52,7 @@ const (
 // nothing.
 func (k FindingKind) blocking() bool {
 	switch k {
-	case NoRecord, RecordInvalid, MissingGeneration, MissingRetainedManifest, InvalidManifest, ForeignManifest:
+	case NoRecord, RecordInvalid, MissingGeneration, HistoryGap, MissingRetainedManifest, InvalidManifest, ForeignManifest:
 		return true
 	}
 	return false
@@ -106,6 +110,10 @@ type SchemaReport struct {
 	// horizon: staging of a publication that may still commit, or garbage
 	// a later pass collects once the horizon passes it.
 	PendingOrphans int
+	// ConcurrentlyExpired counts the findings a diagnosis left out because
+	// the superseded generation they concerned expired while it ran: a
+	// collection beside it may have deleted its manifest or objects.
+	ConcurrentlyExpired int
 	// Plan is what garbage collection deletes (under --gc) or would delete
 	// against Horizon (without it). Empty when the pass refused.
 	Plan publication.Plan
@@ -160,30 +168,57 @@ func (s SchemaReport) render(w io.Writer) {
 		fmt.Fprintf(w, "  %s: %s\n", f.Kind, f.describe())
 		fmt.Fprintf(w, "    action: %s\n", f.Action)
 	}
+	if s.ConcurrentlyExpired > 0 {
+		fmt.Fprintf(w, "  %d finding(s) left out: the superseded generation they concerned expired while the diagnosis ran, "+
+			"and a collection may have deleted what it listed\n", s.ConcurrentlyExpired)
+	}
 	if s.Refused != "" {
 		fmt.Fprintf(w, "  garbage collection refused: %s\n", s.Refused)
-	}
-	verb := "would delete"
-	if s.Collected != nil {
-		verb = "deleted"
 	}
 	if s.Collected != nil && len(s.Collected.Retired) > 0 {
 		fmt.Fprintf(w, "  retired generations: %v\n", s.Collected.Retired)
 	}
-	if s.Refused == "" {
-		fmt.Fprintf(w, "  garbage collection %s %d objects, %d manifests, and forgets generations %v\n",
-			verb, len(s.Plan.Objects), len(s.Plan.Manifests), s.Plan.Forget)
-	}
-	if s.Collected != nil {
-		for _, k := range s.Collected.Objects {
-			fmt.Fprintf(w, "  deleted object: %s\n", k)
-		}
-		for _, k := range s.Collected.Manifests {
-			fmt.Fprintf(w, "  deleted manifest: %s\n", k)
-		}
+	switch {
+	case s.Refused != "":
+	case s.Collected == nil:
+		s.renderPlan(w)
+	default:
+		s.renderCollected(w)
 	}
 	if s.Err != nil {
 		fmt.Fprintf(w, "  error: %v\n", s.Err)
+	}
+}
+
+// renderPlan writes the exact deletes a collection would run, so that an
+// operator can inspect them before enabling --gc.
+func (s SchemaReport) renderPlan(w io.Writer) {
+	fmt.Fprintf(w, "  garbage collection would delete %d objects and %d manifests, and forget generations %v\n",
+		len(s.Plan.Objects), len(s.Plan.Manifests), s.Plan.Forget)
+	for _, k := range s.Plan.Objects {
+		fmt.Fprintf(w, "  would delete object: %s\n", k)
+	}
+	for _, k := range s.Plan.Manifests {
+		fmt.Fprintf(w, "  would delete manifest: %s\n", k)
+	}
+}
+
+// renderCollected writes what the collection did, from Collected: a pass
+// that failed part way reports what it deleted and forgot, and what of its
+// plan it left for the next pass.
+func (s SchemaReport) renderCollected(w io.Writer) {
+	c := s.Collected
+	fmt.Fprintf(w, "  garbage collection deleted %d of %d planned objects and %d of %d planned manifests, and forgot generations %v of %v planned\n",
+		len(c.Objects), len(s.Plan.Objects), len(c.Manifests), len(s.Plan.Manifests), c.Forgotten, s.Plan.Forget)
+	for _, k := range c.Objects {
+		fmt.Fprintf(w, "  deleted object: %s\n", k)
+	}
+	for _, k := range c.Manifests {
+		fmt.Fprintf(w, "  deleted manifest: %s\n", k)
+	}
+	left := len(s.Plan.Objects) - len(c.Objects) + len(s.Plan.Manifests) - len(c.Manifests) + len(s.Plan.Forget) - len(c.Forgotten)
+	if left > 0 {
+		fmt.Fprintf(w, "  left for the next pass: %d planned deletes and forgets did not run\n", left)
 	}
 }
 

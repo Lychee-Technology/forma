@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lychee-technology/forma/internal/cdc"
@@ -42,6 +44,29 @@ func TestOptionsRefuseARetentionThatDoesNotCoverTheReader(t *testing.T) {
 	require.ErrorIs(t, err, ErrRetentionUnsafe, "a run with unsafe options visits no schema")
 }
 
+// TestOptionsRefuseAFloorThatOverflows: R_max + C summed in a Duration
+// would wrap negative and let a zero grace pass.
+func TestOptionsRefuseAFloorThatOverflows(t *testing.T) {
+	for _, o := range []Options{
+		{RetentionGrace: 0, ReaderDeadline: time.Nanosecond, ClockMargin: math.MaxInt64, OrphanAge: time.Nanosecond},
+		{RetentionGrace: math.MaxInt64, ReaderDeadline: time.Minute, ClockMargin: math.MaxInt64 - time.Minute + 1, OrphanAge: time.Hour},
+	} {
+		require.ErrorIs(t, o.Validate(), ErrRetentionUnsafe, "%+v", o)
+	}
+	edge := Options{RetentionGrace: math.MaxInt64, ReaderDeadline: time.Minute, ClockMargin: math.MaxInt64 - time.Minute, OrphanAge: time.Hour}
+	require.NoError(t, edge.Validate(), "a floor of exactly MaxInt64 is representable")
+
+	sum, ok := AddDurations(math.MaxInt64-1, 1)
+	require.Equal(t, [2]any{time.Duration(math.MaxInt64), true}, [2]any{sum, ok})
+	_, ok = AddDurations(math.MaxInt64, 1)
+	require.False(t, ok)
+	_, ok = AddDurations(-1, 0)
+	require.False(t, ok, "a negative term is no floor")
+
+	_, err := (&Reconciler{Opts: Options{GC: true, RetentionGrace: time.Hour, ReaderDeadline: time.Minute, OrphanAge: time.Hour}}).Run(context.Background())
+	require.ErrorContains(t, err, "schema lock", "a collection without the schema lock visits no schema")
+}
+
 func TestReportResidualAndRender(t *testing.T) {
 	clean := SchemaReport{SchemaID: 1, State: publication.Published, Epoch: 2, Generation: 5,
 		Plan: publication.Plan{Objects: []string{"a"}, Forget: []int64{3}}}
@@ -52,17 +77,21 @@ func TestReportResidualAndRender(t *testing.T) {
 
 	collected := clean
 	collected.SchemaID = 2
-	collected.Collected = &Collected{Retired: []int64{4}, Objects: []string{"a"}}
+	collected.Collected = &Collected{Retired: []int64{4}, Objects: []string{"a"}, Forgotten: []int64{3}}
+	partial := SchemaReport{SchemaID: 5, State: publication.Published,
+		Plan:      publication.Plan{Objects: []string{"p", "q"}, Manifests: []string{"m"}, Forget: []int64{2}},
+		Collected: &Collected{Objects: []string{"p"}}, Err: errors.New("injected delete failure of q")}
 	refused := SchemaReport{SchemaID: 3, Refused: "no_record: x",
 		Findings: []Finding{recordFinding(NoRecord, publication.ErrNoRecord)}}
 	var out bytes.Buffer
-	Report{Schemas: []SchemaReport{clean, collected, refused, {SchemaID: 4, Skipped: true}}}.Render(&out)
+	Report{Schemas: []SchemaReport{clean, collected, refused, {SchemaID: 4, Skipped: true}, partial}}.Render(&out)
 	text := out.String()
 	for _, want := range []string{
 		"schema 1: clean (PUBLISHED, epoch 2, generation 5)",
-		"garbage collection would delete 1 objects, 0 manifests, and forgets generations [3]",
+		"garbage collection would delete 1 objects and 0 manifests, and forget generations [3]",
+		"would delete object: a",
 		"retired generations: [4]",
-		"garbage collection deleted 1 objects",
+		"garbage collection deleted 1 of 1 planned objects and 0 of 0 planned manifests, and forgot generations [3] of [3] planned",
 		"deleted object: a",
 		"schema 3: needs attention (no record read, epoch 0, generation 0)",
 		"no_record: publication record missing",
@@ -74,6 +103,17 @@ func TestReportResidualAndRender(t *testing.T) {
 	}
 	block := text[strings.Index(text, "schema 3:"):strings.Index(text, "schema 4:")]
 	require.NotContains(t, block, "garbage collection would delete", "a refused pass plans no deletes")
+	block = text[strings.Index(text, "schema 5:"):]
+	for _, want := range []string{
+		"garbage collection deleted 1 of 2 planned objects and 0 of 1 planned manifests, and forgot generations [] of [2] planned",
+		"deleted object: p",
+		"left for the next pass: 3 planned deletes and forgets did not run",
+		"error: injected delete failure of q",
+	} {
+		require.Contains(t, block, want)
+	}
+	require.NotContains(t, block, "deleted object: q", "a failed delete is not reported as done")
+	require.NotContains(t, block, "deleted manifest", "the manifest step never ran")
 }
 
 func TestEveryBlockingFindingHasAnAction(t *testing.T) {
@@ -92,7 +132,9 @@ func TestEveryBlockingFindingHasAnAction(t *testing.T) {
 // fakeS3 answers the S3Objects calls from a map, with one listing page per
 // call.
 type fakeS3 struct {
-	objects   map[string][]byte
+	objects map[string][]byte
+	// undated lists the key without a LastModified.
+	undated   string
 	truncated bool
 	getErr    error
 	deleted   []string
@@ -101,9 +143,14 @@ type fakeS3 struct {
 func (f *fakeS3) ListObjectsV2(_ context.Context, in *s3.ListObjectsV2Input, _ ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
 	out := &s3.ListObjectsV2Output{IsTruncated: aws.Bool(f.truncated)}
 	for k := range f.objects {
-		if strings.HasPrefix(k, aws.ToString(in.Prefix)) {
-			out.Contents = append(out.Contents, types.Object{Key: aws.String(k), LastModified: aws.Time(time.UnixMilli(1000))})
+		if !strings.HasPrefix(k, aws.ToString(in.Prefix)) {
+			continue
 		}
+		o := types.Object{Key: aws.String(k), LastModified: aws.Time(time.UnixMilli(1000))}
+		if k == f.undated {
+			o.LastModified = nil
+		}
+		out.Contents = append(out.Contents, o)
 	}
 	return out, nil
 }
@@ -163,4 +210,16 @@ func TestS3ObjectsTellsAMissingObjectFromAnUnreadableOne(t *testing.T) {
 	client.truncated = true
 	_, err = s.List(ctx, "data/1/")
 	require.ErrorIs(t, err, cdc.ErrIncompleteObjectListing, "a listing that stops short fails")
+}
+
+// TestS3ObjectsRefusesAListingWithoutLastModified: aws.ToTime of a missing
+// LastModified is the zero time, which would date fresh staging before
+// every horizon; the listing fails instead.
+func TestS3ObjectsRefusesAListingWithoutLastModified(t *testing.T) {
+	key := "data/1/e1/delta/" + uuid.Must(uuid.NewV7()).String() + ".parquet"
+	client := &fakeS3{objects: map[string][]byte{key: []byte("staged")}, undated: key}
+	_, err := (&S3Objects{Client: client, Bucket: "b"}).List(context.Background(), "data/1/")
+	require.ErrorIs(t, err, ErrUnknownAge)
+	require.ErrorContains(t, err, key)
+	require.Empty(t, client.deleted)
 }

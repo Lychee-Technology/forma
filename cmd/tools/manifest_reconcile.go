@@ -153,7 +153,11 @@ func validateReconcileTimes(o reconcile.Options) error {
 	if err := o.Validate(); err != nil {
 		return fmt.Errorf("validate --retention-grace, --clock-margin and --orphan-age: %w", err)
 	}
-	if floor := cdcv2.DefaultStagingBudget + o.ClockMargin; o.OrphanAge < floor {
+	floor, ok := reconcile.AddDurations(cdcv2.DefaultStagingBudget, o.ClockMargin)
+	if !ok {
+		return fmt.Errorf("--clock-margin %s plus the writers' staging budget %s overflows a duration", o.ClockMargin, cdcv2.DefaultStagingBudget)
+	}
+	if o.OrphanAge < floor {
 		return fmt.Errorf("--orphan-age %s is below the writers' staging budget %s plus --clock-margin: the horizon would refuse publications still inside their budget",
 			o.OrphanAge, cdcv2.DefaultStagingBudget)
 	}
@@ -211,22 +215,28 @@ var openReconcileDBFn = func(ctx context.Context, cfg cdc.CDCConfig, logger *zap
 // clients, so the flag-to-behaviour wiring is testable without PostgreSQL or
 // S3.
 func newReconciler(opts *reconcileOptions, objects reconcile.ObjectStore, db *sql.DB, logger *zap.Logger) (*reconcile.Reconciler, error) {
+	tables := publication.TablesFor(opts.entityMain)
+	r := &reconcile.Reconciler{
+		DB:      db,
+		Tables:  tables,
+		Layout:  manifestv2.Layout{Prefix: opts.dataPrefix},
+		Objects: objects,
+		Schemas: &reconcile.Schemas{DB: db, Registry: opts.registryTable, Tables: tables, Only: opts.schemaID},
+		Logger:  logger,
+		Opts:    opts.run,
+	}
+	if !opts.run.GC {
+		// The diagnosis takes no lock: on Aurora DSQL the lock is a lease
+		// row, and a read-only principal must be able to run the check.
+		return r, nil
+	}
 	// The lock cdc-flush and cdc-init of the same engine take (#633).
 	locker, err := cdc.NewSchemaLocker(db, opts.db.Engine, opts.entityMain)
 	if err != nil {
 		return nil, fmt.Errorf("manifest-reconcile schema lock: %w", err)
 	}
-	tables := publication.TablesFor(opts.entityMain)
-	return &reconcile.Reconciler{
-		DB:      db,
-		Tables:  tables,
-		Layout:  manifestv2.Layout{Prefix: opts.dataPrefix},
-		Objects: objects,
-		Locker:  locker,
-		Schemas: &reconcile.Schemas{DB: db, Registry: opts.registryTable, Tables: tables, Only: opts.schemaID},
-		Logger:  logger,
-		Opts:    opts.run,
-	}, nil
+	r.Locker = locker
+	return r, nil
 }
 
 // reconcileExitError maps a rendered report to the process outcome:
