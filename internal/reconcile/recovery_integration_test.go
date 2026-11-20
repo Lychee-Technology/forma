@@ -84,53 +84,89 @@ func TestMissingCurrentHistoryRecoveryTakesTwoPublications(t *testing.T) {
 // them: the recovery's lifecycle fence refuses it, in the diagnosis's plan
 // too. Once the reader is done and the retention grace after the recovery
 // has passed, the collection resumes and collects them.
+//
+// The grace is a minute (agedOptions), so the collection runs well inside
+// the fence and the reader's deadline under any load (R8-F2); N-1's expiry,
+// N's keys' age and the fence's end are reached by ageing their stamps.
 func TestLostRecordRecoveryFencesAReaderOfAnUnrecordedHead(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
+	opts := agedOptions(true)
 	g1 := f.publishInit(t, f.initialized(t), 2)
 	head := f.publish(t, f.stageFlush(t, g1, 1))
-	rep := f.pass(t, testOptions(true))
+	rep := f.pass(t, opts)
 	require.NoError(t, rep.Err)
 	require.Equal(t, []int64{g1.rec.Generation}, rep.Collected.Retired)
 	// N-1 expires as the history's floor below N, and N's keys fall below
 	// the orphan cutoff: only the fence keeps them once N's row is lost.
-	waitOutListingPrecision()
+	f.ageStamps(t, time.Hour)
 
 	reader, err := f.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	require.NoError(t, err)
 	defer func() { _ = reader.Rollback() }()
 	pinned, err := publication.Read(ctx, publication.SQLTx(reader), f.tables, testSchema)
 	require.NoError(t, err)
+	pinnedAt := time.Now()
 	require.Equal(t, head.rec.Generation, pinned.Generation, "the reader pinned generation N")
 
 	f.exec(t, "DELETE FROM %s", f.tables.Record)
 	f.exec(t, "DELETE FROM %s WHERE generation = 2", f.tables.Generation)
-	require.NoError(t, f.inTx(t, func(tx publication.Tx) error {
-		h, err := publication.ReadHistory(ctx, tx, f.tables, testSchema)
-		if err != nil {
-			return err
-		}
-		_, wrote, err := publication.InitializeAfterLoss(ctx, tx, f.tables, testSchema, h, publication.AwaitingInit)
-		require.True(t, wrote)
-		return err
-	}))
+	recoverLostRecord(t, f)
 	recovered := f.record(t)
 	require.Equal(t, g1.rec.Generation, recovered.Generation, "the counter is rebuilt from the surviving N-1")
+	expired, err := publication.Expired(ctx, publication.DB(f.db), f.tables, testSchema, opts.RetentionGrace)
+	require.NoError(t, err)
+	require.Len(t, expired, 1)
+	require.Equal(t, g1.rec.Generation, expired[0].Generation, "the old history is already expired")
 
 	for _, gc := range []bool{false, true} {
-		rep := f.pass(t, testOptions(gc))
+		o := agedOptions(gc)
+		rep := f.pass(t, o)
 		require.NoError(t, rep.Err)
 		require.Equal(t, []FindingKind{AwaitingInit}, kinds(rep.Findings), "the history shows no gap above the rebuilt counter")
 		require.Contains(t, rep.Refused, "lifecycle epoch", "gc=%v", gc)
 		require.Empty(t, rep.Plan.Objects, "gc=%v", gc)
 		require.Empty(t, rep.Plan.Manifests, "gc=%v", gc)
 		if gc {
+			require.Less(t, time.Since(pinnedAt), o.ReaderDeadline, "the collection ran while the reader was inside its deadline")
+			f.requireOrphansEligible(t, rep, o, f.keysOf(head))
 			require.Empty(t, rep.Collected.Objects)
 			require.Empty(t, rep.Collected.Manifests)
 			require.Empty(t, rep.Collected.Forgotten)
 		}
 	}
-	ref, err := manifestv2.RecordRef(pinned.Record)
+	requirePinnedIntact(t, f, pinned.Record)
+	require.NoError(t, reader.Commit())
+
+	f.ageLifecycle(t, time.Hour) // past the fence's grace
+	rep = f.pass(t, opts)
+	require.NoError(t, rep.Err)
+	require.Empty(t, rep.Refused)
+	require.Subset(t, rep.Collected.Objects, f.keysOf(head), "the unrecorded head's manifest and objects are collected once the fence passed")
+	require.Empty(t, f.store.keys(), "nothing names any object the schema staged before the loss")
+}
+
+// recoverLostRecord runs init-db's recovery of a lost record: ReadHistory,
+// then InitializeAfterLoss, AWAITING_INIT while history survives.
+func recoverLostRecord(t *testing.T, f *fixture) {
+	t.Helper()
+	require.NoError(t, f.inTx(t, func(tx publication.Tx) error {
+		h, err := publication.ReadHistory(context.Background(), tx, f.tables, testSchema)
+		if err != nil {
+			return err
+		}
+		_, wrote, err := publication.InitializeAfterLoss(context.Background(), tx, f.tables, testSchema, h, publication.AwaitingInit)
+		require.True(t, wrote)
+		return err
+	}))
+}
+
+// requirePinnedIntact asserts that the pinned record's manifest verifies as
+// a reader verifies it and that every object it lists is still there.
+func requirePinnedIntact(t *testing.T, f *fixture, pinned publication.Record) {
+	t.Helper()
+	ctx := context.Background()
+	ref, err := manifestv2.RecordRef(pinned)
 	require.NoError(t, err)
 	raw, err := f.store.Get(ctx, pinned.ManifestKey)
 	require.NoError(t, err, "the pinned generation's manifest is still there")
@@ -141,14 +177,6 @@ func TestLostRecordRecoveryFencesAReaderOfAnUnrecordedHead(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, ok, "the pinned generation's object %s is still there", key)
 	}
-	require.NoError(t, reader.Commit())
-
-	waitOutListingPrecision() // past the fence's grace, and the unrecorded head's keys below the orphan cutoff
-	rep = f.pass(t, testOptions(true))
-	require.NoError(t, rep.Err)
-	require.Empty(t, rep.Refused)
-	require.Subset(t, rep.Collected.Objects, f.keysOf(head), "the unrecorded head's manifest and objects are collected once the fence passed")
-	require.Empty(t, f.store.keys(), "nothing names any object the schema staged before the loss")
 }
 
 // TestRecoveryStampsItsFenceAfterTheLoss: the recovery's transaction may
@@ -215,10 +243,15 @@ func TestARecordWithoutItsLifecycleEpochStopsTheCollection(t *testing.T) {
 // past the orphan cutoff; only then does the reader pin N, and the loss, the
 // recovery, the drop and the collection all run while the reader is still
 // inside its deadline, which the protocol promises to protect.
+//
+// A transaction's start cannot be aged in a stamp, so the test waits a
+// grace out once; the grace is 4 s over a reader deadline of 3.5 s
+// (lateTransitionOptions), so the steps from the pin to the collection have
+// seconds to run, not the 200 ms of testOptions (R8-F2).
 func TestALaterTransitionKeepsTheRecoveryFence(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	opts := testOptions(true)
+	opts := lateTransitionOptions()
 	g1 := f.publishInit(t, f.initialized(t), 2)
 	head := f.publish(t, f.stageFlush(t, g1, 1))
 	rep := f.pass(t, opts)
@@ -233,7 +266,7 @@ func TestALaterTransitionKeepsTheRecoveryFence(t *testing.T) {
 	// The drop's transaction ages past the grace before the recovery, N-1
 	// expires as the history's floor below N, and N's keys fall below the
 	// orphan cutoff: only the fence keeps them once N's row is lost.
-	waitOutListingPrecision()
+	time.Sleep(opts.RetentionGrace + 250*time.Millisecond)
 
 	reader, err := f.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	require.NoError(t, err)
@@ -245,18 +278,11 @@ func TestALaterTransitionKeepsTheRecoveryFence(t *testing.T) {
 
 	f.exec(t, "DELETE FROM %s", f.tables.Record)
 	f.exec(t, "DELETE FROM %s WHERE generation = 2", f.tables.Generation)
-	require.NoError(t, f.inTx(t, func(tx publication.Tx) error {
-		h, err := publication.ReadHistory(ctx, tx, f.tables, testSchema)
-		if err != nil {
-			return err
-		}
-		_, wrote, err := publication.InitializeAfterLoss(ctx, tx, f.tables, testSchema, h, publication.AwaitingInit)
-		require.True(t, wrote)
-		return err
-	}))
+	recoverLostRecord(t, f)
 	stamped, err := publication.ReadLifecycleFence(ctx, publication.DB(f.db), f.tables, testSchema, time.Hour)
 	require.NoError(t, err)
-	require.Greater(t, stamped.MovedAt, began+opts.RetentionGrace.Milliseconds())
+	require.Greater(t, stamped.MovedAt, began+publication.GraceMillis(opts.RetentionGrace),
+		"the drop's own stamp is past the grace: only the recovery's keeps the fence")
 
 	q := publication.SQLTx(drop)
 	recovered, err := publication.Read(ctx, q, f.tables, testSchema)
@@ -268,27 +294,33 @@ func TestALaterTransitionKeepsTheRecoveryFence(t *testing.T) {
 	fence, err := publication.ReadLifecycleFence(ctx, publication.DB(f.db), f.tables, testSchema, time.Hour)
 	require.NoError(t, err)
 	require.Equal(t, stamped.MovedAt, fence.MovedAt, "the drop keeps the recovery's later stamp, not its start %d", began)
+	expired, err := publication.Expired(ctx, publication.DB(f.db), f.tables, testSchema, opts.RetentionGrace)
+	require.NoError(t, err)
+	require.Len(t, expired, 1)
+	require.Equal(t, g1.rec.Generation, expired[0].Generation, "the old history is already expired")
 
 	rep = f.pass(t, opts)
+	ran := time.Since(pinnedAt)
 	require.NoError(t, rep.Err)
+	require.Less(t, ran, opts.ReaderDeadline,
+		"the loss, the recovery, the drop and the collection ran while the reader was inside its deadline")
 	require.Contains(t, rep.Refused, "lifecycle epoch")
+	f.requireOrphansEligible(t, rep, opts, f.keysOf(head))
 	require.Empty(t, rep.Collected.Objects)
 	require.Empty(t, rep.Collected.Manifests)
 	require.Empty(t, rep.Collected.Forgotten)
-	ref, err := manifestv2.RecordRef(pinned.Record)
-	require.NoError(t, err)
-	raw, err := f.store.Get(ctx, pinned.ManifestKey)
-	require.NoError(t, err, "the pinned generation's manifest is still there")
-	m, err := manifestv2.Verify(raw, ref)
-	require.NoError(t, err)
-	for _, key := range m.Keys() {
-		ok, err := f.store.Exists(ctx, key)
-		require.NoError(t, err)
-		require.True(t, ok, "the pinned generation's object %s is still there", key)
-	}
-	require.Less(t, time.Since(pinnedAt), opts.ReaderDeadline,
-		"the loss, the recovery, the drop and the collection ran while the reader was inside its deadline")
+	requirePinnedIntact(t, f, pinned.Record)
 	require.NoError(t, reader.Commit())
+}
+
+// lateTransitionOptions are TestALaterTransitionKeepsTheRecoveryFence's
+// protocol times: a grace it waits out once, and a reader deadline with
+// seconds of headroom for the steps it runs inside it.
+func lateTransitionOptions() Options {
+	return Options{
+		GC: true, RetentionGrace: 4 * time.Second, ReaderDeadline: 3500 * time.Millisecond,
+		ClockMargin: 50 * time.Millisecond, OrphanAge: time.Millisecond,
+	}
 }
 
 // TestAnInvalidRecordRecoversAtAFreshEpoch is R6-F3: the action for an

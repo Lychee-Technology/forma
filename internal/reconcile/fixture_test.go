@@ -368,6 +368,61 @@ func testOptions(gc bool) Options {
 	}
 }
 
+// agedOptions have a grace and a reader deadline far longer than a test
+// runs (R8-F2). A test that must see a fence still inside the grace, and a
+// pinned reader still inside its deadline, when its collection runs then
+// holds under any database or scheduler latency; what must be older than
+// the grace is aged in its stamps (ageStamps) instead of waited for.
+func agedOptions(gc bool) Options {
+	return Options{
+		GC: gc, RetentionGrace: time.Minute, ReaderDeadline: 50 * time.Second,
+		ClockMargin: 50 * time.Millisecond, OrphanAge: time.Millisecond,
+	}
+}
+
+// ageStamps moves every retirement stamp of the schema's history and every
+// object's LastModified back by d, as if d had passed since each was
+// written.
+func (f *fixture) ageStamps(t *testing.T, d time.Duration) {
+	t.Helper()
+	_, err := f.db.Exec(fmt.Sprintf("UPDATE %s SET retired_at = retired_at - $1 WHERE schema_id = $2 AND retired_at <> 0",
+		f.tables.Generation), d.Milliseconds(), testSchema)
+	require.NoError(t, err)
+	f.store.mu.Lock()
+	defer f.store.mu.Unlock()
+	for key, o := range f.store.objects {
+		o.lastModified -= d.Milliseconds()
+		f.store.objects[key] = o
+	}
+}
+
+// ageLifecycle moves the schema's lifecycle epoch stamp back by d.
+func (f *fixture) ageLifecycle(t *testing.T, d time.Duration) {
+	t.Helper()
+	_, err := f.db.Exec(fmt.Sprintf("UPDATE %s SET updated_at = updated_at - $1 WHERE schema_id = $2", f.tables.Epoch),
+		d.Milliseconds(), testSchema)
+	require.NoError(t, err)
+}
+
+// requireOrphansEligible asserts that every key is old enough for the
+// collection rep ran to delete it as an orphan (publication.OrphanCutoff
+// of the horizon it raised): only a fence or a finding keeps it.
+func (f *fixture) requireOrphansEligible(t *testing.T, rep SchemaReport, opts Options, keys []string) {
+	t.Helper()
+	listed, err := f.store.List(context.Background(), "")
+	require.NoError(t, err)
+	at := map[string]int64{}
+	for _, o := range listed {
+		at[o.Key] = o.LastModified
+	}
+	cutoff := publication.OrphanCutoff(rep.Horizon, opts.ClockMargin)
+	for _, key := range keys {
+		lm, ok := at[key]
+		require.True(t, ok, "%s is listed", key)
+		require.Less(t, lm, cutoff, "%s is below the orphan cutoff: absent the fence it is collected", key)
+	}
+}
+
 // errDiagnosisLocked fails a diagnosis that takes the schema lock, which on
 // Aurora DSQL writes a lease row.
 var errDiagnosisLocked = errors.New("the read-only diagnosis took the schema lock")
