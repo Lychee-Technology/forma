@@ -326,12 +326,18 @@ func TestInitializeAfterLossPreservesForgottenGenerationFloor(t *testing.T) {
 func TestStorageBindingLifecycle(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	t.Cleanup(func() { _, _ = f.db.Exec("DROP TABLE IF EXISTS " + f.t.Storage) })
 
-	// Before the binding table exists, ReadStorage reports unbound (not an error).
+	// Before the binding table exists, ReadStorage reports unbound on a pool
+	// (not an error), while inside a Tx PostgreSQL aborts the transaction on
+	// 42P01 so ReadStorage surfaces the error rather than claiming unbound.
 	_, ok, err := ReadStorage(ctx, DB(f.db), f.t)
 	require.NoError(t, err)
 	require.False(t, ok)
+	err = f.inTx(ctx, func(tx Tx) error {
+		_, _, err := ReadStorage(ctx, tx, f.t)
+		return err
+	})
+	require.Error(t, err, "ReadStorage inside a Tx must not mask 42P01 on an aborted transaction")
 
 	// Create the table using StorageStatement.
 	entityMain := strings.TrimSuffix(strings.Trim(f.t.Record, `"`), RecordTableSuffix)
