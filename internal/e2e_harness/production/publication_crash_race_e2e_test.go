@@ -235,54 +235,8 @@ func TestPublicationConcurrentWritersAndReaders(t *testing.T) {
 	mustFlush(ctx, t, env)
 	seedMatrixRows(ctx, t, env, wide, "hot", 5, 200)
 
-	// Assemble the shared engine before spawning concurrent reader goroutines.
-	eng := env.Engine()
 	readCtx, stopReaders := context.WithCancel(ctx)
-	var readWG sync.WaitGroup
-	var readErrMu sync.Mutex
-	var readErrs []error
-	var readsCompleted atomic.Int64
-
-	for worker := 0; worker < 2; worker++ {
-		readWG.Add(1)
-		go func(offset int) {
-			defer readWG.Done()
-			for readCtx.Err() == nil {
-				fq, err := env.buildFederatedQuery(Query{
-					Schema:  wide,
-					Filters: []Filter{{Attr: "count", Op: "gte", Value: "100"}},
-					Sorts:   []Sort{{Attr: "count"}},
-					Limit:   5,
-					Offset:  offset,
-				})
-				if err != nil {
-					readErrMu.Lock()
-					readErrs = append(readErrs, err)
-					readErrMu.Unlock()
-					return
-				}
-				page, err := eng.Query(readCtx, env.Tables, fq, nil)
-				if err != nil {
-					if readCtx.Err() != nil {
-						return
-					}
-					readErrMu.Lock()
-					readErrs = append(readErrs, fmt.Errorf("concurrent read: %w", err))
-					readErrMu.Unlock()
-					return
-				}
-				for _, rec := range page.Records {
-					if rec.RowID == deletedID {
-						readErrMu.Lock()
-						readErrs = append(readErrs, fmt.Errorf("deleted row %s resurrected during concurrent publish", deletedID))
-						readErrMu.Unlock()
-						return
-					}
-				}
-				readsCompleted.Add(1)
-			}
-		}(worker * 2)
-	}
+	readsCompleted, waitReaders := startConcurrentRaceReaders(readCtx, env, wide, deletedID)
 
 	var writeWG sync.WaitGroup
 	errs := make(chan error, 3)
@@ -305,10 +259,8 @@ func TestPublicationConcurrentWritersAndReaders(t *testing.T) {
 	writeWG.Wait()
 	close(errs)
 	stopReaders()
-	readWG.Wait()
-
-	if len(readErrs) > 0 {
-		t.Fatalf("concurrent readers saw errors: %v", readErrs[0])
+	if err := waitReaders(); err != nil {
+		t.Fatalf("concurrent readers saw errors: %v", err)
 	}
 	if readsCompleted.Load() == 0 {
 		t.Fatal("concurrent readers completed 0 queries during publish race")
@@ -331,6 +283,64 @@ func TestPublicationConcurrentWritersAndReaders(t *testing.T) {
 	mustFlush(ctx, t, env)
 	assertFilteredAndPaginated(ctx, t, env, wide, true)
 	assertDeletedAbsent(ctx, t, env, wide, deletedID)
+}
+
+func startConcurrentRaceReaders(readCtx context.Context, env *Env, wide SchemaRef, deletedID any) (*atomic.Int64, func() error) {
+	eng := env.Engine()
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+	var completed atomic.Int64
+
+	recordErr := func(err error) {
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		errMu.Unlock()
+	}
+
+	for worker := 0; worker < 2; worker++ {
+		wg.Add(1)
+		go func(offset int) {
+			defer wg.Done()
+			for readCtx.Err() == nil {
+				fq, err := env.buildFederatedQuery(Query{
+					Schema:  wide,
+					Filters: []Filter{{Attr: "count", Op: "gte", Value: "100"}},
+					Sorts:   []Sort{{Attr: "count"}},
+					Limit:   5,
+					Offset:  offset,
+				})
+				if err != nil {
+					recordErr(err)
+					return
+				}
+				page, err := eng.Query(readCtx, env.Tables, fq, nil)
+				if err != nil {
+					if readCtx.Err() != nil {
+						return
+					}
+					recordErr(fmt.Errorf("concurrent read: %w", err))
+					return
+				}
+				for _, rec := range page.Records {
+					if rec.RowID == deletedID {
+						recordErr(fmt.Errorf("deleted row %s resurrected during concurrent publish", deletedID))
+						return
+					}
+				}
+				completed.Add(1)
+			}
+		}(worker * 2)
+	}
+
+	return &completed, func() error {
+		wg.Wait()
+		errMu.Lock()
+		defer errMu.Unlock()
+		return firstErr
+	}
 }
 
 func crashOnceAt(point string) func(context.Context, string) error {

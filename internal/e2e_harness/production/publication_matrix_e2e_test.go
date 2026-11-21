@@ -264,71 +264,83 @@ func TestPublicationMatrix_FaultsFailClosedAndPreserveBreaker(t *testing.T) {
 
 	t.Run("manifest_deleted_between_snapshot_and_resolution", func(t *testing.T) {
 		t.Parallel()
-		ctx := context.Background()
-		metrics := &combinedMetrics{}
-		env := NewEnv(t, SharedCluster(t), WithBreaker(1, time.Minute), WithMetricEmitter(metrics))
-		wide := DefaultSchemaFixtures()[1]
-		pauser := newPausingPublicationReader()
-		pauser.install(env)
-
-		seedMatrixRows(ctx, t, env, wide, "race", 4, 10)
-		mustFlush(ctx, t, env)
-		m := loadSchemaManifest(ctx, t, env, wide)
-
-		pauser.armed.Store(true)
-		errCh := make(chan error, 1)
-		go func() {
-			_, err := env.Query(ctx, Query{Schema: wide, Limit: 10, AllowPartialDegradedMode: true})
-			errCh <- err
-		}()
-		t.Cleanup(func() { pauser.Release() })
-		<-pauser.Reached()
-		deleteObject(ctx, t, env, m.Key)
-		pauser.Release()
-
-		err := <-errCh
-		assertConsistencyError(t, err, wide, false)
-		if env.Breaker().IsOpen() {
-			t.Fatal("lost manifest between snapshot and resolution must not open circuit breaker")
-		}
-		metrics.assertClean(t, "lost manifest mid-pass")
+		runManifestDeletedMidPass(t)
 	})
 
 	t.Run("access_denied_on_manifest_fetch", func(t *testing.T) {
 		t.Parallel()
-		ctx := context.Background()
-		metrics := &combinedMetrics{}
-		env := NewEnv(t, SharedCluster(t), WithBreaker(1, time.Minute), WithMetricEmitter(metrics))
-		wide := DefaultSchemaFixtures()[1]
-		seedMatrixRows(ctx, t, env, wide, "denied-m", 4, 10)
-		mustFlush(ctx, t, env)
-		env.PublicationS3Wrap = func(inner PublicationS3Client) PublicationS3Client {
-			return &accessDeniedPublicationS3{inner: inner, denyGet: true, keyContains: "/_manifests/"}
-		}
-		if err := env.ReopenDuckDB(); err != nil {
-			t.Fatalf("reopen engine with access-denied S3 wrapper: %v", err)
-		}
-		assertPublicationFault(ctx, t, env, wide, metrics, true)
+		runAccessDeniedManifestFetch(t)
 	})
 
 	t.Run("access_denied_on_missing_object_probe", func(t *testing.T) {
 		t.Parallel()
-		ctx := context.Background()
-		metrics := &combinedMetrics{}
-		env := NewEnv(t, SharedCluster(t), WithBreaker(1, time.Minute), WithMetricEmitter(metrics))
-		wide := DefaultSchemaFixtures()[1]
-		seedMatrixRows(ctx, t, env, wide, "denied-p", 4, 10)
-		mustFlush(ctx, t, env)
-		m := loadSchemaManifest(ctx, t, env, wide)
-		deleteObject(ctx, t, env, m.Files[0].Path)
-		env.PublicationS3Wrap = func(inner PublicationS3Client) PublicationS3Client {
-			return &accessDeniedPublicationS3{inner: inner, denyHead: true}
-		}
-		if err := env.ReopenDuckDB(); err != nil {
-			t.Fatalf("reopen engine with access-denied probe wrapper: %v", err)
-		}
-		assertPublicationFault(ctx, t, env, wide, metrics, true)
+		runAccessDeniedObjectProbe(t)
 	})
+}
+
+func runManifestDeletedMidPass(t *testing.T) {
+	ctx := context.Background()
+	metrics := &combinedMetrics{}
+	env := NewEnv(t, SharedCluster(t), WithBreaker(1, time.Minute), WithMetricEmitter(metrics))
+	wide := DefaultSchemaFixtures()[1]
+	pauser := newPausingPublicationReader()
+	pauser.install(env)
+
+	seedMatrixRows(ctx, t, env, wide, "race", 4, 10)
+	mustFlush(ctx, t, env)
+	m := loadSchemaManifest(ctx, t, env, wide)
+
+	pauser.armed.Store(true)
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := env.Query(ctx, Query{Schema: wide, Limit: 10, AllowPartialDegradedMode: true})
+		errCh <- err
+	}()
+	t.Cleanup(func() { pauser.Release() })
+	<-pauser.Reached()
+	deleteObject(ctx, t, env, m.Key)
+	pauser.Release()
+
+	err := <-errCh
+	assertConsistencyError(t, err, wide, false)
+	if env.Breaker().IsOpen() {
+		t.Fatal("lost manifest between snapshot and resolution must not open circuit breaker")
+	}
+	metrics.assertClean(t, "lost manifest mid-pass")
+}
+
+func runAccessDeniedManifestFetch(t *testing.T) {
+	ctx := context.Background()
+	metrics := &combinedMetrics{}
+	env := NewEnv(t, SharedCluster(t), WithBreaker(1, time.Minute), WithMetricEmitter(metrics))
+	wide := DefaultSchemaFixtures()[1]
+	seedMatrixRows(ctx, t, env, wide, "denied-m", 4, 10)
+	mustFlush(ctx, t, env)
+	env.PublicationS3Wrap = func(inner PublicationS3Client) PublicationS3Client {
+		return &accessDeniedPublicationS3{inner: inner, denyGet: true, keyContains: "/_manifests/"}
+	}
+	if err := env.ReopenDuckDB(); err != nil {
+		t.Fatalf("reopen engine with access-denied S3 wrapper: %v", err)
+	}
+	assertPublicationFault(ctx, t, env, wide, metrics, true)
+}
+
+func runAccessDeniedObjectProbe(t *testing.T) {
+	ctx := context.Background()
+	metrics := &combinedMetrics{}
+	env := NewEnv(t, SharedCluster(t), WithBreaker(1, time.Minute), WithMetricEmitter(metrics))
+	wide := DefaultSchemaFixtures()[1]
+	seedMatrixRows(ctx, t, env, wide, "denied-p", 4, 10)
+	mustFlush(ctx, t, env)
+	m := loadSchemaManifest(ctx, t, env, wide)
+	deleteObject(ctx, t, env, m.Files[0].Path)
+	env.PublicationS3Wrap = func(inner PublicationS3Client) PublicationS3Client {
+		return &accessDeniedPublicationS3{inner: inner, denyHead: true}
+	}
+	if err := env.ReopenDuckDB(); err != nil {
+		t.Fatalf("reopen engine with access-denied probe wrapper: %v", err)
+	}
+	assertPublicationFault(ctx, t, env, wide, metrics, true)
 }
 
 // newPublishedFaultEnv provisions a fresh Env with a threshold-1 breaker,

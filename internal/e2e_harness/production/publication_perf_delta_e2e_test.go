@@ -232,7 +232,6 @@ func measurePublishingWorkloads(ctx context.Context, t *testing.T, env *Env, wid
 	}
 	t.Logf("PERF_WRITE name=v2_reconcile_diagnose dur_ms=%.2f", durMs(time.Since(t0)))
 
-	t0 = time.Now()
 	if _, err := env.reconciler(t, wide, reconcileOptions(true)).Run(ctx); err != nil {
 		t.Fatalf("perf manifest-reconcile retire: %v", err)
 	}
