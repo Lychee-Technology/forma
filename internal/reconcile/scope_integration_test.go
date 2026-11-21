@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"slices"
@@ -41,6 +42,11 @@ func TestCollectorKeepsAnotherDeploymentsObjectsForAnUnpublishedSchema(t *testin
 		require.NoError(t, rep.Err)
 		require.Empty(t, rep.Findings, "gc=%v", gc)
 		require.Contains(t, rep.Refused, "no manifest", "gc=%v", gc)
+		require.True(t, rep.Residual(), "gc=%v", gc)
+		var out bytes.Buffer
+		Report{Schemas: []SchemaReport{rep}}.Render(&out)
+		require.Contains(t, out.String(), "collection refused", "gc=%v", gc)
+		require.NotContains(t, out.String(), ": clean (", "gc=%v", gc)
 		require.Empty(t, rep.Plan.Objects, "gc=%v", gc)
 		require.Empty(t, rep.Plan.Manifests, "gc=%v", gc)
 		if gc {
@@ -54,6 +60,7 @@ func TestCollectorKeepsAnotherDeploymentsObjectsForAnUnpublishedSchema(t *testin
 	rep := f.pass(t, testOptions(true))
 	require.NoError(t, rep.Err)
 	require.Empty(t, rep.Refused)
+	require.False(t, rep.Residual())
 	require.ElementsMatch(t, foreign, rep.Collected.Objects)
 	require.Equal(t, f.keysOf(g1), f.store.keys())
 }

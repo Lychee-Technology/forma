@@ -33,7 +33,7 @@ Exit codes:
 | Exit code | Meaning |
 | --- | --- |
 | `0` | Clean run (routine garbage awaiting `--gc` is clean) |
-| `2` | Residual discrepancies, skipped schemas (lock contended), or inconclusive lock-free diagnosis (rerun needed) |
+| `2` | Residual discrepancies, refused collections (e.g. active recovery fence or unpublished schema with unverified objects), skipped schemas (lock contended), or inconclusive lock-free diagnosis (rerun needed) |
 | `1` | Tool, configuration, S3, redirect, or database failure |
 
 ## Storage binding (`--bind-storage`)

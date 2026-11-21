@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"testing"
@@ -187,6 +188,11 @@ func TestAnInvalidRecordRecoversAtAFreshEpoch(t *testing.T) {
 	require.Empty(t, rep.Findings)
 	require.True(t, rep.Collected.RecoveryRetired)
 	require.Contains(t, rep.Refused, "recovery fence")
+	require.True(t, rep.Residual())
+	var out bytes.Buffer
+	Report{Schemas: []SchemaReport{rep}}.Render(&out)
+	require.Contains(t, out.String(), "collection refused")
+	require.NotContains(t, out.String(), ": clean (")
 	require.Equal(t, []int64{g1.rec.Generation, head.rec.Generation}, rep.Collected.Retired)
 }
 

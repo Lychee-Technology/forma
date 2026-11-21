@@ -78,10 +78,11 @@ type SchemaReport struct {
 	Err                 error
 }
 
-// Residual reports whether the schema needs operator attention or a rerun.
-// Routine garbage awaiting collection is not residual.
+// Residual reports whether the schema needs operator attention or a rerun:
+// skipped schemas, pass errors, findings, inconclusive lock-free diagnoses,
+// and refused collections. Routine garbage awaiting collection is not residual.
 func (s SchemaReport) Residual() bool {
-	return s.Skipped || s.Err != nil || len(s.Findings) > 0 || s.Inconclusive()
+	return s.Skipped || s.Err != nil || len(s.Findings) > 0 || s.Inconclusive() || s.Refused != ""
 }
 
 // Inconclusive reports whether lock-free diagnosis dropped absent-object
@@ -113,6 +114,8 @@ func (s SchemaReport) render(w io.Writer) {
 		verdict = "needs attention"
 	case s.Inconclusive():
 		verdict = "inconclusive (run the diagnosis again)"
+	case s.Refused != "":
+		verdict = "collection refused"
 	}
 	state := string(s.State)
 	if state == "" {

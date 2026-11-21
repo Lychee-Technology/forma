@@ -207,6 +207,13 @@ func TestReconcileExitError_ToolFailureBeatsDiscrepancy(t *testing.T) {
 	require.True(t, errors.As(err, &ec), "an inconclusive diagnosis is a discrepancy, not a tool failure")
 	require.Equal(t, 2, ec.ExitCode())
 
+	// A refused collection without findings (e.g. no-verified-manifest guard or
+	// active recovery fence) must also exit 2 rather than appearing clean.
+	refused := reconcile.SchemaReport{SchemaID: 1, Refused: "no manifest of schema 1's generation history verified in the bucket"}
+	err = reconcileExitError(reconcile.Report{Schemas: []reconcile.SchemaReport{refused}})
+	require.True(t, errors.As(err, &ec), "a refused collection without findings is a discrepancy, not clean")
+	require.Equal(t, 2, ec.ExitCode())
+
 	clean := reconcile.SchemaReport{SchemaID: 1, Plan: publication.Plan{Objects: []string{"garbage"}}}
 	require.NoError(t, reconcileExitError(reconcile.Report{Schemas: []reconcile.SchemaReport{clean}}),
 		"garbage awaiting collection is not a discrepancy")

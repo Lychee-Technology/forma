@@ -79,6 +79,10 @@ func TestReportResidualAndRender(t *testing.T) {
 	require.True(t, inconclusive.Inconclusive())
 	require.True(t, inconclusive.Residual(), "a diagnosis that left findings out is not clean")
 	require.False(t, clean.Inconclusive())
+	refusedNoFinding := SchemaReport{SchemaID: 7, State: publication.Unpublished, Epoch: 1,
+		Refused: "no manifest of schema 7's generation history verified in the bucket"}
+	require.False(t, refusedNoFinding.Inconclusive())
+	require.True(t, refusedNoFinding.Residual(), "a refused collection without findings is not clean")
 
 	collected := clean
 	collected.SchemaID = 2
@@ -89,7 +93,7 @@ func TestReportResidualAndRender(t *testing.T) {
 	refused := SchemaReport{SchemaID: 3, Refused: "no_record: x",
 		Findings: []Finding{recordFinding(NoRecord, publication.ErrNoRecord)}}
 	var out bytes.Buffer
-	Report{Schemas: []SchemaReport{clean, collected, refused, {SchemaID: 4, Skipped: true}, partial, inconclusive}}.Render(&out)
+	Report{Schemas: []SchemaReport{clean, collected, refused, {SchemaID: 4, Skipped: true}, partial, inconclusive, refusedNoFinding}}.Render(&out)
 	text := out.String()
 	for _, want := range []string{
 		"schema 1: clean (PUBLISHED, epoch 2, generation 5)",
@@ -106,11 +110,16 @@ func TestReportResidualAndRender(t *testing.T) {
 		"schema 4: skipped",
 		"schema 6: inconclusive (run the diagnosis again) (PUBLISHED, epoch 2, generation 5)",
 		"1 finding(s) left out",
+		"schema 7: collection refused (UNPUBLISHED, epoch 1, generation 0)",
+		"garbage collection refused: no manifest of schema 7's generation history verified in the bucket",
 	} {
 		require.Contains(t, text, want)
 	}
 	block := text[strings.Index(text, "schema 3:"):strings.Index(text, "schema 4:")]
 	require.NotContains(t, block, "garbage collection would delete", "a refused pass plans no deletes")
+	block = text[strings.Index(text, "schema 7:"):]
+	require.NotContains(t, block, ": clean (", "a refused pass without findings must not render as clean")
+	require.NotContains(t, block, "garbage collection would delete", "a refused pass without findings plans no deletes")
 	block = text[strings.Index(text, "schema 5:"):strings.Index(text, "schema 6:")]
 	for _, want := range []string{
 		"garbage collection deleted 1 of 2 planned objects and 0 of 1 planned manifests, and forgot generations [] of [2] planned",
