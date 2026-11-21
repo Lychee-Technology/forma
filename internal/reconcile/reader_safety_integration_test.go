@@ -17,7 +17,9 @@ import (
 // reader pinned to generation N still fetches N's manifest and objects after
 // N+1 publishes and GC runs twice; once the retention grace elapses, GC
 // deletes N's manifest and objects and forgets all expired rows (advancing
-// forgotten_generation cleanly).
+// forgotten_generation cleanly). The passes run under a grace far longer than
+// any pass takes and the grace is then elapsed by aging the stamps, so neither
+// half depends on how fast the passes run.
 func TestAReaderPinnedToAGenerationCompletesWhileTheNextPublishesAndGCRuns(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -33,7 +35,7 @@ func TestAReaderPinnedToAGenerationCompletesWhileTheNextPublishesAndGCRuns(t *te
 
 	g3 := f.publishCompact(t, g2)
 	for pass := range 2 {
-		rep := f.pass(t, testOptions(true))
+		rep := f.pass(t, agedOptions(true))
 		require.NoError(t, rep.Err)
 		require.Empty(t, rep.Findings)
 		require.Empty(t, rep.Collected.Objects, "pass %d deletes nothing a retained generation lists", pass)
@@ -56,17 +58,17 @@ func TestAReaderPinnedToAGenerationCompletesWhileTheNextPublishesAndGCRuns(t *te
 	}
 	require.NoError(t, reader.Commit())
 
-	waitOutGrace()
-	rep := f.pass(t, testOptions(true))
+	f.ageStamps(t, time.Hour)
+	rep := f.pass(t, agedOptions(true))
 	require.NoError(t, rep.Err)
 	require.Equal(t, []int64{1, 2}, rep.Collected.Forgotten, "both expired rows are forgotten cleanly")
 	require.Equal(t, f.keysOf(g3), f.store.keys(), "only N+1's manifest and objects remain")
 
-	life, err := publication.ReadLifecycle(ctx, publication.DB(f.db), f.tables, testSchema, testOptions(false).RetentionGrace)
+	life, err := publication.ReadLifecycle(ctx, publication.DB(f.db), f.tables, testSchema, agedOptions(false).RetentionGrace)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), life.ForgottenGeneration, "durable floor proves generations <= 2 were forgotten")
 
-	diag := f.pass(t, testOptions(false))
+	diag := f.pass(t, agedOptions(false))
 	require.Equal(t, [2]int{1, 0}, [2]int{diag.Retained, diag.Expired}, "only current generation remains")
 	require.Empty(t, diag.Findings)
 }
