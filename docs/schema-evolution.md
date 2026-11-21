@@ -348,7 +348,7 @@ the active generation at its start, so a long-lived process (the CDC runner, a
 warm Lambda) does not begin a run on a superseded declaration. Pinned by
 `TestCDCFlushStopsABatchExportedAcrossAnApply` and
 `TestCDCInitStopsABatchExportedAcrossAnApply`. Under Protocol V2 the stranded
-object is staging no generation lists, which `manifest-reconcile --gc` collects
+object is an unlisted staging object that `manifest-reconcile --gc` collects
 once it is below the horizon (#891); nothing re-adopts it.
 
 Two placements are not enough:
