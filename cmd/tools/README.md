@@ -24,6 +24,7 @@ Forma Tools CLI
 - `cdc-flush`：把未刷新的 `change_log` 条目导出为 delta parquet，按 Protocol V2 发布不可变的 manifest 代际，
   并在推进该 schema 发布记录的同一事务里标记这些条目（`docs/publication-protocol-v2.md`）。见下文 `cdc-flush 与 cdc-init`。
 - `cdc-init`：把 schema 的存活行全量导出为 base parquet，发布 `init` 代际，再按导出版本移交其未刷新条目；从不清空 `change_log`。
+- `compactor`：按 Protocol V2 把已发布代际的 base/delta parquet 合并为新的 base 对象并发布 `compact` 代际（保留每行最新版本含墓碑；在并发 `cdc-flush` 之上自动 rebase；从不在线删除被替代的旧对象，旧对象由 `manifest-reconcile --gc` 在宽限期后回收，#890）。见下文 `compactor`。
 - `manifest-reconcile`：按 Protocol V2 只读诊断每个 schema 的发布记录、代际历史与 manifest，
   报告丢失的代际与对象（含 schema、epoch、generation 与安全的处置方式）；`--gc` 按回收顺序
   回收过期代际与水位线之下的孤儿对象（#891）。`--gc` 只在部署绑定的存储目标（endpoint、bucket、
@@ -176,8 +177,7 @@ baseline-schema
 已有部署升级到带 generation 账本的版本前运行一次（#733）：按 OLTP 读取自身的规则审计 PostgreSQL（含 list 元素）：宽度普查（width census）；`numeric` 与 EAV 中的 `bool` 须为有限 float64（拒绝 NaN、无穷大或超出 float64 的值）；EAV 中的 `date`/`datetime` 须为 ±2^53 内的整数毫秒；EAV 中的 `uuid` 须能被 `uuid.Parse` 解析；值不得存放在另一个 `eav_data` 值列中；`bool_text` 列只能是 `"1"`/`"0"`，`rfc3339` 列须能按 RFC 3339 解析；能解析但不是其时刻规范图像的 `rfc3339` 图像逐行报告（附修复类别），但不拒绝基线（#842）。绑定主表列的属性在 EAV 提升为列绑定之前写入的 `eav_data` 行仍会被读取，同样按上述 EAV 规则审计。完整解码每个存活的 parquet 对象并按声明的值域扫描（含 list 元素），
 数据与当前声明不符或无法读取时拒绝且不记录任何内容；通过后为尚无 generation 的 schema 记录 generation 1。已有 generation 的 schema 被跳过。
 运行前须已有账本表（PostgreSQL 上运行 `init-db`；DSQL 上按 `docs/schema-evolution.md` 手工建表）。
-基线是离线的：运行前须停止旧版本中所有写入的服务端、Lambda 与嵌入方，以及所有 `cdc-flush`、`cdc-init` 运行，并暂停 compactor、不运行
-`manifest-reconcile --repair`，直到新版本取代它们为止。旧版本没有启动门禁，它在基线期间或之后写入的值不会被审计。记录基线的事务会再次读取每个
+基线是离线的：运行前须停止旧版本中所有写入的服务端、Lambda 与嵌入方，以及所有 `cdc-flush`、`cdc-init` 运行，并暂停 compactor 与 `manifest-reconcile --gc`，直到新版本取代它们为止。旧版本没有启动门禁，它在基线期间或之后写入的值不会被审计。记录基线的事务会再次读取每个
 schema 的 `entity_main` 行数与版本号之和以及存活的 parquet 对象集合，与该 schema 审计开始时不同则拒绝且不记录任何内容；这只能发现审计期间仍在运行的
 写入方或导出方，发现不了基线提交后才写入的进程。`-dry-run` 可在旧版本运行时执行，用于停机前找出须修正的数据。
 
@@ -277,3 +277,20 @@ schema 没有发布记录时两者都拒绝（记录由 `init-db` 在注册或 V
 发布 `COMMIT` 无应答且写入方无法判定结果时，工具会用新的上下文再结算一次（`Settle` / `ResumeInit`）。仍无法判定时，
 错误给出所暂存的代际、token 与 manifest 键，并说明遗留状态：flush 的标记随其发布一起提交，条目按 `change_log`
 所示保持已刷新或未刷新；init 的移交未运行，其导出条目保持未刷新（安全，下一次 flush 会重新导出）。
+
+compactor
+---------
+按 Protocol V2 合并单个 schema 的 parquet 层并发布 `compact` 代际（#890）：读取该 schema 当前 `PUBLISHED` 代际的 manifest，
+默认先按 manifest 中的 SHA-256 校验全部输入源对象（#347），通过 DuckDB 合并每行最新版本（含墓碑），将新 base 对象与新
+manifest 仅写一次到 S3，并在 PostgreSQL 发布记录上以 CAS 提交。并发 `cdc-flush` 推进了头代际时自动 rebase 保留新 delta，
+与并发 `cdc-init` 或其他 `compactor` 竞争时在 `--max-retries` 预算内重新合并。`compactor` 从不在线删除被替代的旧对象，
+旧代际与对象由 `manifest-reconcile --gc` 过宽限期后回收（`docs/manifest-reconcile.md`）。
+
+主要选项：
+- `-schema-id`（必填）、`-s3-bucket`（必填）、`-s3-endpoint`、`-s3-region`、`-s3-use-ssl`、`-s3-use-path`。
+- `-data-prefix`（默认 `data`）：V2 对象布局前缀，须与 `cdc-flush`/`cdc-init` 的 `-s3-prefix` 一致。
+- `-pg-host`、`-pg-port`、`-pg-user`、`-pg-password`、`-pg-db`、`-pg-ssl-mode`、`-pg-use-iam`、`-pg-engine`（`postgresql` 或 `aurora-dsql`）、`-entity-main-table`（默认 `entity_main`）。
+- `-target-base-size-mb`（默认 256）、`-max-delta-size-mb`（默认 50）、`-dirty-ratio-pct`（默认 5）、`-max-retries`（默认 5）。
+- `-skip-input-checksum-verify`（默认 `false`）：跳过合并前的源对象 SHA-256 校验，仅在已知损坏对象已完成排查时使用。
+
+已删除的 V1 选项：`-manifest-template` 与 `-manifest-prefix`（传入会被参数解析器拒绝）。

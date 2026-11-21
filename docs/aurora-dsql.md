@@ -329,10 +329,11 @@ without the wait. What runs:
   renewal fails and frees the schema. Acquirers racing for a free and for
   an expired lease leave exactly one holder, on READ COMMITTED and
   REPEATABLE READ sessions.
-- `internal/cdcv2`, the V2 writer's flush and init publications: generations
-  of at most 1,000 entries with the plain mark on the publication's
-  transaction, resends after `40001`, the lost-commit resolve and the init
-  handoff (#899).
+- `internal/cdcv2`, the V2 writer's flush, init and compaction publications:
+  generations of at most 1,000 entries with the plain mark on the publication's
+  transaction, resends and bounded exhaustion after `40001` across all three
+  writers, the lost-commit resolve, the init handoff, and concurrent flush +
+  init + compaction races (#899, #890, #892).
 - `internal/cdc/dsql_export_integration_test.go`, the CDC tools' reads on
   tables built with DSQL's DDL: `cdc-flush`'s planning reads and delta
   export, and `cdc-init`'s row count and base export on its export snapshot.
@@ -340,9 +341,16 @@ without the wait. What runs:
   as the tools run them, through the DuckDB export, the V2 writer and the
   publication record, with a local directory for the bucket (#896).
 - `internal/federated/pgx_hot_leg_dsql_integration_test.go`, the federated
-  hot leg on the same tables: the snapshot's dirty set and parquet-history
-  answer, and passes under `HotLegTransport = pgx` that read the hot keys and
-  the page's hot rows through the `aurora-dsql` repository.
+  hot leg on the same tables: the snapshot's dirty set, and passes under
+  `HotLegTransport = pgx` that read the hot keys and the page's hot rows
+  through the `aurora-dsql` repository.
+- `internal/publication` storage binding (`<entity_main>_publication_storage`,
+  bound by `manifest-reconcile --bind-storage`, #891) and lifecycle/retention
+  primitives.
+
+Live Aurora DSQL verification of the Protocol V2 publication contract is
+tracked separately in #893 under #817 (see
+[publication-protocol-v2-evidence.md](publication-protocol-v2-evidence.md)).
 
 **On MiniStack's strict SQL proxy.** `make test-dsql-ministack` runs the
 repository tests, the schema lease, the CDC export's and the federated hot

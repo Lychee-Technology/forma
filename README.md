@@ -498,6 +498,8 @@ only. None is needed to validate an ordinary change.
 
 **Federated query and CDC**
 - [Federated query design](docs/federated-query/design.md)
+- [Parquet publication protocol V2](docs/publication-protocol-v2.md)
+- [Protocol V2 close-out evidence ledger](docs/publication-protocol-v2-evidence.md)
 - [Manifest reconcile](docs/manifest-reconcile.md)
 - [DuckDB upgrades](docs/duckdb-upgrades.md)
 - [Telemetry](docs/telemetry.md)

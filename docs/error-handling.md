@@ -1585,10 +1585,16 @@ whose publication state cannot be answered from
   `publication.ErrRecordInvalid` and fails closed like a missing one. A
   generation listing an address with a `.` or `..` segment, which DuckDB
   would normalize to another object, is `ErrPublishedPathNotCanonical`. A
-  lost manifest or object is data loss of the published generation; repair is
-  a re-init (#891). `ErrPublishedObjectUnverifiable` first needs the reader's
-  S3 permissions fixed (`s3:ListBucket` on the bucket, `s3:GetObject` on its
-  objects); the next read then tells a present object from a lost one.
+  lost manifest or object is data loss of the published generation; recovery is
+  re-initialization via `cdc-init` (never read-time auto-repair or the removed
+  `manifest-reconcile --repair` flag, #891). `ErrPublishedObjectUnverifiable`
+  first needs the reader's S3 permissions fixed (`s3:ListBucket` on the bucket,
+  `s3:GetObject` on its objects); the next read then tells a present object
+  from a lost one. In operational tooling, `publication.ErrHistoryInconsistent`
+  refuses non-monotonic or broken generation history, `reconcile.ErrRedirectRefused`
+  refuses any 3xx redirect on `manifest-reconcile`'s S3 client, and `--gc`
+  refuses to delete unless the deployment's storage target matches its
+  `--bind-storage` binding (`docs/manifest-reconcile.md`).
 
 The V1 read errors `ErrParquetSetInconsistent` (a manifest listing missing
 objects) and `ErrNoParquetPaths` (an empty resolved path set) were deleted with
@@ -2500,7 +2506,12 @@ Unstorable text has behaved this way since #679. What does not change is an
 row: none writes `Updates`, so each still succeeds whatever `Updates` holds,
 unstorable text aside.
 
-### Status change: a parquet path hint DuckDB cannot read as text is now 400 (#771)
+### Status change: a parquet path hint DuckDB cannot read as text is now 400 (#771; hint removed in #715/#896)
+
+*Historical note:* `federated.s3_parquet_path_template` was removed from the
+request API in #715 and engine-level parquet path hints were deleted with V1
+resolution in #896 (`docs/publication-protocol-v2.md`). The entry below
+documents the #771 transition while hints existed.
 
 A `federated.s3_parquet_path_template` whose rendered path held a NUL
 character or invalid UTF-8 passed every hint check. The path is interpolated

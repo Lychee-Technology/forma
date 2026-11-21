@@ -172,7 +172,7 @@ Two rules sit above the strategy. A keyset cursor always takes DuckDB, because o
 
 **Schemas the parquet tiers cannot hold (#704).** The parquet tiers keep one value per attribute and row. The CDC export reduces an attribute's `eav_data` rows to one value, so a member of an array of objects, which has one row per element, would read back as a single object holding the largest value of each member. A filter on a smaller element would miss the row. The shipped `lead` declares two such arrays, `propertyInterests[]` and `requirement.areas[]`. For a schema with any attribute inside an array of objects:
 
-* A query that enters the federated engine is answered from PostgreSQL alone, whatever the routing strategy decides and whatever tiers a direct engine caller declares, an explicit `["warm","cold"]` included. The answer holds every element of every live row, because PostgreSQL holds every live row (§3.3), and `routing.reason` names the attribute. A direct engine caller's hot-only declaration takes the hot-only gate as before. Two inputs are refused, since only the DuckDB template could honor them: a keyset cursor, and an engine-level parquet path hint (§4.3.1 level 1). The hint names a parquet population that a PostgreSQL answer would silently replace, so it is refused as invalid input. In-module callers that start a DuckDB pass directly (`ExecuteFederatedKeysetQuery`, `ExecuteDuckDBFederatedQuery`, `StreamDuckDBFederatedQuery`) are refused with `ErrParquetUnrepresentable` before any DuckDB or S3 work, cursor or not. They must set `FederatedAttributeQuery.ParquetUnrepresentable` themselves: the engine's metadata cache carries no array ancestry, so only the service, which holds the registry's cache, can derive it.
+* A query that enters the federated engine is answered from PostgreSQL alone, whatever the routing strategy decides and whatever tiers a direct engine caller declares, an explicit `["warm","cold"]` included. The answer holds every element of every live row, because PostgreSQL holds every live row (§3.3), and `routing.reason` names the attribute. A direct engine caller's hot-only declaration takes the hot-only gate as before. A keyset cursor is refused as invalid input, since only the DuckDB template can honor it. In-module callers that start a DuckDB pass directly (`ExecuteFederatedKeysetQuery`, `ExecuteDuckDBFederatedQuery`, `StreamDuckDBFederatedQuery`) are refused with `ErrParquetUnrepresentable` before any DuckDB or S3 work, cursor or not. They must set `FederatedAttributeQuery.ParquetUnrepresentable` themselves: the engine's metadata cache carries no array ancestry, so only the service, which holds the registry's cache, can derive it.
 * `cdc-flush` and `cdc-init` skip the schema with a warning naming the attribute, so its rows stay unflushed and nothing is exported for it. A skip is a successful partial run, not a failure: the run's other schemas proceed, and `cdc-flush` exits 0. The skip is reported independently of the logger: the `cdc` package's `RunOnce` (on `FlushRunner` and at package level) returns a `FlushReport` whose `Skipped` lists each such schema and the reason, also alongside another schema's flush error, and cdc-init's `InitSummary.Skipped` does the same. Both commands name the skipped schemas in their completion log line. A `cdc-init --schema-id` that names such a schema fails with `ErrSchemaNotExportable` and a non-zero exit, since the one export it asked for cannot happen. Parquet a flush wrote before this change stays in place and is no longer read.
 * The array ancestry that decides this is derived by the schema registry from the schema document. Derivation is all or nothing per schema: one attribute whose ancestors sit behind another file's `$ref` leaves the whole schema underived, a locally declared array of objects included (#705). Such a schema is not detected, so neither #704 guarantee holds for it: its federated reads can answer a collapsed shape, and CDC exports it lossily and marks it flushed, as before #704. No shipped schema is exposed. Of the shipped schemas only `visit` is underived, and what its cross-file `$ref`s reach (`lead`'s `contact` and `lead_id`) holds no array of objects. Closing the gap is #705's work: deriving through cross-file `$ref`s, then refusing an underived schema at load.
 
@@ -647,9 +647,9 @@ classified failure). The missing-column set participates in the compiled-plan
 scope hash, so a skeleton compiled while a column was cold-absent is re-keyed the
 moment the first flush lands it (the plan-cache poisoning hazard the issue
 mandates addressing). With no missing columns the rendered SQL is byte-identical
-to this document's §5 sketch. One residual race is accepted: for glob-hint path
-sets the validator's listing and the scan's listing are separate S3 LISTs, so a
-flush can land a column between them that the missing set still names. Until
+to this document's §5 sketch. Under Protocol V2 (§4.3.1), both the pre-read
+validator and the DuckDB scan operate on the exact immutable file list of one
+generation, so there is no separate S3 listing between them. Until
 #409 the typed NULL was projected beside the star (`SELECT * REPLACE (…),
 NULL::<type> AS <col>`), so that column, like any column of a compiled
 skeleton served stale, was projected twice, and the answer depended on
@@ -726,35 +726,30 @@ generation, and the offline detector for an object whose bytes changed under
 its entry is `manifest-reconcile --verify-checksums`, which re-hashes each
 object a retained generation lists (#891).
 
-**Manifest schema stamping (#256).** The writers (CDC flush, CDC init,
-compaction merge) `DESCRIBE` each parquet object they publish and record its
-footer columns (name → DuckDB type) on the manifest entry
-(`FileEntry.columns`) — flush and init describe the final key, while
-compaction describes the tmp object it staged, which is sound because tmp→final
-is a byte-identical `CopyObject` and the e2e suite pins the published object's
-footer against the stamp. The pre-read validator consults the stamp first: a stamp
-satisfying the system-column invariant short-circuits the footer probe and
-feeds the column union above; a stamp that is absent (an entry predating
-stamping) or fails the invariant falls back to the probe. On that invariant
+**Manifest schema stamping (#256, required in Protocol V2).** Every V2 writer
+(`cdc-flush`, `cdc-init`, `compactor`) exports to a local scratch file,
+`DESCRIBE`s it to record its footer columns (name → DuckDB type) on the
+manifest entry (`manifestv2.File.Columns`), and stages the object once via
+conditional put (`If-None-Match: *`) before committing the generation. Unlike
+V1, V2 has no `tmp → final` `CopyObject` step, no unstamped entries, and no
+footer-probe fallback on healthy V2 manifests: `manifestv2.Manifest.Encode` and
+`Fetch` require every entry to carry a non-empty `columns` map, and the
+generation's SHA-256 commits those stamps atomically with the record. The
+pre-read validator still verifies the system-column invariant on the stamps and
+falls back to a footer probe only if a stamp fails that invariant; on that
 verdict a stamp may only short-circuit **success** — a rejected stamp costs one
 probe and never authors a failure, so byte truth (#187) alone decides whether a
 file is malformed, and corruption detection (unreadable footers, the #251
 verification pass in §7.3) is untouched because it never ran on `DESCRIBE`
 results to begin with. The column union is the one named exception to that
-guarantee: the invariant check inspects only the system columns, so a stamp
-that passes it while *under-reporting* the file's attribute columns yields a
-short union that still counts as complete, so the missing set names a column
-the file really carries. Since #409 the missing column is unioned in by name
-and re-pinned rather than projected beside the star, so the scan reads the
+guarantee: the invariant check inspects only the system columns, so a tampered
+manifest that passes it while *under-reporting* the file's attribute columns
+yields a short union that still counts as complete, so the missing set names a
+column the file really carries. Since #409 the missing column is unioned in by
+name and re-pinned rather than projected beside the star, so the scan reads the
 file's real values at the schema type instead of projecting the name twice.
-Unlike the glob-listing race above, which self-heals on the next query, the
-wrong missing set **persists until the manifest entry is corrected**. That
-takes no restart: the rewritten stamp is a new cache key (below), so the fix
-lands on the next query. Accepted, because a stamp is a write-time `DESCRIBE`
-of the bytes just written: under-reporting takes a corrupted or tampered
-manifest. Stamping is best-effort
-at write time — a failed self-describe leaves the entry unstamped at the cost
-of one probe on first read, and is logged rather than swallowed.
+Publishing a corrected generation via `cdc-init` (a new manifest key and cache
+entry) replaces the stamp without restarting readers.
 
 **Scan-level system-column guard.** Trusting a stamp means not looking at the
 bytes, which opens one channel the probe path did not have: if the object behind
@@ -808,11 +803,11 @@ per-file identification pass (#351) is the deliberate counterpart: it uses the
 guard precisely to *name* such an object.
 
 **Trust boundary.** A stamp is trusted without reading bytes only because every
-object behind one was written by a Forma writer under manifest transactionality:
-flush and compaction mint fresh keys and stamp what they just wrote, an init
-rerun likewise mints fresh write-once keys (#416) and stamps them in the same
-`ReplaceTierFiles` publish that replaces the base tier, and the V1 `manifest-reconcile --repair` init promotion
-(#292, removed in #891) recomputed the stamp from the footer rather than inventing one. Outside
+object behind one was written by a Forma writer under Protocol V2
+transactionality: flush, compaction, and init reruns mint fresh write-once keys
+under `{prefix}/{schema_id}/e{epoch}/{base|delta}/` (`If-None-Match: *`) and
+stamp what they just wrote in the immutable generation manifest they commit
+through `publication.Publish`. Outside
 that boundary — an out-of-band overwrite of a listed object's bytes while its
 entry keeps a stamp that still satisfies the system-column invariant — the read
 path cannot see the change, and three things bound the exposure: (a) the scan
@@ -852,9 +847,8 @@ read until the object is repaired. Note the deliberate breadth: a single-file gu
 strictly stricter than the set scan (a file missing only `deleted_at` fails
 alone but is tolerated in a set where a sibling carries the column), so the
 error's wording is an invariant statement — "fails the guarded single-file
-scan" — not a causation claim. Hint-authored path sets are not identified
-(no manifest vouches for them); for those the manual path remains: list the
-schema's manifest paths, then run the guarded scan against one path at a time.
+scan" — not a causation claim. Every V2 scan set comes from a verified
+generation manifest, so every listed object participates in attribution.
 The cost envelope stays on the failure path: identification runs only when a
 read has already failed, adds at most ~3 drains per manifest-listed object
 (the guarded pair plus the bare confirmation) on top of #251's verification
@@ -862,21 +856,17 @@ drains, runs the paths sequentially on the engine's DuckDB pool (one open
 connection by default, #285), and bails on context cancellation.
 
 **Cache invalidation.** The validator caches each path it validates, keyed by
-path **and by the stamp it was validated under** (nil for probe-validated). Path
-alone would be wrong: Forma's writers mint write-once keys (flush and compaction
-always did; `cdc.BuildBasePath` mints `{min}_{max}_{uuid}.parquet` since #416,
-before which an init rerun overwrote its deterministic `{min}_{max}.parquet` key
-in place), but a rewrite under a listed path is still reachable — legacy
-deployments, or an operator repair that republishes bytes under an existing
-key — and each re-stamps the entry under the same key. A path-keyed cache would
-serve a warmed server the pre-rewrite columns for the life of the process. The manifest
-rewrite is therefore the invalidation signal: same stamp, keep the entry; new
-stamp, re-validate. An unchanged stamp still costs zero probes, so the
-cold-start win is intact. When a probe *does* run on a stamped path — which
-happens only when the stamp failed the invariant — the two are cross-checked
-and any divergence is logged with the footer winning the union; that is a log
-and not an error because the read succeeds, so nothing in the caller's result
-would ever mention it.
+path **and by the stamp it was validated under** (nil for probe-validated).
+Every V2 writer mints write-once keys under `{prefix}/{schema_id}/e{epoch}/{base|delta}/`
+(`manifestv2.Layout`), and each generation's immutable manifest binds its
+stamps to its SHA-256. Keying by path and stamp ensures that if a test or
+external recovery ever republished under a path with a different stamp, the
+cache re-validates on the next query without a restart. An unchanged stamp
+still costs zero probes, so the cold-start win is intact. When a probe *does*
+run on a stamped path — which happens only when the stamp failed the invariant
+— the two are cross-checked and any divergence is logged with the footer
+winning the union; that is a log and not an error because the read succeeds, so
+nothing in the caller's result would ever mention it.
 
 **Cache bounds.** The cache is a pure performance memo — a miss falls through to
 the stamp check or the footer probe — so it is bounded rather than kept for the
@@ -886,21 +876,17 @@ warm while one that compaction retired ages out: lookups and inserts alike
 sweep expired entries (at most once per TTL window), so while the validator
 sees any traffic — even hits alone — a retired path's entry is gone within
 about two TTL windows of its last use. Independently, the cache holds at most
-8192 entries; a new path arriving at the bound evicts one arbitrary entry, so a
-caller-chosen path set cannot grow the heap past it even inside one TTL window.
+8192 entries; a new path arriving at the bound evicts one arbitrary entry, so
+heap use stays bounded even across many schemas and generations.
 One-entry eviction instead of `queryplan.Cache`'s wholesale clear keeps the bound
 from sending every live object back to a footer probe at once. Eviction can only
 cost a re-validation, never correctness.
 
-**Backfill contract: lazy fallback, no backfill.** There is no migration pass
-and no manifest version bump — field presence is the format signal. Legacy
-entries acquire stamps only when a writer rewrites them (compaction merging
-them into a new base, or an init rerun), and an entry that is never rewritten
-stays probe-based **indefinitely, by design**: an unstamped path costs one
-footer probe per cache residency (see Cache bounds above; while queries keep
-scanning it, that is once per process), which is the pre-#256 steady state, so
-there is nothing to repair and no window in which correctness depends on the
-stamp existing.
+**No unstamped V2 entries.** Protocol V2 requires every `manifestv2.File` entry
+to carry its non-empty `columns` map on write and rejects unstamped manifests on
+fetch (`manifestv2.Manifest.Encode` / `Fetch`). There is no lazy backfill path
+and no read-time auto-repair: every published generation is stamped at write
+time.
 
 ## **6. Optimization Strategies**
 
@@ -941,7 +927,7 @@ The argument also needs the dirty set and the hot keys to come from one snapshot
 
 The transaction stays open from step 1 to step 7, across the DuckDB statement, so the page's hot rows come from the snapshot their keys came from. That holds one pooled PostgreSQL connection per pass, and holds back vacuum's horizon for at most R_max. The alternative, unbuilt, is the re-read-and-retry variant: step 2 ends the transaction, and step 7 re-reads the page's hot rows in a new snapshot and retries the pass when any `ver_ts` moved.
 
-*Connection use (#857).* A pass opens its snapshot before it takes a DuckDB connection, so without a bound every request queued on the DuckDB pool would hold a PostgreSQL connection while it waits. The engine admits at most `duckdb.maxConnections` passes at once, one per DuckDB connection, and a pass waits for its slot before it opens the snapshot. The passes in flight therefore hold at most `duckdb.maxConnections` pooled connections, and the wait costs nothing the DuckDB pool would not have cost: a pass needs a DuckDB connection for its statement anyway. The wait only widens the pass's flush-grace window, whose cutoff is stamped at path resolution, before it. A request whose context ends while it waits fails with its context's error and opens no snapshot. The factory logs a warning at construction when the PostgreSQL pool holds no more connections than `duckdb.maxConnections`, since federated reads could then take every connection the OLTP route needs. The re-read-and-retry variant above remains the option for a deployment that cannot spare `duckdb.maxConnections` pooled connections to federated reads.
+*Connection use (#857).* A pass opens its snapshot before it takes a DuckDB connection, so without a bound every request queued on the DuckDB pool would hold a PostgreSQL connection while it waits. The engine admits at most `duckdb.maxConnections` passes at once, one per DuckDB connection, and a pass waits for its slot before it opens the snapshot. The passes in flight therefore hold at most `duckdb.maxConnections` pooled connections, and the wait costs nothing the DuckDB pool would not have cost: a pass needs a DuckDB connection for its statement anyway. Because Protocol V2 reads the publication record inside the snapshot after acquiring the pass slot, waiting for a slot never widens a staleness window. A request whose context ends while it waits fails with its context's error and opens no snapshot. The factory logs a warning at construction when the PostgreSQL pool holds no more connections than `duckdb.maxConnections`, since federated reads could then take every connection the OLTP route needs. The re-read-and-retry variant above remains the option for a deployment that cannot spare `duckdb.maxConnections` pooled connections to federated reads.
 
 **Ordering parity.** The merged order must be the order DuckDB gives the parquet leg. Go holds the only other copy of that order: the comparator that sorts the hot keys and places them among the parquet rows, and the keyset predicate applied to the hot keys. PostgreSQL never orders. The proposal in #719 had PostgreSQL order and limit the hot leg too. That would put a third order in parity: PostgreSQL's collation, its NULL defaults, and its exact `NUMERIC` comparison. The only saving would be not sending hot keys that fall outside the page, and the dirty set bounds those.
 
@@ -1253,7 +1239,7 @@ One degraded mode exists: a PostgreSQL-only answer when the DuckDB/S3 side fails
    * Count the attempt (#714): once the PostgreSQL read has returned, one `federated_degraded_fallback_total` sample of 1, labelled with the class of the absorbed failure (`cause`) and with `outcome` `served` or `failed` (§8). It is emitted whatever the log level, so a breaker rejection is counted although its line is Debug.
    * Answer with the PostgreSQL-only query, `entity_main` plus EAV, exactly as the routed PostgreSQL-only path does.
    * The response is an ordinary success with nothing in it to mark the fallback. The log line and the counter above record it, and when the request set `include_execution_plan`, the plan's `routing.reason` is `"degraded fallback (AllowPartialDegradedMode)"` and the plan carries nothing from the abandoned DuckDB attempt (#639). Until #715 the answer also carried `partial: {"reason": "hot_tier_only", …}`, which ordinary PostgreSQL-only answers carried too (§7.3).
-   * Ten failure classes are never absorbed: missing schema metadata, manifest inconsistency, an empty parquet path set, a manifest stamped for another schema, invalid caller input, a parquet type the declaration cannot read (#732), a parquet row the dirty set should have excluded (`ErrHotLegNotDisjoint`, §6.1), an engine built without the hot leg's PostgreSQL seams, an expired deadline, and a request its caller cancelled (`degradableFederatedError`). A cancelled request has nobody left to answer, and a fallback on its cancelled context would replace the cancellation with its own failure.
+   * Non-degradable failure classes are never absorbed: missing schema metadata, publication inconsistency (`ErrPublicationInconsistent`, covering missing/unreadable/wrong-epoch records, missing/corrupt/invalid manifests, missing listed objects, and `ErrPublishedObjectUnverifiable`), invalid caller input, a parquet type the declaration cannot read (#732), a parquet row the dirty set should have excluded (`ErrHotLegNotDisjoint`, §6.1), an engine built without the hot leg's PostgreSQL seams, a pass deadline (`ErrPassDeadline`), an expired request deadline, and a request its caller cancelled (`degradableFederatedError`). A cancelled request has nobody left to answer, and a fallback on its cancelled context would replace the cancellation with its own failure.
    * With the setting off, the failure is returned to the caller. Over HTTP it is a redacted internal error unless `docs/error-handling.md` gives it a class of its own.
 2. **PostgreSQL Unavailable:** The query fails. Federated execution needs PostgreSQL for the hot rows and for the dirty set (§3.2). Parquet alone cannot tell a current row from one that was updated or deleted since its flush, so the engine never serves an S3-only answer. `duckdb.allowPartialDegradedMode` does not change this; the degraded fallback is itself a PostgreSQL read. Every PostgreSQL read of the federated engine wraps `ErrPostgresReadFailed`: a pass's reads in its snapshot (§6.1: opening it, the dirty set, the hot keys, the page's hot rows, the commit) and the PostgreSQL-only page read, routed or degraded. A pass's PostgreSQL failure does not count toward the §7.1 breaker. It is degradable, but the fallback meets the same outage and fails with the same sentinel. Until #858 a PostgreSQL failure after the dirty-ID fetch surfaced inside DuckDB's scan of PostgreSQL and classified as `ErrFederatedReadFailed`. Reads outside the federated engine, `Get`, `Tx` reads, `CrossSchemaSearch` and every `Query` on a deployment without DuckDB, return the repository's error without the sentinel. So an embedder cannot detect a PostgreSQL outage by matching `ErrPostgresReadFailed` alone. Over HTTP it answers as any internal failure does, with a redacted 500, or a 504 when a configured timeout expires first (`docs/error-handling.md`). `Get` fails the same way (§3.3).
 
@@ -1261,21 +1247,21 @@ A best-effort analytics mode that reads parquet during a PostgreSQL outage would
 
 ### **7.3 Corrupt Parquet Objects (#251, #722)**
 
-A federated read never answers from part of the parquet set. When a manifest-listed object cannot be read, the read fails, or, on a deployment with `duckdb.allowPartialDegradedMode`, is answered from PostgreSQL alone. #251 first excluded a confirmed-corrupt object and answered from the readable remainder plus the hot tier. #722 removed that exclusion because it returned wrong rows, not just fewer rows. The hot leg reads only rows that are still dirty or inside the flush grace (§3.2), so it cannot stand in for anything the excluded object held. That left two kinds of damage:
+A federated read never answers from part of the parquet set. When a manifest-listed object cannot be read, the read fails, or, on a deployment with `duckdb.allowPartialDegradedMode`, is answered from PostgreSQL alone. #251 first excluded a confirmed-corrupt object and answered from the readable remainder plus the hot tier. #722 removed that exclusion because it returned wrong rows, not just fewer rows. The hot leg reads only rows that are still dirty in the snapshot (§3.2), so it cannot stand in for anything the excluded object held. That left two kinds of damage:
 
 * **Missing rows.** A corrupt base object can hold rows that are live and unchanged since their flush. No other input holds them, so they were absent from the answer.
-* **Stale and resurrected rows.** Excluding an object removes its versions from the last-write-wins input (§5). Suppose the excluded object held a row's latest flushed version, an update or a tombstone, and an older version of that row sat in a readable object. The older version won, so the answer returned an outdated attribute value or a row that had been deleted. Example: a readable base object holds live row R, a later delta holds R's tombstone, and the deletion is past the flush grace, so R is in neither the dirty set nor the hot leg. Excluding that delta returned R as live (`TestCorruptDeltaWithNewestVersionsIsNotAnsweredStale` reproduces it).
+* **Stale and resurrected rows.** Excluding an object removes its versions from the last-write-wins input (§5). Suppose the excluded object held a row's latest flushed version, an update or a tombstone, and an older version of that row sat in a readable object. The older version won, so the answer returned an outdated attribute value or a row that had been deleted. Example: a readable base object holds live row R, a later delta holds R's tombstone, and the deletion is already flushed, so R is in neither the dirty set nor the hot leg. Excluding that delta returned R as live (`TestCorruptDeltaWithNewestVersionsIsNotAnsweredStale` reproduces it).
 
-Excluding only base objects would not have been safe either. Compaction promotion relabels deltas as base without merging them (`applyPromotion`), so a base object can hold a row's newest version, and the tier label cannot tell a safe exclusion from an unsafe one. What #251 keeps is the failure-path machinery: classifying the object, remembering the verdict, and keeping the breaker out of it. A healthy query pays nothing.
+Excluding only base objects would not have been safe either: base objects carry every compacted row's newest version (tombstones included), so tier labels cannot tell a safe exclusion from an unsafe one. What #251 keeps is the failure-path machinery: classifying the object, remembering the verdict, and keeping the breaker out of it. A healthy query pays nothing.
 
 **Mechanism chain.** A DuckDB read failure can come at `Query` time or mid-stream, because listed objects are opened lazily. It enters `failDuckDBScan`, which resolves it in a fixed order:
 
 1. **Missing-object classification first.** `classifyPublishedReadError` probes the exact scanned set via the publication reader's `MissingIn`. A listed object that is absent from storage is a publication **inconsistency** (§4.3.1, #759): non-degradable, not charged to the breaker, and **never retried**. Missing is not corrupt. This ordering is a contract: a deleted object must never be reported as merely unreadable.
 2. **Per-file verification.** Otherwise the engine re-reads each object of the failed set on its own (`verifyParquetPaths` → `SELECT * FROM read_parquet('<one object>')`, drained to exhaustion). An object is confirmed corrupt only after **two consecutive solo drains fail**. Deterministic corruption fails every drain, because the same bytes decode the same way. A transient object-level fault, such as an S3 timeout or a reset connection, reads clean on the immediate re-drain. It must not be cached as corruption, which would turn a blip into a retention window of refused reads that bypass the breaker. A single failed drain is inconclusive and leaves the query on the ordinary `RecordFailure` path. Verification runs only for sets of **two or more** objects. Quote-bearing keys render safely since #456 and are verified like any other (#479). A cancelled context confirms nothing, since cancellation is indistinguishable from corruption for the paths not yet drained.
-3. **TTL cache.** Confirmed-corrupt objects are recorded in an engine-level `corruptParquetCache` with a bounded lifetime: 5 minutes by default, overridable with `WithCorruptPathRetention`. Entries always expire. A terminal verdict must never be kept forever, because a repair, compaction retiring the key, or a manifest reconcile can only self-heal through re-verification after expiry.
+3. **TTL cache.** Confirmed-corrupt objects are recorded in an engine-level `corruptParquetCache` with a bounded lifetime: 5 minutes by default, overridable with `WithCorruptPathRetention`. Entries always expire so a new generation published by `cdc-init` re-initialization or compaction is served cleanly without restarting the process.
 4. **Refusal.** The pass fails with `CorruptParquetError`, which names the schema and the objects and wraps `ErrFederatedReadFailed`. One Error line, "parquet objects confirmed corrupt; …", names the same objects, once per verification. While a verdict is cached, the pass refuses any generation that lists the object, before DuckDB scans (`refusePublishedCorrupt`). It first runs the #732 type guard over the listed objects that are not cached as corrupt, then the SQL build's own refusals, then probes the whole listed set with `MissingIn`. A type refusal, a build refusal and step 1 therefore still win: a readable object the declaration cannot read fails as `ParquetTypeIncompatibleError`, a schema with no usable metadata fails with `ErrSchemaMetadataCacheRequired`, a filter literal the attribute cannot take fails as invalid input, and a listed object absent from storage fails as a publication inconsistency, not as corruption. Later queries therefore fail the same way, with no DuckDB scan, no re-verification and no repeat of the Error line (a degraded request still logs its §7.2 fallback line). Corruption earns no retry. The R_max retry (§6.1) is a separate mechanism.
 
-**Answering anyway.** `CorruptParquetError` is degradable. On a deployment with `duckdb.allowPartialDegradedMode` the query gets the §7.2 PostgreSQL-only answer. Under the storage invariant (§3.3), that answer holds every live row at its current version. With the setting off, the caller receives the failure. So does a query that carries an active keyset cursor, setting or not: the PostgreSQL-only path cannot apply the cursor, so `mayDegradeToPostgres` declines the fallback (#354) and the failure is annotated with the reason rather than answered without the cursor. Over HTTP it is the redacted internal error of any `ErrFederatedReadFailed`, so object keys do not reach the caller. Until a repair, compaction or a manifest reconcile retires the object, every federated read of the schema whose set lists it fails or degrades. A deployment that degrades loses the parquet tiers for that schema, not the answer.
+**Answering anyway.** `CorruptParquetError` is degradable. On a deployment with `duckdb.allowPartialDegradedMode` the query gets the §7.2 PostgreSQL-only answer. Under the storage invariant (§3.3), that answer holds every live row at its current version. With the setting off, the caller receives the failure. So does a query that carries an active keyset cursor, setting or not: the PostgreSQL-only path cannot apply the cursor, so `mayDegradeToPostgres` declines the fallback (#354) and the failure is annotated with the reason rather than answered without the cursor. Over HTTP it is the redacted internal error of any `ErrFederatedReadFailed`, so object keys do not reach the caller. Until `cdc-init` re-initialization or compaction publishes a new generation that no longer lists the corrupt object, every federated read of the schema whose generation lists it fails or degrades (there is no read-time auto-repair and no `--repair` flag). A deployment that degrades loses the parquet tiers for that schema, not the answer.
 
 **Why a drain, not a footer probe.** DuckDB answers `DESCRIBE` and `COUNT(*)` from the Thrift footer and row-group metadata without touching data pages. A footer probe therefore passes cleanly on a page-corrupt object: the pre-read schema validator already footer-probes, and scenario 7 still failed. Only a drain reads the pages. A **solo drain reads a superset of the columns the scan projects**, so the per-file pass reproduces whatever per-file failure made the set scan fail. No failure that the set scan can detect escapes the verification pass. That superset property is what makes attribution sound: an object is reported corrupt because it was proven unreadable on its own, not because it was in the set when something went wrong.
 

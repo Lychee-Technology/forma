@@ -1,19 +1,23 @@
 # Parquet publication protocol V2
 
-Status: the contract #888 proposes for EPIC #887, in production since #896 for registration,
-`cdc-flush`, `cdc-init` and the federated reader. The SQL and its semantics are in
-`internal/publication`, with tests on PostgreSQL and on the MiniStack lane. The manifest
-objects (document, digest, keys, write-once store, verifying cache) are in
-`internal/manifestv2` (#898). `cdc-flush` and `cdc-init` publish only through
-`internal/cdcv2` (#899), into which `internal/cdc` adapts the DuckDB export as its
-`DeltaStager` and `BaseExporter`. The factory builds every federated engine with
+Status: the contract #888 proposes for EPIC #887, fully delivered across registration,
+`cdc-flush`, `cdc-init`, the federated reader, `compactor`, and `manifest-reconcile`.
+The SQL and its semantics are in `internal/publication`, with tests on PostgreSQL and on
+the MiniStack lane. The manifest objects (document, digest, keys, write-once store,
+verifying cache) are in `internal/manifestv2` (#898). `cdc-flush` and `cdc-init` publish
+only through `internal/cdcv2` (#899), into which `internal/cdc` adapts the DuckDB export
+as its `DeltaStager` and `BaseExporter`. The factory builds every federated engine with
 `federated.WithPublicationReader` over `internal/federatedv2` (#900), and `init-db` writes
 each registered schema's record and runs the V2 cutover ([Upgrade](#removed-from-v1)). The
 compactor publishes compact generations through `internal/cdcv2` too (#890).
-`manifest-reconcile` (#891) is still V1: a cut-over deployment keeps it stopped (Upgrade
-step 1) until it moves ([Ownership](#ownership-and-migration)).
-Behaviour on a real Aurora DSQL cluster has not been checked. #817 tracks that, and
-[Verification](#verification) lists what this contract assumes until then.
+`manifest-reconcile` runs read-only diagnosis, `--gc` retention/orphan collection under
+storage binding (`--bind-storage`), and `--verify-checksums` over V2 generations (#891);
+`--repair` is removed. End-to-end fault/crash/concurrency validation, legacy-V1 guards,
+P95/cost deltas, and the EPIC close-out ledger live in
+[publication-protocol-v2-evidence.md](publication-protocol-v2-evidence.md) (#892).
+Behaviour on a real Aurora DSQL cluster has not been checked yet: #893 (tracked under
+#817) owns that external validation gate, and [Verification](#verification) lists what
+this contract assumes until then.
 
 ## Why
 
@@ -1098,7 +1102,7 @@ the V1 code it replaces:
 | compactor (`compactor.go`, `provider.go`) | `Publish(KindCompact)` with `Rebase` over flushes. No inline deletion of replaced objects; their retirement belongs to #891. As built: `internal/cdcv2`'s `Writer.Compact` publishes behind a `CompactStager`, which `internal/compaction` implements; the merge keeps every row's newest version, tombstones included, and a promotion merges the delta files into a new base object, since a V2 key names its tier. The V1 `FileProvider`, `--manifest-template`/`--manifest-prefix` and the ETag retry loop are deleted | #890 (compaction) |
 | federated reader (`internal/manifest/query_source*.go`, `internal/federated` path resolution, `parquet_empty_scan.go`, `change_log_reads.go` history probe) | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline. #900 builds the pass behind `federated.WithPublicationReader` and its source in `internal/federatedv2`, with no caller ([As built](#readers)); #896 loads the epoch pins with the schema metadata, builds the engine with the option, deletes the V1 resolution and rewrites `docs/federated-query/design.md` §6.1 | #896 (writers and reader, built in #899 to #901), carrying #759 |
 | `manifest-reconcile` `--gc`, `--repair`, verification | `RaiseHorizon`, `Retire`, `RetireRecovery`, `Forget`, `BindStorage`, and `PlanCollection` in the collection order above (`internal/reconcile`, `cmd/tools/manifest_reconcile.go`). Repair is removed (re-init with `cdc-init`). Lock-free diagnosis verifies retained and expired manifests and checks completeness above `forgotten_generation`. Verification walks retained generations (`--verify-checksums`) | #891 (GC) |
-| fault matrix, operator docs, EPIC evidence | crash injection at every staging, publish and commit boundary; a guard that fails if `QuerySource.Fallback`, the level-3 glob or a glob-only flag returns | #892 |
+| fault matrix, operator docs, EPIC evidence | production-shape E2E lifecycle/fault/crash/concurrency matrix (`internal/e2e_harness/production`), DSQL `40001` & 3-way concurrency tests (`internal/cdcv2`), static guard banning `QuerySource.Fallback`, level-3 glob, glob-only mode and obsolete flags (`internal/publication/legacy_v1_guard_test.go`), P95/cost deltas, operator doc audit, and [evidence ledger](publication-protocol-v2-evidence.md) | #892 |
 | live Aurora DSQL behaviour | the assumptions in [Verification](#verification) | #893, under #817 |
 
 Sequencing: #888, then #895, then #896, then #890 (it uses the publication interface
