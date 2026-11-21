@@ -18,9 +18,10 @@ import (
 // the next one. The pass is held right after its record read
 // (pausingPublicationReader) while a real rewrite publishes; on release it
 // resolves the replaced generation and scans exactly the objects it lists,
-// which the compactor never deletes (their retirement is #891's). The held
-// read answers the oracle's rows and values, and the next read answers them
-// from the compact generation.
+// which the compactor never deletes, and which a garbage collection run
+// while the pass is held retires without deleting (#891). The held read
+// answers the oracle's rows and values, and the next read answers them from
+// the compact generation.
 //
 // No query runs between the flush that publishes the pre-compaction
 // generation and the held pass, so the engine's manifest cache does not hold
@@ -69,6 +70,17 @@ func TestCompactionRewriteInFlightReaderRetention(t *testing.T) {
 	}
 	if n := compactionPublishesSince(preSwap, result); n != 1 {
 		t.Fatalf("compaction committed %d publishes since the pass's generation, want one", n)
+	}
+	requireReplacedGenerationRetained(ctx, t, env, wide, preSwap)
+
+	// Garbage collection runs while the pass holds the replaced generation:
+	// it retires the generation and deletes nothing it lists.
+	gc := runReconcile(ctx, t, env, wide, reconcileOptions(true))
+	if !slices.Contains(gc.Collected.Retired, preSwap.Generation) {
+		t.Fatalf("collection retired %v, want held generation %d among them", gc.Collected.Retired, preSwap.Generation)
+	}
+	if len(gc.Collected.Objects)+len(gc.Collected.Manifests) != 0 {
+		t.Fatalf("collection deleted %v and %v while a pass held their generation", gc.Collected.Objects, gc.Collected.Manifests)
 	}
 	requireReplacedGenerationRetained(ctx, t, env, wide, preSwap)
 

@@ -56,6 +56,7 @@ var publicationHelperTests = map[string]bool{
 	"manifest_load_gate_test.go":  true,
 	"publication_faults_test.go":  true,
 	"publication_records_test.go": true,
+	"reconcile_test.go":           true,
 }
 
 // TestE2ETestsReachPublicationOnlyThroughHelpers keeps the production e2e

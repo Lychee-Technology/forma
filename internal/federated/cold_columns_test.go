@@ -126,8 +126,11 @@ func TestParquetOnlyScopePartsIncludeColdPinnedSet(t *testing.T) {
 // the drift earns the CAST, and a stamp that reports the export type earns
 // none, whatever the bytes at the path say. A stamp that misreports the
 // bytes is a write-path fault (a same-key rewrite under an unchanged
-// stamp, which no current writer performs — #416 minted write-once keys),
-// detected offline by `manifest-reconcile --verify-stamps`.
+// stamp, which no current writer performs — #416 minted write-once keys);
+// V1 `manifest-reconcile --verify-stamps` checked footers offline until #891,
+// whereas V2 has no stamp scrub — `manifest-reconcile` verifies manifest
+// bytes and object SHA-256/size (`--verify-checksums`), not parquet footer
+// stamps (recovery from a bad generation is `cdc-init`).
 func TestColdScanPinFollowsTrustedStampWithoutProbe(t *testing.T) {
 	cache := forma.SchemaAttributeCache{
 		"score": {AttributeID: 1, ValueType: forma.ValueTypeInteger, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumn("integer_01")}},

@@ -1,380 +1,176 @@
+// Package reconcile implements Protocol V2 manifest-reconcile
+// (docs/publication-protocol-v2.md, "Garbage collection and reader lifetime";
+// docs/manifest-reconcile.md): a read-only, lock-free diagnosis of each
+// schema's publication state and, under --gc, ordered garbage collection of
+// expired generations and horizon-fenced orphans.
 package reconcile
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/lychee-technology/forma/internal/cdc"
-	"github.com/lychee-technology/forma/internal/compaction"
-	"github.com/lychee-technology/forma/internal/manifest"
+	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/publication"
 )
 
-// ManifestStore loads and saves one schema's manifest with optimistic
-// concurrency. Load must have LoadOrCreate semantics: a schema without a
-// manifest reconciles as empty instead of erroring.
-type ManifestStore interface {
-	Load(ctx context.Context, schemaID int16) (*manifest.Manifest, string, error)
-	Save(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string) (string, error)
-}
+// ErrRetentionUnsafe reports options under which garbage collection could
+// delete an object a reader still scans: a retention grace shorter than the
+// reader's pass deadline plus the clock margin, or no deadline at all.
+var ErrRetentionUnsafe = errors.New("retention does not cover the reader's pass deadline")
 
-// StatsReader inspects one parquet file's contents: FileStats recomputes
-// manifest metadata; UncoveredRows returns the rows whose newest version no
-// listed file supersedes, with a tombstone flag (the repair guard's
-// version-aware coverage probe) — with no listed keys it enumerates every
-// distinct row id in the file (#292 init promotion). FileColumns probes the
-// footer for the #256 column stamp. All take bucket-relative keys. Only
-// consulted under --repair, plus FileColumns under --verify-stamps.
-type StatsReader interface {
-	FileStats(ctx context.Context, key string) (compaction.MergeStats, error)
-	UncoveredRows(ctx context.Context, key string, listedKeys []string) ([]compaction.UncoveredRow, error)
-	FileColumns(ctx context.Context, key string) (map[string]string, error)
-}
-
-// LiveRowChecker reports Postgres entity-store liveness. MissingLiveRows
-// returns which of the given row ids are NOT live (a row absent from every
-// manifest-listed parquet AND missing from Postgres was deleted — its
-// tombstone won a compaction merge and was dropped, so re-appending would
-// resurrect it; see classifyDeltaOrphan in repair.go). LiveRowCount returns
-// the number of live rows for a schema — the right-hand side of init
-// promotion's coverage identity (#292): the orphan set may replace the base
-// tier only if it provably covers every one of these rows.
-type LiveRowChecker interface {
-	MissingLiveRows(ctx context.Context, schemaID int16, rowIDs []string) ([]string, error)
-	LiveRowCount(ctx context.Context, schemaID int16) (int64, error)
-}
-
-// Locker serializes reconciliation against the live flusher per schema:
-// cdc.SchemaLocker, whose contract it shares. held ends if the lock is
-// lost; release is non-nil exactly when ok is true.
-type Locker interface {
-	TryLock(ctx context.Context, schemaID int16) (held context.Context, release func(), ok bool, err error)
-}
-
-// SchemaEnumerator yields the schema IDs to reconcile.
-type SchemaEnumerator interface {
-	SchemaIDs(ctx context.Context) ([]int16, error)
-}
-
-// GCStateStore persists per-schema first-unlisted sighting timestamps
-// (key -> unix ms) with optimistic concurrency. GC deletes an orphan only
-// after it has been observed unlisted for longer than the grace period —
-// LastModified alone cannot express "unlisted duration" (#188 follow-up:
-// an old source freshly spliced out by the compactor would otherwise be
-// deleted inside the in-flight-reader window).
-type GCStateStore interface {
-	Load(ctx context.Context, schemaID int16) (map[string]int64, string, error)
-	Save(ctx context.Context, schemaID int16, state map[string]int64, etag string) (string, error)
-}
-
-// Options selects the reconcile actions. The zero value is a read-only
-// report.
+// Options are the protocol's time parameters and what a run does.
 type Options struct {
-	Repair  bool          // append delta-shaped orphans back to the manifest
-	GC      bool          // delete base-shaped and _tmp orphans past the grace period
-	GCGrace time.Duration // minimum object age before GC may delete it
-	// VerifyStamps compares every listed entry's #256 column stamp against
-	// the object footer; divergence is the byte-truth breach the read-path
-	// stamp short-circuit cannot see.
-	VerifyStamps bool
-	// VerifyChecksums re-hashes every stamped entry's object and compares the
-	// digest with its #347 content stamp — the byte-integrity layer under
-	// VerifyStamps' shape check, and the only offline detector of silent
-	// parquet mis-decode corruption. One full GET per stamped entry.
+	// GC runs garbage collection. Without it a run is a read-only diagnosis
+	// that reports what a collection would delete and mutates nothing.
+	GC bool
+	// VerifyChecksums hashes every distinct object a retained generation lists
+	// and compares it with the digest and size of every retained entry naming it.
 	VerifyChecksums bool
-	MaxETagRetries  int // manifest save retries on optimistic-concurrency conflict
-	// AllowEmptyManifestSchemas waives the #463 empty-manifest GC guard for
-	// exactly these schemas. Schema-explicit by design: one mis-pointed
-	// manifest template resolves EVERY schema's manifest empty, so a global
-	// override would wave the whole fleet through the very failure the
-	// guard exists to stop. It waives only the truly-empty signature: a
-	// NON-EMPTY manifest with zero in-prefix entries (#481 foreign
-	// manifest) is never waivable.
-	AllowEmptyManifestSchemas []int16
+	// RetentionGrace is G: how long after a collector retired a superseded
+	// generation (or a lost-record recovery) its objects stay protected.
+	RetentionGrace time.Duration
+	// ReaderDeadline is R_max, the federated reader's pass deadline.
+	ReaderDeadline time.Duration
+	// ClockMargin is C: drift allowed between readers, database clock and S3.
+	ClockMargin time.Duration
+	// OrphanAge is A: how far behind the database clock the collector raises
+	// the record's horizon.
+	OrphanAge time.Duration
 }
 
-// Reconciler diffs S3 parquet objects against per-schema manifests and
-// optionally repairs (append delta orphans) or garbage-collects (delete
-// compaction leftovers). See the package comment for the recovery model.
-type Reconciler struct {
-	Lister     ObjectLister
-	Deleter    ObjectDeleter
-	Manifests  ManifestStore
-	Objects    ObjectReader   // required by Opts.VerifyChecksums; nil also leaves repaired and promoted entries unstamped
-	Stats      StatsReader    // may be nil unless Opts.Repair or Opts.VerifyStamps
-	LiveRows   LiveRowChecker // may be nil unless Opts.Repair
-	Locker     Locker
-	Schemas    SchemaEnumerator
-	GCStates   GCStateStore // may be nil unless Opts.GC
-	Now        func() time.Time
-	Bucket     string
-	DataPrefix string
-	Logger     *zap.Logger
-	Opts       Options
-}
-
-// Run reconciles every enumerated schema. Per-schema failures are recorded
-// in the report and do not abort the run; the returned error is reserved
-// for failures that prevent reconciling anything at all.
-func (r *Reconciler) Run(ctx context.Context) (Report, error) {
-	ids, err := r.Schemas.SchemaIDs(ctx)
-	if err != nil {
-		return Report{}, fmt.Errorf("enumerate schemas: %w", err)
+// Validate refuses options under which a reader could lose an object it scans:
+// G must be at least R_max + C, summed without signed-integer overflow.
+func (o Options) Validate() error {
+	switch {
+	case o.ReaderDeadline <= 0:
+		return fmt.Errorf("reader pass deadline %s must be positive: %w", o.ReaderDeadline, ErrRetentionUnsafe)
+	case o.ClockMargin < 0:
+		return fmt.Errorf("clock margin %s must not be negative", o.ClockMargin)
+	case o.OrphanAge <= 0:
+		return fmt.Errorf("orphan age %s must be positive: a horizon at the database clock would refuse every publication in flight", o.OrphanAge)
 	}
-	report := Report{Schemas: make([]SchemaReport, 0, len(ids))}
-	for _, schemaID := range ids {
-		report.Schemas = append(report.Schemas, r.reconcileSchema(ctx, schemaID))
+	floor, ok := AddDurations(o.ReaderDeadline, o.ClockMargin)
+	if !ok {
+		return fmt.Errorf("the reader pass deadline %s plus the clock margin %s overflows a duration: %w",
+			o.ReaderDeadline, o.ClockMargin, ErrRetentionUnsafe)
 	}
-	return report, nil
-}
-
-func (r *Reconciler) reconcileSchema(ctx context.Context, schemaID int16) SchemaReport {
-	held, release, locked, err := r.Locker.TryLock(ctx, schemaID)
-	if err != nil {
-		return SchemaReport{SchemaID: schemaID, Err: fmt.Errorf("acquire schema %d lock: %w", schemaID, err)}
-	}
-	if !locked {
-		r.Logger.Info("schema lock not acquired, skipping", zap.Int16("schema_id", schemaID))
-		return SchemaReport{SchemaID: schemaID, Skipped: true}
-	}
-	defer release()
-	s := r.reconcileLocked(held, schemaID)
-	s.Err = cdc.WithLockLoss(held, s.Err)
-	return s
-}
-
-// reconcileLocked is reconcileSchema's work under the schema lock, run on
-// the lock's held context so a lost lease (#633) ends it.
-func (r *Reconciler) reconcileLocked(ctx context.Context, schemaID int16) SchemaReport {
-	s := SchemaReport{SchemaID: schemaID}
-
-	// Load the manifest BEFORE listing: a file created after the manifest
-	// snapshot then still appears in the listing, so a racing compactor's
-	// freshly committed base entry can never be reported dangling.
-	m, etag, err := r.Manifests.Load(ctx, schemaID)
-	if err != nil {
-		s.Err = fmt.Errorf("load schema %d manifest: %w", schemaID, err)
-		return s
-	}
-
-	prefix := schemaDataPrefix(r.DataPrefix, schemaID)
-	objects, err := r.Lister.ListObjects(ctx, prefix)
-	if err != nil {
-		s.Err = fmt.Errorf("list schema %d objects under %s: %w", schemaID, prefix, err)
-		return s
-	}
-
-	d := diffSchema(r.Bucket, r.DataPrefix, schemaID, objects, m)
-	s.ObjectsSeen, s.ManifestEntries, s.ManifestEntriesInPrefix = d.objectsSeen, d.manifestEntries, d.manifestEntriesInPrefix
-	s.DeltaOrphans = objectKeyList(d.deltaOrphans)
-	s.BaseOrphans = append(objectKeyList(d.baseInitOrphans), objectKeyList(d.baseMergedOrphans)...)
-	s.TmpOrphans = objectKeyList(d.tmpOrphans)
-	s.Unknown = objectKeyList(d.unknown)
-	s.Unverifiable = d.unverifiable
-	confirmed, present, err := r.confirmDangling(ctx, schemaID, d.dangling)
-	if err != nil {
-		// An unconfirmable candidate is a tool failure, not a data-drift
-		// verdict: the caller maps s.Err to exit 1, never 2.
-		s.Err = fmt.Errorf("confirm schema %d dangling candidates: %w", schemaID, err)
-		return s
-	}
-	s.Dangling = confirmed
-
-	if r.Opts.VerifyStamps || r.Opts.VerifyChecksums {
-		// The skip set is the candidates this run did NOT prove present —
-		// neither the confirmed-dangling list alone nor the raw candidate
-		// list (see verifyStamps). Both passes share it.
-		if err := r.runVerifications(ctx, schemaID, m, unprovenDangling(d.dangling, present), &s); err != nil {
-			s.Err = err
-			return s
-		}
-	}
-
-	deltaLeftovers, promotedInit := r.runRepairs(ctx, schemaID, m, etag, d, objects, &s)
-	if s.Err != nil {
-		return s
-	}
-	if r.Opts.GC {
-		s.Deleted, err = r.collectAndGC(ctx, schemaID, d, promotedInit, deltaLeftovers)
-		if err != nil {
-			s.Err = err
-			return s
-		}
-	}
-	return s
-}
-
-// runVerifications is reconcileSchema's read-only byte-truth half: the #256
-// stamp comparison and the #347 checksum scrub, each behind its own flag.
-// Both run BEFORE any repair mutates the manifest, and both treat a failed
-// probe as a tool failure that aborts this schema — so a probe outage under
-// --repair stops the run rather than repairing against unverified inventory.
-func (r *Reconciler) runVerifications(ctx context.Context, schemaID int16, m *manifest.Manifest,
-	unproven []string, s *SchemaReport) error {
-	if r.Opts.VerifyStamps {
-		divergences, err := r.verifyStamps(ctx, schemaID, m, unproven)
-		if err != nil {
-			return fmt.Errorf("verify schema %d column stamps: %w", schemaID, err)
-		}
-		s.StampDivergences = divergences
-	}
-	if r.Opts.VerifyChecksums {
-		divergences, skipped, err := r.verifyChecksums(ctx, schemaID, m, unproven)
-		if err != nil {
-			return fmt.Errorf("verify schema %d content checksums: %w", schemaID, err)
-		}
-		s.ChecksumDivergences = divergences
-		s.SkippedUnstamped = skipped
+	if o.RetentionGrace < floor {
+		return fmt.Errorf("retention grace %s is below the reader pass deadline %s plus the clock margin %s: %w",
+			o.RetentionGrace, o.ReaderDeadline, o.ClockMargin, ErrRetentionUnsafe)
 	}
 	return nil
 }
 
-// runRepairs is reconcileSchema's --repair half: promote a provably complete
-// init-shaped base orphan set, then hand the post-promotion manifest and etag
-// to the delta-orphan repair pass. Both passes record their outcome on s;
-// s.Err set means the schema aborts and neither the returned leftovers nor
-// promotedInit may be used.
-func (r *Reconciler) runRepairs(ctx context.Context, schemaID int16, m *manifest.Manifest, etag string,
-	d diffResult, objects []ObjectInfo, s *SchemaReport) (deltaLeftovers []ObjectInfo, promotedInit bool) {
-	if r.Opts.Repair && len(d.baseInitOrphans) > 0 {
-		// The promotion's date fences date listed objects against the init
-		// export, so they need this run's listing keyed by object key.
-		listed := make(map[string]ObjectInfo, len(objects))
-		for _, o := range objects {
-			listed[o.Key] = o
-		}
-		promo, pm, petag, err := r.promoteInitOrphans(ctx, schemaID, m, etag, d.baseInitOrphans, listed)
-		if err != nil {
-			s.Err = err
-			return nil, false
-		}
-		m, etag = pm, petag
-		s.PromotedBase = promo.promoted
-		s.InitPromotionRefusal = promo.refusal
-		promotedInit = len(promo.promoted) > 0
+// AddDurations answers a + b for non-negative a and b, and false when the sum
+// overflows time.Duration.
+func AddDurations(a, b time.Duration) (time.Duration, bool) {
+	if a < 0 || b < 0 || a > math.MaxInt64-b {
+		return 0, false
 	}
-	if r.Opts.Repair && len(d.deltaOrphans) > 0 {
-		outcome, err := r.repairSchema(ctx, schemaID, m, etag, d.deltaOrphans)
-		if err != nil {
-			s.Err = err
-			return nil, false
-		}
-		s.Repaired = outcome.repaired
-		s.DeltaLeftovers = objectKeyList(outcome.leftovers)
-		deltaLeftovers = outcome.leftovers
-	}
-	return deltaLeftovers, promotedInit
+	return a + b, true
 }
 
-// collectAndGC assembles this schema's GC candidate set from the diff and
-// hands it to gcSchema.
-func (r *Reconciler) collectAndGC(ctx context.Context, schemaID int16, d diffResult, promotedInit bool, deltaLeftovers []ObjectInfo) ([]string, error) {
-	if err := r.refuseEmptyManifestGC(schemaID, d, promotedInit); err != nil {
-		return nil, err
-	}
-	// Init-shaped base orphans are GC candidates since #290 — unless this
-	// run just promoted them (#292): a promoted set is now manifest-listed
-	// inventory, and gcSchema's state prune drops their sighting entries
-	// so a later unlisting restarts the grace clock. A refused set keeps
-	// the #290 behavior: recovery for a failed publish is re-running
-	// cdc-init or a later --repair pass that can prove coverage.
-	// Delta leftovers require the repair analysis, so they are only
-	// deletable under --repair --gc.
-	var candidates []ObjectInfo
-	if !promotedInit {
-		candidates = append(candidates, d.baseInitOrphans...)
-	}
-	candidates = append(candidates, d.baseMergedOrphans...)
-	candidates = append(candidates, d.tmpOrphans...)
-	candidates = append(candidates, deltaLeftovers...)
-	// Run even with zero candidates: sighting-state entries for keys
-	// that stopped being orphans must be pruned so a later unlisting
-	// restarts their grace clock.
-	return r.gcSchema(ctx, schemaID, candidates)
+// SchemaEnumerator answers the schemas a run visits.
+type SchemaEnumerator interface {
+	SchemaIDs(ctx context.Context) ([]int16, error)
 }
 
-// confirmDangling re-verifies dangling candidates against a fresh manifest
-// load and a per-key existence probe. The lock excludes the flusher but not
-// the compactor or cdc-init, so a splice landing mid-run could otherwise
-// surface a properly handled (or freshly created) object as dangling. A
-// failed reload or probe leaves the candidate UNCONFIRMED and is returned
-// as an error — a storage outage must surface as a tool failure (exit 1),
-// never as a confirmed data-drift report (exit 2).
-//
-// It returns both verdicts the probe actually establishes: confirmed (still
-// listed in the reloaded manifest, object provably gone) and present (still
-// listed, object provably THERE — a stale-listing race, not drift at all).
-// present is what lets --verify-stamps and --verify-checksums keep covering
-// those entries: a candidate whose bytes this run already proved reachable is
-// not a probe hazard, so skipping it would forfeit coverage for no reason.
-func (r *Reconciler) confirmDangling(ctx context.Context, schemaID int16, dangling []string) (confirmed, present []string, err error) {
-	if len(dangling) == 0 {
-		return nil, nil, nil
+// Reconciler runs manifest-reconcile over every schema its enumerator answers.
+type Reconciler struct {
+	DB      *sql.DB
+	Tables  publication.Tables
+	Layout  manifestv2.Layout
+	Objects ObjectStore
+	// Locker is the writer schema lock used under --gc for liveness only.
+	// Diagnosis never takes a lock (on Aurora DSQL a lock writes a lease row).
+	Locker  cdc.SchemaLocker
+	Schemas SchemaEnumerator
+	Logger  *zap.Logger
+	Opts    Options
+	// Storage is the target this run lists and deletes in, checked against
+	// Objects (when Objects implements Destination) and the deployment's
+	// PostgreSQL storage binding before any collection deletes anything.
+	Storage publication.StorageTarget
+
+	storageFault *Finding
+}
+
+// Run visits every schema: a collection under the schema's lock, a diagnosis
+// without it. Per-schema failures are recorded in SchemaReport.Err so the
+// remaining schemas still run.
+func (r *Reconciler) Run(ctx context.Context) (Report, error) {
+	if err := r.Opts.Validate(); err != nil {
+		return Report{}, fmt.Errorf("manifest-reconcile options: %w", err)
 	}
-	m2, _, err := r.Manifests.Load(ctx, schemaID)
+	if r.Opts.GC && r.Locker == nil {
+		return Report{}, errors.New("manifest-reconcile --gc needs the schema lock cdc-flush and cdc-init take")
+	}
+	fault, err := r.checkStorage(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("reload manifest: %w", err)
+		return Report{}, err
 	}
-	still := make(map[string]bool, len(m2.Files))
-	for _, f := range m2.Files {
-		if key, ok := normalizeKey(r.Bucket, f.Path); ok {
-			still[key] = true
-		}
+	r.storageFault = fault
+	ids, err := r.Schemas.SchemaIDs(ctx)
+	if err != nil {
+		return Report{}, fmt.Errorf("enumerate schemas: %w", err)
 	}
-
-	for _, key := range dangling {
-		if !still[key] {
-			continue // spliced out concurrently; nothing dangling anymore
-		}
-		objs, err := r.Lister.ListObjects(ctx, key)
-		if err != nil {
-			return nil, nil, fmt.Errorf("re-probe candidate %s: %w", key, err)
-		}
-		exists := false
-		for _, o := range objs {
-			if o.Key == key {
-				exists = true
-				break
-			}
-		}
-		if exists {
-			present = append(present, key)
+	var report Report
+	for _, id := range ids {
+		if !r.Opts.GC {
+			report.Schemas = append(report.Schemas, r.diagnose(ctx, id))
 			continue
 		}
-		confirmed = append(confirmed, key)
+		report.Schemas = append(report.Schemas, r.underLock(ctx, id))
 	}
-	return confirmed, present, nil
+	return report, nil
 }
 
-// unprovenDangling narrows a dangling candidate list to the entries this run
-// did NOT prove present — the only ones --verify-stamps and --verify-checksums
-// must skip. Candidates confirmDangling probed and found alive keep their coverage.
-func unprovenDangling(candidates, present []string) []string {
-	if len(present) == 0 {
-		return candidates
-	}
-	proven := make(map[string]bool, len(present))
-	for _, key := range present {
-		proven[key] = true
-	}
-	unproven := make([]string, 0, len(candidates))
-	for _, key := range candidates {
-		if !proven[key] {
-			unproven = append(unproven, key)
-		}
-	}
-	return unproven
+func (r *Reconciler) diagnose(ctx context.Context, id int16) SchemaReport {
+	rep := r.schema(ctx, id)
+	r.log(rep)
+	return rep
 }
 
-func objectKeyList(objs []ObjectInfo) []string {
-	if len(objs) == 0 {
-		return nil
+func (r *Reconciler) underLock(ctx context.Context, id int16) SchemaReport {
+	held, release, ok, err := r.Locker.TryLock(ctx, id)
+	if err != nil {
+		return SchemaReport{SchemaID: id, Err: fmt.Errorf("take schema %d's lock: %w", id, err)}
 	}
-	keys := make([]string, 0, len(objs))
-	for _, o := range objs {
-		keys = append(keys, o.Key)
+	if !ok {
+		return SchemaReport{SchemaID: id, Skipped: true}
 	}
-	return keys
+	defer release()
+	rep := r.schema(held, id)
+	if lost := cdc.WithLockLoss(held, rep.Err); lost != nil {
+		rep.Err = lost
+	}
+	r.log(rep)
+	return rep
+}
+
+func (r *Reconciler) log(rep SchemaReport) {
+	if r.Logger == nil {
+		return
+	}
+	fields := []zap.Field{
+		zap.Int16("schema_id", rep.SchemaID), zap.String("state", string(rep.State)),
+		zap.Int64("epoch", rep.Epoch), zap.Int64("generation", rep.Generation),
+		zap.Int("findings", len(rep.Findings)), zap.String("gc_refused", rep.Refused),
+	}
+	if rep.Collected != nil {
+		fields = append(fields, zap.Int("deleted_objects", len(rep.Collected.Objects)),
+			zap.Int("deleted_manifests", len(rep.Collected.Manifests)), zap.Int("forgotten", len(rep.Collected.Forgotten)))
+	}
+	if rep.Err != nil {
+		r.Logger.Error("manifest-reconcile schema pass failed", append(fields, zap.Error(rep.Err))...)
+		return
+	}
+	r.Logger.Info("manifest-reconcile schema pass", fields...)
 }

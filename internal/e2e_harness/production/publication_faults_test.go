@@ -110,30 +110,6 @@ func currentFiles(ctx context.Context, t *testing.T, env *Env, cur publication.R
 	return files
 }
 
-// unpublishFiles publishes a generation without every entry drop selects,
-// leaving the objects they name in S3: the post-state of a lost publish. It
-// answers the entries it took, in inventory order, and publishes nothing when
-// drop selects none. drop sees the entries in inventory order.
-func unpublishFiles(ctx context.Context, t *testing.T, env *Env, schema SchemaRef,
-	drop func(ManifestEntry) bool) []ManifestEntry {
-	t.Helper()
-	var dropped []ManifestEntry
-	for _, e := range loadSchemaManifest(ctx, t, env, schema).Files {
-		if drop(e) {
-			dropped = append(dropped, e)
-		}
-	}
-	if len(dropped) == 0 {
-		return nil
-	}
-	publishTestGeneration(ctx, t, env, schema, func(files []manifestv2.File) []manifestv2.File {
-		return slices.DeleteFunc(files, func(f manifestv2.File) bool {
-			return slices.ContainsFunc(dropped, func(e ManifestEntry) bool { return e.Path == f.Key })
-		})
-	})
-	return dropped
-}
-
 // poisonManifestChecksum publishes a generation whose entry at path carries a
 // well-formed but wrong digest: a stamp/bytes divergence whose object is still
 // decodable.
