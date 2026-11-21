@@ -50,10 +50,13 @@ S3 storage target its writers publish into:
    than collapsed.
 2. **Bucket and data prefix:** `--s3-bucket` and `--data-prefix` (matching
    `cdc-flush` and `cdc-init`'s `-s3-prefix`).
-3. **No redirects:** `manifest-reconcile`'s S3 client refuses all HTTP 3xx
-   redirects (`ErrRedirectRefused`) without draining stalled response bodies or
-   leaking `Location` header credentials, so destructive requests can never
-   leave the bound endpoint.
+3. **No redirects:** `manifest-reconcile`'s S3 client follows no redirect.
+   A 301, 302, 303, 307 or 308 response that carries a `Location` header is
+   refused (`ErrRedirectRefused`, exit `1`) without reading its body or
+   leaking `Location` header credentials. Any other 3xx, including one without
+   a `Location`, reaches the AWS SDK as an S3 error response, which also fails
+   the pass with exit `1`. Either way, destructive requests never leave the
+   bound endpoint.
 
 Run `--bind-storage` once with the writers' exact S3 flags and environment:
 
