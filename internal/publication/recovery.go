@@ -11,29 +11,36 @@ import (
 )
 
 // History is what survives of a schema id's lifecycle apart from its record:
-// the id's lifecycle epoch (the epoch table, epochDDL), and how many rows the
-// generation table holds of its committed generations, with the highest
-// epoch and generation number they carry. An id that has a lifecycle epoch or
-// history rows but no record had a V2 record once and lost it: a record
-// written for it at epoch 1 and generation 0 would carry an epoch a running
-// process may still pin, and reuse generation numbers it committed.
+// the id's lifecycle epoch and forgotten generation floor (the epoch table,
+// epochDDL), and how many rows the generation table holds of its committed
+// generations, with the highest epoch and generation number they carry. An id
+// that has a lifecycle epoch, forgotten floor, or history rows but no record
+// had a V2 record once and lost it: a record written for it at epoch 1 and
+// generation 0 would carry an epoch a running process may still pin, and reuse
+// generation numbers it committed.
 type History struct {
 	// Epoch is the id's lifecycle epoch: the highest epoch any record of it
 	// carried, 0 when it has none.
-	Epoch         int64
-	Generations   int64
-	MaxEpoch      int64
-	MaxGeneration int64
+	Epoch int64
+	// ForgottenGeneration is the highest generation number legitimately
+	// forgotten by garbage collection (stored on the epoch table), 0 when
+	// none have been forgotten.
+	ForgottenGeneration int64
+	Generations         int64
+	MaxEpoch            int64
+	MaxGeneration       int64
 }
 
-// Lost answers whether h says the id had a record: its lifecycle epoch or
-// generation history survives.
+// Lost answers whether h says the id had a record: its lifecycle epoch,
+// forgotten generation floor, or generation history survives.
 func (h History) Lost() bool {
-	return h.Epoch > 0 || h.Generations > 0
+	return h.Epoch > 0 || h.ForgottenGeneration > 0 || h.Generations > 0
 }
 
-// historySQL reads the schema's surviving history and lifecycle epoch.
+// historySQL reads the schema's surviving history, lifecycle epoch, and
+// forgotten generation floor in one snapshot.
 const historySQL = `SELECT COALESCE((SELECT epoch FROM %[2]s WHERE schema_id = $1), 0),
+	COALESCE((SELECT forgotten_generation FROM %[2]s WHERE schema_id = $1), 0),
 	COUNT(*), COALESCE(MAX(epoch), 0), COALESCE(MAX(generation), 0)
 	FROM %[1]s WHERE schema_id = $1`
 
@@ -42,7 +49,7 @@ const historySQL = `SELECT COALESCE((SELECT epoch FROM %[2]s WHERE schema_id = $
 func ReadHistory(ctx context.Context, q Querier, t Tables, schemaID int16) (History, error) {
 	var h History
 	err := q.runner().queryRow(ctx, fmt.Sprintf(historySQL, t.Generation, t.Epoch), schemaID).
-		Scan(&h.Epoch, &h.Generations, &h.MaxEpoch, &h.MaxGeneration)
+		Scan(&h.Epoch, &h.ForgottenGeneration, &h.Generations, &h.MaxEpoch, &h.MaxGeneration)
 	if err != nil {
 		return History{}, fmt.Errorf("read the publication history of schema %d in %s and %s: %w", schemaID, t.Generation, t.Epoch, err)
 	}
@@ -60,14 +67,14 @@ const recoverSQL = `INSERT INTO %s (schema_id, epoch, state, generation, parent_
 // InitializeAfterLoss writes, on tx, the record of a schema whose record is
 // missing while its lifecycle epoch survives (h.Epoch > 0): at the epoch
 // after the id's lifecycle epoch, and after every epoch its generation
-// history names, with the history's highest generation number as its
+// history names, with max(h.MaxGeneration, h.ForgottenGeneration) as its
 // allocation counter. Every epoch a record of the id carried is at or below
 // its lifecycle epoch, since every transition that moved a record's epoch
 // raised it in the same transaction, so no process holds a pin on the
 // recovered epoch: a reader or writer pinned to an epoch of the lost record,
 // or of any registration before it, fails closed on the recovered record,
 // and on every later one, since epochs only grow. No generation number the
-// surviving history committed is used again either.
+// surviving or forgotten history committed is used again either.
 //
 // state is AwaitingInit for a registered schema with generation history,
 // whose parquet tiers the next cdc-init replaces; Unpublished for a
@@ -92,7 +99,13 @@ func InitializeAfterLoss(ctx context.Context, tx Tx, t Tables, schemaID int16, h
 		return Record{}, false, fmt.Errorf("recover the record of schema %d as %s: a lost record is recovered %s, %s or %s only",
 			schemaID, state, AwaitingInit, Unpublished, Dropped)
 	}
-	rec := Record{SchemaID: schemaID, Epoch: max(h.Epoch, h.MaxEpoch) + 1, State: state, Generation: h.MaxGeneration, Token: uuid.New()}
+	rec := Record{
+		SchemaID:   schemaID,
+		Epoch:      max(h.Epoch, h.MaxEpoch) + 1,
+		State:      state,
+		Generation: max(h.MaxGeneration, h.ForgottenGeneration),
+		Token:      uuid.New(),
+	}
 	r := tx.runner()
 	n, err := r.exec(ctx, fmt.Sprintf(recoverSQL, t.Record), schemaID, rec.Epoch, rec.Generation, string(state), rec.Token)
 	if err != nil {

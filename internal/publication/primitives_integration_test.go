@@ -137,6 +137,7 @@ func TestInitializeAfterLossArmsMonotonicRecoveryFenceAndSupersedesFormerHead(t 
 
 	h, err := ReadHistory(ctx, DB(f.db), f.t, 100)
 	require.NoError(t, err)
+	require.Equal(t, int64(1), h.ForgottenGeneration)
 	var rec Record
 	require.NoError(t, f.inTx(ctx, func(tx Tx) error {
 		var wrote bool
@@ -145,6 +146,7 @@ func TestInitializeAfterLossArmsMonotonicRecoveryFenceAndSupersedesFormerHead(t 
 		return err
 	}))
 	require.Equal(t, int64(2), rec.Epoch)
+	require.Equal(t, int64(2), rec.Generation)
 
 	// Former head (gen 2) is superseded so GC can retire it instead of leaking it forever.
 	retained := mustRetained(t, f, time.Hour)
@@ -267,15 +269,75 @@ func TestGraceMillisExactSQLBoundary(t *testing.T) {
 	require.True(t, ok)
 }
 
+// TestInitializeAfterLossPreservesForgottenGenerationFloor verifies that once
+// GC has forgotten every history row of a dropped schema, losing and
+// recovering the publication record initializes the allocation counter from
+// forgotten_generation rather than 0 so generation numbers are never reused.
+func TestInitializeAfterLossPreservesForgottenGenerationFloor(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	cur := f.initialized(t, 100)
+	cur, err := f.publish(ctx, cur, f.next(t, cur, KindFlush), nil)
+	require.NoError(t, err)
+	cur, err = f.publish(ctx, cur, f.next(t, cur, KindFlush), nil)
+	require.NoError(t, err)
+	_ = f.reset(t, cur)
+	f.forget(t, 1)
+	f.forget(t, 2)
+
+	// History table is now empty; only forgotten_generation on the epoch row records 1..2.
+	require.Empty(t, mustRetained(t, f, time.Hour))
+	_, err = f.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1", f.t.Record), 100)
+	require.NoError(t, err)
+
+	h, err := ReadHistory(ctx, DB(f.db), f.t, 100)
+	require.NoError(t, err)
+	require.True(t, h.Lost())
+	require.Equal(t, History{Epoch: 2, ForgottenGeneration: 2, Generations: 0, MaxEpoch: 0, MaxGeneration: 0}, h)
+
+	var rec Record
+	require.NoError(t, f.inTx(ctx, func(tx Tx) error {
+		var wrote bool
+		rec, wrote, err = InitializeAfterLoss(ctx, tx, f.t, 100, h, Dropped)
+		require.True(t, wrote)
+		return err
+	}))
+	require.Equal(t, int64(3), rec.Epoch)
+	require.Equal(t, int64(2), rec.Generation, "recovered allocation counter must honor forgotten_generation")
+	require.Equal(t, int64(2), f.read(t, 100).Generation)
+
+	// Re-activating and publishing allocates generation 3 rather than reusing 1..2.
+	active := f.activate(t, rec)
+	require.Equal(t, int64(4), active.Epoch)
+	require.Equal(t, int64(2), active.Generation)
+	g3, err := f.publish(ctx, active, f.next(t, active, KindFlush), nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), g3.Generation)
+	require.Zero(t, g3.ParentGeneration)
+
+	// Forgetting the new generation advances the durable forgotten floor to 3.
+	_ = f.reset(t, g3)
+	f.forget(t, 3)
+	lc, err := ReadLifecycle(ctx, DB(f.db), f.t, 100, time.Hour)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), lc.ForgottenGeneration)
+}
+
 func TestStorageBindingLifecycle(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	t.Cleanup(func() { _, _ = f.db.Exec("DROP TABLE IF EXISTS " + f.t.Storage) })
 
-	// Before the binding table exists, ReadStorage reports unbound (not an error).
+	// Before the binding table exists, ReadStorage reports unbound on a pool
+	// (not an error), while inside a Tx PostgreSQL aborts the transaction on
+	// 42P01 so ReadStorage surfaces the error rather than claiming unbound.
 	_, ok, err := ReadStorage(ctx, DB(f.db), f.t)
 	require.NoError(t, err)
 	require.False(t, ok)
+	err = f.inTx(ctx, func(tx Tx) error {
+		_, _, err := ReadStorage(ctx, tx, f.t)
+		return err
+	})
+	require.Error(t, err, "ReadStorage inside a Tx must not mask 42P01 on an aborted transaction")
 
 	// Create the table using StorageStatement.
 	entityMain := strings.TrimSuffix(strings.Trim(f.t.Record, `"`), RecordTableSuffix)

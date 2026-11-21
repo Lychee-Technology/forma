@@ -191,12 +191,20 @@ const sqlstateUndefinedTable = "42P01"
 
 // ReadStorage answers the deployment's storage binding, and false when no
 // binding exists (no row, or the binding table has not been created yet).
+//
+// Run it on a pool (DB) when the binding table may not exist yet: on
+// PostgreSQL, querying a missing table inside a Tx aborts the enclosing
+// transaction with SQLSTATE 42P01, so ReadStorage only translates 42P01 to
+// ok == false on a pool and returns the error on a Tx.
 func ReadStorage(ctx context.Context, q Querier, t Tables) (StorageBinding, bool, error) {
 	var b StorageBinding
 	err := q.runner().queryRow(ctx, fmt.Sprintf(readStorageSQL, t.Storage)).
 		Scan(&b.Target.Endpoint, &b.Target.Bucket, &b.Target.Prefix, &b.BoundAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return StorageBinding{}, false, nil
+	}
 	var pgErr *pgconn.PgError
-	if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &pgErr) && pgErr.Code == sqlstateUndefinedTable) {
+	if _, inTx := q.(Tx); !inTx && errors.As(err, &pgErr) && pgErr.Code == sqlstateUndefinedTable {
 		return StorageBinding{}, false, nil
 	}
 	if err != nil {

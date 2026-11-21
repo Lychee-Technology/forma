@@ -95,7 +95,7 @@ func runTheContract(t *testing.T, ctx context.Context, db *sql.DB, tb Tables, cu
 	_, err := ReadHistory(ctx, DB(db), tb, 100)
 	require.NoError(t, err)
 	inTx(func(tx Tx) error {
-		_, _, err := InitializeAfterLoss(ctx, tx, tb, 100, History{Epoch: 3, Generations: 1, MaxEpoch: 1, MaxGeneration: 3}, AwaitingInit)
+		_, _, err := InitializeAfterLoss(ctx, tx, tb, 100, History{Epoch: 3, ForgottenGeneration: 2, Generations: 1, MaxEpoch: 1, MaxGeneration: 3}, AwaitingInit)
 		return err
 	})
 	_, err = Read(ctx, DB(db), tb, 100)
@@ -171,7 +171,7 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(sqlmock.NewRows([]string{"exists", "epoch"}).AddRow(true, 1))
 	mock.ExpectCommit()
-	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(sqlmock.NewRows([]string{"epoch", "count", "max_epoch", "max_generation"}).AddRow(3, 1, 1, 3))
+	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(sqlmock.NewRows([]string{"epoch", "forgotten_generation", "count", "max_epoch", "max_generation"}).AddRow(3, 2, 1, 1, 3))
 	mock.ExpectBegin()
 	mock.ExpectExec("").WithArgs(anyArgs(5)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
