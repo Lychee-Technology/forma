@@ -93,15 +93,19 @@ func (e *Env) Breaker() *fedengine.CircuitBreaker {
 	return e.breaker
 }
 
+// PublicationS3Client is the S3 surface used by the Protocol V2 publication
+// reader (manifest fetches and object-existence probes).
+type PublicationS3Client interface {
+	manifestv2.S3Client
+	manifestv2.S3HeadClient
+}
+
 // clusterS3Client forwards every S3 call to the Cluster's *current* client at
 // call time, so a client rebuilt by RestartS3 (the host-mapped port can change)
 // is picked up without re-wiring the publication reader built over it (#302).
 type clusterS3Client struct{ cluster *Cluster }
 
-var (
-	_ manifestv2.S3Client     = clusterS3Client{}
-	_ manifestv2.S3HeadClient = clusterS3Client{}
-)
+var _ PublicationS3Client = clusterS3Client{}
 
 func (f clusterS3Client) GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	return f.cluster.S3.GetObject(ctx, params, optFns...)
@@ -137,7 +141,10 @@ func (e *Env) publicationReader(ctx context.Context) (*federatedv2.Source, error
 		e.epochPins = pins
 	}
 	pins := e.epochPins
-	client := clusterS3Client{e.Cluster}
+	var client PublicationS3Client = clusterS3Client{e.Cluster}
+	if e.PublicationS3Wrap != nil {
+		client = e.PublicationS3Wrap(client)
+	}
 	cache, err := manifestv2.NewCache(&manifestv2.S3Store{Client: client, Bucket: e.Cluster.Bucket}, manifestCacheEntries)
 	if err != nil {
 		return nil, fmt.Errorf("build the manifest cache: %w", err)

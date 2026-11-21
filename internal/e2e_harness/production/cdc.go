@@ -135,7 +135,8 @@ func (e *Env) RunInit(ctx context.Context, schema SchemaRef) (*InitReport, error
 // InitOverrides customizes a single init pass (#180). Zero-value fields fall
 // back to the defaults RunInit uses.
 type InitOverrides struct {
-	Config *cdc.CDCConfig // nil: e.CDC
+	S3     cdc.S3FullClient // nil: e.Cluster.S3
+	Config *cdc.CDCConfig   // nil: e.CDC
 	DryRun bool
 	// AllSchemas runs init over every registered schema, as cdc-init does
 	// without --schema-id, instead of the one schema named.
@@ -166,9 +167,13 @@ func (e *Env) RunInitWith(ctx context.Context, schema SchemaRef, ov InitOverride
 	if ov.AllSchemas {
 		schemaIDFilter = 0
 	}
+	var s3Client cdc.S3FullClient = e.Cluster.S3
+	if ov.S3 != nil {
+		s3Client = ov.S3
+	}
 	summary, err := cdc.RunInit(ctx, cdc.InitOptions{
 		Config:               cfg,
-		S3Client:             e.Cluster.S3,
+		S3Client:             s3Client,
 		SchemaRegistryTable:  e.Tables.SchemaRegistry,
 		SchemaIDFilter:       schemaIDFilter,
 		DryRun:               ov.DryRun,
@@ -222,6 +227,8 @@ type CompactionOverrides struct {
 	// verification of merge sources, as the compactor tool's
 	// --skip-input-checksum-verify flag does.
 	SkipInputChecksumVerify bool
+	// PublishFailpoint injects faults at cdcv2 publication boundaries.
+	PublishFailpoint func(ctx context.Context, point string) error
 }
 
 // RunCompactionWith runs one V2 compaction pass with per-run overrides, wired
@@ -256,6 +263,7 @@ func (e *Env) RunCompactionWith(ctx context.Context, schema SchemaRef, ov Compac
 	writer, err := compaction.NewWriter(compaction.WriterConfig{
 		DB: db, Engine: e.CDC.Engine, EntityMain: e.CDC.EntityMainTable,
 		Layout: manifestv2.Layout{Prefix: e.S3Prefix}, Store: store, Compaction: cfg,
+		PublishFailpoint: ov.PublishFailpoint,
 	})
 	if err != nil {
 		return compaction.CompactionResult{}, err
