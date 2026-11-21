@@ -13,28 +13,43 @@ import (
 // TestTablesForFollowsEntityMain pins the table names: suffixed to the
 // entity_main table every holder is given, qualifier kept.
 func TestTablesForFollowsEntityMain(t *testing.T) {
-	require.Equal(t, Tables{Record: `"entity_main_publication"`, Generation: `"entity_main_publication_generation"`,
-		Epoch: `"entity_main_publication_epoch"`}, TablesFor("entity_main"))
-	require.Equal(t, Tables{Record: `"app"."em_publication"`, Generation: `"app"."em_publication_generation"`,
-		Epoch: `"app"."em_publication_epoch"`}, TablesFor("app.em"))
+	require.Equal(t, Tables{
+		Record:     `"entity_main_publication"`,
+		Generation: `"entity_main_publication_generation"`,
+		Epoch:      `"entity_main_publication_epoch"`,
+		Storage:    `"entity_main_publication_storage"`,
+	}, TablesFor("entity_main"))
+	require.Equal(t, Tables{
+		Record:     `"app"."em_publication"`,
+		Generation: `"app"."em_publication_generation"`,
+		Epoch:      `"app"."em_publication_epoch"`,
+		Storage:    `"app"."em_publication_storage"`,
+	}, TablesFor("app.em"))
 }
 
 // TestStatementsUseOnlyPlainRows pins the DSQL-safe shape of the DDL: one
-// table each, no secondary index and none of the column features this package
-// does not rely on DSQL for.
+// statement each, no secondary index and none of the column features this
+// package does not rely on DSQL for.
 func TestStatementsUseOnlyPlainRows(t *testing.T) {
-	pg := Statements(forma.EnginePostgreSQL, "entity_main")
+	pg := append(Statements(forma.EnginePostgreSQL, "entity_main"), StorageStatement(forma.EnginePostgreSQL, "entity_main"))
 	for _, s := range pg {
 		require.Nil(t, textcollation.DDLDrift(s), "every text column is COLLATE \"C\" on PostgreSQL: %s", s)
 	}
 	stmts := Statements(forma.EngineAuroraDSQL, "entity_main")
-	require.Len(t, stmts, 3)
-	for _, s := range stmts {
+	require.Len(t, stmts, 6)
+	for i, s := range stmts {
 		require.NotContains(t, s, "COLLATE", "DSQL refuses a COLLATE clause")
-		require.True(t, strings.HasPrefix(s, "CREATE TABLE IF NOT EXISTS "), s)
+		if i < 3 {
+			require.True(t, strings.HasPrefix(s, "CREATE TABLE IF NOT EXISTS "), s)
+		} else {
+			require.True(t, strings.HasPrefix(s, "ALTER TABLE "), s)
+		}
 		upper := strings.ToUpper(s)
 		for _, banned := range []string{"JSONB", "SERIAL", "REFERENCES", "CHECK", "[]", "CREATE INDEX", "SEQUENCE"} {
 			require.NotContains(t, upper, banned, s)
 		}
 	}
+	storage := StorageStatement(forma.EngineAuroraDSQL, "entity_main")
+	require.NotContains(t, storage, "COLLATE")
+	require.True(t, strings.HasPrefix(storage, "CREATE TABLE IF NOT EXISTS "), storage)
 }

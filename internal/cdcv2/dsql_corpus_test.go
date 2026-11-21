@@ -61,7 +61,7 @@ func TestDSQLCorpus(t *testing.T) {
 		"internal/cdcv2/init.go:Writer.readVersions",
 		"internal/cdcv2/init.go:Writer.readVersions",
 		"internal/publication/publish.go:Publish",
-		"internal/publication/publish.go:Publish",
+		"internal/publication/publish.go:supersede",
 		"internal/publication/publish.go:Publish",
 		"internal/publication/lifecycle.go:HoldLineage",
 		"internal/cdcv2/writer.go:Writer.now",
@@ -106,7 +106,7 @@ func expectInit(mock sqlmock.Sqlmock, row, lineage uuid.UUID) {
 	mock.ExpectRollback()
 	mock.ExpectBegin()
 	mock.ExpectQuery("").WithArgs(anyArgs(10)...).WillReturnRows(sqlmock.NewRows([]string{"generation", "parent_generation", "updated_at"}).AddRow(2, 1, 6001))
-	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(8)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("").WithArgs(anyArgs(10)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectBegin()

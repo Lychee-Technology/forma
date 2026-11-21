@@ -73,7 +73,7 @@ func RecordRef(r publication.Record) (Ref, error) {
 func GenerationRef(schemaID int16, g publication.Generation) Ref {
 	return Ref{
 		SchemaID: schemaID, Epoch: g.Epoch, Generation: g.Generation, ParentGeneration: g.ParentGeneration,
-		Token: g.Token, Kind: g.Kind, ManifestKey: g.ManifestKey, ManifestSHA256: g.ManifestSHA256,
+		Token: g.Token, Lineage: g.Lineage, Kind: g.Kind, ManifestKey: g.ManifestKey, ManifestSHA256: g.ManifestSHA256,
 	}
 }
 

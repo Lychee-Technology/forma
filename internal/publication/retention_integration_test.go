@@ -38,22 +38,33 @@ func TestRetentionKeepsSupersededGenerationsForTheGrace(t *testing.T) {
 	require.False(t, ok, "a generation is retired once: a later pass does not push its time back")
 
 	require.Equal(t, []int64{1, 2, 3}, numbers(mustRetained(t, f, time.Hour)))
-	ok, err = Forget(ctx, DB(f.db), f.t, 100, 1, time.Hour)
-	require.NoError(t, err)
-	require.False(t, ok, "a generation inside its grace is not forgotten")
+	require.NoError(t, f.inTx(ctx, func(tx Tx) error {
+		ok, err := Forget(ctx, tx, f.t, 100, 1, time.Hour)
+		require.NoError(t, err)
+		require.False(t, ok, "a generation inside its grace is not forgotten")
+		return nil
+	}))
 
 	expired, err = Expired(ctx, DB(f.db), f.t, 100, 0)
 	require.NoError(t, err)
 	require.Equal(t, []int64{1, 2}, numbers(expired), "the current generation never expires")
 	head := mustRetained(t, f, 0)[0]
-	require.Equal(t, []any{cur.ManifestKey, cur.ManifestSHA256, cur.Token}, []any{head.ManifestKey, head.ManifestSHA256, head.Token},
+	require.Equal(t, []any{cur.ManifestKey, cur.ManifestSHA256, cur.Lineage, cur.Token},
+		[]any{head.ManifestKey, head.ManifestSHA256, head.Lineage, head.Token},
 		"the history row carries what a collector verifies the manifest against")
 	for _, g := range expired {
-		ok, err := Forget(ctx, DB(f.db), f.t, 100, g.Generation, 0)
-		require.NoError(t, err)
-		require.True(t, ok)
+		require.NoError(t, f.inTx(ctx, func(tx Tx) error {
+			ok, err := Forget(ctx, tx, f.t, 100, g.Generation, 0)
+			require.NoError(t, err)
+			require.True(t, ok)
+			return nil
+		}))
 	}
 	require.Equal(t, []int64{3}, numbers(mustRetained(t, f, time.Hour)))
+	lc, err := ReadLifecycle(ctx, DB(f.db), f.t, 100, time.Hour)
+	require.NoError(t, err)
+	require.True(t, lc.Present)
+	require.Equal(t, int64(2), lc.ForgottenGeneration, "Forget atomically advances the durable forgotten floor")
 }
 
 // TestRetireCountsFromTheReplacingCommit is the late-commit schedule for the

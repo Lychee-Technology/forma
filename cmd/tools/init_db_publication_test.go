@@ -45,11 +45,17 @@ func wantPublicationDDL() []string {
 		PRIMARY KEY (schema_id, generation)
 	)`,
 		`CREATE TABLE IF NOT EXISTS "entity_main_publication_epoch" (
-		schema_id  SMALLINT NOT NULL,
-		epoch      BIGINT   NOT NULL,
-		updated_at BIGINT   NOT NULL,
+		schema_id            SMALLINT NOT NULL,
+		epoch                BIGINT   NOT NULL,
+		updated_at           BIGINT   NOT NULL,
+		forgotten_generation BIGINT,
+		recovery_epoch       BIGINT,
+		recovery_retired_at  BIGINT,
 		PRIMARY KEY (schema_id)
 	)`,
+		`ALTER TABLE "entity_main_publication_epoch" ADD COLUMN IF NOT EXISTS forgotten_generation BIGINT`,
+		`ALTER TABLE "entity_main_publication_epoch" ADD COLUMN IF NOT EXISTS recovery_epoch BIGINT`,
+		`ALTER TABLE "entity_main_publication_epoch" ADD COLUMN IF NOT EXISTS recovery_retired_at BIGINT`,
 	}
 }
 
@@ -79,6 +85,9 @@ func TestPublicationDDLAnnouncements(t *testing.T) {
 		{announce: "Created publication record table: app.entity_main_publication\n", failure: "ensure publication record table"},
 		{announce: "Created publication generation table: app.entity_main_publication_generation\n", failure: "ensure publication generation table"},
 		{announce: "Created publication epoch table: app.entity_main_publication_epoch\n", failure: "ensure publication epoch table"},
+		{failure: "ensure publication epoch forgotten_generation column"},
+		{failure: "ensure publication epoch recovery_epoch column"},
+		{failure: "ensure publication epoch recovery_retired_at column"},
 	}
 	if len(ddl) != len(want) {
 		t.Fatalf("publicationDDL returned %d statements, want %d", len(ddl), len(want))

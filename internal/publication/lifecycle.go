@@ -49,8 +49,8 @@ func Reset(ctx context.Context, tx Tx, t Tables, cur Record) (Record, error) {
 		return Record{}, fmt.Errorf("reset schema %d from epoch %d: %w", cur.SchemaID, cur.Epoch, err)
 	}
 	if cur.State == Published {
-		if _, err := r.exec(ctx, fmt.Sprintf(supersedeSQL, t.Generation), cur.SchemaID, cur.Generation); err != nil {
-			return Record{}, fmt.Errorf("supersede schema %d generation %d on reset: %w", cur.SchemaID, cur.Generation, err)
+		if err := supersede(ctx, r, t, cur); err != nil {
+			return Record{}, fmt.Errorf("reset: %w", err)
 		}
 	}
 	out.State, out.ParentGeneration = Dropped, 0

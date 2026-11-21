@@ -2,6 +2,7 @@ package publication
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"strings"
 	"testing"
@@ -29,7 +30,60 @@ func TestDSQLCorpus(t *testing.T) {
 	tb := TablesFor("entity_main")
 	cur := Record{SchemaID: 100, Epoch: 1, State: Published, Generation: 3, ManifestKey: "k", ManifestSHA256: "s", Lineage: uuid.New(), Token: uuid.New()}
 	expectTheContract(mock, cur)
+	runTheContract(t, ctx, db, tb, cur)
+	require.NoError(t, mock.ExpectationsWereMet(), "the publication contract sent other statements than recorded")
 
+	ddl := Statements(forma.EngineAuroraDSQL, "entity_main")
+	statements := []corpus.Statement{
+		corpus.Rendered("internal/publication/ddl.go:recordDDL", ddl[0]),
+		corpus.Rendered("internal/publication/ddl.go:generationDDL", ddl[1]),
+		corpus.Rendered("internal/publication/ddl.go:epochDDL", ddl[2]),
+		corpus.Rendered("internal/publication/ddl.go:epochForgottenDDL", ddl[3]),
+		corpus.Rendered("internal/publication/ddl.go:epochRecoveryEpochDDL", ddl[4]),
+		corpus.Rendered("internal/publication/ddl.go:epochRecoveryRetiredDDL", ddl[5]),
+		corpus.Rendered("internal/publication/storage.go:storageDDL", StorageStatement(forma.EngineAuroraDSQL, "entity_main")),
+	}
+	statements = append(statements, rec.Take(t,
+		"internal/publication/record.go:Initialize",
+		"internal/publication/lifecycle_epoch.go:raiseEpoch",
+		"internal/publication/record.go:Initialize",
+		"internal/publication/record.go:Initialize",
+		"internal/publication/recovery.go:ReadHistory",
+		"internal/publication/recovery.go:InitializeAfterLoss",
+		"internal/publication/lifecycle_epoch.go:raiseEpochAfterLoss",
+		"internal/publication/recovery.go:InitializeAfterLoss",
+		"internal/publication/record.go:Read",
+		"internal/publication/publish.go:Publish",
+		"internal/publication/publish.go:supersede",
+		"internal/publication/publish.go:Publish",
+		"internal/publication/lifecycle.go:HoldLineage",
+		"internal/publication/rebase.go:KindsSince",
+		"internal/publication/lifecycle.go:Resolve",
+		"internal/publication/lifecycle.go:Fence",
+		"internal/publication/lifecycle.go:Reset",
+		"internal/publication/lifecycle_epoch.go:raiseEpoch",
+		"internal/publication/publish.go:supersede",
+		"internal/publication/lifecycle.go:Activate",
+		"internal/publication/lifecycle.go:Activate",
+		"internal/publication/lifecycle_epoch.go:raiseEpoch",
+		"internal/publication/retention.go:RaiseHorizon",
+		"internal/publication/retention.go:Retire",
+		"internal/publication/retention.go:Retained",
+		"internal/publication/retention.go:Expired",
+		"internal/publication/retention.go:Forget",
+		"internal/publication/retention.go:Forget",
+		"internal/publication/retention.go:SchemaIDs",
+		"internal/publication/lifecycle_epoch.go:ReadLifecycle",
+		"internal/publication/lifecycle_epoch.go:RetireRecovery",
+		"internal/publication/storage.go:BindStorage",
+		"internal/publication/storage.go:BindStorage",
+		"internal/publication/storage.go:ReadStorage",
+	)...)
+	corpus.Export(t, corpus.Unit{Name: "internal-publication", Engine: forma.EngineAuroraDSQL, Statements: statements})
+}
+
+func runTheContract(t *testing.T, ctx context.Context, db *sql.DB, tb Tables, cur Record) {
+	t.Helper()
 	inTx := func(fn func(Tx) error) {
 		tx, err := db.BeginTx(ctx, nil)
 		require.NoError(t, err)
@@ -38,10 +92,10 @@ func TestDSQLCorpus(t *testing.T) {
 	}
 	inTx(func(tx Tx) error { _, err := Initialize(ctx, tx, tb, 100); return err })
 	inTx(func(tx Tx) error { _, err := Initialize(ctx, tx, tb, 100); return err })
-	_, err = ReadHistory(ctx, DB(db), tb, 100)
+	_, err := ReadHistory(ctx, DB(db), tb, 100)
 	require.NoError(t, err)
 	inTx(func(tx Tx) error {
-		_, _, err := InitializeAfterLoss(ctx, tx, tb, 100, History{Epoch: 3, Generations: 1, MaxEpoch: 1, MaxGeneration: 3}, AwaitingInit)
+		_, _, err := InitializeAfterLoss(ctx, tx, tb, 100, History{Epoch: 3, ForgottenGeneration: 2, Generations: 1, MaxEpoch: 1, MaxGeneration: 3}, AwaitingInit)
 		return err
 	})
 	_, err = Read(ctx, DB(db), tb, 100)
@@ -74,45 +128,20 @@ func TestDSQLCorpus(t *testing.T) {
 	require.NoError(t, err)
 	_, err = Expired(ctx, DB(db), tb, 100, time.Hour)
 	require.NoError(t, err)
-	_, err = Forget(ctx, DB(db), tb, 100, 3, time.Hour)
+	inTx(func(tx Tx) error {
+		_, err := Forget(ctx, tx, tb, 100, 3, time.Hour)
+		return err
+	})
+	_, err = SchemaIDs(ctx, DB(db), tb)
 	require.NoError(t, err)
-	require.NoError(t, mock.ExpectationsWereMet(), "the publication contract sent other statements than recorded")
-
-	ddl := Statements(forma.EngineAuroraDSQL, "entity_main")
-	statements := []corpus.Statement{
-		corpus.Rendered("internal/publication/ddl.go:recordDDL", ddl[0]),
-		corpus.Rendered("internal/publication/ddl.go:generationDDL", ddl[1]),
-		corpus.Rendered("internal/publication/ddl.go:epochDDL", ddl[2]),
-	}
-	statements = append(statements, rec.Take(t,
-		"internal/publication/record.go:Initialize",
-		"internal/publication/lifecycle_epoch.go:raiseEpoch",
-		"internal/publication/record.go:Initialize",
-		"internal/publication/record.go:Initialize",
-		"internal/publication/recovery.go:ReadHistory",
-		"internal/publication/recovery.go:InitializeAfterLoss",
-		"internal/publication/lifecycle_epoch.go:raiseEpoch",
-		"internal/publication/record.go:Read",
-		"internal/publication/publish.go:Publish",
-		"internal/publication/publish.go:Publish",
-		"internal/publication/publish.go:Publish",
-		"internal/publication/lifecycle.go:HoldLineage",
-		"internal/publication/rebase.go:KindsSince",
-		"internal/publication/lifecycle.go:Resolve",
-		"internal/publication/lifecycle.go:Fence",
-		"internal/publication/lifecycle.go:Reset",
-		"internal/publication/lifecycle_epoch.go:raiseEpoch",
-		"internal/publication/lifecycle.go:Reset",
-		"internal/publication/lifecycle.go:Activate",
-		"internal/publication/lifecycle.go:Activate",
-		"internal/publication/lifecycle_epoch.go:raiseEpoch",
-		"internal/publication/retention.go:RaiseHorizon",
-		"internal/publication/retention.go:Retire",
-		"internal/publication/retention.go:Retained",
-		"internal/publication/retention.go:Expired",
-		"internal/publication/retention.go:Forget",
-	)...)
-	corpus.Export(t, corpus.Unit{Name: "internal-publication", Engine: forma.EngineAuroraDSQL, Statements: statements})
+	_, err = ReadLifecycle(ctx, DB(db), tb, 100, time.Hour)
+	require.NoError(t, err)
+	_, err = RetireRecovery(ctx, DB(db), tb, 100, 4)
+	require.NoError(t, err)
+	_, err = BindStorage(ctx, DB(db), tb, StorageTarget{Endpoint: "https://s3.us-east-1.amazonaws.com", Bucket: "bkt", Prefix: "data"})
+	require.NoError(t, err)
+	_, _, err = ReadStorage(ctx, DB(db), tb)
+	require.NoError(t, err)
 }
 
 // expectTheContract answers, in order, every statement TestDSQLCorpus sends
@@ -123,11 +152,15 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 			AddRow(cur.SchemaID, cur.Epoch, string(cur.State), cur.Generation, 2, cur.ManifestKey, cur.ManifestSHA256, cur.Lineage.String(), cur.Token.String(), 1, 0, 2)
 	}
 	genRows := func() *sqlmock.Rows {
-		return sqlmock.NewRows([]string{"generation", "epoch", "kind", "parent_generation", "manifest_key", "manifest_sha256", "cas_token", "superseded_at", "retired_at"}).
-			AddRow(3, 1, "flush", 2, "k", "s", uuid.NewString(), 0, 0)
+		return sqlmock.NewRows([]string{"generation", "epoch", "kind", "parent_generation", "manifest_key", "manifest_sha256", "lineage", "cas_token", "superseded_at", "retired_at"}).
+			AddRow(3, 1, "flush", 2, "k", "s", cur.Lineage.String(), uuid.NewString(), 0, 0)
 	}
 	epochRow := func(epoch int64) *sqlmock.Rows {
 		return sqlmock.NewRows([]string{"epoch", "updated_at"}).AddRow(epoch, 4)
+	}
+	storageRow := func() *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"endpoint", "bucket", "data_prefix", "bound_at"}).
+			AddRow("https://s3.us-east-1.amazonaws.com", "bkt", "data", 6)
 	}
 
 	mock.ExpectBegin()
@@ -138,15 +171,16 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(sqlmock.NewRows([]string{"exists", "epoch"}).AddRow(true, 1))
 	mock.ExpectCommit()
-	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(sqlmock.NewRows([]string{"epoch", "count", "max_epoch", "max_generation"}).AddRow(3, 1, 1, 3))
+	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(sqlmock.NewRows([]string{"epoch", "forgotten_generation", "count", "max_epoch", "max_generation"}).AddRow(3, 2, 1, 1, 3))
 	mock.ExpectBegin()
 	mock.ExpectExec("").WithArgs(anyArgs(5)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(1)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(recordRow())
 	mock.ExpectBegin()
 	mock.ExpectQuery("").WithArgs(anyArgs(10)...).WillReturnRows(sqlmock.NewRows([]string{"generation", "parent_generation", "updated_at"}).AddRow(4, 3, 3))
-	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(8)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("").WithArgs(anyArgs(10)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("").WithArgs(anyArgs(3)...).WillReturnRows(sqlmock.NewRows([]string{"generation"}).AddRow(4))
 	mock.ExpectCommit()
@@ -159,7 +193,7 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("").WithArgs(anyArgs(4)...).WillReturnRows(epochRow(2))
 	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(8)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	mock.ExpectBegin()
 	mock.ExpectQuery("").WithArgs(anyArgs(1)...).WillReturnRows(sqlmock.NewRows([]string{"one"}))
@@ -170,7 +204,16 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(genRows())
 	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(genRows())
+	mock.ExpectBegin()
 	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"schema_id"}).AddRow(100))
+	mock.ExpectQuery("").WithArgs(anyArgs(2)...).WillReturnRows(sqlmock.NewRows([]string{"epoch", "forgotten_generation", "recovery_epoch", "recovery_retired_at", "active"}).AddRow(4, 3, 4, 0, true))
+	mock.ExpectExec("").WithArgs(anyArgs(2)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("").WillReturnRows(storageRow())
+	mock.ExpectQuery("").WillReturnRows(storageRow())
 }
 
 func anyArgs(n int) []driver.Value {

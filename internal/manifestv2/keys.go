@@ -50,6 +50,24 @@ type Layout struct {
 // root would drop is one no Layout builds, and is refused.
 func (l Layout) root() string { return strings.TrimRight(l.Prefix, "/") }
 
+// SchemaPrefix is the S3 listing prefix for all objects belonging to schemaID
+// under l, ending with "/" so schema 1 never matches schema 10.
+func (l Layout) SchemaPrefix(schemaID int16) string {
+	return fmt.Sprintf("%s/%d/", l.root(), schemaID)
+}
+
+// Owns reports whether key is a canonical V2 manifest or parquet key built by
+// l for schemaID. Keys written by V1 tools or other deployments return false.
+func (l Layout) Owns(schemaID int16, key string) bool {
+	if k, err := parseManifestKey(key); err == nil {
+		return k.layout.root() == l.root() && k.schemaID == schemaID
+	}
+	if p, err := parseParquetKey(key); err == nil {
+		return p.layout.root() == l.root() && p.schemaID == schemaID
+	}
+	return false
+}
+
 // ManifestKey is the key of a generation's manifest object. The token is in
 // the key, so two writers that stage the same generation number never write
 // the same object.

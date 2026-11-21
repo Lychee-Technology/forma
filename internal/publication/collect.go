@@ -3,6 +3,7 @@ package publication
 import (
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 )
@@ -40,6 +41,32 @@ type Collection struct {
 	ClockMargin time.Duration
 }
 
+// LastModifiedPrecision is how much earlier than an object's creation S3's
+// whole-second LastModified timestamp can be: an object written at 12.700 s
+// lists as 12.000 s.
+const LastModifiedPrecision = time.Second
+
+// OrphanCutoff answers the LastModified, in epoch milliseconds, that an object
+// no history row names must be strictly below for its staging to be fenced by
+// horizon. It subtracts ceil(margin) plus LastModifiedPrecision without
+// signed-integer overflow; if the subtraction would underflow, it returns
+// math.MinInt64 so no object with a valid positive timestamp qualifies.
+func OrphanCutoff(horizon int64, margin time.Duration) int64 {
+	if margin < 0 {
+		return math.MinInt64
+	}
+	ms := ceilMillis(margin)
+	prec := LastModifiedPrecision.Milliseconds()
+	if ms > math.MaxInt64-prec {
+		return math.MinInt64
+	}
+	pad := ms + prec
+	if horizon < math.MinInt64+pad {
+		return math.MinInt64
+	}
+	return horizon - pad
+}
+
 // Plan is one pass's deletes in the order they run: every key in Objects,
 // then every key in Manifests, then Forget of every generation in Forget.
 // Each step starts only once the one before it has finished, so a crash at
@@ -74,6 +101,9 @@ type Plan struct {
 //     LastModified plus the clock margin is before the horizon: its staging
 //     began before the horizon, so its publication can never commit.
 func PlanCollection(c Collection) (Plan, error) {
+	if c.ClockMargin < 0 {
+		return Plan{}, fmt.Errorf("clock margin %s must not be negative", c.ClockMargin)
+	}
 	protected := map[string]bool{}
 	for _, g := range c.Retained {
 		raw, ok := c.Manifests[g.ManifestKey]
@@ -104,13 +134,13 @@ func PlanCollection(c Collection) (Plan, error) {
 		manifests[g.ManifestKey] = true
 		p.Forget = append(p.Forget, g.Generation)
 	}
-	before := c.Horizon - c.ClockMargin.Milliseconds()
+	before := OrphanCutoff(c.Horizon, c.ClockMargin)
 	for _, o := range c.Listed {
 		switch {
 		case protected[o.Key]:
 		case manifests[o.Key]:
 			p.Manifests = append(p.Manifests, o.Key)
-		case listed[o.Key], o.LastModified < before:
+		case listed[o.Key], o.LastModified > 0 && o.LastModified < before:
 			p.Objects = append(p.Objects, o.Key)
 		}
 	}

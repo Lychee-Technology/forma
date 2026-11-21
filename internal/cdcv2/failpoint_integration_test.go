@@ -443,7 +443,11 @@ func (f *fixture) forget(t *testing.T, generation int64) {
 	ok, err := publication.Retire(ctx, publication.DB(f.db), f.tables, schemaID, generation)
 	require.NoError(t, err)
 	require.True(t, ok, "generation %d is superseded", generation)
-	ok, err = publication.Forget(ctx, publication.DB(f.db), f.tables, schemaID, generation, 0)
+	tx, err := f.db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	ok, err = publication.Forget(ctx, publication.SQLTx(tx), f.tables, schemaID, generation, 0)
 	require.NoError(t, err)
 	require.True(t, ok, "generation %d is retired", generation)
+	require.NoError(t, tx.Commit())
 }

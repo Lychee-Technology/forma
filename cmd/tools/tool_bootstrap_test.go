@@ -100,4 +100,24 @@ func TestBuildToolS3Client_UsesSharedLoader(t *testing.T) {
 	if client == nil {
 		t.Fatal("expected non-nil s3 client")
 	}
+	if !client.Options().UsePathStyle {
+		t.Fatal("expected UsePathStyle=true with explicit endpoint")
+	}
+}
+
+func TestBuildToolS3Client_HonorsUsePathStyleWithoutEndpointFlag(t *testing.T) {
+	old := toolLoadAWSConfigFn
+	defer func() { toolLoadAWSConfigFn = old }()
+
+	toolLoadAWSConfigFn = func(ctx context.Context, optFns ...func(*awsconfig.LoadOptions) error) (aws.Config, error) {
+		return aws.Config{Region: "us-west-2"}, nil
+	}
+
+	client, err := buildToolS3Client(context.Background(), "us-west-2", "", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !client.Options().UsePathStyle {
+		t.Fatal("expected UsePathStyle=true even when --s3-endpoint is empty (e.g. AWS_ENDPOINT_URL_S3)")
+	}
 }

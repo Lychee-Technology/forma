@@ -202,11 +202,15 @@ func TestVerifyChecksLineageAndKindWhenTheReferenceNamesThem(t *testing.T) {
 
 	hist := GenerationRef(100, publication.Generation{
 		Generation: 7, Epoch: 1, Kind: publication.KindFlush, ParentGeneration: 6,
-		ManifestKey: ref.ManifestKey, ManifestSHA256: ref.ManifestSHA256, Token: testToken,
+		ManifestKey: ref.ManifestKey, ManifestSHA256: ref.ManifestSHA256, Lineage: testLineage, Token: testToken,
 	})
-	require.Equal(t, uuid.Nil, hist.Lineage, "a history row as Retained answers it names no lineage")
+	require.Equal(t, testLineage, hist.Lineage)
 	_, err = Verify(raw, hist)
 	require.NoError(t, err)
+	wrongLineage := hist
+	wrongLineage.Lineage = uuid.New()
+	_, err = Verify(raw, wrongLineage)
+	requireInvalid(t, err, wrongLineage)
 	hist.Kind = publication.KindInit
 	_, err = Verify(raw, hist)
 	requireInvalid(t, err, hist)
