@@ -69,11 +69,14 @@ func TierEntries(m *Manifest, tier string) []ManifestEntry {
 // the test when the schema has not published.
 func loadSchemaManifest(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) *Manifest {
 	t.Helper()
-	manifests, err := env.loadManifests(ctx)
+	rec, err := env.readRecord(ctx, schema.ID)
 	if err != nil {
-		t.Fatalf("load manifests: %v", err)
+		t.Fatalf("read publication record for schema %d (%s): %v", schema.ID, schema.Name, err)
 	}
-	m := manifests[schema.ID]
+	m, err := manifestView(ctx, env.manifestStore(), rec)
+	if err != nil {
+		t.Fatalf("load manifest for schema %d (%s): %v", schema.ID, schema.Name, err)
+	}
 	if m == nil {
 		t.Fatalf("schema %d (%s) has no published generation", schema.ID, schema.Name)
 	}

@@ -325,15 +325,16 @@ func dropSchemaRecord(ctx context.Context, t *testing.T, env *Env, schema Schema
 	return rec.Epoch, rec.Generation
 }
 
-// activateDroppedSchemaRecord transitions a DROPPED schema's publication record
-// back to UNPUBLISHED via publication.Activate, returning the new epoch and
-// monotonic generation counter.
-func activateDroppedSchemaRecord(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) (epoch, gen int64) {
+// readSchemaRecordState reads schema's current publication record state,
+// epoch, and generation counter without exposing internal/publication types
+// to e2e test files.
+func readSchemaRecordState(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) (state string, epoch, gen int64) {
 	t.Helper()
-	rec := runRecordTransition(ctx, t, env, schema, func(tx publication.Tx, tables publication.Tables, cur publication.Record) (publication.Record, error) {
-		return publication.Activate(ctx, tx, tables, cur, nil)
-	})
-	return rec.Epoch, rec.Generation
+	rec, err := env.readRecord(ctx, schema.ID)
+	if err != nil {
+		t.Fatalf("read record state for %s (%d): %v", schema.Name, schema.ID, err)
+	}
+	return string(rec.State), rec.Epoch, rec.Generation
 }
 
 func runRecordTransition(ctx context.Context, t *testing.T, env *Env, schema SchemaRef,

@@ -174,6 +174,30 @@ func (e *Env) ResumePostgres(ctx context.Context) error {
 	return e.reconnectAfterRestart(ctx)
 }
 
+// ReloadSchemas reloads the Env's schema registry, publication epochs,
+// metadata cache, and CDC config from schemaDir and drops memoized engines
+// and managers, modelling a clean process restart after init-db registers or
+// re-registers schemas.
+func (e *Env) ReloadSchemas(ctx context.Context, schemaDir string) error {
+	registry, epochs, err := e.loadRegistry(ctx, e.Pool, schemaDir)
+	if err != nil {
+		return fmt.Errorf("reload schema registry from %s: %w", schemaDir, err)
+	}
+	metadata, err := schemameta.NewMetadataLoader(e.Pool, e.Tables.SchemaRegistry, schemaDir).LoadMetadata(ctx)
+	if err != nil {
+		return fmt.Errorf("reload schema metadata from %s: %w", schemaDir, err)
+	}
+	e.opts.schemaDir = schemaDir
+	e.setRegistry(registry, epochs)
+	e.Metadata = metadata
+	e.CDC = e.buildCDCConfig()
+	e.engine, e.epochPins = nil, nil
+	e.manager = nil
+	e.routedManagers = nil
+	e.postgresManager = nil
+	return nil
+}
+
 // schemaDir is the declaration directory the Env currently runs on.
 func (e *Env) schemaDir() string {
 	if e.opts.schemaDir == "" {
