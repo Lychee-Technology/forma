@@ -13,6 +13,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/cdcv2"
+	"github.com/lychee-technology/forma/internal/model"
 )
 
 // TestPublicationCrashBoundariesAllWriters injects crashes at every S3
@@ -216,13 +217,15 @@ func runCompactorCrashBoundary(t *testing.T, point string) {
 // TestPublicationConcurrentWritersAndReaders runs cdc-flush, cdc-init, and
 // compactor concurrently against the same schema while concurrent filtered and
 // paginated federated queries read continuously over real PostgreSQL + RustFS +
-// DuckDB. Every reader must succeed with consistent snapshots (no deleted row
-// resurrection, no partial state), and post-convergence queries must match the
-// oracle.
+// DuckDB. Every racing reader page is validated against the full stable oracle
+// (totals, exact row IDs, ordering, and attribute values), and a synchronized
+// boundary-straddling reader proves overlap across a committed publication.
 func TestPublicationConcurrentWritersAndReaders(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	env := NewEnv(t, SharedCluster(t), WithDuckMaxConnections(4))
+	pauser := newPausingPublicationReader()
+	pauser.install(env)
 	wide := DefaultSchemaFixtures()[1]
 
 	initial := seedMatrixRows(ctx, t, env, wide, "base", 6, 100)
@@ -234,39 +237,165 @@ func TestPublicationConcurrentWritersAndReaders(t *testing.T) {
 	)
 	mustFlush(ctx, t, env)
 	seedMatrixRows(ctx, t, env, wide, "hot", 5, 200)
+	preRace := loadSchemaManifest(ctx, t, env, wide)
+
+	// Data is fixed before the race; writers only move rows between tiers, so
+	// every racing page must match the exact stable oracle.
+	specs := buildRaceReaderSpecs(t, env, wide)
+	straddleCh := startBoundaryStraddlingReader(ctx, t, env, pauser, specs[0])
 
 	readCtx, stopReaders := context.WithCancel(ctx)
-	readsCompleted, waitReaders := startConcurrentRaceReaders(readCtx, env, wide, deletedID)
+	var writersActive atomic.Bool
+	readsDuringWriters, waitReaders := startConcurrentRaceReaders(readCtx, env, specs, &writersActive)
 
+	writersActive.Store(true)
+	errs := runThreeWayRacingWriters(ctx, env, wide)
+	writersActive.Store(false)
+
+	stopReaders()
+	if err := waitReaders(); err != nil {
+		t.Fatalf("concurrent readers saw oracle divergence or error: %v", err)
+	}
+	if readsDuringWriters.Load() == 0 {
+		t.Fatal("continuous readers completed 0 queries while writers were active")
+	}
+	assertThreeWayWriterOutcomes(t, errs)
+
+	postRace := loadSchemaManifest(ctx, t, env, wide)
+	if postRace.Generation <= preRace.Generation {
+		t.Fatalf("expected racing writers to advance generation past %d, still at %d", preRace.Generation, postRace.Generation)
+	}
+	verifyBoundaryStraddlingReader(t, pauser, straddleCh, preRace.Generation)
+
+	// Drain any remaining dirty entries and verify final oracle parity and no resurrection.
+	mustFlush(ctx, t, env)
+	assertFilteredAndPaginated(ctx, t, env, wide, true)
+	assertDeletedAbsent(ctx, t, env, wide, deletedID)
+}
+
+type raceReaderSpec struct {
+	label    string
+	query    Query
+	expected *ExpectedResult
+	state    *ExpectedState
+}
+
+func buildRaceReaderSpecs(t *testing.T, env *Env, wide SchemaRef) []raceReaderSpec {
+	t.Helper()
+	state, err := env.ExpectedState(wide)
+	if err != nil {
+		t.Fatalf("build stable race oracle: %v", err)
+	}
+	offsets := []int{0, 2}
+	specs := make([]raceReaderSpec, 0, len(offsets))
+	for _, off := range offsets {
+		q := Query{
+			Schema:  wide,
+			Filters: []Filter{{Attr: "count", Op: "gte", Value: "100"}},
+			Sorts:   []Sort{{Attr: "count"}},
+			Limit:   5,
+			Offset:  off,
+		}
+		exp, err := state.Run(q)
+		if err != nil {
+			t.Fatalf("run race oracle (offset=%d): %v", off, err)
+		}
+		specs = append(specs, raceReaderSpec{
+			label:    fmt.Sprintf("offset=%d", off),
+			query:    q,
+			expected: exp,
+			state:    state,
+		})
+	}
+	return specs
+}
+
+type straddleOutcome struct {
+	err error
+}
+
+// startBoundaryStraddlingReader launches a reader that pauses immediately after
+// taking its REPEATABLE READ snapshot and reading the pre-race publication
+// record, proving deterministic overlap with the concurrent writers.
+func startBoundaryStraddlingReader(ctx context.Context, t *testing.T, env *Env, pauser *pausingPublicationReader, spec raceReaderSpec) <-chan straddleOutcome {
+	t.Helper()
+	eng := env.Engine()
+	fq, err := env.buildFederatedQuery(spec.query)
+	if err != nil {
+		t.Fatalf("build straddling query: %v", err)
+	}
+	qctx, cancel := context.WithTimeout(ctx, pausedFlushTimeout)
+	ch := make(chan straddleOutcome, 1)
+	finished := make(chan struct{})
+	pauser.armed.Store(true)
+	go func() {
+		defer close(finished)
+		page, qerr := eng.Query(qctx, env.Tables, fq, nil)
+		if qerr != nil {
+			ch <- straddleOutcome{err: fmt.Errorf("straddling read: %w", qerr)}
+			return
+		}
+		ch <- straddleOutcome{err: checkRacePageAgainstOracle("straddling "+spec.label, spec, page.Records, page.TotalRecords)}
+	}()
+	t.Cleanup(func() {
+		pauser.Release()
+		cancel()
+		<-finished
+	})
+	select {
+	case <-pauser.Reached():
+	case out := <-ch:
+		t.Fatalf("straddling reader finished before pausing at publication boundary: %v", out.err)
+	}
+	return ch
+}
+
+func verifyBoundaryStraddlingReader(t *testing.T, pauser *pausingPublicationReader, ch <-chan straddleOutcome, wantGen int64) {
+	t.Helper()
+	beforeRelease := len(pauser.Resolved())
+	pauser.Release()
+	out := <-ch
+	if out.err != nil {
+		t.Fatalf("boundary-straddling reader failed: %v", out.err)
+	}
+	resolved := pauser.Resolved()[beforeRelease:]
+	if len(resolved) != 1 || resolved[0].Generation != wantGen {
+		t.Fatalf("boundary-straddling reader resolved %+v after release, want single pre-race generation %d", resolved, wantGen)
+	}
+}
+
+func runThreeWayRacingWriters(ctx context.Context, env *Env, wide SchemaRef) []error {
 	var writeWG sync.WaitGroup
-	errs := make(chan error, 3)
+	errCh := make(chan error, 3)
 	writeWG.Add(3)
 	go func() {
 		defer writeWG.Done()
 		_, err := env.RunFlushWith(ctx, FlushOverrides{})
-		errs <- err
+		errCh <- err
 	}()
 	go func() {
 		defer writeWG.Done()
 		_, err := env.RunInitWith(ctx, wide, InitOverrides{})
-		errs <- err
+		errCh <- err
 	}()
 	go func() {
 		defer writeWG.Done()
 		_, err := env.RunCompactionWith(ctx, wide, CompactionOverrides{TargetBaseSizeBytes: 1})
-		errs <- err
+		errCh <- err
 	}()
 	writeWG.Wait()
-	close(errs)
-	stopReaders()
-	if err := waitReaders(); err != nil {
-		t.Fatalf("concurrent readers saw errors: %v", err)
+	close(errCh)
+	out := make([]error, 0, 3)
+	for err := range errCh {
+		out = append(out, err)
 	}
-	if readsCompleted.Load() == 0 {
-		t.Fatal("concurrent readers completed 0 queries during publish race")
-	}
+	return out
+}
+
+func assertThreeWayWriterOutcomes(t *testing.T, errs []error) {
+	t.Helper()
 	succeeded := 0
-	for err := range errs {
+	for _, err := range errs {
 		if err == nil {
 			succeeded++
 			continue
@@ -278,19 +407,14 @@ func TestPublicationConcurrentWritersAndReaders(t *testing.T) {
 	if succeeded == 0 {
 		t.Fatal("expected at least one racing writer to succeed")
 	}
-
-	// Drain any remaining dirty entries and verify final oracle parity and no resurrection.
-	mustFlush(ctx, t, env)
-	assertFilteredAndPaginated(ctx, t, env, wide, true)
-	assertDeletedAbsent(ctx, t, env, wide, deletedID)
 }
 
-func startConcurrentRaceReaders(readCtx context.Context, env *Env, wide SchemaRef, deletedID any) (*atomic.Int64, func() error) {
+func startConcurrentRaceReaders(readCtx context.Context, env *Env, specs []raceReaderSpec, writersActive *atomic.Bool) (*atomic.Int64, func() error) {
 	eng := env.Engine()
 	var wg sync.WaitGroup
 	var errMu sync.Mutex
 	var firstErr error
-	var completed atomic.Int64
+	var duringWriters atomic.Int64
 
 	recordErr := func(err error) {
 		errMu.Lock()
@@ -300,47 +424,52 @@ func startConcurrentRaceReaders(readCtx context.Context, env *Env, wide SchemaRe
 		errMu.Unlock()
 	}
 
-	for worker := 0; worker < 2; worker++ {
+	for _, spec := range specs {
 		wg.Add(1)
-		go func(offset int) {
+		go func(spec raceReaderSpec) {
 			defer wg.Done()
+			fq, err := env.buildFederatedQuery(spec.query)
+			if err != nil {
+				recordErr(err)
+				return
+			}
 			for readCtx.Err() == nil {
-				fq, err := env.buildFederatedQuery(Query{
-					Schema:  wide,
-					Filters: []Filter{{Attr: "count", Op: "gte", Value: "100"}},
-					Sorts:   []Sort{{Attr: "count"}},
-					Limit:   5,
-					Offset:  offset,
-				})
-				if err != nil {
-					recordErr(err)
-					return
-				}
+				activeAtStart := writersActive.Load()
 				page, err := eng.Query(readCtx, env.Tables, fq, nil)
 				if err != nil {
 					if readCtx.Err() != nil {
 						return
 					}
-					recordErr(fmt.Errorf("concurrent read: %w", err))
+					recordErr(fmt.Errorf("concurrent read (%s): %w", spec.label, err))
 					return
 				}
-				for _, rec := range page.Records {
-					if rec.RowID == deletedID {
-						recordErr(fmt.Errorf("deleted row %s resurrected during concurrent publish", deletedID))
-						return
-					}
+				if err := checkRacePageAgainstOracle("concurrent "+spec.label, spec, page.Records, page.TotalRecords); err != nil {
+					recordErr(err)
+					return
 				}
-				completed.Add(1)
+				if activeAtStart {
+					duringWriters.Add(1)
+				}
 			}
-		}(worker * 2)
+		}(spec)
 	}
 
-	return &completed, func() error {
+	return &duringWriters, func() error {
 		wg.Wait()
 		errMu.Lock()
 		defer errMu.Unlock()
 		return firstErr
 	}
+}
+
+func checkRacePageAgainstOracle(label string, spec raceReaderSpec, records []*model.PersistentRecord, total int64) error {
+	actual := &QueryResult{Spec: spec.query, Records: records, Total: total}
+	diff := computeDiff(spec.query, spec.expected, actual, spec.state.Cache)
+	if !diff.IsEmpty() {
+		return fmt.Errorf("%s diverged from stable oracle (expected_total=%d actual_total=%d missing=%v extra=%v dup=%v misordered=%t attrs=%+v)",
+			label, diff.ExpectedTotal, diff.ActualTotal, diff.Missing, diff.Extra, diff.Duplicate, diff.Misordered, diff.Attrs)
+	}
+	return nil
 }
 
 func crashOnceAt(point string) func(context.Context, string) error {
