@@ -5,6 +5,7 @@ package production
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,8 +17,8 @@ import (
 // staging, manifest publish, PG transaction, commit-answer and handoff
 // boundary across cdc-flush, cdc-init and compactor. Each crash must leave
 // reads oracle-consistent with zero partial visibility, allow a clean follow-up
-// to converge, and leave any staged orphans collectable by manifest-reconcile
-// --gc.
+// to converge, and leave staged orphans that manifest-reconcile --gc actually
+// deletes while the current generation stays intact.
 func TestPublicationCrashBoundariesAllWriters(t *testing.T) {
 	t.Parallel()
 
@@ -86,6 +87,7 @@ func runFlushCrashBoundary(t *testing.T, point string) {
 	seedMatrixRows(ctx, t, env, wide, "f2", 3, 20)
 	cfg := env.CDC
 	cfg.PublishFailpoint = crashOnceAt(point)
+	staged := schemaObjectKeys(ctx, t, env, wide)
 	_, err := env.RunFlushWith(ctx, FlushOverrides{Config: &cfg})
 	if point == string(cdcv2.PointCommitAnswer) {
 		// Lost answer after a landed COMMIT resolves to committed without error.
@@ -105,6 +107,7 @@ func runFlushCrashBoundary(t *testing.T, point string) {
 	if cur := loadSchemaManifest(ctx, t, env, wide); cur.Generation != before.Generation {
 		t.Fatalf("failed flush at %s advanced generation %d -> %d", point, before.Generation, cur.Generation)
 	}
+	orphans := crashResidue(ctx, t, env, wide, point, staged)
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 50})
 
 	// Clean retry converges and leaves oracle-matched state.
@@ -113,7 +116,7 @@ func runFlushCrashBoundary(t *testing.T, point string) {
 		t.Fatalf("retry flush after %s generation = %d, want %d", point, after.Generation, before.Generation+1)
 	}
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 50})
-	verifyGCReconcilesCleanly(ctx, t, env, wide)
+	verifyGCCollectsCrashOrphans(ctx, t, env, wide, orphans)
 }
 
 func runInitCrashBoundary(t *testing.T, point string) {
@@ -127,6 +130,7 @@ func runInitCrashBoundary(t *testing.T, point string) {
 
 	cfg := env.CDC
 	cfg.PublishFailpoint = crashOnceAt(point)
+	staged := schemaObjectKeys(ctx, t, env, wide)
 	_, err := env.RunInitWith(ctx, wide, InitOverrides{Config: &cfg})
 	switch point {
 	case string(cdcv2.PointCommitAnswer):
@@ -156,6 +160,7 @@ func runInitCrashBoundary(t *testing.T, point string) {
 	if cur := loadSchemaManifest(ctx, t, env, wide); cur.Generation != before.Generation {
 		t.Fatalf("failed init at %s advanced generation %d -> %d", point, before.Generation, cur.Generation)
 	}
+	orphans := crashResidue(ctx, t, env, wide, point, staged)
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 50})
 
 	if _, err := env.RunInit(ctx, wide); err != nil {
@@ -163,7 +168,7 @@ func runInitCrashBoundary(t *testing.T, point string) {
 	}
 	env.MarkOnboarded(ctx, wide)
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 50})
-	verifyGCReconcilesCleanly(ctx, t, env, wide)
+	verifyGCCollectsCrashOrphans(ctx, t, env, wide, orphans)
 }
 
 func runCompactorCrashBoundary(t *testing.T, point string) {
@@ -176,6 +181,7 @@ func runCompactorCrashBoundary(t *testing.T, point string) {
 	mustFlush(ctx, t, env)
 	before := loadSchemaManifest(ctx, t, env, wide)
 
+	staged := schemaObjectKeys(ctx, t, env, wide)
 	_, err := env.RunCompactionWith(ctx, wide, CompactionOverrides{
 		TargetBaseSizeBytes: 1,
 		PublishFailpoint:    crashOnceAt(point),
@@ -197,6 +203,7 @@ func runCompactorCrashBoundary(t *testing.T, point string) {
 	if cur := loadSchemaManifest(ctx, t, env, wide); cur.Generation != before.Generation {
 		t.Fatalf("failed compactor at %s advanced generation %d -> %d", point, before.Generation, cur.Generation)
 	}
+	orphans := crashResidue(ctx, t, env, wide, point, staged)
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 50})
 
 	res, err := env.RunCompactionWith(ctx, wide, CompactionOverrides{TargetBaseSizeBytes: 1})
@@ -207,7 +214,7 @@ func runCompactorCrashBoundary(t *testing.T, point string) {
 		t.Fatalf("retry compaction after %s did not commit a compact generation: %+v", point, res)
 	}
 	env.AssertQueryMatches(ctx, Query{Schema: wide, Limit: 50})
-	verifyGCReconcilesCleanly(ctx, t, env, wide)
+	verifyGCCollectsCrashOrphans(ctx, t, env, wide, orphans)
 }
 
 func crashOnceAt(point string) func(context.Context, string) error {
@@ -220,11 +227,56 @@ func crashOnceAt(point string) func(context.Context, string) error {
 	}
 }
 
-func verifyGCReconcilesCleanly(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
+// crashResidue returns the schema's objects a failed writer attempt left
+// behind: every key listed after the failure that was not listed before it.
+// A crash before staging leaves none; a crash at or after the manifest
+// staging boundary leaves at least the staged parquet, so the collection
+// assertion that follows can never pass vacuously.
+func crashResidue(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, point string, before []string) []string {
 	t.Helper()
-	time.Sleep(reconcileGrace)
-	if _, err := env.reconciler(t, schema, reconcileOptions(true)).Run(ctx); err != nil {
-		t.Fatalf("manifest-reconcile --gc after crash recovery: %v", err)
+	var residue []string
+	for _, k := range schemaObjectKeys(ctx, t, env, schema) {
+		if !slices.Contains(before, k) {
+			residue = append(residue, k)
+		}
+	}
+	if point == string(cdcv2.PointStageObjects) {
+		if len(residue) != 0 {
+			t.Fatalf("crash before staging at %s left objects %v", point, residue)
+		}
+		return nil
+	}
+	if len(residue) == 0 {
+		t.Fatalf("crash at %s left no staged object to collect", point)
+	}
+	return residue
+}
+
+// verifyGCCollectsCrashOrphans runs manifest-reconcile --gc past the orphan
+// age and the retention grace, and requires that it deleted every object the
+// crashed attempt staged, that the schema then holds exactly the current
+// generation's objects and manifest, and that reads still match the oracle.
+func verifyGCCollectsCrashOrphans(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, orphans []string) {
+	t.Helper()
+	var collected []string
+	for pass := 1; pass <= 2; pass++ {
+		time.Sleep(reconcileGrace)
+		rep := runReconcile(ctx, t, env, schema, reconcileOptions(true))
+		if rep.Refused != "" || rep.Collected == nil {
+			t.Fatalf("manifest-reconcile --gc pass %d after crash recovery refused: %q", pass, rep.Refused)
+		}
+		collected = append(collected, rep.Collected.Objects...)
+	}
+	for _, k := range orphans {
+		if !slices.Contains(collected, k) {
+			t.Fatalf("manifest-reconcile --gc never collected crash-staged object %s (collected %v)", k, collected)
+		}
+	}
+	cur := loadSchemaManifest(ctx, t, env, schema)
+	want := append(sortedGenerationKeys(cur), cur.Key)
+	slices.Sort(want)
+	if got := schemaObjectKeys(ctx, t, env, schema); !slices.Equal(got, want) {
+		t.Fatalf("after collection schema holds %v, want current generation %d's %v", got, cur.Generation, want)
 	}
 	env.AssertQueryMatches(ctx, Query{Schema: schema, Limit: 50})
 }
