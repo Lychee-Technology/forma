@@ -64,48 +64,13 @@ var forbiddenV1Literals = []string{
 	"/*.parquet",
 }
 
-// publicProtocolDocs are the public and operator docs guarded against
-// reintroducing obsolete V1 flags, env vars or level-3 glob examples in
-// runnable snippets.
-var publicProtocolDocs = []string{
-	"README.md",
-	"docs/index.md",
-	"docs/publication-protocol-v2.md",
-	"docs/federated-query/design.md",
-	"docs/error-handling.md",
-	"docs/manifest-reconcile.md",
-	"docs/aurora-dsql.md",
-	"docs/dsql-ministack.md",
-	"cmd/tools/README.md",
-}
-
-// forbiddenDocCodeTokens are retired V1 flags, env vars, APIs and glob
-// patterns that must never appear inside fenced code snippets of public docs.
-// Single-dash forms match both Go `-flag` and POSIX `--flag` spellings.
-var forbiddenDocCodeTokens = []string{
-	"QuerySource.Fallback",
-	"-glob-only",
-	"-manifest-template",
-	"-manifest-prefix",
-	"-replace-delta",
-	"-delta-prefix",
-	"-repair",
-	"-verify-stamps",
-	"-allow-empty-manifest-schema",
-	"-etag-retries",
-	"-gc-grace",
-	"DUCKDB_MANIFEST_TEMPLATE",
-	"DUCKDB_MANIFEST_PREFIX",
-	"DUCKDB_S3_PREFIX",
-	"FLUSH_VISIBILITY_GRACE_MS",
-	"/*.parquet",
-}
-
 // TestNoLegacyV1PathsOrObsoleteFlagsRemain proves that no production Go file
 // outside internal/manifest imports the retired V1 manifest package, calls
 // ValidateManifestPathTemplate, reintroduces QuerySource.Fallback / level-3
 // glob / glob-only / obsolete V1 flags or env vars, and that no public doc
-// code block teaches those retired V1 modes (#892).
+// teaches those retired V1 modes, in a code block or in prose outside a
+// removal or historical note (#892; the doc rules are in
+// legacy_v1_doc_guard_test.go).
 func TestNoLegacyV1PathsOrObsoleteFlagsRemain(t *testing.T) {
 	root := filepath.Join("..", "..")
 	files, err := productionFiles(root)
@@ -116,11 +81,14 @@ func TestNoLegacyV1PathsOrObsoleteFlagsRemain(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, codeViolations)
 
-	docViolations, err := legacyV1DocViolations(root, publicProtocolDocs)
+	docs, err := publicDocs(root)
+	require.NoError(t, err)
+	require.Subset(t, docs, requiredPublicDocs)
+	docViolations, err := legacyV1DocViolations(root, docs)
 	require.NoError(t, err)
 	require.Empty(t, docViolations)
 
-	t.Run("catches planted V1 code and doc regressions", func(t *testing.T) {
+	t.Run("catches planted V1 code regressions", func(t *testing.T) {
 		dir := t.TempDir()
 		for rel, src := range map[string]string{
 			"internal/federated/regressed.go": "package federated\n\nimport _ \"" + v1ManifestPkgImport + "\"\n\ntype QuerySource struct { Fallback bool }\nconst glob = \"s3://b/data/1/*.parquet\"\n",
@@ -143,16 +111,6 @@ func TestNoLegacyV1PathsOrObsoleteFlagsRemain(t *testing.T) {
 			`internal/federated/regressed.go imports ` + v1ManifestPkgImport,
 			`internal/federated/regressed.go references retired V1 identifier QuerySource`,
 		}, gotCode)
-
-		docPath := filepath.Join(dir, "README.md")
-		docSrc := "Historical note: `--repair` was removed.\n\n```bash\nforma-tools cdc-flush -glob-only\nforma-tools manifest-reconcile --repair\n```\n"
-		require.NoError(t, os.WriteFile(docPath, []byte(docSrc), 0o600))
-		gotDocs, err := legacyV1DocViolations(dir, []string{"README.md"})
-		require.NoError(t, err)
-		require.Equal(t, []string{
-			`README.md:4 code block uses retired V1 token "-glob-only"`,
-			`README.md:5 code block uses retired V1 token "-repair"`,
-		}, gotDocs)
 	})
 }
 
@@ -221,32 +179,4 @@ func legacyV1FileViolations(rel string, file *ast.File) []string {
 		return true
 	})
 	return violations
-}
-
-func legacyV1DocViolations(root string, relDocs []string) ([]string, error) {
-	var violations []string
-	for _, rel := range relDocs {
-		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-		if err != nil {
-			return nil, fmt.Errorf("read public doc %s: %w", rel, err)
-		}
-		inFence := false
-		for idx, line := range strings.Split(string(raw), "\n") {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "```") {
-				inFence = !inFence
-				continue
-			}
-			if !inFence {
-				continue
-			}
-			for _, tok := range forbiddenDocCodeTokens {
-				if strings.Contains(line, tok) {
-					violations = append(violations, fmt.Sprintf("%s:%d code block uses retired V1 token %q", rel, idx+1, tok))
-				}
-			}
-		}
-	}
-	sort.Strings(violations)
-	return violations, nil
 }
