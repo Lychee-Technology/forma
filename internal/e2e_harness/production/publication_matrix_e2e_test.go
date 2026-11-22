@@ -144,14 +144,28 @@ func runManifestDeletedMidPass(t *testing.T) {
 	mustFlush(ctx, t, env)
 	m := loadSchemaManifest(ctx, t, env, wide)
 
-	pauser.armed.Store(true)
+	qctx, cancel := context.WithTimeout(ctx, pausedFlushTimeout)
 	errCh := make(chan error, 1)
+	finished := make(chan struct{})
+	pauser.armed.Store(true)
 	go func() {
-		_, err := env.Query(ctx, Query{Schema: wide, Limit: 10, AllowPartialDegradedMode: true})
+		defer close(finished)
+		_, err := env.Query(qctx, Query{Schema: wide, Limit: 10, AllowPartialDegradedMode: true})
 		errCh <- err
 	}()
-	t.Cleanup(func() { pauser.Release() })
-	<-pauser.Reached()
+	t.Cleanup(func() {
+		pauser.Release()
+		cancel()
+		<-finished
+	})
+
+	select {
+	case <-pauser.Reached():
+	case err := <-errCh:
+		t.Fatalf("query finished before pausing at publication ReadRecord: err=%v", err)
+	case <-qctx.Done():
+		t.Fatalf("timed out waiting for query to pause at publication ReadRecord: %v", qctx.Err())
+	}
 	deleteObject(ctx, t, env, m.Key)
 	pauser.Release()
 
