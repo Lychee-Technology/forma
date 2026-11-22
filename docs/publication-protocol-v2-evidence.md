@@ -25,7 +25,7 @@ It separates the **local/CI implementation gate** (PostgreSQL 16, RustFS/S3, Duc
 | Invariant / Closure Gate | Enforcement & Tests | CI Lane(s) |
 | --- | --- | --- |
 | **1. PG-authoritative pointer & monotonic epoch/generation** | `internal/publication`: `TestPublish*`, `TestReset*`, `TestActivate*`, `TestALostRecordIsRecoveredAboveEveryEpochItsIdCarried`, `TestOnlyTheProtocolOwnersMoveAPublicationRecord`. `cmd/tools`: `init_db_records_lifecycle_integration_test.go`, `drop_schema_test.go`. `internal/e2e_harness/production`: `TestPublicationMatrix_FullLifecycleAndPagination`, `TestServerStartupUnpinsASchemaRedroppedAfterItsRegistryLoaded`. | `test`, `dsql-ministack`, `e2e-production` |
-| **2. Write-once immutable manifests & parquet objects (`If-None-Match: *`)** | `internal/manifestv2`: `manifest_test.go`, `store_test.go`, `cache_test.go`, `s3_store_test.go`. `internal/e2e_harness/production`: `TestPublicationPerfDelta` confirms `s3_copy=0`, `s3_del=0` on `cdc-init`, `cdc-flush`, and `compactor`. | `test`, `e2e-production` |
+| **2. Write-once immutable manifests & parquet objects (`If-None-Match: *`)** | `internal/manifestv2`: `manifest_test.go`, `store_test.go`, `cache_test.go`, `s3_store_test.go`. `internal/e2e_harness/production`: `TestPublicationPerfDelta` confirms `s3_list=0`, `s3_copy=0`, `s3_del=0` at the S3 HTTP endpoint for `cdc-init`, `cdc-flush`, and `compactor`. | `test`, `e2e-production` |
 | **3. One atomic PG commit for publish + flush marks; DSQL ≤1,000 marks/gen** | `internal/publication`: `publish_integration_test.go`. `internal/cdcv2`: `failpoint_integration_test.go`, `occ_integration_test.go` (`TestPublishResendsOnSerializationConflictAcrossAllWriters`), `race_integration_test.go`. `internal/e2e_harness/production`: `TestFlushFaultMarkFlushed`, `TestPublicationCrashBoundariesAllWriters`. | `test`, `dsql-ministack`, `e2e-production` |
 | **4. Reader reads record and dirty set in one `REPEATABLE READ` snapshot; `UNPUBLISHED` skips DuckDB/S3; `R_max` bounds pass** | `internal/federatedv2`: `source_integration_test.go`. `internal/federated`: `pgx_publication_deadline_test.go`. `internal/e2e_harness/production`: `TestNeverFlushedSchemaAnswersOnDuckDB`, `TestPublishedPassRacingAPublication`, `TestPublicationMatrix_FullLifecycleAndPagination`. | `test`, `e2e-production` |
 | **5. Unprovable or inconsistent state fails closed (non-degradable, breaker-neutral)** | `internal/federated`: `TestPublishedPassFailsClosedOnAPublicationFault`. `internal/federatedv2`: `source_faults_integration_test.go`, `TestALossBehindAccessDeniedFailsClosedWithoutClaimingLoss`. `internal/e2e_harness/production`: `TestLostManifestOverFlushedRowsStillFails`, `TestPublicationMatrix_FaultsFailClosedAndPreserveBreaker` (missing/corrupt/stale manifest, forbidden empty flush, missing/`AWAITING_INIT`/`DROPPED` record, manifest deleted mid-pass, 403 `AccessDenied` on manifest fetch and `HeadObject` probe — all tested with `AllowPartialDegradedMode` off & on and threshold-1 breaker). | `test`, `e2e-production` |
@@ -52,28 +52,31 @@ FORMA_PUBLICATION_PERF_DELTA=1 GOCACHE=$PWD/.gocache GOFLAGS=-buildvcs=false GOT
   go test -v -tags=e2e -timeout=5m ./internal/e2e_harness/production -run TestPublicationPerfDelta
 ```
 
-**Environment & dataset:** local Linux host, Docker `postgres:16` + pinned `rustfs/rustfs`, DuckDB 4 threads (`WithDuckThreads(4)`), `e2e_wide` schema (`250` base rows + `50` delta rows + `10` hot rows; filtered `count >= 1050`, sorted by `count`, page size `20`). Read latencies report `n=25` samples after 3 warmups (`n=10` for cold cache with fresh engine per sample).
+**Instrumentation & datasets:** Dedicated local Docker `postgres:16` + pinned `rustfs/rustfs` cluster, DuckDB 4 threads (`WithDuckThreads(4)`), `e2e_wide` schema (filtered `count >= 1050`, sorted by `count`, page size `20`). Every S3 request — Go SDK manifest/reconcile clients and DuckDB `httpfs` parquet traffic alike — is counted at a local HTTP reverse proxy in front of the RustFS endpoint (`s3_total = s3_get + s3_head + s3_list + s3_put + s3_copy + s3_del + s3_other`, with `s3_other = 0` on all runs). Read counters reset after warmup (`3` warmups, `n=25` measured samples; `n=10` for cold cache with a fresh DuckDB/manifest cache per sample). Unpublished reads compare on the same `250`-row dataset; published 3-tier reads compare on the same `330`-row dataset (`300` compacted base rows + `20` flushed delta rows across 2 parquet objects + `10` hot rows).
 
-### Read Workloads
+### Read Workloads (Endpoint-Level S3 HTTP Counts)
 
-| Workload | n | P50 (ms) | P95 (ms) | P99 (ms) | DuckDB Execs | Manifest S3 GET | S3 HEAD | S3 LIST | Notes |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `pg_only_baseline` (`PostgresEntityManager`) | 25 | 8.57 | 9.00 | 9.09 | 0 | 0 | 0 | 0 | OLTP baseline without federated engine |
-| `v2_unpublished_federated` (`UNPUBLISHED`) | 25 | 14.08 | 15.58 | 15.75 | 0 | 0 | 0 | 0 | +6.58 ms P95 vs PG-only (`REPEATABLE READ` + `publication.Read` + dirty-set + hot-keys); 0 DuckDB, 0 S3 |
-| `v2_published_warm_cache` (`PUBLISHED`, cache hit) | 25 | 24.30 | 26.74 | 26.91 | 27\* | 0 | 0 | 0 | 0 S3 manifest metadata calls on steady-state cache hit (\*includes 2 warmup passes) |
-| `v2_published_cold_cache` (`PUBLISHED`, cache miss) | 10 | 29.78 | 37.53 | 37.53 | 10 | 10 | 0 | 0 | Exactly 1 S3 `GetObject` per cold generation (+10.79 ms P95 vs warm cache); 0 `HeadObject`, 0 `ListObjectsV2` |
+| Workload | Dataset | n | P50 (ms) | P95 (ms) | P99 (ms) | DuckDB Execs | S3 Total | Manifest GET | Parquet GET | S3 HEAD | S3 LIST | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `pg_only_baseline_unpublished` | 250 rows (hot) | 25 | 8.54 | 9.29 | 9.55 | 0 | 0 | 0 | 0 | 0 | 0 | OLTP baseline on the unpublished dataset |
+| `v2_unpublished_federated` | 250 rows (hot) | 25 | 14.03 | 15.23 | 15.24 | 0 | 0 | 0 | 0 | 0 | 0 | +5.94 ms P95 vs PG-only (`REPEATABLE READ` + `publication.Read` + dirty-set + hot-keys); 0 DuckDB, 0 S3 HTTP requests |
+| `pg_only_baseline_published` | 330 rows (3-tier) | 25 | 3.92 | 4.13 | 4.22 | 0 | 0 | 0 | 0 | 0 | 0 | OLTP baseline on the same 330-row published dataset (warm PG buffers/planner) |
+| `v2_published_warm_cache` | 330 rows (3-tier) | 25 | 26.47 | 27.94 | 28.04 | 25 | 150 | 0 | 0 | 150 | 0 | 0 manifest GETs and 0 `ListObjectsV2`; all 150 `HEAD`s (6/query across 2 parquet files) come from DuckDB `httpfs` revalidation while cached pages avoid parquet `GET`s |
+| `v2_published_cold_cache` | 330 rows (3-tier) | 10 | 32.67 | 33.65 | 33.65 | 10 | 100 | 10 | 30 | 60 | 0 | +5.71 ms P95 vs warm cache; 1 manifest `GET`/query + DuckDB `httpfs` cold parquet reads (3 `GET` + 6 `HEAD`/query across 2 parquet files); 0 `ListObjectsV2` |
 
-### Publishing & Maintenance Workloads
+### Publishing & Maintenance Workloads (Endpoint-Level S3 HTTP Counts)
 
-| Workload | Duration (ms) | S3 PUT | S3 GET | S3 HEAD | S3 COPY | S3 DEL | Notes |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `v2_cdc_init_250rows` | 192.23 | 2 | 0 | 0 | 0 | 0 | 1 base parquet + 1 manifest, write-once (`If-None-Match: *`); 0 `CopyObject`/cleanup |
-| `v2_cdc_flush_50rows` | 120.55 | 2 | 1 | 0 | 0 | 0 | 1 delta parquet + 1 manifest + 1 parent manifest `GET`; atomic PG publish + marks |
-| `v2_compactor_300rows` | 86.50 | 2 | 2 | 0 | 0 | 0 | 1 merged base + 1 manifest + 2 pre-merge SHA-256 input `GET`s; 0 inline deletes |
-| `v2_reconcile_diagnose` | 62.78 | — | — | — | — | — | Read-only, lock-free, 0 DB writes |
-| `v2_reconcile_gc_collect` | 89.02 | — | — | — | — | — | Collects expired manifests/objects and forgets history rows after grace `G` |
+| Workload | Duration (ms) | S3 Total | S3 PUT | Manifest GET | Parquet GET | S3 HEAD | S3 LIST | S3 COPY | S3 DEL | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `v2_cdc_init_250rows` | 145.50 | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 1 base parquet + 1 manifest, write-once (`If-None-Match: *`); 0 `LIST`/`COPY`/`DEL` |
+| `v2_cdc_flush_50rows` | 111.18 | 3 | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 1 delta parquet + 1 manifest + 1 parent manifest `GET`; 0 `LIST`/`COPY`/`DEL` |
+| `v2_compactor_300rows` | 102.12 | 11 | 2 | 1 | 2 | 6 | 0 | 0 | 0 | 1 merged base + 1 manifest + 1 manifest `GET` + 2 parquet `GET`s + 6 DuckDB `httpfs` `HEAD` probes on the 2 input files; 0 `LIST`/`COPY`/`DEL` |
+| `v2_reconcile_diagnose` | 11.77 | 4 | 0 | 3 | 0 | 0 | 1 | 0 | 0 | Read-only, lock-free prefix `LIST` + 3 manifest `GET`s; 0 writes/deletes |
+| `v2_reconcile_gc_collect` | 84.54 | 7 | 0 | 3 | 0 | 0 | 1 | 0 | 3 | Prefix `LIST` + 3 manifest `GET`s + 3 `DeleteObject` calls collecting expired generation manifests/objects after grace `G` |
 
-**Caveats:** These measurements reflect local single-host Docker latency (sub-millisecond S3 loopback) on a 310-row dataset; real AWS S3 RTT adds ~10–40 ms per S3 request, making V2's elimination of per-query `ListObjectsV2`, `HeadObject`, and `CopyObject` calls strictly larger in production than on loopback.
+**Caveats and scope of comparison:**
+- No historical Protocol V1 binary is executed side-by-side here because V1 read/write paths were removed in #906 and #907; latency deltas compare V2 against equivalent PG-only OLTP baselines on identical datasets and between V2 states (unpublished vs published, warm vs cold manifest cache), while S3 request counts capture the complete V2 object-store HTTP traffic surface.
+- Measurements reflect local single-host Docker latency (sub-millisecond S3 loopback) on 250–330 rows. On live AWS S3 (~10–40 ms RTT per request), DuckDB `httpfs` `HEAD`/`GET` calls on parquet objects remain part of published-read latency and request cost, while V2 eliminates per-query `ListObjectsV2`, `CopyObject`, and inline writer `DeleteObject` calls.
 
 ## 5. External Validation Gate: Live Aurora DSQL (#893 under #817)
 
