@@ -117,6 +117,21 @@ func (b proseBlock) text() string {
 	return strings.Join(parts, " ")
 }
 
+// body joins b's own lines, without its list lead-in, and answers the byte
+// offset at which each line starts in the result, so a clause can wrap.
+func (b proseBlock) body() (string, []int) {
+	var sb strings.Builder
+	offsets := make([]int, len(b.lines))
+	for i, l := range b.lines {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		offsets[i] = sb.Len()
+		sb.WriteString(l.text)
+	}
+	return sb.String(), offsets
+}
+
 // publicDocs lists, sorted and slash-separated, every markdown file under
 // root outside hidden, build, dependency and nonPublicDocTrees directories.
 func publicDocs(root string) ([]string, error) {
@@ -176,15 +191,22 @@ func legacyV1DocViolations(root string, relDocs []string) ([]string, error) {
 	return violations, nil
 }
 
+// proseViolations reports each line of b that names a retired token outside
+// a removal or historical note. A block without a removal word is not a note.
+// A note still refuses a mention whose own clause instructs the reader to use
+// it, so "Run `--glob-only`; the old path was removed" fails: the removal word
+// belongs to another clause than the instruction.
 func proseViolations(rel string, b proseBlock) []string {
-	if removalNoteRE.MatchString(b.text()) {
-		return nil
-	}
+	blockIsNote := removalNoteRE.MatchString(b.text())
+	body, offsets := b.body()
 	var violations []string
-	for _, l := range b.lines {
+	for i, l := range b.lines {
 		for _, tok := range forbiddenDocTokens {
 			for _, loc := range tok.re.FindAllStringSubmatchIndex(l.text, -1) {
 				if negatedMentionRE.MatchString(l.text[:loc[2]]) {
+					continue
+				}
+				if blockIsNote && !instructs(clauseAt(body, offsets[i]+loc[2])) {
 					continue
 				}
 				violations = append(violations, fmt.Sprintf("%s:%d prose uses retired V1 token %q outside a removal or historical note", rel, l.num, tok.name))
@@ -193,6 +215,36 @@ func proseViolations(rel string, b proseBlock) []string {
 		}
 	}
 	return violations
+}
+
+// directiveRE matches a verb that tells the reader to do something with what
+// follows it. negationRE matches a clause that tells the reader not to.
+var (
+	directiveRE = regexp.MustCompile(`(?i)\b(?:run|use|pass|set|enable|specify|invoke|configure|execute|try)\b|运行|使用|传入|设置|启用|执行`)
+	negationRE  = regexp.MustCompile(`(?i)\b(?:not|never|don't|cannot|can't)\b|不要|勿|禁止`)
+	// clauseSepRE ends a clause: a semicolon, a table cell border, or a
+	// sentence end. A period inside a name such as `cdc.go` is not one.
+	clauseSepRE = regexp.MustCompile(`[;|。；]|[.!?](?:\s|$)`)
+)
+
+// instructs reports whether clause recommends what it names: a directive
+// verb, with neither a removal word nor a negation in the same clause.
+func instructs(clause string) bool {
+	return directiveRE.MatchString(clause) && !removalNoteRE.MatchString(clause) && !negationRE.MatchString(clause)
+}
+
+// clauseAt answers the clause of text that holds byte offset pos.
+func clauseAt(text string, pos int) string {
+	start, end := 0, len(text)
+	for _, loc := range clauseSepRE.FindAllStringIndex(text, -1) {
+		if loc[0] < pos {
+			start = loc[1]
+			continue
+		}
+		end = loc[0]
+		break
+	}
+	return text[start:end]
 }
 
 // splitMarkdown splits src into prose blocks and fenced code lines. A blank
@@ -263,6 +315,16 @@ func TestLegacyV1DocGuardCatchesPlantedRegressions(t *testing.T) {
 			"Set these:\n\n- `--delta-prefix=s3://b/d` on `cdc-init`.\n\n" +
 			"| `--gc`, `--repair` | Repair is removed |\n| `--repair` | re-adopts unlisted objects |\n\n" +
 			"Reads take the generation, and no `--verify-stamps` pass.\n",
+		// A removal word elsewhere in the block does not excuse an
+		// instruction in another clause (lines 1, 4, 6 and 10); a clause that
+		// removes, refuses or forbids what it names stays a note (12, 14, 16).
+		"docs/mixed.md": "Run `cdc-flush --glob-only`; the old path was removed.\n\n" +
+			"The old manifest cache was removed in #896.\nTo skip manifest checks, run `forma-tools cdc-flush --glob-only`.\n\n" +
+			"| `cdc-flush` | V1 fallback was removed; pass `--glob-only` for fast exports |\n\n" +
+			"These V1 notes cover removed paths:\n\n- Run `forma-tools manifest-reconcile --repair` to rebuild missing manifests.\n\n" +
+			"Do not run `--repair`; it was removed in #891.\n\n" +
+			"`--glob-only` was removed; use `--s3-prefix` instead.\n\n" +
+			"Under V1 you would run the flush\nwith `--glob-only`, which #896 removed.\n",
 		"tools/autoresearch/run/report.md":   "```\nread_parquet('s3://b/1/base/*.parquet')\n```\n",
 		".autoforge/notes.md":                "Run `cdc-flush --glob-only`.\n",
 		"tests/e2e/node_modules/x/README.md": "Run `cdc-flush --glob-only`.\n",
@@ -274,7 +336,7 @@ func TestLegacyV1DocGuardCatchesPlantedRegressions(t *testing.T) {
 
 	docs, err := publicDocs(dir)
 	require.NoError(t, err)
-	require.Equal(t, []string{"README.md", "cmd/tools/README.md", "docs/ops.md", "docs/schema-evolution.md"}, docs)
+	require.Equal(t, []string{"README.md", "cmd/tools/README.md", "docs/mixed.md", "docs/ops.md", "docs/schema-evolution.md"}, docs)
 
 	got, err := legacyV1DocViolations(dir, docs)
 	require.NoError(t, err)
@@ -282,6 +344,10 @@ func TestLegacyV1DocGuardCatchesPlantedRegressions(t *testing.T) {
 		`README.md:4 code block uses retired V1 token "-glob-only"`,
 		`README.md:5 code block uses retired V1 token "-repair"`,
 		`cmd/tools/README.md:1 prose uses retired V1 token "-glob-only" outside a removal or historical note`,
+		`docs/mixed.md:1 prose uses retired V1 token "-glob-only" outside a removal or historical note`,
+		`docs/mixed.md:10 prose uses retired V1 token "-repair" outside a removal or historical note`,
+		`docs/mixed.md:4 prose uses retired V1 token "-glob-only" outside a removal or historical note`,
+		`docs/mixed.md:6 prose uses retired V1 token "-glob-only" outside a removal or historical note`,
 		`docs/ops.md:11 prose uses retired V1 token "-repair" outside a removal or historical note`,
 		`docs/ops.md:8 prose uses retired V1 token "-delta-prefix" outside a removal or historical note`,
 		`docs/schema-evolution.md:4 code block uses retired V1 token "-repair"`,

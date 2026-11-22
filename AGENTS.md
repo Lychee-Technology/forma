@@ -81,7 +81,7 @@ The three-tier federated query path is the most cross-cutting subsystem (see `do
 - Consistency uses an anti-join "dirty set": any S3 row whose `row_id` is still unflushed in Postgres is discarded and replaced by the hot version. Timestamps are never compared.
 - `internal/sqlgen/`: dual-path SQL generation. The same condition DSL renders to both PostgreSQL and DuckDB dialects (`dualpath_sql_generator.go`, `duckdb_*`), plus predicate IR/normalization and a plan cache.
 - `internal/federated/`: the DuckDB engine: connection management, query execution, keyset pagination, tier merge, circuit breaker.
-- `cdc/` and `internal/cdc/`: CDC flush (hot tier to delta Parquet). `internal/compaction/`: delta-to-base merge. `internal/manifest/`: S3 file manifests consumed by federated reads.
+- `cdc/` and `internal/cdc/`: CDC flush (hot tier to delta Parquet). `internal/compaction/`: delta-to-base merge. `internal/manifestv2/` and `internal/publication/`: immutable generation manifests and PG-authoritative publication state consumed by federated reads (`internal/manifest/` is the retired V1 package kept uncalled for public API compatibility).
 - `internal/queryplan/`: plan-cache primitives keyed on stable query shapes.
 
 `cmd/` contains `server` (HTTP API), `tools` (subcommands: `init-db`, `cdc-flush`, `cdc-init`, `compactor`, `validate-schema-consistency`), `lambda` (ARM64 CGO build), `benchmark`, and `sample`.
