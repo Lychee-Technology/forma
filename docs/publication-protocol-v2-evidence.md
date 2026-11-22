@@ -45,38 +45,48 @@ It separates the **local/CI implementation gate** (PostgreSQL 16, RustFS/S3, Duc
 
 ## 4. Measured P95 Latency and Cost Deltas
 
-Captured with the reproducible harness `TestPublicationPerfDelta` (`internal/e2e_harness/production/publication_perf_delta_e2e_test.go`):
+Captured with the reproducible harness `TestPublicationPerfDelta` (`internal/e2e_harness/production/publication_perf_delta_e2e_test.go` and `publication_perf_publish_e2e_test.go`):
 
 ```bash
 FORMA_PUBLICATION_PERF_DELTA=1 GOCACHE=$PWD/.gocache GOFLAGS=-buildvcs=false GOTOOLCHAIN=go1.26.0+auto \
   go test -v -tags=e2e -timeout=5m ./internal/e2e_harness/production -run TestPublicationPerfDelta
 ```
 
-**Instrumentation & datasets:** Dedicated local Docker `postgres:16` + pinned `rustfs/rustfs` cluster, DuckDB 4 threads (`WithDuckThreads(4)`), `e2e_wide` schema (filtered `count >= 1050`, sorted by `count`, page size `20`). Every S3 request — Go SDK manifest/reconcile clients and DuckDB `httpfs` parquet traffic alike — is counted at a local HTTP reverse proxy in front of the RustFS endpoint (`s3_total = s3_get + s3_head + s3_list + s3_put + s3_copy + s3_del + s3_other`, with `s3_other = 0` on all runs). Read counters reset after warmup (`3` warmups, `n=25` measured samples; `n=10` for cold cache with a fresh DuckDB/manifest cache per sample). Unpublished reads compare on the same `250`-row dataset; published 3-tier reads compare on the same `330`-row dataset (`300` compacted base rows + `20` flushed delta rows across 2 parquet objects + `10` hot rows).
+**Instrumentation & datasets:** Dedicated local Docker `postgres:16` + pinned `rustfs/rustfs` cluster, DuckDB 4 threads (`WithDuckThreads(4)`), `e2e_wide` schema (read query: filtered `count >= 1050`, sorted by `count`, page size `20`). Every S3 request — Go SDK manifest/reconcile clients and DuckDB `httpfs` parquet traffic alike — is counted at a local HTTP reverse proxy in front of the RustFS endpoint (`s3_total = s3_get + s3_head + s3_list + s3_put + s3_copy + s3_del + s3_other`, with `s3_other = 0` on all runs). Percentiles use nearest-rank (`ceil(p * n) - 1`).
+
+- **Read runs:** Counters reset after warmup (`3` warmups, `n=25` measured samples; `n=10` for cold cache with a fresh DuckDB/manifest cache per sample). Unpublished reads compare on the same `250`-row dataset; published 3-tier reads compare on the same `330`-row dataset (`300` rewritten base rows in 1 base parquet + `20` flushed delta rows in 1 delta parquet + `10` hot rows).
+- **Publishing & maintenance runs:** `1` discarded warmup iteration followed by `n=20` independently prepared iterations, each running in freshly provisioned isolated `Env` databases and S3 prefixes (`envA` for the primary lifecycle and `envB` for the paired unpublished-flush and `--skip-input-checksum-verify` baselines). Every `cdc-flush` sample uses a fresh `cdc.Runner` so dry-run, unpublished, and published runs share identical cold-runner setup cost. Compaction runs a full 2-file, 300-row dirty-ratio rewrite (`DirtyRatioPct: 5`, verified `Outcome == RewriteApplied`, `FilesMerged == 2`, `RowsIn == 300`, `RowsOut == 300`). Reconcile GC uses shortened valid protocol timings (`RetentionGrace: 300ms`, `ReaderDeadline: 200ms`, `ClockMargin: 50ms`, `OrphanAge: 100ms`, `400ms` wait between retire and collect).
 
 ### Read Workloads (Endpoint-Level S3 HTTP Counts)
 
 | Workload | Dataset | n | P50 (ms) | P95 (ms) | P99 (ms) | DuckDB Execs | S3 Total | Manifest GET | Parquet GET | S3 HEAD | S3 LIST | Notes |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `pg_only_baseline_unpublished` | 250 rows (hot) | 25 | 8.54 | 9.29 | 9.55 | 0 | 0 | 0 | 0 | 0 | 0 | OLTP baseline on the unpublished dataset |
-| `v2_unpublished_federated` | 250 rows (hot) | 25 | 14.03 | 15.23 | 15.24 | 0 | 0 | 0 | 0 | 0 | 0 | +5.94 ms P95 vs PG-only (`REPEATABLE READ` + `publication.Read` + dirty-set + hot-keys); 0 DuckDB, 0 S3 HTTP requests |
-| `pg_only_baseline_published` | 330 rows (3-tier) | 25 | 3.92 | 4.13 | 4.22 | 0 | 0 | 0 | 0 | 0 | 0 | OLTP baseline on the same 330-row published dataset (warm PG buffers/planner) |
-| `v2_published_warm_cache` | 330 rows (3-tier) | 25 | 26.47 | 27.94 | 28.04 | 25 | 150 | 0 | 0 | 150 | 0 | 0 manifest GETs and 0 `ListObjectsV2`; all 150 `HEAD`s (6/query across 2 parquet files) come from DuckDB `httpfs` revalidation while cached pages avoid parquet `GET`s |
-| `v2_published_cold_cache` | 330 rows (3-tier) | 10 | 32.67 | 33.65 | 33.65 | 10 | 100 | 10 | 30 | 60 | 0 | +5.71 ms P95 vs warm cache; 1 manifest `GET`/query + DuckDB `httpfs` cold parquet reads (3 `GET` + 6 `HEAD`/query across 2 parquet files); 0 `ListObjectsV2` |
+| `pg_only_baseline_unpublished` | 250 rows (hot) | 25 | 8.54 | 8.88 | 9.07 | 0 | 0 | 0 | 0 | 0 | 0 | OLTP baseline on the unpublished dataset |
+| `v2_unpublished_federated` | 250 rows (hot) | 25 | 13.46 | 15.09 | 15.73 | 0 | 0 | 0 | 0 | 0 | 0 | +6.21 ms P95 vs PG-only (`REPEATABLE READ` + `publication.Read` + dirty-set + hot-keys); 0 DuckDB, 0 S3 HTTP requests |
+| `pg_only_baseline_published` | 330 rows (3-tier) | 25 | 4.02 | 4.14 | 4.39 | 0 | 0 | 0 | 0 | 0 | 0 | OLTP baseline on the same 330-row published dataset (warm PG buffers/planner) |
+| `v2_published_warm_cache` | 330 rows (3-tier) | 25 | 24.93 | 28.50 | 32.74 | 25 | 100 | 0 | 0 | 100 | 0 | 0 manifest GETs and 0 `ListObjectsV2`; all 100 `HEAD`s (4/query across 2 parquet files) come from DuckDB `httpfs` revalidation while cached pages avoid parquet `GET`s |
+| `v2_published_cold_cache` | 330 rows (3-tier) | 10 | 29.87 | 31.82 | 31.82 | 10 | 70 | 10 | 20 | 40 | 0 | +3.32 ms P95 vs warm cache; 1 manifest `GET`/query + DuckDB `httpfs` cold parquet reads (2 `GET` + 4 `HEAD`/query across 2 parquet files); 0 `ListObjectsV2` |
 
-### Publishing & Maintenance Workloads (Endpoint-Level S3 HTTP Counts)
+### Publishing & Maintenance Workloads (Endpoint-Level S3 HTTP Counts, `n=20` Independent Runs)
 
-| Workload | Duration (ms) | S3 Total | S3 PUT | Manifest GET | Parquet GET | S3 HEAD | S3 LIST | S3 COPY | S3 DEL | Notes |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `v2_cdc_init_250rows` | 145.50 | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 1 base parquet + 1 manifest, write-once (`If-None-Match: *`); 0 `LIST`/`COPY`/`DEL` |
-| `v2_cdc_flush_50rows` | 111.18 | 3 | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 1 delta parquet + 1 manifest + 1 parent manifest `GET`; 0 `LIST`/`COPY`/`DEL` |
-| `v2_compactor_300rows` | 102.12 | 11 | 2 | 1 | 2 | 6 | 0 | 0 | 0 | 1 merged base + 1 manifest + 1 manifest `GET` + 2 parquet `GET`s + 6 DuckDB `httpfs` `HEAD` probes on the 2 input files; 0 `LIST`/`COPY`/`DEL` |
-| `v2_reconcile_diagnose` | 11.77 | 4 | 0 | 3 | 0 | 0 | 1 | 0 | 0 | Read-only, lock-free prefix `LIST` + 3 manifest `GET`s; 0 writes/deletes |
-| `v2_reconcile_gc_collect` | 84.54 | 7 | 0 | 3 | 0 | 0 | 1 | 0 | 3 | Prefix `LIST` + 3 manifest `GET`s + 3 `DeleteObject` calls collecting expired generation manifests/objects after grace `G` |
+S3 counts below report the **per-run** count (identical on every sample) with the 20-run total in parentheses where non-zero. All `S3 COPY` and `S3 OTHER` counts were `0` across all 20 runs.
+
+| Workload | n | P50 (ms) | P95 (ms) | P99 (ms) | S3 Total / Run (20-run) | PUT / Run | Manifest GET / Run | Parquet GET / Run | HEAD / Run | LIST / Run | DEL / Run | Comparison / Notes |
+| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `v2_cdc_init_250rows_dryrun` | 20 | 61.41 | 65.47 | 65.60 | 0 (0) | 0 | 0 | 0 | 0 | 0 | 0 | In-tree baseline: PG+DuckDB setup, schema lock, record/epoch check, live row count/sizing; 0 S3 calls |
+| `v2_cdc_init_250rows` | 20 | 143.50 | 165.05 | 281.44 | 2 (40) | 2 | 0 | 0 | 0 | 0 | 0 | +99.58 ms P95 vs dry-run; 1 base parquet + 1 manifest write-once (`If-None-Match: *`) + PG publish/handoff; 0 `LIST`/`COPY`/`DEL` |
+| `v2_cdc_flush_50rows_dryrun` | 20 | 58.13 | 64.95 | 65.20 | 0 (0) | 0 | 0 | 0 | 0 | 0 | 0 | In-tree baseline: fresh `cdc.Runner` setup, schema lock, record/epoch check, `change_log` stats; 0 S3 calls |
+| `v2_cdc_flush_unpublished_50rows` | 20 | 103.43 | 112.78 | 118.96 | 2 (40) | 2 | 0 | 0 | 0 | 0 | 0 | +47.83 ms P95 vs dry-run; initial `UNPUBLISHED` → gen 1 (1 delta parquet + 1 manifest, 0 parent manifest `GET`); 0 `LIST`/`COPY`/`DEL` |
+| `v2_cdc_flush_50rows` | 20 | 97.94 | 111.79 | 214.40 | 3 (60) | 2 | 1 | 0 | 0 | 0 | 0 | +46.84 ms P95 vs dry-run (-0.99 ms vs unpublished, within local loopback variance); steady-state `PUBLISHED` flush adds +1 parent manifest `GET`/run; 0 `LIST`/`COPY`/`DEL` |
+| `v2_compactor_300rows_skip_verify` | 20 | 99.39 | 109.03 | 128.87 | 17 (340) | 2 | 1 | 2 | 12 | 0 | 0 | In-tree baseline (`--skip-input-checksum-verify`): 2-file (250+50) 300-row rewrite via DuckDB `httpfs` (2 parquet `GET` + 12 `HEAD`) + 1 manifest `GET` + 2 `PUT`; 0 `LIST`/`COPY`/`DEL` |
+| `v2_compactor_300rows` | 20 | 98.19 | 106.34 | 181.13 | 19 (380) | 2 | 1 | 4 | 12 | 0 | 0 | Default V2 pre-merge SHA-256 verification ON: -2.69 ms P95 vs skip-verify (within loopback variance on 300 small rows; P99 +52.26 ms), adding exactly +2 parquet `GET`s/run (one per merged source); 0 `LIST`/`COPY`/`DEL` |
+| `v2_reconcile_diagnose` | 20 | 10.81 | 11.54 | 11.69 | 4 (80) | 0 | 3 | 0 | 0 | 1 | 0 | In-tree baseline: lock-free, read-only diagnosis (1 prefix `LIST` + 3 manifest `GET`s across init/flush/compact generations); 0 writes/deletes |
+| `v2_reconcile_gc_retire` | 20 | 49.41 | 53.82 | 93.66 | 4 (80) | 0 | 3 | 0 | 0 | 1 | 0 | +42.28 ms P95 vs diagnose; `--gc` 1st pass takes schema lock, raises horizon, retires superseded generations; identical S3 reads, 0 writes/deletes |
+| `v2_reconcile_gc_collect` | 20 | 51.94 | 108.55 | 254.60 | 8 (160) | 0 | 3 | 0 | 0 | 1 | 4 | +97.01 ms P95 vs diagnose (+54.73 ms vs retire); `--gc` 2nd pass after grace `G` adds 4 `DeleteObject` calls (2 expired manifests + 2 superseded input parquets) and forgets retired rows |
 
 **Caveats and scope of comparison:**
-- No historical Protocol V1 binary is executed side-by-side here because V1 read/write paths were removed in #906 and #907; latency deltas compare V2 against equivalent PG-only OLTP baselines on identical datasets and between V2 states (unpublished vs published, warm vs cold manifest cache), while S3 request counts capture the complete V2 object-store HTTP traffic surface.
-- Measurements reflect local single-host Docker latency (sub-millisecond S3 loopback) on 250–330 rows. On live AWS S3 (~10–40 ms RTT per request), DuckDB `httpfs` `HEAD`/`GET` calls on parquet objects remain part of published-read latency and request cost, while V2 eliminates per-query `ListObjectsV2`, `CopyObject`, and inline writer `DeleteObject` calls.
+- **No historical Protocol V1 runtime baseline on `HEAD`:** V1 read, write, compaction, and reconcile paths were deleted in #906, #907, and #910 (and prevented from returning by `TestNoLegacyV1PathsOrObsoleteFlagsRemain`), so no historical V1 binary is executed side-by-side in this harness. A direct historical V1-vs-V2 wall-clock publishing or read latency delta is therefore **not** measured here; instead, latency deltas compare V2 against in-tree baselines on identical datasets (PG-only OLTP reads and warm-vs-cold cache for reads; dry-run preflight, unpublished-vs-published flush, `--skip-input-checksum-verify`, and lock-free `diagnose` vs `--gc` retire/collect for publishing), while endpoint-level S3 HTTP counters establish the exact V2 operation counts (including `0 LIST`, `0 COPY`, and `0 inline DELETE` on all V2 writers).
+- **Local Docker loopback environment:** Measurements reflect single-host Docker latency (sub-millisecond S3 loopback) on 250–330 rows, where small per-request S3 differences (such as +1 parent manifest `GET` on steady-state flush or +2 pre-merge verification parquet `GET`s on small 300-row compaction inputs) sit inside local scheduling noise at P95. On live AWS S3 (~10–40 ms RTT per request plus payload transfer), those exact per-run S3 HTTP counts (`HEAD`/`GET`/`PUT`/`DELETE`) directly determine network latency and request cost, while V2 eliminates per-query `ListObjectsV2`, `CopyObject`, and inline writer `DeleteObject` calls.
 
 ## 5. External Validation Gate: Live Aurora DSQL (#893 under #817)
 

@@ -4,6 +4,7 @@ package production
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/cdc"
+	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/e2e_harness"
 )
 
@@ -166,7 +168,7 @@ func TestPublicationPerfDelta(t *testing.T) {
 	env := NewEnv(t, cluster, WithDuckThreads(4))
 	wide := DefaultSchemaFixtures()[1]
 
-	seedMatrixRows(ctx, t, env, wide, "perf", 250, 1000)
+	seedPerfRows(ctx, t, env, wide, "perf", 250, 1000)
 
 	const readSamples = 25
 	q := Query{
@@ -183,15 +185,9 @@ func TestPublicationPerfDelta(t *testing.T) {
 		t.Fatalf("UNPUBLISHED reads must issue 0 S3 HTTP requests, got %+v", unpubSnap)
 	}
 
-	// 2. Publishing & maintenance workloads: cdc-init (250), cdc-flush (50),
-	// compactor (300), manifest-reconcile diagnose & --gc collect.
-	measurePublishingWorkloads(ctx, t, env, wide, counts)
-
-	// Add 20 flushed delta rows + 10 hot rows so published reads exercise all
-	// three tiers (300 base + 20 delta + 10 hot = 330 rows).
-	seedMatrixRows(ctx, t, env, wide, "perf-delta2", 20, 1800)
-	mustFlush(ctx, t, env)
-	seedMatrixRows(ctx, t, env, wide, "perf-hot", 10, 2000)
+	// 2. Prepare the 3-tier published dataset (300 compacted base rows in 1 base
+	// object + 20 flushed delta rows in 1 delta object + 10 hot rows = 330 rows).
+	preparePublishedThreeTierDataset(ctx, t, env, wide)
 
 	// 3. Published 3-tier dataset (330 rows): PG-only baseline vs V2 warm & cold cache.
 	measurePGOnlyRead(ctx, t, env, wide, "pg_only_baseline_published", readSamples, counts)
@@ -204,6 +200,29 @@ func TestPublicationPerfDelta(t *testing.T) {
 	if coldSnap.getManifest != 10 || coldSnap.list != 0 {
 		t.Fatalf("cold-cache published reads must issue 10 manifest GETs and 0 LISTs, got %+v", coldSnap)
 	}
+
+	// 4. Publishing & maintenance workloads: repeated independently prepared
+	// runs (1 warmup + 20 samples) with in-tree comparable baselines.
+	measurePublishingWorkloads(ctx, t, cluster, wide, counts)
+}
+
+func preparePublishedThreeTierDataset(ctx context.Context, t *testing.T, env *Env, wide SchemaRef) {
+	t.Helper()
+	if _, err := cdc.RunInit(ctx, perfInitOptions(env, wide, false)); err != nil {
+		t.Fatalf("prep published reads cdc-init: %v", err)
+	}
+	seedPerfRows(ctx, t, env, wide, "perf-delta", 50, 1500)
+	mustFlush(ctx, t, env)
+	res, err := env.RunCompactionWith(ctx, wide, CompactionOverrides{DirtyRatioPct: 5})
+	if err != nil {
+		t.Fatalf("prep published reads compactor: %v", err)
+	}
+	if res.Outcome != compaction.RewriteApplied || res.RowsOut != 300 {
+		t.Fatalf("prep published reads expected 300-row rewrite, got %+v", res)
+	}
+	seedPerfRows(ctx, t, env, wide, "perf-delta2", 20, 1800)
+	mustFlush(ctx, t, env)
+	seedPerfRows(ctx, t, env, wide, "perf-hot", 10, 2000)
 }
 
 func measurePGOnlyRead(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, name string, samples int, counts *s3EndpointCounts) {
@@ -274,91 +293,6 @@ func measureColdCacheRead(ctx context.Context, t *testing.T, env *Env, q Query, 
 	return snap
 }
 
-func measurePublishingWorkloads(ctx context.Context, t *testing.T, env *Env, wide SchemaRef, counts *s3EndpointCounts) {
-	t.Helper()
-
-	// cdc-init (250 live rows -> base parquet + manifest + handoff).
-	// Invoked directly without harness listS3Keys/loadManifests bookkeeping.
-	counts.reset()
-	t0 := time.Now()
-	if _, err := cdc.RunInit(ctx, cdc.InitOptions{
-		Config:               env.CDC,
-		S3Client:             env.Cluster.S3,
-		SchemaRegistryTable:  env.Tables.SchemaRegistry,
-		SchemaIDFilter:       int(wide.ID),
-		AutoEstimateRowBytes: true,
-		Logger:               env.logger,
-		SchemaRegistry:       env.Registry,
-	}); err != nil {
-		t.Fatalf("perf cdc-init: %v", err)
-	}
-	initSnap := counts.snapshot()
-	logWriteStats(t, "v2_cdc_init_250rows", time.Since(t0), initSnap)
-	if initSnap.list != 0 || initSnap.copyOp != 0 || initSnap.del != 0 {
-		t.Fatalf("cdc-init must issue 0 LIST/COPY/DELETE at S3 endpoint, got %+v", initSnap)
-	}
-
-	// cdc-flush (50 dirty rows -> delta parquet + manifest + atomic marks).
-	seedMatrixRows(ctx, t, env, wide, "perf-delta", 50, 1500)
-	runner := cdc.NewRunner(env.logger)
-	defer func() { _ = runner.Close() }()
-	counts.reset()
-	t0 = time.Now()
-	if _, err := runner.RunOnce(ctx, env.CDC, env.Cluster.S3, false, env.Registry); err != nil {
-		t.Fatalf("perf cdc-flush: %v", err)
-	}
-	flushSnap := counts.snapshot()
-	logWriteStats(t, "v2_cdc_flush_50rows", time.Since(t0), flushSnap)
-	if flushSnap.list != 0 || flushSnap.copyOp != 0 || flushSnap.del != 0 {
-		t.Fatalf("cdc-flush must issue 0 LIST/COPY/DELETE at S3 endpoint, got %+v", flushSnap)
-	}
-
-	// compactor (merge base + delta with pre-merge checksum verification ON).
-	counts.reset()
-	t0 = time.Now()
-	res, err := env.RunCompactionWith(ctx, wide, CompactionOverrides{TargetBaseSizeBytes: 1})
-	if err != nil {
-		t.Fatalf("perf compactor: %v", err)
-	}
-	if res.Generation == 0 {
-		t.Fatalf("perf compactor did not commit: %+v", res)
-	}
-	compSnap := counts.snapshot()
-	logWriteStats(t, "v2_compactor_300rows", time.Since(t0), compSnap)
-	if compSnap.list != 0 || compSnap.copyOp != 0 || compSnap.del != 0 {
-		t.Fatalf("compactor must issue 0 LIST/COPY/DELETE at S3 endpoint, got %+v", compSnap)
-	}
-
-	// manifest-reconcile diagnosis (read-only) and --gc collect pass.
-	diagRec := env.reconciler(t, wide, reconcileOptions(false))
-	counts.reset()
-	t0 = time.Now()
-	if _, err := diagRec.Run(ctx); err != nil {
-		t.Fatalf("perf manifest-reconcile diagnose: %v", err)
-	}
-	diagSnap := counts.snapshot()
-	logWriteStats(t, "v2_reconcile_diagnose", time.Since(t0), diagSnap)
-	if diagSnap.put != 0 || diagSnap.copyOp != 0 || diagSnap.del != 0 {
-		t.Fatalf("reconcile diagnose must issue 0 PUT/COPY/DELETE at S3 endpoint, got %+v", diagSnap)
-	}
-
-	if _, err := env.reconciler(t, wide, reconcileOptions(true)).Run(ctx); err != nil {
-		t.Fatalf("perf manifest-reconcile retire: %v", err)
-	}
-	time.Sleep(reconcileGrace)
-	gcRec := env.reconciler(t, wide, reconcileOptions(true))
-	counts.reset()
-	tGC := time.Now()
-	if _, err := gcRec.Run(ctx); err != nil {
-		t.Fatalf("perf manifest-reconcile gc: %v", err)
-	}
-	gcSnap := counts.snapshot()
-	logWriteStats(t, "v2_reconcile_gc_collect", time.Since(tGC), gcSnap)
-	if gcSnap.list == 0 || gcSnap.del == 0 {
-		t.Fatalf("reconcile --gc collect must observe LIST and DELETE at S3 endpoint, got %+v", gcSnap)
-	}
-}
-
 func measureDurations(t *testing.T, warmup, samples int, afterWarmup func(), fn func() error) []time.Duration {
 	t.Helper()
 	for i := 0; i < warmup; i++ {
@@ -381,11 +315,18 @@ func measureDurations(t *testing.T, warmup, samples int, afterWarmup func(), fn 
 	return out
 }
 
+// percentile computes the nearest-rank percentile over a non-empty sorted slice.
 func percentile(sorted []time.Duration, p float64) time.Duration {
 	if len(sorted) == 0 {
 		return 0
 	}
-	idx := int(float64(len(sorted)-1) * p)
+	idx := int(math.Ceil(p*float64(len(sorted)))) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(sorted) {
+		idx = len(sorted) - 1
+	}
 	return sorted[idx]
 }
 
@@ -405,11 +346,4 @@ func logReadStats(t *testing.T, name string, sorted []time.Duration, duckdbExecs
 	t.Logf("PERF_READ name=%s n=%d p50_ms=%.2f p95_ms=%.2f p99_ms=%.2f duckdb_execs=%d s3_total=%d s3_get=%d (manifest=%d parquet=%d) s3_head=%d s3_list=%d s3_put=%d s3_copy=%d s3_del=%d s3_other=%d",
 		name, len(sorted), durMs(percentile(sorted, 0.50)), durMs(percentile(sorted, 0.95)), durMs(percentile(sorted, 0.99)),
 		duckdbExecs, s.total, s.getTotal, s.getManifest, s.getParquet, s.head, s.list, s.put, s.copyOp, s.del, s.other)
-}
-
-func logWriteStats(t *testing.T, name string, dur time.Duration, s s3CountSnapshot) {
-	t.Helper()
-	assertCountAccounting(t, name, s)
-	t.Logf("PERF_WRITE name=%s dur_ms=%.2f s3_total=%d s3_put=%d s3_get=%d (manifest=%d parquet=%d) s3_head=%d s3_list=%d s3_copy=%d s3_del=%d s3_other=%d",
-		name, durMs(dur), s.total, s.put, s.getTotal, s.getManifest, s.getParquet, s.head, s.list, s.copyOp, s.del, s.other)
 }
