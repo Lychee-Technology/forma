@@ -153,6 +153,49 @@ func TestInitDBInitializesOnlySchemasThatSatisfyTheUnpublishedInvariant(t *testi
 	}
 }
 
+// A schema this run registers is held to the UNPUBLISHED invariant too: an
+// id whose data tables already hold a flushed entry fails the run, which
+// rolls its registration back. Purging the rows, the remedy the refusal
+// names, lets the next run register it UNPUBLISHED.
+func TestInitDBRefusesANewRegistrationOverRowsThatBreakTheUnpublishedInvariant(t *testing.T) {
+	tg := newInitDBTarget(t)
+	tg.writeOutboxAndTimer(t)
+	if out, err := tg.run(t); err != nil {
+		t.Fatalf("init-db on a fresh database: %v\n%s", err, out)
+	}
+	// visit registers as 102, the id after outbox_message's and timer's.
+	tg.insertRow(t, 102, 1700000000000)
+	tg.writeSchema(t, "visit", map[string]string{"page": "text_02"}, nil)
+	out, err := tg.run(t)
+	if !errors.Is(err, errUnpublishedInvariantBroken) {
+		t.Fatalf("init-db registering visit over a flushed entry: want errUnpublishedInvariantBroken, got %v\n%s", err, out)
+	}
+	if !strings.Contains(err.Error(), "schema 102 has no publication record") {
+		t.Errorf("the refusal does not name schema 102: %v", err)
+	}
+	ids, err := loadRegisteredSchemaIDs(context.Background(), tg.pool, tg.opts.schemaTable)
+	if err != nil {
+		t.Fatalf("read the registry: %v", err)
+	}
+	if _, ok := ids["visit"]; ok {
+		t.Fatalf("visit's registration committed over rows that break the invariant: %v", ids)
+	}
+
+	tg.exec(t, `DELETE FROM %[2]s WHERE schema_id = 102`)
+	tg.exec(t, `DELETE FROM %[1]s WHERE ltbase_schema_id = 102`)
+	if out, err := tg.run(t); err != nil {
+		t.Fatalf("init-db after purging schema 102's rows: %v\n%s", err, out)
+	}
+	ids, err = loadRegisteredSchemaIDs(context.Background(), tg.pool, tg.opts.schemaTable)
+	if err != nil {
+		t.Fatalf("read the registry: %v", err)
+	}
+	if ids["visit"] != 102 {
+		t.Fatalf("visit registered as %d after the purge, want 102: %v", ids["visit"], ids)
+	}
+	requireStates(t, "purged registration", tg.records(t), map[string]publication.State{"visit": publication.Unpublished})
+}
+
 // init-db skips a schema registered before the run whose lock a writer
 // holds: it writes no record for it, reports it, and a later run
 // initializes it.
