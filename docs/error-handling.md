@@ -1344,7 +1344,7 @@ holder skips that schema without an error, so the public API has no
 contention sentinel: only `cdc-init` fails on a contended lock. An S3
 listing that cannot be followed to its end fails `manifest-reconcile`'s pass
 of the schema, which then deletes nothing, never a flush or an init. Both outcomes are reported by those tools and are not
-returned through package `cdc`. A flush of a schema the V2 writer may not
+returned through package `cdc`. A flush of a schema the publication writer may not
 publish fails for that schema, with an error that matches
 `cdc.ErrNoPublicationRecord` (no record: init-db writes it),
 `cdc.ErrAwaitingInit` (run `cdc-init` for the schema) or
@@ -1560,10 +1560,10 @@ whose publication state cannot be answered from
   the operator log line.
 - **Operator action.** The message names the schema, the epoch and the
   generation, and the lost keys when objects are missing. `AWAITING_INIT` is
-  the specified per-schema outage between the V2 cutover and the schema's V2
-  `cdc-init`: run the init. A schema without a record, or pinned at another
-  epoch, needs its registration (`init-db`) and a restart of the reader. When
-  the record was lost while the id's lifecycle epoch survives (its row in the
+  the per-schema outage between a lost record's recovery with surviving
+  generation history and the schema's `cdc-init` (below): run the init. A
+  schema without a record, or pinned at another epoch, needs its
+  registration (`init-db`) and a restart of the reader. When the record was lost while the id's lifecycle epoch survives (its row in the
   `<entity_main>_publication_epoch` table), `init-db` does not start it over
   at epoch 1 and generation 0: epoch 1, or any epoch up to the lost record's,
   may still be pinned by a running server or writer that loaded the schema's
@@ -1586,88 +1586,14 @@ whose publication state cannot be answered from
   generation listing an address with a `.` or `..` segment, which DuckDB
   would normalize to another object, is `ErrPublishedPathNotCanonical`. A
   lost manifest or object is data loss of the published generation; recovery is
-  re-initialization via `cdc-init` (never read-time auto-repair or the removed
-  `manifest-reconcile --repair` flag, #891). `ErrPublishedObjectUnverifiable`
-  first needs the reader's S3 permissions fixed (`s3:ListBucket` on the bucket,
-  `s3:GetObject` on its objects); the next read then tells a present object
-  from a lost one. In operational tooling, `publication.ErrHistoryInconsistent`
-  refuses non-monotonic or broken generation history, `reconcile.ErrRedirectRefused`
-  refuses any 3xx redirect on `manifest-reconcile`'s S3 client, and `--gc`
+  re-initialization via `cdc-init`, never read-time auto-repair (#891).
+  `ErrPublishedObjectUnverifiable` first needs the reader's S3 permissions
+  fixed (`s3:ListBucket` on the bucket, `s3:GetObject` on its objects); the
+  next read then tells a present object from a lost one. In operational
+  tooling, `publication.ErrHistoryInconsistent` refuses non-monotonic or
+  broken generation history, `reconcile.ErrRedirectRefused` refuses any 3xx redirect on `manifest-reconcile`'s S3 client, and `--gc`
   refuses to delete unless the deployment's storage target matches its
   `--bind-storage` binding (`docs/manifest-reconcile.md`).
-
-The V1 read errors `ErrParquetSetInconsistent` (a manifest listing missing
-objects) and `ErrNoParquetPaths` (an empty resolved path set) were deleted with
-the V1 resolution (#896), together with their HTTP classes
-`parquet_set_inconsistent` and `no_parquet_paths`.
-
-### `ErrManifestSchemaMismatch`
-
-`forma.ErrManifestSchemaMismatch`, carried by
-`forma.ManifestSchemaMismatchError{RequestedSchemaID, ManifestSchemaID, Path}`,
-marks a **V1** manifest object whose recorded `schema_id` disagrees with the
-schema being read. It is raised before any path reaches a scan.
-
-**Scope since #891.** No Forma tool or read path raises it any more.
-`manifest-reconcile`, the last V1 manifest consumer, reads the V2 generation
-history since #891 and takes no `--manifest-template`; the compactor
-publishes V2 compact generations since #890 and refuses the flag too. The
-server and the federated read path no longer read a V1 manifest, and
-`duckdb.manifestTemplate` is no longer a server setting. A V2 read resolves
-the manifest the publication record names, verified against its committed
-digest and identity: a manifest that names another schema, epoch or
-generation fails as `ErrPublicationInconsistent` (wrapping
-`publication.ErrManifestInvalid`), whose HTTP class is
-`publication_inconsistent`, not this one, and `manifest-reconcile` reports it
-as an `invalid_manifest` finding. The sentinel and its carrier stay in the
-public API, and the V1 manifest package that raises them
-(`internal/manifest`) stays in the tree, but nothing in Forma calls it; the
-rules below describe that package.
-
-- **Why it is loud rather than a short read.** A manifest addresses one schema
-  by path convention alone. Nothing downstream re-checks it: the parquet scan
-  does not filter rows by schema (files are per-schema by path) and the
-  projection stamps whatever it scans as the *requested* schema. So a path
-  collision between two schemas would not merely under-read — it would serve
-  another schema's rows under this schema's identity.
-- **Not a degradable read.** Cross-schema contamination is the opposite of a
-  partial answer, so a V1 tool fails on it rather than work around it.
-- **Where it is enforced.** `manifest.VerifySchemaStamp`, in the V1 manifest
-  package, which no Forma tool calls since #891.
-- **Zero stamp (#522).** A manifest whose `schema_id` is zero is unstamped
-  rather than schema 0 (schema IDs are always positive), and it is not a legacy
-  format either: the field has been on the manifest, and set by every Forma
-  writer, since the manifest package's first commit, so a zero stamp can only
-  come from a hand-made or hand-edited object. It proves nothing about which
-  schema owns the listed entries, and it was the blind spot of the two-probe
-  template check (a template that collides only at IDs the probe never renders
-  passes it, and a zero-stamped manifest at the shared path was served under
-  every colliding schema). So a zero-stamped manifest that lists entries is
-  refused for every schema with `forma.ErrManifestUnstamped`, carried by
-  `forma.ManifestUnstampedError{RequestedSchemaID, Path, Entries}`. The carrier
-  unwraps to **both** sentinels — it *is* a schema mismatch, so every
-  classification above (redaction class, non-degradable) applies unchanged —
-  and `ErrManifestUnstamped` tells the remedy apart: confirm ownership and set
-  `schema_id` on the object, rather than fix the template. An empty
-  zero-stamped manifest has nothing another schema could own and loads stamped
-  for the requested schema in memory; the consumer's next save persists it.
-  The *requested* schema ID must be positive too (#536): a request for schema
-  0 is never a schema, and without the guard it would satisfy the stamp
-  equality against a zero-stamped manifest and admit its entries.
-  `VerifySchemaStamp` refuses a non-positive request before comparing any
-  stamp, as a plain error (an invariant violation by the caller, not a
-  property of the manifest), so it does not classify as a schema mismatch.
-  The federated engine still refuses a non-positive `SchemaID` at entry
-  (`Query`, `ExecuteFederatedKeysetQuery`, PR #537 review), the same `schema
-  id must be positive` invariant the OLTP repository enforces.
-- **Where the zero-stamp rule is enforced.** The same single site,
-  `manifest.VerifySchemaStamp`, reached through `LoadOrCreateForSchema`.
-- **Operator action.** A Forma deployment does not meet this error. Its V2
-  counterpart is `manifest-reconcile`'s `invalid_manifest` finding, whose
-  recovery `docs/manifest-reconcile.md` gives.
-- **HTTP.** The `manifest_schema_mismatch` class stays in
-  `internal/httpapi`'s classification for an embedder that surfaces the
-  error. The server's own reads raise `publication_inconsistent`.
 
 ## Public HTTP error surface
 
@@ -1756,11 +1682,10 @@ So a wrong match cannot reproduce either failure above, and
 the prose it keys on is pinned against the real validator by
 `TestClassifyViolationPinsLibraryProse`. A prose key that feeds any decision
 *on this path* — a status, a disclosed body, a write outcome — remains
-forbidden. (Two older string keys sit outside this paragraph's rule and
-predate the carve-out: `manifest.IsNotFound` reads S3 driver prose to recognise
-an absent object on the read path, and the e2e harness's
-`isFederatedTierFileError` is test-only. Neither classifies an error toward a
-caller.)
+forbidden. (One older string key sits outside this paragraph's rule and
+predates the carve-out: the e2e harness's `isFederatedTierFileError`, which is
+test-only and classifies no error toward a caller. The read path recognises an
+absent S3 object by the SDK's typed `NoSuchKey` error, not by prose.)
 
 The consequence is that a genuine client error earns its 4xx only by carrying a
 sentinel. Removing the heuristic therefore required a sweep of the sites that
@@ -2098,9 +2023,9 @@ operator detail (see "Log levels are contract" below).
 
 **Redacted bodies (#301)** carry a fixed message, a stable `error_class` token,
 an `error_id`, and — when the chain holds a typed read-path carrier — a
-`schema_id`. No error text crosses. There are exactly three fixed messages
-(`publicErrorMessage`): `internal read error` for the three typed read-path
-classes, `request timed out` for `errorClassTimeout` (a `504` for an expired
+`schema_id`. No error text crosses. Besides the #645 storage outcomes' own
+sentences, there are exactly three fixed messages (`publicErrorMessage`):
+`internal read error` for the two typed read-path classes, `request timed out` for `errorClassTimeout` (a `504` for an expired
 budget, a `408` for a body still arriving when `ReadTimeout` expired, #465), and
 `internal error` for `errorClassInternal`. **`internal` is the
 common case in production** — it absorbs `ErrFederatedReadFailed`,
@@ -2115,17 +2040,10 @@ An operator retrieves the detail from the `error_id` the caller quotes.
 
 `errorSchemaID` (`internal/httpapi/error_response.go`) resolves the schema with
 `errors.As` against the typed read-path carriers —
-`PublicationConsistencyError.SchemaID`,
-`ManifestSchemaMismatchError.RequestedSchemaID` (and its unstamped species),
-and `ParquetTypeIncompatibleError.SchemaID`. Anything else resolves 0 and
-the field is omitted. `errors.As` rather than a type assertion, because the
+`PublicationConsistencyError.SchemaID` and
+`ParquetTypeIncompatibleError.SchemaID`. Anything else resolves 0 and the
+field is omitted. `errors.As` rather than a type assertion, because the
 carriers reach the boundary wrapped several levels deep.
-
-For the mismatch carrier it is deliberately the *requested* id, not the
-`ManifestSchemaID` stamped on the object. That stamp belongs to whichever other
-schema misaddressed the manifest; returning it would answer a request about one
-schema with another schema's identity, and would name a schema the caller never
-asked about. Operators still see both ids — the full message is on the log line.
 
 **This reverses a decision recorded in this document.** Issue #301 asked for
 "error class + schema id"; the design settled on `error_class` + `error_id` and
@@ -2138,10 +2056,11 @@ field here stands on the same low-value reasoning.) What it buys is a redacted
 body a client can correlate without an operator round-trip.
 
 `schema_id` is `omitempty` on `APIResponse`, and that encoding is lossless rather
-than lossy only because **schema IDs are always positive** — the same invariant
-that lets a manifest `schema_id` of zero read as *unstamped* rather than as
-schema 0 (see `ErrManifestSchemaMismatch` → Zero stamp, above). A zero can
-therefore only mean "the error named no schema". Pinned on the serialized bytes,
+than lossy only because **schema IDs are always positive**: the federated
+engine refuses a non-positive `SchemaID` at entry (`Query`,
+`ExecuteFederatedKeysetQuery`), the same `schema id must be positive` invariant
+the OLTP repository enforces. A zero can therefore only mean "the error named
+no schema". Pinned on the serialized bytes,
 not the struct field, by `TestRedactedBodyOmitsSchemaIDWithoutACarrier`.
 
 The same value is logged as its **own structured field**, not folded into the
@@ -2307,9 +2226,11 @@ pairs `"error_class": "internal"` with `"error": "internal error"` and carries
 **no** `schema_id` key at all, because an unclassified chain holds no typed
 carrier to read one from.
 
-Classes: `publication_inconsistent` (#759, #896), `manifest_schema_mismatch`,
-`parquet_type_incompatible` (#732), and `internal`
-for everything else. They resolve via `errors.Is`, never message text.
+Classes: `publication_inconsistent` (#759, #896), `parquet_type_incompatible`
+(#732), `timeout` (#465), the #645 storage outcomes `retryable_conflict`,
+`commit_outcome_unknown`, `unique_conflict` and `precondition_failed` (the
+last two only when their body is redacted), and `internal` for everything
+else. They resolve via `errors.Is`, never message text.
 
 ### Why an allowlist
 
@@ -2506,28 +2427,6 @@ Unstorable text has behaved this way since #679. What does not change is an
 row: none writes `Updates`, so each still succeeds whatever `Updates` holds,
 unstorable text aside.
 
-### Status change: a parquet path hint DuckDB cannot read as text is now 400 (#771; hint removed in #715/#896)
-
-*Historical note:* `federated.s3_parquet_path_template` was removed from the
-request API in #715 and engine-level parquet path hints were deleted with V1
-resolution in #896 (`docs/publication-protocol-v2.md`). The entry below
-documents the #771 transition while hints existed.
-
-A `federated.s3_parquet_path_template` whose rendered path held a NUL
-character or invalid UTF-8 passed every hint check. The path is interpolated
-into the DuckDB statement as a literal, and DuckDB reads statement text as a C
-string: a NUL cut the statement off inside the literal (`Parser Error:
-unterminated quoted string`), and invalid UTF-8 failed it with `Invalid Input
-Error: Invalid unicode`. Either was a DuckDB failure, not invalid input, so the
-caller got an unclassified error, or with `allow_partial_degraded_mode` a
-PostgreSQL-only answer in place of the path set it named. The hint is now
-refused before any DuckDB statement with `ErrInvalidInput` naming the path
-(`s3 parquet path "…" is not permitted: text cannot contain a NUL character
-(U+0000)`), the rule PostgreSQL text applies elsewhere (`sqlutil.CheckText`).
-Only the NUL reaches the server from a JSON body (`\u0000`); the Go API can
-send both. Since #715 no request carries the hint, so the refusal is
-reachable only by an in-module caller of the engine.
-
 ### Status change: a duplicate-attribute payload now succeeds
 
 Baseline for this section is the **pre-#301** contract, as above.
@@ -2695,9 +2594,9 @@ By design, #318 left the single-operation path untouched: bodies written by
 later added `error_id` to withheld-detail disclosed bodies).
 
 `publicErrorMessage`'s other wording, `internal read error`, is deliberately not
-reproduced in the batch path. It is reserved for the three federated read-path
-carriers `errorClass` recognises, all constructed in `internal/federated` and
-`internal/manifest`; the batch executors are the CRUD service's `Create`,
+reproduced in the batch path. It is reserved for the two federated read-path
+carriers `errorClass` recognises, constructed in `internal/federated` and
+`internal/federatedv2`; the batch executors are the CRUD service's `Create`,
 `Update` and `Delete`, none of which reads through the federated engine — that
 service's only enrichment call is in `Get`.
 

@@ -111,9 +111,9 @@ describe('S3 reset', () => {
     expect(publishedSchemaIds(new Map())).toEqual([]);
   });
 
-  test('the reset clears a custom data prefix and the legacy ones', () => {
-    expect(cleanPrefixes('cdc/v2/')).toEqual(['cdc/v2', 'delta', 'base', 'manifest']);
-    expect(cleanPrefixes('delta')).toEqual(['delta', 'base', 'manifest']);
-    expect(cleanPrefixes('')).toEqual(['delta', 'base', 'manifest']);
+  test('the reset clears the data prefix only', () => {
+    expect(cleanPrefixes('cdc/v2/')).toEqual(['cdc/v2']);
+    expect(cleanPrefixes('data')).toEqual(['data']);
+    expect(cleanPrefixes('')).toEqual([]);
   });
 });

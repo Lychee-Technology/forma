@@ -29,7 +29,7 @@ Forma Tools CLI
   报告丢失的代际与对象（含 schema、epoch、generation 与安全的处置方式）；`--gc` 按回收顺序
   回收过期代际与水位线之下的孤儿对象（#891）。`--gc` 只在部署绑定的存储目标（endpoint、bucket、
   data prefix）下删除：首次运行前用写入方自己的配置执行一次 `--bind-storage`。
-  不再有 `--repair`：恢复方式是 `cdc-init` 重新初始化。
+  丢失的代际或对象无法从 S3 重建，恢复方式是 `cdc-init` 重新初始化。
   详见 `docs/manifest-reconcile.md`。退出码：0 一致 / 2 有发现 / 1 失败。
 - `validate-schema-consistency`：升级前校验 schema 元数据与 EAV 存储的一致性，
   使用与服务端相同的元数据加载路径。检查项包括：
@@ -125,13 +125,17 @@ unreferenced，由运维自行删除。详见 `docs/schema-indexes.md`。
 待文件就绪后运行 `baseline-schema`。已注册的 schema 不受影响。详见 `docs/schema-evolution.md`。
 
 `init-db` 在注册事务里为每个已注册 schema 写 Protocol V2 发布记录（`docs/publication-protocol-v2.md`）：已有记录保留；
-`DROPPED` 记录在 id 重新注册时激活到下一个 epoch（旧 schema 的行须已清除）；没有记录的 schema 在 schema 锁下按 parquet 历史
-写 `UNPUBLISHED` 或 `AWAITING_INIT`。两种情况会被区别对待（#896）：
+`DROPPED` 记录在 id 重新注册时激活到下一个 epoch（旧 schema 的行须已清除）；既没有记录也没有发布历史的 schema 在 schema 锁下
+校验 `UNPUBLISHED` 不变式（`change_log` 中没有已刷新的条目，`entity_main` 中每行都有条目），成立则写 `UNPUBLISHED`。
+不变式不成立说明这些行不是 Protocol V2 写入方留下的：`UNPUBLISHED` 记录会让读取方只读热层而漏掉 parquet 层可能持有的行，
+所以 `init-db` 失败并回滚本次运行，不迁移这种状态；把发布表与其所属的数据表一同恢复，或清除该 schema 的行后重新注册。
+以下两种情况同样区别对待（#896）：
 - 本次新注册的 id 已有非 `DROPPED` 的记录：说明之前的注册没有经 `drop-schema` 退役就被删除了。新 schema 会继承旧 epoch、
   旧的已发布 generation 和旧行，所以 `init-db` 失败并回滚这次注册。先运行 `drop-schema --schema-id <id>`，再运行 `init-db`。
-- 没有记录、但发布 generation 表里仍有该 id 的历史：说明 V2 记录丢失了，而不是未切换的 V1 schema。`init-db` 在 schema 锁下把记录
+- 没有记录、但发布表里仍有该 id 的生命周期 epoch 或 generation 历史：说明记录丢失了，而不是新注册。`init-db` 在 schema 锁下把记录
   恢复到历史中最大 epoch 的下一个 epoch，以最大 generation 号作为计数器，因此不会重用任何 epoch 或 generation 号：仍注册的 schema
-  恢复为 `AWAITING_INIT`（随后运行 `cdc-init`，再重启读取方），本次新注册的 id 先恢复为 `DROPPED` 再按上条激活。
+  在仍有 generation 历史时恢复为 `AWAITING_INIT`（随后运行 `cdc-init`，再重启读取方），没有 generation 历史时按上述不变式
+  恢复为 `UNPUBLISHED`；本次新注册的 id 先恢复为 `DROPPED` 再按上条激活。
 
 示例：
 - `go run ./cmd/tools init-db`
@@ -187,8 +191,7 @@ schema 的 `entity_main` 行数与版本号之和以及存活的 parquet 对象�
 - `--no-parquet-tier`：部署没有 lakehouse 层，只审计 PostgreSQL。否则必须给出 `--s3-bucket`（与服务端的 `DUCKDB_S3_BUCKET` 一致），
   可选 S3 与 DuckDB 选项。审计的对象集合即联邦读扫描的集合：每个 schema 的发布记录为 `PUBLISHED` 时，其当前 generation 的 manifest
   列出的对象（`docs/publication-protocol-v2.md`）；没有记录或记录为 `UNPUBLISHED`、`AWAITING_INIT`、`DROPPED` 的 schema 没有 parquet 对象可审计
-  （`AWAITING_INIT` 的 V2 `cdc-init` 从 PostgreSQL 导出，而 PostgreSQL 已被审计）。记录或 manifest 无法读取或无效时拒绝基线。
-  `--manifest-template`、`--manifest-prefix` 与 `--data-prefix` 已随 V1 读路径删除（#896）。
+  （`AWAITING_INIT` 的 `cdc-init` 从 PostgreSQL 导出，而 PostgreSQL 已被审计）。记录或 manifest 无法读取或无效时拒绝基线。
 - `-dry-run`：只报告审计结果，不写入。
 
 示例：
@@ -251,7 +254,7 @@ cdc-flush 与 cdc-init
 ---------------------
 两者都只经发布记录发布（#896）：对象先写到本地临时文件，再以条件写（`If-None-Match: *`）写入从未用过的键，
 manifest 代际同样只写一次，然后在一个 PostgreSQL 事务里比较并推进记录（flush 的标记也在该事务内）。
-schema 没有发布记录时两者都拒绝（记录由 `init-db` 在注册或 V2 切换时写入）；记录为 `AWAITING_INIT` 时
+schema 没有发布记录时两者都拒绝（记录由 `init-db` 在注册或恢复丢失的记录时写入）；记录为 `AWAITING_INIT` 时
 `cdc-flush` 拒绝并提示先运行 `cdc-init`；`DROPPED` 时两者都拒绝。
 
 共同选项：
@@ -270,9 +273,6 @@ schema 没有发布记录时两者都拒绝（记录由 `init-db` 在注册或 V
 
 `cdc-init` 选项：`-schema-registry-table`/`-schema-dir`（必填）、`-schema-id`、`-batch-size`、`-target-file-size-mb`、
 `-max-batch-size`、`-estimated-row-bytes`。每个 base 文件是一个导出快照，行数由这些选项决定。
-
-已删除、不保留兼容路径的选项：`cdc-flush` 的 `-glob-only`，两者的 `-manifest-template`、`-manifest-prefix`，
-`cdc-init` 的 `-replace-delta` 与 `-delta-prefix`。传入任何一个都会被参数解析器以未定义的标志拒绝。
 
 发布 `COMMIT` 无应答且写入方无法判定结果时，工具会用新的上下文再结算一次（`Settle` / `ResumeInit`）。仍无法判定时，
 错误给出所暂存的代际、token 与 manifest 键，并说明遗留状态：flush 的标记随其发布一起提交，条目按 `change_log`
@@ -293,4 +293,3 @@ manifest 仅写一次到 S3，并在 PostgreSQL 发布记录上以 CAS 提交。
 - `-target-base-size-mb`（默认 256）、`-max-delta-size-mb`（默认 50）、`-dirty-ratio-pct`（默认 5）、`-max-retries`（默认 5）。
 - `-skip-input-checksum-verify`（默认 `false`）：跳过合并前的源对象 SHA-256 校验，仅在已知损坏对象已完成排查时使用。
 
-已删除的 V1 选项：`-manifest-template` 与 `-manifest-prefix`（传入会被参数解析器拒绝）。

@@ -361,11 +361,9 @@ Two placements are not enough:
   copy a later run exports has the same `(row_id, ver_ts)`, and the federated
   dedup cannot order the two. A read at selection as well only saves a wasted
   export.
-- **Before the manifest append only.** Under V1 an object at a final key was
-  repairable: `manifest-reconcile --repair` appended a delta object whose rows
-  were live in Postgres and not covered by a listed file, which is exactly a
-  stopped run's object. V2 has no repair (#891): an object no generation lists
-  is only ever collected.
+- **Before the publication only.** An object a stopped run staged under a
+  final key is never adopted into a generation: an object no generation lists
+  is only ever collected (#891).
 
 The read needs no fence, on DSQL included. A process that can write a value
 only the new declaration admits passed the start-up check, so it started after

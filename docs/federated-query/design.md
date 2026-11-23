@@ -47,7 +47,7 @@ Formula:
 
 $$Result = (S3_{Data} \notin DirtySet) \cup PG_{HotData}$$
 
-* **DirtySet:** The set of row_ids currently present in the PostgreSQL change_log with flushed_at = 0, read in the pass's snapshot. Nothing widens it. The pass reads the generation it scans from the schema's publication record in the same snapshot (§6.1), and every writer marks rows flushed in the transaction that publishes the generation holding them (`docs/publication-protocol-v2.md`, Invariant B), so a row the snapshot shows flushed is in the scanned generation. The flush-visibility grace (#252, `FlushVisibilityGraceMs`) that widened the set for a path set resolved before the snapshot was deleted with that resolution (#896).
+* **DirtySet:** The set of row_ids currently present in the PostgreSQL change_log with flushed_at = 0, read in the pass's snapshot. Nothing widens it. The pass reads the generation it scans from the schema's publication record in the same snapshot (§6.1), and every writer marks rows flushed in the transaction that publishes the generation holding them (`docs/publication-protocol-v2.md`, Invariant B), so a row the snapshot shows flushed is in the scanned generation.
 * Any record found in S3 that also exists in the DirtySet is **discarded** immediately during the read phase, regardless of its timestamp.
 * **Flush ordering:** a flush stages its parquet objects and its immutable manifest first, then publishes the generation and marks its rows flushed in one PostgreSQL transaction (`docs/publication-protocol-v2.md`, "The commit boundary"). A batch is therefore never absent from both the hot tier and the generation a snapshot reads: before the commit its rows are dirty, after it they are in the generation. A row the mark skips (rewritten since the batch was staged, or held by an open writer on PostgreSQL, #686) stays dirty, its staged copy is discarded by this anti-join, and a later flush lists and marks it.
 * **One snapshot (§6.1):** the publication record, the dirty set and the hot rows are read over pgx in one `REPEATABLE READ` snapshot, and the anti-join reads the dirty set the pass staged from that snapshot. With no cross-tier deduplication, the formula above holds only because both sides of the union, and the generation the parquet side scans, come from that one snapshot.
@@ -70,7 +70,7 @@ What `Get` does not promise:
 
 **Eventual is a minimum, not a licence.** The eventual contract of `Query` and `CrossSchemaSearch` does not permit silent partial results, resurrecting deleted rows, or ignoring data that is permanently missing. The protections stay: the dirty-set anti-join (§3.2), tombstones, last-write-wins deduplication (§5), loud failure on a missing or invalid manifest and on listed-but-missing objects (§4.3.1), and a failed or PostgreSQL-only read, never a remainder answer, over a corrupt parquet object (§7.3). An eventually consistent answer may be fully up to date.
 
-These protections hold for every DuckDB-routed answer: the parquet set is always the published generation the pass's snapshot reads (§4.3.1). No engine caller can pin another set: the engine-level path hint (`DuckDBRenderHints.S3ParquetPathTemplate`), which replaced the server's set unchecked, was deleted with the V1 resolution (#896).
+These protections hold for every DuckDB-routed answer: the parquet set is always the published generation the pass's snapshot reads (§4.3.1). No engine caller can pin another set: neither a request nor an in-module caller can name parquet paths (#896).
 
 **Terminology.** Four concepts stay distinct:
 
@@ -162,7 +162,7 @@ Two rules sit above the strategy. A keyset cursor always takes DuckDB, because o
 * `enabled` became `duckdb.enabled`.
 * `preferred_tiers` and `prefer_hot` became the routing strategy. The engine still takes a tier declaration from direct callers (`FederatedAttributeQuery.PreferredTiers`, `PreferHot`: the hot-only gate, the #468 override of an explicit multi-tier list, the hot-excluded form), and the e2e and benchmark harnesses use it. `Query` never sets one, so every query is the default all-tier form.
 * `allow_partial_degraded_mode` became `duckdb.allowPartialDegradedMode` (§7.2).
-* `s3_parquet_path_template` was deleted, with `duckdb.allowCallerParquetPaths` (`DUCKDB_ALLOW_CALLER_PARQUET_PATHS`) and its startup check, `ValidateCallerParquetPaths` (§4.3.1 level 1).
+* `s3_parquet_path_template` was deleted with no replacement: the parquet set is always the published generation (§4.3.1).
 * `use_main_as_anchor` and `consistency_mode` had no effect and were deleted. `use_main_as_anchor` was still part of the plan-cache shape key (`internal/queryplan/shape.go`), where it split the cache without changing the plan; it left the key too.
 * `include_execution_plan` moved to the top level of the request.
 
@@ -182,19 +182,19 @@ Storing each element in the parquet tiers would lift the restriction (#749).
 
 ### **4.3.1 Parquet Path Resolution (Publication Protocol V2)**
 
-A pass scans exactly the objects of one published generation, the one its schema's publication record names in the pass's snapshot (`docs/publication-protocol-v2.md`; §6.1 gives the steps). Nothing else resolves a parquet set: the V1 levels (an engine-level path hint, the mutable `manifest.json` resolved by a path template, the per-schema fallback glob `s3://{s3Bucket}/{s3DataPrefix}/{schemaID}/*.parquet`, and the `ErrNoParquetPaths` refusal of an empty set) were deleted with no transition path in #896, and with them every glob listing on the read path.
+A pass scans exactly the objects of one published generation, the one its schema's publication record names in the pass's snapshot (`docs/publication-protocol-v2.md`; §6.1 gives the steps). Nothing else resolves a parquet set: there is no caller path hint, no path template and no storage listing, so no glob is listed or scanned anywhere on the read path (#896).
 
 * **The record.** `publication.Read` is the snapshot's first statement. The schema's state decides the pass:
   * `UNPUBLISHED`: the schema has never been published. Its every live row has an unflushed `change_log` entry, so the hot leg is the whole answer. DuckDB runs no statement and nothing in storage is fetched, listed or probed. A cursor query is answered the same way.
   * `PUBLISHED`: the pass scans the record's current generation.
-  * No record, `AWAITING_INIT`, `DROPPED`, a row the read refuses as malformed, or an epoch other than the one the process pinned: the read fails closed with `forma.PublicationConsistencyError` (`ErrPublicationInconsistent`). `AWAITING_INIT` is the per-schema outage between the V2 cutover and the schema's V2 `cdc-init`, which is specified behaviour.
+  * No record, `AWAITING_INIT`, `DROPPED`, a row the read refuses as malformed, or an epoch other than the one the process pinned: the read fails closed with `forma.PublicationConsistencyError` (`ErrPublicationInconsistent`). `AWAITING_INIT` arises only when `init-db` recovers a lost record while the schema's generation history survives; the schema is unreadable until its `cdc-init` publishes, which is specified behaviour (`docs/publication-protocol-v2.md`, "A lost record").
 * **Epoch pins.** The factory reads every registered schema's record epoch once, with the schema metadata, in one `REPEATABLE READ` snapshot at startup (`federatedv2.LoadEpochPins`). A schema without a record then gets no pin, and its reads fail closed (`federatedv2.ErrNotPinned`) until a process that loads its metadata again finds one: a record that appears later is not adopted, because the metadata this process holds may describe a schema the record no longer belongs to. A schema dropped and re-created since startup fails with `federatedv2.ErrEpochChanged`. Startup fails if the publication tables cannot be read.
 * **The manifest.** A published generation's manifest is fetched by the key the record holds, from `duckdb.s3Bucket`, through a process-wide cache of verified manifests (`manifestv2.Cache`, 1,024 entries). Manifest objects are immutable, so an entry is never stale. Verification checks the digest the record committed, the document's identity (schema, epoch, generation, token), its format and every listed key. A missing manifest, or one that fails verification, is a consistency error; a store that cannot answer is a degradable `ErrFederatedReadFailed`. A generation that lists no object leaves the pass without a parquet leg.
 * **The objects.** Each listed key is scanned as `s3://<s3Bucket>/<key>`, one concrete object each. A listed address holding a glob metacharacter (`*`, `?`, `[`), which DuckDB would expand and match against unlisted objects, fails the read with the consistency error (`ErrPublishedPathNotConcrete`) before any DuckDB statement. The manifest's footer columns stand in for the pre-read footer probe (#189, #256), so a healthy pass probes no footer.
 * **Inconsistency detection.** Only after a failed read does the reader probe the scanned objects (`HeadObject`, `manifestv2.S3Exists`; only a confirmed 404 counts as absent). A listed object the store does not hold is loss: the read fails with the consistency error naming the lost keys, ahead of the corruption classification (§7.3). A probe that fails does not take back a key another probe found missing. A probe, or a manifest fetch, that S3 answers `403 AccessDenied` proves nothing: S3 answers 403 rather than 404 for a missing key to a principal without `s3:ListBucket` on the bucket. The read then fails closed with the consistency error wrapping `forma.ErrPublishedObjectUnverifiable`, naming no lost key, never degraded and never charged to the breaker. The reader's principal therefore needs `s3:ListBucket` on the bucket besides `s3:GetObject` on its objects for a loss to be reported as one. A happy path costs no probe.
 * **Classification.** A publication fault is never degradable, never charged to the breaker, never `ErrFederatedReadFailed`, and not retried (§6.1, *Failures*). Over HTTP it is the `publication_inconsistent` error class with the schema id (`docs/error-handling.md`).
 
-**Server configuration.** `cmd/server` reads `DUCKDB_S3_BUCKET` (`S3_BUCKET`) into `duckdb.s3Bucket`, which is required when DuckDB is enabled: Config validation and the factory refuse an enabled engine without one, and a padded value, before any I/O. The S3 client is built from `duckdb.s3Region`, `s3Endpoint` and the static keys, as DuckDB's httpfs session is; it is constructed at startup but not exercised, so a mistyped bucket or bad credentials surface at query time. `DUCKDB_HOT_LEG_TRANSPORT` names the hot leg (§6.1): `pgx`, or empty, is the only transport, and `attach` fails startup. The V1 read settings are gone and nothing reads them: `duckdb.manifestTemplate`, `duckdb.manifestPrefix`, `duckdb.s3DataPrefix`, `duckdb.flushVisibilityGraceMs`, and the variables `DUCKDB_MANIFEST_TEMPLATE`, `MANIFEST_TEMPLATE`, `DUCKDB_MANIFEST_PREFIX`, `MANIFEST_PREFIX`, `DUCKDB_S3_PREFIX` and `S3_PREFIX` (for the server). With DuckDB enabled, a DuckDB client that cannot initialise, or a publication reader that cannot be built, fails construction (#715).
+**Server configuration.** `cmd/server` reads `DUCKDB_S3_BUCKET` (`S3_BUCKET`) into `duckdb.s3Bucket`, which is required when DuckDB is enabled: Config validation and the factory refuse an enabled engine without one, and a padded value, before any I/O. The S3 client is built from `duckdb.s3Region`, `s3Endpoint` and the static keys, as DuckDB's httpfs session is; it is constructed at startup but not exercised, so a mistyped bucket or bad credentials surface at query time. `DUCKDB_HOT_LEG_TRANSPORT` names the hot leg (§6.1): `pgx`, or empty, is the only transport, and `attach` fails startup. With DuckDB enabled, a DuckDB client that cannot initialise, or a publication reader that cannot be built, fails construction (#715).
 
 ### **4.4 Attribute → Column Naming Contract**
 
@@ -589,10 +589,8 @@ identical — the contract is row multiplicity and value, never scan order.
 
 Two residuals bound this guarantee. First, objects written **before** the
 #274 ordering fix may still hold divergent same-`ver_ts` copies from
-pre-fix same-millisecond writes; the V1 #292 promotion fences, removed with
-`manifest-reconcile --repair` in #891, refused to publish unverifiable
-entries from that era, and compaction's fold of such a legacy pair is
-arbitrary (the copies were already unordered on disk). Second, during the
+pre-fix same-millisecond writes, and compaction's fold of such a legacy
+pair is arbitrary (the copies were already unordered on disk). Second, during the
 mixed-vintage window a legacy delta object (live `NULL`) tying a new-vintage
 object (live `0`) resolves to the new object under `NULLS LAST` — the copies
 encode the same version, so this is a curiosity, not a regression. CDC is
@@ -718,21 +716,21 @@ carry another type, and the drift would then bind unpinned. That state needs a
 same-key rewrite under an unchanged stamp — a legacy deterministic init key
 overwritten in place, or a manual or old-writer mutation — which no current
 writer performs: since #416 every init batch lands on a write-once key, flush
-and compaction never reuse a key, and since #896 every V2 object is written
-once under a fresh key (`If-None-Match: *`). Probing attribute columns on every read would give back the
+and compaction never reuse a key, and every object is written once under a
+fresh key (`If-None-Match: *`). Probing attribute columns on every read would give back the
 cost #256 removed, and binding a stamp to an object version is a manifest
-format change. Under V2 a manifest's digest commits its stamps with the
+format change. A manifest's digest commits its stamps with the
 generation, and the offline detector for an object whose bytes changed under
 its entry is `manifest-reconcile --verify-checksums`, which re-hashes each
 object a retained generation lists (#891).
 
-**Manifest schema stamping (#256, required in Protocol V2).** Every V2 writer
+**Manifest schema stamping (#256).** Every writer
 (`cdc-flush`, `cdc-init`, `compactor`) exports to a local scratch file,
 `DESCRIBE`s it to record its footer columns (name → DuckDB type) on the
 manifest entry (`manifestv2.File.Columns`), and stages the object once via
-conditional put (`If-None-Match: *`) before committing the generation. Unlike
-V1, V2 has no `tmp → final` `CopyObject` step, no unstamped entries, and no
-footer-probe fallback on healthy V2 manifests: `manifestv2.Manifest.Encode` and
+conditional put (`If-None-Match: *`) before committing the generation. There
+is no `tmp → final` `CopyObject` step, no unstamped entry, and no footer-probe
+fallback on a healthy manifest: `manifestv2.Manifest.Encode` and
 `Fetch` require every entry to carry a non-empty `columns` map, and the
 generation's SHA-256 commits those stamps atomically with the record. The
 pre-read validator still verifies the system-column invariant on the stamps and
@@ -816,8 +814,7 @@ guards above, which re-derive `row_id`/`changed_at` presence and the
 the stamp claimed; (b) `manifest-reconcile --verify-checksums`, the offline
 comparison of every listed object's bytes against the SHA-256 its manifest
 lists, which catches any overwrite the scan guards cannot see, at zero
-read-path cost (the V1 `--verify-stamps` footer comparison went with V1 in
-#891); and (c) the `deleted_at` presence channel, which stays gated at
+read-path cost (#891); and (c) the `deleted_at` presence channel, which stays gated at
 the read path until pre-#274 legacy delta objects are retired (#365) and is
 therefore reachable *only* through (b) until then.
 
@@ -847,7 +844,7 @@ read until the object is repaired. Note the deliberate breadth: a single-file gu
 strictly stricter than the set scan (a file missing only `deleted_at` fails
 alone but is tolerated in a set where a sibling carries the column), so the
 error's wording is an invariant statement — "fails the guarded single-file
-scan" — not a causation claim. Every V2 scan set comes from a verified
+scan" — not a causation claim. Every scan set comes from a verified
 generation manifest, so every listed object participates in attribution.
 The cost envelope stays on the failure path: identification runs only when a
 read has already failed, adds at most ~3 drains per manifest-listed object
@@ -857,7 +854,7 @@ connection by default, #285), and bails on context cancellation.
 
 **Cache invalidation.** The validator caches each path it validates, keyed by
 path **and by the stamp it was validated under** (nil for probe-validated).
-Every V2 writer mints write-once keys under `{prefix}/{schema_id}/e{epoch}/{base|delta}/`
+Every writer mints write-once keys under `{prefix}/{schema_id}/e{epoch}/{base|delta}/`
 (`manifestv2.Layout`), and each generation's immutable manifest binds its
 stamps to its SHA-256. Keying by path and stamp ensures that if a test or
 external recovery ever republished under a path with a different stamp, the
@@ -882,7 +879,7 @@ One-entry eviction instead of `queryplan.Cache`'s wholesale clear keeps the boun
 from sending every live object back to a footer probe at once. Eviction can only
 cost a re-validation, never correctness.
 
-**No unstamped V2 entries.** Protocol V2 requires every `manifestv2.File` entry
+**No unstamped entries.** Protocol V2 requires every `manifestv2.File` entry
 to carry its non-empty `columns` map on write and rejects unstamped manifests on
 fetch (`manifestv2.Manifest.Encode` / `Fetch`). There is no lazy backfill path
 and no read-time auto-repair: every published generation is stamped at write
@@ -919,7 +916,7 @@ A federated pass reads its parquet source from the schema's publication record, 
 
 A pass without a parquet leg (an `UNPUBLISHED` record, or a generation that lists no object) runs no DuckDB statement and lists nothing in storage: the hot leg is the whole answer. Under the `UNPUBLISHED` invariant every live row has an unflushed entry, so the hot leg holds them all (#720). The hot-excluded form (an engine-level `PreferredTiers` without `hot`; `Query` never sends one) has no hot leg. It reads the same strict set, stages it, and answers the parquet window as the page.
 
-**Consistency.** The generation the pass scans and the dirty set it discards come from one snapshot S, so the answer holds every row's state as of S. A writer marks rows flushed in the transaction that publishes the generation holding them, and `cdc-init` hands off under its lineage in the transaction of its generation, so a row S shows flushed is in S's generation or a descendant, and its newest version there is the one S knows. The protocol's Invariant R proves it, case by case. This replaces the V1 argument, which read the path set at an instant P before S and needed the flush-grace widening (#252) to cover the marks between P and S, a frozen listing of the level-3 glob to keep objects published after S out of the scan, the parquet-history probe (#720) to tell a never-flushed schema from a lost manifest, and a re-resolution after the pass. All four are gone with the V1 resolution (#896): the record and the generation are read in S, the scan lists exactly the generation's objects, and no glob is listed or scanned anywhere on the read path.
+**Consistency.** The generation the pass scans and the dirty set it discards come from one snapshot S, so the answer holds every row's state as of S. A writer marks rows flushed in the transaction that publishes the generation holding them, and `cdc-init` hands off under its lineage in the transaction of its generation, so a row S shows flushed is in S's generation or a descendant, and its newest version there is the one S knows. The protocol's Invariant R proves it, case by case. Because the record and the generation are read in S and the scan lists exactly the generation's objects, nothing outside S enters the argument: the dirty set needs no widening, no object listing is frozen or re-resolved after the pass, and no glob is listed or scanned anywhere on the read path.
 
 **R_max.** A pass is armed with a deadline, R_max (`federated.DefaultPublishedPassDeadline`, 60 s), from before its snapshot opens. Garbage collection keeps a superseded generation for a grace G ≥ R_max + C, so a pass must end by then whatever `DuckDBConfig.QueryTimeout` says, and that budget may be zero. A pass R_max ends fails with `ErrPassDeadline`, cancels its running DuckDB statement, and is retried once on a fresh snapshot. It is not degradable and is not charged to the breaker: R_max bounds how long a pass holds its generation, not how fast DuckDB answers, which `QueryTimeout` bounds and charges.
 
@@ -1261,7 +1258,7 @@ Excluding only base objects would not have been safe either: base objects carry 
 3. **TTL cache.** Confirmed-corrupt objects are recorded in an engine-level `corruptParquetCache` with a bounded lifetime: 5 minutes by default, overridable with `WithCorruptPathRetention`. Entries always expire so a new generation published by `cdc-init` re-initialization or compaction is served cleanly without restarting the process.
 4. **Refusal.** The pass fails with `CorruptParquetError`, which names the schema and the objects and wraps `ErrFederatedReadFailed`. One Error line, "parquet objects confirmed corrupt; …", names the same objects, once per verification. While a verdict is cached, the pass refuses any generation that lists the object, before DuckDB scans (`refusePublishedCorrupt`). It first runs the #732 type guard over the listed objects that are not cached as corrupt, then the SQL build's own refusals, then probes the whole listed set with `MissingIn`. A type refusal, a build refusal and step 1 therefore still win: a readable object the declaration cannot read fails as `ParquetTypeIncompatibleError`, a schema with no usable metadata fails with `ErrSchemaMetadataCacheRequired`, a filter literal the attribute cannot take fails as invalid input, and a listed object absent from storage fails as a publication inconsistency, not as corruption. Later queries therefore fail the same way, with no DuckDB scan, no re-verification and no repeat of the Error line (a degraded request still logs its §7.2 fallback line). Corruption earns no retry. The R_max retry (§6.1) is a separate mechanism.
 
-**Answering anyway.** `CorruptParquetError` is degradable. On a deployment with `duckdb.allowPartialDegradedMode` the query gets the §7.2 PostgreSQL-only answer. Under the storage invariant (§3.3), that answer holds every live row at its current version. With the setting off, the caller receives the failure. So does a query that carries an active keyset cursor, setting or not: the PostgreSQL-only path cannot apply the cursor, so `mayDegradeToPostgres` declines the fallback (#354) and the failure is annotated with the reason rather than answered without the cursor. Over HTTP it is the redacted internal error of any `ErrFederatedReadFailed`, so object keys do not reach the caller. Until `cdc-init` re-initialization or compaction publishes a new generation that no longer lists the corrupt object, every federated read of the schema whose generation lists it fails or degrades (there is no read-time auto-repair and no `--repair` flag). A deployment that degrades loses the parquet tiers for that schema, not the answer.
+**Answering anyway.** `CorruptParquetError` is degradable. On a deployment with `duckdb.allowPartialDegradedMode` the query gets the §7.2 PostgreSQL-only answer. Under the storage invariant (§3.3), that answer holds every live row at its current version. With the setting off, the caller receives the failure. So does a query that carries an active keyset cursor, setting or not: the PostgreSQL-only path cannot apply the cursor, so `mayDegradeToPostgres` declines the fallback (#354) and the failure is annotated with the reason rather than answered without the cursor. Over HTTP it is the redacted internal error of any `ErrFederatedReadFailed`, so object keys do not reach the caller. Until `cdc-init` re-initialization or compaction publishes a new generation that no longer lists the corrupt object, every federated read of the schema whose generation lists it fails or degrades (there is no read-time auto-repair). A deployment that degrades loses the parquet tiers for that schema, not the answer.
 
 **Why a drain, not a footer probe.** DuckDB answers `DESCRIBE` and `COUNT(*)` from the Thrift footer and row-group metadata without touching data pages. A footer probe therefore passes cleanly on a page-corrupt object: the pre-read schema validator already footer-probes, and scenario 7 still failed. Only a drain reads the pages. A **solo drain reads a superset of the columns the scan projects**, so the per-file pass reproduces whatever per-file failure made the set scan fail. No failure that the set scan can detect escapes the verification pass. That superset property is what makes attribution sound: an object is reported corrupt because it was proven unreadable on its own, not because it was in the set when something went wrong.
 
@@ -1283,9 +1280,9 @@ Excluding only base objects would not have been safe either: base objects carry 
 
 **Known limitation — silent mis-decode (pre-existing; detected out of band since #347).** DuckDB v1.4.5 neither writes nor verifies Parquet page checksums, and `parquet_metadata()` exposes no CRC column (both still true on v2.0.0), so byte corruption inside an incompressible column chunk can decode into *different valid values* with no error at all. The spike proved this concretely: a 64-byte XOR at the 50% offset of a 500-row file returned 500 rows with **5 `row_id` values lost and 5 fabricated**, zero errors raised. A mis-decoded `row_id` defeats the dirty-set anti-join (§3.2), so a stale S3 row can escape masking by its hot version. Whether damage is caught at all is a function of *which bytes* are hit — the same corruption landing in a delta-encoded integer column raises `Snappy decompression failure`, and in the footer raises a Thrift error. This class is invisible to **every** reader, including the all-or-nothing scan that preceded #251, so it is neither introduced nor worsened here; #251 covers scan-detectable failures only. What #347 adds is **out-of-band detection**, not read-time prevention.
 
-**Manifest content checksums (#347).** Under Protocol V2 every manifest entry carries the object's SHA-256 and size (`manifestv2.File`), and both are required: a manifest without them does not verify. The writer computes them over the local file it is about to upload, before its write-once put: the CDC flush and `cdc-init` over the exported parquet file (`digestFile`, `internal/cdc/object_stage.go`), compaction over its merged base (`internal/compaction/stage.go`). No path stamps a digest after publish, and `manifest-reconcile` publishes no entries: under V2 it only diagnoses and collects (#891). *V1 history.* A V1 manifest entry could carry an optional `FileEntry.Checksum`, a `"sha256:<hex>"` digest taken by reading the object back from the store *after* publish; an absent checksum meant the entry was never stamped, and every consumer skipped it. V2 removed both `manifest-reconcile` paths along with `--repair`.
+**Manifest content checksums (#347).** Under Protocol V2 every manifest entry carries the object's SHA-256 and size (`manifestv2.File`), and both are required: a manifest without them does not verify. The writer computes them over the local file it is about to upload, before its write-once put: the CDC flush and `cdc-init` over the exported parquet file (`digestFile`, `internal/cdc/object_stage.go`), compaction over its merged base (`internal/compaction/stage.go`). No path stamps a digest after publish, and `manifest-reconcile` publishes no entries: it only diagnoses, verifies and collects (#891).
 
-**Two verifiers, both out of band.** (1) `manifest-reconcile --verify-checksums` (`docs/manifest-reconcile.md`) re-GETs every distinct object a retained generation lists **in full**, re-hashes, and compares the digest and size with every retained entry that names the key; an object S3 confirms missing is reported as lost rather than hashed. A divergence is a `corrupt_object` finding and exits **2**; a failed GET or confirming HEAD is a *tool* failure and exits **1**, never a corruption verdict. Every V2 entry carries a digest, so nothing is skipped as unstamped. (2) The compaction **pre-merge input gate** re-hashes every merge source before anything is merged and refuses the pass on mismatch (`ErrSourceChecksumMismatch`, `verifySourceChecksums` in `internal/compaction/verify_inputs.go`), emitting `EmitParquetChecksumMismatch`. Verification is **on by default** when an object reader is wired; `--skip-input-checksum-verify` is the escape hatch once a known-corrupt source has been triaged.
+**Two verifiers, both out of band.** (1) `manifest-reconcile --verify-checksums` (`docs/manifest-reconcile.md`) re-GETs every distinct object a retained generation lists **in full**, re-hashes, and compares the digest and size with every retained entry that names the key; an object S3 confirms missing is reported as lost rather than hashed. A divergence is a `corrupt_object` finding and exits **2**; a failed GET or confirming HEAD is a *tool* failure and exits **1**, never a corruption verdict. Every entry carries a digest, so nothing is skipped as unstamped. (2) The compaction **pre-merge input gate** re-hashes every merge source before anything is merged and refuses the pass on mismatch (`ErrSourceChecksumMismatch`, `verifySourceChecksums` in `internal/compaction/verify_inputs.go`), emitting `EmitParquetChecksumMismatch`. Verification is **on by default** when an object reader is wired; `--skip-input-checksum-verify` is the escape hatch once a known-corrupt source has been triaged.
 
 **Residual — what is still unverified.** Query-time reads are **not** checked. No federated read compares bytes against a checksum, and per-query verification was rejected outright (#347 D4): it would re-download every scanned object on every query, turning a metadata-driven scan into a full-bytes transfer. Because the digest is computed from the local file before upload, upload and storage corruption are now covered; bytes corrupted before local hashing (encoder/disk) remain hashed as truth. Detection latency is bounded by operational cadence: a corrupt object surfaces on the next `--verify-checksums` run or the next compaction that consumes it, whichever comes first.
 

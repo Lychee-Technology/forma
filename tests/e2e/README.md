@@ -199,7 +199,7 @@ The check asks for the execution plan (`include_execution_plan`) and fails unles
 
 ### Clean S3 (repeatable runs)
 
-Deletes CDC objects under the data prefix (`S3_PREFIX`) and the legacy `delta/`, `base/` and `manifest/` prefixes so a re-run starts clean. Destructive — test bucket only.
+Deletes CDC objects under the data prefix (`S3_PREFIX`) so a re-run starts clean. Destructive — test bucket only.
 
 Under Protocol V2 a schema's published parquet is what its PostgreSQL publication record names, and the marks of its flushed `change_log` entries commit with that record (`docs/publication-protocol-v2.md`). Deleting the objects a `PUBLISHED` record points at would make every read of the schema fail closed and lose its flushed rows, so `clean-s3` refuses (exit 2) while any record is `PUBLISHED`. Reset in this order:
 
@@ -282,10 +282,9 @@ See `.env.example` for all available configuration options:
 | `DUCKDB_HOT_LEG_TRANSPORT` | `pgx` | Server: how a federated pass reads the hot tier. `pgx` is the only transport; `attach` (retired in #858) or any other value fails startup |
 | `REQUIRE_DUCKDB` | `0` | federated-check / k6: fail unless a DuckDB route is observed |
 
-The server reads no manifest template, manifest prefix or data prefix since
-#896 (`DUCKDB_MANIFEST_TEMPLATE`, `MANIFEST_TEMPLATE`, `DUCKDB_MANIFEST_PREFIX`,
-`MANIFEST_PREFIX`, `DUCKDB_S3_PREFIX` and `S3_PREFIX` are ignored by it): each
-schema's publication record names the manifest of the generation it reads.
+The server takes no manifest or data prefix setting: each schema's publication
+record names the manifest of the generation it reads, and the manifest lists
+every object the read scans.
 
 ## Reports
 
