@@ -31,7 +31,7 @@ var errPublishedObjectMissing = errors.New("the generation lists objects the sto
 // answer keeps it in its error. It is not charged to the breaker either.
 // R_max bounds how long a pass may hold its generation against garbage
 // collection, not how fast DuckDB answers; DuckDBConfig.QueryTimeout is that
-// budget, and its expiry is charged as in V1.
+// budget.
 var ErrPassDeadline = errors.New("published pass ran past its deadline")
 
 // passDeadlineError wraps the failure of a pass its deadline aborted.

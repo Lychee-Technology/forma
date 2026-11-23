@@ -161,9 +161,8 @@ func TestInitThenIncrementalFlush(t *testing.T) {
 }
 
 // TestInitHandoffLeavesTheFirstFlushNothingToReexport (#176 scenario 2
-// variant, #760): under V1 nothing enforced the onboarding cleanup, and a
-// first flush after cdc-init re-exported every backfilled row into delta at
-// the same version. The V2 handoff marks the exported entries in the
+// variant, #760): a first flush after cdc-init must not re-export a
+// backfilled row into delta at the same version. The V2 handoff marks the exported entries in the
 // transactions that hold the init's lineage, so the first flush finds nothing
 // dirty, writes nothing and publishes nothing, and the federated result holds
 // each row exactly once, from base.

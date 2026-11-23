@@ -66,7 +66,7 @@ func TestAGenerationListingAnAddressDuckDBWouldExpandFailsClosed(t *testing.T) {
 // closed with the typed error naming the row's epoch and generation, and
 // neither degrades nor reaches the breaker. A record the snapshot could not
 // read at all, here because its table is gone, is a failed PostgreSQL read,
-// which degrades as its V1 counterpart does.
+// which degrades.
 func TestAMalformedRecordFailsClosedAndAFailedRecordReadDegrades(t *testing.T) {
 	t.Run("malformed record", func(t *testing.T) {
 		f := newFixture(t)

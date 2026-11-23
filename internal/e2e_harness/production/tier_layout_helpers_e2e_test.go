@@ -11,8 +11,7 @@ import (
 // created with, so the rows are back in the dirty set at unchanged values,
 // and the next flush exports them to a delta object. A test that lays rows
 // out in base and delta at once needs it under Protocol V2: the cdc-init
-// handoff marks every row the init exported, where V1 left change_log to the
-// test, so rows exported to base reach delta only through a later write. It
+// handoff marks every row the init exported, so rows exported to base reach delta only through a later write. It
 // answers the update events, in creates' order, with their read-back
 // timestamps.
 func redirtyRows(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, creates []*Event) []*Event {

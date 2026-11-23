@@ -33,8 +33,7 @@ type stager struct {
 	newBaseKey string
 }
 
-// StageCompaction decides what of req.Input to merge, as the V1 compactor
-// did, and merges it:
+// StageCompaction decides what of req.Input to merge, and merges it:
 //
 //   - promotion, when the delta tier holds at least the target base size:
 //     every delta file. A V2 key names its tier, so a delta object cannot be

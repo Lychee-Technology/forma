@@ -83,7 +83,7 @@ func TestComputeDiff_ReportsEachInjectedDiscrepancy(t *testing.T) {
 		inject func(r *QueryResult)
 		check  func(d *Diff) bool
 	}{
-		{"stale V1 value survives the merge", func(r *QueryResult) {
+		{"stale older value survives the merge", func(r *QueryResult) {
 			r.Records[1].TextItems[string(forma.MainColumnText01)] = "one-v1"
 		}, func(d *Diff) bool { return hasAttrMismatch(d, newRowID(1), "title") }},
 		{"bound bigint rounded through float64", func(r *QueryResult) {

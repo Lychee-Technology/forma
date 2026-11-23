@@ -125,7 +125,7 @@ func TestCollectorWaitsOutAPublicationInFlight(t *testing.T) {
 
 // TestCollectorDeletesOnlyOrphansBelowItsHorizon verifies horizon fencing:
 // fenced staging is deleted and can never commit; young staging is kept and
-// still commits; unrecognized V1/foreign keys are reported and never deleted.
+// still commits; unrecognized foreign keys are reported and never deleted.
 func TestCollectorDeletesOnlyOrphansBelowItsHorizon(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

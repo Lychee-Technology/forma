@@ -13,7 +13,7 @@ func TestLayoutSpellsTheProtocolKeys(t *testing.T) {
 		require.Equal(t, "data/100/_manifests/e3/g00000000000000000007-"+testToken.String()+".json", l.ManifestKey(100, 3, 7, testToken))
 		require.Equal(t, "data/100/e3/delta/"+id.String()+".parquet", l.ParquetKey(100, 3, TierDelta, id))
 	}
-	require.Equal(t, "/100/e1/base/"+id.String()+".parquet", Layout{}.ParquetKey(100, 1, TierBase, id), "an empty prefix keeps the leading slash, as the V1 builders do")
+	require.Equal(t, "/100/e1/base/"+id.String()+".parquet", Layout{}.ParquetKey(100, 1, TierBase, id), "an empty prefix keeps the leading slash (#516)")
 	require.Equal(t, "/100/e1/base/"+id.String()+".parquet", Layout{Prefix: "/"}.ParquetKey(100, 1, TierBase, id), "a prefix of slashes only is the empty prefix")
 
 	key, err := Layout{Prefix: "a/b"}.NewParquetKey(100, 2, TierBase)
@@ -141,7 +141,7 @@ func TestLayoutSchemaPrefixAndOwns(t *testing.T) {
 	require.False(t, l.Owns(101, manifestKey), "other schema")
 	require.False(t, l.Owns(101, parquetKey), "other schema")
 	require.False(t, Layout{Prefix: "other"}.Owns(100, manifestKey), "other prefix")
-	require.False(t, l.Owns(100, "data/100/manifest.json"), "V1 manifest")
-	require.False(t, l.Owns(100, "data/100/_tmp/abc.parquet"), "V1 tmp object")
+	require.False(t, l.Owns(100, "data/100/manifest.json"), "a mutable root manifest is not a V2 key")
+	require.False(t, l.Owns(100, "data/100/_tmp/abc.parquet"), "a _tmp object is not a V2 key")
 	require.False(t, l.Owns(100, "data/100/e2/base/not-a-uuid.parquet"), "malformed key")
 }

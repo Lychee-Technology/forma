@@ -127,7 +127,7 @@ func TestCompactionNoopPaths(t *testing.T) {
 // V2: with real SizeBytes metadata and a lowered byte threshold, promotion
 // merges every delta file into one new base object, written once under a
 // fresh key, and the next generation lists it in their place. A V2 key names
-// its tier, so a delta object cannot be relabelled base as V1 did. Federated
+// its tier, so a delta object is never relabelled base. Federated
 // results are identical before and after. Hot rows are present so the pass
 // provably leaves the hot tier alone; the seed's 2/5 dirty ratio also
 // exceeds the rewrite trigger, pinning promotion precedence within one pass.
