@@ -292,4 +292,3 @@ manifest 仅写一次到 S3，并在 PostgreSQL 发布记录上以 CAS 提交。
 - `-pg-host`、`-pg-port`、`-pg-user`、`-pg-password`、`-pg-db`、`-pg-ssl-mode`、`-pg-use-iam`、`-pg-engine`（`postgresql` 或 `aurora-dsql`）、`-entity-main-table`（默认 `entity_main`）。
 - `-target-base-size-mb`（默认 256）、`-max-delta-size-mb`（默认 50）、`-dirty-ratio-pct`（默认 5）、`-max-retries`（默认 5）。
 - `-skip-input-checksum-verify`（默认 `false`）：跳过合并前的源对象 SHA-256 校验，仅在已知损坏对象已完成排查时使用。
-
