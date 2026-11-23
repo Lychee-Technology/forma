@@ -30,17 +30,12 @@ func (r *RecordingS3) record(op S3Op) {
 	r.calls[op]++
 }
 
-// MutatingCalls reports how many write-class calls (CopyObject,
-// DeleteObject, PutObject) have passed through the client.
+// MutatingCalls reports how many write-class calls (DeleteObject,
+// PutObject) have passed through the client.
 func (r *RecordingS3) MutatingCalls() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.calls[S3OpCopy] + r.calls[S3OpDelete] + r.calls[S3OpPut]
-}
-
-func (r *RecordingS3) CopyObject(ctx context.Context, in *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
-	r.record(S3OpCopy)
-	return r.Inner.CopyObject(ctx, in, optFns...)
+	return r.calls[S3OpDelete] + r.calls[S3OpPut]
 }
 
 func (r *RecordingS3) DeleteObject(ctx context.Context, in *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {

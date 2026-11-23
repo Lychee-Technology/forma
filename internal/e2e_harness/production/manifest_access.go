@@ -41,9 +41,9 @@ type Manifest struct {
 	Files       []ManifestEntry
 }
 
-// ManifestEntry is one parquet object a generation lists, in the field names
-// the V1 manifest entry had: Path is the object key and Checksum the
-// object's SHA-256 as 64 lowercase hex digits.
+// ManifestEntry is one parquet object a generation lists: Path is its
+// bucket-relative object key and Checksum its SHA-256 as 64 lowercase hex
+// digits.
 type ManifestEntry struct {
 	Tier               string
 	Path               string

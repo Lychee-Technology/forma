@@ -11,9 +11,8 @@ import (
 // TestFlushManifestWindowVisibility pins issue #252 on Protocol V2: a
 // federated query landing while a flush has staged its objects and its
 // manifest, but not yet committed the generation and its marks, must still
-// see the batch's rows from the hot tier. Under V1 the batch could be
-// transiently invisible in every tier; under V2 nothing a reader sees moves
-// before the commit that publishes the generation and marks the rows.
+// see the batch's rows from the hot tier: nothing a reader sees moves before
+// the commit that publishes the generation and marks the rows.
 //
 // Generation 1 flushes cleanly first, so the reader resolves a published
 // generation, then generation 2's flush is held open at its manifest
@@ -91,8 +90,8 @@ func TestFlushManifestWindowVisibility(t *testing.T) {
 // runFlushPausedOn starts one real flush with the given pauser installed as
 // its S3 client, invokes during on the test goroutine while the flush is
 // suspended at the pauser's first matching call, then resumes the flush and
-// returns its outcome. The generic core of runPausedFlush (which pins the
-// CopyObject pause point for #182); #252 pauses at the manifest PutObject.
+// returns its outcome. The generic core of runPausedFlush (which pauses at
+// the first staged parquet PutObject); #252 pauses at the manifest PutObject.
 func runFlushPausedOn(ctx context.Context, t *testing.T, env *Env, pauser *PausingS3, during func()) (*FlushReport, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(ctx, pausedFlushTimeout)

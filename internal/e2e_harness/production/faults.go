@@ -16,18 +16,16 @@ import (
 type S3Op string
 
 const (
-	// S3OpCopy matches CopyObject (flush step 3: tmp -> final promotion).
-	S3OpCopy S3Op = "CopyObject"
-	// S3OpDelete matches DeleteObject (flush step 4: tmp cleanup).
+	// S3OpDelete matches DeleteObject (manifest-reconcile --gc's collection).
 	S3OpDelete S3Op = "DeleteObject"
-	// S3OpGet matches GetObject, which flush issues twice: the content hash of
-	// the just-published final delta object (#347), then the manifest load
-	// (flush step 6). KeyContains separates them — the manifest read is the
-	// only one whose key is under the manifest prefix.
+	// S3OpGet matches GetObject: a writer's read of its parent manifest, and
+	// a reader's manifest load. KeyContains separates the manifest from
+	// parquet objects.
 	S3OpGet S3Op = "GetObject"
-	// S3OpPut matches PutObject (flush step 7: manifest save).
+	// S3OpPut matches PutObject: the conditional put of each staged parquet
+	// object and of the generation's manifest.
 	S3OpPut S3Op = "PutObject"
-	// S3OpHead matches HeadObject (post-copy size stat for manifest SizeBytes).
+	// S3OpHead matches HeadObject (an existence check of a listed object).
 	S3OpHead S3Op = "HeadObject"
 )
 
@@ -76,18 +74,6 @@ func (f *FaultInjectingS3) intercept(op S3Op, key string) error {
 	}
 	f.injected++
 	return fmt.Errorf("e2e injected s3 fault: %s %s", op, key)
-}
-
-func (f *FaultInjectingS3) CopyObject(ctx context.Context, in *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
-	key := aws.ToString(in.Key)
-	if err := f.intercept(S3OpCopy, key); err != nil {
-		return nil, err
-	}
-	out, err := f.Inner.CopyObject(ctx, in, optFns...)
-	if err != nil {
-		return nil, fmt.Errorf("s3 CopyObject %q: %w", key, err)
-	}
-	return out, nil
 }
 
 func (f *FaultInjectingS3) DeleteObject(ctx context.Context, in *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
