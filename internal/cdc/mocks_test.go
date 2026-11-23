@@ -2,7 +2,6 @@ package cdc
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -76,46 +75,11 @@ func testAttrCache() forma.SchemaAttributeCache {
 
 type objectOnlyS3Client struct{}
 
-func (c *objectOnlyS3Client) CopyObject(_ context.Context, _ *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
-	return &s3.CopyObjectOutput{}, nil
-}
-
 func (c *objectOnlyS3Client) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
 	return &s3.DeleteObjectOutput{}, nil
 }
 
 func (c *objectOnlyS3Client) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
-	return &s3.HeadObjectOutput{ContentLength: aws.Int64(mockObjectSizeBytes)}, nil
-}
-
-// recordingS3Client records every DeleteObject key so tests can assert the
-// #226 in-band tmp cleanup fired; copy/delete failures are injectable.
-type recordingS3Client struct {
-	copyErr     error
-	deleteErr   error
-	deletedKeys []string
-	copySources []string // CopySource of each CopyObject call, in order
-	copiedKeys  []string // destination Key of each CopyObject call, in order
-}
-
-func (c *recordingS3Client) CopyObject(_ context.Context, in *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
-	c.copySources = append(c.copySources, aws.ToString(in.CopySource))
-	c.copiedKeys = append(c.copiedKeys, aws.ToString(in.Key))
-	if c.copyErr != nil {
-		return nil, fmt.Errorf("mock copy object to %s: %w", aws.ToString(in.Key), c.copyErr)
-	}
-	return &s3.CopyObjectOutput{}, nil
-}
-
-func (c *recordingS3Client) DeleteObject(_ context.Context, in *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
-	c.deletedKeys = append(c.deletedKeys, aws.ToString(in.Key))
-	if c.deleteErr != nil {
-		return nil, fmt.Errorf("mock delete object %s: %w", aws.ToString(in.Key), c.deleteErr)
-	}
-	return &s3.DeleteObjectOutput{}, nil
-}
-
-func (c *recordingS3Client) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
 	return &s3.HeadObjectOutput{ContentLength: aws.Int64(mockObjectSizeBytes)}, nil
 }
 

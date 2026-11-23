@@ -312,29 +312,6 @@ func TestParseCDCInitFlagsEstimatedRowBytes(t *testing.T) {
 	}
 }
 
-// The V1 writer flags are gone with no compatibility path (#896): the V2
-// writers publish through the schema's publication record and an immutable
-// manifest under the -s3-prefix layout, so there is no manifest template to
-// name, no glob-only mode to declare and no delta tier to purge at
-// onboarding. The flag parser refuses each by name, so none is silently
-// ignored.
-func TestCDCToolsRefuseTheRemovedV1WriterFlags(t *testing.T) {
-	flushArgs := []string{"-glob-only", "-manifest-template=manifest/{{.SchemaID}}.json", "-manifest-prefix=m"}
-	for _, arg := range flushArgs {
-		_, err := parseCDCFlushFlags([]string{"-s3-bucket=b", arg})
-		if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
-			t.Errorf("cdc-flush %s: err = %v, want the parser's refusal of an undefined flag", arg, err)
-		}
-	}
-	initArgs := []string{"-replace-delta", "-delta-prefix=delta", "-manifest-template=manifest/{{.SchemaID}}.json", "-manifest-prefix=m"}
-	for _, arg := range initArgs {
-		_, err := parseCDCInitFlags([]string{"-s3-bucket=b", "-schema-registry-table=t", "-schema-dir=/d", arg})
-		if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
-			t.Errorf("cdc-init %s: err = %v, want the parser's refusal of an undefined flag", arg, err)
-		}
-	}
-}
-
 // A PostgreSQL flush marks its whole batch in one statement, so -batch-size
 // above cdcv2.MaxMarkEntries is refused at parse time, naming the flag; on
 // Aurora DSQL the batch publishes in generations and any size parses.

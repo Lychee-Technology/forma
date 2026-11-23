@@ -72,8 +72,7 @@ func TestInitOfAnEmptySchemaPublishesAnEmptyGeneration(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	f.inTx(t, func(tx *sql.Tx) error {
-		_, err := publication.InitializeAwaitingInit(ctx, publication.SQLTx(tx), f.tables, schemaID)
-		return err
+		return f.initializeAwaitingInit(ctx, tx)
 	})
 	rep, err := f.writer(t).Init(ctx, schemaID, 1, &stager{f: f})
 	require.NoError(t, err)

@@ -161,7 +161,7 @@ func readPublicationRecord(ctx context.Context, db *sql.DB, entityMain string, s
 	snap, err := publication.Read(ctx, publication.DB(db), publication.TablesFor(entityMain), schemaID)
 	if errors.Is(err, publication.ErrNoRecord) {
 		return publication.Record{}, fmt.Errorf("schema %d has no publication record; init-db writes it when it registers the schema "+
-			"or runs the V2 cutover, and nothing of the schema is published until then: %w", schemaID, err)
+			"or recovers a lost record, and nothing of the schema is published until then: %w", schemaID, err)
 	}
 	if err != nil {
 		return publication.Record{}, fmt.Errorf("load the publication record of schema %d: %w", schemaID, err)
@@ -225,7 +225,7 @@ func refuseMovedEpoch(rec publication.Record, epochs map[int16]int64) error {
 func refuseUnflushable(rec publication.Record) error {
 	switch rec.State {
 	case publication.AwaitingInit:
-		return fmt.Errorf("schema %d at epoch %d awaits its first V2 cdc-init: run cdc-init for it; until it publishes, "+
+		return fmt.Errorf("schema %d at epoch %d awaits a cdc-init: run cdc-init for it; until it publishes, "+
 			"cdc-flush exports nothing of the schema, its rows stay unflushed and federated reads of it fail closed: %w",
 			rec.SchemaID, rec.Epoch, publication.ErrAwaitingInit)
 	case publication.Dropped:
@@ -240,7 +240,7 @@ func refuseUnflushable(rec publication.Record) error {
 func explainWriterError(tool string, schemaID int16, err error) error {
 	switch {
 	case errors.Is(err, publication.ErrAwaitingInit):
-		return fmt.Errorf("schema %d awaits its first V2 cdc-init; run cdc-init for it: %w", schemaID, err)
+		return fmt.Errorf("schema %d awaits a cdc-init; run cdc-init for it: %w", schemaID, err)
 	case errors.Is(err, cdcv2.ErrEpochChanged):
 		return fmt.Errorf("schema %d was dropped, or dropped and registered again, while %s ran; nothing it staged is visible, run it again: %w", schemaID, tool, err)
 	case errors.Is(err, publication.ErrDropped):

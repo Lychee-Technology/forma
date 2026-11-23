@@ -31,68 +31,6 @@ var ErrInvalidInput = errors.New("invalid input")
 // wrong. They report that the configured read surface, or the publication
 // state it reads, cannot answer the query. See docs/error-handling.md.
 
-// ErrManifestSchemaMismatch marks a manifest object whose recorded schema ID
-// disagrees with the schema being read. A manifest addresses one schema by path
-// convention alone; nothing downstream re-checks it — the parquet scan does not
-// filter rows by schema (files are per-schema by path) and the projection stamps
-// whatever it scans as the requested schema. So a path collision between two
-// schemas would not merely under-read, it would serve another schema's rows
-// under this schema's identity. Not degradable: cross-schema contamination is
-// the opposite of a partial answer.
-var ErrManifestSchemaMismatch = errors.New("manifest schema id does not match the schema being read")
-
-// ManifestSchemaMismatchError names both schema IDs and the manifest object, so
-// an operator can see which template or object is misaddressed.
-type ManifestSchemaMismatchError struct {
-	RequestedSchemaID int16
-	ManifestSchemaID  int16
-	Path              string
-}
-
-func (e *ManifestSchemaMismatchError) Error() string {
-	return fmt.Sprintf("manifest %s is stamped for schema %d but was loaded for schema %d; "+
-		"the manifest path template must resolve a distinct object per schema",
-		e.Path, e.ManifestSchemaID, e.RequestedSchemaID)
-}
-
-func (e *ManifestSchemaMismatchError) Unwrap() error { return ErrManifestSchemaMismatch }
-
-// ErrManifestUnstamped marks a manifest object that lists entries under
-// schema_id 0 (#522). A zero stamp is not "schema 0" (schema IDs are always
-// positive) and it is not a legacy format either: SchemaID has been on the
-// manifest, and set by every writer, since the manifest package's first
-// commit, so a zero stamp can only come from a hand-made or hand-edited
-// object. It proves nothing about which schema owns the listed entries, and
-// the two-probe template check cannot rule out a template that collides only
-// at schema IDs it never renders — so such a manifest may hold another
-// schema's tiers and is refused for every schema.
-//
-// It is a species of ErrManifestSchemaMismatch: the carrier unwraps to both
-// sentinels, so every classification keyed on the mismatch (redaction class,
-// non-degradable federated read) applies unchanged, while this sentinel tells
-// the remedy apart — confirm ownership and set schema_id on the object,
-// rather than fix the path template.
-var ErrManifestUnstamped = errors.New("manifest lists entries under schema_id 0 and cannot prove which schema owns them")
-
-// ManifestUnstampedError names the manifest object, the schema it was loaded
-// for, and how many entries it lists without a stamp.
-type ManifestUnstampedError struct {
-	RequestedSchemaID int16
-	Path              string
-	Entries           int
-}
-
-func (e *ManifestUnstampedError) Error() string {
-	return fmt.Sprintf("manifest %s was loaded for schema %d but has %d entries listed under schema_id 0; "+
-		"confirm the object belongs to schema %d and set schema_id before rerunning",
-		e.Path, e.RequestedSchemaID, e.Entries, e.RequestedSchemaID)
-}
-
-// Unwrap yields both sentinels: see ErrManifestUnstamped.
-func (e *ManifestUnstampedError) Unwrap() []error {
-	return []error{ErrManifestUnstamped, ErrManifestSchemaMismatch}
-}
-
 // ErrPublicationInconsistent marks a federated read of a schema whose
 // publication state cannot be answered from (docs/publication-protocol-v2.md,
 // "Readers"): no publication record, a record that is AWAITING_INIT or

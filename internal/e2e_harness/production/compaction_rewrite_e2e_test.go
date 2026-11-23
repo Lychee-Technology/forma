@@ -236,8 +236,8 @@ func TestCompactionRewriteEquivalence(t *testing.T) {
 // base copy from cdc-init and a newer update delta must collapse to the
 // single newest version, and the untouched row keeps its one copy. Under
 // Protocol V2 the init's handoff marks the rows it exported, so the flush
-// after it exports nothing and the V1 seed's equal-ver_ts base/delta pair
-// (#183/#210) no longer arises. RowsIn counts every copy; RowsOut counts
+// after it exports nothing, and no equal-ver_ts base/delta pair (#183/#210)
+// arises. RowsIn counts every copy; RowsOut counts
 // entities.
 func TestCompactionRewriteMultiVersionLWW(t *testing.T) {
 	cluster := SharedCluster(t)

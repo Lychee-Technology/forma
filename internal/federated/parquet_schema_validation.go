@@ -23,19 +23,14 @@ import (
 // corruption (unreadable footer) to the execution-path classifier.
 //
 // A validated path is cached so steady-state cost is one footer probe per new
-// object, and glob paths — expanded per query, since the match set changes as
-// objects land — hit the same cache through their concrete matches.
+// object.
 //
 // The cache is keyed by path AND by the manifest stamp the entry was validated
-// under (nil for a probe-validated path). Path alone would be wrong: Forma's
-// writers mint write-once keys (flush and compaction always did; init since
-// #416), but a rewrite under a listed path is still reachable — a pre-#416
-// init overwrote its deterministic {min}_{max}.parquet key in place, and an
-// operator repair can republish bytes under an existing key — and each
-// re-stamps the entry under the same key. A path-keyed cache would serve a
-// warmed server the pre-rewrite columns for the rest of its life. Adding the
-// stamp to the key makes the manifest rewrite the invalidation signal: same
-// stamp, same bytes, keep the entry; new stamp, re-validate.
+// under (nil for a probe-validated path). Every writer mints write-once keys,
+// so a listed key's bytes never change; keying on the stamp as well means
+// that if they ever did, under a manifest entry with a new stamp, the path
+// re-validates instead of a warmed server serving the old columns for the
+// rest of its life: same stamp, keep the entry; new stamp, re-validate.
 //
 // The cache stores each validated path's columns so a repeat query can
 // contribute them to the column union (#255) without a second probe. It has
@@ -114,9 +109,8 @@ func (v *parquetSchemaValidator) log() *zap.Logger {
 // inspects only the system columns, so a stamp that passes it while
 // UNDER-REPORTING the file's attribute columns contributes a short union with
 // complete still true, and #255 then augments a NULL alias for a column the
-// file really carries. Unlike the accepted glob skew, which self-heals on the
-// next query, that binder failure persists until the manifest entry is
-// corrected — but correcting it now suffices: the rewritten stamp is a new
+// file really carries. That binder failure persists until the manifest entry
+// is corrected, but correcting it suffices: the rewritten stamp is a new
 // cache key, so the fix takes effect on the next query without a restart.
 // Accepted (plan decision 4) — stamps are written from a write-time DESCRIBE
 // of the actual bytes, so under-reporting takes a corrupted or tampered

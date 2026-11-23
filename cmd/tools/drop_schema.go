@@ -114,7 +114,7 @@ func retireRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, target dro
 		return publication.Record{}, err
 	}
 	var locked bool
-	if err := tx.QueryRow(ctx, tryCutoverLockSQL, int32(id), int32(id)).Scan(&locked); err != nil {
+	if err := tx.QueryRow(ctx, trySchemaLockSQL, int32(id), int32(id)).Scan(&locked); err != nil {
 		return publication.Record{}, fmt.Errorf("take schema %d's lock: %w", id, err)
 	}
 	if !locked {

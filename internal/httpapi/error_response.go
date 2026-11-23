@@ -41,7 +41,6 @@ const (
 	// the client's one way to tell "this schema cannot be read as published"
 	// from an internal failure; the detail stays on the operator log line.
 	errorClassPublicationInconsistent = "publication_inconsistent"
-	errorClassManifestSchemaMismatch  = "manifest_schema_mismatch"
 	// errorClassParquetTypeIncompatible marks a federated read refused because
 	// a live parquet object stores an attribute in a form its current
 	// declaration cannot read losslessly (#732).
@@ -74,8 +73,6 @@ func errorClass(err error) string {
 	switch {
 	case errors.Is(err, forma.ErrPublicationInconsistent):
 		return errorClassPublicationInconsistent
-	case errors.Is(err, forma.ErrManifestSchemaMismatch):
-		return errorClassManifestSchemaMismatch
 	case errors.Is(err, forma.ErrParquetTypeIncompatible):
 		return errorClassParquetTypeIncompatible
 	// Same precedence as classifyManagerError: an unknown commit is never
@@ -130,25 +127,6 @@ func errorSchemaID(err error) int16 {
 	var inconsistent *forma.PublicationConsistencyError
 	if errors.As(err, &inconsistent) {
 		return inconsistent.SchemaID
-	}
-
-	// RequestedSchemaID, not ManifestSchemaID. The client asked to read the
-	// requested schema; the manifest stamp is a foreign id found on the object,
-	// belonging to whichever *other* schema misaddressed it. Returning that would
-	// answer a request about schema A with schema B's identity — and disclose the
-	// existence of an unrelated schema to a caller who never named it. The
-	// operator gets both ids on the log line, which is where the collision is
-	// diagnosed.
-	var mismatch *forma.ManifestSchemaMismatchError
-	if errors.As(err, &mismatch) {
-		return mismatch.RequestedSchemaID
-	}
-
-	// The unstamped species (#522) carries only the requested id: the
-	// object names no schema at all, so there is nothing foreign to leak.
-	var unstamped *forma.ManifestUnstampedError
-	if errors.As(err, &unstamped) {
-		return unstamped.RequestedSchemaID
 	}
 
 	var incompatible *forma.ParquetTypeIncompatibleError

@@ -1,6 +1,7 @@
 package compaction
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 
@@ -31,6 +32,10 @@ type WriterConfig struct {
 	// compaction that lost to a rival compaction or cdc-init reads the head
 	// and merges again.
 	Compaction cdc.CompactionConfig
+	// PublishFailpoint, when non-nil, is called at every boundary of a
+	// publication the V2 writer passes (internal/cdcv2 Point names). Test seam
+	// mirroring cdc.CDCConfig.PublishFailpoint; always nil in production.
+	PublishFailpoint func(ctx context.Context, point string) error
 }
 
 // NewWriter builds the V2 writer a compactor publishes through. It marks no
@@ -43,11 +48,15 @@ func NewWriter(cfg WriterConfig) (*cdcv2.Writer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build the compaction manifest cache: %w", err)
 	}
-	w, err := cdcv2.New(cdcv2.Config{
+	wcfg := cdcv2.Config{
 		DB: cfg.DB, Engine: cfg.Engine, EntityMain: cfg.EntityMain,
 		Layout: cfg.Layout, Store: cfg.Store, Cache: cache,
 		Restarts: cfg.Compaction.WithDefaults().MaxRetries,
-	})
+	}
+	if hook := cfg.PublishFailpoint; hook != nil {
+		wcfg.Failpoint = func(ctx context.Context, p cdcv2.Point) error { return hook(ctx, string(p)) }
+	}
+	w, err := cdcv2.New(wcfg)
 	if err != nil {
 		return nil, fmt.Errorf("build the compaction writer: %w", err)
 	}

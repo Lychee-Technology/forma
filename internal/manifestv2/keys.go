@@ -31,11 +31,10 @@ const manifestsDir = "_manifests"
 // The prefix's trailing slashes are dropped, all of them, so "data", "data/"
 // and "data//" build the same keys, and its parsers read back the prefix in
 // that canonical form; the rest of Prefix is used verbatim. An empty Prefix
-// (or one of slashes only) yields a key that starts with "/", as the V1 key
-// builders do (internal/cdc, #516), and both stores hold such a key under its
+// (or one of slashes only) yields a key that starts with "/" (#516), and both stores hold such a key under its
 // own name (FSStore escapes it rather than strip the slash). S3 accepts such
 // a key; a server that refuses it (the RustFS e2e harness answers 400) cannot
-// back an empty prefix, for V2 as for V1. Correctness never depends on the
+// back an empty prefix. Correctness never depends on the
 // layout, since a reader fetches the one key the record names and scans the
 // keys its manifest lists. Verify still refuses a key that does not spell the
 // identity it belongs to, which catches a manifest that lists another
@@ -57,7 +56,8 @@ func (l Layout) SchemaPrefix(schemaID int16) string {
 }
 
 // Owns reports whether key is a canonical V2 manifest or parquet key built by
-// l for schemaID. Keys written by V1 tools or other deployments return false.
+// l for schemaID. Keys no V2 writer of l builds (another deployment's, or a
+// hand-made object's) return false.
 func (l Layout) Owns(schemaID int16, key string) bool {
 	if k, err := parseManifestKey(key); err == nil {
 		return k.layout.root() == l.root() && k.schemaID == schemaID

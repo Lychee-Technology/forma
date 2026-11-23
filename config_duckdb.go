@@ -3,7 +3,6 @@ package forma
 import (
 	"fmt"
 	"strings"
-	"text/template"
 	"time"
 )
 
@@ -102,92 +101,6 @@ func (d DuckDBConfig) ValidateParquetRead() error {
 			Message: "must be set when duckdb is enabled: the federated reader scans the published generations in it",
 		}
 	}
-	return nil
-}
-
-// ValidateManifestPathTemplate applies the manifest template rules to a
-// template supplied to a V1 tool — the compactor's and manifest-reconcile's
-// --manifest-template (#371 review). field names the setting in the returned
-// ConfigError. Every V1 manifest writer that resolves a per-schema path must
-// reject a template that collapses schemas onto one object: a collided
-// template would otherwise rewrite another schema's manifest. The whitespace
-// rule comes first: the resolver renders the raw value, so a padded template addresses a different
-// object than the trimmed one an operator reads in the config.
-func ValidateManifestPathTemplate(field, pathTemplate string) error {
-	if err := rejectPaddedValue(field, pathTemplate); err != nil {
-		return err
-	}
-	if pathTemplate == "" {
-		return &ConfigError{Field: field, Message: "must not be empty"}
-	}
-	tmpl, err := template.New("manifest").Parse(pathTemplate)
-	if err != nil {
-		return &ConfigError{
-			Field:   field,
-			Message: "must be a valid text/template path template: " + err.Error(),
-		}
-	}
-	return probeManifestTemplate(field, tmpl)
-}
-
-// probeManifestTemplate renders the parsed template against two probe schema
-// IDs and rejects anything that cannot address a per-schema manifest object.
-// Parsing alone is not enough (#300): a case-typo field like {{.SchemaId}}
-// parses fine and renders "<no value>", so every schema would resolve to the
-// same bogus key, every manifest would load empty, and reads would fall back
-// or come up short with no error anywhere — the silent loss manifest-driven
-// reads exist to eliminate.
-//
-// Two probes rather than one, because a single render cannot tell a collapsed
-// template from a working one: {{.SchemaId}}, a constant path, and a
-// printf-style "%d" all render *something*, and what condemns them is that
-// they render the SAME something for different schemas.
-//
-// The probe data shape mirrors manifest.PathResolver.Resolve exactly — a
-// map[string]any keyed "SchemaID", not a struct — so a template accepted here
-// renders identically in production. missingkey=error turns the map miss into
-// a precise error naming the offending field; the "<no value>" check stays as
-// a backstop for the shapes that option does not cover (e.g. an explicit nil).
-func probeManifestTemplate(field string, tmpl *template.Template) error {
-	const probeA, probeB = int16(1), int16(2)
-	reject := func(msg string) error {
-		return &ConfigError{Field: field, Message: msg}
-	}
-
-	render := func(schemaID int16) (string, error) {
-		var buf strings.Builder
-		if err := tmpl.Option("missingkey=error").Execute(&buf, map[string]any{"SchemaID": schemaID}); err != nil {
-			return "", err
-		}
-		return buf.String(), nil
-	}
-
-	// Every probe output is screened, not just the first: a template can render
-	// a usable path for one schema and an empty one — or "<no value>" — for
-	// another (`{{if eq .SchemaID 1}}manifest/1.json{{end}}`, or an `index`
-	// lookup that sidesteps missingkey=error). Those outputs differ, so an
-	// equality-only second check would pass them and leave the other schemas
-	// resolving nothing at runtime.
-	rendered := make([]string, 0, 2)
-	for _, schemaID := range []int16{probeA, probeB} {
-		out, err := render(schemaID)
-		if err != nil {
-			return reject("must render against the manifest resolver's data (a \"SchemaID\" key): " + err.Error())
-		}
-		if out == "" {
-			return reject(fmt.Sprintf("must render a non-empty manifest path for every schema; rendered nothing for schema %d", schemaID))
-		}
-		if strings.Contains(out, "<no value>") {
-			return reject(fmt.Sprintf("renders \"<no value>\" for schema %d; the only available field is .SchemaID (check spelling and case)", schemaID))
-		}
-		rendered = append(rendered, out)
-	}
-
-	if rendered[0] == rendered[1] {
-		return reject("must vary by schema: it rendered " + rendered[0] +
-			" for two different schema IDs, so every schema would share one manifest object (use .SchemaID)")
-	}
-
 	return nil
 }
 

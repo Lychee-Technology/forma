@@ -14,10 +14,6 @@ import (
 // stubS3 always succeeds, standing in for the real client.
 type stubS3 struct{}
 
-func (s *stubS3) CopyObject(_ context.Context, _ *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
-	return &s3.CopyObjectOutput{}, nil
-}
-
 func (s *stubS3) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
 	return &s3.DeleteObjectOutput{}, nil
 }
@@ -69,15 +65,15 @@ func TestFaultInjectingS3MatchesOpAndKey(t *testing.T) {
 
 func TestFaultInjectingS3SkipMatches(t *testing.T) {
 	ctx := context.Background()
-	f := &FaultInjectingS3{Inner: &stubS3{}, Fault: S3Fault{Op: S3OpCopy, SkipMatches: 1}}
+	f := &FaultInjectingS3{Inner: &stubS3{}, Fault: S3Fault{Op: S3OpPut, SkipMatches: 1}}
 
-	if _, err := f.CopyObject(ctx, &s3.CopyObjectInput{Key: aws.String("a.parquet")}); err != nil {
+	if _, err := f.PutObject(ctx, &s3.PutObjectInput{Key: aws.String("a.parquet")}); err != nil {
 		t.Fatalf("first match must be skipped, got %v", err)
 	}
-	if _, err := f.CopyObject(ctx, &s3.CopyObjectInput{Key: aws.String("b.parquet")}); err == nil {
+	if _, err := f.PutObject(ctx, &s3.PutObjectInput{Key: aws.String("b.parquet")}); err == nil {
 		t.Fatal("second match must fail")
 	}
-	if _, err := f.CopyObject(ctx, &s3.CopyObjectInput{Key: aws.String("c.parquet")}); err == nil {
+	if _, err := f.PutObject(ctx, &s3.PutObjectInput{Key: aws.String("c.parquet")}); err == nil {
 		t.Fatal("later matches must keep failing")
 	}
 	if f.Injected() != 2 {

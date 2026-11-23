@@ -34,14 +34,6 @@ func (e *discrepancyError) Error() string {
 
 func (e *discrepancyError) ExitCode() int { return 2 }
 
-// errRepairRemoved refuses --repair. Under Protocol V2 an object no
-// generation lists is staging that never committed or garbage, never lost
-// data, so there is nothing to adopt; and a lost manifest or object of a
-// committed generation cannot be rebuilt from S3. The recovery is a re-init.
-var errRepairRemoved = errors.New("--repair is removed under Protocol V2: an unlisted object is uncommitted staging or garbage, " +
-	"never lost data, and a lost manifest or object cannot be rebuilt from S3; re-initialize the schema with cdc-init instead " +
-	"(docs/manifest-reconcile.md)")
-
 // Defaults of the protocol's time parameters (docs/manifest-reconcile.md,
 // "Retention"). The grace must cover the reader's pass deadline plus the
 // clock margin, and the orphan age the writers' staging budget plus it.
@@ -103,7 +95,6 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 			"addressing --s3-use-path chooses), --s3-bucket and "+
 			"--data-prefix, the target its writers publish into, and exit. Garbage collection deletes nothing under any other target. Run it once, with the writers' own values and environment; "+
 			"an existing binding to another target is kept and the run fails")
-	repair := fs.Bool("repair", false, "Removed under Protocol V2; refused. Re-initialize with cdc-init instead")
 	fs.BoolVar(&opts.run.VerifyChecksums, "verify-checksums", false,
 		"Hash every object a retained generation lists and compare it with its manifest's sha256 and size (one full GET per object)")
 	fs.DurationVar(&opts.run.RetentionGrace, "retention-grace", defaultRetentionGrace,
@@ -118,9 +109,6 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 			return nil, nil
 		}
 		return nil, err
-	}
-	if *repair {
-		return nil, errRepairRemoved
 	}
 	if opts.bindStorage && *gc {
 		return nil, errors.New("--bind-storage binds and exits; run --gc separately")

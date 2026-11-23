@@ -39,10 +39,11 @@ func (h *lockHolder) release(t *testing.T, id int16) {
 }
 
 // Under contention a registration commits with its record or not at all,
-// while a schema registered before keeps the cutover's skip-and-retry.
-// outbox_message (100) and timer (101) were registered before the V2
-// cutover, so they have no record; orders is a new schema file, which this
-// run registers as 102.
+// while a schema registered before keeps its skip-and-retry.
+// outbox_message (100) and timer (101) were registered before and lost their
+// records, lifecycle epochs and history (emptyPublicationRecords), so they
+// have no record; orders is a new schema file, which this run registers as
+// 102.
 //
 //   - With 102's lock held, init-db fails and commits nothing: no registry
 //     row for orders, and no record for anyone, since the run is one
@@ -82,7 +83,7 @@ func TestInitDBRegistrationCommitsWithItsRecordOrNotAtAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init-db with only a pre-existing schema's lock held: %v\n%s", err, out)
 	}
-	requireStates(t, "registration beside a skipped cutover", tg.records(t), map[string]publication.State{
+	requireStates(t, "registration beside a skipped schema", tg.records(t), map[string]publication.State{
 		"orders": publication.Unpublished, "timer": publication.Unpublished, "outbox_message": "",
 	})
 	if ids, _ := loadRegisteredSchemaIDs(context.Background(), tg.pool, tg.opts.schemaTable); ids["orders"] != ordersID {
@@ -96,7 +97,7 @@ func TestInitDBRegistrationCommitsWithItsRecordOrNotAtAll(t *testing.T) {
 	if out, err := tg.run(t); err != nil {
 		t.Fatalf("init-db after the lock was released: %v\n%s", err, out)
 	}
-	requireStates(t, "retried cutover", tg.records(t), map[string]publication.State{
+	requireStates(t, "retried schema", tg.records(t), map[string]publication.State{
 		"orders": publication.Unpublished, "timer": publication.Unpublished, "outbox_message": publication.Unpublished,
 	})
 }

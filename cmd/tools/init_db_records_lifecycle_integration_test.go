@@ -236,8 +236,8 @@ func TestDropSchemaRetiresPurgesAndResumes(t *testing.T) {
 	}
 }
 
-// A V2 record lost while its generation history survives is not an
-// untouched V1 schema: a record at epoch 1 and generation 0 would publish
+// A record lost while its generation history survives is not a new
+// registration: a record at epoch 1 and generation 0 would publish
 // generation 1 again. init-db recovers it, under the schema lock, at the
 // epoch after the history's with the history's highest generation as its
 // counter: AWAITING_INIT for a schema still registered, and DROPPED then

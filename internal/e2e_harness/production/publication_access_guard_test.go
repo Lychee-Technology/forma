@@ -16,9 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// v1ManifestImport is the V1 manifest package, which no test reaches.
-const v1ManifestImport = "github.com/lychee-technology/forma/internal/manifest"
-
 // publicationImports are the Protocol V2 packages that hold a schema's
 // published inventory: its record and its immutable manifests.
 var publicationImports = map[string]bool{
@@ -67,8 +64,6 @@ var publicationHelperTests = map[string]bool{
 //     it: cdc-flush and the cdc-init handoff take rows out of the dirty set
 //     by marking their entries, and handoff.go's helpers only check that
 //     they did.
-//   - No test file imports the V1 manifest package. Nothing in the product
-//     reads a V1 manifest any more.
 //   - No test file but publicationHelperTests imports internal/manifestv2 or
 //     internal/publication. E2E scenarios observe the published inventory
 //     through manifest_access.go and publication_state.go, and stage a fault
@@ -122,7 +117,7 @@ func plantedStandIns() (map[string]string, []string) {
 	v2Import := "github.com/lychee-technology/forma/internal/manifestv2"
 	planted := map[string]string{
 		"handoff.go":        pkg + "const q = \"" + stmt + "\"\n\nvar _ = \"DELETE FROM \" + e.Tables.ChangeLog\n",
-		"cdc.go":            pkg + "import _ \"" + v1ManifestImport + "\"\n\nconst q = `" + stmt + " WHERE flushed_at <> 0`\n",
+		"cdc.go":            pkg + "const q = `" + stmt + " WHERE flushed_at <> 0`\n",
 		"lower_e2e_test.go": "//go:build e2e\n\n" + pkg + "const q = \"delete\\n\\tfrom " + table + "\"\n",
 		"trunc_e2e_test.go": pkg + "const q = `" + trunc + "`\n",
 		"qualified_test.go": pkg + "const q = `" + qualified + "`\n\nconst r = `" + quoted + "`\n",
@@ -131,11 +126,10 @@ func plantedStandIns() (map[string]string, []string) {
 		"format_e2e_test.go": pkg + "var q = fmt.Sprintf(\"SELECT %d, 100%%; DELETE FROM %s WHERE schema_id = %d\", " +
 			"1, sqlutil.SanitizeIdentifier(env.Tables.ChangeLog), 2)\n\n" +
 			"var r = fmt.Sprintf(\"DELETE FROM %s WHERE schema_id = %d\", env.Tables.EntityMain, env.Tables.ChangeLog)\n",
-		"import_e2e_test.go":          pkg + "import m \"" + v1ManifestImport + "\"\n\nvar _ = m.FilterByTier\n",
 		"record_e2e_test.go":          pkg + "import p \"" + pubImport + "\"\n\nvar _ = p.Publish\n",
 		"generation_e2e_test.go":      pkg + "import (\n\tm \"" + v2Import + "\"\n\tp \"" + pubImport + "\"\n)\n\nvar _, _ = m.Fetch, p.Read\n",
 		"publication_faults_test.go":  pkg + "import p \"" + pubImport + "\"\n\nvar _ = p.Publish\n",
-		"faults_test.go":              pkg + "import _ \"" + v1ManifestImport + "\"\n\nimport _ \"" + v2Import + "\"\n",
+		"faults_test.go":              pkg + "import _ \"" + v2Import + "\"\n",
 		"published_e2e_test.go":       pkg + "func f() { for _, e := range m.Files { _ = e.Path }; x := m.Files; _ = x }\n",
 		"sibling_e2e_test.go":         pkg + "const q = \"" + stmt + "_archive\"\n\nconst r = \"DELETE FROM public." + table + "_archive\"\n",
 		"manifest_load_gate_test.go":  pkg + "const q = \"SELECT 1\"\n",
@@ -144,13 +138,11 @@ func plantedStandIns() (map[string]string, []string) {
 	want := []string{
 		`cdc.go clears change_log: "` + stmt + ` WHERE flushed_at <> 0"`,
 		`concat_e2e_test.go clears change_log: "DELETE FROM " + Tables.ChangeLog`,
-		"faults_test.go imports " + v1ManifestImport,
 		`format_e2e_test.go clears change_log: "SELECT %d, 100%%; DELETE FROM %s WHERE schema_id = %d" with Tables.ChangeLog`,
 		"generation_e2e_test.go imports " + v2Import,
 		"generation_e2e_test.go imports " + pubImport,
 		`handoff.go clears change_log: "DELETE FROM " + Tables.ChangeLog`,
 		`handoff.go clears change_log: "` + stmt + `"`,
-		"import_e2e_test.go imports " + v1ManifestImport,
 		`lower_e2e_test.go clears change_log: "delete\n\tfrom ` + table + `"`,
 		"manifest_load_gate_test.go is exempt from the publication import rule but imports neither package",
 		`qualified_test.go clears change_log: "` + qualified + `"`,
@@ -170,7 +162,7 @@ func standInViolations(files []string) ([]string, error) {
 	for _, name := range files {
 		file, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
 		if err != nil {
-			return nil, fmt.Errorf("parse %s for V1 stand-ins: %w", name, err)
+			return nil, fmt.Errorf("parse %s for publication stand-ins: %w", name, err)
 		}
 		base := filepath.Base(name)
 		violations = append(violations, importViolations(base, file)...)
@@ -191,8 +183,6 @@ func importViolations(base string, file *ast.File) []string {
 		p, err := strconv.Unquote(spec.Path.Value)
 		switch {
 		case err != nil:
-		case p == v1ManifestImport:
-			violations = append(violations, base+" imports "+p)
 		case publicationImports[p]:
 			publicationImported = true
 			if !publicationHelperTests[base] {

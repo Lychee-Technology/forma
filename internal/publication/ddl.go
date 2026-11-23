@@ -13,11 +13,11 @@
 //
 // init-db creates the three tables from Statements (#895) and, in the
 // registration transaction, each schema's record (Initialize, Activate, and
-// at the V2 cutover InitializeAwaitingInit). cdc-flush and cdc-init publish
-// through internal/cdcv2, and the federated reader reads the record in its
-// pass snapshot through internal/federatedv2 (#896). The compactor (#890) and
-// garbage collection (#891) move onto it next; until then they stay on V1 and
-// must not run against a V2 schema. Only the owners
+// for a lost record InitializeAfterLoss). cdc-flush, cdc-init and the
+// compactor publish through internal/cdcv2, the federated reader reads the
+// record in its pass snapshot through internal/federatedv2, and garbage
+// collection retires and forgets generations through internal/reconcile.
+// Only the owners
 // TestOnlyTheProtocolOwnersMoveAPublicationRecord names may move a record.
 //
 // The tables keep plain rows: no JSONB, arrays, sequences, enums, CHECK
@@ -124,8 +124,8 @@ const generationDDL = `CREATE TABLE IF NOT EXISTS %s (
 // epochDDL is the durable lifecycle identity of each schema id, kept apart
 // from the record so that it outlives a lost record row: epoch is the highest
 // lifecycle epoch any record of the id has carried. Every transition that
-// moves a record's epoch (Initialize, InitializeAwaitingInit, Reset,
-// Activate, InitializeAfterLoss) raises it to the new epoch in its own
+// moves a record's epoch (Initialize, Reset, Activate,
+// InitializeAfterLoss) raises it to the new epoch in its own
 // transaction, and refuses to commit unless the new epoch is above it, so it
 // only grows and no record is ever written at an epoch a record of the id
 // carried before. A lost record is recovered above it (recovery.go): no

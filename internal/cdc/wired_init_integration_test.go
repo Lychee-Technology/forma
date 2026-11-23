@@ -14,9 +14,10 @@ import (
 	"github.com/lychee-technology/forma/internal/publication"
 )
 
-// onboardingFixture is a schema with history the cutover left AWAITING_INIT:
-// two live rows with unflushed entries, one live row whose entry a V1 flush
-// marked, and one deleted row whose tombstone is unflushed.
+// onboardingFixture is an AWAITING_INIT schema, as init-db recovers a lost
+// record with generation history: two live rows with unflushed entries, one
+// live row whose entry an earlier flush marked, and one deleted row whose
+// tombstone is unflushed.
 type onboardingFixture struct {
 	*wiredFixture
 	live          []uuid.UUID

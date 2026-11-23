@@ -2,9 +2,8 @@
 /**
  * Clean CDC S3 state for repeatable runs.
  *
- * Deletes every object under the CDC-managed prefixes: the configured data
- * prefix (S3_PREFIX, where cdc-flush and cdc-init publish their Protocol V2
- * generations) and the legacy delta/, base/ and manifest/ prefixes.
+ * Deletes every object under the configured data prefix (S3_PREFIX, where
+ * cdc-flush and cdc-init publish their Protocol V2 generations).
  * Destructive — run only against a test bucket. Not part of the default
  * `bun run test` chain; invoke explicitly.
  *

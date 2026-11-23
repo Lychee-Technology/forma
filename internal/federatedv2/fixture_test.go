@@ -181,18 +181,20 @@ func (f *fixture) write(t *testing.T, r row, changedAt int64) {
 	require.NoError(t, err)
 }
 
-// initialize writes the schema's record as registration does.
+// initialize writes the schema's record as registration does, then moves it
+// to state: AWAITING_INIT is the state init-db recovers a lost record with
+// generation history in.
 func (f *fixture) initialize(t *testing.T, state publication.State) {
 	t.Helper()
 	tx, err := f.pool.Begin(f.ctx)
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback(f.ctx) }()
-	init := publication.Initialize
-	if state == publication.AwaitingInit {
-		init = publication.InitializeAwaitingInit
-	}
-	_, err = init(f.ctx, publication.PgxTx(tx), f.pub, schemaID)
+	_, err = publication.Initialize(f.ctx, publication.PgxTx(tx), f.pub, schemaID)
 	require.NoError(t, err)
+	if state != publication.Unpublished {
+		_, err = tx.Exec(f.ctx, "UPDATE "+f.pub.Record+" SET state = $1 WHERE schema_id = $2", string(state), schemaID)
+		require.NoError(t, err)
+	}
 	require.NoError(t, tx.Commit(f.ctx))
 }
 

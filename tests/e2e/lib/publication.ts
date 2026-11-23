@@ -155,14 +155,11 @@ export function publishedSchemaIds(records: Map<number, PublicationRecord>): num
 }
 
 /**
- * The prefixes an S3 reset clears: the configured data prefix, where the V2
- * writers publish, and the legacy delta/, base/ and manifest/ prefixes, each
- * once and without trailing slashes. An empty data prefix (the bucket root)
- * is never one of them.
+ * The prefixes an S3 reset clears: the configured data prefix, where the
+ * writers publish, without trailing slashes. An empty data prefix (the bucket
+ * root) is never cleared.
  */
 export function cleanPrefixes(dataPrefix: string): string[] {
-  const prefixes = [dataPrefix, 'delta', 'base', 'manifest']
-    .map((p) => p.replace(/\/+$/, ''))
-    .filter((p) => p !== '');
-  return [...new Set(prefixes)];
+  const prefix = dataPrefix.replace(/\/+$/, '');
+  return prefix === '' ? [] : [prefix];
 }

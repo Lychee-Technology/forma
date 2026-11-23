@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -116,20 +115,6 @@ func TestOpenMergeEngine_EnvCredentialsReachEngineValidation(t *testing.T) {
 	}
 	if called {
 		t.Fatal("merge engine must not load the AWS default credential chain (#329)")
-	}
-}
-
-// The V1 compactor's manifest and backoff flags are gone with no
-// compatibility path (#890): the compactor reads the schema's publication
-// record and publishes an immutable manifest under the -data-prefix layout,
-// and a lost compare-and-set rebases or restarts from the head rather than
-// backing off. The parser refuses each by name, so none is silently ignored.
-func TestParseCompactorFlagsRefusesTheRemovedV1Flags(t *testing.T) {
-	for _, arg := range []string{"-manifest-template=manifest/{{.SchemaID}}.json", "-manifest-prefix=m", "-base-backoff-ms=1", "-max-backoff-ms=1"} {
-		_, err := parseCompactorFlags([]string{"--schema-id", "7", "--s3-bucket", "bkt", arg})
-		if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
-			t.Errorf("compactor %s: err = %v, want the parser's refusal of an undefined flag", arg, err)
-		}
 	}
 }
 

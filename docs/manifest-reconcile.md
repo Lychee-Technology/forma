@@ -4,10 +4,10 @@
 under `--gc`, collects expired generations and horizon-fenced orphans
 (`docs/publication-protocol-v2.md`, "Garbage collection and reader lifetime").
 
-Protocol V2 has no `--repair` mode: an unlisted object under the V2 layout is
-uncommitted staging or garbage (never lost data), and a lost manifest or object
-of a committed generation cannot be rebuilt from S3. Passing `--repair` fails
-immediately.
+An unlisted object under the layout is uncommitted staging or garbage (never
+lost data), and a lost manifest or object of a committed generation cannot be
+rebuilt from S3, so the tool never adopts or rebuilds anything: the recovery of
+a lost generation is a `cdc-init`.
 
 ## Modes and exit codes
 
@@ -100,10 +100,10 @@ collection of expired/orphaned garbage.
 | `missing_retained_manifest` | Yes | Superseded retained manifest missing in S3. No impact on new reads; GC resumes once the generation expires. |
 | `invalid_manifest` | Yes | Retained or expired manifest failed SHA-256 or structural verification. Restore exact matching bytes or re-initialize with `cdc-init`. |
 | `foreign_manifest` | Yes | Manifest key outside `--data-prefix`. Re-run with the writers' `--data-prefix`. |
-| `awaiting_init` | No | Schema awaits `cdc-init` (readers fail closed until first V2 generation publishes). |
+| `awaiting_init` | No | Lost-record recovery left the schema awaiting `cdc-init`; its generation history survives. Run `cdc-init` for the schema: readers fail closed until its next generation publishes. |
 | `lost_object` | No | Listed parquet object confirmed missing by `HEAD`. If current, re-initialize with `cdc-init` (reads fail closed); if superseded, expires after grace. |
 | `corrupt_object` | No | `--verify-checksums` found SHA-256 or size divergence. Readers do not hash parquet files and may return incorrect results or scan errors; if current, re-initialize with `cdc-init`. |
-| `unrecognized_object` | No | Key not built by V2 writers (e.g. V1 leftovers). Never deleted by GC; remove manually after verification. |
+| `unrecognized_object` | No | Key the layout's writers do not build (e.g. hand-made or foreign objects). Never deleted by GC; remove manually after verification. |
 
 ## Fresh-epoch recovery and the recovery fence
 

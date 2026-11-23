@@ -15,9 +15,9 @@ import (
 // PausingS3 wraps the cluster's real S3 client and blocks the first call
 // matching Op until Resume is called, holding a real CDC flush
 // open mid-pipeline so a test can mutate rows inside the race window (#182).
-// Pausing on S3OpCopy suspends the flush after dirty-ID selection, snapshot
-// capture, and the DuckDB export, but before MarkFlushedVersions — the
-// window the exact listed-version mark guard protects (#274).
+// Pausing on S3OpPut suspends the flush after dirty-ID selection, snapshot
+// capture, and the DuckDB export, but before the publication commits and
+// marks its entries.
 //
 // Only the first matching call pauses; later matches pass straight through.
 // The paused call also unblocks when its context is cancelled, so a timed-out
@@ -27,8 +27,8 @@ type PausingS3 struct {
 	Op    S3Op
 	// KeyContains narrows the match to keys containing this substring (empty
 	// matches any key). Needed when the paused pipeline issues several calls
-	// of the same op — e.g. the compaction rewrite copies its new base parquet
-	// before the manifest PutObject a test wants to hold open (#188).
+	// of the same op — e.g. a writer puts its parquet objects before the
+	// manifest PutObject a test wants to hold open.
 	KeyContains string
 
 	reached    chan struct{}
@@ -88,18 +88,6 @@ func (p *PausingS3) intercept(ctx context.Context, op S3Op, key string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func (p *PausingS3) CopyObject(ctx context.Context, in *s3.CopyObjectInput, optFns ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
-	key := aws.ToString(in.Key)
-	if err := p.intercept(ctx, S3OpCopy, key); err != nil {
-		return nil, fmt.Errorf("pause CopyObject %q: %w", key, err)
-	}
-	out, err := p.Inner.CopyObject(ctx, in, optFns...)
-	if err != nil {
-		return nil, fmt.Errorf("s3 CopyObject %q: %w", key, err)
-	}
-	return out, nil
 }
 
 func (p *PausingS3) DeleteObject(ctx context.Context, in *s3.DeleteObjectInput, optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {

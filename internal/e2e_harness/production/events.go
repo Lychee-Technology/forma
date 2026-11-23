@@ -131,6 +131,19 @@ func (e *Env) Events() []*Event {
 	return e.events
 }
 
+// ResetSchemaEvents drops every recorded event belonging to schema from the
+// oracle event log, modelling a schema drop and purge so subsequent oracle
+// comparisons reflect only rows created in the new epoch.
+func (e *Env) ResetSchemaEvents(schema SchemaRef) {
+	kept := make([]*Event, 0, len(e.events))
+	for _, ev := range e.events {
+		if ev.Schema.ID != schema.ID {
+			kept = append(kept, ev)
+		}
+	}
+	e.events = kept
+}
+
 // ExecSQL is the failure-matrix escape hatch (for #179/#181): it executes
 // raw SQL against the per-test database and fails the test on error. Use it
 // to inject states production code cannot produce through its API. Clearing

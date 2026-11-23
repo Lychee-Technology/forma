@@ -3,9 +3,11 @@
 package production
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"slices"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/google/uuid"
 
 	"github.com/lychee-technology/forma/internal/manifestv2"
@@ -310,4 +313,182 @@ func redropSchema(ctx context.Context, t *testing.T, env *Env, schema SchemaRef)
 		}
 	}
 	return rec
+}
+
+// dropSchemaRecord transitions schema's publication record to DROPPED via
+// publication.Reset, returning the new epoch and generation counter.
+func dropSchemaRecord(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) (epoch, gen int64) {
+	t.Helper()
+	rec := runRecordTransition(ctx, t, env, schema, func(tx publication.Tx, tables publication.Tables, cur publication.Record) (publication.Record, error) {
+		return publication.Reset(ctx, tx, tables, cur)
+	})
+	return rec.Epoch, rec.Generation
+}
+
+// readSchemaRecordState reads schema's current publication record state,
+// epoch, and generation counter without exposing internal/publication types
+// to e2e test files.
+func readSchemaRecordState(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) (state string, epoch, gen int64) {
+	t.Helper()
+	rec, err := env.readRecord(ctx, schema.ID)
+	if err != nil {
+		t.Fatalf("read record state for %s (%d): %v", schema.Name, schema.ID, err)
+	}
+	return string(rec.State), rec.Epoch, rec.Generation
+}
+
+func runRecordTransition(ctx context.Context, t *testing.T, env *Env, schema SchemaRef,
+	fn func(publication.Tx, publication.Tables, publication.Record) (publication.Record, error)) publication.Record {
+	t.Helper()
+	tables := publication.TablesFor(env.Tables.EntityMain)
+	tx, err := env.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin record transition for %s: %v", schema.Name, err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	snap, err := publication.Read(ctx, publication.PgxTx(tx), tables, schema.ID)
+	if err != nil {
+		t.Fatalf("read record for %s: %v", schema.Name, err)
+	}
+	rec, err := fn(publication.PgxTx(tx), tables, snap.Record)
+	if err != nil {
+		t.Fatalf("transition record for %s: %v", schema.Name, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit record transition for %s: %v", schema.Name, err)
+	}
+	return rec
+}
+
+// deletePublicationRecord removes schema's publication record row to simulate
+// a missing record (ErrNoRecord) for fail-closed reader tests.
+func deletePublicationRecord(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
+	t.Helper()
+	tables := publication.TablesFor(env.Tables.EntityMain)
+	if _, err := env.Pool.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE schema_id = $1", tables.Record), schema.ID); err != nil {
+		t.Fatalf("delete publication record for %s: %v", schema.Name, err)
+	}
+}
+
+// forceAwaitingInitRecord rewrites schema's publication record into the
+// AWAITING_INIT state, in which init-db recovers a lost record with
+// generation history, for fail-closed reader tests.
+func forceAwaitingInitRecord(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
+	t.Helper()
+	tables := publication.TablesFor(env.Tables.EntityMain)
+	q := fmt.Sprintf(
+		"UPDATE %s SET state = $1, parent_generation = 0, manifest_key = '', manifest_sha256 = '', lineage = NULL WHERE schema_id = $2",
+		tables.Record,
+	)
+	if _, err := env.Pool.Exec(ctx, q, string(publication.AwaitingInit), schema.ID); err != nil {
+		t.Fatalf("force AWAITING_INIT for %s: %v", schema.Name, err)
+	}
+}
+
+// pointRecordAtStaleManifest repoints schema's current publication record at an
+// older generation's manifest key and digest while keeping the newer
+// generation/token, proving manifest identity verification catches stale pointers.
+func pointRecordAtStaleManifest(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, stale *Manifest) {
+	t.Helper()
+	tables := publication.TablesFor(env.Tables.EntityMain)
+	q := fmt.Sprintf("UPDATE %s SET manifest_key = $1, manifest_sha256 = $2 WHERE schema_id = $3", tables.Record)
+	if _, err := env.Pool.Exec(ctx, q, stale.Key, stale.SHA256, schema.ID); err != nil {
+		t.Fatalf("point record of %s at stale manifest %s: %v", schema.Name, stale.Key, err)
+	}
+}
+
+// publishIllicitEmptyFlushManifest commits a valid-digest kind=flush manifest
+// with an empty file list directly, bypassing manifestv2's writer guard so the
+// reader's fail-closed check against empty flush generations is exercised.
+func publishIllicitEmptyFlushManifest(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
+	t.Helper()
+	tables := publication.TablesFor(env.Tables.EntityMain)
+	tx, err := env.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin empty-flush publish for %s: %v", schema.Name, err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	snap, err := publication.Read(ctx, publication.PgxTx(tx), tables, schema.ID)
+	if err != nil {
+		t.Fatalf("read record for %s: %v", schema.Name, err)
+	}
+	cur := snap.Record
+	lineage := cur.Lineage
+	if lineage == uuid.Nil {
+		lineage = uuid.New()
+	}
+	h, err := manifestv2.Stage(cur, publication.KindFlush, lineage, uuid.New())
+	if err != nil {
+		t.Fatalf("stage empty-flush header for %s: %v", schema.Name, err)
+	}
+	doc := manifestv2.Manifest{
+		Format: publication.ManifestFormat, SchemaID: h.SchemaID, Epoch: h.Epoch, Generation: h.Generation,
+		ParentGeneration: h.ParentGeneration, Lineage: h.Lineage, Token: h.Token, Kind: publication.KindFlush,
+		Files: []manifestv2.File{},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal empty-flush manifest: %v", err)
+	}
+	sum := sha256.Sum256(raw)
+	digest := hex.EncodeToString(sum[:])
+	key := env.manifestLayout().ManifestKey(h.SchemaID, h.Epoch, h.Generation, h.Token)
+	if _, err := env.Cluster.S3.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(env.Cluster.Bucket), Key: aws.String(key), Body: bytes.NewReader(raw),
+	}); err != nil {
+		t.Fatalf("put empty-flush manifest %s: %v", key, err)
+	}
+	if _, err := publication.Publish(ctx, publication.PgxTx(tx), tables, cur, publication.Next{
+		Kind: h.Kind, Token: h.Token, ManifestKey: key, ManifestSHA256: digest, Lineage: h.Lineage,
+		StagedAt: snap.ReadAt, StagingBudget: testStagingBudget,
+	}); err != nil {
+		t.Fatalf("publish empty-flush generation for %s: %v", schema.Name, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit empty-flush generation for %s: %v", schema.Name, err)
+	}
+}
+
+// overwriteS3Object replaces key's bytes in S3 with payload (for testing corrupt
+// manifests or tampered parquet objects).
+func overwriteS3Object(ctx context.Context, t *testing.T, env *Env, key string, payload []byte) {
+	t.Helper()
+	if _, err := env.Cluster.S3.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(env.Cluster.Bucket), Key: aws.String(key), Body: bytes.NewReader(payload),
+	}); err != nil {
+		t.Fatalf("overwrite %s: %v", key, err)
+	}
+}
+
+// accessDeniedPublicationS3 wraps a PublicationS3Client and answers 403
+// AccessDenied for GetObject and/or HeadObject calls whose key matches
+// keyContains (or all keys when empty), modelling an S3 principal without
+// s3:ListBucket or denied object access.
+type accessDeniedPublicationS3 struct {
+	inner       PublicationS3Client
+	denyGet     bool
+	denyHead    bool
+	keyContains string
+}
+
+func (a *accessDeniedPublicationS3) matches(key string) bool {
+	return a.keyContains == "" || strings.Contains(key, a.keyContains)
+}
+
+func (a *accessDeniedPublicationS3) GetObject(ctx context.Context, in *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	if a.denyGet && a.matches(aws.ToString(in.Key)) {
+		return nil, &smithy.GenericAPIError{Code: "AccessDenied", Message: "Access Denied"}
+	}
+	return a.inner.GetObject(ctx, in, optFns...)
+}
+
+func (a *accessDeniedPublicationS3) PutObject(ctx context.Context, in *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	return a.inner.PutObject(ctx, in, optFns...)
+}
+
+func (a *accessDeniedPublicationS3) HeadObject(ctx context.Context, in *s3.HeadObjectInput, optFns ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	if a.denyHead && a.matches(aws.ToString(in.Key)) {
+		return nil, &smithy.GenericAPIError{Code: "AccessDenied", Message: "Access Denied"}
+	}
+	return a.inner.HeadObject(ctx, in, optFns...)
 }

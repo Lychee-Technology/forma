@@ -222,7 +222,7 @@ func testDeleteOutranksClockAheadLiveVersion(ctx context.Context, t *testing.T, 
 // TestRecreateBetweenExportAndMark (#274 review round 3 P1) drives the
 // delete/recreate race straight through the export→mark window: a
 // clock-ahead tombstone is selected and exported, the flush pauses at its
-// CopyObject, the row is recreated while the flush hangs, and the mark then
+// parquet PutObject, the row is recreated while the flush hangs, and the mark then
 // runs against a slot the recreate overwrote. The recreate goes through the
 // repository contract (InsertPersistentRecord) directly: the EntityManager
 // surface always mints a fresh UUIDv7, so row_id reuse is the repository's

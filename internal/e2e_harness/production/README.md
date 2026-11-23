@@ -206,8 +206,8 @@ from PostgreSQL, with no DuckDB statement, whatever the routing (#720, #896).
   schema's epoch (`newTestParquetKey`). Only those helper files and the
   untagged unit tests of the harness's inventory reader and S3 fault
   decorator (`manifest_load_gate_test.go`, `faults_test.go`) import
-  `internal/manifestv2` or `internal/publication`, and no test imports the
-  V1 `internal/manifest`; `TestE2ETestsReachPublicationOnlyThroughHelpers`
+  `internal/manifestv2` or `internal/publication`;
+  `TestE2ETestsReachPublicationOnlyThroughHelpers`
   keeps these rules (#901, #896). It is syntactic: it catches a `change_log`
   delete in a literal (quoted or schema-qualified) and one that takes
   `Tables.ChangeLog` as its target through `+` or `Sprintf`, not SQL

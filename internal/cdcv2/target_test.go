@@ -145,6 +145,17 @@ func (f *fixture) inTx(t *testing.T, fn func(*sql.Tx) error) {
 	require.NoError(t, tx.Commit())
 }
 
+// initializeAwaitingInit writes the schema's record as registration does,
+// then moves it to AWAITING_INIT, the state init-db recovers a lost record
+// with generation history in.
+func (f *fixture) initializeAwaitingInit(ctx context.Context, tx *sql.Tx) error {
+	if _, err := publication.Initialize(ctx, publication.SQLTx(tx), f.tables, schemaID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, "UPDATE "+f.tables.Record+" SET state = $1 WHERE schema_id = $2", string(publication.AwaitingInit), schemaID)
+	return err
+}
+
 // put writes row at version, live or deleted, as the write path does: the
 // entity_main row and the row's unflushed change_log entry in one
 // transaction.

@@ -77,8 +77,7 @@ func TestPublishedPassWithoutAParquetLegNeedsNoDuckDBAdmission(t *testing.T) {
 // Under an open breaker a publication fault is still read, and reported, as
 // what it is: the record is read before any admission could answer for it
 // with a degradable rejection. A generation that lists objects is refused
-// once its record is read, with the degradable rejection a V1 pass meets on
-// entry.
+// once its record is read, with the breaker's degradable rejection.
 func TestPublishedPassUnderAnOpenBreaker(t *testing.T) {
 	t.Run("a publication fault", func(t *testing.T) {
 		f := newPgxFixture(t, tieRunRows())

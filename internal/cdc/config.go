@@ -132,13 +132,6 @@ type CompactionConfig struct {
 	MaxRetries int
 }
 
-// ManifestConfig describes where manifests are stored and how to resolve parquet paths.
-type ManifestConfig struct {
-	Bucket       string
-	Prefix       string // root prefix for manifests (e.g., manifest/<project>/)
-	PathTemplate string // optional template per schema, e.g., "manifest/{{.SchemaID}}.json"
-}
-
 // Default constants
 const (
 	DefaultParquetCompression      = parquetformat.DefaultCompression

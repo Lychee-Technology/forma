@@ -200,14 +200,14 @@ func TestResetFencesEveryWriterOfTheOldEpoch(t *testing.T) {
 	require.Zero(t, gens[1].SupersededAt)
 }
 
-// TestAwaitingInitAdmitsOnlyACDCInit pins the cutover state of a schema with
-// parquet history: readers fail closed, flushes and compactions are refused,
-// and the first V2 generation is a cdc-init's.
+// TestAwaitingInitAdmitsOnlyACDCInit pins the state init-db recovers a lost
+// record with generation history in: readers fail closed, flushes and
+// compactions are refused, and the next generation is a cdc-init's.
 func TestAwaitingInitAdmitsOnlyACDCInit(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	require.NoError(t, f.inTx(ctx, func(tx Tx) error {
-		ok, err := InitializeAwaitingInit(ctx, tx, f.t, 100)
+		ok, err := insertRecord(ctx, tx, f.t, 100, AwaitingInit)
 		require.True(t, ok)
 		return err
 	}))
@@ -216,7 +216,7 @@ func TestAwaitingInitAdmitsOnlyACDCInit(t *testing.T) {
 	require.ErrorIs(t, cur.Readable(), ErrAwaitingInit)
 	again, err := f.initialize(t, 100)
 	require.NoError(t, err)
-	require.False(t, again, "registration does not turn the cutover's record into an unpublished one")
+	require.False(t, again, "registration does not turn an AWAITING_INIT record into an unpublished one")
 
 	_, err = f.publish(ctx, cur, f.next(t, cur, KindFlush), nil)
 	require.ErrorContains(t, err, "only a cdc-init")

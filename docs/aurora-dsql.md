@@ -16,7 +16,7 @@ engine. You configure it.
 | CDC schema lock (`cdc-flush`, `cdc-init`, `manifest-reconcile`) | Supported: a session advisory lock | Supported with `--pg-engine aurora-dsql`: a lease row (#633). CI runs it on PostgreSQL. It has not yet run against a cluster |
 | `cdc-flush`'s flush mark and `cdc-init`'s handoff | Supported: one statement a batch, in the transaction that publishes its generation | Supported: a batch publishes as generations of at most 1,000 entries, each marked in its publication's transaction and sent again with the same token on `40001`; the handoff marks in transactions of at most 1,000 entries (#896, `internal/cdcv2`). Not yet run against a cluster |
 | `forma-tools init-db` | Supported | Not supported: its DDL is not valid on DSQL (#690) |
-| Protocol V2 publication records (registration, the V2 cutover) | Supported: `init-db` writes them | Not available: only `init-db` writes them, so a DSQL deployment cannot cut over to the V2 writers and reader until #690 ([Operating the CDC tools on DSQL](#operating-the-cdc-tools-on-dsql)). The MiniStack lane writes them in test fixtures only |
+| Protocol V2 publication records (registration, lost-record recovery) | Supported: `init-db` writes them | Not available: only `init-db` writes them, so a DSQL deployment cannot run the CDC writers or the federated reader until #690 ([Operating the CDC tools on DSQL](#operating-the-cdc-tools-on-dsql)). The MiniStack lane writes them in test fixtures only |
 | CDC export reads (`cdc-flush`, `cdc-init`) | Supported | Over the run's pgx pool with the row ids as a `uuid[]` parameter (#785): a flush export in one `REPEATABLE READ READ ONLY` transaction per object, an init export on the `REPEATABLE READ READ ONLY` snapshot that listed its rows and their versions. They pass in the MiniStack lane (#691). Not yet run against a cluster; whether a 10,000-row batch's read fits DSQL's five-minute transaction limit is unmeasured |
 | Federated queries' hot-tier reads | Supported | Over the engine's pgx pool, in one `REPEATABLE READ READ ONLY` transaction per pass (#858). The statements are in the DSQL lint corpus and pass in the MiniStack lane (#691). Not yet run against a cluster |
 
@@ -208,27 +208,26 @@ plain statement.
 
 ### Operating the CDC tools on DSQL
 
-- **Production cutover to Protocol V2 is not available on DSQL yet.** Every
-  V2 writer and the federated reader need each schema's publication record
+- **Publication records cannot be provisioned on DSQL yet.** Every
+  CDC writer and the federated reader need each schema's publication record
   (`<entity_main>_publication`, with `<entity_main>_publication_generation`
   and `<entity_main>_publication_epoch`),
   and refuse a schema without one: `cdc-flush` and `cdc-init` fail it, and
   its federated reads fail closed with `publication_inconsistent`. Only
   `init-db` creates those tables and writes the records, when it registers a
-  schema or runs the V2 cutover, and `init-db` cannot run on DSQL (#690).
-  There is no supported procedure to provision them by hand: the cutover's
-  history check and the record's initial state must run under the schema
-  lock in the registration's transaction, which nothing but `init-db` does.
-  Until #690 gives DSQL a provisioning path, keep a DSQL deployment on the
-  release before #896.
+  schema or recovers a lost record, and `init-db` cannot run on DSQL (#690).
+  There is no supported procedure to provision them by hand: the
+  UNPUBLISHED-invariant check and the record's initial state must run under
+  the schema lock in the registration's transaction, which nothing but
+  `init-db` does. Until #690 gives DSQL a provisioning path, a DSQL
+  deployment runs no CDC tool and no federated read.
 - **The MiniStack lane is a test fixture, not a deployment procedure.** The
   suites under `make test-dsql-ministack` create the publication tables from
   `publication.Statements` and write each test schema's record with
   `publication.Initialize` directly, to exercise the writers and the reader
   on DSQL's SQL surface ([dsql-ministack.md](dsql-ministack.md)). They prove
   the protocol's statements run on DSQL; they do not register schemas, run
-  the cutover's history check or take its lock, and are no substitute for
-  them.
+  the invariant check or take its lock, and are no substitute for them.
 - **Tables.** Besides the publication tables above, create
   `<entity_main>_row_guard` and `<entity_main>_schema_lease` with the
   statements above, next to the core tables. On PostgreSQL, `init-db`
@@ -329,10 +328,11 @@ without the wait. What runs:
   renewal fails and frees the schema. Acquirers racing for a free and for
   an expired lease leave exactly one holder, on READ COMMITTED and
   REPEATABLE READ sessions.
-- `internal/cdcv2`, the V2 writer's flush and init publications: generations
-  of at most 1,000 entries with the plain mark on the publication's
-  transaction, resends after `40001`, the lost-commit resolve and the init
-  handoff (#899).
+- `internal/cdcv2`, the V2 writer's flush, init and compaction publications:
+  generations of at most 1,000 entries with the plain mark on the publication's
+  transaction, resends and bounded exhaustion after `40001` across all three
+  writers, the lost-commit resolve, the init handoff, and concurrent flush +
+  init + compaction races (#899, #890, #892).
 - `internal/cdc/dsql_export_integration_test.go`, the CDC tools' reads on
   tables built with DSQL's DDL: `cdc-flush`'s planning reads and delta
   export, and `cdc-init`'s row count and base export on its export snapshot.
@@ -340,9 +340,16 @@ without the wait. What runs:
   as the tools run them, through the DuckDB export, the V2 writer and the
   publication record, with a local directory for the bucket (#896).
 - `internal/federated/pgx_hot_leg_dsql_integration_test.go`, the federated
-  hot leg on the same tables: the snapshot's dirty set and parquet-history
-  answer, and passes under `HotLegTransport = pgx` that read the hot keys and
-  the page's hot rows through the `aurora-dsql` repository.
+  hot leg on the same tables: the snapshot's dirty set, and passes under
+  `HotLegTransport = pgx` that read the hot keys and the page's hot rows
+  through the `aurora-dsql` repository.
+- `internal/publication` storage binding (`<entity_main>_publication_storage`,
+  bound by `manifest-reconcile --bind-storage`, #891) and lifecycle/retention
+  primitives.
+
+Live Aurora DSQL verification of the Protocol V2 publication contract is
+tracked separately in #893 under #817 (see
+[publication-protocol-v2-evidence.md](publication-protocol-v2-evidence.md)).
 
 **On MiniStack's strict SQL proxy.** `make test-dsql-ministack` runs the
 repository tests, the schema lease, the CDC export's and the federated hot

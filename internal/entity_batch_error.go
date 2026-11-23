@@ -14,10 +14,10 @@ import (
 // (publicErrorMessage, error_response.go), so the two write surfaces do not
 // describe an undisclosed failure differently. That function has a second
 // wording, "internal read error", which it reserves for the read-path
-// carriers errorClass recognises — ErrPublicationInconsistent,
-// ErrManifestSchemaMismatch, ErrParquetTypeIncompatible. Not reproduced here,
-// because none of them can arrive: they are constructed in internal/federated,
-// internal/federatedv2 and internal/manifest, and the batch executors are entityCRUDService.Create,
+// carriers errorClass recognises — ErrPublicationInconsistent and
+// ErrParquetTypeIncompatible. Not reproduced here, because neither can
+// arrive: they are constructed in internal/federated and
+// internal/federatedv2, and the batch executors are entityCRUDService.Create,
 // Update and Delete, none of which reads through the federated engine — the
 // CRUD service's one enrichment call sits in Get (entity_crud_service.go).
 // Classifying here would add a branch that never fires and a second copy of a

@@ -7,8 +7,7 @@ import (
 )
 
 // The helpers below name why a test expects rows to leave the dirty set
-// (#901). Under Protocol V1 each one cleared change_log entries. Protocol V2
-// never clears change_log (docs/publication-protocol-v2.md, "The cdc-init
+// (#901). Protocol V2 never clears change_log (docs/publication-protocol-v2.md, "The cdc-init
 // handoff"): the tools themselves take the rows out of the dirty set, and the
 // helpers only check that they did, failing the test otherwise. No helper
 // writes change_log.

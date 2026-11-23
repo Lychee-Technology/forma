@@ -21,10 +21,10 @@ func nonPositiveSchemaQuery(schemaID int16) *model.FederatedAttributeQuery {
 
 // TestQuery_NonPositiveSchemaIDIsNotDegradable pins the PR #537 review
 // finding: a request for schema 0 or a negative ID is a caller invariant
-// violation, and VerifySchemaStamp reports it as a plain error (#536) that
-// resolveParquetPaths would relabel ErrFederatedReadFailed — degradable. With
-// AllowPartialDegradedMode the invalid request would then be served as a
-// Postgres-only page. The engine refuses it at entry instead: no source is
+// violation. Nothing below the engine classifies it: a plain error from the
+// publication source's generation resolve is a degradable
+// ErrFederatedReadFailed, so with AllowPartialDegradedMode the invalid
+// request would be served as a Postgres-only page. The engine refuses it at entry instead: no source is
 // consulted, no DuckDB pass runs, and no Postgres-only fallback answers.
 func TestQuery_NonPositiveSchemaIDIsNotDegradable(t *testing.T) {
 	restore := initTestDescriptors()
@@ -32,12 +32,11 @@ func TestQuery_NonPositiveSchemaIDIsNotDegradable(t *testing.T) {
 
 	for _, schemaID := range []int16{0, -1} {
 		t.Run(fmt.Sprintf("schema_%d", schemaID), func(t *testing.T) {
-			// The source answers the way the manifest package does for this
-			// ID: a plain, unclassified error. If the guard regressed, this is
-			// what the degraded fallback would absorb.
+			// The source fails the generation resolve with a plain,
+			// unclassified error. If the guard regressed, this is what the
+			// degraded fallback would absorb.
 			src := &fakeParquetSource{pathsErr: fmt.Errorf(
-				"manifest manifest/%d.json: requested schema id %d is not a schema (schema IDs are positive); refusing to verify the stamp",
-				schemaID, schemaID)}
+				"resolve generation for schema %d: schema IDs are positive", schemaID)}
 			duck := &fakeDuckDBExecutor{rows: &singleDuckDBRow{rowID: uuid.New()}}
 			pg := &fakePostgresFederatedSource{page: &model.PersistentRecordPage{TotalRecords: 3}}
 			engine := NewDBFederatedQueryEngine(pg, duck, nil,

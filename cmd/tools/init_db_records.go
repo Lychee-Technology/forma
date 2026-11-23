@@ -17,17 +17,16 @@ import (
 type recordStep string
 
 const (
-	recordKept         recordStep = "kept"
-	recordUnpublished  recordStep = "initialized UNPUBLISHED"
-	recordAwaitingInit recordStep = "initialized AWAITING_INIT"
-	recordActivated    recordStep = "activated"
-	recordLockBusy     recordStep = "skipped: schema lock held"
-	recordRecovered    recordStep = "recovered"
+	recordKept        recordStep = "kept"
+	recordUnpublished recordStep = "initialized UNPUBLISHED"
+	recordActivated   recordStep = "activated"
+	recordLockBusy    recordStep = "skipped: schema lock held"
+	recordRecovered   recordStep = "recovered"
 )
 
 // ensurePublicationRecords gives every registered schema its Protocol V2
-// publication record (docs/publication-protocol-v2.md, "Lifecycle of the row"
-// and "Upgrade"), on tx, the transaction that registered the schemas, so a
+// publication record (docs/publication-protocol-v2.md, "Lifecycle of the row"),
+// on tx, the transaction that registered the schemas, so a
 // registry row never commits without the record registration owes it:
 //
 //   - A schema with a record keeps it. Registering again never resets one.
@@ -48,21 +47,23 @@ const (
 //     the history's highest generation as the counter
 //     (publication.InitializeAfterLoss): AWAITING_INIT for a registered
 //     schema with generation history, whose next cdc-init replaces its
-//     parquet tiers; for one without, the state its parquet history allows,
-//     as at the cutover; and, for an id this transaction registered, DROPPED
-//     and then activated as above. An id whose generation history survives
+//     parquet tiers; UNPUBLISHED for one without, once its rows are checked
+//     against the UNPUBLISHED invariant as below; and, for an id this
+//     transaction registered, DROPPED and then activated as above. An id whose generation history survives
 //     but whose lifecycle epoch is lost too fails the run: no epoch can be
 //     shown free of a running process's pin, and the operator establishes
 //     one (docs/publication-protocol-v2.md, "A lost record").
-//   - A schema without a record or history is a new registration or one the
-//     V2 cutover has not reached. Under the schema lock every V1 marker (cdc-flush and
-//     the onboarding handoff) takes, the parquet-history check decides the
-//     state: without history the schema satisfies the UNPUBLISHED invariant
-//     (Initialize); with it the schema waits for its first V2 cdc-init
-//     (InitializeAwaitingInit). A lock init-db cannot take means a writer
-//     still runs: a schema registered before this run is skipped, keeps no
-//     record (its reads and writes fail closed on ErrNoRecord), and the next
-//     init-db retries it.
+//   - A schema without a record or history is a new registration. Under the
+//     schema lock, its rows are checked against the UNPUBLISHED invariant
+//     (every change_log entry unflushed, every entity_main row with one), and
+//     it is initialized UNPUBLISHED (Initialize). Rows that break the
+//     invariant are state no Protocol V2 writer leaves without a publication
+//     history: a parquet tier may hold rows the hot leg would not serve, so
+//     the run fails (errUnpublishedInvariantBroken) rather than write a record
+//     that hides them. A lock init-db cannot take means a writer still runs:
+//     a schema registered before this run is skipped, keeps no record (its
+//     reads and writes fail closed on ErrNoRecord), and the next init-db
+//     retries it.
 //   - A schema whose registry row this transaction inserted (inserted) is
 //     never skipped: its registration commits with its record or not at
 //     all. A lock init-db cannot take for it fails the run, which rolls the
@@ -99,7 +100,7 @@ func ensurePublicationRecords(ctx context.Context, tx pgx.Tx, opts initDBOptions
 	}
 	if len(skipped) > 0 {
 		_, _ = fmt.Fprintf(out, "Publication records not written for schemas %v: a cdc-flush or cdc-init holds their schema lock. "+
-			"Stop every V1 writer, then run init-db again; until then their reads and writes fail closed.\n", skipped)
+			"Stop their cdc-flush and cdc-init runs, then run init-db again; until then their reads and writes fail closed.\n", skipped)
 	}
 	return nil
 }
@@ -166,16 +167,17 @@ var errRegistrationInheritsRecord = errors.New("registration would inherit a rec
 // lock it could not take, which fails the run and rolls the registration back.
 var errRegistrationLockBusy = errors.New("schema lock held at registration")
 
-// tryCutoverLockSQL takes the schema's lock for the rest of the transaction,
+// trySchemaLockSQL takes the schema's lock for the rest of the transaction,
 // on the key internal/cdc's TrySchemaLock takes per session.
-const tryCutoverLockSQL = `SELECT pg_try_advisory_xact_lock($1, $2)`
+const trySchemaLockSQL = `SELECT pg_try_advisory_xact_lock($1, $2)`
 
 // writeMissingRecord writes the record of a schema that has none, under the
 // schema lock: recovered after its lifecycle epoch when it had a record
-// before, otherwise in the state its V1 parquet history allows.
+// before, otherwise initialized UNPUBLISHED once its rows satisfy the
+// UNPUBLISHED invariant.
 func writeMissingRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16, registered bool) (recordStep, error) {
 	var locked bool
-	if err := tx.QueryRow(ctx, tryCutoverLockSQL, int32(id), int32(id)).Scan(&locked); err != nil {
+	if err := tx.QueryRow(ctx, trySchemaLockSQL, int32(id), int32(id)).Scan(&locked); err != nil {
 		return "", fmt.Errorf("take the schema lock: %w", err)
 	}
 	if !locked {
@@ -188,14 +190,14 @@ func writeMissingRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, tabl
 	if history.Lost() {
 		return recoverLostRecord(ctx, tx, opts, tables, id, history, registered)
 	}
-	return cutoverSchema(ctx, tx, opts, tables, id)
+	return initializeUnpublished(ctx, tx, opts, tables, id)
 }
 
 // recoverLostRecord writes the record of a schema whose record was lost,
 // after its lifecycle epoch and with its history's highest generation as the
 // counter: for a schema registered before this run, AWAITING_INIT when
-// generation history survives and otherwise the state its parquet history
-// allows; for an id this run registered, DROPPED and then activated, so the
+// generation history survives and otherwise UNPUBLISHED, once its rows
+// satisfy the UNPUBLISHED invariant; for an id this run registered, DROPPED and then activated, so the
 // dropped registration's rows are checked as on any re-registration.
 func recoverLostRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16, h publication.History, registered bool) (recordStep, error) {
 	state, err := lostRecordState(ctx, tx, opts, id, h, registered)
@@ -225,7 +227,8 @@ func recoverLostRecord(ctx context.Context, tx pgx.Tx, opts initDBOptions, table
 
 // lostRecordState is the state a lost record is recovered in: DROPPED for an
 // id this run registered, AWAITING_INIT for a schema whose generation history
-// survives, and otherwise what its parquet history allows.
+// survives, and otherwise UNPUBLISHED, which requires the UNPUBLISHED
+// invariant to hold.
 func lostRecordState(ctx context.Context, tx pgx.Tx, opts initDBOptions, id int16, h publication.History, registered bool) (publication.State, error) {
 	switch {
 	case registered:
@@ -233,29 +236,20 @@ func lostRecordState(ctx context.Context, tx pgx.Tx, opts initDBOptions, id int1
 	case h.Generations > 0:
 		return publication.AwaitingInit, nil
 	}
-	history, err := hasParquetHistory(ctx, tx, opts, id)
-	if err != nil {
+	if err := requireUnpublishedInvariant(ctx, tx, opts, id); err != nil {
 		return "", err
-	}
-	if history {
-		return publication.AwaitingInit, nil
 	}
 	return publication.Unpublished, nil
 }
 
-// cutoverSchema writes the record of a schema that has neither a record nor
-// publication history, under the schema lock the caller holds, in the state
-// its parquet history allows.
-func cutoverSchema(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16) (recordStep, error) {
-	history, err := hasParquetHistory(ctx, tx, opts, id)
-	if err != nil {
+// initializeUnpublished writes the UNPUBLISHED record of a schema that has
+// neither a record nor publication history, under the schema lock the caller
+// holds, once its rows satisfy the UNPUBLISHED invariant.
+func initializeUnpublished(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables publication.Tables, id int16) (recordStep, error) {
+	if err := requireUnpublishedInvariant(ctx, tx, opts, id); err != nil {
 		return "", err
 	}
-	initialize, step := publication.Initialize, recordUnpublished
-	if history {
-		initialize, step = publication.InitializeAwaitingInit, recordAwaitingInit
-	}
-	wrote, err := initialize(ctx, publication.PgxTx(tx), tables, id)
+	wrote, err := publication.Initialize(ctx, publication.PgxTx(tx), tables, id)
 	if err != nil {
 		return "", fmt.Errorf("initialize: %w", err)
 	}
@@ -264,25 +258,40 @@ func cutoverSchema(ctx context.Context, tx pgx.Tx, opts initDBOptions, tables pu
 		// another init-db, whose insert committed after this snapshot.
 		return "", errors.New("another init-db wrote the record concurrently; run init-db again")
 	}
-	return step, nil
+	return recordUnpublished, nil
 }
 
-// hasParquetHistory answers parquetHistorySQL for schema id on tx.
-func hasParquetHistory(ctx context.Context, tx pgx.Tx, opts initDBOptions, id int16) (bool, error) {
-	var history bool
-	if err := tx.QueryRow(ctx, parquetHistorySQL(opts), id).Scan(&history); err != nil {
-		return false, fmt.Errorf("check the parquet history: %w", err)
+// errUnpublishedInvariantBroken reports a schema without a record or
+// generation history whose rows break the UNPUBLISHED invariant, which fails
+// the run.
+var errUnpublishedInvariantBroken = errors.New("rows break the UNPUBLISHED invariant")
+
+// requireUnpublishedInvariant refuses, on tx, a schema whose rows break the
+// UNPUBLISHED invariant (docs/publication-protocol-v2.md): a flushed
+// change_log entry, or an entity_main row without any entry. Only a
+// publication marks entries, in the transaction that records its generation,
+// and the write path gives every row an entry, so a schema with neither a
+// record nor generation history in that state was not written by Protocol V2.
+// A parquet tier may hold rows no unflushed entry shadows, and an UNPUBLISHED
+// record would answer from the hot leg without them, so init-db writes none.
+func requireUnpublishedInvariant(ctx context.Context, tx pgx.Tx, opts initDBOptions, id int16) error {
+	var broken bool
+	if err := tx.QueryRow(ctx, unpublishedInvariantBrokenSQL(opts), id).Scan(&broken); err != nil {
+		return fmt.Errorf("check schema %d's rows against the UNPUBLISHED invariant: %w", id, err)
 	}
-	return history, nil
+	if broken {
+		return fmt.Errorf("schema %d has no publication record and no generation history, but %s holds a flushed entry of it "+
+			"or %s a row of it without one, which no Protocol V2 writer leaves: an UNPUBLISHED record would hide whatever a "+
+			"parquet tier holds of it, so init-db writes none. Restore the publication tables with the data tables they "+
+			"belong to, or purge the schema's rows and register it again: %w",
+			id, opts.changeLog, opts.entityMain, errUnpublishedInvariantBroken)
+	}
+	return nil
 }
 
-// parquetHistorySQL answers whether schema $1 has parquet history from V1: a
-// flushed change_log entry, or an entity_main row without any entry, which
-// only the V1 onboarding handoff, which cleared change_log after a cdc-init
-// export, leaves behind. Either means a parquet tier may hold rows no
-// unflushed entry shadows, so the schema cannot be UNPUBLISHED: with every
-// entry unflushed and every row holding one, the hot leg is the whole answer.
-func parquetHistorySQL(opts initDBOptions) string {
+// unpublishedInvariantBrokenSQL answers whether schema $1 has a flushed
+// change_log entry, or an entity_main row without any entry.
+func unpublishedInvariantBrokenSQL(opts initDBOptions) string {
 	return fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %[1]s WHERE schema_id = $1 AND flushed_at <> 0)
 	OR EXISTS (SELECT 1 FROM %[2]s m WHERE m.ltbase_schema_id = $1 AND NOT EXISTS (
 		SELECT 1 FROM %[1]s c WHERE c.schema_id = $1 AND c.row_id = m.ltbase_row_id))`,

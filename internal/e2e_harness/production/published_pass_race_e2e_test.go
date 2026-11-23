@@ -90,9 +90,8 @@ func (p *pausingPublicationReader) Resolved() []fedengine.PublishedGeneration {
 // A flush that publishes while a pass over a published schema is in flight,
 // after the pass's snapshot read the record (docs/publication-protocol-v2.md,
 // "Readers"): the pass answers from the generation and the dirty set of its
-// own snapshot, which agree, so no row is dropped or read twice. Under V1 the
-// pass resolved a mutable path set before its dirty scan, and only the #252
-// widening covered the gap. The never-published counterpart, a first flush
+// own snapshot, which agree, so no row is dropped or read twice. The
+// never-published counterpart, a first flush
 // or an init handoff racing an UNPUBLISHED pass, is in
 // never_flushed_loss_e2e_test.go.
 func TestPublishedPassRacingAPublication(t *testing.T) {

@@ -37,13 +37,13 @@ type SchemaFlush = internalcdc.SchemaFlush
 type SkippedSchema = internalcdc.SkippedSchema
 
 // ErrNoPublicationRecord matches a flush of a schema that has no publication
-// record. init-db writes the record when it registers a schema or runs the V2
-// cutover; until then nothing of the schema is flushed. It is a deployment
+// record. init-db writes the record when it registers a schema, or recovers
+// a lost one; until then nothing of the schema is flushed. It is a deployment
 // fault, not a transient one.
 var ErrNoPublicationRecord = publication.ErrNoRecord
 
-// ErrAwaitingInit matches a flush of a schema the V2 cutover left awaiting
-// its first cdc-init: only a cdc-init publishes its first V2 generation. Run
+// ErrAwaitingInit matches a flush of a schema whose lost record init-db
+// recovered AWAITING_INIT: only a cdc-init publishes its next generation. Run
 // cdc-init for the schema; its rows stay unflushed until then.
 var ErrAwaitingInit = publication.ErrAwaitingInit
 

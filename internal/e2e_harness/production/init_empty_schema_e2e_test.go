@@ -5,8 +5,6 @@ package production
 import (
 	"context"
 	"testing"
-
-	"github.com/lychee-technology/forma/internal/cdc"
 )
 
 // TestReInitRetiresEmptiedSchema (#519, #896): a schema that was
@@ -35,7 +33,7 @@ func TestReInitRetiresEmptiedSchema(t *testing.T) {
 	if first.RowsExported != 6 {
 		t.Fatalf("first init exported %d rows, want 6", first.RowsExported)
 	}
-	oldBaseKeys := manifestKeys(t, env, TierEntries(first.Manifest, "base"))
+	oldBaseKeys := manifestKeys(TierEntries(first.Manifest, "base"))
 	if len(oldBaseKeys) == 0 {
 		t.Fatal("first init listed no base entries")
 	}
@@ -54,7 +52,7 @@ func TestReInitRetiresEmptiedSchema(t *testing.T) {
 	if flush.UnflushedAfter != 0 {
 		t.Fatalf("flush left %d unflushed rows", flush.UnflushedAfter)
 	}
-	deltaKeys := manifestKeys(t, env, TierEntries(flush.Manifests[wide.ID], "delta"))
+	deltaKeys := manifestKeys(TierEntries(flush.Manifests[wide.ID], "delta"))
 	if len(deltaKeys) == 0 {
 		t.Fatal("flush listed no delta entries for the tombstones")
 	}
@@ -109,16 +107,11 @@ func TestReInitRetiresEmptiedSchema(t *testing.T) {
 	}
 }
 
-// manifestKeys resolves manifest entries to bucket-relative keys.
-func manifestKeys(t *testing.T, env *Env, entries []ManifestEntry) []string {
-	t.Helper()
+// manifestKeys answers the bucket-relative keys of manifest entries.
+func manifestKeys(entries []ManifestEntry) []string {
 	keys := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		key, ok := cdc.NormalizeObjectKey(env.Cluster.Bucket, entry.Path)
-		if !ok {
-			t.Fatalf("manifest entry %q is not addressable in bucket %s", entry.Path, env.Cluster.Bucket)
-		}
-		keys = append(keys, key)
+		keys = append(keys, entry.Path)
 	}
 	return keys
 }

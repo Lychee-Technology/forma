@@ -116,20 +116,6 @@ func TestManifestReconcileRefusesOverflowingTimesBeforeConnecting(t *testing.T) 
 	require.ErrorIs(t, err, reconcile.ErrRetentionUnsafe)
 }
 
-// TestParseReconcileFlags_RefusesRepair: under V2 there is nothing to adopt,
-// and the recovery of a lost generation is a re-init.
-func TestParseReconcileFlags_RefusesRepair(t *testing.T) {
-	_, err := parseReconcileFlags(reconcileArgs("--repair"))
-	require.ErrorIs(t, err, errRepairRemoved)
-	require.ErrorContains(t, err, "cdc-init")
-	for _, removed := range []string{"--manifest-template", "--manifest-prefix", "--allow-empty-manifest-schema", "--gc-grace", "--etag-retries"} {
-		_, err := parseReconcileFlags(reconcileArgs(removed, "x"))
-		require.ErrorContains(t, err, "flag provided but not defined", removed)
-	}
-	_, err = parseReconcileFlags(reconcileArgs("--verify-stamps"))
-	require.ErrorContains(t, err, "flag provided but not defined")
-}
-
 // TestNewReconciler_WiresTheFlags pins the flag-to-Reconciler wiring: the
 // tables and the lock named after --entity-main-table, the layout of
 // --data-prefix, the schema filter and the options.

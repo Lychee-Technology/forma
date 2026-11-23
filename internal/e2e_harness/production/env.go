@@ -53,6 +53,11 @@ type Env struct {
 	// generation's resolution. Same mutate-before-first-use pattern; nil
 	// leaves the reader untouched.
 	PublicationReaderWrap func(fedengine.PublicationReader) fedengine.PublicationReader
+	// PublicationS3Wrap, when set before the Env's first query, decorates the
+	// S3 client used by the Protocol V2 publication reader (manifest GetObject
+	// and object-existence HeadObject probes). Same mutate-before-first-use
+	// pattern; nil leaves the client untouched.
+	PublicationS3Wrap func(PublicationS3Client) PublicationS3Client
 	// HotLegReaderWrap, when set before the Env's first query, decorates the
 	// pgx hot leg's reader of the hot keys and the page's hot rows — the seam
 	// for running a writer inside a pgx pass, after its snapshot is taken and

@@ -23,10 +23,11 @@ import (
 // (PublicationReader), with no glob and no hint.
 //
 // Only PublishTiers publishes. The harness's simulated flush and compaction
-// (RunCDCFlush, RunCompaction) and WriteParquet keep writing the V1-shaped
-// {prefix}/{schema}/{base|delta}/ layout that the harness's own DuckDB oracle
-// reads with globs, and PublishTiers writes its rows there too; nothing in
-// the product reads that layout.
+// (RunCDCFlush, RunCompaction) and WriteParquet write the oracle's reference
+// copy, the {prefix}/{schema}/{base|delta}/ layout that the harness's own
+// DuckDB oracle scans with globs, and PublishTiers writes its rows there too.
+// The reference copy is test infrastructure, independent of the product by
+// design: nothing in the product reads it.
 //
 // This file is named in internal/publication's owners guard
 // (TestOnlyTheProtocolOwnersMoveAPublicationRecord) as an owner of
@@ -128,7 +129,7 @@ type publishedGeneration struct {
 // schema must be registered (SetupSchema). No change_log entry is marked:
 // the rows are synthetic parquet history with no PostgreSQL entry.
 //
-// The same rows are also written to the V1-shaped {base|delta}/ layout
+// The same rows are also written to the oracle's {base|delta}/ reference copy
 // (writeOracleTiers), which the harness's own DuckDB query path
 // (ExecuteFederatedQuery, the benchmark's truth pass) reads with globs, so
 // that independent oracle sees what the product reader scans.
@@ -171,7 +172,7 @@ func (h *FederatedTestHarness) PublishTiers(ctx context.Context, schemaID int16,
 }
 
 // writeOracleTiers writes base and delta, each when it has rows, as one
-// parquet file per tier under schemaID's V1-shaped {base|delta}/ layout,
+// parquet file per tier under schemaID's {base|delta}/ reference copy,
 // the harness oracle's input. Nothing in the product reads it.
 func (h *FederatedTestHarness) writeOracleTiers(ctx context.Context, schemaID int16, base, delta []TestRecord) error {
 	previous := h.SchemaID

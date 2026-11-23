@@ -24,11 +24,12 @@ Forma Tools CLI
 - `cdc-flush`：把未刷新的 `change_log` 条目导出为 delta parquet，按 Protocol V2 发布不可变的 manifest 代际，
   并在推进该 schema 发布记录的同一事务里标记这些条目（`docs/publication-protocol-v2.md`）。见下文 `cdc-flush 与 cdc-init`。
 - `cdc-init`：把 schema 的存活行全量导出为 base parquet，发布 `init` 代际，再按导出版本移交其未刷新条目；从不清空 `change_log`。
+- `compactor`：按 Protocol V2 把已发布代际的 base/delta parquet 合并为新的 base 对象并发布 `compact` 代际（保留每行最新版本含墓碑；在并发 `cdc-flush` 之上自动 rebase；从不在线删除被替代的旧对象，旧对象由 `manifest-reconcile --gc` 在宽限期后回收，#890）。见下文 `compactor`。
 - `manifest-reconcile`：按 Protocol V2 只读诊断每个 schema 的发布记录、代际历史与 manifest，
   报告丢失的代际与对象（含 schema、epoch、generation 与安全的处置方式）；`--gc` 按回收顺序
   回收过期代际与水位线之下的孤儿对象（#891）。`--gc` 只在部署绑定的存储目标（endpoint、bucket、
   data prefix）下删除：首次运行前用写入方自己的配置执行一次 `--bind-storage`。
-  不再有 `--repair`：恢复方式是 `cdc-init` 重新初始化。
+  丢失的代际或对象无法从 S3 重建，恢复方式是 `cdc-init` 重新初始化。
   详见 `docs/manifest-reconcile.md`。退出码：0 一致 / 2 有发现 / 1 失败。
 - `validate-schema-consistency`：升级前校验 schema 元数据与 EAV 存储的一致性，
   使用与服务端相同的元数据加载路径。检查项包括：
@@ -124,13 +125,17 @@ unreferenced，由运维自行删除。详见 `docs/schema-indexes.md`。
 待文件就绪后运行 `baseline-schema`。已注册的 schema 不受影响。详见 `docs/schema-evolution.md`。
 
 `init-db` 在注册事务里为每个已注册 schema 写 Protocol V2 发布记录（`docs/publication-protocol-v2.md`）：已有记录保留；
-`DROPPED` 记录在 id 重新注册时激活到下一个 epoch（旧 schema 的行须已清除）；没有记录的 schema 在 schema 锁下按 parquet 历史
-写 `UNPUBLISHED` 或 `AWAITING_INIT`。两种情况会被区别对待（#896）：
+`DROPPED` 记录在 id 重新注册时激活到下一个 epoch（旧 schema 的行须已清除）；既没有记录也没有发布历史的 schema 在 schema 锁下
+校验 `UNPUBLISHED` 不变式（`change_log` 中没有已刷新的条目，`entity_main` 中每行都有条目），成立则写 `UNPUBLISHED`。
+不变式不成立说明这些行不是 Protocol V2 写入方留下的：`UNPUBLISHED` 记录会让读取方只读热层而漏掉 parquet 层可能持有的行，
+所以 `init-db` 失败并回滚本次运行，不迁移这种状态；把发布表与其所属的数据表一同恢复，或清除该 schema 的行后重新注册。
+以下两种情况同样区别对待（#896）：
 - 本次新注册的 id 已有非 `DROPPED` 的记录：说明之前的注册没有经 `drop-schema` 退役就被删除了。新 schema 会继承旧 epoch、
   旧的已发布 generation 和旧行，所以 `init-db` 失败并回滚这次注册。先运行 `drop-schema --schema-id <id>`，再运行 `init-db`。
-- 没有记录、但发布 generation 表里仍有该 id 的历史：说明 V2 记录丢失了，而不是未切换的 V1 schema。`init-db` 在 schema 锁下把记录
+- 没有记录、但发布表里仍有该 id 的生命周期 epoch 或 generation 历史：说明记录丢失了，而不是新注册。`init-db` 在 schema 锁下把记录
   恢复到历史中最大 epoch 的下一个 epoch，以最大 generation 号作为计数器，因此不会重用任何 epoch 或 generation 号：仍注册的 schema
-  恢复为 `AWAITING_INIT`（随后运行 `cdc-init`，再重启读取方），本次新注册的 id 先恢复为 `DROPPED` 再按上条激活。
+  在仍有 generation 历史时恢复为 `AWAITING_INIT`（随后运行 `cdc-init`，再重启读取方），没有 generation 历史时按上述不变式
+  恢复为 `UNPUBLISHED`；本次新注册的 id 先恢复为 `DROPPED` 再按上条激活。
 
 示例：
 - `go run ./cmd/tools init-db`
@@ -176,8 +181,7 @@ baseline-schema
 已有部署升级到带 generation 账本的版本前运行一次（#733）：按 OLTP 读取自身的规则审计 PostgreSQL（含 list 元素）：宽度普查（width census）；`numeric` 与 EAV 中的 `bool` 须为有限 float64（拒绝 NaN、无穷大或超出 float64 的值）；EAV 中的 `date`/`datetime` 须为 ±2^53 内的整数毫秒；EAV 中的 `uuid` 须能被 `uuid.Parse` 解析；值不得存放在另一个 `eav_data` 值列中；`bool_text` 列只能是 `"1"`/`"0"`，`rfc3339` 列须能按 RFC 3339 解析；能解析但不是其时刻规范图像的 `rfc3339` 图像逐行报告（附修复类别），但不拒绝基线（#842）。绑定主表列的属性在 EAV 提升为列绑定之前写入的 `eav_data` 行仍会被读取，同样按上述 EAV 规则审计。完整解码每个存活的 parquet 对象并按声明的值域扫描（含 list 元素），
 数据与当前声明不符或无法读取时拒绝且不记录任何内容；通过后为尚无 generation 的 schema 记录 generation 1。已有 generation 的 schema 被跳过。
 运行前须已有账本表（PostgreSQL 上运行 `init-db`；DSQL 上按 `docs/schema-evolution.md` 手工建表）。
-基线是离线的：运行前须停止旧版本中所有写入的服务端、Lambda 与嵌入方，以及所有 `cdc-flush`、`cdc-init` 运行，并暂停 compactor、不运行
-`manifest-reconcile --repair`，直到新版本取代它们为止。旧版本没有启动门禁，它在基线期间或之后写入的值不会被审计。记录基线的事务会再次读取每个
+基线是离线的：运行前须停止旧版本中所有写入的服务端、Lambda 与嵌入方，以及所有 `cdc-flush`、`cdc-init` 运行，并暂停 compactor 与 `manifest-reconcile --gc`，直到新版本取代它们为止。旧版本没有启动门禁，它在基线期间或之后写入的值不会被审计。记录基线的事务会再次读取每个
 schema 的 `entity_main` 行数与版本号之和以及存活的 parquet 对象集合，与该 schema 审计开始时不同则拒绝且不记录任何内容；这只能发现审计期间仍在运行的
 写入方或导出方，发现不了基线提交后才写入的进程。`-dry-run` 可在旧版本运行时执行，用于停机前找出须修正的数据。
 
@@ -187,8 +191,7 @@ schema 的 `entity_main` 行数与版本号之和以及存活的 parquet 对象�
 - `--no-parquet-tier`：部署没有 lakehouse 层，只审计 PostgreSQL。否则必须给出 `--s3-bucket`（与服务端的 `DUCKDB_S3_BUCKET` 一致），
   可选 S3 与 DuckDB 选项。审计的对象集合即联邦读扫描的集合：每个 schema 的发布记录为 `PUBLISHED` 时，其当前 generation 的 manifest
   列出的对象（`docs/publication-protocol-v2.md`）；没有记录或记录为 `UNPUBLISHED`、`AWAITING_INIT`、`DROPPED` 的 schema 没有 parquet 对象可审计
-  （`AWAITING_INIT` 的 V2 `cdc-init` 从 PostgreSQL 导出，而 PostgreSQL 已被审计）。记录或 manifest 无法读取或无效时拒绝基线。
-  `--manifest-template`、`--manifest-prefix` 与 `--data-prefix` 已随 V1 读路径删除（#896）。
+  （`AWAITING_INIT` 的 `cdc-init` 从 PostgreSQL 导出，而 PostgreSQL 已被审计）。记录或 manifest 无法读取或无效时拒绝基线。
 - `-dry-run`：只报告审计结果，不写入。
 
 示例：
@@ -251,7 +254,7 @@ cdc-flush 与 cdc-init
 ---------------------
 两者都只经发布记录发布（#896）：对象先写到本地临时文件，再以条件写（`If-None-Match: *`）写入从未用过的键，
 manifest 代际同样只写一次，然后在一个 PostgreSQL 事务里比较并推进记录（flush 的标记也在该事务内）。
-schema 没有发布记录时两者都拒绝（记录由 `init-db` 在注册或 V2 切换时写入）；记录为 `AWAITING_INIT` 时
+schema 没有发布记录时两者都拒绝（记录由 `init-db` 在注册或恢复丢失的记录时写入）；记录为 `AWAITING_INIT` 时
 `cdc-flush` 拒绝并提示先运行 `cdc-init`；`DROPPED` 时两者都拒绝。
 
 共同选项：
@@ -271,9 +274,21 @@ schema 没有发布记录时两者都拒绝（记录由 `init-db` 在注册或 V
 `cdc-init` 选项：`-schema-registry-table`/`-schema-dir`（必填）、`-schema-id`、`-batch-size`、`-target-file-size-mb`、
 `-max-batch-size`、`-estimated-row-bytes`。每个 base 文件是一个导出快照，行数由这些选项决定。
 
-已删除、不保留兼容路径的选项：`cdc-flush` 的 `-glob-only`，两者的 `-manifest-template`、`-manifest-prefix`，
-`cdc-init` 的 `-replace-delta` 与 `-delta-prefix`。传入任何一个都会被参数解析器以未定义的标志拒绝。
-
 发布 `COMMIT` 无应答且写入方无法判定结果时，工具会用新的上下文再结算一次（`Settle` / `ResumeInit`）。仍无法判定时，
 错误给出所暂存的代际、token 与 manifest 键，并说明遗留状态：flush 的标记随其发布一起提交，条目按 `change_log`
 所示保持已刷新或未刷新；init 的移交未运行，其导出条目保持未刷新（安全，下一次 flush 会重新导出）。
+
+compactor
+---------
+按 Protocol V2 合并单个 schema 的 parquet 层并发布 `compact` 代际（#890）：读取该 schema 当前 `PUBLISHED` 代际的 manifest，
+默认先按 manifest 中的 SHA-256 校验全部输入源对象（#347），通过 DuckDB 合并每行最新版本（含墓碑），将新 base 对象与新
+manifest 仅写一次到 S3，并在 PostgreSQL 发布记录上以 CAS 提交。并发 `cdc-flush` 推进了头代际时自动 rebase 保留新 delta，
+与并发 `cdc-init` 或其他 `compactor` 竞争时在 `--max-retries` 预算内重新合并。`compactor` 从不在线删除被替代的旧对象，
+旧代际与对象由 `manifest-reconcile --gc` 过宽限期后回收（`docs/manifest-reconcile.md`）。
+
+主要选项：
+- `-schema-id`（必填）、`-s3-bucket`（必填）、`-s3-endpoint`、`-s3-region`、`-s3-use-ssl`、`-s3-use-path`。
+- `-data-prefix`（默认 `data`）：V2 对象布局前缀，须与 `cdc-flush`/`cdc-init` 的 `-s3-prefix` 一致。
+- `-pg-host`、`-pg-port`、`-pg-user`、`-pg-password`、`-pg-db`、`-pg-ssl-mode`、`-pg-use-iam`、`-pg-engine`（`postgresql` 或 `aurora-dsql`）、`-entity-main-table`（默认 `entity_main`）。
+- `-target-base-size-mb`（默认 256）、`-max-delta-size-mb`（默认 50）、`-dirty-ratio-pct`（默认 5）、`-max-retries`（默认 5）。
+- `-skip-input-checksum-verify`（默认 `false`）：跳过合并前的源对象 SHA-256 校验，仅在已知损坏对象已完成排查时使用。

@@ -111,8 +111,7 @@ func TestFlushRefusesWhatOnlyAnInitOrNothingMayPublish(t *testing.T) {
 	require.ErrorIs(t, err, publication.ErrNoRecord)
 
 	f.inTx(t, func(tx *sql.Tx) error {
-		_, err := publication.InitializeAwaitingInit(ctx, publication.SQLTx(tx), f.tables, schemaID)
-		return err
+		return f.initializeAwaitingInit(ctx, tx)
 	})
 	_, err = w.Flush(ctx, schemaID, 1, st)
 	require.ErrorIs(t, err, publication.ErrAwaitingInit)

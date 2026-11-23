@@ -23,7 +23,7 @@ const (
 	actionRebindStorage = "run manifest-reconcile with the bound writers' base --s3-endpoint (never the displayed bucket URL), --s3-use-path, " +
 		"--s3-bucket, --data-prefix and environment (clear any stray AWS_ENDPOINT_URL_S3/AWS_ENDPOINT_URL). " +
 		"Only if the writers genuinely moved, delete the binding row by hand and re-run --bind-storage"
-	actionAwaitingInit      = "run cdc-init for the schema: readers fail closed until its first V2 generation publishes"
+	actionAwaitingInit      = "run cdc-init for the schema: readers fail closed until its next generation publishes"
 	actionMissingGeneration = "re-initialize the schema with cdc-init (the lost manifest cannot be rebuilt from S3); " +
 		"GC deletes nothing until the lost generation expires after retirement and grace"
 	actionHistoryMismatch = "the current generation's history row is missing or disagrees with the record. Do not restore a history row from backup " +
@@ -40,7 +40,7 @@ const (
 	actionCorrupt         = "integrity fault: federated readers do not hash parquet objects, so reads may return incorrect results or scan errors. " +
 		"If the current generation lists the object, re-initialize with cdc-init (compaction refuses corrupt sources, #347); " +
 		"otherwise it leaves when its superseded generation expires"
-	actionUnrecognized = "GC never deletes keys no V2 writer stages (V1 leftovers or foreign objects); remove by hand once verified"
+	actionUnrecognized = "GC never deletes keys no writer of this layout stages (hand-made or foreign objects); remove by hand once verified"
 )
 
 func recordFinding(kind FindingKind, err error) Finding {

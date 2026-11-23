@@ -195,7 +195,7 @@ stops receiving samples.
 
 | Name | Retired by | Why |
 |------|------------|-----|
-| `compaction_manifest_contract_violation_total` (counter, count, `schema_id`) | #890 | It counted V1 compaction passes whose `SaveManifest` succeeded without advancing the manifest's metadata. The V2 compactor publishes each generation with an exact compare-and-set on the schema's publication record, which either commits the generation or fails the pass, so the event it counted cannot occur and nothing emits it. |
+| `compaction_manifest_contract_violation_total` (counter, count, `schema_id`) | #890 | It counted compaction passes whose mutable-manifest save succeeded without advancing the manifest's metadata. The compactor now publishes each generation with an exact compare-and-set on the schema's publication record, which either commits the generation or fails the pass, so the event it counted cannot occur and nothing emits it. |
 | `fed_query_pushdown_efficiency` (gauge, ratio, `schema_id`) | #596 | It was the dirty-set size over the final matching row count, a stand-in for a Postgres-rows-scanned ratio Forma did not observe: the hot leg then ran inside DuckDB, which exposes the scans' row counts only through per-query profiling. Its numerator is still emitted as `fed_query_row_count{source="pg"}`. |
 
 ## The demo binaries
