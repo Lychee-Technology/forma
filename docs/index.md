@@ -10,13 +10,16 @@ hero:
       text: Get Started
       link: https://github.com/Lychee-Technology/forma#quick-start
     - theme: alt
+      text: Engineering Blog
+      link: /blog-series/
+    - theme: alt
       text: GitHub
       link: https://github.com/Lychee-Technology/forma
 
 features:
   - icon: 🔄
     title: Schema Evolution Without DDL
-    details: Add, remove or rename an attribute by editing the entity's JSON Schema and recording it with apply-schema; no ALTER TABLE. Changing an attribute's type is allowed only when it is lossless for stored data.
+    details: Add or remove an attribute by editing the entity's JSON Schema and recording it with apply-schema; no ALTER TABLE. A rename is a removal plus an addition under a new attribute ID, so stored values stay with the old ID. apply-schema allows only widening type changes that keep stored values exact, such as integer to bigint, and refuses the rest. The one exception is bigint to numeric on a bigint_* column, allowed with a warning that values beyond ±2^53 then read rounded.
   - icon: 🤖
     title: JSON Schema Data Modeling
     details: Each entity type is a JSON Schema file, the format LLM structured-output APIs also take. A create that violates the schema answers 400 naming the attribute.
@@ -42,10 +45,10 @@ When your AI agent outputs 12 fields today and 30 tomorrow, a migration per new 
 |---|---|---|
 | Add an attribute | `ALTER TABLE` migration | Edit the JSON Schema, record it with `apply-schema`, restart |
 | Validation | Column types and constraints | JSON Schema validation of writes, plus declared value types |
-| Indexed access | Any column | Attributes bound to typed main-table columns; EAV attributes are not indexable |
+| Indexed access | Any column | Built-in EAV indexes keyed by attribute and value; composite indexes you declare (`x-forma-indexes`) on column-bound attributes |
 | Analytics | A separate pipeline | Optional CDC export to Parquet, queried through DuckDB |
 
-The costs are real. EAV reads are more complex than reading one row, which is why Forma generates one CTE + `JSON_AGG` statement per page. The main table has a fixed set of typed columns, so only some attributes can be column-bound, and the default per-column indexes cannot seek on a column's value: only indexes declared with [`x-forma-indexes`](./schema-indexes.md) can. Schema changes are not free-form either ([Schema Evolution](./schema-evolution.md)).
+The costs are real. EAV reads are more complex than reading one row, which is why Forma generates one CTE + `JSON_AGG` statement per page. The main table has a fixed set of typed columns, so only some attributes can be column-bound. The per-column indexes `init-db` gives the main table cannot seek on a column's value; a column-bound attribute needs an index declared with [`x-forma-indexes`](./schema-indexes.md) for that, and only column-bound attributes can be declared. EAV attributes go through `init-db`'s `eav_data` indexes instead, keyed by attribute and value; the text one seeks equality and ranges for text and uuid attributes ([Text ranges](./schema-indexes.md#text-ranges)). Schema changes are not free-form either ([Schema Evolution](./schema-evolution.md)).
 
 ## Quick Start
 
@@ -98,6 +101,7 @@ curl -s -X POST localhost:8080/api/v1/contact \
 
 ## Learn More
 
+- [Engineering Blog Series](/blog-series/) - Deep dive into Forma's architecture
 - [README](https://github.com/Lychee-Technology/forma#readme) - Quick Start, HTTP API, read consistency, configuration, and the full documentation index
 - [Federated query design](./federated-query/design.md) - The three tiers, the dirty-set anti-join, read consistency by API, and degraded modes
 - [Error Handling](./error-handling.md) - Write-path vs read-path error semantics
