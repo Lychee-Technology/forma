@@ -793,9 +793,12 @@ full retention grace `G` elapses after that stamp, protecting any reader pinned
 before recovery even if a concurrent `Reset` or `Publish` runs next.
 
 **Storage binding (`_publication_storage`).** Before `--gc` deletes anything, the
-deployment must be bound once via `manifest-reconcile --bind-storage` to the exact
-S3 destination its client sends `LIST` and `DELETE` requests to (bucket URL, bucket
-name, and data prefix). `manifest-reconcile` refuses HTTP 3xx redirects and rejects
+deployment must be bound to the exact S3 destination its client sends `LIST` and
+`DELETE` requests to (bucket URL, bucket name, and data prefix). `init-db` creates
+the table. The V2 writers bind it before their first staging, deriving their target
+with the same `s3endpoint.ClientEndpoint` the collector uses, and fail closed with
+`ErrStorageBoundElsewhere` when the deployment is bound to another target (#911);
+`manifest-reconcile --bind-storage` binds or checks it explicitly. `manifest-reconcile` refuses HTTP 3xx redirects and rejects
 ambiguous custom-endpoint paths (repeated slashes, trailing slashes on non-root
 paths, dot segments, escaped paths) so destructive requests can never reach another
 bucket or tenant route.

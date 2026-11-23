@@ -17,9 +17,10 @@ const (
 	actionStaleLifecycle = "do not restore a backup lifecycle row; verify the record's epoch and update the lifecycle epoch row " +
 		"to match the record's epoch, or run fresh-epoch recovery if the record was restored (docs/manifest-reconcile.md)"
 	actionRecordBehindLifecycle = "treat the record as invalid: " + actionRecordInvalid
-	actionUnboundStorage        = "confirm the S3 client's effective bucket URL (--s3-endpoint or AWS_ENDPOINT_URL_S3/AWS_ENDPOINT_URL or --s3-region, " +
-		"with --s3-use-path matching the writers), --s3-bucket and --data-prefix match the writers, then run manifest-reconcile --bind-storage once " +
-		"(docs/manifest-reconcile.md); GC deletes nothing until bound"
+	actionUnboundStorage        = "cdc-flush, cdc-init and the compactor bind the deployment to the target they publish into on their first publication; " +
+		"until one has, or for writers with a client of their own, confirm the S3 client's effective bucket URL (--s3-endpoint or " +
+		"AWS_ENDPOINT_URL_S3/AWS_ENDPOINT_URL or --s3-region, with --s3-use-path matching the writers), --s3-bucket and --data-prefix " +
+		"match the writers, then run manifest-reconcile --bind-storage once (docs/manifest-reconcile.md); GC deletes nothing until bound"
 	actionRebindStorage = "run manifest-reconcile with the bound writers' base --s3-endpoint (never the displayed bucket URL), --s3-use-path, " +
 		"--s3-bucket, --data-prefix and environment (clear any stray AWS_ENDPOINT_URL_S3/AWS_ENDPOINT_URL). " +
 		"Only if the writers genuinely moved, delete the binding row by hand and re-run --bind-storage"

@@ -28,7 +28,8 @@ Forma Tools CLI
 - `manifest-reconcile`：按 Protocol V2 只读诊断每个 schema 的发布记录、代际历史与 manifest，
   报告丢失的代际与对象（含 schema、epoch、generation 与安全的处置方式）；`--gc` 按回收顺序
   回收过期代际与水位线之下的孤儿对象（#891）。`--gc` 只在部署绑定的存储目标（endpoint、bucket、
-  data prefix）下删除：首次运行前用写入方自己的配置执行一次 `--bind-storage`。
+  data prefix）下删除。`cdc-flush`、`cdc-init` 与 `compactor` 在首次发布前自动绑定该目标，
+  已绑定到其他目标时拒绝暂存与发布（#911）；`--bind-storage` 可选，用于提前绑定或核对收集器的配置。
   丢失的代际或对象无法从 S3 重建，恢复方式是 `cdc-init` 重新初始化。
   详见 `docs/manifest-reconcile.md`。退出码：0 一致 / 2 有发现 / 1 失败。
 - `validate-schema-consistency`：升级前校验 schema 元数据与 EAV 存储的一致性，

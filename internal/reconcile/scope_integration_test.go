@@ -15,6 +15,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/publication"
+	"github.com/lychee-technology/forma/internal/s3endpoint"
 )
 
 // TestCollectorKeepsAnotherDeploymentsObjectsForAnUnpublishedSchema verifies
@@ -220,7 +221,7 @@ func (s destinedStore) Endpoint(context.Context) (string, error) { return s.endp
 
 func clientEndpoint(t *testing.T, f *fixture, o s3.Options) string {
 	t.Helper()
-	endpoint, err := ClientEndpoint(context.Background(), s3.New(o), f.target().Bucket)
+	endpoint, err := s3endpoint.ClientEndpoint(context.Background(), s3.New(o), f.target().Bucket)
 	require.NoError(t, err)
 	return endpoint
 }

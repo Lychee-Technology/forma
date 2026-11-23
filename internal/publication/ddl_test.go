@@ -31,15 +31,14 @@ func TestTablesForFollowsEntityMain(t *testing.T) {
 // statement each, no secondary index and none of the column features this
 // package does not rely on DSQL for.
 func TestStatementsUseOnlyPlainRows(t *testing.T) {
-	pg := append(Statements(forma.EnginePostgreSQL, "entity_main"), StorageStatement(forma.EnginePostgreSQL, "entity_main"))
-	for _, s := range pg {
+	for _, s := range Statements(forma.EnginePostgreSQL, "entity_main") {
 		require.Nil(t, textcollation.DDLDrift(s), "every text column is COLLATE \"C\" on PostgreSQL: %s", s)
 	}
 	stmts := Statements(forma.EngineAuroraDSQL, "entity_main")
-	require.Len(t, stmts, 6)
+	require.Len(t, stmts, 7)
 	for i, s := range stmts {
 		require.NotContains(t, s, "COLLATE", "DSQL refuses a COLLATE clause")
-		if i < 3 {
+		if i < 3 || i == 6 {
 			require.True(t, strings.HasPrefix(s, "CREATE TABLE IF NOT EXISTS "), s)
 		} else {
 			require.True(t, strings.HasPrefix(s, "ALTER TABLE "), s)
@@ -49,7 +48,6 @@ func TestStatementsUseOnlyPlainRows(t *testing.T) {
 			require.NotContains(t, upper, banned, s)
 		}
 	}
-	storage := StorageStatement(forma.EngineAuroraDSQL, "entity_main")
-	require.NotContains(t, storage, "COLLATE")
-	require.True(t, strings.HasPrefix(storage, "CREATE TABLE IF NOT EXISTS "), storage)
+	require.Equal(t, StorageStatement(forma.EngineAuroraDSQL, "entity_main"), stmts[6],
+		"init-db creates the storage binding table the writers bind in, so no writer runs DDL")
 }

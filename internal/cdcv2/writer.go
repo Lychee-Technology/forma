@@ -102,7 +102,10 @@ type Config struct {
 	// it empty; Flush, Init and ResumeInit refuse to run without it.
 	ChangeLog string
 	// Layout builds the object keys, Store holds them write-once, and Cache
-	// answers the verified parent manifest a flush appends to.
+	// answers the verified parent manifest a flush appends to. A Store that
+	// is a manifestv2.S3Store over an *s3.Client also names the deployment's
+	// storage target, which the writer binds, or checks against the binding,
+	// before its first staging (ensureStorage).
 	Layout manifestv2.Layout
 	Store  manifestv2.Store
 	Cache  *manifestv2.Cache
@@ -133,6 +136,7 @@ type Writer struct {
 	changeLog string
 	main      string
 	dsql      bool
+	storage   storageGate
 }
 
 // New checks cfg, fills its defaults and answers its writer.

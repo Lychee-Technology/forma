@@ -69,6 +69,9 @@ func (w *Writer) Flush(ctx context.Context, schemaID int16, pin int64, st DeltaS
 	if err := w.needChangeLog("flush"); err != nil {
 		return rep, err
 	}
+	if err := w.ensureStorage(ctx); err != nil {
+		return rep, fmt.Errorf("flush schema %d: %w", schemaID, err)
+	}
 	for {
 		err := w.flushRound(ctx, schemaID, pin, st, &rep)
 		if err == nil || !errors.Is(err, ErrAbandoned) || rep.Restarts >= w.cfg.Restarts {

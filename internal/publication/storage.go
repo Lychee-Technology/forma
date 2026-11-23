@@ -142,9 +142,11 @@ type StorageBinding struct {
 }
 
 // storageDDL is the deployment's storage binding: at most one row (binding 1),
-// naming the target the operator declared this database's writers publish into
-// (manifest-reconcile --bind-storage). Created by --bind-storage itself, not
-// by init-db, so only the collector depends on it.
+// naming the target this database's writers publish into. The V2 writers bind
+// it on their first publication (EnsureStorage), and manifest-reconcile
+// --bind-storage binds or checks it explicitly. init-db creates it with the
+// other publication tables (Statements); --bind-storage also creates it, for
+// a deployment whose init-db predates the table.
 const storageDDL = `CREATE TABLE IF NOT EXISTS %s (
 		binding     SMALLINT NOT NULL,
 		endpoint    ` + textcollation.TextType + ` NOT NULL,
@@ -185,6 +187,64 @@ func BindStorage(ctx context.Context, q Querier, t Tables, target StorageTarget)
 		return StorageBinding{}, fmt.Errorf("bind the publication storage in %s to %s: the binding is not there after its write", t.Storage, c)
 	}
 	return b, nil
+}
+
+// ErrStorageBoundElsewhere reports a deployment bound to another storage
+// target than the one a writer publishes into or a run targets. The binding
+// is kept: garbage collection deletes only under the bound target, so a
+// writer publishing elsewhere would put objects where the collector never
+// looks, and a collector bound elsewhere would judge the writers' objects
+// against the wrong bucket.
+var ErrStorageBoundElsewhere = errors.New("the deployment is bound to another storage target")
+
+// ErrStorageTableMissing reports a deployment without the storage binding
+// table: its init-db ran before the table existed.
+var ErrStorageTableMissing = errors.New("the publication storage binding table does not exist")
+
+// EnsureStorage binds the deployment to target when it has no binding yet,
+// and answers the binding. A binding to another target fails with
+// ErrStorageBoundElsewhere and is kept; a missing binding table fails with
+// ErrStorageTableMissing. Run it on a pool (DB), outside any publication
+// transaction: on Aurora DSQL the bind is its own transaction, and a rival
+// writer's bind of the same row may fail it with a conflict, after which
+// the binding the rival wrote is read and checked instead.
+func EnsureStorage(ctx context.Context, q Querier, t Tables, target StorageTarget) (StorageBinding, error) {
+	c, err := target.Normalize()
+	if err != nil {
+		return StorageBinding{}, fmt.Errorf("ensure the publication storage binding: %w", err)
+	}
+	b, ok, err := ReadStorage(ctx, q, t)
+	if err != nil {
+		return StorageBinding{}, err
+	}
+	if !ok {
+		if b, err = bindOrRead(ctx, q, t, c); err != nil {
+			return StorageBinding{}, err
+		}
+	}
+	if !b.Target.Same(c) {
+		return b, fmt.Errorf("the deployment is bound to %s since %d, not to %s: %w", b.Target, b.BoundAt, c, ErrStorageBoundElsewhere)
+	}
+	return b, nil
+}
+
+// bindOrRead binds the deployment to c, and when the bind fails answers the
+// binding a rival wrote first, if there is one by now.
+func bindOrRead(ctx context.Context, q Querier, t Tables, c StorageTarget) (StorageBinding, error) {
+	b, err := BindStorage(ctx, q, t, c)
+	if err == nil {
+		return b, nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == sqlstateUndefinedTable {
+		return StorageBinding{}, fmt.Errorf("%s: run init-db, which creates it, or manifest-reconcile --bind-storage: %w: %w",
+			t.Storage, ErrStorageTableMissing, err)
+	}
+	rival, ok, rerr := ReadStorage(ctx, q, t)
+	if rerr != nil || !ok {
+		return StorageBinding{}, err
+	}
+	return rival, nil
 }
 
 const sqlstateUndefinedTable = "42P01"

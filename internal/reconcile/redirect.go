@@ -4,11 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"time"
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	"github.com/lychee-technology/forma/internal/s3endpoint"
 )
 
 // defaultResponseHeaderTimeout bounds how long a collector waits for S3
@@ -72,14 +73,7 @@ func refuseRedirect(next *http.Request, via []*http.Request) error {
 
 func newRedirectError(r *http.Request, status int) *redirectError {
 	return &redirectError{msg: fmt.Sprintf("%s %s answered %d with a redirect (Location omitted)",
-		r.Method, safeURL(r.URL), status)}
-}
-
-func safeURL(u *url.URL) string {
-	if u == nil {
-		return ""
-	}
-	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, RawPath: u.RawPath}).String()
+		r.Method, s3endpoint.SafeURL(r.URL), status)}
 }
 
 type redirectError struct{ msg string }

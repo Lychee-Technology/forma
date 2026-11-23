@@ -11,14 +11,15 @@
 // the dirty set in, so the generation it scans and the rows it treats as
 // flushed come from one snapshot.
 //
-// init-db creates the three tables from Statements (#895) and, in the
+// init-db creates the tables from Statements (#895) and, in the
 // registration transaction, each schema's record (Initialize, Activate, and
 // for a lost record InitializeAfterLoss). cdc-flush, cdc-init and the
-// compactor publish through internal/cdcv2, the federated reader reads the
-// record in its pass snapshot through internal/federatedv2, and garbage
+// compactor publish through internal/cdcv2, which binds the deployment's
+// storage target before it stages (EnsureStorage), the federated reader reads
+// the record in its pass snapshot through internal/federatedv2, and garbage
 // collection retires and forgets generations through internal/reconcile.
-// Only the owners
-// TestOnlyTheProtocolOwnersMoveAPublicationRecord names may move a record.
+// Only the owners TestOnlyTheProtocolOwnersMoveAPublicationRecord names may
+// move a record.
 //
 // The tables keep plain rows: no JSONB, arrays, sequences, enums, CHECK
 // constraints or foreign keys, none of which this package relies on Aurora
@@ -153,6 +154,9 @@ const (
 // one statement each with no secondary index, so each is one DDL transaction
 // on Aurora DSQL too. Text columns are COLLATE "C" on PostgreSQL and plain
 // TEXT on DSQL, whose collation is C and which refuses the clause (#816).
+// The storage binding table comes last (StorageStatement): a writer binds
+// the deployment in it, so it must exist before a writer's first
+// publication, and creating it here keeps DDL out of the writers.
 func Statements(engine forma.DatabaseEngine, entityMain string) []string {
 	t := TablesFor(entityMain)
 	return []string{
@@ -162,5 +166,6 @@ func Statements(engine forma.DatabaseEngine, entityMain string) []string {
 		fmt.Sprintf(epochForgottenDDL, t.Epoch),
 		fmt.Sprintf(epochRecoveryEpochDDL, t.Epoch),
 		fmt.Sprintf(epochRecoveryRetiredDDL, t.Epoch),
+		StorageStatement(engine, entityMain),
 	}
 }

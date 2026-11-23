@@ -425,8 +425,8 @@ func TestOwnedTablesNameEveryTableInitDBCreates(t *testing.T) {
 			want = append(want, m[1])
 		}
 	}
-	if len(want) != 13 {
-		t.Fatalf("init-db creates %d tables, want 13: %q", len(want), want)
+	if len(want) != 14 {
+		t.Fatalf("init-db creates %d tables, want 14: %q", len(want), want)
 	}
 	if got := ownedTables(testInitDBOptions()); !slices.Equal(got, want) {
 		t.Fatalf("ownedTables = %q, want the tables init-db creates, in order: %q", got, want)

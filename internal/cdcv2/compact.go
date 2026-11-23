@@ -81,6 +81,9 @@ type CompactReport struct {
 // collection retires them.
 func (w *Writer) Compact(ctx context.Context, schemaID int16, pin int64, st CompactStager) (CompactReport, error) {
 	var rep CompactReport
+	if err := w.ensureStorage(ctx); err != nil {
+		return rep, fmt.Errorf("compact schema %d: %w", schemaID, err)
+	}
 	for {
 		err := w.compactRound(ctx, schemaID, pin, st, &rep)
 		if pin == 0 && rep.Input.Epoch != 0 {

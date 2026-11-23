@@ -11,7 +11,8 @@ import (
 )
 
 // wantPublicationDDL is the golden text of the publication record,
-// generation and epoch tables (#895), issued after the ledger. Independent literals,
+// generation and epoch tables (#895) and the storage binding table (#911),
+// issued after the ledger. Independent literals,
 // like the rest of wantDDLStatements: never rebuild them from the builders.
 func wantPublicationDDL() []string {
 	return []string{
@@ -56,6 +57,14 @@ func wantPublicationDDL() []string {
 		`ALTER TABLE "entity_main_publication_epoch" ADD COLUMN IF NOT EXISTS forgotten_generation BIGINT`,
 		`ALTER TABLE "entity_main_publication_epoch" ADD COLUMN IF NOT EXISTS recovery_epoch BIGINT`,
 		`ALTER TABLE "entity_main_publication_epoch" ADD COLUMN IF NOT EXISTS recovery_retired_at BIGINT`,
+		`CREATE TABLE IF NOT EXISTS "entity_main_publication_storage" (
+		binding     SMALLINT NOT NULL,
+		endpoint    TEXT COLLATE "C" NOT NULL,
+		bucket      TEXT COLLATE "C" NOT NULL,
+		data_prefix TEXT COLLATE "C" NOT NULL,
+		bound_at    BIGINT   NOT NULL,
+		PRIMARY KEY (binding)
+	)`,
 	}
 }
 
@@ -88,6 +97,7 @@ func TestPublicationDDLAnnouncements(t *testing.T) {
 		{failure: "ensure publication epoch forgotten_generation column"},
 		{failure: "ensure publication epoch recovery_epoch column"},
 		{failure: "ensure publication epoch recovery_retired_at column"},
+		{announce: "Created publication storage binding table: app.entity_main_publication_storage\n", failure: "ensure publication storage binding table"},
 	}
 	if len(ddl) != len(want) {
 		t.Fatalf("publicationDDL returned %d statements, want %d", len(ddl), len(want))
@@ -154,6 +164,11 @@ func TestPublicationTableCollision(t *testing.T) {
 		"the EAV table is the epoch table": {
 			set: func(o *initDBOptions) { o.eavTable = "entity_main_publication_epoch" },
 			want: []string{`"entity_main_publication_epoch" is the publication epoch table`,
+				"the EAV table, which --eav-table names"},
+		},
+		"the EAV table is the storage binding table": {
+			set: func(o *initDBOptions) { o.eavTable = "entity_main_publication_storage" },
+			want: []string{`"entity_main_publication_storage" is the publication storage binding table`,
 				"the EAV table, which --eav-table names"},
 		},
 		"the registry's generation ledger is the generation table": {

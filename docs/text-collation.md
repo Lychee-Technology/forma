@@ -145,6 +145,7 @@ The procedure:
            'entity_main', 'entity_main_unique_key', 'entity_main_unique_key_state',
            'entity_main_row_guard', 'entity_main_schema_lease', 'entity_main_publication',
            'entity_main_publication_generation', 'entity_main_publication_epoch',
+           'entity_main_publication_storage',
            'eav_data', 'change_log']) AS t)
      AND a.attnum > 0 AND NOT a.attisdropped
      AND NOT (c.collname = 'C' AND n.nspname = 'pg_catalog')

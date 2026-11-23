@@ -79,6 +79,9 @@ func (w *Writer) Init(ctx context.Context, schemaID int16, pin int64, exp BaseEx
 	if err := w.needChangeLog("init"); err != nil {
 		return rep, err
 	}
+	if err := w.ensureStorage(ctx); err != nil {
+		return rep, fmt.Errorf("init schema %d: %w", schemaID, err)
+	}
 	cur, err := w.readRecord(ctx, schemaID, pin)
 	if err != nil {
 		return rep, fmt.Errorf("init: %w", err)

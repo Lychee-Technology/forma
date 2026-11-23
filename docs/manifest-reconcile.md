@@ -23,7 +23,9 @@ a lost generation is a `cdc-init`.
   each expired history row while advancing `forgotten_generation`.
 - **Storage binding (`--bind-storage`):** creates `<entity_main>_publication_storage`
   if needed, binds this database deployment to the exact S3 destination its
-  client uses, and exits. Cannot be combined with `--gc`.
+  client uses (or checks it against an existing binding), and exits. Optional:
+  the V2 writers bind the deployment on their first publication. Cannot be
+  combined with `--gc`.
 - **Checksum scrub (`--verify-checksums`):** hashes every distinct object listed
   by retained generations (one full `GET` per unique key) and checks both SHA-256
   and size against every retained manifest entry naming it.
@@ -36,10 +38,11 @@ Exit codes:
 | `2` | Residual discrepancies, refused collections (e.g. active recovery fence or unpublished schema with unverified objects), skipped schemas (lock contended), or inconclusive lock-free diagnosis (rerun needed) |
 | `1` | Tool, configuration, S3, redirect, or database failure |
 
-## Storage binding (`--bind-storage`)
+## Storage binding
 
-Garbage collection deletes nothing until the deployment is bound to the exact
-S3 storage target its writers publish into:
+Garbage collection deletes nothing until the deployment is bound, in
+`<entity_main>_publication_storage`, to the exact S3 storage target its writers
+publish into. `init-db` creates the table. A target is three values:
 
 1. **Effective bucket URL:** derived directly from the AWS SDK S3 client's
    `ListObjectsV2` and `DeleteObject` request URLs (`--s3-endpoint` or
@@ -58,7 +61,45 @@ S3 storage target its writers publish into:
    the pass with exit `1`. Either way, destructive requests never leave the
    bound endpoint.
 
-Run `--bind-storage` once with the writers' exact S3 flags and environment:
+### Writers bind it
+
+`cdc-flush`, `cdc-init` and the `compactor` bind the deployment themselves
+(#911). Before a run stages anything, the writer derives its own target with
+the same function `manifest-reconcile` uses for its client (the bucket URL its
+AWS SDK client sends a `LIST` and a `DELETE` to, its `-s3-bucket`, and its data
+prefix), then:
+
+- with no binding yet, binds the deployment to that target;
+- with a binding to the same target, publishes as before;
+- with a binding to another target, fails before it stages or publishes,
+  naming both targets (`publication.ErrStorageBoundElsewhere`). The binding is
+  kept. A writer publishing into a target the collector is not bound to would
+  put objects where garbage collection never looks, and a collector bound to
+  the wrong target would judge the writers' objects against another bucket.
+
+A mismatch is refused at once, with no warn-only window. A deployment bound
+before #911 was bound by an operator who ran `--bind-storage` with the writers'
+own flags and environment, through the same derivation, so its writers derive
+the same target; one whose writers derive another target has a binding that
+garbage collection would already act on wrongly.
+
+A writer whose S3 client destination cannot be told (a custom endpoint
+resolver, or an ambiguous custom endpoint path, see above) fails the same way
+before it stages. A writer given a client that is not the AWS SDK's own
+(`*s3.Client`), as an embedded caller of `internal/cdc` may, binds and checks
+nothing: bind such a deployment with `--bind-storage`.
+
+A deployment whose `init-db` ran before the table existed has no binding
+table, and its writers fail with `publication.ErrStorageTableMissing` until
+`init-db` (or `--bind-storage`, which also creates it) runs again.
+
+### `--bind-storage`
+
+`--bind-storage` binds the deployment to the target of the run's own client, or
+checks that target against an existing binding, and exits. Use it to bind ahead
+of the writers' first publication, or to confirm that the flags and environment
+the collector runs with name the writers' target. Run it with the writers'
+exact S3 flags and environment:
 
 ```bash
 forma-tools manifest-reconcile \
@@ -69,10 +110,12 @@ forma-tools manifest-reconcile \
   --s3-bucket my-bucket --data-prefix data
 ```
 
-An existing binding to a different target is never overwritten. If writers
-genuinely moved to a new bucket/endpoint/prefix, delete the row in
-`<entity_main>_publication_storage` manually after writers publish to the new
-target, then re-run `--bind-storage`.
+An existing binding to a different target is never overwritten, by either
+path. To move a deployment to a new bucket, endpoint or prefix, stop its
+writers, delete the row in `<entity_main>_publication_storage` by hand, then
+either start the writers with the new target (their first run binds it) or run
+`--bind-storage` with it first. Writers still running with the old target fail
+closed once another target is bound.
 
 ## Retention and time flags
 
@@ -90,7 +133,7 @@ collection of expired/orphaned garbage.
 
 | Finding | Blocking | Meaning & safe operator action |
 | --- | --- | --- |
-| `storage_not_bound` | Yes | Missing binding or target mismatch. Run `--bind-storage` once with writers' flags, or fix flags/env (`AWS_ENDPOINT_URL_S3`). |
+| `storage_not_bound` | Yes | Missing binding or target mismatch. A missing binding is written by the writers' first publication, or by `--bind-storage` run with the writers' flags; for a mismatch, fix the run's flags/env (`AWS_ENDPOINT_URL_S3`). |
 | `no_record` | Yes | Missing publication record row. Run `init-db` under the schema lock to recover at a fresh epoch. |
 | `record_invalid` | Yes | Corrupt publication record. Never restore a record row from backup; delete the record row, run `init-db` (arms fresh-epoch recovery fence), restart readers/writers, and run `cdc-init`. |
 | `missing_lifecycle_epoch` / `lifecycle_epoch_mismatch` | Yes | Missing or mismatched `<entity_main>_publication_epoch` row. Restore lifecycle epoch monotonicity and run fresh-epoch recovery. |

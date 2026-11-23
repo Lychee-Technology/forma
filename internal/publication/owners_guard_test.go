@@ -37,8 +37,9 @@ const (
 // over its purge) is drop-schema's (cmd/tools/drop_schema.go), and the
 // recovery of a lost record (InitializeAfterLoss) init-db's. Garbage
 // collection (RaiseHorizon, Retire, RetireRecovery, Forget) is
-// internal/reconcile's, and binding a deployment's storage target
-// (BindStorage) is manifest-reconcile's CLI.
+// internal/reconcile's. Binding a deployment's storage target is
+// manifest-reconcile's CLI (BindStorage) and the writers' before their first
+// staging (EnsureStorage, internal/cdcv2).
 var transitions = map[string]map[string]bool{
 	"Initialize":          {"cmd/tools/init_db_records.go": true, federatedHarnessPublication: true},
 	"InitializeAfterLoss": {"cmd/tools/init_db_records.go": true},
@@ -53,6 +54,7 @@ var transitions = map[string]map[string]bool{
 	"RetireRecovery":      {"internal/reconcile": true},
 	"Forget":              {"internal/reconcile": true},
 	"BindStorage":         {"cmd/tools/manifest_reconcile.go": true},
+	"EnsureStorage":       {"internal/cdcv2": true},
 }
 
 // TestOnlyTheProtocolOwnersMoveAPublicationRecord is a static check over

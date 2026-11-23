@@ -1593,7 +1593,10 @@ whose publication state cannot be answered from
   tooling, `publication.ErrHistoryInconsistent` refuses non-monotonic or
   broken generation history, `reconcile.ErrRedirectRefused` refuses any 3xx redirect on `manifest-reconcile`'s S3 client, and `--gc`
   refuses to delete unless the deployment's storage target matches its
-  `--bind-storage` binding (`docs/manifest-reconcile.md`).
+  binding. The V2 writers refuse to stage or publish into another target than
+  the bound one (`publication.ErrStorageBoundElsewhere`), and fail with
+  `publication.ErrStorageTableMissing` on a deployment whose `init-db`
+  predates the binding table (`docs/manifest-reconcile.md`).
 
 ## Public HTTP error surface
 

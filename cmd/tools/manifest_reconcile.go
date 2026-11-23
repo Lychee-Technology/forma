@@ -93,8 +93,10 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 		"Bind this database's deployment to the URL the run's client sends the bucket's requests to (--s3-endpoint, or the "+
 			"AWS SDK's endpoint configuration such as AWS_ENDPOINT_URL_S3 without it, or the region's AWS endpoint, with the "+
 			"addressing --s3-use-path chooses), --s3-bucket and "+
-			"--data-prefix, the target its writers publish into, and exit. Garbage collection deletes nothing under any other target. Run it once, with the writers' own values and environment; "+
-			"an existing binding to another target is kept and the run fails")
+			"--data-prefix, the target its writers publish into, and exit. Garbage collection deletes nothing under any other target. "+
+			"cdc-flush, cdc-init and the compactor bind it on their first publication, so this is optional: it checks the run's "+
+			"target against the binding, or binds ahead of the writers, who then refuse to publish elsewhere. "+
+			"An existing binding to another target is kept and the run fails")
 	fs.BoolVar(&opts.run.VerifyChecksums, "verify-checksums", false,
 		"Hash every object a retained generation lists and compare it with its manifest's sha256 and size (one full GET per object)")
 	fs.DurationVar(&opts.run.RetentionGrace, "retention-grace", defaultRetentionGrace,
@@ -251,7 +253,7 @@ func newReconciler(opts *reconcileOptions, objects reconcile.ObjectStore, db *sq
 
 // buildReconcileObjects builds the S3 client the run lists, reads and
 // deletes through, and records in opts the URL that client sends the
-// bucket's requests to (reconcile.ClientEndpoint): the one the run is bound
+// bucket's requests to (s3endpoint.ClientEndpoint): the one the run is bound
 // by and checked against. The SDK may take its endpoint from the
 // environment (AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, a profile's
 // endpoint_url) when --s3-endpoint is not given, and --s3-use-path changes
@@ -282,14 +284,18 @@ func (o *reconcileOptions) storageTarget() publication.StorageTarget {
 	return publication.StorageTarget{Endpoint: o.endpoint, Bucket: o.s3.bucket, Prefix: o.dataPrefix}
 }
 
-// errStorageBoundElsewhere refuses --bind-storage on a deployment bound to
-// another target: only an operator who deleted the binding row rebinds it.
-var errStorageBoundElsewhere = errors.New("the deployment is bound to another storage target")
-
 // bindReconcileStorage creates the storage binding table and binds the
 // deployment to the configured target, unless it is bound already; a
-// binding to another target is kept and fails the run. The DDL is its own
-// statement, as Aurora DSQL needs.
+// binding to another target is kept and fails the run with
+// publication.ErrStorageBoundElsewhere: only an operator who deleted the
+// binding row rebinds it. The DDL is its own statement, as Aurora DSQL
+// needs; init-db creates the table too, and the run creates it for a
+// deployment whose init-db predates it.
+//
+// The V2 writers bind the deployment on their first publication (#911), so
+// on a deployment they have published into this is a check that the run's
+// target is theirs; before their first publication it binds the target
+// ahead of them, and they then refuse to publish anywhere else.
 func bindReconcileStorage(ctx context.Context, db *sql.DB, opts *reconcileOptions, out io.Writer) error {
 	tables := publication.TablesFor(opts.entityMain)
 	if _, err := db.ExecContext(ctx, publication.StorageStatement(opts.db.Engine, opts.entityMain)); err != nil {
@@ -303,7 +309,7 @@ func bindReconcileStorage(ctx context.Context, db *sql.DB, opts *reconcileOption
 	if !b.Target.Same(want) {
 		return fmt.Errorf("bind the deployment's storage to %s: it is bound to %s since %d; delete the row of %s by hand "+
 			"only once the writers publish into the new target (docs/manifest-reconcile.md, \"Storage binding\"): %w",
-			want, b.Target, b.BoundAt, tables.Storage, errStorageBoundElsewhere)
+			want, b.Target, b.BoundAt, tables.Storage, publication.ErrStorageBoundElsewhere)
 	}
 	_, err = fmt.Fprintf(out, "the deployment is bound to %s since %d\n", b.Target, b.BoundAt)
 	if err != nil {
