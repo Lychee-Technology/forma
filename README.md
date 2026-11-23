@@ -39,7 +39,7 @@ gives up declared types and validation. Forma sits between the two:
 | | Conventional tables | Forma |
 |---|---|---|
 | Add an attribute | `ALTER TABLE` migration | Edit the JSON Schema, record it with `apply-schema`, restart |
-| Validation | Column types and constraints | Creates that violate the JSON Schema are rejected; updates that violate it are logged and written unless `VALIDATE_UPDATES_STRICT` is set ([Error Handling](docs/error-handling.md#creates-reject-updates-report)). Each attribute has a declared value type |
+| Validation | Column types and constraints | Creates that violate the JSON Schema are rejected; updates that violate it are logged and written unless `VALIDATE_UPDATES_STRICT` is enabled (set to `true`) ([Error Handling](docs/error-handling.md#creates-reject-updates-report)). Each attribute has a declared value type |
 | Indexed access | Any column | Attributes bound to typed main-table columns; EAV attributes are not indexable |
 | Analytics | A separate pipeline | Optional CDC export to Parquet, queried through DuckDB |
 
@@ -72,7 +72,7 @@ a time (search spans several), and offset pagination is capped at a configurable
   `<schema>_attributes.json` that assigns attribute IDs, value types and, optionally,
   a main-table column. A create that violates the schema answers `400` naming the
   attribute. An update that violates it is logged and written unless
-  `VALIDATE_UPDATES_STRICT` is set, so rows stored before enforcement stay updatable
+  `VALIDATE_UPDATES_STRICT` is set to `true`, so rows stored before enforcement stay updatable
   ([Error Handling](docs/error-handling.md)).
 - **Hybrid storage.** Column-bound attributes live in typed columns of `entity_main`;
   the rest live in `eav_data`. Column-bound attributes can carry declared composite
