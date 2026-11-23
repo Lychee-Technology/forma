@@ -45,9 +45,9 @@ func newLaneFixture(t *testing.T) *laneFixture {
 			t.Fatalf("create %s: %v", dir, err)
 		}
 	}
-	tools, err := filepath.Abs("testdata/dsql_ministack/fake_tools.sh")
-	if err != nil {
-		t.Fatalf("resolve fake tools: %v", err)
+	tools := repoPath(packageDir + "/testdata/dsql_ministack/fake_tools.sh")
+	if _, err := os.Stat(tools); err != nil {
+		t.Fatalf("find fake tools: %v", err)
 	}
 	for _, tool := range []string{"docker", "curl", "go"} {
 		if err := os.Symlink(tools, filepath.Join(bin, tool)); err != nil {

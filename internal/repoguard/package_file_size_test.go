@@ -8,8 +8,13 @@ import (
 
 // TestPackageFilesStayWithinFileSizeLimit keeps every file of this package,
 // all of them tests, under the 500-line cap from coding-standard.md. It reads
-// the package directory: the guards' TestMain resolves the repository root
-// without changing the working directory.
+// the package directory from the repository root TestMain resolved, never the
+// working directory: a guard binary launched from the module root would
+// otherwise measure the root package's files and pass in silence.
 func TestPackageFilesStayWithinFileSizeLimit(t *testing.T) {
-	sizeguard.Check(t, sizeguard.IncludeTests)
+	dir, err := packageFS()
+	if err != nil {
+		t.Fatalf("open %s: %v", packageDir, err)
+	}
+	sizeguard.CheckFS(t, dir, sizeguard.IncludeTests)
 }

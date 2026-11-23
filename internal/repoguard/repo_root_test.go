@@ -62,7 +62,83 @@ func TestRepoIsTheRepositoryRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
 	}
-	if !strings.Contains(string(mod), "module "+modulePath+"\n") {
-		t.Errorf("go.mod at the resolved root does not declare module %s", modulePath)
+	if got, err := declaredModule("go.mod", mod); err != nil || got != modulePath {
+		t.Errorf("go.mod at the resolved root declares module %q (%v), want %s", got, err, modulePath)
+	}
+	if !filepath.IsAbs(repoRoot) {
+		t.Errorf("repoRoot = %q, want an absolute path", repoRoot)
+	}
+}
+
+// TestFindRepoRootReadsGoModSyntax pins that the module declaration is read
+// as the go command reads it: a trailing comment, a quoted path and a module
+// block all declare the same module, and a module whose path merely starts
+// with this one's does not.
+func TestFindRepoRootReadsGoModSyntax(t *testing.T) {
+	for _, tc := range []struct {
+		name, gomod string
+		match       bool
+	}{
+		{"inline comment", "module " + modulePath + " // canonical import path\n\ngo 1.26\n", true},
+		{"double-quoted", "module \"" + modulePath + "\"\n", true},
+		{"module block", "module (\n\t" + modulePath + "\n)\n", true},
+		{"leading comment", "// the forma module\nmodule " + modulePath + "\n", true},
+		{"longer path", "module " + modulePath + "/infra // nested\n", false},
+		{"commented out", "// module " + modulePath + "\nmodule example.com/other\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(tc.gomod), 0o644); err != nil {
+				t.Fatalf("write go.mod: %v", err)
+			}
+			got, err := findRepoRoot(root)
+			switch {
+			case tc.match && (err != nil || got != root):
+				t.Errorf("findRepoRoot(%q) = %q, %v; want %s", tc.gomod, got, err, root)
+			case !tc.match && err == nil:
+				t.Errorf("findRepoRoot(%q) = %q, want no match", tc.gomod, got)
+			}
+		})
+	}
+}
+
+// TestFindRepoRootFailsOnAMalformedGoMod keeps a go.mod the go command would
+// reject from being passed over in silence on the way up.
+func TestFindRepoRootFailsOnAMalformedGoMod(t *testing.T) {
+	root := t.TempDir()
+	writeGoMod(t, root, modulePath)
+	nested := filepath.Join(root, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("create %s: %v", nested, err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "go.mod"), []byte("module a b\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	if got, err := findRepoRoot(nested); err == nil || !strings.Contains(err.Error(), "parse ") {
+		t.Fatalf("findRepoRoot(%s) = %q, %v; want a parse error", nested, got, err)
+	}
+}
+
+// TestGuardsIgnoreTheWorkingDirectory runs what used to read the working
+// directory from somewhere else: the size guard's package directory and the
+// MiniStack fixture's fake tools both come from the resolved root.
+func TestGuardsIgnoreTheWorkingDirectory(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	dir, err := packageFS()
+	if err != nil {
+		t.Fatalf("open %s: %v", packageDir, err)
+	}
+	if _, err := fs.Stat(dir, "repo_test.go"); err != nil {
+		t.Errorf("package directory does not hold this package: %v", err)
+	}
+
+	f := newLaneFixture(t)
+	for _, tool := range []string{"docker", "curl", "go"} {
+		// Stat follows the symlink, so a target that moved fails here.
+		if _, err := os.Stat(filepath.Join(f.root, "bin", tool)); err != nil {
+			t.Errorf("fake %s does not resolve: %v", tool, err)
+		}
 	}
 }
