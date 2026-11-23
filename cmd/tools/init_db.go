@@ -333,8 +333,8 @@ func ensureTables(ctx context.Context, tx pgx.Tx, opts initDBOptions) error {
 		}
 	}
 	// Every registered schema, not only those of schemaDir, gets its
-	// publication record in this transaction: a new one at registration, an
-	// existing one at the V2 cutover (init_db_records.go).
+	// publication record in this transaction: a new one at registration, and
+	// one missing a record or recovering a lost one (init_db_records.go).
 	return ensurePublicationRecords(ctx, tx, opts, inserted, os.Stdout)
 }
 

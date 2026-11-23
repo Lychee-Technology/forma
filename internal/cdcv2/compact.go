@@ -105,7 +105,7 @@ func (w *Writer) compactRound(ctx context.Context, schemaID int16, pin int64, st
 	case publication.Unpublished:
 		return nil
 	case publication.AwaitingInit:
-		return fmt.Errorf("compact schema %d: only a cdc-init publishes its first V2 generation: %w", schemaID, publication.ErrAwaitingInit)
+		return fmt.Errorf("compact schema %d: only a cdc-init publishes its next generation: %w", schemaID, publication.ErrAwaitingInit)
 	case publication.Dropped:
 		return fmt.Errorf("compact schema %d at epoch %d: %w", schemaID, cur.Epoch, publication.ErrDropped)
 	}

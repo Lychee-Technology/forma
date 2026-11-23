@@ -97,7 +97,7 @@ func TestWiredFlushPublishesImmutableGenerationsThroughTheRecord(t *testing.T) {
 }
 
 // TestWiredFlushRefusesASchemaItMayNotPublish: a schema without a record,
-// one the cutover left AWAITING_INIT and a dropped one are refused before
+// one AWAITING_INIT and a dropped one are refused before
 // anything is staged or marked, each with what the operator does about it.
 func TestWiredFlushRefusesASchemaItMayNotPublish(t *testing.T) {
 	f := newWiredFixture(t)

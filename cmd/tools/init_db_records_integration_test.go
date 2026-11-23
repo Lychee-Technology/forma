@@ -44,8 +44,8 @@ func (tg *initDBTarget) records(t *testing.T) map[string]publication.Record {
 }
 
 // requireStates fails unless each named schema's record is in the state
-// wanted ("" for no record) at epoch 1, the only epoch registration and the
-// cutover write.
+// wanted ("" for no record) at epoch 1, the only epoch a first registration
+// writes.
 func requireStates(t *testing.T, when string, got map[string]publication.Record, want map[string]publication.State) {
 	t.Helper()
 	for name, state := range want {
@@ -59,9 +59,10 @@ func requireStates(t *testing.T, when string, got map[string]publication.Record,
 	}
 }
 
-// emptyPublicationRecords empties the record and epoch tables: the state of
-// a deployment from before V2, which never had a record. Emptying the record
-// table alone is a lost record, which init-db recovers instead.
+// emptyPublicationRecords empties the record and epoch tables: with no
+// generation published, the ids cannot be told from ones never registered.
+// Emptying the record table alone is a lost record, which init-db recovers
+// instead.
 func (tg *initDBTarget) emptyPublicationRecords(t *testing.T) {
 	t.Helper()
 	tables := publication.TablesFor(tg.opts.entityMain)
@@ -92,11 +93,13 @@ func (tg *initDBTarget) insertRow(t *testing.T, id int16, flushedAt int64) {
 	}
 }
 
-// Registration creates each schema's record in its registry transaction, and
-// the V2 cutover gives a deployment registered before V2 its records: no
-// history is UNPUBLISHED, a flushed entry or a live row without an entry is
-// AWAITING_INIT. A rerun keeps every record as it is.
-func TestInitDBWritesTheRecordsRegistrationAndTheCutoverOwe(t *testing.T) {
+// Registration creates each schema's record in its registry transaction,
+// UNPUBLISHED, and a rerun keeps every record as it is. A schema with no
+// record and no history is initialized UNPUBLISHED only when its rows satisfy
+// the UNPUBLISHED invariant. A flushed entry, or a row without an entry, is
+// state no Protocol V2 writer leaves without a generation, so init-db fails
+// and the run's registrations roll back with it.
+func TestInitDBInitializesOnlySchemasThatSatisfyTheUnpublishedInvariant(t *testing.T) {
 	tg := newInitDBTarget(t)
 	tg.writeOutboxAndTimer(t, "due")
 	if out, err := tg.run(t); err != nil {
@@ -104,37 +107,56 @@ func TestInitDBWritesTheRecordsRegistrationAndTheCutoverOwe(t *testing.T) {
 	}
 	fresh := tg.records(t)
 	requireStates(t, "fresh init-db", fresh, map[string]publication.State{"outbox_message": publication.Unpublished, "timer": publication.Unpublished})
-
-	// A deployment from before V2: its schemas carry V1 history, and its
-	// publication tables are empty.
-	tg.emptyPublicationRecords(t)
-	tg.insertRow(t, 100, 1700000000000) // outbox_message: a flushed entry
-	tg.insertRow(t, 100, 0)
-	tg.insertRow(t, 101, -1) // timer: a row the V1 onboarding handoff cleared
-	tg.writeSchema(t, "visit", map[string]string{"page": "text_02"}, nil)
-	out, err := tg.run(t)
-	if err != nil {
-		t.Fatalf("init-db over a V1 deployment: %v\n%s", err, out)
-	}
-	cut := tg.records(t)
-	requireStates(t, "cutover", cut, map[string]publication.State{
-		"outbox_message": publication.AwaitingInit, "timer": publication.AwaitingInit, "visit": publication.Unpublished,
-	})
-	if !strings.Contains(out, "Publication record of schema 100: initialized AWAITING_INIT") {
-		t.Errorf("init-db output does not report the cutover:\n%s", out)
-	}
-
 	if out, err := tg.run(t); err != nil {
 		t.Fatalf("rerun: %v\n%s", err, out)
 	}
-	if rerun := tg.records(t); fmt.Sprint(rerun) != fmt.Sprint(cut) {
-		t.Fatalf("the rerun changed the records:\nbefore %v\n after %v", cut, rerun)
+	if rerun := tg.records(t); fmt.Sprint(rerun) != fmt.Sprint(fresh) {
+		t.Fatalf("the rerun changed the records:\nbefore %v\n after %v", fresh, rerun)
+	}
+
+	// Unflushed entries satisfy the invariant: both schemas are initialized.
+	tg.emptyPublicationRecords(t)
+	tg.insertRow(t, 100, 0)
+	tg.insertRow(t, 101, 0)
+	if out, err := tg.run(t); err != nil {
+		t.Fatalf("init-db over unflushed rows: %v\n%s", err, out)
+	}
+	requireStates(t, "unflushed rows", tg.records(t), map[string]publication.State{"outbox_message": publication.Unpublished, "timer": publication.Unpublished})
+
+	for _, tc := range []struct {
+		name      string
+		flushedAt int64
+	}{
+		{"a flushed entry", 1700000000000},
+		{"a row without an entry", -1},
+	} {
+		tg.emptyPublicationRecords(t)
+		tg.insertRow(t, 100, tc.flushedAt)
+		tg.writeSchema(t, "visit", map[string]string{"page": "text_02"}, nil)
+		out, err := tg.run(t)
+		if !errors.Is(err, errUnpublishedInvariantBroken) {
+			t.Fatalf("init-db over %s: want errUnpublishedInvariantBroken, got %v\n%s", tc.name, err, out)
+		}
+		if !strings.Contains(err.Error(), "schema 100 has no publication record") {
+			t.Errorf("the refusal over %s does not name schema 100: %v", tc.name, err)
+		}
+		requireStates(t, tc.name, tg.records(t), map[string]publication.State{"outbox_message": "", "timer": ""})
+		ids, err := loadRegisteredSchemaIDs(context.Background(), tg.pool, tg.opts.schemaTable)
+		if err != nil {
+			t.Fatalf("read the registry: %v", err)
+		}
+		if _, ok := ids["visit"]; ok {
+			t.Fatalf("visit's registration committed beside the refused schema: %v", ids)
+		}
+		tg.exec(t, `DELETE FROM %[2]s WHERE schema_id = 100`)
+		tg.exec(t, `DELETE FROM %[1]s WHERE ltbase_schema_id = 100`)
 	}
 }
 
-// The cutover skips a schema whose lock a V1 writer holds: it writes no
-// record for it, reports it, and a later run initializes it.
-func TestInitDBCutoverSkipsASchemaWhoseLockIsHeld(t *testing.T) {
+// init-db skips a schema registered before the run whose lock a writer
+// holds: it writes no record for it, reports it, and a later run
+// initializes it.
+func TestInitDBSkipsASchemaWhoseLockIsHeld(t *testing.T) {
 	tg := newInitDBTarget(t)
 	tg.writeOutboxAndTimer(t)
 	if out, err := tg.run(t); err != nil {
@@ -154,7 +176,7 @@ func TestInitDBCutoverSkipsASchemaWhoseLockIsHeld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init-db with schema 100 locked: %v\n%s", err, out)
 	}
-	requireStates(t, "locked cutover", tg.records(t), map[string]publication.State{"outbox_message": "", "timer": publication.Unpublished})
+	requireStates(t, "locked schema", tg.records(t), map[string]publication.State{"outbox_message": "", "timer": publication.Unpublished})
 	if !strings.Contains(out, "Publication record of schema 100: skipped: schema lock held") || !strings.Contains(out, "schemas [100]") {
 		t.Errorf("init-db output does not report the skipped schema:\n%s", out)
 	}
@@ -165,7 +187,7 @@ func TestInitDBCutoverSkipsASchemaWhoseLockIsHeld(t *testing.T) {
 	if out, err := tg.run(t); err != nil {
 		t.Fatalf("init-db after the writer stopped: %v\n%s", err, out)
 	}
-	requireStates(t, "retried cutover", tg.records(t), map[string]publication.State{"outbox_message": publication.Unpublished, "timer": publication.Unpublished})
+	requireStates(t, "retried schema", tg.records(t), map[string]publication.State{"outbox_message": publication.Unpublished, "timer": publication.Unpublished})
 }
 
 // dropSchema is the drop transition: one transaction deletes the registry

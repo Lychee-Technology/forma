@@ -34,7 +34,7 @@ func publicationFaults() []publicationFault {
 	}
 	return []publicationFault{
 		{name: "no record", seed: recordFault(errors.New("publication record missing"))},
-		{name: "awaiting init", seed: recordFault(errors.New("schema awaits its first V2 cdc-init"))},
+		{name: "awaiting init", seed: recordFault(errors.New("schema awaits a cdc-init"))},
 		{name: "dropped", seed: recordFault(errors.New("schema dropped"))},
 		{name: "epoch changed", seed: recordFault(errors.New("publication epoch differs from the process's pin"))},
 		{name: "manifest missing or invalid", seed: func(t *testing.T, f *pgxFixture) *fakePublication {
@@ -136,8 +136,7 @@ func TestPublishedPassFailsClosedOnAPublicationFault(t *testing.T) {
 
 // A publication fault is told apart from a failed read: a record the
 // snapshot could not read is a PostgreSQL failure, and a manifest the store
-// could not answer is a federated read failure. Both stay degradable, as
-// their V1 counterparts are, and neither is charged to the breaker, since
+// could not answer is a federated read failure. Both stay degradable, and neither is charged to the breaker, since
 // neither reached DuckDB.
 func TestPublishedPassTellsAFailedReadFromAPublicationFault(t *testing.T) {
 	for name, c := range map[string]struct {

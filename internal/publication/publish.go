@@ -77,7 +77,7 @@ func (n Next) validate(cur Record) error {
 	case cur.State == Dropped:
 		return fmt.Errorf("schema %d at epoch %d: nothing publishes until re-registration activates it: %w", cur.SchemaID, cur.Epoch, ErrDropped)
 	case cur.State == AwaitingInit && n.Kind != KindInit:
-		return fmt.Errorf("schema %d is %s: only a cdc-init publishes its first V2 generation, not a %s", cur.SchemaID, cur.State, n.Kind)
+		return fmt.Errorf("schema %d is %s: only a cdc-init publishes its next generation, not a %s", cur.SchemaID, cur.State, n.Kind)
 	}
 	switch n.Kind {
 	case KindInit:

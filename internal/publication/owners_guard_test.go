@@ -27,8 +27,8 @@ const (
 
 // transitions are the identifiers of this package that move a record or
 // write its history, and owners the production packages (by directory) or
-// files allowed to use each of them: registration and the V2 cutover in
-// init-db (cmd/tools/init_db_records.go), and the cdc-flush, cdc-init and
+// files allowed to use each of them: registration in init-db
+// (cmd/tools/init_db_records.go), and the cdc-flush, cdc-init and
 // compaction publication paths (internal/cdcv2, which the compactor in
 // internal/compaction publishes through). The federated e2e harness's
 // publication file stands in for both, registration and publication, over
@@ -40,20 +40,19 @@ const (
 // internal/reconcile's, and binding a deployment's storage target
 // (BindStorage) is manifest-reconcile's CLI.
 var transitions = map[string]map[string]bool{
-	"Initialize":             {"cmd/tools/init_db_records.go": true, federatedHarnessPublication: true},
-	"InitializeAwaitingInit": {"cmd/tools/init_db_records.go": true},
-	"InitializeAfterLoss":    {"cmd/tools/init_db_records.go": true},
-	"Activate":               {"cmd/tools/init_db_records.go": true},
-	"Publish":                {"internal/cdcv2": true, federatedHarnessPublication: true},
-	"HoldLineage":            {"internal/cdcv2": true},
-	"HoldDropped":            {"cmd/tools/drop_schema.go": true},
-	"Fence":                  {"internal/cdcv2": true},
-	"Reset":                  {"cmd/tools/drop_schema.go": true},
-	"RaiseHorizon":           {"internal/reconcile": true},
-	"Retire":                 {"internal/reconcile": true},
-	"RetireRecovery":         {"internal/reconcile": true},
-	"Forget":                 {"internal/reconcile": true},
-	"BindStorage":            {"cmd/tools/manifest_reconcile.go": true},
+	"Initialize":          {"cmd/tools/init_db_records.go": true, federatedHarnessPublication: true},
+	"InitializeAfterLoss": {"cmd/tools/init_db_records.go": true},
+	"Activate":            {"cmd/tools/init_db_records.go": true},
+	"Publish":             {"internal/cdcv2": true, federatedHarnessPublication: true},
+	"HoldLineage":         {"internal/cdcv2": true},
+	"HoldDropped":         {"cmd/tools/drop_schema.go": true},
+	"Fence":               {"internal/cdcv2": true},
+	"Reset":               {"cmd/tools/drop_schema.go": true},
+	"RaiseHorizon":        {"internal/reconcile": true},
+	"Retire":              {"internal/reconcile": true},
+	"RetireRecovery":      {"internal/reconcile": true},
+	"Forget":              {"internal/reconcile": true},
+	"BindStorage":         {"cmd/tools/manifest_reconcile.go": true},
 }
 
 // TestOnlyTheProtocolOwnersMoveAPublicationRecord is a static check over

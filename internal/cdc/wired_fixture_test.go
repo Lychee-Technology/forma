@@ -104,17 +104,20 @@ func newWiredFixture(t *testing.T) *wiredFixture {
 	return f
 }
 
-// register writes the schema's record in state, as registration or the V2
-// cutover does.
+// register writes the schema's record as registration does, then moves it
+// to state: AWAITING_INIT is the state init-db recovers a lost record with
+// generation history in.
 func (f *wiredFixture) register(t *testing.T, state publication.State) {
 	t.Helper()
 	f.inTx(t, func(tx pgx.Tx) error {
-		var err error
-		if state == publication.AwaitingInit {
-			_, err = publication.InitializeAwaitingInit(context.Background(), publication.PgxTx(tx), f.tables, wiredSchema)
-		} else {
-			_, err = publication.Initialize(context.Background(), publication.PgxTx(tx), f.tables, wiredSchema)
+		ctx := context.Background()
+		if _, err := publication.Initialize(ctx, publication.PgxTx(tx), f.tables, wiredSchema); err != nil {
+			return err
 		}
+		if state == publication.Unpublished {
+			return nil
+		}
+		_, err := tx.Exec(ctx, "UPDATE "+f.tables.Record+" SET state = $1 WHERE schema_id = $2", string(state), wiredSchema)
 		return err
 	})
 }

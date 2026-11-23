@@ -371,7 +371,8 @@ func deletePublicationRecord(ctx context.Context, t *testing.T, env *Env, schema
 }
 
 // forceAwaitingInitRecord rewrites schema's publication record into the
-// AWAITING_INIT cutover state for fail-closed reader tests.
+// AWAITING_INIT state, in which init-db recovers a lost record with
+// generation history, for fail-closed reader tests.
 func forceAwaitingInitRecord(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
 	t.Helper()
 	tables := publication.TablesFor(env.Tables.EntityMain)
