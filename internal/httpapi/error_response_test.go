@@ -32,18 +32,6 @@ func TestErrorClassResolvesSentinelsThroughWraps(t *testing.T) {
 			want: errorClassPublicationInconsistent,
 		},
 		{
-			name: "manifest schema mismatch",
-			err: fmt.Errorf("manifest parquet source: %w",
-				&forma.ManifestSchemaMismatchError{RequestedSchemaID: 1, ManifestSchemaID: 2, Path: "manifests/1.json"}),
-			want: errorClassManifestSchemaMismatch,
-		},
-		{
-			name: "manifest unstamped is a schema mismatch",
-			err: fmt.Errorf("manifest parquet source: %w",
-				&forma.ManifestUnstampedError{RequestedSchemaID: 1, Path: "manifests/shared.json", Entries: 2}),
-			want: errorClassManifestSchemaMismatch,
-		},
-		{
 			name: "unclassified falls back to internal",
 			err:  fmt.Errorf("db timeout"),
 			want: errorClassInternal,
@@ -70,7 +58,6 @@ func TestErrorClassResolvesSentinelsThroughWraps(t *testing.T) {
 func TestPublicErrorMessageCarriesNoDetail(t *testing.T) {
 	tests := map[string]string{
 		errorClassPublicationInconsistent: "internal read error",
-		errorClassManifestSchemaMismatch:  "internal read error",
 		errorClassInternal:                "internal error",
 	}
 

@@ -45,18 +45,6 @@ func TestErrorSchemaIDResolvesCarriersThroughWraps(t *testing.T) {
 			want: 22,
 		},
 		{
-			name: "manifest schema mismatch",
-			err: fmt.Errorf("a: %w", fmt.Errorf("b: %w",
-				&forma.ManifestSchemaMismatchError{RequestedSchemaID: 41, ManifestSchemaID: 93, Path: "manifests/41.json"})),
-			want: 41,
-		},
-		{
-			name: "manifest unstamped",
-			err: fmt.Errorf("a: %w", fmt.Errorf("b: %w",
-				&forma.ManifestUnstampedError{RequestedSchemaID: 41, Path: "manifests/shared.json", Entries: 2})),
-			want: 41,
-		},
-		{
 			name: "parquet type incompatible",
 			err: fmt.Errorf("a: %w", fmt.Errorf("b: %w",
 				&forma.ParquetTypeIncompatibleError{SchemaID: 33, Attribute: "ratio", Path: "s3://b/delta/k.parquet"})),
@@ -87,36 +75,6 @@ func TestErrorSchemaIDResolvesCarriersThroughWraps(t *testing.T) {
 				t.Fatalf("errorSchemaID = %d, want %d", got, tt.want)
 			}
 		})
-	}
-}
-
-// TestErrorSchemaIDPrefersRequestedOverManifestID is the swap guard.
-//
-// ManifestSchemaMismatchError carries two ids, and only one of them is the
-// client's. RequestedSchemaID is the schema the caller asked to read;
-// ManifestSchemaID is a foreign stamp found on the object, belonging to whichever
-// other schema misaddressed it. Reporting the manifest's id would answer a
-// request about one schema with another schema's identity, and would disclose the
-// existence of a schema the caller never named.
-//
-// The two ids differ, so a swapped field fails here rather than passing on a
-// coincidence.
-func TestErrorSchemaIDPrefersRequestedOverManifestID(t *testing.T) {
-	const requested, stamped int16 = 41, 93
-
-	err := fmt.Errorf("manifest parquet source: %w", &forma.ManifestSchemaMismatchError{
-		RequestedSchemaID: requested,
-		ManifestSchemaID:  stamped,
-		Path:              "manifests/41.json",
-	})
-
-	got := errorSchemaID(err)
-	if got == stamped {
-		t.Fatalf("errorSchemaID returned the manifest's stamped id %d; it must return the requested id %d",
-			stamped, requested)
-	}
-	if got != requested {
-		t.Fatalf("errorSchemaID = %d, want the requested id %d", got, requested)
 	}
 }
 

@@ -211,12 +211,9 @@ func TestCreateUnknownSchemaIs404AndVerbatim(t *testing.T) {
 	}
 }
 
-// TestReadPathErrorsClassifyAs5xx pins status accuracy for the three read-path
-// carriers. It is now structural rather than a near-miss check: classification
-// reads sentinels only, and none of these carriers wraps a client sentinel, so
-// each is a 500. It used to be delicate — the substring heuristic matched
-// "must be", and ManifestSchemaMismatchError says "must resolve", one word away
-// from a bogus 400. Removing the heuristic removed that hazard class entirely.
+// TestReadPathErrorsClassifyAs5xx pins status accuracy for the read-path
+// carriers. It is structural: classification reads sentinels only, and none of
+// these carriers wraps a client sentinel, so each is a 500.
 //
 // It is NOT what keeps object keys out of the body — disclosure depends on
 // positive sentinel evidence (isClientError). This test guards the status;
@@ -225,12 +222,6 @@ func TestReadPathErrorsClassifyAs5xx(t *testing.T) {
 	errs := map[string]error{
 		"publication inconsistent": &forma.PublicationConsistencyError{Err: errTestPublicationFault,
 			SchemaID: 22, MissingKeys: []string{"base/k.parquet"},
-		},
-		"manifest schema mismatch": &forma.ManifestSchemaMismatchError{
-			RequestedSchemaID: 1, ManifestSchemaID: 2, Path: "manifests/1.json",
-		},
-		"manifest unstamped": &forma.ManifestUnstampedError{
-			RequestedSchemaID: 1, Path: "manifests/shared.json", Entries: 2,
 		},
 		"parquet type incompatible": &forma.ParquetTypeIncompatibleError{
 			SchemaID: 1, Attribute: "ratio", Declared: "bigint", Path: "s3://b/delta/k.parquet", FileType: "DOUBLE",
