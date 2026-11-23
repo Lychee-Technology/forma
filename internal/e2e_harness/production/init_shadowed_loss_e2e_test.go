@@ -111,18 +111,25 @@ func requireInitStillCurrent(ctx context.Context, t *testing.T, env *Env, schema
 // assertLostInitFailsClosed requires the all-tier and the hot-excluded query,
 // each with and without AllowPartialDegradedMode, to fail as a publication
 // inconsistency: no answer, and no degradable read failure that the degraded
-// mode could answer short from postgres.
+// mode could answer short from postgres. It calls the engine directly rather
+// than through Env.Query, which drops the page whenever the engine errors, so
+// a regression that returns partial rows alongside the error is caught.
 func assertLostInitFailsClosed(ctx context.Context, t *testing.T, env *Env, schema SchemaRef) {
 	t.Helper()
+	eng := env.Engine()
 	for _, tiers := range [][]model.DataTier{allTiers, parquetTiers} {
 		for _, degraded := range []bool{false, true} {
-			res, err := env.Query(ctx, Query{Schema: schema, Limit: 20, PreferredTiers: tiers, AllowPartialDegradedMode: degraded})
-			if err == nil {
-				t.Fatalf("tiers %v, degraded %t: query answered %d rows with the init export lost; want a read failure",
-					tiers, degraded, len(res.Records))
+			fq, err := env.buildFederatedQuery(Query{Schema: schema, Limit: 20, PreferredTiers: tiers})
+			if err != nil {
+				t.Fatalf("tiers %v, degraded %t: build federated query: %v", tiers, degraded, err)
 			}
-			if res != nil {
-				t.Fatalf("tiers %v, degraded %t: query failed with %v yet answered %d rows", tiers, degraded, err, len(res.Records))
+			page, err := eng.Query(ctx, env.Tables, fq, &model.FederatedQueryOptions{AllowPartialDegradedMode: degraded})
+			if err == nil {
+				t.Fatalf("tiers %v, degraded %t: query answered %s with the init export lost; want a read failure",
+					tiers, degraded, describePage(page))
+			}
+			if page != nil {
+				t.Fatalf("tiers %v, degraded %t: query failed with %v yet answered %s", tiers, degraded, err, describePage(page))
 			}
 			if !errors.Is(err, fedengine.ErrPublicationInconsistent) {
 				t.Fatalf("tiers %v, degraded %t: got %v, want ErrPublicationInconsistent", tiers, degraded, err)
@@ -132,4 +139,12 @@ func assertLostInitFailsClosed(ctx context.Context, t *testing.T, env *Env, sche
 			}
 		}
 	}
+}
+
+// describePage summarizes an engine page for a failure message.
+func describePage(page *model.PersistentRecordPage) string {
+	if page == nil {
+		return "a nil page"
+	}
+	return fmt.Sprintf("a page of %d rows (total %d)", len(page.Records), page.TotalRecords)
 }
