@@ -49,33 +49,46 @@ var forbiddenV1Identifiers = map[string]bool{
 	"CopyTmpToFinal":               true,
 }
 
-// forbiddenV1Literals are retired V1 flag names, environment variables and
-// the level-3 glob, matched as substrings of a production string literal.
-var forbiddenV1Literals = []string{
-	"glob-only", "manifest-template", "manifest-prefix", "replace-delta", "delta-prefix",
-	"verify-stamps", "allow-empty-manifest-schema", "etag-retries", "gc-grace",
-	"base-backoff-ms", "max-backoff-ms",
-	"DUCKDB_MANIFEST_TEMPLATE", "MANIFEST_TEMPLATE", "DUCKDB_MANIFEST_PREFIX", "MANIFEST_PREFIX",
-	"DUCKDB_S3_PREFIX", "FLUSH_VISIBILITY_GRACE_MS", "DUCKDB_ALLOW_CALLER_PARQUET_PATHS",
-	"/*.parquet",
-}
+// retiredV1Flags are retired V1 flag names. retiredV1EnvVars are retired V1
+// environment variables, each a whole name: DUCKDB_MANIFEST_TEMPLATE and
+// MANIFEST_TEMPLATE were both read. Both lists feed the Go-literal check and
+// the public-doc check, so the two cannot drift apart.
+var (
+	retiredV1Flags = []string{
+		"glob-only", "manifest-template", "manifest-prefix", "replace-delta", "delta-prefix",
+		"verify-stamps", "allow-empty-manifest-schema", "etag-retries", "gc-grace",
+		"base-backoff-ms", "max-backoff-ms",
+	}
+	retiredV1EnvVars = []string{
+		"DUCKDB_MANIFEST_TEMPLATE", "MANIFEST_TEMPLATE", "DUCKDB_MANIFEST_PREFIX", "MANIFEST_PREFIX",
+		"DUCKDB_S3_PREFIX", "FLUSH_VISIBILITY_GRACE_MS", "DUCKDB_ALLOW_CALLER_PARQUET_PATHS",
+	}
+)
+
+// v1Level3Glob is the retired level-3 glob over a schema's whole prefix.
+const v1Level3Glob = "/*.parquet"
+
+// forbiddenV1Literals are matched as substrings of a production string
+// literal.
+var forbiddenV1Literals = concat(retiredV1Flags, retiredV1EnvVars, []string{v1Level3Glob})
 
 // forbiddenV1FlagNames are retired flags whose bare name is too common to
 // match as a substring; a production literal equal to one is a violation.
 var forbiddenV1FlagNames = map[string]bool{"repair": true}
 
-// forbiddenDocTokens are what a public doc may not name. A leading-dash name
-// is a flag, matched in its -flag and --flag spellings and only as a whole
-// flag, so "auto-repair" is not --repair. internal/manifest matches only the
-// retired package, not internal/manifestv2.
-var forbiddenDocTokens = docTokens(
-	"-glob-only", "-manifest-template", "-manifest-prefix", "-replace-delta", "-delta-prefix",
-	"-repair", "-verify-stamps", "-allow-empty-manifest-schema", "-etag-retries", "-gc-grace",
-	"-base-backoff-ms", "-max-backoff-ms",
-	"QuerySource.Fallback", "DUCKDB_MANIFEST_TEMPLATE", "DUCKDB_MANIFEST_PREFIX", "DUCKDB_S3_PREFIX",
-	"FLUSH_VISIBILITY_GRACE_MS", "DUCKDB_ALLOW_CALLER_PARQUET_PATHS",
-	"ErrManifestSchemaMismatch", "ErrManifestUnstamped", "ValidateManifestPathTemplate",
-	"InitializeAwaitingInit", "internal/manifest", "/*.parquet",
+// forbiddenDocTokens are what a public doc may not name. A flag is matched in
+// its -flag and --flag spellings and only as a whole flag, so "auto-repair" is
+// not --repair. An environment variable is matched only as a whole name.
+// internal/manifest matches only the retired package, not
+// internal/manifestv2.
+var forbiddenDocTokens = concat(
+	docTokens(flagPattern, dashed(concat(retiredV1Flags, sortedKeys(forbiddenV1FlagNames)))),
+	docTokens(envVarPattern, retiredV1EnvVars),
+	docTokens(regexp.QuoteMeta, []string{
+		"QuerySource.Fallback", "ErrManifestSchemaMismatch", "ErrManifestUnstamped",
+		"ValidateManifestPathTemplate", "InitializeAwaitingInit", v1Level3Glob,
+	}),
+	docTokens(packagePattern, []string{"internal/manifest"}),
 )
 
 // requiredPublicDocs must be found by publicDocs, so a walker that silently
@@ -96,19 +109,50 @@ type docToken struct {
 	re   *regexp.Regexp
 }
 
-func docTokens(names ...string) []docToken {
+func docTokens(pattern func(string) string, names []string) []docToken {
 	tokens := make([]docToken, 0, len(names))
 	for _, name := range names {
-		pattern := regexp.QuoteMeta(name)
-		switch {
-		case strings.HasPrefix(name, "-"):
-			pattern = `(?:^|[^A-Za-z0-9_-])--?` + regexp.QuoteMeta(name[1:]) + `(?:[^A-Za-z0-9_-]|$)`
-		case name == "internal/manifest":
-			pattern += `(?:[^A-Za-z0-9_]|$)`
-		}
-		tokens = append(tokens, docToken{name: name, re: regexp.MustCompile(pattern)})
+		tokens = append(tokens, docToken{name: name, re: regexp.MustCompile(pattern(name))})
 	}
 	return tokens
+}
+
+// flagPattern matches a "-flag" token name in its -flag and --flag spellings.
+func flagPattern(name string) string {
+	return `(?:^|[^A-Za-z0-9_-])--?` + regexp.QuoteMeta(strings.TrimPrefix(name, "-")) + `(?:[^A-Za-z0-9_-]|$)`
+}
+
+func envVarPattern(name string) string {
+	return `(?:^|[^A-Za-z0-9_])` + regexp.QuoteMeta(name) + `(?:[^A-Za-z0-9_]|$)`
+}
+
+func packagePattern(name string) string {
+	return regexp.QuoteMeta(name) + `(?:[^A-Za-z0-9_]|$)`
+}
+
+func dashed(flags []string) []string {
+	out := make([]string, len(flags))
+	for i, f := range flags {
+		out[i] = "-" + f
+	}
+	return out
+}
+
+func concat[T any](lists ...[]T) []T {
+	var out []T
+	for _, l := range lists {
+		out = append(out, l...)
+	}
+	return out
+}
+
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // TestNoLegacyV1PathsOrObsoleteFlagsRemain proves that no production Go file
@@ -182,7 +226,7 @@ func legacyV1FileViolations(rel string, file *ast.File) []string {
 				add(fmt.Sprintf("%s contains retired V1 flag name %q", rel, val))
 			}
 			for _, lit := range forbiddenV1Literals {
-				if strings.Contains(val, lit) && (lit != "/*.parquet" || rel != federatedHarnessOracleQuery) {
+				if strings.Contains(val, lit) && (lit != v1Level3Glob || rel != federatedHarnessOracleQuery) {
 					add(fmt.Sprintf("%s contains retired V1 literal %q", rel, lit))
 				}
 			}
@@ -285,7 +329,11 @@ func TestLegacyV1GuardCatchesPlantedRegressions(t *testing.T) {
 		"cmd/tools/README.md": "```bash\nforma-tools manifest-reconcile --repair\n```\n",
 		"docs/ops.md": "Historical note: `DUCKDB_S3_PREFIX` was removed.\n" +
 			"There is no read-time auto-repair, and `--gc` collects garbage.\n" +
-			"See internal/manifestv2 and `-s3-prefix`.\n",
+			"See internal/manifestv2 and `-s3-prefix`.\n" +
+			"Set `MANIFEST_TEMPLATE` for the server.\n" +
+			"export MANIFEST_PREFIX=manifest/\n" +
+			"Set `DUCKDB_MANIFEST_PREFIX`.\n" +
+			"`CDC_MANIFEST_PREFIX_V2` and `MANIFEST_TEMPLATES` are other names.\n",
 		"tools/autoresearch/run/report.md":   "read_parquet('s3://b/1/base/*.parquet')\n",
 		".autoforge/notes.md":                "Run `cdc-flush --glob-only`.\n",
 		"tests/e2e/node_modules/x/README.md": "Run `cdc-flush --glob-only`.\n",
@@ -299,5 +347,8 @@ func TestLegacyV1GuardCatchesPlantedRegressions(t *testing.T) {
 		`README.md:1 names retired V1 token "-glob-only"`,
 		`cmd/tools/README.md:2 names retired V1 token "-repair"`,
 		`docs/ops.md:1 names retired V1 token "DUCKDB_S3_PREFIX"`,
+		`docs/ops.md:4 names retired V1 token "MANIFEST_TEMPLATE"`,
+		`docs/ops.md:5 names retired V1 token "MANIFEST_PREFIX"`,
+		`docs/ops.md:6 names retired V1 token "DUCKDB_MANIFEST_PREFIX"`,
 	}, gotDocs)
 }
