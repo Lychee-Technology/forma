@@ -9,7 +9,9 @@
 // package's source directory as its working directory. A guard therefore
 // watches exactly the directory of the package it sits in, and not its
 // subdirectories, which are separate packages with guards of their own. Call
-// Check only from a test in the package whose files it should watch.
+// Check only from a test in the package whose files it should watch. A
+// package whose tests must not depend on the working directory calls CheckFS
+// with its own directory instead.
 package sizeguard
 
 import (
@@ -59,6 +61,17 @@ func isTest(name string) bool {
 func Check(t testing.TB, scope Scope) {
 	t.Helper()
 	check(t, os.DirFS("."), scope)
+}
+
+// CheckFS is Check over the root of fsys instead of the working directory. It
+// is for a package whose tests deliberately do not depend on the working
+// directory (internal/repoguard resolves the repository root in TestMain and
+// may run from anywhere inside it): such a package passes its own directory,
+// read from that root, so the guard never measures some other directory in
+// silence.
+func CheckFS(t testing.TB, fsys fs.FS, scope Scope) {
+	t.Helper()
+	check(t, fsys, scope)
 }
 
 func check(t testing.TB, fsys fs.FS, scope Scope) {

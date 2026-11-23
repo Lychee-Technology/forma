@@ -66,6 +66,8 @@ Module: `github.com/lychee-technology/forma`.
 
 The root package `forma` is the public API surface: schema registry, config, storage interfaces, shared types, and sentinel errors (`errors.go`). Match errors with `errors.Is`/`errors.As`, never string comparison.
 
+Package ownership at the root: a Go file there belongs to the public `forma` package, so it is either part of the API (or private support the API cannot be separated from) or a test of that package. Do not move public declarations to shrink the root; the import path `github.com/lychee-technology/forma` is the contract. Repository policy tests (guards over the Makefile, `.github/workflows/`, `go.mod`, `scripts/`, the docs site, or source-wide patterns across packages) live in `internal/repoguard/`, not at the root. They read the repository through the root its `TestMain` resolves, with root-relative paths, and keep their fixtures in its `testdata/`. A test that inspects package `forma` itself (such as `package_file_size_test.go`) stays at the root.
+
 `factory/` is the composition root: it wires a pgxpool and metadata cache into a ready `EntityManager`. Start here to see how the pieces connect.
 
 `internal/` holds the implementation. Key areas:

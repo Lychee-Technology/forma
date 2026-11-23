@@ -1,7 +1,7 @@
-package forma
+package repoguard
 
 import (
-	"os"
+	"io/fs"
 	"regexp"
 	"strings"
 	"testing"
@@ -32,7 +32,7 @@ func recipeLines(t *testing.T, makefile, target string) []string {
 // TestLintDSQLRecipeRunsTheGate pins `make lint-dsql` (#740) to the gate
 // command under $(GOENV), the single entry point CI and `make all` share.
 func TestLintDSQLRecipeRunsTheGate(t *testing.T) {
-	mk, err := os.ReadFile("Makefile")
+	mk, err := fs.ReadFile(repo, "Makefile")
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestLintDSQLRecipeRunsTheGate(t *testing.T) {
 // `make all` runs the DSQL lint gate, so local verification and CI run the
 // same entry point.
 func TestMakeAllRunsLintDSQL(t *testing.T) {
-	mk, err := os.ReadFile("Makefile")
+	mk, err := fs.ReadFile(repo, "Makefile")
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
@@ -118,7 +118,7 @@ func reachesLintDSQL(rules map[string]*makeRule, target string, seen map[string]
 // downloads its pinned linter on first use (#740). The walk follows every
 // prerequisite and recipe of build-all, so an indirect route also fails.
 func TestBuildAllDoesNotRunLintDSQL(t *testing.T) {
-	mk, err := os.ReadFile("Makefile")
+	mk, err := fs.ReadFile(repo, "Makefile")
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestBuildAllDoesNotRunLintDSQL(t *testing.T) {
 // `make lint-dsql` itself, not an open-coded copy that could drift from the
 // local gate. Comment lines never satisfy the guard.
 func TestCILintJobRunsLintDSQL(t *testing.T) {
-	ci, err := os.ReadFile(".github/workflows/ci.yml")
+	ci, err := fs.ReadFile(repo, ".github/workflows/ci.yml")
 	if err != nil {
 		t.Fatalf("read .github/workflows/ci.yml: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestCILintJobRunsLintDSQL(t *testing.T) {
 // Makefile or CI line invokes dsql-lint's --fix, which rewrites SQL.
 func TestNoBuildStepRewritesSQL(t *testing.T) {
 	for _, path := range []string{"Makefile", ".github/workflows/ci.yml", ".github/workflows/nightly-e2e.yml"} {
-		data, err := os.ReadFile(path)
+		data, err := fs.ReadFile(repo, path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}

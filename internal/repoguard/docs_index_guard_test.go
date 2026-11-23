@@ -1,8 +1,8 @@
-package forma
+package repoguard
 
 import (
 	"fmt"
-	"os"
+	"io/fs"
 	"path"
 	"regexp"
 	"strings"
@@ -148,7 +148,7 @@ func siteLinkResolves(target string) error {
 	}
 	p := path.Join("docs", rel)
 	for _, candidate := range []string{p, p + ".md", path.Join(p, "index.md")} {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+		if info, err := fs.Stat(repo, candidate); err == nil && !info.IsDir() {
 			return nil
 		}
 	}
@@ -157,7 +157,7 @@ func siteLinkResolves(target string) error {
 
 func readDoc(t *testing.T, name string) string {
 	t.Helper()
-	b, err := os.ReadFile(name)
+	b, err := fs.ReadFile(repo, name)
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
 	}

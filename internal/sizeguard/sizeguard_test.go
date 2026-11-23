@@ -200,6 +200,21 @@ func TestCheckFailsTOncePerProblem(t *testing.T) {
 	}
 }
 
+// TestCheckFSMeasuresTheGivenTree pins that CheckFS reads the file system it
+// is given and not the working directory, which holds no over-cap file.
+func TestCheckFSMeasuresTheGivenTree(t *testing.T) {
+	rec := &recordingTB{}
+	CheckFS(rec, packageDir(), IncludeTests)
+
+	want := []string{overCap("big.go"), overCap("big_test.go"), overCap("unterminated_test.go")}
+	if !slices.Equal(rec.errors, want) {
+		t.Errorf("CheckFS reported %q, want %q", rec.errors, want)
+	}
+	if rec.fatal != "" {
+		t.Errorf("CheckFS failed fatally: %s", rec.fatal)
+	}
+}
+
 func TestCheckFailsFatallyWhenTheGuardCannotRun(t *testing.T) {
 	rec := &recordingTB{}
 	check(rec, fstest.MapFS{}, IncludeTests)

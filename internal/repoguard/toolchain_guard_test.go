@@ -1,7 +1,7 @@
-package forma
+package repoguard
 
 import (
-	"os"
+	"io/fs"
 	"regexp"
 	"runtime"
 	"strings"
@@ -24,7 +24,7 @@ import (
 // test observes only the binary that compiled it — the lint gate's wiring is
 // pinned separately by TestLintRecipeInheritsGOENV.
 func TestGatesRunUnderPinnedToolchain(t *testing.T) {
-	mod, err := os.ReadFile("go.mod")
+	mod, err := fs.ReadFile(repo, "go.mod")
 	if err != nil {
 		t.Fatalf("read go.mod: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestGatesRunUnderPinnedToolchain(t *testing.T) {
 // caught it (commit 78f003a) — a $(GOENV) buried inside the GOPATH command
 // substitution does not reach the linter process, so a prefix is required.
 func TestLintRecipeInheritsGOENV(t *testing.T) {
-	mk, err := os.ReadFile("Makefile")
+	mk, err := fs.ReadFile(repo, "Makefile")
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestLintRecipeInheritsGOENV(t *testing.T) {
 // (that gap hid 83 pre-existing violations). CI inherits this line via
 // `make lint` (#454), so this one guard covers both gates.
 func TestLintRecipeCoversE2ETag(t *testing.T) {
-	mk, err := os.ReadFile("Makefile")
+	mk, err := fs.ReadFile(repo, "Makefile")
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestLintRecipeCoversE2ETag(t *testing.T) {
 // of "golangci-lint" in the whole workflow catches both halves of a
 // regression: re-adding the install line or the run line.
 func TestCILintJobRunsMakeLint(t *testing.T) {
-	ci, err := os.ReadFile(".github/workflows/ci.yml")
+	ci, err := fs.ReadFile(repo, ".github/workflows/ci.yml")
 	if err != nil {
 		t.Fatalf("read .github/workflows/ci.yml: %v", err)
 	}

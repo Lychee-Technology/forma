@@ -1,7 +1,7 @@
-package forma
+package repoguard
 
 import (
-	"os"
+	"io/fs"
 	"regexp"
 	"strings"
 	"testing"
@@ -18,7 +18,7 @@ import (
 // golangci-lint run line. Comment lines are skipped so prose never satisfies
 // a positive guard (#485 review; same hardening as the ci.yml guards, #482).
 func TestLintRecipeCoversInfraModule(t *testing.T) {
-	mk, err := os.ReadFile("Makefile")
+	mk, err := fs.ReadFile(repo, "Makefile")
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestLintRecipeCoversInfraModule(t *testing.T) {
 // (#448) reaches it; CI's side of the wiring is guarded separately by
 // TestCILintJobChecksInfraModule.
 func TestMakefileHasCheckInfraTarget(t *testing.T) {
-	mk, err := os.ReadFile("Makefile")
+	mk, err := fs.ReadFile(repo, "Makefile")
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestMakefileHasCheckInfraTarget(t *testing.T) {
 // an open-coded copy would drop GOENV and the toolchain pin). Comment lines
 // are skipped so prose never satisfies the guard.
 func TestCILintJobChecksInfraModule(t *testing.T) {
-	ci, err := os.ReadFile(".github/workflows/ci.yml")
+	ci, err := fs.ReadFile(repo, ".github/workflows/ci.yml")
 	if err != nil {
 		t.Fatalf("read .github/workflows/ci.yml: %v", err)
 	}

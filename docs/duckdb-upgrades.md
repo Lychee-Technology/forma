@@ -33,7 +33,7 @@ Paths are relative to `internal/`. The production harness tests live in `e2e_har
 | Extension loading, reopen after invalidation | `duckdbinit/required_recovery_test.go`, `federated/duckdb_conn_init_test.go`, `federated/duckdb_recovery_seam_test.go` |
 | The parallel window race (#702) | `federated/duckdb_window_race_test.go` |
 | Circuit breaker and degraded modes | production `circuit_breaker_e2e_test.go`, `degraded_mode_e2e_test.go`, `postgres_halt_e2e_test.go`, `s3_recovery_e2e_test.go` |
-| SQL syntax the new release dropped | `duckdb_lambda_syntax_guard_test.go` (repository root) for lambdas; behaviour changes are found by the suites above, as #752 found the `postgres_scan` removal and the `postgres_query` column order |
+| SQL syntax the new release dropped | `repoguard/duckdb_lambda_syntax_guard_test.go` for lambdas; behaviour changes are found by the suites above, as #752 found the `postgres_scan` removal and the `postgres_query` column order |
 | Parquet readable across releases | `make duckdb-storage-compat` (below) |
 
 ## What the production oracle checks
