@@ -113,7 +113,7 @@ spellings".
 A create that violates its schema is rejected. An update that violates its
 schema is **logged and written** unless `Entity.ValidateUpdatesStrict` (env
 `VALIDATE_UPDATES_STRICT`, honoured by both `cmd/server` and `cmd/lambda`) is
-set, which flips updates to enforcing.
+set to `true`, which flips updates to enforcing.
 
 Report-only is the default because rows written before enforcement existed may
 already violate their schema, and rejecting on update would make them
@@ -2463,7 +2463,7 @@ lands last — the same last-wins rule the writer applies — and the winning va
 type- and constraint-checked like any other. A create carrying a duplicate
 spelling whose surviving value violates the schema now answers `400`. The update
 case in the paragraph above is unaffected by default, since updates are
-report-only unless `VALIDATE_UPDATES_STRICT` is set.
+report-only unless `VALIDATE_UPDATES_STRICT` is set to `true`.
 
 `transform.dedupeEAVRecords` now resolves the duplicate spellings before the
 records leave `ToAttributes`, keeping the **last** spelling — the same
