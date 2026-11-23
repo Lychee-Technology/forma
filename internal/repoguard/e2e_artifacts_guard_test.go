@@ -1,7 +1,7 @@
-package forma
+package repoguard
 
 import (
-	"os"
+	"io/fs"
 	"slices"
 	"strings"
 	"testing"
@@ -24,7 +24,7 @@ func TestProductionHarnessJobsUploadArtifactsOnFailure(t *testing.T) {
 		{".github/workflows/ci.yml", []string{"e2e"}},
 		{".github/workflows/nightly-e2e.yml", []string{"production-race", "production-race-arm64"}},
 	} {
-		wf, err := os.ReadFile(tc.workflow)
+		wf, err := fs.ReadFile(repo, tc.workflow)
 		if err != nil {
 			t.Fatalf("read %s: %v", tc.workflow, err)
 		}

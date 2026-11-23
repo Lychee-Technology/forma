@@ -1,9 +1,8 @@
-package forma
+package repoguard
 
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"io/fs"
 	"path/filepath"
@@ -79,7 +78,7 @@ func TestNoBareSentinelWraps(t *testing.T) {
 	scanned := 0
 	fset := token.NewFileSet()
 
-	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(repo, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -92,7 +91,7 @@ func TestNoBareSentinelWraps(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		file, perr := parser.ParseFile(fset, path, nil, 0)
+		file, perr := parseRepoFile(fset, path)
 		if perr != nil {
 			return fmt.Errorf("parse %s: %w", path, perr)
 		}
@@ -115,8 +114,8 @@ func TestNoBareSentinelWraps(t *testing.T) {
 		t.Fatalf("walking the module: %v", err)
 	}
 
-	// A vacuous pass is a broken guard, not a clean sweep: this test runs from
-	// the module root and must see the whole tree.
+	// A vacuous pass is a broken guard, not a clean sweep: this test walks
+	// the repository from its root and must see the whole tree.
 	if scanned < 50 {
 		t.Fatalf("guard scanned only %d non-test Go files; the walk is broken", scanned)
 	}

@@ -1,8 +1,7 @@
-package forma
+package repoguard
 
 import (
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"io/fs"
 	"path/filepath"
@@ -48,7 +47,7 @@ func TestNoDeprecatedDuckDBLambdaArrow(t *testing.T) {
 	found := map[string][]string{}
 	scanned := 0
 	fset := token.NewFileSet()
-	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(repo, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -62,7 +61,7 @@ func TestNoDeprecatedDuckDBLambdaArrow(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
-		file, perr := parser.ParseFile(fset, path, nil, 0)
+		file, perr := parseRepoFile(fset, path)
 		if perr != nil {
 			t.Fatalf("parse %s: %v", path, perr)
 		}

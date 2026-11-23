@@ -1,12 +1,10 @@
-package forma
+package repoguard
 
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
 	"io/fs"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -69,14 +67,14 @@ func TestParquetPathRendersAreEscaped(t *testing.T) {
 	fset := token.NewFileSet()
 
 	for _, dir := range dirs {
-		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		err := fs.WalkDir(repo, dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
-			file, perr := parser.ParseFile(fset, path, nil, 0)
+			file, perr := parseRepoFile(fset, path)
 			if perr != nil {
 				return fmt.Errorf("parse %s: %w", path, perr)
 			}

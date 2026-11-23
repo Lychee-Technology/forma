@@ -1,4 +1,4 @@
-package forma
+package repoguard
 
 import (
 	"strings"

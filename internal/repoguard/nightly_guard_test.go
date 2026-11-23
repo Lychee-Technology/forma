@@ -1,7 +1,7 @@
-package forma
+package repoguard
 
 import (
-	"os"
+	"io/fs"
 	"strings"
 	"testing"
 )
@@ -15,7 +15,7 @@ import (
 // paths. A plain text scan, like the sibling guards in
 // toolchain_guard_test.go: a yaml dependency buys nothing here.
 func TestNightlyRacesProductionSuite(t *testing.T) {
-	wf, err := os.ReadFile(".github/workflows/nightly-e2e.yml")
+	wf, err := fs.ReadFile(repo, ".github/workflows/nightly-e2e.yml")
 	if err != nil {
 		t.Fatalf("read .github/workflows/nightly-e2e.yml: %v", err)
 	}

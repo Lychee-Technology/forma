@@ -1,7 +1,7 @@
-package forma
+package repoguard
 
 import (
-	"os"
+	"io/fs"
 	"strings"
 	"testing"
 )
@@ -23,7 +23,7 @@ func TestDuckDBExtensionCacheCoversExposedJobs(t *testing.T) {
 		{".github/workflows/ci.yml", []string{"test", "dsql-ministack", "e2e", "k6-smoke"}},
 		{".github/workflows/nightly-e2e.yml", []string{"federated-full", "production-race", "production-race-arm64"}},
 	} {
-		wf, err := os.ReadFile(tc.workflow)
+		wf, err := fs.ReadFile(repo, tc.workflow)
 		if err != nil {
 			t.Fatalf("read %s: %v", tc.workflow, err)
 		}

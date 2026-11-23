@@ -1,7 +1,7 @@
-package forma
+package repoguard
 
 import (
-	"os"
+	"io/fs"
 	"regexp"
 	"strings"
 	"testing"
@@ -13,7 +13,7 @@ const ministackScript = "scripts/test_dsql_ministack.sh"
 // (#739) to the script, under $(GOENV) so the suites run on the pinned
 // toolchain, and its teardown to the same script.
 func TestMiniStackLaneRecipes(t *testing.T) {
-	mk, err := os.ReadFile("Makefile")
+	mk, err := fs.ReadFile(repo, "Makefile")
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestMiniStackLaneRecipes(t *testing.T) {
 // TestCIRunsTheMiniStackLane pins the job (#739): the shared target, bounded,
 // with its logs uploaded on failure, and nothing that lets it fail unnoticed.
 func TestCIRunsTheMiniStackLane(t *testing.T) {
-	wf, err := os.ReadFile(".github/workflows/ci.yml")
+	wf, err := fs.ReadFile(repo, ".github/workflows/ci.yml")
 	if err != nil {
 		t.Fatalf("read ci.yml: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestCIRunsTheMiniStackLane(t *testing.T) {
 // mode, without which a cluster has no SQL data plane, and the gate running
 // before any suite.
 func TestMiniStackLanePinsStrictMode(t *testing.T) {
-	script, err := os.ReadFile(ministackScript)
+	script, err := fs.ReadFile(repo, ministackScript)
 	if err != nil {
 		t.Fatalf("read %s: %v", ministackScript, err)
 	}
@@ -82,7 +82,7 @@ func TestMiniStackLanePinsStrictMode(t *testing.T) {
 // this target. A suite dropped from the lane, or one whose -run pattern stops
 // matching, would otherwise pass unnoticed.
 func TestMiniStackLaneRunsTheLedgerUpgradeSuite(t *testing.T) {
-	script, err := os.ReadFile(ministackScript)
+	script, err := fs.ReadFile(repo, ministackScript)
 	if err != nil {
 		t.Fatalf("read %s: %v", ministackScript, err)
 	}
@@ -103,7 +103,7 @@ func TestMiniStackLaneRunsTheLedgerUpgradeSuite(t *testing.T) {
 // publication contract's compare-and-set suite (#888), and the V2 cdc-flush
 // and cdc-init writers built on it (#899).
 func TestMiniStackLaneRunsThePgxReadSuites(t *testing.T) {
-	script, err := os.ReadFile(ministackScript)
+	script, err := fs.ReadFile(repo, ministackScript)
 	if err != nil {
 		t.Fatalf("read %s: %v", ministackScript, err)
 	}

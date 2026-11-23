@@ -28,7 +28,7 @@ Examples:
 These errors are intended to surface as user-facing `4xx` responses. A bare
 `fmt.Errorf("…: %w", forma.ErrInvalidInput)` still earns the 400 status but
 answers a **redacted** body — the deny-by-default shape (#313) — and is
-rejected at build time by `TestNoBareSentinelWraps` (root package).
+rejected at build time by `TestNoBareSentinelWraps` (`internal/repoguard`).
 
 ## JSON Schema enforcement on write
 

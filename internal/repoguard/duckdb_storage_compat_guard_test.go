@@ -1,7 +1,7 @@
-package forma
+package repoguard
 
 import (
-	"os"
+	"io/fs"
 	"regexp"
 	"strings"
 	"testing"
@@ -12,7 +12,7 @@ import (
 // skipped so prose never satisfies the guard (same as the sibling ci.yml
 // guards).
 func TestCITestJobRunsDuckDBStorageCompat(t *testing.T) {
-	wf, err := os.ReadFile(".github/workflows/ci.yml")
+	wf, err := fs.ReadFile(repo, ".github/workflows/ci.yml")
 	if err != nil {
 		t.Fatalf("read ci.yml: %v", err)
 	}
@@ -42,7 +42,7 @@ var duckdbDriverRequire = regexp.MustCompile(`(?m)^\s*(?:require\s+)?github\.com
 
 func duckdbDriverVersion(t *testing.T, path string) string {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	data, err := fs.ReadFile(repo, path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}

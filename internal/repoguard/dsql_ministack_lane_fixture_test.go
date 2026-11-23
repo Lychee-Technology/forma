@@ -1,8 +1,9 @@
-package forma
+package repoguard
 
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -53,7 +54,7 @@ func newLaneFixture(t *testing.T) *laneFixture {
 			t.Fatalf("link fake %s: %v", tool, err)
 		}
 	}
-	body, err := os.ReadFile(ministackScript)
+	body, err := fs.ReadFile(repo, ministackScript)
 	if err != nil {
 		t.Fatalf("read %s: %v", ministackScript, err)
 	}
