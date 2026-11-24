@@ -69,9 +69,6 @@ func (w *Writer) Flush(ctx context.Context, schemaID int16, pin int64, st DeltaS
 	if err := w.needChangeLog("flush"); err != nil {
 		return rep, err
 	}
-	if err := w.ensureStorage(ctx); err != nil {
-		return rep, fmt.Errorf("flush schema %d: %w", schemaID, err)
-	}
 	for {
 		err := w.flushRound(ctx, schemaID, pin, st, &rep)
 		if err == nil || !errors.Is(err, ErrAbandoned) || rep.Restarts >= w.cfg.Restarts {
@@ -115,6 +112,9 @@ func (w *Writer) flushRound(ctx context.Context, schemaID int16, pin int64, st D
 // flushGeneration stages and publishes one generation of entries on cur, and
 // records in rep what it marked.
 func (w *Writer) flushGeneration(ctx context.Context, cur publication.Record, lineage uuid.UUID, entries []Entry, st DeltaStager, rep *FlushReport) (publication.Record, error) {
+	if err := w.checkStorage(ctx); err != nil {
+		return publication.Record{}, fmt.Errorf("flush schema %d: %w", cur.SchemaID, err)
+	}
 	stagedAt, err := w.now(ctx, w.cfg.DB)
 	if err != nil {
 		return publication.Record{}, fmt.Errorf("flush schema %d: %w", cur.SchemaID, err)

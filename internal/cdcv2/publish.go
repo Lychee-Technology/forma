@@ -84,8 +84,13 @@ func (e *commitError) Unwrap() error { return e.err }
 // would give p up while a COMMIT of p's staging went without an answer and
 // may still land, it settles that COMMIT first (settle): it answers the
 // record if the COMMIT landed, the failure only once the COMMIT can no
-// longer land, and ErrUnresolved when it could tell neither.
+// longer land, and ErrUnresolved when it could tell neither. Before the
+// first transaction it binds an unbound deployment to the writer's storage
+// target (bindStorage): p is staged and about to be published.
 func (w *Writer) publish(ctx context.Context, p *pub) (publication.Record, error) {
+	if err := w.bindStorage(ctx); err != nil {
+		return publication.Record{}, fmt.Errorf("%s of schema %d staged on generation %d: %w", p.kind, p.cur.SchemaID, p.cur.Generation, err)
+	}
 	out, err := w.send(ctx, p)
 	if err == nil || !p.uncertain {
 		return out, err

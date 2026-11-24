@@ -14,6 +14,7 @@ import (
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/s3endpoint"
 	"github.com/lychee-technology/forma/internal/telemetry"
 	"go.uber.org/zap"
 )
@@ -237,6 +238,12 @@ func runCompactorOut(ctx context.Context, args []string, metricsOut io.Writer) e
 	}
 	defer func() { _ = exporter.DB.Close() }()
 
+	// The writer binds the deployment to where this client sends its
+	// requests, so it follows no redirect (#911).
+	s3Client, err = s3endpoint.WithoutRedirects(s3Client)
+	if err != nil {
+		return fmt.Errorf("build the compactor's S3 client: %w", err)
+	}
 	store := &manifestv2.S3Store{Client: s3Client, Bucket: opts.s3.bucket}
 	writer, err := compaction.NewWriter(compaction.WriterConfig{
 		DB: db, Engine: opts.db.Engine, EntityMain: opts.entityMain,

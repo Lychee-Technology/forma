@@ -79,15 +79,15 @@ func (w *Writer) Init(ctx context.Context, schemaID int16, pin int64, exp BaseEx
 	if err := w.needChangeLog("init"); err != nil {
 		return rep, err
 	}
-	if err := w.ensureStorage(ctx); err != nil {
-		return rep, fmt.Errorf("init schema %d: %w", schemaID, err)
-	}
 	cur, err := w.readRecord(ctx, schemaID, pin)
 	if err != nil {
 		return rep, fmt.Errorf("init: %w", err)
 	}
 	if cur.State == publication.Dropped {
 		return rep, fmt.Errorf("init schema %d at epoch %d: %w", schemaID, cur.Epoch, publication.ErrDropped)
+	}
+	if err := w.checkStorage(ctx); err != nil {
+		return rep, fmt.Errorf("init schema %d: %w", schemaID, err)
 	}
 	stagedAt, err := w.now(ctx, w.cfg.DB)
 	if err != nil {

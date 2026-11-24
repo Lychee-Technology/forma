@@ -27,7 +27,7 @@ func (s *S3Objects) Endpoint(ctx context.Context) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("an S3 client of type %T: %w", s.Client, errUnknownDestination)
 	}
-	if !followsNoRedirect(c) {
+	if !s3endpoint.FollowsNoRedirect(c) {
 		return "", fmt.Errorf("an S3 client that may follow redirects (build it with NewS3Objects): %w", errUnknownDestination)
 	}
 	endpoint, err := s3endpoint.ClientEndpoint(ctx, c, s.Bucket)

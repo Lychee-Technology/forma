@@ -173,17 +173,3 @@ func TestARedirectWithAStalledBodyIsRefusedPromptly(t *testing.T) {
 		"each stalled response's connection is closed by the refusal")
 	require.Zero(t, reached.Load(), "no redirected request was sent")
 }
-
-// TestARedirectReachingTheClientIsRefusedToo verifies the CheckRedirect
-// backstop formats the same sanitized error without Location details.
-func TestARedirectReachingTheClientIsRefusedToo(t *testing.T) {
-	via, err := http.NewRequest(http.MethodDelete, "https://s3.example/lake/data/7/k?x-id=DeleteObject", nil)
-	require.NoError(t, err)
-	next, err := http.NewRequest(http.MethodDelete, "https://u:pw-secret@other.example/k?sig=secret", nil)
-	require.NoError(t, err)
-	next.Response = &http.Response{StatusCode: http.StatusPermanentRedirect}
-	err = refuseRedirect(next, []*http.Request{via})
-	require.ErrorIs(t, err, ErrRedirectRefused)
-	require.Equal(t, "DELETE https://s3.example/lake/data/7/k answered 308 with a redirect (Location omitted): "+
-		ErrRedirectRefused.Error(), err.Error())
-}

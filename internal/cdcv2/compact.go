@@ -81,9 +81,6 @@ type CompactReport struct {
 // collection retires them.
 func (w *Writer) Compact(ctx context.Context, schemaID int16, pin int64, st CompactStager) (CompactReport, error) {
 	var rep CompactReport
-	if err := w.ensureStorage(ctx); err != nil {
-		return rep, fmt.Errorf("compact schema %d: %w", schemaID, err)
-	}
 	for {
 		err := w.compactRound(ctx, schemaID, pin, st, &rep)
 		if pin == 0 && rep.Input.Epoch != 0 {
@@ -117,6 +114,9 @@ func (w *Writer) compactRound(ctx context.Context, schemaID int16, pin int64, st
 	// published one it would move the inventory away from the flush writers.
 	if err := w.cfg.Layout.Holds(cur.ManifestKey); err != nil {
 		return fmt.Errorf("compact schema %d generation %d: %w", schemaID, cur.Generation, err)
+	}
+	if err := w.checkStorage(ctx); err != nil {
+		return fmt.Errorf("compact schema %d: %w", schemaID, err)
 	}
 	input, err := w.manifest(ctx, cur)
 	if err != nil {

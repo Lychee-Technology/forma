@@ -12,6 +12,7 @@ import (
 	"github.com/lychee-technology/forma/internal/cdcv2"
 	"github.com/lychee-technology/forma/internal/manifestv2"
 	"github.com/lychee-technology/forma/internal/publication"
+	"github.com/lychee-technology/forma/internal/s3endpoint"
 )
 
 // S3Client is the object API cdc-flush and cdc-init write through
@@ -90,7 +91,10 @@ func (c CDCConfig) validateLayout() error {
 }
 
 // newObjectStore answers the write-once store of the run's bucket over
-// client.
+// client. An AWS SDK client is copied to follow no HTTP redirect
+// (s3endpoint.WithoutRedirects), so its objects land at the storage target
+// the writer binds; one whose HTTP client may follow redirects on its own is
+// refused.
 func newObjectStore(client S3Client, bucket string) (manifestv2.Store, error) {
 	if client == nil {
 		return nil, errors.New("s3 client is required")
@@ -100,6 +104,13 @@ func newObjectStore(client S3Client, bucket string) (manifestv2.Store, error) {
 	}
 	if bucket == "" {
 		return nil, errors.New("an S3 bucket is required: the V2 writer stages every object and manifest in it")
+	}
+	if c, ok := client.(*s3.Client); ok {
+		bound, err := s3endpoint.WithoutRedirects(c)
+		if err != nil {
+			return nil, fmt.Errorf("the V2 writer's S3 client: %w", err)
+		}
+		client = bound
 	}
 	return &manifestv2.S3Store{Client: client, Bucket: bucket}, nil
 }

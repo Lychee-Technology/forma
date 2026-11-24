@@ -104,8 +104,11 @@ type Config struct {
 	// Layout builds the object keys, Store holds them write-once, and Cache
 	// answers the verified parent manifest a flush appends to. A Store that
 	// is a manifestv2.S3Store over an *s3.Client also names the deployment's
-	// storage target, which the writer binds, or checks against the binding,
-	// before its first staging (ensureStorage).
+	// storage target: the writer checks it against the binding before it
+	// stages (checkStorage) and binds an unbound deployment to it right
+	// before its first publication transaction (bindStorage). Such a client
+	// must follow no HTTP redirect (s3endpoint.WithoutRedirects), or New
+	// refuses it.
 	Layout manifestv2.Layout
 	Store  manifestv2.Store
 	Cache  *manifestv2.Cache
@@ -148,6 +151,9 @@ func New(cfg Config) (*Writer, error) {
 		return nil, errors.New("a V2 writer needs a manifest store and a manifest cache")
 	case cfg.EntityMain == "":
 		return nil, errors.New("a V2 writer needs the entity_main table name")
+	}
+	if err := checkRedirects(cfg.Store); err != nil {
+		return nil, fmt.Errorf("build the V2 writer: %w", err)
 	}
 	cfg.PublishTimeout = orDefault(cfg.PublishTimeout, DefaultPublishTimeout)
 	cfg.StagingBudget = orDefault(cfg.StagingBudget, DefaultStagingBudget)
