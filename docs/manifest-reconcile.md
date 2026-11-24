@@ -139,6 +139,30 @@ create it before upgraded writers run:
   )
   ```
 
+### Upgrading a deployment that has already published
+
+A new deployment needs nothing beyond the table: its first publication binds
+the writer's target. A deployment that published generations before #911 and
+has no binding is different. Its first upgraded writer binds whatever target
+it is configured with, and nothing proves the older generations are there: a
+`cdc-init`, or a flush of a schema that never published, reads nothing from
+the old target. Bind such a deployment explicitly, before upgraded writers
+run:
+
+1. Stop every writer and every `manifest-reconcile --gc` of the deployment.
+2. Create the binding table ("Creating the binding table").
+3. Run a read-only `manifest-reconcile` (no `--gc`) of the upgraded
+   `forma-tools` with the writers' flags and environment. It verifies every
+   retained and expired manifest and probes the listed objects at the target
+   it derives. Go on only if its blocking findings are `storage_not_bound`
+   alone, for a missing binding, and it reports no `lost_object`; otherwise
+   the flags do not name where the generations are.
+4. Run `--bind-storage` with the same flags and environment, and check the
+   target it prints.
+5. Upgrade and start the writers. Keep `--gc` off until every writer of the
+   deployment runs an upgraded build: a writer from before #911 checks no
+   binding, and would publish wherever it is configured.
+
 ### Bindings made before #911
 
 Before #911, for a client without a base endpoint (`--s3-endpoint` or an
@@ -167,6 +191,12 @@ names where the deployment's generations actually are:
    check the target it prints.
 4. Start the writers and GC again.
 
+Stopping them is required, not a precaution. Each publication transaction
+reads the binding, but a transaction that read the old row before it was
+deleted is not fenced by that read and can still commit a generation at the
+old target; a GC pass that already read the old binding still deletes
+against it.
+
 Moving a deployment's data to another bucket, endpoint or data prefix is not
 a rebinding and is not covered here. It needs a migration plan of its own,
 verified before writers or GC resume, that keeps every current and retained
@@ -191,7 +221,7 @@ collection of expired/orphaned garbage.
 
 | Finding | Blocking | Meaning & safe operator action |
 | --- | --- | --- |
-| `storage_not_bound` | Yes | Missing binding or target mismatch. Writers bind on their first publication; to bind ahead of them, run `--bind-storage` once with writers' flags. On a mismatch, fix this run's flags/env (`AWS_ENDPOINT_URL_S3`); change the binding only as "Changing the binding" describes. |
+| `storage_not_bound` | Yes | Missing binding or target mismatch. Writers bind a new deployment on their first publication; to bind ahead of them, run `--bind-storage` once with writers' flags. A deployment that published before #911 must be bound explicitly, as "Upgrading a deployment that has already published" describes. On a mismatch, fix this run's flags/env (`AWS_ENDPOINT_URL_S3`); change the binding only as "Changing the binding" describes. |
 | `no_record` | Yes | Missing publication record row. Run `init-db` under the schema lock to recover at a fresh epoch. |
 | `record_invalid` | Yes | Corrupt publication record. Never restore a record row from backup; delete the record row, run `init-db` (arms fresh-epoch recovery fence), restart readers/writers, and run `cdc-init`. |
 | `missing_lifecycle_epoch` / `lifecycle_epoch_mismatch` | Yes | Missing or mismatched `<entity_main>_publication_epoch` row. Restore lifecycle epoch monotonicity and run fresh-epoch recovery. |

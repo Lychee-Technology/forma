@@ -17,7 +17,9 @@ const (
 	actionStaleLifecycle = "do not restore a backup lifecycle row; verify the record's epoch and update the lifecycle epoch row " +
 		"to match the record's epoch, or run fresh-epoch recovery if the record was restored (docs/manifest-reconcile.md)"
 	actionRecordBehindLifecycle = "treat the record as invalid: " + actionRecordInvalid
-	actionUnboundStorage        = "cdc-flush, cdc-init and the compactor bind the deployment on their first publication; to bind it ahead of them, " +
+	actionUnboundStorage        = "cdc-flush, cdc-init and the compactor bind a new deployment on their first publication; a deployment that " +
+		"published before #911 must be bound explicitly before upgraded writers run, with writers and GC stopped " +
+		"(docs/manifest-reconcile.md, \"Upgrading a deployment that has already published\"). To bind it, " +
 		"confirm the S3 client's effective bucket URL (--s3-endpoint or AWS_ENDPOINT_URL_S3/AWS_ENDPOINT_URL or --s3-region, " +
 		"with --s3-use-path matching the writers), --s3-bucket and --data-prefix match the writers, then run manifest-reconcile --bind-storage once " +
 		"(docs/manifest-reconcile.md); GC deletes nothing until bound"

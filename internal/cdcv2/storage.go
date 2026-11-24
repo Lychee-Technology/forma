@@ -23,8 +23,11 @@ import (
 //     an unbound deployment, binds its own target (publication.BindStorageTx).
 //     The binding commits with the first generation, so a run that publishes
 //     nothing, or a publication that fails, rolls back or never commits,
-//     binds nothing; and since every transaction checks, a writer started
-//     before a rebind cannot publish past it.
+//     binds nothing. Since every transaction checks, a writer's publications
+//     after a rebind are checked against the new binding. A transaction that
+//     read the old binding before the row changed is not fenced by that
+//     read and may still commit, which is why a rebind needs the writers and
+//     GC stopped (docs/manifest-reconcile.md, "Changing the binding").
 //
 // The target is derived from the writer's own store: the bucket URL its SDK
 // client sends requests to (s3endpoint.ClientEndpoint, the derivation the

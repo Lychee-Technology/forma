@@ -170,7 +170,8 @@ func TestAFailedFirstPublicationBindsNothing(t *testing.T) {
 // writers at different targets both pass the check before staging. The one
 // whose publication commits second finds the other's binding in its
 // transaction and fails closed before its compare-and-set, keeping the
-// binding, and a writer started before a rebind cannot publish past it.
+// binding, and a running writer's next publication after a rebind is checked
+// against the new binding.
 func TestAFirstPublicationLosesToABindingCommittedWhileItStaged(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
