@@ -215,19 +215,27 @@ retained or expired. That finding blocks, so the collector neither deletes nor
 forgets for the schema. This procedure therefore does not cover a prefix
 change.
 
-**Copy every retained generation (preferred).** A generation stays retained
-until garbage collection forgets its history row: the current one, each one
-superseded less than the retention grace `G` ago, and each expired one not yet
-collected. Readers pinned to any of them, and the collector, which verifies
-the manifests and probes the objects of every one of them, still need it.
+**Copy every retained generation (preferred).** A generation stays in the
+history until garbage collection forgets its row: the current one, each
+superseded one no `--gc` pass has retired yet, each one retired less than the
+retention grace `G` ago (the grace runs from the `retired_at` stamp a `--gc`
+pass writes, not from when the generation was superseded), and each expired
+one not yet collected. Readers pinned to any of them, and the collector, which
+verifies the manifests and probes the objects of every one of them, still need
+it.
 
 1. With writers and `--gc` stopped, copy every object under the data prefix,
    manifests and parquet files, from the old target to the new one, with the
    same keys and the same bytes.
-2. Run `manifest-reconcile` against the new target (without `--gc`) and then
-   with `--verify-checksums`. Go on only when they report no
-   `missing_generation`, `missing_retained_manifest`, `invalid_manifest`,
-   `lost_object` or `corrupt_object`.
+2. Run `manifest-reconcile` against the new target (without `--gc`) with
+   `--verify-checksums`. Go on only when the run exits `0` and reports every
+   schema the readers serve as `clean`, in the `published` state, at the
+   generation it had at the old target. The one finding a faithful copy may
+   show is an `unrecognized_object` for a key that was also unrecognized at
+   the old target. Any other finding, a schema reported with an `error`, as
+   skipped or as inconclusive, or a schema whose state or generation differs,
+   means the copy is incomplete or the state is not readable: fix it and run
+   the check again.
 3. Configure every reader for the new target before any writer resumes.
    Leave the old target as it is until no reader is configured for it any more
    and the reader pass deadline (`R_max`) has passed: a pass that started
@@ -237,8 +245,10 @@ the manifests and probes the objects of every one of them, still need it.
 **Re-initialize, then let the old generations expire.** Use this plan when the
 objects cannot be copied. `cdc-init` at the new target publishes a new current
 generation for a schema there. It copies none of the older generations: their
-manifests and objects stay at the old target only, and they stay retained
-until the grace `G` after the re-init superseded them.
+manifests and objects stay at the old target only. Each of them stays retained
+until a `--gc` pass has retired it, stamping its `retired_at`, and the grace
+`G` has passed since that stamp; it stays in the history until a later `--gc`
+pass forgets it.
 
 A reader takes the current manifest's key from the record and reads it at the
 one target it is configured for. Once a schema's `cdc-init` commits, its
@@ -257,22 +267,73 @@ last. When reads cannot stop, use the copy plan.
    manifest its target does not hold.
 3. Run `cdc-init` for every schema, with the new target's exact flags and
    environment.
-4. Run `manifest-reconcile` against the new target (without `--gc`). Go on only
-   when it reports no `missing_generation` and no `lost_object` for any
-   schema: every schema's current generation is then at the new target. It
-   reports `missing_retained_manifest` for the generations the re-inits
-   superseded, as expected: their manifests are at the old target only.
+4. Verify the new target before any reader starts. Run `manifest-reconcile`
+   against the new target (without `--gc`) with `--verify-checksums`. For each
+   schema it reads the record, the generation history and the lifecycle row,
+   verifies the current manifest against the record as readers do, probes
+   every object that manifest lists, and hashes each one against the
+   manifest's SHA-256 and size. The run exits `2`, as expected: the
+   generations the re-inits superseded are reported as
+   `missing_retained_manifest`, since their manifests are at the old target
+   only. Go on only when all of the following hold:
+   - The run does not exit `1`, and reports no schema with an `error`, as
+     skipped or as inconclusive.
+   - Every schema the readers serve is reported, in the `published` state, at
+     the generation its `cdc-init` published in step 3, which is above every
+     generation published at the old target.
+   - Every finding of every such schema is a `missing_retained_manifest` for a
+     generation below that one.
+
+   Any other finding stops the move. In particular, each of the following
+   means the schema cannot serve reads, or not correctly, at the new target:
+   `storage_not_bound`, `no_record`, `record_invalid`, `awaiting_init`,
+   `missing_lifecycle_epoch`, `lifecycle_epoch_mismatch`, `history_mismatch`,
+   `missing_history`, `missing_generation`, `invalid_manifest`,
+   `foreign_manifest`, `lost_object` and `corrupt_object`. The absence of
+   `missing_generation` and `lost_object` alone proves nothing: a current
+   manifest that exists but fails verification is reported as
+   `invalid_manifest` only, and the objects it lists are neither probed nor
+   hashed, so its loss or corruption is not reported at all. An
+   `unrecognized_object` means the new target holds keys no writer of the
+   layout stages: find out where they came from first. Recover the schema by
+   its finding's action (for its current generation, normally another
+   `cdc-init`) and run this check again.
 5. Configure every reader for the new target, and only then start them. Do not
    start one with the old configuration: it fails every pass, since no current
    manifest is at the old target any more.
-6. Do not run `--gc` until every generation published at the old target has
-   expired, that is, until `G` has passed since the last schema's re-init. Run
-   earlier, the collector finds their manifests missing at the new target and
-   reports `missing_retained_manifest`, a blocking finding. Once they have
-   expired, `--gc` forgets them without deleting anything at the old target.
-7. Delete the old target's objects by hand, and only after `--gc` has
-   forgotten every generation published there and no reader or writer is
-   configured for it any more.
+6. Retire the superseded generations. Once the readers run on the new target
+   (and the writers, step 5 of [Changing the binding](#changing-the-binding)), run
+   `manifest-reconcile --gc` against the new target once, with the
+   `--retention-grace` (`G`) it always runs with. Before it inspects a schema,
+   the pass stamps `retired_at` on every superseded generation no earlier pass
+   retired, at the time its retirement commits, and lists them under
+   `retired generations`. The grace of each starts with that stamp: none of the
+   generations the re-inits superseded expires before it, however long ago the
+   re-init ran, since the collector was held. The pass then reports
+   `missing_retained_manifest` for them and refuses collection for each such
+   schema (`garbage collection refused`, exit `2`), as expected: the finding
+   blocks, and the pass deletes and forgets nothing for the schema. A schema
+   reported as skipped (its lock was held) or with an `error` may not have
+   been retired: run the pass again for it. Generations an earlier pass at the old
+   target had already retired keep their earlier stamp.
+7. Wait at least `G` after the retirement pass of step 6 ended, for every
+   schema. Then run `manifest-reconcile --gc` again, with the same `G`. Each
+   generation published at the old target is now expired. Its manifest is not
+   at the new target, so the collector has nothing to verify or delete for it
+   and forgets its history row (`forgot generations`), deleting nothing at
+   the old target. A pass that still reports `missing_retained_manifest` for
+   a schema ran less than `G` after that schema's retirement stamp, or its
+   retirement did not run: rerun step 6 for that schema if it lists no
+   retirement, wait, and run this step again.
+8. Verify that garbage collection has forgotten every generation published at
+   the old target: run `manifest-reconcile` against the new target (without
+   `--gc`). For every schema, no `missing_retained_manifest` is reported (an
+   old generation still retained), and the `forget generations` list of its
+   `garbage collection would delete ...` line names no generation below the
+   one its `cdc-init` published (an old generation expired but not yet
+   forgotten). Otherwise run step 7 again.
+9. Delete the old target's objects by hand, and only after step 8 holds and no
+   reader or writer is configured for the old target any more.
 
 ## Retention and time flags
 
