@@ -23,10 +23,15 @@ import (
 // around it: items[0].name is one, items is not. An element of an array at
 // that position is the same path one array index deeper. Which indices are
 // the arrays of objects around the attribute and which its own value's is
-// the walk's, by the position the value takes: where a parent is an object
-// in one alternative and an array of objects in another, items: {phones:
-// [["1"]]} meets phones under no array of objects, so ["1"] is an element of
-// phones, not phones itself (#696 review).
+// the walk's, by the position the value takes at each parent (walkedAncestry):
+// where a parent is an object in one alternative and an array of objects in
+// another, items: {phones: [["1"]]} meets phones under no array of objects,
+// so ["1"] is an element of phones, not phones itself (#696 review). Which
+// parent is the array counts, not only how many are: a: [{b: {v: ...}}] is
+// not under the arrangement a: {b: [{v: ...}]}. A literal dotted key takes
+// no array at the parents it names (items.phones: ["1"] writes phones' own
+// array however items is declared), so each of its indices is the
+// attribute's own value's.
 //
 //   - An object, empty or not, is refused at every attribute's position: no
 //     value type, list elements included, stores an object there.
@@ -57,10 +62,10 @@ import (
 
 // scalarShapeRefusal answers the published refusal of value at path and
 // indices when value is a JSON object or array the attribute at path cannot
-// store there, or nil (see above). The first ancestors of indices are those
-// of the arrays of objects the walk passed on its way to path; the rest
-// index the attribute's own value.
-func scalarShapeRefusal(path []string, value any, indices []int, ancestors int, cache forma.SchemaAttributeCache, shapes SchemaShapes) error {
+// store there, or nil (see above). entered[k] is how many of indices the
+// walk held when it entered the key path[k]; the indices past the last are
+// the attribute's own value's.
+func scalarShapeRefusal(path []string, value any, indices []int, entered []int, cache forma.SchemaAttributeCache, shapes SchemaShapes) error {
 	var isArray bool
 	switch value.(type) {
 	case map[string]any:
@@ -83,10 +88,11 @@ func scalarShapeRefusal(path []string, value any, indices []int, ancestors int, 
 		expected = fmt.Sprintf("declared type list takes an array of %s values", meta.EffectiveItemsType())
 	case isArray:
 		declared := shapes.Declared(name)
-		switch at := declared.At(ancestors, len(indices)-ancestors); {
+		walked, own := walkedAncestry(path, entered)
+		switch at := declared.At(walked, len(indices)-own); {
 		case at == ShapeArray:
 			return nil
-		case declared.At(ancestors, 0) == ShapeArray:
+		case declared.At(walked, 0) == ShapeArray:
 			// The attribute's own array is legal; this is one of its
 			// elements.
 			expected += fmt.Sprintf(" at array indices %q", joinIndices(indices))
@@ -98,6 +104,23 @@ func scalarShapeRefusal(path []string, value any, indices []int, ancestors int, 
 		"%s, got %s; an object or array, empty or not, cannot be stored where a single value belongs "+
 			"(to keep the current value, omit the key)",
 		expected, containerKind(value)))
+}
+
+// walkedAncestry answers what the walk took at each parent of the
+// attribute at path, and how many indices it held on reaching the
+// attribute's own key. A key's value took the indices added before the walk
+// entered the next key. A parent a literal dotted key names is crossed.
+func walkedAncestry(path []string, entered []int) (Ancestry, int) {
+	var walked Ancestry
+	for k, key := range path {
+		for range strings.Count(key, ".") {
+			walked = append(walked, AncestorCrossed)
+		}
+		if k+1 < len(path) {
+			walked = append(walked, entered[k+1]-entered[k])
+		}
+	}
+	return walked, entered[len(path)-1]
 }
 
 // containerKind describes a JSON object or array.

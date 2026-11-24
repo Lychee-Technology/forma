@@ -46,37 +46,67 @@ func (l *shapeLookup) declared(name string) Declaration {
 		return Declaration{}
 	}
 	segments := strings.Split(name, ".")
-	// reach[a] holds the declarations reaching the current segment under a
-	// arrays of objects. A parent one alternative declares an object and
-	// another an array of objects is read both ways, each under its own
-	// count: which one a write meets is the walk's, by the position the
-	// value actually takes (#696 review).
-	reach := [][]schemaNode{{{value: l.root}}}
+	// reach holds the declarations reaching the current segment under each
+	// arrangement of arrays of objects around it. A parent one alternative
+	// declares an object and another an array of objects is read both ways,
+	// each under its own arrangement: which one a write meets is the walk's,
+	// by the position the value actually takes (#696 review). Arrangements
+	// stay apart even where they count as many arrays of objects, since a
+	// value under one is not under the other.
+	reach := []reading{{nodes: []schemaNode{{value: l.root}}}}
 	for _, segment := range segments[:len(segments)-1] {
-		next := make([][]schemaNode, len(reach)+1)
-		for ancestors, nodes := range reach {
-			children := l.property(nodes, segment)
+		var next []reading
+		for _, r := range reach {
+			children := l.property(r.nodes, segment)
 			if len(children) == 0 {
 				continue
 			}
-			next[ancestors] = append(next[ancestors], children...)
+			next = append(next, r.then(false, children))
 			if shape, _ := l.shapeOf(children); shape == ShapeArray {
 				items := l.items(children)
 				if len(items) == 0 {
 					return Declaration{}
 				}
-				next[ancestors+1] = append(next[ancestors+1], items...)
+				next = append(next, r.then(true, items))
 			}
+		}
+		if len(next) > maxShapeReadings {
+			return Declaration{}
 		}
 		reach = next
 	}
 	var placements []placement
-	for ancestors, nodes := range reach {
-		if leaves := l.property(nodes, segments[len(segments)-1]); len(leaves) > 0 {
-			placements = append(placements, placement{ancestors: ancestors, shapes: l.levels(leaves)})
+	for _, r := range reach {
+		if leaves := l.property(r.nodes, segments[len(segments)-1]); len(leaves) > 0 {
+			placements = append(placements, placement{arrays: r.arrays, ancestors: r.ancestors(), shapes: l.levels(leaves)})
 		}
 	}
 	return Declaration{placements: placements}
+}
+
+// reading is the declarations reaching a segment of an attribute's name
+// under one arrangement of arrays of objects around it.
+type reading struct {
+	arrays []bool
+	nodes  []schemaNode
+}
+
+// then answers the reading one parent further in: nodes declare the next
+// segment's container, an array of objects's elements where array is set.
+func (r reading) then(array bool, nodes []schemaNode) reading {
+	arrays := make([]bool, len(r.arrays), len(r.arrays)+1)
+	copy(arrays, r.arrays)
+	return reading{arrays: append(arrays, array), nodes: nodes}
+}
+
+func (r reading) ancestors() int {
+	n := 0
+	for _, array := range r.arrays {
+		if array {
+			n++
+		}
+	}
+	return n
 }
 
 // levels answers the shape at each array level of the value the

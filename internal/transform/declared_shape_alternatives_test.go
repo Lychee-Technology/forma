@@ -85,12 +85,12 @@ func TestDeclaredShapeNullableAndOpenAlternatives(t *testing.T) {
 					keyword, order[0], order[1], keyword, alt.branch))
 				shapes := SchemaShapesOf(registry, shapeSchemaID)
 				phones := shapes.Declared("phones")
-				assert.Equal(t, ShapeArray, phones.At(0, 0), label)
-				assert.Equal(t, alt.element, phones.At(0, 1), label)
+				assert.Equal(t, ShapeArray, phones.At(nil, 0), label)
+				assert.Equal(t, alt.element, phones.At(nil, 1), label)
 				_, most, exact := phones.Indices()
 				assert.Equal(t, 1, most, label)
 				assert.Equal(t, alt.exact, exact, label)
-				assert.Equal(t, alt.note, shapes.Declared("note").At(0, 0), label)
+				assert.Equal(t, alt.note, shapes.Declared("note").At(nil, 0), label)
 
 				requireShapeAccepted(t, registry, map[string]any{"phones": []any{"1", "2"}}, []string{"2[0]=1", "2[1]=2"}, label)
 				requireShapeAccepted(t, registry, map[string]any{"phones": "1"}, []string{"2[]=1"}, label)
@@ -134,10 +134,10 @@ func TestDeclaredShapeAncestryIsTheWalkedPosition(t *testing.T) {
 			registry := alternativeRegistry(fmt.Sprintf(`{"type": "object", "properties": {"items": {%q: [%s, %s]}}}`, keyword, order[0], order[1]))
 			declared := SchemaShapesOf(registry, shapeSchemaID).Declared("items.phones")
 			for ancestors := 0; ancestors <= 1; ancestors++ {
-				assert.Equal(t, ShapeArray, declared.At(ancestors, 0), "%s, %d arrays of objects", label, ancestors)
-				assert.Equal(t, ShapeScalar, declared.At(ancestors, 1), "%s, %d arrays of objects", label, ancestors)
+				assert.Equal(t, ShapeArray, declared.At(Ancestry{ancestors}, 0), "%s, %d arrays of objects", label, ancestors)
+				assert.Equal(t, ShapeScalar, declared.At(Ancestry{ancestors}, 1), "%s, %d arrays of objects", label, ancestors)
 			}
-			assert.Equal(t, ShapeUnresolved, declared.At(2, 0), label)
+			assert.Equal(t, ShapeUnresolved, declared.At(Ancestry{2}, 0), label)
 			sure, most, exact := declared.Indices()
 			assert.Equal(t, []any{1, 2, true}, []any{sure, most, exact}, label)
 

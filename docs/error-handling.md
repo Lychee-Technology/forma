@@ -217,9 +217,20 @@ of objects (`items[0].name` is a scalar position, `items` is not):
   alternative and an array of objects in another, `items: {"phones":
   [["1"]]}` meets `phones` under no array of objects, so `["1"]` is one of
   its elements and is refused at array index `0`, while `items: {"phones":
-  ["1"]}` and `items: [{"phones": ["1"]}]` are written as before. A value
-  under more arrays of objects than any alternative declares is refused as
-  undeclared.
+  ["1"]}` and `items: [{"phones": ["1"]}]` are written as before. Which
+  parent is the array of objects counts, not only how many are: where one
+  alternative declares `a` an array of objects holding an object `b` with a
+  string `v`, and another declares `a` an object holding an array of `b`
+  objects with `v` an array of strings, `a: [{"b": {"v": ["x"]}}]` is
+  refused and `a: {"b": [{"v": ["x"]}]}` is written. A literal dotted key
+  takes no array at the parents it names, so its indices are all the
+  attribute's own: with `items` an array of objects whose `phones` is an
+  array of strings, `{"items.phones": ["1"]}` is written as `phones`' own
+  array, and `{"items.phones": [["1"]]}` is refused at array index `0`.
+  Where the parents such a key names leave several alternatives possible,
+  the array is admitted only if every one of them declares it. A value
+  under more arrays of objects than any alternative declares, or under an
+  arrangement none declares, is refused as undeclared.
 - Where the document does not settle the position, the array is refused as
   well: the document is missing or declares no such property, a `$ref`
   names a file the registry does not serve or a pointer it does not hold,

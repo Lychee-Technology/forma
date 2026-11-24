@@ -73,20 +73,27 @@ const (
 )
 
 // Declaration is what a schema document declares for one attribute: the
-// shape at each depth of its own value, for each count of arrays of objects
-// the document admits around it. A parent one alternative declares an
-// object and another an array of objects admits two counts (#696 review).
+// shape at each depth of its own value, for each arrangement of arrays of
+// objects around it that the document admits. A parent one alternative
+// declares an object and another an array of objects admits two
+// arrangements (#696 review), and so do two parents that alternatives
+// declare arrays of objects in turn: which parent is the array matters, not
+// only how many are.
 type Declaration struct {
-	// placements has one entry per count of arrays of objects around the
-	// attribute that the document admits, fewest first. Nil when the
-	// document does not reach the attribute.
+	// placements has one entry per arrangement of arrays of objects around
+	// the attribute that the document admits. Nil when the document does not
+	// reach the attribute.
 	placements []placement
 }
 
-// placement is the attribute's value under one count of arrays of objects.
+// placement is the attribute's value under one arrangement of arrays of
+// objects.
 type placement struct {
-	// ancestors is how many arrays of objects lie around the attribute; a
-	// member of one carries an array index for each.
+	// arrays[i] reports whether the i-th parent of the attribute,
+	// outermost first, is an array of objects; a member of one carries an
+	// array index for it.
+	arrays []bool
+	// ancestors is how many of arrays are true.
 	ancestors int
 	// shapes[i] is the shape declared i array levels into the attribute's
 	// own value: shapes[0] is the attribute's own position, and only the
@@ -94,27 +101,77 @@ type placement struct {
 	shapes []DeclaredShape
 }
 
-// At answers the shape declared at a position of the attribute inside
-// ancestors arrays of objects and own array levels into its own value, as
-// the write walked it: the ancestry is the value's, not one an alternative
-// the value does not take declares. A position past the last declared level
-// has the last one's shape, which is never an array; one under a count of
-// arrays of objects the document does not admit is unresolved.
-func (d Declaration) At(ancestors, own int) DeclaredShape {
+// Ancestry is what a write's walk took at each parent of an attribute,
+// outermost first: the array levels it walked there, 0 for an object and 1
+// for an array of objects, or AncestorCrossed for a parent a literal dotted
+// key names ("items.phones" names items), where the walk takes no array.
+type Ancestry []int
+
+// AncestorCrossed is a parent of an attribute a literal dotted key names.
+// Such a key's value is written without an index for the parent whatever
+// the document declares it (rebuildByAncestry reads it back the same way),
+// so every arrangement admits it.
+const AncestorCrossed = -1
+
+// At answers the shape declared at a position of the attribute that the
+// write reached through walked, own array levels into its own value: the
+// ancestry is the value's, not one an alternative the value does not take
+// declares. A position past the last declared level has the last one's
+// shape, which is never an array. One no arrangement admits is unresolved.
+// Where a crossed parent lets several arrangements admit it, the position
+// is an array only where every one declares an array there, so an uncertain
+// reading never lets a single value store array elements.
+func (d Declaration) At(walked Ancestry, own int) DeclaredShape {
+	shape, matched := ShapeUnresolved, false
 	for _, p := range d.placements {
-		if p.ancestors == ancestors {
-			return p.shapes[min(own, len(p.shapes)-1)]
+		if !p.admits(walked) {
+			continue
+		}
+		at := p.shapes[min(own, len(p.shapes)-1)]
+		if matched {
+			at = meetShapes(shape, at)
+		}
+		shape, matched = at, true
+	}
+	return shape
+}
+
+// admits reports whether the walk's ancestry is the arrangement p: an
+// array of objects exactly where p declares one, apart from crossed parents.
+func (p placement) admits(walked Ancestry) bool {
+	if len(walked) != len(p.arrays) {
+		return false
+	}
+	for i, levels := range walked {
+		switch {
+		case levels == AncestorCrossed:
+		case levels == 0 && p.arrays[i], levels == 1 && !p.arrays[i], levels > 1:
+			return false
 		}
 	}
-	return ShapeUnresolved
+	return true
+}
+
+// meetShapes answers what two arrangements that both admit a position
+// settle there: their shape where they agree, unresolved where either is,
+// and a single value where one declares an array and the other does not.
+func meetShapes(a, b DeclaredShape) DeclaredShape {
+	switch {
+	case a == b:
+		return a
+	case a == ShapeUnresolved || b == ShapeUnresolved:
+		return ShapeUnresolved
+	default:
+		return ShapeScalar
+	}
 }
 
 // Indices answers how many array indices a stored record of the attribute
 // may carry as far as the document shows. A record carries no index telling
 // its ancestry from its own value's, so where the document admits several
-// counts of arrays of objects, a record within one reading may be malformed
-// under another: sure is the most every reading admits, most the most any
-// does. exact reports whether the document shows that no record carries
+// arrangements of arrays of objects, a record within one reading may be
+// malformed under another: sure is the most every reading admits, most the
+// most any does. exact reports whether the document shows that no record carries
 // more than most: every reading declares the innermost level a non-array
 // type.
 func (d Declaration) Indices() (sure, most int, exact bool) {
@@ -175,10 +232,13 @@ func shapeDocument(schema forma.JSONSchema, err error) map[string]any {
 
 // maxShapeLevels bounds the array levels one answer follows, so an array
 // whose items $ref the array itself ends; maxShapeNodes bounds the
-// subschemas one lookup reads, so a document of many combinators ends too.
+// subschemas one lookup reads, so a document of many combinators ends too;
+// maxShapeReadings bounds the arrangements of arrays of objects one answer
+// keeps apart, which can double at every parent.
 const (
-	maxShapeLevels = 32
-	maxShapeNodes  = 4096
+	maxShapeLevels   = 32
+	maxShapeNodes    = 4096
+	maxShapeReadings = 64
 )
 
 // schemaNode is a subschema of a document: file names the sibling document
