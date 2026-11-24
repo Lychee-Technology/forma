@@ -2,8 +2,8 @@
 // bucket's requests to, and keeps the client's requests there. ClientEndpoint
 // is the one derivation of a deployment's storage target
 // (publication.StorageTarget.Endpoint): the V2 writers check the binding with
-// it before they stage and bind the deployment with it before they publish
-// (internal/cdcv2), and manifest-reconcile checks the target its collector
+// it before they stage and bind the deployment with it in their first
+// publication transaction (internal/cdcv2), and manifest-reconcile checks the target its collector
 // lists and deletes in against the same binding with it (internal/reconcile).
 // Deriving both from one function keeps virtual-hosted and path-style
 // addressing, AWS_ENDPOINT_URL_S3, custom endpoint paths, FIPS, dual-stack and
