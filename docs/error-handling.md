@@ -1591,12 +1591,13 @@ whose publication state cannot be answered from
   fixed (`s3:ListBucket` on the bucket, `s3:GetObject` on its objects); the
   next read then tells a present object from a lost one. In operational
   tooling, `publication.ErrHistoryInconsistent` refuses non-monotonic or
-  broken generation history, `reconcile.ErrRedirectRefused` refuses any 3xx redirect on `manifest-reconcile`'s S3 client, and `--gc`
+  broken generation history, `s3endpoint.ErrRedirectRefused` (also `reconcile.ErrRedirectRefused`) refuses any 3xx redirect on `manifest-reconcile`'s and the V2 writers' S3 clients, and `--gc`
   refuses to delete unless the deployment's storage target matches its
   binding. The V2 writers refuse to stage or publish into another target than
   the bound one (`publication.ErrStorageBoundElsewhere`), and fail with
-  `publication.ErrStorageTableMissing` on a deployment whose `init-db`
-  predates the binding table (`docs/manifest-reconcile.md`).
+  `publication.ErrStorageTableMissing` on a deployment without the binding
+  table: on PostgreSQL rerun `init-db`; on Aurora DSQL create it by hand or
+  with `manifest-reconcile --bind-storage` (`docs/manifest-reconcile.md`).
 
 ## Public HTTP error surface
 

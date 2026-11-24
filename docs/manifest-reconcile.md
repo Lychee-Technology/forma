@@ -44,54 +44,95 @@ Garbage collection deletes nothing until the deployment is bound, in
 `<entity_main>_publication_storage`, to the exact S3 storage target its writers
 publish into. `init-db` creates the table. A target is three values:
 
-1. **Effective bucket URL:** derived directly from the AWS SDK S3 client's
-   `ListObjectsV2` and `DeleteObject` request URLs (`--s3-endpoint` or
-   `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL` / region endpoint, with
-   `--s3-use-path` addressing). Custom endpoints with ambiguous paths (repeated
-   slashes such as `/tenant//`, trailing slashes on non-root paths, dot
-   segments, escaped paths, query/fragment, or userinfo) are rejected rather
-   than collapsed.
+1. **Effective bucket URL:** derived directly from the request URLs the AWS SDK
+   S3 client itself builds for a `ListObjectsV2` of the bucket and a
+   `DeleteObject`, `PutObject` and `GetObject` of a key in it, through the
+   client's own routing options: `--s3-endpoint` or `AWS_ENDPOINT_URL_S3` /
+   `AWS_ENDPOINT_URL` / the region endpoint, `--s3-use-path` addressing, and
+   FIPS, dual-stack and transfer acceleration when the client's configuration
+   enables them (`AWS_USE_FIPS_ENDPOINT`, `AWS_USE_DUALSTACK_ENDPOINT`, or the
+   shared config's `use_fips_endpoint` / `use_dualstack_endpoint`). The object
+   requests must go to one URL and the `LIST` to its bucket path, or the client
+   is refused. Custom endpoints with ambiguous paths (repeated slashes such as
+   `/tenant//`, trailing slashes on non-root paths, dot segments, escaped
+   paths, query/fragment, or userinfo) are rejected rather than collapsed, and
+   so is a configuration the SDK cannot route (FIPS over a custom endpoint).
 2. **Bucket and data prefix:** `--s3-bucket` and `--data-prefix` (matching
    `cdc-flush` and `cdc-init`'s `-s3-prefix`).
-3. **No redirects:** `manifest-reconcile`'s S3 client follows no redirect.
-   A 301, 302, 303, 307 or 308 response that carries a `Location` header is
-   refused (`ErrRedirectRefused`, exit `1`) without reading its body or
-   leaking `Location` header credentials. Any other 3xx, including one without
-   a `Location`, reaches the AWS SDK as an S3 error response, which also fails
-   the pass with exit `1`. Either way, destructive requests never leave the
-   bound endpoint.
+3. **No redirects:** `manifest-reconcile`'s S3 client and the writers' follow
+   no redirect (`s3endpoint.WithoutRedirects`). A 301, 302, 303, 307 or 308
+   response that carries a `Location` header is refused
+   (`ErrRedirectRefused`, exit `1` for `manifest-reconcile`, a failed run for
+   a writer) without reading its body or leaking `Location` header
+   credentials. Any other 3xx, including one without a `Location`, reaches
+   the AWS SDK as an S3 error response, which also fails the request. Either
+   way, no request leaves the bound endpoint: no collector `DELETE`, and no
+   writer `PUT`, which an HTTP client that followed a 303 would otherwise
+   resend as a `GET` whose `200` the SDK takes for the `PUT`'s success,
+   publishing an object that was never stored.
 
 ### Writers bind it
 
 `cdc-flush`, `cdc-init` and the `compactor` bind the deployment themselves
-(#911). Before a run stages anything, the writer derives its own target with
-the same function `manifest-reconcile` uses for its client (the bucket URL its
-AWS SDK client sends a `LIST` and a `DELETE` to, its `-s3-bucket`, and its data
-prefix), then:
+(#911). Each derives its own target with the same function
+`manifest-reconcile` uses for its client (the bucket URL above, its
+`-s3-bucket`, and its data prefix), then:
 
-- with no binding yet, binds the deployment to that target;
-- with a binding to the same target, publishes as before;
-- with a binding to another target, fails before it stages or publishes,
-  naming both targets (`publication.ErrStorageBoundElsewhere`). The binding is
-  kept. A writer publishing into a target the collector is not bound to would
-  put objects where garbage collection never looks, and a collector bound to
-  the wrong target would judge the writers' objects against another bucket.
+- **before it stages anything,** checks that target against the binding. With a
+  binding to another target, it fails, naming both targets
+  (`publication.ErrStorageBoundElsewhere`), before it sends anything to S3 or
+  moves the record. The binding is kept. A writer publishing into a target the
+  collector is not bound to would put objects where garbage collection never
+  looks, and a collector bound to the wrong target would judge the writers'
+  objects against another bucket.
+- **once it is about to publish,** binds a deployment that has no binding yet.
+  The generation is then staged and has passed every check a staging makes:
+  the record's state, a compactor's published prefix, the manifest's own
+  verification, and the read of the parent manifest through the writer's own
+  client. A run that publishes nothing never binds: an empty flush, a
+  compaction of an unpublished schema or one that merges nothing, and a run
+  refused by any of those checks, such as a compactor configured with another
+  prefix than the published one.
+- with a binding to the same target, publishes as before.
+
+Two writers of an unbound deployment may both stage. The first to bind wins;
+the other then fails with `ErrStorageBoundElsewhere` before its publication
+transaction, and what it staged stays unpublished, outside the bound target.
+Once a writer has seen the deployment bound to its target, it does not read
+the binding again until it restarts.
 
 A mismatch is refused at once, with no warn-only window. A deployment bound
 before #911 was bound by an operator who ran `--bind-storage` with the writers'
-own flags and environment, through the same derivation, so its writers derive
-the same target; one whose writers derive another target has a binding that
-garbage collection would already act on wrongly.
+own flags and environment, so its writers normally derive the same target;
+one whose writers derive another target has a binding that garbage collection
+would already act on wrongly. One case differs: the derivation before this
+release ignored FIPS, dual-stack and transfer acceleration when no custom
+endpoint was set, and recorded the ordinary regional host (for example
+`https://my-bucket.s3.us-west-2.amazonaws.com`) even for a client that sends
+to `https://my-bucket.s3.dualstack.us-west-2.amazonaws.com`. See
+[Checking a binding made before #911](#checking-a-binding-made-before-911).
 
 A writer whose S3 client destination cannot be told (a custom endpoint
-resolver, or an ambiguous custom endpoint path, see above) fails the same way
-before it stages. A writer given a client that is not the AWS SDK's own
+resolver, an ambiguous custom endpoint path, see above) fails the same way
+before it stages, and so does a writer whose AWS SDK client sends through an
+HTTP client of a type whose redirect handling cannot be replaced: only the
+SDK's default HTTP client and a plain `*http.Client` can be made to follow no
+redirect. A writer given a client that is not the AWS SDK's own
 (`*s3.Client`), as an embedded caller of `internal/cdc` may, binds and checks
 nothing: bind such a deployment with `--bind-storage`.
 
-A deployment whose `init-db` ran before the table existed has no binding
-table, and its writers fail with `publication.ErrStorageTableMissing` until
-`init-db` (or `--bind-storage`, which also creates it) runs again.
+A deployment without the binding table fails its writers with
+`publication.ErrStorageTableMissing`, before they stage:
+
+- **PostgreSQL:** run `init-db` again; it creates the table with the other
+  publication tables. Rerun it before upgraded writers publish.
+- **Aurora DSQL:** `init-db` cannot run on DSQL yet (#690). Create the table with
+  its DSQL statement, on its own, as [Operating the CDC tools on
+  DSQL](aurora-dsql.md#operating-the-cdc-tools-on-dsql) gives it. Or run
+  `--bind-storage` (below) with `--pg-engine aurora-dsql`: it creates the
+  table, each DDL in its own transaction, and also binds the deployment to
+  that run's target, so run it only with the writers' exact S3 flags and
+  environment.
 
 ### `--bind-storage`
 
@@ -110,12 +151,55 @@ forma-tools manifest-reconcile \
   --s3-bucket my-bucket --data-prefix data
 ```
 
-An existing binding to a different target is never overwritten, by either
-path. To move a deployment to a new bucket, endpoint or prefix, stop its
-writers, delete the row in `<entity_main>_publication_storage` by hand, then
-either start the writers with the new target (their first run binds it) or run
-`--bind-storage` with it first. Writers still running with the old target fail
-closed once another target is bound.
+### Checking a binding made before #911
+
+A binding made by `--bind-storage` before this release recorded the bucket URL
+without FIPS, dual-stack or transfer acceleration. When the writers and the
+collector run without those options, nothing changes. Otherwise:
+
+1. Run `--bind-storage` with the writers' exact flags and environment. It
+   prints the binding when it matches. When it fails with
+   `ErrStorageBoundElsewhere`, compare the two targets it names.
+2. If they differ only in the endpoint host, and that host is the FIPS,
+   dual-stack or accelerate form of the same bucket in the same region (the
+   bucket name, the data prefix and the region match), both URLs reach the
+   same objects. Rebind by the procedure below. No object moves: steps 4 and
+   5 do not apply.
+3. If anything else differs, the binding names another bucket, prefix or
+   endpoint than the one the writers publish into. Do not rebind to make the
+   error go away: find out which target holds the live generations, and treat
+   it as a move (below).
+
+Upgraded writers refuse to publish under a binding that names the other host,
+so check before upgrading them.
+
+### Changing the binding
+
+An existing binding to a different target is never overwritten, by any
+writer or by `--bind-storage`. The binding only names where garbage collection
+deletes and where writers may publish. Editing it moves no object and changes
+no reader's configuration: the current generation and every retained one stay
+at the target they were published to, and readers keep reading them there.
+
+To rebind (the endpoint spelling above, or a move):
+
+1. Stop every writer (`cdc-flush`, `cdc-init`, `compactor`) and every
+   `manifest-reconcile --gc` of the deployment, and wait for runs in flight to
+   finish. A writer that has already seen the binding keeps publishing to its
+   own target without reading the binding again, so it must not be running
+   when the binding changes.
+2. Delete the row in `<entity_main>_publication_storage`.
+3. Run `--bind-storage` with the new target's exact flags and environment.
+4. For a move to another bucket, endpoint or prefix, also carry out a
+   separately verified migration or recovery plan before anything resumes:
+   the current and every retained generation's manifest and objects must be
+   readable at the new target, or the schemas re-initialized there with
+   `cdc-init`, and every reader configured for the new target. Deleting the
+   row and restarting the writers is not a migration: the old target's
+   objects stay where they are, garbage collection under the new binding
+   never reclaims them, and readers of generations still listing them fail if
+   they read the new target.
+5. Only then start the writers with the new target, and `--gc` last.
 
 ## Retention and time flags
 
@@ -133,7 +217,7 @@ collection of expired/orphaned garbage.
 
 | Finding | Blocking | Meaning & safe operator action |
 | --- | --- | --- |
-| `storage_not_bound` | Yes | Missing binding or target mismatch. A missing binding is written by the writers' first publication, or by `--bind-storage` run with the writers' flags; for a mismatch, fix the run's flags/env (`AWS_ENDPOINT_URL_S3`). |
+| `storage_not_bound` | Yes | Missing binding or target mismatch. A missing binding is written by the writers' first publication, or by `--bind-storage` run with the writers' flags; for a mismatch, fix the run's flags/env (`AWS_ENDPOINT_URL_S3`, `AWS_USE_DUALSTACK_ENDPOINT`, `AWS_USE_FIPS_ENDPOINT`), or see [Checking a binding made before #911](#checking-a-binding-made-before-911) and [Changing the binding](#changing-the-binding). |
 | `no_record` | Yes | Missing publication record row. Run `init-db` under the schema lock to recover at a fresh epoch. |
 | `record_invalid` | Yes | Corrupt publication record. Never restore a record row from backup; delete the record row, run `init-db` (arms fresh-epoch recovery fence), restart readers/writers, and run `cdc-init`. |
 | `missing_lifecycle_epoch` / `lifecycle_epoch_mismatch` | Yes | Missing or mismatched `<entity_main>_publication_epoch` row. Restore lifecycle epoch monotonicity and run fresh-epoch recovery. |

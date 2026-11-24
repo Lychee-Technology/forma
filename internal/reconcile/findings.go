@@ -19,11 +19,12 @@ const (
 	actionRecordBehindLifecycle = "treat the record as invalid: " + actionRecordInvalid
 	actionUnboundStorage        = "cdc-flush, cdc-init and the compactor bind the deployment to the target they publish into on their first publication; " +
 		"until one has, or for writers with a client of their own, confirm the S3 client's effective bucket URL (--s3-endpoint or " +
-		"AWS_ENDPOINT_URL_S3/AWS_ENDPOINT_URL or --s3-region, with --s3-use-path matching the writers), --s3-bucket and --data-prefix " +
-		"match the writers, then run manifest-reconcile --bind-storage once (docs/manifest-reconcile.md); GC deletes nothing until bound"
+		"AWS_ENDPOINT_URL_S3/AWS_ENDPOINT_URL or --s3-region, with --s3-use-path, AWS_USE_FIPS_ENDPOINT and AWS_USE_DUALSTACK_ENDPOINT matching the writers), " +
+		"--s3-bucket and --data-prefix match the writers, then run manifest-reconcile --bind-storage once (docs/manifest-reconcile.md); GC deletes nothing until bound"
 	actionRebindStorage = "run manifest-reconcile with the bound writers' base --s3-endpoint (never the displayed bucket URL), --s3-use-path, " +
-		"--s3-bucket, --data-prefix and environment (clear any stray AWS_ENDPOINT_URL_S3/AWS_ENDPOINT_URL). " +
-		"Only if the writers genuinely moved, delete the binding row by hand and re-run --bind-storage"
+		"--s3-bucket, --data-prefix and environment (clear any stray AWS_ENDPOINT_URL_S3/AWS_ENDPOINT_URL, match AWS_USE_FIPS_ENDPOINT and AWS_USE_DUALSTACK_ENDPOINT); " +
+		"changing the binding moves no object and no reader: only with every writer and GC stopped, and for a move only after a verified migration " +
+		"of the current and retained generations and the readers, follow docs/manifest-reconcile.md (\"Changing the binding\")"
 	actionAwaitingInit      = "run cdc-init for the schema: readers fail closed until its next generation publishes"
 	actionMissingGeneration = "re-initialize the schema with cdc-init (the lost manifest cannot be rebuilt from S3); " +
 		"GC deletes nothing until the lost generation expires after retirement and grace"

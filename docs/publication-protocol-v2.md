@@ -793,15 +793,20 @@ full retention grace `G` elapses after that stamp, protecting any reader pinned
 before recovery even if a concurrent `Reset` or `Publish` runs next.
 
 **Storage binding (`_publication_storage`).** Before `--gc` deletes anything, the
-deployment must be bound to the exact S3 destination its client sends `LIST` and
-`DELETE` requests to (bucket URL, bucket name, and data prefix). `init-db` creates
-the table. The V2 writers bind it before their first staging, deriving their target
-with the same `s3endpoint.ClientEndpoint` the collector uses, and fail closed with
-`ErrStorageBoundElsewhere` when the deployment is bound to another target (#911);
-`manifest-reconcile --bind-storage` binds or checks it explicitly. `manifest-reconcile` refuses HTTP 3xx redirects and rejects
-ambiguous custom-endpoint paths (repeated slashes, trailing slashes on non-root
-paths, dot segments, escaped paths) so destructive requests can never reach another
-bucket or tenant route.
+deployment must be bound to the exact S3 destination its client sends `LIST`,
+`DELETE`, `PUT` and `GET` requests to (bucket URL, bucket name, and data prefix).
+`init-db` creates the table on PostgreSQL. The V2 writers derive their target with
+the same `s3endpoint.ClientEndpoint` the collector uses, through their client's own
+routing options (FIPS, dual-stack and acceleration included); they check it against
+the binding before they stage, failing closed with `ErrStorageBoundElsewhere` when
+the deployment is bound to another target, and bind an unbound deployment only
+right before their first publication transaction, so a run that publishes nothing
+never binds (#911). `manifest-reconcile --bind-storage` binds or checks it
+explicitly. The collector's and the writers' S3 clients follow no HTTP redirect
+(`s3endpoint.WithoutRedirects`), and ambiguous custom-endpoint paths (repeated
+slashes, trailing slashes on non-root paths, dot segments, escaped paths) are
+rejected, so neither a destructive request nor a write can reach another bucket or
+tenant route.
 
 A writer can never commit a reference to an object GC deleted:
 

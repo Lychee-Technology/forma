@@ -287,15 +287,17 @@ func (o *reconcileOptions) storageTarget() publication.StorageTarget {
 // bindReconcileStorage creates the storage binding table and binds the
 // deployment to the configured target, unless it is bound already; a
 // binding to another target is kept and fails the run with
-// publication.ErrStorageBoundElsewhere: only an operator who deleted the
-// binding row rebinds it. The DDL is its own statement, as Aurora DSQL
+// publication.ErrStorageBoundElsewhere: only an operator who stopped the
+// writers and GC and deleted the binding row rebinds it. The DDL is its own statement, as Aurora DSQL
 // needs; init-db creates the table too, and the run creates it for a
 // deployment whose init-db predates it.
 //
-// The V2 writers bind the deployment on their first publication (#911), so
-// on a deployment they have published into this is a check that the run's
-// target is theirs; before their first publication it binds the target
-// ahead of them, and they then refuse to publish anywhere else.
+// The V2 writers bind the deployment right before their first publication
+// (#911), so on a deployment they have published into this is a check that
+// the run's target is theirs; before their first publication it binds the
+// target ahead of them, and they then refuse to publish anywhere else. On
+// Aurora DSQL, where init-db cannot run yet, it is also how the table gets
+// created, along with the binding.
 func bindReconcileStorage(ctx context.Context, db *sql.DB, opts *reconcileOptions, out io.Writer) error {
 	tables := publication.TablesFor(opts.entityMain)
 	if _, err := db.ExecContext(ctx, publication.StorageStatement(opts.db.Engine, opts.entityMain)); err != nil {
@@ -307,8 +309,11 @@ func bindReconcileStorage(ctx context.Context, db *sql.DB, opts *reconcileOption
 		return fmt.Errorf("bind the deployment's storage: %w", err)
 	}
 	if !b.Target.Same(want) {
-		return fmt.Errorf("bind the deployment's storage to %s: it is bound to %s since %d; delete the row of %s by hand "+
-			"only once the writers publish into the new target (docs/manifest-reconcile.md, \"Storage binding\"): %w",
+		return fmt.Errorf("bind the deployment's storage to %s: it is bound to %s since %d, and the binding is kept; "+
+			"if the writers publish into the bound target, run with their exact S3 flags and environment instead; "+
+			"changing the binding moves no object and updates no reader: stop and drain every writer and every --gc run first, "+
+			"and for a move carry out a verified migration of the current and retained generations and the readers' configuration "+
+			"before deleting the row of %s and resuming (docs/manifest-reconcile.md, \"Changing the binding\"): %w",
 			want, b.Target, b.BoundAt, tables.Storage, publication.ErrStorageBoundElsewhere)
 	}
 	_, err = fmt.Fprintf(out, "the deployment is bound to %s since %d\n", b.Target, b.BoundAt)

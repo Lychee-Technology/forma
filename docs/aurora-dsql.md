@@ -232,6 +232,29 @@ plain statement.
   `<entity_main>_row_guard` and `<entity_main>_schema_lease` with the
   statements above, next to the core tables. On PostgreSQL, `init-db`
   creates all of them; the guard and lease tables stay empty.
+- **Storage binding table.** `cdc-flush`, `cdc-init`, the compactor and
+  `manifest-reconcile --gc` need `<entity_main>_publication_storage`
+  ([Storage binding](manifest-reconcile.md#storage-binding)); a writer without
+  it fails with `publication.ErrStorageTableMissing` before it stages. Unlike
+  the records, it needs no lock or invariant check, so it can be created by
+  hand, as its own transaction (DSQL runs one DDL statement per transaction):
+
+  ```sql
+  CREATE TABLE IF NOT EXISTS "<entity_main>_publication_storage" (
+      binding     SMALLINT NOT NULL,
+      endpoint    TEXT NOT NULL,
+      bucket      TEXT NOT NULL,
+      data_prefix TEXT NOT NULL,
+      bound_at    BIGINT   NOT NULL,
+      PRIMARY KEY (binding)
+  );
+  ```
+
+  This creates the table only: the writers' first publication binds it.
+  `manifest-reconcile --bind-storage --pg-engine aurora-dsql` creates the
+  same table and, in the same run, also binds the deployment to that run's
+  target, so run it only with the writers' exact S3 flags and environment.
+  On PostgreSQL, `init-db` creates it (with `COLLATE "C"` text columns).
 - **Engine.** Run all three tools with `--pg-engine aurora-dsql`.
   `cdc-flush --pg-use-iam` implies it.
 - **Authentication.** `cdc-flush`, the compactor and `manifest-reconcile`
@@ -344,7 +367,8 @@ without the wait. What runs:
   `HotLegTransport = pgx` that read the hot keys and the page's hot rows
   through the `aurora-dsql` repository.
 - `internal/publication` storage binding (`<entity_main>_publication_storage`,
-  created by `init-db`, bound by the writers' first publication or
+  created by `init-db` on PostgreSQL and by hand or `--bind-storage` on DSQL,
+  bound by the writers' first publication or
   `manifest-reconcile --bind-storage`, #891, #911) and lifecycle/retention
   primitives.
 
