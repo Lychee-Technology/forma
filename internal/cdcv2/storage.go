@@ -2,6 +2,7 @@ package cdcv2
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 
@@ -28,7 +29,8 @@ type storageGate struct {
 // another target than the one the writer publishes into, and with
 // publication.ErrStorageTableMissing when the binding table does not exist,
 // so that neither sends anything to S3. It binds nothing: an unbound
-// deployment is bound by bindStorage, once the writer is about to publish.
+// deployment is bound inside the writer's first publication transaction
+// (bindInTx), so the binding commits with a generation or not at all.
 // Garbage collection deletes only under the bound target
 // (manifest-reconcile), so a writer publishing anywhere else is refused here.
 //
@@ -63,33 +65,57 @@ func (w *Writer) checkStorage(ctx context.Context) error {
 	return nil
 }
 
-// bindStorage binds an unbound deployment to the writer's target. publish
-// runs it after the generation is staged and has passed every check a
-// staging makes (the record's state, the published prefix, the manifest's
-// verification, the parent manifest's read through the store), right before
-// the publication transaction: a run that publishes nothing (an empty flush,
-// a compaction that merges nothing or is refused) never binds. A rival
-// writer that bound another target first fails it with
-// publication.ErrStorageBoundElsewhere, and its staging is left unpublished.
-func (w *Writer) bindStorage(ctx context.Context) error {
+// pendingBind answers the target publish binds an unbound deployment to in
+// each transaction of a publication (bindInTx), and nil when the deployment
+// is bound to the writer's target already or its store names no target.
+func (w *Writer) pendingBind(ctx context.Context) (*publication.StorageTarget, error) {
 	g := &w.storage
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.bound {
-		return nil
+		return nil, nil
 	}
 	if err := w.deriveTarget(ctx); err != nil {
-		return fmt.Errorf("bind the deployment's storage: %w", err)
+		return nil, fmt.Errorf("bind the deployment's storage: %w", err)
 	}
-	if g.named {
-		if _, err := publication.EnsureStorage(ctx, publication.DB(w.cfg.DB), w.tables, g.target); err != nil {
-			return fmt.Errorf("this writer publishes into %s, and garbage collection deletes only under the deployment's "+
-				"storage binding; check the writer's S3 endpoint, bucket and data prefix (docs/manifest-reconcile.md, \"Storage binding\"): %w",
-				g.target, err)
-		}
+	if !g.named {
+		g.bound = true
+		return nil, nil
 	}
-	g.bound = true
+	target := g.target
+	return &target, nil
+}
+
+// bindInTx binds an unbound deployment to target in tx, the publication
+// transaction, ahead of its compare-and-set (publication.BindStorageTx): the
+// binding commits exactly when the generation does, so a publication that
+// fails, is rejected, is abandoned or rolls back leaves the deployment
+// unbound, and a misconfigured writer whose publication never commits cannot
+// claim it. A rival first publisher that bound another target fails tx with
+// publication.ErrStorageBoundElsewhere and leaves its staging unpublished; a
+// rival bind that has not committed yet fails tx with a serialization
+// conflict on DSQL, which publish sends again, and its next transaction reads
+// the rival's binding.
+func (w *Writer) bindInTx(ctx context.Context, tx *sql.Tx, target *publication.StorageTarget) error {
+	if target == nil {
+		return nil
+	}
+	if _, err := publication.BindStorageTx(ctx, publication.SQLTx(tx), w.tables, *target); err != nil {
+		return fmt.Errorf("this writer publishes into %s, and garbage collection deletes only under the deployment's "+
+			"storage binding; check the writer's S3 endpoint, bucket and data prefix (docs/manifest-reconcile.md, \"Storage binding\"): %w",
+			*target, err)
+	}
 	return nil
+}
+
+// markBound records that a publication whose transactions bound the
+// deployment committed, so the binding is durable and the writer binds and
+// checks it no more.
+func (w *Writer) markBound() {
+	g := &w.storage
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.bound = true
 }
 
 // deriveTarget fills the gate's target once. An *s3.Client whose destination

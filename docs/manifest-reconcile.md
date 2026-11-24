@@ -85,21 +85,31 @@ publish into. `init-db` creates the table. A target is three values:
   collector is not bound to would put objects where garbage collection never
   looks, and a collector bound to the wrong target would judge the writers'
   objects against another bucket.
-- **once it is about to publish,** binds a deployment that has no binding yet.
-  The generation is then staged and has passed every check a staging makes:
-  the record's state, a compactor's published prefix, the manifest's own
-  verification, and the read of the parent manifest through the writer's own
-  client. A run that publishes nothing never binds: an empty flush, a
-  compaction of an unpublished schema or one that merges nothing, and a run
-  refused by any of those checks, such as a compactor configured with another
-  prefix than the published one.
+- **in its publication transaction,** binds a deployment that has no binding
+  yet. The bind is a statement of the same transaction as the generation's
+  compare-and-set and marks, so the binding becomes durable exactly when the
+  generation commits. A run that publishes nothing never binds: an empty
+  flush, a compaction of an unpublished schema or one that merges nothing, and
+  a run refused by a check a staging makes, such as a compactor configured
+  with another prefix than the published one. Neither does a publication that
+  fails, whatever stops it: a failed `BEGIN`, an expired staging, a lost
+  compare-and-set that may not rebase, a refused or rolled-back `COMMIT`. A
+  writer whose `COMMIT` went without an answer takes the deployment as bound
+  only once it has established that the publication committed. So a
+  misconfigured writer whose publications never commit leaves the deployment
+  unbound for the writers that do publish.
 - with a binding to the same target, publishes as before.
 
-Two writers of an unbound deployment may both stage. The first to bind wins;
-the other then fails with `ErrStorageBoundElsewhere` before its publication
-transaction, and what it staged stays unpublished, outside the bound target.
-Once a writer has seen the deployment bound to its target, it does not read
-the binding again until it restarts.
+Two writers of an unbound deployment at different targets may both pass the
+check and stage, since neither has bound anything yet. Only one of their
+publications can commit the binding. On PostgreSQL the second writer's bind
+waits for the first's transaction. On Aurora DSQL it fails with a
+serialization conflict, and the writer sends the publication again. Either
+way, when the first commits, the second's publication fails with
+`ErrStorageBoundElsewhere`, and what it staged stays unpublished, outside the
+bound target. If the first rolls back instead, the second binds its own
+target. Once a writer has seen the deployment bound to its target, it does not
+read the binding again until it restarts.
 
 A mismatch is refused at once, with no warn-only window. A deployment bound
 before #911 was bound by an operator who ran `--bind-storage` with the writers'
@@ -190,16 +200,59 @@ To rebind (the endpoint spelling above, or a move):
    when the binding changes.
 2. Delete the row in `<entity_main>_publication_storage`.
 3. Run `--bind-storage` with the new target's exact flags and environment.
-4. For a move to another bucket, endpoint or prefix, also carry out a
-   separately verified migration or recovery plan before anything resumes:
-   the current and every retained generation's manifest and objects must be
-   readable at the new target, or the schemas re-initialized there with
-   `cdc-init`, and every reader configured for the new target. Deleting the
-   row and restarting the writers is not a migration: the old target's
-   objects stay where they are, garbage collection under the new binding
-   never reclaims them, and readers of generations still listing them fail if
-   they read the new target.
-5. Only then start the writers with the new target, and `--gc` last.
+4. For a move to another bucket or endpoint, migrate the data before anything
+   resumes, by one of the two plans below. Deleting the row and restarting the
+   writers is not a migration: the old target's objects stay where they are,
+   garbage collection under the new binding never reclaims them, and a reader
+   or the collector that looks for them at the new target fails.
+5. Only then start the writers with the new target, and `--gc` last, no
+   earlier than its plan allows.
+
+Keep the data prefix when you move. A manifest key names its prefix, so
+every generation published under the old prefix stays there. Under a new
+`--data-prefix`, garbage collection reports each of them as `foreign_manifest`,
+retained or expired. That finding blocks, so the collector neither deletes nor
+forgets for the schema. This procedure therefore does not cover a prefix
+change.
+
+**Copy every retained generation (preferred).** A generation stays retained
+until garbage collection forgets its history row: the current one, each one
+superseded less than the retention grace `G` ago, and each expired one not yet
+collected. Readers pinned to any of them, and the collector, which verifies
+the manifests and probes the objects of every one of them, still need it.
+
+1. With writers and `--gc` stopped, copy every object under the data prefix,
+   manifests and parquet files, from the old target to the new one, with the
+   same keys and the same bytes.
+2. Run `manifest-reconcile` against the new target (without `--gc`) and then
+   with `--verify-checksums`. Go on only when they report no
+   `missing_generation`, `missing_retained_manifest`, `invalid_manifest`,
+   `lost_object` or `corrupt_object`.
+3. Configure every reader for the new target. Leave the old target as it is
+   until no reader is configured for it any more and the reader pass deadline
+   (`R_max`) has passed: a pass that started before the switch still reads
+   there.
+
+**Re-initialize, then let the old generations expire.** Use this plan when the
+objects cannot be copied. `cdc-init` at the new target publishes a new current
+generation for a schema there. It copies none of the older generations: their
+manifests and objects stay at the old target only, and they stay retained
+until the grace `G` after the re-init superseded them.
+
+1. Keep the old target and every object in it readable, and do not change
+   reader configuration yet.
+2. Run `cdc-init` for every schema, with the new target's exact flags and
+   environment.
+3. Configure every reader for the new target. A reader pass that pinned an
+   older generation before the switch finishes against the old target.
+4. Do not run `--gc` until every generation published at the old target has
+   expired, that is, until `G` has passed since the last schema's re-init. Run
+   earlier, the collector finds their manifests missing at the new target and
+   reports `missing_retained_manifest`, a blocking finding. Once they have
+   expired, `--gc` forgets them without deleting anything at the old target.
+5. Delete the old target's objects by hand, and only after `--gc` has
+   forgotten every generation published there and no reader or writer is
+   configured for it any more.
 
 ## Retention and time flags
 

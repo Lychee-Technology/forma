@@ -29,7 +29,7 @@ Forma Tools CLI
   报告丢失的代际与对象（含 schema、epoch、generation 与安全的处置方式）；`--gc` 按回收顺序
   回收过期代际与水位线之下的孤儿对象（#891）。`--gc` 只在部署绑定的存储目标（endpoint、bucket、
   data prefix）下删除。`cdc-flush`、`cdc-init` 与 `compactor` 在暂存前核对该绑定、已绑定到其他目标时拒绝暂存与发布，
-  并只在首次真正发布（提交发布事务）前绑定未绑定的部署（#911）；写入方与收集器的 S3 客户端都不跟随 HTTP 重定向。
+  并在首次发布的发布事务内绑定未绑定的部署，绑定与该代一同提交，发布失败则不留下绑定（#911）；写入方与收集器的 S3 客户端都不跟随 HTTP 重定向。
   `--bind-storage` 可选，用于提前绑定或核对收集器的配置；在 Aurora DSQL 上它也会创建绑定表（`init-db` 尚不能在 DSQL 上运行）。
   修改绑定不会移动任何对象：先停止所有写入方与 `--gc`，迁移需另行验证，见 `docs/manifest-reconcile.md`。
   丢失的代际或对象无法从 S3 重建，恢复方式是 `cdc-init` 重新初始化。

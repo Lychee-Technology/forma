@@ -336,8 +336,11 @@ func TestStorageBindingLifecycle(t *testing.T) {
 	_, ok, err := ReadStorage(ctx, DB(f.db), f.t)
 	require.NoError(t, err)
 	require.False(t, ok)
-	_, err = EnsureStorage(ctx, DB(f.db), f.t, StorageTarget{Endpoint: "https://lake.s3.example", Bucket: "lake", Prefix: "data"})
-	require.ErrorIs(t, err, ErrStorageTableMissing, "a writer on such a deployment is told to run init-db, and binds nothing")
+	target := StorageTarget{Endpoint: "https://lake.s3.example", Bucket: "lake", Prefix: "data"}
+	_, err = CheckStorage(ctx, DB(f.db), f.t, target)
+	require.ErrorIs(t, err, ErrStorageTableMissing, "a writer on such a deployment is told to run init-db before it stages")
+	err = f.inTx(ctx, func(tx Tx) error { _, err := BindStorageTx(ctx, tx, f.t, target); return err })
+	require.ErrorIs(t, err, ErrStorageTableMissing, "and its publication transaction binds nothing")
 	err = f.inTx(ctx, func(tx Tx) error {
 		_, _, err := ReadStorage(ctx, tx, f.t)
 		return err
@@ -370,48 +373,6 @@ func TestStorageBindingLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, b2.Target.Same(first))
 	require.False(t, b2.Target.Same(other))
-}
-
-// TestEnsureStorageBindsOnceAndRefusesAnotherTarget pins what a writer does
-// with the deployment's binding before it stages (#911): the first target
-// binds, the same target in another spelling passes, and another target
-// fails closed and leaves the binding as it was.
-func TestEnsureStorageBindsOnceAndRefusesAnotherTarget(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	_, err := EnsureStorage(ctx, DB(f.db), f.t, StorageTarget{Endpoint: "https://lake.s3.example/tenant//", Bucket: "lake", Prefix: "data"})
-	require.ErrorIs(t, err, ErrStorageTargetInvalid)
-	_, ok, err := ReadStorage(ctx, DB(f.db), f.t)
-	require.NoError(t, err)
-	require.False(t, ok, "an invalid target binds nothing")
-
-	first := StorageTarget{Endpoint: "https://lake.s3.example/tenant", Bucket: "lake", Prefix: "data"}
-	b, err := EnsureStorage(ctx, DB(f.db), f.t, first)
-	require.NoError(t, err)
-	require.True(t, b.Target.Same(first))
-	require.NotZero(t, b.BoundAt)
-
-	again, err := EnsureStorage(ctx, DB(f.db), f.t, StorageTarget{Endpoint: "HTTPS://Lake.S3.Example/tenant", Bucket: "lake", Prefix: "data/"})
-	require.NoError(t, err, "the same target, spelled otherwise")
-	require.Equal(t, b, again, "a check rewrites nothing")
-
-	for name, other := range map[string]StorageTarget{
-		"another endpoint":   {Endpoint: "https://s3.example/tenant/lake", Bucket: "lake", Prefix: "data"},
-		"another bucket":     {Endpoint: "https://lake.s3.example/tenant", Bucket: "pond", Prefix: "data"},
-		"another prefix":     {Endpoint: "https://lake.s3.example/tenant", Bucket: "lake", Prefix: "data2"},
-		"the default origin": {Endpoint: "", Bucket: "lake", Prefix: "data"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			got, err := EnsureStorage(ctx, DB(f.db), f.t, other)
-			require.ErrorIs(t, err, ErrStorageBoundElsewhere)
-			require.Equal(t, b, got, "the refusal answers the binding it kept")
-			kept, ok, err := ReadStorage(ctx, DB(f.db), f.t)
-			require.NoError(t, err)
-			require.True(t, ok)
-			require.Equal(t, b, kept)
-		})
-	}
 }
 
 func TestSchemaIDsIncludesDroppedAndLostRecordSchemas(t *testing.T) {

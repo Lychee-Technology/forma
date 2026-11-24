@@ -143,7 +143,7 @@ type StorageBinding struct {
 
 // storageDDL is the deployment's storage binding: at most one row (binding 1),
 // naming the target this database's writers publish into. The V2 writers bind
-// it on their first publication (EnsureStorage), and manifest-reconcile
+// it in their first publication's transaction (BindStorageTx), and manifest-reconcile
 // --bind-storage binds or checks it explicitly. init-db creates it with the
 // other publication tables (Statements); --bind-storage also creates it, for
 // a deployment whose init-db predates the table.
@@ -212,7 +212,7 @@ const storageTableAction = "on PostgreSQL run init-db, which creates it; on Auro
 // and false when it has no binding yet. A binding to another target fails with
 // ErrStorageBoundElsewhere, and a missing binding table with
 // ErrStorageTableMissing. A writer runs it before it stages, and binds with
-// EnsureStorage only once it is about to publish. Run it on a pool (DB).
+// BindStorageTx only in its publication transaction. Run it on a pool (DB).
 func CheckStorage(ctx context.Context, q Querier, t Tables, target StorageTarget) (bool, error) {
 	c, err := target.Normalize()
 	if err != nil {
@@ -231,26 +231,41 @@ func CheckStorage(ctx context.Context, q Querier, t Tables, target StorageTarget
 	return true, nil
 }
 
-// EnsureStorage binds the deployment to target when it has no binding yet,
-// and answers the binding. A binding to another target fails with
-// ErrStorageBoundElsewhere and is kept; a missing binding table fails with
-// ErrStorageTableMissing. Run it on a pool (DB), outside any publication
-// transaction: on Aurora DSQL the bind is its own transaction, and a rival
-// writer's bind of the same row may fail it with a conflict, after which
-// the binding the rival wrote is read and checked instead.
-func EnsureStorage(ctx context.Context, q Querier, t Tables, target StorageTarget) (StorageBinding, error) {
+// BindStorageTx binds the deployment to target inside tx, a writer's
+// publication transaction, unless a binding exists, and checks the binding tx
+// reads afterwards: a binding to another target fails with
+// ErrStorageBoundElsewhere, a missing binding table with
+// ErrStorageTableMissing (which, on PostgreSQL, aborts tx). The binding is
+// therefore durable exactly when tx commits, and so when the generation tx
+// publishes commits: a publication that fails, is rejected or rolls back binds
+// nothing.
+//
+// Two first publishers of an unbound deployment both insert the one row, so
+// at most one of them commits it. On PostgreSQL the second waits for the
+// first's transaction: if the first rolled back it inserts the row itself,
+// otherwise it reads the first's row and checks it (or, at REPEATABLE READ,
+// fails with SQLSTATE 40001). On Aurora DSQL the second fails at COMMIT with
+// SQLSTATE 40001. A writer sends a publication that failed with 40001 again,
+// and the new transaction reads the committed binding.
+func BindStorageTx(ctx context.Context, tx Tx, t Tables, target StorageTarget) (StorageBinding, error) {
 	c, err := target.Normalize()
 	if err != nil {
-		return StorageBinding{}, fmt.Errorf("ensure the publication storage binding: %w", err)
+		return StorageBinding{}, fmt.Errorf("bind the publication storage in the publication transaction: %w", err)
 	}
-	b, ok, err := readBinding(ctx, q, t)
+	if _, err := tx.runner().exec(ctx, fmt.Sprintf(bindStorageSQL, t.Storage), c.Endpoint, c.Bucket, c.Prefix); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == sqlstateUndefinedTable {
+			return StorageBinding{}, fmt.Errorf("bind the publication storage in %s to %s: %s: %w: %w",
+				t.Storage, c, storageTableAction, ErrStorageTableMissing, err)
+		}
+		return StorageBinding{}, fmt.Errorf("bind the publication storage in %s to %s: %w", t.Storage, c, err)
+	}
+	b, ok, err := readBinding(ctx, tx, t)
 	if err != nil {
-		return StorageBinding{}, fmt.Errorf("ensure the publication storage binding to %s: %w", c, err)
+		return StorageBinding{}, fmt.Errorf("bind the publication storage in %s to %s: read it back: %w", t.Storage, c, err)
 	}
 	if !ok {
-		if b, err = bindOrRead(ctx, q, t, c); err != nil {
-			return StorageBinding{}, fmt.Errorf("ensure the publication storage binding to %s: %w", c, err)
-		}
+		return StorageBinding{}, fmt.Errorf("bind the publication storage in %s to %s: the binding is not there after its write", t.Storage, c)
 	}
 	if !b.Target.Same(c) {
 		return b, boundElsewhere(b, c)
@@ -260,27 +275,6 @@ func EnsureStorage(ctx context.Context, q Querier, t Tables, target StorageTarge
 
 func boundElsewhere(b StorageBinding, c StorageTarget) error {
 	return fmt.Errorf("the deployment is bound to %s since %d, not to %s: %w", b.Target, b.BoundAt, c, ErrStorageBoundElsewhere)
-}
-
-// bindOrRead binds the deployment to c, and when the bind fails answers the
-// binding a rival wrote first, if there is one by now.
-func bindOrRead(ctx context.Context, q Querier, t Tables, c StorageTarget) (StorageBinding, error) {
-	b, err := BindStorage(ctx, q, t, c)
-	if err == nil {
-		return b, nil
-	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == sqlstateUndefinedTable {
-		return StorageBinding{}, fmt.Errorf("%s: %s: %w: %w", t.Storage, storageTableAction, ErrStorageTableMissing, err)
-	}
-	rival, ok, rerr := readBinding(ctx, q, t)
-	if rerr != nil {
-		return StorageBinding{}, fmt.Errorf("read a rival's binding after the bind failed (%w): %w", rerr, err)
-	}
-	if !ok {
-		return StorageBinding{}, fmt.Errorf("no rival bound the deployment after the bind failed: %w", err)
-	}
-	return rival, nil
 }
 
 const sqlstateUndefinedTable = "42P01"

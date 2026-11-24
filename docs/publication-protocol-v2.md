@@ -800,8 +800,9 @@ the same `s3endpoint.ClientEndpoint` the collector uses, through their client's 
 routing options (FIPS, dual-stack and acceleration included); they check it against
 the binding before they stage, failing closed with `ErrStorageBoundElsewhere` when
 the deployment is bound to another target, and bind an unbound deployment only
-right before their first publication transaction, so a run that publishes nothing
-never binds (#911). `manifest-reconcile --bind-storage` binds or checks it
+inside their first publication transaction (`BindStorageTx`), so the binding
+commits with a generation or not at all: a run that publishes nothing, and a
+publication that fails, is abandoned or rolls back, never binds (#911). `manifest-reconcile --bind-storage` binds or checks it
 explicitly. The collector's and the writers' S3 clients follow no HTTP redirect
 (`s3endpoint.WithoutRedirects`), and ambiguous custom-endpoint paths (repeated
 slashes, trailing slashes on non-root paths, dot segments, escaped paths) are
@@ -1091,7 +1092,8 @@ their owners: outside the package, `Initialize`, `InitializeAfterLoss` and `Acti
 only in `cmd/tools/init_db_records.go`, `Publish`, `HoldLineage` and `Fence` only in
 `internal/cdcv2`, `Reset` and `HoldDropped` only in `cmd/tools/drop_schema.go`,
 `RaiseHorizon`, `Retire`, `RetireRecovery` and `Forget` only in `internal/reconcile`, and
-`BindStorage` only in `cmd/tools/manifest_reconcile.go`. The one other non-test file allowed
+`BindStorage` only in `cmd/tools/manifest_reconcile.go`, `BindStorageTx` only in
+`internal/cdcv2`. The one other non-test file allowed
 `Initialize` and `Publish` is the federated e2e harness's `publication.go`, which registers
 the benchmark's schemas and publishes its synthetic parquet, which has no PostgreSQL rows
 for a writer to export; `cmd/benchmark` runs it outside any test. Test files are not scanned:

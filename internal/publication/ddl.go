@@ -14,8 +14,10 @@
 // init-db creates the tables from Statements (#895) and, in the
 // registration transaction, each schema's record (Initialize, Activate, and
 // for a lost record InitializeAfterLoss). cdc-flush, cdc-init and the
-// compactor publish through internal/cdcv2, which binds the deployment's
-// storage target before it stages (EnsureStorage), the federated reader reads
+// compactor publish through internal/cdcv2, which checks the deployment's
+// storage target before it stages (CheckStorage) and binds an unbound
+// deployment in its first publication transaction (BindStorageTx), the
+// federated reader reads
 // the record in its pass snapshot through internal/federatedv2, and garbage
 // collection retires and forgets generations through internal/reconcile.
 // Only the owners TestOnlyTheProtocolOwnersMoveAPublicationRecord names may

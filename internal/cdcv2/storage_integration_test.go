@@ -138,7 +138,7 @@ func (f *fixture) binding(t *testing.T) (publication.StorageBinding, bool) {
 // TestAWriterBindsOnlyWhenItPublishes pins R1-F2 of #911: a run that
 // publishes nothing (an empty flush, a compaction of an unpublished schema)
 // binds nothing and sends nothing to S3, and the first publication binds
-// the deployment, before its transaction, to the bucket URL the writer's
+// the deployment, in its own transaction, to the bucket URL the writer's
 // client sends requests to, the derivation manifest-reconcile checks its own
 // client with. A writer reads the binding once it is bound, and a new writer
 // checks it again.

@@ -292,7 +292,7 @@ func (o *reconcileOptions) storageTarget() publication.StorageTarget {
 // needs; init-db creates the table too, and the run creates it for a
 // deployment whose init-db predates it.
 //
-// The V2 writers bind the deployment right before their first publication
+// The V2 writers bind the deployment in their first publication transaction
 // (#911), so on a deployment they have published into this is a check that
 // the run's target is theirs; before their first publication it binds the
 // target ahead of them, and they then refuse to publish anywhere else. On

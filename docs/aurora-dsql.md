@@ -250,7 +250,8 @@ plain statement.
   );
   ```
 
-  This creates the table only: the writers' first publication binds it.
+  This creates the table only: the writers' first publication binds it, in
+  the publication's own transaction.
   `manifest-reconcile --bind-storage --pg-engine aurora-dsql` creates the
   same table and, in the same run, also binds the deployment to that run's
   target, so run it only with the writers' exact S3 flags and environment.

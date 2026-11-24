@@ -18,8 +18,8 @@ import (
 
 // TestDSQLCorpus exports the publication contract's statements for the DSQL
 // lint gate (#740): the three tables' DDL, and every statement the transitions,
-// the reader's read, the commit-outcome check and its fence, and the
-// collector send, in the order a writer's life sends them. Each transition
+// the reader's read, the commit-outcome check and its fence, the storage
+// binding, and the collector send, in the order a writer's life sends them. Each transition
 // runs in a transaction, as its Tx parameter demands.
 func TestDSQLCorpus(t *testing.T) {
 	ctx := context.Background()
@@ -78,6 +78,8 @@ func TestDSQLCorpus(t *testing.T) {
 		"internal/publication/storage.go:BindStorage",
 		"internal/publication/storage.go:BindStorage",
 		"internal/publication/storage.go:ReadStorage",
+		"internal/publication/storage.go:BindStorageTx",
+		"internal/publication/storage.go:BindStorageTx",
 	)...)
 	corpus.Export(t, corpus.Unit{Name: "internal-publication", Engine: forma.EngineAuroraDSQL, Statements: statements})
 }
@@ -142,6 +144,10 @@ func runTheContract(t *testing.T, ctx context.Context, db *sql.DB, tb Tables, cu
 	require.NoError(t, err)
 	_, _, err = ReadStorage(ctx, DB(db), tb)
 	require.NoError(t, err)
+	inTx(func(tx Tx) error {
+		_, err := BindStorageTx(ctx, tx, tb, StorageTarget{Endpoint: "https://s3.us-east-1.amazonaws.com", Bucket: "bkt", Prefix: "data"})
+		return err
+	})
 }
 
 // expectTheContract answers, in order, every statement TestDSQLCorpus sends
@@ -214,6 +220,10 @@ func expectTheContract(mock sqlmock.Sqlmock, cur Record) {
 	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("").WillReturnRows(storageRow())
 	mock.ExpectQuery("").WillReturnRows(storageRow())
+	mock.ExpectBegin()
+	mock.ExpectExec("").WithArgs(anyArgs(3)...).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("").WillReturnRows(storageRow())
+	mock.ExpectCommit()
 }
 
 func anyArgs(n int) []driver.Value {

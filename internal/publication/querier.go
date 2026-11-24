@@ -18,11 +18,13 @@ type Querier interface {
 }
 
 // Tx is a transaction the caller opened and alone commits or rolls back.
-// Publish, Reset, Activate, HoldLineage and both Initialize functions take a
-// Tx: their statements and the caller's must commit as one. Through a pool
-// every statement commits on its own, so Publish would commit the pointer
-// before the history row and the caller's marks, and HoldLineage would release
-// its lock before the marks it holds the lineage for.
+// Publish, Reset, Activate, HoldLineage, BindStorageTx and both Initialize
+// functions take a Tx: their statements and the caller's must commit as one.
+// Through a pool every statement commits on its own, so Publish would commit
+// the pointer before the history row and the caller's marks, HoldLineage would
+// release its lock before the marks it holds the lineage for, and
+// BindStorageTx would bind the deployment for a publication that never
+// commits.
 type Tx interface {
 	Querier
 	inTx()

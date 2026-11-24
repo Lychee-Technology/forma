@@ -34,6 +34,10 @@ type pub struct {
 	next  publication.Next
 	build buildFunc
 	mark  markFunc // nil for an init, whose publication carries no marks
+	// bind is the storage target each transaction of p binds an unbound
+	// deployment to (bindInTx), nil when the deployment is bound already or
+	// the writer's store names no target.
+	bind *publication.StorageTarget
 	// handoff is an init's exported entries at their export versions, what
 	// its handoff marks once the init committed: an UnresolvedError keeps
 	// them, so that ResumeInit can still hand them off.
@@ -84,18 +88,25 @@ func (e *commitError) Unwrap() error { return e.err }
 // would give p up while a COMMIT of p's staging went without an answer and
 // may still land, it settles that COMMIT first (settle): it answers the
 // record if the COMMIT landed, the failure only once the COMMIT can no
-// longer land, and ErrUnresolved when it could tell neither. Before the
-// first transaction it binds an unbound deployment to the writer's storage
-// target (bindStorage): p is staged and about to be published.
+// longer land, and ErrUnresolved when it could tell neither. On a deployment
+// not bound yet, every transaction of p also binds it to the writer's
+// storage target (pendingBind, bindInTx), so the binding is durable exactly
+// when p commits: only once publish answers a record does the writer take
+// the deployment as bound.
 func (w *Writer) publish(ctx context.Context, p *pub) (publication.Record, error) {
-	if err := w.bindStorage(ctx); err != nil {
+	bind, err := w.pendingBind(ctx)
+	if err != nil {
 		return publication.Record{}, fmt.Errorf("%s of schema %d staged on generation %d: %w", p.kind, p.cur.SchemaID, p.cur.Generation, err)
 	}
+	p.bind = bind
 	out, err := w.send(ctx, p)
-	if err == nil || !p.uncertain {
-		return out, err
+	if err != nil && p.uncertain {
+		out, err = w.settle(ctx, p, err)
 	}
-	return w.settle(ctx, p, err)
+	if err == nil && p.bind != nil {
+		w.markBound()
+	}
+	return out, err
 }
 
 // send is publish's loop: it answers the record p committed, or why it
@@ -142,9 +153,9 @@ func (w *Writer) send(ctx context.Context, p *pub) (publication.Record, error) {
 	return publication.Record{}, fmt.Errorf("%s of schema %d after %d transactions: %w: %w", p.kind, p.cur.SchemaID, w.cfg.Attempts, ErrAttemptsExhausted, last)
 }
 
-// commit sends p once: BEGIN, the compare-and-set, the marks, COMMIT, under
-// the T_pub deadline. Every S3 write happened before, so the transaction is
-// its statements alone.
+// commit sends p once: BEGIN, the storage binding of an unbound deployment,
+// the compare-and-set, the marks, COMMIT, under the T_pub deadline. Every S3
+// write happened before, so the transaction is its statements alone.
 func (w *Writer) commit(ctx context.Context, p *pub) (publication.Record, error) {
 	p.marked = 0
 	if err := w.fail(ctx, PointBegin); err != nil {
@@ -158,6 +169,9 @@ func (w *Writer) commit(ctx context.Context, p *pub) (publication.Record, error)
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := w.fail(tctx, PointPublish); err != nil {
+		return publication.Record{}, err
+	}
+	if err := w.bindInTx(tctx, tx, p.bind); err != nil {
 		return publication.Record{}, err
 	}
 	out, err := publication.Publish(tctx, publication.SQLTx(tx), w.tables, p.cur, p.next)

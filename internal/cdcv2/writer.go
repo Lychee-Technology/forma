@@ -105,8 +105,8 @@ type Config struct {
 	// answers the verified parent manifest a flush appends to. A Store that
 	// is a manifestv2.S3Store over an *s3.Client also names the deployment's
 	// storage target: the writer checks it against the binding before it
-	// stages (checkStorage) and binds an unbound deployment to it right
-	// before its first publication transaction (bindStorage). Such a client
+	// stages (checkStorage) and binds an unbound deployment to it inside
+	// its first publication transaction (bindInTx). Such a client
 	// must follow no HTTP redirect (s3endpoint.WithoutRedirects), or New
 	// refuses it.
 	Layout manifestv2.Layout
