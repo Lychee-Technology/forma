@@ -11,7 +11,7 @@
 // the dirty set in, so the generation it scans and the rows it treats as
 // flushed come from one snapshot.
 //
-// init-db creates the three tables from Statements (#895) and, in the
+// init-db creates the tables from Statements (#895) and, in the
 // registration transaction, each schema's record (Initialize, Activate, and
 // for a lost record InitializeAfterLoss). cdc-flush, cdc-init and the
 // compactor publish through internal/cdcv2, the federated reader reads the
@@ -153,6 +153,9 @@ const (
 // one statement each with no secondary index, so each is one DDL transaction
 // on Aurora DSQL too. Text columns are COLLATE "C" on PostgreSQL and plain
 // TEXT on DSQL, whose collation is C and which refuses the clause (#816).
+// The storage binding table comes last (StorageStatement): the writers bind
+// and check it in their publication transactions (#911), which therefore
+// never run DDL.
 func Statements(engine forma.DatabaseEngine, entityMain string) []string {
 	t := TablesFor(entityMain)
 	return []string{
@@ -162,5 +165,6 @@ func Statements(engine forma.DatabaseEngine, entityMain string) []string {
 		fmt.Sprintf(epochForgottenDDL, t.Epoch),
 		fmt.Sprintf(epochRecoveryEpochDDL, t.Epoch),
 		fmt.Sprintf(epochRecoveryRetiredDDL, t.Epoch),
+		StorageStatement(engine, entityMain),
 	}
 }

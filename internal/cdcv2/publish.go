@@ -137,7 +137,8 @@ func (w *Writer) send(ctx context.Context, p *pub) (publication.Record, error) {
 	return publication.Record{}, fmt.Errorf("%s of schema %d after %d transactions: %w: %w", p.kind, p.cur.SchemaID, w.cfg.Attempts, ErrAttemptsExhausted, last)
 }
 
-// commit sends p once: BEGIN, the compare-and-set, the marks, COMMIT, under
+// commit sends p once: BEGIN, the storage binding's check (and on an unbound
+// deployment its insert), the compare-and-set, the marks, COMMIT, under
 // the T_pub deadline. Every S3 write happened before, so the transaction is
 // its statements alone.
 func (w *Writer) commit(ctx context.Context, p *pub) (publication.Record, error) {
@@ -153,6 +154,11 @@ func (w *Writer) commit(ctx context.Context, p *pub) (publication.Record, error)
 	}
 	defer func() { _ = tx.Rollback() }()
 	if err := w.fail(tctx, PointPublish); err != nil {
+		return publication.Record{}, err
+	}
+	// Ahead of the compare-and-set: a binding to another target fails the
+	// transaction before it moves the record.
+	if err := w.bindStorage(tctx, publication.SQLTx(tx)); err != nil {
 		return publication.Record{}, err
 	}
 	out, err := publication.Publish(tctx, publication.SQLTx(tx), w.tables, p.cur, p.next)

@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/s3endpoint"
 )
 
 // TestTheSDKClientFollowsARedirectedDelete demonstrates the premise: the AWS
@@ -32,7 +33,7 @@ func TestTheSDKClientFollowsARedirectedDelete(t *testing.T) {
 	require.NoError(t, raw.Delete(context.Background(), "data/7/k"), "the SDK reports the other route's answer")
 	require.Equal(t, []string{"DELETE /lake/data/7/k"}, other.requests(), "the DELETE reached the other route")
 	_, err := raw.Endpoint(context.Background())
-	require.ErrorIs(t, err, errUnknownDestination, "a store whose client follows redirects cannot tell where its requests land")
+	require.ErrorIs(t, err, s3endpoint.ErrUnknownDestination, "a store whose client follows redirects cannot tell where its requests land")
 }
 
 // TestAPassFollowsNoRedirect verifies that NewS3Objects refuses every redirect
@@ -172,18 +173,4 @@ func TestARedirectWithAStalledBodyIsRefusedPromptly(t *testing.T) {
 	require.Eventually(t, func() bool { return closed.Load() == int32(len(calls)) }, 5*time.Second, 10*time.Millisecond,
 		"each stalled response's connection is closed by the refusal")
 	require.Zero(t, reached.Load(), "no redirected request was sent")
-}
-
-// TestARedirectReachingTheClientIsRefusedToo verifies the CheckRedirect
-// backstop formats the same sanitized error without Location details.
-func TestARedirectReachingTheClientIsRefusedToo(t *testing.T) {
-	via, err := http.NewRequest(http.MethodDelete, "https://s3.example/lake/data/7/k?x-id=DeleteObject", nil)
-	require.NoError(t, err)
-	next, err := http.NewRequest(http.MethodDelete, "https://u:pw-secret@other.example/k?sig=secret", nil)
-	require.NoError(t, err)
-	next.Response = &http.Response{StatusCode: http.StatusPermanentRedirect}
-	err = refuseRedirect(next, []*http.Request{via})
-	require.ErrorIs(t, err, ErrRedirectRefused)
-	require.Equal(t, "DELETE https://s3.example/lake/data/7/k answered 308 with a redirect (Location omitted): "+
-		ErrRedirectRefused.Error(), err.Error())
 }

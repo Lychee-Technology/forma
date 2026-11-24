@@ -14,6 +14,7 @@ import (
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/s3endpoint"
 	"github.com/lychee-technology/forma/internal/telemetry"
 	"go.uber.org/zap"
 )
@@ -220,9 +221,16 @@ func runCompactorOut(ctx context.Context, args []string, metricsOut io.Writer) e
 	}
 	defer func() { _ = logger.Sync() }()
 
-	s3Client, err := buildToolS3Client(ctx, opts.s3.region, opts.s3.endpoint, opts.s3.usePath)
+	sdkClient, err := buildToolS3Client(ctx, opts.s3.region, opts.s3.endpoint, opts.s3.usePath)
 	if err != nil {
 		return fmt.Errorf("load AWS config: %w", err)
+	}
+	// The writer binds and checks the deployment's storage target with the
+	// bucket URL this client sends requests to, so it follows no redirect
+	// to another route (s3endpoint.WithoutRedirects, cdcv2's storage.go).
+	s3Client, err := s3endpoint.WithoutRedirects(sdkClient)
+	if err != nil {
+		return fmt.Errorf("build the compactor's S3 client: %w", err)
 	}
 
 	db, err := openCompactorDBFn(ctx, opts.db, logger)

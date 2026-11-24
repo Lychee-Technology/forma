@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+
 	forma "github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/cdc"
 	"github.com/lychee-technology/forma/internal/compaction"
 	"github.com/lychee-technology/forma/internal/manifestv2"
+	"github.com/lychee-technology/forma/internal/s3endpoint"
 )
 
 // FlushReport captures the observable effects of one CDC flush pass.
@@ -240,6 +243,15 @@ func (e *Env) RunCompactionWith(ctx context.Context, schema SchemaRef, ov Compac
 	var s3Client cdc.S3FullClient = e.Cluster.S3
 	if ov.S3 != nil {
 		s3Client = ov.S3
+	}
+	// As the compactor tool does: an SDK client that follows no redirect,
+	// which the writer binds the deployment's storage target with.
+	if c, ok := s3Client.(*s3.Client); ok {
+		bound, err := s3endpoint.WithoutRedirects(c)
+		if err != nil {
+			return compaction.CompactionResult{}, fmt.Errorf("compaction of schema %d: %w", schema.ID, err)
+		}
+		s3Client = bound
 	}
 	db, err := cdc.OpenPublicationDB(ctx, e.CDC, e.logger)
 	if err != nil {

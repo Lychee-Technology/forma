@@ -93,8 +93,9 @@ func parseReconcileFlags(args []string) (*reconcileOptions, error) {
 		"Bind this database's deployment to the URL the run's client sends the bucket's requests to (--s3-endpoint, or the "+
 			"AWS SDK's endpoint configuration such as AWS_ENDPOINT_URL_S3 without it, or the region's AWS endpoint, with the "+
 			"addressing --s3-use-path chooses), --s3-bucket and "+
-			"--data-prefix, the target its writers publish into, and exit. Garbage collection deletes nothing under any other target. Run it once, with the writers' own values and environment; "+
-			"an existing binding to another target is kept and the run fails")
+			"--data-prefix, the target its writers publish into, and exit, creating the binding table if needed. Garbage collection deletes nothing under any other target. "+
+			"Optional: cdc-flush, cdc-init and the compactor bind on their first publication. Run it with the writers' own values and environment to bind ahead of them, "+
+			"or to check a binding; an existing binding to another target is kept and the run fails")
 	fs.BoolVar(&opts.run.VerifyChecksums, "verify-checksums", false,
 		"Hash every object a retained generation lists and compare it with its manifest's sha256 and size (one full GET per object)")
 	fs.DurationVar(&opts.run.RetentionGrace, "retention-grace", defaultRetentionGrace,
@@ -284,12 +285,13 @@ func (o *reconcileOptions) storageTarget() publication.StorageTarget {
 
 // errStorageBoundElsewhere refuses --bind-storage on a deployment bound to
 // another target: only an operator who deleted the binding row rebinds it.
-var errStorageBoundElsewhere = errors.New("the deployment is bound to another storage target")
+var errStorageBoundElsewhere = publication.ErrStorageBoundElsewhere
 
 // bindReconcileStorage creates the storage binding table and binds the
 // deployment to the configured target, unless it is bound already; a
 // binding to another target is kept and fails the run. The DDL is its own
-// statement, as Aurora DSQL needs.
+// statement, as Aurora DSQL needs; on DSQL, where init-db cannot run yet
+// (#690), this is how the table the writers bind in gets created.
 func bindReconcileStorage(ctx context.Context, db *sql.DB, opts *reconcileOptions, out io.Writer) error {
 	tables := publication.TablesFor(opts.entityMain)
 	if _, err := db.ExecContext(ctx, publication.StorageStatement(opts.db.Engine, opts.entityMain)); err != nil {
@@ -301,8 +303,9 @@ func bindReconcileStorage(ctx context.Context, db *sql.DB, opts *reconcileOption
 		return fmt.Errorf("bind the deployment's storage: %w", err)
 	}
 	if !b.Target.Same(want) {
-		return fmt.Errorf("bind the deployment's storage to %s: it is bound to %s since %d; delete the row of %s by hand "+
-			"only once the writers publish into the new target (docs/manifest-reconcile.md, \"Storage binding\"): %w",
+		return fmt.Errorf("bind the deployment's storage to %s: it is bound to %s since %d, and the binding is kept; "+
+			"check this run's S3 flags and environment against the writers'. Rebinding moves no data and changes no reader: "+
+			"if the binding itself is wrong, follow docs/manifest-reconcile.md, \"Changing the binding\", before touching the row of %s: %w",
 			want, b.Target, b.BoundAt, tables.Storage, errStorageBoundElsewhere)
 	}
 	_, err = fmt.Fprintf(out, "the deployment is bound to %s since %d\n", b.Target, b.BoundAt)

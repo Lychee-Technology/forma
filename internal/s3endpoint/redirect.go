@@ -1,4 +1,4 @@
-package reconcile
+package s3endpoint
 
 import (
 	"errors"
@@ -11,14 +11,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// defaultResponseHeaderTimeout bounds how long a collector waits for S3
-// response headers without capping streaming body reads during checksum scrubs.
+// defaultResponseHeaderTimeout bounds how long a request waits for S3
+// response headers without capping streaming body reads (a collector's
+// checksum scrub, a writer's parent manifest).
 const defaultResponseHeaderTimeout = 30 * time.Second
 
-// ErrRedirectRefused reports an S3 request answered with a redirect. The
-// collector follows no redirects so a destructive request can never be routed
-// beyond the bound destination.
-var ErrRedirectRefused = errors.New("the S3 request was redirected, and manifest-reconcile follows no redirect")
+// ErrRedirectRefused reports an S3 request answered with a redirect. Neither
+// the collector nor a writer follows one, so no request of theirs reaches a
+// route other than the bucket URL ClientEndpoint derives: a collector's
+// DELETE never lands outside the bound target, and a writer's PUT is never
+// answered by another route's success.
+var ErrRedirectRefused = errors.New("the S3 request was redirected, and Forma follows no S3 redirect")
 
 // boundHTTPClient sends through refuseRedirects so http.Client never parses,
 // follows or wraps a redirect's Location (which may carry credentials) in a
@@ -39,7 +42,7 @@ func (b boundHTTPClient) Do(r *http.Request) (*http.Response, error) {
 
 // refuseRedirects intercepts every redirect response http.Client would follow,
 // closes its body unread immediately (so a stalled redirect body cannot hold a
-// pass or schema lock), and returns a redacted non-retryable redirectError.
+// pass, a publication or a schema lock), and returns a redacted non-retryable redirectError.
 type refuseRedirects struct{ next http.RoundTripper }
 
 func (t refuseRedirects) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -72,10 +75,12 @@ func refuseRedirect(next *http.Request, via []*http.Request) error {
 
 func newRedirectError(r *http.Request, status int) *redirectError {
 	return &redirectError{msg: fmt.Sprintf("%s %s answered %d with a redirect (Location omitted)",
-		r.Method, safeURL(r.URL), status)}
+		r.Method, SafeURL(r.URL), status)}
 }
 
-func safeURL(u *url.URL) string {
+// SafeURL renders u without userinfo, query or fragment, which may carry
+// credentials or signatures.
+func SafeURL(u *url.URL) string {
 	if u == nil {
 		return ""
 	}
@@ -115,22 +120,23 @@ func withoutRedirects(h s3.HTTPClient) (boundHTTPClient, error) {
 		return bound(c.Transport, *c), nil
 	}
 	return boundHTTPClient{}, fmt.Errorf("an S3 client sending through an HTTP client of type %T, which may follow redirects: %w",
-		h, errUnknownDestination)
+		h, ErrUnknownDestination)
 }
 
-// NewS3Objects returns an S3Objects over a copy of c that refuses every HTTP
-// redirect before following it. Only stores constructed here report a bound
-// Destination.Endpoint.
-func NewS3Objects(c *s3.Client, bucket string) (*S3Objects, error) {
+// WithoutRedirects answers a copy of c that refuses every HTTP redirect
+// before following it (ErrRedirectRefused), and ErrUnknownDestination for a
+// client sending through an HTTP client whose redirects it cannot control.
+func WithoutRedirects(c *s3.Client) (*s3.Client, error) {
 	o := c.Options()
 	h, err := withoutRedirects(o.HTTPClient)
 	if err != nil {
 		return nil, err
 	}
-	return &S3Objects{Client: s3.New(o, func(o *s3.Options) { o.HTTPClient = h }), Bucket: bucket}, nil
+	return s3.New(o, func(o *s3.Options) { o.HTTPClient = h }), nil
 }
 
-func followsNoRedirect(c *s3.Client) bool {
+// FollowsNoRedirect reports whether c was built by WithoutRedirects.
+func FollowsNoRedirect(c *s3.Client) bool {
 	_, ok := c.Options().HTTPClient.(boundHTTPClient)
 	return ok
 }

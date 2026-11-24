@@ -12,7 +12,8 @@ import (
 
 // publicationDDL is init-db's share of Protocol V2's publication contract
 // (#895, docs/publication-protocol-v2.md): the per-schema publication record,
-// generation and lifecycle epoch tables, named after entity_main. The text comes from
+// generation and lifecycle epoch tables, and the deployment's storage binding
+// (#911), named after entity_main. The text comes from
 // publication.Statements, the one source the publication package's own
 // suites create them from, rendered for opts.engine.
 //
@@ -23,6 +24,7 @@ func publicationDDL(opts initDBOptions) []tableDDL {
 	record := sqlutil.SuffixedIdentifier(opts.entityMain, publication.RecordTableSuffix)
 	generation := sqlutil.SuffixedIdentifier(opts.entityMain, publication.GenerationTableSuffix)
 	epoch := sqlutil.SuffixedIdentifier(opts.entityMain, publication.EpochTableSuffix)
+	storage := sqlutil.SuffixedIdentifier(opts.entityMain, publication.StorageTableSuffix)
 	stmts := publication.Statements(opts.engine, opts.entityMain)
 	return []tableDDL{
 		{
@@ -52,6 +54,11 @@ func publicationDDL(opts initDBOptions) []tableDDL {
 			statement: stmts[5],
 			failure:   "ensure publication epoch recovery_retired_at column",
 		},
+		{
+			statement: stmts[6],
+			announce:  fmt.Sprintf("Created publication storage binding table: %s\n", storage),
+			failure:   "ensure publication storage binding table",
+		},
 	}
 }
 
@@ -60,6 +67,7 @@ const (
 	publicationRecordRole     = "the publication record table"
 	publicationGenerationRole = "the publication generation table"
 	publicationEpochRole      = "the publication epoch table"
+	publicationStorageRole    = "the publication storage binding table"
 )
 
 // requireDistinctPublicationTables refuses a configuration under which a
@@ -151,7 +159,8 @@ func resolveTables(ctx context.Context, q tableResolver, roles []ownedTable) ([]
 // table's.
 func publicationTableCollision(opts initDBOptions, roles []ownedTable, resolved []resolvedTable) error {
 	for i, pub := range roles {
-		if pub.role != publicationRecordRole && pub.role != publicationGenerationRole && pub.role != publicationEpochRole {
+		if pub.role != publicationRecordRole && pub.role != publicationGenerationRole && pub.role != publicationEpochRole &&
+			pub.role != publicationStorageRole {
 			continue
 		}
 		for j, other := range roles {

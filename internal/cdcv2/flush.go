@@ -119,6 +119,9 @@ func (w *Writer) flushGeneration(ctx context.Context, cur publication.Record, li
 	if err := w.fail(ctx, PointStageObjects); err != nil {
 		return publication.Record{}, fmt.Errorf("flush schema %d: %w", cur.SchemaID, err)
 	}
+	if err := w.checkStorage(ctx); err != nil {
+		return publication.Record{}, fmt.Errorf("flush schema %d: %w", cur.SchemaID, err)
+	}
 	deltas, err := st.StageDelta(ctx, DeltaRequest{SchemaID: cur.SchemaID, Epoch: cur.Epoch, Layout: w.cfg.Layout, Entries: entries})
 	if err != nil {
 		return publication.Record{}, fmt.Errorf("flush schema %d: stage the delta objects of %d entries: %w", cur.SchemaID, len(entries), err)

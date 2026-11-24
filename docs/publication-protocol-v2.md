@@ -793,12 +793,16 @@ full retention grace `G` elapses after that stamp, protecting any reader pinned
 before recovery even if a concurrent `Reset` or `Publish` runs next.
 
 **Storage binding (`_publication_storage`).** Before `--gc` deletes anything, the
-deployment must be bound once via `manifest-reconcile --bind-storage` to the exact
-S3 destination its client sends `LIST` and `DELETE` requests to (bucket URL, bucket
-name, and data prefix). `manifest-reconcile` refuses HTTP 3xx redirects and rejects
-ambiguous custom-endpoint paths (repeated slashes, trailing slashes on non-root
-paths, dot segments, escaped paths) so destructive requests can never reach another
-bucket or tenant route.
+deployment must be bound to the exact S3 destination its clients send requests to
+(bucket URL, bucket name, and data prefix, derived by `internal/s3endpoint`). The
+writers bind it in the transaction of the deployment's first publication and check
+it before every staging and in every publication transaction, failing closed on
+another target (`publication.ErrStorageBoundElsewhere`, #911);
+`manifest-reconcile --bind-storage` binds it ahead of them. Writers and collector
+refuse HTTP 3xx redirects and reject ambiguous custom-endpoint paths (repeated
+slashes, trailing slashes on non-root paths, dot segments, escaped paths), so no
+request reaches another bucket or tenant route (`docs/manifest-reconcile.md`,
+"Storage binding").
 
 A writer can never commit a reference to an object GC deleted:
 
@@ -1067,7 +1071,7 @@ Each component of the protocol was delivered by one child of #887:
 | `cdc-init` | Export versions, `init` generation, handoff under `HoldLineage`. `internal/cdcv2`'s `Writer.Init` (#899) reads each export snapshot's versions as its first statement and hands the exporter (`BaseExporter`) that snapshot; `internal/cdc`'s `baseExporter` reads the rows on it. A lost `COMMIT` is settled once in-process (`ResumeInit`). An empty export publishes an empty generation, never a placeholder object | #896 (built in #899), closing #760 |
 | compactor | `Publish(KindCompact)` with `Rebase` over flushes, through `internal/cdcv2`'s `Writer.Compact` behind a `CompactStager`, which `internal/compaction` implements. The merge keeps every row's newest version, tombstones included; a promotion merges the delta files into a new base object, since a key names its tier. The compactor deletes nothing inline: superseded objects are retired by garbage collection | #890 |
 | federated reader | `Read` in the pass snapshot, `Readable`, the epoch pin, manifest by key, `R_max` deadline: the pass behind `federated.WithPublicationReader` (`internal/federated/pgx_publication.go`) over its source in `internal/federatedv2`, with the pins loaded beside the schema metadata ([As built](#readers)) | #900, wired in #896, carrying #759 |
-| `manifest-reconcile` | Lock-free diagnosis that verifies retained and expired manifests and checks completeness above `forgotten_generation`; `--gc` runs `RaiseHorizon`, `Retire`, `RetireRecovery`, `Forget` and `PlanCollection` in the collection order above, under storage binding (`--bind-storage`, `BindStorage`); `--verify-checksums` walks retained generations (`internal/reconcile`, `cmd/tools/manifest_reconcile.go`). A damaged inventory is repaired by a re-init with `cdc-init` | #891 |
+| `manifest-reconcile` | Lock-free diagnosis that verifies retained and expired manifests and checks completeness above `forgotten_generation`; `--gc` runs `RaiseHorizon`, `Retire`, `RetireRecovery`, `Forget` and `PlanCollection` in the collection order above, under storage binding (`BindStorageTx` in the writers' publication transactions, or `--bind-storage`); `--verify-checksums` walks retained generations (`internal/reconcile`, `cmd/tools/manifest_reconcile.go`). A damaged inventory is repaired by a re-init with `cdc-init` | #891 |
 | fault matrix, operator docs, EPIC evidence | production-shape E2E lifecycle/fault/crash/concurrency matrix (`internal/e2e_harness/production`), DSQL `40001` and 3-way concurrency tests (`internal/cdcv2`), the static legacy-V1 guard (`internal/publication/legacy_v1_guard_test.go`), P95/cost deltas, operator doc audit, and the [evidence ledger](publication-protocol-v2-evidence.md) | #892 |
 | live Aurora DSQL behaviour | the assumptions in [Verification](#verification) | #893, under #817 |
 

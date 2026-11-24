@@ -24,6 +24,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/reconcile"
+	"github.com/lychee-technology/forma/internal/s3endpoint"
 	"github.com/lychee-technology/forma/internal/testdb"
 )
 
@@ -109,7 +110,7 @@ func TestReconcileObjectsRejectAmbiguousEndpointPaths(t *testing.T) {
 }
 
 // TestClientEndpointIsWhereTheClientSendsListAndDelete checks
-// reconcile.ClientEndpoint against the requests the client really builds:
+// s3endpoint.ClientEndpoint against the requests the client really builds:
 // a transport records the URL of a LIST and of a DELETE, for either
 // addressing, at a custom endpoint and at AWS.
 func TestClientEndpointIsWhereTheClientSendsListAndDelete(t *testing.T) {
@@ -129,7 +130,7 @@ func TestClientEndpointIsWhereTheClientSendsListAndDelete(t *testing.T) {
 		})
 		o.Retryer = aws.NopRetryer{}
 		c := s3.New(o)
-		endpoint, err := reconcile.ClientEndpoint(context.Background(), c, "lake")
+		endpoint, err := s3endpoint.ClientEndpoint(context.Background(), c, "lake")
 		require.NoError(t, err)
 		_, _ = c.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{Bucket: aws.String("lake"), Prefix: aws.String("data/7/")})
 		_, _ = c.DeleteObject(context.Background(), &s3.DeleteObjectInput{Bucket: aws.String("lake"), Key: aws.String("data/7/k")})
@@ -212,7 +213,7 @@ func TestS3ObjectsEndpointRefusesAClientItCannotName(t *testing.T) {
 	_, err = (&reconcile.S3Objects{Client: following, Bucket: "bkt"}).Endpoint(context.Background())
 	require.ErrorContains(t, err, "may follow redirects")
 	custom := s3.New(s3.Options{Region: "us-east-1", EndpointResolverV2: customResolver{}})
-	_, err = reconcile.ClientEndpoint(context.Background(), custom, "bkt")
+	_, err = s3endpoint.ClientEndpoint(context.Background(), custom, "bkt")
 	require.ErrorContains(t, err, "destination cannot be told")
 }
 

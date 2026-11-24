@@ -34,6 +34,7 @@ var initDBLabels = map[string]string{
 	"ensure publication epoch forgotten_generation column": "internal/publication/ddl.go:epochForgottenDDL",
 	"ensure publication epoch recovery_epoch column":       "internal/publication/ddl.go:epochRecoveryEpochDDL",
 	"ensure publication epoch recovery_retired_at column":  "internal/publication/ddl.go:epochRecoveryRetiredDDL",
+	"ensure publication storage binding table":             "internal/publication/storage.go:storageDDL",
 	"create numeric index":                                 "cmd/tools/init_db.go:eavIndexDDL",
 	"create text index":                                    "cmd/tools/init_db.go:eavIndexDDL",
 	"create change log flush index":                        "cmd/tools/init_db.go:changeLogFlushIndexDDL",

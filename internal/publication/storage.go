@@ -142,9 +142,11 @@ type StorageBinding struct {
 }
 
 // storageDDL is the deployment's storage binding: at most one row (binding 1),
-// naming the target the operator declared this database's writers publish into
-// (manifest-reconcile --bind-storage). Created by --bind-storage itself, not
-// by init-db, so only the collector depends on it.
+// naming the target this database's writers publish into. The first
+// publication binds it in its own transaction (BindStorageTx), unless an
+// operator bound it ahead with manifest-reconcile --bind-storage. init-db
+// creates it on PostgreSQL (Statements); on Aurora DSQL, where init-db cannot
+// run yet (#690), --bind-storage creates it.
 const storageDDL = `CREATE TABLE IF NOT EXISTS %s (
 		binding     SMALLINT NOT NULL,
 		endpoint    ` + textcollation.TextType + ` NOT NULL,
@@ -174,8 +176,8 @@ func BindStorage(ctx context.Context, q Querier, t Tables, target StorageTarget)
 	if err != nil {
 		return StorageBinding{}, fmt.Errorf("bind the publication storage: %w", err)
 	}
-	if _, err := q.runner().exec(ctx, fmt.Sprintf(bindStorageSQL, t.Storage), c.Endpoint, c.Bucket, c.Prefix); err != nil {
-		return StorageBinding{}, fmt.Errorf("bind the publication storage in %s to %s: %w", t.Storage, c, err)
+	if err := insertStorage(ctx, q, t, c); err != nil {
+		return StorageBinding{}, err
 	}
 	b, ok, err := ReadStorage(ctx, q, t)
 	if err != nil {
@@ -185,6 +187,13 @@ func BindStorage(ctx context.Context, q Querier, t Tables, target StorageTarget)
 		return StorageBinding{}, fmt.Errorf("bind the publication storage in %s to %s: the binding is not there after its write", t.Storage, c)
 	}
 	return b, nil
+}
+
+func insertStorage(ctx context.Context, q Querier, t Tables, c StorageTarget) error {
+	if _, err := q.runner().exec(ctx, fmt.Sprintf(bindStorageSQL, t.Storage), c.Endpoint, c.Bucket, c.Prefix); err != nil {
+		return fmt.Errorf("bind the publication storage in %s to %s: %w", t.Storage, c, err)
+	}
+	return nil
 }
 
 const sqlstateUndefinedTable = "42P01"
@@ -211,4 +220,93 @@ func ReadStorage(ctx context.Context, q Querier, t Tables) (StorageBinding, bool
 		return StorageBinding{}, false, fmt.Errorf("read the publication storage binding in %s: %w", t.Storage, err)
 	}
 	return b, true, nil
+}
+
+// ErrStorageBoundElsewhere reports a writer whose storage target is not the
+// one the deployment is bound to: garbage collection runs against the bound
+// target, so a generation published elsewhere would be one it never sees.
+// The writer publishes nothing, and the binding is kept.
+var ErrStorageBoundElsewhere = errors.New("the deployment is bound to another storage target")
+
+// ErrStorageTableMissing reports a deployment without the storage binding
+// table. A writer never creates it: a publication transaction runs no DDL.
+var ErrStorageTableMissing = errors.New("the publication storage binding table does not exist")
+
+// CheckStorage is a writer's check before it stages anything: it fails with
+// ErrStorageBoundElsewhere when the deployment is bound to another target than
+// target, and with ErrStorageTableMissing when the binding table is missing.
+// An unbound deployment passes, and nothing is bound here: only a publication
+// transaction binds (BindStorageTx). Run it on a pool (DB).
+func CheckStorage(ctx context.Context, q Querier, t Tables, target StorageTarget, engine forma.DatabaseEngine) error {
+	var b StorageBinding
+	err := q.runner().queryRow(ctx, fmt.Sprintf(readStorageSQL, t.Storage)).
+		Scan(&b.Target.Endpoint, &b.Target.Bucket, &b.Target.Prefix, &b.BoundAt)
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case errors.As(err, &pgErr) && pgErr.Code == sqlstateUndefinedTable:
+		return missingStorageTable(t, engine)
+	case err != nil:
+		return fmt.Errorf("read the publication storage binding in %s: %w", t.Storage, err)
+	}
+	return sameStorage(b, target)
+}
+
+// BindStorageTx binds an unbound deployment to target in the publication
+// transaction tx, so the binding commits exactly when the generation does:
+// a publication that rolls back, fails or never commits binds nothing. A
+// deployment bound to another target fails tx with ErrStorageBoundElsewhere
+// before it moves anything. A bound deployment is only read: concurrent
+// publishers of a bound deployment never write the binding's row, so it is no
+// write conflict between them on Aurora DSQL.
+//
+// Concurrent first publishers serialize on the row. On PostgreSQL a second
+// insert waits for the first's transaction, and the read after it, a new
+// statement under READ COMMITTED, sees the committed binding, or none if the
+// first rolled back and this insert bound. On DSQL the loser's COMMIT fails
+// with 40001, and its resend reads the committed binding.
+func BindStorageTx(ctx context.Context, tx Tx, t Tables, target StorageTarget) error {
+	b, ok, err := ReadStorage(ctx, tx, t)
+	if err != nil {
+		return fmt.Errorf("check the storage binding in the publication transaction: %w", err)
+	}
+	if ok {
+		return sameStorage(b, target)
+	}
+	c, err := target.Normalize()
+	if err != nil {
+		return fmt.Errorf("bind the publication storage in the publication transaction: %w", err)
+	}
+	if err := insertStorage(ctx, tx, t, c); err != nil {
+		return fmt.Errorf("bind the publication storage in the publication transaction: %w", err)
+	}
+	if b, ok, err = ReadStorage(ctx, tx, t); err != nil {
+		return fmt.Errorf("check the storage binding in the publication transaction: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("bind the publication storage in %s to %s: the binding is not there after its write", t.Storage, c)
+	}
+	return sameStorage(b, target)
+}
+
+func sameStorage(b StorageBinding, target StorageTarget) error {
+	if b.Target.Same(target) {
+		return nil
+	}
+	return fmt.Errorf("this writer publishes into %s, and the deployment is bound to %s since %d; "+
+		"check the writer's S3 flags and environment (AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, region, path-style addressing, "+
+		"FIPS and dual-stack settings), bucket and data prefix against the binding; "+
+		"if the binding itself is wrong, see docs/manifest-reconcile.md, \"Changing the binding\": %w",
+		target, b.Target, b.BoundAt, ErrStorageBoundElsewhere)
+}
+
+func missingStorageTable(t Tables, engine forma.DatabaseEngine) error {
+	remedy := "rerun init-db, which creates it with the other publication tables"
+	if engine.Resolved() == forma.EngineAuroraDSQL {
+		remedy = "init-db cannot create Forma's tables on Aurora DSQL yet (#690): run manifest-reconcile --bind-storage " +
+			"with the writers' S3 flags and environment, which creates it and also binds that target, or create it with " +
+			"the statement in docs/manifest-reconcile.md, \"Storage binding\""
+	}
+	return fmt.Errorf("%s: %s, before the writers publish: %w", t.Storage, remedy, ErrStorageTableMissing)
 }
