@@ -177,11 +177,13 @@ What each surface does:
 - **Update** that changes a key attribute moves the key: it releases the old
   value and takes the new one. An update that leaves a key's attributes alone
   does not touch that key's entry. The entries follow the row as stored after
-  the write. An update cannot clear an attribute (#684), and a column-bound
-  attribute whose merged value stores nothing, such as `{}` in place of a
-  string under report-only update validation, keeps its stored value, so the
-  row keeps its entry. An EAV attribute in the same case is removed from the
-  row, and its entry is released.
+  the write. An update cannot clear an attribute (#684). An object or array
+  in place of a key component's single value, `{}` and `[]` included, is
+  refused as invalid input in every validation mode before the key is
+  planned (#696), so it neither keeps nor releases an entry; before #696
+  report-only validation let `{}` through, a column-bound component kept its
+  stored value and entry, an EAV one was removed and its entry released, and
+  `["b@x"]` failed in the planner with a `500`.
 - **Delete** releases every key of the row, so its values can be taken again
   at once.
 - **An atomic batch** reserves every operation's values together, against

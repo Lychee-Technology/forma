@@ -37,7 +37,7 @@ func (t *persistentRecordTransformer) MergeUpdate(
 	if err != nil {
 		return nil, fmt.Errorf("failed to merge the update into row %s: %w", record.RowID, err)
 	}
-	return resolveStoredValues(record.SchemaID, record.RowID, merged, cache)
+	return resolveStoredValues(record.SchemaID, record.RowID, merged, cache, SchemaShapesOf(t.registry, record.SchemaID))
 }
 
 // resolveStoredValues replaces every stored value the merged document holds
@@ -59,6 +59,15 @@ func (t *persistentRecordTransformer) MergeUpdate(
 // spellings of the attribute holds, and the update is refused rather than
 // silently deleting the record (respelledError).
 //
+// A container the shape rule refuses where a single value belongs
+// (scalarShapeRefusal) is walked as before when it holds a stored value: a
+// stored row holding array elements under a scalar, as report-only
+// validation let an update write before #696. The write would refuse it as
+// the caller's once resolved, so where it still holds a value the write
+// keeps, the update is refused here instead, plainly, as stored state; the
+// existing refusals above come first. An update that replaces the attribute
+// writes the replacement.
+//
 // A stored value the walk does not claim was rebuilt where the write cannot
 // read it back. A row without array ancestry leaves one there when its record
 // carries more array indices than its parent takes, as the members of an
@@ -75,8 +84,8 @@ func (t *persistentRecordTransformer) MergeUpdate(
 // the kept elements keep their indices, and emptied trailing elements are
 // cut. The root document is never removed, and a container that was empty
 // before resolution, such as a caller's {} or [], is kept.
-func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, cache forma.SchemaAttributeCache) (map[string]any, error) {
-	entries, err := walkDocument(schemaID, rowID, doc, cache)
+func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, cache forma.SchemaAttributeCache, shapes SchemaShapes) (map[string]any, error) {
+	entries, storedShapes, err := walkMergeDocument(schemaID, rowID, doc, cache, shapes)
 	if err != nil {
 		return nil, fmt.Errorf("walk the merged document of row %s: %w", rowID, err)
 	}
@@ -113,6 +122,11 @@ func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, ca
 			return nil, held.respelledError()
 		default:
 			return nil, held.unplacedError(entry.name)
+		}
+	}
+	for _, refused := range storedShapes {
+		if held := firstHeld(refused.value, func(v *storedValue) bool { _, keep := kept[v]; return keep }); held != nil {
+			return nil, held.containerAtScalarError(refused.name)
 		}
 	}
 	resolveMap(doc, kept)

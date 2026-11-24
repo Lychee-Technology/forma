@@ -38,8 +38,9 @@ func newCondPG(t *testing.T) *condPG {
 	return newSchemaPG(t, condSchemaName, condSchemaID, condSchemaCache())
 }
 
-// newSchemaPG is newCondPG over any one schema.
-func newSchemaPG(t *testing.T, schemaName string, schemaID int16, cache forma.SchemaAttributeCache) *condPG {
+// newSchemaPG is newCondPG over any one schema. Each option adjusts the stub
+// registry before the manager is built over it (declaringProperties).
+func newSchemaPG(t *testing.T, schemaName string, schemaID int16, cache forma.SchemaAttributeCache, options ...func(*stubSchemaRegistry)) *condPG {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	t.Cleanup(cancel)
@@ -55,6 +56,9 @@ func newSchemaPG(t *testing.T, schemaName string, schemaID int16, cache forma.Sc
 	metadata := schemameta.NewMetadataCache()
 	require.NoError(t, metadata.RegisterSchema(schemaName, schemaID, cache))
 	registry := &stubSchemaRegistry{schemaID: schemaID, schemaName: schemaName, cache: cache}
+	for _, option := range options {
+		option(registry)
+	}
 
 	config := createTestConfig()
 	config.Database.TableNames = forma.TableNames{EntityMain: tables.EntityMain, EAVData: tables.EAVData, ChangeLog: tables.ChangeLog}
@@ -63,6 +67,12 @@ func newSchemaPG(t *testing.T, schemaName string, schemaID int16, cache forma.Sc
 	txr, err := NewTransactor(em)
 	require.NoError(t, err)
 	return &condPG{ctx: ctx, pool: pool, tables: tables, em: em, txr: txr.(*transactor)}
+}
+
+// declaringProperties has the registry serve the document properties given,
+// still without a validator.
+func declaringProperties(properties map[string]*forma.PropertySchema) func(*stubSchemaRegistry) {
+	return func(registry *stubSchemaRegistry) { registry.properties = properties }
 }
 
 func (e *condPG) create(t *testing.T, data map[string]any) uuid.UUID {

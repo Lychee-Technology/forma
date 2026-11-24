@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -65,7 +66,7 @@ func (s *txSession) planUpsert(ctx context.Context, req *forma.UpsertRequest) (*
 // writes Updates (#772).
 func (s *txSession) validateUpsertUpdate(plan *upsertPlan, prepared *preparedCreate) error {
 	update := plan.update
-	updates, err := validateConditionalUpdate(update, prepared.cache, s.crud.relations, s.crud.validator.ArrayPaths(prepared.schemaID))
+	updates, err := validateConditionalUpdate(update, prepared.cache, transform.SchemaShapesOf(s.crud.registry, prepared.schemaID), s.crud.relations, s.crud.validator.ArrayPaths(prepared.schemaID))
 	if err != nil {
 		return fmt.Errorf("failed to validate the update action of the upsert of %s: %w", update.SchemaName, err)
 	}

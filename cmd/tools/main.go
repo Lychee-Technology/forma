@@ -80,6 +80,7 @@ func toolCommands() []toolCommand {
 		{name: "build-unique-keys", run: runBuildUniqueKeys},
 		{name: "inline-schema", run: runInlineSchema},
 		{name: "validate-schema-consistency", run: runValidateSchemaConsistencyFn},
+		{name: "scalar-shape-census", run: runScalarShapeCensus},
 		{name: "cdc-flush", run: runCDCFlush},
 		{name: "cdc-init", run: runCDCInit},
 		{name: "compactor", run: runCompactor},
@@ -100,6 +101,7 @@ func printUsage(out io.Writer) {
 	fmt.Fprintln(out, "  build-unique-keys     Build a schema's unique keys from its live rows (stop every writer first)")
 	fmt.Fprintln(out, "  inline-schema         Inline $ref references and remove x-* extension properties from a JSON schema")
 	fmt.Fprintln(out, "  validate-schema-consistency Validate schema metadata and EAV storage before upgrade")
+	fmt.Fprintln(out, "  scalar-shape-census   Report eav_data array elements stored under attributes that are not lists (read-only)")
 	fmt.Fprintln(out, "  cdc-flush             Run CDC change_log flush to S3 parquet files")
 	fmt.Fprintln(out, "  cdc-init              Initialize S3 parquet base files from existing data")
 	fmt.Fprintln(out, "  compactor             Run compaction on parquet files for a schema")

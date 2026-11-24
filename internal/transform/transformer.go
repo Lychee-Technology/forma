@@ -82,7 +82,7 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 		return nil, fmt.Errorf("resolve relation roots for required-attribute check: %w", err)
 	}
 
-	entries, err := walkDocument(schemaID, rowID, data, cache)
+	entries, err := walkDocument(schemaID, rowID, data, cache, SchemaShapesOf(t.registry, schemaID))
 	if err != nil {
 		return nil, err
 	}

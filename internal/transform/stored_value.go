@@ -2,6 +2,7 @@ package transform
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/lychee-technology/forma"
@@ -122,6 +123,47 @@ func (v *storedValue) respelledError() error {
 	return fmt.Errorf("record %s: stored %s rebuilds under a different key spelling than the attribute's other stored records, "+
 		"and a write keeps one spelling per attribute, so this update cannot write it back; an update must replace the attribute or a container holding it",
 		eavRecordIdentity(v.record), v.describe())
+}
+
+// containerAtScalarError refuses an update that keeps a stored value the row
+// rebuilt inside an object or array at attribute rebuiltAt, where the write
+// stores a single value: a scalar record with array indices, which the
+// write refuses to store (scalarShapeRefusal). The stored row is at fault,
+// not the caller, so the error is plain, like unplacedError's; no update
+// writes such a row back, and none repairs it silently (#696).
+func (v *storedValue) containerAtScalarError(rebuiltAt string) error {
+	return fmt.Errorf("record %s: stored %s rebuilds inside an object or array at attribute '%s', "+
+		"where the write stores a single value, so this update cannot write it back; an update must replace the attribute or a container holding it",
+		eavRecordIdentity(v.record), v.describe(), rebuiltAt)
+}
+
+// firstHeld answers the first stored value inside value, in element and
+// sorted key order, that match accepts, or nil; a nil match accepts any.
+func firstHeld(value any, match func(*storedValue) bool) *storedValue {
+	switch v := value.(type) {
+	case *storedValue:
+		if match == nil || match(v) {
+			return v
+		}
+	case []any:
+		for _, item := range v {
+			if held := firstHeld(item, match); held != nil {
+				return held
+			}
+		}
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if held := firstHeld(v[key], match); held != nil {
+				return held
+			}
+		}
+	}
+	return nil
 }
 
 // hasStoredValue reports whether a record carries a value to decode. A record

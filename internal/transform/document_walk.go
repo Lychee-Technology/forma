@@ -39,7 +39,9 @@ const (
 	// caller sent the parent explicitly, so it is present for the required
 	// policy even though it writes nothing.
 	entryParent
-	// entryRefusal is a position the write refuses as caller input.
+	// entryRefusal is a position the write refuses as caller input: among
+	// others, an object or array where a single value belongs
+	// (scalarShapeRefusal).
 	entryRefusal
 )
 
@@ -47,7 +49,8 @@ const (
 type documentEntry struct {
 	kind entryKind
 	// name is the dotted attribute path. A refusal carries one only where it
-	// refuses an undefined attribute.
+	// refuses an undefined attribute or a container at an attribute's
+	// position.
 	name string
 	// tagged is the record the position addresses, without a value, and the
 	// key spelling that reached it. Its ArrayIndices is the position's
@@ -56,7 +59,8 @@ type documentEntry struct {
 	// meta and value are the claimed attribute and the value to convert. The
 	// refusal of an undefined attribute carries the value found there, which
 	// is how an update finds a stored value the write cannot place
-	// (resolveStoredValues).
+	// (resolveStoredValues); so does that of a container at an attribute's
+	// position (scalarShapeRefusal).
 	meta  forma.AttributeMetadata
 	value any
 	// refusal is the published error of an entryRefusal.
@@ -82,8 +86,24 @@ func (e documentEntry) claims() bool {
 // nested spelling's top-level key is a proper prefix of the literal one, so
 // it sorts first and the literal key, the caller's explicit value, is
 // visited last and wins (#312).
-func walkDocument(schemaID int16, rowID uuid.UUID, data map[string]any, cache forma.SchemaAttributeCache) ([]documentEntry, error) {
-	w := &documentWalk{schemaID: schemaID, rowID: rowID, cache: cache}
+func walkDocument(schemaID int16, rowID uuid.UUID, data map[string]any, cache forma.SchemaAttributeCache, shapes SchemaShapes) ([]documentEntry, error) {
+	w := &documentWalk{schemaID: schemaID, rowID: rowID, cache: cache, shapes: shapes}
+	return w.run(data)
+}
+
+// walkMergeDocument is walkDocument over an update's merged document before
+// its stored values are resolved (resolveStoredValues). A container the
+// shape rule refuses (scalarShapeRefusal) that holds a stored value is the
+// stored row's, not the caller's, so it is walked as before and answered
+// apart, as the second result, for the resolution to judge once it knows
+// which stored values the write keeps.
+func walkMergeDocument(schemaID int16, rowID uuid.UUID, data map[string]any, cache forma.SchemaAttributeCache, shapes SchemaShapes) ([]documentEntry, []documentEntry, error) {
+	w := &documentWalk{schemaID: schemaID, rowID: rowID, cache: cache, shapes: shapes, storedShapes: []documentEntry{}}
+	entries, err := w.run(data)
+	return entries, w.storedShapes, err
+}
+
+func (w *documentWalk) run(data map[string]any) ([]documentEntry, error) {
 	w.visitMap(nil, data, nil)
 	if w.tooDeep != nil {
 		return nil, w.tooDeep
@@ -95,14 +115,28 @@ type documentWalk struct {
 	schemaID int16
 	rowID    uuid.UUID
 	cache    forma.SchemaAttributeCache
+	shapes   SchemaShapes
 	entries  []documentEntry
 	claims   int
 	// tooDeep is the nesting cap's refusal once a container exceeds it; the
 	// walk visits nothing after it.
 	tooDeep error
+	// storedShapes, non-nil in walkMergeDocument only, collects the refusals
+	// of containers holding a stored value instead of refusing them.
+	storedShapes []documentEntry
 }
 
 func (w *documentWalk) visit(path []string, value any, indices []int) {
+	if err := scalarShapeRefusal(path, value, w.cache, w.shapes); err != nil {
+		// Refused whole, before the walk descends and loses its shape
+		// (#696), unless it is the stored row's (walkMergeDocument).
+		refusal := documentEntry{kind: entryRefusal, name: strings.Join(path, "."), value: value, refusal: err}
+		if w.storedShapes == nil || firstHeld(value, nil) == nil {
+			w.entries = append(w.entries, refusal)
+			return
+		}
+		w.storedShapes = append(w.storedShapes, refusal)
+	}
 	switch v := value.(type) {
 	case map[string]any:
 		w.visitMap(path, v, indices)

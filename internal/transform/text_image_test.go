@@ -48,7 +48,7 @@ func textImageCache() forma.SchemaAttributeCache {
 // writtenText answers the text the write stores for doc, per attribute ID.
 func writtenText(t *testing.T, doc map[string]any, cache forma.SchemaAttributeCache) map[int16][]string {
 	t.Helper()
-	entries, err := walkDocument(1, uuid.New(), doc, cache)
+	entries, err := walkDocument(1, uuid.New(), doc, cache, SchemaShapes{})
 	require.NoError(t, err)
 	records, err := flattenToAttributes(entries)
 	require.NoError(t, err)

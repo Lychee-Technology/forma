@@ -6,7 +6,7 @@ Forma Tools CLI
 退出码与输出流
 --------------
 - 任何子命令失败都以非零状态退出：一般为 1，带语义退出码的命令用自己的退出码
-  （`manifest-reconcile` 有差异时为 2）。`-h`/`--help` 打印用法后以 0 退出。
+  （`manifest-reconcile` 有差异时为 2，`scalar-shape-census` 有已确认的发现时为 2）。`-h`/`--help` 打印用法后以 0 退出。
   脚本和 CI 步骤可以直接依赖退出码判断成败（#643）。
 - 失败时的 `<command>: <error>` 行，以及未知命令、缺少命令时的用法说明，写到 stderr。
   stdout 留给命令自身的输出，例如 `inline-schema` 未指定 `-out` 时输出的 JSON、
@@ -57,6 +57,7 @@ Forma Tools CLI
     OLTP 读取与该行的每次更新都会拒绝它，`pgx` 热腿（#857 起的默认）下含该未刷新行的联邦查询页也会失败。
     每一条都报为失败，附行与存储的图像；API 无法修复，需用 SQL 改写该列，见 `docs/schema-consistency-migration.md`。
   详见 `docs/schema-consistency-migration.md`。
+- `scalar-shape-census`：只读普查 `eav_data` 中存放在非 list 属性下的数组元素（#696），见下文 `scalar-shape-census`。
 
 generate-attributes
 -------------------
@@ -197,6 +198,35 @@ schema 的 `entity_main` 行数与版本号之和以及存活的 parquet 对象�
 示例：
 - `go run ./cmd/tools baseline-schema -schema-dir schemas --no-parquet-tier`
 - `go run ./cmd/tools baseline-schema -schema-dir schemas --s3-bucket my-bucket`
+
+scalar-shape-census
+-------------------
+#696 之前，默认的 report-only 更新校验允许把非空数组写给标量属性，写入方把它存成该属性本不该有的数组下标元素记录
+（如 `note` 存为 `array_indices = "0"`）。#696 起写入在任何校验模式下都拒绝这样的值；保留了此类存储值的更新会作为存储状态被拒绝
+（普通错误，指出该记录），直到某次更新改写该属性。本工具只读，找出这类记录，不修复任何内容。
+
+非空的 `array_indices` 本身不是异常：数组对象（array of objects）的成员按外层每个数组各带一个下标，#204 之前以元素类型记录的基本类型数组
+（如 `text` 类型的 `contact.phones`）带有自己的下标。因此每条记录都按属性的数组祖先与 schema 文档判定，规则与写入相同
+（`transform.SchemaShapes.Declared`）：
+- `verified`（已确认）：文档把属性声明为非数组类型，且记录的下标数多于属性外层的数组对象个数（注册表推导出的 `ArrayAncestors`，
+  或文档表明外层没有数组）。
+- 文档把属性声明为数组时，多出的下标是 #204 之前的基本类型数组元素，不报告。
+- `unverified`（无法确认）：文档没有说明属性是什么（未解析的 `$ref`、被丢弃的类型联合），或者属性位于数组对象内而注册表没有推导出数组祖先，
+  这类行合法地带有这样的下标。
+
+每一行报告一个属性的一种下标深度：schema、属性、声明类型、下标数、数组祖先数、记录数、行数，以及一个示例行号与其 `array_indices`；
+从不打印存储的值。list 属性的记录、未知 `attr_id`（`validate-schema-consistency` 的普查）不在本工具范围内。
+schema 按服务端相同的路径加载（`schemameta.NewFileSchemaRegistryContext`）。
+
+退出码：0 没有已确认的发现（`unverified` 不影响退出码）/ 2 有已确认的发现 / 1 失败。修复方法是用 API 更新改写该属性
+（`docs/error-handling.md`，"Status change: an object or array where a single value belongs is now 400"）。
+
+选项（数据库选项及其环境变量默认值与 `validate-schema-consistency` 相同）：
+- `-schema-registry-table`、`-schema-dir`（必填）：部署使用的 schema 注册表与 JSON Schema 目录。
+- `-eav-table`（`EAV_TABLE`，默认 `eav_data_dev`）：要普查的 EAV 表。
+
+示例：
+- `go run ./cmd/tools scalar-shape-census -schema-registry-table schema_registry -schema-dir schemas -eav-table eav_data`
 
 migrate-rfc3339
 ---------------

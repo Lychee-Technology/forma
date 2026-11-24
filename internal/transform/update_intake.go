@@ -32,7 +32,10 @@ import (
 // Upsert that creates), which succeeded before #772 and still does. Both are
 // the first in the write's sorted key order of their class.
 //
-// Only conversion moves here. A position the walk refuses rather than
+// Only conversion moves here, and the shape rule that precedes it: an
+// object or array at a scalar attribute, which can be stored as no value of
+// the attribute's type (scalarShapeRefusal, #696), is a Refusal like a
+// scalar sent for a list. Any other position the walk refuses rather than
 // claims keeps its stage, after the precondition and the row's existence are
 // judged: an undefined attribute, a null, an [] nested in a list, the
 // nesting cap. So does the required policy, which the merged write judges
@@ -52,13 +55,13 @@ import (
 // value alone, so every other position holds the value as sent, a refused
 // one included. A document past the nesting cap is answered unchanged: the
 // merged write refuses it.
-func CheckUpdateValues(data map[string]any, cache forma.SchemaAttributeCache) (CheckedUpdates, error) {
-	if _, err := walkDocument(0, uuid.Nil, data, cache); err != nil {
+func CheckUpdateValues(data map[string]any, cache forma.SchemaAttributeCache, shapes SchemaShapes) (CheckedUpdates, error) {
+	if _, err := walkDocument(0, uuid.Nil, data, cache, shapes); err != nil {
 		// The nesting cap, which the merged write refuses at its own stage.
 		return CheckedUpdates{Values: data}, nil
 	}
 	// The walk has bounded the document, so the copy below terminates.
-	in := &updateIntake{cache: cache}
+	in := &updateIntake{cache: cache, shapes: shapes}
 	values, err := in.copyMap(nil, data, nil)
 	if err != nil {
 		return CheckedUpdates{}, err
@@ -85,6 +88,7 @@ type CheckedUpdates struct {
 // the copy goes on past it, looking for unstorable text.
 type updateIntake struct {
 	cache   forma.SchemaAttributeCache
+	shapes  SchemaShapes
 	refusal error
 }
 
@@ -92,6 +96,11 @@ type updateIntake struct {
 // unwrapped: convertLeaf names the attribute, which is the whole path, so a
 // prefix per level would only repeat it.
 func (in *updateIntake) copyValue(path []string, value any, indices []int) (any, error) {
+	if err := scalarShapeRefusal(path, value, in.cache, in.shapes); err != nil {
+		// The walk refuses the container whole (#696); it is kept as sent.
+		in.refuse(err)
+		return value, nil
+	}
 	switch v := value.(type) {
 	case map[string]any:
 		return in.copyMap(path, v, indices)
@@ -168,15 +177,20 @@ func (in *updateIntake) convertLeaf(path []string, value any, indices []int) (an
 		if text && sqlutil.CheckText(*record.ValueText) != nil {
 			return nil, err
 		}
-		if in.refusal == nil {
-			in.refusal = err
-		}
+		in.refuse(err)
 		return value, nil
 	}
 	if !text {
 		return value, nil
 	}
 	return carryTextImage(value, *record.ValueText), nil
+}
+
+// refuse records err as the intake's refusal unless an earlier one is.
+func (in *updateIntake) refuse(err error) {
+	if in.refusal == nil {
+		in.refusal = err
+	}
 }
 
 // storedAsText reports whether the write stores a claim at arrayIndices,

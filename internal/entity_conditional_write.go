@@ -41,14 +41,14 @@ func validateConditionalCreate(req *forma.EntityOperation) error {
 // image to the merged write (#773), with the conversion refusal the caller
 // raises before it writes a row with them. arrays are the paths the schema
 // declares as arrays, nil when the manager has no validator to know them.
-func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex, arrays schemavalidate.ArrayPaths) (transform.CheckedUpdates, error) {
+func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAttributeCache, shapes transform.SchemaShapes, relations *RelationIndex, arrays schemavalidate.ArrayPaths) (transform.CheckedUpdates, error) {
 	if err := validatePrecondition(req.Preconditions, req.SchemaName, cache); err != nil {
 		return transform.CheckedUpdates{}, fmt.Errorf("check precondition: %w", err)
 	}
 	if err := validateUpdateOps(req, cache, relations, arrays); err != nil {
 		return transform.CheckedUpdates{}, fmt.Errorf("check update operators: %w", err)
 	}
-	return checkUpdatesValues(req.SchemaName, req.Updates, cache, relations)
+	return checkUpdatesValues(req.SchemaName, req.Updates, cache, shapes, relations)
 }
 
 // checkUpdatesValues judges, before the update sends any statement, the
@@ -74,9 +74,9 @@ func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAtt
 // (#773). The stripped relation subtrees are put back as sent, so the merge
 // strips exactly what it stripped before. nil stays nil: an update of
 // operators alone sends no Updates.
-func checkUpdatesValues(schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, relations *RelationIndex) (transform.CheckedUpdates, error) {
+func checkUpdatesValues(schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, shapes transform.SchemaShapes, relations *RelationIndex) (transform.CheckedUpdates, error) {
 	written := relations.StripComputedFields(schemaName, updates)
-	checked, err := transform.CheckUpdateValues(written, cache)
+	checked, err := transform.CheckUpdateValues(written, cache, shapes)
 	if err != nil {
 		return transform.CheckedUpdates{}, fmt.Errorf("check updates: %w", err)
 	}

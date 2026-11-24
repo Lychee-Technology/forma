@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/lychee-technology/forma"
 )
@@ -33,7 +34,7 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 		}
 		// A value the write cannot convert is refused here, before the
 		// batch locks any row, as Update refuses it at intake (#679, #772).
-		updates, err := updatesToWrite(checkUpdatesValues(op.SchemaName, op.Updates, schemaCache, s.relations))
+		updates, err := updatesToWrite(checkUpdatesValues(op.SchemaName, op.Updates, schemaCache, transform.SchemaShapesOf(s.registry, schemaID), s.relations))
 		if err != nil {
 			return nil, forma.WrapPublicf(err, "operation[%d]", i)
 		}

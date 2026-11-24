@@ -193,7 +193,7 @@ func (s *txSession) validateMutationValues(kind mutateKind, req *forma.MutateWhe
 	}
 	op := &forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: req.SchemaName},
 		Updates: req.Updates, UpdateOps: req.UpdateOps}
-	updates, err := validateConditionalUpdate(op, cache, s.crud.relations, s.crud.validator.ArrayPaths(schemaID))
+	updates, err := validateConditionalUpdate(op, cache, transform.SchemaShapesOf(s.crud.registry, schemaID), s.crud.relations, s.crud.validator.ArrayPaths(schemaID))
 	if err != nil {
 		return transform.CheckedUpdates{}, fmt.Errorf("failed to validate UpdateWhere on %s: %w", req.SchemaName, err)
 	}

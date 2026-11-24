@@ -112,7 +112,7 @@ func walkRefusedUpdates() []intakeCase {
 // Updates sees it: the document to write, and the refusal it raises before
 // the write, unstorable text first.
 func checkUpdate(doc map[string]any, cache forma.SchemaAttributeCache) (map[string]any, error) {
-	checked, err := CheckUpdateValues(doc, cache)
+	checked, err := CheckUpdateValues(doc, cache, SchemaShapes{})
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func TestCheckUpdateValues(t *testing.T) {
 // conversion, as ToAttributes runs them (the required policy aside).
 func writeVerdict(t *testing.T, doc map[string]any, cache forma.SchemaAttributeCache) error {
 	t.Helper()
-	entries, err := walkDocument(1, uuid.New(), doc, cache)
+	entries, err := walkDocument(1, uuid.New(), doc, cache, SchemaShapes{})
 	if err != nil {
 		return err
 	}
@@ -218,7 +218,7 @@ func TestCheckUpdateValues_KeepsConvertedValuesAsSent(t *testing.T) {
 func TestCheckUpdateValues_SeparatesUnstorableText(t *testing.T) {
 	cache := updateIntakeCache()
 	for _, tc := range refusedUpdateValues() {
-		checked, err := CheckUpdateValues(tc.doc, cache)
+		checked, err := CheckUpdateValues(tc.doc, cache, SchemaShapes{})
 		if unstorableText(tc) {
 			require.ErrorIs(t, err, forma.ErrInvalidInput, tc.name)
 			continue
@@ -229,7 +229,7 @@ func TestCheckUpdateValues_SeparatesUnstorableText(t *testing.T) {
 		assert.Equal(t, tc.doc, checked.Values, tc.name)
 	}
 	for _, tc := range acceptedUpdateValues() {
-		checked, err := CheckUpdateValues(tc.doc, cache)
+		checked, err := CheckUpdateValues(tc.doc, cache, SchemaShapes{})
 		require.NoError(t, err, tc.name)
 		assert.NoError(t, checked.Refusal, tc.name)
 	}
@@ -239,11 +239,11 @@ func TestCheckUpdateValues_SeparatesUnstorableText(t *testing.T) {
 // key order, and of several other refusals the first in key order is kept.
 func TestCheckUpdateValues_UnstorableTextAnswersFirst(t *testing.T) {
 	cache := updateIntakeCache()
-	_, err := CheckUpdateValues(map[string]any{"age": 1.5, "name": "a\x00b", "ref": "bad"}, cache)
+	_, err := CheckUpdateValues(map[string]any{"age": 1.5, "name": "a\x00b", "ref": "bad"}, cache, SchemaShapes{})
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
 	assert.Contains(t, err.Error(), refusedValue("name", 1)+nulRule)
 
-	checked, err := CheckUpdateValues(map[string]any{"ref": "bad", "name": "ok", "age": 1.5}, cache)
+	checked, err := CheckUpdateValues(map[string]any{"ref": "bad", "name": "ok", "age": 1.5}, cache, SchemaShapes{})
 	require.NoError(t, err)
 	require.Error(t, checked.Refusal)
 	assert.Contains(t, checked.Refusal.Error(), refusedValue("age", 7))

@@ -66,23 +66,9 @@ func TestUpdateLeavingRequiredNestedAttributeMissingFails(t *testing.T) {
 		{"empty parent into absent parent", forma.RequiredPolicyIfParentPresent,
 			map[string]any{"amount": int64(1)}, map[string]any{"contact": map[string]any{}}},
 	}
-	// A value at contact.total that writes no record there replaces the
-	// stored one without standing in for it.
-	for _, policy := range bothRequiredPolicies {
-		for name, replacement := range map[string]any{
-			"object replacing the value":       map[string]any{"total": int64(5)},
-			"empty object replacing the value": map[string]any{},
-		} {
-			cases = append(cases, struct {
-				name    string
-				policy  forma.RequiredPolicy
-				seed    map[string]any
-				updates map[string]any
-			}{name, policy,
-				map[string]any{"contact": map[string]any{"total": int64(1), "name": "kept"}},
-				map[string]any{"contact": map[string]any{"total": replacement}}})
-		}
-	}
+	// An object at contact.total, which used to replace the stored value
+	// without standing in for it, is refused before the required policy is
+	// judged (#696): TestUpdateRefusesContainerAtRequiredScalar.
 	for _, surface := range updateSurfaces {
 		for _, tc := range cases {
 			t.Run(surface.name+"/"+string(tc.policy)+"/"+tc.name, func(t *testing.T) {
@@ -114,5 +100,37 @@ func assertMissingRequired(t *testing.T, err error, attr string) {
 	msg, ok := forma.ResolvePublicMessage(err)
 	if !ok || !strings.Contains(msg, want) {
 		t.Fatalf("expected the published message to name %q, got %q (%v)", want, msg, err)
+	}
+}
+
+// An object at a required scalar is refused as the shape it is, before the
+// required policy is judged, and writes nothing (#696).
+func TestUpdateRefusesContainerAtRequiredScalar(t *testing.T) {
+	ctx := context.Background()
+	for _, surface := range updateSurfaces {
+		for _, policy := range bothRequiredPolicies {
+			for name, replacement := range map[string]any{
+				"object":       map[string]any{"total": int64(5)},
+				"empty object": map[string]any{},
+			} {
+				t.Run(surface.name+"/"+string(policy)+"/"+name, func(t *testing.T) {
+					row := seedBigintRow(t, policy, map[string]any{"contact": map[string]any{"total": int64(1), "name": "kept"}}, nil)
+					before := row.repo.records[bigintDestSchema][row.rowID]
+					_, err := surface.update(ctx, row.em, bigintDestUpdate(row.rowID, map[string]any{"contact": map[string]any{"total": replacement}}))
+					want := "invalid value for attribute 'contact.total' (attrID=34): declared type bigint takes a single value, got an"
+					var reported bestEffortFailure
+					if errors.As(err, &reported) {
+						if !strings.Contains(reported.failure.Error, want) {
+							t.Fatalf("expected the reported failure to name %q, got %q", want, reported.failure.Error)
+						}
+					} else if msg, ok := forma.ResolvePublicMessage(err); !errors.Is(err, forma.ErrInvalidInput) || !ok || !strings.Contains(msg, want) {
+						t.Fatalf("expected ErrInvalidInput publishing %q, got %v", want, err)
+					}
+					if row.repo.records[bigintDestSchema][row.rowID] != before {
+						t.Fatalf("failed update stored a new row")
+					}
+				})
+			}
+		}
 	}
 }

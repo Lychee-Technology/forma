@@ -21,6 +21,9 @@ type stubSchemaRegistry struct {
 	schemaID   int16
 	schemaName string
 	cache      forma.SchemaAttributeCache
+	// properties is the schema document's, nil for a registry that serves
+	// none.
+	properties map[string]*forma.PropertySchema
 }
 
 func newStubSchemaRegistry() forma.SchemaRegistry {
@@ -75,7 +78,7 @@ func (s *stubSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, 
 	if id != s.schemaID {
 		return "", forma.JSONSchema{}, fmt.Errorf("schema id %d not found", id)
 	}
-	return s.schemaName, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName}, nil
+	return s.schemaName, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName, Properties: s.properties}, nil
 }
 
 func TestTransformer_ToAttributes(t *testing.T) {

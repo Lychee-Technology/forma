@@ -7,6 +7,7 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/telemetry"
+	"github.com/lychee-technology/forma/internal/transform"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -280,7 +281,7 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 
 	// Update writes its row whenever it succeeds, so a conversion refusal
 	// in Updates is raised here, before any statement (#772).
-	updates, err := updatesToWrite(validateConditionalUpdate(req, schemaCache, s.relations, s.validator.ArrayPaths(schemaID)))
+	updates, err := updatesToWrite(validateConditionalUpdate(req, schemaCache, transform.SchemaShapesOf(s.registry, schemaID), s.relations, s.validator.ArrayPaths(schemaID)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate update of %s/%s: %w", req.SchemaName, req.RowID, err)
 	}
