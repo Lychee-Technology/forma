@@ -86,6 +86,20 @@ A writer whose object store is not an S3 store over an AWS SDK client (a
 local directory, or an embedder's own client type) names no target and
 binds or checks nothing; bind such a deployment with `--bind-storage`.
 
+The compactor reads its merge sources twice: its SDK client, the one it
+checks the binding with, hashes each source against its manifest digest
+(unless `--skip-input-checksum-verify`), and its DuckDB merge engine then
+reads the same keys again for the merge. The merge engine is configured from
+`--s3-endpoint`, `--s3-region`, `--s3-use-ssl` and `--s3-use-path` alone, so
+the compactor refuses to start (`ErrMergeRouteMismatch`), before it opens the
+database or the bucket, when its SDK client is routed otherwise: an endpoint
+taken from `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or a shared config
+`endpoint_url` instead of `--s3-endpoint`, another region, FIPS, dual-stack
+or transfer acceleration, or an `--s3-endpoint` scheme that disagrees with
+`--s3-use-ssl`. Pass the endpoint and region as flags. What is enforced is
+that both read through the same configured endpoint, region and addressing;
+the merge engine's reads do not go through the no-redirect client.
+
 `--bind-storage` stays as an explicit path: it binds the deployment ahead of
 the writers, or confirms that this run's flags and environment name the bound
 target. An existing binding to a different target is never overwritten.

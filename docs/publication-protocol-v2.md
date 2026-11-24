@@ -798,11 +798,14 @@ deployment must be bound to the exact S3 destination its clients send requests t
 writers bind it in the transaction of the deployment's first publication and check
 it before every staging and in every publication transaction, failing closed on
 another target (`publication.ErrStorageBoundElsewhere`, #911);
-`manifest-reconcile --bind-storage` binds it ahead of them. Writers and collector
-refuse HTTP 3xx redirects and reject ambiguous custom-endpoint paths (repeated
-slashes, trailing slashes on non-root paths, dot segments, escaped paths), so no
-request reaches another bucket or tenant route (`docs/manifest-reconcile.md`,
-"Storage binding").
+`manifest-reconcile --bind-storage` binds it ahead of them. The writers' and the
+collector's SDK clients refuse HTTP 3xx redirects and reject ambiguous
+custom-endpoint paths (repeated slashes, trailing slashes on non-root paths, dot
+segments, escaped paths), so none of their requests reaches another bucket or
+tenant route. The compactor's DuckDB merge engine reads its sources apart from
+that client; the compactor refuses to run unless both are configured with the
+same endpoint, region and addressing (`docs/manifest-reconcile.md`, "Storage
+binding").
 
 A writer can never commit a reference to an object GC deleted:
 

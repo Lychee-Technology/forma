@@ -232,6 +232,11 @@ func runCompactorOut(ctx context.Context, args []string, metricsOut io.Writer) e
 	if err != nil {
 		return fmt.Errorf("build the compactor's S3 client: %w", err)
 	}
+	// The merge engine reads the sources again, configured from the flags
+	// alone: refuse a run whose client took its route from anywhere else.
+	if err := checkMergeRoute(s3Client, opts.s3); err != nil {
+		return fmt.Errorf("check the compactor's merge route: %w", err)
+	}
 
 	db, err := openCompactorDBFn(ctx, opts.db, logger)
 	if err != nil {
