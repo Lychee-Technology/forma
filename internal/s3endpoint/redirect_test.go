@@ -129,3 +129,50 @@ func TestARedirectReachingTheClientIsRefusedToo(t *testing.T) {
 	require.Equal(t, "DELETE https://s3.example/lake/data/7/k answered 308 with a redirect (Location omitted): "+
 		ErrRedirectRefused.Error(), err.Error())
 }
+
+// TestWithoutRedirectsSharesNoStateWithTheOriginal: hardening a client while
+// the original sends requests writes nothing the original reads. Run under
+// -race (CI does): s3.New used to write its new client into the S3 Express
+// provider the original's every request reads, ordinary buckets included.
+func TestWithoutRedirectsSharesNoStateWithTheOriginal(t *testing.T) {
+	ctx := context.Background()
+	srv := newRoute(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	original := pathClient(srv.URL, nil)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = original.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String("lake"), Key: aws.String("k")})
+		}
+	}()
+	for range 50 {
+		c, err := WithoutRedirects(original)
+		require.NoError(t, err)
+		require.NotSame(t, original.Options().ExpressCredentials, c.Options().ExpressCredentials,
+			"the copy has an S3 Express provider of its own")
+	}
+	close(stop)
+	wg.Wait()
+}
+
+// TestWithoutRedirectsKeepsACallersExpressProvider: only the provider the
+// SDK installed is replaced.
+func TestWithoutRedirectsKeepsACallersExpressProvider(t *testing.T) {
+	own := ownExpressProvider{}
+	c, err := WithoutRedirects(newClient(s3.Options{Region: "us-east-1", ExpressCredentials: own}))
+	require.NoError(t, err)
+	require.Equal(t, own, c.Options().ExpressCredentials)
+}
+
+type ownExpressProvider struct{}
+
+func (ownExpressProvider) Retrieve(context.Context, string) (aws.Credentials, error) {
+	return aws.Credentials{}, nil
+}

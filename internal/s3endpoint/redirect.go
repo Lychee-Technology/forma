@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
+	"sync"
 	"time"
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
@@ -123,16 +125,34 @@ func withoutRedirects(h s3.HTTPClient) (boundHTTPClient, error) {
 		h, ErrUnknownDestination)
 }
 
+// sdkExpressProvider is the type of the S3 Express credentials provider the
+// SDK installs in a client given none. s3.New writes the new client into
+// such a provider, which c.Options() only copies by pointer.
+var sdkExpressProvider = sync.OnceValue(func() reflect.Type {
+	return reflect.TypeOf(s3.New(s3.Options{}).Options().ExpressCredentials)
+})
+
 // WithoutRedirects answers a copy of c that refuses every HTTP redirect
 // before following it (ErrRedirectRefused), and ErrUnknownDestination for a
 // client sending through an HTTP client whose redirects it cannot control.
+//
+// The copy shares no SDK-managed state with c: an S3 Express provider the
+// SDK installed in c is replaced by a fresh one, because s3.New would
+// otherwise write the copy into the provider c's own requests read, racing
+// with any request c is sending meanwhile. A provider the caller supplied is
+// kept; the SDK never writes into it.
 func WithoutRedirects(c *s3.Client) (*s3.Client, error) {
 	o := c.Options()
 	h, err := withoutRedirects(o.HTTPClient)
 	if err != nil {
 		return nil, err
 	}
-	return s3.New(o, func(o *s3.Options) { o.HTTPClient = h }), nil
+	return s3.New(o, func(o *s3.Options) {
+		o.HTTPClient = h
+		if reflect.TypeOf(o.ExpressCredentials) == sdkExpressProvider() {
+			o.ExpressCredentials = nil
+		}
+	}), nil
 }
 
 // FollowsNoRedirect reports whether c was built by WithoutRedirects.
