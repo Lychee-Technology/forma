@@ -803,8 +803,9 @@ collector's SDK clients refuse HTTP 3xx redirects and reject ambiguous
 custom-endpoint paths (repeated slashes, trailing slashes on non-root paths, dot
 segments, escaped paths), so none of their requests reaches another bucket or
 tenant route. The compactor's DuckDB merge engine reads its sources apart from
-that client; the compactor refuses to run unless both are configured with the
-same endpoint, region and addressing (`docs/manifest-reconcile.md`, "Storage
+that client; the compactor configures it with the client's endpoint and
+refuses to run unless both read the bucket from the same URL, with the same
+region and addressing (`docs/manifest-reconcile.md`, "Storage
 binding").
 
 A writer can never commit a reference to an object GC deleted:

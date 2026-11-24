@@ -108,9 +108,17 @@ name that is not a DNS label, or any bucket behind an IP endpoint). The
 compactor resolves the client's route for the bucket with the SDK's own
 endpoint rules and refuses such a run; pass `--s3-use-path=true`, which
 routes both path-style (and is the route the client already took, so the
-bound storage target does not change). What is enforced is that both read
-through the same configured endpoint, region and effective addressing; the
-merge engine's reads do not go through the no-redirect client.
+bound storage target does not change). Without `--s3-endpoint` the merge
+engine is configured with the endpoint the SDK client resolves for the
+region, not DuckDB's own default: httpfs left without an endpoint builds
+`s3.<region>.amazonaws.com` in every region, which in AWS China
+(`cn-north-1`, `cn-northwest-1`) is not the S3 endpoint
+`s3.<region>.amazonaws.com.cn` the client checks and hashes through. Last,
+the bucket URL the merge engine builds from its endpoint, scheme and
+addressing is compared with the one the client's endpoint rules resolve, and
+a run whose two differ is refused. What is enforced is that both read
+through the same endpoint, region and effective addressing; the merge
+engine's reads do not go through the no-redirect client.
 
 `--bind-storage` stays as an explicit path: it binds the deployment ahead of
 the writers, or confirms that this run's flags and environment name the bound

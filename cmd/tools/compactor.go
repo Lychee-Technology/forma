@@ -110,7 +110,9 @@ func parseCompactorFlags(args []string) (*compactorOptions, error) {
 	return opts, nil
 }
 
-// openMergeEngine builds the CDC DuckDB exporter the rewrite merges through.
+// openMergeEngine builds the CDC DuckDB exporter the rewrite merges through,
+// reading the bucket through endpoint, the one checkMergeRoute returned: the
+// S3 client's endpoint, never DuckDB's own default (R4-F1).
 // Credentials come from the single shared rule cdc.ResolveStaticS3Credentials
 // (#329): explicit config wins, otherwise the AWS_ACCESS_KEY_ID /
 // AWS_SECRET_ACCESS_KEY pair, with AWS_SESSION_TOKEN riding whichever source
@@ -133,7 +135,7 @@ func parseCompactorFlags(args []string) (*compactorOptions, error) {
 // feeding cdc.CDCConfig.S3AccessKeyID/S3SecretAccessKey/S3SessionToken, not to
 // reintroduce a second private resolver: two credential rules signing the same
 // bucket differently is the failure mode #329 retires.
-func openMergeEngine(ctx context.Context, opts *compactorOptions, logger *zap.Logger) (*cdc.DuckExporter, error) {
+func openMergeEngine(ctx context.Context, opts *compactorOptions, endpoint string, logger *zap.Logger) (*cdc.DuckExporter, error) {
 	duckCfg := cdc.CDCConfig{
 		DuckDBPath:              opts.duck.duckDBPath,
 		DuckThreads:             opts.duck.duckThreads,
@@ -142,7 +144,7 @@ func openMergeEngine(ctx context.Context, opts *compactorOptions, logger *zap.Lo
 		ParquetCompression:      opts.duck.parquetCompression,
 		ParquetCompressionLevel: opts.duck.parquetCompressionLevel,
 		S3Bucket:                opts.s3.bucket,
-		S3Endpoint:              opts.s3.endpoint,
+		S3Endpoint:              endpoint,
 		S3Region:                opts.s3.region,
 		S3UseSSL:                opts.s3.useSSL,
 		S3UsePath:               opts.s3.usePath,
@@ -233,8 +235,10 @@ func runCompactorOut(ctx context.Context, args []string, metricsOut io.Writer) e
 		return fmt.Errorf("build the compactor's S3 client: %w", err)
 	}
 	// The merge engine reads the sources again, configured from the flags
-	// alone: refuse a run whose client took its route from anywhere else.
-	if err := checkMergeRoute(s3Client, opts.s3); err != nil {
+	// and, when they name no endpoint, the client's own endpoint for the
+	// region: refuse a run whose client took its route from anywhere else.
+	mergeEndpoint, err := checkMergeRoute(s3Client, opts.s3)
+	if err != nil {
 		return fmt.Errorf("check the compactor's merge route: %w", err)
 	}
 
@@ -244,7 +248,7 @@ func runCompactorOut(ctx context.Context, args []string, metricsOut io.Writer) e
 	}
 	defer func() { _ = db.Close() }()
 
-	exporter, err := openMergeEngine(ctx, opts, logger)
+	exporter, err := openMergeEngine(ctx, opts, mergeEndpoint, logger)
 	if err != nil {
 		return fmt.Errorf("build merge engine: %w", err)
 	}

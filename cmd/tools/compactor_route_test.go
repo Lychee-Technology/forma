@@ -51,6 +51,12 @@ func TestCompactorRefusesAnEnvironmentOnlyEndpoint(t *testing.T) {
 	require.False(t, opened)
 }
 
+// mergeRouteErr is checkMergeRoute's error alone.
+func mergeRouteErr(c *s3.Client, s s3Flags) error {
+	_, err := checkMergeRoute(c, s)
+	return err
+}
+
 // TestCheckMergeRoute pins what the merge engine can follow: the flags'
 // endpoint, region and addressing, with --s3-use-ssl agreeing with the
 // endpoint's scheme, and no FIPS, dual-stack or accelerated route.
@@ -63,10 +69,10 @@ func TestCheckMergeRoute(t *testing.T) {
 		}
 		return s3.New(o)
 	}
-	require.NoError(t, checkMergeRoute(client(nil), flags))
+	require.NoError(t, mergeRouteErr(client(nil), flags))
 	regional := flags
 	regional.endpoint, regional.useSSL = "", true
-	require.NoError(t, checkMergeRoute(client(func(o *s3.Options) { o.BaseEndpoint = nil }), regional))
+	require.NoError(t, mergeRouteErr(client(func(o *s3.Options) { o.BaseEndpoint = nil }), regional))
 
 	for name, tc := range map[string]struct {
 		flags func(*s3Flags)
@@ -92,7 +98,7 @@ func TestCheckMergeRoute(t *testing.T) {
 		if tc.flags != nil {
 			tc.flags(&f)
 		}
-		require.ErrorIs(t, checkMergeRoute(client(tc.opts), f), ErrMergeRouteMismatch, name)
+		require.ErrorIs(t, mergeRouteErr(client(tc.opts), f), ErrMergeRouteMismatch, name)
 	}
 }
 
@@ -130,7 +136,7 @@ func TestCheckMergeRouteComparesEffectiveAddressing(t *testing.T) {
 		if f.endpoint != "" {
 			o.BaseEndpoint = aws.String(f.endpoint)
 		}
-		return checkMergeRoute(s3.New(o), f)
+		return mergeRouteErr(s3.New(o), f)
 	}
 	for name, tc := range map[string]struct {
 		flags    s3Flags

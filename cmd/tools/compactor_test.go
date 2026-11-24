@@ -80,7 +80,7 @@ func TestOpenMergeEngine_DoesNotConsultCredentialChain(t *testing.T) {
 	setStaticS3Env(t)
 
 	opts := &compactorOptions{s3: s3Flags{region: "us-east-1"}}
-	exporter, err := openMergeEngine(context.Background(), opts, zap.NewNop())
+	exporter, err := openMergeEngine(context.Background(), opts, "", zap.NewNop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestOpenMergeEngine_EnvCredentialsReachEngineValidation(t *testing.T) {
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "env-secret")
 
 	opts := &compactorOptions{s3: s3Flags{region: "us-east-1"}}
-	exporter, err := openMergeEngine(context.Background(), opts, zap.NewNop())
+	exporter, err := openMergeEngine(context.Background(), opts, "", zap.NewNop())
 	if err == nil {
 		_ = exporter.DB.Close()
 		t.Fatal("expected the env access key to reach httpfs credential validation and be rejected (#329)")
