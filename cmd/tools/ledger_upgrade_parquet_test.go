@@ -148,7 +148,7 @@ func (u *upgradeTarget) addPublication(t *testing.T) {
 	}
 	tables := publication.TablesFor(u.tables.EntityMain)
 	t.Cleanup(func() {
-		for _, table := range []string{tables.Record, tables.Generation, tables.Epoch} {
+		for _, table := range []string{tables.Record, tables.Generation, tables.Epoch, tables.Storage} {
 			_, _ = u.pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+table)
 		}
 	})
