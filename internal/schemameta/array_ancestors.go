@@ -1,6 +1,9 @@
 package schemameta
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -99,4 +102,28 @@ func arrayAncestorsOf(name string, properties map[string]*forma.PropertySchema) 
 // it parses.
 func declaresObject(prop *forma.PropertySchema) bool {
 	return prop != nil && (prop.Type == "object" || prop.Properties != nil)
+}
+
+// DeriveArrayAncestors answers cache, the active attributes of schemaName,
+// with ArrayAncestors derived from the schema's document in schemaDir exactly
+// as the file registry derives them for the server (withArrayAncestors). A
+// schema with no document, or one whose document does not resolve every
+// attribute's ancestors, keeps cache as is. MetadataLoader does not derive
+// them, so a tool that judges stored records by ancestry, as
+// validate-schema-consistency's scalar-shape census does (#696), reads them
+// here.
+func DeriveArrayAncestors(schemaDir, schemaName string, schemaID int16, cache forma.SchemaAttributeCache) (forma.SchemaAttributeCache, error) {
+	schemaFile := filepath.Join(schemaDir, schemaName+".json")
+	data, err := os.ReadFile(schemaFile)
+	if os.IsNotExist(err) {
+		return cache, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read schema file %s: %w", schemaFile, err)
+	}
+	schema, err := parseJSONSchemaFile(data, schemaID, schemaName)
+	if err != nil {
+		return nil, fmt.Errorf("parse schema file %s: %w", schemaFile, err)
+	}
+	return withArrayAncestors(schemaName, cache, schema.Properties), nil
 }

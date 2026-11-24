@@ -155,6 +155,48 @@ milestones, and the counts live on the `EntityManager` — one per process in
 the shipped wiring — and reset on restart. The signal
 narrows where to look; the e2e pass above is still what licenses the flip.
 
+### Report-only covers the schema, not storage (#696)
+
+Report-only mode admits a document that violates its JSON Schema only where
+storage can hold the value as written: an out-of-enum string, a bad
+`format`, a number past `maximum`, a missing required property. It is not
+permission to store something else. Representability is a storage
+invariant, enforced whatever the validation mode, including on a manager
+with no validator: the conversion refusals of the next section, and the
+shape of a value.
+
+The shape is read off the attributes file. An attribute whose `valueType`
+is `list` takes an array of single values; every other attribute takes one
+single value. An update that sends an object or an array, empty or not, at
+a single value's position is refused with `ErrInvalidInput`, a `400`:
+
+```text
+invalid value for attribute 'tenant' (attrID=1): declared type text takes a single value, got an empty object; an object or array, empty or not, cannot be stored where a single value belongs (omit the key to keep the current value)
+```
+
+So is an object at a list, or as one of its elements. Before #696 the write
+took such a container apart: `{}` and `[]` wrote nothing, which kept a
+column-bound value and removed an EAV one, and `["a"]` stored `"a"` as an
+array element under a scalar, which the read returns as `["a"]`. Neither
+`{}` nor `[]` clears a scalar; clearing stays with #684. The rule is
+positional: in `{"items": [{"name": "x"}]}` the array is `items`', an array
+of objects, and `name` holds a single value; `{"items": [{"name": ["x"]}]}`
+and the literal `{"items.name": ["x"]}` are refused. Go values the write
+does not decompose, such as a `[]string` or a struct, are still the
+conversion's to judge.
+
+The attributes file decides even where the JSON Schema says otherwise. A
+primitive array whose attributes file predates #204 and records its element
+type (`contact.phones` as `text`) can no longer be written as an array:
+declare it `"valueType": "list"`, as `generate-attributes` asks for that
+ledger shape. Its stored records still read, and an update that does not
+name the attribute writes them back unchanged, as it does for any stored
+container: the rule judges what the caller sends, not what the row already
+holds. Creates are judged by their strict JSON Schema validation, as before.
+`validate-schema-consistency` lists stored records with more array indices
+than a scalar's array ancestry admits ([migration
+guide](./schema-consistency-migration.md#array-elements-stored-under-scalar-attributes-696)).
+
 ### Which errors are which class
 
 `validateWritePayload` splits on sentinel evidence, not on the enforce flag:
@@ -802,12 +844,16 @@ any other conversion refusal. Otherwise, of several such values, the one
 reported is the one the write's conversion meets first, in sorted key
 order.
 
-Only conversion moves. What the document walk refuses rather than converts
-(an undefined attribute, a `null`, an `[]` nested inside a list's value, the
-nesting cap) and the required policy, which needs the row, keep their stage
-in the merged write. A scalar or a nested array sent for a list is the
-conversion's refusal, so it moves too; before #772 `Update` answered it after
-the precondition and the row.
+Only conversion moves, and the shape of a value (#696), which, like a
+conversion, depends on the value and its attribute alone: an object or array
+where a single value belongs is refused in this class, at this stage. What
+the document walk refuses rather than converts (an undefined attribute, a
+`null`, an `[]` nested inside a list's value, the nesting cap) and the
+required policy, which needs the row, keep their stage in the merged write. A
+scalar or a nested array sent for a list is the conversion's refusal, so it
+moves too; before #772 `Update` answered it after the precondition and the
+row. The merged write judges the shape again on the document it writes, so a
+route that reaches the merge another way is refused there.
 
 Registration (`schemameta.ValidateColumnBinding`) refuses a `col_name` that
 is not a column `entity_main` has (#557: `foo` or `text_99` classify as text
@@ -2428,6 +2474,21 @@ Unstorable text has behaved this way since #679. What does not change is an
 `UpdateWhere` or `Claim` matching no row, or an `Upsert` that creates its
 row: none writes `Updates`, so each still succeeds whatever `Updates` holds,
 unstorable text aside.
+
+### Status change: an object or array at a scalar is now 400 in every mode (#696)
+
+Under report-only update validation, the default, an update giving a scalar
+`{}`, `[]` or a non-empty array answered `200` and stored what the walk made
+of it (see "Report-only covers the schema, not storage"). A singleton array
+at an EAV unique-key component answered a redacted `500` from the key
+planner. Each is now `ErrInvalidInput`, a `400` naming the attribute, its
+declared type and what was sent, raised with the conversion refusals of
+#772: before any SQL on `Update` and the atomic `BatchUpdate`, after the
+read and before any write on `UpdateWhere`, `Claim` and `Upsert`, so a `Tx`
+stays usable. An `UpdateWhere` or `Claim` that takes no row, and an `Upsert`
+that creates, still succeed. An object at a required scalar used to be
+reported as the missing required attribute; it is now reported as the shape.
+A caller relying on `{}` or `[]` to drop an EAV attribute gets the `400`.
 
 ### Status change: a duplicate-attribute payload now succeeds
 

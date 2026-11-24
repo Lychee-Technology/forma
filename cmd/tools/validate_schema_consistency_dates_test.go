@@ -30,6 +30,7 @@ func newEAVDateImageCensusMock(t *testing.T, dateCensus *pgxmock.Rows) pgxmock.P
 		WillReturnRows(empty())
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.array_indices = ''`).
 		WillReturnRows(empty())
+	expectEmptyScalarShapeCensus(mock)
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, e\.row_id, e\.array_indices, e\.value_numeric::text`).
 		WithArgs(int16(100), int16(3), "-9007199254740992", "9007199254740992").
 		WillReturnRows(widthCensusRows())

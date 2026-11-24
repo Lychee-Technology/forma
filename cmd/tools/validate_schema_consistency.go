@@ -220,6 +220,12 @@ func (v schemaConsistencyValidator) collectIssues(ctx context.Context, cache *sc
 	}
 	issues = append(issues, listIssues...)
 
+	shapeIssues, err := v.checkIndexedRowsUnderScalarAttrs(ctx, cache)
+	if err != nil {
+		return nil, err
+	}
+	issues = append(issues, shapeIssues...)
+
 	widthIssues, err := v.checkIntegerWidthExports(ctx, cache)
 	if err != nil {
 		return nil, err

@@ -37,6 +37,11 @@ Forma Tools CLI
   - `column_binding.col_name` 不是 `entity_main` 实际拥有的列（#557）；
   - `valueType`↔column-encoding 绑定无法 round-trip 的情况（#459）；
   - `eav_data` 中未知的 `attr_id`、存储列错位、list 属性下残留的标量行；
+  - 非 list 属性的记录携带的数组下标多于其 array ancestry 所允许的数量（#696）：#696 之前
+    report-only 更新在标量下写入的数组元素，或 attributes 文件仍记录元素类型的 #204 之前的
+    primitive array（应改为 `valueType: list`）。registry 未推导出 array ancestry 的 schema，
+    在名称允许的下标数以内的记录列为 informational；每条发现只给出同一条记录的 `row_id` 与
+    `array_indices`，不打印值；
   - EAV-only `smallint`/`integer`/`bigint` 值超出声明宽度或非整数（#501）；自 #729 起 OLTP 读取会拒绝
     超出声明类型的 EAV `smallint`/`integer`（含 list 元素与提升为绑定列前遗留的 `eav_data` 行），
     每一条都报为失败，需通过 API 重写；

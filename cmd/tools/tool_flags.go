@@ -61,6 +61,10 @@ func (f *postgresFlags) register(fs *flag.FlagSet, opts postgresFlagOptions) {
 	fs.IntVar(&f.port, opts.portFlag, opts.portDefault, opts.portUsage)
 	fs.StringVar(&f.user, opts.userFlag, opts.userDefault, opts.userUsage)
 	fs.StringVar(&f.password, opts.passwordFlag, opts.passwordDefault, opts.passwordUsage)
+	// The default is often read from DB_PASSWORD or PG_PASSWORD; -help must
+	// not print it. Clearing the printed default leaves the value in place,
+	// so the precedence is unchanged: the flag, then its default.
+	fs.Lookup(opts.passwordFlag).DefValue = ""
 	fs.StringVar(&f.database, opts.databaseFlag, opts.databaseDefault, opts.databaseUsage)
 	fs.StringVar(&f.sslMode, opts.sslModeFlag, opts.sslModeDefault, opts.sslModeUsage)
 	if opts.includeUseIAM {

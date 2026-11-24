@@ -66,23 +66,10 @@ func TestUpdateLeavingRequiredNestedAttributeMissingFails(t *testing.T) {
 		{"empty parent into absent parent", forma.RequiredPolicyIfParentPresent,
 			map[string]any{"amount": int64(1)}, map[string]any{"contact": map[string]any{}}},
 	}
-	// A value at contact.total that writes no record there replaces the
-	// stored one without standing in for it.
-	for _, policy := range bothRequiredPolicies {
-		for name, replacement := range map[string]any{
-			"object replacing the value":       map[string]any{"total": int64(5)},
-			"empty object replacing the value": map[string]any{},
-		} {
-			cases = append(cases, struct {
-				name    string
-				policy  forma.RequiredPolicy
-				seed    map[string]any
-				updates map[string]any
-			}{name, policy,
-				map[string]any{"contact": map[string]any{"total": int64(1), "name": "kept"}},
-				map[string]any{"contact": map[string]any{"total": replacement}}})
-		}
-	}
+	// An object or array sent at contact.total used to replace the stored
+	// value without writing a record there, and so failed this policy. It
+	// is refused for its shape now, ahead of the policy (#696,
+	// TestUpdateGivingAScalarAContainerIsRefusedOnEverySurface).
 	for _, surface := range updateSurfaces {
 		for _, tc := range cases {
 			t.Run(surface.name+"/"+string(tc.policy)+"/"+tc.name, func(t *testing.T) {

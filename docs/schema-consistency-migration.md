@@ -168,6 +168,12 @@ It validates:
 - text/uuid/list values are not incorrectly stored in `value_numeric`
 - no `list` attribute still carries a scalar row (`array_indices = ''` with a
   value), left over from before the attribute became a list (`#372`)
+- no attribute that holds a single value (any `valueType` but `list`) carries
+  records with more array indices than its array ancestry admits (`#696`):
+  array elements a report-only update stored under a scalar before `#696`,
+  or a primitive array whose attributes file still records its element type
+  (pre-`#204`). Indexed records within the ancestry the registry cannot
+  derive are reported as informational
 - no unbound `date`/`datetime` attribute (or list of them) carries an
   `eav_data.value_numeric` image the upgraded read path refuses: a number
   that is not whole (a fraction, `NaN`, `±Infinity`) or one past 2^53 epoch
@@ -692,6 +698,53 @@ value until its next write re-flushes it. That is harmless for exports made
 after `#372`, which already carry the one-element list the rewritten row
 produces; parquet written before `#372` holds `[]` for the row and serves that
 from the warm/cold tiers until the entity is written again.
+
+### Array elements stored under scalar attributes (`#696`)
+
+Example validator output:
+
+```text
+- array elements stored under scalar attributes in eav_data_dev: schema=ukaccount schema_id=120 attr_id=5 attribute=note type=text indices=1 array_ancestors=0 rows=3 example=row_id=018f2c4e-0000-7000-8000-000000000001 array_indices="0"
+informational (not a failure):
+- indexed scalar records whose array ancestry the registry does not declare in eav_data_dev: schema=visit schema_id=102 attr_id=31 attribute=contactSnapshot.name type=text indices=1 array_ancestors=unknown, at most 1 rows=12 example=row_id=018f2c4e-0000-7000-8000-000000000002 array_indices="0"
+```
+
+An attribute whose `valueType` is not `list` holds one value. Its record
+carries one array index per array of objects around it, the attribute's
+array ancestry, which the server derives from the schema document, and no
+more. A record with more indices is an element of an array stored where the
+metadata declares a single value. Before `#696` a report-only update made such
+records: `{"note": ["a"]}` stored `"a"` at `array_indices = '0'`, and the read
+returns `["a"]`. Since `#696` every update refuses that payload, so the rows
+are pre-existing data.
+
+The same shape is also what a primitive array looks like when its attributes
+file predates `#204` and records the element type (`contact.phones` as
+`text`). The census cannot tell the two apart; the attributes file decides.
+For the legacy array, declare the attribute `"valueType": "list"` with its
+`items_type`, as `generate-attributes` already asks for that ledger shape, and
+re-run the validator. For anything else, rewrite the attribute through the API
+with a single value. An update that does not name the attribute writes the
+records back unchanged, and none is repaired automatically.
+
+The informational block lists indexed records of schemas whose array ancestry
+the registry does not derive, such as one whose document reaches an object
+through another file's `$ref`. There an index may belong to an array of
+objects or to the attribute's own array, so these records are neither counted
+as clean nor as corrupt. A record with more indices than the attribute's name
+has proper prefixes cannot belong to its ancestors, so it is a failure even
+there. Each finding names one record by `row_id` and `array_indices`, read
+from the same record, and never prints a value.
+
+Inspect a finding:
+
+```sql
+SELECT row_id, array_indices
+FROM eav_data_dev
+WHERE schema_id = 120 AND attr_id = 5 AND array_indices <> ''
+ORDER BY row_id, array_indices
+LIMIT 50;
+```
 
 ### EAV integer values past their declared width (`#501`)
 
@@ -1266,6 +1319,10 @@ LIMIT 50;
   The upgraded server refuses to read such rows on the OLTP route, and the
   federated tiers read them narrowed until `#621`; see
   [Date images the read path refuses](#date-images-the-read-path-refuses-592)
+- no array elements stored under scalar attributes are reported (`#696`):
+  declare a pre-`#204` primitive array a `list`, and rewrite any other
+  attribute through the API with a single value, as described in
+  [Array elements stored under scalar attributes](#array-elements-stored-under-scalar-attributes-696)
 - no `bool_text` image other than `"1"`, `"0"` or NULL is reported
   (`#404`, `#857`): every read and every update of such a row fails, so
   rewrite the column with SQL, as described in

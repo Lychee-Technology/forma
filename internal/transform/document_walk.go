@@ -47,7 +47,7 @@ const (
 type documentEntry struct {
 	kind entryKind
 	// name is the dotted attribute path. A refusal carries one only where it
-	// refuses an undefined attribute.
+	// refuses an undefined attribute or a shape.
 	name string
 	// tagged is the record the position addresses, without a value, and the
 	// key spelling that reached it. Its ArrayIndices is the position's
@@ -61,6 +61,9 @@ type documentEntry struct {
 	value any
 	// refusal is the published error of an entryRefusal.
 	refusal error
+	// shape marks the shape rule's refusal of a container the caller sent
+	// at an attribute's position (judgeContainer).
+	shape bool
 }
 
 // claims reports whether the entry writes a record.
@@ -83,7 +86,19 @@ func (e documentEntry) claims() bool {
 // it sorts first and the literal key, the caller's explicit value, is
 // visited last and wins (#312).
 func walkDocument(schemaID int16, rowID uuid.UUID, data map[string]any, cache forma.SchemaAttributeCache) ([]documentEntry, error) {
-	w := &documentWalk{schemaID: schemaID, rowID: rowID, cache: cache}
+	return (&documentWalk{schemaID: schemaID, rowID: rowID, cache: cache}).run(data)
+}
+
+// walkMergedDocument is walkDocument over an update's merged document, its
+// stored values held undecoded, judging every container at an attribute's
+// position by the shape rule (visitAt). Only there can the walk tell the
+// caller's containers from the stored row's: once the stored values are
+// decoded, the written document no longer says which is which.
+func walkMergedDocument(schemaID int16, rowID uuid.UUID, data map[string]any, cache forma.SchemaAttributeCache) ([]documentEntry, error) {
+	return (&documentWalk{schemaID: schemaID, rowID: rowID, cache: cache, judgeShapes: true}).run(data)
+}
+
+func (w *documentWalk) run(data map[string]any) ([]documentEntry, error) {
 	w.visitMap(nil, data, nil)
 	if w.tooDeep != nil {
 		return nil, w.tooDeep
@@ -100,6 +115,14 @@ type documentWalk struct {
 	// tooDeep is the nesting cap's refusal once a container exceeds it; the
 	// walk visits nothing after it.
 	tooDeep error
+	// judgeShapes applies the shape rule (walkMergedDocument).
+	judgeShapes bool
+	// scanning is non-zero while the walk descends into a container it
+	// judges at an attribute's position (judgeContainer); sent and held
+	// count the leaves it finds: the caller's own values, and the merge
+	// base's stored ones.
+	scanning   int
+	sent, held int
 }
 
 func (w *documentWalk) visit(path []string, value any, indices []int) {
@@ -146,7 +169,7 @@ func (w *documentWalk) visitMap(path []string, v map[string]any, indices []int) 
 			}
 			continue
 		}
-		w.visit(newPath, value, indices)
+		w.visitAt(newPath, value, indices)
 	}
 	if w.claims == claimsBefore {
 		w.parent(path, indices)
@@ -166,17 +189,27 @@ func (w *documentWalk) visitArray(path []string, v []any, indices []int) {
 			return
 		}
 		if item == nil {
-			attrName := strings.Join(path, ".")
-			if isKnownAttributeOrParent(attrName, w.cache) {
-				w.refuse(forma.InvalidInputf("attribute '%s' cannot be set to null (array index %d); omit the element to preserve its current value", attrName, i))
-			}
+			w.nullElement(path, i)
 			continue
 		}
 		w.visit(path, item, append(indices, i))
 	}
 }
 
+// nullElement refuses a null element of an array at a known path.
+func (w *documentWalk) nullElement(path []string, i int) {
+	attrName := strings.Join(path, ".")
+	if isKnownAttributeOrParent(attrName, w.cache) {
+		w.refuse(forma.InvalidInputf("attribute '%s' cannot be set to null (array index %d); omit the element to preserve its current value", attrName, i))
+	}
+}
+
 func (w *documentWalk) visitLeaf(path []string, v any, indices []int) {
+	if _, isHeld := v.(*storedValue); isHeld {
+		w.held++
+	} else {
+		w.sent++
+	}
 	attrName := strings.Join(path, ".")
 	meta, ok := w.cache[attrName]
 	if !ok {

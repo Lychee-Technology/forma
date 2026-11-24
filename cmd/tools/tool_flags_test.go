@@ -170,3 +170,44 @@ func TestDBPortEnvErrorKeepsHelp(t *testing.T) {
 		}
 	}
 }
+
+// A tool's help never prints the database password its flag defaults to
+// (#696): the default is read from the environment, and help output lands in
+// terminals and CI logs. The value still applies when the flag is not given.
+func TestHelpDoesNotPrintThePasswordDefault(t *testing.T) {
+	const secret = "dummy-secret-696"
+	t.Setenv("DB_PASSWORD", secret)
+	var out bytes.Buffer
+	if err := runValidateSchemaConsistencyOut(context.Background(), []string{"-help"}, &out); err != nil {
+		t.Fatalf("help: %v", err)
+	}
+	if !strings.Contains(out.String(), "-db-password") {
+		t.Fatalf("help must still list the flag, got %q", out.String())
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatalf("help printed the password default: %q", out.String())
+	}
+
+	var flags postgresFlags
+	fs := flag.NewFlagSet("postgres", flag.ContinueOnError)
+	fs.SetOutput(&out)
+	flags.register(fs, postgresFlagOptions{passwordFlag: "db-password", passwordDefault: bootstrap.Env("DB_PASSWORD", "postgres"),
+		hostFlag: "db-host", portFlag: "db-port", userFlag: "db-user", databaseFlag: "db-name", sslModeFlag: "db-ssl-mode"})
+	out.Reset()
+	fs.PrintDefaults()
+	if strings.Contains(out.String(), secret) {
+		t.Fatalf("usage printed the password default: %q", out.String())
+	}
+	if err := fs.Parse(nil); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := flags.resolvedPassword("DB_PASSWORD"); got != secret {
+		t.Fatalf("the default must still apply, got %q", got)
+	}
+	if err := fs.Parse([]string{"-db-password=explicit"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := flags.resolvedPassword("DB_PASSWORD"); got != "explicit" {
+		t.Fatalf("the flag must win over its default, got %q", got)
+	}
+}

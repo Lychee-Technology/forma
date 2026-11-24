@@ -32,10 +32,13 @@ import (
 // Upsert that creates), which succeeded before #772 and still does. Both are
 // the first in the write's sorted key order of their class.
 //
-// Only conversion moves here. A position the walk refuses rather than
-// claims keeps its stage, after the precondition and the row's existence are
-// judged: an undefined attribute, a null, an [] nested in a list, the
-// nesting cap. So does the required policy, which the merged write judges
+// Only conversion moves here, and the shape rule (#696), which judges a
+// value against its attribute alone just as conversion does: an object or
+// array at an attribute holding a single value, or an object as a list's
+// element, is a refusal of the second class (copyAt). Any other position
+// the walk refuses rather than claims keeps its stage, after the
+// precondition and the row's existence are judged: an undefined attribute, a
+// null, an [] nested in a list, the nesting cap. So does the required policy, which the merged write judges
 // before it converts and which needs the row. The caller strips relation
 // subtrees first, as the merge does, since they are never written.
 //
@@ -119,13 +122,60 @@ func (in *updateIntake) copyMap(path []string, src map[string]any, indices []int
 			out[key] = nil
 			continue
 		}
-		copied, err := in.copyValue(append(path, key), value, indices)
+		at := append(path, key)
+		copied, err := in.copyAt(at, value, indices)
 		if err != nil {
 			return nil, err
 		}
 		out[key] = copied
 	}
 	return out, nil
+}
+
+// copyAt copies the value at path, the position a map key leads to, judging
+// a container there as the walk does at an attribute's position
+// (documentWalk.visitAt): an object or array where the attribute holds a
+// single value, or an object as a list's element, is refused. Like a
+// conversion, the refusal depends only on the value and its attribute, so it
+// is a refusal of the second class (#696). The copy still descends into the
+// container, so text PostgreSQL cannot hold inside it is refused as
+// unconditionally as before (#679).
+func (in *updateIntake) copyAt(path []string, value any, indices []int) (any, error) {
+	if !isContainer(value) {
+		return in.copyValue(path, value, indices)
+	}
+	name := strings.Join(path, ".")
+	meta, ok := in.cache[name]
+	if !ok {
+		return in.copyValue(path, value, indices)
+	}
+	list, isArray := value.([]any)
+	if !isArray || meta.ValueType != forma.ValueTypeList {
+		in.refuse(containerError(name, meta, value, false, joinIndices(indices)))
+		return in.copyValue(path, value, indices)
+	}
+	out := make([]any, len(list))
+	for i, item := range list {
+		if item == nil {
+			continue
+		}
+		if element, isObject := item.(map[string]any); isObject {
+			in.refuse(containerError(name, meta, element, true, joinIndices(append(indices, i))))
+		}
+		copied, err := in.copyValue(path, item, append(indices, i))
+		if err != nil {
+			return nil, err
+		}
+		out[i] = copied
+	}
+	return out, nil
+}
+
+// refuse records err unless an earlier refusal of its class is recorded.
+func (in *updateIntake) refuse(err error) {
+	if in.refusal == nil {
+		in.refusal = err
+	}
 }
 
 // copyArray copies an array element by element. An empty one is the
@@ -168,9 +218,7 @@ func (in *updateIntake) convertLeaf(path []string, value any, indices []int) (an
 		if text && sqlutil.CheckText(*record.ValueText) != nil {
 			return nil, err
 		}
-		if in.refusal == nil {
-			in.refusal = err
-		}
+		in.refuse(err)
 		return value, nil
 	}
 	if !text {

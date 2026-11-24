@@ -59,6 +59,16 @@ func (t *persistentRecordTransformer) MergeUpdate(
 // spellings of the attribute holds, and the update is refused rather than
 // silently deleting the record (respelledError).
 //
+// The walk also judges the shape of every container the caller put at an
+// attribute's position (walkMergedDocument), and the first it refuses, in
+// walk order, fails the update as invalid input: the written document holds
+// it unchanged, and the write would take it apart. A container of stored
+// values only is the stored row's own shape and is written back as stored.
+// A row read without array ancestry rebuilds the members of an array of
+// objects as arrays of their own (rebuildInferred), and records a
+// report-only update stored before #696 rebuild the same way; neither is
+// repaired or refused here.
+//
 // A stored value the walk does not claim was rebuilt where the write cannot
 // read it back. A row without array ancestry leaves one there when its record
 // carries more array indices than its parent takes, as the members of an
@@ -76,7 +86,7 @@ func (t *persistentRecordTransformer) MergeUpdate(
 // cut. The root document is never removed, and a container that was empty
 // before resolution, such as a caller's {} or [], is kept.
 func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, cache forma.SchemaAttributeCache) (map[string]any, error) {
-	entries, err := walkDocument(schemaID, rowID, doc, cache)
+	entries, err := walkMergedDocument(schemaID, rowID, doc, cache)
 	if err != nil {
 		return nil, fmt.Errorf("walk the merged document of row %s: %w", rowID, err)
 	}
@@ -84,6 +94,11 @@ func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, ca
 	stored := storedSpellingsOf(entries)
 	kept := make(map[*storedValue]any)
 	for _, entry := range entries {
+		if entry.shape {
+			// The caller's container at an attribute's position
+			// (judgeContainer), published.
+			return nil, entry.refusal
+		}
 		held, isHeld := entry.value.(*storedValue)
 		if !isHeld {
 			continue
