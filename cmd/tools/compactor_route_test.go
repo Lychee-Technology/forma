@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -113,4 +117,122 @@ func TestCompactorRefusesPlainHTTPToTheAWSDefaultEndpoint(t *testing.T) {
 	require.ErrorIs(t, err, ErrMergeRouteMismatch)
 	require.ErrorContains(t, err, `the AWS default endpoint of region "us-east-1" over https`)
 	require.False(t, opened, "refused before the database is opened")
+}
+
+// TestCheckMergeRouteComparesEffectiveAddressing: with --s3-use-path=false
+// the merge engine always addresses the bucket virtual-hosted, while the SDK
+// client falls back to path style for a bucket it cannot name in the host
+// (R3-F1). Equal flags then still mean two routes, and the run is refused;
+// --s3-use-path=true makes both path-style.
+func TestCheckMergeRouteComparesEffectiveAddressing(t *testing.T) {
+	check := func(f s3Flags) error {
+		o := s3.Options{Region: f.region, UsePathStyle: f.usePath}
+		if f.endpoint != "" {
+			o.BaseEndpoint = aws.String(f.endpoint)
+		}
+		return checkMergeRoute(s3.New(o), f)
+	}
+	for name, tc := range map[string]struct {
+		flags    s3Flags
+		mismatch bool
+	}{
+		"a dotted bucket over the AWS default HTTPS endpoint":     {flags: s3Flags{bucket: "my.bucket", useSSL: true}, mismatch: true},
+		"a dotted bucket over a custom HTTPS endpoint":            {flags: s3Flags{bucket: "my.bucket", endpoint: "https://s3.example", useSSL: true}, mismatch: true},
+		"a bucket that is not a DNS label":                        {flags: s3Flags{bucket: "My_Bucket", endpoint: "https://s3.example", useSSL: true}, mismatch: true},
+		"an IP endpoint":                                          {flags: s3Flags{bucket: "bkt", endpoint: "http://127.0.0.1:9000"}, mismatch: true},
+		"a dotted bucket path-style over HTTPS":                   {flags: s3Flags{bucket: "my.bucket", useSSL: true, usePath: true}},
+		"a dotted bucket path-style over a custom HTTPS endpoint": {flags: s3Flags{bucket: "my.bucket", endpoint: "https://s3.example", useSSL: true, usePath: true}},
+		"a dotted bucket over a custom plain-HTTP endpoint":       {flags: s3Flags{bucket: "my.bucket", endpoint: "http://s3.example"}, mismatch: true},
+		"a plain bucket virtual-hosted over HTTPS":                {flags: s3Flags{bucket: "bkt", useSSL: true}},
+		"an IP endpoint path-style":                               {flags: s3Flags{bucket: "bkt", endpoint: "http://127.0.0.1:9000", usePath: true}},
+	} {
+		tc.flags.region = "us-east-1"
+		err := check(tc.flags)
+		if tc.mismatch {
+			require.ErrorIs(t, err, ErrMergeRouteMismatch, name)
+			require.ErrorContains(t, err, "pass --s3-use-path=true", name)
+			continue
+		}
+		require.NoError(t, err, name)
+	}
+}
+
+// TestCompactorRefusesADottedBucketOverHTTPSVirtualHosted: the SDK client
+// reads a dotted bucket over HTTPS path-style, the merge engine would read it
+// virtual-hosted under --s3-use-path=false (R3-F1). The run fails before it
+// opens the database.
+func TestCompactorRefusesADottedBucketOverHTTPSVirtualHosted(t *testing.T) {
+	isolateAWSConfig(t)
+	setStaticS3Env(t)
+	opened := false
+	old := openCompactorDBFn
+	t.Cleanup(func() { openCompactorDBFn = old })
+	openCompactorDBFn = func(context.Context, cdc.CDCConfig, *zap.Logger) (*sql.DB, error) {
+		opened = true
+		return nil, context.Canceled
+	}
+	err := runCompactorOut(context.Background(), []string{
+		"--schema-id", "7", "--s3-bucket", "my.bucket", "--entity-main-table", "entity_main",
+	}, &bytes.Buffer{})
+	require.ErrorIs(t, err, ErrMergeRouteMismatch)
+	require.ErrorContains(t, err, `bucket "my.bucket" path-style`)
+	require.False(t, opened, "refused before the database is opened")
+
+	err = runCompactorOut(context.Background(), []string{
+		"--schema-id", "7", "--s3-bucket", "my.bucket", "--entity-main-table", "entity_main", "--s3-use-path=true",
+	}, &bytes.Buffer{})
+	require.NotErrorIs(t, err, ErrMergeRouteMismatch)
+	require.True(t, opened, "path-style on both sides passes the route check")
+}
+
+// captureURL is an S3 HTTP client that records the URL of the request the SDK
+// built and sends nothing.
+type captureURL struct{ url *string }
+
+func (c captureURL) Do(r *http.Request) (*http.Response, error) {
+	*c.url = r.URL.String()
+	return nil, errors.New("not sent")
+}
+
+// TestClientPathStyleMatchesTheRequestURL pins clientPathStyle to the request
+// the SDK client actually builds for an object of the bucket: path-style
+// exactly when the bucket is the first segment of the URL path and not in the
+// host name.
+func TestClientPathStyleMatchesTheRequestURL(t *testing.T) {
+	for _, tc := range []struct {
+		bucket, endpoint string
+		disableHTTPS     bool
+		forcePath        bool
+	}{
+		{bucket: "bkt"},
+		{bucket: "bkt", disableHTTPS: true},
+		{bucket: "bkt", forcePath: true},
+		{bucket: "my.bucket"},
+		{bucket: "my.bucket", disableHTTPS: true},
+		{bucket: "bkt", endpoint: "https://s3.example"},
+		{bucket: "my.bucket", endpoint: "https://s3.example"},
+		{bucket: "my.bucket", endpoint: "http://s3.example"},
+		{bucket: "My_Bucket", endpoint: "https://s3.example"},
+		{bucket: "bkt", endpoint: "http://127.0.0.1:9000"},
+		{bucket: "bkt", endpoint: "http://rustfs:9000", forcePath: true},
+	} {
+		var sent string
+		o := s3.Options{
+			Region: "us-east-1", UsePathStyle: tc.forcePath, HTTPClient: captureURL{&sent},
+			Credentials: aws.AnonymousCredentials{}, RetryMaxAttempts: 1,
+		}
+		o.EndpointOptions.DisableHTTPS = tc.disableHTTPS
+		if tc.endpoint != "" {
+			o.BaseEndpoint = aws.String(tc.endpoint)
+		}
+		c := s3.New(o)
+		_, _ = c.GetObject(context.Background(), &s3.GetObjectInput{Bucket: aws.String(tc.bucket), Key: aws.String("k")})
+		require.NotEmpty(t, sent, "%+v", tc)
+		u, err := url.Parse(sent)
+		require.NoError(t, err)
+		sentPath := strings.HasPrefix(u.Path, "/"+tc.bucket+"/") && !strings.HasPrefix(u.Host, tc.bucket+".")
+		got, err := clientPathStyle(c.Options(), tc.bucket)
+		require.NoError(t, err)
+		require.Equal(t, sentPath, got, "%+v sent %s", tc, sent)
+	}
 }

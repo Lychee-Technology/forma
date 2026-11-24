@@ -99,9 +99,18 @@ taken from `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or a shared config
 `endpoint_url` instead of `--s3-endpoint`, another region, FIPS, dual-stack
 or transfer acceleration, or an `--s3-endpoint` scheme that disagrees with
 `--s3-use-ssl`. Without `--s3-endpoint` the SDK client sends to the region's
-AWS endpoint over HTTPS, so `--s3-use-ssl=false` is refused there too. Pass the endpoint and region as flags. What is enforced is
-that both read through the same configured endpoint, region and addressing;
-the merge engine's reads do not go through the no-redirect client.
+AWS endpoint over HTTPS, so `--s3-use-ssl=false` is refused there too. Pass the endpoint and region as flags.
+The addressing compared is the effective one, not the flag: the merge engine
+addresses the bucket exactly as `--s3-use-path` says, while under
+`--s3-use-path=false` the SDK client falls back to path-style addressing for
+a bucket it cannot name in the host (a dotted bucket such as `my.bucket`, a
+name that is not a DNS label, or any bucket behind an IP endpoint). The
+compactor resolves the client's route for the bucket with the SDK's own
+endpoint rules and refuses such a run; pass `--s3-use-path=true`, which
+routes both path-style (and is the route the client already took, so the
+bound storage target does not change). What is enforced is that both read
+through the same configured endpoint, region and effective addressing; the
+merge engine's reads do not go through the no-redirect client.
 
 `--bind-storage` stays as an explicit path: it binds the deployment ahead of
 the writers, or confirms that this run's flags and environment name the bound

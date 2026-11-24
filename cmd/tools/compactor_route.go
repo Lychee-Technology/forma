@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -22,13 +23,19 @@ import (
 var ErrMergeRouteMismatch = errors.New("the compactor's merge engine would read the bucket through another route than its S3 client")
 
 // checkMergeRoute refuses a run whose S3 client and merge engine are not
-// configured with the same endpoint, region, scheme and routing settings. The
-// merge engine takes --s3-endpoint (its scheme dropped), --s3-region,
-// --s3-use-ssl and --s3-use-path, and has no FIPS, dual-stack or
-// acceleration setting; the client takes the same flags, but the SDK fills
-// what they leave unset from AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, a shared
-// config endpoint_url, AWS_REGION, AWS_USE_FIPS_ENDPOINT and
-// AWS_USE_DUALSTACK_ENDPOINT.
+// configured with the same endpoint, region, scheme and routing settings, or
+// do not address the bucket the same way. The merge engine takes
+// --s3-endpoint (its scheme dropped), --s3-region, --s3-use-ssl and
+// --s3-use-path, and has no FIPS, dual-stack or acceleration setting; the
+// client takes the same flags, but the SDK fills what they leave unset from
+// AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL, a shared config endpoint_url,
+// AWS_REGION, AWS_USE_FIPS_ENDPOINT and AWS_USE_DUALSTACK_ENDPOINT. Equal
+// flags are not yet equal routes: the merge engine addresses the bucket
+// exactly as --s3-use-path says, while the SDK, with --s3-use-path=false,
+// falls back to path-style addressing for a bucket it cannot put in the host
+// name (a dotted bucket, over HTTPS or plain HTTP alike, a name that is not a
+// DNS label, an IP endpoint), so the addressing compared is the one the SDK's own endpoint
+// rules resolve for the bucket (clientPathStyle).
 func checkMergeRoute(c *s3.Client, s s3Flags) error {
 	o := c.Options()
 	if got := aws.ToString(o.BaseEndpoint); got != s.endpoint {
@@ -57,7 +64,63 @@ func checkMergeRoute(c *s3.Client, s s3Flags) error {
 			"make --s3-use-ssl agree with the client's scheme: %w",
 			shown, scheme, map[bool]string{true: "https", false: "http"}[s.useSSL], s.useSSL, ErrMergeRouteMismatch)
 	}
+	pathStyle, err := clientPathStyle(o, s.bucket)
+	if err != nil {
+		return fmt.Errorf("resolve the S3 client's route to bucket %q: %w", s.bucket, err)
+	}
+	if pathStyle != s.usePath {
+		style := map[bool]string{true: "path-style", false: "virtual-hosted"}
+		return fmt.Errorf("the S3 client addresses bucket %q %s on %s and the merge engine %s (--s3-use-path=%t); "+
+			"the SDK falls back to path-style addressing for a bucket it cannot name in the host, such as a dotted "+
+			"bucket, a name that is not a DNS label or one behind an IP endpoint: pass --s3-use-path=%t: %w",
+			s.bucket, style[pathStyle], shown, style[s.usePath], s.usePath, pathStyle, ErrMergeRouteMismatch)
+	}
 	return nil
+}
+
+// clientPathStyle reports whether the S3 client addresses bucket path-style,
+// as the SDK's own endpoint rules resolve it for an object request: forced by
+// UsePathStyle, or a fallback the rules take when the bucket cannot be a
+// virtual host. It resolves the bucket's endpoint once with the client's
+// settings and once with path style forced: the client addresses the bucket
+// path-style exactly when both resolve to the same URL.
+func clientPathStyle(o s3.Options, bucket string) (bool, error) {
+	if o.UsePathStyle {
+		return true, nil
+	}
+	resolver := o.EndpointResolverV2
+	if resolver == nil {
+		resolver = s3.NewDefaultEndpointResolverV2()
+	}
+	params := s3.EndpointParameters{
+		Bucket:                         aws.String(bucket),
+		Region:                         aws.String(o.Region),
+		Endpoint:                       o.BaseEndpoint,
+		UseFIPS:                        aws.Bool(o.EndpointOptions.UseFIPSEndpoint == aws.FIPSEndpointStateEnabled),
+		UseDualStack:                   aws.Bool(o.EndpointOptions.UseDualStackEndpoint == aws.DualStackEndpointStateEnabled),
+		Accelerate:                     aws.Bool(o.UseAccelerate),
+		DisableMultiRegionAccessPoints: aws.Bool(o.DisableMultiRegionAccessPoints),
+		UseArnRegion:                   aws.Bool(o.UseARNRegion),
+		ForcePathStyle:                 aws.Bool(false),
+	}
+	resolve := func(forcePath bool) (string, error) {
+		p := params
+		p.ForcePathStyle = aws.Bool(forcePath)
+		ep, err := resolver.ResolveEndpoint(context.Background(), p)
+		if err != nil {
+			return "", err
+		}
+		return ep.URI.String(), nil
+	}
+	actual, err := resolve(false)
+	if err != nil {
+		return false, err
+	}
+	forced, err := resolve(true)
+	if err != nil {
+		return false, err
+	}
+	return actual == forced, nil
 }
 
 // clientScheme returns the scheme the S3 client sends with, and the endpoint
