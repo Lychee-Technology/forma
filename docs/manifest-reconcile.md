@@ -14,8 +14,10 @@ a lost generation is a `cdc-init`.
 - **Read-only diagnosis (default, without `--gc`):** takes no schema lock and
   makes no database writes (safe for a read-only PostgreSQL principal and
   Aurora DSQL). Reads each schema's publication record, generation history,
-  lifecycle row, and S3 listing; verifies every retained and expired manifest;
-  probes listed objects for loss; reports what `--gc` would delete.
+  lifecycle row, and S3 listing; verifies every retained manifest and every
+  expired manifest still present (an expired manifest already missing is not
+  reported); probes the objects retained generations list for loss; reports
+  what `--gc` would delete.
 - **Garbage collection (`--gc`):** takes the writer schema lock (`--pg-engine`),
   raises `gc_horizon`, retires superseded generations and any unretired
   lost-record recovery fence, deletes unprotected objects of expired generations
@@ -153,11 +155,26 @@ run:
 1. Stop every writer and every `manifest-reconcile --gc` of the deployment.
 2. Create the binding table ("Creating the binding table").
 3. Run a read-only `manifest-reconcile` (no `--gc`) of the upgraded
-   `forma-tools` with the writers' flags and environment. It verifies every
-   retained and expired manifest and probes the listed objects at the target
-   it derives. Go on only if its blocking findings are `storage_not_bound`
-   alone, for a missing binding, and it reports no `lost_object`; otherwise
-   the flags do not name where the generations are.
+   `forma-tools` with the writers' flags and environment, and without
+   `--schema-id`, so that it diagnoses every registered schema and every
+   schema with a record. For each schema it diagnoses, it verifies the
+   manifests of the current and retained generations and the expired
+   manifests still present (one already missing is not reported), and probes
+   the objects the current and retained generations list at the target it
+   derives. Go on only if all of these hold:
+   - it exits with code `2`, not `1`. Exit code `1` means a schema's pass
+     failed (its S3 LIST, a manifest fetch, an object probe or a database
+     read), and a failed schema was not checked: its report has no
+     `storage_not_bound` finding to tell it from a checked one;
+   - the report has a `schema <id>:` line for every schema of the
+     deployment, none of them reads `skipped` or `inconclusive`, and no
+     schema's part of the report holds an `error:` line;
+   - every schema reports `storage_not_bound`, for the missing binding, and
+     that is the only blocking finding of any schema;
+   - no schema reports `lost_object`.
+
+   Otherwise do not bind: fix what failed and run the diagnosis again, or,
+   when the findings stand, the flags do not name where the generations are.
 4. Run `--bind-storage` with the same flags and environment, and check the
    target it prints.
 5. Upgrade and start the writers. Keep `--gc` off until every writer of the
