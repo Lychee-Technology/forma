@@ -75,6 +75,14 @@ func TestCheckMergeRoute(t *testing.T) {
 		"acceleration":               {opts: func(o *s3.Options) { o.UseAccelerate = true }},
 		"https off for https":        {flags: func(f *s3Flags) { f.endpoint = "https://s3.example" }, opts: func(o *s3.Options) { o.BaseEndpoint = &[]string{"https://s3.example"}[0] }},
 		"https on for http":          {flags: func(f *s3Flags) { f.useSSL = true }},
+		"https off for the AWS default endpoint": {
+			flags: func(f *s3Flags) { f.endpoint, f.useSSL = "", false },
+			opts:  func(o *s3.Options) { o.BaseEndpoint = nil },
+		},
+		"https on for an AWS default endpoint without HTTPS": {
+			flags: func(f *s3Flags) { f.endpoint, f.useSSL = "", true },
+			opts:  func(o *s3.Options) { o.BaseEndpoint, o.EndpointOptions.DisableHTTPS = nil, true },
+		},
 	} {
 		f := flags
 		if tc.flags != nil {
@@ -82,4 +90,27 @@ func TestCheckMergeRoute(t *testing.T) {
 		}
 		require.ErrorIs(t, checkMergeRoute(client(tc.opts), f), ErrMergeRouteMismatch, name)
 	}
+}
+
+// TestCompactorRefusesPlainHTTPToTheAWSDefaultEndpoint: without
+// --s3-endpoint the SDK client checks and hashes the merge sources over the
+// region's HTTPS endpoint, so --s3-use-ssl=false would have the merge engine
+// read them again over plain HTTP. The run fails before it opens the
+// database.
+func TestCompactorRefusesPlainHTTPToTheAWSDefaultEndpoint(t *testing.T) {
+	isolateAWSConfig(t)
+	setStaticS3Env(t)
+	opened := false
+	old := openCompactorDBFn
+	t.Cleanup(func() { openCompactorDBFn = old })
+	openCompactorDBFn = func(context.Context, cdc.CDCConfig, *zap.Logger) (*sql.DB, error) {
+		opened = true
+		return nil, context.Canceled
+	}
+	err := runCompactorOut(context.Background(), []string{
+		"--schema-id", "7", "--s3-bucket", "bkt", "--entity-main-table", "entity_main", "--s3-use-ssl=false",
+	}, &bytes.Buffer{})
+	require.ErrorIs(t, err, ErrMergeRouteMismatch)
+	require.ErrorContains(t, err, `the AWS default endpoint of region "us-east-1" over https`)
+	require.False(t, opened, "refused before the database is opened")
 }

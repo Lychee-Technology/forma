@@ -96,7 +96,8 @@ database or the bucket, when its SDK client is routed otherwise: an endpoint
 taken from `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` or a shared config
 `endpoint_url` instead of `--s3-endpoint`, another region, FIPS, dual-stack
 or transfer acceleration, or an `--s3-endpoint` scheme that disagrees with
-`--s3-use-ssl`. Pass the endpoint and region as flags. What is enforced is
+`--s3-use-ssl`. Without `--s3-endpoint` the SDK client sends to the region's
+AWS endpoint over HTTPS, so `--s3-use-ssl=false` is refused there too. Pass the endpoint and region as flags. What is enforced is
 that both read through the same configured endpoint, region and addressing;
 the merge engine's reads do not go through the no-redirect client.
 

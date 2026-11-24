@@ -48,16 +48,35 @@ func checkMergeRoute(c *s3.Client, s s3Flags) error {
 			"AWS_USE_DUALSTACK_ENDPOINT or shared config), which the merge engine has no setting for: pass that endpoint "+
 			"as --s3-endpoint and turn the setting off: %w", ErrMergeRouteMismatch)
 	}
-	u, err := url.Parse(s.endpoint)
-	if s.endpoint == "" || err != nil {
+	scheme, shown := clientScheme(o, s.endpoint)
+	if scheme == "" {
 		return nil // the client's endpoint check refuses a malformed one (s3endpoint.ClientEndpoint)
 	}
-	if (u.Scheme == "https" && !s.useSSL) || (u.Scheme == "http" && s.useSSL) {
-		return fmt.Errorf("the S3 client sends to %s and the merge engine uses %s (--s3-use-ssl=%t): "+
-			"make --s3-use-ssl agree with --s3-endpoint's scheme: %w",
-			s3endpoint.SafeURL(u), map[bool]string{true: "https", false: "http"}[s.useSSL], s.useSSL, ErrMergeRouteMismatch)
+	if (scheme == "https") != s.useSSL {
+		return fmt.Errorf("the S3 client sends to %s over %s and the merge engine uses %s (--s3-use-ssl=%t): "+
+			"make --s3-use-ssl agree with the client's scheme: %w",
+			shown, scheme, map[bool]string{true: "https", false: "http"}[s.useSSL], s.useSSL, ErrMergeRouteMismatch)
 	}
 	return nil
+}
+
+// clientScheme returns the scheme the S3 client sends with, and the endpoint
+// to name in an error. With --s3-endpoint it is that endpoint's scheme; with
+// none the SDK resolves the region's AWS default endpoint, over HTTPS unless
+// the client disables it, whatever --s3-use-ssl says. It returns no scheme
+// for an endpoint that is not a URL.
+func clientScheme(o s3.Options, endpoint string) (scheme, shown string) {
+	if endpoint == "" {
+		if o.EndpointOptions.DisableHTTPS {
+			return "http", describeEndpoint("", o.Region)
+		}
+		return "https", describeEndpoint("", o.Region)
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", ""
+	}
+	return u.Scheme, s3endpoint.SafeURL(u)
 }
 
 // describeEndpoint renders a configured endpoint without what may carry a
