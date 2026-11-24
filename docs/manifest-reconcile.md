@@ -228,10 +228,11 @@ the manifests and probes the objects of every one of them, still need it.
    with `--verify-checksums`. Go on only when they report no
    `missing_generation`, `missing_retained_manifest`, `invalid_manifest`,
    `lost_object` or `corrupt_object`.
-3. Configure every reader for the new target. Leave the old target as it is
-   until no reader is configured for it any more and the reader pass deadline
-   (`R_max`) has passed: a pass that started before the switch still reads
-   there.
+3. Configure every reader for the new target before any writer resumes.
+   Leave the old target as it is until no reader is configured for it any more
+   and the reader pass deadline (`R_max`) has passed: a pass that started
+   before the switch still reads there. Its record is unchanged, since no
+   writer runs, and its manifest is at both targets.
 
 **Re-initialize, then let the old generations expire.** Use this plan when the
 objects cannot be copied. `cdc-init` at the new target publishes a new current
@@ -239,18 +240,37 @@ generation for a schema there. It copies none of the older generations: their
 manifests and objects stay at the old target only, and they stay retained
 until the grace `G` after the re-init superseded them.
 
-1. Keep the old target and every object in it readable, and do not change
-   reader configuration yet.
-2. Run `cdc-init` for every schema, with the new target's exact flags and
+A reader takes the current manifest's key from the record and reads it at the
+one target it is configured for. Once a schema's `cdc-init` commits, its
+record names a manifest that exists only at the new target, and until then it
+names one that exists only at the old target. No reader configuration reads
+every schema throughout, so this plan takes the deployment's reads offline:
+readers are stopped before the first re-init and started again only after the
+last. When reads cannot stop, use the copy plan.
+
+1. Keep the old target and every object in it readable.
+2. Stop every reader of the deployment, every process that serves federated
+   reads of its schemas, and wait until each one has exited. A pass ends by
+   its deadline `R_max`, so a reader that drains its passes when it stops
+   exits within `R_max` of the stop. A reader still running when the first
+   re-init commits fails its next pass of that schema: the record then names a
+   manifest its target does not hold.
+3. Run `cdc-init` for every schema, with the new target's exact flags and
    environment.
-3. Configure every reader for the new target. A reader pass that pinned an
-   older generation before the switch finishes against the old target.
-4. Do not run `--gc` until every generation published at the old target has
+4. Run `manifest-reconcile` against the new target (without `--gc`). Go on only
+   when it reports no `missing_generation` and no `lost_object` for any
+   schema: every schema's current generation is then at the new target. It
+   reports `missing_retained_manifest` for the generations the re-inits
+   superseded, as expected: their manifests are at the old target only.
+5. Configure every reader for the new target, and only then start them. Do not
+   start one with the old configuration: it fails every pass, since no current
+   manifest is at the old target any more.
+6. Do not run `--gc` until every generation published at the old target has
    expired, that is, until `G` has passed since the last schema's re-init. Run
    earlier, the collector finds their manifests missing at the new target and
    reports `missing_retained_manifest`, a blocking finding. Once they have
    expired, `--gc` forgets them without deleting anything at the old target.
-5. Delete the old target's objects by hand, and only after `--gc` has
+7. Delete the old target's objects by hand, and only after `--gc` has
    forgotten every generation published there and no reader or writer is
    configured for it any more.
 
