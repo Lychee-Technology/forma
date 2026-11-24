@@ -95,30 +95,32 @@ type updateIntake struct {
 // copyValue dispatches one position of the copy. Errors pass up the copy
 // unwrapped: convertLeaf names the attribute, which is the whole path, so a
 // prefix per level would only repeat it.
-func (in *updateIntake) copyValue(path []string, value any, indices []int) (any, error) {
-	if err := scalarShapeRefusal(path, value, indices, in.cache, in.shapes); err != nil {
+// ancestors counts the indices of the arrays of objects around path, as in
+// the walk (documentWalk.visit).
+func (in *updateIntake) copyValue(path []string, value any, indices []int, ancestors int) (any, error) {
+	if err := scalarShapeRefusal(path, value, indices, ancestors, in.cache, in.shapes); err != nil {
 		// The walk refuses the container whole (#696); it is kept as sent.
 		// Text PostgreSQL cannot hold inside it stays the error, whatever
 		// the row, as it was before the container was refused whole: the
 		// copy below judges the same positions, and only that error comes
 		// back from it.
 		in.refuse(err)
-		if _, err := in.copyContainer(path, value, indices); err != nil {
+		if _, err := in.copyContainer(path, value, indices, ancestors); err != nil {
 			return nil, err
 		}
 		return value, nil
 	}
-	return in.copyContainer(path, value, indices)
+	return in.copyContainer(path, value, indices, ancestors)
 }
 
 // copyContainer copies value at path: an object or array by its members,
 // anything else as a leaf.
-func (in *updateIntake) copyContainer(path []string, value any, indices []int) (any, error) {
+func (in *updateIntake) copyContainer(path []string, value any, indices []int, ancestors int) (any, error) {
 	switch v := value.(type) {
 	case map[string]any:
 		return in.copyMap(path, v, indices)
 	case []any:
-		return in.copyArray(path, v, indices)
+		return in.copyArray(path, v, indices, ancestors)
 	default:
 		return in.convertLeaf(path, v, indices)
 	}
@@ -141,7 +143,7 @@ func (in *updateIntake) copyMap(path []string, src map[string]any, indices []int
 			out[key] = nil
 			continue
 		}
-		copied, err := in.copyValue(append(path, key), value, indices)
+		copied, err := in.copyValue(append(path, key), value, indices, len(indices))
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +155,7 @@ func (in *updateIntake) copyMap(path []string, src map[string]any, indices []int
 // copyArray copies an array element by element. An empty one is the
 // empty-list marker, or an [] the walk refuses or ignores: none is a value
 // to convert.
-func (in *updateIntake) copyArray(path []string, src []any, indices []int) ([]any, error) {
+func (in *updateIntake) copyArray(path []string, src []any, indices []int, ancestors int) ([]any, error) {
 	if src == nil {
 		return nil, nil
 	}
@@ -162,7 +164,7 @@ func (in *updateIntake) copyArray(path []string, src []any, indices []int) ([]an
 		if item == nil {
 			continue
 		}
-		copied, err := in.copyValue(path, item, append(indices, i))
+		copied, err := in.copyValue(path, item, append(indices, i), ancestors)
 		if err != nil {
 			return nil, err
 		}

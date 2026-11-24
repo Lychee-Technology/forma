@@ -29,17 +29,21 @@ import (
 // objects carries one index per array around it, and a primitive array
 // recorded under its element type before #204 carries one more of its own.
 // So a record is judged against how many indices its attribute legitimately
-// carries: what its schema document declares (transform.SchemaShapes, the
-// write's own reading), or the registry's array ancestry where that says
-// more (ArrayAncestors).
+// carries: what its schema document declares under every reading
+// (transform.SchemaShapes, the write's own reading), or the registry's array
+// ancestry where that says more (ArrayAncestors).
 //
-//   - verified: the record carries more indices than that, and the document
-//     declares the innermost level a single value, so the extra ones index
+//   - verified: the record carries more indices than any reading of the
+//     document admits, and every reading declares the innermost level a
+//     single value, so the extra ones index
 //     an array stored where a single value belongs: under a scalar, or as an
 //     element of a pre-#204 primitive array;
 //   - unverified: it carries more, but the document does not say what the
 //     attribute's value is there (no document, a $ref to a file the registry
-//     does not serve, a position it leaves open);
+//     does not serve, a position it leaves open), or only some reading of
+//     it admits that many: a parent declared an object in one alternative
+//     and an array of objects in another, which a record's indices do not
+//     tell apart;
 //   - no finding: it carries no more (a member at its array ancestry's
 //     depth, a pre-#204 array's own elements), or it is a list's.
 //
@@ -146,14 +150,18 @@ func runScalarShapeCensusQuery(ctx context.Context, q toolDBPool, eavTable strin
 
 // classifyShapeRecords judges records of depth indices under meta's
 // attribute, whose document declares declared, and answers how many indices
-// its records legitimately carry; "" is no finding.
+// its records legitimately carry under every reading of the document; ""
+// is no finding. A depth only some reading admits, where a parent is an
+// object in one alternative and an array of objects in another, is
+// unverified: the record's indices do not say which the row took.
 func classifyShapeRecords(declared transform.Declaration, meta forma.AttributeMetadata, depth int) (shapeCensusClass, int) {
-	legitimate, exact := declared.Indices()
-	legitimate = max(legitimate, len(meta.ArrayAncestors))
+	sure, most, exact := declared.Indices()
+	ancestry := len(meta.ArrayAncestors)
+	legitimate := max(sure, ancestry)
 	switch {
 	case meta.ValueType == forma.ValueTypeList || depth <= legitimate:
 		return "", legitimate
-	case exact:
+	case exact && depth > max(most, ancestry):
 		return shapeVerified, legitimate
 	default:
 		return shapeUnverified, legitimate

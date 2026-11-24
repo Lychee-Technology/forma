@@ -21,7 +21,12 @@ import (
 // name is an attribute of the schema, whichever spelling reached it (nested
 // keys or a literal dotted key) and however many arrays of objects lie
 // around it: items[0].name is one, items is not. An element of an array at
-// that position is the same path one array index deeper.
+// that position is the same path one array index deeper. Which indices are
+// the arrays of objects around the attribute and which its own value's is
+// the walk's, by the position the value takes: where a parent is an object
+// in one alternative and an array of objects in another, items: {phones:
+// [["1"]]} meets phones under no array of objects, so ["1"] is an element of
+// phones, not phones itself (#696 review).
 //
 //   - An object, empty or not, is refused at every attribute's position: no
 //     value type, list elements included, stores an object there.
@@ -52,8 +57,10 @@ import (
 
 // scalarShapeRefusal answers the published refusal of value at path and
 // indices when value is a JSON object or array the attribute at path cannot
-// store there, or nil (see above).
-func scalarShapeRefusal(path []string, value any, indices []int, cache forma.SchemaAttributeCache, shapes SchemaShapes) error {
+// store there, or nil (see above). The first ancestors of indices are those
+// of the arrays of objects the walk passed on its way to path; the rest
+// index the attribute's own value.
+func scalarShapeRefusal(path []string, value any, indices []int, ancestors int, cache forma.SchemaAttributeCache, shapes SchemaShapes) error {
 	var isArray bool
 	switch value.(type) {
 	case map[string]any:
@@ -76,14 +83,14 @@ func scalarShapeRefusal(path []string, value any, indices []int, cache forma.Sch
 		expected = fmt.Sprintf("declared type list takes an array of %s values", meta.EffectiveItemsType())
 	case isArray:
 		declared := shapes.Declared(name)
-		switch {
-		case declared.At(len(indices)) == ShapeArray:
+		switch at := declared.At(ancestors, len(indices)-ancestors); {
+		case at == ShapeArray:
 			return nil
-		case declared.At(0) == ShapeArray:
+		case declared.At(ancestors, 0) == ShapeArray:
 			// The attribute's own array is legal; this is one of its
 			// elements.
 			expected += fmt.Sprintf(" at array indices %q", joinIndices(indices))
-		case declared.At(len(indices)) == ShapeUnresolved:
+		case at == ShapeUnresolved:
 			expected += " (the schema document declares no array here)"
 		}
 	}

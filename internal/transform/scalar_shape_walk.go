@@ -98,7 +98,9 @@ func indexCount(arrayIndices string) int {
 
 // recordsInPlace reports whether every held value is a record of the
 // attribute name carrying no more array indices than the schema document
-// declares for it (Declaration.Indices). Where the document does not settle
+// declares for it under any reading (Declaration.Indices): a record carries
+// nothing that tells its ancestry apart, and a stored one is not the
+// caller's to judge by the strictest reading. Where the document does not settle
 // how many it may carry (no document, an open declaration, an unresolved
 // $ref), nothing shows the stored records malformed: they may be a
 // primitive array recorded under its element type before #204. They are
@@ -107,9 +109,9 @@ func indexCount(arrayIndices string) int {
 // array there is still refused (scalarShapeRefusal).
 func (w *documentWalk) recordsInPlace(name string, held []*storedValue) bool {
 	meta := w.cache[name]
-	declared, exact := w.shapes.Declared(name).Indices()
+	_, most, exact := w.shapes.Declared(name).Indices()
 	for _, v := range held {
-		if v.record.AttrID != meta.AttributeID || exact && indexCount(v.record.ArrayIndices) > declared {
+		if v.record.AttrID != meta.AttributeID || exact && indexCount(v.record.ArrayIndices) > most {
 			return false
 		}
 	}

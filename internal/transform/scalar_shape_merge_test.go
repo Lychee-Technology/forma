@@ -44,14 +44,16 @@ func TestScalarShapeStoredMembersWithoutAncestryAreWrittenBack(t *testing.T) {
 	require.NoError(t, err)
 	assert.ElementsMatch(t, append(storedKeys(row.OtherAttributes), "3[]=1"), writtenKeys(written))
 
-	// The caller's own array there is refused all the same.
+	// The caller's own array there is refused all the same: the document
+	// declares items.name under an array of objects, not under the object
+	// the rebuild holds it in.
 	merged, err = tr.MergeUpdate(ctx, row, func(base map[string]any) (map[string]any, error) {
 		base["items"].(map[string]any)["name"] = []any{"c"}
 		return base, nil
 	})
 	require.NoError(t, err)
 	_, err = tr.ToPersistentRecord(ctx, shapeSchemaID, rowID, merged)
-	requireShapeRefusal(t, err, shapeRefusal("items.name", 5, "an array of 1 element"))
+	requireShapeRefusal(t, err, noArrayRefusal("items.name", 5))
 
 	_, err = tr.MergeUpdate(ctx, stored(shapeTextRecord(rowID, 5, "0,0", "a")), setting(map[string]any{"count": 1}))
 	require.Error(t, err)

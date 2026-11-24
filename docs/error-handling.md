@@ -207,7 +207,19 @@ of objects (`items[0].name` is a scalar position, `items` is not):
   array ancestry changes the answer. Where the document declares the
   attribute an array, that array is admitted and each of its elements is
   judged at its own position, so `phones: [["1"]]` and `phones: [[]]` are
-  refused at array index `0`.
+  refused at array index `0`. An alternative that admits only `null`, or
+  leaves the type open, does not hide the array another alternative
+  declares: `anyOf: [{"type": "array", "items": {"type": "string"}},
+  {"type": "null"}]` admits the array, in either order. Which indices are
+  the arrays of objects around the attribute and which index its own value
+  is decided by the position the value takes in the document, not by the
+  most any alternative admits: where `items` is an object in one
+  alternative and an array of objects in another, `items: {"phones":
+  [["1"]]}` meets `phones` under no array of objects, so `["1"]` is one of
+  its elements and is refused at array index `0`, while `items: {"phones":
+  ["1"]}` and `items: [{"phones": ["1"]}]` are written as before. A value
+  under more arrays of objects than any alternative declares is refused as
+  undeclared.
 - Where the document does not settle the position, the array is refused as
   well: the document is missing or declares no such property, a `$ref`
   names a file the registry does not serve or a pointer it does not hold,

@@ -140,17 +140,20 @@ type documentWalk struct {
 	rowArrays    map[*any]struct{}
 }
 
-func (w *documentWalk) visit(path []string, value any, indices []int) {
-	if err := scalarShapeRefusal(path, value, indices, w.cache, w.shapes); err != nil && w.refuseShape(path, value, indices, err) {
+// visit visits value at path and indices, of which the first ancestors are
+// the arrays of objects the walk passed before reaching path; the rest index
+// path's own value.
+func (w *documentWalk) visit(path []string, value any, indices []int, ancestors int) {
+	if err := scalarShapeRefusal(path, value, indices, ancestors, w.cache, w.shapes); err != nil && w.refuseShape(path, value, indices, err) {
 		return
 	}
 	switch v := value.(type) {
 	case map[string]any:
 		w.visitMap(path, v, indices)
 	case []any:
-		w.visitArray(path, v, indices)
+		w.visitArray(path, v, indices, ancestors)
 	case rowArray:
-		w.visitArray(path, v, indices)
+		w.visitArray(path, v, indices, ancestors)
 	default:
 		w.visitLeaf(path, v, indices)
 	}
@@ -189,14 +192,14 @@ func (w *documentWalk) visitMap(path []string, v map[string]any, indices []int) 
 			}
 			continue
 		}
-		w.visit(newPath, value, indices)
+		w.visit(newPath, value, indices, len(indices))
 	}
 	if w.claims == claimsBefore {
 		w.parent(path, indices)
 	}
 }
 
-func (w *documentWalk) visitArray(path []string, v []any, indices []int) {
+func (w *documentWalk) visitArray(path []string, v []any, indices []int, ancestors int) {
 	if !w.enter(path, indices) {
 		return
 	}
@@ -215,7 +218,7 @@ func (w *documentWalk) visitArray(path []string, v []any, indices []int) {
 			}
 			continue
 		}
-		w.visit(path, item, append(indices, i))
+		w.visit(path, item, append(indices, i), ancestors)
 	}
 }
 

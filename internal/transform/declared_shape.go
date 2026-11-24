@@ -73,39 +73,65 @@ const (
 )
 
 // Declaration is what a schema document declares for one attribute: the
-// arrays of objects around it and the shape at each depth of its own value.
+// shape at each depth of its own value, for each count of arrays of objects
+// the document admits around it. A parent one alternative declares an
+// object and another an array of objects admits two counts (#696 review).
 type Declaration struct {
-	// ancestors is how many arrays of objects the document declares around
-	// the attribute; a member of one carries an array index for each.
+	// placements has one entry per count of arrays of objects around the
+	// attribute that the document admits, fewest first. Nil when the
+	// document does not reach the attribute.
+	placements []placement
+}
+
+// placement is the attribute's value under one count of arrays of objects.
+type placement struct {
+	// ancestors is how many arrays of objects lie around the attribute; a
+	// member of one carries an array index for each.
 	ancestors int
 	// shapes[i] is the shape declared i array levels into the attribute's
 	// own value: shapes[0] is the attribute's own position, and only the
-	// last entry is not ShapeArray. Nil when the document does not reach the
-	// attribute.
+	// last entry is not ShapeArray.
 	shapes []DeclaredShape
 }
 
-// At answers the shape declared at a position of the attribute that carries
-// indices array indices: those past the arrays of objects around it index
-// its own value. A position past the last declared level has the last one's
-// shape, which is never an array.
-func (d Declaration) At(indices int) DeclaredShape {
-	if len(d.shapes) == 0 {
-		return ShapeUnresolved
+// At answers the shape declared at a position of the attribute inside
+// ancestors arrays of objects and own array levels into its own value, as
+// the write walked it: the ancestry is the value's, not one an alternative
+// the value does not take declares. A position past the last declared level
+// has the last one's shape, which is never an array; one under a count of
+// arrays of objects the document does not admit is unresolved.
+func (d Declaration) At(ancestors, own int) DeclaredShape {
+	for _, p := range d.placements {
+		if p.ancestors == ancestors {
+			return p.shapes[min(own, len(p.shapes)-1)]
+		}
 	}
-	own := min(max(indices-d.ancestors, 0), len(d.shapes)-1)
-	return d.shapes[own]
+	return ShapeUnresolved
 }
 
 // Indices answers how many array indices a stored record of the attribute
-// may carry, as far as the document shows, and whether the document shows
-// that none carries more: it declares the innermost level a non-array type.
-func (d Declaration) Indices() (int, bool) {
-	if len(d.shapes) == 0 {
-		return 0, false
+// may carry as far as the document shows. A record carries no index telling
+// its ancestry from its own value's, so where the document admits several
+// counts of arrays of objects, a record within one reading may be malformed
+// under another: sure is the most every reading admits, most the most any
+// does. exact reports whether the document shows that no record carries
+// more than most: every reading declares the innermost level a non-array
+// type.
+func (d Declaration) Indices() (sure, most int, exact bool) {
+	if len(d.placements) == 0 {
+		return 0, 0, false
 	}
-	last := len(d.shapes) - 1
-	return d.ancestors + last, d.shapes[last] == ShapeScalar
+	sure, exact = -1, true
+	for _, p := range d.placements {
+		last := len(p.shapes) - 1
+		depth := p.ancestors + last
+		if sure < 0 || depth < sure {
+			sure = depth
+		}
+		most = max(most, depth)
+		exact = exact && p.shapes[last] == ShapeScalar
+	}
+	return sure, most, exact
 }
 
 // Declared answers what the document declares for the attribute name.

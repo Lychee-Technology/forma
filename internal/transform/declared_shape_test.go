@@ -36,17 +36,20 @@ func TestDeclaredShapeIndices(t *testing.T) {
 		{"elsewhere", 0, false},
 		{"undeclared", 0, false},
 	} {
-		indices, exact := shapes.Declared(tc.name).Indices()
-		assert.Equal(t, tc.indices, indices, tc.name)
+		sure, most, exact := shapes.Declared(tc.name).Indices()
+		assert.Equal(t, tc.indices, sure, tc.name)
+		assert.Equal(t, tc.indices, most, tc.name)
 		assert.Equal(t, tc.exact, exact, tc.name)
 	}
 	phones := shapes.Declared("phones")
-	assert.Equal(t, ShapeArray, phones.At(0))
-	assert.Equal(t, ShapeScalar, phones.At(1))
-	assert.Equal(t, ShapeScalar, phones.At(2))
+	assert.Equal(t, ShapeArray, phones.At(0, 0))
+	assert.Equal(t, ShapeScalar, phones.At(0, 1))
+	assert.Equal(t, ShapeScalar, phones.At(0, 2))
+	assert.Equal(t, ShapeUnresolved, phones.At(1, 0), "phones inside an array of objects the document does not declare")
 	name := shapes.Declared("items.name")
-	assert.Equal(t, ShapeScalar, name.At(0), "an object sent where the document declares an array of objects")
-	assert.Equal(t, ShapeScalar, name.At(1))
+	assert.Equal(t, ShapeUnresolved, name.At(0, 0), "an object sent where the document declares an array of objects")
+	assert.Equal(t, ShapeScalar, name.At(1, 0))
+	assert.Equal(t, ShapeScalar, name.At(1, 1))
 }
 
 // A registry that serves the properties it parsed but no document text is
@@ -59,9 +62,9 @@ func TestDeclaredShapeFromParsedProperties(t *testing.T) {
 		"phones": {Type: "array", Items: &forma.PropertySchema{Type: "string"}},
 	}
 	shapes := SchemaShapesOf(registry, shapeSchemaID)
-	assert.Equal(t, ShapeScalar, shapes.Declared("note").At(0))
-	assert.Equal(t, ShapeArray, shapes.Declared("phones").At(0))
-	assert.Equal(t, ShapeUnresolved, shapes.Declared("opaque").At(0))
+	assert.Equal(t, ShapeScalar, shapes.Declared("note").At(0, 0))
+	assert.Equal(t, ShapeArray, shapes.Declared("phones").At(0, 0))
+	assert.Equal(t, ShapeUnresolved, shapes.Declared("opaque").At(0, 0))
 
 	checked, err := CheckUpdateValues(map[string]any{"note": []any{"a"}}, registry.cache, shapes)
 	require.NoError(t, err)
@@ -75,7 +78,7 @@ func TestDeclaredShapeEndsOnARefCycle(t *testing.T) {
 		"properties": {"note": {"$ref": "#/$defs/a"}, "code": {"$ref": "#/$defs/none"}, "tenant": {"$ref": "../up.json"}}}`
 	shapes := SchemaShapesOf(registry, shapeSchemaID)
 	for _, name := range []string{"note", "code", "tenant"} {
-		assert.Equal(t, ShapeUnresolved, shapes.Declared(name).At(0), name)
+		assert.Equal(t, ShapeUnresolved, shapes.Declared(name).At(0, 0), name)
 	}
 }
 
@@ -94,7 +97,11 @@ func TestDeclaredShapeOfShippedSchemas(t *testing.T) {
 			if meta.ValueType == forma.ValueTypeList {
 				continue
 			}
-			assert.NotEqual(t, ShapeUnresolved, shapes.Declared(name).At(0), "%s.%s", schemaName, name)
+			declared := shapes.Declared(name)
+			assert.NotEmpty(t, declared.placements, "%s.%s", schemaName, name)
+			for _, p := range declared.placements {
+				assert.NotEqual(t, ShapeUnresolved, p.shapes[0], "%s.%s", schemaName, name)
+			}
 		}
 	}
 
@@ -102,8 +109,8 @@ func TestDeclaredShapeOfShippedSchemas(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, visit["leadId"].ArrayAncestors, "the fixture must exercise a schema without derived ancestry")
 	shapes := SchemaShapesOf(registry, visitID)
-	assert.Equal(t, ShapeScalar, shapes.Declared("leadId").At(0))
-	assert.Equal(t, ShapeScalar, shapes.Declared("contactSnapshot.email").At(0))
+	assert.Equal(t, ShapeScalar, shapes.Declared("leadId").At(0, 0))
+	assert.Equal(t, ShapeScalar, shapes.Declared("contactSnapshot.email").At(0, 0))
 
 	// The update intake judges an update's values first, so leadId, a
 	// required attribute, is refused as the shape there.
@@ -158,9 +165,9 @@ func TestDeclaredShapeAcrossAlternativeBranches(t *testing.T) {
 				registry.document = document
 				shapes := SchemaShapesOf(registry, shapeSchemaID)
 				phones := shapes.Declared("phones")
-				assert.Equal(t, ShapeArray, phones.At(0), "%s, %s", name, label)
-				assert.Equal(t, ShapeScalar, phones.At(1), "%s, %s", name, label)
-				assert.Equal(t, ShapeScalar, shapes.Declared("note").At(0), "%s, %s", name, label)
+				assert.Equal(t, ShapeArray, phones.At(0, 0), "%s, %s", name, label)
+				assert.Equal(t, ShapeScalar, phones.At(0, 1), "%s, %s", name, label)
+				assert.Equal(t, ShapeScalar, shapes.Declared("note").At(0, 0), "%s, %s", name, label)
 
 				tr := NewPersistentRecordTransformer(registry)
 				for _, value := range []any{[]any{"1", "2"}, "1"} {
@@ -181,7 +188,8 @@ func TestDeclaredShapeAcrossAlternativeBranches(t *testing.T) {
 			registry := newShapeRegistry(true)
 			registry.document = `{"type": "object", "properties": {"phones": ` + branches(keyword, order[0], order[1]) + `}}`
 			phones := SchemaShapesOf(registry, shapeSchemaID).Declared("phones")
-			assert.Equal(t, []DeclaredShape{ShapeArray, ShapeArray, ShapeScalar}, phones.shapes,
+			require.Len(t, phones.placements, 1)
+			assert.Equal(t, []DeclaredShape{ShapeArray, ShapeArray, ShapeScalar}, phones.placements[0].shapes,
 				"%s: an element one alternative declares an array is one", keyword)
 		}
 		for _, order := range [][2]string{
@@ -191,8 +199,8 @@ func TestDeclaredShapeAcrossAlternativeBranches(t *testing.T) {
 			registry := newShapeRegistry(true)
 			registry.document = `{"type": "object", "properties": {"items": ` + branches(keyword, order[0], order[1]) + `}}`
 			name := SchemaShapesOf(registry, shapeSchemaID).Declared("items.name")
-			assert.Equal(t, 1, name.ancestors, "%s: a parent one alternative declares an array of objects", keyword)
-			assert.Equal(t, ShapeScalar, name.At(1), keyword)
+			assert.Equal(t, ShapeScalar, name.At(0, 0), "%s: a parent one alternative declares an object", keyword)
+			assert.Equal(t, ShapeScalar, name.At(1, 0), "%s: a parent one alternative declares an array of objects", keyword)
 		}
 	}
 }
@@ -203,7 +211,7 @@ func TestDeclaredShapeOpenAlternative(t *testing.T) {
 	registry := newShapeRegistry(true)
 	registry.document = `{"type": "object", "anyOf": [{"properties": {"note": {"type": "string"}}}, {"properties": {"note": {"description": "any"}}}]}`
 	shapes := SchemaShapesOf(registry, shapeSchemaID)
-	assert.Equal(t, ShapeUnresolved, shapes.Declared("note").At(0))
+	assert.Equal(t, ShapeUnresolved, shapes.Declared("note").At(0, 0))
 	_, err := NewPersistentRecordTransformer(registry).ToPersistentRecord(context.Background(), shapeSchemaID, uuid.New(), map[string]any{"note": []any{"n"}})
 	requireShapeRefusal(t, err, noArrayRefusal("note", 2))
 }
@@ -223,7 +231,7 @@ func TestDeclaredShapeBoundsBranchingDocuments(t *testing.T) {
 	go func() { done <- SchemaShapesOf(registry, shapeSchemaID).Declared("phones") }()
 	select {
 	case phones := <-done:
-		assert.Equal(t, ShapeArray, phones.At(0))
+		assert.Equal(t, ShapeArray, phones.At(0, 0))
 	case <-time.After(10 * time.Second):
 		t.Fatal("the lookup did not end")
 	}

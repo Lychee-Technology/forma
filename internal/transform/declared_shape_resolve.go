@@ -17,8 +17,9 @@ import (
 // branch constrains the value as well, so it is read the same way.
 //
 // A position is declared an array when any declaration reaching it admits
-// one, a single value when every one says it is not an array, and
-// unresolved otherwise: some declaration leaves its type open.
+// one, even where another leaves its type open or admits only null; a
+// single value when every one says it is not an array; and unresolved
+// otherwise: some declaration leaves its type open.
 
 // nodeKey identifies a subschema the lookup has read: the object holding it
 // and the file it was read from.
@@ -44,46 +45,57 @@ func (l *shapeLookup) declared(name string) Declaration {
 	if l.root == nil {
 		return Declaration{}
 	}
-	nodes := []schemaNode{{value: l.root}}
 	segments := strings.Split(name, ".")
-	ancestors := 0
+	// reach[a] holds the declarations reaching the current segment under a
+	// arrays of objects. A parent one alternative declares an object and
+	// another an array of objects is read both ways, each under its own
+	// count: which one a write meets is the walk's, by the position the
+	// value actually takes (#696 review).
+	reach := [][]schemaNode{{{value: l.root}}}
 	for _, segment := range segments[:len(segments)-1] {
-		children := l.property(nodes, segment)
-		if len(children) == 0 {
-			return Declaration{}
-		}
-		nodes = children
-		if l.shapeOf(children) == ShapeArray {
-			// An array of objects around the attribute. Where an
-			// alternative declares the parent an object instead, its
-			// members are still looked up there, and the member is
-			// counted under the array: the array's index is then the one
-			// the write may meet.
-			items := l.items(children)
-			if len(items) == 0 {
-				return Declaration{}
+		next := make([][]schemaNode, len(reach)+1)
+		for ancestors, nodes := range reach {
+			children := l.property(nodes, segment)
+			if len(children) == 0 {
+				continue
 			}
-			ancestors++
-			nodes = append(items, children...)
+			next[ancestors] = append(next[ancestors], children...)
+			if shape, _ := l.shapeOf(children); shape == ShapeArray {
+				items := l.items(children)
+				if len(items) == 0 {
+					return Declaration{}
+				}
+				next[ancestors+1] = append(next[ancestors+1], items...)
+			}
+		}
+		reach = next
+	}
+	var placements []placement
+	for ancestors, nodes := range reach {
+		if leaves := l.property(nodes, segments[len(segments)-1]); len(leaves) > 0 {
+			placements = append(placements, placement{ancestors: ancestors, shapes: l.levels(leaves)})
 		}
 	}
-	leaves := l.property(nodes, segments[len(segments)-1])
-	if len(leaves) == 0 {
-		return Declaration{}
-	}
-	return Declaration{ancestors: ancestors, shapes: l.levels(leaves)}
+	return Declaration{placements: placements}
 }
 
 // levels answers the shape at each array level of the value the
-// declarations nodes describe.
+// declarations nodes describe. Below a level some declaration leaves open,
+// a level the others declare a single value is unresolved: the open one
+// may admit anything there.
 func (l *shapeLookup) levels(nodes []schemaNode) []DeclaredShape {
 	var shapes []DeclaredShape
+	openAbove := false
 	for len(shapes) < maxShapeLevels {
-		shape := l.shapeOf(nodes)
+		shape, open := l.shapeOf(nodes)
+		if shape == ShapeScalar && openAbove {
+			shape = ShapeUnresolved
+		}
 		shapes = append(shapes, shape)
 		if shape != ShapeArray {
 			return shapes
 		}
+		openAbove = openAbove || open
 		if nodes = l.items(nodes); len(nodes) == 0 {
 			return append(shapes, ShapeUnresolved)
 		}
@@ -93,22 +105,26 @@ func (l *shapeLookup) levels(nodes []schemaNode) []DeclaredShape {
 
 // shapeOf answers the shape the declarations nodes give one position: an
 // array where any of them admits one, a single value where every one says
-// it is not an array, and unresolved otherwise.
-func (l *shapeLookup) shapeOf(nodes []schemaNode) DeclaredShape {
+// it is not an array, and unresolved otherwise; and whether any of them
+// leaves the type open.
+func (l *shapeLookup) shapeOf(nodes []schemaNode) (DeclaredShape, bool) {
 	if len(nodes) == 0 {
-		return ShapeUnresolved
+		return ShapeUnresolved, true
 	}
-	shape := ShapeScalar
+	array, open := false, false
 	for _, node := range nodes {
 		types, known := l.types(node)
-		switch {
-		case types["array"]:
-			return ShapeArray
-		case !known:
-			shape = ShapeUnresolved
-		}
+		array = array || types["array"]
+		open = open || !known
 	}
-	return shape
+	switch {
+	case array:
+		return ShapeArray, open
+	case open:
+		return ShapeUnresolved, true
+	default:
+		return ShapeScalar, false
+	}
 }
 
 // property answers every subschema the declarations nodes give the member
@@ -159,12 +175,16 @@ func (l *shapeLookup) collect(nodes []schemaNode, own func(schemaNode) (schemaNo
 }
 
 // types answers the JSON types node admits other than null, and whether the
-// document says: its "type" (a name or a union), its $ref's, its allOf
-// branches', and the union of its anyOf or oneOf branches' when every branch
-// says. Only when none of them says, an "items" declares an array and a
-// "properties" an object, as the registry's parser reads them. Every
-// constraint's types are joined, so an array is admitted wherever any of
-// them names one. Each subschema's answer is read once.
+// document settles them: its "type" (a name or a union), its $ref's, its
+// allOf branches', and the union of its anyOf or oneOf branches'. Only when
+// none of them says, an "items" declares an array and a "properties" an
+// object, as the registry's parser reads them. Every constraint's types are
+// joined, so an array is admitted wherever any of them names one, and the
+// types an alternative names are kept even where another alternative is
+// open: anyOf [array, {}] still admits the array, though its types are not
+// settled. A declaration of null alone settles its types as none: anyOf
+// [array, null] is an array (#696 review). Each subschema's answer is read
+// once.
 func (l *shapeLookup) types(node schemaNode) (map[string]bool, bool) {
 	key := keyOf(node)
 	if answer, seen := l.typeMemo[key]; seen {
@@ -185,11 +205,9 @@ func (l *shapeLookup) types(node schemaNode) (map[string]bool, bool) {
 func (l *shapeLookup) ownTypes(node schemaNode) (map[string]bool, bool) {
 	out, known := map[string]bool{}, false
 	add := func(types map[string]bool, ok bool) {
-		if ok {
-			known = true
-			for t := range types {
-				out[t] = true
-			}
+		known = known || ok
+		for t := range types {
+			out[t] = true
 		}
 	}
 	add(typeKeyword(node.value["type"]))
@@ -205,36 +223,42 @@ func (l *shapeLookup) ownTypes(node schemaNode) (map[string]bool, bool) {
 	if !known {
 		_, hasItems := node.value["items"].(map[string]any)
 		_, hasProperties := node.value["properties"].(map[string]any)
-		add(map[string]bool{"array": true}, hasItems)
-		add(map[string]bool{"object": true}, !hasItems && hasProperties)
+		switch {
+		case hasItems:
+			add(map[string]bool{"array": true}, true)
+		case hasProperties:
+			add(map[string]bool{"object": true}, true)
+		}
 	}
 	delete(out, "null")
-	return out, known && len(out) > 0
+	return out, known
 }
 
-// unionOf joins the types of branches, which say only when every one does.
+// unionOf joins the types of branches, which are settled only when every
+// branch's are; an open branch leaves the others' types in the answer.
 func (l *shapeLookup) unionOf(branches []schemaNode) (map[string]bool, bool) {
 	if len(branches) == 0 {
 		return nil, false
 	}
-	out := map[string]bool{}
+	out, known := map[string]bool{}, true
 	for _, branch := range branches {
 		types, ok := l.types(branch)
-		if !ok {
-			return nil, false
-		}
+		known = known && ok
 		for t := range types {
 			out[t] = true
 		}
 	}
-	return out, true
+	return out, known
 }
 
 // typeKeyword reads a "type" keyword: a type name or an array of them.
 func typeKeyword(value any) (map[string]bool, bool) {
 	switch v := value.(type) {
 	case string:
-		return map[string]bool{v: true}, v != ""
+		if v == "" {
+			return nil, false
+		}
+		return map[string]bool{v: true}, true
 	case []any:
 		out := map[string]bool{}
 		for _, item := range v {
