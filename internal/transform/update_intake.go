@@ -96,11 +96,24 @@ type updateIntake struct {
 // unwrapped: convertLeaf names the attribute, which is the whole path, so a
 // prefix per level would only repeat it.
 func (in *updateIntake) copyValue(path []string, value any, indices []int) (any, error) {
-	if err := scalarShapeRefusal(path, value, in.cache, in.shapes); err != nil {
+	if err := scalarShapeRefusal(path, value, indices, in.cache, in.shapes); err != nil {
 		// The walk refuses the container whole (#696); it is kept as sent.
+		// Text PostgreSQL cannot hold inside it stays the error, whatever
+		// the row, as it was before the container was refused whole: the
+		// copy below judges the same positions, and only that error comes
+		// back from it.
 		in.refuse(err)
+		if _, err := in.copyContainer(path, value, indices); err != nil {
+			return nil, err
+		}
 		return value, nil
 	}
+	return in.copyContainer(path, value, indices)
+}
+
+// copyContainer copies value at path: an object or array by its members,
+// anything else as a leaf.
+func (in *updateIntake) copyContainer(path []string, value any, indices []int) (any, error) {
 	switch v := value.(type) {
 	case map[string]any:
 		return in.copyMap(path, v, indices)

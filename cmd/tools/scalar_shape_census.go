@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,19 +27,21 @@ import (
 //
 // A non-empty array_indices is no anomaly by itself: a member of an array of
 // objects carries one index per array around it, and a primitive array
-// recorded under its element type before #204 carries its own. So a record
-// is judged against its attribute's array ancestry and its schema document,
-// with the write's own rule (transform.SchemaShapes.Declared):
+// recorded under its element type before #204 carries one more of its own.
+// So a record is judged against how many indices its attribute legitimately
+// carries: what its schema document declares (transform.SchemaShapes, the
+// write's own reading), or the registry's array ancestry where that says
+// more (ArrayAncestors).
 //
-//   - verified: the document declares the attribute a non-array type, and
-//     the record carries more indices than the attribute has arrays of
-//     objects around it, which the registry knows (ArrayAncestors) or the
-//     document shows to be none;
-//   - pre-#204 primitive array: the document declares the attribute an
-//     array, so extra indices are its elements (not reported);
-//   - unverified: the document does not say what the attribute is, or the
-//     attribute lies inside an array of objects in a schema whose registry
-//     derived no ancestry, whose rows hold such indices legitimately.
+//   - verified: the record carries more indices than that, and the document
+//     declares the innermost level a single value, so the extra ones index
+//     an array stored where a single value belongs: under a scalar, or as an
+//     element of a pre-#204 primitive array;
+//   - unverified: it carries more, but the document does not say what the
+//     attribute's value is there (no document, a $ref to a file the registry
+//     does not serve, a position it leaves open);
+//   - no finding: it carries no more (a member at its array ancestry's
+//     depth, a pre-#204 array's own elements), or it is a list's.
 //
 // The census reads and reports; it never writes and repairs nothing. A row
 // is repaired by an update that writes the attribute (docs/error-handling.md).
@@ -60,8 +63,8 @@ type shapeCensusSchema struct {
 }
 
 // shapeCensusFinding is one attribute's records of one index depth that the
-// census reports, with one example record named by row and indices only:
-// the stored value is never printed.
+// census reports, an attribute/depth group, with one example record named by
+// row and indices only: the stored value is never printed.
 type shapeCensusFinding struct {
 	class          shapeCensusClass
 	schema         string
@@ -70,7 +73,7 @@ type shapeCensusFinding struct {
 	attrID         int16
 	declared       forma.ValueType
 	depth          int
-	ancestors      int
+	legitimate     int
 	records        int64
 	rows           int64
 	exampleRow     string
@@ -78,17 +81,20 @@ type shapeCensusFinding struct {
 }
 
 func (f shapeCensusFinding) String() string {
-	return fmt.Sprintf("%s: schema=%s schema_id=%d attr_id=%d attribute=%s declared=%s indices_per_record=%d array_ancestors=%d records=%d rows=%d example_row=%s example_array_indices=%q",
-		f.class, f.schema, f.schemaID, f.attrID, f.attr, f.declared, f.depth, f.ancestors, f.records, f.rows, f.exampleRow, f.exampleIndices)
+	return fmt.Sprintf("%s: schema=%s schema_id=%d attr_id=%d attribute=%s declared=%s indices_per_record=%d legitimate_indices=%d records=%d rows=%d example_row=%s example_array_indices=%q",
+		f.class, f.schema, f.schemaID, f.attrID, f.attr, f.declared, f.depth, f.legitimate, f.records, f.rows, f.exampleRow, f.exampleIndices)
 }
 
 // scalarShapeCensusQuery groups every indexed record by attribute and index
-// depth. A depth is one more than the commas of array_indices.
+// depth. A depth is one more than the commas of array_indices. The example
+// is one record of the group, the smallest by row and then by indices: a
+// row_id's text has a fixed length and no space, so the smallest of row and
+// indices joined by a space is that record's.
 const scalarShapeCensusQuery = `
 SELECT e.schema_id, e.attr_id,
 	length(e.array_indices) - length(replace(e.array_indices, ',', '')) + 1 AS depth,
 	COUNT(*) AS record_count, COUNT(DISTINCT e.row_id) AS row_count,
-	MIN(e.row_id::text) AS example_row, MIN(e.array_indices) AS example_indices
+	MIN(e.row_id::text || ' ' || e.array_indices) AS example
 FROM %s AS e
 WHERE e.array_indices <> ''
 GROUP BY e.schema_id, e.attr_id, depth
@@ -115,17 +121,19 @@ func runScalarShapeCensusQuery(ctx context.Context, q toolDBPool, eavTable strin
 	var findings []shapeCensusFinding
 	for rows.Next() {
 		var f shapeCensusFinding
-		if err := rows.Scan(&f.schemaID, &f.attrID, &f.depth, &f.records, &f.rows, &f.exampleRow, &f.exampleIndices); err != nil {
+		var example string
+		if err := rows.Scan(&f.schemaID, &f.attrID, &f.depth, &f.records, &f.rows, &example); err != nil {
 			return nil, fmt.Errorf("scan indexed records of %s: %w", eavTable, err)
 		}
+		f.exampleRow, f.exampleIndices, _ = strings.Cut(example, " ")
 		schema, known := byID[f.schemaID]
 		name, named := attrs[f.schemaID][f.attrID]
 		if !known || !named {
 			continue
 		}
 		meta := schema.cache[name]
-		f.schema, f.attr, f.declared, f.ancestors = schema.name, name, meta.ValueType, len(meta.ArrayAncestors)
-		if f.class = classifyShapeRecords(schema.shapes.Declared(name, meta), meta, f.depth); f.class != "" {
+		f.schema, f.attr, f.declared = schema.name, name, meta.ValueType
+		if f.class, f.legitimate = classifyShapeRecords(schema.shapes.Declared(name), meta, f.depth); f.class != "" {
 			findings = append(findings, f)
 		}
 	}
@@ -137,19 +145,18 @@ func runScalarShapeCensusQuery(ctx context.Context, q toolDBPool, eavTable strin
 }
 
 // classifyShapeRecords judges records of depth indices under meta's
-// attribute; "" is no finding. Only a known ancestry bounds the depth: an
-// attribute without one is ShapeScalar only when the document shows no
-// array of objects around it.
-func classifyShapeRecords(shape transform.DeclaredShape, meta forma.AttributeMetadata, depth int) shapeCensusClass {
+// attribute, whose document declares declared, and answers how many indices
+// its records legitimately carry; "" is no finding.
+func classifyShapeRecords(declared transform.Declaration, meta forma.AttributeMetadata, depth int) (shapeCensusClass, int) {
+	legitimate, exact := declared.Indices()
+	legitimate = max(legitimate, len(meta.ArrayAncestors))
 	switch {
-	case meta.ValueType == forma.ValueTypeList || depth <= len(meta.ArrayAncestors):
-		return ""
-	case shape == transform.ShapeScalar:
-		return shapeVerified
-	case shape == transform.ShapeArray:
-		return ""
+	case meta.ValueType == forma.ValueTypeList || depth <= legitimate:
+		return "", legitimate
+	case exact:
+		return shapeVerified, legitimate
 	default:
-		return shapeUnverified
+		return shapeUnverified, legitimate
 	}
 }
 
@@ -173,11 +180,13 @@ func loadShapeCensusSchemas(ctx context.Context, pool *pgxpool.Pool, schemaTable
 	return schemas, nil
 }
 
-// shapeCensusFound is the exit status of a census that verified a finding.
-type shapeCensusFound struct{ verified int }
+// shapeCensusFound is the exit status of a census that verified a finding:
+// how many attributes, and how many attribute/depth groups of them.
+type shapeCensusFound struct{ attributes, groups int }
 
 func (e *shapeCensusFound) Error() string {
-	return fmt.Sprintf("scalar-shape-census found %d attribute(s) with array elements stored under a scalar", e.verified)
+	return fmt.Sprintf("scalar-shape-census found arrays stored where a single value belongs in %d attribute(s) (%d attribute/depth group(s))",
+		e.attributes, e.groups)
 }
 
 func (e *shapeCensusFound) ExitCode() int { return 2 }
@@ -201,10 +210,10 @@ func runScalarShapeCensusOut(ctx context.Context, args []string, out io.Writer) 
 		hostFlag: "db-host", portFlag: "db-port", userFlag: "db-user", passwordFlag: "db-password",
 		databaseFlag: "db-name", sslModeFlag: "db-ssl-mode",
 		hostDefault: bootstrap.Env("DB_HOST", "localhost"), portDefault: portDefault,
-		userDefault: bootstrap.Env("DB_USER", "postgres"), passwordDefault: bootstrap.Env("DB_PASSWORD", "postgres"),
+		userDefault: bootstrap.Env("DB_USER", "postgres"), passwordDefault: "",
 		databaseDefault: bootstrap.Env("DB_NAME", "forma"), sslModeDefault: bootstrap.Env("DB_SSL_MODE", "disable"),
 		hostUsage: "database host", portUsage: "database port", userUsage: "database user",
-		passwordUsage: "database password", databaseUsage: "database name", sslModeUsage: "database sslmode",
+		passwordUsage: "database password (default: $DB_PASSWORD, else postgres)", databaseUsage: "database name", sslModeUsage: "database sslmode",
 	})
 	var schemaRegistry schemaRegistryFlags
 	schemaRegistry.register(flags, true)
@@ -220,6 +229,11 @@ func runScalarShapeCensusOut(ctx context.Context, args []string, out io.Writer) 
 	}
 	if err := schemaRegistry.validate(true); err != nil {
 		return err
+	}
+	// The password's fallback is resolved only now, so no help or usage
+	// text prints it as the flag's default (#696 review).
+	if pg.password == "" {
+		pg.password = bootstrap.Env("DB_PASSWORD", "postgres")
 	}
 	pool, err := toolPostgresPoolFn(ctx, pg.databaseConfig("DB_PASSWORD", toolPostgresPoolSettings{
 		maxConnections: 2,
@@ -242,21 +256,25 @@ func runScalarShapeCensusOut(ctx context.Context, args []string, out io.Writer) 
 }
 
 // reportShapeCensus prints the findings and answers the exit status: 2 when
-// one is verified, success otherwise, an unverified finding included.
+// one is verified, success otherwise, an unverified finding included. Each
+// finding is one attribute/depth group; an attribute with records at two
+// depths is two.
 func reportShapeCensus(out io.Writer, eavTable string, schemaCount int, findings []shapeCensusFinding) error {
 	verified := 0
+	attributes := make(map[[2]int16]struct{})
 	for _, f := range findings {
 		if f.class == shapeVerified {
 			verified++
+			attributes[[2]int16{f.schemaID, f.attrID}] = struct{}{}
 		}
 	}
-	fmt.Fprintf(out, "scalar-shape-census of %s over %d schema(s): %d verified, %d unverified\n",
-		eavTable, schemaCount, verified, len(findings)-verified)
+	fmt.Fprintf(out, "scalar-shape-census of %s over %d schema(s): %d verified, %d unverified attribute/depth group(s); %d attribute(s) verified\n",
+		eavTable, schemaCount, verified, len(findings)-verified, len(attributes))
 	for _, f := range findings {
 		fmt.Fprintf(out, "- %s\n", f)
 	}
 	if verified > 0 {
-		return &shapeCensusFound{verified: verified}
+		return &shapeCensusFound{attributes: len(attributes), groups: verified}
 	}
 	return nil
 }

@@ -190,16 +190,29 @@ of objects (`items[0].name` is a scalar position, `items` is not):
 - An object is refused at every attribute's position, a list's included: no
   value type stores an object there.
 - An array is refused at an attribute that is not a list when the schema
-  document declares it a type other than an array. The attributes file alone
-  cannot say: a primitive array recorded under its element type before #204
-  (`contact.phones` as `text`) stores its elements at array indices and is
-  still written that way. So an array is admitted where the document
-  declares the attribute an array, where it does not resolve the attribute
-  (a `$ref` the parser leaves open, a type union it drops, a registry that
-  serves no document), and for a member of an array of objects in a schema
-  whose registry derived no array ancestry, whose rows the read rebuilds by
-  inference and writes back that way. Those are the cases that keep the old
-  behavior.
+  document declares it a type other than an array, in an array of objects
+  or not. The attributes file alone cannot say: a primitive array recorded
+  under its element type before #204 (`contact.phones` as `text`) stores its
+  elements at array indices and is still written that way. So the rule reads
+  the document (`transform.SchemaShapes`): its own text, following a `$ref`
+  into the document or into a sibling schema file the registry serves
+  (`visit.json`'s `leadId` is `lead.json#/$defs/lead_id`, a string), and a
+  type union with `null` (`["string", "null"]`) or an `anyOf`/`oneOf` of
+  single-value types as the single value it is. Neither the validation mode
+  nor the registry's array ancestry changes the answer. Where the document
+  declares the attribute an array, that array is admitted and each of its
+  elements is judged at its own position, so `phones: [["1"]]` and
+  `phones: [[]]` are refused at array index `0`. An array is admitted only
+  where nothing says the attribute is a single value: there is no document,
+  a `$ref` names a file the registry does not serve, or the position leaves
+  its type open (`{}`). `TestDeclaredShapeOfShippedSchemas` holds every
+  non-list attribute of the shipped schemas out of that case.
+- A row of a schema whose registry derived no array ancestry is rebuilt by
+  inference, which can read a member of an array of objects as an array of
+  its own (`items: {"name": ["a", "b"]}`). An update that keeps those
+  records writes each back where it was stored, since none carries more
+  array indices than the document declares arrays of objects around it.
+  The same array sent by a caller is refused.
 - A list's own array, its empty-list marker and its elements keep their
   rules, and only the JSON shapes the walk takes apart (`map[string]any`,
   `[]any`) are containers: a Go `[]byte` is still text and any other Go value
@@ -208,7 +221,12 @@ of objects (`items[0].name` is a scalar position, `items` is not):
 On an update the intake refuses it with the conversion refusals of #772, in
 the same sorted key order and at the same stage (see "An update's values are
 converted before it writes"); the merged write refuses it again whatever
-reached it. A create refuses it in the transformer when schema validation has
+reached it. Text PostgreSQL cannot hold inside such a container keeps the
+intake's unconditional refusal, as before #696, so a singleton array holding
+a NUL is still refused on an `UpdateWhere` or `Claim` that takes no row and
+on an `Upsert` that creates, where a container alone waits for a row to
+write. A container is scanned under the payload nesting cap before it is
+refused, so a cyclic or too deep one is refused as such. A create refuses it in the transformer when schema validation has
 not already.
 
 ### Which errors are which class

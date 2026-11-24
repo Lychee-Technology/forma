@@ -3,6 +3,7 @@ package transform
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -19,23 +20,33 @@ import (
 
 const shapeSchemaID int16 = 696
 
-func declaredType(typ string) *forma.PropertySchema { return &forma.PropertySchema{Type: typ} }
-
-func declaredObject(props map[string]*forma.PropertySchema) *forma.PropertySchema {
-	return &forma.PropertySchema{Type: "object", Properties: props}
-}
-
-func declaredArrayOf(items *forma.PropertySchema) *forma.PropertySchema {
-	return &forma.PropertySchema{Type: "array", Items: items}
-}
+// shapeSchemaDocument is the shape schema's document text. Its declarations reach
+// the shape rule however the document spells them: a type union with null,
+// a $ref into the document, a $ref into a sibling schema's file, an anyOf.
+const shapeSchemaDocument = `{"type": "object", "$defs": {"code": {"type": "string"}}, "properties": {
+	"tenant": {"type": "string"}, "note": {"type": "string"}, "count": {"type": "integer"},
+	"addr": {"type": "object", "properties": {"city": {"type": "string"}}},
+	"items": {"type": "array", "items": {"type": "object", "properties": {
+		"name": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}},
+		"dims": {"type": "object", "properties": {"w": {"type": "string"}}}}}},
+	"tags": {"type": "array", "items": {"type": "string"}},
+	"phones": {"type": "array", "items": {"type": "string"}},
+	"opaque": {},
+	"maybe": {"type": ["string", "null"]},
+	"code": {"$ref": "#/$defs/code"},
+	"lead": {"$ref": "other.json#/$defs/lead_id", "description": "beside the $ref"},
+	"either": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+	"elsewhere": {"$ref": "missing.json#/$defs/x"}}}`
 
 // newShapeRegistry serves the shape schema: a bound and an EAV text scalar,
 // an integer, a nested scalar, an array of objects with a scalar and a list
 // member, a list, a primitive array recorded under its element type before
-// #204 (phones), and a scalar whose leaf the document does not resolve
-// (opaque, as behind a $ref the parser left open). ancestry says whether the
-// registry derived array ancestry, as the file registry does when the
-// document resolves every attribute.
+// #204 (phones), scalars the document declares through a union, a $ref or
+// an anyOf, an object member of the array of objects (items.dims.w), a leaf
+// it leaves open (opaque) and one behind a $ref to a file
+// the registry does not serve (elsewhere). ancestry says whether the
+// registry derived array ancestry, as the file registry does when its
+// parser resolves every attribute's ancestors.
 func newShapeRegistry(ancestry bool) *stubSchemaRegistry {
 	ancestors := func(names ...string) []string {
 		if !ancestry {
@@ -44,37 +55,32 @@ func newShapeRegistry(ancestry bool) *stubSchemaRegistry {
 		return append([]string{}, names...)
 	}
 	cache := forma.SchemaAttributeCache{
-		"tenant":     {AttributeID: 1, ValueType: forma.ValueTypeText, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01}},
-		"note":       {AttributeID: 2, ValueType: forma.ValueTypeText},
-		"count":      {AttributeID: 3, ValueType: forma.ValueTypeInteger},
-		"addr.city":  {AttributeID: 4, ValueType: forma.ValueTypeText},
-		"items.name": {AttributeID: 5, ValueType: forma.ValueTypeText},
-		"items.tags": {AttributeID: 6, ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeText},
-		"tags":       {AttributeID: 7, ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeText},
-		"phones":     {AttributeID: 8, ValueType: forma.ValueTypeText},
-		"opaque":     {AttributeID: 9, ValueType: forma.ValueTypeText},
+		"tenant":       {AttributeID: 1, ValueType: forma.ValueTypeText, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01}},
+		"note":         {AttributeID: 2, ValueType: forma.ValueTypeText},
+		"count":        {AttributeID: 3, ValueType: forma.ValueTypeInteger},
+		"addr.city":    {AttributeID: 4, ValueType: forma.ValueTypeText},
+		"items.name":   {AttributeID: 5, ValueType: forma.ValueTypeText},
+		"items.tags":   {AttributeID: 6, ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeText},
+		"tags":         {AttributeID: 7, ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeText},
+		"phones":       {AttributeID: 8, ValueType: forma.ValueTypeText},
+		"opaque":       {AttributeID: 9, ValueType: forma.ValueTypeText},
+		"maybe":        {AttributeID: 10, ValueType: forma.ValueTypeText},
+		"code":         {AttributeID: 11, ValueType: forma.ValueTypeText},
+		"lead":         {AttributeID: 12, ValueType: forma.ValueTypeText},
+		"either":       {AttributeID: 13, ValueType: forma.ValueTypeText},
+		"elsewhere":    {AttributeID: 14, ValueType: forma.ValueTypeText},
+		"items.dims.w": {AttributeID: 15, ValueType: forma.ValueTypeText},
 	}
 	for name, meta := range cache {
 		meta.AttributeName = name
 		meta.ArrayAncestors = ancestors()
-		if name == "items.name" || name == "items.tags" {
+		if strings.HasPrefix(name, "items.") {
 			meta.ArrayAncestors = ancestors("items")
 		}
 		cache[name] = meta
 	}
-	return &stubSchemaRegistry{schemaID: shapeSchemaID, schemaName: "shape", cache: cache,
-		properties: map[string]*forma.PropertySchema{
-			"tenant": declaredType("string"),
-			"note":   declaredType("string"),
-			"count":  declaredType("integer"),
-			"addr":   declaredObject(map[string]*forma.PropertySchema{"city": declaredType("string")}),
-			"items": declaredArrayOf(declaredObject(map[string]*forma.PropertySchema{
-				"name": declaredType("string"), "tags": declaredArrayOf(declaredType("string")),
-			})),
-			"tags":   declaredArrayOf(declaredType("string")),
-			"phones": declaredArrayOf(declaredType("string")),
-			"opaque": {},
-		}}
+	return &stubSchemaRegistry{schemaID: shapeSchemaID, schemaName: "shape", cache: cache, document: shapeSchemaDocument,
+		siblings: map[string]string{"other": `{"$defs": {"lead_id": {"type": "string", "format": "uuid"}}}`}}
 }
 
 func shapeRefusal(attr string, id int, got string) string {
@@ -111,7 +117,15 @@ func refusedShapeCases() []shapeCase {
 		{"list element, object", map[string]any{"tags": []any{"a", map[string]any{"x": "y"}}},
 			"invalid value for attribute 'tags' (attrID=7): declared type list takes an array of text values, got an object"},
 		{"pre-#204 array element, object", map[string]any{"phones": []any{map[string]any{}}}, shapeRefusal("phones", 8, "an empty object")},
+		{"pre-#204 array element, array", map[string]any{"phones": []any{[]any{"1"}}},
+			`invalid value for attribute 'phones' (attrID=8): declared type text takes a single value at array indices "0", got an array of 1 element`},
+		{"pre-#204 array element, empty array", map[string]any{"phones": []any{"1", []any{}}},
+			`invalid value for attribute 'phones' (attrID=8): declared type text takes a single value at array indices "1", got an empty array`},
 		{"undeclared leaf, object", map[string]any{"opaque": map[string]any{}}, shapeRefusal("opaque", 9, "an empty object")},
+		{"nullable type union, array", map[string]any{"maybe": []any{"a"}}, shapeRefusal("maybe", 10, "an array of 1 element")},
+		{"local $ref, empty array", map[string]any{"code": []any{}}, shapeRefusal("code", 11, "an empty array")},
+		{"sibling file $ref, array", map[string]any{"lead": []any{"x"}}, shapeRefusal("lead", 12, "an array of 1 element")},
+		{"anyOf of single values, array", map[string]any{"either": []any{"x"}}, shapeRefusal("either", 13, "an array of 1 element")},
 	}
 }
 
@@ -134,6 +148,7 @@ func acceptedShapeCases() []struct {
 		{"pre-#204 primitive array", map[string]any{"phones": []any{"1", "2"}}, []string{"8[0]=1", "8[1]=2"}},
 		{"pre-#204 primitive array, empty", map[string]any{"phones": []any{}}, []string{}},
 		{"undeclared leaf, array", map[string]any{"opaque": []any{"a"}}, []string{"9[0]=a"}},
+		{"$ref to a file the registry does not serve, array", map[string]any{"elsewhere": []any{"a"}}, []string{"14[0]=a"}},
 		{"empty parent object", map[string]any{"addr": map[string]any{}}, []string{}},
 		{"bytes as text", map[string]any{"note": []byte("n")}, []string{"2[]=n"}},
 		{"Go slice, left to the conversion", map[string]any{"note": []string{"a"}}, []string{"2[]=[a]"}},
@@ -160,6 +175,8 @@ func writtenKeys(record *model.PersistentRecord) []string {
 
 // The merged write refuses the container with or without array ancestry,
 // and the intake refuses it first, as the Refusal of the conversion class.
+// A member of an array of objects is a scalar position either way: the
+// registry's ancestry decides how a row is read, not what the attribute is.
 func TestScalarShapeRefusedByTheWriteAndTheIntake(t *testing.T) {
 	ctx := context.Background()
 	for _, ancestry := range []bool{true, false} {
@@ -167,9 +184,6 @@ func TestScalarShapeRefusedByTheWriteAndTheIntake(t *testing.T) {
 		tr := NewPersistentRecordTransformer(registry)
 		for _, tc := range refusedShapeCases() {
 			label := fmt.Sprintf("ancestry=%v %s", ancestry, tc.name)
-			if !ancestry && tc.name == "member of an array of objects, array" {
-				continue // TestScalarShapeArrayInsideObjectArrayWithoutAncestry
-			}
 			_, err := tr.ToPersistentRecord(ctx, shapeSchemaID, uuid.New(), tc.doc)
 			requireShapeRefusal(t, err, tc.want, "write %s", label)
 
@@ -201,7 +215,7 @@ func TestScalarShapeLeavesOtherContainersToTheWalk(t *testing.T) {
 func TestScalarShapeWithoutADocumentRefusesObjectsOnly(t *testing.T) {
 	ctx := context.Background()
 	registry := newShapeRegistry(true)
-	registry.properties = nil
+	registry.document = ""
 	tr := NewPersistentRecordTransformer(registry)
 
 	_, err := tr.ToPersistentRecord(ctx, shapeSchemaID, uuid.New(), map[string]any{"note": map[string]any{}})
@@ -211,21 +225,6 @@ func TestScalarShapeWithoutADocumentRefusesObjectsOnly(t *testing.T) {
 	assert.Equal(t, []string{"2[0]=a"}, writtenKeys(written))
 
 	checked, err := CheckUpdateValues(map[string]any{"note": []any{"a"}}, registry.cache, SchemaShapes{})
-	require.NoError(t, err)
-	assert.NoError(t, checked.Refusal)
-}
-
-// A row rebuilt without array ancestry reads a member of an array of
-// objects as an array of its own, and an update writes it back so, so an
-// array there is left to the walk when the registry derived no ancestry.
-func TestScalarShapeArrayInsideObjectArrayWithoutAncestry(t *testing.T) {
-	ctx := context.Background()
-	registry := newShapeRegistry(false)
-	tr := NewPersistentRecordTransformer(registry)
-	doc := map[string]any{"items": []any{map[string]any{"name": []any{"a"}}}}
-	_, err := tr.ToPersistentRecord(ctx, shapeSchemaID, uuid.New(), doc)
-	require.NoError(t, err)
-	checked, err := CheckUpdateValues(doc, registry.cache, SchemaShapesOf(registry, shapeSchemaID))
 	require.NoError(t, err)
 	assert.NoError(t, checked.Refusal)
 }

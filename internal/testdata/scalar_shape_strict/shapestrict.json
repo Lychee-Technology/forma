@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Scalar-shape strict-validation fixture (#696)",
+  "type": "object",
+  "required": ["tenant", "email"],
+  "properties": {
+    "tenant": { "type": "string" },
+    "email": { "type": "string" },
+    "label": { "type": "string" },
+    "note": { "type": ["string", "null"] }
+  }
+}

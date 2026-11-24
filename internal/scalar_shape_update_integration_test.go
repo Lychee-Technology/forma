@@ -169,22 +169,28 @@ func TestScalarShapeUpdateRefusedOnEveryRoute(t *testing.T) {
 		assert.Equal(t, "changed", env.attrs(t, ukAccount, other)["note"])
 	}
 
+	// Each Tx route: a transaction that only sees the refusal commits, and
+	// the row (all three tables and its key entries) is as it was; one that
+	// goes on after the refusal commits its write to another row.
 	for route, write := range ukShapeTxRoutes() {
 		for _, tc := range ukShapeUpdates(true) {
 			rowID, handle, note := next()
+			other, _, _ := next()
 			before := env.ukShapeState(t, rowID)
+			require.NoError(t, env.inTx(func(ctx context.Context, tx forma.Tx) error {
+				requireShapeRefused(t, write(ctx, tx, rowID, handle, note, tc.updates), tc.want, "%s %s", route, tc.name)
+				return nil
+			}), "%s %s", route, tc.name)
+			assert.Equal(t, before, env.ukShapeState(t, rowID), "%s %s: the committed row as it was", route, tc.name)
+
 			err := env.inTx(func(ctx context.Context, tx forma.Tx) error {
 				requireShapeRefused(t, write(ctx, tx, rowID, handle, note, tc.updates), tc.want, "%s %s", route, tc.name)
-				_, err := tx.Update(ctx, txUpdateOp(ukAccount, rowID, map[string]any{"counter": 1000}))
+				_, err := tx.Update(ctx, txUpdateOp(ukAccount, other, map[string]any{"counter": 1000}))
 				return err
 			})
 			require.NoError(t, err, "%s %s: the refusal left the Tx usable", route, tc.name)
-			after := env.ukShapeState(t, rowID)
-			assert.Equal(t, before.keys, after.keys, "%s %s: the key entries as they were", route, tc.name)
-			got := env.attrs(t, ukAccount, rowID)
-			assert.EqualValues(t, 1000, got["counter"], "%s %s: the write after the refusal committed", route, tc.name)
-			assert.Equal(t, note, got["note"], "%s %s", route, tc.name)
-			assert.Equal(t, fmt.Sprintf("T-%d", i), got["tenant"], "%s %s", route, tc.name)
+			assert.EqualValues(t, 1000, env.attrs(t, ukAccount, other)["counter"], "%s %s: the write after the refusal committed", route, tc.name)
+			assert.Equal(t, before, env.ukShapeState(t, rowID), "%s %s: the refused row as it was", route, tc.name)
 		}
 	}
 
@@ -209,31 +215,65 @@ func TestScalarShapeUpdateRefusedOnEveryRoute(t *testing.T) {
 
 // TestScalarShapeUpdateWithNoRowToWriteSucceeds: an UpdateWhere or Claim
 // taking no row, and an Upsert that creates, never write Updates, and the
-// shape refusal waits for a row as the conversion refusals of #772 do.
+// shape refusal waits for a row as the conversion refusals of #772 do. Text
+// PostgreSQL cannot hold inside such a container does not wait: intake has
+// refused it on every route since #679, whatever the row, and still does.
 func TestScalarShapeUpdateWithNoRowToWriteSucceeds(t *testing.T) {
 	env := setupUniqueKeyEnv(t)
 	nobody := &forma.KvCondition{Attr: "note", Value: "equals:nobody"}
-	for j, tc := range ukShapeUpdates(true) {
+	// noRow runs tc on the routes that write no row: UpdateWhere and Upsert
+	// when write, and Claim, whose mutation may not touch a key component,
+	// when claim.
+	noRow := func(tc shapeUpdate, j int, write, claim bool) map[string]error {
+		results := map[string]error{}
 		require.NoError(t, env.inTx(func(ctx context.Context, tx forma.Tx) error {
-			updated, err := tx.UpdateWhere(ctx, &forma.MutateWhereRequest{SchemaName: ukAccount, Condition: nobody, MaxAffected: 1, Updates: tc.updates})
-			require.NoError(t, err, "UpdateWhere matching no row, %s", tc.name)
-			assert.Empty(t, updated.RowIDs)
-			created, err := tx.Upsert(ctx, &forma.UpsertRequest{
-				Create: *ukCreateOp(ukAccount, uuid.Nil, ukAccountData("T", fmt.Sprintf("new-%d@x", j), fmt.Sprintf("new-%d", j))),
-				Target: forma.ConflictTarget{Key: "handle"}, Action: forma.UpsertUpdate, Updates: tc.updates,
-			})
-			require.NoError(t, err, "Upsert creating its row, %s", tc.name)
-			assert.Equal(t, forma.UpsertCreated, created.Outcome)
+			if write {
+				updated, err := tx.UpdateWhere(ctx, &forma.MutateWhereRequest{SchemaName: ukAccount, Condition: nobody, MaxAffected: 1, Updates: tc.updates})
+				results["UpdateWhere matching no row"] = err
+				if err == nil {
+					assert.Empty(t, updated.RowIDs)
+				}
+				created, err := tx.Upsert(ctx, &forma.UpsertRequest{
+					Create: *ukCreateOp(ukAccount, uuid.Nil, ukAccountData("T", fmt.Sprintf("new-%d@x", j), fmt.Sprintf("new-%d", j))),
+					Target: forma.ConflictTarget{Key: "handle"}, Action: forma.UpsertUpdate, Updates: tc.updates,
+				})
+				results["Upsert creating its row"] = err
+				if err == nil {
+					assert.Equal(t, forma.UpsertCreated, created.Outcome)
+				}
+			}
+			if claim {
+				claimed, err := tx.Claim(ctx, &forma.ClaimRequest{SchemaName: ukAccount, Condition: nobody, Limit: 1, Updates: tc.updates})
+				results["Claim matching no row"] = err
+				if err == nil {
+					assert.Empty(t, claimed.Records)
+				}
+			}
 			return nil
 		}))
+		return results
 	}
-	for _, tc := range ukShapeUpdates(false) {
-		require.NoError(t, env.inTx(func(ctx context.Context, tx forma.Tx) error {
-			claimed, err := tx.Claim(ctx, &forma.ClaimRequest{SchemaName: ukAccount, Condition: nobody, Limit: 1, Updates: tc.updates})
-			require.NoError(t, err, "Claim matching no row, %s", tc.name)
-			assert.Empty(t, claimed.Records)
-			return nil
-		}))
+	for j, tc := range ukShapeUpdates(true) {
+		for route, err := range noRow(tc, j, true, false) {
+			require.NoError(t, err, "%s, %s", route, tc.name)
+		}
+	}
+	for j, tc := range ukShapeUpdates(false) {
+		for route, err := range noRow(tc, 1000+j, false, true) {
+			require.NoError(t, err, "%s, %s", route, tc.name)
+		}
+	}
+	const nul = "invalid value for attribute 'note' (attrID=5): text cannot contain a NUL character (U+0000)"
+	for j, updates := range []map[string]any{{"note": []any{"a\x00b"}}, {"note": []any{[]any{"a\x00b"}}}} {
+		tc := shapeUpdate{name: fmt.Sprint(updates), updates: updates}
+		results := noRow(tc, 2000+j, true, true)
+		require.Len(t, results, 3)
+		for route, err := range results {
+			require.ErrorIs(t, err, forma.ErrInvalidInput, "%s, %s", route, tc.name)
+			message, published := forma.ResolvePublicMessage(err)
+			require.True(t, published, err)
+			assert.Contains(t, message, nul, "%s, %s", route, tc.name)
+		}
 	}
 	env.assertKeyTableMatchesRows(t)
 }

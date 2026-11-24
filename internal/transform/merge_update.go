@@ -85,10 +85,11 @@ func (t *persistentRecordTransformer) MergeUpdate(
 // cut. The root document is never removed, and a container that was empty
 // before resolution, such as a caller's {} or [], is kept.
 func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, cache forma.SchemaAttributeCache, shapes SchemaShapes) (map[string]any, error) {
-	entries, storedShapes, err := walkMergeDocument(schemaID, rowID, doc, cache, shapes)
+	walked, err := walkMergeDocument(schemaID, rowID, doc, cache, shapes)
 	if err != nil {
 		return nil, fmt.Errorf("walk the merged document of row %s: %w", rowID, err)
 	}
+	entries := walked.entries
 	winners := updateWinners(entries)
 	stored := storedSpellingsOf(entries)
 	kept := make(map[*storedValue]any)
@@ -124,13 +125,41 @@ func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, ca
 			return nil, held.unplacedError(entry.name)
 		}
 	}
-	for _, refused := range storedShapes {
+	// The walk has bounded every container it answers, so the search ends.
+	for _, refused := range walked.storedShapes {
 		if held := firstHeld(refused.value, func(v *storedValue) bool { _, keep := kept[v]; return keep }); held != nil {
 			return nil, held.containerAtScalarError(refused.name)
 		}
 	}
 	resolveMap(doc, kept)
+	if len(walked.rowArrays) > 0 {
+		markRowArrays(doc, walked.rowArrays)
+	}
 	return doc, nil
+}
+
+// markRowArrays replaces each array beneath value that the walk found
+// holding the row's own records in place, by its first element, with a
+// rowArray. Resolution rewrites an array's elements in place, so the first
+// element is where the walk saw it.
+func markRowArrays(value any, rows map[*any]struct{}) any {
+	switch v := value.(type) {
+	case map[string]any:
+		for key, child := range v {
+			v[key] = markRowArrays(child, rows)
+		}
+	case []any:
+		for i, child := range v {
+			v[i] = markRowArrays(child, rows)
+		}
+		if len(v) == 0 {
+			break
+		}
+		if _, ok := rows[&v[0]]; ok {
+			return rowArray(v)
+		}
+	}
+	return value
 }
 
 // updateWinners is #312's rule over an update's merged document, with the

@@ -94,13 +94,24 @@ func walkDocument(schemaID int16, rowID uuid.UUID, data map[string]any, cache fo
 // walkMergeDocument is walkDocument over an update's merged document before
 // its stored values are resolved (resolveStoredValues). A container the
 // shape rule refuses (scalarShapeRefusal) that holds a stored value is the
-// stored row's, not the caller's, so it is walked as before and answered
-// apart, as the second result, for the resolution to judge once it knows
-// which stored values the write keeps.
-func walkMergeDocument(schemaID int16, rowID uuid.UUID, data map[string]any, cache forma.SchemaAttributeCache, shapes SchemaShapes) ([]documentEntry, []documentEntry, error) {
-	w := &documentWalk{schemaID: schemaID, rowID: rowID, cache: cache, shapes: shapes, storedShapes: []documentEntry{}}
+// stored row's, not the caller's, so it is walked as before (refuseShape);
+// one that does not fit the attribute's declaration is also answered apart,
+// as the second result, for the resolution to judge once it knows which
+// stored values the write keeps.
+func walkMergeDocument(schemaID int16, rowID uuid.UUID, data map[string]any, cache forma.SchemaAttributeCache, shapes SchemaShapes) (mergeWalk, error) {
+	w := &documentWalk{schemaID: schemaID, rowID: rowID, cache: cache, shapes: shapes,
+		storedShapes: []documentEntry{}, rowArrays: make(map[*any]struct{})}
 	entries, err := w.run(data)
-	return entries, w.storedShapes, err
+	return mergeWalk{entries: entries, storedShapes: w.storedShapes, rowArrays: w.rowArrays}, err
+}
+
+// mergeWalk is what walkMergeDocument answers: the walk's entries, the
+// stored containers the shape rule refuses, and the arrays holding the
+// row's own records in place, by their first element.
+type mergeWalk struct {
+	entries      []documentEntry
+	storedShapes []documentEntry
+	rowArrays    map[*any]struct{}
 }
 
 func (w *documentWalk) run(data map[string]any) ([]documentEntry, error) {
@@ -121,26 +132,24 @@ type documentWalk struct {
 	// tooDeep is the nesting cap's refusal once a container exceeds it; the
 	// walk visits nothing after it.
 	tooDeep error
-	// storedShapes, non-nil in walkMergeDocument only, collects the refusals
-	// of containers holding a stored value instead of refusing them.
+	// storedShapes and rowArrays, non-nil in walkMergeDocument only, collect
+	// the refusals of containers holding a stored value instead of refusing
+	// them, and the arrays among those holding the row's own records in
+	// place (refuseShape).
 	storedShapes []documentEntry
+	rowArrays    map[*any]struct{}
 }
 
 func (w *documentWalk) visit(path []string, value any, indices []int) {
-	if err := scalarShapeRefusal(path, value, w.cache, w.shapes); err != nil {
-		// Refused whole, before the walk descends and loses its shape
-		// (#696), unless it is the stored row's (walkMergeDocument).
-		refusal := documentEntry{kind: entryRefusal, name: strings.Join(path, "."), value: value, refusal: err}
-		if w.storedShapes == nil || firstHeld(value, nil) == nil {
-			w.entries = append(w.entries, refusal)
-			return
-		}
-		w.storedShapes = append(w.storedShapes, refusal)
+	if err := scalarShapeRefusal(path, value, indices, w.cache, w.shapes); err != nil && w.refuseShape(path, value, indices, err) {
+		return
 	}
 	switch v := value.(type) {
 	case map[string]any:
 		w.visitMap(path, v, indices)
 	case []any:
+		w.visitArray(path, v, indices)
+	case rowArray:
 		w.visitArray(path, v, indices)
 	default:
 		w.visitLeaf(path, v, indices)

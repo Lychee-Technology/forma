@@ -24,6 +24,11 @@ type stubSchemaRegistry struct {
 	// properties is the schema document's, nil for a registry that serves
 	// none.
 	properties map[string]*forma.PropertySchema
+	// document is the schema document's text, "" for a registry that serves
+	// none, and siblings the texts of the other schemas it serves by name,
+	// which only GetSchemaByName answers.
+	document string
+	siblings map[string]string
 }
 
 func newStubSchemaRegistry() forma.SchemaRegistry {
@@ -68,6 +73,9 @@ func (s *stubSchemaRegistry) ListSchemas() []string {
 }
 
 func (s *stubSchemaRegistry) GetSchemaByName(name string) (int16, forma.JSONSchema, error) {
+	if document, ok := s.siblings[name]; ok {
+		return s.schemaID + 1, forma.JSONSchema{ID: s.schemaID + 1, Name: name, Schema: document}, nil
+	}
 	if name != s.schemaName {
 		return 0, forma.JSONSchema{}, fmt.Errorf("schema %s not found", name)
 	}
@@ -78,7 +86,7 @@ func (s *stubSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, 
 	if id != s.schemaID {
 		return "", forma.JSONSchema{}, fmt.Errorf("schema id %d not found", id)
 	}
-	return s.schemaName, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName, Properties: s.properties}, nil
+	return s.schemaName, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName, Schema: s.document, Properties: s.properties}, nil
 }
 
 func TestTransformer_ToAttributes(t *testing.T) {

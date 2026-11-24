@@ -1,0 +1,6 @@
+{
+  "email": { "attributeID": 2, "valueType": "text", "required_policy": "required_always" },
+  "label": { "attributeID": 3, "valueType": "text", "column_binding": { "col_name": "text_02" } },
+  "note": { "attributeID": 4, "valueType": "text" },
+  "tenant": { "attributeID": 1, "valueType": "text", "required_policy": "required_always", "column_binding": { "col_name": "text_01" } }
+}

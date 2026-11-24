@@ -206,22 +206,24 @@ scalar-shape-census
 （普通错误，指出该记录），直到某次更新改写该属性。本工具只读，找出这类记录，不修复任何内容。
 
 非空的 `array_indices` 本身不是异常：数组对象（array of objects）的成员按外层每个数组各带一个下标，#204 之前以元素类型记录的基本类型数组
-（如 `text` 类型的 `contact.phones`）带有自己的下标。因此每条记录都按属性的数组祖先与 schema 文档判定，规则与写入相同
-（`transform.SchemaShapes.Declared`）：
-- `verified`（已确认）：文档把属性声明为非数组类型，且记录的下标数多于属性外层的数组对象个数（注册表推导出的 `ArrayAncestors`，
-  或文档表明外层没有数组）。
-- 文档把属性声明为数组时，多出的下标是 #204 之前的基本类型数组元素，不报告。
-- `unverified`（无法确认）：文档没有说明属性是什么（未解析的 `$ref`、被丢弃的类型联合），或者属性位于数组对象内而注册表没有推导出数组祖先，
-  这类行合法地带有这样的下标。
+（如 `text` 类型的 `contact.phones`）再带一个自己的下标。因此每条记录都按属性合法的下标数判定：schema 文档的声明（`transform.SchemaShapes`，
+与写入读取文档的方式相同：跟随文档内的 `$ref` 与注册表提供的同目录 schema 文件的 `$ref`，读取 `["string", "null"]` 这类类型联合），
+或注册表推导出的 `ArrayAncestors`（取两者中较大者）：
+- `verified`（已确认）：记录的下标数多于合法下标数，且文档把最内层声明为单值类型。多出的下标是存放在单值位置上的数组：标量属性之下，
+  或 #204 之前的基本类型数组的元素之下。
+- `unverified`（无法确认）：下标数多于合法下标数，但文档没有说明该位置是什么（没有文档、指向注册表不提供的文件的 `$ref`、未声明类型的位置）。
+- 不报告：下标数不多于合法下标数（数组对象成员、#204 之前基本类型数组自己的元素），或属于 list 属性。
 
-每一行报告一个属性的一种下标深度：schema、属性、声明类型、下标数、数组祖先数、记录数、行数，以及一个示例行号与其 `array_indices`；
-从不打印存储的值。list 属性的记录、未知 `attr_id`（`validate-schema-consistency` 的普查）不在本工具范围内。
+每一行报告一个属性/下标深度组（同一属性的两种深度是两组）：schema、属性、声明类型、下标数、合法下标数、记录数、行数，
+以及组内一条记录的行号与其 `array_indices`（组内行号最小、其次下标最小的那条，可直接查到）；从不打印存储的值。
+汇总行给出已确认与无法确认的组数，以及已确认的属性个数。list 属性的记录、未知 `attr_id`（`validate-schema-consistency` 的普查）不在本工具范围内。
 schema 按服务端相同的路径加载（`schemameta.NewFileSchemaRegistryContext`）。
 
 退出码：0 没有已确认的发现（`unverified` 不影响退出码）/ 2 有已确认的发现 / 1 失败。修复方法是用 API 更新改写该属性
 （`docs/error-handling.md`，"Status change: an object or array where a single value belongs is now 400"）。
 
-选项（数据库选项及其环境变量默认值与 `validate-schema-consistency` 相同）：
+选项（数据库选项及其环境变量与 `validate-schema-consistency` 相同；`-db-password` 的回退值 `DB_PASSWORD`（否则 `postgres`）在解析参数后才取，
+不会作为默认值出现在帮助输出中）：
 - `-schema-registry-table`、`-schema-dir`（必填）：部署使用的 schema 注册表与 JSON Schema 目录。
 - `-eav-table`（`EAV_TABLE`，默认 `eav_data_dev`）：要普查的 EAV 表。
 
