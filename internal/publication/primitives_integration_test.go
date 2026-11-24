@@ -327,6 +327,10 @@ func TestStorageBindingLifecycle(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
+	// A deployment from before init-db created the binding table.
+	_, err := f.db.Exec("DROP TABLE " + f.t.Storage)
+	require.NoError(t, err)
+
 	// Before the binding table exists, ReadStorage reports unbound on a pool
 	// (not an error), while inside a Tx PostgreSQL aborts the transaction on
 	// 42P01 so ReadStorage surfaces the error rather than claiming unbound.

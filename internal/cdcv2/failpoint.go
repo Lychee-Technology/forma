@@ -16,8 +16,8 @@ const (
 	PointStageManifest Point = "stage-manifest"
 	// PointBegin precedes BEGIN of a publication transaction.
 	PointBegin Point = "begin"
-	// PointPublish precedes the compare-and-set, the transaction's first
-	// statement.
+	// PointPublish precedes the transaction's first statements: the storage
+	// binding's check (storage.go) and the compare-and-set.
 	PointPublish Point = "publish"
 	// PointMarks follows the compare-and-set and precedes the marks.
 	PointMarks Point = "marks"

@@ -1591,9 +1591,11 @@ whose publication state cannot be answered from
   fixed (`s3:ListBucket` on the bucket, `s3:GetObject` on its objects); the
   next read then tells a present object from a lost one. In operational
   tooling, `publication.ErrHistoryInconsistent` refuses non-monotonic or
-  broken generation history, `reconcile.ErrRedirectRefused` refuses any 3xx redirect on `manifest-reconcile`'s S3 client, and `--gc`
+  broken generation history, `s3endpoint.ErrRedirectRefused` refuses any 3xx redirect on the writers' and `manifest-reconcile`'s S3 clients, `--gc`
   refuses to delete unless the deployment's storage target matches its
-  `--bind-storage` binding (`docs/manifest-reconcile.md`).
+  binding, and a writer refuses to stage or publish against a binding to another target
+  (`publication.ErrStorageBoundElsewhere`) or without the binding table
+  (`publication.ErrStorageTableMissing`) (`docs/manifest-reconcile.md`).
 
 ## Public HTTP error surface
 

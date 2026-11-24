@@ -24,6 +24,7 @@ import (
 
 	"github.com/lychee-technology/forma/internal/publication"
 	"github.com/lychee-technology/forma/internal/reconcile"
+	"github.com/lychee-technology/forma/internal/s3endpoint"
 	"github.com/lychee-technology/forma/internal/testdb"
 )
 
@@ -35,7 +36,7 @@ func isolateAWSConfig(t *testing.T) {
 	t.Setenv("AWS_CONFIG_FILE", none)
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", none)
 	for _, v := range []string{"AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3",
-		"AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", "AWS_REGION", "AWS_DEFAULT_REGION"} {
+		"AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_USE_FIPS_ENDPOINT", "AWS_USE_DUALSTACK_ENDPOINT"} {
 		t.Setenv(v, "")
 	}
 }
@@ -109,7 +110,7 @@ func TestReconcileObjectsRejectAmbiguousEndpointPaths(t *testing.T) {
 }
 
 // TestClientEndpointIsWhereTheClientSendsListAndDelete checks
-// reconcile.ClientEndpoint against the requests the client really builds:
+// s3endpoint.ClientEndpoint against the requests the client really builds:
 // a transport records the URL of a LIST and of a DELETE, for either
 // addressing, at a custom endpoint and at AWS.
 func TestClientEndpointIsWhereTheClientSendsListAndDelete(t *testing.T) {
@@ -129,7 +130,7 @@ func TestClientEndpointIsWhereTheClientSendsListAndDelete(t *testing.T) {
 		})
 		o.Retryer = aws.NopRetryer{}
 		c := s3.New(o)
-		endpoint, err := reconcile.ClientEndpoint(context.Background(), c, "lake")
+		endpoint, err := s3endpoint.ClientEndpoint(context.Background(), c, "lake")
 		require.NoError(t, err)
 		_, _ = c.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{Bucket: aws.String("lake"), Prefix: aws.String("data/7/")})
 		_, _ = c.DeleteObject(context.Background(), &s3.DeleteObjectInput{Bucket: aws.String("lake"), Key: aws.String("data/7/k")})
@@ -212,7 +213,7 @@ func TestS3ObjectsEndpointRefusesAClientItCannotName(t *testing.T) {
 	_, err = (&reconcile.S3Objects{Client: following, Bucket: "bkt"}).Endpoint(context.Background())
 	require.ErrorContains(t, err, "may follow redirects")
 	custom := s3.New(s3.Options{Region: "us-east-1", EndpointResolverV2: customResolver{}})
-	_, err = reconcile.ClientEndpoint(context.Background(), custom, "bkt")
+	_, err = s3endpoint.ClientEndpoint(context.Background(), custom, "bkt")
 	require.ErrorContains(t, err, "destination cannot be told")
 }
 

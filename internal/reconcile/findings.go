@@ -17,12 +17,15 @@ const (
 	actionStaleLifecycle = "do not restore a backup lifecycle row; verify the record's epoch and update the lifecycle epoch row " +
 		"to match the record's epoch, or run fresh-epoch recovery if the record was restored (docs/manifest-reconcile.md)"
 	actionRecordBehindLifecycle = "treat the record as invalid: " + actionRecordInvalid
-	actionUnboundStorage        = "confirm the S3 client's effective bucket URL (--s3-endpoint or AWS_ENDPOINT_URL_S3/AWS_ENDPOINT_URL or --s3-region, " +
+	actionUnboundStorage        = "cdc-flush, cdc-init and the compactor bind a new deployment on their first publication; a deployment that " +
+		"published before #911 must be bound explicitly before upgraded writers run, with writers and GC stopped " +
+		"(docs/manifest-reconcile.md, \"Upgrading a deployment that has already published\"). To bind it, " +
+		"confirm the S3 client's effective bucket URL (--s3-endpoint or AWS_ENDPOINT_URL_S3/AWS_ENDPOINT_URL or --s3-region, " +
 		"with --s3-use-path matching the writers), --s3-bucket and --data-prefix match the writers, then run manifest-reconcile --bind-storage once " +
 		"(docs/manifest-reconcile.md); GC deletes nothing until bound"
 	actionRebindStorage = "run manifest-reconcile with the bound writers' base --s3-endpoint (never the displayed bucket URL), --s3-use-path, " +
 		"--s3-bucket, --data-prefix and environment (clear any stray AWS_ENDPOINT_URL_S3/AWS_ENDPOINT_URL). " +
-		"Only if the writers genuinely moved, delete the binding row by hand and re-run --bind-storage"
+		"Rebinding moves no data: only if the binding itself is wrong, follow docs/manifest-reconcile.md, \"Changing the binding\""
 	actionAwaitingInit      = "run cdc-init for the schema: readers fail closed until its next generation publishes"
 	actionMissingGeneration = "re-initialize the schema with cdc-init (the lost manifest cannot be rebuilt from S3); " +
 		"GC deletes nothing until the lost generation expires after retirement and grace"

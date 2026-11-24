@@ -115,6 +115,9 @@ func (w *Writer) compactRound(ctx context.Context, schemaID int16, pin int64, st
 	if err := w.cfg.Layout.Holds(cur.ManifestKey); err != nil {
 		return fmt.Errorf("compact schema %d generation %d: %w", schemaID, cur.Generation, err)
 	}
+	if err := w.checkStorage(ctx); err != nil {
+		return fmt.Errorf("compact schema %d: %w", schemaID, err)
+	}
 	input, err := w.manifest(ctx, cur)
 	if err != nil {
 		return fmt.Errorf("compact schema %d: %w", schemaID, err)

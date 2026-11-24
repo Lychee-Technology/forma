@@ -329,7 +329,7 @@ func (e *env) dropTables() {
 		uniquekey.KeyTable(e.tables.entityMain), uniquekey.StateTable(e.tables.entityMain), rowguard.Table(e.tables.entityMain),
 		schemaledger.TablesFor(e.tables.schemaRegistry).Generation, schemaledger.TablesFor(e.tables.schemaRegistry).Attribute,
 		publication.TablesFor(e.tables.entityMain).Record, publication.TablesFor(e.tables.entityMain).Generation,
-		publication.TablesFor(e.tables.entityMain).Epoch} {
+		publication.TablesFor(e.tables.entityMain).Epoch, publication.TablesFor(e.tables.entityMain).Storage} {
 		_, _ = e.pool.Exec(ctx, "DROP TABLE IF EXISTS "+table)
 	}
 }

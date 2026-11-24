@@ -52,7 +52,9 @@ const (
 // modified rows; a publication modifies three rows of its own besides its
 // marks, so even if an update of flushed_at, a primary-key column, counted
 // twice, a generation stays at 2,003 (docs/publication-protocol-v2.md, "DSQL
-// budgets"). On PostgreSQL a flush generation keeps the whole batch.
+// budgets"); the first publication of an unbound deployment also inserts the
+// storage binding's row (storage.go), one row more. On PostgreSQL a flush
+// generation keeps the whole batch.
 const (
 	DSQLGenerationLimit = 1000
 	HandoffChunk        = 1000
@@ -133,6 +135,9 @@ type Writer struct {
 	changeLog string
 	main      string
 	dsql      bool
+	// storage is the target the writer binds and checks (storage.go), nil
+	// when its store names none.
+	storage *publication.StorageTarget
 }
 
 // New checks cfg, fills its defaults and answers its writer.
@@ -158,6 +163,11 @@ func New(cfg Config) (*Writer, error) {
 		main:      sqlutil.SanitizeIdentifier(cfg.EntityMain),
 		dsql:      cfg.Engine.Resolved() == forma.EngineAuroraDSQL,
 	}
+	storage, err := storageTarget(cfg.Store, cfg.Layout)
+	if err != nil {
+		return nil, fmt.Errorf("build the V2 writer: %w", err)
+	}
+	w.storage = storage
 	if limit := w.generationLimit(); limit > MaxMarkEntries {
 		return nil, fmt.Errorf("a V2 writer on PostgreSQL marks a flush batch in one statement, so BatchSize %d must be at most %d (MaxMarkEntries)", limit, MaxMarkEntries)
 	}

@@ -41,7 +41,7 @@ func TestDSQLCorpus(t *testing.T) {
 		corpus.Rendered("internal/publication/ddl.go:epochForgottenDDL", ddl[3]),
 		corpus.Rendered("internal/publication/ddl.go:epochRecoveryEpochDDL", ddl[4]),
 		corpus.Rendered("internal/publication/ddl.go:epochRecoveryRetiredDDL", ddl[5]),
-		corpus.Rendered("internal/publication/storage.go:storageDDL", StorageStatement(forma.EngineAuroraDSQL, "entity_main")),
+		corpus.Rendered("internal/publication/storage.go:storageDDL", ddl[6]),
 	}
 	statements = append(statements, rec.Take(t,
 		"internal/publication/record.go:Initialize",

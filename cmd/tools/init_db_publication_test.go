@@ -56,6 +56,14 @@ func wantPublicationDDL() []string {
 		`ALTER TABLE "entity_main_publication_epoch" ADD COLUMN IF NOT EXISTS forgotten_generation BIGINT`,
 		`ALTER TABLE "entity_main_publication_epoch" ADD COLUMN IF NOT EXISTS recovery_epoch BIGINT`,
 		`ALTER TABLE "entity_main_publication_epoch" ADD COLUMN IF NOT EXISTS recovery_retired_at BIGINT`,
+		`CREATE TABLE IF NOT EXISTS "entity_main_publication_storage" (
+		binding     SMALLINT NOT NULL,
+		endpoint    TEXT COLLATE "C" NOT NULL,
+		bucket      TEXT COLLATE "C" NOT NULL,
+		data_prefix TEXT COLLATE "C" NOT NULL,
+		bound_at    BIGINT   NOT NULL,
+		PRIMARY KEY (binding)
+	)`,
 	}
 }
 
@@ -88,6 +96,7 @@ func TestPublicationDDLAnnouncements(t *testing.T) {
 		{failure: "ensure publication epoch forgotten_generation column"},
 		{failure: "ensure publication epoch recovery_epoch column"},
 		{failure: "ensure publication epoch recovery_retired_at column"},
+		{announce: "Created publication storage binding table: app.entity_main_publication_storage\n", failure: "ensure publication storage binding table"},
 	}
 	if len(ddl) != len(want) {
 		t.Fatalf("publicationDDL returned %d statements, want %d", len(ddl), len(want))

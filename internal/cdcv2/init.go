@@ -90,6 +90,9 @@ func (w *Writer) Init(ctx context.Context, schemaID int16, pin int64, exp BaseEx
 	if err != nil {
 		return rep, fmt.Errorf("init schema %d: %w", schemaID, err)
 	}
+	if err := w.checkStorage(ctx); err != nil {
+		return rep, fmt.Errorf("init schema %d: %w", schemaID, err)
+	}
 	files, entries, err := w.export(ctx, cur, exp, &rep)
 	if err != nil {
 		return rep, err

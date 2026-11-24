@@ -344,7 +344,8 @@ without the wait. What runs:
   `HotLegTransport = pgx` that read the hot keys and the page's hot rows
   through the `aurora-dsql` repository.
 - `internal/publication` storage binding (`<entity_main>_publication_storage`,
-  bound by `manifest-reconcile --bind-storage`, #891) and lifecycle/retention
+  bound in the writers' first publication transaction or by
+  `manifest-reconcile --bind-storage`, #891, #911) and lifecycle/retention
   primitives.
 
 Live Aurora DSQL verification of the Protocol V2 publication contract is

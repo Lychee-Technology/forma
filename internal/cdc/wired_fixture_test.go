@@ -85,7 +85,7 @@ func newWiredFixture(t *testing.T) *wiredFixture {
 	t.Cleanup(func() { _ = f.db.Close() })
 	ddl := append(publication.Statements(engine, storage.EntityMain), schemalease.StatementFor(storage.EntityMain))
 	t.Cleanup(func() {
-		for _, table := range []string{f.tables.Record, f.tables.Generation, f.tables.Epoch, schemalease.Table(storage.EntityMain)} {
+		for _, table := range []string{f.tables.Record, f.tables.Generation, f.tables.Epoch, f.tables.Storage, schemalease.Table(storage.EntityMain)} {
 			_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+table)
 		}
 	})
