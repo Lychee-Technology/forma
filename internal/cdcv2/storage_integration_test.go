@@ -200,6 +200,53 @@ func TestAFirstPublicationLosesToABindingCommittedWhileItStaged(t *testing.T) {
 	require.ErrorIs(t, err, publication.ErrStorageBoundElsewhere, "the writer checks again after a rebind")
 }
 
+// TestTwoFirstPublishersAtDifferentTargetsBindOne races two first flushes of
+// an unbound deployment at different targets, both staged and inside their
+// publication transactions. Exactly one commits and binds its target; the
+// other fails closed with ErrStorageBoundElsewhere before its compare-and-set,
+// however its target's engine serializes them: on PostgreSQL its insert waits
+// and its read sees the binding, at REPEATABLE READ or on DSQL it gets 40001
+// and its resend reads the binding.
+func TestTwoFirstPublishersAtDifferentTargetsBindOne(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.register(t)
+	f.insert(t, 3)
+	targets := []publication.StorageTarget{writersTarget, otherTarget}
+	gates := make([]*gate, len(targets))
+	stagers := make([]*stager, len(targets))
+	outs := make([]<-chan struct {
+		v   FlushReport
+		err error
+	}, len(targets))
+	for i, target := range targets {
+		gates[i], stagers[i] = newGate(PointPublish), &stager{f: f}
+		w := at(t, f.writer(t, func(c *Config) { c.Failpoint = gates[i].failpoint; c.Attempts = 10 }), target)
+		outs[i] = async(func() (FlushReport, error) { return w.Flush(ctx, schemaID, 1, stagers[i]) })
+	}
+	for _, g := range gates {
+		g.wait(t)
+	}
+	for _, g := range gates {
+		close(g.released)
+	}
+	winner := -1
+	for i, out := range outs {
+		res := <-out
+		require.Equal(t, 1, stagers[i].calls, "publisher %d staged before either bound", i)
+		if res.err == nil {
+			require.Equal(t, -1, winner, "only one publisher commits")
+			winner = i
+			continue
+		}
+		require.ErrorIs(t, res.err, publication.ErrStorageBoundElsewhere, "publisher %d", i)
+	}
+	require.NotEqual(t, -1, winner, "one publisher commits")
+	f.requireBound(t, targets[winner])
+	require.Equal(t, int64(1), f.record(t).Generation, "the loser moved nothing")
+	require.Empty(t, f.dirty(t))
+}
+
 // TestAWriterWithoutTheBindingTableFailsBeforeStaging: a deployment whose
 // binding table was never created fails its writers before they stage.
 func TestAWriterWithoutTheBindingTableFailsBeforeStaging(t *testing.T) {

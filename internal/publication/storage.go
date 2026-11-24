@@ -264,8 +264,11 @@ func CheckStorage(ctx context.Context, q Querier, t Tables, target StorageTarget
 // Concurrent first publishers serialize on the row. On PostgreSQL a second
 // insert waits for the first's transaction, and the read after it, a new
 // statement under READ COMMITTED, sees the committed binding, or none if the
-// first rolled back and this insert bound. On DSQL the loser's COMMIT fails
-// with 40001, and its resend reads the committed binding.
+// first rolled back and this insert bound. At REPEATABLE READ (MiniStack's
+// PostgreSQL) the waiting insert fails with 40001 once the first commits. On
+// DSQL the loser's COMMIT fails with 40001. A writer sends a publication
+// failing with 40001 again (Conflict), and the resend reads the committed
+// binding.
 func BindStorageTx(ctx context.Context, tx Tx, t Tables, target StorageTarget) error {
 	b, ok, err := ReadStorage(ctx, tx, t)
 	if err != nil {

@@ -30,6 +30,9 @@ type fixture struct {
 	db        *sql.DB
 	t         Tables
 	changeLog string
+	// engine is the target's: PostgreSQL at READ COMMITTED, or Aurora DSQL
+	// (a cluster, or MiniStack's PostgreSQL at REPEATABLE READ).
+	engine forma.DatabaseEngine
 	// cluster says the target is a real Aurora DSQL cluster.
 	cluster bool
 }
@@ -38,7 +41,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	db, engine, cluster := openTarget(t)
 	entityMain := fmt.Sprintf("pub_test_%d", time.Now().UnixNano())
-	f := &fixture{db: db, t: TablesFor(entityMain), changeLog: entityMain + "_change_log", cluster: cluster}
+	f := &fixture{db: db, t: TablesFor(entityMain), changeLog: entityMain + "_change_log", engine: engine, cluster: cluster}
 	ddl := append(Statements(engine, entityMain), fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		schema_id  SMALLINT NOT NULL,
 		row_id     UUID     NOT NULL,

@@ -81,9 +81,14 @@ func TestBindStorageTxBindsOnlyWithItsTransaction(t *testing.T) {
 }
 
 // TestConcurrentFirstBindersCommitOneBinding: two first publishers at
-// different targets serialize on the binding's row. The second waits for
-// the first's transaction, then fails closed once the first commits, or
-// binds its own target once the first rolls back.
+// different targets serialize on the binding's row. The second waits for the
+// first's transaction. If the first rolls back, the second binds its own
+// target. If the first commits, the second fails closed: under PostgreSQL's
+// READ COMMITTED its read after the insert, a new statement, sees the
+// binding (ErrStorageBoundElsewhere); at REPEATABLE READ (MiniStack's
+// backend) the waiting insert fails with 40001, which a writer answers by
+// sending its publication again. Either way a fresh transaction then sees the
+// winner's binding and refuses the mismatch.
 func TestConcurrentFirstBindersCommitOneBinding(t *testing.T) {
 	for _, firstCommits := range []bool{true, false} {
 		t.Run(fmt.Sprintf("first commits %v", firstCommits), func(t *testing.T) {
@@ -106,22 +111,26 @@ func TestConcurrentFirstBindersCommitOneBinding(t *testing.T) {
 				t.Fatalf("the second binder did not wait for the first: %v", err)
 			case <-time.After(300 * time.Millisecond):
 			}
-			want := otherTarget
-			if firstCommits {
-				require.NoError(t, first.Commit())
-				want = writersTarget
-			} else {
+			if !firstCommits {
 				require.NoError(t, first.Rollback())
+				require.NoError(t, <-second)
+				b, ok := f.binding(t)
+				require.True(t, ok)
+				require.Equal(t, otherTarget, b.Target, "the second bound once the first rolled back")
+				return
 			}
+			require.NoError(t, first.Commit())
 			err = <-second
-			if firstCommits {
-				require.ErrorIs(t, err, ErrStorageBoundElsewhere)
+			if f.engine == forma.EnginePostgreSQL {
+				require.ErrorIs(t, err, ErrStorageBoundElsewhere, "READ COMMITTED: the read after the insert sees the binding")
 			} else {
-				require.NoError(t, err)
+				require.True(t, Conflict(err), "REPEATABLE READ: the insert that waited fails with 40001: %v", err)
 			}
+			again := f.inTx(ctx, func(tx Tx) error { return BindStorageTx(ctx, tx, f.t, otherTarget) })
+			require.ErrorIs(t, again, ErrStorageBoundElsewhere, "a fresh transaction sees the winner's binding")
 			b, ok := f.binding(t)
 			require.True(t, ok)
-			require.Equal(t, want, b.Target, "exactly one target is bound")
+			require.Equal(t, writersTarget, b.Target, "exactly one target is bound")
 		})
 	}
 }
