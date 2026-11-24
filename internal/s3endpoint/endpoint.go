@@ -83,13 +83,32 @@ func checkResolvable(c *s3.Client, bucket string) error {
 		return fmt.Errorf("a client with neither a base endpoint nor a region: %w", ErrUnknownDestination)
 	}
 	if rawBase != "" {
-		u, err := url.Parse(rawBase)
-		if err != nil {
-			return fmt.Errorf("parse base endpoint %q: %w: %w", rawBase, err, ErrUnknownDestination)
-		}
-		if u.RawPath != "" || strings.Contains(rawBase, "%") {
-			return fmt.Errorf("base endpoint %q uses an escaped path: %w", rawBase, ErrUnknownDestination)
-		}
+		return checkBaseEndpoint(rawBase)
+	}
+	return nil
+}
+
+// checkBaseEndpoint refuses a configured base endpoint (an endpoint option,
+// AWS_ENDPOINT_URL_S3) carrying userinfo, a query or a fragment, or an
+// escaped path, before the SDK derives a request URL from it: the SDK may
+// drop userinfo and fragments on the way, so the derived URL alone cannot
+// show they were there. No diagnostic quotes the configured value, which may
+// carry credentials or signatures: a malformed one is not quoted at all
+// (url.Parse's error would), a parsed one only as SafeURL renders it.
+func checkBaseEndpoint(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("the base endpoint is not a URL (not shown: it may carry credentials): %w", ErrUnknownDestination)
+	}
+	switch {
+	case u.User != nil:
+		return fmt.Errorf("base endpoint %s carries userinfo (not shown): %w", SafeURL(u), ErrUnknownDestination)
+	case u.RawQuery != "" || u.ForceQuery:
+		return fmt.Errorf("base endpoint %s carries a query (not shown): %w", SafeURL(u), ErrUnknownDestination)
+	case u.Fragment != "" || strings.Contains(raw, "#"):
+		return fmt.Errorf("base endpoint %s carries a fragment (not shown): %w", SafeURL(u), ErrUnknownDestination)
+	case u.RawPath != "" || strings.Contains(raw, "%"):
+		return fmt.Errorf("base endpoint %s uses an escaped path: %w", SafeURL(u), ErrUnknownDestination)
 	}
 	return nil
 }

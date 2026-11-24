@@ -64,10 +64,10 @@ func normalizeEndpointURL(raw string) (string, error) {
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", fmt.Errorf("parse storage endpoint %q: %v: %w", raw, err, ErrStorageTargetInvalid)
+		return "", fmt.Errorf("the storage endpoint is not a URL (not shown: it may carry credentials): %w", ErrStorageTargetInvalid)
 	}
 	if u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("storage endpoint %q must include scheme and host: %w", raw, ErrStorageTargetInvalid)
+		return "", fmt.Errorf("the storage endpoint must include scheme and host (not shown: it may carry credentials): %w", ErrStorageTargetInvalid)
 	}
 	if u.User != nil {
 		return "", fmt.Errorf("storage endpoint must not carry userinfo: %w", ErrStorageTargetInvalid)

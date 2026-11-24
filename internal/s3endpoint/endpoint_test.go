@@ -134,3 +134,30 @@ func TestClientEndpointRejectsAmbiguousPaths(t *testing.T) {
 		}
 	}
 }
+
+// TestClientEndpointRejectsForbiddenEndpointFieldsUnquoted: a configured
+// base endpoint carrying userinfo, a query or a fragment is refused before
+// the SDK can drop them, and no diagnostic, a malformed endpoint's included,
+// repeats the secret it may carry.
+func TestClientEndpointRejectsForbiddenEndpointFieldsUnquoted(t *testing.T) {
+	const secret = "pw-secret"
+	for _, base := range []string{
+		"https://user:" + secret + "@s3.storage.example",
+		"https://s3.storage.example/?sig=" + secret,
+		"https://s3.storage.example/?",
+		"https://s3.storage.example/tenant#" + secret,
+		"https://s3.storage.example/tenant#",
+		"https://s3.storage.example/" + secret + "%2Fa",
+		"https://user:" + secret + "/s3.storage.example",
+		"https://s3.storage.example/\x7f" + secret,
+	} {
+		for _, pathStyle := range []bool{false, true} {
+			c := newClient(s3.Options{Region: "us-east-1", BaseEndpoint: aws.String(base), UsePathStyle: pathStyle})
+			_, err := ClientEndpoint(context.Background(), c, "lake")
+			require.ErrorIs(t, err, ErrUnknownDestination, "base=%q pathStyle=%v", base, pathStyle)
+			if !strings.Contains(base, "%2F") {
+				require.NotContains(t, err.Error(), secret, "base=%q", base)
+			}
+		}
+	}
+}
