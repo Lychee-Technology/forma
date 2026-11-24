@@ -25,7 +25,8 @@ const nestedArraySchema = 624
 // element of such a sku, at two array indices. With ancestry the registry
 // declares both arrays, as the file registry derives them from a schema
 // document, and the rebuild places the code where it was written (#623);
-// without, it cannot place it where the write reads it back.
+// without, it cannot place it where the write reads it back. Its document's
+// properties declare sku an array either way.
 func nestedArrayRegistry(ancestry bool) forma.SchemaRegistry {
 	cache := forma.SchemaAttributeCache{
 		"order.items.lots.code": {AttributeID: 1, ValueType: forma.ValueTypeText},
@@ -43,7 +44,21 @@ func nestedArrayRegistry(ancestry bool) forma.SchemaRegistry {
 			cache[name] = meta
 		}
 	}
-	return &stubSchemaRegistry{schemaID: nestedArraySchema, schemaName: "nested_array", cache: cache}
+	// The document declares sku an array of strings, which is what lets the
+	// writer store the pre-#204 array (#696); it says nothing of ancestry
+	// to the rebuild, which reads the metadata's.
+	text := &forma.PropertySchema{Type: "string"}
+	properties := map[string]*forma.PropertySchema{
+		"stage": text,
+		"order": {Type: "object", Properties: map[string]*forma.PropertySchema{
+			"note": text,
+			"items": {Type: "array", Items: &forma.PropertySchema{Type: "object", Properties: map[string]*forma.PropertySchema{
+				"sku":  {Type: "array", Items: text},
+				"lots": {Type: "array", Items: &forma.PropertySchema{Type: "object", Properties: map[string]*forma.PropertySchema{"code": text}}},
+			}}},
+		}},
+	}
+	return &stubSchemaRegistry{schemaID: nestedArraySchema, schemaName: "nested_array", cache: cache, properties: properties}
 }
 
 func nestedArrayDocument(code string) map[string]any {
@@ -216,7 +231,21 @@ func listInObjectArrayRegistry(ancestry bool) forma.SchemaRegistry {
 			cache[name] = meta
 		}
 	}
-	return &stubSchemaRegistry{schemaID: nestedArraySchema, schemaName: "nested_array", cache: cache}
+	// The document declares sku an array of strings, which is what lets the
+	// writer store the pre-#204 array (#696); it says nothing of ancestry
+	// to the rebuild, which reads the metadata's.
+	text := &forma.PropertySchema{Type: "string"}
+	properties := map[string]*forma.PropertySchema{
+		"stage": text,
+		"order": {Type: "object", Properties: map[string]*forma.PropertySchema{
+			"note": text,
+			"items": {Type: "array", Items: &forma.PropertySchema{Type: "object", Properties: map[string]*forma.PropertySchema{
+				"sku":  {Type: "array", Items: text},
+				"lots": {Type: "array", Items: &forma.PropertySchema{Type: "object", Properties: map[string]*forma.PropertySchema{"code": text}}},
+			}}},
+		}},
+	}
+	return &stubSchemaRegistry{schemaID: nestedArraySchema, schemaName: "nested_array", cache: cache, properties: properties}
 }
 
 // A row written while the registry declared array ancestry holds the

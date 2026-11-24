@@ -47,6 +47,7 @@ func newPersistentTransformerRegistry() *stubSchemaRegistry {
 			"jobs.active":        unboundPersistentAttr(13, forma.ValueTypeBool),
 			"metadata.updatedAt": unboundPersistentAttr(14, forma.ValueTypeDate),
 		},
+		document: legacyArrayDocument([]string{"jobs"}, "tags"),
 	}
 }
 

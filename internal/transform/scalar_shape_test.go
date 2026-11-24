@@ -87,6 +87,13 @@ func shapeRefusal(attr string, id int, got string) string {
 	return fmt.Sprintf("invalid value for attribute '%s' (attrID=%d): declared type text takes a single value, got %s", attr, id, got)
 }
 
+// noArrayRefusal is the refusal of an array at a non-list attribute whose
+// document declares no array there, or is missing.
+func noArrayRefusal(attr string, id int) string {
+	return fmt.Sprintf("invalid value for attribute '%s' (attrID=%d): declared type text takes a single value "+
+		"(the schema document declares no array here), got an", attr, id)
+}
+
 type shapeCase struct {
 	name string
 	doc  map[string]any
@@ -126,6 +133,13 @@ func refusedShapeCases() []shapeCase {
 		{"local $ref, empty array", map[string]any{"code": []any{}}, shapeRefusal("code", 11, "an empty array")},
 		{"sibling file $ref, array", map[string]any{"lead": []any{"x"}}, shapeRefusal("lead", 12, "an array of 1 element")},
 		{"anyOf of single values, array", map[string]any{"either": []any{"x"}}, shapeRefusal("either", 13, "an array of 1 element")},
+		// Where the document leaves the position open, nothing shows the
+		// attribute holds an array, and the metadata says it holds one
+		// value (#696 review).
+		{"open declaration, array", map[string]any{"opaque": []any{"a"}}, noArrayRefusal("opaque", 9) + " array of 1 element"},
+		{"open declaration, empty array", map[string]any{"opaque": []any{}}, noArrayRefusal("opaque", 9) + " empty array"},
+		{"$ref to a file the registry does not serve, array", map[string]any{"elsewhere": []any{"a"}},
+			noArrayRefusal("elsewhere", 14) + " array of 1 element"},
 	}
 }
 
@@ -147,8 +161,6 @@ func acceptedShapeCases() []struct {
 			[]string{"5[0]=a", "6[0]=<none>", "5[1]=b"}},
 		{"pre-#204 primitive array", map[string]any{"phones": []any{"1", "2"}}, []string{"8[0]=1", "8[1]=2"}},
 		{"pre-#204 primitive array, empty", map[string]any{"phones": []any{}}, []string{}},
-		{"undeclared leaf, array", map[string]any{"opaque": []any{"a"}}, []string{"9[0]=a"}},
-		{"$ref to a file the registry does not serve, array", map[string]any{"elsewhere": []any{"a"}}, []string{"14[0]=a"}},
 		{"empty parent object", map[string]any{"addr": map[string]any{}}, []string{}},
 		{"bytes as text", map[string]any{"note": []byte("n")}, []string{"2[]=n"}},
 		{"Go slice, left to the conversion", map[string]any{"note": []string{"a"}}, []string{"2[]=[a]"}},
@@ -211,22 +223,70 @@ func TestScalarShapeLeavesOtherContainersToTheWalk(t *testing.T) {
 }
 
 // Without a document, metadata cannot tell a scalar from a pre-#204
-// primitive array, so only objects are refused.
-func TestScalarShapeWithoutADocumentRefusesObjectsOnly(t *testing.T) {
+// primitive array, and nothing shows the attribute holds an array, so an
+// array is refused as an object is, bound or EAV, by the write and the
+// intake alike (#696 review): an uncertain declaration never lets a scalar
+// store array elements, and [] is no way to clear it.
+func TestScalarShapeWithoutADocumentRefusesArrays(t *testing.T) {
+	ctx := context.Background()
+	for _, registry := range []*stubSchemaRegistry{newShapeRegistry(true), newShapeRegistry(false)} {
+		registry.document = ""
+		tr := NewPersistentRecordTransformer(registry)
+		for _, tc := range []shapeCase{
+			{"EAV, empty object", map[string]any{"note": map[string]any{}}, shapeRefusal("note", 2, "an empty object")},
+			{"EAV, singleton array", map[string]any{"note": []any{"a"}}, noArrayRefusal("note", 2)},
+			{"EAV, empty array", map[string]any{"note": []any{}}, noArrayRefusal("note", 2)},
+			{"bound, singleton array", map[string]any{"tenant": []any{"a"}}, noArrayRefusal("tenant", 1)},
+			{"bound, empty array", map[string]any{"tenant": []any{}}, noArrayRefusal("tenant", 1)},
+			{"pre-#204 array", map[string]any{"phones": []any{"1"}}, noArrayRefusal("phones", 8)},
+			{"member of an array of objects", map[string]any{"items": []any{map[string]any{"name": []any{"a"}}}}, noArrayRefusal("items.name", 5)},
+		} {
+			_, err := tr.ToPersistentRecord(ctx, shapeSchemaID, uuid.New(), tc.doc)
+			requireShapeRefusal(t, err, tc.want, "write %s", tc.name)
+			checked, err := CheckUpdateValues(tc.doc, registry.cache, SchemaShapesOf(registry, shapeSchemaID))
+			require.NoError(t, err, tc.name)
+			requireShapeRefusal(t, checked.Refusal, tc.want, "intake %s", tc.name)
+		}
+		written, err := tr.ToPersistentRecord(ctx, shapeSchemaID, uuid.New(), map[string]any{
+			"note": "n", "tags": []any{"a"}, "items": []any{map[string]any{"name": "x"}}})
+		require.NoError(t, err, "single values, lists and arrays of objects are written as before")
+		assert.ElementsMatch(t, []string{"2[]=n", "7[0]=a", "5[0]=x"}, writtenKeys(written))
+	}
+}
+
+// A row's own records of an attribute whose document is missing are stored
+// state, not the caller's: they may be a pre-#204 array, so an update that
+// keeps them writes them back where they were, and one that replaces the
+// attribute replaces them. The caller's own array there is refused.
+func TestScalarShapeWithoutADocumentKeepsStoredRecords(t *testing.T) {
 	ctx := context.Background()
 	registry := newShapeRegistry(true)
 	registry.document = ""
 	tr := NewPersistentRecordTransformer(registry)
+	rowID := uuid.New()
+	p0, p1, other := "1", "2", "kept"
+	stored := &model.PersistentRecord{SchemaID: shapeSchemaID, RowID: rowID, OtherAttributes: []model.EAVRecord{
+		{SchemaID: shapeSchemaID, RowID: rowID, AttrID: 8, ArrayIndices: "0", ValueText: &p0},
+		{SchemaID: shapeSchemaID, RowID: rowID, AttrID: 8, ArrayIndices: "1", ValueText: &p1},
+		{SchemaID: shapeSchemaID, RowID: rowID, AttrID: 4, ArrayIndices: "", ValueText: &other},
+	}}
 
-	_, err := tr.ToPersistentRecord(ctx, shapeSchemaID, uuid.New(), map[string]any{"note": map[string]any{}})
-	requireShapeRefusal(t, err, shapeRefusal("note", 2, "an empty object"))
-	written, err := tr.ToPersistentRecord(ctx, shapeSchemaID, uuid.New(), map[string]any{"note": []any{"a"}})
+	merged, err := tr.MergeUpdate(ctx, stored, setting(map[string]any{"count": 1}))
 	require.NoError(t, err)
-	assert.Equal(t, []string{"2[0]=a"}, writtenKeys(written))
+	written, err := tr.ToPersistentRecord(ctx, shapeSchemaID, rowID, merged)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"8[0]=1", "8[1]=2", "4[]=kept", "3[]=1"}, writtenKeys(written))
 
-	checked, err := CheckUpdateValues(map[string]any{"note": []any{"a"}}, registry.cache, SchemaShapes{})
+	merged, err = tr.MergeUpdate(ctx, stored, setting(map[string]any{"phones": "9"}))
 	require.NoError(t, err)
-	assert.NoError(t, checked.Refusal)
+	written, err = tr.ToPersistentRecord(ctx, shapeSchemaID, rowID, merged)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"8[]=9", "4[]=kept"}, writtenKeys(written))
+
+	merged, err = tr.MergeUpdate(ctx, stored, setting(map[string]any{"phones": []any{"3"}}))
+	require.NoError(t, err)
+	_, err = tr.ToPersistentRecord(ctx, shapeSchemaID, rowID, merged)
+	requireShapeRefusal(t, err, noArrayRefusal("phones", 8)+" array of 1 element")
 }
 
 // The shape refusal is of the conversion class and keeps its order: the

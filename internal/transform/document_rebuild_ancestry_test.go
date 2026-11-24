@@ -27,7 +27,8 @@ func newAncestryRegistry() *stubSchemaRegistry {
 	cache["order.items.lots.tags"] = forma.AttributeMetadata{AttributeName: "order.items.lots.tags", AttributeID: 22, ValueType: forma.ValueTypeList}
 	cache["order.items.marks"] = forma.AttributeMetadata{AttributeName: "order.items.marks", AttributeID: 23, ValueType: forma.ValueTypeList}
 	declareArrayAncestors(cache, "order.items", "order.items.lots")
-	return &stubSchemaRegistry{schemaID: 619, schemaName: "rebuild", cache: cache}
+	return &stubSchemaRegistry{schemaID: 619, schemaName: "rebuild", cache: cache,
+		document: newRebuildRegistry().(*stubSchemaRegistry).document}
 }
 
 // newRegistryWithoutAncestry is newAncestryRegistry's schema with no

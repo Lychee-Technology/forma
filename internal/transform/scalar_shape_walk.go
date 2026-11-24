@@ -24,8 +24,10 @@ type rowArray []any
 // holds only records of the attribute, none with more array indices than
 // the document declares for it, is a member of an array of objects that a
 // row without array ancestry rebuilds as an array of its own
-// (rebuildInferred): the walk writes each record back where it was, nothing
-// is refused, and the resolution marks the array as the row's (rowArray).
+// (rebuildInferred), or the records of an attribute whose document does not
+// settle its shape (recordsInPlace): the walk writes each record back where
+// it was, nothing is refused, and the resolution marks the array as the
+// row's (rowArray).
 // Any other is answered apart (storedShapes) for the resolution to judge
 // once it knows which stored values the write keeps.
 func (w *documentWalk) refuseShape(path []string, value any, indices []int, err error) bool {
@@ -96,15 +98,18 @@ func indexCount(arrayIndices string) int {
 
 // recordsInPlace reports whether every held value is a record of the
 // attribute name carrying no more array indices than the schema document
-// declares for it (Declaration.Indices).
+// declares for it (Declaration.Indices). Where the document does not settle
+// how many it may carry (no document, an open declaration, an unresolved
+// $ref), nothing shows the stored records malformed: they may be a
+// primitive array recorded under its element type before #204. They are
+// stored state, not the caller's, so the write puts them back where they
+// were rather than refuse every update that keeps them; the caller's own
+// array there is still refused (scalarShapeRefusal).
 func (w *documentWalk) recordsInPlace(name string, held []*storedValue) bool {
 	meta := w.cache[name]
 	declared, exact := w.shapes.Declared(name).Indices()
-	if !exact {
-		return false
-	}
 	for _, v := range held {
-		if v.record.AttrID != meta.AttributeID || indexCount(v.record.ArrayIndices) > declared {
+		if v.record.AttrID != meta.AttributeID || exact && indexCount(v.record.ArrayIndices) > declared {
 			return false
 		}
 	}

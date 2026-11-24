@@ -45,7 +45,7 @@ func newRebuildRegistry() forma.SchemaRegistry {
 		"order.items.lots.code": {
 			AttributeName: "order.items.lots.code", AttributeID: 18, ValueType: forma.ValueTypeText,
 		},
-	}}
+	}, document: legacyArrayDocument([]string{"order.items", "order.items.lots"}, "legacy.phones", "order.tags", "order.items.sku")}
 }
 
 func rebuildAttr(attrID int16, indices string, value any) model.EntityAttribute {

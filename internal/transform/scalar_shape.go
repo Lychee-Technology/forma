@@ -26,18 +26,24 @@ import (
 //   - An object, empty or not, is refused at every attribute's position: no
 //     value type, list elements included, stores an object there.
 //   - An array, empty or not, is refused at a non-list attribute's position
-//     where its schema document declares a non-array type
+//     unless its schema document declares an array there
 //     (SchemaShapes.Declared), in an array of objects or not. Metadata alone
-//     cannot tell such an attribute from a primitive array recorded under
-//     its element type before #204 (contact.phones as text), which stores
-//     its elements at array indices and is still read and written that way.
-//     So an attribute the document declares an array keeps its own array,
-//     and each element is judged at its own position: an array where the
-//     document declares the element a single value is refused there
-//     (phones: [["1"]] and phones: [[]]). Where there is no document, or the
-//     document leaves the position open, nothing says the attribute is a
-//     scalar, and an array is left to the walk. A list's own array and its
-//     elements keep their rules (populateTypedValue, emptyList).
+//     cannot tell a single value from a primitive array recorded under its
+//     element type before #204 (contact.phones as text), which stores its
+//     elements at array indices and is still read and written that way. So
+//     an attribute the document declares an array, in any branch of an
+//     anyOf or oneOf, keeps its own array, and each element is judged at
+//     its own position: an array where the document declares the element a
+//     single value is refused there (phones: [["1"]] and phones: [[]]).
+//     Where there is no document, or it does not reach the position or
+//     leaves it open, nothing shows the attribute holds an array, and the
+//     metadata says it holds one value: the array is refused too, so an
+//     uncertain declaration never lets a scalar store array elements. A
+//     pre-#204 attribute written through a registry without the document
+//     needs its document served or its entry regenerated as a list. Its
+//     stored records are not refused (recordsInPlace): an update that keeps
+//     them writes them back. A list's own array and its elements keep their
+//     rules (populateTypedValue, emptyList).
 //
 // Only the JSON shapes the walk decomposes (map[string]any and []any) are
 // containers here. Any other Go value goes to the scalar conversion as
@@ -70,13 +76,15 @@ func scalarShapeRefusal(path []string, value any, indices []int, cache forma.Sch
 		expected = fmt.Sprintf("declared type list takes an array of %s values", meta.EffectiveItemsType())
 	case isArray:
 		declared := shapes.Declared(name)
-		if declared.At(len(indices)) != ShapeScalar {
+		switch {
+		case declared.At(len(indices)) == ShapeArray:
 			return nil
-		}
-		if declared.At(0) == ShapeArray {
+		case declared.At(0) == ShapeArray:
 			// The attribute's own array is legal; this is one of its
 			// elements.
 			expected += fmt.Sprintf(" at array indices %q", joinIndices(indices))
+		case declared.At(len(indices)) == ShapeUnresolved:
+			expected += " (the schema document declares no array here)"
 		}
 	}
 	return conversionRefusal(name, meta, fmt.Errorf(

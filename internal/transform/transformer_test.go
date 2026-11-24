@@ -45,6 +45,7 @@ func newStubSchemaRegistry() forma.SchemaRegistry {
 		schemaID:   100,
 		schemaName: "test",
 		cache:      cache,
+		document:   legacyArrayDocument(nil, "items"),
 	}
 }
 
@@ -242,6 +243,7 @@ func TestTransformer_ArrayInsideObjectDoesNotClobberObject(t *testing.T) {
 			"contact.name":   {AttributeID: 1, ValueType: forma.ValueTypeText},
 			"contact.phones": {AttributeID: 2, ValueType: forma.ValueTypeText},
 		},
+		document: legacyArrayDocument(nil, "contact.phones"),
 	}
 
 	transformer := NewTransformer(registry)

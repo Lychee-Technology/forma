@@ -2,7 +2,10 @@ package transform
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -122,4 +125,106 @@ func TestDeclaredShapeOfShippedSchemas(t *testing.T) {
 	}
 	_, err = NewPersistentRecordTransformer(registry).ToPersistentRecord(context.Background(), visitID, uuid.New(), doc)
 	requireShapeRefusal(t, err, "invalid value for attribute 'contactSnapshot.email'")
+}
+
+// An attribute declared in several alternatives of an anyOf or oneOf takes
+// any shape one of them admits, whichever branch comes first: one branch
+// declaring phones a string does not refuse the array another declares
+// (#696 review). The branches are read wherever they are: around the
+// properties, at the property, at an array's items and at a parent.
+func TestDeclaredShapeAcrossAlternativeBranches(t *testing.T) {
+	asString := `{"type": "string"}`
+	asArray := `{"type": "array", "items": {"type": "string"}}`
+	asNested := `{"type": "array", "items": {"type": "array", "items": {"type": "string"}}}`
+	branches := func(keyword, first, second string) string {
+		return `{"` + keyword + `": [` + first + `, ` + second + `]}`
+	}
+	declaring := func(property string) string {
+		return `{"properties": {"phones": ` + property + `}}`
+	}
+	for _, keyword := range []string{"anyOf", "oneOf"} {
+		for _, order := range [][2]string{{asString, asArray}, {asArray, asString}} {
+			label := fmt.Sprintf("%s %s then %s", keyword, order[0], order[1])
+			documents := map[string]string{
+				"branches around the properties": `{"type": "object", "properties": {"note": {"type": "string"}}, "` + keyword +
+					`": [` + declaring(order[0]) + `, ` + declaring(order[1]) + `]}`,
+				"branches at the property": `{"type": "object", "properties": {"note": {"type": "string"}, "phones": ` +
+					branches(keyword, order[0], order[1]) + `}}`,
+				"own declaration and a branch": `{"type": "object", "properties": {"note": {"type": "string"}, "phones": ` +
+					order[0] + `}, "` + keyword + `": [` + declaring(order[1]) + `, {"required": ["note"]}]}`,
+			}
+			for name, document := range documents {
+				registry := newShapeRegistry(true)
+				registry.document = document
+				shapes := SchemaShapesOf(registry, shapeSchemaID)
+				phones := shapes.Declared("phones")
+				assert.Equal(t, ShapeArray, phones.At(0), "%s, %s", name, label)
+				assert.Equal(t, ShapeScalar, phones.At(1), "%s, %s", name, label)
+				assert.Equal(t, ShapeScalar, shapes.Declared("note").At(0), "%s, %s", name, label)
+
+				tr := NewPersistentRecordTransformer(registry)
+				for _, value := range []any{[]any{"1", "2"}, "1"} {
+					doc := map[string]any{"phones": value}
+					_, err := tr.ToPersistentRecord(context.Background(), shapeSchemaID, uuid.New(), doc)
+					require.NoError(t, err, "%s, %s, %v", name, label, value)
+					checked, err := CheckUpdateValues(doc, registry.cache, shapes)
+					require.NoError(t, err)
+					assert.NoError(t, checked.Refusal, "%s, %s, %v", name, label, value)
+				}
+				_, err := tr.ToPersistentRecord(context.Background(), shapeSchemaID, uuid.New(), map[string]any{"phones": []any{[]any{"1"}}})
+				requireShapeRefusal(t, err, `declared type text takes a single value at array indices "0"`, "%s, %s", name, label)
+				_, err = tr.ToPersistentRecord(context.Background(), shapeSchemaID, uuid.New(), map[string]any{"note": []any{"n"}})
+				requireShapeRefusal(t, err, shapeRefusal("note", 2, "an array of 1 element"), "%s, %s", name, label)
+			}
+		}
+		for _, order := range [][2]string{{asArray, asNested}, {asNested, asArray}} {
+			registry := newShapeRegistry(true)
+			registry.document = `{"type": "object", "properties": {"phones": ` + branches(keyword, order[0], order[1]) + `}}`
+			phones := SchemaShapesOf(registry, shapeSchemaID).Declared("phones")
+			assert.Equal(t, []DeclaredShape{ShapeArray, ShapeArray, ShapeScalar}, phones.shapes,
+				"%s: an element one alternative declares an array is one", keyword)
+		}
+		for _, order := range [][2]string{
+			{`{"type": "object", "properties": {"name": {"type": "string"}}}`, `{"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}}}}`},
+			{`{"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}}}}`, `{"type": "object", "properties": {"name": {"type": "string"}}}`},
+		} {
+			registry := newShapeRegistry(true)
+			registry.document = `{"type": "object", "properties": {"items": ` + branches(keyword, order[0], order[1]) + `}}`
+			name := SchemaShapesOf(registry, shapeSchemaID).Declared("items.name")
+			assert.Equal(t, 1, name.ancestors, "%s: a parent one alternative declares an array of objects", keyword)
+			assert.Equal(t, ShapeScalar, name.At(1), keyword)
+		}
+	}
+}
+
+// Where one alternative leaves the property open and none declares an array,
+// the declaration is unresolved: the write still refuses an array there.
+func TestDeclaredShapeOpenAlternative(t *testing.T) {
+	registry := newShapeRegistry(true)
+	registry.document = `{"type": "object", "anyOf": [{"properties": {"note": {"type": "string"}}}, {"properties": {"note": {"description": "any"}}}]}`
+	shapes := SchemaShapesOf(registry, shapeSchemaID)
+	assert.Equal(t, ShapeUnresolved, shapes.Declared("note").At(0))
+	_, err := NewPersistentRecordTransformer(registry).ToPersistentRecord(context.Background(), shapeSchemaID, uuid.New(), map[string]any{"note": []any{"n"}})
+	requireShapeRefusal(t, err, noArrayRefusal("note", 2))
+}
+
+// Every subschema is read once per answer, so a document whose $defs branch
+// into each other many levels deep is answered promptly.
+func TestDeclaredShapeBoundsBranchingDocuments(t *testing.T) {
+	defs := make([]string, 0, 40)
+	for i := 0; i < 40; i++ {
+		next := fmt.Sprintf(`{"$ref": "#/$defs/d%d"}`, i+1)
+		defs = append(defs, fmt.Sprintf(`"d%d": {"anyOf": [%s, %s], "allOf": [%s]}`, i, next, next, next))
+	}
+	defs = append(defs, `"d40": {"type": "array", "items": {"type": "string"}}`)
+	registry := newShapeRegistry(true)
+	registry.document = `{"type": "object", "$defs": {` + strings.Join(defs, ", ") + `}, "properties": {"phones": {"$ref": "#/$defs/d0"}}}`
+	done := make(chan Declaration, 1)
+	go func() { done <- SchemaShapesOf(registry, shapeSchemaID).Declared("phones") }()
+	select {
+	case phones := <-done:
+		assert.Equal(t, ShapeArray, phones.At(0))
+	case <-time.After(10 * time.Second):
+		t.Fatal("the lookup did not end")
+	}
 }

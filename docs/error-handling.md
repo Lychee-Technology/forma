@@ -189,24 +189,46 @@ of objects (`items[0].name` is a scalar position, `items` is not):
 
 - An object is refused at every attribute's position, a list's included: no
   value type stores an object there.
-- An array is refused at an attribute that is not a list when the schema
-  document declares it a type other than an array, in an array of objects
-  or not. The attributes file alone cannot say: a primitive array recorded
-  under its element type before #204 (`contact.phones` as `text`) stores its
-  elements at array indices and is still written that way. So the rule reads
-  the document (`transform.SchemaShapes`): its own text, following a `$ref`
-  into the document or into a sibling schema file the registry serves
-  (`visit.json`'s `leadId` is `lead.json#/$defs/lead_id`, a string), and a
-  type union with `null` (`["string", "null"]`) or an `anyOf`/`oneOf` of
-  single-value types as the single value it is. Neither the validation mode
-  nor the registry's array ancestry changes the answer. Where the document
-  declares the attribute an array, that array is admitted and each of its
-  elements is judged at its own position, so `phones: [["1"]]` and
-  `phones: [[]]` are refused at array index `0`. An array is admitted only
-  where nothing says the attribute is a single value: there is no document,
-  a `$ref` names a file the registry does not serve, or the position leaves
-  its type open (`{}`). `TestDeclaredShapeOfShippedSchemas` holds every
-  non-list attribute of the shipped schemas out of that case.
+- An array is refused at an attribute that is not a list unless the schema
+  document declares an array there, in an array of objects or not. The
+  attributes file alone cannot say: a primitive array recorded under its
+  element type before #204 (`contact.phones` as `text`) stores its elements
+  at array indices and is still written that way. So the rule reads the
+  document (`transform.SchemaShapes`): its own text, following a `$ref` into
+  the document or into a sibling schema file the registry serves
+  (`visit.json`'s `leadId` is `lead.json#/$defs/lead_id`, a string), and
+  every declaration that reaches the position. A property, an array's
+  `items` and a type can be declared in the subschema itself, its `$ref` and
+  each branch of an `allOf`, `anyOf` or `oneOf`, and all of them count, in
+  any order: where one `anyOf` branch declares `phones` a string and another
+  an array of strings, the array is valid and admitted. A type union with
+  `null` (`["string", "null"]`) or an `anyOf`/`oneOf` of single-value types
+  is the single value it is. Neither the validation mode nor the registry's
+  array ancestry changes the answer. Where the document declares the
+  attribute an array, that array is admitted and each of its elements is
+  judged at its own position, so `phones: [["1"]]` and `phones: [[]]` are
+  refused at array index `0`.
+- Where the document does not settle the position, the array is refused as
+  well: the document is missing or declares no such property, a `$ref`
+  names a file the registry does not serve or a pointer it does not hold,
+  or the declaration leaves the type open (`{}`, an `anyOf` branch without
+  a type). Nothing then shows the attribute holds an array, and its metadata
+  says it holds one value, so an uncertain declaration never lets a scalar
+  store array elements, and `[]` never removes one. The message says why:
+  `declared type text takes a single value (the schema document declares no
+  array here)`. A pre-#204 primitive array served without a document that
+  declares it needs that document served, or its attributes entry
+  regenerated as a `list` (`docs/schema-consistency-migration.md`); until
+  then a caller cannot write it. `TestDeclaredShapeOfShippedSchemas` holds
+  every non-list attribute of the shipped schemas to a resolved
+  declaration.
+- A stored row's own records are stored state, not the caller's. Where the
+  document does not settle the attribute, an update that keeps them writes
+  each back where it was stored, as before #696: they may be a pre-#204
+  array, and nothing shows them malformed. Where the document declares a
+  single value and a record carries more array indices than the arrays of
+  objects around it, the update that keeps it is refused with a plain error
+  naming the record (below, and `scalar-shape-census` reports it).
 - A row of a schema whose registry derived no array ancestry is rebuilt by
   inference, which can read a member of an array of objects as an array of
   its own (`items: {"name": ["a", "b"]}`). An update that keeps those
@@ -2520,7 +2542,10 @@ container sent, before it writes. A non-empty object used to answer the
 undefined attribute beneath it (`attribute 'tenant.x' is not defined`); it
 now answers the shape. Strict mode and creates already refused all of these
 through schema validation and keep a `400`; a manager with no validator now
-refuses them too.
+refuses them too. So does an attribute whose schema document does not settle
+its declaration (no such property, a `$ref` the registry cannot resolve, an
+open `{}`): an array there is refused, with `(the schema document declares
+no array here)` in the message.
 
 A row that already holds array elements under a scalar is stored state, not
 the caller's fault. The read returns it as an array, as before. An update

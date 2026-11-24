@@ -38,6 +38,8 @@ type shapeLookup struct {
 	// siblings caches the documents of other schemas a $ref names, by file
 	// name; a nil entry is one the registry does not serve.
 	siblings map[string]map[string]any
+	// typeMemo caches the types each subschema admits (types).
+	typeMemo map[nodeKey]typeAnswer
 }
 
 // SchemaShapesOf answers the shapes registry's document declares for
@@ -57,7 +59,9 @@ const (
 	// ShapeUnresolved means the document gives no evidence: there is none,
 	// it does not reach the attribute (a $ref to a file the registry does
 	// not serve), or it leaves the position's type open ({}, an anyOf with
-	// an open branch, an array without items).
+	// an open branch, an array without items). The write refuses an array
+	// there as at a ShapeScalar (scalarShapeRefusal); only the census and a
+	// stored row's records tell the two apart.
 	ShapeUnresolved DeclaredShape = iota
 	// ShapeScalar is a type that is not an array: an object or a single
 	// value.
@@ -143,184 +147,19 @@ func shapeDocument(schema forma.JSONSchema, err error) map[string]any {
 	return parsed
 }
 
-// maxShapeHops bounds the $ref hops and array levels one answer follows, so
-// a $ref cycle in a document ends.
-const maxShapeHops = 32
+// maxShapeLevels bounds the array levels one answer follows, so an array
+// whose items $ref the array itself ends; maxShapeNodes bounds the
+// subschemas one lookup reads, so a document of many combinators ends too.
+const (
+	maxShapeLevels = 32
+	maxShapeNodes  = 4096
+)
 
 // schemaNode is a subschema of a document: file names the sibling document
 // holding it, "" for the schema's own.
 type schemaNode struct {
 	value map[string]any
 	file  string
-}
-
-func (l *shapeLookup) declared(name string) Declaration {
-	if l.root == nil {
-		return Declaration{}
-	}
-	node := schemaNode{value: l.root}
-	segments := strings.Split(name, ".")
-	ancestors := 0
-	for _, segment := range segments[:len(segments)-1] {
-		child, ok := l.property(node, segment, 0)
-		if !ok {
-			return Declaration{}
-		}
-		node = child
-		if types, _ := l.types(child, 0); types["array"] {
-			items, ok := l.items(child, 0)
-			if !ok {
-				return Declaration{}
-			}
-			ancestors++
-			node = items
-		}
-	}
-	leaf, ok := l.property(node, segments[len(segments)-1], 0)
-	if !ok {
-		return Declaration{}
-	}
-	return Declaration{ancestors: ancestors, shapes: l.levels(leaf)}
-}
-
-// levels answers the shape at each array level of the value node declares.
-func (l *shapeLookup) levels(node schemaNode) []DeclaredShape {
-	var shapes []DeclaredShape
-	for len(shapes) < maxShapeHops {
-		types, known := l.types(node, 0)
-		switch {
-		case !known:
-			return append(shapes, ShapeUnresolved)
-		case !types["array"]:
-			return append(shapes, ShapeScalar)
-		}
-		shapes = append(shapes, ShapeArray)
-		items, ok := l.items(node, 0)
-		if !ok {
-			return append(shapes, ShapeUnresolved)
-		}
-		node = items
-	}
-	return append(shapes, ShapeUnresolved)
-}
-
-// types answers the JSON types node admits other than null, and whether the
-// document says: its "type" (a name or a union), its $ref's, its allOf
-// branches', and the union of its anyOf or oneOf branches' when every branch
-// says. Only when none of them says, an "items" declares an array and a
-// "properties" an object, as the registry's parser reads them. Every
-// constraint's types are joined, so an array is admitted wherever any of
-// them names one.
-func (l *shapeLookup) types(node schemaNode, hops int) (map[string]bool, bool) {
-	if hops > maxShapeHops {
-		return nil, false
-	}
-	out, known := map[string]bool{}, false
-	add := func(types map[string]bool, ok bool) {
-		if ok {
-			known = true
-			for t := range types {
-				out[t] = true
-			}
-		}
-	}
-	add(typeKeyword(node.value["type"]))
-	if target, ok := l.ref(node, hops); ok {
-		add(l.types(target, hops+1))
-	}
-	for _, branch := range l.branches(node, "allOf") {
-		add(l.types(branch, hops+1))
-	}
-	for _, keyword := range []string{"anyOf", "oneOf"} {
-		add(l.unionOf(l.branches(node, keyword), hops+1))
-	}
-	if !known {
-		_, hasItems := node.value["items"].(map[string]any)
-		_, hasProperties := node.value["properties"].(map[string]any)
-		add(map[string]bool{"array": true}, hasItems)
-		add(map[string]bool{"object": true}, !hasItems && hasProperties)
-	}
-	delete(out, "null")
-	return out, known && len(out) > 0
-}
-
-// unionOf joins the types of branches, which say only when every one does.
-func (l *shapeLookup) unionOf(branches []schemaNode, hops int) (map[string]bool, bool) {
-	if len(branches) == 0 {
-		return nil, false
-	}
-	out := map[string]bool{}
-	for _, branch := range branches {
-		types, ok := l.types(branch, hops)
-		if !ok {
-			return nil, false
-		}
-		for t := range types {
-			out[t] = true
-		}
-	}
-	return out, true
-}
-
-// typeKeyword reads a "type" keyword: a type name or an array of them.
-func typeKeyword(value any) (map[string]bool, bool) {
-	switch v := value.(type) {
-	case string:
-		return map[string]bool{v: true}, v != ""
-	case []any:
-		out := map[string]bool{}
-		for _, item := range v {
-			name, ok := item.(string)
-			if !ok {
-				return nil, false
-			}
-			out[name] = true
-		}
-		return out, len(out) > 0
-	}
-	return nil, false
-}
-
-// property answers the subschema node declares for the member name: in its
-// own "properties", or else in those of its $ref or of a combinator branch.
-func (l *shapeLookup) property(node schemaNode, name string, hops int) (schemaNode, bool) {
-	return l.member(node, hops, func(n schemaNode) (schemaNode, bool) {
-		properties, _ := n.value["properties"].(map[string]any)
-		child, ok := properties[name].(map[string]any)
-		return schemaNode{value: child, file: n.file}, ok
-	})
-}
-
-// items answers the subschema node declares for an array's elements.
-func (l *shapeLookup) items(node schemaNode, hops int) (schemaNode, bool) {
-	return l.member(node, hops, func(n schemaNode) (schemaNode, bool) {
-		items, ok := n.value["items"].(map[string]any)
-		return schemaNode{value: items, file: n.file}, ok
-	})
-}
-
-// member answers own(node), or else the first answer of node's $ref and
-// combinator branches.
-func (l *shapeLookup) member(node schemaNode, hops int, own func(schemaNode) (schemaNode, bool)) (schemaNode, bool) {
-	if hops > maxShapeHops {
-		return schemaNode{}, false
-	}
-	if found, ok := own(node); ok {
-		return found, true
-	}
-	var next []schemaNode
-	if target, ok := l.ref(node, hops); ok {
-		next = append(next, target)
-	}
-	for _, keyword := range []string{"allOf", "anyOf", "oneOf"} {
-		next = append(next, l.branches(node, keyword)...)
-	}
-	for _, candidate := range next {
-		if found, ok := l.member(candidate, hops+1, own); ok {
-			return found, true
-		}
-	}
-	return schemaNode{}, false
 }
 
 // branches answers the subschemas of a combinator keyword of node.
@@ -339,9 +178,9 @@ func (l *shapeLookup) branches(node schemaNode, keyword string) []schemaNode {
 // own document ("#/$defs/x") or into a sibling file the registry serves as a
 // schema ("lead.json#/properties/contact"). Any other reference, a sibling
 // in another directory or on the network included, is not followed.
-func (l *shapeLookup) ref(node schemaNode, hops int) (schemaNode, bool) {
+func (l *shapeLookup) ref(node schemaNode) (schemaNode, bool) {
 	ref, ok := node.value["$ref"].(string)
-	if !ok || hops > maxShapeHops {
+	if !ok {
 		return schemaNode{}, false
 	}
 	file, pointer, _ := strings.Cut(ref, "#")

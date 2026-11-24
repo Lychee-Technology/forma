@@ -13,8 +13,10 @@ type stubSchemaRegistry struct {
 	cache      forma.SchemaAttributeCache
 	// properties are the parsed document's properties, which say what each
 	// attribute is declared as (transform.SchemaShapesOf); nil declares
-	// none. The document text stays stubSchemaDocument.
+	// none. The document text stays stubSchemaDocument unless document is
+	// set, which GetSchemaByID then serves instead.
 	properties map[string]*forma.PropertySchema
+	document   string
 }
 
 // stubSchemaDocument is the schema document this registry serves.
@@ -77,5 +79,9 @@ func (s *stubSchemaRegistry) GetSchemaByID(id int16) (string, forma.JSONSchema, 
 	if id != s.schemaID {
 		return "", forma.JSONSchema{}, fmt.Errorf("schema id %d not found", id)
 	}
-	return s.schemaName, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName, Schema: stubSchemaDocument, Properties: s.properties}, nil
+	document := stubSchemaDocument
+	if s.document != "" {
+		document = s.document
+	}
+	return s.schemaName, forma.JSONSchema{ID: s.schemaID, Name: s.schemaName, Schema: document, Properties: s.properties}, nil
 }
