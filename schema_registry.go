@@ -200,9 +200,12 @@ type AttributeMetadata struct {
 	// stores each element at an index of its own, as for a list, and the
 	// read rebuilds them as an array (rebuildByAncestry), so an update may
 	// send that array where the attribute's type alone says a single value
-	// belongs (#696). The file registry derives it from the schema document
-	// and never reads it from the attributes file; false means the document
-	// does not positively declare such an array, or was not read.
+	// belongs (#696). It is judged on the attribute's own node, a type union
+	// with "null" included, whether or not the document settles its
+	// ancestors' positions (SettledArrayAncestors). The file registry derives
+	// it from the schema document and never reads it from the attributes
+	// file; false means the document does not positively declare such an
+	// array, or was not read.
 	DeclaredArray bool `json:"-"`
 	// SettledArrayAncestors is ArrayAncestors as the schema document fixes
 	// it for this attribute alone, read strictly (#696): non-nil, possibly

@@ -77,6 +77,32 @@ func TestFileRegistryDerivesSettledArrayPositions(t *testing.T) {
 	require.False(t, cache["note"].DeclaredArray)
 }
 
+// DeclaredArray is judged on the attribute's own node, not on whether its
+// ancestors settle its positions (#696 review R3-F1): a nullable primitive
+// array beneath an object declared only by "properties", or beside an anyOf
+// admitting an array, is still declared, though its indices are unsettled.
+// A true scalar there, and a node whose type admits both an array and an
+// object, are not marked.
+func TestFileRegistryDerivesDeclaredArraysUnderUnsettledParents(t *testing.T) {
+	dir := t.TempDir()
+	writeSchemaArtifacts(t, dir, "legacy",
+		`{"type":"object","properties":{`+
+			`"profile":{"properties":{"note":{"type":"string"},"tags":{"type":["array","null"],"items":{"type":"string"}},`+
+			`"mixed":{"type":["array","object"],"items":{"type":"string"}}}},`+
+			`"office":{"properties":{"codes":{"type":["array","null"],"items":{"type":"integer"}}},"anyOf":[{"type":"object"},`+
+			`{"type":"array","items":{"type":"object","properties":{"codes":{"type":["array","null"],"items":{"type":"integer"}}}}}]}}}`,
+		`{"profile.note":{"attributeID":1,"valueType":"text"},"profile.tags":{"attributeID":2,"valueType":"text"},`+
+			`"profile.mixed":{"attributeID":3,"valueType":"text"},"office.codes":{"attributeID":4,"valueType":"integer"}}`)
+	registry, err := NewFileSchemaRegistryFromDirectory(dir)
+	require.NoError(t, err)
+	_, cache, err := registry.GetSchemaAttributeCacheByName("legacy")
+	require.NoError(t, err)
+	for name, want := range map[string]bool{"profile.note": false, "profile.tags": true, "profile.mixed": false, "office.codes": true} {
+		require.Equal(t, want, cache[name].DeclaredArray, name)
+		require.Nil(t, cache[name].SettledArrayAncestors, "%s's parent does not settle its positions", name)
+	}
+}
+
 // DeriveArrayPositions reads what the document fixes (#696). A node whose
 // type is object or array of objects settles its members' positions, even
 // beside an anyOf, since JSON Schema is conjunctive. A node declared only by

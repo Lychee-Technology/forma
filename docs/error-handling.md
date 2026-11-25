@@ -215,7 +215,10 @@ as by creates, where the schema document positively declares it one
 (`"type": "array"`, or a union such as `["array", "null"]`, with primitive
 `items`): the file registry marks it
 (`AttributeMetadata.DeclaredArray`), and its elements are judged as a
-list's, one single value each. A registry that does not derive the mark, or
+list's, one single value each. The mark reads the attribute's own node, so
+it holds beneath a parent whose positions the document leaves unsettled,
+such as an object declared only by `properties`; there only the number of
+indices goes unjudged. A registry that does not derive the mark, or
 a document that does not declare the array, leaves the attribute a single
 value, and an update sending it an array is refused; declare it
 `"valueType": "list"`, as `generate-attributes` asks for that ledger shape.

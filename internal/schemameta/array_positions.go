@@ -19,9 +19,12 @@ import (
 // positively declares a primitive array, the element-typed ledger entry a
 // primitive array had before #204: by the parsed properties, as the registry
 // reads them, or by the raw document, which also keeps a type union such as
-// ["array", "null"] the parser drops. SettledArrayAncestors is set only
-// where the raw document settles the attribute's positions
-// (settledArrayPositions), since an update is refused by it.
+// ["array", "null"] the parser drops (declaredPrimitiveArray). It is judged
+// on the attribute's own node, whether or not its ancestors' positions are
+// settled: it only admits an array the document declares there.
+// SettledArrayAncestors is set only where the raw document settles the
+// attribute's positions (settledArrayPositions), since an update is refused
+// by it.
 func withArrayPositions(cache forma.SchemaAttributeCache, schema *forma.JSONSchema) forma.SchemaAttributeCache {
 	var root map[string]any
 	if err := json.Unmarshal([]byte(schema.Schema), &root); err != nil {
@@ -34,7 +37,7 @@ func withArrayPositions(cache forma.SchemaAttributeCache, schema *forma.JSONSche
 		meta.DeclaredArray, meta.SettledArrayAncestors = false, nil
 		if meta.ValueType != forma.ValueTypeList {
 			positions := settledArrayPositions(root, defs, name)
-			meta.DeclaredArray = positions.DeclaredArray || declaresPrimitiveArray(name, schema.Properties)
+			meta.DeclaredArray = declaredPrimitiveArray(root, defs, name) || declaresPrimitiveArray(name, schema.Properties)
 			if positions.Verified {
 				meta.SettledArrayAncestors = positions.Ancestors
 			}
@@ -42,6 +45,37 @@ func withArrayPositions(cache forma.SchemaAttributeCache, schema *forma.JSONSche
 		derived[name] = meta
 	}
 	return derived
+}
+
+// declaredPrimitiveArray reports whether the raw document declares name an
+// array whose items are single values, by the attribute's own node as
+// leafPositions settles it (a type fixing an array, a union with "null"
+// included, and items whose type fixes a single value). Its ancestors are
+// reached as the parser reaches them (memberProperties): through an array's
+// items where the node has items, through its own properties otherwise,
+// whether or not their types settle them. An ancestor whose positions are
+// open (an object declared by "properties" alone, beside an anyOf) leaves
+// the attribute's indices unjudged (settledArrayPositions) but does not
+// unmake the array its own node declares (#696 review R3-F1).
+func declaredPrimitiveArray(root, defs map[string]any, name string) bool {
+	segments := strings.Split(name, ".")
+	node := root
+	for i, segment := range segments {
+		properties, _ := node["properties"].(map[string]any)
+		child, ok := resolvedNode(properties[segment], defs)
+		if !ok {
+			return false
+		}
+		if i == len(segments)-1 {
+			return leafPositions(child, fixedKind(child), defs, nil).DeclaredArray
+		}
+		if items, ok := resolvedNode(child["items"], defs); ok {
+			node = items
+		} else {
+			node = child
+		}
+	}
+	return false
 }
 
 // declaresPrimitiveArray reports whether the document declares name an array

@@ -181,3 +181,34 @@ func TestStrictUpdateWritesANullablePrimitiveArrayUnderAnElementTypedLedger(t *t
 	require.Same(t, before, m.stored(t, row), "a refused update must not store a row")
 	require.Equal(t, []any{"b"}, m.read(t, row)["tags"])
 }
+
+// The same nullable primitive array beneath an object declared only by
+// "properties", whose positions the document leaves unsettled, is still the
+// array its own node declares: a strict update writes it as a strict create
+// does (#696 review R3-F1). profile.note, a true scalar beside it, still
+// refuses an array, and the refusal leaves the stored row as it was.
+func TestStrictUpdateWritesANullablePrimitiveArrayUnderAnUnsettledParent(t *testing.T) {
+	m := newPositionsManager(t, "legacy",
+		`{"type":"object","properties":{"profile":{"properties":{"note":{"type":"string"},`+
+			`"tags":{"type":["array","null"],"items":{"type":"string"}}}}}}`,
+		`{"profile.note":{"attributeID":1,"valueType":"text"},"profile.tags":{"attributeID":2,"valueType":"text"}}`, true)
+	_, cache, err := m.registry.GetSchemaAttributeCacheByName("legacy")
+	require.NoError(t, err)
+	require.True(t, cache["profile.tags"].DeclaredArray)
+	require.Nil(t, cache["profile.tags"].SettledArrayAncestors)
+	require.False(t, cache["profile.note"].DeclaredArray)
+
+	row := m.create(t, map[string]any{"profile": map[string]any{"note": "n", "tags": []any{"a"}}})
+	require.Equal(t, []any{"a"}, row.Attributes["profile"].(map[string]any)["tags"])
+	updated, err := m.update(row, map[string]any{"profile": map[string]any{"tags": []any{"b"}}})
+	require.NoError(t, err)
+	require.Equal(t, []any{"b"}, updated.Attributes["profile"].(map[string]any)["tags"])
+
+	before := m.stored(t, row)
+	_, err = m.update(row, map[string]any{"profile": map[string]any{"note": []any{"x"}}})
+	assertShapeRefused(t, err, "profile.note", "declared type text takes a single value, got an array")
+	require.Same(t, before, m.stored(t, row), "a refused update must not store a row")
+	profile := m.read(t, row)["profile"].(map[string]any)
+	require.Equal(t, []any{"b"}, profile["tags"])
+	require.Equal(t, "n", profile["note"])
+}
