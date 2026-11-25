@@ -278,7 +278,6 @@ func TestShapeFollowsReferencesIntoMovedKeywords(t *testing.T) {
 	require.NoError(t, err)
 	shape := v.Shape(1)
 	require.NotNil(t, shape)
-	assert.False(t, shape.Partial(), "every reference resolves into the skeleton")
 	for _, admitted := range []string{"a", "b", "d", "f", "i", "k", "l"} {
 		assert.NoErrorf(t, shape.AdmitsArrangement([]string{admitted}, []int{1}), "%s declares an array of strings through its reference", admitted)
 		assert.Errorf(t, shape.AdmitsArrangement([]string{admitted}, []int{2}), "%s declares no array of arrays", admitted)
@@ -293,25 +292,38 @@ func TestShapeFollowsReferencesIntoMovedKeywords(t *testing.T) {
 	require.NoError(t, v.Validate(1, map[string]any{"b": []any{"x"}, "l": []any{"y"}}))
 }
 
-// TestShapeIsPartialWhereAPointerCrossesAnID pins the one known fallback: a
-// pointer that crosses a nested $id into a moved keyword does not resolve
-// in the skeleton. The schema still validates, and keeps a partial skeleton
-// in which the position behind the reference is unconstrained: it admits an
-// array, which the schema may declare there, rather than refuse it, while
-// a position reached without a reference is judged as before.
-func TestShapeIsPartialWhereAPointerCrossesAnID(t *testing.T) {
+// TestShapeFollowsAPointerAcrossANestedID pins #696 review R2-F1: a pointer
+// that walks into a subschema with an $id of its own, in this document or
+// in another file, and on into a keyword the skeleton moves, lands in that
+// resource's skeleton. A referenced scalar admits no array, and a
+// referenced array admits its own, never one more; a reference within the
+// nested resource still resolves against it.
+func TestShapeFollowsAPointerAcrossANestedID(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "other.json"), []byte(`{"$defs":{"deep":{"$id":"deep.json",
+		"properties":{"x":{"oneOf":[{"type":"array","items":{"type":"string"}},{"type":"string"}]}}}}}`), 0o600))
 	v, err := New(registryWith(t, "s", `{"type":"object","$defs":{"inner":{"$id":"inner.json","properties":{
-		"x":{"oneOf":[{"type":"array","items":{"type":"string"}},{"type":"integer"}]}}}},"properties":{
-		"a":{"$ref":"#/$defs/inner/properties/x/oneOf/0"},"note":{"type":"string"}}}`, 1), t.TempDir())
+		"x":{"oneOf":[{"type":"string"},{"type":"integer"}]},
+		"y":{"oneOf":[{"type":"array","items":{"type":"string"}},{"type":"integer"}]},
+		"z":{"$ref":"#/properties/y/oneOf/0"}}}},"properties":{
+		"note":{"$ref":"#/$defs/inner/properties/x/oneOf/0"},
+		"codes":{"$ref":"#/$defs/inner/properties/y/oneOf/0"},
+		"alias":{"$ref":"inner.json#/properties/z"},
+		"far":{"$ref":"other.json#/$defs/deep/properties/x/oneOf/0"},
+		"farNote":{"$ref":"other.json#/$defs/deep/properties/x/oneOf/1"}}}`, 1), dir)
 	require.NoError(t, err)
 	shape := v.Shape(1)
-	require.NotNil(t, shape)
-	assert.True(t, shape.Partial())
-	require.NoError(t, v.Validate(1, map[string]any{"a": []any{"x"}}))
-	assert.NoError(t, shape.AdmitsArrangement([]string{"a"}, []int{1}), "behind an unresolved reference is unknown, not a single value")
-	assert.Error(t, shape.AdmitsArrangement([]string{"note"}, []int{1}))
+	require.NotNil(t, shape, "the skeleton resolves")
+	for _, single := range []string{"note", "farNote"} {
+		assert.Errorf(t, shape.AdmitsArrangement([]string{single}, []int{1}), "%s references a single value", single)
+		assert.NoErrorf(t, shape.AdmitsArrangement([]string{single}, []int{0}), "%s takes a single value", single)
+	}
+	for _, array := range []string{"codes", "alias", "far"} {
+		assert.NoErrorf(t, shape.AdmitsArrangement([]string{array}, []int{1}), "%s references an array of strings", array)
+		assert.Errorf(t, shape.AdmitsArrangement([]string{array}, []int{2}), "%s references no array of arrays", array)
+	}
+	require.NoError(t, v.Validate(1, map[string]any{"note": "n", "codes": []any{"x"}, "alias": []any{"y"}, "far": []any{"z"}}))
 	assert.Nil(t, (*Validator)(nil).Shape(1), "an unconfigured validator has no skeleton")
-	assert.False(t, (*ShapeSchema)(nil).Partial())
 }
 
 // TestShippedSchemasHaveSkeletons pins that every shipped schema keeps a
@@ -331,7 +343,6 @@ func TestShippedSchemasHaveSkeletons(t *testing.T) {
 	require.NoError(t, err)
 	for name, id := range registry.idsByNm {
 		assert.NotNilf(t, v.Shape(id), "shipped schema %s must keep a container skeleton", name)
-		assert.Falsef(t, v.Shape(id).Partial(), "shipped schema %s must keep a full container skeleton", name)
 	}
 }
 

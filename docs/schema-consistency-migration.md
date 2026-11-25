@@ -705,7 +705,7 @@ Example validator output:
 ```text
 - array elements stored where the schema declares no such arrays, under scalar attributes in eav_data_dev: schema=lead schema_id=106 attr_id=14 attribute=contact.memo type=text indices=1 rows=1 example=row_id=00000000-0000-4000-8000-00000000000b array_indices="0"
 informational (not a failure):
-- indexed records under scalar attributes the census could not judge in eav_data_dev: schema=s schema_id=110 attr_id=3 attribute=note type=text indices=1 rows=2 example=row_id=... array_indices="0" unverified=the schema keeps a partial container skeleton, which does not follow its $refs
+- indexed records under scalar attributes the census could not judge in eav_data_dev: schema=s schema_id=110 attr_id=3 attribute=note type=text indices=1 rows=2 example=row_id=... array_indices="0" unverified=the schema documents did not resolve (...)
 ```
 
 Before `#696`, report-only update validation let an update give an attribute
@@ -730,12 +730,12 @@ naming one record by `row_id` and `array_indices`, never a value: a text
 attribute declared `{"anyOf": [{"type": "string"}, {"enum": [false]}]}` with a
 record at `'0'` is one. A group the census cannot judge is reported as
 informational with the reason, unverified and not clean: the schema's
-documents did not resolve, there are too many arrangements to try, or the
-schema keeps only a partial skeleton (a JSON Pointer crosses a nested `$id`
-into a moved keyword, so its `$ref`s are not followed) and the skeleton admits
-the group, which a reference it did not follow might not. A partial
-skeleton's refusal is still proof. A list's records are the `#372` check's, and an unknown attribute's
-the attr_id census's.
+documents did not resolve, the schema has no skeleton (its skeleton did not
+resolve, which no known schema construct causes; the validator logs it at
+startup), or there are too many arrangements to try. A `$ref` is followed
+wherever it points, across a nested `$id` and into another file included, so a
+scalar reached through one is judged like any other. A list's records are the
+`#372` check's, and an unknown attribute's the attr_id census's.
 
 The census only reads. Nothing in Forma repairs such records, and the right
 repair depends on what the caller meant, so a confirmed finding needs its own

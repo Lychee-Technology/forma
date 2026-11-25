@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/lychee-technology/forma"
@@ -25,8 +26,9 @@ import (
 //     each sat at, so the read assigns them: to the attribute's array
 //     ancestors, outermost first, then to the attribute's own array
 //     (rebuildByAncestry), or, without ancestry, to the attribute or its
-//     parent. Two arrays at one key are therefore never read back, and with
-//     ancestry the arrays around the path's keys must be its first array
+//     parent. Two arrays at one key are therefore never read back. Without
+//     a skeleton, the ancestry is also all that says which ancestors are
+//     arrays, so the arrays around the path's keys must be its first array
 //     ancestors, in order, with an array around the attribute itself only
 //     once every ancestor has one (representable).
 //   - The schema must declare those arrays there. Its container skeleton
@@ -85,7 +87,7 @@ func (j *placementJudge) value(path []string, meta forma.AttributeMetadata, at d
 	}
 	segments, arrays := arrangementOf(path, at.arrays)
 	name := strings.Join(path, ".")
-	if detail := representable(segments, arrays, meta); detail != nil {
+	if detail := representable(segments, arrays, meta, j.shape == nil); detail != nil {
 		return arrayStorageError(name, meta, sent, detail)
 	}
 	if j.shape == nil {
@@ -95,7 +97,7 @@ func (j *placementJudge) value(path []string, meta forma.AttributeMetadata, at d
 		}
 		return nil
 	}
-	key := fmt.Sprint(segments, arrays)
+	key := arrangementKey(segments, arrays)
 	verdict, seen := j.judged[key]
 	if !seen {
 		verdict = j.shape.AdmitsArrangement(segments, arrays)
@@ -138,17 +140,43 @@ func allNil(src []any) bool {
 	return true
 }
 
+// arrangementKey names an arrangement unambiguously for the memo: each
+// segment quoted, since a segment may hold a space, a dot or a bracket of
+// its own (#696 review R2-F2: ["a", "b c"] and ["a b", "c"] are two
+// paths).
+func arrangementKey(segments []string, arrays []int) string {
+	var b strings.Builder
+	for i, segment := range segments {
+		b.WriteString(strconv.Quote(segment))
+		b.WriteByte(':')
+		b.WriteString(strconv.Itoa(arrays[i]))
+		b.WriteByte(' ')
+	}
+	return b.String()
+}
+
 // representable answers why storage would not read the value back where it
 // sits, or nil (see the rule above). segments and arrays are its dotted path
 // and the arrays around each segment's value.
-func representable(segments []string, arrays []int, meta forma.AttributeMetadata) error {
+//
+// Two arrays at one key are never read back. The order of the arrays along
+// the path is held to the registry's array ancestry only by the ledger
+// judge, without a skeleton (byAncestry): there the ancestry is all that
+// says which ancestors are arrays. With a skeleton, the schema says so, and
+// it can declare more than the registry's lenient derivation sees: an
+// object-or-array union that the registry derives as an object admits its
+// array of objects, which a create stores as it always has, so an update
+// must store it too (#696 review R2-F3). A single value never gains an
+// array this way: the skeleton refuses every array the schema does not
+// declare.
+func representable(segments []string, arrays []int, meta forma.AttributeMetadata, byAncestry bool) error {
 	for i, n := range arrays {
 		if n > 1 {
 			return fmt.Errorf("%d arrays around %q: a record keeps one index per array and the read takes each for a different array",
 				n, strings.Join(segments[:i+1], "."))
 		}
 	}
-	if meta.ArrayAncestors == nil {
+	if !byAncestry || meta.ArrayAncestors == nil {
 		return nil
 	}
 	filled := 0

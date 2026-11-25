@@ -82,11 +82,21 @@ func newValueShapeEnv(t *testing.T, mode string) valueShapeEnv {
 // and attributes. mode is "strict", "report-only" or "no validator".
 func newShapeEnvFor(t *testing.T, mode, name, document, attributes string) valueShapeEnv {
 	t.Helper()
+	return newShapeEnvWith(t, mode, name, document, attributes, nil)
+}
+
+// newShapeEnvWith is newShapeEnvFor over the file registry as wrap, when
+// set, serves it.
+func newShapeEnvWith(t *testing.T, mode, name, document, attributes string, wrap func(forma.SchemaRegistry) forma.SchemaRegistry) valueShapeEnv {
+	t.Helper()
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, name+".json"), []byte(document), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, name+"_attributes.json"), []byte(attributes), 0o600))
 	registry, err := newFileSchemaRegistryFromDir(dir)
 	require.NoError(t, err)
+	if wrap != nil {
+		registry = wrap(registry)
+	}
 	schemaID, cache, err := registry.GetSchemaAttributeCacheByName(name)
 	require.NoError(t, err)
 
@@ -95,7 +105,6 @@ func newShapeEnvFor(t *testing.T, mode, name, document, attributes string) value
 		validator, err = schemavalidate.New(registry, dir)
 		require.NoError(t, err)
 		require.NotNil(t, validator.Shape(schemaID))
-		require.False(t, validator.Shape(schemaID).Partial(), "the schema keeps a full skeleton")
 	}
 	config := createTestConfig()
 	config.Entity.SchemaDirectory = dir

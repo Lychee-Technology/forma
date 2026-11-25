@@ -844,11 +844,16 @@ validator configured:
   array. So two arrays at one key are refused, and where the registry derives
   array ancestry, the arrays around the path must be its first array
   ancestors in order, with an array around the attribute itself only once
-  every ancestor has one. (An `anyOf` of an object and an array of objects
-  whose ancestry the registry derives as an object is such a case: its
-  array's members would read back as arrays of their own, so an update
-  sending the array is refused; a create, which strict validation judges, is
-  not.) Which arrays the schema declares is its structure's
+  every ancestor has one, as long as no skeleton (below) says which arrays
+  the schema declares. With one, the schema is the authority and only the
+  two-arrays-at-one-key limit is storage's own: the registry's lenient
+  derivation can take for an object what the schema declares as either,
+  such as an `anyOf` of an object and an array of objects beside
+  `properties`, and an update keeps writing that array as a create writes it
+  (#696 review R2-F3). Such a row's array members read back as arrays of
+  their own, a reading by that derivation which is the registry's to fix,
+  not a new record shape: a create stored them alike before #696. Which
+  arrays the schema declares is its structure's
   to say: arrays of objects around the attribute, a list's own array, and a
   primitive array a schema declares for an element-typed (pre-#204) ledger
   entry, in any spelling (a nullable union, items typed through `anyOf`, an
@@ -866,7 +871,10 @@ validator configured:
   {"enum": [false]}]}` still admits no array. Every subschema the skeleton
   does not keep in place is moved into its resource's `$defs`, and each
   `$ref` into it is rewritten to land there, so a reference into a `oneOf`,
-  `not` or tuple position resolves. The rule judges every value `Updates`
+  `not` or tuple position resolves, through a nested `$id` and into another
+  file as well: the rewrite walks the document the reference names beside
+  its pointer, so a pointer entering a resource with an `$id` of its own
+  lands in that resource's `$defs`. The rule judges every value `Updates`
   writes, with the arrays the caller put around it at the key where the
   caller put them, so a nested, dotted or array-of-objects spelling is judged
   alike. An array at a single-valued attribute is judged before its
@@ -911,12 +919,11 @@ the ledger is all that says what an attribute stores: an array around an
 attribute that is not a list is refused, a primitive array under an
 element-typed ledger entry included, while the read's own rule above still
 judges the arrays around the path by the registry's array ancestry. A schema
-whose skeleton does not resolve, which happens only where a JSON Pointer
-crosses a nested `$id` into a subschema the skeleton moves, keeps a partial
-skeleton with its own `$ref`s dropped: a position behind a reference is then
-unconstrained, so it admits an array the schema may declare there rather than
-taking it for a single value, and the validator logs a warning at startup.
-Every shipped schema keeps a full skeleton. `validate-schema-consistency`
+whose skeleton does not resolve, which no known construct causes, keeps none,
+and its updates are judged by the ledger as without a validator; the
+validator logs a warning at startup. A skeleton that left the unresolved
+positions unconstrained instead would admit an array at a scalar reached
+through a `$ref` (#696 review R2-F1). Every shipped schema keeps a skeleton. `validate-schema-consistency`
 censuses the records such updates stored before #696 ([Array elements under
 scalar
 attributes](./schema-consistency-migration.md#array-elements-under-scalar-attributes-696)).

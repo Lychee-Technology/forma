@@ -1,6 +1,7 @@
 package schemavalidate
 
 import (
+	"net/url"
 	"reflect"
 	"slices"
 	"strings"
@@ -60,12 +61,11 @@ import (
 // included ("#/properties/a/oneOf/0"), so every subschema the skeleton does
 // not keep in place is moved, as its own skeleton, into the $defs of its
 // resource under a key naming its original location, and each reference
-// into it is rewritten to land there (shape_refs.go). Where it applied, a
-// reference to it takes its place. A schema whose skeleton still does not
-// resolve keeps a partial one, with every $ref of its own dropped
-// (resolveShape): a position behind a reference is then unconstrained, an
-// unknown and not a single value, so it admits arrays rather than refuse
-// what the schema may declare.
+// into it is rewritten to land there (shape_refs.go), across a nested $id
+// too. Where it applied, a reference to it takes its place. A schema whose
+// skeleton still does not resolve keeps none (resolveShape), and its updates
+// are judged as without a validator: by the ledger, which refuses an array
+// at an attribute that is not a list.
 
 // scalarTypes is every JSON type that is a single value.
 var scalarTypes = []string{"boolean", "integer", "null", "number", "string"}
@@ -73,10 +73,23 @@ var scalarTypes = []string{"boolean", "integer", "null", "number", "string"}
 // containerTypes is every JSON type that is a container.
 var containerTypes = []string{"array", "object"}
 
-// shaper builds skeletons. followRefs is false for a partial skeleton, whose
-// own references are dropped.
+// shaper builds skeletons. base is the base URI of the resource being
+// shaped, and docs finds the resources its references name, so that a
+// reference is mapped onto the skeleton of its target's resource
+// (mapPointer); without them a reference is mapped by its pointer alone.
 type shaper struct {
-	followRefs bool
+	base *url.URL
+	docs *refDocuments
+}
+
+// newShaper answers the shaper of the document root, whose base URI is base,
+// reading the documents its references name through load (nil: none).
+func newShaper(root *jsonschema.Schema, base string, load jsonschema.Loader) shaper {
+	u, err := url.Parse(base)
+	if err != nil || root == nil {
+		return shaper{}
+	}
+	return shaper{base: u, docs: newRefDocuments(root, u, load)}
 }
 
 // document answers the skeleton of a schema document, a new schema; s is
@@ -92,6 +105,9 @@ func (sh shaper) document(s *jsonschema.Schema) *jsonschema.Schema {
 // subschema with an $id of its own. Pointers inside it are relative to it,
 // so it holds what is moved out of place beneath it.
 func (sh shaper) resource(s *jsonschema.Schema) *jsonschema.Schema {
+	if startsResource(s) && sh.base != nil {
+		sh.base = resourceBase(sh.base, s)
+	}
 	stash := make(map[string]*jsonschema.Schema)
 	out := sh.body(s, "", stash)
 	if len(stash) > 0 {

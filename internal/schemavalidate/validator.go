@@ -193,8 +193,8 @@ type Validator struct {
 	// arrays is derived alongside resolution because the schema is the only
 	// loaded source of truth for which paths are arrays (see array_paths.go).
 	arrays map[int16]ArrayPaths
-	// shapes holds each schema's container skeleton (shape.go), partial for
-	// a schema whose full skeleton does not resolve.
+	// shapes holds each schema's container skeleton (shape.go), none for a
+	// schema whose skeleton does not resolve.
 	shapes map[int16]*ShapeSchema
 }
 
@@ -214,7 +214,7 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build resolve options for schema directory %s: %w", dir, err)
 	}
-	shapeOpts, err := shapeResolveOptions(dir)
+	shapeOpts, err := newShapeOptions(dir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build skeleton resolve options for schema directory %s: %w", dir, err)
 	}
@@ -252,21 +252,21 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 }
 
 // addShape resolves the container skeleton of schema name. A schema that
-// resolves can still have a full skeleton that does not, when a pointer
-// crosses an $id into a subschema the skeleton moves (shape_refs.go); that
-// is logged, not refused, since the schema itself validates as before, and
-// the schema keeps the partial skeleton, which leaves a position behind a
-// $ref unconstrained rather than taking it for a single value.
-func (v *Validator) addShape(name string, id int16, document string, opts *jsonschema.ResolveOptions) {
+// resolves is expected to have a skeleton that does too (shape_refs.go);
+// one that does not is logged, not refused, since the schema itself
+// validates as before, and the schema keeps no skeleton: its updates are
+// judged as without a validator, by the ledger, which refuses an array at an
+// attribute that is not a list, and the census reports its indexed records
+// unverified.
+func (v *Validator) addShape(name string, id int16, document string, opts shapeOptions) {
 	shape, err := resolveShape(document, opts)
 	if err != nil {
-		zap.S().Warnw("schema keeps a partial container skeleton: an update may place an array wherever the schema "+
-			"reaches a value through a $ref, and the census does not judge such a position",
-			"schema", name, "schemaID", id, "partial", shape != nil, "error", err.Error())
+		zap.S().Warnw("schema keeps no container skeleton: its updates are judged by the ledger alone, which "+
+			"refuses an array at every attribute that is not a list, and the census does not judge its records",
+			"schema", name, "schemaID", id, "error", err.Error())
+		return
 	}
-	if shape != nil {
-		v.shapes[id] = shape
-	}
+	v.shapes[id] = shape
 }
 
 // Validate checks doc against the schema registered for schemaID.
