@@ -14,8 +14,7 @@ import (
 // pointer across a nested $id is followed, so a referenced scalar takes no
 // array and a referenced array keeps its own (R2-F1); two attribute paths
 // that print alike are judged apart (R2-F2); and an object-or-array union
-// whose array ancestry the registry derives as an object keeps its array
-// updates (R2-F3).
+// keeps its array updates (R2-F3), which read back as written (R3-F2).
 
 // nestedIDDocument reaches note, a scalar, and codes, a primitive array
 // under an element-typed (pre-#204) ledger entry, through pointers that
@@ -160,8 +159,10 @@ func valueAtKeys(doc map[string]any, keys []string) any {
 }
 
 // unionDocument declares office by properties beside an anyOf admitting an
-// object or one array of objects, which the registry derives as an object:
-// office.city has no array ancestors.
+// object or one array of objects. The registry derives it an array of
+// objects (#696 review R3-F2), so office.city has office for its array
+// ancestor, and a record of either form reads back in the form it was
+// written in.
 const unionDocument = `{"type":"object","properties":{"id":{"type":"string"},"note":{"type":"string"},
 	"office":{"properties":{"city":{"type":"string"}},"anyOf":[{"type":"object"},
 		{"type":"array","items":{"type":"object","properties":{"city":{"type":"string"}}}}]}}}`
@@ -170,26 +171,38 @@ const unionAttributes = `{"id":{"attributeID":1,"valueType":"text"},"note":{"att
 	"office.city":{"attributeID":3,"valueType":"text"}}`
 
 // TestUpdateKeepsTheArrayOfAnObjectOrArrayUnionWithDerivedAncestry pins
-// R2-F3: where the registry derives the union's ancestry as an object, an
-// update in either mode, on every surface, still writes the array of
-// objects the schema admits, as a create does, and the object form, while
-// an array at the scalar member, an extra array around the union and an
-// array at the scalar note stay refused with the row unchanged.
+// R2-F3 and R3-F2: an update in either mode and without a validator, on
+// every surface, writes the array of objects the schema admits, as a create
+// does, and reads it back as that array, not as an array at the scalar
+// member (R3-F2: Get answered {"city": ["o2"]}); the object form is written
+// and read back as an object. An array at the scalar member, an extra array
+// around the union and an array at the scalar note stay refused with the
+// row unchanged.
 func TestUpdateKeepsTheArrayOfAnObjectOrArrayUnionWithDerivedAncestry(t *testing.T) {
-	for _, mode := range []string{"strict", "report-only"} {
+	for _, mode := range []string{"strict", "report-only", "no validator"} {
 		for _, surface := range updateSurfaces {
 			t.Run(mode+"/"+surface.name, func(t *testing.T) {
 				env := newShapeEnvFor(t, mode, "union", unionDocument, unionAttributes)
-				require.Equal(t, []string{}, env.cache["office.city"].ArrayAncestors, "precondition: ancestry derived, office as an object")
+				require.Equal(t, []string{"office"}, env.cache["office.city"].ArrayAncestors, "precondition: office derived an array of objects")
 				rowID := env.create(t, map[string]any{"note": "n", "office": []any{map[string]any{"city": "o1"}}})
+				assertEqualValue(t, "office as created", []any{map[string]any{"city": "o1"}}, env.get(t, rowID)["office"])
 
-				_, err := surface.update(context.Background(), env.em, env.update(rowID, map[string]any{"office": []any{map[string]any{"city": "o2"}}}))
-				require.NoError(t, err, "the union admits an array of objects")
-				assert.Equal(t, []string{"3[0]=o2"}, recordsOf(env.stored(rowID), "3["), "stored as a create stores it")
+				for _, office := range []any{
+					[]any{map[string]any{"city": "o2"}},
+					[]any{map[string]any{"city": "o4"}, map[string]any{"city": "o5"}},
+				} {
+					got, err := surface.update(context.Background(), env.em, env.update(rowID, map[string]any{"office": office}))
+					require.NoError(t, err, "the union admits an array of objects")
+					assertEqualValue(t, "office as answered", office, got["office"])
+					assertEqualValue(t, "office as read back", office, env.get(t, rowID)["office"])
+				}
+				assert.Equal(t, []string{"3[0]=o4", "3[1]=o5"}, recordsOf(env.stored(rowID), "3["), "stored as a create stores it")
 
-				_, err = surface.update(context.Background(), env.em, env.update(rowID, map[string]any{"office": map[string]any{"city": "o3"}}))
+				got, err := surface.update(context.Background(), env.em, env.update(rowID, map[string]any{"office": map[string]any{"city": "o3"}}))
 				require.NoError(t, err, "the union admits an object")
-				assertEqualValue(t, "office", map[string]any{"city": "o3"}, env.get(t, rowID)["office"])
+				assertEqualValue(t, "office as answered", map[string]any{"city": "o3"}, got["office"])
+				assertEqualValue(t, "office as read back", map[string]any{"city": "o3"}, env.get(t, rowID)["office"])
+				assert.Equal(t, []string{"3[]=o3"}, recordsOf(env.stored(rowID), "3["), "the object form stores no index")
 
 				before := env.stored(rowID)
 				for _, tc := range []struct {
@@ -205,6 +218,7 @@ func TestUpdateKeepsTheArrayOfAnObjectOrArrayUnionWithDerivedAncestry(t *testing
 					assertShapeRefused(t, err, tc.attr)
 					assert.Equal(t, before, env.stored(rowID), "%v", tc.updates)
 				}
+				assertEqualValue(t, "office after the refusals", map[string]any{"city": "o3"}, env.get(t, rowID)["office"])
 			})
 		}
 	}

@@ -844,17 +844,29 @@ validator configured:
   array. So two arrays at one key are refused, and where the registry derives
   array ancestry, the arrays around the path must be its first array
   ancestors in order, with an array around the attribute itself only once
-  every ancestor has one, as long as no skeleton (below) says which arrays
-  the schema declares. With one, the schema is the authority and only the
-  two-arrays-at-one-key limit is storage's own: the registry's lenient
-  derivation can take for an object what the schema declares as either,
-  such as an `anyOf` of an object and an array of objects beside
-  `properties`, and an update keeps writing that array as a create writes it
-  (#696 review R2-F3). Such a row's array members read back as arrays of
-  their own, a reading by that derivation which is the registry's to fix,
-  not a new record shape: a create stored them alike before #696. Which
-  arrays the schema declares is its structure's
-  to say: arrays of objects around the attribute, a list's own array, and a
+  every ancestor has one. That is the read's own rule, so it holds with a
+  skeleton (below) as without one: the schema says which arrays it
+  declares, the read says where it places a record's indices back, and an
+  update must satisfy both (#696 review R3-F2). The registry derives a
+  property that admits an object or an array of objects through a branch
+  (`anyOf`, `oneOf`, `allOf`, or `then`/`else` beside `if`, with or without
+  `properties` beside it) as an array of objects, so its array form is
+  written with one index for it and read back inside it, and its object
+  form, written with no index, reads back as an object, for a create as for
+  an update. Before, it derived such a property an object, and its array
+  members read back as arrays of their own (`office: [{"city": "o2"}]` read
+  as `office: {"city": ["o2"]}`). An arrangement the schema admits but the
+  read cannot place back is refused: with two such unions nested, an array
+  at the inner one alone would be stored with one index that the read gives
+  to the outer one, so it is refused, while arrays at both, at the outer one
+  alone, or at neither are written and read back as sent. A branch the
+  registry's parser does not follow, such as a `$ref` into another file,
+  leaves the property derived as it was, and its array form is refused for
+  the same reason. A property derived an array of objects puts its schema
+  outside what the parquet tiers hold, as any array of objects does (#704):
+  the CDC export skips it. Which arrays the schema declares is its
+  structure's to say: arrays of objects around the attribute, a list's own
+  array, and a
   primitive array a schema declares for an element-typed (pre-#204) ledger
   entry, in any spelling (a nullable union, items typed through `anyOf`, an
   `anyOf` beside an object, a `$ref` into another file or into a `oneOf`). So
@@ -869,8 +881,15 @@ validator configured:
   array, a `false` schema and a `not` of `{}` or of a bare `type` keep the
   array (or object) out of `type`, so `{"anyOf": [{"type": "string"},
   {"enum": [false]}]}` still admits no array. Every subschema the skeleton
-  does not keep in place is moved into its resource's `$defs`, and each
-  `$ref` into it is rewritten to land there, so a reference into a `oneOf`,
+  does not keep in place is moved into its resource's `$defs`, under a key
+  that starts `forma-shape/` and names its original location, and each
+  `$ref` into it is rewritten to land there. JSON Schema reserves no
+  `$defs` name, so a definition of the schema's own whose name starts
+  `forma-shape` is kept under a renamed key (`forma-shape!` and its name),
+  which no moved key spells, and every reference to it is renamed alike:
+  before, a moved subschema could replace such a definition, so a scalar
+  referencing it admitted an array and an array referencing it refused its
+  own (#696 review R3-F1). So a reference into a `oneOf`,
   `not` or tuple position resolves, through a nested `$id` and into another
   file as well: the rewrite walks the document the reference names beside
   its pointer, so a pointer entering a resource with an `$id` of its own
@@ -917,9 +936,9 @@ their own refusal at their own stage.
 Two configurations know less. Without a validator there is no skeleton, and
 the ledger is all that says what an attribute stores: an array around an
 attribute that is not a list is refused, a primitive array under an
-element-typed ledger entry included, while the read's own rule above still
-judges the arrays around the path by the registry's array ancestry. A schema
-whose skeleton does not resolve, which no known construct causes, keeps none,
+element-typed ledger entry included, and the read's own rule above judges
+the arrays around the path by the registry's array ancestry, as it does with
+a validator. A schema whose skeleton does not resolve, which no known construct causes, keeps none,
 and its updates are judged by the ledger as without a validator; the
 validator logs a warning at startup. A skeleton that left the unresolved
 positions unconstrained instead would admit an array at a scalar reached

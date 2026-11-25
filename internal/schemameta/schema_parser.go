@@ -92,12 +92,18 @@ func parsePropertySchema(name string, prop map[string]any, defs map[string]any, 
 	parsePropertyExtensions(schema, prop)
 
 	// Parse items (for arrays)
+	openItems := false
 	if items, ok := prop["items"].(map[string]any); ok {
 		schema.Items = parsePropertySchema("", items, defs, nil)
+	} else if schema.Type == "" || schema.Type == "array" {
+		schema.Items, openItems = parseBranchObjectItems(prop, defs)
 	}
 
 	// Parse nested properties (for objects)
 	parseNestedProperties(schema, prop, defs)
+	if openItems {
+		schema.Items.Properties = withMissing(schema.Items.Properties, schema.Properties)
+	}
 
 	return schema
 }
@@ -219,4 +225,83 @@ func resolveRef(ref string, defs map[string]any) map[string]any {
 		}
 	}
 	return nil
+}
+
+// branchKeywords hold the subschemas a value may match instead of, or
+// beside, the property's own keywords.
+var branchKeywords = []string{"anyOf", "oneOf", "allOf"}
+
+// parseBranchObjectItems answers the elements of the arrays of objects a
+// property without items of its own admits through a branch: an object or
+// an array of objects ({"anyOf": [{"type": "object"}, {"type": "array",
+// "items": {...}}]}), with the properties of every such branch's elements,
+// or nil when no branch is one. Then and else count as branches beside an
+// if. A write stores such an array's members with one index for it, so the
+// read must know the property is an array of objects to place them back
+// there (#696 review R3-F2): without, an update or a create of the array
+// form read back with the array around each member instead. A branch
+// declaring a primitive array is not one; it only matters at a leaf, which
+// array ancestry does not look up. Nor is a branch whose "type" is not
+// "array", or any branch of a property whose own "type" is neither unset
+// nor "array": no array can match it.
+//
+// open reports a branch whose elements are objects that name no properties:
+// they admit any member, so the property's own properties name them too.
+func parseBranchObjectItems(prop map[string]any, defs map[string]any) (merged *forma.PropertySchema, open bool) {
+	var branches []any
+	for _, keyword := range branchKeywords {
+		if list, ok := prop[keyword].([]any); ok {
+			branches = append(branches, list...)
+		}
+	}
+	if _, ok := prop["if"]; ok {
+		branches = append(branches, prop["then"], prop["else"])
+	}
+	for _, branch := range branches {
+		element := branchObjectElement(branch, defs)
+		if element == nil {
+			continue
+		}
+		if merged == nil {
+			merged = &forma.PropertySchema{Type: "object"}
+		}
+		open = open || element.Properties == nil
+		merged.Properties = withMissing(merged.Properties, element.Properties)
+	}
+	return merged, open
+}
+
+// branchObjectElement answers the element of the array of objects branch
+// declares, nil when it declares none.
+func branchObjectElement(branch any, defs map[string]any) *forma.PropertySchema {
+	branchMap, ok := branch.(map[string]any)
+	if !ok {
+		return nil
+	}
+	branchMap = resolvePropertyRef(branchMap, defs)
+	if t, ok := branchMap["type"].(string); ok && t != "array" {
+		return nil
+	}
+	items, ok := branchMap["items"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	element := parsePropertySchema("", items, defs, nil)
+	if element.Type != "object" && element.Properties == nil {
+		return nil
+	}
+	return element
+}
+
+// withMissing answers into with every property of from it lacks added.
+func withMissing(into, from map[string]*forma.PropertySchema) map[string]*forma.PropertySchema {
+	for name, member := range from {
+		if into == nil {
+			into = make(map[string]*forma.PropertySchema)
+		}
+		if _, seen := into[name]; !seen {
+			into[name] = member
+		}
+	}
+	return into
 }

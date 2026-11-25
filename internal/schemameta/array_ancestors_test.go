@@ -173,3 +173,52 @@ func TestFileRegistryLogsUnderivedSchemaByItsArrays(t *testing.T) {
 	}
 	require.Equal(t, map[string]zapcore.Level{"orders": zapcore.WarnLevel, "people": zapcore.InfoLevel}, levels)
 }
+
+// TestFileRegistryDerivesAnObjectOrArrayUnionAsAnArray pins #696 review
+// R3-F2: a property admitting an object or an array of objects through a
+// branch is an array ancestor of its members, so the read places a member
+// written in the array form back inside the array (one index for it) and
+// one written in the object form in the object (no index). Without, the
+// registry derived it an object, and the read put the array around each
+// member. That holds for anyOf, oneOf, allOf and if/then/else, through a
+// local $ref, beside the property's own properties or without any, and
+// for elements that name no properties of their own, whose members the
+// property's own properties name. A branch of a primitive array, a branch
+// typed other than an array, and any branch of a property typed an object
+// make no array of objects.
+func TestFileRegistryDerivesAnObjectOrArrayUnionAsAnArray(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600))
+	}
+	write("unions.json", `{"type":"object","$defs":{"offices":{"type":"array","items":{"type":"object","properties":{"city":{"type":"string"}}}}},
+	"properties":{
+		"beside":{"properties":{"city":{"type":"string"}},"anyOf":[{"type":"object"},
+			{"type":"array","items":{"type":"object","properties":{"city":{"type":"string"}}}}]},
+		"within":{"oneOf":[{"type":"object","properties":{"city":{"type":"string"}}},{"$ref":"#/$defs/offices"}]},
+		"open":{"properties":{"city":{"type":"string"}},"anyOf":[{"type":"object"},{"type":"array","items":{"type":"object"}}]},
+		"cond":{"properties":{"city":{"type":"string"}},"if":{"type":"array"},
+			"then":{"items":{"type":"object","properties":{"city":{"type":"string"}}}}},
+		"always":{"allOf":[{"type":"array","items":{"type":"object","properties":{"city":{"type":"string"}}}}]},
+		"plain":{"properties":{"city":{"type":"string"}},"anyOf":[{"type":"object"},{"type":"array","items":{"type":"string"}}]},
+		"typed":{"type":"object","properties":{"city":{"type":"string"}},
+			"anyOf":[{"type":"array","items":{"type":"object","properties":{"city":{"type":"string"}}}}]},
+		"objectBranch":{"properties":{"city":{"type":"string"}},
+			"anyOf":[{"type":"object","items":{"type":"object","properties":{"city":{"type":"string"}}}}]}}}`)
+	write("unions_attributes.json", `{
+		"beside.city":{"attributeID":1,"valueType":"text"},"within.city":{"attributeID":2,"valueType":"text"},
+		"open.city":{"attributeID":3,"valueType":"text"},"cond.city":{"attributeID":4,"valueType":"text"},
+		"always.city":{"attributeID":5,"valueType":"text"},"plain.city":{"attributeID":6,"valueType":"text"},
+		"typed.city":{"attributeID":7,"valueType":"text"},"objectBranch.city":{"attributeID":8,"valueType":"text"}}`)
+
+	registry, err := NewFileSchemaRegistryFromDirectory(dir)
+	require.NoError(t, err)
+	_, cache, err := registry.GetSchemaAttributeCacheByName("unions")
+	require.NoError(t, err)
+	for _, union := range []string{"beside", "within", "open", "cond", "always"} {
+		require.Equal(t, []string{union}, cache[union+".city"].ArrayAncestors, union)
+	}
+	for _, object := range []string{"plain", "typed", "objectBranch"} {
+		require.Equal(t, []string{}, cache[object+".city"].ArrayAncestors, "%s admits no array of objects", object)
+	}
+}

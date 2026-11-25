@@ -26,11 +26,11 @@ import (
 //     each sat at, so the read assigns them: to the attribute's array
 //     ancestors, outermost first, then to the attribute's own array
 //     (rebuildByAncestry), or, without ancestry, to the attribute or its
-//     parent. Two arrays at one key are therefore never read back. Without
-//     a skeleton, the ancestry is also all that says which ancestors are
-//     arrays, so the arrays around the path's keys must be its first array
-//     ancestors, in order, with an array around the attribute itself only
-//     once every ancestor has one (representable).
+//     parent. Two arrays at one key are therefore never read back, and
+//     where the registry derives the ancestry, the arrays around the path's
+//     keys must be its first array ancestors, in order, with an array
+//     around the attribute itself only once every ancestor has one
+//     (representable), with or without a skeleton.
 //   - The schema must declare those arrays there. Its container skeleton
 //     (schemavalidate.ShapeSchema) says so when the validator keeps one.
 //     Without one, the ledger is all there is: an attribute that is not a
@@ -87,7 +87,7 @@ func (j *placementJudge) value(path []string, meta forma.AttributeMetadata, at d
 	}
 	segments, arrays := arrangementOf(path, at.arrays)
 	name := strings.Join(path, ".")
-	if detail := representable(segments, arrays, meta, j.shape == nil); detail != nil {
+	if detail := representable(segments, arrays, meta); detail != nil {
 		return arrayStorageError(name, meta, sent, detail)
 	}
 	if j.shape == nil {
@@ -159,24 +159,27 @@ func arrangementKey(segments []string, arrays []int) string {
 // sits, or nil (see the rule above). segments and arrays are its dotted path
 // and the arrays around each segment's value.
 //
-// Two arrays at one key are never read back. The order of the arrays along
-// the path is held to the registry's array ancestry only by the ledger
-// judge, without a skeleton (byAncestry): there the ancestry is all that
-// says which ancestors are arrays. With a skeleton, the schema says so, and
-// it can declare more than the registry's lenient derivation sees: an
-// object-or-array union that the registry derives as an object admits its
-// array of objects, which a create stores as it always has, so an update
-// must store it too (#696 review R2-F3). A single value never gains an
-// array this way: the skeleton refuses every array the schema does not
-// declare.
-func representable(segments []string, arrays []int, meta forma.AttributeMetadata, byAncestry bool) error {
+// Two arrays at one key are never read back. Where the registry derives the
+// attribute's array ancestry, the read places the record's indices by it
+// (rebuildByAncestry), so the arrays around the path's keys must be its
+// first array ancestors, in order, and an array around the attribute itself
+// needs one around every ancestor. That holds with a skeleton as without
+// one: the skeleton says what the schema declares, and this says what the
+// read places back (#696 review R3-F2: an object-or-array union the registry
+// derived as an object took its array form, which then read back with the
+// array around each member). The registry derives such a union an array of
+// objects, so its array form is placed back inside it, and its object form,
+// whose record has fewer indices than ancestors, reads that array as an
+// object (#696 review R2-F3). Without ancestry the read infers each
+// record's array from the row, and nothing is held to it here.
+func representable(segments []string, arrays []int, meta forma.AttributeMetadata) error {
 	for i, n := range arrays {
 		if n > 1 {
 			return fmt.Errorf("%d arrays around %q: a record keeps one index per array and the read takes each for a different array",
 				n, strings.Join(segments[:i+1], "."))
 		}
 	}
-	if !byAncestry || meta.ArrayAncestors == nil {
+	if meta.ArrayAncestors == nil {
 		return nil
 	}
 	filled := 0

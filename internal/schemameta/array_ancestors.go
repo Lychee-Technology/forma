@@ -68,9 +68,12 @@ func withArrayAncestors(schemaName string, cache forma.SchemaAttributeCache, pro
 // object nor an array of objects, as a $ref the parser did not resolve does
 // not. Then the arrays above that ancestor are returned. An array's items
 // hold the next segment, since an array index is not part of an attribute's
-// name (requirement.areas.city is the city of requirement.areas[i]). The
-// leaf itself is not looked up, so a list or a $ref'd scalar needs nothing
-// more.
+// name (requirement.areas.city is the city of requirement.areas[i]). A
+// property admitting an object or an array of objects through a branch is
+// parsed with the array's items (parseBranchObjectItems), so it is an array
+// ancestor: the read places a record written in its object form, with no
+// index for it, as an object (#696 review R3-F2). The leaf itself is not
+// looked up, so a list or a $ref'd scalar needs nothing more.
 func arrayAncestorsOf(name string, properties map[string]*forma.PropertySchema) ([]string, bool) {
 	segments := strings.Split(name, ".")
 	ancestors := []string{}
