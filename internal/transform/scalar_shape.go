@@ -2,6 +2,7 @@ package transform
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/lychee-technology/forma"
@@ -33,6 +34,92 @@ import (
 // passes and items: [{"name": ["x"]}] is refused at items.name. A literal
 // dotted key names the attribute itself, so {"items.name": ["x"]} is refused
 // whatever items is, and {"items.tags": ["x"]} is a list's array.
+//
+// An array at a parent's path holds one index per array of objects, so where
+// the registry declares the attribute's array ancestry, a single value the
+// caller sends inside more arrays than that is refused too
+// (excessIndicesError): {"items": [[{"name": "x"}]]} would store name at
+// "0,0", which the read takes for an element of name's own array. A
+// primitive array the schema document declares under an element-typed
+// ledger (forma.AttributeMetadata.DeclaredArray) takes its array like a
+// list, with one index more.
+//
+// The predicates below are the rule; the walk (visitAt) and the intake
+// (copyAt) apply them to the same positions.
+
+// arrayValued reports whether the attribute takes an array at its own
+// position: a list, or a primitive array the schema document declares.
+func arrayValued(meta forma.AttributeMetadata) bool {
+	return meta.ValueType == forma.ValueTypeList || meta.DeclaredArray
+}
+
+// shapeAt judges a container sent at an attribute's own position: the array
+// to walk element by element when the attribute takes one, or the refusal.
+func shapeAt(attrName string, meta forma.AttributeMetadata, value any, indices []int) ([]any, error) {
+	if array, isArray := value.([]any); isArray && arrayValued(meta) {
+		return array, nil
+	}
+	return nil, containerError(attrName, meta, value, false, joinIndices(indices))
+}
+
+// elementShape is how an element of an array-valued attribute's array is
+// judged (elementShapeOf).
+type elementShape uint8
+
+const (
+	// elementSingle is walked as one value.
+	elementSingle elementShape = iota
+	// elementNested is a list's element that is itself an array, walked
+	// element by element in turn: an [] there is emptyList's, and a value
+	// there the conversion's (listElementMeta), as before #696.
+	elementNested
+	// elementRefused is a container where the element holds one value.
+	elementRefused
+)
+
+// elementShapeOf judges one element of an array-valued attribute's array. An
+// object is never a single value. An array is refused in a declared
+// primitive array; in a list it is walked on, so an object anywhere inside a
+// list's value is refused rather than written as nothing ({"tags": [[{}]]}).
+func elementShapeOf(meta forma.AttributeMetadata, item any) elementShape {
+	switch item.(type) {
+	case map[string]any:
+		return elementRefused
+	case []any:
+		if meta.ValueType == forma.ValueTypeList {
+			return elementNested
+		}
+		return elementRefused
+	}
+	return elementSingle
+}
+
+// excessIndicesError refuses a single value the caller sent inside more
+// arrays than the attribute's declared array ancestry admits: one index per
+// array of objects around it, and one more for a declared primitive array's
+// element. Without declared ancestry nothing says which arrays a position's
+// indices belong to, and a list's indices are its conversion's
+// (listElementMeta).
+func excessIndicesError(attrName string, meta forma.AttributeMetadata, indices []int) error {
+	if meta.ArrayAncestors == nil || meta.ValueType == forma.ValueTypeList {
+		return nil
+	}
+	admitted := len(meta.ArrayAncestors)
+	if meta.DeclaredArray {
+		admitted++
+	}
+	if len(indices) <= admitted {
+		return nil
+	}
+	ancestors := "none"
+	if len(meta.ArrayAncestors) > 0 {
+		ancestors = strings.Join(meta.ArrayAncestors, ", ")
+	}
+	return conversionRefusal(attrName, meta, fmt.Errorf(
+		"a single %s value at array indices %q is nested in more arrays than the attribute's arrays of objects (%s); "+
+			"an array cannot be stored where a single value belongs",
+		meta.ValueType, joinIndices(indices), ancestors))
+}
 
 // visitAt visits value at path, the position a map key leads to. Under the
 // shape rule a container at an attribute's own position is judged by the
@@ -47,17 +134,17 @@ func (w *documentWalk) visitAt(path []string, value any, indices []int) {
 		w.visit(path, value, indices)
 		return
 	}
-	if list, isArray := value.([]any); isArray && meta.ValueType == forma.ValueTypeList {
-		w.visitList(path, list, indices, meta)
+	if array, err := shapeAt(strings.Join(path, "."), meta, value, indices); err == nil {
+		w.visitElements(path, array, indices, meta)
 		return
 	}
 	w.judgeContainer(path, value, indices, meta, false)
 }
 
-// visitList walks a list attribute's array as visitArray does, except that an
-// object element is judged like an object at a scalar: a list's element is a
-// single value.
-func (w *documentWalk) visitList(path []string, v []any, indices []int, meta forma.AttributeMetadata) {
+// visitElements walks an array-valued attribute's array as visitArray does,
+// except that each element is judged by elementShapeOf: a refused one like
+// a container at a scalar.
+func (w *documentWalk) visitElements(path []string, v []any, indices []int, meta forma.AttributeMetadata) {
 	if len(v) == 0 {
 		w.visitArray(path, v, indices)
 		return
@@ -69,15 +156,23 @@ func (w *documentWalk) visitList(path []string, v []any, indices []int, meta for
 		if w.tooDeep != nil {
 			return
 		}
-		switch element := item.(type) {
-		case nil:
+		at := append(slices.Clip(indices), i)
+		switch {
+		case item == nil:
 			w.nullElement(path, i)
-		case map[string]any:
-			w.judgeContainer(path, element, append(indices, i), meta, true)
+		case elementShapeOf(meta, item) == elementRefused:
+			w.judgeContainer(path, item, at, meta, true)
+		case elementShapeOf(meta, item) == elementNested:
+			w.visitElements(path, item.([]any), at, meta)
 		default:
-			w.visit(path, element, append(indices, i))
+			w.visit(path, item, at)
 		}
 	}
+}
+
+// refuseShape records the shape rule's refusal at attrName.
+func (w *documentWalk) refuseShape(attrName string, err error) {
+	w.entries = append(w.entries, documentEntry{kind: entryRefusal, name: attrName, refusal: err, shape: true})
 }
 
 // judgeContainer judges value, a container at a position of the attribute
@@ -100,12 +195,7 @@ func (w *documentWalk) judgeContainer(path []string, value any, indices []int, m
 		return
 	}
 	w.entries, w.claims = w.entries[:start], claims
-	w.entries = append(w.entries, documentEntry{
-		kind:    entryRefusal,
-		name:    attrName,
-		refusal: containerError(attrName, meta, value, element, arrayIndices),
-		shape:   true,
-	})
+	w.refuseShape(attrName, containerError(attrName, meta, value, element, arrayIndices))
 }
 
 func isContainer(value any) bool {
@@ -122,9 +212,15 @@ func isContainer(value any) bool {
 func containerError(attrName string, meta forma.AttributeMetadata, value any, element bool, arrayIndices string) error {
 	var reason string
 	switch {
-	case element:
+	case element && meta.ValueType == forma.ValueTypeList:
 		reason = fmt.Sprintf("list element at array indices %q takes a single %s value, got %s; a list's elements cannot be objects",
 			arrayIndices, meta.EffectiveItemsType(), describeContainer(value))
+	case element:
+		reason = fmt.Sprintf("array element at array indices %q takes a single %s value, got %s; "+
+			"the elements of an array the schema declares of single values cannot be objects or arrays",
+			arrayIndices, meta.ValueType, describeContainer(value))
+	case meta.DeclaredArray:
+		reason = fmt.Sprintf("the schema declares an array of single %s values, got %s", meta.ValueType, describeContainer(value))
 	case meta.ValueType == forma.ValueTypeList:
 		reason = fmt.Sprintf("declared type list takes an array of single %s values, got %s",
 			meta.EffectiveItemsType(), describeContainer(value))

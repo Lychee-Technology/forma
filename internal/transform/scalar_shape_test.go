@@ -26,6 +26,7 @@ func shapeCache() forma.SchemaAttributeCache {
 		"tags":          {AttributeName: "tags", AttributeID: 6, ValueType: forma.ValueTypeList},
 		"items.name":    {AttributeName: "items.name", AttributeID: 7, ValueType: forma.ValueTypeText},
 		"items.tags":    {AttributeName: "items.tags", AttributeID: 8, ValueType: forma.ValueTypeList},
+		"phones":        {AttributeName: "phones", AttributeID: 9, ValueType: forma.ValueTypeText, DeclaredArray: true},
 	}
 	declareArrayAncestors(cache, "items")
 	return cache
@@ -83,7 +84,28 @@ func refusedShapes() []intakeCase {
 		intakeCase{"object as an element of a list inside an array of objects",
 			map[string]any{"items": []any{map[string]any{"tags": []any{map[string]any{}}}}},
 			refusedValue("items.tags", 8) + `list element at array indices "0,0" takes a single text value, got an empty object; a list's elements cannot be objects`},
+		intakeCase{"object inside an array inside a list", map[string]any{"tags": []any{[]any{map[string]any{}}}},
+			refusedValue("tags", 6) + `list element at array indices "0,0" takes a single text value, got an empty object; a list's elements cannot be objects`},
+		intakeCase{"scalar member inside an extra array around an array of objects",
+			map[string]any{"items": []any{[]any{map[string]any{"name": "x"}}}}, excessRefusal("items.name", 7, "0,0", "items")},
+		intakeCase{"array where the schema declares an object", map[string]any{"contact": []any{map[string]any{"name": "n"}}},
+			excessRefusal("contact.name", 5, "0", "none")},
+		intakeCase{"object at a declared array", map[string]any{"phones": map[string]any{}},
+			refusedValue("phones", 9) + "the schema declares an array of single text values, got an empty object"},
+		intakeCase{"array inside a declared array", map[string]any{"phones": []any{"1", []any{"2"}}},
+			refusedValue("phones", 9) + `array element at array indices "1" takes a single text value, got an array; ` +
+				"the elements of an array the schema declares of single values cannot be objects or arrays"},
+		intakeCase{"object inside a declared array", map[string]any{"phones": []any{map[string]any{"x": "y"}}},
+			refusedValue("phones", 9) + `array element at array indices "0" takes a single text value, got an object; ` +
+				"the elements of an array the schema declares of single values cannot be objects or arrays"},
 	)
+}
+
+// excessRefusal is the published refusal of a single value sent inside more
+// arrays than its attribute's array ancestry admits.
+func excessRefusal(attr string, id int, indices, ancestors string) string {
+	return refusedValue(attr, id) + fmt.Sprintf("a single text value at array indices %q is nested in more arrays than the "+
+		"attribute's arrays of objects (%s); an array cannot be stored where a single value belongs", indices, ancestors)
 }
 
 // acceptedShapes are updates the rule leaves alone: single values, lists and
@@ -100,6 +122,9 @@ func acceptedShapes() []map[string]any {
 		{"items.tags": []any{"a"}},
 		{"items": []any{}},
 		{"note": []string{"a"}},
+		{"phones": []any{"1", "2"}},
+		{"phones": []any{}},
+		{"items": []any{map[string]any{"name": "x"}}, "items.name": "y"},
 	}
 }
 

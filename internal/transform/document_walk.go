@@ -205,13 +205,21 @@ func (w *documentWalk) nullElement(path []string, i int) {
 }
 
 func (w *documentWalk) visitLeaf(path []string, v any, indices []int) {
-	if _, isHeld := v.(*storedValue); isHeld {
+	_, isHeld := v.(*storedValue)
+	if isHeld {
 		w.held++
 	} else {
 		w.sent++
 	}
 	attrName := strings.Join(path, ".")
 	meta, ok := w.cache[attrName]
+	if ok && w.judgeShapes && !isHeld {
+		// A stored value stands where the row's rebuild put it.
+		if err := excessIndicesError(attrName, meta, indices); err != nil {
+			w.refuseShape(attrName, err)
+			return
+		}
+	}
 	if !ok {
 		// The internal schema id is operator detail: the caller addressed a
 		// schema by name and cannot act on the int16 (#362 review, P2).

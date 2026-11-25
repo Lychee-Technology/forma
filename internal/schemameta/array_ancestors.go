@@ -1,9 +1,6 @@
 package schemameta
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -78,23 +75,34 @@ func arrayAncestorsOf(name string, properties map[string]*forma.PropertySchema) 
 	segments := strings.Split(name, ".")
 	ancestors := []string{}
 	for i, segment := range segments[:len(segments)-1] {
-		prop := properties[segment]
-		switch {
-		case prop == nil:
-			return ancestors, false
-		case prop.Type == "array" || prop.Items != nil:
-			if !declaresObject(prop.Items) {
-				return ancestors, false
-			}
-			ancestors = append(ancestors, strings.Join(segments[:i+1], "."))
-			properties = prop.Items.Properties
-		case declaresObject(prop):
-			properties = prop.Properties
-		default:
+		members, isArray, ok := memberProperties(properties[segment])
+		if !ok {
 			return ancestors, false
 		}
+		if isArray {
+			ancestors = append(ancestors, strings.Join(segments[:i+1], "."))
+		}
+		properties = members
 	}
 	return ancestors, true
+}
+
+// memberProperties answers the properties prop's members are declared in,
+// whether prop is an array of objects, and false when the document does not
+// say what prop is (arrayAncestorsOf).
+func memberProperties(prop *forma.PropertySchema) (map[string]*forma.PropertySchema, bool, bool) {
+	switch {
+	case prop == nil:
+		return nil, false, false
+	case prop.Type == "array" || prop.Items != nil:
+		if !declaresObject(prop.Items) {
+			return nil, true, false
+		}
+		return prop.Items.Properties, true, true
+	case declaresObject(prop):
+		return prop.Properties, false, true
+	}
+	return nil, false, false
 }
 
 // declaresObject covers a "type" the parser keeps, which is a single string,
@@ -102,28 +110,4 @@ func arrayAncestorsOf(name string, properties map[string]*forma.PropertySchema) 
 // it parses.
 func declaresObject(prop *forma.PropertySchema) bool {
 	return prop != nil && (prop.Type == "object" || prop.Properties != nil)
-}
-
-// DeriveArrayAncestors answers cache, the active attributes of schemaName,
-// with ArrayAncestors derived from the schema's document in schemaDir exactly
-// as the file registry derives them for the server (withArrayAncestors). A
-// schema with no document, or one whose document does not resolve every
-// attribute's ancestors, keeps cache as is. MetadataLoader does not derive
-// them, so a tool that judges stored records by ancestry, as
-// validate-schema-consistency's scalar-shape census does (#696), reads them
-// here.
-func DeriveArrayAncestors(schemaDir, schemaName string, schemaID int16, cache forma.SchemaAttributeCache) (forma.SchemaAttributeCache, error) {
-	schemaFile := filepath.Join(schemaDir, schemaName+".json")
-	data, err := os.ReadFile(schemaFile)
-	if os.IsNotExist(err) {
-		return cache, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read schema file %s: %w", schemaFile, err)
-	}
-	schema, err := parseJSONSchemaFile(data, schemaID, schemaName)
-	if err != nil {
-		return nil, fmt.Errorf("parse schema file %s: %w", schemaFile, err)
-	}
-	return withArrayAncestors(schemaName, cache, schema.Properties), nil
 }

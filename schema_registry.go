@@ -193,6 +193,17 @@ type AttributeMetadata struct {
 	// holding one fails until the registry sets it again. The JSON form keeps
 	// nil (null) and empty ([]) apart.
 	ArrayAncestors []string `json:"array_ancestors"`
+	// DeclaredArray reports that the schema document declares this
+	// attribute, which is not a list, as an array of single values: a
+	// primitive array whose attributes-file entry still records its element
+	// type, as ledgers did before #204 (contact.phones as text). The write
+	// stores each element at an index of its own, as for a list, and the
+	// read rebuilds them as an array (rebuildByAncestry), so an update may
+	// send that array where the attribute's type alone says a single value
+	// belongs (#696). The file registry derives it from the schema document
+	// and never reads it from the attributes file; false means the document
+	// does not positively declare such an array, or was not read.
+	DeclaredArray bool `json:"-"`
 }
 
 // EffectiveRequiredPolicy returns the policy used at runtime.

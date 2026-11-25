@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/schemameta"
@@ -12,36 +11,35 @@ import (
 // The scalar-shape census (#696). Before #696 a report-only update could give
 // a scalar attribute an array, ["a"], and the write stored its elements as
 // records carrying array indices of their own. The census finds such records
-// by reading what the metadata says a scalar's record may carry: one index
-// per array of objects around it, the attribute's ArrayAncestors, and no
-// more. Indexed records alone are no anomaly; a member of an array of
+// by reading what the schema document says a scalar's record may carry: one
+// index per array of objects around it, and one more where the document
+// declares the attribute itself a primitive array whose attributes file still
+// records its element type (before #204), which the write and the read store
+// that way. Indexed records alone are no anomaly; a member of an array of
 // objects carries the indices of its element.
 //
-// Where the registry does not declare a schema's array ancestry, the census
-// cannot tell an element of an array of objects from an element of the
-// attribute's own array, so it only knows a bound: an attribute has no more
-// array ancestors than its name has proper prefixes. Records past that bound
-// are failures like any other; records within it are reported as
-// informational, unverified, rather than counted as clean or as corrupt.
-//
-// A primitive array whose attributes file still records its element type
-// (before #204) is stored in the same shape and is reported the same way: the
-// metadata the write and the read are given declares a single value. The fix
-// for it is the attributes file's, valueType list, as generate-attributes
-// already demands (flattenedListHint). No record is repaired here, and no
-// value is printed: each finding names one record by row ID and indices.
+// A record is reported as a failure only where the document settles the
+// attribute's array positions (schemameta.DeriveArrayPositions): every node
+// on its path has a type that fixes it as an object, an array of objects, a
+// single value or a primitive array. Elsewhere, a node without a type, a
+// $ref to another file, or a type admitting both an object and an array, an
+// index may belong to an array the document admits as well as to the
+// attribute's own array, so the census reports the records as informational,
+// unverified, rather than counting them as clean or as corrupt. No record is
+// repaired here, and no value is printed: each finding names one record by
+// row ID and indices.
 
-// scalarShapeAttr is an active scalar attribute, what the census judges its
-// records against.
+// scalarShapeAttr is an active scalar attribute and its array positions,
+// what the census judges its records against.
 type scalarShapeAttr struct {
-	schema string
-	meta   forma.AttributeMetadata
+	schema    string
+	meta      forma.AttributeMetadata
+	positions schemameta.ArrayPositions
 }
 
 // scalarShapeAttrs indexes every active attribute that holds a single value,
-// lists excluded, by schema ID and attribute ID.
-// Their array ancestry is derived from each schema's document as the server's
-// registry derives it, since the loader does not.
+// lists excluded, by schema ID and attribute ID, with the array positions its
+// schema's document settles.
 func scalarShapeAttrs(cache *schemameta.MetadataCache, schemaDir string) (map[int16]map[int16]scalarShapeAttr, error) {
 	attrs := make(map[int16]map[int16]scalarShapeAttr)
 	for _, schemaName := range cache.ListSchemas() {
@@ -53,9 +51,9 @@ func scalarShapeAttrs(cache *schemameta.MetadataCache, schemaDir string) (map[in
 		if !ok {
 			continue
 		}
-		schemaCache, err := schemameta.DeriveArrayAncestors(schemaDir, schemaName, schemaID, schemaCache)
+		positions, err := schemameta.DeriveArrayPositions(schemaDir, schemaName, schemaCache)
 		if err != nil {
-			return nil, fmt.Errorf("derive the array ancestry of schema %s: %w", schemaName, err)
+			return nil, fmt.Errorf("derive the array positions of schema %s: %w", schemaName, err)
 		}
 		for name, meta := range schemaCache {
 			if meta.ValueType == forma.ValueTypeList {
@@ -65,7 +63,7 @@ func scalarShapeAttrs(cache *schemameta.MetadataCache, schemaDir string) (map[in
 				attrs[schemaID] = make(map[int16]scalarShapeAttr)
 			}
 			meta.AttributeName = name
-			attrs[schemaID][meta.AttributeID] = scalarShapeAttr{schema: schemaName, meta: meta}
+			attrs[schemaID][meta.AttributeID] = scalarShapeAttr{schema: schemaName, meta: meta, positions: positions[name]}
 		}
 	}
 	return attrs, nil
@@ -83,8 +81,8 @@ type scalarShapeGroup struct {
 }
 
 // checkIndexedRowsUnderScalarAttrs reports the indexed records of scalar
-// attributes that carry more indices than their array ancestry admits, and,
-// as informational, those whose ancestry the registry does not declare.
+// attributes that carry more indices than their schema document admits, and,
+// as informational, those whose array positions the document does not settle.
 func (v schemaConsistencyValidator) checkIndexedRowsUnderScalarAttrs(ctx context.Context, cache *schemameta.MetadataCache) ([]validationIssue, error) {
 	attrs, err := scalarShapeAttrs(cache, v.schemaDir)
 	if err != nil {
@@ -117,29 +115,26 @@ func (v schemaConsistencyValidator) checkIndexedRowsUnderScalarAttrs(ctx context
 
 // classifyScalarShape judges one group of an attribute's indexed records.
 func classifyScalarShape(eavTable string, attr scalarShapeAttr, group scalarShapeGroup) (validationIssue, bool) {
-	meta := attr.meta
+	meta, positions := attr.meta, attr.positions
 	details := fmt.Sprintf("schema=%s schema_id=%d attr_id=%d attribute=%s type=%s indices=%d",
 		attr.schema, group.schemaID, group.attrID, meta.AttributeName, meta.ValueType, group.depth)
-	if meta.ArrayAncestors != nil {
-		if group.depth <= len(meta.ArrayAncestors) {
-			return validationIssue{}, false
-		}
+	if !positions.Verified {
 		return validationIssue{
-			category: "array elements stored under scalar attributes in " + eavTable,
-			details:  fmt.Sprintf("%s array_ancestors=%d rows=%d", details, len(meta.ArrayAncestors), group.count),
+			category: "indexed scalar records whose array positions the schema document does not settle in " + eavTable,
+			details:  fmt.Sprintf("%s array_positions=unverified rows=%d", details, group.count),
+			severity: severityInfo,
 		}, true
 	}
-	bound := strings.Count(meta.AttributeName, ".")
-	if group.depth > bound {
-		return validationIssue{
-			category: "array elements stored under scalar attributes in " + eavTable,
-			details:  fmt.Sprintf("%s array_ancestors=at most %d (not declared) rows=%d", details, bound, group.count),
-		}, true
+	if group.depth <= positions.MaxIndices() {
+		return validationIssue{}, false
+	}
+	declared := ""
+	if positions.DeclaredArray {
+		declared = " declared_array=true"
 	}
 	return validationIssue{
-		category: "indexed scalar records whose array ancestry the registry does not declare in " + eavTable,
-		details:  fmt.Sprintf("%s array_ancestors=unknown, at most %d rows=%d", details, bound, group.count),
-		severity: severityInfo,
+		category: "array elements stored under scalar attributes in " + eavTable,
+		details:  fmt.Sprintf("%s array_ancestors=%d%s rows=%d", details, len(positions.Ancestors), declared, group.count),
 	}, true
 }
 

@@ -2,6 +2,7 @@ package transform
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -34,8 +35,10 @@ import (
 //
 // Only conversion moves here, and the shape rule (#696), which judges a
 // value against its attribute alone just as conversion does: an object or
-// array at an attribute holding a single value, or an object as a list's
-// element, is a refusal of the second class (copyAt). Any other position
+// array at an attribute holding a single value, a container as an element
+// of an attribute's array (copyAt), or a single value inside more arrays
+// than its declared array ancestry admits (convertLeaf) is a refusal of the
+// second class. Any other position
 // the walk refuses rather than claims keeps its stage, after the
 // precondition and the row's existence are judged: an undefined attribute, a
 // null, an [] nested in a list, the nesting cap. So does the required policy, which the merged write judges
@@ -133,9 +136,9 @@ func (in *updateIntake) copyMap(path []string, src map[string]any, indices []int
 }
 
 // copyAt copies the value at path, the position a map key leads to, judging
-// a container there as the walk does at an attribute's position
-// (documentWalk.visitAt): an object or array where the attribute holds a
-// single value, or an object as a list's element, is refused. Like a
+// a container there by the walk's shape rule (documentWalk.visitAt): an
+// object or array where the attribute holds a single value, or a container
+// as an element of its array (elementShapeOf), is refused. Like a
 // conversion, the refusal depends only on the value and its attribute, so it
 // is a refusal of the second class (#696). The copy still descends into the
 // container, so text PostgreSQL cannot hold inside it is refused as
@@ -149,20 +152,40 @@ func (in *updateIntake) copyAt(path []string, value any, indices []int) (any, er
 	if !ok {
 		return in.copyValue(path, value, indices)
 	}
-	list, isArray := value.([]any)
-	if !isArray || meta.ValueType != forma.ValueTypeList {
-		in.refuse(containerError(name, meta, value, false, joinIndices(indices)))
+	array, err := shapeAt(name, meta, value, indices)
+	if err != nil {
+		in.refuse(err)
 		return in.copyValue(path, value, indices)
 	}
-	out := make([]any, len(list))
-	for i, item := range list {
+	return in.copyElements(path, array, indices, meta)
+}
+
+// copyElements copies an array-valued attribute's array as copyArray does,
+// judging each element as the walk does (documentWalk.visitElements). A nil
+// array stays nil, which a JSON Schema validator reads as null, not as the
+// empty-list marker an empty one writes.
+func (in *updateIntake) copyElements(path []string, src []any, indices []int, meta forma.AttributeMetadata) ([]any, error) {
+	if src == nil {
+		return nil, nil
+	}
+	name := strings.Join(path, ".")
+	out := make([]any, len(src))
+	for i, item := range src {
 		if item == nil {
 			continue
 		}
-		if element, isObject := item.(map[string]any); isObject {
-			in.refuse(containerError(name, meta, element, true, joinIndices(append(indices, i))))
+		at := append(slices.Clip(indices), i)
+		var copied any
+		var err error
+		switch elementShapeOf(meta, item) {
+		case elementRefused:
+			in.refuse(containerError(name, meta, item, true, joinIndices(at)))
+			copied, err = in.copyValue(path, item, at)
+		case elementNested:
+			copied, err = in.copyElements(path, item.([]any), at, meta)
+		default:
+			copied, err = in.copyValue(path, item, at)
 		}
-		copied, err := in.copyValue(path, item, append(indices, i))
 		if err != nil {
 			return nil, err
 		}
@@ -209,6 +232,9 @@ func (in *updateIntake) convertLeaf(path []string, value any, indices []int) (an
 	meta, ok := in.cache[name]
 	if !ok {
 		return value, nil
+	}
+	if err := excessIndicesError(name, meta, indices); err != nil {
+		in.refuse(err)
 	}
 	record := model.EAVRecord{ArrayIndices: joinIndices(indices)}
 	_, err := populateTypedValue(&record, name, value, meta)

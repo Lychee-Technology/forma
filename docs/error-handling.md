@@ -165,36 +165,54 @@ invariant, enforced whatever the validation mode, including on a manager
 with no validator: the conversion refusals of the next section, and the
 shape of a value.
 
-The shape is read off the attributes file. An attribute whose `valueType`
-is `list` takes an array of single values; every other attribute takes one
-single value. An update that sends an object or an array, empty or not, at
+The shape is read off the attribute's metadata. An attribute whose
+`valueType` is `list` takes an array of single values, and so does a
+primitive array the schema document declares under an element-typed ledger
+entry (below); every other attribute takes one single value. An update that sends an object or an array, empty or not, at
 a single value's position is refused with `ErrInvalidInput`, a `400`:
 
 ```text
 invalid value for attribute 'tenant' (attrID=1): declared type text takes a single value, got an empty object; an object or array, empty or not, cannot be stored where a single value belongs (omit the key to keep the current value)
 ```
 
-So is an object at a list, or as one of its elements. Before #696 the write
-took such a container apart: `{}` and `[]` wrote nothing, which kept a
-column-bound value and removed an EAV one, and `["a"]` stored `"a"` as an
-array element under a scalar, which the read returns as `["a"]`. Neither
-`{}` nor `[]` clears a scalar; clearing stays with #684. The rule is
-positional: in `{"items": [{"name": "x"}]}` the array is `items`', an array
-of objects, and `name` holds a single value; `{"items": [{"name": ["x"]}]}`
-and the literal `{"items.name": ["x"]}` are refused. Go values the write
-does not decompose, such as a `[]string` or a struct, are still the
-conversion's to judge.
+So is an object at a list, or as one of its elements, however deep inside
+the list's value (`{"tags": [[{}]]}` used to write neither a value nor the
+empty-list marker, and so removed the list). Before #696 the write took such
+a container apart: `{}` and `[]` wrote nothing, which kept a column-bound
+value and removed an EAV one, and `["a"]` stored `"a"` as an array element
+under a scalar, which the read returns as `["a"]`. Neither `{}` nor `[]`
+clears a scalar; clearing stays with #684. The rule is positional: in
+`{"items": [{"name": "x"}]}` the array is `items`', an array of objects, and
+`name` holds a single value; `{"items": [{"name": ["x"]}]}` and the literal
+`{"items.name": ["x"]}` are refused. Go values the write does not decompose,
+such as a `[]string` or a struct, are still the conversion's to judge. A nil
+`[]any` is still JSON `null` to the validator, which strict validation
+refuses; only an empty one is the empty-list marker.
 
-The attributes file decides even where the JSON Schema says otherwise. A
-primitive array whose attributes file predates #204 and records its element
-type (`contact.phones` as `text`) can no longer be written as an array:
-declare it `"valueType": "list"`, as `generate-attributes` asks for that
-ledger shape. Its stored records still read, and an update that does not
-name the attribute writes them back unchanged, as it does for any stored
-container: the rule judges what the caller sends, not what the row already
-holds. Creates are judged by their strict JSON Schema validation, as before.
-`validate-schema-consistency` lists stored records with more array indices
-than a scalar's array ancestry admits ([migration
+An array of objects holds one array index per element, so where the
+registry derives an attribute's array ancestry (#623), a single value sent
+inside more arrays than that is refused as well:
+`{"propertyInterests": [[{"propertyId": "p"}]]}` would store `propertyId` at
+`array_indices = '0,0'`, which the read takes for an element of
+`propertyId`'s own array. So would an array where the schema declares an
+object (`{"contact": [{"name": "n"}]}`). Where the registry does not derive
+the ancestry, nothing says which array an index belongs to, and this part of
+the rule does not apply.
+
+A primitive array whose attributes file predates #204 and records its
+element type (`contact.phones` as `text`) is written as an array, by updates
+as by creates, where the schema document positively declares it one
+(`"type": "array"` with primitive `items`): the file registry marks it
+(`AttributeMetadata.DeclaredArray`), and its elements are judged as a
+list's, one single value each. A registry that does not derive the mark, or
+a document that does not declare the array, leaves the attribute a single
+value, and an update sending it an array is refused; declare it
+`"valueType": "list"`, as `generate-attributes` asks for that ledger shape.
+Stored records the caller does not send are written back unchanged, as for
+any stored container: the rule judges what the caller sends, not what the
+row already holds. Creates are judged by their strict JSON Schema
+validation, as before. `validate-schema-consistency` lists stored records
+with more array indices than the schema document admits ([migration
 guide](./schema-consistency-migration.md#array-elements-stored-under-scalar-attributes-696)).
 
 ### Which errors are which class
