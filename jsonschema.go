@@ -40,6 +40,16 @@ type PropertySchema struct {
 	Relation   *RelationSchema            `json:"x-relation,omitempty"`
 	LTBaseType string                     `json:"x-ltbase-type,omitempty"`      // "virtual" for virtual fields that are populated dynamically
 	LTBaseNote string                     `json:"x-ltbase-note-prop,omitempty"` // Reference to note field: "${note_id}", "${owner_id}", "${note_data}"
+	// BranchItems are the elements of the arrays of objects an untyped
+	// property without items of its own admits through a branch (anyOf,
+	// oneOf, allOf, then/else beside if) beside its object form, such as
+	// {"properties": {...}, "anyOf": [{"type": "object"}, {"type": "array",
+	// "items": {...}}]}. Items stays nil for such a property, since a value
+	// may take either form: a consumer asking whether the property is an
+	// array sees an object, as before #696. The registry's array ancestry
+	// counts it (AttributeMetadata.UnionArrayAncestors), so the read places
+	// a record written in either form back in that form. Not serialized.
+	BranchItems *PropertySchema `json:"-"`
 }
 
 // RelationSchema defines reference relationships between objects.

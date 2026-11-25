@@ -112,7 +112,8 @@ func TestArrayAncestorsOf(t *testing.T) {
 	for _, tc := range cases {
 		got, ok := arrayAncestorsOf(tc.name, properties)
 		require.Equal(t, tc.ok, ok, tc.name)
-		require.Equal(t, tc.want, got, tc.name)
+		require.Equal(t, tc.want, got.all, tc.name)
+		require.Empty(t, got.unions, tc.name)
 	}
 }
 
@@ -204,21 +205,36 @@ func TestFileRegistryDerivesAnObjectOrArrayUnionAsAnArray(t *testing.T) {
 		"typed":{"type":"object","properties":{"city":{"type":"string"}},
 			"anyOf":[{"type":"array","items":{"type":"object","properties":{"city":{"type":"string"}}}}]},
 		"objectBranch":{"properties":{"city":{"type":"string"}},
-			"anyOf":[{"type":"object","items":{"type":"object","properties":{"city":{"type":"string"}}}}]}}}`)
+			"anyOf":[{"type":"object","items":{"type":"object","properties":{"city":{"type":"string"}}}}]},
+		"typedArray":{"type":"array","anyOf":[{"items":{"type":"object","properties":{"city":{"type":"string"}}}}]}}}`)
 	write("unions_attributes.json", `{
 		"beside.city":{"attributeID":1,"valueType":"text"},"within.city":{"attributeID":2,"valueType":"text"},
 		"open.city":{"attributeID":3,"valueType":"text"},"cond.city":{"attributeID":4,"valueType":"text"},
 		"always.city":{"attributeID":5,"valueType":"text"},"plain.city":{"attributeID":6,"valueType":"text"},
-		"typed.city":{"attributeID":7,"valueType":"text"},"objectBranch.city":{"attributeID":8,"valueType":"text"}}`)
+		"typed.city":{"attributeID":7,"valueType":"text"},"objectBranch.city":{"attributeID":8,"valueType":"text"},
+		"typedArray.city":{"attributeID":9,"valueType":"text"}}`)
 
 	registry, err := NewFileSchemaRegistryFromDirectory(dir)
 	require.NoError(t, err)
 	_, cache, err := registry.GetSchemaAttributeCacheByName("unions")
 	require.NoError(t, err)
+	_, schema, err := registry.GetSchemaByName("unions")
+	require.NoError(t, err)
 	for _, union := range []string{"beside", "within", "open", "cond", "always"} {
 		require.Equal(t, []string{union}, cache[union+".city"].ArrayAncestors, union)
+		// R4-F1, R4-F2: the array form is a union's, apart from the arrays
+		// the schema declares, and the property keeps no Items.
+		require.Equal(t, []string{union}, cache[union+".city"].UnionArrayAncestors, union)
+		require.Nil(t, schema.Properties[union].Items, union)
+		require.NotNil(t, schema.Properties[union].BranchItems, union)
 	}
 	for _, object := range []string{"plain", "typed", "objectBranch"} {
 		require.Equal(t, []string{}, cache[object+".city"].ArrayAncestors, "%s admits no array of objects", object)
+		require.Empty(t, cache[object+".city"].UnionArrayAncestors, object)
 	}
+	// A property typed an array admits no object form: its branch's
+	// elements are its Items, and it is a declared array, not a union.
+	require.Equal(t, []string{"typedArray"}, cache["typedArray.city"].ArrayAncestors)
+	require.Empty(t, cache["typedArray.city"].UnionArrayAncestors)
+	require.NotNil(t, schema.Properties["typedArray"].Items)
 }

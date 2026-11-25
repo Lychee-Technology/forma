@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/sqlgen"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -114,4 +116,50 @@ func TestUpdateRefusesAnArrayPlacementTheReadDoesNotPlaceBack(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestUnionSchemaStaysParquetRepresentable pins #696 review R4-F1 beside the
+// union readback tests: the registry derives the union's array form for the
+// read, as a union ancestor, so the schema the readback tests write stays
+// one the parquet tiers hold, as it was before #696; its federated queries
+// and CDC export keep the DuckDB path, and only a row holding the array form
+// fails the export (internal/cdc).
+func TestUnionSchemaStaysParquetRepresentable(t *testing.T) {
+	env := newShapeEnvFor(t, "strict", "union", unionDocument, unionAttributes)
+	require.Equal(t, []string{"office"}, env.cache["office.city"].UnionArrayAncestors)
+	assert.Empty(t, sqlgen.ParquetUnrepresentableReason(env.cache))
+}
+
+// TestUpdateIntakeRefusesAKeyAttributeInsideAnArray pins the intake half of
+// R4-F2: Updates writing a unique key's attribute inside an array answer the
+// published key refusal before any statement, wherever the array is (the
+// union's array form, two elements, a dotted key below it); the object
+// form, a dotted key without an array, and a schema without the key pass.
+func TestUpdateIntakeRefusesAKeyAttributeInsideAnArray(t *testing.T) {
+	env := newShapeEnvFor(t, "strict", "union", unionDocument, unionAttributes)
+	keys := []forma.UniqueKeyDeclaration{{ID: 1, Name: "office_city", Attributes: []string{"office.city"}}}
+	city := func(v string) map[string]any { return map[string]any{"city": v} }
+	for _, updates := range []map[string]any{
+		{"office": []any{city("a")}},
+		{"office": []any{city("a"), city("b")}, "note": "n"},
+	} {
+		checked, err := checkUpdatesValues("union", updates, env.cache, nil, nil, keys)
+		require.NoError(t, err)
+		require.ErrorIs(t, checked.Refusal, forma.ErrInvalidInput, "%v", updates)
+		message, published := forma.ResolvePublicMessage(checked.Refusal)
+		require.True(t, published)
+		assert.Contains(t, message, `invalid value for attribute 'office.city' (attrID=3): unique key office_city takes one value of it per row, got a value at array indices "0"`)
+	}
+	for _, updates := range []map[string]any{
+		{"office": city("a")},
+		{"office.city": "a"},
+		{"note": "n"},
+	} {
+		checked, err := checkUpdatesValues("union", updates, env.cache, nil, nil, keys)
+		require.NoError(t, err)
+		require.NoError(t, checked.Refusal, "%v", updates)
+	}
+	checked, err := checkUpdatesValues("union", map[string]any{"office": []any{city("a")}}, env.cache, nil, nil, nil)
+	require.NoError(t, err)
+	require.NoError(t, checked.Refusal, "no key, no refusal")
 }

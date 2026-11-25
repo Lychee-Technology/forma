@@ -862,9 +862,21 @@ validator configured:
   alone, or at neither are written and read back as sent. A branch the
   registry's parser does not follow, such as a `$ref` into another file,
   leaves the property derived as it was, and its array form is refused for
-  the same reason. A property derived an array of objects puts its schema
-  outside what the parquet tiers hold, as any array of objects does (#704):
-  the CDC export skips it. Which arrays the schema declares is its
+  the same reason. The registry records such a property as a *union*
+  ancestor (`AttributeMetadata.UnionArrayAncestors`) apart from the arrays
+  the schema declares, and leaves the property's `Items` unset, so what asks
+  whether the schema has an array there answers as before (#696 review
+  R4-F1, R4-F2). A union ancestor does not put the schema outside what the
+  parquet tiers hold (#704): a row writing the object form holds one value
+  of each member, and the CDC export exports it as it did. A row writing the
+  array form holds one value per element, so the export fails naming the
+  attribute and the row rather than export it collapsed and mark it flushed;
+  the schema's rows stay in PostgreSQL until no row of the batch holds the
+  array form. A unique key may name a member of a union, since the object
+  form holds one value per row; an update whose `Updates` write that member
+  inside the array form is refused with `ErrInvalidInput` at intake, before
+  any statement (a `Tx` stays usable), and a create doing so is refused by
+  the key planner. Which arrays the schema declares is its
   structure's to say: arrays of objects around the attribute, a list's own
   array, and a
   primitive array a schema declares for an element-typed (pre-#204) ledger

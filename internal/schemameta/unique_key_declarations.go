@@ -187,7 +187,12 @@ func IsServerMaintained(column forma.MainColumn) bool {
 // attributes file names an attribute inside an array of objects by its
 // dotted path alone, so only the document tells. A path the document does
 // not resolve, such as one through another file's $ref, is not refused here;
-// the write path refuses a key value that comes from array elements.
+// the write path refuses a key value that comes from array elements. Nor is
+// a path through a property admitting an object or an array of objects
+// (forma.PropertySchema.BranchItems): its object form holds one value per
+// row, so a key over its member stays declarable as before #696, and the
+// write path refuses the member's value written in the array form with
+// forma.ErrInvalidInput (#696 review R4-F2).
 func insideArray(attr string, properties map[string]*forma.PropertySchema) bool {
 	segments := strings.Split(attr, ".")
 	for _, segment := range segments[:len(segments)-1] {

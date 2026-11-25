@@ -109,6 +109,7 @@ func copySchemaAttributeCache(cache forma.SchemaAttributeCache) forma.SchemaAttr
 			meta.ColumnBinding = &binding
 		}
 		meta.ArrayAncestors = slices.Clone(meta.ArrayAncestors)
+		meta.UnionArrayAncestors = slices.Clone(meta.UnionArrayAncestors)
 		snapshot[name] = meta
 	}
 	return snapshot

@@ -193,6 +193,16 @@ type AttributeMetadata struct {
 	// holding one fails until the registry sets it again. The JSON form keeps
 	// nil (null) and empty ([]) apart.
 	ArrayAncestors []string `json:"array_ancestors"`
+	// UnionArrayAncestors names those of ArrayAncestors that the schema
+	// declares as an object or an array of objects (PropertySchema.
+	// BranchItems), outermost first. A row stores such an ancestor in either
+	// form: its object form holds one value of the attribute per row, its
+	// array form one per element. So a unique key may name the attribute
+	// and the parquet tiers may hold it, as long as the row uses the object
+	// form; a write of a key component in the array form is refused, and a
+	// CDC export of a row holding the array form fails rather than collapse
+	// it (#696 review R4-F1, R4-F2).
+	UnionArrayAncestors []string `json:"union_array_ancestors,omitempty"`
 }
 
 // EffectiveRequiredPolicy returns the policy used at runtime.

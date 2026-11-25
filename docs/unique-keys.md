@@ -85,7 +85,12 @@ keys:
 - `attributes`: 1 to 4 distinct attributes, in order. Each must be an active
   scalar attribute of the schema, column-bound or EAV, of any value type
   except `list`. An attribute inside an array of objects (`lines.sku`) is
-  refused, because a row holds many values of it. So is an attribute bound to
+  refused, because a row holds many values of it. A member of a property
+  declared as an object or an array of objects (`properties` beside
+  `anyOf: [{"type": "object"}, {"type": "array", "items": {...}}]`) is
+  allowed, since the object form holds one value per row; a write that puts
+  it inside the array form is refused with `ErrInvalidInput` (#696 review
+  R4-F2). So is an attribute bound to
   a column Forma rewrites on later writes (`ltbase_updated_at`,
   `ltbase_updated_by`, `ltbase_deleted_at`, `ltbase_deleted_by`);
   `ltbase_created_at` and `ltbase_created_by` are allowed. An attribute bound

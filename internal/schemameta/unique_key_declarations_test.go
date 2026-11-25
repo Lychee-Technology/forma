@@ -149,3 +149,40 @@ func TestUniqueKeyDeclarations_AcceptEveryScalarStorage(t *testing.T) {
 	})
 	require.NoError(t, err)
 }
+
+// TestUniqueKeyDeclarations_AcceptAMemberOfAnObjectOrArrayUnion pins #696
+// review R4-F2: a key over a member of a property declared as an object or
+// an array of objects loads, as it did before the registry derived the
+// union's array form, since the object form holds one value per row (the
+// write refuses the array form). A member of an array the schema declares,
+// typed so or through items, stays refused, and so does one under a
+// property typed an array whose items come from a branch.
+func TestUniqueKeyDeclarations_AcceptAMemberOfAnObjectOrArrayUnion(t *testing.T) {
+	load := func(t *testing.T, key string) error {
+		dir := t.TempDir()
+		city := map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}}
+		writeJSONFile(t, filepath.Join(dir, "offices.json"), map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"office": map[string]any{"properties": map[string]any{"city": map[string]any{"type": "string"}},
+					"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "array", "items": city}}},
+				"branches":   map[string]any{"type": "array", "items": city},
+				"typedArray": map[string]any{"type": "array", "anyOf": []any{map[string]any{"items": city}}},
+			},
+			UniqueKeyDeclarationsKey: []any{uniqueKey(1, "by_city", key)},
+		})
+		writeJSONFile(t, filepath.Join(dir, "offices_attributes.json"), map[string]any{
+			"office.city":     map[string]any{"attributeID": float64(1), "valueType": "text"},
+			"branches.city":   map[string]any{"attributeID": float64(2), "valueType": "text"},
+			"typedArray.city": map[string]any{"attributeID": float64(3), "valueType": "text"},
+		})
+		_, err := NewFileSchemaRegistryFromDirectory(dir)
+		return err
+	}
+	require.NoError(t, load(t, "office.city"))
+	for _, attr := range []string{"branches.city", "typedArray.city"} {
+		err := load(t, attr)
+		require.Error(t, err, attr)
+		assert.Contains(t, err.Error(), "attribute "+attr+" is inside an array; a unique key needs one value per row")
+	}
+}

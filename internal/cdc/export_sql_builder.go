@@ -157,12 +157,13 @@ func buildSchemaDrivenProjection(attrCache forma.SchemaAttributeCache) (schemaDr
 			// such rows. Mirrored by sqlgen.buildEAVPivotExpr.
 			elemMeta := meta
 			elemMeta.ValueType = meta.EffectiveItemsType()
-			eavAgg = append(eavAgg, fmt.Sprintf(
-				"CASE WHEN count(*) FILTER (WHERE attr_id = %d) > 0 THEN coalesce(list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d AND (value_text IS NOT NULL OR value_numeric IS NOT NULL)), []) END AS %s",
-				meta.AttributeID, castEAVValue(elemMeta), meta.AttributeID, alias))
+			eavAgg = append(eavAgg, refuseUnionArrayForm(attrName, meta, fmt.Sprintf(
+				"CASE WHEN count(*) FILTER (WHERE attr_id = %d) > 0 THEN coalesce(list(%s ORDER BY TRY_CAST(array_indices AS BIGINT)) FILTER (WHERE attr_id = %d AND (value_text IS NOT NULL OR value_numeric IS NOT NULL)), []) END",
+				meta.AttributeID, castEAVValue(elemMeta), meta.AttributeID))+" AS "+alias)
 		} else {
 			castExpr := castEAVValue(meta)
-			eavAgg = append(eavAgg, fmt.Sprintf("MAX(CASE WHEN attr_id = %d THEN %s END) AS %s", meta.AttributeID, castExpr, alias))
+			eavAgg = append(eavAgg, refuseUnionArrayForm(attrName, meta,
+				fmt.Sprintf("MAX(CASE WHEN attr_id = %d THEN %s END)", meta.AttributeID, castExpr))+" AS "+alias)
 		}
 		eavSelect = append(eavSelect, fmt.Sprintf("e.%s", alias))
 		eavAttrIDs = append(eavAttrIDs, meta.AttributeID)

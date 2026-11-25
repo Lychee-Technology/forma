@@ -55,7 +55,7 @@ func (r *DBPersistentRecordRepository) planUniqueKeys(
 	}
 	desired, err := uniqueKeyEntriesOf(specs, record)
 	if err != nil {
-		return nil, fmt.Errorf("compute the unique keys of row %s: %w", record.RowID, err)
+		return nil, fmt.Errorf("compute the unique keys of row %s: %w", record.RowID, refuseKeyValueInArray(err))
 	}
 	claim := &uniqueKeyClaim{schemaID: record.SchemaID, rowID: record.RowID}
 	if !stored {

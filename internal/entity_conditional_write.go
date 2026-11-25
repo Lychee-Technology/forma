@@ -48,21 +48,38 @@ func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAtt
 	if err := validateUpdateOps(req, cache, relations, structure.arrays); err != nil {
 		return transform.CheckedUpdates{}, fmt.Errorf("check update operators: %w", err)
 	}
-	return checkUpdatesValues(req.SchemaName, req.Updates, cache, relations, structure.shape)
+	return checkUpdatesValues(req.SchemaName, req.Updates, cache, relations, structure.shape, structure.keys)
 }
 
 // schemaStructure is what the validator knows of one schema's structure for
 // an update's intake: the paths it declares as arrays, for the operators,
-// and its container skeleton, which judges where Updates put arrays (#696).
+// and its container skeleton, which judges where Updates put arrays (#696);
+// and the unique keys the schema declares, whose attributes Updates may not
+// put inside an array (#696 review R4-F2).
 type schemaStructure struct {
 	arrays schemavalidate.ArrayPaths
 	shape  *schemavalidate.ShapeSchema
+	keys   []forma.UniqueKeyDeclaration
 }
 
-// structureOf answers what validator knows of schemaID's structure; a nil
-// validator knows nothing.
-func structureOf(validator *schemavalidate.Validator, schemaID int16) schemaStructure {
-	return schemaStructure{arrays: validator.ArrayPaths(schemaID), shape: validator.Shape(schemaID)}
+// structureOf answers what validator knows of schemaID's structure, and the
+// unique keys registry declares for it; a nil validator knows nothing.
+func structureOf(validator *schemavalidate.Validator, registry forma.SchemaRegistry, schemaID int16) schemaStructure {
+	return schemaStructure{arrays: validator.ArrayPaths(schemaID), shape: validator.Shape(schemaID), keys: declaredUniqueKeys(registry, schemaID)}
+}
+
+// declaredUniqueKeys answers the unique keys registry declares for
+// schemaID, none when it cannot say: the write path's key planner still
+// refuses a key attribute inside an array then, only after the row lock.
+func declaredUniqueKeys(registry forma.SchemaRegistry, schemaID int16) []forma.UniqueKeyDeclaration {
+	if registry == nil {
+		return nil
+	}
+	_, schema, err := registry.GetSchemaByID(schemaID)
+	if err != nil {
+		return nil
+	}
+	return schema.UniqueKeys
 }
 
 // checkUpdatesValues judges, before the update sends any statement, the
@@ -90,11 +107,17 @@ func structureOf(validator *schemavalidate.Validator, schemaID int16) schemaStru
 // (#773). The stripped relation subtrees are put back as sent, so the merge
 // strips exactly what it stripped before. nil stays nil: an update of
 // operators alone sends no Updates.
-func checkUpdatesValues(schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, relations *RelationIndex, shape *schemavalidate.ShapeSchema) (transform.CheckedUpdates, error) {
+func checkUpdatesValues(
+	schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, relations *RelationIndex,
+	shape *schemavalidate.ShapeSchema, keys []forma.UniqueKeyDeclaration,
+) (transform.CheckedUpdates, error) {
 	written := relations.StripComputedFields(schemaName, updates)
 	checked, err := transform.CheckUpdateValues(written, cache, shape)
 	if err != nil {
 		return transform.CheckedUpdates{}, fmt.Errorf("check updates: %w", err)
+	}
+	if checked.Refusal == nil {
+		checked.Refusal = keyValueInArrayRefusal(checked.Values, cache, keys)
 	}
 	if checked.Refusal != nil {
 		checked.Refusal = fmt.Errorf("check updates: %w", checked.Refusal)

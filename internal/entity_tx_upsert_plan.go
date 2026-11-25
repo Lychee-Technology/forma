@@ -65,7 +65,7 @@ func (s *txSession) planUpsert(ctx context.Context, req *forma.UpsertRequest) (*
 // writes Updates (#772).
 func (s *txSession) validateUpsertUpdate(plan *upsertPlan, prepared *preparedCreate) error {
 	update := plan.update
-	updates, err := validateConditionalUpdate(update, prepared.cache, s.crud.relations, structureOf(s.crud.validator, prepared.schemaID))
+	updates, err := validateConditionalUpdate(update, prepared.cache, s.crud.relations, structureOf(s.crud.validator, s.crud.registry, prepared.schemaID))
 	if err != nil {
 		return fmt.Errorf("failed to validate the update action of the upsert of %s: %w", update.SchemaName, err)
 	}
@@ -135,7 +135,7 @@ func (s *txSession) planKeyTarget(plan *upsertPlan, keyName string) error {
 	}
 	value, present, err := uniqueKeyValueOf(spec, plan.create.record)
 	if err != nil {
-		return fmt.Errorf("failed to compute unique key %s of the upsert's create: %w", keyName, err)
+		return fmt.Errorf("failed to compute unique key %s of the upsert's create: %w", keyName, refuseKeyValueInArray(err))
 	}
 	if !present {
 		names := make([]string, len(spec.attrs))

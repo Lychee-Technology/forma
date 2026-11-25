@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 
@@ -300,6 +301,10 @@ func uniqueKeyValueOf(spec uniqueKeySpec, record *model.PersistentRecord) (strin
 	components := make([]uniquekey.Component, 0, len(spec.attrs))
 	for _, attr := range spec.attrs {
 		v, err := transform.StoredAttributeValue(record, attr.meta)
+		var inArray *transform.ArrayElementsError
+		if errors.As(err, &inArray) {
+			return "", false, &keyValueInArrayError{key: spec.name, attr: attr.name, elements: inArray}
+		}
 		if err != nil {
 			return "", false, fmt.Errorf("read attribute %s: %w", attr.name, err)
 		}
@@ -313,4 +318,67 @@ func uniqueKeyValueOf(spec uniqueKeySpec, record *model.PersistentRecord) (strin
 		return "", false, fmt.Errorf("encode: %w", err)
 	}
 	return value, true, nil
+}
+
+// keyValueInArrayError is uniqueKeyValueOf's answer for a key attribute
+// whose record holds array elements instead of one value. The registry
+// admits a key over a member of an object-or-array union, whose object form
+// holds one value per row; a row writing the union in its array form holds
+// one per element, which no key entry can stand for (#696 review R4-F2).
+type keyValueInArrayError struct {
+	key, attr string
+	elements  *transform.ArrayElementsError
+}
+
+func (e *keyValueInArrayError) Error() string {
+	return fmt.Sprintf("read attribute %s of unique key %s: %v", e.attr, e.key, e.elements)
+}
+
+func (e *keyValueInArrayError) Unwrap() error { return e.elements }
+
+// refuseKeyValueInArray answers a write's refusal of a record that holds a
+// key attribute inside an array, err itself for any other error. The value
+// is the caller's: a create, or an update's merged document, which judges
+// the stored row's values only where the update leaves them, and a stored
+// row holding one could not have been written or keyed. So the refusal is
+// forma.ErrInvalidInput, published, not the key planner's operator error
+// it was before #696. The key build keeps the operator error, since it reads
+// stored rows.
+func refuseKeyValueInArray(err error) error {
+	var inArray *keyValueInArrayError
+	if !errors.As(err, &inArray) {
+		return err
+	}
+	return forma.WithOperatorDetail(keyInArrayError(inArray.attr, inArray.elements.AttrID, inArray.key, inArray.elements.Indices), err)
+}
+
+// keyValueInArrayRefusal answers the refusal of updates, the values an
+// update's intake checked, when they write an attribute of one of keys
+// inside an array, nil otherwise. It is the intake's half of
+// refuseKeyValueInArray: raised with the conversion refusals, before any
+// statement or once a row is known to be written (refusedBeforeWrite), so
+// it leaves a Tx usable where the key planner's, after the row lock, would
+// not.
+func keyValueInArrayRefusal(updates map[string]any, cache forma.SchemaAttributeCache, keys []forma.UniqueKeyDeclaration) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	inArrays := transform.ValuesInArrays(updates, cache)
+	for _, key := range keys {
+		for _, attr := range key.Attributes {
+			if indices, ok := inArrays[attr]; ok {
+				return keyInArrayError(attr, cache[attr].AttributeID, key.Name, indices)
+			}
+		}
+	}
+	return nil
+}
+
+// keyInArrayError is the published refusal of a unique key's attribute
+// written inside an array.
+func keyInArrayError(attr string, attrID int16, key, indices string) error {
+	return forma.InvalidInputf(
+		"invalid value for attribute '%s' (attrID=%d): unique key %s takes one value of it per row, got a value at array indices %q, inside an array; "+
+			"a unique key's attribute cannot be stored inside an array (write the object form, or omit the key)",
+		attr, attrID, key, indices)
 }

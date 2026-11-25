@@ -92,20 +92,40 @@ func parsePropertySchema(name string, prop map[string]any, defs map[string]any, 
 	parsePropertyExtensions(schema, prop)
 
 	// Parse items (for arrays)
+	var branchItems *forma.PropertySchema
 	openItems := false
 	if items, ok := prop["items"].(map[string]any); ok {
 		schema.Items = parsePropertySchema("", items, defs, nil)
 	} else if schema.Type == "" || schema.Type == "array" {
-		schema.Items, openItems = parseBranchObjectItems(prop, defs)
+		branchItems, openItems = parseBranchObjectItems(prop, defs)
 	}
 
 	// Parse nested properties (for objects)
 	parseNestedProperties(schema, prop, defs)
 	if openItems {
-		schema.Items.Properties = withMissing(schema.Items.Properties, schema.Properties)
+		branchItems.Properties = withMissing(branchItems.Properties, schema.Properties)
 	}
+	placeBranchItems(schema, branchItems)
 
 	return schema
+}
+
+// placeBranchItems keeps the elements of the arrays of objects a property
+// admits through a branch. A property typed "array" is one, so they are its
+// Items. An untyped one admits its object form too, so they are its
+// BranchItems and Items stays nil, as before #696: what asks whether the
+// property is an array, a unique key's declaration among it, sees an
+// object, and only the array ancestry counts the array form (#696 review
+// R4-F1, R4-F2).
+func placeBranchItems(schema *forma.PropertySchema, items *forma.PropertySchema) {
+	if items == nil {
+		return
+	}
+	if schema.Type == "array" {
+		schema.Items = items
+		return
+	}
+	schema.BranchItems = items
 }
 
 // resolvePropertyRef resolves $ref if present
