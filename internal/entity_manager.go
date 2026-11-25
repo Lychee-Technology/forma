@@ -209,6 +209,7 @@ func NewEntityManager(
 		em.relations = idx
 	}
 	installRelationRoots(transformer, em.relations)
+	installShapes(transformer, validator)
 	if err := em.checkUniqueKeys(repository, registry); err != nil {
 		return nil, fmt.Errorf("failed to check unique keys: %w", err)
 	}
@@ -218,6 +219,25 @@ func NewEntityManager(
 	em.query = newEntityQueryService(em)
 	em.batch = newEntityBatchService(em, em.crud)
 	return em, nil
+}
+
+// installShapes hands the transformer the validator's container skeletons,
+// by which an update's write judges the arrays of the document it persists
+// (#696), as the update's intake does. Without a validator there is none to
+// hand, and both judge by the ledger.
+func installShapes(transformer model.PersistentRecordTransformer, validator *schemavalidate.Validator) {
+	if validator == nil {
+		return
+	}
+	aware, ok := transformer.(transform.ShapeAware)
+	if !ok {
+		// Loud, not silent: the write then judges by the ledger and refuses a
+		// primitive array the intake admitted under an element-typed ledger
+		// entry.
+		zap.S().Warn("transformer does not accept container skeletons; an update's write judges its arrays by the ledger alone")
+		return
+	}
+	aware.SetShapes(validator.Shape)
 }
 
 // installRelationRoots hands the transformer the relation roots it needs for the

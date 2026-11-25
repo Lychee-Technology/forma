@@ -193,8 +193,8 @@ type Validator struct {
 	// arrays is derived alongside resolution because the schema is the only
 	// loaded source of truth for which paths are arrays (see array_paths.go).
 	arrays map[int16]ArrayPaths
-	// shapes holds each schema's container skeleton (shape.go), absent for a
-	// schema whose skeleton does not resolve.
+	// shapes holds each schema's container skeleton (shape.go), partial for
+	// a schema whose full skeleton does not resolve.
 	shapes map[int16]*ShapeSchema
 }
 
@@ -252,19 +252,21 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 }
 
 // addShape resolves the container skeleton of schema name. A schema that
-// resolves can still have a skeleton that does not, when a $ref points into a
-// keyword the skeleton rewrites (shape.go); that is logged, not refused, since
-// the schema itself validates as before. Without a skeleton the schema's
-// updates take no array at an attribute that is not a list.
+// resolves can still have a full skeleton that does not, when a pointer
+// crosses an $id into a subschema the skeleton moves (shape_refs.go); that
+// is logged, not refused, since the schema itself validates as before, and
+// the schema keeps the partial skeleton, which leaves a position behind a
+// $ref unconstrained rather than taking it for a single value.
 func (v *Validator) addShape(name string, id int16, document string, opts *jsonschema.ResolveOptions) {
 	shape, err := resolveShape(document, opts)
 	if err != nil {
-		zap.S().Warnw("schema has no container skeleton: its updates refuse an array at every attribute that is not a list, "+
-			"including a primitive array the schema declares for an element-typed attribute",
-			"schema", name, "schemaID", id, "error", err.Error())
-		return
+		zap.S().Warnw("schema keeps a partial container skeleton: an update may place an array wherever the schema "+
+			"reaches a value through a $ref, and the census does not judge such a position",
+			"schema", name, "schemaID", id, "partial", shape != nil, "error", err.Error())
 	}
-	v.shapes[id] = shape
+	if shape != nil {
+		v.shapes[id] = shape
+	}
 }
 
 // Validate checks doc against the schema registered for schemaID.

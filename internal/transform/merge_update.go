@@ -37,7 +37,8 @@ func (t *persistentRecordTransformer) MergeUpdate(
 	if err != nil {
 		return nil, fmt.Errorf("failed to merge the update into row %s: %w", record.RowID, err)
 	}
-	return resolveStoredValues(record.SchemaID, record.RowID, merged, cache)
+	placement := newPlacementJudge(cache, t.shapeOf(record.SchemaID))
+	return resolveStoredValues(record.SchemaID, record.RowID, merged, cache, placement)
 }
 
 // resolveStoredValues replaces every stored value the merged document holds
@@ -68,6 +69,14 @@ func (t *persistentRecordTransformer) MergeUpdate(
 // is refused instead, in the same walk order, unless the caller's own
 // spelling of the attribute replaces the value.
 //
+// The walk applies the array-placement rule (value_placement.go) to every
+// value the merged document holds that is not a stored one, so the document
+// the update persists holds no value inside arrays the rule refuses, with or
+// without a validator, whatever the validation mode (#696 review R1-F4). The
+// update's intake has judged Updates by the same rule before any statement,
+// so this refuses only what reaches the document another way. Its refusal
+// comes first: it is the caller's input, not the row's.
+//
 // Removing a value must not change what the rest of the row means. A
 // container it empties is removed with it, since it held stored values only
 // and the stored row is no evidence the caller sent it. An array keeps its
@@ -75,10 +84,16 @@ func (t *persistentRecordTransformer) MergeUpdate(
 // the kept elements keep their indices, and emptied trailing elements are
 // cut. The root document is never removed, and a container that was empty
 // before resolution, such as a caller's {} or [], is kept.
-func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, cache forma.SchemaAttributeCache) (map[string]any, error) {
-	entries, err := walkDocument(schemaID, rowID, doc, cache)
+func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, cache forma.SchemaAttributeCache, placement *placementJudge) (map[string]any, error) {
+	entries, err := walkJudgedDocument(schemaID, rowID, doc, cache, placement)
 	if err != nil {
 		return nil, fmt.Errorf("walk the merged document of row %s: %w", rowID, err)
+	}
+	for _, entry := range entries {
+		if entry.placementRefusal {
+			// Unwrapped: the published refusal, as the intake raises it.
+			return nil, entry.refusal
+		}
 	}
 	winners := updateWinners(entries)
 	stored := storedSpellingsOf(entries)

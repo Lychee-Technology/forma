@@ -35,11 +35,14 @@ import (
 //
 // The shape of Updates' objects and arrays is judged here too, in every
 // validation mode (value_shape.go, #696): an object at an attribute's own
-// position, and a value inside arrays the schema's container skeleton
-// (shape) does not admit around it, or, with no skeleton, an array at an
-// attribute that is not a list. Each is a refusal of the Refusal class,
-// since it depends on Updates alone and the merged write would store it
-// otherwise, and is ordered with the conversion refusals by the same walk.
+// position, and a value inside arrays the array-placement rule refuses
+// (value_placement.go), judged by the schema's container skeleton (shape)
+// or, with none, by the ledger. An array is judged before its elements, so
+// one whose elements are all null is judged too, and a Go map or slice at a
+// single value is refused by the conversion. Each is a refusal of the
+// Refusal class, since it depends on Updates alone and the merged write
+// would store it otherwise, and is ordered with the conversion refusals by
+// the same walk.
 //
 // Only conversion and shape move here. A position the walk refuses rather
 // than claims keeps its stage, after the precondition and the row's
@@ -68,8 +71,8 @@ func CheckUpdateValues(data map[string]any, cache forma.SchemaAttributeCache, sh
 		return CheckedUpdates{Values: data}, nil
 	}
 	// The walk has bounded the document, so the copy below terminates.
-	in := &updateIntake{cache: cache, shape: shape, judged: make(map[string]error)}
-	values, err := in.copyMap(nil, data, intakePosition{})
+	in := &updateIntake{cache: cache, placement: newPlacementJudge(cache, shape)}
+	values, err := in.copyMap(nil, data, docPosition{})
 	if err != nil {
 		return CheckedUpdates{}, err
 	}
@@ -95,12 +98,9 @@ type CheckedUpdates struct {
 // the copy goes on past it, looking for unstorable text.
 type updateIntake struct {
 	cache forma.SchemaAttributeCache
-	// shape is the schema's container skeleton, which judges the arrays
-	// around each value (judgeArrays); nil when there is none.
-	shape *schemavalidate.ShapeSchema
-	// judged memoizes the skeleton's verdict per arrangement.
-	judged  map[string]error
-	refusal error
+	// placement applies the array-placement rule (value_placement.go).
+	placement *placementJudge
+	refusal   error
 }
 
 // refuse records err unless an earlier refusal is recorded.
@@ -113,7 +113,7 @@ func (in *updateIntake) refuse(err error) {
 // copyValue dispatches one position of the copy. Errors pass up the copy
 // unwrapped: convertLeaf names the attribute, which is the whole path, so a
 // prefix per level would only repeat it.
-func (in *updateIntake) copyValue(path []string, value any, at intakePosition) (any, error) {
+func (in *updateIntake) copyValue(path []string, value any, at docPosition) (any, error) {
 	switch v := value.(type) {
 	case map[string]any:
 		return in.copyMap(path, v, at)
@@ -124,7 +124,7 @@ func (in *updateIntake) copyValue(path []string, value any, at intakePosition) (
 	}
 }
 
-func (in *updateIntake) copyMap(path []string, src map[string]any, at intakePosition) (map[string]any, error) {
+func (in *updateIntake) copyMap(path []string, src map[string]any, at docPosition) (map[string]any, error) {
 	in.judgeObject(path, src)
 	if src == nil {
 		return nil, nil
@@ -154,7 +154,7 @@ func (in *updateIntake) copyMap(path []string, src map[string]any, at intakePosi
 // copyArray copies an array element by element. An empty one is the
 // empty-list marker, or an [] the walk refuses or ignores: none is a value
 // to convert.
-func (in *updateIntake) copyArray(path []string, src []any, at intakePosition) ([]any, error) {
+func (in *updateIntake) copyArray(path []string, src []any, at docPosition) ([]any, error) {
 	in.judgeArray(path, src, at)
 	if src == nil {
 		// Kept nil, which the validator sees as null, not as [].
@@ -179,13 +179,12 @@ func (in *updateIntake) copyArray(path []string, src []any, at intakePosition) (
 // place. A scalar at an undefined attribute is the walk's refusal, left to
 // the write. Text PostgreSQL cannot hold is the error; any other refusal is
 // recorded once, the first, and the value kept as sent.
-func (in *updateIntake) convertLeaf(path []string, value any, at intakePosition) (any, error) {
+func (in *updateIntake) convertLeaf(path []string, value any, at docPosition) (any, error) {
 	name := strings.Join(path, ".")
 	meta, ok := in.cache[name]
 	if !ok {
 		return value, nil
 	}
-	in.judgeArrays(path, meta, at, sentAt("a value", at.indices))
 	record := model.EAVRecord{ArrayIndices: joinIndices(at.indices)}
 	_, err := populateTypedValue(&record, name, value, meta)
 	text := storedAsText(meta, record.ArrayIndices, value) && record.ValueText != nil
@@ -196,6 +195,11 @@ func (in *updateIntake) convertLeaf(path []string, value any, at intakePosition)
 		}
 		in.refuse(err)
 		return value, nil
+	}
+	// A value the conversion refuses is refused with its own reason, as the
+	// write refuses it; the arrays around one it converts are judged next.
+	if err := in.placement.value(path, meta, at, sentAt("a value", at.indices)); err != nil {
+		in.refuse(err)
 	}
 	if !text {
 		return value, nil

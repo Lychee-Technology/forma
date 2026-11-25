@@ -1,8 +1,9 @@
 package transform
 
 import (
+	"encoding"
 	"fmt"
-	"slices"
+	"reflect"
 	"strings"
 
 	"github.com/lychee-technology/forma"
@@ -24,38 +25,21 @@ import (
 //     where the schema declares those arrays: arrays of objects around it,
 //     a list's own array, or a primitive array the schema declares under an
 //     element-typed (pre-#204) ledger entry. Which arrays the schema declares
-//     is the schema's to say, so an update's intake asks its container
-//     skeleton (schemavalidate.ShapeSchema) about each value it writes, with
-//     the arrays the caller put around it, at the segment where the caller
-//     put them, whatever the spelling (judgeArrays). An empty array is
-//     judged as the arrays around a value inside it. Without a skeleton
-//     nothing declares an array, and an array at an attribute that is not a
-//     list is refused (arrayAtSingleValueError).
+//     is the schema's to say, and where storage reads the value back from is
+//     the read's: the array-placement rule (value_placement.go) judges both,
+//     on each value with the arrays the caller put around it, at the
+//     segment where the caller put them, whatever the spelling. The update
+//     intake and an update's write both apply it.
+//
+// A Go map, slice or array the caller sends where a single value belongs is
+// an object or array too, though the walk does not take it apart: the
+// conversion refuses it (goContainerKind) rather than store its formatted
+// image. A Go value that is a single value in a container's clothing is
+// kept: a []byte is text, a uuid.UUID is a UUID, and any fmt.Stringer or
+// encoding.TextMarshaler converts as it always has.
 //
 // An attribute whose name is also the parent of another attribute is left to
 // the walk as before: its position holds an object legitimately.
-
-// intakePosition is where the update intake is in a document: the array
-// indices around it, and per key of its path the arrays around that key's
-// value.
-type intakePosition struct {
-	indices []int
-	arrays  []int
-}
-
-// under answers the position of a value one key below p.
-func (p intakePosition) under() intakePosition {
-	return intakePosition{indices: p.indices, arrays: append(slices.Clone(p.arrays), 0)}
-}
-
-// inside answers the position of element i of the array at p.
-func (p intakePosition) inside(i int) intakePosition {
-	arrays := slices.Clone(p.arrays)
-	if len(arrays) > 0 {
-		arrays[len(arrays)-1]++
-	}
-	return intakePosition{indices: append(slices.Clone(p.indices), i), arrays: arrays}
-}
 
 // judgeObject refuses an object at an attribute's own position.
 func (in *updateIntake) judgeObject(path []string, src map[string]any) {
@@ -68,69 +52,14 @@ func (in *updateIntake) judgeObject(path []string, src map[string]any) {
 	}
 }
 
-// judgeArray judges an array at an attribute's own position. With a
-// skeleton an empty one is judged as the arrays around a value inside it,
-// and a non-empty one by the values it holds. Without one, nothing declares
-// an array at an attribute that is not a list.
-func (in *updateIntake) judgeArray(path []string, src []any, at intakePosition) {
-	name := strings.Join(path, ".")
-	meta, ok := singleValueAttribute(name, in.cache)
-	if !ok {
-		return
-	}
-	if in.shape == nil {
-		if meta.ValueType != forma.ValueTypeList {
-			in.refuse(arrayAtSingleValueError(name, meta, src))
+// judgeArray judges an array at an attribute's own position by the
+// array-placement rule (placementJudge.array).
+func (in *updateIntake) judgeArray(path []string, src []any, at docPosition) {
+	if meta, ok := singleValueAttribute(strings.Join(path, "."), in.cache); ok {
+		if err := in.placement.array(path, meta, src, at); err != nil {
+			in.refuse(err)
 		}
-		return
 	}
-	if len(src) == 0 {
-		in.judgeArrays(path, meta, at.inside(0), sentAt(containerKind(src), at.indices))
-	}
-}
-
-// judgeArrays refuses a value of the attribute at path, sitting at at,
-// where the skeleton admits no value inside the arrays the caller put around
-// it, there. sent says what the caller sent, for the message. A value in no
-// array is a single value, which the skeleton never refuses.
-func (in *updateIntake) judgeArrays(path []string, meta forma.AttributeMetadata, at intakePosition, sent string) {
-	if in.shape == nil || len(at.indices) == 0 {
-		return
-	}
-	segments, arrays := arrangementOf(path, at.arrays)
-	key := fmt.Sprint(segments, arrays)
-	verdict, seen := in.judged[key]
-	if !seen {
-		verdict = in.shape.AdmitsArrangement(segments, arrays)
-		in.judged[key] = verdict
-	}
-	if verdict != nil {
-		in.refuse(arrayPlacementError(strings.Join(path, "."), meta, sent, verdict))
-	}
-}
-
-// sentAt names a value the caller sent at indices, for a message.
-func sentAt(kind string, indices []int) string {
-	if len(indices) == 0 {
-		return kind
-	}
-	return fmt.Sprintf("%s at array indices %q", kind, joinIndices(indices))
-}
-
-// arrangementOf answers the dotted segments of path, whose keys may be
-// literal dotted names, and the arrays around each segment's value: a key's
-// arrays sit around its last segment, since a literal key "a.b" holding an
-// array places it where {"a": {"b": [...]}} does.
-func arrangementOf(path []string, arrays []int) ([]string, []int) {
-	var segments []string
-	var around []int
-	for i, key := range path {
-		parts := strings.Split(key, ".")
-		segments = append(segments, parts...)
-		around = append(around, make([]int, len(parts)-1)...)
-		around = append(around, arrays[i])
-	}
-	return segments, around
 }
 
 // singleValueAttribute answers the attribute at name when its position takes
@@ -157,24 +86,6 @@ func objectAtAttributeError(name string, meta forma.AttributeMetadata, value map
 		name, meta.AttributeID, meta.ValueType, takes(meta), containerKind(value))
 }
 
-// arrayAtSingleValueError refuses an array at an attribute that is not a
-// list, where no skeleton says the schema declares one.
-func arrayAtSingleValueError(name string, meta forma.AttributeMetadata, value []any) error {
-	return forma.InvalidInputf(
-		"invalid value for attribute '%s' (attrID=%d): declared type %s takes %s, got %s; an array, empty or not, cannot be stored where a single value belongs (omit the key to keep the current value)",
-		name, meta.AttributeID, meta.ValueType, takes(meta), containerKind(value))
-}
-
-// arrayPlacementError refuses a value inside arrays the schema's skeleton
-// does not admit around it. The verdict names schema locations and is an
-// operator's detail.
-func arrayPlacementError(name string, meta forma.AttributeMetadata, sent string, verdict error) error {
-	return forma.WithOperatorDetail(forma.InvalidInputf(
-		"invalid value for attribute '%s' (attrID=%d): declared type %s takes %s, got %s, inside arrays the schema does not declare there; an object or array, empty or not, cannot be stored where a single value belongs (omit the key to keep the current value)",
-		name, meta.AttributeID, meta.ValueType, takes(meta), sent),
-		fmt.Errorf("container skeleton verdict: %w", verdict))
-}
-
 // takes says what an attribute's position takes.
 func takes(meta forma.AttributeMetadata) string {
 	if meta.ValueType == forma.ValueTypeList {
@@ -199,4 +110,44 @@ func containerKind(value any) string {
 		return "an array"
 	}
 	return "a value"
+}
+
+// goContainerKind names the container a Go value is, when it is one: a map,
+// or a slice or array, other than a []byte (text) and anything that renders
+// itself as a single value (fmt.Stringer, encoding.TextMarshaler, as a
+// uuid.UUID does). A pointer is judged by what it points to. []any and
+// map[string]any never reach it: the walk takes them apart.
+func goContainerKind(value any) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	switch value.(type) {
+	case fmt.Stringer, encoding.TextMarshaler:
+		return "", false
+	}
+	v := reflect.ValueOf(value)
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return "", false
+		}
+		v = v.Elem()
+	}
+	switch v.Kind() {
+	case reflect.Map:
+		return "map", true
+	case reflect.Slice:
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			return "", false
+		}
+		return "slice", true
+	case reflect.Array:
+		return "array", true
+	}
+	return "", false
+}
+
+// goContainerError refuses a Go container where meta takes single values.
+func goContainerError(meta forma.AttributeMetadata, kind string, value any) error {
+	return fmt.Errorf("declared type %s takes %s, got a Go %s (%T); an object or array, empty or not, cannot be stored where a single value belongs (send a list's elements as []any)",
+		meta.ValueType, takes(meta), kind, value)
 }

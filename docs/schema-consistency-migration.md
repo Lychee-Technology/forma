@@ -705,7 +705,7 @@ Example validator output:
 ```text
 - array elements stored where the schema declares no such arrays, under scalar attributes in eav_data_dev: schema=lead schema_id=106 attr_id=14 attribute=contact.memo type=text indices=1 rows=1 example=row_id=00000000-0000-4000-8000-00000000000b array_indices="0"
 informational (not a failure):
-- indexed records under scalar attributes the census could not judge in eav_data_dev: schema=s schema_id=110 attr_id=3 attribute=note type=text indices=1 rows=2 example=row_id=... array_indices="0" unverified=the schema has no container skeleton
+- indexed records under scalar attributes the census could not judge in eav_data_dev: schema=s schema_id=110 attr_id=3 attribute=note type=text indices=1 rows=2 example=row_id=... array_indices="0" unverified=the schema keeps a partial container skeleton, which does not follow its $refs
 ```
 
 Before `#696`, report-only update validation let an update give an attribute
@@ -723,13 +723,18 @@ of indices, and asks the schema's container skeleton, the one an update's
 intake asks (see
 [error handling](./error-handling.md#an-updates-shape-is-a-storage-invariant-in-every-mode-696)),
 whether any arrangement of that many arrays along the attribute's path holds a
-single value of it. The skeleton admits every document the schema admits, so a
-group it admits no arrangement for is a verified anomaly and fails the
-pre-flight, naming one record by `row_id` and `array_indices`, never a value. A
-group the census cannot judge, because the schema keeps no skeleton (a `$ref`
-into a `oneOf`, say), its documents did not resolve, or there are too many
-arrangements to try, is reported as informational with the reason: unverified,
-not clean. A list's records are the `#372` check's, and an unknown attribute's
+single value of it. The skeleton admits every document the schema admits, and
+keeps what an `enum`, `const`, `false` or `not` excludes of arrays, so a group
+it admits no arrangement for is a verified anomaly and fails the pre-flight,
+naming one record by `row_id` and `array_indices`, never a value: a text
+attribute declared `{"anyOf": [{"type": "string"}, {"enum": [false]}]}` with a
+record at `'0'` is one. A group the census cannot judge is reported as
+informational with the reason, unverified and not clean: the schema's
+documents did not resolve, there are too many arrangements to try, or the
+schema keeps only a partial skeleton (a JSON Pointer crosses a nested `$id`
+into a moved keyword, so its `$ref`s are not followed) and the skeleton admits
+the group, which a reference it did not follow might not. A partial
+skeleton's refusal is still proof. A list's records are the `#372` check's, and an unknown attribute's
 the attr_id census's.
 
 The census only reads. Nothing in Forma repairs such records, and the right

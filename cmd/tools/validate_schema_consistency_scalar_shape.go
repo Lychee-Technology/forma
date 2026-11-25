@@ -30,7 +30,9 @@ import (
 // and indices, never a value. A group the census cannot judge, because the
 // schema has no skeleton or its document cannot be read, or because there
 // are too many arrangements to try, is informational: unverified, not
-// clean. A list's records are #372's census. Nothing is repaired; a
+// clean; so is a group a partial skeleton (one that does not follow the
+// schema's $refs) admits, since the reference may be what declares or
+// excludes the arrays. A list's records are #372's census. Nothing is repaired; a
 // confirmed finding needs a separately tracked remediation.
 func (v schemaConsistencyValidator) checkIndexedScalarRecords(ctx context.Context, cache *schemameta.MetadataCache) ([]validationIssue, error) {
 	shapes, unverified := censusShapes(cache, v.schemaDir)
@@ -94,16 +96,21 @@ func (v schemaConsistencyValidator) classifyIndexedGroup(cache *schemameta.Metad
 	reason := unverified
 	if shape != nil {
 		admitted, decided := shape.AdmitsIndices(meta.AttributeName, group.depth)
-		if admitted {
+		if admitted && !shape.Partial() {
 			return validationIssue{}, false
 		}
-		if decided {
+		// A partial skeleton is still a relaxation, so its refusal is proof;
+		// what it admits may sit behind a $ref it does not follow.
+		if !admitted && decided {
 			return validationIssue{
 				category: "array elements stored where the schema declares no such arrays, under scalar attributes in " + v.eavTable,
 				details:  details,
 			}, true
 		}
 		reason = "too many arrangements of arrays along the attribute's path to try"
+		if admitted {
+			reason = "the schema keeps a partial container skeleton, which does not follow its $refs"
+		}
 	}
 	if reason == "" {
 		reason = "the schema has no container skeleton"

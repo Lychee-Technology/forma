@@ -59,45 +59,57 @@ const valueShapeAttributes = `{
 	"items.name":{"attributeID":9,"valueType":"text"},"office.city":{"attributeID":10,"valueType":"text"},
 	"ext.y":{"attributeID":11,"valueType":"text"}}`
 
-// valueShapeEnv is a manager over the shapes schema.
+// valueShapeEnv is a manager over one schema, the shapes schema unless
+// built by newShapeEnvFor.
 type valueShapeEnv struct {
 	em       forma.EntityManager
 	repo     *mockPersistentRecordRepository
 	schemaID int16
+	schema   string
+	cache    forma.SchemaAttributeCache
 }
 
 // newValueShapeEnv builds the manager. mode is "strict", "report-only" or
 // "no validator".
 func newValueShapeEnv(t *testing.T, mode string) valueShapeEnv {
 	t.Helper()
+	env := newShapeEnvFor(t, mode, valueShapeSchema, valueShapeDocument, valueShapeAttributes)
+	require.Nil(t, env.cache["items.name"].ArrayAncestors, "precondition: the unresolved ext leaves array ancestry underived")
+	return env
+}
+
+// newShapeEnvFor builds a manager over the schema name, declared by document
+// and attributes. mode is "strict", "report-only" or "no validator".
+func newShapeEnvFor(t *testing.T, mode, name, document, attributes string) valueShapeEnv {
+	t.Helper()
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, valueShapeSchema+".json"), []byte(valueShapeDocument), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, valueShapeSchema+"_attributes.json"), []byte(valueShapeAttributes), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name+".json"), []byte(document), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name+"_attributes.json"), []byte(attributes), 0o600))
 	registry, err := newFileSchemaRegistryFromDir(dir)
 	require.NoError(t, err)
-	schemaID, cache, err := registry.GetSchemaAttributeCacheByName(valueShapeSchema)
+	schemaID, cache, err := registry.GetSchemaAttributeCacheByName(name)
 	require.NoError(t, err)
-	require.Nil(t, cache["items.name"].ArrayAncestors, "precondition: the unresolved ext leaves array ancestry underived")
 
 	var validator *schemavalidate.Validator
 	if mode != "no validator" {
 		validator, err = schemavalidate.New(registry, dir)
 		require.NoError(t, err)
 		require.NotNil(t, validator.Shape(schemaID))
+		require.False(t, validator.Shape(schemaID).Partial(), "the schema keeps a full skeleton")
 	}
 	config := createTestConfig()
 	config.Entity.SchemaDirectory = dir
 	config.Entity.ValidateUpdatesStrict = mode == "strict"
 	repo := newMockPersistentRecordRepository()
 	em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry), repo, nil, registry, config, validator)
-	return valueShapeEnv{em: em, repo: repo, schemaID: schemaID}
+	return valueShapeEnv{em: em, repo: repo, schemaID: schemaID, schema: name, cache: cache}
 }
 
 func (e valueShapeEnv) create(t *testing.T, data map[string]any) uuid.UUID {
 	t.Helper()
 	data["id"] = uuid.NewString()
 	created, err := e.em.Create(context.Background(), &forma.EntityOperation{
-		EntityIdentifier: forma.EntityIdentifier{SchemaName: valueShapeSchema},
+		EntityIdentifier: forma.EntityIdentifier{SchemaName: e.schema},
 		Type:             forma.OperationCreate,
 		Data:             data,
 	})
@@ -106,16 +118,30 @@ func (e valueShapeEnv) create(t *testing.T, data map[string]any) uuid.UUID {
 }
 
 func valueShapeUpdate(rowID uuid.UUID, updates map[string]any) *forma.EntityOperation {
+	return shapeUpdateOf(valueShapeSchema, rowID, updates)
+}
+
+func shapeUpdateOf(schema string, rowID uuid.UUID, updates map[string]any) *forma.EntityOperation {
 	return &forma.EntityOperation{
-		EntityIdentifier: forma.EntityIdentifier{SchemaName: valueShapeSchema, RowID: rowID},
+		EntityIdentifier: forma.EntityIdentifier{SchemaName: schema, RowID: rowID},
 		Type:             forma.OperationUpdate,
 		Updates:          updates,
 	}
 }
 
+// update answers an update of the env's schema.
+func (e valueShapeEnv) update(rowID uuid.UUID, updates map[string]any) *forma.EntityOperation {
+	return shapeUpdateOf(e.schema, rowID, updates)
+}
+
+// stored answers the row's EAV records as storedTextRecords spells them.
+func (e valueShapeEnv) stored(rowID uuid.UUID) []string {
+	return storedTextRecords(e.repo.records[e.schemaID][rowID])
+}
+
 func (e valueShapeEnv) get(t *testing.T, rowID uuid.UUID) map[string]any {
 	t.Helper()
-	record, err := e.em.Get(context.Background(), &forma.QueryRequest{SchemaName: valueShapeSchema, RowID: &rowID})
+	record, err := e.em.Get(context.Background(), &forma.QueryRequest{SchemaName: e.schema, RowID: &rowID})
 	require.NoError(t, err)
 	return record.Attributes
 }

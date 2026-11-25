@@ -15,28 +15,33 @@ import (
 )
 
 // shapeSchemaFields classifies every field of jsonschema.Schema for the
-// skeleton (shape.go): kept as is, rewritten, or dropped. A library upgrade
-// that adds a field fails TestShapeOfClassifiesEverySchemaField until the
-// field is classified, because an unclassified field is dropped, and a
-// dropped keyword that can fail a document only where its subschema
-// succeeds (as not does) would make the skeleton refuse what the schema
-// admits.
+// skeleton (shape.go): kept in place, rewritten, moved into $defs (applied
+// through a reference where it applied, so a pointer into it resolves), or
+// dropped. A library upgrade that adds a field fails
+// TestShapeOfClassifiesEverySchemaField until the field is classified,
+// because an unclassified field is dropped, and a dropped keyword that can
+// fail a document only where its subschema succeeds (as not does) would make
+// the skeleton refuse what the schema admits. enum, const and not are
+// dropped, but what they exclude of containers is kept in "type"
+// (containerKinds).
 var shapeSchemaFields = map[string]string{
-	"ID": "kept", "Schema": "kept", "Ref": "kept", "Anchor": "kept", "DynamicAnchor": "kept", "DynamicRef": "kept",
+	"ID": "kept", "Schema": "kept", "Ref": "rewritten", "Anchor": "kept", "DynamicAnchor": "kept", "DynamicRef": "rewritten",
 	"Defs": "kept", "Definitions": "kept", "Properties": "kept", "AllOf": "kept", "AnyOf": "kept",
-	"PrefixItems": "rewritten", "Items": "rewritten", "ItemsArray": "rewritten", "AdditionalItems": "rewritten",
-	"Type": "rewritten", "Types": "rewritten", "OneOf": "rewritten", "If": "rewritten", "Then": "rewritten", "Else": "rewritten",
-	"Not": "dropped", "Comment": "dropped", "DependencySchemas": "dropped", "DependencyStrings": "dropped",
+	"PrefixItems": "moved", "Items": "moved", "ItemsArray": "moved", "AdditionalItems": "moved",
+	"Type": "rewritten", "Types": "rewritten", "OneOf": "moved", "If": "moved", "Then": "moved", "Else": "moved",
+	"Not": "moved", "Contains": "moved", "AdditionalProperties": "moved", "PropertyNames": "moved",
+	"UnevaluatedItems": "moved", "UnevaluatedProperties": "moved", "ContentSchema": "moved",
+	"PatternProperties": "moved", "DependentSchemas": "moved", "DependencySchemas": "moved",
+	"Comment": "dropped", "DependencyStrings": "dropped",
 	"Vocabulary": "dropped", "Title": "dropped", "Description": "dropped", "Default": "dropped", "Deprecated": "dropped",
 	"ReadOnly": "dropped", "WriteOnly": "dropped", "Examples": "dropped", "Enum": "dropped", "Const": "dropped",
 	"MultipleOf": "dropped", "Minimum": "dropped", "Maximum": "dropped", "ExclusiveMinimum": "dropped",
 	"ExclusiveMaximum": "dropped", "MinLength": "dropped", "MaxLength": "dropped", "Pattern": "dropped",
-	"MinItems": "dropped", "MaxItems": "dropped", "UniqueItems": "dropped", "Contains": "dropped",
-	"MinContains": "dropped", "MaxContains": "dropped", "UnevaluatedItems": "dropped", "MinProperties": "dropped",
-	"MaxProperties": "dropped", "Required": "dropped", "DependentRequired": "dropped", "PatternProperties": "dropped",
-	"AdditionalProperties": "dropped", "PropertyNames": "dropped", "UnevaluatedProperties": "dropped",
-	"DependentSchemas": "dropped", "ContentEncoding": "dropped", "ContentMediaType": "dropped",
-	"ContentSchema": "dropped", "Format": "dropped", "Extra": "dropped", "PropertyOrder": "dropped",
+	"MinItems": "dropped", "MaxItems": "dropped", "UniqueItems": "dropped",
+	"MinContains": "dropped", "MaxContains": "dropped", "MinProperties": "dropped",
+	"MaxProperties": "dropped", "Required": "dropped", "DependentRequired": "dropped",
+	"ContentEncoding": "dropped", "ContentMediaType": "dropped",
+	"Format": "dropped", "Extra": "dropped", "PropertyOrder": "dropped",
 }
 
 func TestShapeOfClassifiesEverySchemaField(t *testing.T) {
@@ -165,6 +170,35 @@ var shapeCases = []struct {
 		refused:  []leafArrangement{{[]string{"code"}, []int{1}}},
 	},
 	{
+		// #696 review R1-F1: dropping enum must not open the branch to arrays.
+		name: "a scalar-only branch spelled by enum, const, not or false",
+		schema: `{"type":"object","properties":{
+			"note":{"anyOf":[{"type":"string"},{"enum":[false]}]},
+			"code":{"anyOf":[{"type":"string"},{"const":3}]},
+			"flag":{"anyOf":[{"type":"string"},{"not":{"type":["array","object"]}}]},
+			"never":{"anyOf":[{"type":"string"},false]},
+			"listed":{"enum":["a",["b"]]},
+			"open":{"anyOf":[{"type":"string"},{"not":{"type":"string","minLength":2}}]}}}`,
+		admitted: []string{`{"note":false,"code":3,"flag":1,"never":"x","listed":["b"],"open":["x"]}`, `{"note":"x","listed":"a"}`},
+		refused: []leafArrangement{
+			{[]string{"note"}, []int{1}}, {[]string{"code"}, []int{1}}, {[]string{"flag"}, []int{1}},
+			{[]string{"never"}, []int{1}},
+		},
+	},
+	{
+		// #696 review R1-F2: then and else without if are ignored.
+		name:     "then and else without if",
+		schema:   `{"type":"object","properties":{"tags":{"type":"array","items":{"type":"string"},"then":{"type":"string"},"else":{"type":"integer"}}}}`,
+		admitted: []string{`{"tags":["a"]}`, `{"tags":[]}`},
+		refused:  []leafArrangement{{[]string{"tags"}, []int{2}}},
+	},
+	{
+		name:     "if with then alone",
+		schema:   `{"type":"object","properties":{"c":{"type":["string","array"],"items":{"type":"string"},"if":{"type":"array"},"then":{"minItems":1}}}}`,
+		admitted: []string{`{"c":["a"]}`, `{"c":"x"}`},
+		refused:  []leafArrangement{{[]string{"c"}, []int{2}}},
+	},
+	{
 		name:     "the dependent and unevaluated keywords",
 		schema:   `{"type":"object","dependentRequired":{"a":["b"]},"unevaluatedProperties":false,"properties":{"a":{"type":"string"},"b":{"type":"string"}}}`,
 		admitted: []string{`{"a":"x","b":"y"}`},
@@ -217,18 +251,71 @@ func TestShapeFollowsCrossFileReferences(t *testing.T) {
 	assert.Error(t, shape.AdmitsArrangement([]string{"name"}, []int{1}))
 }
 
-// TestShapeIsAbsentWhereARefPointsIntoARewrittenKeyword pins the fallback:
-// the schema still validates, and the validator keeps no skeleton for it.
-func TestShapeIsAbsentWhereARefPointsIntoARewrittenKeyword(t *testing.T) {
-	v, err := New(registryWith(t, "s", `{"type":"object","properties":{
-		"a":{"oneOf":[{"type":"string"},{"type":"integer"}]},"b":{"$ref":"#/properties/a/oneOf/0"}}}`, 1), t.TempDir())
+// TestShapeFollowsReferencesIntoMovedKeywords pins #696 review R1-F2: a
+// $ref may point into any keyword the skeleton rewrites or drops, and it
+// still resolves, to the skeleton of the subschema it names, in this file
+// or another. So the schema keeps a full skeleton, and a primitive array it
+// declares through such a reference stays admitted.
+func TestShapeFollowsReferencesIntoMovedKeywords(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "other.json"), []byte(`{"$defs":{"pick":{"oneOf":[
+		{"type":"array","items":{"type":"string"}},{"type":"integer"}]}}}`), 0o600))
+	v, err := New(registryWith(t, "s", `{"type":"object","$defs":{"name/~x":{"type":"string"}},"properties":{
+		"a":{"oneOf":[{"type":"array","items":{"type":"string"}},{"type":"integer"}]},
+		"b":{"$ref":"#/properties/a/oneOf/0"},
+		"c":{"not":{"type":"array","items":{"type":"string"}}},
+		"d":{"$ref":"#/properties/c/not"},
+		"e":{"type":"array","prefixItems":[{"type":"string"}],"items":{"type":"array","items":{"type":"string"}}},
+		"f":{"$ref":"#/properties/e/items"},
+		"g":{"$ref":"#/properties/e/prefixItems/0"},
+		"h":{"if":{"type":"string"},"then":{"type":"string"},"else":{"type":"array","items":{"type":"string"}}},
+		"i":{"$ref":"#/properties/h/else"},
+		"j":{"patternProperties":{"^x/y$":{"type":"array","items":{"type":"string"}}}},
+		"k":{"$ref":"#/properties/j/patternProperties/^x~1y$"},
+		"l":{"$ref":"other.json#/$defs/pick/oneOf/0"},
+		"m":{"$ref":"#/$defs/name~1~0x"},
+		"n":{"type":"array","items":{"$ref":"#/properties/a/oneOf/1"}}}}`, 1), dir)
 	require.NoError(t, err)
-	assert.Nil(t, v.Shape(1))
-	require.NoError(t, v.Validate(1, map[string]any{"b": "x"}))
-	assert.Nil(t, (*Validator)(nil).Shape(1), "an unconfigured validator has no skeleton")
+	shape := v.Shape(1)
+	require.NotNil(t, shape)
+	assert.False(t, shape.Partial(), "every reference resolves into the skeleton")
+	for _, admitted := range []string{"a", "b", "d", "f", "i", "k", "l"} {
+		assert.NoErrorf(t, shape.AdmitsArrangement([]string{admitted}, []int{1}), "%s declares an array of strings through its reference", admitted)
+		assert.Errorf(t, shape.AdmitsArrangement([]string{admitted}, []int{2}), "%s declares no array of arrays", admitted)
+	}
+	for _, single := range []string{"g", "m", "n"} {
+		depth := 1
+		if single == "n" {
+			depth = 2
+		}
+		assert.Errorf(t, shape.AdmitsArrangement([]string{single}, []int{depth}), "%s declares no array there", single)
+	}
+	require.NoError(t, v.Validate(1, map[string]any{"b": []any{"x"}, "l": []any{"y"}}))
 }
 
-// TestShippedSchemasHaveSkeletons pins that every shipped schema keeps one.
+// TestShapeIsPartialWhereAPointerCrossesAnID pins the one known fallback: a
+// pointer that crosses a nested $id into a moved keyword does not resolve
+// in the skeleton. The schema still validates, and keeps a partial skeleton
+// in which the position behind the reference is unconstrained: it admits an
+// array, which the schema may declare there, rather than refuse it, while
+// a position reached without a reference is judged as before.
+func TestShapeIsPartialWhereAPointerCrossesAnID(t *testing.T) {
+	v, err := New(registryWith(t, "s", `{"type":"object","$defs":{"inner":{"$id":"inner.json","properties":{
+		"x":{"oneOf":[{"type":"array","items":{"type":"string"}},{"type":"integer"}]}}}},"properties":{
+		"a":{"$ref":"#/$defs/inner/properties/x/oneOf/0"},"note":{"type":"string"}}}`, 1), t.TempDir())
+	require.NoError(t, err)
+	shape := v.Shape(1)
+	require.NotNil(t, shape)
+	assert.True(t, shape.Partial())
+	require.NoError(t, v.Validate(1, map[string]any{"a": []any{"x"}}))
+	assert.NoError(t, shape.AdmitsArrangement([]string{"a"}, []int{1}), "behind an unresolved reference is unknown, not a single value")
+	assert.Error(t, shape.AdmitsArrangement([]string{"note"}, []int{1}))
+	assert.Nil(t, (*Validator)(nil).Shape(1), "an unconfigured validator has no skeleton")
+	assert.False(t, (*ShapeSchema)(nil).Partial())
+}
+
+// TestShippedSchemasHaveSkeletons pins that every shipped schema keeps a
+// full one.
 func TestShippedSchemasHaveSkeletons(t *testing.T) {
 	dir := shippedSchemaDir(t)
 	registry := &stubRegistry{byName: map[string]forma.JSONSchema{}, idsByNm: map[string]int16{}}
@@ -244,6 +331,7 @@ func TestShippedSchemasHaveSkeletons(t *testing.T) {
 	require.NoError(t, err)
 	for name, id := range registry.idsByNm {
 		assert.NotNilf(t, v.Shape(id), "shipped schema %s must keep a container skeleton", name)
+		assert.Falsef(t, v.Shape(id).Partial(), "shipped schema %s must keep a full container skeleton", name)
 	}
 }
 

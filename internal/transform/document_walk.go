@@ -61,6 +61,9 @@ type documentEntry struct {
 	value any
 	// refusal is the published error of an entryRefusal.
 	refusal error
+	// placementRefusal marks a refusal of the array-placement rule
+	// (walkJudgedDocument).
+	placementRefusal bool
 }
 
 // claims reports whether the entry writes a record.
@@ -83,8 +86,18 @@ func (e documentEntry) claims() bool {
 // it sorts first and the literal key, the caller's explicit value, is
 // visited last and wins (#312).
 func walkDocument(schemaID int16, rowID uuid.UUID, data map[string]any, cache forma.SchemaAttributeCache) ([]documentEntry, error) {
-	w := &documentWalk{schemaID: schemaID, rowID: rowID, cache: cache}
-	w.visitMap(nil, data, nil)
+	return walkJudgedDocument(schemaID, rowID, data, cache, nil)
+}
+
+// walkJudgedDocument is walkDocument with the array-placement rule applied
+// by placement (value_placement.go) to every value the caller wrote: every
+// position but a stored value an update's merge holds (storedValue), since
+// a stored row is not the caller's arrangement, and a row its schema no
+// longer admits stays updatable. Each refusal is an entryRefusal marked as
+// the rule's (placementRefusal). nil applies no rule.
+func walkJudgedDocument(schemaID int16, rowID uuid.UUID, data map[string]any, cache forma.SchemaAttributeCache, placement *placementJudge) ([]documentEntry, error) {
+	w := &documentWalk{schemaID: schemaID, rowID: rowID, cache: cache, placement: placement}
+	w.visitMap(nil, data, docPosition{})
 	if w.tooDeep != nil {
 		return nil, w.tooDeep
 	}
@@ -97,19 +110,22 @@ type documentWalk struct {
 	cache    forma.SchemaAttributeCache
 	entries  []documentEntry
 	claims   int
+	// placement judges the arrays around each value the caller wrote; nil
+	// when the walk applies no array-placement rule.
+	placement *placementJudge
 	// tooDeep is the nesting cap's refusal once a container exceeds it; the
 	// walk visits nothing after it.
 	tooDeep error
 }
 
-func (w *documentWalk) visit(path []string, value any, indices []int) {
+func (w *documentWalk) visit(path []string, value any, at docPosition) {
 	switch v := value.(type) {
 	case map[string]any:
-		w.visitMap(path, v, indices)
+		w.visitMap(path, v, at)
 	case []any:
-		w.visitArray(path, v, indices)
+		w.visitArray(path, v, at)
 	default:
-		w.visitLeaf(path, v, indices)
+		w.visitLeaf(path, v, at)
 	}
 }
 
@@ -123,7 +139,8 @@ func (w *documentWalk) enter(path []string, indices []int) bool {
 	return w.tooDeep == nil
 }
 
-func (w *documentWalk) visitMap(path []string, v map[string]any, indices []int) {
+func (w *documentWalk) visitMap(path []string, v map[string]any, at docPosition) {
+	indices := at.indices
 	if !w.enter(path, indices) {
 		return
 	}
@@ -157,17 +174,19 @@ func (w *documentWalk) visitMap(path []string, v map[string]any, indices []int) 
 			}
 			continue
 		}
-		w.visit(newPath, value, indices)
+		w.visit(newPath, value, at.under())
 	}
 	if w.claims == claimsBefore {
 		w.parent(path, indices)
 	}
 }
 
-func (w *documentWalk) visitArray(path []string, v []any, indices []int) {
+func (w *documentWalk) visitArray(path []string, v []any, at docPosition) {
+	indices := at.indices
 	if !w.enter(path, indices) {
 		return
 	}
+	w.judgeArray(path, v, at)
 	if len(v) == 0 {
 		w.emptyList(path, indices)
 		return
@@ -183,11 +202,12 @@ func (w *documentWalk) visitArray(path []string, v []any, indices []int) {
 			}
 			continue
 		}
-		w.visit(path, item, append(indices, i))
+		w.visit(path, item, at.inside(i))
 	}
 }
 
-func (w *documentWalk) visitLeaf(path []string, v any, indices []int) {
+func (w *documentWalk) visitLeaf(path []string, v any, at docPosition) {
+	indices := at.indices
 	attrName := strings.Join(path, ".")
 	meta, ok := w.cache[attrName]
 	if !ok {
@@ -204,6 +224,7 @@ func (w *documentWalk) visitLeaf(path []string, v any, indices []int) {
 		w.parent(path, indices)
 		return
 	}
+	w.judgeValue(path, meta, v, at)
 	w.claim(documentEntry{
 		kind:   entryClaim,
 		name:   attrName,
@@ -211,6 +232,43 @@ func (w *documentWalk) visitLeaf(path []string, v any, indices []int) {
 		meta:   meta,
 		value:  v,
 	})
+}
+
+// judgeValue applies the array-placement rule to a value the caller wrote
+// at a known attribute.
+func (w *documentWalk) judgeValue(path []string, meta forma.AttributeMetadata, v any, at docPosition) {
+	if w.placement == nil {
+		return
+	}
+	if _, stored := v.(*storedValue); stored {
+		return
+	}
+	if err := w.placement.value(path, meta, at, sentAt("a value", at.indices)); err != nil {
+		w.refusePlacement(err)
+	}
+}
+
+// judgeArray applies the array-placement rule to an array at an attribute
+// that takes single values, before its elements are visited. The rule
+// judges such an array only when it is empty or holds nulls alone, which an
+// array a stored row was rebuilt into never is: it holds the stored values,
+// and a stored empty-list marker is a stored value itself.
+func (w *documentWalk) judgeArray(path []string, v []any, at docPosition) {
+	if w.placement == nil {
+		return
+	}
+	meta, ok := singleValueAttribute(strings.Join(path, "."), w.cache)
+	if !ok {
+		return
+	}
+	if err := w.placement.array(path, meta, v, at); err != nil {
+		w.refusePlacement(err)
+	}
+}
+
+// refusePlacement records a refusal of the array-placement rule.
+func (w *documentWalk) refusePlacement(err error) {
+	w.entries = append(w.entries, documentEntry{kind: entryRefusal, refusal: err, placementRefusal: true})
 }
 
 // emptyList claims the empty-list marker of a registered list attribute; an

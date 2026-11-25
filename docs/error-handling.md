@@ -836,49 +836,89 @@ validator configured:
   value. The ledger alone decides this (an attribute that is no other
   attribute's parent), and the write's own walk applies it too, so a create
   without a validator refuses it as well.
-- **A value inside arrays is refused unless the schema declares those arrays
-  there.** Which arrays the schema declares is its structure's to say: arrays
-  of objects around the attribute, a list's own array, and a primitive array a
-  schema declares for an element-typed (pre-#204) ledger entry, in any
-  spelling (a nullable union, items typed through `anyOf`, an `anyOf` beside an
-  object, a `$ref` into another file). So the validator resolves a second
-  schema per entity, its *container skeleton* (`schemavalidate.ShapeSchema`):
-  the schema with every constraint on a single value dropped, `oneOf` and
-  `if`/`then`/`else` relaxed to `anyOf`, `not` dropped, tuples merged into one
-  `items`, and `type` widened to admit any single value. It admits every
-  document the schema admits, and refuses one only for its objects and
-  arrays. The update's intake asks it about every value `Updates` writes,
-  with the arrays the caller put around it at the key where the caller put
-  them, so a nested, dotted or array-of-objects spelling is judged alike. An
-  empty array is judged as the arrays around a value inside it, so `[]`
-  remains the empty-list marker and still clears a declared array.
+- **A value inside arrays is refused unless storage reads it back where it
+  was written and the schema declares those arrays there** (the
+  array-placement rule). A record keeps one array index per array around its
+  value and nothing of which key each sat at; the read assigns them to the
+  attribute's array ancestors, outermost first, then to the attribute's own
+  array. So two arrays at one key are refused, and where the registry derives
+  array ancestry, the arrays around the path must be its first array
+  ancestors in order, with an array around the attribute itself only once
+  every ancestor has one. (An `anyOf` of an object and an array of objects
+  whose ancestry the registry derives as an object is such a case: its
+  array's members would read back as arrays of their own, so an update
+  sending the array is refused; a create, which strict validation judges, is
+  not.) Which arrays the schema declares is its structure's
+  to say: arrays of objects around the attribute, a list's own array, and a
+  primitive array a schema declares for an element-typed (pre-#204) ledger
+  entry, in any spelling (a nullable union, items typed through `anyOf`, an
+  `anyOf` beside an object, a `$ref` into another file or into a `oneOf`). So
+  the validator resolves a second schema per entity, its *container skeleton*
+  (`schemavalidate.ShapeSchema`): the schema with every constraint on a
+  single value dropped, `oneOf` relaxed to `anyOf`, `if`/`then`/`else` to an
+  `anyOf` of `then` and `else` (and ignored without `if`, as validation
+  ignores it), `not` dropped, tuples merged into one `items`, and `type`
+  widened to admit any single value. It admits every document the schema
+  admits, and refuses one only for its objects and arrays. A dropped keyword
+  keeps what it excluded of containers: an `enum` or `const` listing no
+  array, a `false` schema and a `not` of `{}` or of a bare `type` keep the
+  array (or object) out of `type`, so `{"anyOf": [{"type": "string"},
+  {"enum": [false]}]}` still admits no array. Every subschema the skeleton
+  does not keep in place is moved into its resource's `$defs`, and each
+  `$ref` into it is rewritten to land there, so a reference into a `oneOf`,
+  `not` or tuple position resolves. The rule judges every value `Updates`
+  writes, with the arrays the caller put around it at the key where the
+  caller put them, so a nested, dotted or array-of-objects spelling is judged
+  alike. An array at a single-valued attribute is judged before its
+  elements, so `[]`, `[null]` and `[null, null]` are refused there like
+  `["a"]`. A list's `[]` is its empty-list marker, stored with the indices of
+  the arrays around the list: it is judged where the list sits, so
+  `{"items.tags": []}` beside an array of objects `items` still stores its
+  unindexed marker and reads back under the literal key, while an `[]` inside
+  the list's own value (`tags: [[]]`) is refused as nested.
 
-Both refusals publish `ErrInvalidInput` naming the attribute, its declared
+A Go map, slice or array sent where a single value belongs is an object or
+array too, though the walk does not take it apart: the conversion refuses it
+(`got a Go slice ([]string)`) instead of storing its formatted image. A Go
+value that represents a single value is converted as before: a `[]byte` is
+text, and a `uuid.UUID` or any `fmt.Stringer` or `encoding.TextMarshaler`
+converts as it always has.
+
+The refusals publish `ErrInvalidInput` naming the attribute, its declared
 type and what was sent:
 
 ```text
 invalid value for attribute 'tenant' (attrID=1): declared type text takes a single value, got an empty object; an object, empty or not, cannot be stored where a single value belongs (omit the key to keep the current value)
-invalid value for attribute 'propertyInterests.propertyId' (attrID=35): declared type text takes a single value, got a value at array indices "0,0", inside arrays the schema does not declare there; an object or array, empty or not, cannot be stored where a single value belongs (omit the key to keep the current value)
+invalid value for attribute 'note' (attrID=2): declared type text takes a single value, got an array, inside arrays the schema does not declare there; an object or array, empty or not, cannot be stored where a single value belongs (omit the key to keep the current value)
+invalid value for attribute 'propertyInterests.propertyId' (attrID=35): declared type text takes a single value, got a value at array indices "0,0", inside arrays its stored record would not read back from; an object or array, empty or not, cannot be stored where a single value belongs (omit the key to keep the current value)
 ```
 
-The skeleton's own verdict, which names schema locations, is operator detail.
-Only `Updates` are judged, never the stored row they merge into, so a row
-holding values its schema no longer admits stays updatable. Both refusals are
-the conversion class of #772 above: ordered with the conversion refusals by
-the same walk, raised before any SQL by `Update` and the atomic
-`BatchUpdate`, and by `UpdateWhere`, `Claim` and `Upsert` only once they have a
-row to write, before writing it; a call that writes no row with `Updates`
-succeeds as before. Neither `{}` nor `[]` is a way to clear a single value;
-clearing is #684's.
+Why a placement was refused (the skeleton's verdict, which names schema
+locations, or the ancestry the read follows) is operator detail. The
+refusals are the conversion class of #772 above: ordered with the conversion
+refusals by the same walk, raised before any SQL by `Update` and the atomic
+`BatchUpdate`, and by `UpdateWhere`, `Claim` and `Upsert` only once they have
+a row to write, before writing it; a call that writes no row with `Updates`
+succeeds as before, and a refusal leaves a `Tx` usable. The update's write
+applies the same rule to the merged document it persists, to every value but
+the stored row's own: a row holding values its schema no longer admits stays
+updatable. Neither `{}` nor `[]` is a way to clear a single value; clearing
+is #684's. A direct `null`, and a `null` element of a declared array, keep
+their own refusal at their own stage.
 
-Two configurations know less. Without a validator nothing declares an array,
-so an array at an attribute that is not a list is refused outright, a primitive
-array under an element-typed ledger entry included, and the arrays around a
-value elsewhere are not judged. A schema whose `$ref` points into a keyword the
-skeleton rewrites (`"#/properties/a/oneOf/0"`) keeps no skeleton; the
-validator logs a warning at startup and its updates behave as without a
-validator. `validate-schema-consistency` censuses the records such updates
-stored before #696 ([Array elements under scalar
+Two configurations know less. Without a validator there is no skeleton, and
+the ledger is all that says what an attribute stores: an array around an
+attribute that is not a list is refused, a primitive array under an
+element-typed ledger entry included, while the read's own rule above still
+judges the arrays around the path by the registry's array ancestry. A schema
+whose skeleton does not resolve, which happens only where a JSON Pointer
+crosses a nested `$id` into a subschema the skeleton moves, keeps a partial
+skeleton with its own `$ref`s dropped: a position behind a reference is then
+unconstrained, so it admits an array the schema may declare there rather than
+taking it for a single value, and the validator logs a warning at startup.
+Every shipped schema keeps a full skeleton. `validate-schema-consistency`
+censuses the records such updates stored before #696 ([Array elements under
+scalar
 attributes](./schema-consistency-migration.md#array-elements-under-scalar-attributes-696)).
 
 ## The update merge and the written row (#590 review)

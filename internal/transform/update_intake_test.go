@@ -57,6 +57,9 @@ func refusedValue(attr string, id int) string {
 func refusedUpdateValues() []intakeCase {
 	return []intakeCase{
 		{"text, NUL", map[string]any{"name": "a\x00b"}, refusedValue("name", 1) + nulRule},
+		// The walk's own refusal of a list declaring its array ancestors, which
+		// the array-placement rule raises at intake for every list (#696).
+		{"[] nested in a list", map[string]any{"flags": []any{[]any{}}}, refusedValue("flags", 17) + `empty list at array indices "0" is nested`},
 		{"bound text, invalid UTF-8", map[string]any{"label": "a\xffb"}, refusedValue("label", 2) + badUTF8Rule},
 		{"text list element, NUL", map[string]any{"tags": []any{"ok", "a\x00b"}}, refusedValue("tags", 3) + nulRule},
 		{"integer past its width", map[string]any{"age": json.Number("2147483648")}, refusedValue("age", 7)},
@@ -103,7 +106,6 @@ func walkRefusedUpdates() []intakeCase {
 		{"undefined attribute", map[string]any{"nope": "a\x00b"}, ""},
 		{"null", map[string]any{"age": nil}, ""},
 		{"null list element", map[string]any{"counts": []any{1, nil}}, ""},
-		{"[] nested in a list", map[string]any{"flags": []any{[]any{}}}, ""},
 		{"past the nesting cap", cyclicDocument(), ""},
 	}
 }

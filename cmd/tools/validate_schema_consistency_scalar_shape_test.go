@@ -100,21 +100,49 @@ func TestValidateSchemaConsistencyCensusesIndexedScalarRecords(t *testing.T) {
 	}
 }
 
+// TestValidateSchemaConsistencyCensusesAScalarOnlyBranch pins #696 review
+// R1-F1 in the census: a text attribute whose second branch admits only
+// false admits no array, so its indexed record is an anomaly, as the update
+// that stored it is refused.
+func TestValidateSchemaConsistencyCensusesAScalarOnlyBranch(t *testing.T) {
+	const example = "00000000-0000-4000-8000-00000000000b"
+	schema := `{"type":"object","properties":{"note":{"anyOf":[{"type":"string"},{"enum":[false]}]},
+		"phones":{"anyOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]}}}`
+	census := indexedScalarCensusRows().
+		AddRow(int16(100), int16(1), 1, int64(1), example+" 0").
+		AddRow(int16(100), int16(2), 1, int64(1), example+" 0")
+	out, err := runIndexedScalarCensus(t, schema, census)
+	if err == nil || !strings.Contains(err.Error(), "1 issue(s)") {
+		t.Fatalf("expected one failure, got %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "array elements stored where the schema declares no such arrays") ||
+		!strings.Contains(out, `attr_id=1 attribute=note type=text indices=1 rows=1`) || strings.Contains(out, "attr_id=2") {
+		t.Fatalf("expected note alone reported, got\n%s", out)
+	}
+}
+
 // TestValidateSchemaConsistencyReportsUnjudgedIndexedRecordsAsUnverified
 // pins that a group the census cannot judge is informational, not clean
-// and not a failure: here the schema's $ref points into a oneOf, so the
-// schema keeps no container skeleton.
+// and not a failure: here a pointer crosses a nested $id into a oneOf, so
+// the schema keeps a partial container skeleton, which does not follow its
+// references. A $ref into a oneOf alone is followed (TestShapeFollows...).
 func TestValidateSchemaConsistencyReportsUnjudgedIndexedRecordsAsUnverified(t *testing.T) {
-	schema := `{"type":"object","properties":{"note":{"oneOf":[{"type":"string"},{"type":"integer"}]},
-		"phones":{"$ref":"#/properties/note/oneOf/0"}}}`
-	census := indexedScalarCensusRows().AddRow(int16(100), int16(1), 1, int64(2), "00000000-0000-4000-8000-00000000000b 0")
+	schema := `{"type":"object","$defs":{"inner":{"$id":"inner.json","properties":{
+		"x":{"oneOf":[{"type":"string"},{"type":"integer"}]}}}},"properties":{
+		"note":{"$ref":"#/$defs/inner/properties/x/oneOf/0"},"phones":{"type":"string"}}}`
+	census := indexedScalarCensusRows().
+		AddRow(int16(100), int16(1), 1, int64(2), "00000000-0000-4000-8000-00000000000b 0").
+		AddRow(int16(100), int16(2), 1, int64(1), "00000000-0000-4000-8000-00000000000b 0")
 	out, err := runIndexedScalarCensus(t, schema, census)
-	if err != nil {
-		t.Fatalf("an unjudged group must not fail the pre-flight: %v\n%s", err, out)
+	if err == nil || !strings.Contains(err.Error(), "1 issue(s)") {
+		t.Fatalf("a partial skeleton's refusal is still proof: %v\n%s", err, out)
 	}
 	want := "indexed records under scalar attributes the census could not judge in eav_data_dev: schema=lead schema_id=100 attr_id=1 attribute=note type=text indices=1 rows=2"
 	if !strings.Contains(out, "informational (not a failure):") || !strings.Contains(out, want) ||
-		!strings.Contains(out, "unverified=the schema has no container skeleton") {
+		!strings.Contains(out, "unverified=the schema keeps a partial container skeleton") {
 		t.Fatalf("output missing the unverified group, got\n%s", out)
+	}
+	if !strings.Contains(out, "array elements stored where the schema declares no such arrays") || !strings.Contains(out, "attr_id=2 attribute=phones") {
+		t.Fatalf("output missing the refused group, got\n%s", out)
 	}
 }

@@ -14,6 +14,11 @@ func populateTypedValue(attr *model.EAVRecord, attrName string, value any, meta 
 	handleConversionError := func(err error) (bool, error) {
 		return false, conversionRefusal(attrName, meta, err)
 	}
+	// Before any conversion: toString would format a Go map or slice into
+	// text (#696 review R1-F5).
+	if kind, ok := goContainerKind(value); ok {
+		return handleConversionError(goContainerError(meta, kind, value))
+	}
 
 	switch meta.ValueType {
 	case forma.ValueTypeUUID:

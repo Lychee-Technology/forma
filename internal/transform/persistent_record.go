@@ -10,12 +10,41 @@ import (
 	"github.com/lychee-technology/forma/internal/model"
 	"github.com/lychee-technology/forma/internal/rfc3339"
 	"github.com/lychee-technology/forma/internal/schemameta"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 )
 
 type persistentRecordTransformer struct {
 	registry        forma.SchemaRegistry
 	jsonTransformer *transformer
 	relationRoots   RelationRootsLookup
+	// shapes answers each schema's container skeleton for an update's
+	// array-placement rule (MergeUpdate); nil without a validator.
+	shapes ShapeLookup
+}
+
+// ShapeLookup answers the container skeleton of a schema, nil when there is
+// none.
+type ShapeLookup func(schemaID int16) *schemavalidate.ShapeSchema
+
+// ShapeAware is a transformer that judges the arrays of an update's merged
+// document by each schema's container skeleton (#696). The manager installs
+// its validator's skeletons on it; without them the write judges by the
+// ledger, as the intake does without a validator.
+type ShapeAware interface {
+	SetShapes(lookup ShapeLookup)
+}
+
+// SetShapes installs the container skeletons MergeUpdate judges by.
+func (t *persistentRecordTransformer) SetShapes(lookup ShapeLookup) {
+	t.shapes = lookup
+}
+
+// shapeOf answers schemaID's container skeleton, nil when none is installed.
+func (t *persistentRecordTransformer) shapeOf(schemaID int16) *schemavalidate.ShapeSchema {
+	if t.shapes == nil {
+		return nil
+	}
+	return t.shapes(schemaID)
 }
 
 // SetRelationRoots installs the relation-root lookup on this transformer and on

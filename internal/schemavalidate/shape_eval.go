@@ -19,10 +19,21 @@ import (
 // construct the schema can use to declare those arrays.
 type ShapeSchema struct {
 	resolved *jsonschema.Resolved
+	// partial is set when the skeleton keeps none of the schema's own
+	// references (resolveShape): a position behind one admits anything.
+	partial bool
+}
+
+// Partial reports whether the skeleton is partial: the full one did not
+// resolve, so every position the schema reaches through a $ref is left
+// unconstrained, which admits more and never refuses what the schema
+// declares.
+func (s *ShapeSchema) Partial() bool {
+	return s != nil && s.partial
 }
 
 // Shape answers the container skeleton of schemaID's schema, nil when the
-// validator is unconfigured or keeps none for the schema (see shape.go).
+// validator is unconfigured or does not know the schema.
 func (v *Validator) Shape(schemaID int16) *ShapeSchema {
 	if v == nil {
 		return nil
@@ -31,17 +42,25 @@ func (v *Validator) Shape(schemaID int16) *ShapeSchema {
 }
 
 // resolveShape resolves the skeleton of one schema document, parsed afresh
-// so the resolve of the schema itself shares nothing with it.
+// so the resolve of the schema itself shares nothing with it. When the full
+// skeleton does not resolve (shape_refs.go names the one case known), the
+// partial one is answered with the reason: its references are dropped, so
+// it needs no loader and resolves whenever the document parses. Its error
+// is the full skeleton's.
 func resolveShape(document string, opts *jsonschema.ResolveOptions) (*ShapeSchema, error) {
 	var s jsonschema.Schema
 	if err := json.Unmarshal([]byte(document), &s); err != nil {
 		return nil, fmt.Errorf("failed to parse the schema for its container skeleton: %w", err)
 	}
-	resolved, err := shapeOf(&s).Resolve(opts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve the schema's container skeleton: %w", err)
+	resolved, fullErr := shaper{followRefs: true}.document(&s).Resolve(opts)
+	if fullErr == nil {
+		return &ShapeSchema{resolved: resolved}, nil
 	}
-	return &ShapeSchema{resolved: resolved}, nil
+	partial, err := shaper{followRefs: false}.document(&s).Resolve(&jsonschema.ResolveOptions{BaseURI: opts.BaseURI})
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve the schema's container skeleton (%v), or its partial skeleton: %w", fullErr, err)
+	}
+	return &ShapeSchema{resolved: partial, partial: true}, fmt.Errorf("failed to resolve the schema's container skeleton, kept a partial one: %w", fullErr)
 }
 
 // shapeResolveOptions is resolveOptions with every document the loader
@@ -58,7 +77,7 @@ func shapeResolveOptions(dir string) (*jsonschema.ResolveOptions, error) {
 		if err != nil {
 			return nil, err
 		}
-		return shapeOf(s), nil
+		return shaper{followRefs: true}.document(s), nil
 	}
 	return opts, nil
 }
