@@ -2,6 +2,7 @@ package transform
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"strings"
 	"testing"
@@ -67,6 +68,11 @@ func refusedScalarShapes(ancestry bool) []intakeCase {
 		{"Go slice", map[string]any{"name": []string{"a"}}, shapeRefused("name", 1, "text", "an array")},
 		{"Go map", map[string]any{"age": map[string]int{}}, shapeRefused("age", 3, "integer", "an empty object")},
 		{"Go slice of UUIDs", map[string]any{"ref": []uuid.UUID{uuid.New()}}, shapeRefused("ref", 4, "uuid", "an array")},
+		{"Go array", map[string]any{"name": [2]string{"a", "b"}}, shapeRefused("name", 1, "text", "an array")},
+		{"empty Go array", map[string]any{"name": [0]int{}}, shapeRefused("name", 1, "text", "an empty array")},
+		{"Go byte array", map[string]any{"name": [3]byte{'a', 'b', 'c'}}, shapeRefused("name", 1, "text", "an array")},
+		{"raw JSON array", map[string]any{"name": json.RawMessage(`["a"]`)}, shapeRefused("name", 1, "text", "an array")},
+		{"raw JSON string", map[string]any{"name": json.RawMessage(`"a"`)}, shapeRefused("name", 1, "text", "an array")},
 	}
 	if !ancestry {
 		return cases
@@ -76,6 +82,11 @@ func refusedScalarShapes(ancestry bool) []intakeCase {
 		intakeCase{"in an object, dotted", map[string]any{"contact.email": []any{"a"}}, shapeRefused("contact.email", 6, "text", "an array")},
 		intakeCase{"in an array of objects", map[string]any{"items": []any{map[string]any{"sku": []any{"a"}}}}, shapeRefused("items.sku", 7, "text", "an array")},
 		intakeCase{"in an array of objects, {}", map[string]any{"items": []any{map[string]any{"sku": map[string]any{}}}}, shapeRefused("items.sku", 7, "text", "an empty object")},
+		// The outer array's index fills items; what is inside it is
+		// items.sku's own value.
+		intakeCase{"dotted across a declared array, nested array", map[string]any{"items.sku": []any{[]any{"a"}}}, shapeRefused("items.sku", 7, "text", "an array")},
+		intakeCase{"dotted across a declared array, object", map[string]any{"items.sku": []any{"a", map[string]any{}}}, shapeRefused("items.sku", 7, "text", "an empty object")},
+		intakeCase{"dotted across a declared array, Go array", map[string]any{"items.sku": []any{[1]string{"a"}}}, shapeRefused("items.sku", 7, "text", "an array")},
 	)
 }
 
@@ -99,11 +110,15 @@ func unchangedScalarShapes(ancestry bool) []intakeCase {
 		{"array of objects", map[string]any{"items": []any{map[string]any{"sku": "a"}}}, ""},
 		{"dotted spelling across a declared array", map[string]any{"items.sku": []any{"a", "b"}}, ""},
 		{"array level the schema does not declare", map[string]any{"items": []any{[]any{map[string]any{"sku": []any{"a"}}}}}, ""},
+		// An object-or-array union's object branch: the ancestry places
+		// items.sku inside the array, not across none.
+		{"object where the ancestry declares an array", map[string]any{"items": map[string]any{"sku": []any{"a"}}}, ""},
 	}
 	if ancestry {
 		return cases
 	}
 	return append(cases,
+		intakeCase{"unresolved ancestry, dotted across an array", map[string]any{"items.sku": []any{[]any{"a"}}}, ""},
 		intakeCase{"unresolved ancestry, nested", map[string]any{"contact": map[string]any{"email": map[string]any{}}}, ""},
 		intakeCase{"unresolved ancestry, dotted", map[string]any{"contact.email": []any{"a"}}, ""},
 	)
@@ -194,4 +209,53 @@ func TestMergeUpdateKeepsStoredContainersAtScalars(t *testing.T) {
 
 	_, err = tr.MergeUpdate(context.Background(), legacy(), setting(map[string]any{"name": []any{"c"}}))
 	require.ErrorIs(t, err, forma.ErrInvalidInput)
+}
+
+// The representations the write converts as one scalar are stored as that
+// scalar, and every other Go array or byte slice is refused rather than
+// formatted element by element (#924 review R1-F2).
+func TestScalarRepresentationsAreWrittenAsScalars(t *testing.T) {
+	tr := NewPersistentRecordTransformer(scalarShapeRegistry())
+	cache := scalarShapeCache(true)
+	id := uuid.MustParse("0198c2a4-5d6e-7f80-9a1b-2c3d4e5f6a7b")
+	cases := []struct {
+		name  string
+		attr  string
+		value any
+		want  string
+	}{
+		{"[]byte", "name", []byte("abc"), "abc"},
+		{"net.IP", "name", net.IPv4(10, 0, 0, 1), "10.0.0.1"},
+		{"Stringer slice", "name", stringerSlice{"a", "b"}, "a,b"},
+		{"uuid.UUID", "ref", id, id.String()},
+		{"uuid.UUID as text", "name", id, id.String()},
+		{"16-byte UUID", "ref", id[:], id.String()},
+		{"dotted across a declared array", "items.sku", []any{"a"}, "a"},
+	}
+	for _, tc := range cases {
+		checked, err := CheckUpdateValues(map[string]any{tc.attr: tc.value}, cache)
+		require.NoError(t, err, tc.name)
+		require.NoError(t, checked.Refusal, tc.name)
+		rowID := uuid.Must(uuid.NewV7())
+		merged, err := tr.MergeUpdate(context.Background(),
+			&model.PersistentRecord{SchemaID: 501, RowID: rowID}, setting(checked.Values))
+		require.NoError(t, err, tc.name)
+		written, err := tr.ToPersistentRecord(context.Background(), 501, rowID, merged)
+		require.NoError(t, err, tc.name)
+		require.Len(t, written.OtherAttributes, 1, tc.name)
+		got := written.OtherAttributes[0]
+		assert.Equal(t, cache[tc.attr].AttributeID, got.AttrID, tc.name)
+		require.NotNil(t, got.ValueText, tc.name)
+		assert.Equal(t, tc.want, *got.ValueText, tc.name)
+	}
+
+	for _, value := range []any{[2]string{"a", "b"}, json.RawMessage(`["a"]`), [16]byte(id)} {
+		checked, err := CheckUpdateValues(map[string]any{"name": value}, cache)
+		require.NoError(t, err)
+		require.ErrorIs(t, checked.Refusal, forma.ErrInvalidInput, "%T", value)
+		_, err = tr.MergeUpdate(context.Background(),
+			&model.PersistentRecord{SchemaID: 501, RowID: uuid.Must(uuid.NewV7())}, setting(map[string]any{"name": value}))
+		require.ErrorIs(t, err, forma.ErrInvalidInput, "%T", value)
+		assert.Contains(t, err.Error(), shapeRefused("name", 1, "text", "an array"), "%T", value)
+	}
 }

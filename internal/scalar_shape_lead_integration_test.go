@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -25,7 +26,12 @@ type leadShapeCase struct {
 }
 
 func refusedLeadUpdates() []leadShapeCase {
-	cases := []leadShapeCase{}
+	// Go representations the write would format element by element, not as
+	// one scalar (#924 review R1-F2).
+	cases := []leadShapeCase{
+		{"Go array", map[string]any{"stage": [2]string{"a", "b"}}, "stage", forma.ValueTypeText},
+		{"raw JSON array", map[string]any{"stage": json.RawMessage(`["a"]`)}, "stage", forma.ValueTypeText},
+	}
 	for kind, value := range scalarContainers() {
 		cases = append(cases,
 			leadShapeCase{"required top-level " + kind, map[string]any{"stage": value()}, "stage", forma.ValueTypeText},
@@ -41,6 +47,11 @@ func refusedLeadUpdates() []leadShapeCase {
 				"propertyInterests.snapshot.code", forma.ValueTypeText},
 			leadShapeCase{"array of objects in an object " + kind, map[string]any{"requirement": map[string]any{
 				"areas": []any{map[string]any{"city": value()}}}}, "requirement.areas.city", forma.ValueTypeText},
+			// The outer array's index fills requirement.areas, the
+			// attribute's one declared array of objects; what it holds is
+			// note's own value (#924 review R1-F1).
+			leadShapeCase{"dotted across an array of objects " + kind, map[string]any{
+				"requirement.areas.note": []any{value()}}, "requirement.areas.note", forma.ValueTypeText},
 		)
 	}
 	return cases
@@ -84,6 +95,10 @@ func TestLeadUpdateAdmitsValidShapes(t *testing.T) {
 			"propertyInterests", []any{map[string]any{"propertyId": "p1", "status": "viewed", "snapshot": map[string]any{"code": "c"}}}},
 		{"array of objects in an object", map[string]any{"requirement": map[string]any{"areas": []any{map[string]any{"city": "Tokyo"}}}},
 			"requirement.areas", []any{map[string]any{"city": "Tokyo"}}},
+		// Each index fills requirement.areas, merging into the element the
+		// case above wrote.
+		{"dotted across an array of objects", map[string]any{"requirement.areas.note": []any{"n", "m"}},
+			"requirement.areas", []any{map[string]any{"city": "Tokyo", "note": "n"}, map[string]any{"note": "m"}}},
 	}
 	for _, mode := range updateValidationModes {
 		env := base.withUpdateValidation(t, mode, leadSchemaDir, nil)

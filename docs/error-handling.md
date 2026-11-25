@@ -202,19 +202,36 @@ consult the JSON Schema document. Two points check it:
   is refused. Sending a scalar replaces the array. Finding such rows is
   #922's.
 
-A Go value the write already converts as one scalar is not a container:
-`[]byte` and other byte slices, a `uuid.UUID`, or any value implementing
-`fmt.Stringer`. Any other Go map or slice is one. List attributes, arrays of
-objects and their scalar members are unaffected.
+Placement follows the indices the write stores. The walk gives the first
+array it crosses the first index, and the read places that index in the
+attribute's first array of objects, and so on. A value is the attribute's own
+once each of its `ArrayAncestors` has been filled by one array crossed, either
+the ancestor itself or, in a dotted spelling, a key beneath it. So
+`{"items.sku": ["a", "b"]}` writes `items[0].sku` and `items[1].sku` as before,
+while `{"items.sku": [["a"]]}` is refused: the outer index fills `items`, and
+the inner `["a"]` is `items.sku`'s own value.
+
+A Go value the write converts as one scalar is not a container: `[]byte`
+itself (text, or the 16 bytes of a UUID), and any value that formats itself,
+such as a `uuid.UUID` or a `net.IP` (`fmt.Stringer`, `error` or
+`fmt.Formatter`). Any other Go map, slice or array is one, because the write
+would format it element by element: `[2]string{"a", "b"}` as `[a b]`, a
+`json.RawMessage` or another named byte slice as its decimal bytes. List
+attributes, arrays of objects and their scalar members are unaffected.
 
 Where the metadata cannot place a value, the update behaves as it did before
 the rule (#923 owns these cases):
 
 - every position of a schema whose `ArrayAncestors` the registry did not
   derive, except a top-level attribute, which has no ancestor to place;
-- a dotted spelling across a declared array of objects
-  (`{"items.sku": ["a", "b"]}`);
-- an array level the schema does not declare above an array of objects.
+- a position reached across more or fewer arrays than its `ArrayAncestors`,
+  or across an array that is not the next ancestor or beneath it, such as an
+  array level the schema does not declare above an array of objects;
+- for an object-or-array union, the branch the metadata does not describe.
+  Where the registry derives the union's ancestry from its `items` (for
+  example `ArrayAncestors = ["items"]`), a container in the array branch is
+  refused, while the same container in the object branch, reached across no
+  array, is not.
 
 ### Which errors are which class
 

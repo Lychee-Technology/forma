@@ -3,7 +3,6 @@ package transform
 import (
 	"fmt"
 	"reflect"
-	"slices"
 	"sort"
 	"strings"
 
@@ -45,43 +44,58 @@ func scalarShapeRefusal(name string, value any, arrays []string, cache forma.Sch
 
 // scalarShapePlaced reports whether the metadata says a value reached across
 // arrays is the attribute's own value rather than one filling an array level
-// above it. It is when the arrays crossed are exactly the attribute's
-// declared arrays of objects. A dotted spelling that skips a declared array
-// ({"items.name": [...]}) and an array level the schema does not declare
-// ([[{"name": ...}]]) are not placed, and neither is any position of an
-// attribute whose ArrayAncestors the registry did not derive, short of a
-// top-level attribute reached across no array, which has no ancestor to
-// place.
+// above it. The walk gives the i-th array it crosses the i-th index, and the
+// read places that index in the attribute's i-th declared array of objects
+// (ArrayAncestors). So a value is the attribute's own once every ancestor is
+// filled, each by one array crossed, and by no more: the arrays crossed are
+// as many as the ancestors, and each is the ancestor it fills or, in a dotted
+// spelling, a key beneath it. {"items.sku": [...]} crosses an array named
+// items.sku, whose index fills items, so the array itself fills the ancestor
+// and is not placed, but {"items.sku": [[...]]}'s inner array is items.sku's
+// own value. An array crossed above its ancestor ([[{"sku": ...}]], a level
+// the schema does not declare) places nothing beneath it, and neither does
+// any position of an attribute whose ArrayAncestors the registry did not
+// derive, short of a top-level attribute reached across no array, which has
+// no ancestor to place.
 func scalarShapePlaced(name string, meta forma.AttributeMetadata, arrays []string) bool {
 	if meta.ArrayAncestors == nil {
 		return len(arrays) == 0 && !strings.Contains(name, ".")
 	}
-	return slices.Equal(arrays, meta.ArrayAncestors)
+	if len(arrays) != len(meta.ArrayAncestors) {
+		return false
+	}
+	for i, crossed := range arrays {
+		ancestor := meta.ArrayAncestors[i]
+		if crossed != ancestor && !strings.HasPrefix(crossed, ancestor+".") {
+			return false
+		}
+	}
+	return true
 }
 
 // containerKind reports whether value is an object or an array, and names it
 // for the refusal. map[string]any and []any are the JSON forms. Any other Go
-// map or slice is a container too, except the representations the write
-// already converts as one scalar: a byte slice ([]byte, and named ones such
-// as net.IP) and a value carrying its own text (fmt.Stringer). A Go array,
-// such as uuid.UUID, is not a slice and is left to the conversion.
+// map, slice or array is a container too, except the representations the
+// write converts as one scalar: []byte itself, which is text or a UUID's
+// bytes, and a value that formats itself (a fmt.Stringer, such as uuid.UUID
+// or net.IP, an error, or a fmt.Formatter), whose own text is what is
+// stored. Any other byte slice or array, json.RawMessage or [16]byte, is
+// formatted element by element ("[91 34 97 34 93]"), so it is a container,
+// as a [2]string is.
 func containerKind(value any) (string, bool) {
 	switch v := value.(type) {
 	case map[string]any:
 		return sizedKind("object", len(v)), true
 	case []any:
 		return sizedKind("array", len(v)), true
-	case []byte, fmt.Stringer:
+	case []byte, fmt.Stringer, error, fmt.Formatter:
 		return "", false
 	}
 	rv := reflect.ValueOf(value)
 	switch rv.Kind() {
 	case reflect.Map:
 		return sizedKind("object", rv.Len()), true
-	case reflect.Slice:
-		if rv.Type().Elem().Kind() == reflect.Uint8 {
-			return "", false
-		}
+	case reflect.Slice, reflect.Array:
 		return sizedKind("array", rv.Len()), true
 	default:
 		return "", false
