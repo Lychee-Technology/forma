@@ -11,30 +11,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Real-PostgreSQL tests of an update whose merged document drops a key
-// component (#651). Report-only update validation, the default, admits
+// Real-PostgreSQL tests of an update that gives a key component an empty
+// object (#651). Report-only update validation, the default, used to admit
 // {"tenant": {}}: an object where ukaccount declares a string, for which the
-// transformer stores nothing. The main-table UPDATE assigns only the columns
-// the merged record sets, so the column-bound tenant keeps its stored value,
-// and the row must keep that value's entry. The EAV write replaces the row's
-// attributes, so an EAV component dropped the same way is gone, and its
-// entry with it.
+// transformer stored nothing, so the column-bound tenant kept its value and
+// the EAV email lost its value and its entry. Since #924 every surface
+// refuses it before writing (scalar_shape.go), and the row keeps both values
+// and both entries.
 
 // ukDropAttribute replaces attr with an empty object.
 func ukDropAttribute(attr string) map[string]any {
 	return map[string]any{attr: map[string]any{}}
 }
 
-// ukBatchUpdateAnswer runs updates as one BatchUpdate and answers the
-// attributes of the one record it returns.
-func (e *txEnv) ukBatchUpdateAnswer(t *testing.T, atomic bool, rowID uuid.UUID, updates map[string]any) map[string]any {
+// ukBatchUpdateRefusal runs updates as one BatchUpdate and answers its
+// refusal: the atomic batch's error, or the best-effort batch's one failure.
+func (e *txEnv) ukBatchUpdateRefusal(t *testing.T, atomic bool, rowID uuid.UUID, updates map[string]any) error {
 	t.Helper()
 	op := *txUpdateOp(ukAccount, rowID, updates)
 	result, err := e.manager.BatchUpdate(e.ctx, &forma.BatchOperation{Atomic: atomic, Operations: []forma.EntityOperation{op}})
+	if atomic {
+		return err
+	}
 	require.NoError(t, err)
-	require.Empty(t, result.Failed)
-	require.Len(t, result.Successful, 1)
-	return result.Successful[0].Attributes
+	require.Empty(t, result.Successful)
+	require.Len(t, result.Failed, 1)
+	return forma.InvalidInputf("%s", result.Failed[0].Error)
 }
 
 func TestUniqueKeyUpdateKeepsTheEntryOfABoundValueItLeavesStored(t *testing.T) {
@@ -42,40 +44,32 @@ func TestUniqueKeyUpdateKeepsTheEntryOfABoundValueItLeavesStored(t *testing.T) {
 	surfaces := []struct {
 		name string
 		// update applies ukDropAttribute("tenant") to the row and answers
-		// the attributes the surface returns for it.
-		update func(t *testing.T, rowID uuid.UUID, note string) map[string]any
+		// the surface's refusal.
+		update func(t *testing.T, rowID uuid.UUID, note string) error
 	}{
-		{"Update", func(t *testing.T, rowID uuid.UUID, _ string) map[string]any {
-			record, err := env.manager.Update(env.ctx, txUpdateOp(ukAccount, rowID, ukDropAttribute("tenant")))
-			require.NoError(t, err)
-			return record.Attributes
+		{"Update", func(t *testing.T, rowID uuid.UUID, _ string) error {
+			_, err := env.manager.Update(env.ctx, txUpdateOp(ukAccount, rowID, ukDropAttribute("tenant")))
+			return err
 		}},
-		{"atomic BatchUpdate", func(t *testing.T, rowID uuid.UUID, _ string) map[string]any {
-			return env.ukBatchUpdateAnswer(t, true, rowID, ukDropAttribute("tenant"))
+		{"atomic BatchUpdate", func(t *testing.T, rowID uuid.UUID, _ string) error {
+			return env.ukBatchUpdateRefusal(t, true, rowID, ukDropAttribute("tenant"))
 		}},
-		{"best-effort BatchUpdate", func(t *testing.T, rowID uuid.UUID, _ string) map[string]any {
-			return env.ukBatchUpdateAnswer(t, false, rowID, ukDropAttribute("tenant"))
+		{"best-effort BatchUpdate", func(t *testing.T, rowID uuid.UUID, _ string) error {
+			return env.ukBatchUpdateRefusal(t, false, rowID, ukDropAttribute("tenant"))
 		}},
-		{"Tx.Update", func(t *testing.T, rowID uuid.UUID, _ string) map[string]any {
-			var record *forma.DataRecord
-			require.NoError(t, env.inTx(func(ctx context.Context, tx forma.Tx) error {
-				var err error
-				record, err = tx.Update(ctx, txUpdateOp(ukAccount, rowID, ukDropAttribute("tenant")))
+		{"Tx.Update", func(t *testing.T, rowID uuid.UUID, _ string) error {
+			return env.inTx(func(ctx context.Context, tx forma.Tx) error {
+				_, err := tx.Update(ctx, txUpdateOp(ukAccount, rowID, ukDropAttribute("tenant")))
 				return err
-			}))
-			return record.Attributes
+			})
 		}},
-		{"Tx.UpdateWhere", func(t *testing.T, _ uuid.UUID, note string) map[string]any {
-			var result *forma.MutateWhereResult
-			require.NoError(t, env.inTx(func(ctx context.Context, tx forma.Tx) error {
+		{"Tx.UpdateWhere", func(t *testing.T, _ uuid.UUID, note string) error {
+			return env.inTx(func(ctx context.Context, tx forma.Tx) error {
 				req := ukHandleWhere(note)
 				req.Updates, req.Returning = ukDropAttribute("tenant"), true
-				var err error
-				result, err = tx.UpdateWhere(ctx, req)
+				_, err := tx.UpdateWhere(ctx, req)
 				return err
-			}))
-			require.Len(t, result.Records, 1)
-			return result.Records[0].Attributes
+			})
 		}},
 	}
 	for i, surface := range surfaces {
@@ -86,8 +80,8 @@ func TestUniqueKeyUpdateKeepsTheEntryOfABoundValueItLeavesStored(t *testing.T) {
 			created, err := env.manager.Create(env.ctx, ukCreateOp(ukAccount, uuid.Nil, data))
 			require.NoError(t, err)
 
-			answered := surface.update(t, created.RowID, note)
-			assert.Equal(t, tenant, answered["tenant"], "the update answers the value the row keeps")
+			err = surface.update(t, created.RowID, note)
+			requireScalarShapeRefusal(t, err, "tenant", forma.ValueTypeText, surface.name)
 			stored, err := env.manager.Get(env.ctx, &forma.QueryRequest{SchemaName: ukAccount, RowID: &created.RowID})
 			require.NoError(t, err)
 			assert.Equal(t, tenant, stored.Attributes["tenant"], "the bound column keeps its stored value")
@@ -99,18 +93,20 @@ func TestUniqueKeyUpdateKeepsTheEntryOfABoundValueItLeavesStored(t *testing.T) {
 	}
 }
 
-func TestUniqueKeyUpdateReleasesTheEntryOfAnEAVValueItDrops(t *testing.T) {
+func TestUniqueKeyUpdateKeepsTheEntryOfAnEAVValueItWouldDrop(t *testing.T) {
 	env := setupUniqueKeyEnv(t)
 	rowID := env.mustCreateAccount(t, "t1", "same@x", "")
+	held := env.keyEntriesOfRow(t, rowID)
+	require.NotEmpty(t, held)
 
 	_, err := env.manager.Update(env.ctx, txUpdateOp(ukAccount, rowID, ukDropAttribute("email")))
-	require.NoError(t, err)
+	requireScalarShapeRefusal(t, err, "email", forma.ValueTypeText, "Update")
 	stored, err := env.manager.Get(env.ctx, &forma.QueryRequest{SchemaName: ukAccount, RowID: &rowID})
 	require.NoError(t, err)
-	assert.NotContains(t, stored.Attributes, "email", "the EAV write removed the dropped value")
-	assert.Empty(t, env.keyEntriesOfRow(t, rowID))
+	assert.Equal(t, "same@x", stored.Attributes["email"], "the EAV value is kept")
+	assert.Equal(t, held, env.keyEntriesOfRow(t, rowID))
 	env.assertKeyTableMatchesRows(t)
 
-	env.mustCreateAccount(t, "t1", "same@x", "")
-	env.assertKeyTableMatchesRows(t)
+	_, err = env.manager.Create(env.ctx, ukCreateOp(ukAccount, uuid.Nil, ukAccountData("t1", "same@x", "")))
+	requireKeyConflict(t, err, ukAccount, "tenant_email", "same@x")
 }

@@ -32,9 +32,15 @@ import (
 // Upsert that creates), which succeeded before #772 and still does. Both are
 // the first in the write's sorted key order of their class.
 //
-// Only conversion moves here. A position the walk refuses rather than
-// claims keeps its stage, after the precondition and the row's existence are
-// judged: an undefined attribute, a null, an [] nested in a list, the
+// A scalar attribute given an object or an array is a Refusal too (#924,
+// scalarShapeRefusal), in the same key order: the walk would take the
+// container apart rather than store it, so what the row kept depended on
+// the binding. It is judged from the registry's metadata whatever the
+// validation mode, before strict validation would see it.
+//
+// Only conversion and that shape move here. A position the walk refuses
+// rather than claims keeps its stage, after the precondition and the row's
+// existence are judged: an undefined attribute, a null, an [] nested in a list, the
 // nesting cap. So does the required policy, which the merged write judges
 // before it converts and which needs the row. The caller strips relation
 // subtrees first, as the merge does, since they are never written.
@@ -59,7 +65,7 @@ func CheckUpdateValues(data map[string]any, cache forma.SchemaAttributeCache) (C
 	}
 	// The walk has bounded the document, so the copy below terminates.
 	in := &updateIntake{cache: cache}
-	values, err := in.copyMap(nil, data, nil)
+	values, err := in.copyMap(nil, data, nil, nil)
 	if err != nil {
 		return CheckedUpdates{}, err
 	}
@@ -90,19 +96,29 @@ type updateIntake struct {
 
 // copyValue dispatches one position of the copy. Errors pass up the copy
 // unwrapped: convertLeaf names the attribute, which is the whole path, so a
-// prefix per level would only repeat it.
-func (in *updateIntake) copyValue(path []string, value any, indices []int) (any, error) {
+// prefix per level would only repeat it. arrays are the dotted paths of the
+// arrays crossed to reach the position, for the scalar-shape rule.
+//
+// A container at a scalar attribute the metadata places is refused here, as
+// a conversion refusal is (#924): recorded once, the first in key order of
+// either class. The copy still descends into it, so unstorable text beneath
+// it is the error it was before the rule, whatever the order.
+func (in *updateIntake) copyValue(path []string, value any, indices []int, arrays []string) (any, error) {
+	if refusal := scalarShapeRefusal(strings.Join(path, "."), value, arrays, in.cache); refusal != nil && in.refusal == nil {
+		in.refusal = refusal
+	}
 	switch v := value.(type) {
 	case map[string]any:
-		return in.copyMap(path, v, indices)
+		return in.copyMap(path, v, indices, arrays)
 	case []any:
-		return in.copyArray(path, v, indices)
+		crossed := append(arrays[:len(arrays):len(arrays)], strings.Join(path, "."))
+		return in.copyArray(path, v, indices, crossed)
 	default:
 		return in.convertLeaf(path, v, indices)
 	}
 }
 
-func (in *updateIntake) copyMap(path []string, src map[string]any, indices []int) (map[string]any, error) {
+func (in *updateIntake) copyMap(path []string, src map[string]any, indices []int, arrays []string) (map[string]any, error) {
 	if src == nil {
 		return nil, nil
 	}
@@ -119,7 +135,7 @@ func (in *updateIntake) copyMap(path []string, src map[string]any, indices []int
 			out[key] = nil
 			continue
 		}
-		copied, err := in.copyValue(append(path, key), value, indices)
+		copied, err := in.copyValue(append(path, key), value, indices, arrays)
 		if err != nil {
 			return nil, err
 		}
@@ -131,7 +147,7 @@ func (in *updateIntake) copyMap(path []string, src map[string]any, indices []int
 // copyArray copies an array element by element. An empty one is the
 // empty-list marker, or an [] the walk refuses or ignores: none is a value
 // to convert.
-func (in *updateIntake) copyArray(path []string, src []any, indices []int) ([]any, error) {
+func (in *updateIntake) copyArray(path []string, src []any, indices []int, arrays []string) ([]any, error) {
 	if src == nil {
 		return nil, nil
 	}
@@ -140,7 +156,7 @@ func (in *updateIntake) copyArray(path []string, src []any, indices []int) ([]an
 		if item == nil {
 			continue
 		}
-		copied, err := in.copyValue(path, item, append(indices, i))
+		copied, err := in.copyValue(path, item, append(indices, i), arrays)
 		if err != nil {
 			return nil, err
 		}

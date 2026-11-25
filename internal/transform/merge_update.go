@@ -20,6 +20,8 @@ import (
 // merged document (walkDocument), so the update's path and #312 semantics
 // have one source. A row the read refuses to rebuild, such as one holding a
 // marker it cannot place (rebuildInferred), is refused before the merge.
+// A merged document giving a scalar attribute an object or an array is
+// refused before any stored value is decoded (checkMergedScalarShapes, #924).
 func (t *persistentRecordTransformer) MergeUpdate(
 	ctx context.Context,
 	record *model.PersistentRecord,
@@ -79,6 +81,10 @@ func resolveStoredValues(schemaID int16, rowID uuid.UUID, doc map[string]any, ca
 	entries, err := walkDocument(schemaID, rowID, doc, cache)
 	if err != nil {
 		return nil, fmt.Errorf("walk the merged document of row %s: %w", rowID, err)
+	}
+	// The walk has bounded the document, and nothing is decoded yet.
+	if err := checkMergedScalarShapes(doc, cache); err != nil {
+		return nil, fmt.Errorf("check the merged document of row %s: %w", rowID, err)
 	}
 	winners := updateWinners(entries)
 	stored := storedSpellingsOf(entries)
