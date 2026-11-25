@@ -62,7 +62,8 @@ import (
 // not keep in place is moved, as its own skeleton, into the $defs of its
 // resource under a key naming its original location, and each reference
 // into it is rewritten to land there (shape_refs.go), across a nested $id
-// too. Where it applied, a reference to it takes its place. A schema whose
+// too. A definition of the schema's own that such a key could name is kept
+// under a renamed key, and references to it are renamed alike (keptDefKey). Where it applied, a reference to it takes its place. A schema whose
 // skeleton still does not resolve keeps none (resolveShape), and its updates
 // are judged as without a validator: by the ledger, which refuses an array
 // at an attribute that is not a list.
@@ -146,7 +147,7 @@ func (sh shaper) body(s *jsonschema.Schema, ptr string, stash map[string]*jsonsc
 		Anchor:        s.Anchor,
 		DynamicAnchor: s.DynamicAnchor,
 		DynamicRef:    sh.reference(s.DynamicRef),
-		Defs:          sh.keptMap(s.Defs, ptr+"/$defs", stash),
+		Defs:          sh.keptDefs(s.Defs, ptr+"/$defs", stash),
 		Definitions:   sh.keptMap(s.Definitions, ptr+"/definitions", stash),
 		Types:         widenTypes(s),
 
@@ -253,6 +254,20 @@ func (sh shaper) keptMap(in map[string]*jsonschema.Schema, ptr string, stash map
 	out := make(map[string]*jsonschema.Schema, len(in))
 	for key, s := range in {
 		out[key] = sh.node(s, ptr+"/"+escapePointerSegment(key), stash)
+	}
+	return out
+}
+
+// keptDefs answers the skeleton of a $defs map, each definition kept under
+// keptDefKey of its name, so no definition of the schema's own shares a key
+// with a moved subschema (#696 review R3-F1).
+func (sh shaper) keptDefs(in map[string]*jsonschema.Schema, ptr string, stash map[string]*jsonschema.Schema) map[string]*jsonschema.Schema {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]*jsonschema.Schema, len(in))
+	for key, s := range in {
+		out[keptDefKey(key)] = sh.node(s, ptr+"/"+escapePointerSegment(key), stash)
 	}
 	return out
 }

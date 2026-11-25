@@ -144,6 +144,34 @@ func TestValidateSchemaConsistencyJudgesReferencesAcrossANestedID(t *testing.T) 
 	}
 }
 
+// TestValidateSchemaConsistencyJudgesDefinitionsNamedLikeMovedSubschemas
+// pins #696 review R3-F1 in the census: note references a string defined
+// under the key the skeleton moves grid's items to, and phones an array of
+// strings defined under the key pick's oneOf branch moves to. The census
+// judges each by its own definition, so note's indexed record is an
+// anomaly and phones' element is not; before, the moved subschemas replaced
+// both definitions and the census answered the other way round.
+func TestValidateSchemaConsistencyJudgesDefinitionsNamedLikeMovedSubschemas(t *testing.T) {
+	schema := `{"type":"object","$defs":{
+		"forma-shape/properties/grid/items":{"type":"string"},
+		"forma-shape/properties/pick/oneOf/0":{"type":"array","items":{"type":"string"}}},"properties":{
+		"note":{"$ref":"#/$defs/forma-shape~1properties~1grid~1items"},
+		"phones":{"$ref":"#/$defs/forma-shape~1properties~1pick~1oneOf~10"},
+		"grid":{"type":"array","items":{"type":"array","items":{"type":"string"}}},
+		"pick":{"oneOf":[{"type":"string"},{"type":"integer"}]}}}`
+	census := indexedScalarCensusRows().
+		AddRow(int16(100), int16(1), 1, int64(2), "00000000-0000-4000-8000-00000000000b 0").
+		AddRow(int16(100), int16(2), 1, int64(1), "00000000-0000-4000-8000-00000000000b 0")
+	out, err := runIndexedScalarCensus(t, schema, census)
+	if err == nil || !strings.Contains(err.Error(), "1 issue(s)") {
+		t.Fatalf("expected one failure, got %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "array elements stored where the schema declares no such arrays") ||
+		!strings.Contains(out, "attr_id=1 attribute=note type=text indices=1 rows=2") || strings.Contains(out, "attr_id=2") {
+		t.Fatalf("expected note alone reported, got\n%s", out)
+	}
+}
+
 // TestValidateSchemaConsistencyReportsUnjudgedIndexedRecordsAsUnverified
 // pins that a group the census cannot judge is informational, not clean
 // and not a failure: here the schema's documents do not resolve (a $ref

@@ -29,13 +29,37 @@ import (
 // right unless the pointer crosses an $id; then the skeleton does not
 // resolve, and the schema keeps none (resolveShape).
 
-// movedPrefix starts the $defs key of a moved subschema, so it cannot be
-// taken for a definition of the schema's own.
-const movedPrefix = "forma-shape"
+// movedPrefix starts the $defs key of a moved subschema. JSON Schema
+// reserves no $defs key, so a schema may define one starting with it too
+// (#696 review R3-F1: a definition named
+// "forma-shape/properties/codes/items" was overwritten by the subschema
+// moved from codes' items, and a reference to it then landed on another
+// schema). So the skeleton keeps such a definition under a key of its own,
+// keptDefKey: the moved keys are movedPrefix and then a pointer, which
+// starts with "/", and a renamed definition is movedPrefix, then
+// renamedMark, then its name, so the two never meet, and a name that does
+// not start with movedPrefix is kept as it is. mapPointer renames the
+// definition a pointer names the same way, wherever the reference is, so
+// a reference into another file or across an $id lands on its definition.
+const (
+	movedPrefix = "forma-shape"
+	renamedMark = "!"
+)
 
 // movedKey is the $defs key of the subschema moved from ptr.
 func movedKey(ptr string) string {
 	return movedPrefix + ptr
+}
+
+// keptDefKey is the skeleton's $defs key of the schema's own definition
+// name (movedPrefix). It also holds for the escaped name of a pointer
+// segment, since neither movedPrefix nor renamedMark holds a character a
+// pointer escapes.
+func keptDefKey(name string) string {
+	if strings.HasPrefix(name, movedPrefix) {
+		return movedPrefix + renamedMark + name
+	}
+	return name
 }
 
 // refDocuments finds the original resource a reference names, by its
@@ -188,7 +212,8 @@ var (
 )
 
 // mapPointer maps a JSON Pointer into the resource root onto the same
-// subschema in the resource's skeleton. root is the original resource, nil
+// subschema in the resource's skeleton, a $defs name renamed as the skeleton
+// keeps it (keptDefKey). root is the original resource, nil
 // when it is not known: the pointer alone is then mapped, as if it crossed
 // no $id. Segments stay escaped throughout, as the original pointer spells
 // them, which is how the moved keys spell them too. A segment it does not
@@ -210,9 +235,12 @@ func mapPointer(root *jsonschema.Schema, ptr string) string {
 		}
 		walked := segments[i : i+consumed]
 		original += "/" + strings.Join(walked, "/")
-		if moved {
+		switch {
+		case moved:
 			out = append(append([]string(nil), resourceAt...), "$defs", escapePointerSegment(movedKey(original)))
-		} else {
+		case walked[0] == "$defs":
+			out = append(out, walked[0], keptDefKey(walked[1]))
+		default:
 			out = append(out, walked...)
 		}
 		node = childAt(node, walked)

@@ -326,6 +326,65 @@ func TestShapeFollowsAPointerAcrossANestedID(t *testing.T) {
 	assert.Nil(t, (*Validator)(nil).Shape(1), "an unconfigured validator has no skeleton")
 }
 
+// collidingDefsDocument defines, under names a moved subschema's key
+// spells, a string that note references and an array of strings that codes
+// references, beside codes' items and tags' oneOf, which the skeleton moves
+// to exactly those keys (#696 review R3-F1). nested repeats both inside a
+// resource with an $id of its own, reached by a pointer that crosses it.
+const collidingDefsDocument = `{"type":"object","$defs":{
+	"forma-shape/properties/arrays/items":{"type":"string"},
+	"forma-shape/properties/tags/oneOf/0":{"type":"array","items":{"type":"string"}},
+	"nested":{"$id":"nested.json","$defs":{
+		"forma-shape/properties/arrays/items":{"type":"string"},
+		"forma-shape/properties/tags/oneOf/0":{"type":"array","items":{"type":"string"}}},
+		"properties":{"arrays":{"type":"array","items":{"type":"array","items":{"type":"string"}}},
+			"tags":{"oneOf":[{"type":"string"},{"type":"integer"}]}}}},
+	"properties":{
+	"note":{"$ref":"#/$defs/forma-shape~1properties~1arrays~1items"},
+	"codes":{"$ref":"#/$defs/forma-shape~1properties~1tags~1oneOf~10"},
+	"nestedNote":{"$ref":"#/$defs/nested/$defs/forma-shape~1properties~1arrays~1items"},
+	"nestedCodes":{"$ref":"nested.json#/$defs/forma-shape~1properties~1tags~1oneOf~10"},
+	"arrays":{"type":"array","items":{"type":"array","items":{"type":"string"}}},
+	"tags":{"oneOf":[{"type":"string"},{"type":"integer"}]}}}`
+
+// TestShapeKeepsDefinitionsNamedLikeMovedSubschemas pins #696 review R3-F1:
+// a definition of the schema's own whose name a moved subschema's key
+// spells is not overwritten by it, so a reference to it lands on it, in
+// the document's resource and across a nested $id. The referenced string
+// admits no array, the referenced array its own, and the moved subschemas
+// still judge their own positions.
+func TestShapeKeepsDefinitionsNamedLikeMovedSubschemas(t *testing.T) {
+	resolved, shape := shapeFor(t, collidingDefsDocument)
+	for _, single := range []string{"note", "nestedNote"} {
+		assert.Errorf(t, shape.AdmitsArrangement([]string{single}, []int{1}), "%s references a string", single)
+		assert.NoErrorf(t, shape.AdmitsArrangement([]string{single}, []int{0}), "%s takes a single value", single)
+	}
+	for _, array := range []string{"codes", "nestedCodes"} {
+		assert.NoErrorf(t, shape.AdmitsArrangement([]string{array}, []int{1}), "%s references an array of strings", array)
+		assert.Errorf(t, shape.AdmitsArrangement([]string{array}, []int{2}), "%s references no array of arrays", array)
+	}
+	assert.NoError(t, shape.AdmitsArrangement([]string{"arrays"}, []int{2}), "arrays' items are arrays")
+	assert.Error(t, shape.AdmitsArrangement([]string{"tags"}, []int{1}), "tags is a single value")
+	require.NoError(t, resolved.Validate(map[string]any{
+		"note": "n", "codes": []any{"c"}, "nestedNote": "m", "nestedCodes": []any{"d"},
+		"arrays": []any{[]any{"a"}}, "tags": "t",
+	}))
+	assert.Error(t, resolved.Validate(map[string]any{"note": []any{"bad"}}), "the schema itself refuses it too")
+}
+
+// TestKeptDefKeyNeverMeetsAMovedKey pins the renaming keptDefKey makes: a
+// definition name is kept unless it starts with the moved prefix, and no
+// renamed name is a moved key.
+func TestKeptDefKeyNeverMeetsAMovedKey(t *testing.T) {
+	assert.Equal(t, "inner", keptDefKey("inner"))
+	for _, name := range []string{movedKey("/properties/a/items"), movedPrefix, movedPrefix + renamedMark + "x"} {
+		renamed := keptDefKey(name)
+		assert.NotEqual(t, name, renamed)
+		assert.NotEqual(t, movedKey("/properties/a/items"), renamed)
+		assert.NotEqual(t, keptDefKey(name+"y"), renamed, "the renaming is one to one")
+	}
+}
+
 // TestShippedSchemasHaveSkeletons pins that every shipped schema keeps a
 // full one.
 func TestShippedSchemasHaveSkeletons(t *testing.T) {
