@@ -263,7 +263,7 @@ func (r *fileSchemaRegistry) admitSchema(schemaName string, schemaID int16, cach
 	active := activeAttributeCache(cache)
 	if schema != nil {
 		active = withArrayAncestors(schemaName, active, schema.Properties)
-		active = withDeclaredArrays(active, schema.Properties)
+		active = withArrayPositions(active, schema)
 	}
 	if err := r.registerSchema(schemaName, schemaID, active, schema); err != nil {
 		return fmt.Errorf("register schema id %d: %w", schemaID, err)

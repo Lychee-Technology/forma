@@ -10,16 +10,35 @@ import (
 	"github.com/lychee-technology/forma"
 )
 
-// withDeclaredArrays returns cache with DeclaredArray set on every attribute
-// that is not a list but whose schema document declares it a primitive array
-// (#696): the element-typed ledger entry a primitive array had before #204.
-// Unlike array ancestry it is judged attribute by attribute, since it only
-// widens what an update may send at that one attribute, and only where the
-// document says so positively.
-func withDeclaredArrays(cache forma.SchemaAttributeCache, properties map[string]*forma.PropertySchema) forma.SchemaAttributeCache {
+// withArrayPositions returns cache with each attribute's DeclaredArray and
+// SettledArrayAncestors derived from schema's document (#696). Unlike array
+// ancestry they are judged attribute by attribute: each only bears on what
+// an update may send at that one attribute.
+//
+// DeclaredArray is set on an attribute that is not a list where the document
+// positively declares a primitive array, the element-typed ledger entry a
+// primitive array had before #204: by the parsed properties, as the registry
+// reads them, or by the raw document, which also keeps a type union such as
+// ["array", "null"] the parser drops. SettledArrayAncestors is set only
+// where the raw document settles the attribute's positions
+// (settledArrayPositions), since an update is refused by it.
+func withArrayPositions(cache forma.SchemaAttributeCache, schema *forma.JSONSchema) forma.SchemaAttributeCache {
+	var root map[string]any
+	if err := json.Unmarshal([]byte(schema.Schema), &root); err != nil {
+		// The parser read the same bytes; without them nothing is settled.
+		root = nil
+	}
+	defs := extractDefinitions(root)
 	derived := make(forma.SchemaAttributeCache, len(cache))
 	for name, meta := range cache {
-		meta.DeclaredArray = meta.ValueType != forma.ValueTypeList && declaresPrimitiveArray(name, properties)
+		meta.DeclaredArray, meta.SettledArrayAncestors = false, nil
+		if meta.ValueType != forma.ValueTypeList {
+			positions := settledArrayPositions(root, defs, name)
+			meta.DeclaredArray = positions.DeclaredArray || declaresPrimitiveArray(name, schema.Properties)
+			if positions.Verified {
+				meta.SettledArrayAncestors = positions.Ancestors
+			}
+		}
 		derived[name] = meta
 	}
 	return derived

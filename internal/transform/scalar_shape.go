@@ -36,8 +36,8 @@ import (
 // whatever items is, and {"items.tags": ["x"]} is a list's array.
 //
 // An array at a parent's path holds one index per array of objects, so where
-// the registry declares the attribute's array ancestry, a single value the
-// caller sends inside more arrays than that is refused too
+// the schema document settles the attribute's arrays of objects, a single
+// value the caller sends inside more arrays than that is refused too
 // (excessIndicesError): {"items": [[{"name": "x"}]]} would store name at
 // "0,0", which the read takes for an element of name's own array. A
 // primitive array the schema document declares under an element-typed
@@ -95,16 +95,19 @@ func elementShapeOf(meta forma.AttributeMetadata, item any) elementShape {
 }
 
 // excessIndicesError refuses a single value the caller sent inside more
-// arrays than the attribute's declared array ancestry admits: one index per
-// array of objects around it, and one more for a declared primitive array's
-// element. Without declared ancestry nothing says which arrays a position's
-// indices belong to, and a list's indices are its conversion's
-// (listElementMeta).
+// arrays than the schema document settles for the attribute
+// (forma.AttributeMetadata.SettledArrayAncestors): one index per array of
+// objects around it, and one more for a declared primitive array's element.
+// Where the document does not settle them, as beside an anyOf that may admit
+// an array, nothing proves an index wrong, and the value is written as
+// before #696. The registry's array ancestry is not that proof: it is
+// derived leniently, and for every attribute of a schema or for none. A
+// list's indices are its conversion's (listElementMeta).
 func excessIndicesError(attrName string, meta forma.AttributeMetadata, indices []int) error {
-	if meta.ArrayAncestors == nil || meta.ValueType == forma.ValueTypeList {
+	if meta.SettledArrayAncestors == nil || meta.ValueType == forma.ValueTypeList {
 		return nil
 	}
-	admitted := len(meta.ArrayAncestors)
+	admitted := len(meta.SettledArrayAncestors)
 	if meta.DeclaredArray {
 		admitted++
 	}
@@ -112,8 +115,8 @@ func excessIndicesError(attrName string, meta forma.AttributeMetadata, indices [
 		return nil
 	}
 	ancestors := "none"
-	if len(meta.ArrayAncestors) > 0 {
-		ancestors = strings.Join(meta.ArrayAncestors, ", ")
+	if len(meta.SettledArrayAncestors) > 0 {
+		ancestors = strings.Join(meta.SettledArrayAncestors, ", ")
 	}
 	return conversionRefusal(attrName, meta, fmt.Errorf(
 		"a single %s value at array indices %q is nested in more arrays than the attribute's arrays of objects (%s); "+

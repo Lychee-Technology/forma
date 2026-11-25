@@ -29,7 +29,18 @@ func shapeCache() forma.SchemaAttributeCache {
 		"phones":        {AttributeName: "phones", AttributeID: 9, ValueType: forma.ValueTypeText, DeclaredArray: true},
 	}
 	declareArrayAncestors(cache, "items")
+	settleArrayPositions(cache)
 	return cache
+}
+
+// settleArrayPositions records each attribute's declared array ancestry as
+// the positions the schema document settles for it, as the file registry
+// does for a document that fixes every node's type.
+func settleArrayPositions(cache forma.SchemaAttributeCache) {
+	for name, meta := range cache {
+		meta.SettledArrayAncestors = meta.ArrayAncestors
+		cache[name] = meta
+	}
 }
 
 func shapeRegistry(cache forma.SchemaAttributeCache) forma.SchemaRegistry {

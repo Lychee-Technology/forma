@@ -190,19 +190,30 @@ such as a `[]string` or a struct, are still the conversion's to judge. A nil
 refuses; only an empty one is the empty-list marker.
 
 An array of objects holds one array index per element, so where the
-registry derives an attribute's array ancestry (#623), a single value sent
-inside more arrays than that is refused as well:
+schema document settles an attribute's arrays of objects, a single value
+sent inside more arrays than that is refused as well:
 `{"propertyInterests": [[{"propertyId": "p"}]]}` would store `propertyId` at
 `array_indices = '0,0'`, which the read takes for an element of
 `propertyId`'s own array. So would an array where the schema declares an
-object (`{"contact": [{"name": "n"}]}`). Where the registry does not derive
-the ancestry, nothing says which array an index belongs to, and this part of
-the rule does not apply.
+object (`{"contact": [{"name": "n"}]}`). The file registry settles the
+positions attribute by attribute, reading the document as the
+`validate-schema-consistency` census does
+(`AttributeMetadata.SettledArrayAncestors`): every node on the path must
+have a `type` that fixes it as an object or an array of objects, and the
+attribute's own node as a single value or a primitive array. That is not the
+registry's array ancestry (#623), which reads the document leniently (an
+object declared only by `properties` may still be an array under an
+`anyOf`) and is derived for every attribute of a schema or for none, so an
+unrelated path it cannot resolve does not lift the limit elsewhere. Where
+the document does not settle an attribute's positions, nothing proves an
+index there wrong, and this part of the rule does not apply: an array of
+objects such a document allows is written as before #696.
 
 A primitive array whose attributes file predates #204 and records its
 element type (`contact.phones` as `text`) is written as an array, by updates
 as by creates, where the schema document positively declares it one
-(`"type": "array"` with primitive `items`): the file registry marks it
+(`"type": "array"`, or a union such as `["array", "null"]`, with primitive
+`items`): the file registry marks it
 (`AttributeMetadata.DeclaredArray`), and its elements are judged as a
 list's, one single value each. A registry that does not derive the mark, or
 a document that does not declare the array, leaves the attribute a single

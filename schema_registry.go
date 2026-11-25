@@ -204,6 +204,21 @@ type AttributeMetadata struct {
 	// and never reads it from the attributes file; false means the document
 	// does not positively declare such an array, or was not read.
 	DeclaredArray bool `json:"-"`
+	// SettledArrayAncestors is ArrayAncestors as the schema document fixes
+	// it for this attribute alone, read strictly (#696): non-nil, possibly
+	// empty, only when every node on the attribute's path has a type that
+	// fixes it as an object or an array of objects, and the attribute's own
+	// node as a single value or a primitive array. It is the evidence an
+	// update's array positions are judged by: a single value the caller sends
+	// inside more arrays than these (and the one a DeclaredArray adds) is
+	// refused. ArrayAncestors cannot serve: the registry derives it leniently
+	// ("properties" alone makes an object, though an anyOf may admit an array
+	// there) and for every attribute of a schema or none, so it is both too
+	// narrow and too often absent to prove a position wrong. Nil means the
+	// document does not settle the positions, or was not read, and no limit
+	// applies. The file registry derives it and never reads it from the
+	// attributes file.
+	SettledArrayAncestors []string `json:"-"`
 }
 
 // EffectiveRequiredPolicy returns the policy used at runtime.
