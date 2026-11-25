@@ -99,6 +99,7 @@ func TestValidateSchemaConsistencyReportsSuccess(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.array_indices = ''`).
 		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
+	expectIndexedScalarCensus(mock)
 
 	var out strings.Builder
 	validator := schemaConsistencyValidator{
@@ -145,6 +146,7 @@ func TestValidateSchemaConsistencyReportsIssues(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.array_indices = ''`).
 		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
+	expectIndexedScalarCensus(mock)
 
 	var out strings.Builder
 	validator := schemaConsistencyValidator{
@@ -236,6 +238,7 @@ func newSchemaConsistencyMock(t *testing.T, attrCensus *pgxmock.Rows) pgxmock.Pg
 		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.array_indices = ''`).
 		WillReturnRows(pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
+	expectIndexedScalarCensus(mock)
 	return mock
 }
 

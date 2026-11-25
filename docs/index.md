@@ -44,7 +44,7 @@ When your AI agent outputs 12 fields today and 30 tomorrow, a migration per new 
 | | Conventional tables | Forma |
 |---|---|---|
 | Add an attribute | `ALTER TABLE` migration | Edit the JSON Schema, record it with `apply-schema`, restart |
-| Validation | Column types and constraints | Creates that violate the JSON Schema are rejected; updates that violate it are logged and written unless `VALIDATE_UPDATES_STRICT` is enabled (set to `true`) ([Error Handling](./error-handling.md#creates-reject-updates-report)). Each attribute has a declared value type |
+| Validation | Column types and constraints | Creates that violate the JSON Schema are rejected; updates that violate it are logged and written unless `VALIDATE_UPDATES_STRICT` is enabled (set to `true`) ([Error Handling](./error-handling.md#creates-reject-updates-report)), except that an object or array where the schema declares no such container is refused in every mode ([#696](./error-handling.md#an-updates-shape-is-a-storage-invariant-in-every-mode-696)). Each attribute has a declared value type |
 | Indexed access | Any column | Built-in EAV indexes keyed by attribute and value; composite indexes you declare (`x-forma-indexes`) on column-bound attributes |
 | Analytics | A separate pipeline | Optional CDC export to Parquet, queried through DuckDB |
 

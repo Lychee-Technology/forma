@@ -386,7 +386,9 @@ func TestUpdateNestedSpellingReplacesLiteralPlacedRecord(t *testing.T) {
 // takes for one of the list's own elements and leaves out: the answer and
 // the next Get would lack the list, and the next unrelated update would
 // delete its record. Every update surface refuses it as caller input
-// instead, and the row keeps its phones.
+// instead, and the row keeps its phones. Since #696 the intake refuses it
+// before any statement: the lead schema declares no array inside the list's
+// value, so its skeleton admits no value inside that [].
 func TestUpdateNestingEmptyListInListIsRefused(t *testing.T) {
 	ctx := context.Background()
 	registry, err := newFileSchemaRegistryFromDir(shippedSchemaDir)
@@ -440,7 +442,7 @@ func TestUpdateNestingEmptyListInListIsRefused(t *testing.T) {
 
 func assertNestedEmptyListRefused(t *testing.T, err error, attr string) {
 	t.Helper()
-	want := []string{"attribute '" + attr + "'", `empty list at array indices "0" is nested in more arrays`}
+	want := []string{"attribute '" + attr + "'", `got an empty array at array indices "0", inside arrays the schema does not declare there`}
 	message := ""
 	var reported bestEffortFailure
 	switch {

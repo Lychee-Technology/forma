@@ -65,7 +65,7 @@ func (s *txSession) planUpsert(ctx context.Context, req *forma.UpsertRequest) (*
 // writes Updates (#772).
 func (s *txSession) validateUpsertUpdate(plan *upsertPlan, prepared *preparedCreate) error {
 	update := plan.update
-	updates, err := validateConditionalUpdate(update, prepared.cache, s.crud.relations, s.crud.validator.ArrayPaths(prepared.schemaID))
+	updates, err := validateConditionalUpdate(update, prepared.cache, s.crud.relations, structureOf(s.crud.validator, prepared.schemaID))
 	if err != nil {
 		return fmt.Errorf("failed to validate the update action of the upsert of %s: %w", update.SchemaName, err)
 	}

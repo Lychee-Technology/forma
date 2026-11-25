@@ -39,25 +39,41 @@ func validateConditionalCreate(req *forma.EntityOperation) error {
 // (checkUpdatesValues). It answers the Updates the update writes in place of
 // req.Updates, which it never mutates: a copy carrying each checked text
 // image to the merged write (#773), with the conversion refusal the caller
-// raises before it writes a row with them. arrays are the paths the schema
-// declares as arrays, nil when the manager has no validator to know them.
-func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex, arrays schemavalidate.ArrayPaths) (transform.CheckedUpdates, error) {
+// raises before it writes a row with them. structure is what the validator
+// knows of the schema (structureOf), nothing without a validator.
+func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex, structure schemaStructure) (transform.CheckedUpdates, error) {
 	if err := validatePrecondition(req.Preconditions, req.SchemaName, cache); err != nil {
 		return transform.CheckedUpdates{}, fmt.Errorf("check precondition: %w", err)
 	}
-	if err := validateUpdateOps(req, cache, relations, arrays); err != nil {
+	if err := validateUpdateOps(req, cache, relations, structure.arrays); err != nil {
 		return transform.CheckedUpdates{}, fmt.Errorf("check update operators: %w", err)
 	}
-	return checkUpdatesValues(req.SchemaName, req.Updates, cache, relations)
+	return checkUpdatesValues(req.SchemaName, req.Updates, cache, relations, structure.shape)
+}
+
+// schemaStructure is what the validator knows of one schema's structure for
+// an update's intake: the paths it declares as arrays, for the operators,
+// and its container skeleton, which judges where Updates put arrays (#696).
+type schemaStructure struct {
+	arrays schemavalidate.ArrayPaths
+	shape  *schemavalidate.ShapeSchema
+}
+
+// structureOf answers what validator knows of schemaID's structure; a nil
+// validator knows nothing.
+func structureOf(validator *schemavalidate.Validator, schemaID int16) schemaStructure {
+	return schemaStructure{arrays: validator.ArrayPaths(schemaID), shape: validator.Shape(schemaID)}
 }
 
 // checkUpdatesValues judges, before the update sends any statement, the
 // values in updates with the write's conversion (transform.CheckUpdateValues):
 // text PostgreSQL cannot hold (#679), a malformed UUID, a fraction or an
 // out-of-width integer for an integer type, a date outside its slot's range
-// (#772). The merged write refuses such a value too, but only after the row
-// lock and read, which poisons a Tx. The relation subtrees are stripped
-// first, as the merge strips them (mergeUpdateDocument).
+// (#772), and an object or array where the attribute takes single values,
+// whatever the validation mode (#696). The merged write refuses such a value
+// too, or would store it, but only after the row lock and read, which
+// poisons a Tx. The relation subtrees are stripped first, as the merge
+// strips them (mergeUpdateDocument).
 //
 // Unstorable text is the error, refused at intake on every route, as since
 // #679. Any other conversion refusal is the answer's Refusal: Update and the
@@ -74,9 +90,9 @@ func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAtt
 // (#773). The stripped relation subtrees are put back as sent, so the merge
 // strips exactly what it stripped before. nil stays nil: an update of
 // operators alone sends no Updates.
-func checkUpdatesValues(schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, relations *RelationIndex) (transform.CheckedUpdates, error) {
+func checkUpdatesValues(schemaName string, updates map[string]any, cache forma.SchemaAttributeCache, relations *RelationIndex, shape *schemavalidate.ShapeSchema) (transform.CheckedUpdates, error) {
 	written := relations.StripComputedFields(schemaName, updates)
-	checked, err := transform.CheckUpdateValues(written, cache)
+	checked, err := transform.CheckUpdateValues(written, cache, shape)
 	if err != nil {
 		return transform.CheckedUpdates{}, fmt.Errorf("check updates: %w", err)
 	}

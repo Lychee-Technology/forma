@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/lychee-technology/forma"
+	"go.uber.org/zap"
 )
 
 // fileLoader resolves cross-file $refs such as "lead.json#/$defs/lead_id" by
@@ -192,6 +193,9 @@ type Validator struct {
 	// arrays is derived alongside resolution because the schema is the only
 	// loaded source of truth for which paths are arrays (see array_paths.go).
 	arrays map[int16]ArrayPaths
+	// shapes holds each schema's container skeleton (shape.go), absent for a
+	// schema whose skeleton does not resolve.
+	shapes map[int16]*ShapeSchema
 }
 
 // New resolves every schema the registry knows about. It fails closed: any
@@ -210,10 +214,15 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build resolve options for schema directory %s: %w", dir, err)
 	}
+	shapeOpts, err := shapeResolveOptions(dir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build skeleton resolve options for schema directory %s: %w", dir, err)
+	}
 
 	v := &Validator{
 		resolved: make(map[int16]*jsonschema.Resolved),
 		arrays:   make(map[int16]ArrayPaths),
+		shapes:   make(map[int16]*ShapeSchema),
 	}
 	for _, name := range registry.ListSchemas() {
 		id, js, err := registry.GetSchemaByName(name)
@@ -237,8 +246,25 @@ func New(registry forma.SchemaRegistry, schemaDir string) (*Validator, error) {
 		if paths := deriveArrayPaths(&s); paths != nil {
 			v.arrays[id] = paths
 		}
+		v.addShape(name, id, js.Schema, shapeOpts)
 	}
 	return v, nil
+}
+
+// addShape resolves the container skeleton of schema name. A schema that
+// resolves can still have a skeleton that does not, when a $ref points into a
+// keyword the skeleton rewrites (shape.go); that is logged, not refused, since
+// the schema itself validates as before. Without a skeleton the schema's
+// updates take no array at an attribute that is not a list.
+func (v *Validator) addShape(name string, id int16, document string, opts *jsonschema.ResolveOptions) {
+	shape, err := resolveShape(document, opts)
+	if err != nil {
+		zap.S().Warnw("schema has no container skeleton: its updates refuse an array at every attribute that is not a list, "+
+			"including a primitive array the schema declares for an element-typed attribute",
+			"schema", name, "schemaID", id, "error", err.Error())
+		return
+	}
+	v.shapes[id] = shape
 }
 
 // Validate checks doc against the schema registered for schemaID.

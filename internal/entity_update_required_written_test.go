@@ -66,23 +66,6 @@ func TestUpdateLeavingRequiredNestedAttributeMissingFails(t *testing.T) {
 		{"empty parent into absent parent", forma.RequiredPolicyIfParentPresent,
 			map[string]any{"amount": int64(1)}, map[string]any{"contact": map[string]any{}}},
 	}
-	// A value at contact.total that writes no record there replaces the
-	// stored one without standing in for it.
-	for _, policy := range bothRequiredPolicies {
-		for name, replacement := range map[string]any{
-			"object replacing the value":       map[string]any{"total": int64(5)},
-			"empty object replacing the value": map[string]any{},
-		} {
-			cases = append(cases, struct {
-				name    string
-				policy  forma.RequiredPolicy
-				seed    map[string]any
-				updates map[string]any
-			}{name, policy,
-				map[string]any{"contact": map[string]any{"total": int64(1), "name": "kept"}},
-				map[string]any{"contact": map[string]any{"total": replacement}}})
-		}
-	}
 	for _, surface := range updateSurfaces {
 		for _, tc := range cases {
 			t.Run(surface.name+"/"+string(tc.policy)+"/"+tc.name, func(t *testing.T) {
@@ -98,9 +81,41 @@ func TestUpdateLeavingRequiredNestedAttributeMissingFails(t *testing.T) {
 	}
 }
 
+// An object at contact.total writes no record there. Before #696 it replaced
+// the stored value without standing in for it, and the required policy
+// refused the update; the value's shape is now refused first, at intake,
+// whatever the policy, and the stored row is left as it was.
+func TestUpdateSendingAnObjectAtARequiredAttributeIsRefusedForItsShape(t *testing.T) {
+	ctx := context.Background()
+	for _, surface := range updateSurfaces {
+		for _, policy := range bothRequiredPolicies {
+			for name, replacement := range map[string]any{
+				"object replacing the value":       map[string]any{"total": int64(5)},
+				"empty object replacing the value": map[string]any{},
+			} {
+				t.Run(surface.name+"/"+string(policy)+"/"+name, func(t *testing.T) {
+					row := seedBigintRow(t, policy, map[string]any{"contact": map[string]any{"total": int64(1), "name": "kept"}}, nil)
+					before := row.repo.records[bigintDestSchema][row.rowID]
+					_, err := surface.update(ctx, row.em, bigintDestUpdate(row.rowID, map[string]any{"contact": map[string]any{"total": replacement}}))
+					assertRefusedFor(t, err, "invalid value for attribute 'contact.total' (attrID=34): declared type bigint takes a single value, got an")
+					if row.repo.records[bigintDestSchema][row.rowID] != before {
+						t.Fatalf("failed update stored a new row")
+					}
+				})
+			}
+		}
+	}
+}
+
 func assertMissingRequired(t *testing.T, err error, attr string) {
 	t.Helper()
-	want := "missing required attribute '" + attr + "'"
+	assertRefusedFor(t, err, "missing required attribute '"+attr+"'")
+}
+
+// assertRefusedFor asserts err is caller input publishing want, as one
+// operation's failure or the call's own error.
+func assertRefusedFor(t *testing.T, err error, want string) {
+	t.Helper()
 	var reported bestEffortFailure
 	if errors.As(err, &reported) {
 		if !strings.Contains(reported.failure.Error, want) {

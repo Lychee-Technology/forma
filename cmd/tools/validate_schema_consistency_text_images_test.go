@@ -28,6 +28,7 @@ func TestValidateSchemaConsistencyReportsNonCanonicalRFC3339Images(t *testing.T)
 	for i := 0; i < 4; i++ {
 		mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e`).WillReturnRows(empty())
 	}
+	expectIndexedScalarCensus(mock)
 	canonical, offset, noDay := uuid.New(), uuid.New(), uuid.New()
 	mock.ExpectQuery(`SELECT m\.ltbase_schema_id, w\.attr_id, m\.ltbase_row_id, v\.image`).
 		WithArgs(int16(100), int16(1), "text_02", "datetime").
@@ -89,6 +90,7 @@ func TestValidateSchemaConsistencyReportsBoolTextImages(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e`).WillReturnRows(empty())
 	}
+	expectIndexedScalarCensus(mock)
 	word := uuid.New()
 	mock.ExpectQuery(`SELECT m\.ltbase_schema_id, w\.attr_id, m\.ltbase_row_id, v\.image`).
 		WithArgs(int16(100), int16(1), "text_01", "bool").

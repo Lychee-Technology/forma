@@ -168,6 +168,11 @@ It validates:
 - text/uuid/list values are not incorrectly stored in `value_numeric`
 - no `list` attribute still carries a scalar row (`array_indices = ''` with a
   value), left over from before the attribute became a list (`#372`)
+- no attribute that is not a list carries records inside arrays its schema
+  does not declare there, which report-only updates stored before `#696`
+  (`{"note": ["a"]}`, or an extra array around an array of objects). A group
+  the census cannot judge is informational; see
+  [Array elements under scalar attributes](#array-elements-under-scalar-attributes-696)
 - no unbound `date`/`datetime` attribute (or list of them) carries an
   `eav_data.value_numeric` image the upgraded read path refuses: a number
   that is not whole (a fraction, `NaN`, `±Infinity`) or one past 2^53 epoch
@@ -692,6 +697,55 @@ value until its next write re-flushes it. That is harmless for exports made
 after `#372`, which already carry the one-element list the rewritten row
 produces; parquet written before `#372` holds `[]` for the row and serves that
 from the warm/cold tiers until the entity is written again.
+
+### Array elements under scalar attributes (`#696`)
+
+Example validator output:
+
+```text
+- array elements stored where the schema declares no such arrays, under scalar attributes in eav_data_dev: schema=lead schema_id=106 attr_id=14 attribute=contact.memo type=text indices=1 rows=1 example=row_id=00000000-0000-4000-8000-00000000000b array_indices="0"
+informational (not a failure):
+- indexed records under scalar attributes the census could not judge in eav_data_dev: schema=s schema_id=110 attr_id=3 attribute=note type=text indices=1 rows=2 example=row_id=... array_indices="0" unverified=the schema has no container skeleton
+```
+
+Before `#696`, report-only update validation let an update give an attribute
+that is not a list an array, and the write stored it element by element:
+`{"contact": {"memo": ["a"]}}` stored `contact.memo` at `array_indices = '0'`,
+and `{"propertyInterests": [[{...}]]}` stored its members at `'0,0'` where the
+schema declares one array of objects. Such a row reads back with an array where
+the schema declares a single value.
+
+A non-empty `array_indices` is not by itself a fault: a member of an array of
+objects and an element of a primitive array the schema declares for an
+element-typed (pre-`#204`) ledger entry are stored with indices too. The census
+groups the indexed records of each attribute that is not a list by their count
+of indices, and asks the schema's container skeleton, the one an update's
+intake asks (see
+[error handling](./error-handling.md#an-updates-shape-is-a-storage-invariant-in-every-mode-696)),
+whether any arrangement of that many arrays along the attribute's path holds a
+single value of it. The skeleton admits every document the schema admits, so a
+group it admits no arrangement for is a verified anomaly and fails the
+pre-flight, naming one record by `row_id` and `array_indices`, never a value. A
+group the census cannot judge, because the schema keeps no skeleton (a `$ref`
+into a `oneOf`, say), its documents did not resolve, or there are too many
+arrangements to try, is reported as informational with the reason: unverified,
+not clean. A list's records are the `#372` check's, and an unknown attribute's
+the attr_id census's.
+
+The census only reads. Nothing in Forma repairs such records, and the right
+repair depends on what the caller meant, so a confirmed finding needs its own
+remediation issue. Inspect a group:
+
+```sql
+SELECT row_id, array_indices, value_text, value_numeric
+FROM eav_data_dev
+WHERE schema_id = 106 AND attr_id = 14 AND array_indices <> ''
+ORDER BY row_id, array_indices
+LIMIT 50;
+```
+
+An update that names the attribute replaces its records with a well-formed
+value, which is the API-level repair for one row.
 
 ### EAV integer values past their declared width (`#501`)
 

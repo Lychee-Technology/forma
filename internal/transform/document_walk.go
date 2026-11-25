@@ -35,9 +35,9 @@ const (
 	// (#623); otherwise they are "". [] anywhere else writes nothing.
 	entryMarker
 	// entryParent is a value at a known path beneath which the walk found no
-	// claim: {}, {"total": null}, or a scalar where an object belongs. The
-	// caller sent the parent explicitly, so it is present for the required
-	// policy even though it writes nothing.
+	// claim: {} or {"total": null} at a parent, or a scalar where an object
+	// belongs. The caller sent the parent explicitly, so it is present for
+	// the required policy even though it writes nothing.
 	entryParent
 	// entryRefusal is a position the write refuses as caller input.
 	entryRefusal
@@ -126,6 +126,17 @@ func (w *documentWalk) enter(path []string, indices []int) bool {
 func (w *documentWalk) visitMap(path []string, v map[string]any, indices []int) {
 	if !w.enter(path, indices) {
 		return
+	}
+	if len(path) > 0 {
+		// An object where an attribute's single values belong stores nothing
+		// the caller sent (value_shape.go, #696). The walk still descends:
+		// a row rebuilt without array ancestry can hold a stored value there
+		// (rebuildInferred), and an update must find it to refuse dropping it
+		// (resolveStoredValues) rather than delete it unseen.
+		name := strings.Join(path, ".")
+		if meta, ok := singleValueAttribute(name, w.cache); ok {
+			w.refuse(objectAtAttributeError(name, meta, v))
+		}
 	}
 	claimsBefore := w.claims
 	keys := make([]string, 0, len(v))

@@ -29,6 +29,7 @@ func newListScalarCensusMock(t *testing.T, listCensus *pgxmock.Rows) pgxmock.Pgx
 		WillReturnRows(empty())
 	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, COUNT\(\*\) AS record_count FROM "eav_data_dev" AS e WHERE e\.array_indices = '' AND \(e\.value_text IS NOT NULL OR e\.value_numeric IS NOT NULL\)`).
 		WillReturnRows(listCensus)
+	expectIndexedScalarCensus(mock)
 	return mock
 }
 

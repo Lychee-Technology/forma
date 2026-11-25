@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
+	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/sqlutil"
 )
 
@@ -32,12 +33,21 @@ import (
 // Upsert that creates), which succeeded before #772 and still does. Both are
 // the first in the write's sorted key order of their class.
 //
-// Only conversion moves here. A position the walk refuses rather than
-// claims keeps its stage, after the precondition and the row's existence are
-// judged: an undefined attribute, a null, an [] nested in a list, the
-// nesting cap. So does the required policy, which the merged write judges
-// before it converts and which needs the row. The caller strips relation
-// subtrees first, as the merge does, since they are never written.
+// The shape of Updates' objects and arrays is judged here too, in every
+// validation mode (value_shape.go, #696): an object at an attribute's own
+// position, and a value inside arrays the schema's container skeleton
+// (shape) does not admit around it, or, with no skeleton, an array at an
+// attribute that is not a list. Each is a refusal of the Refusal class,
+// since it depends on Updates alone and the merged write would store it
+// otherwise, and is ordered with the conversion refusals by the same walk.
+//
+// Only conversion and shape move here. A position the walk refuses rather
+// than claims keeps its stage, after the precondition and the row's
+// existence are judged: an undefined attribute, a null, an [] nested in a
+// list, the nesting cap. So does the required policy, which the merged
+// write judges before it converts and which needs the row. The caller
+// strips relation subtrees first, as the merge does, since they are never
+// written.
 //
 // What passes is answered as the document to write in data's place (#773):
 // a copy of data, which is never mutated, in which each value stored as text
@@ -52,14 +62,14 @@ import (
 // value alone, so every other position holds the value as sent, a refused
 // one included. A document past the nesting cap is answered unchanged: the
 // merged write refuses it.
-func CheckUpdateValues(data map[string]any, cache forma.SchemaAttributeCache) (CheckedUpdates, error) {
+func CheckUpdateValues(data map[string]any, cache forma.SchemaAttributeCache, shape *schemavalidate.ShapeSchema) (CheckedUpdates, error) {
 	if _, err := walkDocument(0, uuid.Nil, data, cache); err != nil {
 		// The nesting cap, which the merged write refuses at its own stage.
 		return CheckedUpdates{Values: data}, nil
 	}
 	// The walk has bounded the document, so the copy below terminates.
-	in := &updateIntake{cache: cache}
-	values, err := in.copyMap(nil, data, nil)
+	in := &updateIntake{cache: cache, shape: shape, judged: make(map[string]error)}
+	values, err := in.copyMap(nil, data, intakePosition{})
 	if err != nil {
 		return CheckedUpdates{}, err
 	}
@@ -84,25 +94,38 @@ type CheckedUpdates struct {
 // refusal holds the first conversion refusal that is not unstorable text;
 // the copy goes on past it, looking for unstorable text.
 type updateIntake struct {
-	cache   forma.SchemaAttributeCache
+	cache forma.SchemaAttributeCache
+	// shape is the schema's container skeleton, which judges the arrays
+	// around each value (judgeArrays); nil when there is none.
+	shape *schemavalidate.ShapeSchema
+	// judged memoizes the skeleton's verdict per arrangement.
+	judged  map[string]error
 	refusal error
+}
+
+// refuse records err unless an earlier refusal is recorded.
+func (in *updateIntake) refuse(err error) {
+	if in.refusal == nil {
+		in.refusal = err
+	}
 }
 
 // copyValue dispatches one position of the copy. Errors pass up the copy
 // unwrapped: convertLeaf names the attribute, which is the whole path, so a
 // prefix per level would only repeat it.
-func (in *updateIntake) copyValue(path []string, value any, indices []int) (any, error) {
+func (in *updateIntake) copyValue(path []string, value any, at intakePosition) (any, error) {
 	switch v := value.(type) {
 	case map[string]any:
-		return in.copyMap(path, v, indices)
+		return in.copyMap(path, v, at)
 	case []any:
-		return in.copyArray(path, v, indices)
+		return in.copyArray(path, v, at)
 	default:
-		return in.convertLeaf(path, v, indices)
+		return in.convertLeaf(path, v, at)
 	}
 }
 
-func (in *updateIntake) copyMap(path []string, src map[string]any, indices []int) (map[string]any, error) {
+func (in *updateIntake) copyMap(path []string, src map[string]any, at intakePosition) (map[string]any, error) {
+	in.judgeObject(path, src)
 	if src == nil {
 		return nil, nil
 	}
@@ -119,7 +142,7 @@ func (in *updateIntake) copyMap(path []string, src map[string]any, indices []int
 			out[key] = nil
 			continue
 		}
-		copied, err := in.copyValue(append(path, key), value, indices)
+		copied, err := in.copyValue(append(path, key), value, at.under())
 		if err != nil {
 			return nil, err
 		}
@@ -131,8 +154,10 @@ func (in *updateIntake) copyMap(path []string, src map[string]any, indices []int
 // copyArray copies an array element by element. An empty one is the
 // empty-list marker, or an [] the walk refuses or ignores: none is a value
 // to convert.
-func (in *updateIntake) copyArray(path []string, src []any, indices []int) ([]any, error) {
+func (in *updateIntake) copyArray(path []string, src []any, at intakePosition) ([]any, error) {
+	in.judgeArray(path, src, at)
 	if src == nil {
+		// Kept nil, which the validator sees as null, not as [].
 		return nil, nil
 	}
 	out := make([]any, len(src))
@@ -140,7 +165,7 @@ func (in *updateIntake) copyArray(path []string, src []any, indices []int) ([]an
 		if item == nil {
 			continue
 		}
-		copied, err := in.copyValue(path, item, append(indices, i))
+		copied, err := in.copyValue(path, item, at.inside(i))
 		if err != nil {
 			return nil, err
 		}
@@ -154,13 +179,14 @@ func (in *updateIntake) copyArray(path []string, src []any, indices []int) ([]an
 // place. A scalar at an undefined attribute is the walk's refusal, left to
 // the write. Text PostgreSQL cannot hold is the error; any other refusal is
 // recorded once, the first, and the value kept as sent.
-func (in *updateIntake) convertLeaf(path []string, value any, indices []int) (any, error) {
+func (in *updateIntake) convertLeaf(path []string, value any, at intakePosition) (any, error) {
 	name := strings.Join(path, ".")
 	meta, ok := in.cache[name]
 	if !ok {
 		return value, nil
 	}
-	record := model.EAVRecord{ArrayIndices: joinIndices(indices)}
+	in.judgeArrays(path, meta, at, sentAt("a value", at.indices))
+	record := model.EAVRecord{ArrayIndices: joinIndices(at.indices)}
 	_, err := populateTypedValue(&record, name, value, meta)
 	text := storedAsText(meta, record.ArrayIndices, value) && record.ValueText != nil
 	if err != nil {
@@ -168,9 +194,7 @@ func (in *updateIntake) convertLeaf(path []string, value any, indices []int) (an
 		if text && sqlutil.CheckText(*record.ValueText) != nil {
 			return nil, err
 		}
-		if in.refusal == nil {
-			in.refusal = err
-		}
+		in.refuse(err)
 		return value, nil
 	}
 	if !text {
