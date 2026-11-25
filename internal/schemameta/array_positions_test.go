@@ -151,3 +151,89 @@ func TestDeriveArrayPositions(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, none["note"].Verified, "a schema without a document settles nothing")
 }
+
+// Combinators are read as JSON Schema reads them (#696 review R4-F1): items
+// typed only through an anyOf of single types make a primitive array, as do
+// a nullable array given by an anyOf and a list's attribute beside it; items
+// that may be objects, or an anyOf admitting an object at the leaf, do not.
+// A leaf typed only through such an anyOf is a single value.
+func TestFileRegistryDerivesDeclaredArraysThroughCombinators(t *testing.T) {
+	dir := t.TempDir()
+	writeSchemaArtifacts(t, dir, "legacy",
+		`{"type":"object","properties":{`+
+			`"tags":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"integer"}]}},`+
+			`"codes":{"anyOf":[{"type":"array","items":{"oneOf":[{"type":"string"},{"type":"null"}]}},{"type":"null"}]},`+
+			`"ranked":{"type":"array","allOf":[{"items":{"type":"integer"}}]},`+
+			`"mixed":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"object"}]}},`+
+			`"either":{"anyOf":[{"type":"object"},{"type":"array","items":{"type":"string"}}]},`+
+			`"note":{"anyOf":[{"type":"string"},{"type":"integer"}]}}}`,
+		`{"tags":{"attributeID":1,"valueType":"text"},"codes":{"attributeID":2,"valueType":"text"},`+
+			`"ranked":{"attributeID":3,"valueType":"integer"},"mixed":{"attributeID":4,"valueType":"text"},`+
+			`"either":{"attributeID":5,"valueType":"text"},"note":{"attributeID":6,"valueType":"text"}}`)
+	registry, err := NewFileSchemaRegistryFromDirectory(dir)
+	require.NoError(t, err)
+	_, cache, err := registry.GetSchemaAttributeCacheByName("legacy")
+	require.NoError(t, err)
+	for name, want := range map[string]bool{"tags": true, "codes": true, "ranked": true, "mixed": false, "either": false, "note": false} {
+		require.Equal(t, want, cache[name].DeclaredArray, name)
+	}
+	require.Equal(t, []string{}, cache["note"].SettledArrayAncestors, "an anyOf of single types settles a single value")
+	require.Nil(t, cache["mixed"].SettledArrayAncestors)
+}
+
+// Where the document does not settle which ancestors are arrays it may still
+// bound how many there are, reading every alternative (#696 review R4-F2):
+// office, an object or one array of objects, bounds office.city at one index
+// and its declared array office.codes at two; deep, an object or an array of
+// arrays of objects, at two. An ancestor whose array leaves its items open, a
+// member an alternative leaves undeclared and a $ref cycle bound nothing, nor
+// does a list. A settled attribute is bounded as it is settled.
+func TestFileRegistryBoundsArrayIndicesBesideCombinators(t *testing.T) {
+	dir := t.TempDir()
+	writeSchemaArtifacts(t, dir, "doc",
+		`{"type":"object","$defs":{"tree":{"anyOf":[{"type":"object","properties":{"name":{"type":"string"}}},`+
+			`{"type":"array","items":{"$ref":"#/$defs/tree"}}]}},"properties":{`+
+			`"office":{"properties":{"city":{"type":"string"},"codes":{"type":["array","null"],"items":{"type":"integer"}}},`+
+			`"anyOf":[{"type":"object"},{"type":"array","items":{"type":"object","properties":{"city":{"type":"string"},`+
+			`"codes":{"type":["array","null"],"items":{"type":"integer"}}}}}]},`+
+			`"deep":{"anyOf":[{"type":"object","properties":{"city":{"type":"string"}}},`+
+			`{"type":"array","items":{"type":"array","items":{"type":"object","properties":{"city":{"type":"string"}}}}}]},`+
+			`"open":{"properties":{"city":{"type":"string"}},"anyOf":[{"type":"object"},{"type":"array"}]},`+
+			`"loose":{"anyOf":[{"type":"object","properties":{"city":{"type":"string"}}},{"type":"object"}]},`+
+			`"tree":{"$ref":"#/$defs/tree"},`+
+			`"areas":{"type":"array","items":{"type":"object","properties":{"city":{"type":"string"}}}},`+
+			`"list":{"type":"array","items":{"type":"string"}}}}`,
+		`{"office.city":{"attributeID":1,"valueType":"text"},"office.codes":{"attributeID":2,"valueType":"integer"},`+
+			`"deep.city":{"attributeID":3,"valueType":"text"},"open.city":{"attributeID":4,"valueType":"text"},`+
+			`"loose.city":{"attributeID":5,"valueType":"text"},"tree.name":{"attributeID":6,"valueType":"text"},`+
+			`"areas.city":{"attributeID":7,"valueType":"text"},"list":{"attributeID":8,"valueType":"list","items_type":"text"}}`)
+	registry, err := NewFileSchemaRegistryFromDirectory(dir)
+	require.NoError(t, err)
+	_, cache, err := registry.GetSchemaAttributeCacheByName("doc")
+	require.NoError(t, err)
+	for name, want := range map[string]int{"office.city": 1, "office.codes": 2, "deep.city": 2, "areas.city": 1} {
+		require.True(t, cache[name].ArrayIndicesBounded, name)
+		require.Equal(t, want, cache[name].MaxArrayIndices, name)
+	}
+	require.Nil(t, cache["office.city"].SettledArrayAncestors)
+	for _, name := range []string{"open.city", "loose.city", "tree.name", "list"} {
+		require.False(t, cache[name].ArrayIndicesBounded, name)
+	}
+}
+
+// The census reads a primitive array whose items are typed through an anyOf
+// as the registry does (#696 review R4-F1): verified, with its own index.
+func TestDeriveArrayPositionsReadsCombinatorItems(t *testing.T) {
+	dir := t.TempDir()
+	writeSchemaArtifacts(t, dir, "doc",
+		`{"type":"object","properties":{"tags":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"integer"}]}},`+
+			`"mixed":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"object"}]}}}}`, `{}`)
+	cache := forma.SchemaAttributeCache{
+		"tags":  {AttributeName: "tags", ValueType: forma.ValueTypeText},
+		"mixed": {AttributeName: "mixed", ValueType: forma.ValueTypeText},
+	}
+	positions, err := DeriveArrayPositions(dir, "doc", cache)
+	require.NoError(t, err)
+	require.Equal(t, ArrayPositions{Ancestors: []string{}, DeclaredArray: true, Verified: true}, positions["tags"])
+	require.False(t, positions["mixed"].Verified)
+}

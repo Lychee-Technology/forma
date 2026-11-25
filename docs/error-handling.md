@@ -205,15 +205,25 @@ registry's array ancestry (#623), which reads the document leniently (an
 object declared only by `properties` may still be an array under an
 `anyOf`) and is derived for every attribute of a schema or for none, so an
 unrelated path it cannot resolve does not lift the limit elsewhere. Where
-the document does not settle an attribute's positions, nothing proves an
-index there wrong, and this part of the rule does not apply: an array of
-objects such a document allows is written as before #696.
+the document does not settle which ancestors are arrays, it may still bound
+how many there are (`AttributeMetadata.MaxArrayIndices`), reading `allOf`,
+`anyOf` and `oneOf` as JSON Schema does: an `office` that an `anyOf` lets be
+an object or one array of objects admits `{"office": [{"city": "c"}]}`, but
+refuses `{"office": [[{"city": "c"}]]}` as `a single text value at array
+indices "0,0" is nested in more arrays than the schema document admits
+around it (at most 1 on any of its readings)`. Where the document bounds
+neither, as where an array's `items` or an object's member is left open,
+nothing proves an index there wrong, and this part of the rule does not
+apply: an array of objects such a document allows is written as before
+#696.
 
 A primitive array whose attributes file predates #204 and records its
 element type (`contact.phones` as `text`) is written as an array, by updates
 as by creates, where the schema document positively declares it one
 (`"type": "array"`, or a union such as `["array", "null"]`, with primitive
-`items`): the file registry marks it
+`items`, whose types may also be given through a combinator such as
+`{"anyOf": [{"type": "string"}, {"type": "integer"}]}`): the file registry
+marks it
 (`AttributeMetadata.DeclaredArray`), and its elements are judged as a
 list's, one single value each. The mark reads the attribute's own node, so
 it holds beneath a parent whose positions the document leaves unsettled,

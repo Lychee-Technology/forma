@@ -24,7 +24,10 @@ import (
 // settled: it only admits an array the document declares there.
 // SettledArrayAncestors is set only where the raw document settles the
 // attribute's positions (settledArrayPositions), since an update is refused
-// by it.
+// by it. Where they are not settled, MaxArrayIndices still bounds them when
+// every reading the document admits does (boundedArrayIndices, #696 review
+// R4-F2), as an anyOf letting office be an object or one array of objects
+// bounds office.city at one index.
 func withArrayPositions(cache forma.SchemaAttributeCache, schema *forma.JSONSchema) forma.SchemaAttributeCache {
 	var root map[string]any
 	if err := json.Unmarshal([]byte(schema.Schema), &root); err != nil {
@@ -35,12 +38,14 @@ func withArrayPositions(cache forma.SchemaAttributeCache, schema *forma.JSONSche
 	derived := make(forma.SchemaAttributeCache, len(cache))
 	for name, meta := range cache {
 		meta.DeclaredArray, meta.SettledArrayAncestors = false, nil
+		meta.MaxArrayIndices, meta.ArrayIndicesBounded = 0, false
 		if meta.ValueType != forma.ValueTypeList {
 			positions := settledArrayPositions(root, defs, name)
 			meta.DeclaredArray = declaredPrimitiveArray(root, defs, name) || declaresPrimitiveArray(name, schema.Properties)
 			if positions.Verified {
 				meta.SettledArrayAncestors = positions.Ancestors
 			}
+			meta.MaxArrayIndices, meta.ArrayIndicesBounded = boundedArrayIndices(root, defs, name, meta.DeclaredArray)
 		}
 		derived[name] = meta
 	}
@@ -49,8 +54,9 @@ func withArrayPositions(cache forma.SchemaAttributeCache, schema *forma.JSONSche
 
 // declaredPrimitiveArray reports whether the raw document declares name an
 // array whose items are single values, by the attribute's own node as
-// leafPositions settles it (a type fixing an array, a union with "null"
-// included, and items whose type fixes a single value). Its ancestors are
+// leafPositions settles it (declaresPrimitiveArrayNode: an array, a union
+// with "null" included, and items that are single values, by their type or
+// their combinators). Its ancestors are
 // reached as the parser reaches them (memberProperties): through an array's
 // items where the node has items, through its own properties otherwise,
 // whether or not their types settle them. An ancestor whose positions are
@@ -67,7 +73,7 @@ func declaredPrimitiveArray(root, defs map[string]any, name string) bool {
 			return false
 		}
 		if i == len(segments)-1 {
-			return leafPositions(child, fixedKind(child), defs, nil).DeclaredArray
+			return leafPositions(child, defs, nil).DeclaredArray
 		}
 		if items, ok := resolvedNode(child["items"], defs); ok {
 			node = items
@@ -171,11 +177,10 @@ func settledArrayPositions(root, defs map[string]any, name string) ArrayPosition
 		if !ok {
 			return ArrayPositions{}
 		}
-		kind := fixedKind(child)
 		if i == len(segments)-1 {
-			return leafPositions(child, kind, defs, ancestors)
+			return leafPositions(child, defs, ancestors)
 		}
-		switch kind {
+		switch fixedKind(child) {
 		case kindObject:
 			node = child
 		case kindArray:
@@ -193,16 +198,17 @@ func settledArrayPositions(root, defs map[string]any, name string) ArrayPosition
 }
 
 // leafPositions settles the attribute's own node: a single value, or a
-// primitive array.
-func leafPositions(leaf map[string]any, kind schemaKind, defs map[string]any, ancestors []string) ArrayPositions {
-	switch kind {
-	case kindSingle:
+// primitive array (declaresPrimitiveArrayNode). Both are read with the
+// node's combinators, so items typed only through an anyOf of single types
+// are single values (#696 review R4-F1), and a leaf without a type or a
+// combinator fixing it stays open.
+func leafPositions(leaf, defs map[string]any, ancestors []string) ArrayPositions {
+	kinds := nodeKinds(leaf, defs, 0)
+	switch {
+	case kinds == kindSetSingle:
 		return ArrayPositions{Ancestors: ancestors, Verified: true}
-	case kindArray:
-		items, ok := resolvedNode(leaf["items"], defs)
-		if ok && fixedKind(items) == kindSingle {
-			return ArrayPositions{Ancestors: ancestors, DeclaredArray: true, Verified: true}
-		}
+	case declaresPrimitiveArrayNode(leaf, defs):
+		return ArrayPositions{Ancestors: ancestors, DeclaredArray: true, Verified: true}
 	}
 	return ArrayPositions{}
 }
@@ -238,17 +244,7 @@ const (
 // record beneath them; one with both an object and an array, or a node
 // without a type, is open.
 func fixedKind(node map[string]any) schemaKind {
-	var types []string
-	switch t := node["type"].(type) {
-	case string:
-		types = []string{t}
-	case []any:
-		for _, member := range t {
-			if s, ok := member.(string); ok {
-				types = append(types, s)
-			}
-		}
-	}
+	types := typeNames(node)
 	if len(types) == 0 {
 		return kindOpen
 	}

@@ -98,14 +98,27 @@ func elementShapeOf(meta forma.AttributeMetadata, item any) elementShape {
 // arrays than the schema document settles for the attribute
 // (forma.AttributeMetadata.SettledArrayAncestors): one index per array of
 // objects around it, and one more for a declared primitive array's element.
-// Where the document does not settle them, as beside an anyOf that may admit
-// an array, nothing proves an index wrong, and the value is written as
+// Where the document does not settle which ancestors are arrays, as beside
+// an anyOf letting office be an object or an array of objects, it may still
+// bound how many there are (forma.AttributeMetadata.MaxArrayIndices): every
+// reading it admits holds office.city at most one array deep, so a value
+// inside an extra array is refused there too (#696 review R4-F2). Where it
+// bounds neither, nothing proves an index wrong, and the value is written as
 // before #696. The registry's array ancestry is not that proof: it is
 // derived leniently, and for every attribute of a schema or for none. A
 // list's indices are its conversion's (listElementMeta).
 func excessIndicesError(attrName string, meta forma.AttributeMetadata, indices []int) error {
-	if meta.SettledArrayAncestors == nil || meta.ValueType == forma.ValueTypeList {
+	if meta.ValueType == forma.ValueTypeList {
 		return nil
+	}
+	if meta.SettledArrayAncestors == nil {
+		if !meta.ArrayIndicesBounded || len(indices) <= meta.MaxArrayIndices {
+			return nil
+		}
+		return conversionRefusal(attrName, meta, fmt.Errorf(
+			"a single %s value at array indices %q is nested in more arrays than the schema document admits around it "+
+				"(at most %d on any of its readings); an array cannot be stored where a single value belongs",
+			meta.ValueType, joinIndices(indices), meta.MaxArrayIndices))
 	}
 	admitted := len(meta.SettledArrayAncestors)
 	if meta.DeclaredArray {

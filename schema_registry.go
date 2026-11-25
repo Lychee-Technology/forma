@@ -222,6 +222,21 @@ type AttributeMetadata struct {
 	// applies. The file registry derives it and never reads it from the
 	// attributes file.
 	SettledArrayAncestors []string `json:"-"`
+	// MaxArrayIndices is, when ArrayIndicesBounded, the most array indices a
+	// record of this attribute may carry under any reading the schema
+	// document admits (#696 review R4-F2): one per array around it on that
+	// reading, and one more where the attribute takes an array itself (a
+	// list's indices aside). It bounds what SettledArrayAncestors cannot
+	// settle: office.city, where an anyOf lets office be an object or one
+	// array of objects, may carry at most one index, though which ancestor
+	// holds it is open. The document bounds it when every node a reading
+	// passes through says what its members and elements are, combinators
+	// (allOf, anyOf, oneOf) read as JSON Schema reads them; a node that
+	// leaves an array's items or an object's member open, or a $ref outside
+	// the document, leaves the attribute unbounded. The file registry
+	// derives both fields and never reads them from the attributes file.
+	MaxArrayIndices     int  `json:"-"`
+	ArrayIndicesBounded bool `json:"-"`
 }
 
 // EffectiveRequiredPolicy returns the policy used at runtime.

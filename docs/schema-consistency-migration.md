@@ -725,7 +725,10 @@ failure only where the document settles them: every node on the
 attribute's path has a `type` that fixes it as an object, an array of
 objects, a single value or a primitive array (a `$ref` into the document's
 `$defs` is followed). JSON Schema is conjunctive, so such a type holds
-whatever combinators sit beside it. A primitive array the document declares
+whatever combinators sit beside it. The attribute's own node is read with
+its combinators too, so items typed through
+`{"anyOf": [{"type": "string"}, {"type": "integer"}]}` are single values. A
+primitive array the document declares
 while the attributes file records its element type (pre-`#204`,
 `contact.phones` as `text`) is that shape on purpose: its records take one
 index more and are clean (`declared_array=true` names it in a finding).
