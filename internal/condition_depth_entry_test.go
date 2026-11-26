@@ -157,40 +157,53 @@ func requirePublishedRefusal(t *testing.T, err error, want string) {
 	assert.Contains(t, message, want)
 }
 
-// runConditionEntryPoints is the regression suite, run by
-// TestConditionEntryPointsRefuseCyclicAndDeepTrees and again under a capped
-// stack by TestCyclicConditionsUnderACappedStack.
-func runConditionEntryPoints(t *testing.T) {
-	for _, tree := range refusedConditions() {
-		t.Run(tree.name, func(t *testing.T) {
-			for _, entry := range managerConditionEntries() {
-				t.Run(entry.name, func(t *testing.T) {
-					em, mock := newMockManagerOver(t, nil, "visit")
-					requirePublishedRefusal(t, entry.call(context.Background(), em, tree.cond), entry.refusal)
-					require.NoError(t, mock.ExpectationsWereMet(), "a refused condition sends no SQL")
-				})
-			}
-			t.Run("Tx", func(t *testing.T) {
-				txr, mock := newMockTransactorOver(t, nil, "visit", "activity")
-				mock.ExpectBeginTx(readCommittedTx)
-				mock.ExpectCommit()
-				err := txr.InTx(context.Background(), func(ctx context.Context, tx forma.Tx) error {
-					for _, entry := range txConditionEntries() {
-						t.Run(entry.name, func(t *testing.T) {
-							requirePublishedRefusal(t, entry.call(ctx, tx, tree.cond), entry.refusal)
-						})
-					}
-					return nil
-				})
-				require.NoError(t, err, "every refusal leaves the Tx able to commit")
-				require.NoError(t, mock.ExpectationsWereMet(), "the Tx sends nothing but BEGIN and COMMIT")
+// runConditionEntryPoints is the regression suite over one refused tree. A
+// finite tree runs it in the test binary
+// (TestConditionEntryPointsRefuseATooDeepTree); a cyclic one only in the
+// capped child of TestCyclicConditionsUnderACappedStack.
+func runConditionEntryPoints(t *testing.T, tree namedCondition) {
+	t.Run(tree.name, func(t *testing.T) {
+		for _, entry := range managerConditionEntries() {
+			t.Run(entry.name, func(t *testing.T) {
+				em, mock := newMockManagerOver(t, nil, "visit")
+				requirePublishedRefusal(t, entry.call(context.Background(), em, tree.cond), entry.refusal)
+				require.NoError(t, mock.ExpectationsWereMet(), "a refused condition sends no SQL")
 			})
+		}
+		t.Run("Tx", func(t *testing.T) {
+			txr, mock := newMockTransactorOver(t, nil, "visit", "activity")
+			mock.ExpectBeginTx(readCommittedTx)
+			mock.ExpectCommit()
+			err := txr.InTx(context.Background(), func(ctx context.Context, tx forma.Tx) error {
+				for _, entry := range txConditionEntries() {
+					t.Run(entry.name, func(t *testing.T) {
+						requirePublishedRefusal(t, entry.call(ctx, tx, tree.cond), entry.refusal)
+					})
+				}
+				return nil
+			})
+			require.NoError(t, err, "every refusal leaves the Tx able to commit")
+			require.NoError(t, mock.ExpectationsWereMet(), "the Tx sends nothing but BEGIN and COMMIT")
 		})
-	}
+	})
 }
 
-func TestConditionEntryPointsRefuseCyclicAndDeepTrees(t *testing.T) {
-	runConditionEntryPoints(t)
+func TestConditionEntryPointsRefuseATooDeepTree(t *testing.T) {
+	runConditionEntryPoints(t, tooDeepCondition())
+}
+
+// The query routes wrap the refusal with the operation it refused, as every
+// other intake error is wrapped, and keep its published message.
+func TestQueryDepthRefusalsNameTheOperation(t *testing.T) {
+	tooDeep := tooDeepCondition().cond
+	em, mock := newMockManagerOver(t, nil, "visit")
+	_, err := em.Query(context.Background(), &forma.QueryRequest{SchemaName: "visit", Condition: tooDeep})
+	requireDepthRefusal(t, err)
+	assert.ErrorContains(t, err, "failed to validate the condition of the query of visit: ")
+	_, err = em.CrossSchemaSearch(context.Background(), &forma.CrossSchemaRequest{SchemaNames: []string{"visit", "activity"}, SearchTerm: "x", Condition: tooDeep})
+	requireDepthRefusal(t, err)
+	assert.ErrorContains(t, err, "failed to validate the condition of the cross-schema search of visit, activity: ")
+	require.NoError(t, mock.ExpectationsWereMet(), "a refused condition sends no SQL")
 }
 
 // At an entry point the bound sits exactly where checkConditionDepth puts
