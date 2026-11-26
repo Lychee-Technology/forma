@@ -181,8 +181,12 @@ func (s *txSession) resolveUpsert(ctx context.Context, plan *upsertPlan, holder 
 	// The plan validated the update, its precondition included, before any
 	// SQL; it is applied as validated, the precondition judged again only as
 	// the row guard under the lock (#675).
+	// The update is bounded by the write budget, as it was when it ran
+	// through Update.
 	op := *plan.update
 	op.RowID = holder
+	ctx, cancel := withBudget(ctx, s.crud.budgets.write)
+	defer cancel()
 	record, err := s.crud.updateValidated(ctx, &op, plan.create.schemaID, plan.create.cache)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update the existing row %s: %w", holder, err)
