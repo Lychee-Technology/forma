@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 
@@ -77,16 +78,51 @@ func readQtyBothRoutes(ctx context.Context, t *testing.T, env *Env, schema Schem
 }
 
 // TestApplyRefusesNumericToBigint: a narrowing is refused whatever the
-// stored values (every qty here is whole), the active generation stays, and
-// reads keep working under the old declaration.
+// stored values (whole values within ±2^53, 1000.5, 1e30, 2^53+2), the active
+// generation stays unchanged, no partial activation occurs, and OLTP/federated
+// reads continue returning the original stored values.
 func TestApplyRefusesNumericToBigint(t *testing.T) {
-	ctx := context.Background()
-	env := NewEnv(t, SharedCluster(t), WithSchemaDir(qtyDir(t, "numeric", "double_01")))
-	simple := DefaultSchemaFixtures()[0]
-	mustApplyEvents(ctx, t, env, "whole qtys", qtyCreate(simple, 0, float64(1000)), qtyCreate(simple, 1, float64(2000)))
-	mustFlush(ctx, t, env)
+	cluster := SharedCluster(t)
+	for _, tc := range []struct {
+		name   string
+		values []float64
+	}{
+		{name: "whole_values_within_exact_int_range", values: []float64{1000, 2000}},
+		{name: "fraction_1000_5", values: []float64{1000.5}},
+		{name: "overflow_1e30", values: []float64{1e30}},
+		{name: "past_2_53_plus_2", values: []float64{float64(int64(1)<<53 + 2)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			verifyNumericToBigintRefusal(t, cluster, tc.name, tc.values)
+		})
+	}
+}
 
-	err := env.EvolveSchema(ctx, qtyDir(t, "bigint", "double_01"))
+func verifyNumericToBigintRefusal(t *testing.T, cluster *Cluster, caseName string, values []float64) {
+	t.Helper()
+	ctx := context.Background()
+	v1 := qtyDir(t, "numeric", "double_01")
+	v2 := qtyDir(t, "bigint", "double_01")
+	env := NewEnv(t, cluster, WithSchemaDir(v1))
+	simple := DefaultSchemaFixtures()[0]
+
+	beforeGen, ok, err := schemaledger.ReadActive(ctx, env.Pool, env.Tables.SchemaRegistry, simple.ID)
+	if err != nil || !ok || beforeGen.Number != 1 {
+		t.Fatalf("read initial generation of %s: ok=%t gen=%+v err=%v", simple.Name, ok, beforeGen, err)
+	}
+
+	events := make([]*Event, len(values))
+	for i, v := range values {
+		events[i] = qtyCreate(simple, i, v)
+	}
+	mustApplyEvents(ctx, t, env, caseName, events...)
+
+	flushRes := mustFlush(ctx, t, env)
+	key := requireSoleParquet(t, "flush", flushRes.NewObjects)
+	requireParquetCols(t, "numeric delta", describeParquetCols(ctx, t, env, key), map[string]string{"qty": "DOUBLE"})
+
+	err = env.EvolveSchema(ctx, v2)
 	if err == nil {
 		t.Fatal("numeric to bigint must be refused")
 	}
@@ -95,13 +131,63 @@ func TestApplyRefusesNumericToBigint(t *testing.T) {
 			t.Errorf("refusal %q does not mention %q", err, want)
 		}
 	}
-	if n := activeGeneration(ctx, t, env, simple); n != 1 {
+
+	assertGenerationUnchangedAndGated(ctx, t, env, simple, beforeGen, v1, v2)
+	assertStoredAndReadValues(ctx, t, env, simple, events, values)
+}
+
+func assertGenerationUnchangedAndGated(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, beforeGen schemaledger.Generation, v1, v2 string) {
+	t.Helper()
+	if n := activeGeneration(ctx, t, env, schema); n != 1 {
 		t.Fatalf("a refused apply moved the active generation to %d", n)
 	}
-	full := env.AssertQueryMatches(ctx, Query{Schema: simple, Limit: 10})
+	afterGen, ok, err := schemaledger.ReadActive(ctx, env.Pool, env.Tables.SchemaRegistry, schema.ID)
+	if err != nil || !ok || afterGen.Number != beforeGen.Number || afterGen.Hash != beforeGen.Hash ||
+		!slices.Equal(afterGen.Entries, beforeGen.Entries) {
+		t.Fatalf("active generation mutated on refusal: before=%+v after=%+v (ok=%t err=%v)", beforeGen, afterGen, ok, err)
+	}
+	var genCount int
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE schema_id = $1", schemaledger.TablesFor(env.Tables.SchemaRegistry).Generation)
+	if err := env.Pool.QueryRow(ctx, countQuery, schema.ID).Scan(&genCount); err != nil {
+		t.Fatalf("count generations: %v", err)
+	}
+	if genCount != 1 {
+		t.Fatalf("generation table has %d rows after refused apply, want 1", genCount)
+	}
+	if _, err := schemameta.NewFileSchemaRegistryContext(ctx, env.Pool, env.Tables.SchemaRegistry, v2); !errors.Is(err, schemaledger.ErrNotActive) {
+		t.Fatalf("registry on refused declaration v2 = %v, want ErrNotActive", err)
+	}
+	if _, err := schemameta.NewMetadataLoader(env.Pool, env.Tables.SchemaRegistry, v2).LoadMetadata(ctx); !errors.Is(err, schemaledger.ErrNotActive) {
+		t.Fatalf("metadata loader on refused declaration v2 = %v, want ErrNotActive", err)
+	}
+	if _, err := schemameta.NewFileSchemaRegistryContext(ctx, env.Pool, env.Tables.SchemaRegistry, v1); err != nil {
+		t.Fatalf("registry on original declaration v1 failed after refusal: %v", err)
+	}
+}
+
+func assertStoredAndReadValues(ctx context.Context, t *testing.T, env *Env, schema SchemaRef, events []*Event, values []float64) {
+	t.Helper()
+	full := env.AssertQueryMatches(ctx, Query{Schema: schema, Limit: 10})
 	assertUsesDuckDB(t, full)
-	if full != nil && full.Total != 2 {
-		t.Fatalf("read under the old declaration returned %d rows, want 2", full.Total)
+	if full != nil && full.Total != int64(len(values)) {
+		t.Fatalf("read under the old declaration returned %d rows, want %d", full.Total, len(values))
+	}
+	colQuery := fmt.Sprintf("SELECT double_01 FROM %s WHERE ltbase_schema_id = $1 AND ltbase_row_id = $2", env.Tables.EntityMain)
+	for i, ev := range events {
+		want := values[i]
+		oltp, federated := readQtyBothRoutes(ctx, t, env, schema, ev.RowID)
+		oltpF, okOLTP := oltp.(float64)
+		fedF, okFed := federated.(float64)
+		if !okOLTP || !okFed || oltpF != want || fedF != want {
+			t.Fatalf("row %s qty reads %v (%T, OLTP) and %v (%T, federated), want exact float64 %v", ev.RowID, oltp, oltp, federated, federated, want)
+		}
+		var stored float64
+		if err := env.Pool.QueryRow(ctx, colQuery, schema.ID, ev.RowID).Scan(&stored); err != nil {
+			t.Fatalf("query stored double_01 for row %s: %v", ev.RowID, err)
+		}
+		if stored != want {
+			t.Fatalf("stored double_01 for row %s = %v, want %v", ev.RowID, stored, want)
+		}
 	}
 }
 
