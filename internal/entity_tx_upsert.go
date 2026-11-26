@@ -178,9 +178,12 @@ func (s *txSession) resolveUpsert(ctx context.Context, plan *upsertPlan, holder 
 	if plan.updateRefusal != nil {
 		return nil, refusedBeforeWrite{fmt.Errorf("failed to update the existing row %s: %w", holder, plan.updateRefusal)}
 	}
+	// The plan validated the update, its precondition included, before any
+	// SQL; it is applied as validated, the precondition judged again only as
+	// the row guard under the lock (#675).
 	op := *plan.update
 	op.RowID = holder
-	record, err := s.crud.Update(ctx, &op)
+	record, err := s.crud.updateValidated(ctx, &op, plan.create.schemaID, plan.create.cache)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update the existing row %s: %w", holder, err)
 	}

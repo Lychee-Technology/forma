@@ -269,9 +269,6 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 		return nil, forma.InvalidInputf("updates are required for update operation")
 	}
 
-	ctx, cancel := withBudget(ctx, s.budgets.write)
-	defer cancel()
-
 	// Get schema by name.
 	schemaID, schemaCache, err := s.registry.GetSchemaAttributeCacheByName(req.SchemaName)
 	if err != nil {
@@ -287,6 +284,17 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	// The merge writes the Updates intake checked, not the caller's (#773).
 	write := *req
 	write.Updates = updates
+	return s.updateValidated(ctx, &write, schemaID, schemaCache)
+}
+
+// updateValidated is Update after its intake: req has passed
+// validateConditionalUpdate, and its Updates are the values that check
+// answered. Upsert's update of the existing row enters here, so its
+// precondition is checked once, by its plan, before any SQL (#675), and is
+// still judged as the row guard under the lock.
+func (s *entityCRUDService) updateValidated(ctx context.Context, req *forma.EntityOperation, schemaID int16, schemaCache forma.SchemaAttributeCache) (*forma.DataRecord, error) {
+	ctx, cancel := withBudget(ctx, s.budgets.write)
+	defer cancel()
 
 	// The whole read-modify-write happens inside the repository's write
 	// transaction, under the per-row write lock create and delete take
@@ -299,7 +307,7 @@ func (s *entityCRUDService) Update(ctx context.Context, req *forma.EntityOperati
 	stored, err := s.repository.MergePersistentRecord(ctx, s.resolveTables(), schemaID, req.RowID,
 		model.RowGuard{Precondition: req.Preconditions},
 		func(ctx context.Context, existing *model.PersistentRecord, clock model.TxClock) (*model.PersistentRecord, error) {
-			return s.mergeUpdateRecord(ctx, &write, schemaID, schemaCache, existing, clock)
+			return s.mergeUpdateRecord(ctx, req, schemaID, schemaCache, existing, clock)
 		})
 	if err != nil {
 		return nil, fmt.Errorf("failed to update persistent record: %w", err)

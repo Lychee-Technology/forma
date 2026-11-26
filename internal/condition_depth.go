@@ -23,6 +23,11 @@ import "github.com/lychee-technology/forma"
 // is 1000 composites over one leaf.
 const maxConditionNestingDepth = 1000
 
+// conditionDepthChecked, nil outside tests, is told of every depth check,
+// so a test can count the checks one public call makes of a condition it
+// accepts: one (#675).
+var conditionDepthChecked func(cond forma.Condition)
+
 // checkConditionDepth refuses cond when a node of it sits deeper than
 // maxConditionNestingDepth. It is the first walk over a condition at every
 // entry point that accepts one, so every later walker may rely on the bound.
@@ -31,6 +36,9 @@ const maxConditionNestingDepth = 1000
 // condition in the published message ("condition", "precondition", ...).
 // nil passes.
 func checkConditionDepth(noun string, cond forma.Condition) error {
+	if conditionDepthChecked != nil {
+		conditionDepthChecked(cond)
+	}
 	if conditionWithinDepth(cond, 0) {
 		return nil
 	}
