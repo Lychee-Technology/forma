@@ -329,8 +329,9 @@ old process convert a bound column's value instead:
   `40000` as NULL. The new declaration reads a SMALLINT column as lossless, so
   the federated route serves the converted value while that object is live,
   and Postgres keeps `1001.5`. The start-up check in [Generations](#generations)
-  does not stop a run already in progress. The production harness reproduces
-  this path end to end: the export a stopped run strands holds `1002`. An
+  does not stop a run already in progress. Before Protocol V2 moved the check
+  ahead of staging, the production harness reproduced this path end to end:
+  the `_tmp` object a stopped run stranded held `1002`. An
   EAV-only `smallint`/`integer` exports at storage width, DOUBLE
   (`castEAVValue`), so such a run converts nothing.
 
@@ -347,9 +348,11 @@ stops a run, including one that only adds an attribute. Each run also checks
 the active generation at its start, so a long-lived process (the CDC runner, a
 warm Lambda) does not begin a run on a superseded declaration. Pinned by
 `TestCDCFlushStopsABatchExportedAcrossAnApply` and
-`TestCDCInitStopsABatchExportedAcrossAnApply`. Under Protocol V2 the stranded
-object is an unlisted staging object that `manifest-reconcile --gc` collects
-once it is below the horizon (#891); nothing re-adopts it.
+`TestCDCInitStopsABatchExportedAcrossAnApply`. Under Protocol V2 the stopped
+export itself stages nothing (its local scratch file is removed before upload);
+any earlier object in a multi-object batch that passed the check and was staged
+before the abort is an unlisted staging object that `manifest-reconcile --gc`
+collects once it is below the horizon (#891), and nothing re-adopts it.
 
 Two placements are not enough:
 
@@ -417,7 +420,8 @@ schema, attribute, column and remaining count. It counts with the
   A differing retired flag is allowed too, so a process from before a removal
   still starts. So apply runs first, then the data plane rolls. The check runs
   at start; a CDC run already in progress instead reads the active generation
-  again before each batch leaves its `_tmp` key (see above). The compactor is
+  again after each object's local export and before it is staged under its
+  write-once key (see above). The compactor is
   not gated, because it loads no declaration.
 - The control-plane steps that must load a declaration the ledger does not
   hold yet, or report on one, load it ungated: `init-db`'s declared-index and
@@ -645,10 +649,10 @@ refuse, and the census reports them. A `numeric` value written as
 
 ### Why enforcement is not a narrow patch
 
-Fail-closed enforcement needs two things the code does not have:
+Before #733, fail-closed enforcement needed two things the code did not have:
 
 1. **A record of the active declaration** that every process checks before it
-   serves. Today there is nothing to compare a new declaration against, and a
+   serves. Previously there was nothing to compare a new declaration against, and a
    check inside one tool would be bypassed by every other process.
 2. **A baseline for existing deployments.** The first record of a schema that
    already holds data must not bless a declaration the data contradicts, so the
@@ -729,9 +733,9 @@ object and the offending value. More generally, an attribute is affected when
 a live parquet file holds its column at a type the current declaration does
 not losslessly contain. For
 example, the manifest lists a `DOUBLE` column `ratio` while `ratio` is now
-declared `bigint`. The manifest JSON names each file's column types (`columns`).
-For entries without them, `DESCRIBE SELECT * FROM read_parquet('<file>')` in
-DuckDB gives the same answer. `validate-schema-consistency` reports the Postgres
+declared `bigint`. Every Protocol V2 manifest entry names each file's column
+types (`columns`); `DESCRIBE SELECT * FROM read_parquet('<file>')` in DuckDB
+gives the same answer directly from the object. `validate-schema-consistency` reports the Postgres
 side: a bound `bigint` in a `double_*` column outside ±2^53 or non-integral, a
 bound `smallint`/`integer` outside its type, and EAV-only integers outside
 their width.
