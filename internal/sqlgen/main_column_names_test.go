@@ -143,35 +143,51 @@ func TestBuildSchemaProjection_RefusesEntityMainColumnName(t *testing.T) {
 	assert.Contains(t, err.Error(), `entity_main column "text_01"`)
 }
 
-// ValidateEntityMainColumnNames is the #470 rule alone, for caches no
-// admission saw: it refuses exactly what ValidateParquetAttrColumns refuses
-// for a main column name, exempts retired entries, admits near-misses, and
-// names the smallest colliding attribute so the message is deterministic.
-func TestValidateEntityMainColumnNames(t *testing.T) {
+// ValidateReservedAttrNames is the reserved-name half of
+// ValidateParquetAttrColumns alone, for caches no admission saw: it refuses
+// every entity_main column and every system and dedup column, worded as
+// admission words it, exempts retired entries, admits near-misses, and names
+// the smallest colliding attribute so the message is deterministic.
+func TestValidateReservedAttrNames(t *testing.T) {
 	for _, desc := range model.EntityMainColumnDescriptors {
-		err := ValidateEntityMainColumnNames(forma.SchemaAttributeCache{
+		cache := forma.SchemaAttributeCache{
 			desc.Name: {AttributeID: 1, ValueType: model.ColumnKindToValueType(desc.Kind)},
-		})
+		}
+		err := ValidateReservedAttrNames(cache)
 		require.Error(t, err, desc.Name)
-		assert.Contains(t, err.Error(), `entity_main column "`+desc.Name+`"`)
+		assert.Equal(t, ValidateParquetAttrColumns(cache).Error(), err.Error(), desc.Name)
+	}
+	for col := range reservedParquetColumns {
+		cache := forma.SchemaAttributeCache{col: {AttributeID: 1, ValueType: forma.ValueTypeText}}
+		err := ValidateReservedAttrNames(cache)
+		require.Error(t, err, col)
+		assert.Contains(t, err.Error(), "reserved for system columns", col)
+		assert.Equal(t, ValidateParquetAttrColumns(cache).Error(), err.Error(), col)
 	}
 
-	err := ValidateEntityMainColumnNames(forma.SchemaAttributeCache{"Text.01": {AttributeID: 1}})
+	err := ValidateReservedAttrNames(forma.SchemaAttributeCache{"Text.01": {AttributeID: 1}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `attribute "Text.01" folds to "Text_01"`)
 
-	err = ValidateEntityMainColumnNames(forma.SchemaAttributeCache{
+	err = ValidateReservedAttrNames(forma.SchemaAttributeCache{"Row.ID": {AttributeID: 1}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `onto the reserved system column "row_id"`)
+
+	err = ValidateReservedAttrNames(forma.SchemaAttributeCache{
 		"uuid_01": {AttributeID: 1}, "integer_02": {AttributeID: 2}, "text_01": {AttributeID: 3},
+		"rn": {AttributeID: 4},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `attribute "integer_02"`)
 
-	require.NoError(t, ValidateEntityMainColumnNames(forma.SchemaAttributeCache{
+	require.NoError(t, ValidateReservedAttrNames(forma.SchemaAttributeCache{
 		"text_11":    {AttributeID: 1},
 		"my.text_01": {AttributeID: 2},
 		"text_02":    {AttributeID: 3, Retired: true},
+		"rn":         {AttributeID: 5, Retired: true},
+		"row_ids":    {AttributeID: 6},
 		"status": {AttributeID: 4, ValueType: forma.ValueTypeText,
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01}},
 	}))
-	require.NoError(t, ValidateEntityMainColumnNames(nil))
+	require.NoError(t, ValidateReservedAttrNames(nil))
 }

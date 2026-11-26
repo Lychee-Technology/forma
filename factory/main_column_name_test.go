@@ -121,3 +121,54 @@ func TestNewEntityManager_RefusesCustomRegistryCacheServedAfterStartup(t *testin
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `entity_main column "text_01"`)
 }
+
+// R2-F1 of #470's review: the system and dedup names admission reserves
+// (row_id, rn, ...) are refused in a caller-supplied registry too, at startup
+// and when a reload serves one later.
+func TestNewEntityManager_RefusesCustomRegistryWithReservedSystemName(t *testing.T) {
+	for _, attr := range []string{"row_id", "rn"} {
+		t.Run(attr, func(t *testing.T) {
+			config := newUnitEntityManagerConfig(t)
+			config.SchemaRegistry = leadRegistry(attr)
+
+			em, err := newEntityManagerWithConfigContext(context.Background(), config, nil,
+				buildUnitEntityManagerDeps(schemameta.NewMetadataCache()))
+			require.Error(t, err)
+			assert.Nil(t, em)
+			assert.Contains(t, err.Error(), "config.SchemaRegistry rejected")
+			assert.Contains(t, err.Error(), "schema lead served by the configured SchemaRegistry")
+			assert.Contains(t, err.Error(), `attribute "`+attr+`" folds to parquet column "`+attr+`", which is reserved for system columns`)
+		})
+	}
+}
+
+func TestNewEntityManager_RefusesCustomRegistryReservedSystemNameServedAfterStartup(t *testing.T) {
+	for _, attr := range []string{"row_id", "rn"} {
+		t.Run(attr, func(t *testing.T) {
+			registry := leadRegistry("label")
+			config := newUnitEntityManagerConfig(t)
+			config.SchemaRegistry = registry
+
+			em, err := newEntityManagerWithConfigContext(context.Background(), config, nil,
+				buildUnitEntityManagerDeps(schemameta.NewMetadataCache()))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = em.Close() })
+
+			registry.schemas["lead"] = forma.SchemaAttributeCache{
+				attr: {AttributeName: attr, AttributeID: 1, ValueType: forma.ValueTypeText},
+			}
+			condition := &forma.KvCondition{Attr: attr, Value: "equals:x"}
+
+			_, err = em.Query(context.Background(), &forma.QueryRequest{SchemaName: "lead", Condition: condition})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `parquet column "`+attr+`", which is reserved for system columns`)
+			assert.NotErrorIs(t, err, forma.ErrInvalidInput, "a misconfigured registry is an operator error")
+
+			_, err = em.CrossSchemaSearch(context.Background(), &forma.CrossSchemaRequest{
+				SchemaNames: []string{"lead"}, SearchTerm: "x", Condition: condition,
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `parquet column "`+attr+`", which is reserved for system columns`)
+		})
+	}
+}

@@ -48,22 +48,26 @@ func mainColumnNameError(name, col, key string) error {
 	return fmt.Errorf("attribute %q folds to %q, which resolves onto entity_main column %q: %s", name, col, key, why)
 }
 
-// ValidateEntityMainColumnNames refuses an active attribute whose folded name
-// is an entity_main column. It is the #470 half of ValidateParquetAttrColumns
-// on its own, for caches that never went through admission: the attribute
-// caches a caller-supplied forma.SchemaRegistry serves
-// (schemameta.GuardEntityMainColumnNames). Those are read on every request,
-// so it is a single pass with no sort and no map of its own; when several
-// names collide, the error names the smallest, so it stays deterministic. Retired entries are exempt for the same reasons as there.
-// Plain operator error, never forma.ErrInvalidInput.
-func ValidateEntityMainColumnNames(cache forma.SchemaAttributeCache) error {
+// ValidateReservedAttrNames refuses an active attribute whose folded name is
+// a reserved name: an entity_main column (#470), or a system or dedup column
+// reservedParquetColumns holds (#260, #552). It is the reserved-name half of
+// ValidateParquetAttrColumns on its own, the combined set #470 keeps out of
+// the attribute namespace, for caches that never went through admission: the
+// attribute caches a caller-supplied forma.SchemaRegistry serves
+// (schemameta.GuardReservedAttrNames). Those are read on every request, so it
+// is a single pass with no sort and no map of its own; when several names
+// collide, the error names the smallest, so it stays deterministic, and it is
+// worded exactly as admission words the same refusal. Retired entries are
+// exempt for the same reasons as there. Plain operator error, never
+// forma.ErrInvalidInput.
+func ValidateReservedAttrNames(cache forma.SchemaAttributeCache) error {
 	first := ""
 	found := false
 	for name, meta := range cache {
 		if meta.Retired {
 			continue
 		}
-		if _, ok := entityMainColumnNames[DuckDBFoldIdentifier(ParquetAttrColumn(name))]; !ok {
+		if !isReservedAttrColumn(DuckDBFoldIdentifier(ParquetAttrColumn(name))) {
 			continue
 		}
 		if !found || name < first {
@@ -74,5 +78,19 @@ func ValidateEntityMainColumnNames(cache forma.SchemaAttributeCache) error {
 		return nil
 	}
 	col := ParquetAttrColumn(first)
-	return mainColumnNameError(first, col, DuckDBFoldIdentifier(col))
+	key := DuckDBFoldIdentifier(col)
+	if _, ok := reservedParquetColumns[key]; ok {
+		return reservedParquetColumnError(first, col, key)
+	}
+	return mainColumnNameError(first, col, key)
+}
+
+// isReservedAttrColumn reports whether a folded column key is one no active
+// attribute may take: a system or dedup column, or an entity_main column.
+func isReservedAttrColumn(key string) bool {
+	if _, ok := reservedParquetColumns[key]; ok {
+		return true
+	}
+	_, ok := entityMainColumnNames[key]
+	return ok
 }

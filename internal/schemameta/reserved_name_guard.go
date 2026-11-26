@@ -7,9 +7,12 @@ import (
 	"github.com/lychee-technology/forma/internal/sqlgen"
 )
 
-// GuardEntityMainColumnNames answers a registry whose attribute caches never
-// hold an active attribute named after an entity_main column (#470), the
-// registry the EntityManager is built over.
+// GuardReservedAttrNames answers a registry whose attribute caches never hold
+// an active attribute named after a reserved column: an entity_main column
+// (#470), or a system or dedup column (row_id, rn, ltbase_created_at, ...;
+// #260, #552). That is the combined reserved set admission keeps out of the
+// attribute namespace (sqlgen.ValidateReservedAttrNames), the one the
+// EntityManager is built over.
 //
 // Admission refuses such names for the registries this package builds
 // (fileSchemaRegistry and the generation gate's trackedRegistry): each cache
@@ -27,14 +30,18 @@ import (
 // transform sees it. The wrapper delegates every other method, and hides any
 // optional interface the caller's registry implements; the EntityManager
 // reads none.
-func GuardEntityMainColumnNames(registry forma.SchemaRegistry) (forma.SchemaRegistry, error) {
+//
+// The guard enforces the reserved-name rule only. The other admission rules
+// (attributeID, binding and fold collisions, binding validity) are not new in
+// #470 and are not applied to a caller's registry here.
+func GuardReservedAttrNames(registry forma.SchemaRegistry) (forma.SchemaRegistry, error) {
 	switch registry.(type) {
 	case nil:
 		return nil, fmt.Errorf("schema registry is not configured")
 	case *fileSchemaRegistry, *trackedRegistry:
 		return registry, nil
 	}
-	guarded := &mainColumnGuardedRegistry{SchemaRegistry: registry}
+	guarded := &reservedNameGuardedRegistry{SchemaRegistry: registry}
 	for _, name := range registry.ListSchemas() {
 		if _, _, err := guarded.GetSchemaAttributeCacheByName(name); err != nil {
 			return nil, fmt.Errorf("failed to check the attributes of schema %s: %w", name, err)
@@ -43,35 +50,35 @@ func GuardEntityMainColumnNames(registry forma.SchemaRegistry) (forma.SchemaRegi
 	return guarded, nil
 }
 
-// mainColumnGuardedRegistry refuses, on every read, an attribute cache that
-// holds an active attribute named after an entity_main column. The refusal is
+// reservedNameGuardedRegistry refuses, on every read, an attribute cache that
+// holds an active attribute named after a reserved column. The refusal is
 // a plain operator error, never forma.ErrInvalidInput: the registry is
 // misconfigured, and no request can fix it.
-type mainColumnGuardedRegistry struct {
+type reservedNameGuardedRegistry struct {
 	forma.SchemaRegistry
 }
 
 // GetSchemaAttributeCacheByName answers the wrapped registry's cache once it
 // holds no colliding name. The registry's own error is returned unwrapped, so
 // a not-found carrier keeps its status and its published message.
-func (r *mainColumnGuardedRegistry) GetSchemaAttributeCacheByName(name string) (int16, forma.SchemaAttributeCache, error) {
+func (r *reservedNameGuardedRegistry) GetSchemaAttributeCacheByName(name string) (int16, forma.SchemaAttributeCache, error) {
 	id, cache, err := r.SchemaRegistry.GetSchemaAttributeCacheByName(name)
 	if err != nil {
 		return 0, nil, err
 	}
-	if err := sqlgen.ValidateEntityMainColumnNames(cache); err != nil {
+	if err := sqlgen.ValidateReservedAttrNames(cache); err != nil {
 		return 0, nil, fmt.Errorf("schema %s served by the configured SchemaRegistry: %w", name, err)
 	}
 	return id, cache, nil
 }
 
 // GetSchemaAttributeCacheByID is the id-keyed half of the same check.
-func (r *mainColumnGuardedRegistry) GetSchemaAttributeCacheByID(id int16) (string, forma.SchemaAttributeCache, error) {
+func (r *reservedNameGuardedRegistry) GetSchemaAttributeCacheByID(id int16) (string, forma.SchemaAttributeCache, error) {
 	name, cache, err := r.SchemaRegistry.GetSchemaAttributeCacheByID(id)
 	if err != nil {
 		return "", nil, err
 	}
-	if err := sqlgen.ValidateEntityMainColumnNames(cache); err != nil {
+	if err := sqlgen.ValidateReservedAttrNames(cache); err != nil {
 		return "", nil, fmt.Errorf("schema %s (id %d) served by the configured SchemaRegistry: %w", name, id, err)
 	}
 	return name, cache, nil

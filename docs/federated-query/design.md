@@ -301,8 +301,9 @@ above remains. The logical attribute namespace and the physical column
 namespace are kept disjoint at admission rather than by
 teaching each renderer to consult the cache first. A caller-supplied
 `SchemaRegistry` never goes through admission, so the factory applies the rule
-to its attribute caches itself, at startup and on every read
-(`schemameta.GuardEntityMainColumnNames`). Retired entries are exempt
+to its attribute caches itself, at startup and on every read, together with
+the system and dedup names `reservedParquetColumns` reserves
+(`schemameta.GuardReservedAttrNames`). Retired entries are exempt
 for the reason given above: nothing projects, filters or sorts on them, and
 the exporter writes a bound column's values under the attribute's name, never
 under the column's.

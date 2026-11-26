@@ -580,7 +580,8 @@ misfilters. The runtime loaders, the file
 registry and `validate-schema-consistency` (binding checks deferred or not)
 all refuse the schema; nothing is grandfathered. A caller-supplied
 `SchemaRegistry` is checked too: the factory refuses one that serves such a
-name, at startup and on every attribute-cache read.
+name, or one of the reserved system and dedup names (`row_id`, `rn`,
+`ltbase_created_at`, ...), at startup and on every attribute-cache read.
 
 Check deployed schemas before upgrading: the new build's
 `validate-schema-consistency` fails on such a schema the same way. The fix is

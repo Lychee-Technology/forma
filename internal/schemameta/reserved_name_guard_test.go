@@ -46,7 +46,7 @@ func leadCache(name string) forma.SchemaAttributeCache {
 // The registries this package builds were admitted when they loaded and never
 // reload, so they are answered as they are: the very value, which keeps the
 // schemaMetadataProvider fast path.
-func TestGuardEntityMainColumnNames_AnswersAdmittedRegistryUnchanged(t *testing.T) {
+func TestGuardReservedAttrNames_AnswersAdmittedRegistryUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	writeMainColumnNameSchema(t, dir, map[string]any{
 		"label": map[string]any{"attributeID": float64(1), "valueType": "text"},
@@ -54,21 +54,21 @@ func TestGuardEntityMainColumnNames_AnswersAdmittedRegistryUnchanged(t *testing.
 	registry, err := NewFileSchemaRegistryFromDirectory(dir)
 	require.NoError(t, err)
 
-	guarded, err := GuardEntityMainColumnNames(registry)
+	guarded, err := GuardReservedAttrNames(registry)
 	require.NoError(t, err)
 	assert.Same(t, registry, guarded)
 
 	tracked := &trackedRegistry{fileSchemaRegistry: registry.(*fileSchemaRegistry)}
-	guarded, err = GuardEntityMainColumnNames(tracked)
+	guarded, err = GuardReservedAttrNames(tracked)
 	require.NoError(t, err)
 	assert.Same(t, tracked, guarded)
 }
 
 // A caller's registry is checked over every schema it lists, so a colliding
 // one fails startup, folded spellings included.
-func TestGuardEntityMainColumnNames_RefusesCustomRegistryAtStartup(t *testing.T) {
+func TestGuardReservedAttrNames_RefusesCustomRegistryAtStartup(t *testing.T) {
 	for name, col := range map[string]string{"text_01": "text_01", "Integer.02": "integer_02"} {
-		_, err := GuardEntityMainColumnNames(&stubRegistry{cache: leadCache(name)})
+		_, err := GuardReservedAttrNames(&stubRegistry{cache: leadCache(name)})
 		require.Error(t, err, name)
 		assert.Contains(t, err.Error(), "failed to check the attributes of schema lead")
 		assert.Contains(t, err.Error(), `attribute "`+name+`"`)
@@ -76,11 +76,47 @@ func TestGuardEntityMainColumnNames_RefusesCustomRegistryAtStartup(t *testing.T)
 	}
 }
 
+// R2-F1 of #470's review: the system and dedup names reservedParquetColumns
+// reserves are refused in a caller's registry as at admission, folded
+// spellings included, so the whole reserved set holds there too.
+func TestGuardReservedAttrNames_RefusesSystemAndDedupNamesAtStartup(t *testing.T) {
+	for name, col := range map[string]string{"rn": "rn", "row_id": "row_id", "Row.ID": "row_id", "ltbase_created_at": "ltbase_created_at"} {
+		_, err := GuardReservedAttrNames(&stubRegistry{cache: leadCache(name)})
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "failed to check the attributes of schema lead")
+		assert.Contains(t, err.Error(), `attribute "`+name+`"`)
+		assert.Contains(t, err.Error(), `system column`)
+		assert.Contains(t, err.Error(), `"`+col+`"`)
+		assert.NotErrorIs(t, err, forma.ErrInvalidInput)
+	}
+}
+
+// A system or dedup name served after startup is refused on both accessors.
+func TestGuardReservedAttrNames_RefusesSystemAndDedupNamesServedAfterStartup(t *testing.T) {
+	for _, name := range []string{"rn", "row_id"} {
+		stub := &stubRegistry{cache: leadCache("label")}
+		guarded, err := GuardReservedAttrNames(stub)
+		require.NoError(t, err)
+
+		stub.cache = leadCache(name)
+		_, _, err = guarded.GetSchemaAttributeCacheByName("lead")
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "schema lead served by the configured SchemaRegistry")
+		assert.Contains(t, err.Error(), `parquet column "`+name+`", which is reserved for system columns`)
+		assert.NotErrorIs(t, err, forma.ErrInvalidInput)
+
+		_, _, err = guarded.GetSchemaAttributeCacheByID(7)
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "schema lead (id 7) served by the configured SchemaRegistry")
+		assert.Contains(t, err.Error(), `parquet column "`+name+`", which is reserved for system columns`)
+	}
+}
+
 // A cache the registry serves after startup is refused on both accessors, so
 // a registry that reloads cannot slip a colliding name past the startup check.
-func TestGuardEntityMainColumnNames_RefusesCacheServedAfterStartup(t *testing.T) {
+func TestGuardReservedAttrNames_RefusesCacheServedAfterStartup(t *testing.T) {
 	stub := &stubRegistry{cache: leadCache("label")}
-	guarded, err := GuardEntityMainColumnNames(stub)
+	guarded, err := GuardReservedAttrNames(stub)
 	require.NoError(t, err)
 
 	id, cache, err := guarded.GetSchemaAttributeCacheByName("lead")
@@ -104,13 +140,14 @@ func TestGuardEntityMainColumnNames_RefusesCacheServedAfterStartup(t *testing.T)
 // The registry's own errors pass through as they were given, so a missing
 // schema keeps its not-found status; retired entries and near-miss names are
 // admitted, as at admission.
-func TestGuardEntityMainColumnNames_KeepsRegistryErrorsAndAdmitsNonColliding(t *testing.T) {
+func TestGuardReservedAttrNames_KeepsRegistryErrorsAndAdmitsNonColliding(t *testing.T) {
 	stub := &stubRegistry{cache: forma.SchemaAttributeCache{
 		"text_11":       {AttributeID: 1, ValueType: forma.ValueTypeText},
 		"text_01_label": {AttributeID: 2, ValueType: forma.ValueTypeText},
 		"text_02":       {AttributeID: 3, ValueType: forma.ValueTypeText, Retired: true},
+		"rn":            {AttributeID: 4, ValueType: forma.ValueTypeText, Retired: true},
 	}}
-	guarded, err := GuardEntityMainColumnNames(stub)
+	guarded, err := GuardReservedAttrNames(stub)
 	require.NoError(t, err)
 
 	_, _, err = guarded.GetSchemaAttributeCacheByName("missing")
@@ -118,6 +155,6 @@ func TestGuardEntityMainColumnNames_KeepsRegistryErrorsAndAdmitsNonColliding(t *
 	_, _, err = guarded.GetSchemaAttributeCacheByID(8)
 	assert.ErrorIs(t, err, forma.ErrNotFound)
 
-	_, err = GuardEntityMainColumnNames(nil)
+	_, err = GuardReservedAttrNames(nil)
 	require.Error(t, err)
 }
