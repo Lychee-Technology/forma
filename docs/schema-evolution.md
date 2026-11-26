@@ -329,9 +329,9 @@ old process convert a bound column's value instead:
   `40000` as NULL. The new declaration reads a SMALLINT column as lossless, so
   the federated route serves the converted value while that object is live,
   and Postgres keeps `1001.5`. The start-up check in [Generations](#generations)
-  does not stop a run already in progress. Before the mid-run check below,
-  the production harness reproduced this path end to end with the exported
-  object holding `1002`. An
+  does not stop a run already in progress. Before Protocol V2 moved the check
+  ahead of staging, the production harness reproduced this path end to end:
+  the `_tmp` object a stopped run stranded held `1002`. An
   EAV-only `smallint`/`integer` exports at storage width, DOUBLE
   (`castEAVValue`), so such a run converts nothing.
 
