@@ -283,14 +283,26 @@ guard refuses an active attribute whose folded name is a physical
 `entity_main` column (`text_01`, `integer_02`, `ltbase_created_by`, …, the set
 `model.EntityMainColumnDescriptors` states), compared case-insensitively like
 the reserved set, whether the attribute lives in EAV or is bound to a column.
-The outer select emits one alias per `entity_main` column
-(`NULL::VARCHAR AS text_01` when unbound), and `buildNonKeysetOrderBy` emits
-the folded attribute name into the outer `ORDER BY`, where SQL alias
-resolution wins over the `visible` CTE column: an attribute named `text_01`
-would sort by the alias. The PostgreSQL renderers resolve a raw column name
-before the cache in the same way. The logical attribute namespace and the
-physical column namespace are kept disjoint at admission rather than by
-teaching each renderer to consult the cache first. Retired entries are exempt
+The live fault is on the PostgreSQL side: `hybridMainColumn` and
+`hasMainTableCondition` resolve a raw column name before they consult the
+schema cache, so a hot-tier `Query` or `CrossSchemaSearch` condition on an
+attribute named `text_02` filters on `m."text_02"`. The federated path had a
+counterpart that is now retired. The attach template (retired in #858) emitted
+the folded attribute name into the outer `ORDER BY` through
+`buildNonKeysetOrderBy`, where the outer select's per-column alias
+(`NULL::VARCHAR AS text_01` when unbound) won over the `visible` CTE column,
+so an attribute named `text_01` sorted by the alias. The parquet-only
+statement that replaced it qualifies every named offset and keyset sort key
+with `visible.` (`parquetOnlyOrderTerms`), so its terms do not bind to the
+outer aliases, and it needs no change. The rule is kept anyway, because the
+two namespaces still meet: the outer select emits every `entity_main` column
+name beside the attribute's own `visible` column, and the PostgreSQL ambiguity
+above remains. The logical attribute namespace and the physical column
+namespace are kept disjoint at admission rather than by
+teaching each renderer to consult the cache first. A caller-supplied
+`SchemaRegistry` never goes through admission, so the factory applies the rule
+to its attribute caches itself, at startup and on every read
+(`schemameta.GuardEntityMainColumnNames`). Retired entries are exempt
 for the reason given above: nothing projects, filters or sorts on them, and
 the exporter writes a bound column's values under the attribute's name, never
 under the column's.

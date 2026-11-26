@@ -129,11 +129,11 @@ func TestValidateParquetAttrColumns_RetiredEntityMainColumnNameIsExempt(t *testi
 	require.Error(t, ValidateParquetAttrColumns(retired))
 }
 
-// The federated read path builds every query's projection, and with it the
-// outer select whose aliases shadow a colliding sort key, through
-// BuildSchemaProjection. It refuses the colliding cache on its own, so a
-// registry that skipped admission still cannot render a federated sort or
-// keyset page over it.
+// The federated read path builds every query's projection through
+// BuildSchemaProjection, whose outer select emits one alias per entity_main
+// column beside the attribute's own visible column. It refuses the colliding
+// cache on its own, so a registry that skipped admission still cannot render
+// a federated query whose attribute and column namespaces overlap.
 func TestBuildSchemaProjection_RefusesEntityMainColumnName(t *testing.T) {
 	_, err := BuildSchemaProjection(7, forma.SchemaAttributeCache{
 		"text_01": {AttributeID: 1, ValueType: forma.ValueTypeText},
@@ -141,4 +141,37 @@ func TestBuildSchemaProjection_RefusesEntityMainColumnName(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, strings.HasPrefix(err.Error(), "schema 7: "), "%v", err)
 	assert.Contains(t, err.Error(), `entity_main column "text_01"`)
+}
+
+// ValidateEntityMainColumnNames is the #470 rule alone, for caches no
+// admission saw: it refuses exactly what ValidateParquetAttrColumns refuses
+// for a main column name, exempts retired entries, admits near-misses, and
+// names the smallest colliding attribute so the message is deterministic.
+func TestValidateEntityMainColumnNames(t *testing.T) {
+	for _, desc := range model.EntityMainColumnDescriptors {
+		err := ValidateEntityMainColumnNames(forma.SchemaAttributeCache{
+			desc.Name: {AttributeID: 1, ValueType: model.ColumnKindToValueType(desc.Kind)},
+		})
+		require.Error(t, err, desc.Name)
+		assert.Contains(t, err.Error(), `entity_main column "`+desc.Name+`"`)
+	}
+
+	err := ValidateEntityMainColumnNames(forma.SchemaAttributeCache{"Text.01": {AttributeID: 1}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `attribute "Text.01" folds to "Text_01"`)
+
+	err = ValidateEntityMainColumnNames(forma.SchemaAttributeCache{
+		"uuid_01": {AttributeID: 1}, "integer_02": {AttributeID: 2}, "text_01": {AttributeID: 3},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `attribute "integer_02"`)
+
+	require.NoError(t, ValidateEntityMainColumnNames(forma.SchemaAttributeCache{
+		"text_11":    {AttributeID: 1},
+		"my.text_01": {AttributeID: 2},
+		"text_02":    {AttributeID: 3, Retired: true},
+		"status": {AttributeID: 4, ValueType: forma.ValueTypeText,
+			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01}},
+	}))
+	require.NoError(t, ValidateEntityMainColumnNames(nil))
 }
