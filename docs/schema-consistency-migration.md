@@ -555,6 +555,49 @@ build does not break on update; a binding built from one is refused at
 registration with the same error. Rebind to `bigint_01..03` or
 `double_01..03` before the next breaking release removes them.
 
+### Attribute names that are entity_main columns (`#470`)
+
+Example startup or validator error:
+
+```text
+attributes file schemas/lead_attributes.json: schema lead: attribute "text_02" is named after entity_main column "text_02": conditions and sorts resolve that name to the physical column, not the attribute, so they would silently filter and order on a different value; rename the attribute
+```
+
+An active attribute may not be named after an `entity_main` column
+(`text_01`..`text_10`, `smallint_0n`, `integer_0n`, `bigint_0n`,
+`double_0n`, `uuid_0n`, `ltbase_*`), nor carry a name that folds onto one
+(`Text_02`, `text.02`, `[text_02]`). The rule applies whether the attribute
+lives in EAV or is bound to a column, the same one or another. Before the
+guard such a schema loaded and its values were stored and read back
+correctly, but conditions and sorts on the attribute were silently wrong:
+hot-tier `Query` and `CrossSchemaSearch` filtered on the physical column
+(`m."text_02"`, NULL or another attribute's value, or `m."integer_02"` for an
+`integer_02` bound to `integer_03`), and a federated query sorted on the outer
+select's column alias instead of the attribute. The runtime loaders, the file
+registry and `validate-schema-consistency` (binding checks deferred or not)
+all refuse the schema; nothing is grandfathered.
+
+Check deployed schemas before upgrading: the new build's
+`validate-schema-consistency` fails on such a schema the same way. The fix is
+a rename, which the ledger treats as a removal plus an addition (`#342`), and
+it has to be prepared on the build you are upgrading from, because a retired
+attribute reads as absent and the new build will not load the schema while
+the old name is active:
+
+1. Still on the old build, add the property under a new name to
+   `<schema>.json` and run `generate-attributes`, which gives it a fresh
+   `attributeID`. Copy each row's value across with an application-level
+   backfill (read the row, update it with the new attribute). Reads and
+   writes of the old attribute's own value are correct on the old build;
+   only conditions and sorts on it were wrong.
+2. Move clients to the new name.
+3. Delete the old property from `<schema>.json` and run `generate-attributes`
+   again: it keeps the old entry as `"retired": true` with its `attributeID`,
+   `valueType` and `column_binding` (see
+   [Removing an attribute](#removing-an-attribute-342)). The retired entry is
+   exempt from this rule because no condition, sort or projection reads it.
+4. Upgrade.
+
 ### valueType/column-encoding binding mismatches (`#459`)
 
 Example validator output:

@@ -278,6 +278,23 @@ migration that fixed nothing. Aggregating every failing schema into one
 startup report, so an operator sees the blast radius in one pass, is tracked
 separately (#604).
 
+**Attribute names must not be `entity_main` column names (#470).** The same
+guard refuses an active attribute whose folded name is a physical
+`entity_main` column (`text_01`, `integer_02`, `ltbase_created_by`, …, the set
+`model.EntityMainColumnDescriptors` states), compared case-insensitively like
+the reserved set, whether the attribute lives in EAV or is bound to a column.
+The outer select emits one alias per `entity_main` column
+(`NULL::VARCHAR AS text_01` when unbound), and `buildNonKeysetOrderBy` emits
+the folded attribute name into the outer `ORDER BY`, where SQL alias
+resolution wins over the `visible` CTE column: an attribute named `text_01`
+would sort by the alias. The PostgreSQL renderers resolve a raw column name
+before the cache in the same way. The logical attribute namespace and the
+physical column namespace are kept disjoint at admission rather than by
+teaching each renderer to consult the cache first. Retired entries are exempt
+for the reason given above: nothing projects, filters or sorts on them, and
+the exporter writes a bound column's values under the attribute's name, never
+under the column's.
+
 Keyset cursor columns obey the same contract as every other column reference,
 and it is one contract, not a per-seam one (#381). A single validator,
 `federated.validateKeysetCursor`, binds every entry point onto the keyset

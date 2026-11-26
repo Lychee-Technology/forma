@@ -126,8 +126,10 @@ func validateConditionalDelete(req *forma.EntityOperation, cache forma.SchemaAtt
 // precondition does not, so the system ltbase_updated_at stamp is no
 // precondition. A schema attribute whose name is itself an entity_main
 // column is refused too: the renderer resolves a raw column name before the
-// cache, so the guard would test that column, not the attribute.
-// Registration still admits such names (#470). Operators and operands are
+// cache, so the guard would test that column, not the attribute. Since #470
+// schema admission refuses such names, so this check only answers for a
+// caller-supplied SchemaRegistry whose caches never went through admission;
+// it stays as that registry's defense in depth. Operators and operands are
 // left to the renderer, which refuses them before the write sends any
 // statement. nil passes: no precondition.
 func validatePrecondition(cond forma.Condition, schemaName string, cache forma.SchemaAttributeCache) error {
