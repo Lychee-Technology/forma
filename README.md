@@ -39,7 +39,7 @@ gives up declared types and validation. Forma sits between the two:
 | | Conventional tables | Forma |
 |---|---|---|
 | Add an attribute | `ALTER TABLE` migration | Edit the JSON Schema, record it with `apply-schema`, restart |
-| Validation | Column types and constraints | Creates that violate the JSON Schema are rejected; updates that violate it are logged and written unless `VALIDATE_UPDATES_STRICT` is enabled (set to `true`) ([Error Handling](docs/error-handling.md#creates-reject-updates-report)). Each attribute has a declared value type |
+| Validation | Column types and constraints | Creates that violate the JSON Schema are rejected; updates that violate it are logged and written unless `VALIDATE_UPDATES_STRICT` is enabled (set to `true`) ([Error Handling](docs/error-handling.md#creates-reject-updates-report)), except that an object or array sent for a scalar attribute is always refused ([Storage invariants](docs/error-handling.md#storage-invariants-are-not-report-only)). Each attribute has a declared value type |
 | Indexed access | Any column | Attributes bound to typed main-table columns; EAV attributes are not indexable |
 | Analytics | A separate pipeline | Optional CDC export to Parquet, queried through DuckDB |
 
@@ -73,7 +73,8 @@ a time (search spans several), and offset pagination is capped at a configurable
   a main-table column. A create that violates the schema answers `400` naming the
   attribute. An update that violates it is logged and written unless
   `VALIDATE_UPDATES_STRICT` is set to `true`, so rows stored before enforcement stay updatable
-  ([Error Handling](docs/error-handling.md)).
+  ([Error Handling](docs/error-handling.md)). An object or array sent for a scalar
+  attribute is refused in every mode, because storage cannot hold it as sent.
 - **Hybrid storage.** Column-bound attributes live in typed columns of `entity_main`;
   the rest live in `eav_data`. Column-bound attributes can carry declared composite
   indexes ([`x-forma-indexes`](docs/schema-indexes.md)) and unique keys

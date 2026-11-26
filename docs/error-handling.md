@@ -155,6 +155,84 @@ milestones, and the counts live on the `EntityManager` — one per process in
 the shipped wiring — and reset on restart. The signal
 narrows where to look; the e2e pass above is still what licenses the flip.
 
+### Storage invariants are not report-only
+
+Report-only mode relaxes the *schema*: it admits an update whose merged
+document breaks a rule the stored row can still hold as written, such as an
+`enum`, a `format`, a `minimum` or a `required` property. It does not relax
+what storage can hold. A rule of that kind is enforced on every update, under
+strict validation, under report-only validation and with no validator
+configured, and its refusal is a published `400` raised before anything is
+written.
+
+The scalar-shape invariant is one such rule (#924). An attribute whose value
+type is a scalar (text, a number, a date, a UUID, a bool) never receives an
+object or an array, empty or not, nested or dotted, bound to a column or in
+EAV. The document walk does not store a container there. It takes the
+container apart, so before this rule a report-only update stored different
+things depending on where the attribute lived:
+
+| Update value | column-bound attribute | EAV attribute |
+| --- | --- | --- |
+| `{}` or `[]` | value kept | value removed, and a unique-key entry released |
+| `["a"]` | `a` stored | `a` stored at array index 0, read back as `["a"]` |
+| `{"x": "y"}` | `400 attribute '….x' is not defined` | the same |
+
+Every update now refuses each of these with `invalid value for attribute
+'<name>' (attrID=<id>): expected a scalar of type <type>, got <an empty
+object | an array | …>`. Neither `{}` nor `[]` clears a scalar; clearing is
+#684's. The rule reads only the registry's attribute metadata: `ValueType`
+and, for a member of an array of objects, `ArrayAncestors`. It does not
+consult the JSON Schema document. Two points check it:
+
+- **Intake** (`transform.CheckUpdateValues`) refuses a container in the
+  update's `Updates` as a conversion refusal. It has the same class, key order
+  and timing (#772): `Update` and the atomic `BatchUpdate` raise it before any
+  statement. `UpdateWhere`, `Claim` and an `Upsert` that updates raise it once
+  they know they write a row, after reads only, so the `Tx` stays usable. A
+  call that writes no row with the values (no row matched or claimed, an
+  `Upsert` that creates) still succeeds. An atomic batch writes nothing, and a
+  best-effort batch fails only the invalid operation.
+- **The merged document** (`MergeUpdate`) is checked again before any stored
+  value is decoded. A container that holds stored values is the stored row's,
+  not the update's: a row written with an array under a scalar before this
+  rule (a pre-#204 attributes file, or `["a"]` admitted by report-only
+  validation) reads back as that array, and an update that does not address
+  it writes it back unchanged, as before. Sending an array for that attribute
+  is refused. Sending a scalar replaces the array. Finding such rows is
+  #922's.
+
+Placement follows the indices the write stores. The walk gives the first
+array it crosses the first index, and the read places that index in the
+attribute's first array of objects, and so on. A value is the attribute's own
+once each of its `ArrayAncestors` has been filled by one array crossed, either
+the ancestor itself or, in a dotted spelling, a key beneath it. So
+`{"items.sku": ["a", "b"]}` writes `items[0].sku` and `items[1].sku` as before,
+while `{"items.sku": [["a"]]}` is refused: the outer index fills `items`, and
+the inner `["a"]` is `items.sku`'s own value.
+
+A Go value the write converts as one scalar is not a container: `[]byte`
+itself (text, or the 16 bytes of a UUID), and any value that formats itself,
+such as a `uuid.UUID` or a `net.IP` (`fmt.Stringer`, `error` or
+`fmt.Formatter`). Any other Go map, slice or array is one, because the write
+would format it element by element: `[2]string{"a", "b"}` as `[a b]`, a
+`json.RawMessage` or another named byte slice as its decimal bytes. List
+attributes, arrays of objects and their scalar members are unaffected.
+
+Where the metadata cannot place a value, the update behaves as it did before
+the rule (#923 owns these cases):
+
+- every position of a schema whose `ArrayAncestors` the registry did not
+  derive, except a top-level attribute, which has no ancestor to place;
+- a position reached across more or fewer arrays than its `ArrayAncestors`,
+  or across an array that is not the next ancestor or beneath it, such as an
+  array level the schema does not declare above an array of objects;
+- for an object-or-array union, the branch the metadata does not describe.
+  Where the registry derives the union's ancestry from its `items` (for
+  example `ArrayAncestors = ["items"]`), a container in the array branch is
+  refused, while the same container in the object branch, reached across no
+  array, is not.
+
 ### Which errors are which class
 
 `validateWritePayload` splits on sentinel evidence, not on the enforce flag:
@@ -1050,7 +1128,9 @@ A create runs step 4 only.
     (`{"contact":{"total":{}}}`, `{"contact":{"total":[]}}`) is a `400`
     `missing required attribute`, not a plain `500`, and
     `{"contact":{"total":{"x":1}}}` reports the missing attribute rather than
-    `attribute 'contact.total.x' is not defined`;
+    `attribute 'contact.total.x' is not defined`. On an update each is now
+    refused earlier, as a container at a scalar (#924, "Storage invariants
+    are not report-only");
   - `{"order.items":[{}]}` is an explicit parent in either spelling, so it is
     refused when `order.items.name` is `required_if_parent_present`;
   - a container whose every claim loses under #312 writes nothing, so it is
