@@ -25,6 +25,38 @@ A **leaf** (`forma.KvCondition`) filters one attribute:
   operand (its colons are not an operator separator). Operators are
   case-insensitive.
 
+## Nesting limit
+
+A condition tree nests at most 1000 levels (#675), the same number that
+bounds a write payload's nesting (#406). Depth counts composite edges from
+the root: the root is at depth 0 and each child sits one level below its
+composite, so the deepest tree accepted is 1000 composites over one leaf.
+A tree with any node deeper than that is `ErrInvalidInput`, with the
+published message `condition nests composite conditions more than 1000
+levels deep; the condition is cyclic or too deeply nested` (`precondition`,
+or `group live condition`, in place of `condition` where that is what
+carries it). The limit is fixed, not configurable.
+
+Real conditions are a few levels deep, so the limit exists for Go callers:
+`forma.CompositeCondition.Conditions` is a `[]forma.Condition`, so a tree
+can contain itself, directly or through other composites, and before #675
+such a tree crashed the process with a fatal stack overflow. A cycle is
+infinitely deep, so the same check refuses it. HTTP JSON cannot express a
+cycle; a JSON body nested past the limit is refused the same way.
+
+The check runs once, where the condition enters, before anything else reads
+it: `Query`, `CrossSchemaSearch`, the `Preconditions` of `Update` and
+`Delete`, and on a `Tx` also `Query`, `AssertRow`, `UpdateWhere`,
+`DeleteWhere`, `Claim` (its `Condition` and its group's `Live`) and
+`Upsert`. The refusal precedes any SQL, so it leaves a `Tx` usable. `Create`
+and the batches, which accept no precondition at all, keep that refusal for
+a cyclic one.
+
+The check walks each path only to the limit and stops at the first node
+past it. It does not detect sharing: an acyclic tree that reuses one
+subtree under many parents is accepted when it is within the limit, and
+every later walk visits each use of the shared subtree.
+
 ## Operators
 
 | Operator | Alias | Operand | Meaning |

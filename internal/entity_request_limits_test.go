@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/httpapi"
 	"github.com/lychee-technology/forma/internal/model"
@@ -403,6 +404,68 @@ func TestTransactionTimeoutCancelsABlockingWrite(t *testing.T) {
 		if elapsed > 5*time.Second {
 			t.Fatalf("%s: write was not cancelled by the budget: took %s", name, elapsed)
 		}
+	}
+}
+
+// slowSchemaRegistry stands in for a schema lookup that takes delay once
+// armed, and records when its last armed lookup returned.
+type slowSchemaRegistry struct {
+	forma.SchemaRegistry
+	delay    time.Duration
+	armed    bool
+	returned time.Time
+}
+
+func (r *slowSchemaRegistry) GetSchemaAttributeCacheByName(name string) (int16, forma.SchemaAttributeCache, error) {
+	id, cache, err := r.SchemaRegistry.GetSchemaAttributeCacheByName(name)
+	if r.armed {
+		time.Sleep(r.delay)
+		r.returned = time.Now()
+	}
+	return id, cache, err
+}
+
+// TestUpdateWriteBudgetCoversItsIntake pins Update's write budget to start
+// before its schema lookup and validation, not after them (#675): the
+// deadline the repository sees is less than one budget after the lookup
+// returned. A budget started after the intake would hand the repository a
+// deadline at least one budget after it.
+func TestUpdateWriteBudgetCoversItsIntake(t *testing.T) {
+	const budget = time.Minute
+	config := createTestConfig()
+	config.Transaction.DefaultTimeout = budget
+	base, err := newFileSchemaRegistryFromDir("../cmd/server/schemas")
+	if err != nil {
+		t.Fatalf("failed to create schema registry: %v", err)
+	}
+	registry := &slowSchemaRegistry{SchemaRegistry: base, delay: 20 * time.Millisecond}
+	repo := newMockPersistentRecordRepository()
+	var deadline time.Time
+	var sawDeadline bool
+	repo.onMergeContext = func(ctx context.Context) {
+		deadline, sawDeadline = ctx.Deadline()
+	}
+	em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(base), repo, nil, registry, config, nil)
+
+	registry.armed = true
+	// The row does not exist, so the update fails after the merge is
+	// entered; only the deadline the merge saw matters here.
+	_, _ = em.Update(context.Background(), &forma.EntityOperation{
+		EntityIdentifier: forma.EntityIdentifier{SchemaName: "visit", RowID: uuid.New()},
+		Type:             forma.OperationUpdate,
+		Updates:          map[string]any{"leadId": "lead-2"},
+	})
+	if repo.mergeCalls != 1 {
+		t.Fatalf("expected the update to reach the merge once, got %d", repo.mergeCalls)
+	}
+	if !sawDeadline {
+		t.Fatalf("the merge context carried no deadline")
+	}
+	if registry.returned.IsZero() {
+		t.Fatalf("the update never looked its schema up")
+	}
+	if latest := registry.returned.Add(budget); !deadline.Before(latest) {
+		t.Fatalf("the write budget started after the intake: deadline %s is not before %s (lookup return + budget)", deadline, latest)
 	}
 }
 

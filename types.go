@@ -294,6 +294,11 @@ type Condition interface {
 }
 
 // --- 3. Composite Condition (Non-Leaf Node) ---
+
+// CompositeCondition joins its Conditions with Logic. A condition tree may
+// nest at most 1000 levels below its root; a deeper one, or one that
+// contains itself, is ErrInvalidInput wherever a condition is accepted
+// (#675). See docs/condition-dsl.md#nesting-limit.
 type CompositeCondition struct {
 	Logic      Logic       `json:"l"`
 	Conditions []Condition `json:"c"`

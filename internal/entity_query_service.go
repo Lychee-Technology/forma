@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lychee-technology/forma/internal/model"
@@ -56,6 +57,11 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 
 	if req == nil {
 		return nil, forma.InvalidInputf("query request cannot be nil")
+	}
+	// Before any walk over the condition (#675): the repository's
+	// main-table probe, normalization and both renderers recurse into it.
+	if err := checkConditionDepth("condition", req.Condition); err != nil {
+		return nil, fmt.Errorf("failed to validate the condition of the query of %s: %w", req.SchemaName, err)
 	}
 
 	if req.SchemaName == "" {
@@ -281,6 +287,9 @@ func (s *entityQueryService) CrossSchemaSearch(ctx context.Context, req *forma.C
 func (s *entityQueryService) validateCrossSchemaRequest(req *forma.CrossSchemaRequest) error {
 	if req == nil {
 		return forma.InvalidInputf("cross schema request cannot be nil")
+	}
+	if err := checkConditionDepth("condition", req.Condition); err != nil {
+		return fmt.Errorf("failed to validate the condition of the cross-schema search of %s: %w", strings.Join(req.SchemaNames, ", "), err)
 	}
 	if len(req.SchemaNames) == 0 {
 		return forma.InvalidInputf("schema names are required")

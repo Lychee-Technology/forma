@@ -31,7 +31,10 @@ type mockPersistentRecordRepository struct {
 	records map[int16]map[uuid.UUID]*model.PersistentRecord
 	// beforeMerge runs inside MergePersistentRecord just before the merge
 	// base is read, standing in for a concurrent committer.
-	beforeMerge      func()
+	beforeMerge func()
+	// onMergeContext, when set, sees the context MergePersistentRecord is
+	// handed, before beforeMerge.
+	onMergeContext   func(ctx context.Context)
 	insertedRecords  []*model.PersistentRecord
 	getCalls         int
 	deleteCalls      int
@@ -89,6 +92,9 @@ func (m *mockPersistentRecordRepository) InsertPersistentRecord(ctx context.Cont
 func (m *mockPersistentRecordRepository) MergePersistentRecord(ctx context.Context, tables model.StorageTables, schemaID int16, rowID uuid.UUID, guard model.RowGuard, merge model.PersistentRecordMerge) (*model.PersistentRecord, error) {
 	m.mergeCalls++
 	m.guards = append(m.guards, guard)
+	if m.onMergeContext != nil {
+		m.onMergeContext(ctx)
+	}
 	if m.beforeMerge != nil {
 		m.beforeMerge()
 	}
