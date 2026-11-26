@@ -136,8 +136,21 @@ func validatePrecondition(cond forma.Condition, schemaName string, cache forma.S
 
 // validateGuardCondition is validatePrecondition for any condition rendered
 // as a row guard; noun names it in the published message ("precondition",
-// or "condition" for a predicate mutation's, #652).
+// or "condition" for a predicate mutation's, #652). It is the first walk
+// over a guard condition on every route that takes one (Update, Delete,
+// AssertRow, UpdateWhere, DeleteWhere, Claim and its group's Live, Upsert),
+// so it bounds the tree's depth before anything else descends into it
+// (#675).
 func validateGuardCondition(noun string, cond forma.Condition, schemaName string, cache forma.SchemaAttributeCache) error {
+	if err := checkConditionDepth(noun, cond); err != nil {
+		return err
+	}
+	return validateGuardNode(noun, cond, schemaName, cache)
+}
+
+// validateGuardNode is validateGuardCondition's recursion, over a tree whose
+// depth checkConditionDepth has bounded.
+func validateGuardNode(noun string, cond forma.Condition, schemaName string, cache forma.SchemaAttributeCache) error {
 	if cond == nil {
 		return nil
 	}
@@ -166,7 +179,7 @@ func validateGuardCondition(noun string, cond forma.Condition, schemaName string
 			if child == nil {
 				return forma.InvalidInputf("%s holds a nil condition", noun)
 			}
-			if err := validateGuardCondition(noun, child, schemaName, cache); err != nil {
+			if err := validateGuardNode(noun, child, schemaName, cache); err != nil {
 				return fmt.Errorf("%s condition %d: %w", c.Logic, i, err)
 			}
 		}
@@ -338,22 +351,38 @@ func relationRootCovering(relations *RelationIndex, schemaName, attr string) (st
 }
 
 // firstConditionAttr names the first attribute a condition tests, for
-// messages; "" when it tests none.
+// messages; "" when it tests none. Create and the batches call it on a
+// precondition they refuse without checking its depth, so it bounds its own
+// walk (#675): the first node past maxConditionNestingDepth, as on a cycle,
+// ends the whole walk, siblings included, so a cycle through several children
+// costs no more than one through a single child. The refusal it serves stays
+// the same.
 func firstConditionAttr(cond forma.Condition) string {
+	attr, _ := firstConditionAttrWithin(cond, 0)
+	return attr
+}
+
+// firstConditionAttrWithin answers the first attribute beneath cond, which
+// sits at depth, and false once the walk passed the bound.
+func firstConditionAttrWithin(cond forma.Condition, depth int) (string, bool) {
+	if depth > maxConditionNestingDepth {
+		return "", false
+	}
 	switch c := cond.(type) {
 	case *forma.KvCondition:
 		if c != nil {
-			return c.Attr
+			return c.Attr, true
 		}
 	case *forma.CompositeCondition:
 		if c == nil {
-			return ""
+			return "", true
 		}
 		for _, child := range c.Conditions {
-			if attr := firstConditionAttr(child); attr != "" {
-				return attr
+			attr, within := firstConditionAttrWithin(child, depth+1)
+			if attr != "" || !within {
+				return attr, within
 			}
 		}
 	}
-	return ""
+	return "", true
 }

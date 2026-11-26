@@ -44,6 +44,17 @@ func newMockTransactorWithEngine(t *testing.T, engine model.FederatedQueryEngine
 // condition needs.
 func newMockTransactorOver(t *testing.T, engine model.FederatedQueryEngine, schemas ...string) (*transactor, pgxmock.PgxPoolIface) {
 	t.Helper()
+	em, mock := newMockManagerOver(t, engine, schemas...)
+	txr, err := NewTransactor(em)
+	require.NoError(t, err)
+	return txr.(*transactor), mock
+}
+
+// newMockManagerOver is the manager newMockTransactorOver drives: its
+// repository runs on a pgxmock pool, with the shipped schemas, named tables,
+// and the metadata of the named schemas.
+func newMockManagerOver(t *testing.T, engine model.FederatedQueryEngine, schemas ...string) (forma.EntityManager, pgxmock.PgxPoolIface) {
+	t.Helper()
 	mock, err := pgxmock.NewPool()
 	require.NoError(t, err)
 	t.Cleanup(mock.Close)
@@ -69,10 +80,7 @@ func newMockTransactorOver(t *testing.T, engine model.FederatedQueryEngine, sche
 	}
 	repo := NewDBPersistentRecordRepository(mock, metadata)
 	em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry), repo, engine, registry, config, nil)
-
-	txr, err := NewTransactor(em)
-	require.NoError(t, err)
-	return txr.(*transactor), mock
+	return em, mock
 }
 
 func TestInTxCommitsWhenFnReturnsNil(t *testing.T) {

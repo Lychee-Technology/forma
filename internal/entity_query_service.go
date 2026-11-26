@@ -57,6 +57,11 @@ func (s *entityQueryService) Query(ctx context.Context, req *forma.QueryRequest)
 	if req == nil {
 		return nil, forma.InvalidInputf("query request cannot be nil")
 	}
+	// Before any walk over the condition (#675): the repository's
+	// main-table probe, normalization and both renderers recurse into it.
+	if err := checkConditionDepth("condition", req.Condition); err != nil {
+		return nil, err
+	}
 
 	if req.SchemaName == "" {
 		return nil, forma.InvalidInputf("schema name is required")
@@ -281,6 +286,9 @@ func (s *entityQueryService) CrossSchemaSearch(ctx context.Context, req *forma.C
 func (s *entityQueryService) validateCrossSchemaRequest(req *forma.CrossSchemaRequest) error {
 	if req == nil {
 		return forma.InvalidInputf("cross schema request cannot be nil")
+	}
+	if err := checkConditionDepth("condition", req.Condition); err != nil {
+		return err
 	}
 	if len(req.SchemaNames) == 0 {
 		return forma.InvalidInputf("schema names are required")
