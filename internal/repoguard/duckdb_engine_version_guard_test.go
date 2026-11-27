@@ -11,6 +11,10 @@ import (
 // runs the same assertion as part of the unit suite, but on arm64 only, and
 // duckdb-go loads a separate native library per platform (#750). Comment
 // lines are skipped so prose never satisfies the guard.
+//
+// go test -run exits 0 when its pattern matches nothing, so the guard also
+// requires the named test to exist: renaming it would otherwise turn the CI
+// step into a silent no-op.
 func TestCIAssertsDuckDBEngineVersionOnAmd64(t *testing.T) {
 	wf, err := fs.ReadFile(repo, ".github/workflows/ci.yml")
 	if err != nil {
@@ -35,5 +39,12 @@ func TestCIAssertsDuckDBEngineVersionOnAmd64(t *testing.T) {
 	}
 	if !hasVersionStep {
 		t.Error("ci.yml e2e job does not run TestRunningDuckDBEngineIsThePinnedVersion: no amd64 CI job would check which DuckDB engine it loaded (#750)")
+	}
+	src, err := fs.ReadFile(repo, "internal/duckdbinit/engine_version_test.go")
+	if err != nil {
+		t.Fatalf("read engine_version_test.go: %v", err)
+	}
+	if !strings.Contains(string(src), "\nfunc TestRunningDuckDBEngineIsThePinnedVersion(t *testing.T) {") {
+		t.Error("internal/duckdbinit/engine_version_test.go no longer declares TestRunningDuckDBEngineIsThePinnedVersion: the ci.yml e2e step's -run pattern would match nothing and pass silently (#750)")
 	}
 }
