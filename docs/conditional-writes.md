@@ -74,7 +74,10 @@ skips the operators; both behave exactly as before #649.
   schema attribute whose name is itself an `entity_main` column (an
   attribute called `text_02`, say) is refused too. The DSL reads such a name
   as the column, whatever the schema stores under it, so the precondition
-  would test a different value. Registration still admits these names (#470).
+  would test a different value. Since #470 no factory-built manager can
+  reach this refusal: schema admission refuses these names, and the factory
+  refuses them in a caller-supplied `SchemaRegistry` at startup and on every
+  attribute-cache read. The refusal stays as defense in depth.
 - **Matches `Query`.** A precondition holds exactly when a hot-tier `Query`
   with the same condition would return the row at the moment after the lock
   is granted. The check is rendered by the renderer `Query` uses

@@ -555,6 +555,77 @@ build does not break on update; a binding built from one is refused at
 registration with the same error. Rebind to `bigint_01..03` or
 `double_01..03` before the next breaking release removes them.
 
+### Attribute names that are entity_main columns (`#470`)
+
+Example startup or validator error:
+
+```text
+attributes file schemas/lead_attributes.json: schema lead: attribute "text_02" is named after entity_main column "text_02": conditions and sorts resolve that name to the physical column, not the attribute, so they would silently filter and order on a different value; rename the attribute
+```
+
+An active attribute may not be named after an `entity_main` column
+(`text_01`..`text_10`, `smallint_0n`, `integer_0n`, `bigint_0n`,
+`double_0n`, `uuid_0n`, `ltbase_*`), nor carry a name that folds onto one
+(`Text_02`, `text.02`, `[text_02]`). The rule applies whether the attribute
+lives in EAV or is bound to a column, the same one or another. Before the
+guard such a schema loaded and its values were stored and read back
+correctly, but conditions on the attribute were silently wrong: hot-tier
+`Query` and `CrossSchemaSearch` filtered on the physical column
+(`m."text_02"`, NULL or another attribute's value, or `m."integer_02"` for an
+`integer_02` bound to `integer_03`). The federated attach template retired in
+`#858` also sorted on the outer select's column alias instead of the
+attribute. The parquet-only statement that replaced it sorts on the
+attribute's own column, so on a current build only the PostgreSQL side
+misfilters. The runtime loaders, the file
+registry and `validate-schema-consistency` (binding checks deferred or not)
+all refuse the schema; nothing is grandfathered. A caller-supplied
+`SchemaRegistry` is checked too: the factory refuses one that serves such a
+name, or one of the reserved system and dedup names (`row_id`, `rn`,
+`ltbase_created_at`, ...), at startup and on every attribute-cache read.
+
+Check deployed schemas before upgrading: the new build's
+`validate-schema-consistency` fails on such a schema the same way. The fix is
+a rename, which the ledger treats as a removal plus an addition (`#342`), and
+it has to be prepared on the build you are upgrading from, because a retired
+attribute reads as absent and the new build will not load the schema while
+the old name is active. Each declaration edit below follows
+[the schema evolution procedure](schema-evolution.md#generations): on a
+deployment with the generation ledger (`#733`), `generate-attributes` only
+changes files, and an edit takes effect only once `apply-schema` has recorded
+it and the data plane has been rolled onto the new `SCHEMA_DIR`, in that
+order.
+
+1. Still on the old build, add the property under a new name to
+   `<schema>.json` and run `generate-attributes`, which gives it a fresh
+   `attributeID`.
+2. Activate the addition on the old build. Record the declaration with
+   `apply-schema`, then roll the old build's servers, Lambda functions and
+   CDC runs onto the new `SCHEMA_DIR`. Do not roll first: until the active
+   generation records the new `attributeID`, the data-plane gate
+   (`schemaledger.Contained`) refuses to start a process that declares it.
+   Processes still on the previous `SCHEMA_DIR` keep running while you roll,
+   because lacking an attribute the active generation holds is allowed. A
+   deployment without the ledger has no `apply-schema`: roll the new
+   `SCHEMA_DIR` directly.
+3. Copy each row's value across with an application-level backfill (read
+   the row, update it with the new attribute). Reads and writes of the old
+   attribute's own value are correct on the old build; only conditions on it
+   were wrong.
+4. Move clients to the new name.
+5. Delete the old property from `<schema>.json` and run `generate-attributes`
+   again: it keeps the old entry as `"retired": true` with its `attributeID`,
+   `valueType` and `column_binding` (see
+   [Removing an attribute](#removing-an-attribute-342)). The retired entry is
+   exempt from this rule because no condition, sort or projection reads it.
+6. Apply the retirement before the upgrade. Record it with `apply-schema` and
+   roll the old build onto this `SCHEMA_DIR`, as in step 2, so the active
+   generation the new build starts against already holds the old name as
+   retired.
+7. Upgrade, with the `SCHEMA_DIR` from step 5. An old build that predates
+   the ledger also needs
+   [Upgrading an existing deployment](schema-evolution.md#upgrading-an-existing-deployment)
+   at this point; its baseline records the step 5 declaration.
+
 ### valueType/column-encoding binding mismatches (`#459`)
 
 Example validator output:

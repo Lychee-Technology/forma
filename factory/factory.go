@@ -139,7 +139,14 @@ func newEntityManagerWithConfigContext(ctx context.Context, config *forma.Config
 	if effectiveConfig.SchemaRegistry == nil {
 		return nil, fmt.Errorf("config.SchemaRegistry is required: please provide a SchemaRegistry implementation")
 	}
-	registry := effectiveConfig.SchemaRegistry
+	// The manager, the transformer and the guards read the registry, not the
+	// loader's cache, so the registry's own caches must hold no attribute named
+	// after a reserved column, entity_main, system or dedup (#470): a
+	// caller-supplied one never went through admission.
+	registry, err := schemameta.GuardReservedAttrNames(effectiveConfig.SchemaRegistry)
+	if err != nil {
+		return nil, fmt.Errorf("config.SchemaRegistry rejected: %w", err)
+	}
 	zap.S().Info("Using provided SchemaRegistry implementation")
 
 	// Initialize transformer

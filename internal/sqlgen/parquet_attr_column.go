@@ -234,6 +234,16 @@ func DuckDBEqualFold(a, b string) bool {
 // error, never forma.ErrInvalidInput. Attributes are checked in sorted
 // order so the error message is deterministic.
 //
+// It also refuses an active attribute whose folded name is an entity_main
+// column (text_01, integer_02, ltbase_created_by, ...), whether or not it is
+// bound to that column (#470): the renderers resolve such a name to the
+// physical column, see entityMainColumnNames. Like the reserved-column half
+// it exempts retired entries: the hazard is in conditions, sorts and
+// projections, all of which see only the active cache, and the exporter
+// writes a bound column's values under the attribute's folded name, never
+// under the column's own (the system columns it does emit are reserved
+// above), so a retired attribute's flushed column cannot meet one.
+//
 // Retired entries (#342) are in scope for the collision half only (#549).
 // A fold collision is physical: read_parquet(..., union_by_name=true) merges
 // case-variant column names from different files into one column and the
@@ -262,6 +272,9 @@ func ValidateParquetAttrColumns(cache forma.SchemaAttributeCache) error {
 		key := DuckDBFoldIdentifier(cur.col)
 		if _, ok := reservedParquetColumns[key]; ok && !cur.meta.Retired {
 			return reservedParquetColumnError(cur.name, cur.col, key)
+		}
+		if _, ok := entityMainColumnNames[key]; ok && !cur.meta.Retired {
+			return mainColumnNameError(cur.name, cur.col, key)
 		}
 		if prev, ok := colToAttr[key]; ok {
 			return foldedColumnCollisionError(prev, cur, key)
