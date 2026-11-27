@@ -63,7 +63,7 @@ These are open under #753 and must not be counted as passing coverage.
 - arm64: CI runs `make test` under `-race` and `make duckdb-storage-compat` on every PR, and the production suite under `-race` nightly. The full federated suite has not run on arm64.
 - The Lambda build (`make build-lambda`, linux/arm64) has no runtime DuckDB path to validate: `cmd/lambda` builds its config from `forma.DefaultConfig`, where DuckDB is disabled, and never reads `DUCKDB_ENABLED`. No workflow builds it or deploys it, and nothing loads the extension layer `scripts/duckdb_layer.sh` packages. If Lambda enables DuckDB, that path needs its own runtime check, and #754 bears on which library it links.
 - Darwin and Windows: go.mod carries their native libraries, but they are not runtime targets, and no test has run on them.
-- The audit of 2.0 behaviour changes reachable from Forma's generated SQL is on #753. Its one finding, float-to-integer casts that round past the type's bound, is pinned in `sqlgen/duckdb_bound_integer_read_test.go` (#790).
+- The audit of 2.0 behaviour changes reachable from Forma's generated SQL is on #753. Its one finding, float-to-integer casts that round past the type's bound, is pinned by `TestDeriveLockstepWithExport` (`internal/cdc/sortkey_derive_lockstep_test.go`), which requires the CDC export's cast to agree with the Go reference at the integer and smallint bounds (#790). The attach hot-leg read #790 first pinned it on was removed by #879.
 
 ## Storage compatibility across releases
 

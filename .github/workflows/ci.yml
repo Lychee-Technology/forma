@@ -210,6 +210,14 @@ jobs:
           restore-keys: |
             duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-
 
+      # The test job asserts the engine version on arm64 only. This job is
+      # the amd64 one that runs DuckDB, so it asserts the same pin here:
+      # duckdb-go fetches the native library per platform, and go.sum alone
+      # does not show which engine an amd64 binary loaded (#750).
+      # TestCIAssertsDuckDBEngineVersionOnAmd64 guards this step.
+      - name: Assert the pinned DuckDB engine version (amd64)
+        run: go test -v ./internal/duckdbinit -run '^TestRunningDuckDBEngineIsThePinnedVersion$' -count=1
+
       - name: Run E2E harness tests
         run: go test -v ./internal/e2e_harness/... -timeout=5m
 
