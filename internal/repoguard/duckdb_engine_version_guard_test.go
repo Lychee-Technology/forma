@@ -17,17 +17,23 @@ func TestCIAssertsDuckDBEngineVersionOnAmd64(t *testing.T) {
 		t.Fatalf("read ci.yml: %v", err)
 	}
 	job := workflowJobBlock(t, string(wf), "e2e")
-	if !strings.Contains(job, "runs-on: ubuntu-latest") {
-		t.Error("ci.yml e2e job no longer runs on ubuntu-latest (amd64): move the engine-version assertion to a job that does (#750)")
-	}
+	var hasAmd64Runner, hasVersionStep bool
 	for _, line := range strings.Split(job, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "#") {
 			continue
 		}
+		if trimmed == "runs-on: ubuntu-latest" {
+			hasAmd64Runner = true
+		}
 		if strings.Contains(trimmed, "./internal/duckdbinit") && strings.Contains(trimmed, "TestRunningDuckDBEngineIsThePinnedVersion") {
-			return
+			hasVersionStep = true
 		}
 	}
-	t.Error("ci.yml e2e job does not run TestRunningDuckDBEngineIsThePinnedVersion: no amd64 CI job would check which DuckDB engine it loaded (#750)")
+	if !hasAmd64Runner {
+		t.Error("ci.yml e2e job no longer runs on ubuntu-latest (amd64): move the engine-version assertion to a job that does (#750)")
+	}
+	if !hasVersionStep {
+		t.Error("ci.yml e2e job does not run TestRunningDuckDBEngineIsThePinnedVersion: no amd64 CI job would check which DuckDB engine it loaded (#750)")
+	}
 }
