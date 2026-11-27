@@ -17,8 +17,11 @@ import (
 // against one rule, and a row whose attributes disagreed on whether a shared
 // ancestor is an array would read it both ways. When the document does not
 // resolve an attribute's ancestors, such as an ancestor behind another
-// file's $ref (visit's contact), cache is returned unchanged and the schema's
-// rows rebuild by row evidence, as they did before #623.
+// file's $ref (visit's contact), every attribute is returned without
+// ancestry and the schema's rows rebuild by row evidence, as they did before
+// #623. Each attribute the document does not resolve is marked
+// ArrayAncestryUnresolved, so the parquet guard, which then holds the schema
+// out of the parquet tiers, names it (#937).
 //
 // That is logged once, naming the first such attribute. The log is a
 // warning when an attribute is known to lie inside an array of objects,
@@ -35,17 +38,21 @@ func withArrayAncestors(schemaName string, cache forma.SchemaAttributeCache, pro
 	sort.Strings(names)
 
 	derived := make(forma.SchemaAttributeCache, len(cache))
+	underived := make(forma.SchemaAttributeCache, len(cache))
 	unresolved, inObjectArray := "", false
 	for _, name := range names {
 		ancestors, ok := arrayAncestorsOf(name, properties)
 		inObjectArray = inObjectArray || len(ancestors) > 0
+		meta := cache[name]
+		meta.ArrayAncestors = nil
+		meta.ArrayAncestryUnresolved = !ok
+		underived[name] = meta
 		if !ok {
 			if unresolved == "" {
 				unresolved = name
 			}
 			continue
 		}
-		meta := cache[name]
 		meta.ArrayAncestors = ancestors
 		derived[name] = meta
 	}
@@ -59,7 +66,7 @@ func withArrayAncestors(schemaName string, cache forma.SchemaAttributeCache, pro
 	logf("array ancestors not derived: the schema document does not resolve an attribute's ancestors, "+
 		"so an object or array nested inside an array of objects does not rebuild in its written shape",
 		"schema", schemaName, "attribute", unresolved)
-	return cache
+	return underived
 }
 
 // arrayAncestorsOf walks name's ancestors through the document and returns

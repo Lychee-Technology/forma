@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "#937: the document ua_ref reaches contact through; on its own a flat schema whose ancestry is derived",
+  "type": "object",
+  "properties": {
+    "contact":{"type":"object","properties":{"phone":{"type":"string"}}}
+  }
+}

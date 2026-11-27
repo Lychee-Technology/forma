@@ -19,7 +19,7 @@ type exportSQLModeCase struct {
 }
 
 func exportSQLAttrCacheFixture() forma.SchemaAttributeCache {
-	return forma.SchemaAttributeCache{
+	return derivedAncestry(forma.SchemaAttributeCache{
 		"name": {
 			AttributeName: "name",
 			AttributeID:   10,
@@ -43,7 +43,7 @@ func exportSQLAttrCacheFixture() forma.SchemaAttributeCache {
 			ValueType:     forma.ValueTypeDateTime,
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint03, Encoding: forma.MainColumnEncodingUnixMs},
 		},
-	}
+	})
 }
 
 func exportSQLModeCases(rowID uuid.UUID) []exportSQLModeCase {

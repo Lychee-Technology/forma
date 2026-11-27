@@ -23,7 +23,8 @@ type FederatedAttributeQuery struct {
 	PreferHot      bool
 	KeysetCursor   *KeysetCursor
 	// ParquetUnrepresentable says why the parquet tiers cannot hold the
-	// schema's rows (#704), or is empty. Set, it routes the query to
+	// schema's rows (#704), its array ancestry not derived included (#937),
+	// or is empty. Set, it routes the query to
 	// PostgreSQL alone. The service sets it from the schema registry's
 	// cache, since the engine's metadata cache carries no array ancestry.
 	ParquetUnrepresentable string

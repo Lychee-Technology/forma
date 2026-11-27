@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "#937: contact is another file's $ref, which the parser does not resolve (#705), so the registry cannot place contact.phone",
+  "type": "object",
+  "properties": {
+    "name":{"type":"string"},
+    "items":{"type":"array","items":{"type":"object","properties":{"sku":{"type":"string"}}}},
+    "contact":{"$ref":"ua_contact.json#/properties/contact"}
+  }
+}

@@ -58,7 +58,7 @@ func (r stubSchemaRegistry) ListSchemas() []string { return nil }
 // testAttrCache is a minimal populated cache (one column-bound text attr, one
 // EAV bool attr) shared by tests that need a resolvable schema.
 func testAttrCache() forma.SchemaAttributeCache {
-	return forma.SchemaAttributeCache{
+	return derivedAncestry(forma.SchemaAttributeCache{
 		"name": {
 			AttributeName: "name",
 			AttributeID:   10,
@@ -70,7 +70,7 @@ func testAttrCache() forma.SchemaAttributeCache {
 			AttributeID:   11,
 			ValueType:     forma.ValueTypeBool,
 		},
-	}
+	})
 }
 
 type objectOnlyS3Client struct{}
@@ -93,4 +93,18 @@ func (c *fullS3ClientMock) GetObject(_ context.Context, _ *s3.GetObjectInput, _ 
 
 func (c *fullS3ClientMock) PutObject(_ context.Context, _ *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
 	return &s3.PutObjectOutput{}, nil
+}
+
+// derivedAncestry gives every attribute of cache without ArrayAncestors an
+// empty one, as the schema registry does for a schema whose array ancestry it
+// derived and that holds no array of objects: the parquet guard exports only
+// such a schema (#704, #937).
+func derivedAncestry(cache forma.SchemaAttributeCache) forma.SchemaAttributeCache {
+	for name, meta := range cache {
+		if meta.ArrayAncestors == nil {
+			meta.ArrayAncestors = []string{}
+			cache[name] = meta
+		}
+	}
+	return cache
 }

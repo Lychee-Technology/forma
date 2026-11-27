@@ -81,7 +81,7 @@ func selectClause(t *testing.T, sql string) string {
 }
 
 func TestBuildBaseExportSQL_WithSchemaCacheProjectsColumns(t *testing.T) {
-	attrCache := forma.SchemaAttributeCache{
+	attrCache := derivedAncestry(forma.SchemaAttributeCache{
 		"name": {
 			AttributeName: "name",
 			AttributeID:   10,
@@ -93,7 +93,7 @@ func TestBuildBaseExportSQL_WithSchemaCacheProjectsColumns(t *testing.T) {
 			AttributeID:   11,
 			ValueType:     forma.ValueTypeBool,
 		},
-	}
+	})
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
 
 	sql, mQuery, eQuery, err := buildBaseExportSQL("s3://bucket/base/1/_tmp/tmp.parquet", CDCConfig{}, 1, []uuid.UUID{rowID}, attrCache)

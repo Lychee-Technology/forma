@@ -964,7 +964,9 @@ A create runs step 4 only.
   attribute of the schema is known to lie inside an array of objects, since
   only such a schema's rows can read differently, and information otherwise,
   as for `visit`. An ancestor the document leaves open could still be such
-  an array (#705). The rebuild
+  an array (#705), so either way the schema is held out of the parquet
+  tiers and its reads answered from PostgreSQL (#937,
+  `docs/federated-query/design.md`). The rebuild
   (`rebuildDocument`, `internal/transform/document_rebuild.go`) then places
   each record by it, in every record order: a lead's
   `propertyInterests[0].snapshot.title` reads back at

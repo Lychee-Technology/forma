@@ -1,0 +1,5 @@
+{
+  "name": { "attributeID": 1, "valueType": "text" },
+  "items.sku": { "attributeID": 2, "valueType": "text" },
+  "matrix.cell": { "attributeID": 3, "valueType": "text" }
+}

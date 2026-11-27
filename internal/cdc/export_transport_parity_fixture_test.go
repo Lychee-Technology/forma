@@ -165,7 +165,7 @@ func parityAttrCache() forma.SchemaAttributeCache {
 	eav := func(id int16, vt forma.ValueType) forma.AttributeMetadata {
 		return forma.AttributeMetadata{AttributeID: id, ValueType: vt}
 	}
-	cache := forma.SchemaAttributeCache{
+	cache := derivedAncestry(forma.SchemaAttributeCache{
 		"title":    bound(1, forma.ValueTypeText, forma.MainColumnText01, ""),
 		"born":     bound(2, forma.ValueTypeDate, forma.MainColumnText02, forma.MainColumnEncodingRFC3339),
 		"active_t": bound(3, forma.ValueTypeBool, forma.MainColumnText03, forma.MainColumnEncodingBoolText),
@@ -186,7 +186,7 @@ func parityAttrCache() forma.SchemaAttributeCache {
 		"since":    eav(26, forma.ValueTypeDate),
 		"ref":      eav(27, forma.ValueTypeUUID),
 		"tags":     eav(28, forma.ValueTypeList),
-	}
+	})
 	nums := eav(29, forma.ValueTypeList)
 	nums.ItemsType = forma.ValueTypeInteger
 	cache["nums"] = nums

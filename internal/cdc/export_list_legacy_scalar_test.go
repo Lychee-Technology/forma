@@ -19,10 +19,10 @@ import (
 // legacy scalar row (array_indices ” with a value, written before the schema
 // declared the attribute a list) → a one-element list instead of [].
 func TestExportListAggregateShapes(t *testing.T) {
-	projection, err := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+	projection, err := buildSchemaDrivenProjection(derivedAncestry(forma.SchemaAttributeCache{
 		"tags": {AttributeName: "tags", AttributeID: 18, ValueType: forma.ValueTypeList},
 		"nums": {AttributeName: "nums", AttributeID: 19, ValueType: forma.ValueTypeList, ItemsType: forma.ValueTypeInteger},
-	})
+	}))
 	require.NoError(t, err)
 	require.Len(t, projection.eavAgg, 2)
 

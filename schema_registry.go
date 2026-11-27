@@ -193,6 +193,18 @@ type AttributeMetadata struct {
 	// holding one fails until the registry sets it again. The JSON form keeps
 	// nil (null) and empty ([]) apart.
 	ArrayAncestors []string `json:"array_ancestors"`
+	// ArrayAncestryUnresolved marks, on an attribute whose ArrayAncestors is
+	// nil, that the registry could not place it: its schema document does not
+	// say what one of its ancestors is (#937), as with an ancestor behind
+	// another file's $ref (#705). It names the attribute that kept the
+	// registry from deriving the schema's ancestry; nil ArrayAncestors without
+	// it means the same to every consumer, only less precisely reported.
+	//
+	// A schema with any attribute whose ArrayAncestors is nil is held out of
+	// the parquet tiers: without the ancestry nothing can tell whether an
+	// attribute lies inside an array of objects, which those tiers would
+	// collapse to one value per row (#704).
+	ArrayAncestryUnresolved bool `json:"array_ancestry_unresolved,omitempty"`
 }
 
 // EffectiveRequiredPolicy returns the policy used at runtime.

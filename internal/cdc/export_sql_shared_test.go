@@ -138,7 +138,7 @@ func TestBuildEAVQuery_OmitsAttrFilterWhenAttrIDsAreEmpty(t *testing.T) {
 }
 
 func TestBuildSchemaDrivenProjection_DeduplicatesMainColumnsAndSeparatesEAVAggregates(t *testing.T) {
-	projection, err := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+	projection, err := buildSchemaDrivenProjection(derivedAncestry(forma.SchemaAttributeCache{
 		"display_name": {
 			AttributeName: "display_name",
 			AttributeID:   10,
@@ -156,7 +156,7 @@ func TestBuildSchemaDrivenProjection_DeduplicatesMainColumnsAndSeparatesEAVAggre
 			AttributeID:   12,
 			ValueType:     forma.ValueTypeBool,
 		},
-	})
+	}))
 	require.NoError(t, err)
 
 	mainColumnCount := 0
@@ -188,7 +188,7 @@ func TestBuildParquetCopyOptions_FormatsResolvedOptionsForDuckDB(t *testing.T) {
 }
 
 func TestBuildSchemaDrivenProjection_MixedBoundAndUnboundAttributesKeepCastsAliasesAndAttrIDsAligned(t *testing.T) {
-	projection, err := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+	projection, err := buildSchemaDrivenProjection(derivedAncestry(forma.SchemaAttributeCache{
 		"display_name": {
 			AttributeName: "display_name",
 			AttributeID:   20,
@@ -205,7 +205,7 @@ func TestBuildSchemaDrivenProjection_MixedBoundAndUnboundAttributesKeepCastsAlia
 			AttributeID:   22,
 			ValueType:     forma.ValueTypeBool,
 		},
-	})
+	}))
 	require.NoError(t, err)
 
 	require.Contains(t, projection.mainColumns, stageColumn{string(forma.MainColumnText01), stageVarchar})
@@ -226,7 +226,7 @@ func TestBuildSchemaDrivenProjection_MixedBoundAndUnboundAttributesKeepCastsAlia
 }
 
 func TestBuildSchemaDrivenProjection_PreservesProjectionSplitAcrossBoundAndUnboundAttributes(t *testing.T) {
-	projection, err := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+	projection, err := buildSchemaDrivenProjection(derivedAncestry(forma.SchemaAttributeCache{
 		"company_name": {
 			AttributeName: "company_name",
 			AttributeID:   30,
@@ -238,7 +238,7 @@ func TestBuildSchemaDrivenProjection_PreservesProjectionSplitAcrossBoundAndUnbou
 			AttributeID:   31,
 			ValueType:     forma.ValueTypeNumeric,
 		},
-	})
+	}))
 	require.NoError(t, err)
 
 	require.Contains(t, projection.mainColumns, stageColumn{string(forma.MainColumnText02), stageVarchar})
@@ -256,7 +256,7 @@ func TestBuildEAVQuery_SelectsArrayIndices(t *testing.T) {
 }
 
 func TestBuildSchemaDrivenProjection_ListAttrAggregatesElementsOrderedByIndex(t *testing.T) {
-	projection, err := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+	projection, err := buildSchemaDrivenProjection(derivedAncestry(forma.SchemaAttributeCache{
 		"tags": {
 			AttributeName: "tags",
 			AttributeID:   18,
@@ -273,7 +273,7 @@ func TestBuildSchemaDrivenProjection_ListAttrAggregatesElementsOrderedByIndex(t 
 			AttributeID:   7,
 			ValueType:     forma.ValueTypeText,
 		},
-	})
+	}))
 	require.NoError(t, err)
 
 	require.Len(t, projection.eavAgg, 3)
@@ -297,7 +297,7 @@ func TestBuildSchemaDrivenProjection_ListAttrAggregatesElementsOrderedByIndex(t 
 }
 
 func TestBuildSchemaDrivenProjection_BoundUnixMsDateAndDatetimeExportEpochMsBigint(t *testing.T) {
-	projection, err := buildSchemaDrivenProjection(forma.SchemaAttributeCache{
+	projection, err := buildSchemaDrivenProjection(derivedAncestry(forma.SchemaAttributeCache{
 		"joined": {
 			AttributeName: "joined",
 			AttributeID:   13,
@@ -310,7 +310,7 @@ func TestBuildSchemaDrivenProjection_BoundUnixMsDateAndDatetimeExportEpochMsBigi
 			ValueType:     forma.ValueTypeDateTime,
 			ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint03, Encoding: forma.MainColumnEncodingUnixMs},
 		},
-	})
+	}))
 	require.NoError(t, err)
 
 	require.Equal(t, []string{
