@@ -41,13 +41,11 @@ func (lc *absenceLifecycle) check(ctx context.Context, t *testing.T, stage strin
 	for _, route := range absenceRoutes {
 		label := stage + ", " + route.name
 		got := lc.query(ctx, t, label, route, nil)
+		lc.requireSelected(t, label, nil, got, func(*absenceRow) bool { return true })
 		for _, r := range lc.rows {
-			attrs, ok := got[r.id]
-			if !ok {
-				t.Errorf("%s: Query did not return the %s row", label, r.label)
-				continue
+			if attrs, ok := got[r.id]; ok {
+				lc.compareAttrs(t, label+" Query", r, attrs)
 			}
-			lc.compareAttrs(t, label+" Query", r, attrs)
 		}
 		for _, a := range lc.subject.attrs {
 			lc.checkSelects(ctx, t, label, route, forma.IsNull(a.name), func(r *absenceRow) bool { return !r.holds(a.name) })
@@ -111,7 +109,8 @@ func (lc *absenceLifecycle) compareAttrs(t *testing.T, label string, r *absenceR
 
 // query answers cond on route and returns each row's JSON-normalized
 // attributes. The DuckDB route must have read through DuckDB, and the
-// PostgreSQL route must not have entered the engine.
+// PostgreSQL route must not have entered the engine. A row returned twice
+// fails the check, so a stale copy cannot hide behind the current one.
 func (lc *absenceLifecycle) query(ctx context.Context, t *testing.T, label string, route absenceRoute, cond forma.Condition) map[uuid.UUID]map[string]any {
 	t.Helper()
 	res, err := route.manager(lc.env).Query(ctx, &forma.QueryRequest{
@@ -128,6 +127,10 @@ func (lc *absenceLifecycle) query(ctx context.Context, t *testing.T, label strin
 	}
 	out := make(map[uuid.UUID]map[string]any, len(res.Data))
 	for _, rec := range res.Data {
+		if _, dup := out[rec.RowID]; dup {
+			t.Errorf("%s: Query %s returned row %s more than once", label, describeCondition(cond), rec.RowID)
+			continue
+		}
 		out[rec.RowID] = jsonNormalizedAttrs(t, rec.Attributes)
 	}
 	return out
@@ -136,15 +139,32 @@ func (lc *absenceLifecycle) query(ctx context.Context, t *testing.T, label strin
 // checkSelects requires cond to select exactly the rows selected reports.
 func (lc *absenceLifecycle) checkSelects(ctx context.Context, t *testing.T, label string, route absenceRoute, cond *forma.KvCondition, selected func(*absenceRow) bool) {
 	t.Helper()
-	got := lc.query(ctx, t, label, route, cond)
+	lc.requireSelected(t, label, cond, lc.query(ctx, t, label, route, cond), selected)
+}
+
+// requireSelected requires the row ids a query of cond returned to be
+// exactly those of the rows selected reports: each of them, and no other.
+func (lc *absenceLifecycle) requireSelected(t *testing.T, label string, cond forma.Condition, got map[uuid.UUID]map[string]any, selected func(*absenceRow) bool) {
+	t.Helper()
 	for _, r := range lc.rows {
 		if _, ok := got[r.id]; ok != selected(r) {
 			t.Errorf("%s: Query %s selects the %s row = %v, want %v", label, describeCondition(cond), r.label, ok, !ok)
 		}
 	}
-	if len(got) > len(lc.rows) {
-		t.Errorf("%s: Query %s returned %d rows, more than the %d written", label, describeCondition(cond), len(got), len(lc.rows))
+	for id := range got {
+		if !lc.hasRow(id) {
+			t.Errorf("%s: Query %s returned row %s, which the lifecycle did not write", label, describeCondition(cond), id)
+		}
 	}
+}
+
+func (lc *absenceLifecycle) hasRow(id uuid.UUID) bool {
+	for _, r := range lc.rows {
+		if r.id == id {
+			return true
+		}
+	}
+	return false
 }
 
 func describeCondition(cond forma.Condition) string {
@@ -220,13 +240,7 @@ func (lc *absenceLifecycle) checkPublishedImage(ctx context.Context, t *testing.
 		if err := lc.env.Duck.DB.QueryRowContext(ctx, query).Scan(&got); err != nil {
 			t.Fatalf("%s: read the newest published image of the %s row (generation %d): %v", stage, r.label, m.Generation, err)
 		}
-		want, present := r.image[a.name]
-		switch {
-		case !present && got.Valid:
-			t.Errorf("%s: the published image of the %s row holds %s = %s, want NULL", stage, r.label, a.name, got.String)
-		case present && (!got.Valid || got.String != parquetImage(want)):
-			t.Errorf("%s: the published image of the %s row holds %s = %v, want %s", stage, r.label, a.name, got, parquetImage(want))
-		}
+		lc.compareImage(t, stage+", newest published image", r, a.name, got)
 	}
 }
 

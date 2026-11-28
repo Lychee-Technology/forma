@@ -4,6 +4,7 @@ package production
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -34,7 +35,11 @@ import (
 //
 // Every stage checks Get, Query on the PostgreSQL and DuckDB routes, is_null
 // and is_not_null, a predicate on the old value, preconditions on the
-// attribute, and the newest image the published generation lists. The list
+// attribute, and the newest image the published generation lists. Every
+// compaction also checks the generation it committed (a promotion keeps the
+// base holding the old value listed beside the new base, and a rewrite
+// replaces that base and every other input with the new one) and reads the
+// object it wrote: exactly one image per row, NULL apart from []. The list
 // subject keeps a row whose list was set to [] beside the cleared rows: it is
 // present at every stage, an empty LIST in parquet, never NULL.
 func TestUnsetAbsenceSurvivesFlushAndCompaction(t *testing.T) {
@@ -137,6 +142,9 @@ type absenceLifecycle struct {
 	subject absenceSubject
 	txr     forma.Transactor
 	rows    []*absenceRow
+	// valueBase is the base object the first promotion wrote, which holds
+	// the old value, until a rewrite folds it ("" otherwise).
+	valueBase string
 }
 
 // newAbsenceLifecycle creates the subject's rows with every attribute set:
@@ -234,13 +242,21 @@ func (lc *absenceLifecycle) updateOp(r *absenceRow) *forma.EntityOperation {
 // transaction of its own.
 func (lc *absenceLifecycle) update(ctx context.Context, r *absenceRow, op *forma.EntityOperation) error {
 	if !r.inTx {
-		_, err := lc.env.EntityManager().Update(ctx, op)
-		return err
+		if _, err := lc.env.EntityManager().Update(ctx, op); err != nil {
+			return fmt.Errorf("update the %s row %s: %w", r.label, r.id, err)
+		}
+		return nil
 	}
-	return lc.txr.InTx(ctx, func(ctx context.Context, tx forma.Tx) error {
-		_, err := tx.Update(ctx, op)
-		return err
+	err := lc.txr.InTx(ctx, func(ctx context.Context, tx forma.Tx) error {
+		if _, err := tx.Update(ctx, op); err != nil {
+			return fmt.Errorf("tx.update: %w", err)
+		}
+		return nil
 	})
+	if err != nil {
+		return fmt.Errorf("update the %s row %s in a transaction: %w", r.label, r.id, err)
+	}
+	return nil
 }
 
 // flush runs the production CDC flush, requires it to drain the dirty set,
@@ -261,23 +277,16 @@ func (lc *absenceLifecycle) published() {
 	}
 }
 
-// compact runs one compaction pass and requires the outcome named, so no
-// stage that claims a merge passes over a pass that merged nothing.
-func (lc *absenceLifecycle) compact(ctx context.Context, t *testing.T, ov CompactionOverrides, want compaction.CompactionOutcome) {
-	t.Helper()
-	res, err := lc.env.RunCompactionWith(ctx, lc.schema, ov)
-	if err != nil {
-		t.Fatalf("compaction: %v", err)
-	}
-	if res.Outcome != want || res.NewBaseKey == "" {
-		t.Fatalf("compaction outcome = %s (dirty ratio %.2f, new base %q), want %s with a new base",
-			res.Outcome, res.DirtyRatio, res.NewBaseKey, want)
-	}
-}
-
 // requireDirty requires every row to hold an unflushed change_log entry, so
 // a stage that reads it hot reads it through the dirty set.
 func (lc *absenceLifecycle) requireDirty(ctx context.Context, t *testing.T, stage string) {
+	t.Helper()
+	lc.requireDirtyRows(ctx, t, stage, len(lc.rows))
+}
+
+// requireDirtyRows requires want rows of the schema to hold an unflushed
+// change_log entry.
+func (lc *absenceLifecycle) requireDirtyRows(ctx context.Context, t *testing.T, stage string, want int) {
 	t.Helper()
 	var dirty int
 	if err := lc.env.Pool.QueryRow(ctx,
@@ -285,7 +294,7 @@ func (lc *absenceLifecycle) requireDirty(ctx context.Context, t *testing.T, stag
 		lc.schema.ID).Scan(&dirty); err != nil {
 		t.Fatalf("%s: count dirty rows: %v", stage, err)
 	}
-	if dirty != len(lc.rows) {
-		t.Fatalf("%s: %d dirty rows, want all %d", stage, dirty, len(lc.rows))
+	if dirty != want {
+		t.Fatalf("%s: %d dirty rows, want %d", stage, dirty, want)
 	}
 }
