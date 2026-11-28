@@ -14,5 +14,9 @@
   "owner.name": { "attributeID": 13, "valueType": "text" },
   "items.sku": { "attributeID": 14, "valueType": "text" },
   "created": { "attributeID": 15, "valueType": "datetime", "column_binding": { "col_name": "ltbase_created_at" } },
-  "short": { "attributeID": 20, "valueType": "text" }
+  "short": { "attributeID": 20, "valueType": "text" },
+  "price$": { "attributeID": 21, "valueType": "text" },
+  "lines": { "attributeID": 22, "valueType": "list" },
+  "seen": { "attributeID": 23, "valueType": "datetime", "column_binding": { "col_name": "text_03", "encoding": "rfc3339" } },
+  "active": { "attributeID": 24, "valueType": "bool", "column_binding": { "col_name": "text_04", "encoding": "bool_text" } }
 }

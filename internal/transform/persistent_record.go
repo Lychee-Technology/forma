@@ -116,14 +116,15 @@ func (t *persistentRecordTransformer) ToPersistentRecord(ctx context.Context, sc
 }
 
 func (t *persistentRecordTransformer) FromPersistentRecord(ctx context.Context, record *model.PersistentRecord) (map[string]any, error) {
-	return t.fromPersistentRecord(ctx, record, decodeRecordValue)
+	return t.fromPersistentRecord(ctx, record, false)
 }
 
-// fromPersistentRecord rebuilds the document of a stored row, giving each EAV
-// record the value valueOf produces: decoded on read, held undecoded for an
-// update's merge base (MergeUpdate). A bound column's own encoding is parsed
-// either way (readFromMainColumn).
-func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, record *model.PersistentRecord, valueOf recordValuer) (map[string]any, error) {
+// fromPersistentRecord rebuilds the document of a stored row. On read (hold
+// false) each value is decoded. For an update's merge base (hold, MergeUpdate)
+// each is held undecoded (heldImages.holdRecordValue), a bound text encoding's image
+// unparsed with it (heldImages), so a value the update discards is never
+// read, whatever store holds it.
+func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, record *model.PersistentRecord, hold bool) (map[string]any, error) {
 	if record == nil {
 		return nil, fmt.Errorf("record cannot be nil")
 	}
@@ -138,6 +139,7 @@ func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, 
 
 	// Reconstruct attributes from main table columns
 	attributes := make([]model.EAVRecord, 0)
+	images := make(heldImages)
 
 	// Process each attribute in the cache to see if it has column binding
 	for attrName, meta := range cache {
@@ -145,9 +147,16 @@ func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, 
 			continue
 		}
 
-		attr, err := t.readFromMainColumn(record, meta, meta.ColumnBinding)
+		attr, image, err := t.readMainColumnImage(record, meta, meta.ColumnBinding)
+		switch {
+		case err != nil:
+		case image != nil && hold:
+			images.hold(attr, image)
+		case image != nil:
+			err = image.parseInto(attr)
+		}
 		if err != nil {
-			return nil, fmt.Errorf("failed to read attribute %s of row %s from main column: %w", attrName, record.RowID, err)
+			return nil, mainColumnReadError(attrName, record.RowID, err)
 		}
 		if attr != nil {
 			attributes = append(attributes, *attr)
@@ -158,6 +167,10 @@ func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, 
 	attributes = append(attributes, record.OtherAttributes...)
 
 	// Convert EAVRecords to EntityAttributes
+	valueOf := decodeRecordValue
+	if hold {
+		valueOf = images.holdRecordValue
+	}
 	converter := t.newConverter()
 	entityAttributes, err := converter.fromStoredRecords(attributes, valueOf)
 	if err != nil {
@@ -174,6 +187,12 @@ func (t *persistentRecordTransformer) fromPersistentRecord(ctx context.Context, 
 	}
 
 	return result, nil
+}
+
+// mainColumnReadError names the attribute and row of a bound column's value
+// the read cannot rebuild: a plain consistency error, operator-visible.
+func mainColumnReadError(attrName string, rowID uuid.UUID, err error) error {
+	return fmt.Errorf("failed to read attribute %s of row %s from main column: %w", attrName, rowID, err)
 }
 
 // storeInEAV appends the record to the row's eav_data attributes. eav_data

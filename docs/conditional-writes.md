@@ -177,10 +177,11 @@ back without `tags`. No typed nil clears either: `[]any(nil)` is the empty
 list, `map[string]any(nil)` changes nothing, and a nil pointer is refused or
 leaves the attribute present.
 
-**Targets.** Decided from the registry metadata alone, before any SQL. An
-unset applies to a registered scalar or list attribute, top-level or nested
-under ordinary objects, in the dotted spelling of the attributes file
-(`profile.nick`). Refused with `ErrInvalidInput` naming the attribute:
+**Targets.** Decided from the registry alone, its attribute metadata and the
+schema document it serves, before any SQL. An unset applies to a registered
+scalar or list attribute, top-level or nested under ordinary objects, under
+the name the attributes file registers (`profile.nick`, and a literal name
+such as `price$` too). Refused with `ErrInvalidInput` naming the attribute:
 
 - an attribute the schema does not define, or a raw `entity_main` column name
   (`ltbase_created_at`, `text_01`);
@@ -193,7 +194,16 @@ under ordinary objects, in the dotted spelling of the attributes file
   no validator too; the array paths the JSON Schema declares refuse as well;
 - a nested attribute whose `ArrayAncestors` is nil: the registry did not
   derive its ancestry, so where it is placed cannot be established;
-- an indexed, wildcard or JSONPath spelling (`tags[0]`, `profile.*`, `$.note`).
+- an indexed, wildcard or JSONPath spelling (`tags[0]`, `profile.*`, `$.note`)
+  of a name the schema does not register.
+
+An object or an array of objects is recognised by an attribute registered
+beneath it or by the schema document's declaration of the target itself, so
+a root the attributes file registers as a `list` while the document declares
+it an array of objects (`"lines": []` then stores an empty-list marker) is
+refused too, with or without a validator. A document that does not reach the
+target, as behind an unresolved `$ref`, leaves only the registration to go
+by.
 
 The row-level backstop stays: a list the locked row holds on the way to the
 target is refused, as for any operator.
@@ -209,13 +219,17 @@ only its own members, so `{"profile": {"title": "x"}}` beside
 
 **Merge.** The target is removed from the merged document, and every object
 the removal leaves empty goes with it, so the document validated is the
-document stored. The stored value is discarded undecoded. A row that holds no
+document stored. The stored value is discarded undecoded, as is a bound
+column's `rfc3339` or `bool_text` image, which the merge holds unparsed: an
+image the read cannot parse fails an update that keeps it, with the read's
+consistency error, and never one that unsets or replaces it. A row that holds no
 value for the target is updated as usual, version stamp and `change_log`
 entry included, and stays without one; repeating an unset recreates nothing.
 
 **Validation.** Nothing is new: the merged document is validated as any
-update's is. A `required_always` attribute, and a `required_if_parent_present`
-attribute whose parent the result still holds, are refused in every mode. A
+update's is. The attribute metadata's required policies apply in every mode:
+a `required_always` attribute, and a `required_if_parent_present` attribute
+whose parent the result still holds, are refused. A
 requirement only the JSON Schema states follows `ValidateUpdatesStrict`:
 refused when strict, accepted with the report-only log line and counter
 otherwise, and not checked without a validator. Any document an unset
@@ -338,7 +352,9 @@ Tests that assert `ErrPreconditionFailed` for the loser specifically are named
 | `server_time` and `$now` share one instant in a `Tx` | `TestNowPreconditionAndServerTimeShareTheTxInstant` |
 | `unset` clears bound and EAV scalars, lists with elements or only their marker, and nested scalars and lists, alone and beside a Set, an `increment` and a `server_time`, through `Update` and `Tx.Update`: the column is `NULL`, no `eav_data` row is left, and version and `change_log` advance | `TestUnsetCommitsTheClear` |
 | `unset` of a bound attribute also deletes the `eav_data` rows it retained | `TestUnsetOfABoundAttributeRemovesItsRetainedEAVRows` |
-| `unset` refusals and overlaps send no SQL, and a `Tx` stays usable | `TestUnsetRefusalsLeaveATxUsable`, `TestUnsetRefusesItsTargetAtIntake`, `TestUnsetOverlapsAreRefused` |
+| `unset` refusals and overlaps name their target and send no SQL, relation and underived nested targets included, and a `Tx` stays usable | `TestUnsetRefusalsLeaveATxUsable`, `TestUnsetRelationAndUnderivedRefusalsLeaveATxUsable`, `TestUnsetRefusesItsTargetAtIntake`, `TestUnsetOverlapsAreRefused` |
+| A registered root the document declares an array of objects is refused in every mode; a registered literal name (`price$`) is cleared while path spellings stay refused | `TestUnsetRefusesARegisteredContainer`, `TestUnsetTakesARegisteredLiteralName` |
+| A bound `rfc3339` or `bool_text` image the read cannot parse is cleared or replaced unparsed, and fails an update that keeps it | `TestUnsetDiscardsAnUnreadableBoundImage` |
 | A cleared key component releases its entry; a failed precondition or rolled-back `Tx` keeps it | `TestUnsetReleasesTheUniqueKeyEntry`, `TestRolledBackUnsetKeepsTheReservation`, `TestUnsetThenRetakeInOneTx` |
-| The validation verdict on an unset matches the verdict on the same document reached otherwise, in strict, report-only and no-validator modes | `TestUnsetValidationMatrix` |
+| The validation verdict on an unset matches the verdict on the same document reached otherwise, in strict, report-only and no-validator modes, and PostgreSQL commits exactly the accepted clears, with report-only's log line and counter | `TestUnsetValidationMatrix`, `TestUnsetValidationMatrixCommits` |
 | A failed precondition rolls back a `Tx` that returns it, and does not poison one that handles it | `TestConditionalUpdateFailureRollsBackTheTx`, `TestSwallowedPreconditionFailureDoesNotPoisonTheTx` |
