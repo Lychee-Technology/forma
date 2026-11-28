@@ -1,6 +1,9 @@
 package internal
 
 import (
+	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -55,8 +58,8 @@ func (e *txEnv) requireCleared(t *testing.T, rowID uuid.UUID, m unsetBatchMutati
 // TestBatchUpdateUnsetStoresWhatUpdateStores gives pairs of rows of one
 // document the same mutation, one row through Update and the other through
 // one BatchUpdate carrying every mutation: entity_main and eav_data are the
-// same, the clears included, and the batch advances version and change_log
-// as Update does.
+// same, the clears included, the batch advances the version, and change_log
+// holds what Update leaves, normalised for row IDs and write timestamps.
 func TestBatchUpdateUnsetStoresWhatUpdateStores(t *testing.T) {
 	for _, atomic := range []bool{true, false} {
 		t.Run(batchModeName(atomic), func(t *testing.T) {
@@ -86,11 +89,34 @@ func TestBatchUpdateUnsetStoresWhatUpdateStores(t *testing.T) {
 				after, hot := env.hotVersion(t, env.postgresPool, unsetSchemaName, rows[i])
 				assert.Greater(t, after, versions[i], "%s: the batch advances the version", m.name)
 				assert.Contains(t, hot, after, "%s: change_log carries the new version", m.name)
+				assert.Equal(t, env.changeLogImage(t, unsetSchemaName, references[i]), env.changeLogImage(t, unsetSchemaName, rows[i]),
+					"%s: change_log as Update leaves it, no entry more or less", m.name)
 				assert.Equal(t, env.attrs(t, unsetSchemaName, rows[i]), result.Successful[i].Attributes,
 					"%s: the response is the stored row", m.name)
 			}
 		})
 	}
+}
+
+// changeLogImage answers rowID's change_log entries in a form two rows'
+// entries compare by: without row_id, and with a changed_at that is the
+// row's version (entity_main's ltbase_updated_at) written as "row version",
+// since each write stamps its own. Any other changed_at is kept as stored.
+func (e *txEnv) changeLogImage(t *testing.T, schema string, rowID uuid.UUID) []map[string]any {
+	t.Helper()
+	version, _ := e.hotVersion(t, e.postgresPool, schema, rowID)
+	decoder := json.NewDecoder(strings.NewReader(e.snapshot(t, schema, rowID).changeLog))
+	decoder.UseNumber()
+	var entries []map[string]any
+	require.NoError(t, decoder.Decode(&entries))
+	for _, entry := range entries {
+		require.Contains(t, entry, "row_id")
+		delete(entry, "row_id")
+		if entry["changed_at"] == json.Number(strconv.FormatInt(version, 10)) {
+			entry["changed_at"] = "row version"
+		}
+	}
+	return entries
 }
 
 // unsetBatchRefusal is an operation on row a refusal fails: by its target
@@ -160,6 +186,8 @@ func TestBestEffortBatchUpdateFailsOnlyTheRefusedUnsetInPostgres(t *testing.T) {
 			require.Len(t, result.Failed, 1)
 			failure := result.Failed[0]
 			assert.Equal(t, refused.RowID, failure.Operation.RowID)
+			assert.Equal(t, 1, failure.Details[forma.OperationErrorIndexDetail],
+				"the result names the failed operation's index in the request")
 			assert.Equal(t, refused.UpdateOps, failure.Operation.UpdateOps)
 			assert.Equal(t, "UPDATE_FAILED", failure.Code)
 			assert.Contains(t, failure.Error, tc.want)
@@ -174,4 +202,24 @@ func TestBestEffortBatchUpdateFailsOnlyTheRefusedUnsetInPostgres(t *testing.T) {
 			assert.Equal(t, before, env.snapshot(t, unsetSchemaName, b), "the refused operation writes nothing")
 		})
 	}
+}
+
+// TestBestEffortBatchUpdateIndexesAFailureOnARepeatedRow names one row three
+// times in a best-effort batch, the middle operation refused: the RowID
+// alone matches every operation, so the result's index is what names the
+// failed one, and the two valid clears around it commit.
+func TestBestEffortBatchUpdateIndexesAFailureOnARepeatedRow(t *testing.T) {
+	env := setupUnsetDocPG(t)
+	a := env.mustCreate(t, unsetSchemaName, unsetBaseDoc())
+
+	result, err := env.manager.BatchUpdate(env.ctx, unsetBatch(false,
+		unsetOp(a, nil, forma.Unset("note")), unsetOp(a, nil, forma.Unset("nope")), unsetOp(a, nil, forma.Unset("tags"))))
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	failure := result.Failed[0]
+	assert.Equal(t, a, failure.Operation.RowID)
+	assert.Equal(t, 1, failure.Details[forma.OperationErrorIndexDetail], "the index names the refused operation")
+	assert.Contains(t, failure.Error, "unset names attribute 'nope'")
+	require.Len(t, result.Successful, 2)
+	env.requireCleared(t, a, unsetBatchMutation{cleared: []string{"note", "tags"}})
 }

@@ -227,6 +227,7 @@ func TestBestEffortBatchUpdateFailsOnlyTheRefusedUnset(t *testing.T) {
 			require.Len(t, result.Failed, 1)
 			failure := result.Failed[0]
 			assert.Equal(t, refused.RowID, failure.Operation.RowID)
+			assert.Equal(t, 1, failure.Details[forma.OperationErrorIndexDetail], "the result names the second operation's index")
 			assert.Equal(t, refused.UpdateOps, failure.Operation.UpdateOps)
 			assert.Equal(t, "UPDATE_FAILED", failure.Code)
 			assert.Contains(t, failure.Error, tc.want)

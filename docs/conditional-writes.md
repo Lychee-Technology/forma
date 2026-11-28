@@ -326,9 +326,13 @@ one at a time, or several in one `Transactor.InTx`. Multi-row conditional
 mutation is #652.
 
 The one exception is `Unset` in `BatchUpdate` (#940). It needs no per-row
-compute or guard contract, so a batch can carry it; `Increment` and
-`ServerTime` compute from the locked row or the transaction clock, which a
-batch has none of. An operation may consist of unsets alone, without
+compute or guard contract, so a batch can carry it. `Increment` and
+`ServerTime` compute from the locked row or the transaction clock, and the
+batch API defines no per-row computation or clock semantics for them, so
+they stay refused. (Both batch paths do write in transactions: the atomic
+path merges every operation under its row's lock in the batch's one
+transaction, and best-effort runs each operation through the ordinary
+transactional `Update`.) An operation may consist of unsets alone, without
 `Updates`. The request-level check reads only the operators' kinds: an
 `Increment`, a `ServerTime` or any other kind in a `BatchUpdate`, a
 precondition in any batch, and any operator in `BatchCreate` or
@@ -344,8 +348,12 @@ validation, storage and unique-key release.
 | Unique-key entries of cleared components | released in the batch's transaction; a rolled-back batch keeps them | released in the operation's own transaction |
 
 A best-effort failure is reported in `BatchResult.Failed` with the
-operation itself, its `RowID` included, and its log line carries the
-operation's index. Nothing is silently ignored.
+operation itself, its `RowID` included, and its zero-based index in
+`BatchOperation.Operations` in `Details` under
+`forma.OperationErrorIndexDetail` (`"operation_index"`); its log line carries
+the same index. `Failed` lists only the failures and a best-effort batch may
+name a row twice, so the index is what identifies the failed operation.
+Nothing is silently ignored.
 
 The budgets are unchanged. `PerformanceConfig.MaxBatchSize` bounds the
 operations of either mode. An atomic batch's rows are not metered against a

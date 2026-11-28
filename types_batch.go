@@ -67,8 +67,9 @@ type EntityOperation struct {
 //
 // An Unset in BatchUpdate (#940) is judged and applied as on Update. An
 // atomic batch with one refused unset commits nothing; a best-effort batch
-// fails that operation only, reported with it in BatchResult.Failed, and
-// commits the others. Any other operator, and any precondition, refuses the
+// fails that operation only, reported in BatchResult.Failed with the
+// operation and its index (OperationErrorIndexDetail), and commits the
+// others. Any other operator, and any precondition, refuses the
 // whole batch before any write, in either mode.
 type BatchOperation struct {
 	Operations []EntityOperation `json:"operations"`
@@ -110,6 +111,17 @@ type OperationError struct {
 	// sampling, and sinks, which belong to the embedding process.
 	//
 	// Empty only on a value Forma did not produce, such as one built by hand.
-	ErrorID string         `json:"error_id,omitempty"`
+	ErrorID string `json:"error_id,omitempty"`
+	// Details carries structured context. A failure produced by a
+	// best-effort batch always holds OperationErrorIndexDetail: the
+	// zero-based position of the failed operation in
+	// BatchOperation.Operations, an int (a JSON number on the wire). Failed
+	// lists only the failures, and a best-effort batch may name a row more
+	// than once, so the index, not Operation or its RowID, identifies which
+	// operation failed (#940).
 	Details map[string]any `json:"details,omitempty"`
 }
+
+// OperationErrorIndexDetail is the OperationError.Details key holding the
+// failed operation's zero-based index in BatchOperation.Operations.
+const OperationErrorIndexDetail = "operation_index"

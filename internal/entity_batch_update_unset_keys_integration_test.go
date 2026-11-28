@@ -7,11 +7,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lychee-technology/forma"
+	"github.com/lychee-technology/forma/internal/uniquekey"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -80,7 +82,9 @@ func TestBatchUpdateUnsetReleasesTheUniqueKeyEntries(t *testing.T) {
 
 // TestRolledBackAtomicBatchUnsetKeepsTheReservations ends the same clears
 // with an operation on a missing row: the batch rolls back under its locks,
-// every row and entry is as stored, and the values stay reserved.
+// in the merge pass and before any write, every row and entry is as stored,
+// and the values stay reserved. TestAtomicBatchUnsetRolledBackAfterAKeyRelease
+// fails the batch after its releases have run.
 func TestRolledBackAtomicBatchUnsetKeepsTheReservations(t *testing.T) {
 	env := setupUnsetKeysPG(t)
 	rows, batch := env.unsetKeysBatch(t, true)
@@ -103,6 +107,67 @@ func TestRolledBackAtomicBatchUnsetKeepsTheReservations(t *testing.T) {
 		require.ErrorIs(t, err, forma.ErrUniqueConflict, tc.name)
 	}
 	env.assertKeyTableMatchesRows(t)
+}
+
+// TestAtomicBatchUnsetRolledBackAfterAKeyRelease fails the same clears in
+// PostgreSQL after every row's unique-key entry has been deleted: a trigger
+// refuses the last row's change_log write, which the batch sends after that
+// row's release and after the releases of the rows before it. The batch's
+// transaction rolls back the deletions with the rest: every row and entry is
+// as stored, and the released values cannot be taken.
+func TestAtomicBatchUnsetRolledBackAfterAKeyRelease(t *testing.T) {
+	tracer := &rowTagTracer{rows: map[string]int64{}, sql: map[*pgx.Conn]string{}}
+	env := setupUnsetPGTuned(t, unsetKeysSchemaDir, unsetKeysSchemaName, 141,
+		func(cfg *pgxpool.Config) { cfg.ConnConfig.Tracer = tracer })
+	rows, batch := env.unsetKeysBatch(t, true)
+	before := make([]rowSnapshot, len(rows))
+	for i, rowID := range rows {
+		before[i] = env.snapshot(t, unsetKeysSchemaName, rowID)
+	}
+	entries := env.keyEntries(t)
+	env.failChangeLogWriteOf(t, rows[len(rows)-1])
+
+	tracer.armed.Store(true)
+	_, err := env.manager.BatchUpdate(env.ctx, batch)
+	tracer.armed.Store(false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("upsert change log for record[%d]", len(rows)-1), "the batch failed at the last row's change_log write")
+	tracer.mu.Lock()
+	released := tracer.rows[uniquekey.KeyTable(env.tables.EntityMain)]
+	tracer.mu.Unlock()
+	assert.Equal(t, int64(len(unsetKeyCases)), released, "every row's release ran before the failure")
+
+	for i, rowID := range rows {
+		assert.Equal(t, before[i], env.snapshot(t, unsetKeysSchemaName, rowID), "no partial state")
+	}
+	assert.Equal(t, entries, env.keyEntries(t), "the released entries are restored")
+	for i, tc := range unsetKeyCases {
+		_, err := env.manager.Create(env.ctx, txCreateOp(unsetKeysSchemaName, unsetKeysRetake(tc.attr, i)))
+		require.ErrorIs(t, err, forma.ErrUniqueConflict, tc.name)
+	}
+	env.assertKeyTableMatchesRows(t)
+}
+
+// failChangeLogWriteOf installs, until the test ends, a trigger raising an
+// exception on any change_log write of rowID.
+func (e *txEnv) failChangeLogWriteOf(t *testing.T, rowID uuid.UUID) {
+	t.Helper()
+	function := fmt.Sprintf("fail_change_log_%d", time.Now().UnixNano())
+	_, err := e.postgresPool.Exec(e.ctx, fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+	IF NEW.row_id = '%s'::uuid THEN
+		RAISE EXCEPTION 'injected change_log failure';
+	END IF;
+	RETURN NEW;
+END $$`, sanitizeIdentifier(function), rowID))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := e.postgresPool.Exec(context.Background(), fmt.Sprintf("DROP FUNCTION IF EXISTS %s() CASCADE", sanitizeIdentifier(function)))
+		assert.NoError(t, err)
+	})
+	_, err = e.postgresPool.Exec(e.ctx, fmt.Sprintf("CREATE TRIGGER %s BEFORE INSERT OR UPDATE ON %s FOR EACH ROW EXECUTE FUNCTION %s()",
+		sanitizeIdentifier(function), sanitizeIdentifier(e.tables.ChangeLog), sanitizeIdentifier(function)))
+	require.NoError(t, err)
 }
 
 // rowTagTracer adds up, while armed, the rows each INSERT, UPDATE and
