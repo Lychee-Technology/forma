@@ -87,10 +87,15 @@ func pageOffset(page, itemsPerPage, maxRows int) (int, error) {
 // maxBatchSize <= 0 leaves the batch unbounded.
 //
 // Batches carry no conditional writes (#649): an operation with Preconditions
-// or UpdateOps is refused before any write, because a best-effort batch would
-// silently drop them and an atomic one has no per-row outcome to report.
+// is refused before any write, because a best-effort batch would silently
+// drop them and an atomic one has no per-row outcome to report. So is every
+// update operator, with one exception: acceptsUnset (BatchUpdate) admits
+// Unset (#940), which needs no per-row compute or guard contract. An
+// Increment or a ServerTime computes from the locked row or the transaction
+// clock, which a batch has no contract for. The operator's kind is all this
+// check reads; the unset's target is the schema's to judge, per operation.
 // Conditional writes of several rows go through Transactor.InTx.
-func validateBatchOperation(req *forma.BatchOperation, maxBatchSize int) error {
+func validateBatchOperation(req *forma.BatchOperation, maxBatchSize int, acceptsUnset bool) error {
 	if req == nil {
 		return forma.InvalidInputf("batch operation cannot be nil")
 	}
@@ -103,10 +108,26 @@ func validateBatchOperation(req *forma.BatchOperation, maxBatchSize int) error {
 			return forma.InvalidInputf("operation[%d]: batches do not accept preconditions (the precondition tests '%s'); run conditional writes through Transactor.InTx",
 				i, firstConditionAttr(op.Preconditions))
 		}
-		if len(op.UpdateOps) > 0 {
-			return forma.InvalidInputf("operation[%d]: batches do not accept update operators (%s on '%s'); run them through Update or Transactor.InTx",
-				i, op.UpdateOps[0].Kind, op.UpdateOps[0].Attribute)
+		if err := refuseBatchUpdateOps(i, op.UpdateOps, acceptsUnset); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// refuseBatchUpdateOps refuses the update operators of operation i that its
+// batch does not accept: every one, or every one but Unset when acceptsUnset.
+func refuseBatchUpdateOps(i int, ops []forma.UpdateOp, acceptsUnset bool) error {
+	for _, op := range ops {
+		if acceptsUnset && op.Kind == forma.UpdateOpUnset {
+			continue
+		}
+		if acceptsUnset {
+			return forma.InvalidInputf("operation[%d]: batches do not accept update operators (%s on '%s'); BatchUpdate accepts %s only, run other operators through Update or Transactor.InTx",
+				i, op.Kind, op.Attribute, forma.UpdateOpUnset)
+		}
+		return forma.InvalidInputf("operation[%d]: batches do not accept update operators (%s on '%s'); run them through Update or Transactor.InTx",
+			i, op.Kind, op.Attribute)
 	}
 	return nil
 }

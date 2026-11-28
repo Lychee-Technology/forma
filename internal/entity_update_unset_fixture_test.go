@@ -50,6 +50,13 @@ type unsetHarness struct {
 
 func newUnsetHarness(t *testing.T, mode unsetMode) *unsetHarness {
 	t.Helper()
+	return newUnsetHarnessWith(t, mode, nil)
+}
+
+// newUnsetHarnessWith is newUnsetHarness with configure, when not nil,
+// adjusting the manager's config before it is built.
+func newUnsetHarnessWith(t *testing.T, mode unsetMode, configure func(*forma.Config)) *unsetHarness {
+	t.Helper()
 	registry, err := schemameta.NewFileSchemaRegistryFromDirectory(unsetSchemaDir)
 	require.NoError(t, err)
 	var validator *schemavalidate.Validator
@@ -67,6 +74,9 @@ func newUnsetHarness(t *testing.T, mode unsetMode) *unsetHarness {
 	config.Entity.SchemaDirectory = unsetSchemaDir
 	config.Entity.ValidateUpdatesStrict = mode == unsetStrict
 	config.Metrics.Emitter = h.metrics
+	if configure != nil {
+		configure(config)
+	}
 	h.em = mustNewEntityManager(t, h.tr, h.repo, nil, registry, config, validator)
 	return h
 }

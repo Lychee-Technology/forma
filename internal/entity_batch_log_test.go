@@ -86,6 +86,8 @@ func TestBestEffortBatchFailureLogOmitsThePayload(t *testing.T) {
 			require.Equal(t, string(tc.op.Type), fields["operation_type"])
 			require.EqualValues(t, 1, fields["operation_index"],
 				"the index is the position in the request, not in Failed")
+			require.Equal(t, 1, failure.Details[forma.OperationErrorIndexDetail],
+				"the result carries the same request index as the line")
 			require.NotEmpty(t, fields["error"])
 			require.NotContains(t, fields, "operation", "the whole operation carries the document")
 

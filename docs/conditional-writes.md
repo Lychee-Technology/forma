@@ -259,8 +259,8 @@ does not commit, refused by its precondition or rolled back with its `Tx`,
 keeps the original reservation. `Claim` refuses an unset of a key component,
 as it refuses every write of one.
 
-Out of scope for #938: `BatchUpdate` still refuses `UpdateOps` (#940), and
-flush, compaction and federated absence are #941.
+`BatchUpdate` accepts `Unset`, and no other operator, in both modes (#940;
+see [Batches](#batches)). Flush, compaction and federated absence are #941.
 
 ### Unset on the other surfaces
 
@@ -324,6 +324,42 @@ an operation that carries `Preconditions` or `UpdateOps` before any write,
 with `ErrInvalidInput` naming the operation's index. Run conditional writes
 one at a time, or several in one `Transactor.InTx`. Multi-row conditional
 mutation is #652.
+
+The one exception is `Unset` in `BatchUpdate` (#940). It needs no per-row
+compute or guard contract, so a batch can carry it. `Increment` and
+`ServerTime` compute from the locked row or the transaction clock, and the
+batch API defines no per-row computation or clock semantics for them, so
+they stay refused. (Both batch paths do write in transactions: the atomic
+path merges every operation under its row's lock in the batch's one
+transaction, and best-effort runs each operation through the ordinary
+transactional `Update`.) An operation may consist of unsets alone, without
+`Updates`. The request-level check reads only the operators' kinds: an
+`Increment`, a `ServerTime` or any other kind in a `BatchUpdate`, a
+precondition in any batch, and any operator in `BatchCreate` or
+`BatchDelete`, `Unset` included, still refuse the whole batch before any
+write. Each unset is then judged and applied exactly as on `Update`
+([Unset](#unset)): the same target rules, the one-writer rule, the merge,
+validation, storage and unique-key release.
+
+| | Atomic | Best-effort |
+| --- | --- | --- |
+| Target or overlap refused at intake (unknown, object, array of objects, a second writer) | the whole batch fails before any row is locked, naming `operation[i]` | that operation fails, the others commit |
+| Refused under the lock (validation of the merged document, such as `required_always`; an overlap only the row shows; a missing row) | the whole batch rolls back, naming `operation[i]` | that operation fails, the others commit |
+| Unique-key entries of cleared components | released in the batch's transaction; a rolled-back batch keeps them | released in the operation's own transaction |
+
+A best-effort failure is reported in `BatchResult.Failed` with the
+operation itself, its `RowID` included, and its zero-based index in
+`BatchOperation.Operations` in `Details` under
+`forma.OperationErrorIndexDetail` (`"operation_index"`); its log line carries
+the same index. `Failed` lists only the failures and a best-effort batch may
+name a row twice, so the index is what identifies the failed operation.
+Nothing is silently ignored.
+
+The budgets are unchanged. `PerformanceConfig.MaxBatchSize` bounds the
+operations of either mode. An atomic batch's rows are not metered against a
+physical-row limit yet (#692): a clear deletes its `eav_data` rows,
+a list's element rows included, inside the batch's one transaction, and
+those deletions count wherever #692's meter will count modified rows.
 
 ## Inside a Tx
 

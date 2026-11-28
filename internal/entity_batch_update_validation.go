@@ -34,7 +34,8 @@ func validateAtomicUpdateOperations(ops []forma.EntityOperation) error {
 		if op.RowID == (uuid.UUID{}) {
 			return forma.InvalidInputf("operation[%d]: row id is required for update operation", i)
 		}
-		if op.Updates == nil {
+		// An unset alone is a complete update, as on Update (#940).
+		if op.Updates == nil && len(op.UpdateOps) == 0 {
 			return forma.InvalidInputf("operation[%d]: updates are required for update operation", i)
 		}
 		key := batchUpdateTarget{schemaName: op.SchemaName, rowID: op.RowID}

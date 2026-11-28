@@ -41,6 +41,10 @@ func (s *entityBatchService) executeBestEffortBatch(
 				Error:     resolveBatchErrorMessage(err),
 				Code:      batchErrorCode(err, errorCode),
 				ErrorID:   errorID,
+				// Failed is compacted and a best-effort batch may name a row
+				// twice, so the operation and its RowID alone do not say which
+				// one failed; the zero-based index in the request does (#940).
+				Details: map[string]any{forma.OperationErrorIndexDetail: index},
 			})
 			continue
 		}

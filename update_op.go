@@ -6,7 +6,8 @@ import "time"
 // value from the row as it stands under the write's lock, or from the
 // database's transaction clock, so a caller never reads a value outside the
 // lock to compute the next one; Unset (#938) makes the attribute absent. They
-// ride on EntityOperation.UpdateOps and apply to Update only. See
+// ride on EntityOperation.UpdateOps and apply to Update, with one batch
+// exception: BatchUpdate accepts Unset, and no other operator (#940). See
 // docs/conditional-writes.md.
 
 // UpdateOpKind names what an UpdateOp computes.
