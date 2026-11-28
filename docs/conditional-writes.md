@@ -13,7 +13,10 @@ afterwards, which is the lost-update race #593 forbids. Two fields on
   #938).
 
 They apply to `EntityManager.Update` and `Delete` and to `Tx.Update` and
-`Tx.Delete` ([Transactions](transactions.md)). The API is Go only: both fields
+`Tx.Delete` ([Transactions](transactions.md)). `UpdateOps` also apply to the
+rows `Tx.UpdateWhere` and `Tx.Claim` write and to `Tx.Upsert`'s `update`
+action, each through the same update path ([Unset on the other
+surfaces](#unset-on-the-other-surfaces)). The API is Go only: both fields
 are `json:"-"`, and the HTTP carriers are #655. `Tx.AssertRow` evaluates a
 precondition by the same rules on a row it locks without writing it
 ([Locking a row](transactions.md#locking-a-row-forupdate-and-assertrow)).
@@ -26,6 +29,8 @@ _, err := tx.Update(ctx, &forma.EntityOperation{
 	UpdateOps: []forma.UpdateOp{
 		forma.Increment("attempts", 1),
 		forma.ServerTime("next_attempt_at", backoff),
+		forma.Unset("locked_by"), // end the lease: the row no longer holds it
+		forma.Unset("locked_until"),
 	},
 })
 switch {
@@ -252,9 +257,35 @@ does not commit, refused by its precondition or rolled back with its `Tx`,
 keeps the original reservation. `Claim` refuses an unset of a key component,
 as it refuses every write of one.
 
-Out of scope for #938: `BatchUpdate` still refuses `UpdateOps` (#940), the
-`UpdateWhere`, `Upsert` and `Claim` contract tests are #939, and flush,
-compaction and federated absence are #941.
+Out of scope for #938: `BatchUpdate` still refuses `UpdateOps` (#940), and
+flush, compaction and federated absence are #941.
+
+### Unset on the other surfaces
+
+`Tx.UpdateWhere` and `Tx.Claim` write each row they take with `Tx.Update`'s
+path, and `Tx.Upsert`'s `update` action applies its operation to the existing
+row with it, so an unset is one implementation everywhere (#939). Each
+surface checks `UpdateOps` with `Update`'s intake before any SQL: a target
+refused above, or an overlap, is `ErrInvalidInput` naming it, and leaves the
+`Tx` usable.
+
+| Surface | `Unset` |
+| --- | --- |
+| `Tx.UpdateWhere` | applied to each selected row the re-check keeps under its lock, and to no other |
+| `Tx.Claim` | applied in the claim mutation to the claimed rows only, under group exclusivity and generation fencing; an unset of a unique-key component is refused, as every write of one is |
+| `Tx.Upsert`, `update` | applied to the existing row |
+| `Tx.Upsert`, create branch | not executed: the create runs as given; the operators are still validated, so a refused target fails the upsert before any SQL |
+| `Tx.Upsert`, `do_nothing` | `UpdateOps` are refused, an unset included |
+
+A surface stores what `Tx.Update` stores for the same mutation: the same
+`entity_main` columns, `eav_data` rows and unique-key entries, with version
+and `change_log` advanced. Everything else is that surface's own behaviour,
+unchanged: preconditions, predicate selection, locking and re-check,
+`MaxAffected`, claim eligibility, and which errors poison the `Tx`. A failed
+precondition, a re-check miss and a `MaxAffected` overflow remove nothing.
+To end a lease, unset its attributes in the holder's CAS update
+([Fencing](claims.md#fencing)); moving it with `ServerTime(attr, 0)` is no
+longer the recommended pattern.
 
 ### Precision of `server_time`
 
@@ -357,4 +388,11 @@ Tests that assert `ErrPreconditionFailed` for the loser specifically are named
 | A bound `rfc3339` or `bool_text` image the read cannot parse is cleared or replaced unparsed, and fails an update that keeps it | `TestUnsetDiscardsAnUnreadableBoundImage` |
 | A cleared key component releases its entry; a failed precondition or rolled-back `Tx` keeps it | `TestUnsetReleasesTheUniqueKeyEntry`, `TestRolledBackUnsetKeepsTheReservation`, `TestUnsetThenRetakeInOneTx` |
 | The validation verdict on an unset matches the verdict on the same document reached otherwise, in strict, report-only and no-validator modes, and PostgreSQL commits exactly the accepted clears, with report-only's log line and counter | `TestUnsetValidationMatrix`, `TestUnsetValidationMatrixCommits` |
+| `UpdateWhere`, `Claim` and `Upsert`'s `update` store what `Tx.Update` stores for the same Set, `increment` and unset of a bound and of an EAV attribute: the same `entity_main` columns and `eav_data` rows, with version and `change_log` advanced | `TestUnsetSurfacesStoreWhatUpdateStores` |
+| Each of the three surfaces refuses every unset target and overlap `Update` refuses, naming it, before any SQL, and its `Tx` then commits | `TestUnsetSurfacesRefuseAtIntake` |
+| `UpdateWhere` clears every matched row and no other, alone and beside a Set and an `increment`; a re-check miss is untouched; a `MaxAffected` overflow commits nothing and leaves the `Tx` usable | `TestUpdateWhereUnsetClearsEveryMatchedRowAndNoOther`, `TestUpdateWhereUnsetLeavesARecheckMissUntouched_PostgresOnly`, `TestUpdateWhereUnsetOverMaxAffectedCommitsNothing` |
+| A claim's unset clears the claimed rows only, in sort order and, with a `Group`, the heads only; an unset of a unique-key component is refused before SQL | `TestClaimUnsetClearsOnlyTheClaimedRows`, `TestClaimGroupUnsetClearsOnlyTheHeads`, `TestClaimRefusesAnUnsetOfAUniqueKeyComponent` |
+| #653's `MarkFailed` (generation precondition, `increment` of `attempts`, `status: failed`, unset of `locked_by` and `locked_until`) ends the lease so that `locked_until is_null` selects the row; a stale generation leaves the lease in place | `TestClaimMarkFailedUnsetsTheLease` |
+| `Upsert`'s create branch creates without running the unset and still refuses a refused target before SQL; `do_nothing` refuses an unset | `TestUpsertCreateBranchDoesNotRunUnset`, `TestUpsertDoNothingRefusesUnset` |
+| A key component cleared through `UpdateWhere` or `Upsert` releases its entry; a rolled-back `Tx` keeps it | `TestUnsetSurfacesReleaseTheUniqueKeyEntry`, `TestUnsetSurfacesRolledBackKeepTheReservation` |
 | A failed precondition rolls back a `Tx` that returns it, and does not poison one that handles it | `TestConditionalUpdateFailureRollsBackTheTx`, `TestSwallowedPreconditionFailureDoesNotPoisonTheTx` |

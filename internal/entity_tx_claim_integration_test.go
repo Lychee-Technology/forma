@@ -199,9 +199,9 @@ func (e *outboxPG) get(t *testing.T, rowID uuid.UUID) map[string]any {
 
 // LTFlow's MarkFailed completes a claim with a CAS on its generation, counts
 // the attempt and ends the lease; the next claim waits for next_attempt_at.
-// LTFlow sets locked_until to NULL; an Update cannot clear an attribute, so
-// the lease ends at the Tx clock instead, which no claim condition reads as
-// live.
+// This variant ends the lease at the Tx clock, which no claim condition reads
+// as live; TestClaimMarkFailedUnsetsTheLease clears it with Unset, as #653
+// specifies.
 func TestClaimMarkFailedShape(t *testing.T) {
 	env := newOutboxPG(t)
 	row := env.create(t, pendingMessage("t", 0))

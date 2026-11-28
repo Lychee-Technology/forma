@@ -187,7 +187,11 @@ statement, not as long as some other transaction stays open.
 
 `Updates`, then `UpdateOps`, are applied to each claimed row through the same
 path as `Tx.Update`: the same merge, validation, stamps, EAV rows and
-`change_log` row. At least one of them is required. `$now` and `server_time`
+`change_log` row. At least one of them is required. `UpdateOps` may hold an
+`Unset` (#939): it clears the attribute on the claimed rows only, after the
+re-check and under the claim's row locks, so group exclusivity and generation
+fencing are those of any claim, and an unset that falsifies `Condition`
+satisfies the rule below as a Set would. `$now` and `server_time`
 read the Tx's clock, so a lease of `ServerTime("locked_until", 30*time.Second)`
 and a condition `locked_until lte:$now` name instants on one clock.
 
@@ -232,10 +236,31 @@ writes nothing. Renewing a lease is the same kind of CAS `Update`. There is no
 background expiry: a lease ends when the caller's condition at claim time says
 it has.
 
-An update cannot clear an attribute yet (#684), so a completion or failure
-cannot set `locked_until` to null. End the lease by moving it instead, for
-example with `ServerTime("locked_until", 0)`, and keep `status` as what tells
-a held row from a released one.
+A completion or failure ends the lease by clearing it with `forma.Unset`
+(#938, [Unset](conditional-writes.md#unset)) in the same CAS `Update`. #653's
+`MarkFailed` counts the attempt, marks the message failed and removes the
+holder and the expiry:
+
+```go
+_, err := tx.Update(ctx, &forma.EntityOperation{
+	EntityIdentifier: forma.EntityIdentifier{SchemaName: "workflow_outbox", RowID: id},
+	Preconditions:    &forma.KvCondition{Attr: "lock_generation", Value: fmt.Sprintf("equals:%d", gen)},
+	Updates:          map[string]any{"status": "failed"},
+	UpdateOps: []forma.UpdateOp{
+		forma.Increment("attempts", 1),
+		forma.Unset("locked_by"),
+		forma.Unset("locked_until"),
+	},
+})
+```
+
+Afterwards the row holds no `locked_until`, so `locked_until is_null:true`
+selects it with the rows never leased, and no row under a live lease. A stale
+holder's `MarkFailed` names a generation the row has moved past: it answers
+`ErrPreconditionFailed` and the current holder's lease stays in place. Moving
+the lease into the past with `ServerTime("locked_until", 0)`, the workaround
+before #938, still works but leaves a value that reads as a lease; it is no
+longer the recommended way to end one.
 
 ## Transactions, errors and limits
 
@@ -246,7 +271,7 @@ rows are eligible to the next claimer exactly as before.
 | Outcome | Poisons the Tx? |
 | --- | --- |
 | An empty result | no |
-| `ErrInvalidInput` refusing the request before any SQL: no schema or an unknown one, a nil, invalid or empty-group `Condition`, `Limit` outside 1..1000, an unknown `Sort` attribute, no `Updates` or `UpdateOps`, update operators `Update` would refuse, a mutation of a unique-key attribute, a `Group` that breaks a rule above | no |
+| `ErrInvalidInput` refusing the request before any SQL: no schema or an unknown one, a nil, invalid or empty-group `Condition`, `Limit` outside 1..1000, an unknown `Sort` attribute, no `Updates` or `UpdateOps`, update operators `Update` would refuse, a mutation of a unique-key attribute (an `Unset` of one included), a `Group` that breaks a rule above | no |
 | `ErrInvalidInput` for a mutation that left a claimed row matching `Condition` | yes |
 | any failure once a row is held, and every failed statement | yes |
 
