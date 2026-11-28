@@ -62,8 +62,9 @@ type EAVRecord struct {
 	// an alias reads, set by the main-column read only; it is empty for an
 	// eav_data record. It is read-only like ValueNumericRaw. A smallint or
 	// integer is held to its declared type on decode wherever it is stored
-	// (#708, #729); this names the column in the refusal, and exempts a
-	// system column alias, whose value is the store's own (#745).
+	// (#708, #729); this names the column in the refusal, and tells a
+	// system column alias, whose value is the store's own and which a
+	// rewrite cannot repair, from a stored image (#745).
 	BoundColumn string
 }
 

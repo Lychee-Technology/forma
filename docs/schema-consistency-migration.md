@@ -160,6 +160,10 @@ It validates:
   bound column and encoding (`#459`) — e.g. `text`→`uuid_02` or `bool` with
   the default encoding are refused; the server refuses to start on the same
   shapes, so run this before deploying a build carrying the guard
+- no active `smallint` or `integer` attribute is bound to
+  `ltbase_created_at`, `ltbase_updated_at` or `ltbase_deleted_at` (`#745`);
+  the server refuses to start on the same shape, so run this before deploying
+  a build carrying the guard
 - `eav_data.attr_id` values all map to known metadata IDs for the same
   `schema_id` — ids belonging to a `retired` ledger entry (`#342`) are reported
   as informational rather than as failures, because those rows are the `#294`
@@ -693,6 +697,34 @@ attribute is projected from a UUID-typed column. If a deployment carries one
 of these shapes, no row is corrupted; rebind with the explicit encoding
 (`bool_smallint`, `bool_text`, `unix_ms`) or to the column family the
 valueType names, and migrate the existing column values with SQL as above.
+
+### smallint/integer aliases of system timestamp columns (`#745`)
+
+Example validator output:
+
+```text
+- smallint/integer aliases of system timestamp columns: schema=contact attribute created (valueType integer) binds system column ltbase_created_at with a declared type too narrow for the column's epoch-millisecond stamps (#745): declare it bigint, numeric, date or datetime to read the stamp, or bind it to a smallint, integer, bigint or double column to hold values of its own
+```
+
+The attribute aliases a system timestamp, which holds the store's own epoch
+milliseconds (about `1.7e12`), past both the `smallint` and the `integer`
+range. The column matrix admitted the pair, since the column is a `bigint`,
+but no write ever reaches a system column to judge the width, so every read
+of the alias answered a wrapped value (`-2147483648` on amd64) instead of the
+stamp. The server now refuses to load the schema, and an already-registered
+one is not grandfathered; fix the attributes file before deploying:
+
+- redeclare the attribute `bigint` or `numeric` and run `apply-schema`: a
+  widening under the same binding, which the ledger allows
+  ([schema evolution](schema-evolution.md)), and which needs no data change,
+  since nothing is stored under the alias; or
+- if the attribute was meant to hold values of its own, add a new attribute
+  bound to a `smallint_*`, `integer_*`, `bigint_*` or `double_*` column, or
+  left in EAV. Moving the binding and the type in one apply is refused.
+
+A `bigint`, `numeric`, `date` or `datetime` alias of these columns, and a
+`smallint` or `integer` alias of `ltbase_schema_id` (which holds a smallint),
+are not affected.
 
 ### Scalar rows under list attributes (`#372`)
 
