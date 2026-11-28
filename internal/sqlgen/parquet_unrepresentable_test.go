@@ -89,3 +89,25 @@ func TestParquetUnrepresentableReasonPrefersAKnownObjectArrayMember(t *testing.T
 func TestParquetUnrepresentableReasonAcceptsAnEmptySchema(t *testing.T) {
 	require.Empty(t, ParquetUnrepresentableReason(forma.SchemaAttributeCache{}))
 }
+
+// TestParquetUnrepresentableReasonRefusesAnUnderivedEmptyName: the cache does
+// not exclude the empty attribute name, so a populated cache whose only
+// underived attribute is named "" is refused, marked or not, while a
+// genuinely empty cache stays representable.
+func TestParquetUnrepresentableReasonRefusesAnUnderivedEmptyName(t *testing.T) {
+	unmarked := forma.SchemaAttributeCache{
+		"":     {AttributeID: 1, ValueType: forma.ValueTypeText},
+		"name": {AttributeID: 2, ValueType: forma.ValueTypeText, ArrayAncestors: []string{}},
+	}
+	reason := ParquetUnrepresentableReason(unmarked)
+	require.Contains(t, reason, `did not derive the array ancestry of attribute ""`)
+	require.EqualError(t, ValidateParquetRepresentable(unmarked), reason)
+
+	marked := forma.SchemaAttributeCache{
+		"": {AttributeID: 1, ValueType: forma.ValueTypeText, ArrayAncestryUnresolved: true},
+	}
+	require.Contains(t, ParquetUnrepresentableReason(marked), `could not place attribute ""`)
+
+	require.Empty(t, ParquetUnrepresentableReason(forma.SchemaAttributeCache{}))
+	require.Empty(t, ParquetUnrepresentableReason(nil))
+}

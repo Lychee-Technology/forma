@@ -25,15 +25,15 @@ import (
 // holds back a schema whose unresolved attribute is in fact flat too, such as
 // a cross-file $ref to a flat object, until its ancestry is derived (#705).
 func ParquetUnrepresentableReason(cache forma.SchemaAttributeCache) string {
-	if reason := objectArrayMemberReason(cache); reason != "" {
+	if reason := describeObjectArrayMember(cache); reason != "" {
 		return reason
 	}
-	return underivedAncestryReason(cache)
+	return describeUnderivedAncestry(cache)
 }
 
-// objectArrayMemberReason names the first attribute in name order that the
+// describeObjectArrayMember names the first attribute in name order that the
 // registry placed inside an array of objects (#704).
-func objectArrayMemberReason(cache forma.SchemaAttributeCache) string {
+func describeObjectArrayMember(cache forma.SchemaAttributeCache) string {
 	names := make([]string, 0, len(cache))
 	for name, meta := range cache {
 		if len(meta.ArrayAncestors) > 0 {
@@ -49,31 +49,33 @@ func objectArrayMemberReason(cache forma.SchemaAttributeCache) string {
 		attr, cache[attr].ArrayAncestors[0])
 }
 
-// underivedAncestryReason names, for a schema holding an attribute without
+// describeUnderivedAncestry names, for a schema holding an attribute without
 // derived ancestry, the first attribute in name order the registry marked
 // ArrayAncestryUnresolved, or else the first without ancestry: a registry
-// that derives none marks none (#937).
-func underivedAncestryReason(cache forma.SchemaAttributeCache) string {
-	unresolved, underived := "", ""
+// that derives none marks none (#937). Whether such an attribute was found is
+// tracked apart from its name, since the cache does not exclude the empty
+// name and an underived attribute named "" must still refuse the schema.
+func describeUnderivedAncestry(cache forma.SchemaAttributeCache) string {
+	var unresolved, underived []string
 	for name, meta := range cache {
 		if meta.ArrayAncestors != nil {
 			continue
 		}
-		if underived == "" || name < underived {
-			underived = name
-		}
-		if meta.ArrayAncestryUnresolved && (unresolved == "" || name < unresolved) {
-			unresolved = name
+		underived = append(underived, name)
+		if meta.ArrayAncestryUnresolved {
+			unresolved = append(unresolved, name)
 		}
 	}
 	switch {
-	case unresolved != "":
+	case len(unresolved) > 0:
+		sort.Strings(unresolved)
 		return fmt.Sprintf("the schema registry could not place attribute %q: the schema document does not resolve its ancestors, "+
 			"so the schema's array ancestry was not derived and the parquet tiers cannot tell whether an attribute lies inside an array of objects (#937)",
-			unresolved)
-	case underived != "":
+			unresolved[0])
+	case len(underived) > 0:
+		sort.Strings(underived)
 		return fmt.Sprintf("the schema registry did not derive the array ancestry of attribute %q, "+
-			"so the parquet tiers cannot tell whether it lies inside an array of objects (#937)", underived)
+			"so the parquet tiers cannot tell whether it lies inside an array of objects (#937)", underived[0])
 	}
 	return ""
 }

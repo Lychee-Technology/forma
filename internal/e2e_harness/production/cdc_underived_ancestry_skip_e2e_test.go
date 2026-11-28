@@ -76,6 +76,18 @@ func (c underivedAncestryCase) seed(ctx context.Context, t *testing.T) (*Env, *E
 	return env, row
 }
 
+// assertNoObjectOf fails when keys holds an object under schema's partition:
+// a skipped schema has nothing written for it, referenced by a manifest or
+// not.
+func assertNoObjectOf(t *testing.T, env *Env, schema SchemaRef, keys []string, when string) {
+	t.Helper()
+	for _, key := range keys {
+		if strings.HasPrefix(key, buildSchemaKeyPrefix(env, schema)) {
+			t.Fatalf("%s wrote %s for the skipped schema %d, want nothing", when, key, schema.ID)
+		}
+	}
+}
+
 // assertUnderivedSkipped: skipped names schema alone, for the attribute the
 // registry could not place.
 func (c underivedAncestryCase) assertSkipped(t *testing.T, skipped []cdc.SkippedSchema, schema SchemaRef) {
@@ -113,6 +125,7 @@ func TestFlushSkipsASchemaWhoseArrayAncestryWasNotDerived(t *testing.T) {
 			if n := unflushedRows(ctx, t, env, flat); n != 0 {
 				t.Fatalf("ordinary schema has %d unflushed rows, want it flushed", n)
 			}
+			assertNoObjectOf(t, env, simple, flush.NewObjects, "the flush")
 			finals, _ := splitKeys(flush.NewObjects)
 			manifests, err := env.loadManifests(ctx)
 			if err != nil {
@@ -128,7 +141,7 @@ func TestFlushSkipsASchemaWhoseArrayAncestryWasNotDerived(t *testing.T) {
 	}
 }
 
-// assertReadsEveryElement: Get answers both items, and every federated
+// assertReadsEveryElement: Get answers the seeded items a and b, and every federated
 // deployment answers the row whole from PostgreSQL alone, saying why.
 func (c underivedAncestryCase) assertReadsEveryElement(ctx context.Context, t *testing.T, env *Env, simple SchemaRef, row *Event) {
 	t.Helper()
@@ -136,8 +149,9 @@ func (c underivedAncestryCase) assertReadsEveryElement(ctx context.Context, t *t
 	if err != nil {
 		t.Fatalf("OLTP get: %v", err)
 	}
-	if items, _ := stored.Attributes["items"].([]any); len(items) != 2 {
-		t.Fatalf("OLTP get reads items %v, want both elements", stored.Attributes["items"])
+	want := []any{map[string]any{"sku": "a"}, map[string]any{"sku": "b"}}
+	if !reflect.DeepEqual(stored.Attributes["items"], want) {
+		t.Fatalf("OLTP get reads items %#v, want the seeded %#v", stored.Attributes["items"], want)
 	}
 	managers := map[string]forma.EntityManager{
 		"hybrid routing": env.RoutedEntityManager(forma.RoutingStrategyHybrid),
@@ -197,6 +211,11 @@ func TestCDCInitSkipsOrRefusesASchemaWhoseArrayAncestryWasNotDerived(t *testing.
 				t.Fatalf("cdc-init over every schema must skip, not fail: %v", err)
 			}
 			c.assertSkipped(t, report.Skipped, simple)
+			keysAll, err := env.listS3Keys(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertNoObjectOf(t, env, simple, diffKeys(keysAfter, keysAll), "cdc-init over every schema")
 			manifests, err := env.loadManifests(ctx)
 			if err != nil {
 				t.Fatal(err)

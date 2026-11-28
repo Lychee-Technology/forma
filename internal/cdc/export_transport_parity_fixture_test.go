@@ -189,6 +189,7 @@ func parityAttrCache() forma.SchemaAttributeCache {
 	})
 	nums := eav(29, forma.ValueTypeList)
 	nums.ItemsType = forma.ValueTypeInteger
+	nums.ArrayAncestors = []string{}
 	cache["nums"] = nums
 	for name, meta := range cache {
 		meta.AttributeName = name
