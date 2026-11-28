@@ -177,7 +177,9 @@ What each surface does:
 - **Update** that changes a key attribute moves the key: it releases the old
   value and takes the new one. An update that leaves a key's attributes alone
   does not touch that key's entry. The entries follow the row as stored after
-  the write. An update cannot clear an attribute (#684). An update that
+  the write. An update that clears a key attribute with `forma.Unset`
+  releases that key's entry, on every surface that writes through `Update`
+  ([Unset](conditional-writes.md#unset)); `Claim` refuses it. An update that
   gives a key attribute an object or an array, such as `{}` or `[]` in place
   of a string, is refused before it writes, under every validation mode, so
   the row keeps its value and its entry (#924; before it, report-only
