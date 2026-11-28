@@ -170,7 +170,7 @@ func (c *AttributeConverter) FromEAVRecords(records []model.EAVRecord) ([]model.
 }
 
 // fromStoredRecords resolves the relation roots of a stored row's records and
-// converts them with valueOf: decodeRecordValue on read, holdRecordValue for
+// converts them with valueOf: decodeRecordValue on read, heldImages.holdRecordValue for
 // an update's merge base, which holds each value undecoded as a *storedValue
 // (stored_value.go). The required policy is checked on the stored records
 // either way; nothing about presence differs.
@@ -206,15 +206,6 @@ func decodeRecordValue(record model.EAVRecord, attrName string, vt forma.ValueTy
 		return nil, fmt.Errorf("convert attribute '%s': %w", attrName, err)
 	}
 	return value, nil
-}
-
-// holdRecordValue holds the stored record undecoded for an update's merge
-// base, a record with no value column set included. The rebuild places such
-// a record where the read places it: a list's empty-list marker, held rather
-// than as [] so that the update keeps or discards it like any other stored
-// record (resolveStoredValues), and nowhere for any other attribute.
-func holdRecordValue(record model.EAVRecord, attrName string, vt forma.ValueType) (any, error) {
-	return &storedValue{record: record, valueType: vt, attrName: attrName}, nil
 }
 
 // convertEAVRecords converts the records of one row, skipping attrIDs the

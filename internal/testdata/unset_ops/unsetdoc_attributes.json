@@ -1,0 +1,22 @@
+{
+  "name": { "attributeID": 1, "valueType": "text", "required_policy": "required_always" },
+  "label": { "attributeID": 2, "valueType": "text", "column_binding": { "col_name": "text_01" } },
+  "note": { "attributeID": 3, "valueType": "text" },
+  "memo": { "attributeID": 4, "valueType": "text" },
+  "tags": { "attributeID": 5, "valueType": "list" },
+  "rank": { "attributeID": 6, "valueType": "integer", "column_binding": { "col_name": "integer_01" } },
+  "counter": { "attributeID": 7, "valueType": "integer" },
+  "due": { "attributeID": 8, "valueType": "datetime" },
+  "profile.nick": { "attributeID": 9, "valueType": "text" },
+  "profile.aliases": { "attributeID": 10, "valueType": "list" },
+  "profile.title": { "attributeID": 11, "valueType": "text", "column_binding": { "col_name": "text_02" } },
+  "owner.id": { "attributeID": 12, "valueType": "text", "required_policy": "required_if_parent_present" },
+  "owner.name": { "attributeID": 13, "valueType": "text" },
+  "items.sku": { "attributeID": 14, "valueType": "text" },
+  "created": { "attributeID": 15, "valueType": "datetime", "column_binding": { "col_name": "ltbase_created_at" } },
+  "short": { "attributeID": 20, "valueType": "text" },
+  "price$": { "attributeID": 21, "valueType": "text" },
+  "lines": { "attributeID": 22, "valueType": "list" },
+  "seen": { "attributeID": 23, "valueType": "datetime", "column_binding": { "col_name": "text_03", "encoding": "rfc3339" } },
+  "active": { "attributeID": 24, "valueType": "bool", "column_binding": { "col_name": "text_04", "encoding": "bool_text" } }
+}

@@ -174,7 +174,8 @@ func TestDSQLCorpusWriteTransactions(t *testing.T) {
 
 // TestDSQLCorpusMainTableStatements exports the entity_main insert and
 // update builders with every branch their SQL takes: a live and a deleted
-// record, and a record setting a column of every typed family.
+// record, and a record setting a column of every typed family and clearing
+// two.
 func TestDSQLCorpusMainTableStatements(t *testing.T) {
 	deletedAt := corpusNowMillis
 	full := &model.PersistentRecord{
@@ -182,6 +183,8 @@ func TestDSQLCorpusMainTableStatements(t *testing.T) {
 		TextItems: map[string]string{"text_01": "open", "ltbase_created_by": "u1"}, Int16Items: map[string]int16{"smallint_01": 1},
 		Int32Items: map[string]int32{"integer_01": 2}, Int64Items: map[string]int64{"bigint_01": 3},
 		Float64Items: map[string]float64{"double_01": 4.5}, UUIDItems: map[string]uuid.UUID{"uuid_01": corpusRowB},
+		// An unset operator's cleared columns render as NULL assignments (#938).
+		ClearedColumns: []string{"text_02", "uuid_02"},
 	}
 	live := &model.PersistentRecord{SchemaID: corpusSchemaID, RowID: corpusRowA, CreatedAt: corpusNowMillis, UpdatedAt: corpusNowMillis}
 	var statements []corpus.Statement

@@ -13,7 +13,8 @@ import (
 
 // MergeUpdate builds the document an update writes (model.
 // PersistentRecordTransformer). The stored row is rebuilt as on read, but
-// with each EAV record held undecoded (holdRecordValue); merge places, moves
+// with each stored value held undecoded (heldImages.holdRecordValue), a bound column's
+// text image unparsed (heldImages); merge places, moves
 // or drops those values like any other; and resolveStoredValues then decodes
 // exactly the ones the written row keeps. Whether a stored value is kept is
 // not decided here: it is read off the same walk the write runs over the
@@ -27,7 +28,7 @@ func (t *persistentRecordTransformer) MergeUpdate(
 	record *model.PersistentRecord,
 	merge func(base map[string]any) (map[string]any, error),
 ) (map[string]any, error) {
-	base, err := t.fromPersistentRecord(ctx, record, holdRecordValue)
+	base, err := t.fromPersistentRecord(ctx, record, true)
 	if err != nil {
 		return nil, fmt.Errorf("rebuild the merge base: %w", err)
 	}

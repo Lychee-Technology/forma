@@ -23,16 +23,55 @@ type storedValue struct {
 	record    model.EAVRecord
 	valueType forma.ValueType
 	attrName  string
+	// image is the unparsed text image of a bound bool_text or rfc3339
+	// column, nil for any other record (heldImages).
+	image *encodedText
 }
 
 // decode converts the stored value exactly as the read path does, errors
 // included: FromPersistentRecord over the same row raises the same error. An
-// empty-list marker decodes to the [] the read places.
+// empty-list marker decodes to the [] the read places. A bound column's text
+// image is parsed first, as the read parses it on rebuilding the row.
 func (v *storedValue) decode() (any, error) {
 	if v.marker() {
 		return []any{}, nil
 	}
-	return decodeRecordValue(v.record, v.attrName, v.valueType)
+	if v.image == nil {
+		return decodeRecordValue(v.record, v.attrName, v.valueType)
+	}
+	record := v.record
+	record.ValueText = nil
+	if err := v.image.parseInto(&record); err != nil {
+		return nil, mainColumnReadError(v.attrName, record.RowID, err)
+	}
+	return decodeRecordValue(record, v.attrName, v.valueType)
+}
+
+// heldImages carries the bound text images of an update's merge base to the
+// values the rebuild holds (fromPersistentRecord). The rebuild gives such a
+// column's record no value slot, so the record holds its image's text as
+// ValueText instead, which also keeps it from reading as an empty-list
+// marker; that ValueText pointer, allocated here and copied with the record
+// through the rebuild, is the key, and no other record carries it, an
+// eav_data record of the same attribute included.
+type heldImages map[*string]*encodedText
+
+// hold makes attr, a bound column's record answered without its value
+// slots, hold image unparsed.
+func (h heldImages) hold(attr *model.EAVRecord, image *encodedText) {
+	text := image.text
+	attr.ValueText = &text
+	h[attr.ValueText] = image
+}
+
+// holdRecordValue holds the stored record undecoded for an update's merge
+// base, a record with no value column set included. The rebuild places such
+// a record where the read places it: a list's empty-list marker, held rather
+// than as [] so that the update keeps or discards it like any other stored
+// record (resolveStoredValues), and nowhere for any other attribute. A held
+// bound column record carries its text image.
+func (h heldImages) holdRecordValue(record model.EAVRecord, attrName string, vt forma.ValueType) (any, error) {
+	return &storedValue{record: record, valueType: vt, attrName: attrName, image: h[record.ValueText]}, nil
 }
 
 // marker reports whether the held record is an empty-list marker: it holds

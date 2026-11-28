@@ -1,10 +1,12 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
 
 	"github.com/google/uuid"
@@ -143,6 +145,54 @@ func TestBuildUpdateMainStatement(t *testing.T) {
 		rowID,
 	}
 	assert.Equal(t, expectedArgs, args)
+}
+
+// TestBuildUpdateMainStatementClearsColumns pins the unset operator's main
+// columns (#938): each cleared column is assigned NULL, after the set ones,
+// and a cleared column that is no writable entity_main column, or that the
+// record also sets, is refused before any statement exists.
+func TestBuildUpdateMainStatementClearsColumns(t *testing.T) {
+	rowID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	record := &model.PersistentRecord{
+		SchemaID: 7, RowID: rowID, UpdatedAt: 200,
+		TextItems:      map[string]string{"text_01": "a"},
+		ClearedColumns: []string{"integer_02", "text_03"},
+	}
+	query, args, err := buildUpdateMainStatement("entity_main", record)
+	require.NoError(t, err)
+	assert.Equal(t, "UPDATE "+sanitizeIdentifier("entity_main")+" SET "+
+		"ltbase_updated_at = GREATEST($1, ltbase_updated_at + 1), ltbase_deleted_at = $2, text_01 = $3, integer_02 = NULL, text_03 = NULL "+
+		"WHERE ltbase_schema_id = $4 AND ltbase_row_id = $5 RETURNING ltbase_updated_at", query)
+	assert.Equal(t, []any{int64(200), nil, "a", int16(7), rowID}, args)
+
+	for name, cleared := range map[string][]string{
+		"unknown column":  {"text_99"},
+		"injection":       {"text_01 = 'x', text_02"},
+		"system column":   {"ltbase_created_at"},
+		"set and cleared": {"text_01"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := *record
+			bad.ClearedColumns = cleared
+			_, _, err := buildUpdateMainStatement("entity_main", &bad)
+			require.Error(t, err)
+			assert.False(t, errors.Is(err, forma.ErrInvalidInput), "an internal-consistency fault, not the caller's")
+		})
+	}
+}
+
+// TestRetainStoredColumnsKeepsClearedColumnsOut pins that a cleared column is
+// not copied back from the stored row, while every other column the merged
+// record leaves out still is.
+func TestRetainStoredColumnsKeepsClearedColumnsOut(t *testing.T) {
+	stored := &model.PersistentRecord{
+		TextItems:  map[string]string{"text_01": "kept", "text_02": "cleared"},
+		Int32Items: map[string]int32{"integer_01": 7},
+	}
+	merged := &model.PersistentRecord{ClearedColumns: []string{"integer_01", "text_02"}}
+	retainStoredColumns(merged, stored)
+	assert.Equal(t, map[string]string{"text_01": "kept"}, merged.TextItems)
+	assert.Empty(t, merged.Int32Items)
 }
 
 func TestBuildAttributeValuesClause(t *testing.T) {

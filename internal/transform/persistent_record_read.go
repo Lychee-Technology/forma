@@ -9,32 +9,80 @@ import (
 )
 
 // readFromMainColumn reads an attribute value from the main table columns.
-// It delegates to specialized functions based on column type.
+// It delegates to specialized functions based on column type, and parses a
+// text encoding's image at once (encodedText).
 func (t *persistentRecordTransformer) readFromMainColumn(record *model.PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*model.EAVRecord, error) {
+	attr, image, err := t.readMainColumnImage(record, meta, binding)
+	if err != nil || image == nil {
+		return attr, err
+	}
+	if err := image.parseInto(attr); err != nil {
+		return nil, err
+	}
+	return attr, nil
+}
+
+// readMainColumnImage is readFromMainColumn without the parse of a text
+// encoding's image: for a bool_text or rfc3339 column holding a value, it
+// answers the record with no value slot set and the image the slots are
+// parsed from. An update's merge base holds that image unparsed
+// (fromPersistentRecord), so a malformed one fails only the updates that keep
+// it, as an unreadable eav_data value does (#590, #938).
+func (t *persistentRecordTransformer) readMainColumnImage(record *model.PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*model.EAVRecord, *encodedText, error) {
 	// First, check if this is a system column (RowID, SchemaID, timestamps)
 	if attr := t.readFromSystemColumn(record, meta, binding); attr != nil {
-		return attr, nil
+		return attr, nil, nil
 	}
 
 	// Then, try reading with special encoding
-	attr, hasValue, err := t.readWithEncoding(record, meta, binding)
-	if err != nil {
-		return nil, fmt.Errorf("decode %s encoding: %w", binding.Encoding, err)
-	}
-	if hasValue {
-		return attr, nil
+	if attr, image, hasValue := t.readWithEncoding(record, meta, binding); hasValue {
+		return attr, image, nil
 	}
 
 	// Finally, try reading with default encoding
-	attr, hasValue, err = t.readWithDefaultEncoding(record, meta, binding)
+	attr, hasValue, err := t.readWithDefaultEncoding(record, meta, binding)
 	if err != nil {
-		return nil, fmt.Errorf("read column %s with default encoding: %w", binding.ColumnName, err)
+		return nil, nil, fmt.Errorf("read column %s with default encoding: %w", binding.ColumnName, err)
 	}
 	if hasValue {
-		return attr, nil
+		return attr, nil, nil
 	}
 
-	return nil, nil
+	return nil, nil, nil
+}
+
+// encodedText is the stored image of a bound text column under an encoding
+// that renders a number as text, bool_text or rfc3339, not yet parsed into
+// the record's numeric slots.
+type encodedText struct {
+	encoding forma.MainColumnEncoding
+	column   string
+	text     string
+}
+
+// parseInto parses the image into attr's value slots, failing as the read
+// path always has on an image the encoding does not store.
+func (e *encodedText) parseInto(attr *model.EAVRecord) error {
+	switch e.encoding {
+	case forma.MainColumnEncodingBoolText:
+		parsed, err := boolFromBoolText(e.text)
+		if err != nil {
+			return fmt.Errorf("decode %s encoding: column %s: %w", e.encoding, e.column, err)
+		}
+		b := boolToFloat64(parsed)
+		attr.ValueNumeric = &b
+	case forma.MainColumnEncodingRFC3339:
+		parsedTime, err := rfc3339.Parse(e.text)
+		if err != nil {
+			return fmt.Errorf("decode %s encoding: column %s: parse ISO 8601 date: %w", e.encoding, e.column, err)
+		}
+		// The image has a four-digit year, so its millis are inside the
+		// int64 range by construction; both slots carry them.
+		setEpochMillis(attr, parsedTime.UnixMilli())
+	default:
+		return fmt.Errorf("decode %s encoding: column %s: the encoding renders no text image", e.encoding, e.column)
+	}
+	return nil
 }
 
 // readFromSystemColumn handles reading from system columns (RowID, SchemaID, timestamps).
@@ -86,9 +134,11 @@ func (t *persistentRecordTransformer) readFromSystemColumn(record *model.Persist
 	return nil
 }
 
-// readWithEncoding handles reading values with special encodings (UnixMs, BoolInt, BoolText, RFC3339).
-// Returns (attr, hasValue, error).
-func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*model.EAVRecord, bool, error) {
+// readWithEncoding handles reading values with special encodings (UnixMs,
+// BoolInt, BoolText, RFC3339). A text encoding's image is answered unparsed
+// beside a record with no value slot set (readMainColumnImage).
+// Returns (attr, image, hasValue).
+func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) (*model.EAVRecord, *encodedText, bool) {
 	columnName := string(binding.ColumnName)
 
 	attr := &model.EAVRecord{
@@ -106,7 +156,7 @@ func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentR
 			exact := val
 			attr.ValueNumeric = &f
 			attr.ValueInt64 = &exact
-			return attr, true, nil
+			return attr, nil, true
 		}
 
 	case forma.MainColumnEncodingBoolInt:
@@ -114,36 +164,17 @@ func (t *persistentRecordTransformer) readWithEncoding(record *model.PersistentR
 		if val, ok := record.Int16Items[columnName]; ok {
 			f := float64(val)
 			attr.ValueNumeric = &f
-			return attr, true, nil
+			return attr, nil, true
 		}
 
-	case forma.MainColumnEncodingBoolText:
-		// Read text ("1"/"0") and convert to bool
+	case forma.MainColumnEncodingBoolText, forma.MainColumnEncodingRFC3339:
+		// Text ("1"/"0", or an ISO 8601 string) parsed into the numeric slots
 		if val, ok := record.TextItems[columnName]; ok {
-			parsed, err := boolFromBoolText(val)
-			if err != nil {
-				return nil, false, fmt.Errorf("column %s: %w", columnName, err)
-			}
-			b := boolToFloat64(parsed)
-			attr.ValueNumeric = &b
-			return attr, true, nil
-		}
-
-	case forma.MainColumnEncodingRFC3339:
-		// Read ISO 8601 string from text column and convert to time
-		if val, ok := record.TextItems[columnName]; ok {
-			parsedTime, err := rfc3339.Parse(val)
-			if err != nil {
-				return nil, false, fmt.Errorf("column %s: parse ISO 8601 date: %w", columnName, err)
-			}
-			// The image has a four-digit year, so its millis are inside
-			// the int64 range by construction; both slots carry them.
-			setEpochMillis(attr, parsedTime.UnixMilli())
-			return attr, true, nil
+			return attr, &encodedText{encoding: binding.Encoding, column: columnName, text: val}, true
 		}
 	}
 
-	return nil, false, nil
+	return nil, nil, false
 }
 
 // readWithDefaultEncoding handles reading values with default encoding based on column type.

@@ -22,6 +22,13 @@ type PersistentRecord struct {
 	UpdatedAt       int64
 	DeletedAt       *int64
 	OtherAttributes []EAVRecord
+	// ClearedColumns names, sorted, the main columns an update's unset
+	// operators empty (#938). It is write intent, set only on a merged
+	// record: the main-table UPDATE assigns NULL to each, and the stored
+	// value is not copied back into the record as an unset column's would be
+	// (retainStoredColumns). A column the record also sets is refused. It is
+	// never persisted or read back.
+	ClearedColumns []string
 }
 
 // EAVRecord represents one attribute row in EAV storage.

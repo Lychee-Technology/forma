@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -139,6 +140,12 @@ func buildUpdateMainStatement(table string, record *model.PersistentRecord) (str
 	if err := appendUpdateAssignmentsAndArgs(&assignments, &args, record.UUIDItems, model.AllowedUUIDColumns); err != nil {
 		return "", nil, fmt.Errorf("collect uuid update assignments: %w", err)
 	}
+	if err := checkClearedColumns(record); err != nil {
+		return "", nil, fmt.Errorf("collect cleared columns: %w", err)
+	}
+	for _, column := range record.ClearedColumns {
+		assignments = append(assignments, column+" = NULL")
+	}
 
 	if len(assignments) == 0 {
 		return "", nil, fmt.Errorf("no columns to update")
@@ -160,25 +167,27 @@ func buildUpdateMainStatement(table string, record *model.PersistentRecord) (str
 }
 
 // retainStoredColumns copies into record every main column stored holds
-// that record does not set. buildUpdateMainStatement assigns only the
-// columns record sets, so the UPDATE leaves such a column as stored; with it
-// copied in, record is the row as the update stores it. A nil stored, a row
-// the merge found missing, adds nothing.
+// that record does not set, except the ones record clears. buildUpdateMainStatement
+// assigns only the columns record sets, and NULL to the ones it clears, so
+// the UPDATE leaves any other column as stored; with it copied in, record is
+// the row as the update stores it. A nil stored, a row the merge found
+// missing, adds nothing.
 func retainStoredColumns(record, stored *model.PersistentRecord) {
 	if stored == nil {
 		return
 	}
-	retainColumns(&record.TextItems, stored.TextItems)
-	retainColumns(&record.Int16Items, stored.Int16Items)
-	retainColumns(&record.Int32Items, stored.Int32Items)
-	retainColumns(&record.Int64Items, stored.Int64Items)
-	retainColumns(&record.Float64Items, stored.Float64Items)
-	retainColumns(&record.UUIDItems, stored.UUIDItems)
+	cleared := record.ClearedColumns
+	retainColumns(&record.TextItems, stored.TextItems, cleared)
+	retainColumns(&record.Int16Items, stored.Int16Items, cleared)
+	retainColumns(&record.Int32Items, stored.Int32Items, cleared)
+	retainColumns(&record.Int64Items, stored.Int64Items, cleared)
+	retainColumns(&record.Float64Items, stored.Float64Items, cleared)
+	retainColumns(&record.UUIDItems, stored.UUIDItems, cleared)
 }
 
-func retainColumns[T any](record *map[string]T, stored map[string]T) {
+func retainColumns[T any](record *map[string]T, stored map[string]T, cleared []string) {
 	for column, value := range stored {
-		if _, set := (*record)[column]; set {
+		if _, set := (*record)[column]; set || slices.Contains(cleared, column) {
 			continue
 		}
 		if *record == nil {
@@ -223,4 +232,32 @@ func (r *DBPersistentRecordRepository) updateMainRow(ctx context.Context, tx pgx
 	}
 	record.UpdatedAt = effectiveUpdatedAt
 	return nil
+}
+
+// checkClearedColumns checks the columns record clears (ClearedColumns,
+// #938): each must be a writable entity_main column, never a system one, and
+// none may also be set, since the record would then ask for two values.
+// buildUpdateMainStatement interpolates the names into the statement, so
+// the allowlists are what keep it safe.
+func checkClearedColumns(record *model.PersistentRecord) error {
+	for _, column := range record.ClearedColumns {
+		if !model.IsMainTableColumn(column) || model.IsSystemColumn(column) {
+			return fmt.Errorf("unsupported cleared column %q", column)
+		}
+		if recordSetsColumn(record, column) {
+			return fmt.Errorf("row %s both sets and clears column %q", record.RowID, column)
+		}
+	}
+	return nil
+}
+
+// recordSetsColumn reports whether record assigns column a value.
+func recordSetsColumn(record *model.PersistentRecord, column string) bool {
+	_, text := record.TextItems[column]
+	_, int16Set := record.Int16Items[column]
+	_, int32Set := record.Int32Items[column]
+	_, int64Set := record.Int64Items[column]
+	_, float64Set := record.Float64Items[column]
+	_, uuidSet := record.UUIDItems[column]
+	return text || int16Set || int32Set || int64Set || float64Set || uuidSet
 }

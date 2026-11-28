@@ -7,7 +7,6 @@ import (
 
 	"github.com/lychee-technology/forma"
 	"github.com/lychee-technology/forma/internal/model"
-	"github.com/lychee-technology/forma/internal/schemavalidate"
 	"github.com/lychee-technology/forma/internal/transform"
 )
 
@@ -39,13 +38,14 @@ func validateConditionalCreate(req *forma.EntityOperation) error {
 // (checkUpdatesValues). It answers the Updates the update writes in place of
 // req.Updates, which it never mutates: a copy carrying each checked text
 // image to the merged write (#773), with the conversion refusal the caller
-// raises before it writes a row with them. arrays are the paths the schema
-// declares as arrays, nil when the manager has no validator to know them.
-func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex, arrays schemavalidate.ArrayPaths) (transform.CheckedUpdates, error) {
+// raises before it writes a row with them. schema holds the paths the schema
+// declares as arrays, nil when the manager has no validator to know them, and
+// the registry serving its document (opsSchema).
+func validateConditionalUpdate(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex, schema opsSchema) (transform.CheckedUpdates, error) {
 	if err := validatePrecondition(req.Preconditions, req.SchemaName, cache); err != nil {
 		return transform.CheckedUpdates{}, fmt.Errorf("check precondition: %w", err)
 	}
-	if err := validateUpdateOps(req, cache, relations, arrays); err != nil {
+	if err := validateUpdateOps(req, cache, relations, schema); err != nil {
 		return transform.CheckedUpdates{}, fmt.Errorf("check update operators: %w", err)
 	}
 	return checkUpdatesValues(req.SchemaName, req.Updates, cache, relations)
@@ -197,10 +197,10 @@ func validateGuardNode(noun string, cond forma.Condition, schemaName string, cac
 // attribute Updates also writes. The row is not read yet, so the overlap
 // check finds the overlaps every row has; the merge repeats it on the locked
 // row (mergeUpdateDocument).
-func validateUpdateOps(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex, arrays schemavalidate.ArrayPaths) error {
+func validateUpdateOps(req *forma.EntityOperation, cache forma.SchemaAttributeCache, relations *RelationIndex, schema opsSchema) error {
 	seen := make(map[string]struct{}, len(req.UpdateOps))
 	for i, op := range req.UpdateOps {
-		if err := validateUpdateOp(op, req.SchemaName, cache, relations, arrays); err != nil {
+		if err := validateUpdateOp(op, req.SchemaName, cache, relations, schema); err != nil {
 			return fmt.Errorf("update operator %d: %w", i, err)
 		}
 		if _, dup := seen[op.Attribute]; dup {
@@ -214,7 +214,8 @@ func validateUpdateOps(req *forma.EntityOperation, cache forma.SchemaAttributeCa
 	return nil
 }
 
-// validateUpdateOp checks one operator against its attribute. Like a
+// validateUpdateOp checks one operator against its attribute; an unset's
+// target rules are validateUnsetOp's (#938). Like a
 // relation attribute, one bound to a system column (ltbase_created_at, say)
 // is never written: the transformer drops an update's value for it
 // (storeInMainColumn), so an operator there would report success and change
@@ -227,9 +228,12 @@ func validateUpdateOps(req *forma.EntityOperation, cache forma.SchemaAttributeCa
 // object the schema says is an array. An array the schema does not show (one
 // behind a $ref, or any when there is no validator) is judged on the locked
 // row (documentParent).
-func validateUpdateOp(op forma.UpdateOp, schemaName string, cache forma.SchemaAttributeCache, relations *RelationIndex, arrays schemavalidate.ArrayPaths) error {
+func validateUpdateOp(op forma.UpdateOp, schemaName string, cache forma.SchemaAttributeCache, relations *RelationIndex, schema opsSchema) error {
 	if op.Attribute == "" {
 		return forma.InvalidInputf("update operator %s names no attribute", op.Kind)
+	}
+	if op.Kind == forma.UpdateOpUnset {
+		return validateUnsetOp(op, schemaName, cache, relations, schema)
 	}
 	meta, ok := cache[op.Attribute]
 	if !ok {
@@ -242,7 +246,7 @@ func validateUpdateOp(op forma.UpdateOp, schemaName string, cache forma.SchemaAt
 		return forma.InvalidInputf("update operator %s names %s attribute '%s', which is bound to system column '%s': the store sets that column itself and never writes an update's value there",
 			op.Kind, meta.ValueType, op.Attribute, binding.ColumnName)
 	}
-	if array, ok := arrays.CrossedArray("", op.Attribute); ok {
+	if array, ok := schema.arrays.CrossedArray("", op.Attribute); ok {
 		return operatorInsideArray(op.Attribute, array)
 	}
 	switch op.Kind {
@@ -268,8 +272,8 @@ func validateUpdateOp(op forma.UpdateOp, schemaName string, cache forma.SchemaAt
 		}
 		return nil
 	}
-	return forma.InvalidInputf("update operator on attribute '%s' has kind '%s'; expected %s or %s",
-		op.Attribute, op.Kind, forma.UpdateOpIncrement, forma.UpdateOpServerTime)
+	return forma.InvalidInputf("update operator on attribute '%s' has kind '%s'; expected %s, %s or %s",
+		op.Attribute, op.Kind, forma.UpdateOpIncrement, forma.UpdateOpServerTime, forma.UpdateOpUnset)
 }
 
 // updatesOverlap refuses attr, an update operator's attribute, when updates

@@ -115,7 +115,7 @@ func (t *transformer) ToAttributes(ctx context.Context, schemaID int16, rowID uu
 // order they arrive (rebuildDocument, #619). A record with no value is
 // dropped, except a list's empty-list marker, which rebuilds as an explicit
 // [] (#204). For an update's merge base the values are held undecoded
-// (holdRecordValue), and a marker is placed as its held record instead.
+// (heldImages.holdRecordValue), and a marker is placed as its held record instead.
 func (t *transformer) FromAttributes(ctx context.Context, attributes []model.EntityAttribute) (map[string]any, error) {
 	records := make([]rebuildRecord, 0, len(attributes))
 	for _, attr := range attributes {
