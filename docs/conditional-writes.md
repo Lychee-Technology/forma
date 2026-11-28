@@ -251,6 +251,18 @@ clear. The EAV write already replaces every active attribute of the row, so a
 cleared EAV value, its empty-list marker, and any `eav_data` row a bound
 attribute retained from before its binding are deleted with it.
 
+**Lakehouse.** Absence reaches the parquet tiers with no attribute tombstone
+(#941). The CDC flush exports each row's whole image from its current
+PostgreSQL state, so a cleared attribute exports as `NULL`, a cleared list
+included, while a list set to `[]` exports as an empty `LIST`. Until that
+flush the dirty set hides the older image the published generation still
+lists. Compaction keeps one whole row per `row_id`, whether it promotes the
+delta tier beside an older base or rewrites every object into one, so no
+field is filled from an older image. `is_null` and `is_not_null` answer the
+same on the DuckDB route as on PostgreSQL. A flush or compaction whose
+publication fails after the clear publishes nothing, and its rows stay
+dirty.
+
 **Unique keys.** Keys are planned from the final record, so a cleared
 component releases its entry in the update's own transaction, and another
 entity can take the value at once, in the same `Tx` included. There is no
@@ -431,6 +443,8 @@ Tests that assert `ErrPreconditionFailed` for the loser specifically are named
 | A bound `rfc3339` or `bool_text` image the read cannot parse is cleared or replaced unparsed, and fails an update that keeps it | `TestUnsetDiscardsAnUnreadableBoundImage` |
 | A cleared key component releases its entry; a failed precondition or rolled-back `Tx` keeps it | `TestUnsetReleasesTheUniqueKeyEntry`, `TestRolledBackUnsetKeepsTheReservation`, `TestUnsetThenRetakeInOneTx` |
 | The validation verdict on an unset matches the verdict on the same document reached otherwise, in strict, report-only and no-validator modes, and PostgreSQL commits exactly the accepted clears, with report-only's log line and counter | `TestUnsetValidationMatrix`, `TestUnsetValidationMatrixCommits` |
+| A cleared value stays absent through the CDC flush, a promotion beside the base that still holds it, a rewrite with that base, and being set again, for a bound and an EAV scalar and for a list beside a list set to `[]`, through `Update` and `Tx.Update`: `Get`, `Query` on the PostgreSQL and DuckDB routes, `is_null` / `is_not_null`, an `equals` predicate on the old value, preconditions and the newest image the published generation lists agree at every stage | `TestUnsetAbsenceSurvivesFlushAndCompaction` |
+| A flush or compaction publication that fails after the clear (at `publish`, `marks` or `commit`, or with a lost `commit-answer`) and the recovery after it never bring the cleared value back | `TestUnsetAbsenceSurvivesAFailedPublication` |
 | `UpdateWhere`, `Claim` and `Upsert`'s `update` store what `Tx.Update` stores for the same Set, `increment` and unset of a bound and of an EAV attribute: the same `entity_main` columns and `eav_data` rows, with version and `change_log` advanced | `TestUnsetSurfacesStoreWhatUpdateStores` |
 | On a row holding three key entries, the three surfaces commit the same `entity_main` columns, `eav_data` rows and key entries as `Tx.Update` for an unset of a bound and of an EAV non-key attribute (every entry kept), and `UpdateWhere` and `Upsert` do so for an unset of a bound and of an EAV key component (that entry released) | `TestUnsetSurfacesKeepTheKeysUpdateKeeps` |
 | Each of the three surfaces refuses, naming it, before any SQL, every unset target `TestUnsetRefusesItsTargetAtIntake` refuses and every overlap `TestUnsetOverlapsAreRefused` refuses (a second operator, `Updates` writing the attribute nested, dotted or as a list, or replacing its parent with a scalar or `null`), and its `Tx` then commits; relation and underived nested targets are pinned on `Update` only | `TestUnsetSurfacesRefuseAtIntake` |
