@@ -324,7 +324,10 @@ Limitations to know before relying on it:
   `DUCKDB_ROUTING_STRATEGY` to `freshness-first` or `cost-first` to read it.
 - A schema with an attribute inside an array of objects (the sample `lead` has two)
   cannot be represented in Parquet: its queries are answered from PostgreSQL, and
-  `cdc-flush` skips it with a warning (#704).
+  `cdc-flush` skips it with a warning (#704). So is a schema whose array ancestry the
+  registry could not derive, since it cannot rule such an attribute out (#937): the
+  sample `visit`, whose `contactSnapshot` is another file's `$ref`, is held back this
+  way until #705 derives through cross-file `$ref`s.
 - When S3 or DuckDB fails, or a Parquet object is corrupt, the query fails; with
   `DUCKDB_ALLOW_PARTIAL_DEGRADED_MODE` it is answered from PostgreSQL alone
   ([design §7.2](docs/federated-query/design.md#72-degraded-modes),

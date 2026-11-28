@@ -100,9 +100,12 @@ jobs:
           restore-keys: |
             duckdb-extensions-${{ runner.os }}-${{ runner.arch }}-
 
-      # TestNightlyRacesProductionSuite guards this line. The 30m timeout is
-      # the gate run's 10m (make test-e2e-production) times the ~2-3x race
-      # instrumentation cost, rounded up.
+      # TestNightlyRacesProductionSuite guards this line. The 30m timeout was
+      # derived from the gate run's original 10m times the ~2-3x race
+      # instrumentation cost. The gate (make test-e2e-production) is now 20m,
+      # because the race-free suite alone takes 11-15 minutes (#937). This run
+      # keeps its own 30m: a timeout here may mean the suite has outgrown it
+      # under -race, not that a test hung.
       - name: Run production e2e suite under -race
         run: go test -v ./internal/e2e_harness/production/ -tags=e2e -race -timeout=30m
 

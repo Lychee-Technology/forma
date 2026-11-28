@@ -19,12 +19,12 @@ const (
 
 // corpusAttrCache is a representative schema: one attribute bound to an
 // entity_main column, two stored in EAV.
-var corpusAttrCache = forma.SchemaAttributeCache{
+var corpusAttrCache = derivedAncestry(forma.SchemaAttributeCache{
 	"status": {AttributeName: "status", AttributeID: 10, ValueType: forma.ValueTypeText,
 		ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01}},
 	"score":     {AttributeName: "score", AttributeID: 11, ValueType: forma.ValueTypeInteger},
 	"is_active": {AttributeName: "is_active", AttributeID: 12, ValueType: forma.ValueTypeBool},
-}
+})
 
 // TestDSQLCorpusExport exports the PostgreSQL side of a CDC export for the
 // DSQL lint gate (#740). The delta export runs as stageInSnapshot runs it:

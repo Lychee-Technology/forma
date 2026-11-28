@@ -61,7 +61,7 @@ func TestBuildExportSQL_ErrorsOnEmptyRowIDs(t *testing.T) {
 }
 
 func TestBuildExportSQL_WithSchemaCacheProjectsColumns(t *testing.T) {
-	attrCache := forma.SchemaAttributeCache{
+	attrCache := derivedAncestry(forma.SchemaAttributeCache{
 		"name": {
 			AttributeName: "name",
 			AttributeID:   10,
@@ -73,7 +73,7 @@ func TestBuildExportSQL_WithSchemaCacheProjectsColumns(t *testing.T) {
 			AttributeID:   11,
 			ValueType:     forma.ValueTypeBool,
 		},
-	}
+	})
 	rowID := uuid.MustParse("019bed54-48eb-7cdc-aed3-8d38ec9c1394")
 
 	sql, clQuery, mQuery, eQuery, err := buildExportSQL("s3://bucket/prefix/1/_tmp/tmp.parquet", CDCConfig{}, 1, 1700000000000, []uuid.UUID{rowID}, attrCache)

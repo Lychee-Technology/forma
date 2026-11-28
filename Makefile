@@ -64,9 +64,16 @@ test-unit:
 
 # Production E2E harness (#173): real containers + real CDC + real federated
 # engine, checked against an independent oracle. Requires docker.
+#
+# The timeout bounds a hang, not the suite's speed. #173 set 10m when the
+# suite was small; it has since outgrown it. On an 8-core development machine
+# the whole suite passed in 676s at #937's head and in 853s at its merge base
+# (the spread is container and disk contention, not the code), so 10m failed
+# a suite whose every test passed. 20m keeps a hang bounded with room above
+# the slowest measured run.
 test-e2e-production:
 	@echo "Running production E2E harness tests..."
-	@$(GOENV) go test -v ./internal/e2e_harness/production/ -tags=e2e -timeout=10m
+	@$(GOENV) go test -v ./internal/e2e_harness/production/ -tags=e2e -timeout=20m
 
 # The MiniStack strict DSQL lane (#739): the aurora-dsql suites through a pinned
 # MiniStack's SQL-validating proxy, torn down afterwards. Needs Docker, not AWS

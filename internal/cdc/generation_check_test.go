@@ -19,7 +19,9 @@ type trackingRegistry struct {
 }
 
 func (r *trackingRegistry) GetSchemaAttributeCacheByID(int16) (string, forma.SchemaAttributeCache, error) {
-	return "orders", forma.SchemaAttributeCache{"qty": {AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeSmallInt}}, nil
+	return "orders", derivedAncestry(forma.SchemaAttributeCache{
+		"qty": {AttributeName: "qty", AttributeID: 1, ValueType: forma.ValueTypeSmallInt},
+	}), nil
 }
 
 func (r *trackingRegistry) LoadedGeneration(schemaID int16) (int64, bool) { return 1, schemaID == 7 }
