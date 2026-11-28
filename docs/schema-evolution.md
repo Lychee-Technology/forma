@@ -152,14 +152,20 @@ record a column-bound attribute kept from before an EAV-to-bound promotion,
 which the whole-row read still decodes. The refusal, the update behavior and
 the repair are the ones above.
 
-A `smallint`/`integer` alias of a system column is exempt. Registration admits
-one bound to `ltbase_created_at`, `ltbase_updated_at` or `ltbase_deleted_at`,
-whose epoch millis are past either range. That value is the store's own: no
-write reaches the column and an update cannot name the alias (#674). Refusing
-it would leave nothing to repair and would fail every read, update and Create
-response (after the insert has committed) on the schema. The alias keeps its
-conversion, which wraps; #745 owns the binding
-(`TestSystemTimestampAliasDeclaredIntegerStaysUsable`).
+A `smallint`/`integer` alias of a system column is judged like any other
+image, and admission keeps the only one that could fail out (#745). An alias of
+`ltbase_created_at`, `ltbase_updated_at` or `ltbase_deleted_at` reads the
+store's epoch millis, past either range, and no write can repair it: no write
+reaches the column and an update cannot name the alias (#674). Registration,
+every runtime load and the guard over a caller's own `forma.SchemaRegistry`
+therefore refuse such a binding (`schemameta.ValidateColumnBinding`). Under
+`DEC-PREPROD-COMPAT` (no-legacy-by-default) an already-admitted one is not
+grandfathered: redeclare the attribute `bigint` or `numeric`, a widening this
+section allows under the same binding, and apply it. `ltbase_schema_id` holds
+a smallint, so both widths still bind it. Should such an alias reach the
+decode through metadata no admission saw, the read refuses it with the
+redeclaration as its remedy rather than answer the wrapped value it used to
+(`TestCheckIntegerImageJudgesSystemColumnAliases`).
 
 **Implemented** (`transform.checkIntegerImage`). The error names
 `value_numeric` in place of a column:

@@ -46,7 +46,10 @@ var ErrUnknownMainColumn = errors.New("unknown main column")
 // Width narrowing inside the numeric family is deliberately admitted:
 // numeric→smallint is a shipped shape, and transform.checkStorageFit rejects
 // any value that does not fit the column. System columns (ltbase_*) go through
-// the same matrix via ColumnType(). A nil binding is always valid.
+// the same matrix via ColumnType(), except that a smallint or integer bound to
+// a system timestamp column is refused first (validateSystemColumnAlias,
+// #745): no write reaches that column, so no funnel judges its width, and its
+// epoch millis fit neither type. A nil binding is always valid.
 //
 // The write path, the Postgres read path, the CDC export and the DuckDB
 // federated reader (hot-leg projection and outer select, #555) round-trip
@@ -60,6 +63,9 @@ func ValidateColumnBinding(attrName string, meta forma.AttributeMetadata) error 
 		return fmt.Errorf(
 			"attribute %s (valueType %s) binds to %w %s: column_binding.col_name must be one of %s",
 			attrName, meta.ValueType, ErrUnknownMainColumn, binding.ColumnName, model.EntityMainProjection)
+	}
+	if err := validateSystemColumnAlias(attrName, meta); err != nil {
+		return err
 	}
 	encoding := binding.Encoding
 	if encoding == "" {

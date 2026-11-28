@@ -93,3 +93,54 @@ func TestValidateSchemaConsistencyReportsUnknownColumns(t *testing.T) {
 		t.Fatalf("EAV checks must still run: %v", err)
 	}
 }
+
+// #745: a smallint or integer bound to a system timestamp column reads the
+// store's epoch millis, which neither type holds. Registration and runtime
+// loads refuse it; the tool lists each one already declared under its own
+// category, and leaves a bigint alias of a timestamp and a smallint on
+// ltbase_schema_id alone.
+func TestValidateSchemaConsistencyReportsNarrowSystemAliases(t *testing.T) {
+	schemaDir := t.TempDir()
+	writeSchemaConsistencyArtifacts(t, schemaDir, "contact",
+		`{"type":"object","properties":{"name":{"type":"string"}}}`,
+		`{"created":{"attributeID":1,"valueType":"integer","column_binding":{"col_name":"ltbase_created_at"}},
+		  "touched":{"attributeID":2,"valueType":"smallint","column_binding":{"col_name":"ltbase_updated_at"}},
+		  "removed":{"attributeID":3,"valueType":"bigint","column_binding":{"col_name":"ltbase_deleted_at"}},
+		  "kind":{"attributeID":5,"valueType":"smallint","column_binding":{"col_name":"ltbase_schema_id"}},
+		  "name":{"attributeID":6,"valueType":"text","column_binding":{"col_name":"text_01"}}}`)
+	mock := newSchemaConsistencyMock(t, pgxmock.NewRows([]string{"schema_id", "attr_id", "record_count"}))
+	// The integer-width census still offers each integer alias's retained
+	// eav_data rows (widthaudit.collectTargets); it finds none here.
+	mock.ExpectQuery(`SELECT e\.schema_id, e\.attr_id, e\.row_id, e\.array_indices, e\.value_numeric::text`).
+		WithArgs(int16(100), int16(1), "-2147483648", "2147483647", int16(100), int16(2), "-32768", "32767",
+			int16(100), int16(3), "-9007199254740992", "9007199254740992", int16(100), int16(5), "-32768", "32767").
+		WillReturnRows(widthCensusRows())
+
+	var out strings.Builder
+	validator := schemaConsistencyValidator{
+		pool: mock, schemaDir: schemaDir, schemaTable: "schema_registry_dev", eavTable: "eav_data_dev", out: &out,
+	}
+	err := validator.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "failed with 2 issue(s)") {
+		t.Fatalf("expected two alias failures, got err=%v out=%q", err, out.String())
+	}
+	got := out.String()
+	const category = "- smallint/integer aliases of system timestamp columns: schema=contact "
+	for _, want := range []string{
+		category + "attribute created (valueType integer) binds system column ltbase_created_at",
+		category + "attribute touched (valueType smallint) binds system column ltbase_updated_at",
+		"declare it bigint, numeric, date or datetime",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in output:\n%s", want, got)
+		}
+	}
+	for _, unaffected := range []string{"attribute removed (", "attribute kind (", "attribute name ("} {
+		if strings.Contains(got, unaffected) {
+			t.Fatalf("%s must not be reported:\n%s", unaffected, got)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("EAV checks must still run: %v", err)
+	}
+}

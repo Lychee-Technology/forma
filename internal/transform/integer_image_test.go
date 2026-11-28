@@ -1,6 +1,7 @@
 package transform
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -52,29 +53,42 @@ func TestCheckIntegerImageIgnoresOtherTypes(t *testing.T) {
 	}
 }
 
-// A smallint or integer alias of a system timestamp reads the store's own
-// epoch millis, past either range; it is not a stored image and is not
-// judged (#745). The same millis in a bigint_* column the attribute is
-// bound to are, so the exemption is the column's, not the value's.
-func TestCheckIntegerImageExemptsSystemColumnAliases(t *testing.T) {
+// A system column alias is judged like any other image (#745). Admission
+// refuses a smallint or integer alias of a system timestamp, so one only
+// reaches the decode through metadata no admission saw; it is then refused
+// with the redeclaration as its remedy, never read as a wrapped value. Both
+// widths on ltbase_schema_id and a bigint alias of a timestamp read exactly.
+func TestCheckIntegerImageJudgesSystemColumnAliases(t *testing.T) {
 	millis := time.Now().UnixMilli()
 	record := &model.PersistentRecord{
 		SchemaID: 100, RowID: uuid.New(), CreatedAt: millis, UpdatedAt: millis, DeletedAt: &millis,
-		Int64Items: map[string]int64{string(forma.MainColumnBigint01): millis},
+	}
+	alias := func(vt forma.ValueType, column forma.MainColumn) forma.AttributeMetadata {
+		return forma.AttributeMetadata{AttributeID: 9, ValueType: vt, ColumnBinding: &forma.MainColumnBinding{ColumnName: column}}
 	}
 	for _, vt := range []forma.ValueType{forma.ValueTypeInteger, forma.ValueTypeSmallInt} {
 		for _, column := range []forma.MainColumn{forma.MainColumnCreatedAt, forma.MainColumnUpdatedAt, forma.MainColumnDeletedAt} {
 			t.Run(string(vt)+"/"+string(column), func(t *testing.T) {
-				meta := forma.AttributeMetadata{AttributeID: 9, ValueType: vt, ColumnBinding: &forma.MainColumnBinding{ColumnName: column}}
-				value, err := StoredAttributeValue(record, meta)
-				require.NoError(t, err)
-				require.NotNil(t, value)
+				_, err := StoredAttributeValue(record, alias(vt, column))
+				require.ErrorContains(t, err, "system column "+string(column)+" value "+strconv.FormatInt(millis, 10)+
+					" does not fit declared type "+string(vt))
+				require.ErrorContains(t, err, "redeclare the attribute bigint, numeric, date or datetime (#745)")
+				require.NotContains(t, err.Error(), "rewrite the attribute")
 			})
 		}
-		t.Run(string(vt)+"/bound bigint column", func(t *testing.T) {
-			meta := forma.AttributeMetadata{AttributeID: 9, ValueType: vt, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnBigint01}}
-			_, err := StoredAttributeValue(record, meta)
-			require.ErrorContains(t, err, "in bound column "+string(forma.MainColumnBigint01)+" does not fit declared type")
-		})
 	}
+	for _, tc := range []struct {
+		vt   forma.ValueType
+		want any
+	}{
+		{forma.ValueTypeSmallInt, int16(100)},
+		{forma.ValueTypeInteger, int32(100)},
+	} {
+		value, err := StoredAttributeValue(record, alias(tc.vt, forma.MainColumnSchemaID))
+		require.NoError(t, err)
+		require.Equal(t, tc.want, value, "%s alias of ltbase_schema_id", tc.vt)
+	}
+	value, err := StoredAttributeValue(record, alias(forma.ValueTypeBigInt, forma.MainColumnCreatedAt))
+	require.NoError(t, err)
+	require.Equal(t, millis, value)
 }

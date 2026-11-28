@@ -31,9 +31,13 @@ import (
 // optional interface the caller's registry implements; the EntityManager
 // reads none.
 //
-// The guard enforces the reserved-name rule only. The other admission rules
-// (attributeID, binding and fold collisions, binding validity) are not new in
-// #470 and are not applied to a caller's registry here.
+// The guard also refuses a smallint or integer bound to a system timestamp
+// column (#745, validateSystemColumnAlias): with it, no registry the
+// EntityManager reads through can serve such an alias, which is what lets
+// the read decode judge a system alias like any other integer image
+// (transform.checkIntegerImage). The other admission rules (attributeID,
+// binding and fold collisions, the rest of binding validity) are not applied
+// to a caller's registry here.
 func GuardReservedAttrNames(registry forma.SchemaRegistry) (forma.SchemaRegistry, error) {
 	switch registry.(type) {
 	case nil:
@@ -66,7 +70,7 @@ func (r *reservedNameGuardedRegistry) GetSchemaAttributeCacheByName(name string)
 	if err != nil {
 		return 0, nil, err
 	}
-	if err := sqlgen.ValidateReservedAttrNames(cache); err != nil {
+	if err := checkCallerCache(cache); err != nil {
 		return 0, nil, fmt.Errorf("schema %s served by the configured SchemaRegistry: %w", name, err)
 	}
 	return id, cache, nil
@@ -78,8 +82,20 @@ func (r *reservedNameGuardedRegistry) GetSchemaAttributeCacheByID(id int16) (str
 	if err != nil {
 		return "", nil, err
 	}
-	if err := sqlgen.ValidateReservedAttrNames(cache); err != nil {
+	if err := checkCallerCache(cache); err != nil {
 		return "", nil, fmt.Errorf("schema %s (id %d) served by the configured SchemaRegistry: %w", name, id, err)
 	}
 	return name, cache, nil
+}
+
+// checkCallerCache applies the rules the guard holds a caller's cache to:
+// reserved names first, then system timestamp aliases.
+func checkCallerCache(cache forma.SchemaAttributeCache) error {
+	if err := sqlgen.ValidateReservedAttrNames(cache); err != nil {
+		return fmt.Errorf("reserved attribute name: %w", err)
+	}
+	if err := validateSystemColumnAliases(cache); err != nil {
+		return fmt.Errorf("system column alias: %w", err)
+	}
+	return nil
 }

@@ -87,8 +87,9 @@ func (e *encodedText) parseInto(attr *model.EAVRecord) error {
 
 // readFromSystemColumn handles reading from system columns (RowID, SchemaID, timestamps).
 // Returns nil if the column is not a system column. A numeric alias names its
-// column in BoundColumn, which keeps it out of the integer-image refusal
-// (checkIntegerImage): the value is the store's own, not a stored image.
+// column in BoundColumn, which the integer-image refusal (checkIntegerImage)
+// names when a smallint or integer alias cannot hold the column's value; the
+// binding is refused at admission (#745), so that refusal is a last resort.
 func (t *persistentRecordTransformer) readFromSystemColumn(record *model.PersistentRecord, meta forma.AttributeMetadata, binding *forma.MainColumnBinding) *model.EAVRecord {
 	baseAttr := model.EAVRecord{
 		SchemaID:     record.SchemaID,

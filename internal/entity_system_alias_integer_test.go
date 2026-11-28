@@ -10,37 +10,43 @@ import (
 	"github.com/lychee-technology/forma/internal/transform"
 )
 
-// A smallint or integer bound to a system timestamp column is admitted at
-// registration (schemameta.ValidateColumnBinding) and reads the store's own
-// epoch millis, which are past either range. The #729 refusal must not judge
-// it: no write reaches the column and an update cannot name the alias, so a
-// refusal would fail every Create response (after the insert), read and
-// update of the schema with nothing to repair. What the alias answers is
-// #745's to decide; these tests pin only that the row stays usable.
+// #745: a smallint or integer bound to a system timestamp column is refused
+// at registration, at every load and by the guard over a caller's own
+// registry (schemameta.ValidateColumnBinding, GuardReservedAttrNames), so
+// the read decode judges a system alias like any other integer image. These
+// tests pin what admission still lets through: a bigint alias of the
+// timestamps and both integer widths on ltbase_schema_id stay usable through
+// Create, read and every update surface, and read the store's exact values.
 
 const sysAliasSchema = 745
 
 func sysAliasRegistry() forma.SchemaRegistry {
 	return &stubSchemaRegistry{schemaID: sysAliasSchema, schemaName: "sys_alias", cache: forma.SchemaAttributeCache{
 		"name":    {AttributeID: 1, ValueType: forma.ValueTypeText, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnText01}},
-		"created": {AttributeID: 2, ValueType: forma.ValueTypeInteger, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnCreatedAt}},
-		"touched": {AttributeID: 3, ValueType: forma.ValueTypeSmallInt, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnUpdatedAt}},
+		"created": {AttributeID: 2, ValueType: forma.ValueTypeBigInt, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnCreatedAt}},
+		"touched": {AttributeID: 3, ValueType: forma.ValueTypeBigInt, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnUpdatedAt}},
+		"kind":    {AttributeID: 4, ValueType: forma.ValueTypeSmallInt, ColumnBinding: &forma.MainColumnBinding{ColumnName: forma.MainColumnSchemaID}},
 	}}
 }
 
-func TestSystemTimestampAliasDeclaredIntegerStaysUsable(t *testing.T) {
-	ctx := context.Background()
-	registry := sysAliasRegistry()
+// sysAliasRepo stamps both timestamps with now on insert, as the Postgres
+// insert does (InsertPersistentRecord); the mock's default stamps nothing.
+func sysAliasRepo(now int64) *mockPersistentRecordRepository {
 	repo := newMockPersistentRecordRepository()
-	// The Postgres insert stamps both columns with the current millis
-	// (InsertPersistentRecord); the mock's default insert stamps nothing.
-	now := time.Now().UnixMilli()
 	repo.insertFunc = func(_ context.Context, record *model.PersistentRecord) error {
 		record.CreatedAt, record.UpdatedAt = now, now
 		repo.insertedRecords = append(repo.insertedRecords, record)
 		repo.storeRecord(record)
 		return nil
 	}
+	return repo
+}
+
+func TestSystemAliasesAdmissionKeepsReadExactly(t *testing.T) {
+	ctx := context.Background()
+	registry := sysAliasRegistry()
+	now := time.Now().UnixMilli()
+	repo := sysAliasRepo(now)
 	em := mustNewEntityManager(t, transform.NewPersistentRecordTransformer(registry), repo, nil, registry, createTestConfig(), nil)
 
 	created, err := em.Create(ctx, &forma.EntityOperation{
@@ -49,20 +55,27 @@ func TestSystemTimestampAliasDeclaredIntegerStaysUsable(t *testing.T) {
 		Data:             map[string]any{"name": "first"},
 	})
 	if err != nil {
-		t.Fatalf("create on a schema with integer aliases of the system timestamps: %v", err)
+		t.Fatalf("create on a schema with admitted system aliases: %v", err)
 	}
 	if len(repo.insertedRecords) != 1 {
 		t.Fatalf("expected one insert, got %d", len(repo.insertedRecords))
 	}
-	for _, alias := range []string{"created", "touched"} {
-		if _, ok := created.Attributes[alias]; !ok {
-			t.Fatalf("create response lacks alias %s: %v", alias, created.Attributes)
+	want := map[string]any{"created": now, "touched": now, "kind": int16(sysAliasSchema)}
+	for alias, value := range want {
+		if got := created.Attributes[alias]; got != value {
+			t.Fatalf("create response alias %s = %v (%T), want %v (%T)", alias, got, got, value, value)
 		}
 	}
 	rowID := created.RowID
 
-	if _, err := em.Get(ctx, &forma.QueryRequest{SchemaName: "sys_alias", RowID: &rowID}); err != nil {
+	read, err := em.Get(ctx, &forma.QueryRequest{SchemaName: "sys_alias", RowID: &rowID})
+	if err != nil {
 		t.Fatalf("read of the created row: %v", err)
+	}
+	for alias, value := range want {
+		if got := read.Attributes[alias]; got != value {
+			t.Fatalf("read alias %s = %v (%T), want %v (%T)", alias, got, got, value, value)
+		}
 	}
 	for _, surface := range updateSurfaces {
 		t.Run(surface.name, func(t *testing.T) {
