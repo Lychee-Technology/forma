@@ -16,7 +16,7 @@ Run it:
 ```bash
 make test-e2e-production
 # or
-go test -v ./internal/e2e_harness/production/ -tags=e2e -timeout=10m
+go test -v ./internal/e2e_harness/production/ -tags=e2e -timeout=20m
 ```
 
 Oracle and generator unit tests are untagged and run with `make test`.
