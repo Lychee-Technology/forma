@@ -75,7 +75,7 @@ func (s *entityBatchService) BatchCreate(ctx context.Context, req *forma.BatchOp
 	if err := s.validateDependencies(); err != nil {
 		return nil, err
 	}
-	if err := validateBatchOperation(req, s.budgets.maxBatchSize); err != nil {
+	if err := validateBatchOperation(req, s.budgets.maxBatchSize, false); err != nil {
 		return nil, err
 	}
 	zap.S().Debugw("BatchCreate called", "operationCount", len(req.Operations))
@@ -96,7 +96,7 @@ func (s *entityBatchService) BatchUpdate(ctx context.Context, req *forma.BatchOp
 	if err := s.validateDependencies(); err != nil {
 		return nil, err
 	}
-	if err := validateBatchOperation(req, s.budgets.maxBatchSize); err != nil {
+	if err := validateBatchOperation(req, s.budgets.maxBatchSize, true); err != nil {
 		return nil, err
 	}
 
@@ -115,7 +115,7 @@ func (s *entityBatchService) BatchDelete(ctx context.Context, req *forma.BatchOp
 	if err := s.validateDependencies(); err != nil {
 		return nil, err
 	}
-	if err := validateBatchOperation(req, s.budgets.maxBatchSize); err != nil {
+	if err := validateBatchOperation(req, s.budgets.maxBatchSize, false); err != nil {
 		return nil, err
 	}
 	zap.S().Debugw("BatchDelete called", "operationCount", len(req.Operations))

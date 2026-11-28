@@ -31,9 +31,12 @@ func (s *entityBatchService) batchUpdateAtomic(ctx context.Context, req *forma.B
 		if err != nil {
 			return nil, forma.WrapPublicf(fmt.Errorf("failed to get schema: %w", err), "operation[%d]", i)
 		}
-		// A value the write cannot convert is refused here, before the
-		// batch locks any row, as Update refuses it at intake (#679, #772).
-		updates, err := updatesToWrite(checkUpdatesValues(op.SchemaName, op.Updates, schemaCache, s.relations))
+		// A value the write cannot convert, and an unset's target or an
+		// overlap intake can see, are refused here, before the batch locks
+		// any row, with Update's own intake (#679, #772, #940). The gate let
+		// no precondition and no operator but Unset through.
+		updates, err := updatesToWrite(validateConditionalUpdate(&op, schemaCache, s.relations,
+			opsSchema{arrays: s.validator.ArrayPaths(schemaID), registry: s.registry}))
 		if err != nil {
 			return nil, forma.WrapPublicf(err, "operation[%d]", i)
 		}
@@ -99,7 +102,11 @@ func (s *entityBatchService) mergeBatchUpdateRecord(
 		return nil, forma.NotFoundf("operation[%d]: entity not found: %s/%s", i, op.SchemaName, op.RowID)
 	}
 
-	mergedData, err := mergeUpdateDocument(ctx, s.transformer, s.relations, op.SchemaName, existing, op.Updates, nil, nil)
+	// The operators are unsets only (validateBatchOperation): nothing to
+	// assign from the clock and no increment to apply, but each target is
+	// removed in the merge and an overlap only this row shows is refused
+	// there, as on Update (#940).
+	mergedData, err := mergeUpdateDocument(ctx, s.transformer, s.relations, op.SchemaName, existing, op.Updates, op.UpdateOps, nil)
 	if err != nil {
 		return nil, forma.WrapPublicf(fmt.Errorf("failed to transform existing record: %w", err), "operation[%d]", i)
 	}
@@ -127,5 +134,8 @@ func (s *entityBatchService) mergeBatchUpdateRecord(
 	}
 	updatedRecord.CreatedAt = existing.CreatedAt
 	updatedRecord.DeletedAt = existing.DeletedAt
+	// A column-bound target's column must be written NULL: the write keeps
+	// every main column the record does not set (#938).
+	updatedRecord.ClearedColumns = clearedColumns(op.UpdateOps, schemaCache)
 	return updatedRecord, nil
 }

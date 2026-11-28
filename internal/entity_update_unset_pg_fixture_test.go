@@ -31,10 +31,22 @@ const (
 // registered as schemaID.
 func setupUnsetPG(t *testing.T, dir, schema string, schemaID int16) *txEnv {
 	t.Helper()
+	return setupUnsetPGTuned(t, dir, schema, schemaID, nil)
+}
+
+// setupUnsetPGTuned is setupUnsetPG with tune, when not nil, adjusting the
+// pool's config before the pool opens.
+func setupUnsetPGTuned(t *testing.T, dir, schema string, schemaID int16, tune func(*pgxpool.Config)) *txEnv {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	t.Cleanup(cancel)
 	testdb.Connect(t, ctx) // skips, or fails in CI, when PostgreSQL is absent
-	pool := openTunedPool(t, ctx, func(cfg *pgxpool.Config) { cfg.MaxConns = 8 })
+	pool := openTunedPool(t, ctx, func(cfg *pgxpool.Config) {
+		cfg.MaxConns = 8
+		if tune != nil {
+			tune(cfg)
+		}
+	})
 	tables := createTempPersistentTables(t, ctx, pool)
 	schemaTable := createSchemaRegistryTableWith(t, ctx, pool, map[string]int16{schema: schemaID})
 	seedSchemaLedger(t, ctx, pool, schemaTable, dir)

@@ -42,9 +42,12 @@ type EntityOperation struct {
 	// and Tx); nil means none. Batches refuse it. See
 	// docs/conditional-writes.md.
 	Preconditions Condition `json:"-"`
-	// UpdateOps compute values from the locked row or the transaction clock
-	// and apply after Updates; an attribute takes one or the other. Update
-	// only, where they may stand in for Updates. Batches refuse them.
+	// UpdateOps compute values from the locked row or the transaction clock,
+	// or clear an attribute (Unset), and apply after Updates; an attribute
+	// takes one or the other. They apply to Update, where they may stand in
+	// for Updates. Batches refuse them, with one exception: BatchUpdate, atomic
+	// or best-effort, accepts Unset and no other operator, and an operation
+	// may then carry unsets alone (#940). See docs/conditional-writes.md.
 	UpdateOps []UpdateOp `json:"-"`
 }
 
@@ -61,6 +64,12 @@ type EntityOperation struct {
 //     any read or write. The atomic path merges every operation onto the base
 //     it read before writing, so duplicates would otherwise silently discard
 //     all but the last one while reporting every operation successful.
+//
+// An Unset in BatchUpdate (#940) is judged and applied as on Update. An
+// atomic batch with one refused unset commits nothing; a best-effort batch
+// fails that operation only, reported with it in BatchResult.Failed, and
+// commits the others. Any other operator, and any precondition, refuses the
+// whole batch before any write, in either mode.
 type BatchOperation struct {
 	Operations []EntityOperation `json:"operations"`
 	// Atomic requests all-or-nothing execution; may be rejected when
