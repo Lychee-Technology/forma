@@ -36,6 +36,13 @@ var updateValidationModes = []updateValidationMode{
 // nil, is enforced as the unique-key managers enforce it.
 func (e *txEnv) withUpdateValidation(t *testing.T, mode updateValidationMode, schemaDir string, catalog *UniqueKeyCatalog) *txEnv {
 	t.Helper()
+	return e.withUpdateValidationEmitting(t, mode, schemaDir, catalog, nil)
+}
+
+// withUpdateValidationEmitting is withUpdateValidation with emitter, when
+// not nil, receiving the manager's metrics.
+func (e *txEnv) withUpdateValidationEmitting(t *testing.T, mode updateValidationMode, schemaDir string, catalog *UniqueKeyCatalog, emitter forma.MetricEmitter) *txEnv {
+	t.Helper()
 	var validator *schemavalidate.Validator
 	if mode.validator {
 		var err error
@@ -52,6 +59,7 @@ func (e *txEnv) withUpdateValidation(t *testing.T, mode updateValidationMode, sc
 		Query:       forma.QueryConfig{DefaultPageSize: 20, MaxPageSize: 100},
 		Entity:      forma.EntityConfig{SchemaDirectory: schemaDir, ValidateUpdatesStrict: mode.strict},
 		Transaction: forma.TransactionConfig{DefaultTimeout: 30 * time.Second},
+		Metrics:     forma.MetricsConfig{Emitter: emitter},
 	}
 	var repoOpts []RepoOption
 	var managerOpts []EntityManagerOption

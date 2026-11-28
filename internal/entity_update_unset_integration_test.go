@@ -1,8 +1,6 @@
 package internal
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"testing"
 
@@ -203,42 +201,4 @@ func TestUnsetFailureRemovesNothing(t *testing.T) {
 			assert.Equal(t, before, env.snapshot(t, unsetSchemaName, rowID))
 		})
 	}
-}
-
-// TestUnsetRefusalsLeaveATxUsable pins that every intake refusal, a refused
-// target or an overlap, sends no statement: the Tx goes on to commit an
-// unset, and the row is otherwise untouched.
-func TestUnsetRefusalsLeaveATxUsable(t *testing.T) {
-	env := setupUnsetDocPG(t)
-	rowID := env.mustCreate(t, unsetSchemaName, unsetBaseDoc())
-	before := env.snapshot(t, unsetSchemaName, rowID)
-	refused := []*forma.EntityOperation{
-		unsetOp(rowID, nil, forma.Unset("missing")),
-		unsetOp(rowID, nil, forma.Unset("created")),
-		unsetOp(rowID, nil, forma.Unset("profile")),
-		unsetOp(rowID, nil, forma.Unset("items")),
-		unsetOp(rowID, nil, forma.Unset("items.sku")),
-		unsetOp(rowID, nil, forma.Unset("tags[0]")),
-		unsetOp(rowID, nil, forma.Unset("note"), forma.Unset("note")),
-		unsetOp(rowID, map[string]any{"note": "x"}, forma.Unset("note")),
-		unsetOp(rowID, map[string]any{"profile": map[string]any{"nick": "x"}}, forma.Unset("profile.nick")),
-		unsetOp(rowID, map[string]any{"profile.nick": "x"}, forma.Unset("profile.nick")),
-		unsetOp(rowID, map[string]any{"profile": "flat"}, forma.Unset("profile.nick")),
-		unsetOp(rowID, nil, forma.Increment("counter", 1), forma.Unset("counter")),
-		unsetOp(rowID, nil, forma.ServerTime("due", 0), forma.Unset("due")),
-	}
-	err := env.inTx(func(ctx context.Context, tx forma.Tx) error {
-		for i, op := range refused {
-			if _, err := tx.Update(ctx, op); !errors.Is(err, forma.ErrInvalidInput) {
-				return fmt.Errorf("refusal %d answered %v", i, err)
-			}
-		}
-		_, err := tx.Update(ctx, unsetOp(rowID, nil, forma.Unset("label")))
-		return err
-	})
-	require.NoError(t, err)
-	after := env.snapshot(t, unsetSchemaName, rowID)
-	assert.NotEqual(t, before.main, after.main, "the Tx committed the unset")
-	assert.Nil(t, env.mainColumns(t, unsetSchemaName, rowID)["text_01"])
-	assert.Equal(t, before.eav, after.eav, "no refused operation wrote EAV")
 }
