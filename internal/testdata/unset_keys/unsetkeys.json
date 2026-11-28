@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Unset operator unique-key test document (#938)",
+  "description": "slug is a column-bound single-attribute key, handle an EAV one, tenant_email a composite of a bound and an EAV component",
+  "type": "object",
+  "x-forma-unique-keys": [
+    { "id": 1, "name": "slug", "attributes": ["slug"] },
+    { "id": 2, "name": "handle", "attributes": ["handle"] },
+    { "id": 3, "name": "tenant_email", "attributes": ["tenant", "email"] }
+  ],
+  "properties": {
+    "note": { "type": "string" },
+    "slug": { "type": "string" },
+    "handle": { "type": "string" },
+    "tenant": { "type": "string" },
+    "email": { "type": "string" }
+  }
+}

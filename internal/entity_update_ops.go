@@ -65,8 +65,9 @@ func applyIncrements(doc map[string]any, ops []forma.UpdateOp, cache forma.Schem
 			if err := applyIncrement(doc, op, cache[op.Attribute].ValueType); err != nil {
 				return fmt.Errorf("increment on attribute '%s': %w", op.Attribute, err)
 			}
-		case forma.UpdateOpServerTime:
-			// assigned during the merge (serverTimeAssignments)
+		case forma.UpdateOpServerTime, forma.UpdateOpUnset:
+			// applied during the merge (serverTimeAssignments,
+			// removeDocumentValue)
 		default:
 			return fmt.Errorf("update operator on attribute '%s' has unvalidated kind '%s'", op.Attribute, op.Kind)
 		}

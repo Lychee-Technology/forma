@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Unset operator test document (#938)",
+  "description": "memo is required by the JSON Schema only; its attributes entry is optional, so only the validator requires it",
+  "type": "object",
+  "required": [
+    "memo"
+  ],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "label": {
+      "type": "string"
+    },
+    "note": {
+      "type": "string"
+    },
+    "memo": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "rank": {
+      "type": "integer"
+    },
+    "counter": {
+      "type": "integer"
+    },
+    "due": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "profile": {
+      "type": "object",
+      "properties": {
+        "nick": {
+          "type": "string"
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "title": {
+          "type": "string"
+        }
+      }
+    },
+    "owner": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sku": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "created": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "short": {
+      "type": "string",
+      "maxLength": 3
+    }
+  }
+}

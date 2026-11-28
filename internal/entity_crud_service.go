@@ -388,6 +388,10 @@ func (s *entityCRUDService) mergeUpdateRecord(
 
 	updatedRecord.CreatedAt = existing.CreatedAt
 	updatedRecord.DeletedAt = existing.DeletedAt
+	// The merged document no longer holds an unset target, but the record
+	// must say so for a column-bound one: the write keeps a main column the
+	// record does not set (#938).
+	updatedRecord.ClearedColumns = clearedColumns(req.UpdateOps, schemaCache)
 
 	return updatedRecord, nil
 }

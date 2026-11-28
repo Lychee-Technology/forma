@@ -145,9 +145,18 @@ func (r *DBPersistentRecordRepository) mergeRecordInTx(
 // instead of releasing it (#651), and the update answers the value too.
 // UpdatedAt is the clock read now; updateMainRow advances it past the row's
 // previous version. Both merge cores call it, so they cannot drift.
+//
+// A column merged clears (ClearedColumns, an unset operator's, #938) is the
+// exception: it is not taken from existing, so the claim plans the row
+// without it and releases its entry, and updateMainRow assigns it NULL. A
+// record that both sets and clears a column is refused: one of the two
+// intents would be lost.
 func (r *DBPersistentRecordRepository) prepareUpdate(
 	ctx context.Context, tx pgx.Tx, tables model.StorageTables, merged, existing *model.PersistentRecord,
 ) (*uniqueKeyClaim, error) {
+	if err := checkClearedColumns(merged); err != nil {
+		return nil, fmt.Errorf("check cleared columns of %s: %w", merged.RowID, err)
+	}
 	retainStoredColumns(merged, existing)
 	merged.UpdatedAt = r.nowMillis()
 	claim, err := r.planUniqueKeys(ctx, tx, tables, merged, true)

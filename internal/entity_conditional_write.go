@@ -214,7 +214,8 @@ func validateUpdateOps(req *forma.EntityOperation, cache forma.SchemaAttributeCa
 	return nil
 }
 
-// validateUpdateOp checks one operator against its attribute. Like a
+// validateUpdateOp checks one operator against its attribute; an unset's
+// target rules are validateUnsetOp's (#938). Like a
 // relation attribute, one bound to a system column (ltbase_created_at, say)
 // is never written: the transformer drops an update's value for it
 // (storeInMainColumn), so an operator there would report success and change
@@ -230,6 +231,9 @@ func validateUpdateOps(req *forma.EntityOperation, cache forma.SchemaAttributeCa
 func validateUpdateOp(op forma.UpdateOp, schemaName string, cache forma.SchemaAttributeCache, relations *RelationIndex, arrays schemavalidate.ArrayPaths) error {
 	if op.Attribute == "" {
 		return forma.InvalidInputf("update operator %s names no attribute", op.Kind)
+	}
+	if op.Kind == forma.UpdateOpUnset {
+		return validateUnsetOp(op, schemaName, cache, relations, arrays)
 	}
 	meta, ok := cache[op.Attribute]
 	if !ok {
@@ -268,8 +272,8 @@ func validateUpdateOp(op forma.UpdateOp, schemaName string, cache forma.SchemaAt
 		}
 		return nil
 	}
-	return forma.InvalidInputf("update operator on attribute '%s' has kind '%s'; expected %s or %s",
-		op.Attribute, op.Kind, forma.UpdateOpIncrement, forma.UpdateOpServerTime)
+	return forma.InvalidInputf("update operator on attribute '%s' has kind '%s'; expected %s, %s or %s",
+		op.Attribute, op.Kind, forma.UpdateOpIncrement, forma.UpdateOpServerTime, forma.UpdateOpUnset)
 }
 
 // updatesOverlap refuses attr, an update operator's attribute, when updates

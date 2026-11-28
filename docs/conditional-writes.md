@@ -9,7 +9,8 @@ afterwards, which is the lost-update race #593 forbids. Two fields on
 - `Preconditions` is a condition in the [Condition DSL](condition-dsl.md)
   that must hold on the locked row, or the write writes nothing.
 - `UpdateOps` computes values from the locked row (`increment`) or from the
-  transaction clock (`server_time`).
+  transaction clock (`server_time`), or makes an attribute absent (`unset`,
+  #938).
 
 They apply to `EntityManager.Update` and `Delete` and to `Tx.Update` and
 `Tx.Delete` ([Transactions](transactions.md)). The API is Go only: both fields
@@ -49,15 +50,16 @@ case errors.Is(err, forma.ErrNotFound): // the row is gone
    satisfy it is `ErrPreconditionFailed`. Either way nothing is written: no
    `entity_main`, EAV or `change_log` change, and no version stamp.
 5. **Write.** An update reads the row, merges `Updates` and the
-   `server_time` values onto it, applies `increment` to the result,
-   validates, and writes through the ordinary merge path with its version
-   stamp and `change_log` entry. A delete deletes.
+   `server_time` values onto it, removes each `unset` target, applies
+   `increment` to the result, validates, and writes through the ordinary
+   merge path with its version stamp and `change_log` entry. A delete
+   deletes.
 
    A `server_time` replaces its attribute as a value in `Updates` does: the
    stored value is never decoded, so the operator also rewrites a stored
    value the read refuses (see
-   [Schema consistency migration](schema-consistency-migration.md)). An
-   `increment` decodes the value it adds to.
+   [Schema consistency migration](schema-consistency-migration.md)). So
+   does an `unset`. An `increment` decodes the value it adds to.
 
 An operation without `Preconditions` skips step 4, and one without `UpdateOps`
 skips the operators; both behave exactly as before #649.
@@ -113,6 +115,7 @@ The published message is `precondition does not hold for entity (row=<id>)`
 | --- | --- | --- |
 | `forma.Increment(attr, by)` | `smallint`, `integer`, `bigint` | the locked value plus `by` |
 | `forma.ServerTime(attr, offset)` | `date`, `datetime` | the transaction's `now()`, truncated to milliseconds, plus `offset` |
+| `forma.Unset(attr)` | every scalar type, `list` | none: the attribute is absent (see [Unset](#unset)) |
 
 Refused at intake, before any SQL, with `ErrInvalidInput` naming the
 attribute:
@@ -135,6 +138,8 @@ attribute:
   validator) is judged on the locked row instead;
 - `increment` on any other type, or with an `Offset`; `server_time` on any
   other type, with a `By`, or with an offset finer than a millisecond;
+  `unset` with a `By` or an `Offset`, or on a target [Unset](#unset)
+  refuses;
 - two operators on one attribute;
 - an attribute that `Updates` also writes, in either spelling (`"a.b"` or
   `{"a": {"b": …}}`), or through a container `Updates` replaces (`"a": nil`
@@ -159,6 +164,83 @@ Judged against the locked row, after the write has sent SQL, also
 - an operator on an attribute inside an array the row holds, where intake
   could not see the array in the schema: it would write one value where the
   row holds one per element.
+
+### Unset
+
+`forma.Unset(attr)` makes `attr` absent, which nothing else can: an explicit
+`null` in `Updates` is refused as before (`attribute 'x' cannot be set to
+null`), on `Create` and `Update`, nested or as a list element, and over HTTP
+too, which has no unset carrier until #655. An empty list is a value, not a
+clear: `{"tags": []}` stores the empty-list marker and reads back `[]`, while
+`Unset("tags")` removes the elements and the marker, and the row then reads
+back without `tags`. No typed nil clears either: `[]any(nil)` is the empty
+list, `map[string]any(nil)` changes nothing, and a nil pointer is refused or
+leaves the attribute present.
+
+**Targets.** Decided from the registry metadata alone, before any SQL. An
+unset applies to a registered scalar or list attribute, top-level or nested
+under ordinary objects, in the dotted spelling of the attributes file
+(`profile.nick`). Refused with `ErrInvalidInput` naming the attribute:
+
+- an attribute the schema does not define, or a raw `entity_main` column name
+  (`ltbase_created_at`, `text_01`);
+- an attribute bound to a system column, or one under an `x-relation` root,
+  the root included;
+- an object (`profile`): unset each attribute beneath it instead;
+- an array of objects (`items`), and an attribute inside one (`items.sku`),
+  which has one value per element. Crossing is read from
+  `AttributeMetadata.ArrayAncestors`, so the refusal holds on a manager with
+  no validator too; the array paths the JSON Schema declares refuse as well;
+- a nested attribute whose `ArrayAncestors` is nil: the registry did not
+  derive its ancestry, so where it is placed cannot be established;
+- an indexed, wildcard or JSONPath spelling (`tags[0]`, `profile.*`, `$.note`).
+
+The row-level backstop stays: a list the locked row holds on the way to the
+target is refused, as for any operator.
+
+**One writer.** An unset is an operator like the others, so the rules above
+apply: a second unset of the attribute, an `increment` or `server_time` on
+it, or `Updates` writing it in either spelling, or replacing an object above
+it (`{"profile": "flat"}` or `{"profile": nil}` beside `Unset("profile.nick")`),
+is refused. An object in `Updates` that merges into the row's object writes
+only its own members, so `{"profile": {"title": "x"}}` beside
+`Unset("profile.nick")` is accepted. Intake refusals send no SQL and leave a
+`Tx` usable.
+
+**Merge.** The target is removed from the merged document, and every object
+the removal leaves empty goes with it, so the document validated is the
+document stored. The stored value is discarded undecoded. A row that holds no
+value for the target is updated as usual, version stamp and `change_log`
+entry included, and stays without one; repeating an unset recreates nothing.
+
+**Validation.** Nothing is new: the merged document is validated as any
+update's is. A `required_always` attribute, and a `required_if_parent_present`
+attribute whose parent the result still holds, are refused in every mode. A
+requirement only the JSON Schema states follows `ValidateUpdatesStrict`:
+refused when strict, accepted with the report-only log line and counter
+otherwise, and not checked without a validator. Any document an unset
+produces gets the verdict the same document gets when another update reaches
+it.
+
+**Storage.** A clear is atomic across both stores. A column-bound target's
+column is written `NULL` in the same `UPDATE`: the merged record carries the
+columns it clears, because the write otherwise keeps every main column the
+record does not set (#651's retained columns), which would silently undo the
+clear. The EAV write already replaces every active attribute of the row, so a
+cleared EAV value, its empty-list marker, and any `eav_data` row a bound
+attribute retained from before its binding are deleted with it.
+
+**Unique keys.** Keys are planned from the final record, so a cleared
+component releases its entry in the update's own transaction, and another
+entity can take the value at once, in the same `Tx` included. There is no
+`NULL` encoding: a key with an absent component has no entry. A clear that
+does not commit, refused by its precondition or rolled back with its `Tx`,
+keeps the original reservation. `Claim` refuses an unset of a key component,
+as it refuses every write of one.
+
+Out of scope for #938: `BatchUpdate` still refuses `UpdateOps` (#940), the
+`UpdateWhere`, `Upsert` and `Claim` contract tests are #939, and flush,
+compaction and federated absence are #941.
 
 ### Precision of `server_time`
 
@@ -254,4 +336,9 @@ Tests that assert `ErrPreconditionFailed` for the loser specifically are named
 | Read-then-conditional-write retry loop loses no update | `TestVersionRetryLoopLosesNoUpdate` |
 | `server_time` equals the transaction's `now()` | `TestServerTimeIsTheTransactionInstant` |
 | `server_time` and `$now` share one instant in a `Tx` | `TestNowPreconditionAndServerTimeShareTheTxInstant` |
+| `unset` clears bound and EAV scalars, lists with elements or only their marker, and nested scalars and lists, alone and beside a Set, an `increment` and a `server_time`, through `Update` and `Tx.Update`: the column is `NULL`, no `eav_data` row is left, and version and `change_log` advance | `TestUnsetCommitsTheClear` |
+| `unset` of a bound attribute also deletes the `eav_data` rows it retained | `TestUnsetOfABoundAttributeRemovesItsRetainedEAVRows` |
+| `unset` refusals and overlaps send no SQL, and a `Tx` stays usable | `TestUnsetRefusalsLeaveATxUsable`, `TestUnsetRefusesItsTargetAtIntake`, `TestUnsetOverlapsAreRefused` |
+| A cleared key component releases its entry; a failed precondition or rolled-back `Tx` keeps it | `TestUnsetReleasesTheUniqueKeyEntry`, `TestRolledBackUnsetKeepsTheReservation`, `TestUnsetThenRetakeInOneTx` |
+| The validation verdict on an unset matches the verdict on the same document reached otherwise, in strict, report-only and no-validator modes | `TestUnsetValidationMatrix` |
 | A failed precondition rolls back a `Tx` that returns it, and does not poison one that handles it | `TestConditionalUpdateFailureRollsBackTheTx`, `TestSwallowedPreconditionFailureDoesNotPoisonTheTx` |

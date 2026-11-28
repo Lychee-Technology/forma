@@ -98,7 +98,8 @@ func mergeMaps(existing map[string]any, updates any) map[string]any {
 // values the write keeps and only those decoded
 // (PersistentRecordTransformer.MergeUpdate, #590). An assigned value is
 // written before that decoding, like updates, so the stored value it
-// replaces is never decoded. Update and BatchUpdate both merge through it,
+// replaces is never decoded; so is each unset operator's target removed
+// (removeDocumentValue, #938), and the value it held is never decoded either. Update and BatchUpdate both merge through it,
 // so the two cannot drift.
 //
 // Before merging, it refuses an operator in ops whose attribute updates
@@ -125,6 +126,14 @@ func mergeUpdateDocument(
 		for _, a := range assigned {
 			if err := setDocumentValue(doc, a.attr, a.value); err != nil {
 				return nil, fmt.Errorf("assign attribute '%s': %w", a.attr, err)
+			}
+		}
+		for _, op := range ops {
+			if op.Kind != forma.UpdateOpUnset {
+				continue
+			}
+			if err := removeDocumentValue(doc, op.Attribute); err != nil {
+				return nil, fmt.Errorf("unset attribute '%s': %w", op.Attribute, err)
 			}
 		}
 		return doc, nil
