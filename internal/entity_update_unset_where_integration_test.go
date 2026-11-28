@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -38,8 +39,10 @@ func (e *txEnv) updateWhereIn(req *forma.MutateWhereRequest) (*forma.MutateWhere
 	var result *forma.MutateWhereResult
 	err := e.inTx(func(ctx context.Context, tx forma.Tx) error {
 		var err error
-		result, err = tx.UpdateWhere(ctx, req)
-		return err
+		if result, err = tx.UpdateWhere(ctx, req); err != nil {
+			return fmt.Errorf("failed to update %s rows where %v: %w", req.SchemaName, req.Condition, err)
+		}
+		return nil
 	})
 	return result, err
 }
@@ -144,8 +147,10 @@ func TestUpdateWhereUnsetOverMaxAffectedCommitsNothing(t *testing.T) {
 			UpdateOps: []forma.UpdateOp{forma.Unset("label"), forma.Unset("tags"), forma.Increment("counter", 1)}})
 		require.ErrorIs(t, err, forma.ErrInvalidInput)
 		assert.Contains(t, err.Error(), "more than MaxAffected 2")
-		_, err = tx.Update(ctx, unsetOp(other, nil, forma.Unset("note")))
-		return err
+		if _, err := tx.Update(ctx, unsetOp(other, nil, forma.Unset("note"))); err != nil {
+			return fmt.Errorf("failed to update %s after the overflow: %w", other, err)
+		}
+		return nil
 	})
 	require.NoError(t, err, "the overflow leaves the Tx usable")
 

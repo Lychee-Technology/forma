@@ -60,13 +60,36 @@ func (e *outboxPG) requireRetryCleared(t *testing.T, rows []uuid.UUID, records [
 	}
 }
 
+// createAgainstSort creates messages, given in reverse enqueued_at order, in
+// one batch under caller row IDs (#651) that ascend as the batch goes on.
+// Insertion order and row-ID order are then both the reverse of enqueued_at
+// order, so a claim that answers enqueued_at order follows the requested
+// Sort and not the heap or a row-ID tiebreak. It answers the row IDs in
+// enqueued_at order; tag keeps one test's IDs apart.
+func (e *outboxPG) createAgainstSort(t *testing.T, tag int, messages []map[string]any) []uuid.UUID {
+	t.Helper()
+	n := len(messages)
+	rowIDs := make([]uuid.UUID, n)
+	for i := range rowIDs {
+		rowIDs[i] = uuid.MustParse(fmt.Sprintf("0190b6a1-0000-7000-8000-%02d%010d", tag, i+1))
+	}
+	inserted := e.createBatch(t, messages, rowIDs)
+	sorted := make([]uuid.UUID, n)
+	for i, rowID := range inserted {
+		sorted[n-1-i] = rowID
+	}
+	return sorted
+}
+
 // TestClaimUnsetClearsOnlyTheClaimedRows claims the first two of four due
 // messages with a mutation that clears their retry time: the two are taken
-// in sort order and cleared, with their lease and generation; the other two
-// are untouched, and a second claim takes them.
+// in enqueued_at order, which neither their insertion nor their row IDs
+// follow, and cleared, with their lease and generation; the other two are
+// untouched, and a second claim takes them.
 func TestClaimUnsetClearsOnlyTheClaimedRows(t *testing.T) {
 	env := newOutboxPG(t)
-	ids := env.createMessages(t, "t", 4)
+	ids := env.createAgainstSort(t, 1, []map[string]any{pendingMessage("t", 3), pendingMessage("t", 2),
+		pendingMessage("t", 1), pendingMessage("t", 0)})
 
 	records, err := env.claim(claimClearingRetry("t", "A", 2))
 	require.NoError(t, err)
@@ -78,27 +101,31 @@ func TestClaimUnsetClearsOnlyTheClaimedRows(t *testing.T) {
 
 	again, err := env.claim(claimClearingRetry("t", "B", 10))
 	require.NoError(t, err)
-	assert.Equal(t, ids[2:], rowIDsOf(again), "a held row is not claimed again; the rest are")
+	assert.Equal(t, ids[2:], rowIDsOf(again), "a held row is not claimed again; the rest are, in enqueued_at order")
 	env.requireRetryCleared(t, ids[2:], again)
 }
 
 // TestClaimGroupUnsetClearsOnlyTheHeads runs the clearing claim as a
-// per-partition FIFO claim: only each partition's head is claimed and
-// cleared, the row behind it keeps its retry time, and the claimed head
-// still blocks its partition.
+// per-partition FIFO claim: only each partition's head by enqueued_at is
+// claimed and cleared, heads in Sort order, though insertion and row-ID
+// order run the other way; the row behind p1's head, which has the lower
+// row ID, keeps its retry time, and the claimed head still blocks its
+// partition.
 func TestClaimGroupUnsetClearsOnlyTheHeads(t *testing.T) {
 	env := newOutboxPG(t)
-	ids := env.createAll(t, []map[string]any{partitioned("g", "p1", 0), partitioned("g", "p2", 1), partitioned("g", "p1", 2)})
+	ids := env.createAgainstSort(t, 2, []map[string]any{partitioned("g", "p2", 2), partitioned("g", "p1", 1),
+		partitioned("g", "p1", 0)})
+	p1Head, p1Behind, p2Head := ids[0], ids[1], ids[2]
 
 	records, err := env.claim(fifo(claimClearingRetry("g", "A", 10)))
 	require.NoError(t, err)
-	require.Equal(t, ids[:2], rowIDsOf(records), "the heads of p1 and p2, in Sort order")
+	require.Equal(t, []uuid.UUID{p1Head, p2Head}, rowIDsOf(records), "the heads of p1 and p2, in Sort order")
 	env.requireRetryCleared(t, ids, records)
 
 	behind, err := env.claim(fifo(claimClearingRetry("g", "B", 10)))
 	require.NoError(t, err)
 	assert.Empty(t, behind, "the row behind p1's held head waits")
-	assert.Equal(t, 1, env.eavCount(t, ids[2], outboxNextAttemptID))
+	assert.Equal(t, 1, env.eavCount(t, p1Behind, outboxNextAttemptID))
 }
 
 // markFailed is LTFlow's MarkFailed as #653 specifies it: a CAS on the
@@ -117,8 +144,10 @@ func markFailed(rowID uuid.UUID, generation int64) *forma.EntityOperation {
 // markFailedIn runs op in a Tx of its own and commits it.
 func (e *outboxPG) markFailedIn(op *forma.EntityOperation) error {
 	return e.inTx(func(ctx context.Context, tx forma.Tx) error {
-		_, err := tx.Update(ctx, op)
-		return err
+		if _, err := tx.Update(ctx, op); err != nil {
+			return fmt.Errorf("failed to mark %s failed: %w", op.RowID, err)
+		}
+		return nil
 	})
 }
 
@@ -204,8 +233,10 @@ func TestClaimRefusesAnUnsetOfAUniqueKeyComponent(t *testing.T) {
 				assert.True(t, published, "the refusal publishes its message: %v", err)
 				assert.Contains(t, message, fmt.Sprintf("cannot change attribute '%s' of unique key", tc.attr))
 				assert.Equal(t, before, sent.Load(), "the refusal sent no statement")
-				_, err = tx.Update(ctx, unsetKeysOp(rowID, map[string]any{"note": "n"}))
-				return err
+				if _, err := tx.Update(ctx, unsetKeysOp(rowID, map[string]any{"note": "n"})); err != nil {
+					return fmt.Errorf("failed to update %s after the refusal: %w", rowID, err)
+				}
+				return nil
 			})
 			require.NoError(t, err, "the Tx commits after the refusal")
 			assert.Equal(t, entries, env.keyEntries(t), "the entry stays held")

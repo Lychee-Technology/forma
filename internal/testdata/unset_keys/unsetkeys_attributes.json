@@ -3,5 +3,7 @@
   "slug": { "attributeID": 2, "valueType": "text", "column_binding": { "col_name": "text_01" } },
   "handle": { "attributeID": 3, "valueType": "text" },
   "tenant": { "attributeID": 4, "valueType": "text", "column_binding": { "col_name": "text_02" } },
-  "email": { "attributeID": 5, "valueType": "text" }
+  "email": { "attributeID": 5, "valueType": "text" },
+  "label": { "attributeID": 6, "valueType": "text", "column_binding": { "col_name": "text_03" } },
+  "memo": { "attributeID": 7, "valueType": "text" }
 }

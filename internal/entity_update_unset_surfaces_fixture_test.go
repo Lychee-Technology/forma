@@ -44,13 +44,16 @@ var (
 	unsetViaUpdate = unsetTxSurface{"Tx.Update", func(ctx context.Context, tx forma.Tx, m unsetMutation) error {
 		_, err := tx.Update(ctx, &forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: m.schema, RowID: m.rowID},
 			Updates: m.updates, UpdateOps: m.ops})
-		return err
+		if err != nil {
+			return fmt.Errorf("failed to update %s row %s: %w", m.schema, m.rowID, err)
+		}
+		return nil
 	}}
 	unsetViaUpdateWhere = unsetTxSurface{"Tx.UpdateWhere", func(ctx context.Context, tx forma.Tx, m unsetMutation) error {
 		result, err := tx.UpdateWhere(ctx, &forma.MutateWhereRequest{SchemaName: m.schema, Condition: m.selector,
 			Updates: m.updates, UpdateOps: m.ops})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to update %s rows selecting %s: %w", m.schema, m.rowID, err)
 		}
 		return requireOnlyRow("UpdateWhere", m.rowID, result.RowIDs)
 	}}
@@ -58,7 +61,7 @@ var (
 		result, err := tx.Claim(ctx, &forma.ClaimRequest{SchemaName: m.schema, Condition: m.selector, Limit: 1,
 			Updates: m.updates, UpdateOps: m.ops})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to claim %s row %s: %w", m.schema, m.rowID, err)
 		}
 		return requireOnlyRow("Claim", m.rowID, rowIDsOf(result.Records))
 	}}
@@ -67,7 +70,7 @@ var (
 			Create: forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: m.schema, RowID: m.rowID}, Data: m.create},
 			Target: forma.ConflictTarget{RowID: true}, Action: forma.UpsertUpdate, Updates: m.updates, UpdateOps: m.ops})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to upsert %s row %s: %w", m.schema, m.rowID, err)
 		}
 		if result.Outcome != forma.UpsertUpdated {
 			return fmt.Errorf("upsert of %s answered %s, want %s", m.rowID, result.Outcome, forma.UpsertUpdated)
@@ -89,7 +92,10 @@ func requireOnlyRow(method string, want uuid.UUID, got []uuid.UUID) error {
 // applyIn runs the mutation through surface in a Tx of its own and commits
 // it.
 func (e *txEnv) applyIn(surface unsetTxSurface, m unsetMutation) error {
-	return e.inTx(func(ctx context.Context, tx forma.Tx) error { return surface.apply(ctx, tx, m) })
+	if err := e.inTx(func(ctx context.Context, tx forma.Tx) error { return surface.apply(ctx, tx, m) }); err != nil {
+		return fmt.Errorf("failed to commit %s of %s row %s: %w", surface.name, m.schema, m.rowID, err)
+	}
+	return nil
 }
 
 // unsetTagged is a selector matching the rows whose attr equals value and

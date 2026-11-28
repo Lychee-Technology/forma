@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/lychee-technology/forma"
@@ -30,7 +31,8 @@ func unsetDocMutation(rowID uuid.UUID, tag, target string) unsetMutation {
 // bound and an EAV target, the rows' entity_main columns and eav_data rows
 // are the same, the clear included, and the surface advances version and
 // change_log as Update does. unsetdoc declares no unique key, so neither row
-// holds an entry; TestUnsetSurfacesReleaseTheUniqueKeyEntry covers keys.
+// holds an entry; TestUnsetSurfacesKeepTheKeysUpdateKeeps holds the same
+// parity on rows that hold key entries.
 func TestUnsetSurfacesStoreWhatUpdateStores(t *testing.T) {
 	env := setupUnsetDocPG(t)
 	targets := []struct{ name, attr, column string }{{"bound", "label", "text_01"}, {"EAV", "note", ""}}
@@ -71,28 +73,52 @@ type unsetSurfaceRefusal struct {
 	want    string
 }
 
-// unsetSurfaceRefusals are the refused targets and the S3 overlaps, as
-// Update refuses them (TestUnsetRefusalsLeaveATxUsable).
+// unsetSurfaceRefusals are, as Update refuses them, every target refusal
+// TestUnsetRefusesItsTargetAtIntake pins on unsetdoc and every S3 overlap
+// TestUnsetOverlapsAreRefused pins: each is decided at intake, before any
+// SQL. The relation and underived-ancestry targets need schemas of their
+// own and are pinned on Update only
+// (TestUnsetRelationAndUnderivedRefusalsLeaveATxUsable); the overlaps only
+// the stored row shows are judged after the lock (docs/conditional-writes.md).
 var unsetSurfaceRefusals = []unsetSurfaceRefusal{
+	// Targets.
 	{nil, []forma.UpdateOp{forma.Unset("missing")}, "unset names attribute 'missing'"},
+	{nil, []forma.UpdateOp{forma.Unset("profile.missing")}, "unset names attribute 'profile.missing'"},
 	{nil, []forma.UpdateOp{forma.Unset("created")}, "attribute 'created', which is bound to system column 'ltbase_created_at'"},
 	{nil, []forma.UpdateOp{forma.Unset("ltbase_row_id")}, "unset names 'ltbase_row_id', an entity_main column"},
+	{nil, []forma.UpdateOp{forma.Unset("text_01")}, "unset names 'text_01', an entity_main column"},
 	{nil, []forma.UpdateOp{forma.Unset("profile")}, "unset names 'profile', an object"},
 	{nil, []forma.UpdateOp{forma.Unset("items")}, "unset names 'items', an array of objects"},
+	{nil, []forma.UpdateOp{forma.Unset("lines")}, "unset names 'lines', an array of objects"},
 	{nil, []forma.UpdateOp{forma.Unset("items.sku")}, "attribute 'items.sku' is inside the array of objects 'items'"},
 	{nil, []forma.UpdateOp{forma.Unset("tags[0]")}, "unset names 'tags[0]'"},
+	{nil, []forma.UpdateOp{forma.Unset("items[0].sku")}, "unset names 'items[0].sku'"},
+	{nil, []forma.UpdateOp{forma.Unset("profile.*")}, "unset names 'profile.*'"},
+	{nil, []forma.UpdateOp{forma.Unset("$.note")}, "unset names '$.note'"},
+	{nil, []forma.UpdateOp{forma.Unset("profile..nick")}, "unset names 'profile..nick'"},
+	{nil, []forma.UpdateOp{forma.Unset("")}, "update operator unset names no attribute"},
 	{nil, []forma.UpdateOp{{Attribute: "note", Kind: forma.UpdateOpUnset, By: 1}}, "unset on attribute 'note' sets By or Offset"},
+	{nil, []forma.UpdateOp{{Attribute: "note", Kind: forma.UpdateOpUnset, Offset: time.Second}}, "unset on attribute 'note' sets By or Offset"},
+	// S3 overlaps.
 	{nil, []forma.UpdateOp{forma.Unset("note"), forma.Unset("note")}, "attribute 'note' has more than one update operator"},
-	{map[string]any{"note": "x"}, []forma.UpdateOp{forma.Unset("note")}, "attribute 'note' appears in both updates"},
-	{map[string]any{"profile": map[string]any{"nick": "x"}}, []forma.UpdateOp{forma.Unset("profile.nick")}, "attribute 'profile.nick' appears in both updates"},
+	{map[string]any{"note": "x"}, []forma.UpdateOp{forma.Unset("note")}, "attribute 'note' appears in both updates (as 'note')"},
+	{map[string]any{"tags": []any{}}, []forma.UpdateOp{forma.Unset("tags")}, "attribute 'tags' appears in both updates (as 'tags')"},
+	{map[string]any{"profile": map[string]any{"nick": "x"}}, []forma.UpdateOp{forma.Unset("profile.nick")},
+		"attribute 'profile.nick' appears in both updates (as 'profile.nick')"},
+	{map[string]any{"profile.nick": "x"}, []forma.UpdateOp{forma.Unset("profile.nick")},
+		"attribute 'profile.nick' appears in both updates (as 'profile.nick')"},
 	{nil, []forma.UpdateOp{forma.Increment("counter", 1), forma.Unset("counter")}, "attribute 'counter' has more than one update operator"},
-	{nil, []forma.UpdateOp{forma.ServerTime("due", 0), forma.Unset("due")}, "attribute 'due' has more than one update operator"},
+	{nil, []forma.UpdateOp{forma.Unset("due"), forma.ServerTime("due", 0)}, "attribute 'due' has more than one update operator"},
+	{map[string]any{"profile": "flat"}, []forma.UpdateOp{forma.Unset("profile.nick")},
+		"attribute 'profile.nick' appears in both updates (as 'profile')"},
+	{map[string]any{"profile": nil}, []forma.UpdateOp{forma.Unset("profile.nick")},
+		"attribute 'profile.nick' appears in both updates (as 'profile')"},
 }
 
 // TestUnsetSurfacesRefuseAtIntake runs every refusal through each surface in
 // one Tx: each is ErrInvalidInput naming its target and sends no statement,
 // so the Tx goes on to commit an unset through the same surface, and the
-// row holds that unset alone.
+// row holds that unset alone: no refused mutation wrote the row.
 func TestUnsetSurfacesRefuseAtIntake(t *testing.T) {
 	env := setupUnsetDocPG(t)
 	sent := env.countStatements(t)
@@ -198,7 +224,7 @@ func TestUnsetSurfacesRolledBackKeepTheReservation(t *testing.T) {
 
 				err := env.inTx(func(ctx context.Context, tx forma.Tx) error {
 					if err := surface.apply(ctx, tx, unsetKeysMutation(a, "a", tc.attr)); err != nil {
-						return err
+						return fmt.Errorf("failed to clear %s of %s: %w", tc.attr, a, err)
 					}
 					return rollback
 				})
@@ -233,12 +259,14 @@ func TestUpsertCreateBranchDoesNotRunUnset(t *testing.T) {
 	refused, created := uuid.New(), uuid.New()
 	err := env.inTx(func(ctx context.Context, tx forma.Tx) error {
 		requireRefusedBeforeSQL(t, sent, "the create branch's invalid unset", "unset names 'items', an array of objects", func() error {
-			_, err := tx.Upsert(ctx, upsert(refused, forma.Unset("items")))
-			return err
+			if _, err := tx.Upsert(ctx, upsert(refused, forma.Unset("items"))); err != nil {
+				return fmt.Errorf("failed to upsert %s: %w", refused, err)
+			}
+			return nil
 		})
 		result, err := tx.Upsert(ctx, upsert(created, forma.Unset("label"), forma.Unset("tags")))
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to upsert %s through its create branch: %w", created, err)
 		}
 		assert.Equal(t, forma.UpsertCreated, result.Outcome)
 		return nil
@@ -263,13 +291,16 @@ func TestUpsertDoNothingRefusesUnset(t *testing.T) {
 			_, err := tx.Upsert(ctx, &forma.UpsertRequest{
 				Create: forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: unsetSchemaName, RowID: rowID}, Data: unsetBaseDoc()},
 				Target: forma.ConflictTarget{RowID: true}, Action: forma.UpsertDoNothing, UpdateOps: []forma.UpdateOp{forma.Unset("label")}})
-			return err
+			if err != nil {
+				return fmt.Errorf("failed to upsert %s with do_nothing: %w", rowID, err)
+			}
+			return nil
 		})
 		result, err := tx.Upsert(ctx, &forma.UpsertRequest{
 			Create: forma.EntityOperation{EntityIdentifier: forma.EntityIdentifier{SchemaName: unsetSchemaName, RowID: rowID}, Data: unsetBaseDoc()},
 			Target: forma.ConflictTarget{RowID: true}, Action: forma.UpsertDoNothing})
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to upsert %s with do_nothing after the refusal: %w", rowID, err)
 		}
 		assert.Equal(t, forma.UpsertExisting, result.Outcome)
 		return nil
